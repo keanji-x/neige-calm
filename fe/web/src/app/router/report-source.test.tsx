@@ -137,7 +137,7 @@ describe('the source panel on the track page', () => {
     expect(scrollIntoView.mock.instances).toContain(mark);
     expect(within(drawer).getByRole('button', { name: SOURCE_PANEL_COPY.closeLabel })).toBeTruthy();
     fireEvent.keyDown(drawer, { key: 'Escape' });
-    /* jsdom fires no `animationend`, so the card sits in its retracting frame;
+    /* jsdom fires no `transitionend`, so the card sits in its retracting frame;
        what closing means here is that it has left the Escape stack. */
     await waitFor(() => expect(drawer.hasAttribute('data-nc-escape-layer')).toBe(false));
   });

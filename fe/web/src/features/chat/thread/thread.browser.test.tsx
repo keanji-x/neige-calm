@@ -482,7 +482,7 @@ function RailPane({ turns, paneHeight = 400, conversationSpan = 396 }: {
         ['--conversation-span' as string]: `${conversationSpan}px`,
       }}
     >
-      <div className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none' }}>
+      <div className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none', transition: 'none' }}>
         <div
           className={drawerStyles.scroll}
           data-nc-drawer-scroll=""
@@ -493,7 +493,7 @@ function RailPane({ turns, paneHeight = 400, conversationSpan = 396 }: {
           </div>
         </div>
       </div>
-      <div className={drawerStyles.seam} data-nc-drawer-seam="" style={{ animation: 'none' }} />
+      <div className={drawerStyles.seam} data-nc-drawer-seam="" style={{ animation: 'none', transition: 'none' }} />
     </div>
   );
 }
@@ -1782,17 +1782,20 @@ describe('the exchange rail, as the engine lays it out', () => {
 
     const timing = (element: Element) => {
       const style = getComputedStyle(element);
-      return `${style.animationName} ${style.animationDuration} ${style.animationTimingFunction}`;
+      return `${style.transitionProperty} ${style.transitionDuration} ${style.transitionTimingFunction}`;
     };
     expect(timing(seam)).toBe(timing(card));
-    const enteringName = getComputedStyle(seam).animationName;
-    expect(enteringName).not.toBe('none');
+    const enteringTiming = timing(seam);
+    expect(getComputedStyle(seam).transitionProperty).toBe('opacity, translate');
+    expect(parseFloat(getComputedStyle(seam).transitionDuration)).toBeGreaterThan(0);
+    await Promise.all(card.getAnimations().map(animation => animation.finished));
 
     view.rerender(<Harness open={false} />);
     await frame();
     const leavingCard = host.querySelector<HTMLElement>('[data-nc-drawer]')!;
     const leavingSeam = host.querySelector<HTMLElement>('[data-nc-drawer-seam]')!;
-    expect(getComputedStyle(leavingSeam).animationName).not.toBe(enteringName);
+    expect(timing(leavingSeam)).not.toBe(enteringTiming);
+    expect(getComputedStyle(leavingSeam).transitionProperty).toBe('opacity, translate');
     expect(timing(leavingSeam)).toBe(timing(leavingCard));
 
     /* The exit is one `--motion-snappy`; wait it out rather than guessing. */

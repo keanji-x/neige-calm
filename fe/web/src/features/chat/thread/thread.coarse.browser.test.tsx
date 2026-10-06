@@ -47,7 +47,7 @@ function RailPane({ turns, paneHeight = 400 }: {
         ['--panel-span' as string]: '300px',
       }}
     >
-      <div className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none' }}>
+      <div className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none', transition: 'none' }}>
         <div
           className={drawerStyles.scroll}
           data-nc-drawer-scroll=""
@@ -58,7 +58,7 @@ function RailPane({ turns, paneHeight = 400 }: {
           </div>
         </div>
       </div>
-      <div className={drawerStyles.seam} data-nc-drawer-seam="" style={{ animation: 'none' }} />
+      <div className={drawerStyles.seam} data-nc-drawer-seam="" style={{ animation: 'none', transition: 'none' }} />
     </div>
   );
 }

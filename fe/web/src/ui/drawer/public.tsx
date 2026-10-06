@@ -181,7 +181,8 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
       {...(compact && !inline ? { 'aria-label': frame.title } : { 'aria-labelledby': titleId })}
       tabIndex={-1}
       onTransitionEnd={event => {
-        if (closing && event.target === event.currentTarget && event.propertyName === 'opacity') setClosing(false);
+        if (closing && event.target === event.currentTarget && event.propertyName === 'opacity'
+          && getComputedStyle(event.currentTarget).opacity === '0') setClosing(false);
       }}
     >
       {/* The header is before the scroller in the DOM, so the first Tab out of the container lands on its controls. */}

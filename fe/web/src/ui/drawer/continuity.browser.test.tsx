@@ -71,3 +71,14 @@ it('ignores a child transition ending while its own exit is in flight', async ()
   for (const animation of departing.getAnimations()) animation.finish();
   await expect.poll(() => departing.isConnected).toBe(false);
 });
+
+it('ignores an entrance completion queued before a new exit owns the panel', async () => {
+  const view = render(<Scene open={true} />);
+  const departing = panel();
+  for (const animation of departing.getAnimations()) animation.finish();
+  view.rerender(<Scene open={false} />);
+  await frame();
+  expect(departing.isConnected).toBe(true);
+  expect(Number(getComputedStyle(departing).opacity)).toBeGreaterThan(0);
+  await expect.poll(() => departing.isConnected).toBe(false);
+});

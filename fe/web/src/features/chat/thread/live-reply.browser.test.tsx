@@ -27,7 +27,7 @@ const stored = (text: string): ConversationTurn => ({ id: '42', author: 'agent',
 
 function Pane({ turns, width = 640 }: { turns: readonly TranscriptEntry[]; width?: number }) {
   return (
-    <div className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none', position: 'relative', inlineSize: width, blockSize: 448 }}>
+    <div className={drawerStyles.drawer} data-nc-drawer="" style={{ animation: 'none', transition: 'none', position: 'relative', inlineSize: width, blockSize: 448 }}>
       <div className={drawerStyles.scroll} data-nc-drawer-scroll="" style={{ blockSize: 400, flex: 'none' }}>
         <div className={drawerStyles.bodyInner}>
           <ChatThread canContinue={false} cards={{}} stalled={false} pending conversation={conversation} turns={turns} />

@@ -316,6 +316,9 @@ describe('the drawer against a real rendering engine', () => {
     hiddenOpener.focus();
     expect(document.activeElement).not.toBe(hiddenOpener);
 
+    // This case exercises a visible exit, rather than cancelling before the card's first paint.
+    await Promise.all(drawer.getAnimations().map(animation => animation.finished));
+    expect(getComputedStyle(drawer).opacity).toBe('1');
     await click(drawer.querySelector<HTMLElement>('button[aria-label="Close conversation"]')!);
 
     /* Mid-retraction; with no live `closing` frame the next line would pass vacuously. */
