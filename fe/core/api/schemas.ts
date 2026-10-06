@@ -697,13 +697,20 @@ export const forgeScanCompletedSchema = z.object({
   }),
 });
 
+const forgePrResultDataSchema = z.object({
+  track_id: z.string(),
+  pr_number: z.number(),
+  head_sha: z.string(),
+});
+
 export const forgePrOpenedSchema = z.object({
   ev: z.literal('forge.pr.opened'),
-  data: z.object({
-    track_id: z.string(),
-    pr_number: z.number(),
-    head_sha: z.string(),
-  }),
+  data: forgePrResultDataSchema,
+});
+
+export const forgePrPublishedSchema = z.object({
+  ev: z.literal('forge.pr.published'),
+  data: forgePrResultDataSchema,
 });
 
 export const forgePrDiffReadSchema = z.object({
@@ -932,6 +939,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   proposalResolvedSchema,
   forgeScanCompletedSchema,
   forgePrOpenedSchema,
+  forgePrPublishedSchema,
   forgePrDiffReadSchema,
   forgePrChecksSchema,
   forgeIssueReadSchema,
@@ -994,6 +1002,7 @@ export type ProposalSubmittedEvent = z.infer<typeof proposalSubmittedSchema>;
 export type ProposalResolvedEvent = z.infer<typeof proposalResolvedSchema>;
 export type ForgeScanCompletedEvent = z.infer<typeof forgeScanCompletedSchema>;
 export type ForgePrOpenedEvent = z.infer<typeof forgePrOpenedSchema>;
+export type ForgePrPublishedEvent = z.infer<typeof forgePrPublishedSchema>;
 export type ForgePrDiffReadEvent = z.infer<typeof forgePrDiffReadSchema>;
 export type ForgePrChecksEvent = z.infer<typeof forgePrChecksSchema>;
 export type ForgeIssueReadEvent = z.infer<typeof forgeIssueReadSchema>;

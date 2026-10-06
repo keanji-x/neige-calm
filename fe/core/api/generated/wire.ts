@@ -221,7 +221,7 @@ note: string,
  * Pending-scoped idempotency key: re-submits while pending return the original proposal id;
  * resolution releases the key.
  */
-idem_key: string, } } | { "ev": "proposal.resolved", "data": { track_id: TrackId, proposal_id: string, plugin_id: string, decision: ProposalDecision, } } | { "ev": "forge.scan.completed", "data": { track_id: TrackId, overlapping_prs: Array<number>, } } | { "ev": "forge.pr.opened", "data": { track_id: TrackId, pr_number: number, head_sha: string, } } | { "ev": "forge.pr.diff.read", "data": { track_id: TrackId, pr_number: number, base_sha: string, head_sha: string, artifact_path: string, } } | { "ev": "forge.pr.checks", "data": { track_id: TrackId, pr_number: number, conclusion: string, 
+idem_key: string, } } | { "ev": "proposal.resolved", "data": { track_id: TrackId, proposal_id: string, plugin_id: string, decision: ProposalDecision, } } | { "ev": "forge.scan.completed", "data": { track_id: TrackId, overlapping_prs: Array<number>, } } | { "ev": "forge.pr.opened", "data": { track_id: TrackId, pr_number: number, head_sha: string, } } | { "ev": "forge.pr.published", "data": { track_id: TrackId, pr_number: number, head_sha: string, } } | { "ev": "forge.pr.diff.read", "data": { track_id: TrackId, pr_number: number, base_sha: string, head_sha: string, artifact_path: string, } } | { "ev": "forge.pr.checks", "data": { track_id: TrackId, pr_number: number, conclusion: string, 
 /**
  * Absent only for historical events or operations frozen before snapshot capture.
  */

@@ -97,6 +97,7 @@ pub async fn commit_events_with_author_in_tx(
                 | Event::RatifyResolved { .. }
                 | Event::ForgeScanCompleted { .. }
                 | Event::ForgePrOpened { .. }
+                | Event::ForgePrPublished { .. }
                 | Event::ForgePrDiffRead { .. }
                 | Event::ForgePrChecks { .. }
                 | Event::ForgeIssueRead { .. }

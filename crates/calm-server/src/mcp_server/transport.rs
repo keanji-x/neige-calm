@@ -989,13 +989,18 @@ fn validate_plugin_forge_payload(payload: &PluginForgePayload) -> Result<(), Rpc
     if payload.idem_key.trim().is_empty() {
         return Err(malformed_forge_payload());
     }
-    if let Some(event) = payload.event_spec.as_ref()
-        && !SUPPORTED_FORGE_EVENT_KINDS.contains(&event.event_kind.as_str())
-    {
-        return Err(RpcError::invalid_params(format!(
-            "forge-action event_kind `{}` is not supported",
-            event.event_kind
-        )));
+    if let Some(event) = payload.event_spec.as_ref() {
+        if !SUPPORTED_FORGE_EVENT_KINDS.contains(&event.event_kind.as_str()) {
+            return Err(RpcError::invalid_params(format!(
+                "forge-action event_kind `{}` is not supported",
+                event.event_kind
+            )));
+        }
+        if payload.parked && event.event_kind == "forge.pr.published" {
+            return Err(RpcError::invalid_params(
+                "forge.pr.published is receipt-only; parked actions require a completion wake",
+            ));
+        }
     }
     Ok(())
 }
@@ -1543,6 +1548,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn published_receipts_require_a_waiting_caller_before_submission() {
+        let payload = |kind: &str, parked| {
+            let mut value = forge_action_payload(
+                "receipt-mode".into(),
+                vec!["sh".into()],
+                crate::event::ForgeEventSpec {
+                    event_kind: kind.into(),
+                    fields: [
+                        (
+                            "pr_number".into(),
+                            crate::event::FieldSource::JsonField {
+                                path: "/number".into(),
+                            },
+                        ),
+                        (
+                            "head_sha".into(),
+                            crate::event::FieldSource::JsonField {
+                                path: "/head".into(),
+                            },
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                },
+                crate::operation::forge_action_adapter::ProbeSpec {
+                    probe_argv: vec!["true".into()],
+                    output_probe_argv: None,
+                },
+            );
+            value.parked = parked;
+            value
+        };
+        assert!(validate_plugin_forge_payload(&payload("forge.pr.published", false)).is_ok());
+        assert!(validate_plugin_forge_payload(&payload("forge.pr.opened", true)).is_ok());
+        let error =
+            validate_plugin_forge_payload(&payload("forge.pr.published", true)).unwrap_err();
+        assert!(error.message.contains("receipt-only"), "{error:?}");
+    }
+
+    #[test]
     fn forge_result_filename_is_hash_based_and_path_safe() {
         let foo = forge_result_filename("foo");
         let foo_bar = forge_result_filename("foo.bar");
@@ -1578,19 +1623,10 @@ mod tests {
         }
 
         let base = payload(vec!["gh", "pr", "merge", "42"], "gh.pr.merge:owner/repo:42");
-        let edited_argv = PluginForgePayload {
-            compatible_payload_hashes: Vec::new(),
-            argv: vec!["gh", "pr", "merge", "42", "--squash", "--delete-branch"]
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-            idem_key: "gh.pr.merge:owner/repo:42".into(),
-            event_spec: None,
-            subject: None,
-            context: serde_json::Map::new(),
-            probe: None,
-            parked: true,
-        };
+        let edited_argv = payload(
+            vec!["gh", "pr", "merge", "42", "--squash", "--delete-branch"],
+            "gh.pr.merge:owner/repo:42",
+        );
         let different_identity =
             payload(vec!["gh", "pr", "merge", "43"], "gh.pr.merge:owner/repo:43");
 

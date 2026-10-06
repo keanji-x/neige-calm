@@ -270,7 +270,7 @@ fn dispatcher_filter_matches_push_kinds() {
         track_id: track.clone(),
         overlapping_prs: vec![1, 2],
     })));
-    assert!(!filter.matches(&env(Event::ForgePrOpened {
+    assert!(filter.matches(&env(Event::ForgePrOpened {
         track_id: track.clone(),
         pr_number: 1,
         head_sha: "head-sha".into(),
@@ -1293,7 +1293,7 @@ fn event_warrants_planner_push_covers_push_allowlist() {
             track_id: track.clone(),
             reason: "cap_exhausted".into(),
         },
-        Event::ForgePrOpened {
+        Event::ForgePrPublished {
             track_id: track.clone(),
             pr_number: 1,
             head_sha: "head-sha".into(),
@@ -1352,6 +1352,11 @@ fn event_warrants_planner_push_covers_push_allowlist() {
         Event::ForgeScanCompleted {
             track_id: track.clone(),
             overlapping_prs: vec![1, 2],
+        },
+        Event::ForgePrOpened {
+            track_id: track.clone(),
+            pr_number: 1,
+            head_sha: "head-sha".into(),
         },
         Event::ForgePrChecks {
             track_id: track.clone(),
@@ -2197,8 +2202,18 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
                 head_sha: "head-sha".into(),
             },
             ActorId::KernelDispatcher,
-            false,
             true,
+            true,
+        ),
+        row(
+            Event::ForgePrPublished {
+                track_id: track.clone(),
+                pr_number: 1,
+                head_sha: "head-sha".into(),
+            },
+            ActorId::KernelDispatcher,
+            false,
+            false,
         ),
         row(
             Event::ForgePrChecks {
@@ -3976,7 +3991,7 @@ fn confirmation_receipts_do_not_wake_the_planner_live_or_on_replay() {
             track_id: TrackId::from("w"),
             reason: "Which repository?".into(),
         },
-        Event::ForgePrOpened {
+        Event::ForgePrPublished {
             track_id: TrackId::from("w"),
             pr_number: 2169,
             head_sha: "head".into(),
@@ -3993,4 +4008,19 @@ fn confirmation_receipts_do_not_wake_the_planner_live_or_on_replay() {
             event.kind_tag()
         );
     }
+}
+
+#[test]
+fn asynchronous_opened_results_keep_waking_live_and_on_replay() {
+    let event = Event::ForgePrOpened {
+        track_id: TrackId::from("async-track"),
+        pr_number: 2169,
+        head_sha: "head".into(),
+    };
+    assert!(event_warrants_planner_push_with_role(
+        &event,
+        &ActorId::KernelDispatcher,
+        |_| None
+    ));
+    assert!(PLANNER_CATCH_UP_KINDS.contains(&event.kind_tag()));
 }

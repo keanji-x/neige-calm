@@ -145,12 +145,12 @@ async fn real_codex_worker_delivers_candidate_then_scripted_planner_publishes() 
     let published = call_tool_via_socket(&fx.socket_path, &fx.daemon_token, &planner_thread, 190,
         PUBLISH_TOOL, json!({"title":"Worker delivery", "body":"Completed candidate", "idempotency_key":"worker-delivery"})).await;
     assert_forge_tool_accepted(&published, PUBLISH_TOOL);
-    let (s6_id, s6_track, s6) = wait_for_first_forge_event(&fx, "forge.pr.opened", budget).await;
+    let (s6_id, s6_track, s6) = wait_for_first_forge_event(&fx, "forge.pr.published", budget).await;
     assert_eq!(s6_track.as_deref(), Some(fx.track_id.as_str()));
     assert_eq!(s6["head_sha"], head);
     let pr_number = s6["pr_number"]
         .as_u64()
-        .unwrap_or_else(|| panic!("forge.pr.opened missing pr_number: {s6}"));
+        .unwrap_or_else(|| panic!("forge.pr.published missing pr_number: {s6}"));
     assert!(pr_number >= 1, "PR number must be >= 1, got {pr_number}");
 
     let checks = call_tool_via_socket(
@@ -339,7 +339,7 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
     assert_forge_tool_accepted(&create_resp, PUBLISH_TOOL);
     let (opened_id, _, opened) = wait_for_track_forge_event(
         &fx,
-        "forge.pr.opened",
+        "forge.pr.published",
         0,
         review_budget(),
         "scripted setup PR",
@@ -348,7 +348,7 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
     .await;
     let pr_number = opened["pr_number"]
         .as_u64()
-        .unwrap_or_else(|| panic!("forge.pr.opened missing pr_number: {opened}"));
+        .unwrap_or_else(|| panic!("forge.pr.published missing pr_number: {opened}"));
 
     let checks_resp = call_tool_via_socket(
         &fx.socket_path,
@@ -742,7 +742,7 @@ async fn real_planner_drives_issue_to_close_capstone() {
     // S6 — the real Planner publishes the completed candidate.
     let (opened_id, opened_actor, opened) = wait_capstone_event(
         &fx,
-        "forge.pr.opened",
+        "forge.pr.published",
         commit_id,
         st(),
         "Planner publishes the completed candidate",
@@ -752,10 +752,10 @@ async fn real_planner_drives_issue_to_close_capstone() {
     assert_eq!(opened_actor, ActorId::KernelDispatcher, "{opened}");
     let pr_number = opened["pr_number"]
         .as_u64()
-        .unwrap_or_else(|| panic!("forge.pr.opened missing pr_number: {opened}"));
+        .unwrap_or_else(|| panic!("forge.pr.published missing pr_number: {opened}"));
     let opened_head = opened["head_sha"]
         .as_str()
-        .unwrap_or_else(|| panic!("forge.pr.opened missing head_sha: {opened}"))
+        .unwrap_or_else(|| panic!("forge.pr.published missing head_sha: {opened}"))
         .to_string();
     assert!(is_hex_sha(&opened_head), "{opened}");
     assert_eq!(candidate, opened_head);

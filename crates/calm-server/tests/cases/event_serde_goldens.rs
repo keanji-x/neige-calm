@@ -1010,6 +1010,16 @@ golden_test!(
 );
 
 golden_test!(
+    forge_pr_published,
+    "forge_pr_published.json",
+    Event::ForgePrPublished {
+        track_id: TrackId::from("track-01"),
+        pr_number: 1,
+        head_sha: "head-sha".into(),
+    }
+);
+
+golden_test!(
     forge_pr_diff_read,
     "forge_pr_diff_read.json",
     Event::ForgePrDiffRead {
@@ -1260,7 +1270,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 }
 
 /// Every `Event` variant's kind tag, in declaration order.
-const ALL_KIND_TAGS: [&str; 52] = [
+const ALL_KIND_TAGS: [&str; 53] = [
     "area.updated",
     "area.deleted",
     "track.updated",
@@ -1305,6 +1315,7 @@ const ALL_KIND_TAGS: [&str; 52] = [
     "proposal.resolved",
     "forge.scan.completed",
     "forge.pr.opened",
+    "forge.pr.published",
     "forge.pr.diff.read",
     "forge.pr.checks",
     "forge.issue.read",
@@ -1405,6 +1416,7 @@ fn kind_tag_list_matches_enum() {
             Event::ProposalResolved { .. } => "proposal.resolved",
             Event::ForgeScanCompleted { .. } => "forge.scan.completed",
             Event::ForgePrOpened { .. } => "forge.pr.opened",
+            Event::ForgePrPublished { .. } => "forge.pr.published",
             Event::ForgePrDiffRead { .. } => "forge.pr.diff.read",
             Event::ForgePrChecks { .. } => "forge.pr.checks",
             Event::ForgeIssueRead { .. } => "forge.issue.read",

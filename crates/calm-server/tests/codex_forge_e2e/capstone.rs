@@ -151,7 +151,7 @@ pub(super) async fn capstone_oracle(
             RequiredEvent::new("forge.issue.read", |r| {
                 r.payload["issue_number"] == json!(CAPSTONE_ISSUE_NUMBER)
             }),
-            RequiredEvent::any("forge.pr.opened"),
+            RequiredEvent::any("forge.pr.published"),
             RequiredEvent::new("forge.pr.checks", |r| {
                 r.payload["conclusion"] == json!("success")
             }),
@@ -215,7 +215,7 @@ pub(super) async fn capstone_oracle(
         "SELECT payload_json, tx_output_json, created_at_ms FROM operations \
          WHERE kind = 'forge-action' AND idempotency_key LIKE '%:track.publish:%' AND phase = 'succeeded'")
         .fetch_all(fx.repo.pool()).await.unwrap();
-    let opened = event_rows(&fx.repo, "forge.pr.opened")
+    let opened = event_rows(&fx.repo, "forge.pr.published")
         .await
         .into_iter()
         .find(|row| row.payload["pr_number"] == json!(pr_number))

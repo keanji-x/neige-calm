@@ -104,7 +104,7 @@ pub(super) async fn done_candidate(fx: &Fx, key: &str) -> String {
 
 pub(super) async fn pr_opened_heads(fx: &Fx) -> Vec<Value> {
     let rows: Vec<(String,)> =
-        sqlx::query_as("SELECT payload FROM events WHERE kind = 'forge.pr.opened' ORDER BY id")
+        sqlx::query_as("SELECT payload FROM events WHERE kind = 'forge.pr.published' ORDER BY id")
             .fetch_all(&fx.pool())
             .await
             .unwrap();
@@ -168,7 +168,7 @@ fn token_probe_hook(out: &Path) -> String {
 }
 
 /// P1 (D5, D6) — a done attempt's candidate C is pushed, the PR is opened on it, and the one
-/// `forge.pr.opened` carries C. The live stdout completed the op: the shim saw no probe. The
+/// `forge.pr.published` carries C. The live stdout completed the op: the shim saw no probe. The
 /// user's clone keeps every ref it had.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn publish_pushes_the_candidate_and_opens_its_pr() {

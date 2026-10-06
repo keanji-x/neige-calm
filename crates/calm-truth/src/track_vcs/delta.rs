@@ -496,6 +496,7 @@ pub(super) fn paths_changed_by_event(event: &Event, track_id: &TrackId) -> PathD
         | Event::RatifyResolved { .. }
         | Event::ForgeScanCompleted { .. }
         | Event::ForgePrOpened { .. }
+                | Event::ForgePrPublished { .. }
         | Event::ForgePrDiffRead { .. }
         | Event::ForgePrChecks { .. }
         | Event::ForgeIssueRead { .. }

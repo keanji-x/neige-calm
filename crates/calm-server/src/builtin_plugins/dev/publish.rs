@@ -236,7 +236,7 @@ fn publish_payload(
             PR_PUBLISH_SCRIPT,
             &[sha, branch, url, &dest.base, title, body, &own_commits],
         ),
-        pr_opened_event(),
+        publish_receipt_event(),
         ProbeSpec {
             probe_argv: shell_argv(PR_PUBLISH_PROBE_SCRIPT, &[sha, branch, url]),
             output_probe_argv: Some(shell_argv(
@@ -247,12 +247,12 @@ fn publish_payload(
     )
 }
 
-/// The publish's event: `forge.pr.opened` from the script's stdout. `pr_action` and `url` are
+/// The publish's synchronous receipt: `forge.pr.published` from the script's stdout. `pr_action` and `url` are
 /// for the tool result; the event drops them.
-fn pr_opened_event() -> ForgeEventSpec {
+fn publish_receipt_event() -> ForgeEventSpec {
     let json_field = |path: &str| FieldSource::JsonField { path: path.into() };
     ForgeEventSpec {
-        event_kind: "forge.pr.opened".into(),
+        event_kind: "forge.pr.published".into(),
         fields: [
             ("pr_number".to_string(), json_field("/number")),
             // `created`, `reused` or `recovered`.
@@ -385,10 +385,31 @@ mod tests {
             .unwrap();
         assert!(output.status.success(), "{output:?}");
         let stdout: Value = serde_json::from_slice(&output.stdout).unwrap();
-        let fields = pr_opened_event().extract_payload(0, Some(&stdout)).unwrap();
+        let fields = publish_receipt_event()
+            .extract_payload(0, Some(&stdout))
+            .unwrap();
         assert_eq!(fields["pr_action"], json!("recovered"));
         assert_eq!(fields["pr_number"], json!(7));
         assert_eq!(fields["head_sha"], json!("abc"));
         assert_eq!(fields["url"], json!("https://github.invalid/pull/7"));
+    }
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+
+    #[test]
+    fn native_publish_uses_a_synchronous_receipt_event() {
+        let dest = Destination {
+            worktree: PathBuf::from("/nonexistent"),
+            branch: "neige/track-t".into(),
+            tip: "abc".into(),
+            url: "/origin.git".into(),
+            base: "main".into(),
+        };
+        let payload = publish_payload(&dest, "Title", "Body.", "receipt", &[]);
+        assert!(!payload.parked);
+        assert_eq!(payload.event_spec.unwrap().event_kind, "forge.pr.published");
     }
 }

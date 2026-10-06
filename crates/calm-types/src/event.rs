@@ -227,7 +227,7 @@ impl EventScope {
 
 /// Sync-engine event envelope version. Bump together with a migration default whenever clients
 /// must gate on a new persisted wire shape.
-pub const SYNC_EVENT_VERSION: u32 = 24;
+pub const SYNC_EVENT_VERSION: u32 = 25;
 
 /// Evidence captured by the checks read, never reconstructed from a later PR head.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -702,6 +702,13 @@ pub enum Event {
         pr_number: u64,
         head_sha: String,
     },
+    /// The caller receives this synchronous publish result inline; it is not a wake signal.
+    #[serde(rename = "forge.pr.published")]
+    ForgePrPublished {
+        track_id: TrackId,
+        pr_number: u64,
+        head_sha: String,
+    },
     #[serde(rename = "forge.pr.diff.read")]
     ForgePrDiffRead {
         track_id: TrackId,
@@ -1045,6 +1052,7 @@ impl Event {
             | Event::RatifyResolved { track_id, .. }
             | Event::ForgeScanCompleted { track_id, .. }
             | Event::ForgePrOpened { track_id, .. }
+            | Event::ForgePrPublished { track_id, .. }
             | Event::ForgePrDiffRead { track_id, .. }
             | Event::ForgePrChecks { track_id, .. }
             | Event::ForgeIssueRead { track_id, .. }
@@ -1133,6 +1141,7 @@ impl Event {
             Event::ProposalResolved { .. } => "proposal.resolved",
             Event::ForgeScanCompleted { .. } => "forge.scan.completed",
             Event::ForgePrOpened { .. } => "forge.pr.opened",
+            Event::ForgePrPublished { .. } => "forge.pr.published",
             Event::ForgePrDiffRead { .. } => "forge.pr.diff.read",
             Event::ForgePrChecks { .. } => "forge.pr.checks",
             Event::ForgeIssueRead { .. } => "forge.issue.read",
@@ -1290,6 +1299,7 @@ pub fn topics(ev: &Event) -> Vec<String> {
         | Event::RatifyResolved { track_id, .. }
         | Event::ForgeScanCompleted { track_id, .. }
         | Event::ForgePrOpened { track_id, .. }
+        | Event::ForgePrPublished { track_id, .. }
         | Event::ForgePrDiffRead { track_id, .. }
         | Event::ForgePrChecks { track_id, .. }
         | Event::ForgeIssueRead { track_id, .. }
@@ -2655,6 +2665,11 @@ mod scope_tests {
                 pr_number: 1,
                 head_sha: "head-sha".into(),
             },
+            Event::ForgePrPublished {
+                track_id: TrackId::from("track-1"),
+                pr_number: 1,
+                head_sha: "head-sha".into(),
+            },
             Event::ForgePrDiffRead {
                 track_id: TrackId::from("track-1"),
                 pr_number: 1,
@@ -2903,6 +2918,15 @@ mod scope_tests {
             (
                 "forge.pr.opened",
                 "forge.pr.opened",
+                serde_json::json!({
+                    "track_id": "track-1",
+                    "pr_number": 1,
+                    "head_sha": "head-sha",
+                }),
+            ),
+            (
+                "forge.pr.published",
+                "forge.pr.published",
                 serde_json::json!({
                     "track_id": "track-1",
                     "pr_number": 1,

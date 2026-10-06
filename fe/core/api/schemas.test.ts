@@ -31,3 +31,12 @@ describe('core/api wire decode behavior', () => {
     if (result.status === 'failed') expect(result.error.kind).toBe('decode');
   });
 });
+
+
+describe('synchronous publication receipts', () => {
+  it('decodes the receipt while requiring all routing and PR fields', () => {
+    const data = { track_id: 'track', pr_number: 2169, head_sha: 'head' };
+    expect(decodeWireEvent({ ev: 'forge.pr.published', data }).status).toBe('ready');
+    expect(decodeWireEvent({ ev: 'forge.pr.published', data: { track_id: 'track' } }).status).toBe('failed');
+  });
+});

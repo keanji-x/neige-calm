@@ -1,0 +1,11 @@
+{
+  "description": "Synchronous native publication receipt; remains visible without waking the Planner.",
+  "wire": {
+    "ev": "forge.pr.published",
+    "data": {
+      "track_id": "track-01",
+      "pr_number": 1,
+      "head_sha": "head-sha"
+    }
+  }
+}

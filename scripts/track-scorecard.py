@@ -13,7 +13,7 @@ Columns:
   failed        task attempts that ended failed
   rejected      task.failed events the Planner wrote (neige_task_reject verdicts)
   gate_red      task.gate_result events with passed=false
-  publish       forge.pr.opened events (one per published head)
+  publish       forge.pr.opened / forge.pr.published events (one per published head)
   ci_red        distinct heads whose forge.pr.checks concluded failure; --detail and --json also
                 name each failed check per head (events before #2170 did not record names)
   interventions the user's messages to the Planner after the kickoff message, plus ratify
@@ -140,9 +140,9 @@ def ci_red_heads(db, track_id, start, end):
     publish before them."""
     head = None
     red = {}
-    for kind, payload, _, _ in events(db, track_id, ["forge.pr.opened", "forge.pr.checks"], start, end):
+    for kind, payload, _, _ in events(db, track_id, ["forge.pr.opened", "forge.pr.published", "forge.pr.checks"], start, end):
         data = json.loads(payload)
-        if kind == "forge.pr.opened":
+        if kind in ("forge.pr.opened", "forge.pr.published"):
             head = data["head_sha"]
         elif data["conclusion"] == "failure":
             failed = (data.get("snapshot") or {}).get("head_sha") or head or "unknown"
@@ -219,7 +219,7 @@ def scorecard(db, track_id):
     gate_red = sum(
         1 for _, p, _, _ in events(db, track_id, ["task.gate_result"], start, end) if not json.loads(p)["passed"]
     )
-    publish = len(events(db, track_id, ["forge.pr.opened"], start, end))
+    publish = len(events(db, track_id, ["forge.pr.opened", "forge.pr.published"], start, end))
     # The Planner's first message is the kickoff, whoever sent it. After that only the user's own
     # messages count: an AI-sent message is not an intervention, and side conversations with an
     # assistant card are not steering the Planner.

@@ -37,6 +37,7 @@ pub const SUPPORTED_FORGE_EVENT_KINDS: &[&str] = &[
     "forge.pr.merged",
     "forge.scan.completed",
     "forge.pr.opened",
+    "forge.pr.published",
     "forge.pr.diff.read",
     "forge.issue.read",
     "forge.pr.checks",
@@ -424,7 +425,7 @@ fn new_kind_required_fields(event_kind: &str) -> &'static [(&'static str, ForgeF
     use ForgeFieldType::*;
     match event_kind {
         "forge.scan.completed" => &[("overlapping_prs", VecU64)],
-        "forge.pr.opened" => &[("pr_number", U64), ("head_sha", Str)],
+        "forge.pr.opened" | "forge.pr.published" => &[("pr_number", U64), ("head_sha", Str)],
         "forge.pr.diff.read" => &[
             ("pr_number", U64),
             ("base_sha", Str),

@@ -240,6 +240,7 @@ function policies(): PolicyMap {
   'proposal.resolved': noop('The proposal UI is withdrawn.'),
   'forge.scan.completed': noop('Forge scan rows have no query consumer.'),
   'forge.pr.opened': noop('Opened PR rows have no query consumer.'),
+  'forge.pr.published': noop('Published PR receipts have no query consumer.'),
   'forge.pr.diff.read': noop('Diff-read rows have no query consumer.'),
   'forge.pr.checks': noop('Forge check rows have no query consumer.'),
   'forge.issue.read': noop('Issue-read rows have no query consumer.'),

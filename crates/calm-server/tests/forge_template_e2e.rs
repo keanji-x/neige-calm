@@ -548,7 +548,7 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
     let create_resp =
         publish_delivery(&mut fx, "Forge E2E", "Completed candidate", "publish").await;
     assert_tool_succeeded(&create_resp, "neige_dev_publish");
-    let opened_rows = wait_for_event_count(&fx.repo, "forge.pr.opened", 1).await;
+    let opened_rows = wait_for_event_count(&fx.repo, "forge.pr.published", 1).await;
     let opened = opened_rows[0].clone();
     assert_track_event(&opened, &fx.track_id);
     assert_eq!(opened.payload["pr_number"], 1);
@@ -715,7 +715,7 @@ async fn git_forge_merge_crash_recovers_once_via_probe() {
     let create_resp =
         publish_delivery(&mut fx, "Forge E2E", "Completed candidate", "publish").await;
     assert_tool_succeeded(&create_resp, "neige_dev_publish");
-    let opened_rows = wait_for_event_count(&fx.repo, "forge.pr.opened", 1).await;
+    let opened_rows = wait_for_event_count(&fx.repo, "forge.pr.published", 1).await;
     let pr_number = opened_rows[0].payload["pr_number"]
         .as_u64()
         .expect("pr number");
@@ -827,7 +827,7 @@ async fn git_forge_never_ran_parked_merge_recovers_not_landed_via_probe() {
     let create_resp =
         publish_delivery(&mut fx, "Forge E2E", "Completed candidate", "publish").await;
     assert_tool_succeeded(&create_resp, "neige_dev_publish");
-    let opened_rows = wait_for_event_count(&fx.repo, "forge.pr.opened", 1).await;
+    let opened_rows = wait_for_event_count(&fx.repo, "forge.pr.published", 1).await;
     let pr_number = opened_rows[0].payload["pr_number"]
         .as_u64()
         .expect("pr number");
@@ -2035,7 +2035,7 @@ async fn drive_pr_to_diff(
 
     let create_resp = publish_delivery(fx, title, "Completed review candidate", "publish").await;
     assert_tool_succeeded(&create_resp, "neige_dev_publish");
-    let opened = wait_for_event_matching(&fx.repo, "forge.pr.opened", |row| {
+    let opened = wait_for_event_matching(&fx.repo, "forge.pr.published", |row| {
         row.scope_track.as_deref() == Some(&fx.track_id)
             && row.payload["head_sha"] == json!(head_sha)
     })
