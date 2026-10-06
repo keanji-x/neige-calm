@@ -482,6 +482,7 @@ dependencies = [
  "libc",
  "nix 0.29.0",
  "nucleo-matcher",
+ "proc-macro2",
  "provider",
  "pulldown-cmark",
  "qrcode",

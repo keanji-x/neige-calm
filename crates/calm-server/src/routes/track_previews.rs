@@ -1,10 +1,10 @@
 //! `GET /api/tracks/{id}/previews`: the track's #1780 preview gateway registrations, each with
 //! a `live` probe of its loopback target. In-memory and ephemeral, so the front end polls.
 
-use crate::extract::Path;
+use crate::extract::{Json, Path};
 use std::time::Duration;
 
-use axum::{Json, Router, extract::State, routing::get};
+use axum::{Router, extract::State, routing::get};
 use serde::Serialize;
 use tokio::net::TcpStream;
 use utoipa::ToSchema;

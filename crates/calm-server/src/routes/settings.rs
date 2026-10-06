@@ -2,9 +2,9 @@
 //! empty rows are never stored.
 
 use crate::error::{ErrorBody, Result};
-use crate::extract::JsonBody;
+use crate::extract::{Json, JsonBody};
 use crate::state::{AppState, CodexShellState, RouteState};
-use axum::{Json, Router, extract::State, routing::get};
+use axum::{Router, extract::State, routing::get};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use utoipa::ToSchema;

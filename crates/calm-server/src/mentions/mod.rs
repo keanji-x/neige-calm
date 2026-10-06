@@ -14,10 +14,10 @@ mod rank;
 #[cfg(test)]
 mod tests;
 
-use crate::extract::{Path, Query};
+use crate::extract::{Json, Path, Query};
+use axum::Router;
 use axum::extract::State;
 use axum::routing::get;
-use axum::{Json, Router};
 use calm_types::mentions::MentionCandidates;
 use serde::Deserialize;
 use utoipa::IntoParams;

@@ -3,9 +3,9 @@
 //! A read never calls a plugin and never writes; a missing or stale row is an in-memory
 //! `enqueue`. Every read is one autocommit statement on the pool — no transaction.
 
-use crate::extract::{Path, Query};
+use crate::extract::{Json, Path, Query};
 use axum::{
-    Json, Router,
+    Router,
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
