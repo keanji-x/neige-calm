@@ -119,7 +119,7 @@ async fn run(
     {
         return catalog::run(ctx, registry, connection_identity, argv).await;
     }
-    let parsed = match commands::parse(argv) {
+    let parsed = match commands::parse(argv, registry) {
         Ok(parsed) => parsed,
         Err(usage) => return Output::usage(usage.message, usage.json, usage.command),
     };

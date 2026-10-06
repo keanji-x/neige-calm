@@ -37,29 +37,88 @@ pub(crate) async fn tool_descriptors_for_connection(
                 _ => Vec::new(),
             },
             None => {
-                let card = ensure_card_bound_session_active(ctx, bound, "tools/list").await?;
-                let scope = plugin_scope_for_track(ctx, Some(card.track_id.as_str())).await;
-                let mut descriptors = registry.descriptors_listed_for(bound.role);
-                extend_plugin_tool_descriptors_for_role(ctx, &mut descriptors, card.role, &scope)
-                    .await;
-                filter_profile(ctx, bound.card_id.as_str(), descriptors).await?
+                let identity = card_bound_identity(ctx, bound, "tools/list").await?;
+                tool_descriptors_for_identity(ctx, registry, &identity).await?
             }
         },
     };
     Ok(descriptors)
 }
 
-/// What `tools/list` shows a resolved caller: its role's kernel tools plus the plugin tools of
-/// its track's scope.
+/// One production, two views (#2289 D2): what a resolved caller may call, and the subset its
+/// `tools/list` shows. Both come from [`SessionCatalog::of`], so `listed` can never name a tool
+/// the catalog does not.
+pub(crate) struct SessionCatalog {
+    pub(crate) role: CardRole,
+    /// Every tool this caller may call, the managed-track restriction applied.
+    callable: Vec<ToolDescriptor>,
+    /// Kernel tools and running, in-scope natives whose declared `roles` exclude this role: served
+    /// to someone, so naming the roles reveals nothing (kernel tool names are public, #2003 K7).
+    /// A plugin tool outside the Track's scope or not running is in neither set: it stays
+    /// undiscoverable, as at `tools/call`.
+    role_refused: Vec<ToolDescriptor>,
+}
+
+impl SessionCatalog {
+    /// Kernel tools and compiled natives whose `roles` hold the caller's role, natives filtered by
+    /// running state and the Track's plugin scope; the scope's manifest tools for a
+    /// [`PLUGIN_TOOL_ROLES`] role; then the managed-track restriction, as `tools/call` applies it.
+    async fn of(
+        ctx: &Arc<AppContext>,
+        registry: &ToolRegistry,
+        identity: &ToolCallIdentity,
+    ) -> Result<Self, RpcError> {
+        let scope = plugin_scope_for_track(ctx, identity.track_id.as_deref()).await;
+        let mut served = registry.descriptors();
+        extend_plugin_tool_descriptors_for_role(ctx, &mut served, identity.role, &scope).await;
+        let (callable, role_refused): (Vec<_>, Vec<_>) = served
+            .into_iter()
+            .partition(|descriptor| descriptor.roles.contains(&identity.role));
+        Ok(Self {
+            role: identity.role,
+            callable: filter_profile(ctx, &identity.card_id, callable).await?,
+            role_refused,
+        })
+    }
+
+    /// The `tools/list` view: the callable tools that declare `listed_for` this role.
+    pub(crate) fn listed(&self) -> impl Iterator<Item = &ToolDescriptor> {
+        self.callable
+            .iter()
+            .filter(|descriptor| descriptor.listed_for.contains(&self.role))
+    }
+
+    pub(crate) fn callable(&self) -> &[ToolDescriptor] {
+        &self.callable
+    }
+
+    /// The declared `roles` of `name` when it is served, but not to this role.
+    pub(crate) fn roles_refusing(&self, name: &str) -> Option<&'static [CardRole]> {
+        self.role_refused
+            .iter()
+            .find(|descriptor| descriptor.name == name)
+            .map(|descriptor| descriptor.roles)
+    }
+}
+
+/// The catalog of a card-bound session, resolved as its `tools/call` resolves it.
+pub(crate) async fn card_bound_catalog(
+    ctx: &Arc<AppContext>,
+    registry: &ToolRegistry,
+    bound: &CardIdentity,
+) -> Result<SessionCatalog, RpcError> {
+    let identity = card_bound_identity(ctx, bound, "tools/list").await?;
+    SessionCatalog::of(ctx, registry, &identity).await
+}
+
+/// What `tools/list` shows a resolved caller: the listed view of its catalog.
 async fn tool_descriptors_for_identity(
     ctx: &Arc<AppContext>,
     registry: &ToolRegistry,
     identity: &ToolCallIdentity,
 ) -> Result<Vec<ToolDescriptor>, RpcError> {
-    let scope = plugin_scope_for_track(ctx, identity.track_id.as_deref()).await;
-    let mut descriptors = registry.descriptors_listed_for(identity.role);
-    extend_plugin_tool_descriptors_for_role(ctx, &mut descriptors, identity.role, &scope).await;
-    filter_profile(ctx, &identity.card_id, descriptors).await
+    let catalog = SessionCatalog::of(ctx, registry, identity).await?;
+    Ok(catalog.listed().cloned().collect())
 }
 
 /// The transport's `-32601` for a `tools/call` name this caller cannot reach. It lists the names

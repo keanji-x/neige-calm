@@ -233,11 +233,29 @@ Agent-facing JSON-RPC codes, one meaning each:
 
 ## 7. Discovery and help
 
-- `neige tool ls (--prefix P | --all) [--cursor C]` returns `{tools: [{name, cli, listed,
-  plugin, kind}], next_cursor}`. `neige tool describe --name N` returns the MCP declaration plus
-  `cli`, `listed`, `plugin` and `kind`. `plugin` is the id of the plugin serving the tool, built-in
-  natives such as `plugin_gitforge_publish` included, or null for a kernel tool; `kind` is the kind
-  its manifest declares (`forge-action`) or null (#2227).
+- **The catalog is what the role may call** (#2289): the kernel tools and running, in-scope
+  compiled natives whose declared `roles` hold the session's role, the in-scope manifest plugin
+  tools for a Planner or Worker, under the managed-track restriction `tools/call` applies. One
+  owner (`SessionCatalog`, `transport/catalog.rs`) produces it; `tools/list` is its `listed_for`
+  view.
+- `neige tool ls (--prefix P | --all) [--cursor C]` returns `{tools: [{name, surfaces, cli,
+  listed, plugin, kind}], next_cursor}`. `neige tool describe --name N` returns the MCP declaration
+  plus `surfaces`, `cli`, `listed`, `plugin` and `kind`. `surfaces` is `["mcp"]`, or
+  `["mcp","cli"]` when a `neige` command calls the tool; every tool is served over MCP. `cli` is
+  that command or null. `listed` is true exactly when the session's `tools/list` shows the tool.
+  `plugin` is the id of the plugin serving the tool, built-in natives such as
+  `plugin_gitforge_publish` included, or null for a kernel tool; `kind` is the kind its manifest
+  declares (`forge-action`) or null (#2227). A text row is
+  `name  mcp|mcp+cli  cli-or-—  listed|hidden  kernel|plugin:<id>  kind-or-—`.
+- **Three refusals teach apart:**
+  - *No tool* (`describe`, exit 4, `kind: catalog`): an unknown name, or a plugin tool outside the
+    Track's scope or not running. Plugin scope stays undiscoverable, as at `tools/call`.
+  - *Wrong role* (`describe`, exit 4, `kind: role` with `roles` and `role`): a kernel tool or a
+    running, in-scope native whose `roles` exclude the session's role: "`neige_admin_gc` is for
+    roles [Planner]; this session is Assistant". Kernel tool names are public (#2003 K7).
+  - *MCP only* (any command, exit 1, usage): `neige <object> <action>` where
+    `neige_<object>_<action>` is a kernel tool with no command: "`neige_report_read` has no CLI
+    command; call it as an MCP tool (`neige tool describe --name neige_report_read` shows it)".
 - `listed` (shown in `tools/list`) is a context-budget choice. A tool is hidden when shell use
   serves it better. Listing is never a grant: a tool declares `roles` (who may call it) and
   `listed_for` (the subset whose `tools/list` shows it, a context-budget choice), and the

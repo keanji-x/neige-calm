@@ -545,7 +545,8 @@ sqlite3 -readonly $DB "select count(*) from tasks where status in ('running','di
   raw names listed. No production tool is affected (max 45 B, no collisions).
 - **K2:** role admission is not declared. `neige tool ls` can show a CLI-covered tool that the
   caller's role is refused (for example, Worker → `neige admin gc`). The output says that listing
-  is not a grant.
+  is not a grant. Resolved by #2289: tools declare `roles`, and the catalog is what the role may
+  call (`docs/conventions/agent-commands.md` §7).
 - **K3:** the fe infers read/write from tool names (`mcp-tools.ts`), which is a UI-side policy
   inference. A declared effect on the tool-call item would remove it. That is out of scope here.
 - **K4:** Claude's own tool-name length limit was not measured. Kernel names are at most 36 B as

@@ -8,6 +8,7 @@ use super::help;
 use super::render::Render;
 use crate::area_reports::{self, AreaPath};
 use crate::mail::{TOOL_MAIL_CAT, TOOL_MAIL_LS};
+use crate::mcp_server::registry::ToolRegistry;
 use crate::mcp_server::tools::{
     admin, area_reports as area_reports_tool, emit, report_tag, track_file, track_history,
     track_state,
@@ -314,7 +315,9 @@ pub(crate) struct Usage {
     pub(crate) command: Option<&'static str>,
 }
 
-pub(crate) fn parse(argv: &[String]) -> Result<Parsed, Usage> {
+/// `registry` answers only whether an unserved `neige <object> <action>` names a kernel tool,
+/// which is then refused as MCP-only (#2289 D3).
+pub(crate) fn parse(argv: &[String], registry: &ToolRegistry) -> Result<Parsed, Usage> {
     let mut json = false;
     let mut iter = argv.iter();
     let mut next_word = |json: &mut bool| loop {
@@ -326,10 +329,20 @@ pub(crate) fn parse(argv: &[String]) -> Result<Parsed, Usage> {
     let Some(object) = next_word(&mut json) else {
         return Err(usage(missing_command(), json, None));
     };
-    if !objects().contains(&object) {
+    let known_object = objects().contains(&object);
+    let action = next_word(&mut json);
+    if let Some(action) = action
+        && !COMMANDS.iter().any(|c| c.is(object, action))
+    {
+        let tool = format!("neige_{object}_{action}");
+        if registry.lookup(&tool).is_some() {
+            return Err(usage(mcp_only(&tool), json, None));
+        }
+    }
+    if !known_object {
         return Err(usage(help::unknown_command_message(object), json, None));
     }
-    let Some(action) = next_word(&mut json) else {
+    let Some(action) = action else {
         return Err(usage(missing_action(object), json, None));
     };
     let Some(command) = COMMANDS.iter().find(|c| c.is(object, action)) else {
@@ -499,6 +512,13 @@ fn usage(message: String, json: bool, command: Option<&'static str>) -> Usage {
         json,
         command,
     }
+}
+
+/// A kernel tool with no `COMMANDS` row: served over MCP only.
+fn mcp_only(tool: &str) -> String {
+    format!(
+        "`{tool}` has no CLI command; call it as an MCP tool (`neige tool describe --name {tool}` shows it)"
+    )
 }
 
 fn missing_command() -> String {

@@ -31,3 +31,5 @@ mod neige_cli_area_reports;
 mod neige_cli_commands;
 #[path = "cases/neige_cli_fence.rs"]
 mod neige_cli_fence;
+#[path = "cases/neige_cli_tool_catalog.rs"]
+mod neige_cli_tool_catalog;

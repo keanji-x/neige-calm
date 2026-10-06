@@ -5,7 +5,9 @@ mod call;
 mod forge_payload;
 pub(crate) use forge_payload::{PluginForgePayload, forge_action_payload};
 mod catalog;
-pub(crate) use catalog::{PluginOwner, tool_descriptors_for_connection, tool_owner};
+pub(crate) use catalog::{
+    PluginOwner, SessionCatalog, card_bound_catalog, tool_descriptors_for_connection, tool_owner,
+};
 pub(crate) mod plugin_tool_names;
 pub(crate) use call::call_registered_tool;
 
@@ -534,7 +536,7 @@ async fn resolve_tools_call_identity(
                 }
                 Ok(identity)
             }
-            None => card_bound_tool_identity(ctx, bound).await,
+            None => card_bound_identity(ctx, bound, "tools/call").await,
         },
     }
 }
@@ -1643,11 +1645,14 @@ mod tests {
     }
 }
 
-async fn card_bound_tool_identity(
+/// The identity a card-bound connection without a thread acts as; `method` names the request in
+/// its refusals.
+async fn card_bound_identity(
     ctx: &Arc<AppContext>,
     bound: &CardIdentity,
+    method: &'static str,
 ) -> Result<ToolCallIdentity, RpcError> {
-    let card = ensure_card_bound_session_active(ctx, bound, "tools/call").await?;
+    let card = ensure_card_bound_session_active(ctx, bound, method).await?;
     Ok(ToolCallIdentity {
         card_id: card.card_id.as_str().to_string(),
         role: card.role,

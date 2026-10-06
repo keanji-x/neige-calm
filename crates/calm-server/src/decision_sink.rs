@@ -506,7 +506,7 @@ mod tests {
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::{Layer, registry as tracing_registry};
 
-    /// The funnel's role table, pinned at the one layer where every role is reachable (the entry points' `require_role_any` masks Worker/ReportCard today).
+    /// The funnel's role table, pinned at the one layer where every role is reachable (the report tools' declared `roles`, which the registry gates, mask Worker/ReportCard today).
     #[test]
     fn report_op_attribution_refuses_worker_and_report_cards() {
         assert_eq!(

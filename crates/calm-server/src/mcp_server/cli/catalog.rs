@@ -1,12 +1,14 @@
-//! `neige tool ls|describe` (#2003 §4.5): a literal, bounded lookup over this session's
-//! `tools/list` set plus every tool a `neige` command calls, each with the plugin that serves it
-//! (#2227). Listing is not a grant.
-use super::commands::{JSON, cli_spelling, command_for_tool};
+//! `neige tool ls|describe` (#2003 §4.5): a literal, bounded lookup over every tool this session
+//! may call (#2289 D2), each with the surfaces that serve it, whether its `tools/list` shows it and
+//! the plugin that serves it (#2227). The set is [`SessionCatalog`]'s; this module only selects
+//! and renders it.
+use super::commands::{JSON, cli_spelling};
 use super::{CliExit, Output};
 use crate::mcp_server::{
     registry::{AppContext, ConnectionIdentity, ToolDescriptor, ToolRegistry},
-    transport::{PluginOwner, tool_descriptors_for_connection, tool_owner},
+    transport::{PluginOwner, SessionCatalog, card_bound_catalog, tool_owner},
 };
+use crate::model::CardRole;
 use crate::plugin_host::PluginRegistry;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -33,13 +35,30 @@ enum Query {
     },
 }
 
-/// One catalog entry: the descriptor, whether this session's `tools/list` shows it, and the plugin
-/// that serves it (`None` for a kernel tool).
+/// One catalog entry: the descriptor and whether this session's `tools/list` shows it.
 #[derive(Clone)]
 struct Entry {
     tool: ToolDescriptor,
     listed: bool,
-    plugin: Option<PluginOwner>,
+}
+
+/// Why `select` refused, rendered by [`run`] with its exit and detail.
+#[derive(Debug, PartialEq)]
+enum Refusal {
+    /// Unknown, outside the Track's plugin scope, not running, or over a byte limit.
+    Catalog(String),
+    /// Served, but not to this role: the tool's declared `roles`.
+    Role {
+        name: String,
+        roles: &'static [CardRole],
+        role: CardRole,
+    },
+}
+
+impl From<String> for Refusal {
+    fn from(message: String) -> Self {
+        Self::Catalog(message)
+    }
 }
 
 fn valid_prefix(value: &str) -> bool {
@@ -117,79 +136,86 @@ fn parse(argv: &[String]) -> Result<(Query, bool), String> {
     }
 }
 
-/// The session's `tools/list` set plus every CLI-covered tool, by name, each with its owner.
-fn entries(
-    listed: Vec<ToolDescriptor>,
-    registry: &ToolRegistry,
-    plugins: Option<&PluginRegistry>,
-    running_ids: &BTreeSet<String>,
-) -> Result<Vec<Entry>, String> {
-    let mut tools: Vec<(ToolDescriptor, bool)> =
-        listed.into_iter().map(|tool| (tool, true)).collect();
-    for tool in registry.descriptors() {
-        if command_for_tool(&tool.name).is_some()
-            && !tools.iter().any(|(listed, _)| listed.name == tool.name)
-        {
-            tools.push((tool, false));
-        }
-    }
-    let mut entries = tools
-        .into_iter()
-        .map(|(tool, listed)| {
-            let plugin =
-                tool_owner(registry, plugins, running_ids, &tool.name).map_err(|e| e.message)?;
-            Ok(Entry {
-                tool,
-                listed,
-                plugin,
-            })
+/// The session's callable tools by name, each marked whether its `tools/list` shows it.
+fn entries(catalog: &SessionCatalog) -> Vec<Entry> {
+    let listed: BTreeSet<&str> = catalog.listed().map(|tool| tool.name.as_str()).collect();
+    let mut entries: Vec<Entry> = catalog
+        .callable()
+        .iter()
+        .map(|tool| Entry {
+            listed: listed.contains(tool.name.as_str()),
+            tool: tool.clone(),
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect();
     entries.sort_by(|a, b| a.tool.name.cmp(&b.tool.name));
-    Ok(entries)
+    entries
 }
+
+/// Who serves a selected row: resolved only for the rows `select` returns (#2287), so a plugin
+/// that changes while listing fails only the rows it serves.
+type Owner<'a> = &'a dyn Fn(&str) -> Result<Option<PluginOwner>, String>;
 
 /// `plugin` is the serving plugin's id, `kind` the kind its manifest declares; both null for a
 /// kernel tool.
-fn ownership(entry: &Entry) -> (Value, Value) {
-    match &entry.plugin {
+fn ownership(plugin: &Option<PluginOwner>) -> (Value, Value) {
+    match plugin {
         Some(owner) => (json!(owner.id), json!(owner.kind)),
         None => (Value::Null, Value::Null),
     }
 }
 
-fn row(entry: &Entry) -> Value {
-    let (plugin, kind) = ownership(entry);
-    json!({
+/// Every tool is served over MCP; a `COMMANDS` row adds the CLI.
+fn surfaces(name: &str) -> Value {
+    match cli_spelling(name) {
+        Some(_) => json!(["mcp", "cli"]),
+        None => json!(["mcp"]),
+    }
+}
+
+fn row(entry: &Entry, owner: Owner<'_>) -> Result<Value, String> {
+    let (plugin, kind) = ownership(&owner(&entry.tool.name)?);
+    Ok(json!({
         "name": entry.tool.name,
+        "surfaces": surfaces(&entry.tool.name),
         "cli": cli_spelling(&entry.tool.name),
         "listed": entry.listed,
         "plugin": plugin,
         "kind": kind,
-    })
+    }))
 }
 
-fn select(query: Query, entries: Vec<Entry>) -> Result<Value, String> {
+fn select(
+    query: Query,
+    entries: Vec<Entry>,
+    refusing: impl Fn(&str) -> Option<&'static [CardRole]>,
+    role: CardRole,
+    owner: Owner<'_>,
+) -> Result<Value, Refusal> {
     match query {
         Query::Describe { name } => {
-            let entry = entries
-                .into_iter()
-                .find(|entry| entry.tool.name == name)
-                .ok_or_else(|| {
-                    format!("no tool `{name}` in this session; `neige tool ls --all` lists them")
-                })?;
+            let Some(entry) = entries.into_iter().find(|entry| entry.tool.name == name) else {
+                return Err(match refusing(&name) {
+                    Some(roles) => Refusal::Role { name, roles, role },
+                    // Unknown, or a plugin tool outside the Track's scope or not running: the
+                    // same refusal, so describe is no existence oracle for plugin scope.
+                    None => Refusal::Catalog(format!(
+                        "no tool `{name}` in this session; `neige tool ls --all` lists them"
+                    )),
+                });
+            };
             let mut value = entry.tool.clone().into_mcp_value();
             let object = value.as_object_mut().expect("a descriptor is an object");
+            object.insert("surfaces".into(), surfaces(&entry.tool.name));
             object.insert("cli".into(), json!(cli_spelling(&entry.tool.name)));
             object.insert("listed".into(), json!(entry.listed));
-            let (plugin, kind) = ownership(&entry);
+            let (plugin, kind) = ownership(&owner(&entry.tool.name)?);
             object.insert("plugin".into(), plugin);
             object.insert("kind".into(), kind);
             if value.to_string().len() > DETAIL_MAX_BYTES {
-                return Err(
+                return Err(Refusal::Catalog(
                     "tool declaration exceeds the lookup byte limit; use the client's exact-name tool loading"
                         .into(),
-                );
+                ));
             }
             Ok(value)
         }
@@ -198,19 +224,25 @@ fn select(query: Query, entries: Vec<Entry>) -> Result<Value, String> {
                 .as_ref()
                 .is_some_and(|name| !name.starts_with(&prefix))
             {
-                return Err("--cursor must be a next_cursor of the requested prefix".into());
+                return Err(Refusal::Catalog(
+                    "--cursor must be a next_cursor of the requested prefix".into(),
+                ));
             }
-            let rows: Vec<(String, Value)> = entries
+            let matching: Vec<&Entry> = entries
                 .iter()
                 .filter(|entry| {
                     entry.tool.name.starts_with(&prefix)
                         && cursor.as_ref().is_none_or(|last| entry.tool.name > *last)
                 })
-                .map(|entry| (entry.tool.name.clone(), row(entry)))
                 .collect();
-            let mut count = rows.len().min(PAGE_SIZE);
+            let rows: Vec<(String, Value)> = matching
+                .iter()
+                .take(PAGE_SIZE)
+                .map(|entry| Ok((entry.tool.name.clone(), row(entry, owner)?)))
+                .collect::<Result<_, String>>()?;
+            let mut count = rows.len();
             loop {
-                let next = (count < rows.len())
+                let next = (count < matching.len())
                     .then(|| count.checked_sub(1).map(|index| rows[index].0.clone()))
                     .flatten();
                 let page: Vec<&Value> = rows[..count].iter().map(|(_, row)| row).collect();
@@ -219,7 +251,9 @@ fn select(query: Query, entries: Vec<Entry>) -> Result<Value, String> {
                     return Ok(value);
                 }
                 if count <= 1 {
-                    return Err("one tool row exceeds the lookup byte limit".into());
+                    return Err(Refusal::Catalog(
+                        "one tool row exceeds the lookup byte limit".into(),
+                    ));
                 }
                 count -= 1;
             }
@@ -227,8 +261,8 @@ fn select(query: Query, entries: Vec<Entry>) -> Result<Value, String> {
     }
 }
 
-/// Text output: one `name  cli-or-—  listed|hidden  kernel|plugin:<id>  kind-or-—` row per tool,
-/// or the describe JSON, then the footer.
+/// Text output: one `name  mcp|mcp+cli  cli-or-—  listed|hidden  kernel|plugin:<id>  kind-or-—`
+/// row per tool, or the describe JSON, then the footer.
 fn text(value: &Value) -> String {
     let mut out = match value["tools"].as_array() {
         Some(rows) => {
@@ -236,8 +270,15 @@ fn text(value: &Value) -> String {
                 .iter()
                 .map(|row| {
                     format!(
-                        "{}  {}  {}  {}  {}\n",
+                        "{}  {}  {}  {}  {}  {}\n",
                         row["name"].as_str().expect("rows carry a name"),
+                        row["surfaces"]
+                            .as_array()
+                            .expect("rows carry their surfaces")
+                            .iter()
+                            .map(|surface| surface.as_str().expect("a surface is a word"))
+                            .collect::<Vec<_>>()
+                            .join("+"),
                         row["cli"].as_str().unwrap_or("—"),
                         if row["listed"] == json!(true) {
                             "listed"
@@ -272,16 +313,16 @@ pub(super) async fn run(
         Ok(query) => query,
         Err(message) => return Output::usage(message, json_mode, Some(COMMAND_NAME)),
     };
-    if !matches!(identity, ConnectionIdentity::CardBound(_)) {
+    let ConnectionIdentity::CardBound(bound) = identity else {
         return Output::error(
             CliExit::Failed,
             json_mode,
             "tool lookup requires an active card-bound session".into(),
             json!({"kind":"identity"}),
         );
-    }
-    let listed = match tool_descriptors_for_connection(ctx, registry, identity, None).await {
-        Ok(tools) => tools,
+    };
+    let catalog = match card_bound_catalog(ctx, registry, bound).await {
+        Ok(catalog) => catalog,
         Err(error) => {
             return Output::error(
                 CliExit::Failed,
@@ -296,15 +337,31 @@ pub(super) async fn run(
         Some(host) => host.running_plugin_ids().await,
         None => BTreeSet::new(),
     };
-    let plugins = host.map(|host| host.registry().as_ref());
-    match entries(listed, registry, plugins, &running_ids)
-        .and_then(|entries| select(query, entries))
-    {
-        Err(message) => Output::error(
+    let plugins: Option<&PluginRegistry> = host.map(|host| host.registry().as_ref());
+    let owner =
+        |name: &str| tool_owner(registry, plugins, &running_ids, name).map_err(|e| e.message);
+    match select(
+        query,
+        entries(&catalog),
+        |name| catalog.roles_refusing(name),
+        catalog.role,
+        &owner,
+    ) {
+        Err(Refusal::Catalog(message)) => Output::error(
             CliExit::Failed,
             json_mode,
             message,
             json!({"kind":"catalog"}),
+        ),
+        Err(Refusal::Role { name, roles, role }) => Output::error(
+            CliExit::Failed,
+            json_mode,
+            format!("`{name}` is for roles {roles:?}; this session is {role:?}"),
+            json!({
+                "kind": "role",
+                "roles": roles.iter().map(|role| format!("{role:?}")).collect::<Vec<_>>(),
+                "role": format!("{role:?}"),
+            }),
         ),
         Ok(value) if json_mode => Output::success(format!("{value}\n")),
         Ok(value) => Output::success(text(&value)),
@@ -315,7 +372,6 @@ pub(super) async fn run(
 mod tests {
     use super::*;
     use crate::mcp_server::build_default_registry;
-    use crate::model::CardRole;
     use crate::plugin_host::Manifest;
     use crate::plugin_host::manifest::ToolKind;
 
@@ -330,19 +386,38 @@ mod tests {
         }
     }
 
+    fn entry(name: &str, listed: bool) -> Entry {
+        Entry {
+            tool: tool(name.into()),
+            listed,
+        }
+    }
+
     fn listed(names: &[String]) -> Vec<Entry> {
-        names
-            .iter()
-            .cloned()
-            .map(|name| Entry {
-                tool: tool(name),
-                listed: true,
-                plugin: Some(PluginOwner {
-                    id: "gitforge".into(),
-                    kind: Some(ToolKind::ForgeAction),
-                }),
-            })
-            .collect()
+        names.iter().map(|name| entry(name, true)).collect()
+    }
+
+    fn gitforge(_: &str) -> Result<Option<PluginOwner>, String> {
+        Ok(Some(PluginOwner {
+            id: "gitforge".into(),
+            kind: Some(ToolKind::ForgeAction),
+        }))
+    }
+
+    fn kernel(_: &str) -> Result<Option<PluginOwner>, String> {
+        Ok(None)
+    }
+
+    fn nobody_refuses(_: &str) -> Option<&'static [CardRole]> {
+        None
+    }
+
+    fn select_as_planner(
+        query: Query,
+        entries: Vec<Entry>,
+        owner: Owner<'_>,
+    ) -> Result<Value, Refusal> {
+        select(query, entries, nobody_refuses, CardRole::Planner, owner)
     }
 
     fn page_names(page: &Value) -> Vec<String> {
@@ -363,12 +438,13 @@ mod tests {
         let mut cursor = None;
         let mut seen = Vec::new();
         loop {
-            let page = select(
+            let page = select_as_planner(
                 Query::List {
                     prefix: "plugin_".into(),
                     cursor: cursor.clone(),
                 },
                 entries.clone(),
+                &gitforge,
             )
             .unwrap();
             assert!(page.to_string().len() <= LIST_MAX_BYTES);
@@ -401,7 +477,7 @@ mod tests {
         let mut seen = Vec::new();
         loop {
             let (query, _) = parse(&argv).unwrap();
-            let page = select(query, entries.clone()).unwrap();
+            let page = select_as_planner(query, entries.clone(), &gitforge).unwrap();
             for name in page_names(&page) {
                 let (query, _) = parse(&[
                     "tool".into(),
@@ -410,7 +486,10 @@ mod tests {
                     name.clone(),
                 ])
                 .unwrap();
-                assert_eq!(select(query, entries.clone()).unwrap()["name"], name);
+                assert_eq!(
+                    select_as_planner(query, entries.clone(), &gitforge).unwrap()["name"],
+                    name
+                );
                 seen.push(name);
             }
             let Some(cursor) = page["next_cursor"].as_str() else {
@@ -426,32 +505,33 @@ mod tests {
     fn details_refuse_oversize_and_keep_optional_annotations_absent() {
         let mut large = tool("neige_large_tool".into());
         large.description = "x".repeat(DETAIL_MAX_BYTES);
-        assert!(
-            select(
+        assert!(matches!(
+            select_as_planner(
                 Query::Describe {
                     name: large.name.clone()
                 },
                 vec![Entry {
                     tool: large,
                     listed: true,
-                    plugin: None,
-                }]
+                }],
+                &kernel,
             )
-            .unwrap_err()
-            .contains("byte limit")
-        );
-        let details = select(
+            .unwrap_err(),
+            Refusal::Catalog(message) if message.contains("byte limit")
+        ));
+        let details = select_as_planner(
             Query::Describe {
                 name: "neige_small_tool".into(),
             },
             listed(&["neige_small_tool".into()]),
+            &gitforge,
         )
         .unwrap();
         assert!(details.get("annotations").is_none());
         assert_eq!(details["inputSchema"], json!({"type":"object"}));
         assert_eq!(
-            (&details["cli"], &details["listed"]),
-            (&Value::Null, &json!(true))
+            (&details["surfaces"], &details["cli"], &details["listed"]),
+            (&json!(["mcp"]), &Value::Null, &json!(true))
         );
         assert_eq!(
             (&details["plugin"], &details["kind"]),
@@ -459,64 +539,100 @@ mod tests {
         );
     }
 
-    /// #2003 §4.5: a hidden CLI-covered tool is still discoverable, marked `listed: false` with its
-    /// derived command; a listed tool without a command has `cli: null`.
+    /// #2289 D2: a row carries its surfaces, `mcp+cli` when a command serves it, with the derived
+    /// command; `listed` is the entry's own mark, never derived from the command.
     #[test]
-    fn tool_list_includes_cli_covered_hidden_tools() {
-        let registry = build_default_registry();
-        let planner = registry.descriptors_listed_for(CardRole::Planner);
-        assert!(
-            !planner.iter().any(|tool| tool.name == "neige_track_cat"),
-            "precondition: track.cat is hidden from the Planner's tools/list"
-        );
-        let page = select(
+    fn rows_carry_surfaces_and_the_derived_command() {
+        let entries = vec![
+            entry("neige_track_cat", false),
+            entry("neige_track_close", true),
+            entry("neige_track_rename", true),
+        ];
+        let page = select_as_planner(
             Query::List {
                 prefix: "neige_track_".into(),
                 cursor: None,
             },
-            entries(planner, &registry, None, &BTreeSet::new()).unwrap(),
+            entries.clone(),
+            &kernel,
         )
         .unwrap();
         let rows = page["tools"].as_array().unwrap();
-        assert!(
-            rows.contains(
-                &json!({"name":"neige_track_cat","cli":"neige track cat","listed":false,"plugin":null,"kind":null})
-            ),
+        assert_eq!(
+            rows,
+            &vec![
+                json!({"name":"neige_track_cat","surfaces":["mcp","cli"],"cli":"neige track cat","listed":false,"plugin":null,"kind":null}),
+                json!({"name":"neige_track_close","surfaces":["mcp","cli"],"cli":"neige track close","listed":true,"plugin":null,"kind":null}),
+                json!({"name":"neige_track_rename","surfaces":["mcp"],"cli":null,"listed":true,"plugin":null,"kind":null}),
+            ],
             "{page}"
         );
-        assert!(
-            rows.contains(
-                &json!({"name":"neige_track_close","cli":"neige track close","listed":true,"plugin":null,"kind":null})
-            ),
-            "{page}"
+        assert_eq!(
+            text(&page),
+            format!(
+                "neige_track_cat  mcp+cli  neige track cat  hidden  kernel  —\n\
+                 neige_track_close  mcp+cli  neige track close  listed  kernel  —\n\
+                 neige_track_rename  mcp  —  listed  kernel  —\n\
+                 next_cursor: null\n{FOOTER}\n"
+            )
         );
-        assert!(
-            rows.contains(&json!({"name":"neige_track_rename","cli":null,"listed":true,"plugin":null,"kind":null})),
-            "{page}"
-        );
-        let described = select(
+        let described = select_as_planner(
             Query::Describe {
                 name: "neige_track_cat".into(),
             },
-            entries(
-                registry.descriptors_listed_for(CardRole::Planner),
-                &registry,
-                None,
-                &BTreeSet::new(),
-            )
-            .unwrap(),
+            entries,
+            &kernel,
         )
         .unwrap();
         assert_eq!(
-            (&described["cli"], &described["listed"]),
-            (&json!("neige track cat"), &json!(false))
+            (
+                &described["surfaces"],
+                &described["cli"],
+                &described["listed"]
+            ),
+            (
+                &json!(["mcp", "cli"]),
+                &json!("neige track cat"),
+                &json!(false)
+            )
         );
-        assert!(text(&page).ends_with(&format!("{FOOTER}\n")));
+    }
+
+    /// #2289 D3: describe tells a tool served to other roles from one this session cannot reach.
+    #[test]
+    fn describe_names_the_declared_roles_of_a_tool_served_to_others() {
+        let refusing = |name: &str| (name == "neige_admin_gc").then_some(&[CardRole::Planner][..]);
+        let describe = |name: &str| {
+            select(
+                Query::Describe { name: name.into() },
+                vec![entry("neige_report_read", true)],
+                refusing,
+                CardRole::Assistant,
+                &kernel,
+            )
+        };
+        assert_eq!(
+            describe("neige_admin_gc").unwrap_err(),
+            Refusal::Role {
+                name: "neige_admin_gc".into(),
+                roles: &[CardRole::Planner],
+                role: CardRole::Assistant,
+            }
+        );
+        assert!(matches!(
+            describe("neige_nope_x").unwrap_err(),
+            Refusal::Catalog(message) if message.starts_with("no tool `neige_nope_x`")
+        ));
+        assert_eq!(
+            describe("neige_report_read").unwrap()["listed"],
+            json!(true)
+        );
     }
 
     /// #2227: every row names the plugin that serves it. A built-in native
     /// (`plugin_gitforge_publish`) answers to its compiled owner with no kind; a manifest tool
-    /// carries its declared kind; a name nobody serves is refused rather than shown as a kernel tool.
+    /// carries its declared kind; a name nobody serves is refused rather than shown as a kernel
+    /// tool, and only when a returned row needs it (#2287).
     #[test]
     fn rows_name_the_serving_plugin_and_its_declared_kind() {
         let registry = build_default_registry();
@@ -529,63 +645,72 @@ mod tests {
             .with(invest, None)
             .build()
             .with_builtins();
-        let descriptor = |name: &str| tool(name.into());
-        let listed = [
+        let running: BTreeSet<String> = ["gitforge", "calendar", "invest"].map(String::from).into();
+        let owner = |name: &str| {
+            tool_owner(&registry, Some(&plugins), &running, name).map_err(|e| e.message)
+        };
+        let entries: Vec<Entry> = [
             "plugin_gitforge_publish",
             "plugin_calendar_add",
             "plugin_gitforge_git_commit",
             "plugin_invest_instrument_add",
             "neige_track_rename",
+            "plugin_ghost_tool",
         ]
-        .map(descriptor)
+        .map(|name| entry(name, true))
         .to_vec();
-        let running: BTreeSet<String> = ["gitforge", "calendar", "invest"].map(String::from).into();
-        let rows: Vec<Value> = entries(listed, &registry, Some(&plugins), &running)
-            .unwrap()
-            .iter()
-            .map(row)
-            .collect();
-        let owner = |name: &str| {
+        let list = |prefix: &str| {
+            select_as_planner(
+                Query::List {
+                    prefix: prefix.into(),
+                    cursor: None,
+                },
+                entries.clone(),
+                &owner,
+            )
+        };
+        let mut rows = Vec::new();
+        for prefix in [
+            "plugin_gitforge_",
+            "plugin_calendar_",
+            "plugin_invest_",
+            "neige_",
+        ] {
+            rows.extend(list(prefix).unwrap()["tools"].as_array().unwrap().clone());
+        }
+        let owner_of = |name: &str| {
             let row = rows.iter().find(|row| row["name"] == name).unwrap();
             (row["plugin"].clone(), row["kind"].clone())
         };
         assert_eq!(
-            owner("plugin_gitforge_publish"),
+            owner_of("plugin_gitforge_publish"),
             (json!("gitforge"), Value::Null)
         );
         assert_eq!(
-            owner("plugin_calendar_add"),
+            owner_of("plugin_calendar_add"),
             (json!("calendar"), Value::Null)
         );
         assert_eq!(
-            owner("plugin_gitforge_git_commit"),
+            owner_of("plugin_gitforge_git_commit"),
             (json!("gitforge"), json!("forge-action"))
         );
         assert_eq!(
-            owner("plugin_invest_instrument_add"),
+            owner_of("plugin_invest_instrument_add"),
             (json!("invest"), Value::Null)
         );
-        assert_eq!(owner("neige_track_rename"), (Value::Null, Value::Null));
-        assert_eq!(owner("neige_track_cat"), (Value::Null, Value::Null));
+        assert_eq!(owner_of("neige_track_rename"), (Value::Null, Value::Null));
         let page = json!({"tools": rows, "next_cursor": null});
         assert!(
-            text(&page).contains("plugin_gitforge_publish  —  listed  plugin:gitforge  —\n"),
+            text(&page).contains("plugin_gitforge_publish  mcp  —  listed  plugin:gitforge  —\n"),
             "{}",
             text(&page)
         );
-        assert!(
-            text(&page)
-                .contains("plugin_gitforge_git_commit  —  listed  plugin:gitforge  forge-action\n")
-        );
-        assert!(text(&page).contains("neige_track_cat  neige track cat  hidden  kernel  —\n"));
-        let ghost = entries(
-            vec![descriptor("plugin_ghost_tool")],
-            &registry,
-            Some(&plugins),
-            &running,
-        )
-        .err()
-        .unwrap();
+        assert!(text(&page).contains(
+            "plugin_gitforge_git_commit  mcp  —  listed  plugin:gitforge  forge-action\n"
+        ));
+        let Refusal::Catalog(ghost) = list("plugin_ghost_").unwrap_err() else {
+            panic!("a name nobody serves is a catalog refusal");
+        };
         assert!(ghost.contains("plugin_ghost_tool"), "{ghost}");
     }
 
@@ -606,24 +731,19 @@ mod tests {
         ]);
         let registry = build_default_registry();
         for running in ["ab-c", "ab"] {
-            let rows = entries(
-                vec![tool("plugin_ab_c_d".into())],
-                &registry,
-                Some(&plugins),
-                &BTreeSet::from([running.to_string()]),
+            let running_ids = BTreeSet::from([running.to_string()]);
+            let owner = |name: &str| {
+                tool_owner(&registry, Some(&plugins), &running_ids, name).map_err(|e| e.message)
+            };
+            let details = select_as_planner(
+                Query::Describe {
+                    name: "plugin_ab_c_d".into(),
+                },
+                vec![entry("plugin_ab_c_d", true)],
+                &owner,
             )
             .unwrap();
-            let row = rows
-                .iter()
-                .find(|entry| entry.tool.name == "plugin_ab_c_d")
-                .unwrap();
-            assert_eq!(
-                row.plugin,
-                Some(PluginOwner {
-                    id: running.into(),
-                    kind: None
-                })
-            );
+            assert_eq!(details["plugin"], json!(running));
         }
     }
 

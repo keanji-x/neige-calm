@@ -7,8 +7,14 @@ use crate::track_vcs::DEFAULT_TRACK_HISTORY_PRUNE_KEEP;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
+static REGISTRY: std::sync::LazyLock<std::sync::Arc<ToolRegistry>> =
+    std::sync::LazyLock::new(build_default_registry);
+
 fn parse_args(args: &[&str]) -> Result<Parsed, Usage> {
-    parse(&args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>())
+    parse(
+        &args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>(),
+        &REGISTRY,
+    )
 }
 
 fn tool_args(args: &[&str]) -> Value {
@@ -530,6 +536,47 @@ fn an_old_spelling_is_a_usage_error_listing_the_objects() {
     );
 }
 
+/// #2289 D3: `neige <object> <action>` naming a kernel tool without a command is refused as
+/// MCP-only, on an unknown object and on an unknown action alike; any other unknown spelling keeps
+/// its message and choices.
+#[test]
+fn a_kernel_tool_without_a_command_is_refused_as_mcp_only() {
+    for (args, tool) in [
+        (
+            &["report", "read", "--path", "report.md"][..],
+            "neige_report_read",
+        ),
+        (&["--json", "workspace", "ls"][..], "neige_workspace_ls"),
+        (&["track", "rename"][..], "neige_track_rename"),
+    ] {
+        let err = parse_args(args).expect_err("no CLI command");
+        assert_eq!(
+            (err.message.as_str(), err.command, err.json),
+            (
+                format!(
+                    "`{tool}` has no CLI command; call it as an MCP tool (`neige tool describe --name {tool}` shows it)"
+                )
+                .as_str(),
+                None,
+                args[0] == "--json"
+            ),
+            "{args:?}"
+        );
+    }
+    assert_eq!(
+        refusal(&["report", "nope"]),
+        help::unknown_action_message("report", "nope")
+    );
+    assert_eq!(
+        refusal(&["workspace", "nope"]),
+        help::unknown_command_message("workspace")
+    );
+    assert_eq!(
+        refusal(&["workspace"]),
+        help::unknown_command_message("workspace")
+    );
+}
+
 /// #2003 §4.4: every positional is also accepted as its `--<key>` option. A named option claims
 /// its slot, and the remaining positionals fill the unclaimed slots in order.
 #[test]
@@ -583,7 +630,7 @@ fn every_positional_is_also_its_option() {
             for opt in command.options.iter().filter(|o| o.required) {
                 argv.extend([opt.flag.to_string(), "v".into()]);
             }
-            let parsed = parse(&argv).unwrap_or_else(|e| panic!("{argv:?}: {e:?}"));
+            let parsed = parse(&argv, &REGISTRY).unwrap_or_else(|e| panic!("{argv:?}: {e:?}"));
             assert_eq!(
                 parsed.args[slot.key],
                 json!(format!("v-{}", slot.key)),
