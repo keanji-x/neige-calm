@@ -4,10 +4,11 @@
 //! stable id; `nowMs` is the server clock at response time.
 
 use crate::event::SYNC_EVENT_VERSION;
+use crate::extract::Json;
 use crate::mcp_server::transport::KERNEL_MCP_PROTOCOL_VERSION;
 use crate::plugin_host::mcp::KERNEL_PROTOCOL_VERSION;
 use crate::state::{AppState, RouteState};
-use axum::{Json, Router, extract::State, routing::get};
+use axum::{Router, extract::State, routing::get};
 use calm_session::SUPERVISOR_CONTROL_VERSION;
 use serde::Serialize;
 use utoipa::ToSchema;

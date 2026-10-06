@@ -1,10 +1,10 @@
 //! `/api/fs/listdir` — read-only directory listing for the DirectoryPicker.
 
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::extract::{Path as RoutePath, Query};
+use crate::extract::{Json, Path as RoutePath, Query};
 use crate::state::{AppState, RouteState};
 use axum::{
-    Json, Router,
+    Router,
     extract::State,
     http::header,
     response::{IntoResponse, Response},

@@ -1,8 +1,9 @@
 //! HTTP route registry: merges each sub-module's `Router<AppState>`.
 
+use crate::extract::Json;
 use crate::openapi::ApiDoc;
 use crate::state::AppState;
-use axum::{Json, Router, routing::get};
+use axum::{Router, routing::get};
 use utoipa::OpenApi;
 
 mod application;

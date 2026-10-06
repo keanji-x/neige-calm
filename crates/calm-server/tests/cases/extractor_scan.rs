@@ -1,240 +1,162 @@
-//! Source-scan guard against axum's extractors, whose rejections answer plain text where the ones
-//! in `calm_server::extract` (`JsonBody<T>`, `Path<T>`, `Query<T>`) answer an `ErrorBody` (#2132,
-//! #2175). It checks spellings, not resolved names, so it claims only these:
+//! Source-scan guard (#2132, #2175): outside `src/extract.rs`, calm-server's source never names
+//! axum's `Json`, `Path` or `Query`, or axum-extra's. Those answer a request rejection in plain
+//! text; `calm_server::extract` wraps them (`JsonBody`, `Path`, `Query` to extract, `Json` to
+//! answer, which is not an extractor) so a rejection answers an `ErrorBody`.
 //!
-//! - No function or closure argument names `Json`: its type has a path segment `Json`
-//!   (`Json<T>`, `axum::Json<T>`, `Option<Json<T>>`), or its pattern destructures a tuple struct
-//!   whose path ends in `Json` (`|axum::Json(body)| …`). Returning `Json<T>` stays allowed.
-//! - No alias can give `Json`, axum, or anything in axum another name: a `use` that renames any
-//!   `Json` (on any path, so a renamed local re-export too), any rename through `axum`
-//!   (`use axum::{self as X}`, `use axum::extract as X`, `use axum::routing::get as X`),
-//!   `use axum as X`, `extern crate axum as X`, and a `type` alias naming a `Json`. So every path
-//!   into axum is spelled from the literal `axum`, and `Json` keeps its own name.
-//! - The literal spellings of axum's `Path` and `Query`: an argument or `type` alias whose path
-//!   runs through `axum` and ends in either, and a `use` that brings either, the `axum::extract`
-//!   module, or a glob over it into scope.
+//! The invariant, checked over each file's raw token stream at every depth (macro bodies and macro
+//! inputs included), identifiers compared after stripping `r#`:
+//! - no path that runs through `axum` or `axum_extra` reaches a segment `Json`, `Path` or `Query`,
+//!   with or without a leading `::`, in any position: a type, a pattern, an expression, a generic
+//!   argument, an attribute;
+//! - no `use` item that names either crate imports `Json`, `Path` or `Query`, renames anything
+//!   (`self` included), or globs; no `extern crate` renames either;
+//! - either crate's name appears only as the first segment of a literal path (`axum::…`), never bare
+//!   and never followed by a macro metavariable (`axum::$x`).
 //!
-//! The semantic guard for `Path` and `Query` is clippy: `crates/calm-server/clippy.toml` makes
-//! axum's two disallowed types everywhere outside `calm_server::extract`, through any alias. It
-//! checks types, not patterns; an untyped closure pattern that destructures them is caught here,
-//! by its literal spelling, which the rename ban keeps literal.
+//! With renames and globs refused, a reference to axum spells the literal path from its crate name,
+//! so the first rule sees every one. `calm-server`'s and the workspace's `Cargo.toml` must not rename
+//! the dependencies either. Not covered: a `macro_rules!` that assembles a path from fragments
+//! passed separately (`$($seg)::*`). `crates/calm-server/clippy.toml` is the type-level backstop:
+//! it disallows axum's three types at every type position, through any alias or macro.
 
 use std::path::{Path, PathBuf};
 
-use syn::visit::{self, Visit};
+use proc_macro2::{TokenStream, TokenTree};
+use syn::ext::IdentExt;
 
-/// Every argument that names a refused extractor in its type or its pattern, as
-/// `fn name: argument`, and every `use` or `type` that would hide one, as `use …` / `type …`.
+const CRATES: [&str; 2] = ["axum", "axum_extra"];
+const WRAPPED: [&str; 3] = ["Json", "Path", "Query"];
+
+/// An identifier's name without `r#`.
+fn name(token: &TokenTree) -> Option<String> {
+    match token {
+        TokenTree::Ident(ident) => Some(ident.unraw().to_string()),
+        _ => None,
+    }
+}
+
+fn is_punct(token: Option<&TokenTree>, ch: char) -> bool {
+    matches!(token, Some(TokenTree::Punct(punct)) if punct.as_char() == ch)
+}
+
+/// `::` at `tokens[i]`.
+fn path_sep(tokens: &[TokenTree], i: usize) -> bool {
+    is_punct(tokens.get(i), ':') && is_punct(tokens.get(i + 1), ':')
+}
+
+/// Every token of `tokens`, groups opened, in order.
+fn flatten(tokens: &[TokenTree], out: &mut Vec<TokenTree>) {
+    for token in tokens {
+        match token {
+            TokenTree::Group(group) => {
+                let inner: Vec<TokenTree> = group.stream().into_iter().collect();
+                flatten(&inner, out);
+            }
+            other => out.push(other.clone()),
+        }
+    }
+}
+
+fn text(tokens: &[TokenTree]) -> String {
+    tokens.iter().cloned().collect::<TokenStream>().to_string()
+}
+
 #[derive(Default)]
-struct RefusedExtractors {
+struct Scan {
     hits: Vec<String>,
 }
 
-impl RefusedExtractors {
-    /// One hit per argument, whichever of its type and its pattern names a refused extractor.
-    fn check(&mut self, owner: &str, pat: &syn::Pat, ty: Option<&syn::Type>) {
-        let mut in_pattern = Names::in_pattern();
-        in_pattern.visit_pat(pat);
-        let mut in_type = Names::in_type();
-        if let Some(ty) = ty {
-            in_type.visit_type(ty);
-        }
-        if in_pattern.found || in_type.found {
-            let argument = match ty {
-                Some(ty) => format!(
-                    "{}: {}",
-                    quote::ToTokens::to_token_stream(pat),
-                    quote::ToTokens::to_token_stream(ty)
-                ),
-                None => quote::ToTokens::to_token_stream(pat).to_string(),
-            };
-            self.hits.push(format!("{owner}: {argument}"));
+impl Scan {
+    /// One level of a token stream, then every group in it.
+    fn level(&mut self, stream: TokenStream) {
+        let tokens: Vec<TokenTree> = stream.into_iter().collect();
+        let mut i = 0;
+        while i < tokens.len() {
+            match name(&tokens[i]).as_deref() {
+                Some("use") => {
+                    let end = (i..tokens.len())
+                        .find(|&j| is_punct(tokens.get(j), ';'))
+                        .unwrap_or(tokens.len() - 1);
+                    self.use_item(&tokens[i..=end]);
+                    i = end + 1;
+                    continue;
+                }
+                Some("extern") if tokens.get(i + 1).and_then(name).as_deref() == Some("crate") => {
+                    let krate = tokens.get(i + 2).and_then(name);
+                    let renamed = tokens.get(i + 3).and_then(name).as_deref() == Some("as");
+                    if krate.is_some_and(|k| CRATES.contains(&k.as_str())) && renamed {
+                        self.hits.push(text(&tokens[i..(i + 5).min(tokens.len())]));
+                    }
+                    i += 3;
+                    continue;
+                }
+                Some(krate) if CRATES.contains(&krate) => {
+                    self.path(&tokens, i);
+                }
+                _ => {}
+            }
+            if let TokenTree::Group(group) = &tokens[i] {
+                self.level(group.stream());
+            }
+            i += 1;
         }
     }
 
-    /// A `use`, at any depth of a grouped tree, that renames a `Json` (on any path: a module can
-    /// re-export axum's under its own), renames anything through `axum` or `axum` itself, or brings
-    /// axum's `Path`, `Query` or `extract` module into scope.
-    fn check_use(&mut self, prefix: &mut Vec<String>, tree: &syn::UseTree) {
-        let through_axum = |prefix: &[String]| prefix.iter().any(|segment| segment == "axum");
-        let at = |prefix: &[String], leaf: &dyn std::fmt::Display| {
-            let mut path = prefix.join("::");
-            if !path.is_empty() {
-                path.push_str("::");
+    /// The crate name at `tokens[start]`: it must lead a literal path (`axum::…`), whose segments
+    /// never reach a wrapped extractor nor stop at a macro metavariable.
+    fn path(&mut self, tokens: &[TokenTree], start: usize) {
+        let mut end = start + 1;
+        if !path_sep(tokens, end) {
+            self.hits
+                .push(format!("bare `{}`", text(&tokens[start..end])));
+            return;
+        }
+        while path_sep(tokens, end) {
+            match tokens.get(end + 2) {
+                Some(segment @ TokenTree::Ident(_)) => {
+                    end += 3;
+                    if name(segment).is_some_and(|s| WRAPPED.contains(&s.as_str())) {
+                        self.hits.push(text(&tokens[start..end]));
+                        return;
+                    }
+                }
+                Some(TokenTree::Punct(punct)) if punct.as_char() == '$' => {
+                    let shown = (end + 4).min(tokens.len());
+                    self.hits
+                        .push(format!("macro-built path {}", text(&tokens[start..shown])));
+                    return;
+                }
+                _ => return,
             }
-            format!("use {path}{leaf}")
+        }
+    }
+
+    /// A `use` item, its groups opened: one that names either crate may not import a wrapped
+    /// extractor, rename, or glob.
+    fn use_item(&mut self, item: &[TokenTree]) {
+        let mut flat = Vec::new();
+        flatten(item, &mut flat);
+        let Some(from) = flat
+            .iter()
+            .position(|t| name(t).is_some_and(|n| CRATES.contains(&n.as_str())))
+        else {
+            return;
         };
-        match tree {
-            syn::UseTree::Path(path) => {
-                prefix.push(path.ident.to_string());
-                self.check_use(prefix, &path.tree);
-                prefix.pop();
-            }
-            syn::UseTree::Group(group) => {
-                for item in &group.items {
-                    self.check_use(prefix, item);
-                }
-            }
-            syn::UseTree::Rename(rename) => {
-                let leaf = rename.ident.to_string();
-                // Any rename through `axum`, `self` included: modules and items cannot be told
-                // apart by syntax, and a renamed module would hide `axum` from every path under it.
-                if leaf == "Json" || leaf == "axum" || through_axum(prefix) {
-                    let leaf = format!("{leaf} as {}", rename.rename);
-                    self.hits.push(at(prefix, &leaf));
-                }
-            }
-            syn::UseTree::Name(name) => {
-                let leaf = name.ident.to_string();
-                if through_axum(prefix) && refused_axum_leaf(prefix, &leaf) {
-                    self.hits.push(at(prefix, &leaf));
-                }
-            }
-            syn::UseTree::Glob(_) => {
-                if through_axum(prefix)
-                    && matches!(prefix.last().map(String::as_str), Some("axum" | "extract"))
-                {
-                    self.hits.push(at(prefix, &"*"));
-                }
-            }
-        }
-    }
-
-    /// A `type` alias whose aliased type names a refused extractor: the alias would hide it.
-    fn check_alias(&mut self, ident: &syn::Ident, ty: &syn::Type) {
-        let mut names = Names::in_type();
-        names.visit_type(ty);
-        if names.found {
-            self.hits.push(format!(
-                "type {ident} = {}",
-                quote::ToTokens::to_token_stream(ty)
-            ));
+        let after = &flat[from..];
+        let refused = after.iter().any(|t| {
+            name(t).is_some_and(|n| n == "as" || WRAPPED.contains(&n.as_str()))
+                || is_punct(Some(t), '*')
+        });
+        if refused {
+            self.hits.push(text(item));
         }
     }
 }
 
-/// Imported unrenamed under a path through `axum`: the `Path` and `Query` extractors, and the
-/// `extract` module itself (as a name, or as `self` in a group under it).
-fn refused_axum_leaf(prefix: &[String], leaf: &str) -> bool {
-    match leaf {
-        "Path" | "Query" | "extract" => true,
-        "self" => prefix.last().is_some_and(|last| last == "extract"),
-        _ => false,
-    }
-}
-
-impl<'ast> Visit<'ast> for RefusedExtractors {
-    fn visit_signature(&mut self, signature: &'ast syn::Signature) {
-        for input in &signature.inputs {
-            if let syn::FnArg::Typed(argument) = input {
-                self.check(
-                    &format!("fn {}", signature.ident),
-                    &argument.pat,
-                    Some(&argument.ty),
-                );
-            }
-        }
-        visit::visit_signature(self, signature);
-    }
-
-    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
-        self.check_use(&mut Vec::new(), &item.tree);
-        visit::visit_item_use(self, item);
-    }
-
-    fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
-        if item.ident == "axum" && item.rename.is_some() {
-            self.hits.push("extern crate axum as …".into());
-        }
-        visit::visit_item_extern_crate(self, item);
-    }
-
-    fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
-        self.check_alias(&item.ident, &item.ty);
-        visit::visit_item_type(self, item);
-    }
-
-    fn visit_impl_item_type(&mut self, item: &'ast syn::ImplItemType) {
-        self.check_alias(&item.ident, &item.ty);
-        visit::visit_impl_item_type(self, item);
-    }
-
-    fn visit_expr_closure(&mut self, closure: &'ast syn::ExprClosure) {
-        for input in &closure.inputs {
-            match input {
-                syn::Pat::Type(argument) => {
-                    self.check("closure", &argument.pat, Some(&argument.ty));
-                }
-                untyped => self.check("closure", untyped, None),
-            }
-        }
-        visit::visit_expr_closure(self, closure);
-    }
-}
-
-/// Whether a type or a pattern names a refused extractor: in a type, any path segment named
-/// exactly `Json`; in a pattern, a tuple-struct destructure whose path ends in `Json` (`Json(body)`,
-/// `axum::Json(body)`); in either, a path through `axum` that ends in `Path` or `Query`. At any
-/// depth.
-struct Names {
-    pattern: bool,
-    found: bool,
-}
-
-impl Names {
-    fn in_type() -> Self {
-        Self {
-            pattern: false,
-            found: false,
-        }
-    }
-
-    fn in_pattern() -> Self {
-        Self {
-            pattern: true,
-            found: false,
-        }
-    }
-}
-
-impl<'ast> Visit<'ast> for Names {
-    fn visit_path_segment(&mut self, segment: &'ast syn::PathSegment) {
-        if !self.pattern && segment.ident == "Json" {
-            self.found = true;
-        }
-        visit::visit_path_segment(self, segment);
-    }
-
-    fn visit_pat_tuple_struct(&mut self, pat: &'ast syn::PatTupleStruct) {
-        if pat
-            .path
-            .segments
-            .last()
-            .is_some_and(|last| last.ident == "Json")
-        {
-            self.found = true;
-        }
-        visit::visit_pat_tuple_struct(self, pat);
-    }
-
-    fn visit_path(&mut self, path: &'ast syn::Path) {
-        let through_axum = path.segments.iter().any(|segment| segment.ident == "axum");
-        if through_axum
-            && path
-                .segments
-                .last()
-                .is_some_and(|last| last.ident == "Path" || last.ident == "Query")
-        {
-            self.found = true;
-        }
-        visit::visit_path(self, path);
-    }
-}
-
-fn refused_extractors(source: &str) -> Vec<String> {
-    let file = syn::parse_file(source).unwrap_or_else(|e| panic!("parse: {e}"));
-    let mut scan = RefusedExtractors::default();
-    scan.visit_file(&file);
+fn refused(source: &str) -> Vec<String> {
+    let stream: TokenStream = source.parse().unwrap_or_else(|e| panic!("tokenize: {e:?}"));
+    let mut scan = Scan::default();
+    scan.level(stream);
     scan.hits
 }
 
@@ -250,100 +172,125 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 #[test]
-fn no_calm_server_function_takes_an_axum_extractor_that_answers_plain_text() {
+fn no_calm_server_source_names_an_axum_extractor_outside_extract() {
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
     rust_files(&src, &mut files);
-    // The scan root is the whole crate source, handlers included.
+    // The scan root is the whole crate source, handlers included, and the one exempt file exists.
     assert!(
-        files.iter().any(|path| path.ends_with("routes/plugins.rs")),
-        "scan root lost the route handlers: {src:?}"
+        files.iter().any(|path| path.ends_with("routes/plugins.rs"))
+            && files.iter().any(|path| path.ends_with("src/extract.rs")),
+        "scan root lost the route handlers or `extract.rs`: {src:?}"
     );
     let mut violations = Vec::new();
-    for path in &files {
+    for path in files
+        .iter()
+        .filter(|path| !path.ends_with("src/extract.rs"))
+    {
         let source = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
-        for hit in refused_extractors(&source) {
-            violations.push(format!("{}:{hit}", path.display()));
+        for hit in refused(&source) {
+            violations.push(format!("{}: {hit}", path.display()));
         }
     }
     assert!(
         violations.is_empty(),
-        "extract with `crate::extract::{{JsonBody, Path, Query}}`, not axum's `Json`, `Path` or \
-         `Query`:\n{}",
+        "name axum's extractors only in `src/extract.rs`; use `crate::extract::{{JsonBody, Path, \
+         Query}}` to extract and `crate::extract::Json` to answer:\n{}",
         violations.join("\n")
     );
 }
 
-/// Each shape the rule names is flagged on its own; the allowed shapes are not.
+/// A dependency renamed in a manifest would give axum a name the scan does not know.
 #[test]
-fn the_scan_flags_every_refused_extractor_shape_and_nothing_else() {
-    let flagged = [
-        "async fn h(Json(body): Json<Body>) {}",
+fn no_manifest_renames_the_axum_dependencies() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for path in [
+        manifest.join("Cargo.toml"),
+        manifest.join("../../Cargo.toml"),
+    ] {
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+        let squeezed: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+        for package in ["package=\"axum\"", "package=\"axum-extra\""] {
+            assert!(
+                !squeezed.contains(package),
+                "{}: a dependency renames `{package}`",
+                path.display()
+            );
+        }
+    }
+}
+
+/// Every form a review found, each refused; the crate's own extractors and response pass.
+#[test]
+fn the_scan_refuses_every_spelling_of_an_axum_extractor_and_nothing_else() {
+    let refused_forms = [
+        // Arguments, typed and untyped, and a response type.
         "async fn h(axum::Json(body): axum::Json<Body>) {}",
-        "async fn h(body: Option<Json<Body>>) {}",
-        "impl X { async fn h(&self, Json(body): Json<Body>) {} }",
-        "fn r() { let _ = post(|Json(body): Json<Body>| async move {}); }",
-        // Untyped closure patterns: the destructure alone names the extractor.
+        "async fn h(::axum::Json(body): ::axum::Json<Body>) {}",
         "fn r() { let _ = post(|axum::Json(body)| async move {}); }",
-        "fn r() { let _ = post(|Json(body)| async move {}); }",
-        "fn r() { let _ = post(|(State(s), Json(body))| async move {}); }",
-        "async fn h(Json(body): BodyAlias) {}",
-        // Aliases, each on its own: the alias line is the one hit, whatever uses it.
-        "use axum::Json as BodyJson; async fn h(BodyJson(body): BodyJson<Body>) {}",
-        "use axum::extract::Json as BodyJson;",
-        "use axum::{Json as BodyJson, Router};",
-        "use axum::{extract::{Json as BodyJson, State}, Router};",
-        // A local re-export renamed: the path no longer runs through `axum`.
-        "mod a { pub use axum::Json; } use self::a::Json as BodyJson;",
-        "use self::a::{Json as BodyJson, Other};",
-        "type BodyJson<T> = axum::Json<T>; async fn h(body: BodyJson<Body>) {}",
-        "type BodyJson<T> = Json<T>;",
-        "impl X for Y { type Body = axum::Json<Body>; }",
-        // axum's `Path` and `Query`, by origin.
+        "fn r() -> axum::Json<Out> { todo!() }",
+        "fn r() { let _ = axum::response::Json(out); }",
         "async fn h(axum::extract::Path(id): axum::extract::Path<String>) {}",
         "async fn h(q: Option<axum::extract::Query<Q>>) {}",
-        "fn r() { let _ = get(|axum::extract::Path(id)| async move {}); }",
-        "use axum::extract::Path;",
-        "use axum::extract::{Query, State};",
-        "use axum::{extract::{Path as Params, State}, Router};",
-        "use axum::extract;",
-        "use axum::extract::{self, State};",
-        "use axum::extract::*;",
-        "use axum as web;",
-        // Any rename through `axum`: a renamed crate or module hides `axum` from the paths under it.
-        "use axum::{self as web}; async fn h(web::extract::Path(id): web::extract::Path<String>) {}",
-        "use axum::{self as web}; fn r() { let _ = get(|web::extract::Query(q)| async move {}); }",
-        "use axum::{Router, extract::{self as ex, State}};",
-        "use axum::extract as ex;",
-        "use axum::routing::get as route;",
-        "extern crate axum as web;",
-        "type Params<T> = axum::extract::Path<T>;",
-    ];
-    for source in flagged {
-        assert_eq!(refused_extractors(source).len(), 1, "{source}");
-    }
-    let allowed = [
-        "async fn h(JsonBody(body): JsonBody<Body>) -> Json<Out> { todo!() }",
-        "async fn h() -> Result<Json<Out>, CalmError> { todo!() }",
-        "fn r() { let body: Json<Out> = Json(out); }",
-        "fn r() { if let Some(Json(out)) = answer {} }",
-        "fn r() { let _ = post(|JsonBody(body)| async move {}); }",
-        "mod a { pub use axum::Json; } use self::a::Json;",
+        "fn f(q: axum_extra::extract::Query<Q>) {}",
+        // Codex round 2: an inferred closure argument, and a brace pattern.
+        "fn r() { let _ = post(|body| async move { let _: axum::Json<V> = body; }); }",
+        "fn r() { let _ = post(|axum::Json { 0: body }| async move {}); }",
+        // Channel A round 2: raw identifiers.
+        "async fn h(axum::r#Json(b): axum::r#Json<V>) {}",
+        "use r#axum::r#Json as X;",
+        // Channel A round 2: a generic handler routed with axum's type.
+        "fn r() { let _ = post(generic::<axum::Json<V>>); }",
+        // Channel A round 2: `let` patterns inside closures.
+        "fn r() { let _ = post(|j| async move { let axum::Json(b) = j; }); }",
+        "fn r() { let _ = get(|p| async move { let axum::extract::Path(id) = p; }); }",
+        "fn r() { let _ = get(|q| async move { let axum::extract::Query(q) = q; }); }",
+        // Channel A round 2: a macro_rules!-generated handler; its input, and its body.
+        "macro_rules! mk { ($n:ident, $t:ty) => { async fn $n(b: $t) {} } } mk!(p, axum::Json<V>);",
+        "macro_rules! mk { () => { async fn h(axum::Json(b): axum::Json<V>) {} } }",
+        // A crate name that is not the head of a literal path.
+        "fn r() { p!(axum); }",
+        "macro_rules! m { ($x:ident) => { axum::$x } }",
+        // `use` items: imports, renames, globs, re-exports.
         "use axum::Json;",
         "use axum::{Json, Router};",
-        "use crate::extract::JsonBody as Body;",
-        "use serde_json::Value as Json;",
-        "type Answer = Result<Out, CalmError>;",
-        "use crate::extract::{JsonBody, Path, Query};",
-        "use crate::extract::Path as RoutePath;",
-        "async fn h(Path(id): Path<String>, Query(q): Query<Q>) {}",
-        "fn r() { let _ = axum::extract::Path::<String>::from_request_parts(parts, state); }",
-        "use axum::extract::{FromRef, State, rejection::JsonRejection};",
-        "use std::path::Path;",
-        "use axum::{self, Router};",
-        "use crate::routes::fs as files;",
+        "use axum::extract::{Query, State};",
+        "use axum::{Router, extract::{Path as Params, State}};",
+        "mod a { pub use axum::Json; }",
+        "use axum::{self as web}; async fn h(web::extract::Path(id): web::extract::Path<String>) {}",
+        "use axum::{self as web}; fn r() { let _ = get(|web::extract::Query(q)| async move {}); }",
+        "use axum::extract as ex;",
+        "use axum::routing::get as route;",
+        "use axum as web;",
+        "extern crate axum as web;",
+        "use axum::*;",
+        "use axum::extract::*;",
+        "type Params<T> = axum::extract::Path<T>;",
     ];
-    for source in allowed {
-        assert!(refused_extractors(source).is_empty(), "{source}");
-    }
+    let missed: Vec<&str> = refused_forms
+        .into_iter()
+        .filter(|source| refused(source).is_empty())
+        .collect();
+    assert!(missed.is_empty(), "not refused:\n{}", missed.join("\n"));
+    let allowed = [
+        "use crate::extract::{Json, JsonBody}; \
+         async fn h(JsonBody(b): JsonBody<V>) -> Json<Out> { Json(out) }",
+        "use crate::extract::{Path, Query}; async fn h(Path(id): Path<String>, Query(q): Query<Q>) {}",
+        "use crate::extract::Path as RoutePath;",
+        "use axum::{Router, extract::State, routing::post};",
+        "use axum::extract::rejection::JsonRejection;",
+        "use axum_extra::extract::cookie::{Cookie, SameSite};",
+        "#[axum::debug_handler] async fn h() -> axum::response::Response { todo!() }",
+        "use std::path::Path; use serde_json::Value as Json;",
+        "/// `axum::Json` in a doc comment\nfn f() { let _ = \"axum::Json\"; }",
+        "macro_rules! m { () => { crate::extract::Json(1) } }",
+    ];
+    let flagged: Vec<String> = allowed
+        .into_iter()
+        .filter_map(|source| {
+            let hits = refused(source);
+            (!hits.is_empty()).then(|| format!("{source}: {hits:?}"))
+        })
+        .collect();
+    assert!(flagged.is_empty(), "refused:\n{}", flagged.join("\n"));
 }

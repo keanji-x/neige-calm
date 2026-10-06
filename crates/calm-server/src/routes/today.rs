@@ -9,6 +9,7 @@ use crate::db::sqlite::{
 use crate::db::{write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
+use crate::extract::Json;
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{
     Card, CardPatch, CardRole, NewCard, RequestTheme, Terminal, Track, TrackWorkspace,
@@ -24,7 +25,7 @@ use crate::track_report::TrackReportPayload;
 use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;
 use crate::workspace_materialize::workspace_key_digest;
 use axum::{
-    Json, Router,
+    Router,
     extract::{FromRef, State},
     http::StatusCode,
     routing::{get, post},

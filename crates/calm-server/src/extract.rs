@@ -1,16 +1,21 @@
-//! The request extractors handlers take: `JsonBody<T>` for a JSON body, `Path<T>` for path
-//! parameters, `Query<T>` for the query string. Each deserializes exactly as axum's own extractor
-//! does, but a rejection answers the `ErrorBody` contract (`{error, code}`) with the status axum
-//! gives it, instead of axum's plain-text body. `tests/cases/extractor_scan.rs` keeps axum's
-//! `Json` out of every handler's arguments, and clippy keeps out its `Path` and `Query`.
+//! axum's `Json`, `Path` and `Query`, wrapped. `JsonBody<T>`, `Path<T>` and `Query<T>` are the
+//! request extractors handlers take: each deserializes exactly as axum's own does, but a rejection
+//! answers the `ErrorBody` contract (`{error, code}`) with the status axum gives it, instead of
+//! axum's plain-text body. `Json<T>` is the JSON response body: it answers exactly as axum's does
+//! and is not an extractor, so no handler argument can take it.
+//!
+//! This is the one file that may name axum's three: `tests/cases/extractor_scan.rs` refuses every
+//! spelling of them anywhere else in the crate's source, and `crates/calm-server/clippy.toml` makes
+//! them disallowed types outside the impls here.
 //!
 //! `Path` and `Query` keep axum's names on purpose: utoipa's axum integration recognises those
-//! extractors by name, and infers a handler's documented parameters from them. axum's own are
-//! disallowed types (`crates/calm-server/clippy.toml`) outside the two impls here.
+//! extractors by name, and infers a handler's documented parameters from them.
 
 use axum::extract::{FromRequest, FromRequestParts, Request};
 use axum::http::StatusCode;
 use axum::http::request::Parts;
+use axum::response::{IntoResponse, Response};
+use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::error::CalmError;
@@ -19,6 +24,8 @@ use crate::error::CalmError;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct JsonBody<T>(pub T);
 
+// The one place axum's `Json` is named as a request extractor: `clippy.toml` disallows it elsewhere.
+#[allow(clippy::disallowed_types)]
 impl<T, S> FromRequest<S> for JsonBody<T>
 where
     T: DeserializeOwned,
@@ -31,6 +38,19 @@ where
             Ok(axum::Json(value)) => Ok(JsonBody(value)),
             Err(rejection) => Err(rejection_error(rejection.status(), rejection.body_text())),
         }
+    }
+}
+
+/// A JSON response body; `Json(value)` from a handler. Serialized and answered exactly as
+/// `axum::Json` answers, with `Content-Type: application/json`. It implements no `FromRequest`, so
+/// it cannot extract a request body: that is [`JsonBody`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Json<T>(pub T);
+
+#[allow(clippy::disallowed_types)]
+impl<T: Serialize> IntoResponse for Json<T> {
+    fn into_response(self) -> Response {
+        axum::Json(self.0).into_response()
     }
 }
 

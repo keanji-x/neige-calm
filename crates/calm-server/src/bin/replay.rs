@@ -229,7 +229,9 @@ struct DevResetState {
     app: calm_server::state::AppState,
 }
 
-async fn dev_reset(State(s): State<DevResetState>) -> (StatusCode, axum::Json<serde_json::Value>) {
+async fn dev_reset(
+    State(s): State<DevResetState>,
+) -> (StatusCode, calm_server::extract::Json<serde_json::Value>) {
     // Drain stood-up harnesses BEFORE reseeding: the reseed wipes their runtime rows, and an orphaned harness would keep ticking and warning forever.
     let drained = replay::shutdown_registered_harnesses(&s.app).await;
     if drained > 0 {
@@ -238,7 +240,7 @@ async fn dev_reset(State(s): State<DevResetState>) -> (StatusCode, axum::Json<se
     match replay::reset_from_fixture(&s.repo, &s.bus, &s.fixture).await {
         Ok(ids) => (
             StatusCode::OK,
-            axum::Json(serde_json::json!({
+            calm_server::extract::Json(serde_json::json!({
                 "ok": true,
                 "seeded": ids.len(),
                 "last_id": ids.last().copied().unwrap_or(0),
@@ -249,7 +251,7 @@ async fn dev_reset(State(s): State<DevResetState>) -> (StatusCode, axum::Json<se
             tracing::error!(error = %e, "POST /dev/reset failed");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(serde_json::json!({
+                calm_server::extract::Json(serde_json::json!({
                     "ok": false,
                     "error": e.to_string(),
                 })),
@@ -270,10 +272,13 @@ struct ForcePlannerPhaseBody {
 async fn dev_force_planner_phase(
     State(s): State<DevResetState>,
     calm_server::extract::JsonBody(body): calm_server::extract::JsonBody<ForcePlannerPhaseBody>,
-) -> Result<axum::Json<serde_json::Value>, (StatusCode, axum::Json<serde_json::Value>)> {
+) -> Result<
+    calm_server::extract::Json<serde_json::Value>,
+    (StatusCode, calm_server::extract::Json<serde_json::Value>),
+> {
     let repo: Arc<dyn calm_server::db::Repo> = s.repo.clone();
     match calm_server::replay::force_planner_phase(&s.app, repo, &body.card_id, body.to).await {
-        Ok(outcome) => Ok(axum::Json(serde_json::json!({
+        Ok(outcome) => Ok(calm_server::extract::Json(serde_json::json!({
             "ok": true,
             "card_id": outcome.card_id,
             "worker_session_id": outcome.worker_session_id,
@@ -282,7 +287,7 @@ async fn dev_force_planner_phase(
         }))),
         Err(e) => Err((
             e.status(),
-            axum::Json(serde_json::json!({
+            calm_server::extract::Json(serde_json::json!({
                 "ok": false,
                 "error": e.to_string(),
             })),

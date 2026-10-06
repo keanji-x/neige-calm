@@ -373,6 +373,9 @@ syn = { version = "2.0.117", features = ["full", "visit"] }
 # `quote`; it is already locked as syn's own dependency, so this adds no crate to
 # the graph.
 quote = "1"
+# #2175 M1c — the extractor ban walks raw source tokens (macro bodies included), which `syn`'s
+# AST does not keep. Already locked as syn's own dependency, so this adds no crate to the graph.
+proc-macro2 = "1"
 # #2003 — the tool-name grammar and the stale-name sweep match the design's regexes verbatim.
 # This release is already locked as a transitive dependency.
 regex = "1.12.3"

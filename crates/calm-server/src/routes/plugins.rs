@@ -1,7 +1,7 @@
 //! `/api/plugins/*` — plugin install, configuration, and lifecycle.
 
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::extract::{JsonBody, Path, Query};
+use crate::extract::{Json, JsonBody, Path, Query};
 use crate::model::Plugin;
 use crate::plugin_host::managed::{self, ConnectorInstall};
 use crate::plugin_host::template_input::{
@@ -13,7 +13,7 @@ use crate::plugin_host::{
 };
 use crate::state::{AppState, CodexShellState, RouteState};
 use axum::{
-    Json, Router,
+    Router,
     body::Body,
     extract::State,
     http::{StatusCode, header},

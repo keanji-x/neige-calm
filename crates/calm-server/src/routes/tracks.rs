@@ -15,7 +15,7 @@ use crate::db::sqlite::{
 use crate::db::write_with_actor_events_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
-use crate::extract::{JsonBody, Path, Query};
+use crate::extract::{Json, JsonBody, Path, Query};
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{
     AreaKind, Card, CardRole, FolderConflict, FolderConflictKind, NewCard, NewOverlay, NewTrack,
@@ -52,7 +52,7 @@ use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;
 use crate::workspace_recycle;
 use crate::workspace_repoint::{PristineVerdict, workspace_pristine};
 use axum::{
-    Json, Router,
+    Router,
     extract::State,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},

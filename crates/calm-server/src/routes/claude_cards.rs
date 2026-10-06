@@ -2,7 +2,7 @@
 
 use crate::actor::Actor;
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::extract::{JsonBody, Path};
+use crate::extract::{Json, JsonBody, Path};
 use crate::model::{Card, new_id};
 use crate::operation::claude_adapter::{
     ClaudeCreateOperationPayload, ClaudeCreateRequestInput, NormalizedClaudeCreateRequest,
@@ -19,7 +19,7 @@ use crate::routes::idempotency_key::{
 use crate::session_projection_lookup::project_runtime_into_card_payload;
 use crate::state::{AppState, CodexShellState, RouteState};
 use axum::{
-    Json, Router,
+    Router,
     extract::State,
     http::{HeaderMap, StatusCode},
     routing::post,

@@ -3,8 +3,9 @@
 //! launchpad, create the summary conversation if absent, and unconditionally send one
 //! planner input carrying the activity summary.
 
+use crate::extract::Json;
 use axum::{
-    Json, Router,
+    Router,
     extract::{FromRef, State},
     http::{HeaderMap, HeaderValue},
     routing::post,
