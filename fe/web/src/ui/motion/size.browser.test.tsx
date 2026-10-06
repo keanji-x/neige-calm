@@ -98,3 +98,26 @@ it('lets the browser advance a large height change without per-frame inline rewr
   await settled();
   expect(host().getBoundingClientRect().height).toBe(500);
 });
+
+it('discards a native finish that is queued when the host unmounts', async () => {
+  const view = render(<Panel mode="compact" />);
+  view.rerender(<Panel mode="expanded" />);
+  const detached = host();
+  detached.getAnimations()[0].finish();
+  view.unmount();
+  await frame();
+  expect(detached.style.height).toBe('');
+  expect(detached.style.overflow).toBe('');
+  expect(detached.getAnimations()).toHaveLength(0);
+});
+
+it('discards a queued finish before a newer mode owns the height', async () => {
+  const view = render(<Panel mode="compact" />);
+  view.rerender(<Panel mode="expanded" />);
+  host().getAnimations()[0].finish();
+  view.rerender(<Panel mode="compact" />);
+  await frame();
+  expect(host().getAnimations()).toHaveLength(1);
+  await settled();
+  expect(host().getBoundingClientRect().height).toBe(40);
+});

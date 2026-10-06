@@ -1,5 +1,3 @@
-import type { AnimationPlaybackControls } from 'motion';
-import { animate } from 'motion/mini';
 import { useEffectEvent, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { readSizeTransition } from './transition.ts';
 import styles from './size.module.css';
@@ -14,11 +12,12 @@ export function SizeMotion({ children, motionKey }: Readonly<{ children: ReactNo
   const contentRef = useRef<HTMLDivElement>(null);
   const previousKey = useRef(motionKey);
   const naturalHeight = useRef<number | null>(null);
-  const controls = useRef<AnimationPlaybackControls | null>(null);
+  const controls = useRef<Animation | null>(null);
   const targetHeight = useRef<number | null>(null);
 
   const clear = useEffectEvent(() => {
-    controls.current?.stop();
+    // Discard even a finished effect whose native finish event is still queued.
+    controls.current?.cancel();
     controls.current = null;
     targetHeight.current = null;
     const host = hostRef.current;
@@ -38,10 +37,16 @@ export function SizeMotion({ children, motionKey }: Readonly<{ children: ReactNo
     host.style.overflow = 'clip';
     targetHeight.current = to;
     // Native height interpolation avoids a JS style write on every frame. Height still participates in layout.
-    const animation = animate(host, { height: [`${from}px`, `${to}px`] }, transition);
+    const animation = host.animate([{ height: `${from}px` }, { height: `${to}px` }], {
+      duration: transition.duration * 1000,
+      easing: `cubic-bezier(${transition.ease.join(', ')})`,
+      fill: 'both',
+    });
     controls.current = animation;
-    void Promise.resolve(animation).then(() => {
+    void animation.finished.then(() => {
       if (controls.current === animation) clear();
+    }, () => {
+      // Cancellation rejects finished; it already discarded the effect and released our styles.
     });
   });
 

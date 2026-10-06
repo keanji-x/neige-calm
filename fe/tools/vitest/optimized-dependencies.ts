@@ -8,7 +8,6 @@ export const OPTIMIZED_DEPENDENCIES = Object.freeze([
   '@fullcalendar/react/interaction',
   '@fullcalendar/react/themes/monarch',
   'temporal-polyfill',
-  'motion/mini',
   '@astryxdesign/core/Switch',
   '@tanstack/react-query',
   '@tanstack/react-router',
