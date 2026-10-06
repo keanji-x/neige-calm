@@ -1,0 +1,5 @@
+@layer ui {
+  .host { min-inline-size: 0; }
+  /* Keep child margins and floats inside the box whose intrinsic height we read. */
+  .content { display: flow-root; }
+}

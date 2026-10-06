@@ -1,5 +1,7 @@
 import { animate, type AnimationPlaybackControls } from 'motion';
 import { useEffectEvent, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { readMotionTransition } from './transition.ts';
+import styles from './size.module.css';
 
 /**
  * Animate intrinsic height only when motionKey changes. Content remains live and
@@ -32,17 +34,13 @@ export function SizeMotion({ children, motionKey }: Readonly<{ children: ReactNo
     clear();
     naturalHeight.current = to;
     if (from === to || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    const style = getComputedStyle(host);
-    const duration = parseFloat(style.getPropertyValue('--motion-medium'));
-    const values = style.getPropertyValue('--ease-layout').match(/[\d.]+/g)?.map(Number);
-    // Both declarations are required by the styles contract, not optional defaults.
-    if (!Number.isFinite(duration) || values?.length !== 4) throw new Error('Missing motion tokens');
+    const transition = readMotionTransition(host, 'layout');
     host.style.height = `${from}px`;
     host.style.overflow = 'clip';
     targetHeight.current = to;
     const revision = generation.current;
     const animation = animate(from, to, {
-      duration, ease: [values[0], values[1], values[2], values[3]],
+      ...transition,
       onUpdate: value => {
         if (generation.current === revision) host.style.height = `${value}px`;
       },
@@ -85,5 +83,5 @@ export function SizeMotion({ children, motionKey }: Readonly<{ children: ReactNo
     };
   }, []);
 
-  return <div ref={hostRef} data-nc-size-motion=""><div ref={contentRef}>{children}</div></div>;
+  return <div ref={hostRef} className={styles.host} data-nc-size-motion=""><div ref={contentRef} className={styles.content}>{children}</div></div>;
 }

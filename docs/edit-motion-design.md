@@ -11,3 +11,7 @@ Acceptance: production-component browser tests cover immediate content and focus
 ## Owner change request
 
 The user authorized this implementation on 2026-10-06. The root orchestrator accepts these narrowly scoped changes: register `ui/motion` and development-only `tools/preview` in `fe/module-file-inventory.yaml`; add MIT Motion to `fe/package.json` and its lockfile; extend styles tokens, public types and inventory tests with easing names. Frozen ownership controls and unrelated interfaces retain their contracts. Issue publication was subsequently authorized: https://github.com/keanji-x/neige-calm/issues/2191.
+
+## Reusable framework acceptance
+
+The UI owner exposes semantic enter/exit/layout recipes from styles-owned tokens and an intrinsic-size primitive independent of chat. A measuring flow root contains margins and floats. Standalone browser coverage verifies initial mount, ordinary content changes, retargeting while in flight, DOM/focus identity, StrictMode unmount cleanup and reduced motion. Edit and drawer are the first consumers; additional surfaces can adopt these contracts without copying orchestration or inventing their own timing constants. Do not add speculative registries or migrate unrelated animation surfaces in this change.
