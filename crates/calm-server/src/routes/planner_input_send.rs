@@ -11,9 +11,10 @@ use crate::event::{Event, EventScope};
 use crate::harness::SendKey;
 use crate::ids::{ActorId, CardId};
 use crate::json_body::JsonBody;
-use crate::per_card_lock::{PerCardLockGuard, lock_card, lock_key};
+use crate::per_card_lock::lock_key;
 use crate::routes::idempotency_key::{parse_idempotency_key_header, stable_payload_hash};
 use crate::routes::planner_cards::{card_runs_headless_harness, validate_planner_input};
+use crate::routes::planner_start_fence::CardStartFence;
 use crate::routes::track_report_blocks::require_rest_user_actor_for;
 use crate::session_projection_repo::WorkerSessionProjection;
 use crate::state::{CodexShellState, RouteState, WorkerState};
@@ -192,7 +193,7 @@ pub(crate) async fn send_planner_input_keyed(
     )
     .await;
 
-    // `_recovery_guard` holds the per-card recovery lock until end of scope, so a concurrent `/planner/reset` can't supersede the just-recovered runtime before the observe/audit below.
+    // `_recovery_guard` holds the card's start fence (its recovery lock) until end of scope, so a concurrent `/planner/reset` can't supersede the just-recovered runtime before the observe/audit below.
     let (runtime, harness, _recovery_guard) = match replaces_turn {
         None => super::planner_session::ensure_planner_session(s, w, cs, &card.id, &actor).await?,
         Some(_) => live_planner_harness(s, &card.id).await?,
@@ -331,9 +332,9 @@ async fn live_planner_harness(
 ) -> Result<(
     WorkerSessionProjection,
     crate::harness::PlannerHarness,
-    Option<PerCardLockGuard>,
+    Option<CardStartFence>,
 )> {
-    let guard = lock_card(&s.planner_recovery_locks, card_id.as_str()).await;
+    let fence = CardStartFence::lock(s, card_id).await;
     let dormant = || {
         CalmError::PlannerHarnessDormant(format!(
             "no live planner harness session for card {card_id}; reset to start a session",
@@ -345,5 +346,5 @@ async fn live_planner_harness(
         .await?
         .ok_or_else(dormant)?;
     let harness = s.harness.get(&runtime.id).ok_or_else(dormant)?;
-    Ok((runtime, harness, Some(guard)))
+    Ok((runtime, harness, Some(fence)))
 }

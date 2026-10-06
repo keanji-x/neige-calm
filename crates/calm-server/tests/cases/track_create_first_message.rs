@@ -671,12 +671,6 @@ impl Boot {
         .unwrap()
     }
 
-    /// `POST /api/today/launchpad/ensure` — the production caller of `prepare_tx`'s NON-deferred arm on its
-    /// second and later calls.
-    async fn ensure_launchpad(&self) -> (StatusCode, Value) {
-        self.post_json("/api/today/launchpad/ensure", "{}").await
-    }
-
     /// `POST /api/cards/{id}/planner/input` — the production send path, whose enqueue is persisted before the response.
     async fn send_planner_input(&self, card_id: &str, text: &str) -> (StatusCode, Value) {
         let response = self
@@ -3251,21 +3245,21 @@ async fn a_failed_restart_gives_the_harvested_sentence_back() {
     b.shutdown_harnesses().await;
 }
 
-/// The NON-deferred arm of `prepare_tx`: `ensure`'s second call starts with `force_new_thread: false`, which
-/// supersedes the card's live predecessor without inheriting anything from it.
+/// The NON-deferred arm of `prepare_tx`: a message-less keyed create's resume starts the existing Planner
+/// with `force_new_thread: false`, which supersedes the card's live predecessor without inheriting anything
+/// from it. (The launchpad's second `ensure` drove this arm until its `reuse` start was deleted, #2251.)
 #[tokio::test]
 async fn the_non_deferred_arm_carries_an_undrained_sentence_to_its_successor() {
     const LAUNCHPAD_SENTENCE: &str = "check the overnight builds";
 
     let b = boot().await;
-    let (first, first_body) = b.ensure_launchpad().await;
+    let (first, first_body) = b.create_track(Some("idem-non-deferred"), None).await;
     assert_eq!(
         first,
         StatusCode::CREATED,
-        "premise: the launchpad must be minted: body={first_body}"
+        "premise: the track must be minted: body={first_body}"
     );
-    let planner_card_id = first_body["planner_card_id"].as_str().unwrap().to_string();
-    let runtime = b.active_runtime_of_card(&planner_card_id).await;
+    let (runtime, planner_card_id) = b.only_runtime().await;
 
     // Park the drain, THEN send: the sentence has to be durably queued and still undrained when the second ensure runs.
     let (entered, release) = b.hold_the_next_drain();
@@ -3284,13 +3278,16 @@ async fn the_non_deferred_arm_carries_an_undrained_sentence_to_its_successor() {
         "premise: the sentence is durably queued on the predecessor and has not drained"
     );
 
-    // The second ensure takes the other arm.
-    let (second, second_body) = b.ensure_launchpad().await;
+    // The resume under the same key takes the other arm.
+    let (second, second_body) = b.create_track(Some("idem-non-deferred"), None).await;
     assert_eq!(
         second,
-        StatusCode::OK,
-        "premise: the second ensure must resolve the existing launchpad — a 201 here would mean \
-         it minted a new one and never reached the arm under test: body={second_body}"
+        StatusCode::CREATED,
+        "premise: the resume must answer the key's own track: body={second_body}"
+    );
+    assert_eq!(
+        second_body["id"], first_body["id"],
+        "premise: the resume minted nothing and never reached the arm under test"
     );
     release.notify_one();
 
@@ -3503,14 +3500,15 @@ async fn a_replaced_runtime_keeps_the_evidence_enqueued_against_it() {
     let b = boot().await;
     let (entered, release) = b.hold_the_next_drain();
 
-    let (first, first_body) = b.ensure_launchpad().await;
+    // A message-less keyed create and its resume: the production starts of an existing Planner that
+    // supersede its live runtime (the launchpad's `reuse` start was deleted, #2251).
+    let (first, first_body) = b.create_track(Some("idem-replaced-runtime"), None).await;
     assert_eq!(
         first,
         StatusCode::CREATED,
-        "premise: the launchpad must be minted: body={first_body}"
+        "premise: the track must be minted: body={first_body}"
     );
-    let planner_card_id = first_body["planner_card_id"].as_str().unwrap().to_string();
-    let runtime = b.active_runtime_of_card(&planner_card_id).await;
+    let (runtime, planner_card_id) = b.only_runtime().await;
 
     // A standing instruction that has not drained yet.
     let (sent, sent_body) = b
@@ -3533,11 +3531,15 @@ async fn a_replaced_runtime_keeps_the_evidence_enqueued_against_it() {
     // The successor's own drain, parked before it exists: the hook is installed BEFORE the mint that creates
     // the successor, so "not drained yet" is a held state rather than a window.
     let (successor_entered, successor_release) = b.hold_the_next_drain();
-    let (second, second_body) = b.ensure_launchpad().await;
+    let (second, second_body) = b.create_track(Some("idem-replaced-runtime"), None).await;
     assert_eq!(
         second,
-        StatusCode::OK,
-        "premise: the second ensure must resolve the existing launchpad: body={second_body}"
+        StatusCode::CREATED,
+        "premise: the resume must answer the key's own track: body={second_body}"
+    );
+    assert_eq!(
+        second_body["id"], first_body["id"],
+        "premise: the resume minted nothing"
     );
 
     let successor = b.active_runtime_of_card(&planner_card_id).await;

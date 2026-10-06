@@ -21,12 +21,11 @@ use crate::operation::planner_harness_start_adapter::{
     PlannerHarnessStartOperationPayload,
 };
 use crate::operation::{OperationKey, OperationOutcome};
-use crate::routes::conversations_shared::{
-    PLANNER_HARNESS_START, retryable_operation_key, validate_first_message,
-};
+use crate::routes::conversations_shared::{retryable_operation_key, validate_first_message};
 use crate::routes::idempotency_key::{
     calm_error_from_operation_failure, parse_idempotency_key_header, stable_payload_hash,
 };
+use crate::routes::planner_start_fence::CardStartFence;
 use crate::session_projection_repo::WorkerSessionState;
 use crate::state::{AppState, RouteState, WorkerState};
 use calm_truth::session_projection_row::LAST_TURN_COMPLETED_MS_SUBQUERY;
@@ -215,21 +214,21 @@ pub(crate) async fn create_track_conversation_inner(
         // This route mints no track, so it has no create request to hash.
         create_request_sha256: None,
     };
-    let payload = serde_json::to_value(payload)?;
+    let payload_hash = stable_payload_hash(&serde_json::to_value(&payload)?)?;
     let operation_key = retryable_operation_key(&s, &derived.operation_key).await?;
-    let op_id = s
-        .operation_runtime
-        .submit(
-            PLANNER_HARNESS_START,
+    // The operation mints the card, so the fence is on the id it derives: a send or reset of
+    // that card waits for the mint's start to settle.
+    let fence = CardStartFence::lock(&s, &payload.planner_card_id).await;
+    let result = fence
+        .start(
+            &payload,
             OperationKey {
                 operation_key: operation_key.clone(),
                 idempotency_key: Some(operation_key),
-                payload_hash: stable_payload_hash(&payload)?,
+                payload_hash,
             },
-            payload,
         )
         .await?;
-    let result = s.operation_runtime.wait(&op_id).await?;
     match result.outcome {
         OperationOutcome::Succeeded { .. } | OperationOutcome::SucceededViaCollision { .. } => {}
         OperationOutcome::Failed {
@@ -249,8 +248,8 @@ pub(crate) async fn create_track_conversation_inner(
     }
 
     // No send, no per-card first-message claim, and no briefing call out here: the message
-    // was enqueued by `prepare_tx` inside the operation, and the operation row is what
-    // serializes concurrent POSTs under one key. The payload carries the caller's RULING,
+    // was enqueued by `prepare_tx` inside the operation; the card's start fence serializes
+    // concurrent POSTs under one key, and the operation row answers the later ones. The payload carries the caller's RULING,
     // never the briefing TEXT, which must not enter `payload_hash`.
 
     let summary = load_track_conversation_summaries(&w, track.id.as_str(), Some(&derived.card_id))

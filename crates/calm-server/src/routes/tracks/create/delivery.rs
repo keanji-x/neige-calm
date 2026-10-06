@@ -6,8 +6,8 @@ use crate::ids::CardId;
 use crate::model::Track;
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
 use crate::operation::{OperationKey, OperationOutcome};
-use crate::routes::conversations_shared::PLANNER_HARNESS_START;
 use crate::routes::idempotency_key::{calm_error_from_operation_failure, stable_payload_hash};
+use crate::routes::planner_start_fence::CardStartFence;
 use crate::state::RouteState;
 
 use super::KeyedActor;
@@ -110,17 +110,18 @@ pub(super) async fn start_planner_harness_with_first_message(
         // Not a conversation create; nothing to brief.
         opening_briefing: None,
     };
-    let op_payload = serde_json::to_value(&request)?;
     // Same hash shape as `start_planner_harness`, so the two paths cannot drift on what a
     // payload is.
     let payload_hash = stable_payload_hash(&serde_json::json!({
         "actor": actor.start_label,
         "request": &request,
     }))?;
-    let op_id = s
-        .operation_runtime
-        .submit(
-            PLANNER_HARNESS_START,
+    // Taken inside the same-key claim the plan holds (`state.rs` lock order); the card exists
+    // already, so a send or a reset may be using it.
+    let fence = CardStartFence::lock(s, &request.planner_card_id).await;
+    let result = fence
+        .start(
+            &request,
             OperationKey {
                 operation_key: operation_key.clone(),
                 // Set, unlike the legacy path's `None`: this is the column
@@ -128,9 +129,7 @@ pub(super) async fn start_planner_harness_with_first_message(
                 idempotency_key: Some(operation_key),
                 payload_hash,
             },
-            op_payload,
         )
         .await?;
-    let result = s.operation_runtime.wait(&op_id).await?;
     response_for(arm, result.outcome)
 }

@@ -105,13 +105,14 @@ pub struct RouteState {
     pub templates: &'static crate::templates::TemplateRoster,
     pub terminal_renderer: Arc<TerminalRendererRegistry>,
     pub(crate) hook_ingest_cache: Arc<StdMutex<HookIngestCache>>,
-    /// Per-card lock for lazy planner harness recovery. Lock order:
+    /// Per-card lock for lazy planner harness recovery, and every route's `planner-harness-start`
+    /// through `routes::planner_start_fence::CardStartFence`, its one holder that submits. Lock order:
     /// `conversation_first_message_locks` → `planner_input_key_locks` → `planner_recovery_locks`
     /// → the operation runtime's drive mutex (`lock_for_track_delete`; a start submitted and
     /// waited on under this lock) → `track_delete_locks` (a send's `planner_recovery::recover`),
     /// never the reverse. So no caller may hold the drive mutex or `track_delete_locks` when it
     /// takes this lock: the workspace re-point drops both before its restart, and the launchpad
-    /// `ensure` holds neither.
+    /// `ensure` holds neither. A track create's `area_delete_locks` guard comes before all of these.
     pub(crate) planner_recovery_locks: crate::per_card_lock::PerCardLocks,
     /// Per-card claim for the Today bootstrap's first-message send. A SEPARATE map from
     /// `planner_recovery_locks`: the claim is held across a call that takes that lock and

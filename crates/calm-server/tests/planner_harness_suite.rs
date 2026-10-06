@@ -72,12 +72,16 @@ mod planner_queue_mutations;
 mod planner_replace;
 #[path = "cases/planner_repoint_restart_lock.rs"]
 mod planner_repoint_restart_lock;
+#[path = "cases/planner_start_fence_invariant.rs"]
+mod planner_start_fence_invariant;
 #[path = "cases/planner_steer.rs"]
 mod planner_steer;
 #[path = "cases/planner_transcript_projection.rs"]
 mod planner_transcript_projection;
 #[path = "cases/today_launchpad_restart_lock.rs"]
 mod today_launchpad_restart_lock;
+#[path = "cases/today_launchpad_start_once.rs"]
+mod today_launchpad_start_once;
 #[path = "cases/track_mail.rs"]
 mod track_mail;
 #[path = "cases/track_mail_claude.rs"]

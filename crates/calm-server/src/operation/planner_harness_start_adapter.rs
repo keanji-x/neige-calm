@@ -3153,7 +3153,7 @@ mod tests {
         Operation {
             id: "op-1".into(),
             operation_key: "op-key".into(),
-            kind: "planner-harness-start".into(),
+            kind: crate::routes::conversations_shared::PLANNER_HARNESS_START.into(),
             idempotency_key: None,
             payload_hash: String::new(),
             target_type: "card".into(),

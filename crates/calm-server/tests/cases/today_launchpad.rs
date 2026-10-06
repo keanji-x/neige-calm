@@ -595,8 +595,8 @@ async fn launchpad_workspace_is_materialized() {
     assert_eq!(status, StatusCode::OK, "body={body}");
 }
 
-/// A workspace re-point must not wedge `ensure` on a stale idempotency key: the `:reuse` operation row
-/// is hashed against the old cwd and nothing ever deletes rows from `operations`.
+/// A workspace re-point must not wedge `ensure` on a stale idempotency key: the bootstrap's
+/// operation row is hashed against the old cwd and nothing ever deletes rows from `operations`.
 #[tokio::test]
 async fn repointing_the_workspace_does_not_wedge_ensure_on_a_stale_idempotency_key() {
     let tmp = TempDir::new().unwrap();
@@ -607,8 +607,7 @@ async fn repointing_the_workspace_does_not_wedge_ensure_on_a_stale_idempotency_k
 
     let (status, body) = ensure(before.app.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
-    // Steady state: this is the call that mints the `:reuse` operation row
-    // hashed against the OLD workspace path.
+    // Steady state: started at this path already, so this ensure starts nothing (#2251).
     let (status, body) = ensure(before.app.clone()).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     let old_path: String =
@@ -616,16 +615,28 @@ async fn repointing_the_workspace_does_not_wedge_ensure_on_a_stale_idempotency_k
             .fetch_one(repo.pool())
             .await
             .unwrap();
-    let reuse_keys: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM operations WHERE idempotency_key LIKE 'today-launchpad:%:reuse%'",
-    )
-    .fetch_one(repo.pool())
-    .await
-    .unwrap();
-    assert!(
-        reuse_keys > 0,
-        "the fixture must have minted a `:reuse` operation row, otherwise there \
-         is no stale key to collide with and this test proves nothing"
+    let launchpad_keys = |pattern: &'static str| {
+        let pool = repo.pool().clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM operations WHERE idempotency_key LIKE ?1",
+            )
+            .bind(pattern)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(
+        launchpad_keys("today-launchpad:%:bootstrap:%").await,
+        1,
+        "the fixture must have minted the bootstrap's operation row at the OLD path, otherwise \
+         there is no stale key to collide with and this test proves nothing"
+    );
+    assert_eq!(
+        launchpad_keys("today-launchpad:%").await,
+        1,
+        "a steady-state ensure submitted a start of its own"
     );
 
     // --- the upgrade ---
@@ -650,7 +661,13 @@ async fn repointing_the_workspace_does_not_wedge_ensure_on_a_stale_idempotency_k
          key never collides and this test proves nothing"
     );
 
-    // `:reuse` again, now with the new cwd.
+    assert_eq!(
+        launchpad_keys("today-launchpad:%:repoint:%").await,
+        1,
+        "the re-point started the Planner at the new path"
+    );
+
+    // Steady again, now at the new cwd.
     let (status, body) = ensure(after.app.clone()).await;
     assert_eq!(
         status,
@@ -658,9 +675,10 @@ async fn repointing_the_workspace_does_not_wedge_ensure_on_a_stale_idempotency_k
         "second ensure after the re-point 409'd on a stale idempotency key — \
          the Today panel is wedged with no self-healing path; body={body}"
     );
-    // And it stays healed.
+    // And it stays healed, starting nothing more.
     let (status, body) = ensure(after.app.clone()).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(launchpad_keys("today-launchpad:%").await, 2);
 }
 
 /// A re-point that fails midway must still re-anchor the planner harness on the next `ensure`:
@@ -715,16 +733,23 @@ async fn a_failed_materialize_during_a_repoint_still_re_anchors_the_harness() {
          OLD workspace while every worker uses the new one"
     );
 
-    // And it settles: once started at this path, later ensures are plain reuse.
+    // And it settles: once started at this path, later ensures start nothing.
+    let launchpad_starts = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM operations WHERE idempotency_key LIKE 'today-launchpad:%'",
+        )
+        .fetch_one(repo.pool())
+        .await
+        .unwrap()
+    };
+    let settled = launchpad_starts().await;
     let (status, body) = ensure(after.app.clone()).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
-    let reuse_at_new_path: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM operations WHERE idempotency_key LIKE 'today-launchpad:%:reuse:%'",
-    )
-    .fetch_one(repo.pool())
-    .await
-    .unwrap();
-    assert!(reuse_at_new_path > 0, "steady state never resumed");
+    assert_eq!(
+        launchpad_starts().await,
+        settled,
+        "steady state never resumed: a settled ensure started the Planner again"
+    );
 }
 
 /// `(track id, workspace_kind, workspace_path)`.

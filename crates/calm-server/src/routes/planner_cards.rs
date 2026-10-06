@@ -14,8 +14,8 @@ use crate::operation::planner_harness_start_adapter::{
     HarnessProfile, PlannerHarnessStartOperationPayload,
 };
 use crate::operation::{OperationKey, OperationOutcome};
-use crate::per_card_lock::lock_card;
 use crate::routes::idempotency_key::{calm_error_from_operation_failure, stable_payload_hash};
+use crate::routes::planner_start_fence::CardStartFence;
 use crate::session_projection_lookup::card_is_shared_planner;
 use crate::session_projection_repo::WorkerSessionProjection;
 use crate::state::{CodexShellState, RouteState};
@@ -500,23 +500,24 @@ async fn reset_planner_card_shared(
     card: Card,
     profile: HarnessProfile,
 ) -> Result<ResetPlannerCardResponse> {
-    // Reset takes the SAME per-card lock as `/planner/input` lazy recovery, or a reset racing a registry-miss Send could resurrect the reset-away session. Deadlock-free: neither adapter re-enters `planner_recovery_locks`.
-    let _recovery_guard = lock_card(&s.planner_recovery_locks, card.id.as_str()).await;
+    // Reset takes the SAME per-card fence as `/planner/input` lazy recovery, or a reset racing a registry-miss Send could resurrect the reset-away session. Deadlock-free: neither adapter re-enters `planner_recovery_locks`.
+    let fence = CardStartFence::lock(&s, &card.id).await;
     let active_runtime = s
         .repo
         .session_projection_active_for_card(&card.id.to_string())
         .await?;
-    reset_planner_harness_card(s, actor, card, profile, active_runtime).await
+    reset_planner_harness_card(s, &fence, actor, card, profile, active_runtime).await
 }
 
 async fn reset_planner_harness_card(
     s: RouteState,
+    fence: &CardStartFence,
     actor: Actor,
     card: Card,
     profile: HarnessProfile,
     runtime: Option<WorkerSessionProjection>,
 ) -> Result<ResetPlannerCardResponse> {
-    start_harness_card(&s, &actor, &card, profile, HarnessCardStart::Reset).await?;
+    start_harness_card(&s, fence, &actor, &card, profile, HarnessCardStart::Reset).await?;
 
     if let Some(runtime) = runtime {
         let shutdown_payload = serde_json::to_value(PlannerHarnessShutdownOperationPayload {
@@ -560,12 +561,13 @@ pub(crate) enum HarnessCardStart {
 }
 
 /// Run one `planner-harness-start` for an existing harness card and wait for it. The one
-/// derivation of that start's payload, shared by reset and a send's fresh start; the caller holds the
-/// card's `planner_recovery_locks` guard. `profile` is the card's OWN, from its
+/// derivation of that start's payload, shared by reset and a send's fresh start, submitted under
+/// the card's [`CardStartFence`]. `profile` is the card's OWN, from its
 /// [`PlannerBinding`](crate::harness::profile::PlannerBinding): starting an assistant under
 /// `Planner` would mint its thread with the planner prompt while the card row still says `assistant`.
 pub(crate) async fn start_harness_card(
     s: &RouteState,
+    fence: &CardStartFence,
     actor: &Actor,
     card: &Card,
     profile: HarnessProfile,
@@ -604,12 +606,18 @@ pub(crate) async fn start_harness_card(
         // Not a conversation create; nothing to brief. `None` is skipped by serde.
         opening_briefing: None,
     };
-    run_planner_card_operation(
-        s,
-        "planner-harness-start",
-        serde_json::to_value(start_request)?,
-    )
-    .await
+    let payload_hash = stable_payload_hash(&serde_json::to_value(&start_request)?)?;
+    let result = fence
+        .start(
+            &start_request,
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: None,
+                payload_hash,
+            },
+        )
+        .await?;
+    planner_card_operation_outcome(result.outcome)
 }
 
 /// Submit one planner-card operation and wait for it, mapping its outcome onto a `CalmError`, so every planner-card route maps failure classes identically.
@@ -632,7 +640,12 @@ pub(crate) async fn run_planner_card_operation(
         )
         .await?;
     let result = s.operation_runtime.wait(&op_id).await?;
-    match result.outcome {
+    planner_card_operation_outcome(result.outcome)
+}
+
+/// The one mapping of a planner-card operation's outcome onto a `CalmError`.
+fn planner_card_operation_outcome(outcome: OperationOutcome) -> Result<()> {
+    match outcome {
         OperationOutcome::Succeeded { .. } | OperationOutcome::SucceededViaCollision { .. } => {
             Ok(())
         }

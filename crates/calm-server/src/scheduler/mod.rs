@@ -1270,9 +1270,15 @@ impl Scheduler {
             opening_briefing: None,
         };
         let bootstrap_payload = serde_json::to_value(&bootstrap)?;
+        // The one `planner-harness-start` submitted outside `CardStartFence` (#2252): the scheduler
+        // holds only a `Weak` operation runtime and is built with the dispatcher before
+        // `RouteState`'s lock maps exist, so it cannot reach the card's `planner_recovery_locks`.
+        // The child's creator owns this start, so a send answers 409/503 here rather than starting
+        // the card itself (`planner_session::send_owns_first_start`); a concurrent reset is not
+        // fenced. `tests/cases/planner_start_fence_invariant.rs` names this exception.
         let bootstrap_id = runtime
             .submit(
-                "planner-harness-start",
+                crate::routes::conversations_shared::PLANNER_HARNESS_START,
                 OperationKey {
                     operation_key: new_id(),
                     // The key carries a digest of the cwd: the runtime refuses "same key, different

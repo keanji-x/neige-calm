@@ -1,12 +1,14 @@
 //! #2068: the keyed-write answers of `POST /api/tracks/{id}/conversations` — a malformed or
-//! over-long key, the same key with a different body, and a duplicate that passes the operation
-//! dedup check and reaches the `operations` UNIQUE backstop.
+//! over-long key, the same key with a different body, and a concurrent duplicate, which waits on
+//! the conversation card's start fence (#2252) and joins the stored conversation.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
-use calm_server::conversation_keys::derive_track_conversation_operation_key_for_test;
+use calm_server::conversation_keys::{
+    derive_track_conversation_card_id_for_test, derive_track_conversation_operation_key_for_test,
+};
 use calm_server::test_seams::{OPERATION_DEDUP_MISSED, PausePoint, install_pause_for_test};
 use tokio::sync::Notify;
 
@@ -44,12 +46,14 @@ async fn the_same_key_with_other_text_is_reused_and_final() {
     b.shutdown_harnesses().await;
 }
 
-/// The first request is paused inside the operation insert, after its dedup read found nothing; the
-/// second commits the operation under the same key meanwhile. The first's INSERT then hits the
-/// `(kind, idempotency_key)` UNIQUE index, and the backstop joins the stored operation: both are
-/// answered with the one conversation, and the message is delivered once.
+/// The first request is paused inside the operation insert, after its dedup read found nothing, and
+/// holds the conversation card's start fence there. A duplicate under the same key derives the same
+/// card id, so it queues on that fence instead of racing the insert (the `operations` UNIQUE
+/// backstop is no longer reachable in-process on this route, #2252); once the first commits, the
+/// duplicate's dedup read joins the stored operation. Both are answered with the one conversation,
+/// and the message is delivered once.
 #[tokio::test]
-async fn a_duplicate_past_the_dedup_check_joins_the_stored_conversation() {
+async fn a_concurrent_duplicate_waits_on_the_fence_and_joins_the_stored_conversation() {
     let b = boot().await;
     let track_id = b.create_track("keyed-backstop").await;
     let paused = PausePoint {
@@ -57,6 +61,7 @@ async fn a_duplicate_past_the_dedup_check_joins_the_stored_conversation() {
         release: Arc::new(Notify::new()),
     };
     let operation_key = derive_track_conversation_operation_key_for_test(&track_id, "k-race");
+    let card_id = derive_track_conversation_card_id_for_test(&track_id, "k-race");
     install_pause_for_test(OPERATION_DEDUP_MISSED, &operation_key, paused.clone());
     let (first, second) = tokio::join!(
         b.create_conversation(&track_id, "k-race", "only once"),
@@ -64,11 +69,28 @@ async fn a_duplicate_past_the_dedup_check_joins_the_stored_conversation() {
             tokio::time::timeout(Duration::from_secs(10), paused.entered.notified())
                 .await
                 .expect("the first request passed its dedup read; without it the case is vacuous");
-            let second = b
-                .create_conversation(&track_id, "k-race", "only once")
-                .await;
+            let held = b.state.planner_recovery_lock_handles_for_test(&card_id);
+            assert!(
+                held > 0,
+                "premise: the paused first request holds the conversation card's start fence"
+            );
+            let mut second =
+                std::pin::pin!(b.create_conversation(&track_id, "k-race", "only once"));
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while b.state.planner_recovery_lock_handles_for_test(&card_id) <= held {
+                assert!(
+                    Instant::now() < deadline,
+                    "the duplicate never queued on the start fence"
+                );
+                tokio::select! {
+                    out = &mut second => {
+                        panic!("the duplicate finished while the first held the fence: {out:?}")
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+                }
+            }
             paused.release.notify_one();
-            second
+            second.await
         }
     );
     assert_eq!(second.0, StatusCode::CREATED, "{}", second.1);
@@ -81,7 +103,7 @@ async fn a_duplicate_past_the_dedup_check_joins_the_stored_conversation() {
         )
         .await,
         1,
-        "one operation: the first request's INSERT was refused by the index"
+        "one operation: the duplicate joined the first request's"
     );
     assert_eq!(b.copies_in_harness("only once", 1).await, 1);
     b.shutdown_harnesses().await;

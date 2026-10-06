@@ -12,6 +12,52 @@ fn the_start_kind_is_the_servers() {
     assert_eq!(PLANNER_START_OPERATION_KIND, PLANNER_HARNESS_START);
 }
 
+/// The adapter's own `kind()` literal is the name the runtime registers it under, so it is the
+/// const every lookup and the start fence use (#2252).
+#[tokio::test]
+async fn the_adapters_kind_is_the_const() {
+    use std::sync::Arc;
+
+    use crate::card_role_cache::CardRoleCache;
+    use crate::db::Repo;
+    use crate::db::sqlite::SqlxRepo;
+    use crate::harness::HarnessRegistry;
+    use crate::operation::ProviderAdapter;
+    use crate::operation::planner_harness_start_adapter::PlannerHarnessStartAdapter;
+    use crate::plugin_host::{PluginHost, PluginRegistry};
+    use crate::shared_codex_appserver::SharedCodexAppServer;
+    use crate::state::WriteContext;
+    use crate::track_area_cache::TrackAreaCache;
+
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.expect("repo"));
+    let daemon = SharedCodexAppServer::new_stub(repo.clone());
+    let plugin = Arc::new(PluginHost::new_full(
+        Arc::new(PluginRegistry::empty()),
+        repo.clone(),
+        tmp.path().join("plugins"),
+        tmp.path().join("plugins-data"),
+        Vec::new(),
+        crate::event::EventBus::new(),
+        WriteContext::new(CardRoleCache::new(), TrackAreaCache::new()),
+    ));
+    let adapter = PlannerHarnessStartAdapter::new(
+        repo,
+        daemon.clone(),
+        daemon.thread_seals().clone(),
+        HarnessRegistry::new(),
+        plugin,
+        CardRoleCache::new(),
+        TrackAreaCache::new(),
+        None,
+        Arc::new(
+            crate::claude_planner::config::ClaudePlannerHost::unconfigured_scratch()
+                .expect("scratch claude planner host"),
+        ),
+    );
+    assert_eq!(adapter.kind(), PLANNER_HARNESS_START);
+}
+
 /// One list makes both the exhaustive `match` in `phase` and `ALL_PHASES`, so a new `PhaseTag`
 /// fails to compile until it is listed, and once listed it is compared.
 macro_rules! phases {

@@ -34,6 +34,7 @@ use crate::routes::area_folders::{find_owner, is_descendant_of, normalize_path};
 use crate::routes::codex_cards::default_cwd;
 use crate::routes::idempotency_key::stable_payload_hash;
 use crate::routes::planner_cards::quiesce_shared_card_active_turn;
+use crate::routes::planner_start_fence::CardStartFence;
 use crate::session_projection_lookup::project_runtime_into_cards_payload;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
@@ -1775,68 +1776,57 @@ async fn start_planner_harness(
         // Not a conversation create; nothing to brief.
         opening_briefing: None,
     };
-    let op_payload = serde_json::to_value(&request)?;
     let payload_hash = stable_payload_hash(&serde_json::json!({
         "actor": actor.as_str(),
         "request": &request,
     }))?;
-    match s
-        .operation_runtime
-        .submit(
-            "planner-harness-start",
+    let fence = CardStartFence::lock(s, &request.planner_card_id).await;
+    let started = fence
+        .start(
+            &request,
             OperationKey {
                 operation_key: new_id(),
                 idempotency_key: None,
                 payload_hash,
             },
-            op_payload,
         )
-        .await
-    {
-        Ok(op_id) => match s.operation_runtime.wait(&op_id).await {
-            Ok(result) => match result.outcome {
-                // `SucceededViaCollision` is unreachable here: this path submits `idempotency_key: None`,
-                // and nothing in this repository writes the `idempotency_collision` completion that produces it.
-                OperationOutcome::Succeeded { .. }
-                | OperationOutcome::SucceededViaCollision { .. } => {}
-                OperationOutcome::Failed {
-                    last_error,
-                    from_phase,
-                    ..
-                } => {
-                    tracing::warn!(
-                        planner_card_id,
-                        track_id = %track.id,
-                        ?from_phase,
-                        error = %last_error,
-                        "planner harness start operation failed; track created but planner agent is inert"
-                    );
-                }
-                OperationOutcome::Stuck { reason, from_phase } => {
-                    tracing::warn!(
-                        planner_card_id,
-                        track_id = %track.id,
-                        ?from_phase,
-                        reason,
-                        "planner harness start operation stuck; track created but planner agent is inert"
-                    );
-                }
-            },
-            Err(e) => {
+        .await;
+    match started {
+        Ok(result) => match result.outcome {
+            // `SucceededViaCollision` is unreachable here: this path submits `idempotency_key: None`,
+            // and nothing in this repository writes the `idempotency_collision` completion that produces it.
+            OperationOutcome::Succeeded { .. } | OperationOutcome::SucceededViaCollision { .. } => {
+            }
+            OperationOutcome::Failed {
+                last_error,
+                from_phase,
+                ..
+            } => {
                 tracing::warn!(
                     planner_card_id,
                     track_id = %track.id,
-                    error = %e,
-                    "planner harness start wait failed; track created but planner agent may be inert"
+                    ?from_phase,
+                    error = %last_error,
+                    "planner harness start operation failed; track created but planner agent is inert"
+                );
+            }
+            OperationOutcome::Stuck { reason, from_phase } => {
+                tracing::warn!(
+                    planner_card_id,
+                    track_id = %track.id,
+                    ?from_phase,
+                    reason,
+                    "planner harness start operation stuck; track created but planner agent is inert"
                 );
             }
         },
+        // A refused submission or a failed wait: the start's own effect is unknown either way.
         Err(e) => {
             tracing::warn!(
                 planner_card_id,
                 track_id = %track.id,
                 error = %e,
-                "planner harness start submission failed; track created but planner agent is inert"
+                "planner harness start submission or wait failed; track created but planner agent may be inert"
             );
         }
     }
@@ -2547,12 +2537,11 @@ async fn restart_planner_harness_at(s: &RouteState, actor: &Actor, track: &Track
         // No planner card on this track, so no harness to re-anchor.
         return;
     };
-    // The card's lock, held through the start as `/planner/reset` holds it, so a send's lazy
-    // recovery or first start cannot interleave with it. The start waits on the operation
+    // The card's start fence, held through the start as `/planner/reset` holds it, so a send's
+    // lazy recovery or first start cannot interleave with it. The start waits on the operation
     // runtime's drive mutex, and `planner_recovery::recover` takes `track_delete_locks`, both
     // after this lock (`state.rs`); every caller has already dropped both of its guards.
-    let _recovery_guard =
-        crate::per_card_lock::lock_card(&s.planner_recovery_locks, &planner_card_id).await;
+    let fence = CardStartFence::lock(s, &CardId::from(planner_card_id.clone())).await;
     let request = PlannerHarnessStartOperationPayload {
         actor: actor.to_actor_id(),
         track_id: track.id.to_string(),
@@ -2582,46 +2571,28 @@ async fn restart_planner_harness_at(s: &RouteState, actor: &Actor, track: &Track
             return;
         }
     };
-    let payload = match serde_json::to_value(&request) {
-        Ok(payload) => payload,
-        Err(error) => {
-            tracing::warn!(track_id = %track.id, error = %error, "workspace repoint: payload encode failed");
-            return;
-        }
-    };
-    match s
-        .operation_runtime
-        .submit(
-            "planner-harness-start",
+    let started = fence
+        .start(
+            &request,
             OperationKey {
                 operation_key: new_id(),
                 idempotency_key: None,
                 payload_hash: hash,
             },
-            payload,
         )
-        .await
-    {
-        Ok(op) => match s.operation_runtime.wait(&op).await {
-            Ok(result)
-                if matches!(
-                    result.outcome,
-                    OperationOutcome::Succeeded { .. }
-                        | OperationOutcome::SucceededViaCollision { .. }
-                ) => {}
-            other => tracing::warn!(
-                track_id = %track.id,
-                cwd,
-                outcome = ?other.map(|r| r.outcome),
-                "workspace repoint: planner harness restart did not succeed; the workspace is \
-                 correct but the planner agent is inert"
-            ),
-        },
-        Err(error) => tracing::warn!(
+        .await;
+    match started {
+        Ok(result)
+            if matches!(
+                result.outcome,
+                OperationOutcome::Succeeded { .. } | OperationOutcome::SucceededViaCollision { .. }
+            ) => {}
+        other => tracing::warn!(
             track_id = %track.id,
             cwd,
-            error = %error,
-            "workspace repoint: planner harness restart submission failed"
+            outcome = ?other.map(|r| r.outcome),
+            "workspace repoint: planner harness restart did not succeed; the workspace is \
+             correct but the planner agent is inert"
         ),
     }
 }

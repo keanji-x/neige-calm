@@ -9,8 +9,8 @@ use crate::harness::{PlannerHarness, effective_runtime_thread_id, is_harness_sna
 use crate::ids::CardId;
 use crate::model::Card;
 use crate::operation::planner_harness_start_adapter::profile_mints_its_own_card;
-use crate::per_card_lock::{PerCardLockGuard, lock_card};
 use crate::routes::planner_cards::{HarnessCardStart, start_harness_card};
+use crate::routes::planner_start_fence::CardStartFence;
 use crate::session_projection_repo::{
     AgentProvider, CardConversation, WorkerSessionKind, WorkerSessionProjection, WorkerSessionState,
 };
@@ -56,9 +56,10 @@ fn starting() -> CalmError {
 ///   start it) → 409 `planner_harness_dormant`. Row-intrinsic dormancy is checked before daemon
 ///   liveness, so such a row is 409 even with the daemon down.
 ///
-/// Everything past the fast path runs under the per-card `planner_recovery_locks` guard, which
-/// `/planner/reset` takes too, and re-reads the card under it, so racing sends neither double-spawn
-/// nor double-start. The guard is RETURNED so the caller holds it through enqueue and audit.
+/// Everything past the fast path runs under the card's [`CardStartFence`], which `/planner/reset`
+/// and every other start take too, and re-reads the card under it, so racing sends neither
+/// double-spawn nor double-start. The fence is RETURNED so the caller holds it through enqueue and
+/// audit.
 #[allow(deprecated)]
 pub(crate) async fn ensure_planner_session(
     s: &RouteState,
@@ -69,7 +70,7 @@ pub(crate) async fn ensure_planner_session(
 ) -> Result<(
     WorkerSessionProjection,
     PlannerHarness,
-    Option<PerCardLockGuard>,
+    Option<CardStartFence>,
 )> {
     let human_send = actor.as_str() == "user";
     // Unlocked fast path only: its reads can straddle a racing Send's recovery commit, so a miss
@@ -81,13 +82,13 @@ pub(crate) async fn ensure_planner_session(
         return Ok((runtime, harness, None));
     }
 
-    let guard = lock_card(&s.planner_recovery_locks, card_id.as_str()).await;
+    let fence = CardStartFence::lock(s, card_id).await;
     // Re-fetch under the lock and use only this row: `/planner/reset` or a racing Send may have moved it.
     let Some(runtime) = planner_recovery::candidate(s, card_id, human_send).await? else {
         if !human_send {
             return Err(dormant(card_id));
         }
-        return start_fresh(s, cs, card_id, actor, guard).await;
+        return start_fresh(s, cs, card_id, actor, fence).await;
     };
     let runtime = if runtime.status == WorkerSessionState::Failed {
         planner_recovery::recover(s, w, cs, runtime).await?
@@ -95,7 +96,7 @@ pub(crate) async fn ensure_planner_session(
         runtime
     };
     if let Some(harness) = s.harness.get(&runtime.id) {
-        return Ok((runtime, harness, Some(guard)));
+        return Ok((runtime, harness, Some(fence)));
     }
     // A `starting` row means `planner-harness-start` is still in flight: the adapter writes the row BEFORE the harness is registered, so recovering here would spawn a harness the start op then shuts down, dropping any queued input. 503 so the client retries.
     if runtime.status == WorkerSessionState::Starting {
@@ -144,7 +145,7 @@ pub(crate) async fn ensure_planner_session(
         runtime_id = %runtime_id,
         "planner harness lazily recovered on /planner/input registry miss"
     );
-    Ok((runtime, harness, Some(guard)))
+    Ok((runtime, harness, Some(fence)))
 }
 
 /// Whether no creator can still submit this card's initial start, so a send may run it: a
@@ -176,21 +177,18 @@ async fn start_fresh(
     cs: &CodexShellState,
     card_id: &CardId,
     actor: &Actor,
-    guard: PerCardLockGuard,
+    fence: CardStartFence,
 ) -> Result<(
     WorkerSessionProjection,
     PlannerHarness,
-    Option<PerCardLockGuard>,
+    Option<CardStartFence>,
 )> {
     let card = s
         .repo
         .card_get(card_id.as_str())
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-    let conversation = s
-        .repo
-        .session_projection_conversation_for_card(&card_id.to_string())
-        .await?;
+    let conversation = fence.conversation().await?;
     match conversation {
         CardConversation::ThreadToPreserve => return Err(dormant(card_id)),
         CardConversation::StartInFlight => return Err(starting()),
@@ -209,7 +207,15 @@ async fn start_fresh(
     crate::test_seams::pause_point(crate::test_seams::PLANNER_FIRST_START, card_id.as_str()).await;
     // The start adapter's own readiness refusal is a 500; this is the send's 503, as for recovery.
     require_backend(s, cs, binding.provider).await?;
-    start_harness_card(s, actor, &card, binding.profile, HarnessCardStart::Fresh).await?;
+    start_harness_card(
+        s,
+        &fence,
+        actor,
+        &card,
+        binding.profile,
+        HarnessCardStart::Fresh,
+    )
+    .await?;
     let runtime = s
         .repo
         .session_projection_active_for_card(&card_id.to_string())
@@ -230,5 +236,5 @@ async fn start_fresh(
         worker_session_id = %runtime.id,
         "planner harness started on a send to a card with no thread to preserve"
     );
-    Ok((runtime, harness, Some(guard)))
+    Ok((runtime, harness, Some(fence)))
 }

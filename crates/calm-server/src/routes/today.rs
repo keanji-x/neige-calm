@@ -16,7 +16,9 @@ use crate::model::{
 };
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
 use crate::operation::{OperationKey, OperationOutcome};
+use crate::routes::conversations_shared::{PLANNER_HARNESS_START, retryable_operation_key};
 use crate::routes::idempotency_key::stable_payload_hash;
+use crate::routes::planner_start_fence::CardStartFence;
 use crate::state::{AppState, RouteState};
 use crate::track_report::TrackReportPayload;
 use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;
@@ -68,10 +70,6 @@ struct EnsureTxResult {
     report_card_id: String,
     created: bool,
     adopted_legacy: bool,
-    /// The planner harness has never successfully started at the launchpad's current
-    /// workspace path, so its thread must be re-opened. Derived from `operations`, not an
-    /// in-memory comparison, so it survives a crash between commit and operation-submit.
-    repointed: bool,
 }
 
 /// The `constraint` argument for the system-area race. A COLUMN list, never an index
@@ -394,23 +392,6 @@ async fn today_launchpad_ensure_tx(
         )
         .await?
     };
-    // "Does the planner harness need re-anchoring?" must be derived from DURABLE state:
-    // materialization runs after this tx commits, so if it fails or the process dies before
-    // the operation is recorded, an in-memory comparison would read "steady state" next
-    // time and pin the planner's codex thread to the OLD cwd forever.
-    let started_at_this_path: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM operations \
-         WHERE kind='planner-harness-start' AND phase='succeeded' AND idempotency_key LIKE ?1)",
-    )
-    .bind(format!(
-        "today-launchpad:{}:%:{}",
-        planner.id.as_str(),
-        workspace_key_digest(&track.workspace.path)
-    ))
-    .fetch_one(&mut **tx)
-    .await?;
-    let repointed = !started_at_this_path;
-
     Ok(EnsureTxResult {
         dto: TodayLaunchpad {
             track_id: track.id.to_string(),
@@ -422,7 +403,6 @@ async fn today_launchpad_ensure_tx(
         report_card_id: report.id.to_string(),
         created,
         adopted_legacy,
-        repointed,
     })
 }
 
@@ -523,77 +503,109 @@ pub(crate) async fn ensure_today_launchpad(
         error
     })?;
 
+    let planner_card_id = CardId::from(out.dto.planner_card_id.clone());
+    let status = if out.created || out.adopted_legacy {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    // The card is committed, so a send may be using it: hold its start fence through the
+    // decision and the start, as `/planner/reset` and the workspace re-point do. Nothing else is
+    // held here (`state.rs`).
+    let route = RouteState::from_ref(&app);
+    let fence = CardStartFence::lock(&route, &planner_card_id).await;
+    // "Does the Planner need a start at this path?" is decided under the fence, after any
+    // concurrent ensure's start has settled (#2251), and from DURABLE state: materialization runs
+    // after the transaction commits, so if it fails or the process dies before the operation is
+    // recorded, an in-memory comparison would read "steady state" next time and pin the
+    // Planner's thread to the OLD cwd forever.
+    let digest = workspace_key_digest(&out.track.workspace.path);
+    if launchpad_started_at_path(&app, &planner_card_id, &digest).await? {
+        return Ok((status, Json(out.dto)));
+    }
+
+    let bootstrap = out.created || out.adopted_legacy;
     let req = PlannerHarnessStartOperationPayload {
         actor: ActorId::Kernel,
         track_id: out.dto.track_id.clone(),
-        planner_card_id: CardId::from(out.dto.planner_card_id.clone()),
+        planner_card_id: planner_card_id.clone(),
         report_card_id: Some(out.report_card_id),
         sort: None,
         cwd: out.track.workspace.path.clone(),
         goal: None,
-        reset_harness_items: out.created || out.adopted_legacy,
+        reset_harness_items: bootstrap,
         // A re-point also forces a new thread: the codex thread holds the cwd it was minted
         // with. The transcript is NOT reset — harness items are persisted per card, not per thread.
-        force_new_thread: out.created || out.adopted_legacy || out.repointed,
+        force_new_thread: true,
         profile: Default::default(),
         create_card: None,
         first_message: None,
         create_request_sha256: None,
         opening_briefing: None,
     };
-    let start_mode = if out.created || out.adopted_legacy {
-        "bootstrap"
-    } else if out.repointed {
-        // A distinct mode so the re-point's operation is not collapsed onto a
-        // previously succeeded `reuse` by the idempotency key.
-        "repoint"
-    } else {
-        "reuse"
-    };
+    let start_mode = if bootstrap { "bootstrap" } else { "repoint" };
     let hash = stable_payload_hash(&serde_json::json!({"actor":"kernel","request":&req}))?;
-    // The card already exists, so a send may be using it: hold its lock through the start, as
-    // `/planner/reset` and the workspace re-point do. Nothing else is held here (`state.rs`).
-    let _recovery_guard = crate::per_card_lock::lock_card(
-        &RouteState::from_ref(&app).planner_recovery_locks,
-        &out.dto.planner_card_id,
-    )
-    .await;
-    let op = app
-        .operation_runtime
-        .submit(
-            "planner-harness-start",
+    // The workspace path is part of the key, not just of the payload: the runtime refuses a key
+    // already used with a different payload hash, and the payload carries `cwd`, so after a
+    // re-point every `ensure` would be a 409 forever (nothing deletes `operations` rows). Keying
+    // on the path mints a new key instead. A failed attempt's key is stepped past (`#N`), or its
+    // permanent row would replay the failure to every later ensure at this path.
+    let base_key = format!(
+        "today-launchpad:{}:{start_mode}:{digest}",
+        out.dto.planner_card_id
+    );
+    let idempotency_key = match retryable_operation_key(&route, &base_key).await {
+        Ok(key) => key,
+        // Not this route's 409: the launchpad's answer to a start it cannot run is a 500.
+        Err(CalmError::IdempotencyKeyExhausted(message)) => {
+            return Err(CalmError::Internal(format!(
+                "launchpad exists but its harness start failed too often at this path: {message}"
+            )));
+        }
+        Err(error) => return Err(error),
+    };
+    let result = fence
+        .start(
+            &req,
             OperationKey {
                 operation_key: new_id(),
-                // The workspace path is part of the key, not just of the payload: the runtime refuses a
-                // key already used with a different payload hash, and the payload carries `cwd`, so
-                // after a re-point every `ensure` would be a 409 forever (nothing deletes `operations`
-                // rows). Keying on the path mints a new key instead.
-                idempotency_key: Some(format!(
-                    "today-launchpad:{}:{start_mode}:{}",
-                    out.dto.planner_card_id,
-                    workspace_key_digest(&out.track.workspace.path)
-                )),
+                idempotency_key: Some(idempotency_key),
                 payload_hash: hash,
             },
-            serde_json::to_value(req)?,
         )
         .await?;
-    let result = app.operation_runtime.wait(&op).await?;
     match result.outcome {
         OperationOutcome::Succeeded { .. } | OperationOutcome::SucceededViaCollision { .. } => {
-            Ok((
-                if out.created || out.adopted_legacy {
-                    StatusCode::CREATED
-                } else {
-                    StatusCode::OK
-                },
-                Json(out.dto),
-            ))
+            Ok((status, Json(out.dto)))
         }
         _ => Err(CalmError::Internal(format!(
-            "launchpad exists but harness start failed: {op}"
+            "launchpad exists but harness start failed: {}",
+            result.op_id
         ))),
     }
+}
+
+/// Whether a launchpad start of `planner_card_id` has succeeded at the workspace whose key digest
+/// is `digest`, under any mode (a legacy `reuse` included) and any stepped `#N` key.
+async fn launchpad_started_at_path(
+    app: &AppState,
+    planner_card_id: &CardId,
+    digest: &str,
+) -> Result<bool> {
+    let pool = app
+        .sqlite_pool()
+        .ok_or_else(|| CalmError::Internal("the launchpad requires a sqlite-backed repo".into()))?;
+    let key = format!("today-launchpad:{planner_card_id}:%:{digest}");
+    let started: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM operations \
+         WHERE kind = ?1 AND phase = 'succeeded' \
+           AND (idempotency_key LIKE ?2 OR idempotency_key LIKE ?2 || '#%'))",
+    )
+    .bind(PLANNER_HARNESS_START)
+    .bind(key)
+    .fetch_one(&pool)
+    .await?;
+    Ok(started)
 }
 
 #[cfg(test)]
