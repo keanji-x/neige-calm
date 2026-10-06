@@ -607,7 +607,7 @@ describe('track conversations', () => {
         status: 409,
         statusText: 'Conflict',
         body: {
-          error: 'no recoverable planner harness session for this card; reset to start a session',
+          error: "This conversation's session can't be resumed; start a fresh session (history is kept)",
           code: 'planner_harness_dormant',
         },
       }
