@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use calm_server::test_seams::{OPERATION_DEDUP_MISSED, PausePoint, install_pause_for_test};
+use calm_server::test_seams::{OPERATION_KEYED_COMMIT_BEGIN, PausePoint, install_pause_for_test};
 use tokio::sync::Notify;
 
 use super::*;
@@ -92,7 +92,11 @@ async fn a_duplicate_past_the_dedup_check_joins_the_stored_recipe() {
         entered: std::sync::Arc::new(Notify::new()),
         release: std::sync::Arc::new(Notify::new()),
     };
-    install_pause_for_test(OPERATION_DEDUP_MISSED, "k-recipe-race", paused.clone());
+    install_pause_for_test(
+        OPERATION_KEYED_COMMIT_BEGIN,
+        "k-recipe-race",
+        paused.clone(),
+    );
     let (first, second) = tokio::join!(
         create(boot.app.clone(), recipe("mine"), Some("k-recipe-race")),
         async {

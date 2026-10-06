@@ -3,7 +3,7 @@ use super::{
     model::*,
     store::{self, Access},
 };
-use crate::json_body::JsonBody;
+use crate::extract::{JsonBody, Path, Query};
 use crate::{
     actor::Actor,
     error::{CalmError, ErrorBody, Result},
@@ -11,11 +11,7 @@ use crate::{
     ids::ActorId,
     state::{AppState, RouteState},
 };
-use axum::{
-    Json, Router,
-    extract::{Path, Query, State},
-    routing::get,
-};
+use axum::{Json, Router, extract::State, routing::get};
 
 /// The answers every calendar route shares, from [`access`].
 const FORBIDDEN: &str =

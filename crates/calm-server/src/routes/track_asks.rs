@@ -1,20 +1,15 @@
 //! `POST /api/tracks/{id}/asks/{ask_id}/answer` (#2209): the user answers one `neige_user_ask`.
 //! The answer is `ask.answered`, the only record that a question was answered; it wakes the Planner.
 
-use axum::{
-    Router,
-    extract::{Path, State},
-    http::StatusCode,
-    routing::post,
-};
+use axum::{Router, extract::State, http::StatusCode, routing::post};
 use serde::Deserialize;
 use utoipa::ToSchema;
 
 use crate::actor::Actor;
 use crate::db::write_with_actor_events_typed;
 use crate::error::{ErrorBody, Result};
+use crate::extract::{JsonBody, Path};
 use crate::ids::{ActorId, TrackId};
-use crate::json_body::JsonBody;
 use crate::state::{AppState, RouteState};
 
 pub fn router() -> Router<AppState> {

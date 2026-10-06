@@ -3,14 +3,11 @@
 
 use crate::db::RouteRepo;
 use crate::error::{CalmError, ErrorBody, Result};
+use crate::extract::Path;
 use crate::model::Terminal;
 use crate::state::{AppState, DaemonClient, RouteState};
 use crate::terminal_renderer::{RendererConfig, RendererEntry, TerminalRendererRegistry};
-use axum::{
-    Json, Router,
-    extract::{Path, State},
-    routing::get,
-};
+use axum::{Json, Router, extract::State, routing::get};
 use std::sync::Arc;
 
 pub fn router() -> Router<AppState> {

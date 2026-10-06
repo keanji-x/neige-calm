@@ -1,10 +1,11 @@
 //! `/api/fs/listdir` — read-only directory listing for the DirectoryPicker.
 
 use crate::error::{CalmError, ErrorBody, Result};
+use crate::extract::{Path as RoutePath, Query};
 use crate::state::{AppState, RouteState};
 use axum::{
     Json, Router,
-    extract::{Path as AxumPath, Query, State},
+    extract::State,
     http::header,
     response::{IntoResponse, Response},
     routing::get,
@@ -282,7 +283,7 @@ pub(crate) async fn readfile_raw(
 )]
 pub(crate) async fn read_track_workspace_file(
     State(s): State<RouteState>,
-    AxumPath(track_id): AxumPath<String>,
+    RoutePath(track_id): RoutePath<String>,
     Query(q): Query<WorkspacePathQuery>,
 ) -> Result<Json<ReadFileResponse>> {
     let track = s
@@ -317,7 +318,7 @@ pub(crate) async fn read_track_workspace_file(
 )]
 pub(crate) async fn read_track_workspace_file_raw(
     State(s): State<RouteState>,
-    AxumPath(track_id): AxumPath<String>,
+    RoutePath(track_id): RoutePath<String>,
     Query(q): Query<WorkspacePathQuery>,
 ) -> Result<Response> {
     let track = s
@@ -1372,7 +1373,7 @@ mod tests {
                 answers.push(("readfile-raw", answered(e).await));
                 let Err(e) = read_track_workspace_file(
                     State(state.clone()),
-                    AxumPath(track.clone()),
+                    RoutePath(track.clone()),
                     workspace(),
                 )
                 .await
@@ -1382,7 +1383,7 @@ mod tests {
                 answers.push(("workspace readfile", answered(e).await));
                 let e = read_track_workspace_file_raw(
                     State(state.clone()),
-                    AxumPath(track),
+                    RoutePath(track),
                     workspace(),
                 )
                 .await
@@ -1648,7 +1649,7 @@ mod tests {
 
         let Json(text) = read_track_workspace_file(
             State(state.clone()),
-            AxumPath(track_a.clone()),
+            RoutePath(track_a.clone()),
             Query(WorkspacePathQuery {
                 path: "same.txt".into(),
             }),
@@ -1659,7 +1660,7 @@ mod tests {
 
         let raw = read_track_workspace_file_raw(
             State(state.clone()),
-            AxumPath(track_b),
+            RoutePath(track_b),
             Query(WorkspacePathQuery {
                 path: "same.png".into(),
             }),
@@ -1671,7 +1672,7 @@ mod tests {
 
         let unknown = read_track_workspace_file(
             State(state.clone()),
-            AxumPath("missing-track".into()),
+            RoutePath("missing-track".into()),
             Query(WorkspacePathQuery {
                 path: "same.txt".into(),
             }),
@@ -1682,7 +1683,7 @@ mod tests {
 
         let escaping = read_track_workspace_file(
             State(state),
-            AxumPath(track_a),
+            RoutePath(track_a),
             Query(WorkspacePathQuery {
                 path: "../same.txt".into(),
             }),
@@ -1719,21 +1720,21 @@ mod tests {
 
         let text = read_track_workspace_file(
             State(state.clone()),
-            AxumPath(track_a.clone()),
+            RoutePath(track_a.clone()),
             missing_path(),
         )
         .await
         .unwrap_err();
         assert_eq!(answered(text).await, path_not_found);
         let raw =
-            read_track_workspace_file_raw(State(state.clone()), AxumPath(track_a), missing_path())
+            read_track_workspace_file_raw(State(state.clone()), RoutePath(track_a), missing_path())
                 .await
                 .unwrap_err();
         assert_eq!(answered(raw).await, path_not_found);
 
         let gone_track = read_track_workspace_file(
             State(state.clone()),
-            AxumPath("missing-track".into()),
+            RoutePath("missing-track".into()),
             missing_path(),
         )
         .await

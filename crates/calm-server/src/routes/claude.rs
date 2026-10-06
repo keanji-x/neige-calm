@@ -3,16 +3,12 @@
 
 use crate::actor::Actor;
 use crate::error::Result;
-use crate::json_body::JsonBody;
+use crate::extract::{JsonBody, Query};
 use crate::routes::codex::{
     HookProvider, IngestQuery, ingest_provider_hook, resolve_ingest_card_id,
 };
 use crate::state::{AppState, RouteState};
-use axum::{
-    Json, Router,
-    extract::{Query, State},
-    routing::post,
-};
+use axum::{Json, Router, extract::State, routing::post};
 use serde_json::{Value, json};
 
 pub fn router() -> Router<AppState> {

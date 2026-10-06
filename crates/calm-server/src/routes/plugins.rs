@@ -1,7 +1,7 @@
 //! `/api/plugins/*` — plugin install, configuration, and lifecycle.
 
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::json_body::JsonBody;
+use crate::extract::{JsonBody, Path, Query};
 use crate::model::Plugin;
 use crate::plugin_host::managed::{self, ConnectorInstall};
 use crate::plugin_host::template_input::{
@@ -15,7 +15,7 @@ use crate::state::{AppState, CodexShellState, RouteState};
 use axum::{
     Json, Router,
     body::Body,
-    extract::{Path, Query, State},
+    extract::State,
     http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, patch, post},
@@ -341,7 +341,7 @@ pub(crate) async fn install_plugin(
         (status = 404, description = "Plugin not found", body = ErrorBody),
         (status = 409, description = "A template id or minted tool name a running plugin already holds (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`); its `enabled` is as the request found it", body = ErrorBody),
         (status = 422, description = "Manifest min_kernel_version exceeds kernel version; its `enabled` is as the request found it", body = ErrorBody),
-        (status = 500, description = "Spawn failed / internal error; the plugin stays enabled", body = ErrorBody),
+        (status = 500, description = "Spawn failed / internal error; the plugin may have been left enabled (a failed spawn keeps `enabled`, so autospawn retries it)", body = ErrorBody),
         (status = 503, description = "Enabled, but waiting on its connector or configuration (`service_unavailable`); the list shows why as `last_error`", body = ErrorBody),
     ),
 )]

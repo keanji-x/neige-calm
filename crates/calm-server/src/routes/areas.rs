@@ -9,8 +9,8 @@ use crate::db::sqlite::{
 use crate::db::{write_with_actor_events_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
+use crate::extract::{JsonBody, Path, Query};
 use crate::ids::ActorId;
-use crate::json_body::JsonBody;
 use crate::model::{Area, AreaKind, AreaPatch, NewArea, Track};
 use crate::operation::workspace_lease::{
     any_track_has_active_forge_action, release_workspace_leases_for_track_tx,
@@ -23,7 +23,7 @@ use crate::workspace_materialize::validate_attached_workspace;
 use crate::workspace_recycle;
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    extract::State,
     http::{HeaderMap, StatusCode},
     routing::get,
 };

@@ -269,7 +269,7 @@ struct ForcePlannerPhaseBody {
 
 async fn dev_force_planner_phase(
     State(s): State<DevResetState>,
-    calm_server::json_body::JsonBody(body): calm_server::json_body::JsonBody<ForcePlannerPhaseBody>,
+    calm_server::extract::JsonBody(body): calm_server::extract::JsonBody<ForcePlannerPhaseBody>,
 ) -> Result<axum::Json<serde_json::Value>, (StatusCode, axum::Json<serde_json::Value>)> {
     let repo: Arc<dyn calm_server::db::Repo> = s.repo.clone();
     match calm_server::replay::force_planner_phase(&s.app, repo, &body.card_id, body.to).await {

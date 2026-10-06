@@ -187,3 +187,95 @@ async fn the_peer_record_stays_bounded() {
     f.fail(&newest, FREE_FAILURES - 1).await;
     assert_throttled(f.login(Some(&newest), "alice", "hunter2").await, "2");
 }
+
+/// Every loopback address is one host: a local process that binds other 127.0.0.0/8 sources (or
+/// `::1`, or a mapped `::ffff:127.x`) neither gets a fresh budget nor pushes the throttled record out.
+#[tokio::test]
+async fn every_loopback_address_is_one_peer() {
+    let f = Fixture::new().await;
+    for peer in [
+        "127.0.0.1:5000",
+        "127.0.0.2:5000",
+        "127.200.3.4:5000",
+        "[::1]:5000",
+        "[::ffff:127.9.9.9]:5000",
+    ] {
+        f.fail(peer, 1).await;
+    }
+    assert_throttled(
+        f.login(Some("127.1.2.3:6000"), "alice", "hunter2").await,
+        "2",
+    );
+    for i in 0..64u32 {
+        let peer = format!("127.{}.{}.{}:4000", i / 256, i % 256, 1 + i % 200);
+        assert_eq!(
+            f.login(Some(&peer), "alice", "wrong").await.0,
+            StatusCode::TOO_MANY_REQUESTS,
+            "{peer} is the same throttled host"
+        );
+    }
+    assert_eq!(
+        f.throttle.tracked_peers(),
+        1,
+        "one record for the loopback host"
+    );
+    assert_eq!(
+        f.login(Some(OWNER), "alice", "hunter2").await.0,
+        StatusCode::OK,
+        "a non-loopback peer keeps its own budget"
+    );
+}
+
+/// An IPv6 host is keyed by its /64: one interface can pick any address in its prefix.
+#[tokio::test]
+async fn an_ipv6_peer_is_keyed_by_its_64() {
+    let f = Fixture::new().await;
+    for i in 0..FREE_FAILURES {
+        f.fail(&format!("[2001:db8:1:2:{i:x}::7]:5000"), 1).await;
+    }
+    assert_throttled(
+        f.login(
+            Some("[2001:db8:1:2:ffff:ffff:ffff:ffff]:5000"),
+            "alice",
+            "hunter2",
+        )
+        .await,
+        "2",
+    );
+    assert_eq!(
+        f.login(Some("[2001:db8:1:3::7]:5000"), "alice", "hunter2")
+            .await
+            .0,
+        StatusCode::OK,
+        "the next /64 is another peer"
+    );
+}
+
+/// One lock covers the window check, the verification and the record: of a burst of parallel wrong
+/// attempts from one peer, exactly the free budget is evaluated and every other one is throttled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_parallel_burst_from_one_peer_gets_exactly_the_free_budget() {
+    let f = Arc::new(Fixture::new().await);
+    let attempts: Vec<_> = (0..64)
+        .map(|i| {
+            let f = f.clone();
+            tokio::spawn(async move {
+                let peer = format!("100.64.0.7:{}", 5000 + i);
+                f.login(Some(&peer), "alice", "wrong").await.0
+            })
+        })
+        .collect();
+    let mut statuses = Vec::new();
+    for attempt in attempts {
+        statuses.push(attempt.await.unwrap());
+    }
+    let count = |status| statuses.iter().filter(|s| **s == status).count();
+    assert_eq!(
+        (
+            count(StatusCode::UNAUTHORIZED),
+            count(StatusCode::TOO_MANY_REQUESTS)
+        ),
+        (FREE_FAILURES as usize, 64 - FREE_FAILURES as usize),
+        "{statuses:?}"
+    );
+}

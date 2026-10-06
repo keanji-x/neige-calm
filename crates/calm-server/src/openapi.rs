@@ -375,7 +375,7 @@ use utoipa::{Modify, OpenApi, ToSchema};
 pub struct ApiDoc;
 
 /// Adds the answers an operation gives because of what it declares, so no annotation lists them by
-/// hand: a JSON request body brings `JsonBody`'s rejections ([`crate::json_body::REJECTIONS`]),
+/// hand: a JSON request body brings `JsonBody`'s rejections ([`crate::extract::JSON_BODY_REJECTIONS`]),
 /// and requiring the session brings `require_session`'s refusals ([`crate::auth::NO_SESSION`], and
 /// [`crate::auth::CROSS_ORIGIN_WRITE`] on a write). The session is required of every operation that
 /// does not declare `security(())`. A status the annotation already describes keeps its own
@@ -416,7 +416,7 @@ impl Modify for DeclaredResponses {
                     .as_ref()
                     .is_some_and(|body| body.content.contains_key("application/json"));
                 if json_body {
-                    for answer in crate::json_body::REJECTIONS {
+                    for answer in crate::extract::JSON_BODY_REJECTIONS {
                         add_error_response(operation, answer);
                     }
                 }

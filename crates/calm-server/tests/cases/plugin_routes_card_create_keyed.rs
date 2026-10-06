@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use calm_server::test_seams::{OPERATION_DEDUP_MISSED, PausePoint, install_pause_for_test};
+use calm_server::test_seams::{OPERATION_KEYED_COMMIT_BEGIN, PausePoint, install_pause_for_test};
 use serde_json::{Value, json};
 use tokio::sync::Notify;
 use tower::ServiceExt;
@@ -133,7 +133,7 @@ async fn a_concurrent_retry_waits_for_the_first_tool_call_instead_of_making_its_
         entered: Arc::new(Notify::new()),
         release: Arc::new(Notify::new()),
     };
-    install_pause_for_test(OPERATION_DEDUP_MISSED, "k-tool-race", paused.clone());
+    install_pause_for_test(OPERATION_KEYED_COMMIT_BEGIN, "k-tool-race", paused.clone());
     let first = tokio::spawn({
         let fx = fx.clone();
         async move { post_keyed(&fx, via(&fx, json!({})), Some("k-tool-race")).await }
@@ -187,7 +187,11 @@ async fn a_direct_duplicate_past_the_dedup_check_joins_the_stored_card() {
         entered: Arc::new(Notify::new()),
         release: Arc::new(Notify::new()),
     };
-    install_pause_for_test(OPERATION_DEDUP_MISSED, "k-direct-race", paused.clone());
+    install_pause_for_test(
+        OPERATION_KEYED_COMMIT_BEGIN,
+        "k-direct-race",
+        paused.clone(),
+    );
     let (first, second) = tokio::join!(
         post_keyed(&fx, direct("Notes"), Some("k-direct-race")),
         async {
