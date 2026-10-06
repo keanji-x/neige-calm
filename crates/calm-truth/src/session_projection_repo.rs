@@ -104,12 +104,13 @@ pub enum CardConversation {
     /// No session row, no transcript item and no start in flight: nothing ever started the card.
     /// Whether a send may start it is the card's creator's contract, not this read's.
     NeverStarted,
-    /// Only `failed`, completed rows with no thread and no `last_thread_id`, no transcript item,
+    /// Only `failed`, completed rows (whatever thread a failed start bound), no transcript item,
     /// and no start in flight: the card's starts ran and failed, and a fresh start loses nothing.
     OnlyFailedStarts,
     /// Nothing to preserve yet, but a `planner-harness-start` for the card has not finished.
     StartInFlight,
-    /// A row that holds or may hold a thread, whatever its state, or a transcript item.
+    /// A row other than a completed `failed` one (live, retired, or failed and still
+    /// recoverable), or a transcript item.
     ThreadToPreserve,
 }
 

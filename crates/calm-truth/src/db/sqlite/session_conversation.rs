@@ -1,5 +1,5 @@
 //! What a fresh start on a card would lose (#2184): the send boundary starts a card only when
-//! no carrier holds a thread and no transcript exists.
+//! no session row is live or retired and no transcript exists.
 use sqlx::SqlitePool;
 
 use crate::session_projection_repo::{CardConversation, Result};
@@ -13,10 +13,12 @@ pub const PLANNER_START_CARD_KEY: &str = "spec_card_id";
 pub const TERMINAL_OPERATION_PHASES: [&str; 3] = ["succeeded", "failed", "stuck"];
 
 /// A row preserves nothing only in the shape a failed start's compensation leaves it in
-/// (`session_fail_if_active_tx`): `failed`, completed, with no `thread_id` and no snapshot
-/// `last_thread_id`. Any other row, and any transcript row, is a conversation. A snapshot that
-/// is not valid JSON may hold a thread, so it counts as one. A start is in flight while one of
-/// the card's starts is outside [`TERMINAL_OPERATION_PHASES`].
+/// (`session_fail_if_active_tx`): `failed` and completed, whatever thread it names. A start can
+/// bind a thread before it fails (a Claude Planner mints its id with no RPC, ahead of the spawn),
+/// and a thread no turn ran on is no conversation; a turn that ran left a transcript row (#2212).
+/// Any other row (live, retired, or a `failed` one not completed, which recovery may still
+/// resume), and any transcript row, is a conversation. A start is in flight while one of the
+/// card's starts is outside [`TERMINAL_OPERATION_PHASES`].
 pub(super) async fn card_conversation(
     pool: &SqlitePool,
     card_id: &str,
@@ -26,12 +28,7 @@ pub(super) async fn card_conversation(
         r#"SELECT
              EXISTS(SELECT 1 FROM worker_sessions
                     WHERE card_id = ?1
-                      AND NOT (state = 'failed'
-                               AND completed_at_ms IS NOT NULL
-                               AND trim(COALESCE(thread_id, '')) = ''
-                               AND (handle_state_json IS NULL
-                                    OR (json_valid(handle_state_json)
-                                        AND trim(COALESCE(json_extract(handle_state_json, '$.last_thread_id'), '')) = ''))))
+                      AND NOT (state = 'failed' AND completed_at_ms IS NOT NULL))
                OR EXISTS(SELECT 1 FROM harness_items WHERE card_id = ?1),
              EXISTS(SELECT 1 FROM operations
                     WHERE kind = ?2

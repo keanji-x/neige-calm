@@ -4,6 +4,8 @@ mod support;
 mod claude_planner_availability;
 #[path = "cases/claude_planner_catalog.rs"]
 mod claude_planner_catalog;
+#[path = "cases/claude_planner_create_retry.rs"]
+mod claude_planner_create_retry;
 #[path = "cases/claude_planner_credentials.rs"]
 mod claude_planner_credentials;
 #[path = "cases/claude_planner_live_replies.rs"]

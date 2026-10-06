@@ -2,7 +2,7 @@
 //! still owns the first start. The daily Track is
 //! created model-free (#2024), and an ordinary Track's create-time start can fail; the first
 //! `POST /planner/input` must start the conversation and queue the message, not answer 409
-//! `planner_harness_dormant`. A carrier holding a thread, or a transcript, keeps the dormant answer.
+//! `planner_harness_dormant`. A live or retired carrier, or a transcript, keeps the dormant answer.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -415,66 +415,20 @@ pub(crate) async fn within(future: impl std::future::Future<Output = ()>, what: 
         .unwrap_or_else(|_| panic!("timed out: {what}"));
 }
 
-/// A failed row is a conversation as soon as it names a thread, on the row or in its snapshot.
-/// The same card, with the thread taken away, starts: the thread is the only difference.
+/// A completed failed row is what a failed start's compensation leaves, and a start can bind a
+/// thread before it fails (a Claude Planner mints its id with no RPC): with no transcript nothing
+/// ran on that thread, so the send starts the card (#2212). The same row beside a transcript is a
+/// conversation: `a_card_with_transcript_items_but_no_session_row_stays_dormant` pins that half.
 #[tokio::test]
-async fn a_failed_row_that_names_a_thread_stays_dormant() {
+async fn a_completed_failed_row_with_a_thread_and_no_transcript_starts() {
     let boot = boot(AppServer::Running).await;
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit::shared_planner(
-            new_id(),
-            boot.planner_card_id.clone(),
-            AgentProvider::Codex,
-            WorkerSessionState::Failed,
-            Some("thread-kept".into()),
-            json!({}),
-            now_ms(),
-        ),
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    sqlx::query("UPDATE worker_sessions SET completed_at_ms = 1 WHERE card_id = ?1")
-        .bind(&boot.planner_card_id)
-        .execute(boot.repo.pool())
-        .await
-        .unwrap();
+    boot.insert_completed_failed_row_with_a_thread().await;
 
-    for (shape, sql) in [
-        (
-            "a thread on the row",
-            "UPDATE worker_sessions SET thread_id = 'thread-kept' WHERE card_id = ?1",
-        ),
-        (
-            "a thread only in the snapshot",
-            "UPDATE worker_sessions SET thread_id = NULL, \
-               handle_state_json = '{\"last_thread_id\":\"thread-kept\"}' WHERE card_id = ?1",
-        ),
-    ] {
-        sqlx::query(sql)
-            .bind(&boot.planner_card_id)
-            .execute(boot.repo.pool())
-            .await
-            .unwrap();
-        let (status, body) =
-            post_input(boot.app.clone(), &boot.input_uri(), "hello?", &new_id()).await;
-        assert_eq!(status, StatusCode::CONFLICT, "{shape}: body={body}");
-        assert_eq!(body["code"], json!("planner_harness_dormant"), "{shape}");
-        assert_eq!(boot.start_ops().await, 0, "{shape}: no start was submitted");
-    }
-
-    sqlx::query("UPDATE worker_sessions SET handle_state_json = '{}' WHERE card_id = ?1")
-        .bind(&boot.planner_card_id)
-        .execute(boot.repo.pool())
-        .await
-        .unwrap();
     let (status, body) = post_input(boot.app.clone(), &boot.input_uri(), "now?", &new_id()).await;
     assert_eq!(
         status,
         StatusCode::OK,
-        "without the thread it starts: body={body}"
+        "a threaded failed row without a transcript starts: body={body}"
     );
     assert_eq!(boot.start_ops().await, 1);
     boot.shutdown().await;
@@ -531,7 +485,8 @@ async fn a_card_whose_only_session_is_retired_stays_dormant() {
     assert_eq!(boot.active_session_rows().await, 0);
 }
 
-/// A transcript without any session row (rows deleted, items kept) is history too.
+/// A transcript without any session row (rows deleted, items kept) is history too, and so is one
+/// beside a completed failed row that names a thread (#2212): the transcript is what makes it one.
 #[tokio::test]
 async fn a_card_with_transcript_items_but_no_session_row_stays_dormant() {
     let boot = boot(AppServer::Running).await;
@@ -556,9 +511,45 @@ async fn a_card_with_transcript_items_but_no_session_row_stays_dormant() {
     );
     assert_eq!(boot.start_ops().await, 0, "no start was submitted");
     assert_eq!(boot.session_rows().await, 0);
+
+    boot.insert_completed_failed_row_with_a_thread().await;
+    let (status, body) = post_input(boot.app.clone(), &boot.input_uri(), "again?", &new_id()).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "with a threaded failed row: {body}"
+    );
+    assert_eq!(body["code"], json!("planner_harness_dormant"));
+    assert_eq!(boot.start_ops().await, 0, "no start was submitted");
 }
 
 impl Boot {
+    /// A row in the shape a failed start's compensation leaves when the start had bound a thread:
+    /// `failed`, completed, the thread on the row and in the snapshot.
+    async fn insert_completed_failed_row_with_a_thread(&self) {
+        let mut tx = self.repo.pool().begin().await.unwrap();
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit::shared_planner(
+                new_id(),
+                self.planner_card_id.clone(),
+                AgentProvider::Codex,
+                WorkerSessionState::Failed,
+                Some("thread-kept".into()),
+                json!({"last_thread_id": "thread-kept"}),
+                now_ms(),
+            ),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        sqlx::query("UPDATE worker_sessions SET completed_at_ms = 1 WHERE card_id = ?1")
+            .bind(&self.planner_card_id)
+            .execute(self.repo.pool())
+            .await
+            .unwrap();
+    }
+
     /// Retire the card's runtime the way a superseding writer leaves it: the row stays, as
     /// `superseded`, and no harness serves it.
     async fn shutdown_runtime_as_superseded(&self) {

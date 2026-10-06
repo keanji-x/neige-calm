@@ -49,10 +49,10 @@ fn starting() -> CalmError {
 /// * an active row with a registry miss → re-spawned from its snapshot (no Codex RPC);
 /// * a person's send to a `failed` carrier with a recoverable snapshot → `planner_recovery`;
 /// * a person's send to a card nothing can start any more but the send ([`send_owns_first_start`]:
-///   a managed Track's card, or a self-minted conversation whose starts failed threadless) with
-///   no thread to preserve → one `planner-harness-start`;
+///   a managed Track's card, or a self-minted conversation whose starts all failed) with no
+///   conversation to preserve → one `planner-harness-start`;
 /// * a `starting` row, or a start in flight on a card with nothing to preserve → 503, retry;
-/// * anything else (a carrier holding a thread, a transcript, or a card whose creator may still
+/// * anything else (a live or retired carrier, a transcript, or a card whose creator may still
 ///   start it) → 409 `planner_harness_dormant`. Row-intrinsic dormancy is checked before daemon
 ///   liveness, so such a row is 409 even with the daemon down.
 ///
@@ -168,7 +168,7 @@ async fn send_owns_first_start(
 }
 
 /// A person's send found no session to use. Only a card whose start would lose nothing is
-/// started: a carrier holding a thread, or a transcript, is a conversation, and minting a new one
+/// started: a live or retired carrier, or a transcript, is a conversation, and minting a new one
 /// over it is `/planner/reset`'s decision, never a send's. Nor is a card started while a
 /// creator's start can still come: that start would supersede this send's session. The start is unkeyed, so a refused
 /// start (the backend down: 503) leaves nothing behind and the next send starts it.

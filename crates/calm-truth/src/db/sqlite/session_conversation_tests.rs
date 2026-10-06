@@ -61,7 +61,7 @@ async fn conversation(repo: &SqlxRepo, card_id: &str) -> CardConversation {
 }
 
 #[tokio::test]
-async fn only_failed_threadless_starts_or_nothing_at_all_leave_no_conversation() {
+async fn only_completed_failed_starts_or_nothing_at_all_leave_no_conversation() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let (card_id, _) = card(&repo).await;
     let (other_card, _) = card(&repo).await;
@@ -157,22 +157,62 @@ async fn only_failed_threadless_starts_or_nothing_at_all_leave_no_conversation()
         CardConversation::OnlyFailedStarts,
         "a failed start that never got a thread preserves nothing"
     );
+    // A failed start may have bound a thread before it failed (a Claude Planner mints its id with
+    // no RPC); with no transcript, nothing ran on it (#2212).
+    for (threaded, why) in [
+        (
+            "UPDATE worker_sessions SET thread_id = 'thread-1', handle_state_json = NULL \
+             WHERE id = 'row'",
+            "a thread on the row",
+        ),
+        (
+            "UPDATE worker_sessions SET thread_id = NULL, \
+               handle_state_json = '{\"last_thread_id\":\"thread-1\"}' WHERE id = 'row'",
+            "a thread only in the snapshot",
+        ),
+        (
+            "UPDATE worker_sessions SET thread_id = NULL, handle_state_json = 'not json' \
+             WHERE id = 'row'",
+            "a snapshot that cannot be read",
+        ),
+    ] {
+        shape(threaded).await;
+        assert_eq!(
+            conversation(&repo, &card_id).await,
+            CardConversation::OnlyFailedStarts,
+            "a completed failed start with {why} and no transcript preserves nothing"
+        );
+    }
+    // The same completed failed row on the card that has a transcript is a conversation.
+    let mut tx = repo.pool().begin().await.unwrap();
+    crate::db::sqlite::session_start_runtime_tx(
+        &mut tx,
+        crate::session_projection_repo::WorkerSessionInit::shared_planner(
+            "transcript-row".into(),
+            transcript_card.clone(),
+            crate::session_projection_repo::AgentProvider::Codex,
+            calm_types::worker::WorkerSessionState::Failed,
+            Some("t".into()),
+            json!({}),
+            0,
+        ),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    shape("UPDATE worker_sessions SET completed_at_ms = 1 WHERE id = 'transcript-row'").await;
+    assert_eq!(
+        conversation(&repo, &transcript_card).await,
+        CardConversation::ThreadToPreserve,
+        "a completed failed row with a thread and a transcript is a conversation"
+    );
+    shape("UPDATE worker_sessions SET thread_id = NULL, handle_state_json = '{}' WHERE id = 'row'")
+        .await;
+    assert_eq!(
+        conversation(&repo, &card_id).await,
+        CardConversation::OnlyFailedStarts
+    );
     for (holding, restore, why) in [
-        (
-            "UPDATE worker_sessions SET thread_id = 'thread-1' WHERE id = 'row'",
-            "UPDATE worker_sessions SET thread_id = ' ' WHERE id = 'row'",
-            "a failed row with a thread",
-        ),
-        (
-            "UPDATE worker_sessions SET handle_state_json = '{\"last_thread_id\":\"thread-1\"}' WHERE id = 'row'",
-            "UPDATE worker_sessions SET handle_state_json = NULL WHERE id = 'row'",
-            "a failed row whose snapshot names a thread",
-        ),
-        (
-            "UPDATE worker_sessions SET handle_state_json = 'not json' WHERE id = 'row'",
-            "UPDATE worker_sessions SET handle_state_json = '{}' WHERE id = 'row'",
-            "a failed row whose snapshot cannot be read",
-        ),
         (
             "UPDATE worker_sessions SET completed_at_ms = NULL WHERE id = 'row'",
             "UPDATE worker_sessions SET completed_at_ms = 1 WHERE id = 'row'",
