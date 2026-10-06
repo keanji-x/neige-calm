@@ -246,7 +246,7 @@ pub struct ForgeFailedCheck {
     pub locator: ForgeCheckLocator,
 }
 
-/// A failed check's details URL, or its GraphQL node id when it has none.
+/// A failed check's details URL, or the forge's own id for it when it has none.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(untagged)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]

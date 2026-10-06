@@ -583,14 +583,14 @@ fn gate_result_text(
     }
 }
 
-/// `name (url)` per failed check; a check without a details URL shows its node id.
+/// `name (url)` per failed check; a check without a details URL shows its forge id.
 fn failed_check_list(failed: &[crate::event::ForgeFailedCheck]) -> String {
     use crate::event::ForgeCheckLocator;
     failed
         .iter()
         .map(|check| match &check.locator {
             ForgeCheckLocator::Url { url } => format!("{} ({url})", check.name),
-            ForgeCheckLocator::Id { id } => format!("{} (node id {id})", check.name),
+            ForgeCheckLocator::Id { id } => format!("{} (id {id})", check.name),
         })
         .collect::<Vec<_>>()
         .join(", ")

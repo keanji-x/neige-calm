@@ -1,5 +1,5 @@
 {
-  "description": "#2170: checks wakes also keep every failed check's name and URL or node id; earlier goldens remain readable",
+  "description": "#2170: checks wakes also keep every failed check's name and URL or forge id; earlier goldens remain readable",
   "wire": {
     "ev": "forge.pr.checks",
     "data": {

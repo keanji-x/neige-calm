@@ -264,7 +264,7 @@ export type FolderConflict = { folder_id: number, area_id: AreaId, conflict_path
 export type FolderConflictKind = "equal" | "ancestor" | "descendant";
 
 /**
- * A failed check's details URL, or its GraphQL node id when it has none.
+ * A failed check's details URL, or the forge's own id for it when it has none.
  */
 export type ForgeCheckLocator = { url: string, } | { id: string, };
 

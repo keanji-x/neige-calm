@@ -53,7 +53,7 @@ fn checks_wake_names_failed_checks_from_the_persisted_event() {
         .to_turn_text();
     assert!(
         text.ends_with(
-            "\nFailed checks: lint (https://ci.example/lint), legacy status (node id SC_kw1)."
+            "\nFailed checks: lint (https://ci.example/lint), legacy status (id SC_kw1)."
         ),
         "{text}"
     );

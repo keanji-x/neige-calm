@@ -13,7 +13,7 @@ describe('core/api wire decode behavior', () => {
       expect(decodeWireEvent({ ev: 'forge.pr.checks', data: { ...data, snapshot } }).status).toBe('failed');
     }
   });
-  it('accepts failed checks with a URL or node id but rejects one without a locator', () => {
+  it('accepts failed checks with a URL or forge id but rejects one without a locator', () => {
     const data = {
       track_id: 'track-01', pr_number: 1, conclusion: 'failure',
       snapshot: { head_sha: 'exact-head', mergeable: 'mergeable' },
