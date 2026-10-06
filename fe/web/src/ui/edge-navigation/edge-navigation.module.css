@@ -53,7 +53,7 @@
     transition:
       inline-size var(--motion-quick) ease-out,
       block-size var(--motion-quick) ease-out,
-      background-color var(--motion-quick) ease-out;
+      background-color var(--motion-quick) var(--ease-feedback);
   }
   .railDot:hover::before {
     background: var(--text-2);
