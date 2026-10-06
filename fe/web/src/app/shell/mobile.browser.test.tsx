@@ -4,7 +4,7 @@
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
-import { render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { page, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -17,7 +17,7 @@ import { createAppRouter } from '../router/public.tsx';
 import { createUiPreferences, type UiPreferences } from '../providers/ui-preferences.tsx';
 import { bootTestCardRuntime } from '../router/test-card-runtime.ts';
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(cleanup);
 
 const settlePaint = () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 
