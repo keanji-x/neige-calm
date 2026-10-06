@@ -49,7 +49,7 @@ async fn run_the_whole_chain(f: &Fx) {
         "plugin names",
         MIGRATION,
     ]);
-    run_the_chain_through(f, 150, &chain).await;
+    run_the_chain_through(f, 151, &chain).await;
 }
 
 #[tokio::test]
