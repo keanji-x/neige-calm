@@ -498,7 +498,7 @@ fn replace_dropping_data_blocks_never_reuses_a_data_block_id() {
 fn replace_dropping_data_blocks_keeps_matching_prose_ids() {
     let body = "# A\n\nalpha\n";
     let fence = render_fence("app", &json!({ "src": "/apps/x" }));
-    let mut doc = ReportDoc::from_payload(&TrackReportPayload::new("s", &format!("{body}{fence}")));
+    let mut doc = ReportDoc::from_payload(&TrackReportPayload::new("s", format!("{body}{fence}")));
     let prose = doc.blocks_snapshot().unwrap()[0].clone();
 
     doc.replace_dropping_data_blocks("s", body).unwrap();
