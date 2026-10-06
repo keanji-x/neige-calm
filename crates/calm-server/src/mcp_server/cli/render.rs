@@ -225,7 +225,7 @@ fn state(tool: &str, json: bool, value: &Value) -> Result<String, RenderError> {
     }
     let live: Vec<&StateCard<'_>> = cards.iter().filter(|card| card.live).collect();
     for (index, line) in card_lines(&live, caller).iter().enumerate() {
-        fact(if index == 0 { "live" } else { "" }, line);
+        fact(if index == 0 { "sessions" } else { "" }, line);
     }
     Ok(out)
 }
@@ -326,7 +326,7 @@ fn state_cards<'a>(tool: &str, cards: &'a [Value]) -> Result<Vec<StateCard<'a>>,
         .collect()
 }
 
-/// `id  role  kind  session <status>`, columns (escaped first) padded to the widest value; task
+/// `id  role  kind  session <status>` (running means an open session, not a running task), columns (escaped first) padded to the widest value; task
 /// status is the `tasks` block's. The caller's own row shows `(you)` for its session, which is
 /// always mid-turn.
 fn card_lines(cards: &[&StateCard<'_>], caller: &str) -> Vec<String> {
@@ -336,7 +336,12 @@ fn card_lines(cards: &[&StateCard<'_>], caller: &str) -> Vec<String> {
             let session = if card.id == caller {
                 Cow::Borrowed("(you)")
             } else {
-                Cow::Owned(format!("session {}", card.status))
+                let status = if card.status == "running" {
+                    "open"
+                } else {
+                    card.status
+                };
+                Cow::Owned(format!("session {status}"))
             };
             let [id, role, kind] = [card.id, card.role, card.kind].map(escape_control);
             [id, role, kind, session]

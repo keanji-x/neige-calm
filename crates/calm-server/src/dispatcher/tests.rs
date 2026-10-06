@@ -270,7 +270,7 @@ fn dispatcher_filter_matches_push_kinds() {
         track_id: track.clone(),
         overlapping_prs: vec![1, 2],
     })));
-    assert!(filter.matches(&env(Event::ForgePrOpened {
+    assert!(!filter.matches(&env(Event::ForgePrOpened {
         track_id: track.clone(),
         pr_number: 1,
         head_sha: "head-sha".into(),
@@ -1289,6 +1289,15 @@ fn event_warrants_planner_push_covers_push_allowlist() {
     ));
 
     for quiet_event in [
+        Event::RatifyRequested {
+            track_id: track.clone(),
+            reason: "cap_exhausted".into(),
+        },
+        Event::ForgePrOpened {
+            track_id: track.clone(),
+            pr_number: 1,
+            head_sha: "head-sha".into(),
+        },
         Event::WorkspaceLeased {
             track_id: track.clone(),
             card_id: worker.clone(),
@@ -1343,11 +1352,6 @@ fn event_warrants_planner_push_covers_push_allowlist() {
         Event::ForgeScanCompleted {
             track_id: track.clone(),
             overlapping_prs: vec![1, 2],
-        },
-        Event::ForgePrOpened {
-            track_id: track.clone(),
-            pr_number: 1,
-            head_sha: "head-sha".into(),
         },
         Event::ForgePrChecks {
             track_id: track.clone(),
@@ -2193,7 +2197,7 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
                 head_sha: "head-sha".into(),
             },
             ActorId::KernelDispatcher,
-            true,
+            false,
             true,
         ),
         row(
@@ -3962,5 +3966,31 @@ async fn track_updated_with_closed_at_reconciles_the_child() {
             "closing the child must conclude its parent task; still {status:?}"
         );
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+#[test]
+fn confirmation_receipts_do_not_wake_the_planner_live_or_on_replay() {
+    for event in [
+        Event::RatifyRequested {
+            track_id: TrackId::from("w"),
+            reason: "Which repository?".into(),
+        },
+        Event::ForgePrOpened {
+            track_id: TrackId::from("w"),
+            pr_number: 2169,
+            head_sha: "head".into(),
+        },
+    ] {
+        assert!(
+            !event_warrants_planner_push_with_role(&event, &ActorId::KernelDispatcher, |_| None),
+            "a synchronous receipt must not create another turn: {}",
+            event.kind_tag()
+        );
+        assert!(
+            !PLANNER_CATCH_UP_KINDS.contains(&event.kind_tag()),
+            "replay must agree with live delivery: {}",
+            event.kind_tag()
+        );
     }
 }

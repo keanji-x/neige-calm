@@ -205,8 +205,16 @@ help: ## Show this help.
 
 # ---- build (on host, not in docker) -------------------------------------
 
-.PHONY: build
-build: $(BIN) $(BRIDGE) $(APP) $(MCP_SHIM) $(PROC_SUP) $(NEIGE_CLI) $(WORKTREE)/target/release/neige-tailnet $(FE_DIST) ## Build binaries and the maintained frontend bundle.
+.PHONY: check-go build
+check-go:
+	@command -v go >/dev/null 2>&1 || { \
+	  echo "Go toolchain is missing from PATH; add its bin directory (for example /usr/local/go/bin) before building." >&2; \
+	  exit 1; \
+	}
+
+# A recursive make keeps the preflight ahead of every build even with -j.
+build: check-go ## Build binaries and the maintained frontend bundle.
+	$(MAKE) $(BIN) $(BRIDGE) $(APP) $(MCP_SHIM) $(PROC_SUP) $(NEIGE_CLI) $(WORKTREE)/target/release/neige-tailnet $(FE_DIST)
 
 # Single cargo invocation builds all binaries — cheaper than separate
 # calls because deps overlap. Touch every output so the rule re-fires
@@ -238,7 +246,7 @@ fe-dev: $(FE_NODE_MODULES_STAMP) ## Preview the next-generation frontend at http
 # umask, so make only the public build outputs traversable/readable before bind
 # mounting them; source files and node_modules keep their original permissions.
 .PHONY: dev-bundles
-dev-bundles: build fe-build
+dev-bundles: build
 	chmod -R a+rX "$(FE_DIST)"
 
 # ---- docker lifecycle ---------------------------------------------------

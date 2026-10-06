@@ -130,7 +130,7 @@ const HELP: &[CommandHelp] = &[
     ),
     command_help!(
         track_state::TOOL_TRACK_STATUS,
-        "Show the track's current state: closed_at, your card, report, tasks and live sessions",
+        "Show the track's current state: closed_at, your card, report, tasks and open sessions",
         "Usage: neige track status [--json]",
         "",
         "Options:",

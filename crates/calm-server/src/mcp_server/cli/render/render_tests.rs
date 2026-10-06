@@ -150,7 +150,7 @@ fn state_text_of_a_draft_track_says_untitled_and_names_the_caller() {
          you        crd_planner planner\n\
          report     empty skeleton\n\
          tasks      -\n\
-         live       crd_planner  planner  codex  (you)\n"
+         sessions   crd_planner  planner  codex  (you)\n"
     );
     assert_eq!(text.lines().filter(|l| l.contains("closed_at")).count(), 1);
 }
@@ -191,8 +191,8 @@ fn state_text_lists_every_task_and_only_live_cards() {
          tasks      fix-login running start=checkout\n\
          \x20          add-test pending start=checkout\n\
          \x20          old failed start=checkout\n\
-         live       crd_planner  planner  codex   (you)\n\
-         \x20          crd_worker   worker   claude  session running\n"
+         sessions   crd_planner  planner  codex   (you)\n\
+         \x20          crd_worker   worker   claude  session open\n"
     );
     assert_eq!(text.lines().filter(|l| l.contains("closed_at")).count(), 1);
     for absent in ["crd_report", "crd_old", "exited"] {
@@ -211,10 +211,10 @@ fn state_text_shows_a_worker_caller_as_you() {
     );
     assert_eq!(
         text.lines()
-            .skip_while(|l| !l.starts_with("live"))
+            .skip_while(|l| !l.starts_with("sessions"))
             .collect::<Vec<_>>(),
         vec![
-            "live       crd_planner  planner  codex   session idle",
+            "sessions   crd_planner  planner  codex   session idle",
             "           crd_worker   worker   claude  (you)",
         ]
     );
@@ -257,8 +257,8 @@ fn state_text_escapes_control_characters_so_a_title_cannot_forge_a_line() {
          tasks      fix-login running start=checkout\n\
          \x20          add\\ntest pending start=checkout\n\
          \x20          old failed start=checkout\n\
-         live       crd_planner  planner  codex     (you)\n\
-         \x20          crd_worker   worker   cl\\naude  session running\n"
+         sessions   crd_planner  planner  codex     (you)\n\
+         \x20          crd_worker   worker   cl\\naude  session open\n"
     );
     assert!(
         !text.trim_end_matches('\n').contains(['\r', '\t', '\u{7}']),
@@ -362,7 +362,7 @@ fn state_text_access_matrix_preserves_the_full_read_write_output() {
             assert_eq!(
                 render(Render::Status, "neige_track_status", false, &value).unwrap(),
                 format!(
-                    "track      trk_2\ntitle      Fix login redirect\nclosed_at  -\nyou        crd_planner planner\nreport     has content\ntasks      fix\\nlogin {status}{suffix} start=checkout\n           add-test pending start=checkout\n           old failed start=checkout\nlive       crd_planner  planner  codex   (you)\n           crd_worker   worker   claude  session running\n"
+                    "track      trk_2\ntitle      Fix login redirect\nclosed_at  -\nyou        crd_planner planner\nreport     has content\ntasks      fix\\nlogin {status}{suffix} start=checkout\n           add-test pending start=checkout\n           old failed start=checkout\nsessions   crd_planner  planner  codex   (you)\n           crd_worker   worker   claude  session open\n"
                 )
             );
         }
@@ -496,11 +496,11 @@ fn state_text_names_the_session_status_and_the_task_status_apart() {
         );
         assert_eq!(
             text.lines()
-                .skip_while(|l| !l.starts_with("live"))
+                .skip_while(|l| !l.starts_with("sessions"))
                 .collect::<Vec<_>>(),
             vec![
-                "live       crd_planner  planner  codex   (you)",
-                "           crd_worker   worker   claude  session running",
+                "sessions   crd_planner  planner  codex   (you)",
+                "           crd_worker   worker   claude  session open",
             ]
         );
     }
@@ -522,9 +522,26 @@ fn state_text_shows_each_key_once_at_its_current_execution() {
             "tasks      fix-login running start=checkout",
             "           add-test pending start=checkout",
             "           old done start=checkout",
-            "live       crd_planner  planner  codex   (you)",
-            "           crd_worker   worker   claude  session running",
+            "sessions   crd_planner  planner  codex   (you)",
+            "           crd_worker   worker   claude  session open",
             "           crd_old      worker   codex   session idle",
         ]
     );
+}
+
+#[test]
+fn closed_track_keeps_open_sessions_distinct_from_finished_work() {
+    let mut value = working_track_state();
+    value["track"]["closed_at"] = json!(1_000);
+    value["tasks"][0]["status"] = json!("done");
+    let text = render(Render::Status, "neige_track_status", false, &value).unwrap();
+    assert!(text.contains("fix-login done start=checkout"), "{text}");
+    assert!(text.contains("sessions"), "{text}");
+    assert!(
+        text.contains("crd_worker   worker   claude  session open"),
+        "{text}"
+    );
+    assert!(!text.contains("session running"), "{text}");
+    let raw = render(Render::Status, "neige_track_status", true, &value).unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&raw).unwrap(), value);
 }

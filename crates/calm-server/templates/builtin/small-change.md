@@ -51,7 +51,7 @@ track 的 VCS diff）。不要把秘密写进来。
 Working method: Small change
 
 Read the requested change and the current code path; identify constraints before writing.
-Implement and commit the smallest appropriate change, then run the target repository's relevant verification.
+Implement the smallest appropriate change and let the kernel commit worker changes, then run the target repository's relevant verification.
 Derive formatter, linter and test commands from that repository's toolchain, never a hardcoded ecosystem.
 Create concrete delegated tasks only when needed for the request, not one task for each step above.
 Record the actual result and verification evidence in the report. Do not claim unrun checks passed.

@@ -69,7 +69,6 @@ pub(crate) const PLANNER_CATCH_UP_KINDS: &[&str] = &[
     "track.report_edited",
     "track.wake_requested",
     "forge.scan.completed",
-    "forge.pr.opened",
     "forge.pr.checks",
     "forge.issue.closed",
     "forge.pr.merged",
@@ -132,12 +131,11 @@ pub(crate) fn event_warrants_planner_push_with_role(
         Event::ForgePrMerged { .. }
         | Event::RatifyResolved { .. }
         | Event::ForgeScanCompleted { .. }
-        | Event::ForgePrOpened { .. }
         | Event::ForgePrChecks { .. }
         | Event::ForgeIssueClosed { .. } => true,
-        // #2170: only the Planner authors it (role gate), so the wake would echo its own call;
-        // the user's `ratify.resolved` is the wake that matters.
-        Event::RatifyRequested { .. } => false,
+        // These tools wait for their result: the caller already has the receipt. Keep the
+        // events for the timeline/notifications, but do not schedule another Planner turn.
+        Event::RatifyRequested { .. } | Event::ForgePrOpened { .. } => false,
         // Workspace / worktree lifecycle notices are read back on demand (`neige_task_ls`);
         Event::WorkspaceLeased { .. }
         | Event::WorkspaceReleased { .. }
@@ -1062,7 +1060,6 @@ impl Inner {
             Event::ForgePrMerged { track_id, .. }
             | Event::RatifyResolved { track_id, .. }
             | Event::ForgeScanCompleted { track_id, .. }
-            | Event::ForgePrOpened { track_id, .. }
             | Event::ForgePrChecks { track_id, .. }
             | Event::ForgeIssueClosed { track_id, .. }
             | Event::TrackWakeRequested { track_id, .. } => {
@@ -1120,6 +1117,8 @@ impl Inner {
             | Event::TaskDispatched { .. }
             | Event::TaskContextFrozen { .. }
             | Event::TaskContextAdvanced { .. }
+            | Event::RatifyRequested { .. }
+            | Event::ForgePrOpened { .. }
             | Event::ForgePrDiffRead { .. }
             | Event::ForgeIssueRead { .. }
             | Event::RatifyRequested { .. }
