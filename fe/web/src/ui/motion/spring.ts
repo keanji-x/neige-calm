@@ -52,8 +52,7 @@ export function playSpring(
     }
     throw error;
   }
-  const start = document.timeline.currentTime;
-  if (start !== null) for (const animation of animations) animation.startTime = start;
+  // Same-document native play tasks share the next rendering time; do not backdate to a stale frame.
   return {
     animations,
     finished: Promise.all(animations.map(animation => animation.finished)).then(() => {}),

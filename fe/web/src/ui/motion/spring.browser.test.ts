@@ -18,3 +18,14 @@ it('discards acquired effects if a sibling surface cannot start', () => {
   expect(() => playSpring([primary, peer], 0, 1, 0, opacity => ({ opacity }))).toThrow('Native start failed');
   expect(primary.getAnimations()).toHaveLength(0);
 });
+
+it('starts paired surfaces on the same browser rendering frame', async () => {
+  const primary = document.body.appendChild(document.createElement('div'));
+  const peer = document.body.appendChild(document.createElement('div'));
+  const playback = playSpring([primary, peer], 0, 1, 0, opacity => ({ opacity }));
+  await Promise.all(playback.animations.map(animation => animation.ready));
+  expect(playback.animations[0].startTime).not.toBeNull();
+  expect(playback.animations[0].startTime).toBe(playback.animations[1].startTime);
+  playback.cancel();
+  await expect(playback.finished).rejects.toBeDefined();
+});

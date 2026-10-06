@@ -1,8 +1,5 @@
 /** jsdom has no native animations. Model only the platform control protocol; browsers verify rendering. */
 if (typeof HTMLElement !== 'undefined' && typeof HTMLElement.prototype.animate !== 'function') {
-  if (typeof document.timeline === 'undefined') {
-    Object.defineProperty(document, 'timeline', { configurable: true, value: Object.freeze({ currentTime: 0 }) });
-  }
   Object.defineProperty(HTMLElement.prototype, 'animate', {
     configurable: true,
     value: function () {
