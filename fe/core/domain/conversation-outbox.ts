@@ -153,23 +153,40 @@ export type OutboxView = Readonly<{
   failed: FailedSendOp | null;
 }>;
 
+/** Low-frequency delivery facts and the inputs for the display-only transcript fold. */
+export type OutboxFacts = Omit<OutboxView, 'transcript'> & Readonly<{
+  entries: readonly TranscriptEntry[];
+  echoes: readonly ConversationTurn[];
+}>;
+
+/** Keep the delivery projection stable while adding display-only live replies.
+ * The order remains persisted entries, live replies, then outbox echoes. */
+export function withOutboxLiveReplies(facts: OutboxFacts, liveReplies: readonly ConversationTurn[]): OutboxView {
+  const { entries, echoes, ...state } = facts;
+  return { ...state, transcript: mergeTranscript(mergeTranscript(entries, liveReplies), echoes) };
+}
+
+/** The complete projection for consumers that need facts and live display together. */
+export function outboxView(input: Parameters<typeof outboxFacts>[0] & Readonly<{ liveReplies: readonly ConversationTurn[] }>): OutboxView {
+  return withOutboxLiveReplies(outboxFacts(input), input.liveReplies);
+}
+
 /**
  * One conversation's thread: server state plus its outbox. An op's message is drawn here unless the
  * queue region draws its claimed entry, or a newer persisted row already stands for it.
  */
-export function outboxView({ serverEntries, serverTurns, liveReplies, queuedEntryIds, stalled, ops, spent, landed }: {
+export function outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalled, ops, spent, landed }: {
   /** The transcript as read, rows the queue region lists already removed. */
   serverEntries: readonly TranscriptEntry[];
   /** Every persisted message, queue-listed ones included. */
   serverTurns: readonly ConversationMessage[];
-  liveReplies: readonly ConversationTurn[];
   queuedEntryIds: ReadonlySet<string>;
   stalled: boolean;
   ops: readonly SendOp[];
   /** The rows that already retired an op of this outbox. */
   spent: readonly string[];
   landed: LandedReads;
-}): OutboxView {
+}): OutboxFacts {
   const matched = matchSendOps(serverTurns, ops, spent);
   const live = ops.filter((op) => op.phase !== 'failed' && !matched.has(op.key));
   const failed = ops.findLast((op): op is FailedSendOp => op.phase === 'failed') ?? null;
@@ -184,7 +201,8 @@ export function outboxView({ serverEntries, serverTurns, liveReplies, queuedEntr
   return {
     /* KNOWN GAP (#1923): a steer sent while a reply streams draws its echo below the live reply,
        then its stored row above it: a one-time reorder that converges. */
-    transcript: mergeTranscript(mergeTranscript(withoutReplacedTurns(serverEntries, ops), liveReplies), drawn),
+    entries: withoutReplacedTurns(serverEntries, ops),
+    echoes: drawn,
     shown: live.filter(drawsEcho).map((op) => op.echo),
     confirmed: live.filter((op) => op.phase === 'confirmed').map((op) => op.echo),
     retire: retiredOps(ops, matched, landed),

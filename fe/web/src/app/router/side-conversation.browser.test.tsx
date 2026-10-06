@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, RouterProvider } from '@tanstack/react-router';
-import { cleanup, fireEvent, render } from '@testing-library/react';
+import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { page, userEvent } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
 import type { ApiRequest, ApiTransportPort } from '../../../../core/api/types.ts';
@@ -11,11 +11,12 @@ import { createAppRouter, APP_BASEPATH } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import '../../styles/entry.css';
+import { queryKeys } from '../providers/queries.ts';
 import { readingPlaceIn } from '../../ui/drawer/reading-place.ts';
 
 afterEach(async () => { cleanup(); document.getElementById('root')?.remove(); await page.viewport(1280, 720); });
 
-function setup(outcome?: 'interrupted' | 'failed', longText?: string) {
+function setup(outcome?: 'interrupted' | 'failed', longText?: string, live?: { text: string }) {
   const requests: ApiRequest[] = [];
   const track = { id: 'side-track', area_id: 'area', title: 'Architecture discussion', sort: 1,
     cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
@@ -42,7 +43,9 @@ function setup(outcome?: 'interrupted' | 'failed', longText?: string) {
     }
     const cardId = request.path.split('/')[3];
     if (request.path.endsWith('/planner/run')) body = { card_id: cardId, worker_session_id: `session-${cardId}`,
-      phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null, running_turn: null };
+      phase: cardId === 'parent' && live !== undefined ? 'issuing_turn' : 'idle', model: null, reasoning_effort: null, blocked_reason: null, running_turn: null };
+    if (request.path.endsWith('/harness/live')) body = cardId === 'parent' && live !== undefined
+      ? { turn_id: 'live-parent', items: [{ item_id: 'streaming', text: live.text }] } : { turn_id: null, items: [] };
     if (request.path.endsWith('/planner/input')) body = { card_id: cardId, worker_session_id: `session-${cardId}` };
     if (request.path.startsWith('/api/cards/parent/harness/items')) body = [{ id: 1, worker_session_id: 'session-parent',
       card_id: 'parent', track_id: track.id, thread_id: 'thread-parent', turn_id: null, turn_error_text: null,
@@ -65,12 +68,12 @@ function setup(outcome?: 'interrupted' | 'failed', longText?: string) {
   router.update({ history: createMemoryHistory({ initialEntries: [`${APP_BASEPATH}/track/${track.id}?panel=conversations`] }) });
   const container = document.createElement('div'); container.id = 'root'; document.body.append(container);
   render(<QueryClientProvider client={client}><ThemeProvider><RouterProvider router={router} /></ThemeProvider></QueryClientProvider>, { container });
-  return requests;
+  return { requests, client };
 }
 
 it('runs /side through the production router and shows two independent desktop composers', async () => {
   await page.viewport(1512, 950);
-  const requests = setup();
+  const { requests } = setup();
   await page.getByRole('button', { name: 'Conversation Main discussion' }).click();
   const main = page.getByRole('complementary', { name: 'Main discussion' });
   await expect.element(main.getByText('The main conversation keeps working while a separate discussion explores this design.')).toBeVisible();
@@ -118,7 +121,7 @@ it('runs /side through the production router and shows two independent desktop c
 
 it('keeps the existing mobile conversation and refuses /side without creating a child', async () => {
   await page.viewport(390, 844);
-  const requests = setup();
+  const { requests } = setup();
   await page.getByRole('button', { name: 'Conversation Main discussion' }).click();
   const field = page.getByRole('combobox', { name: 'Message' });
   await expect.element(field).toBeEnabled();
@@ -168,4 +171,21 @@ it('preserves the sibling reading anchor when the shared width changes', async (
   await userEvent.keyboard('{Home}');
   const after = place.mark!.getBoundingClientRect().top - sibling.getBoundingClientRect().top;
   expect(Math.abs(after - before)).toBeLessThan(2);
+});
+
+it('captures the latest growing reply through a stable side-command consumer', async () => {
+  await page.viewport(1512, 950);
+  const live = { text: 'First live explanation.' };
+  const { requests, client } = setup(undefined, undefined, live);
+  await page.getByRole('button', { name: 'Conversation Main discussion' }).click();
+  const main = page.getByRole('complementary', { name: 'Main discussion' });
+  await expect.element(main.getByText(live.text, { exact: true })).toBeVisible();
+  live.text = 'First live explanation, with the latest evidence.';
+  await act(async () => { await client.refetchQueries({ queryKey: queryKeys.harnessLive('parent') }); });
+  await expect.element(main.getByText(live.text, { exact: true })).toBeVisible();
+  await main.getByRole('combobox', { name: 'Message' }).fill('/side Explain the latest evidence');
+  await userEvent.keyboard('{Enter}');
+  await expect.poll(() => requests.filter(request => request.method === 'POST' && request.path.endsWith('/conversations')).length).toBe(1);
+  const request = requests.find(request => request.method === 'POST' && request.path.endsWith('/conversations'));
+  expect(JSON.stringify(request?.body)).toContain(live.text);
 });

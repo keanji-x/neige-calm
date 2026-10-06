@@ -2,7 +2,7 @@
 // is a list of the server's answers, and the preview is the server's own copy. Removing one before
 // sending is a local forget, not a delete: the server reclaims orphans after their TTL.
 
-import { useCallback, useRef } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { ChatComposerDrawer } from '@astryxdesign/core/Chat';
 import { HStack } from '@astryxdesign/core/HStack';
@@ -111,9 +111,10 @@ export function usePlannerAttachments(
     update(cardId, (current) => current.filter((item) => item.id !== id));
   }, [cardId, update]);
 
+  const ids = useMemo(() => items.map((item) => item.id), [items]);
   return {
     items,
-    ids: items.map((item) => item.id),
+    ids,
     attach,
     remove,
     busy: store.upload.inFlight > 0,

@@ -170,6 +170,8 @@ it.each([20, 120, 300, 900])('reports production rendering/update boundaries wit
       await frames();
     }
     const changing = { ...snapshot(), queryEvents, domMutations };
+    expect(changing.parentRenders['composer'] ?? 0).toBe(0);
+    expect(changing.parentRenders['navigation'] ?? 0).toBe(0);
     observer.disconnect(); unsubscribe();
     await commands.recordChatPerformance(count, JSON.stringify({ count, scenario: count === 120 ? 'tools-and-delayed-images' : 'markdown-history', loaded, steady, changing }));
   } finally { cleanup(); view.client.clear(); await commands.mockChatPerformanceImage(false); }

@@ -8,7 +8,7 @@ import {
 } from '../../../../core/domain/conversation.ts';
 import { KeyedSendFailure, retryUnknownSend } from '../../../../core/domain/conversation-delivery.ts';
 import {
-  outboxView, settleSendOp, wasUnknown, withConfirmedSends, withoutQueuedEntry, type LandedReads, type ReplacedTurn, type SendOp,
+  outboxFacts, withOutboxLiveReplies, settleSendOp, wasUnknown, withConfirmedSends, withoutQueuedEntry, type LandedReads, type ReplacedTurn, type SendOp,
 } from '../../../../core/domain/conversation-outbox.ts';
 import { recoveryDelay } from '../../../../core/domain/recovery/access.ts';
 import { ApiError, NotSentError } from '../../../../core/domain/failure-class.ts';
@@ -90,10 +90,11 @@ export function useConversationOutbox({
   /** The card shown now; a send's own `cardId` is the one it was pressed in. */
   const shownCardId = useRef(cardId);
   shownCardId.current = cardId;
-  const view = useMemo(
-    () => outboxView({ serverEntries, serverTurns, liveReplies, queuedEntryIds, stalled, ops, spent, landed }),
-    [serverEntries, serverTurns, liveReplies, queuedEntryIds, stalled, ops, spent, landed],
+  const facts = useMemo(
+    () => outboxFacts({ serverEntries, serverTurns, queuedEntryIds, stalled, ops, spent, landed }),
+    [serverEntries, serverTurns, queuedEntryIds, stalled, ops, spent, landed],
   );
+  const view = useMemo(() => withOutboxLiveReplies(facts, liveReplies), [facts, liveReplies]);
   const { retire } = view;
   /* Retiring by key is safe only because a `confirmed` or `replayed` op, the only ones retired, never changes phase
      again: an op under that key here is still the one the view retired. */

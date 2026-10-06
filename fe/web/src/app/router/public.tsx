@@ -104,6 +104,7 @@ import { OperationFeedback, useDeleteConfirm, useOperationFeedback } from '../..
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
 import { PanelAction, PanelEmpty } from '../../ui/panel-card/public.tsx';
+import { useCommittedCallback } from '../../ui/state/committed-callback.ts';
 import { useState } from '../../ui/state/public.ts';
 import {
   harnessItemsQueryOptions,
@@ -496,9 +497,11 @@ export function useConversationStore(
   );
   /* The open row is replaced in place by the live one: same id, plus the turns and
        name only the transcript can supply. */
-  const conversations = conversation === null
+  const conversations = useMemo(() => conversation === null
     ? listedConversations
-    : listedConversations.map((row) => row.id === conversation.id ? conversation : row);
+    : listedConversations.map((row) => row.id === conversation.id ? conversation : row), [conversation, listedConversations]);
+  const model = useMemo(() => run.data === undefined ? FOLLOW_INSTALLATION_DEFAULT
+    : { model: run.data.model, reasoning_effort: run.data.reasoning_effort }, [run.data]);
 
   /* Held in the registry, so a strip remounted on the way back still sees its conversation's write out (#2068). */
   const deleteQueuedEntry = (entry: PendingQueueEntry) =>
@@ -559,9 +562,7 @@ export function useConversationStore(
     blockedReason: run.data?.blocked_reason ?? null,
     /* Before the first answer the conversation is following the default, which is
            what a card with no selection really does. */
-    model: run.data === undefined
-      ? FOLLOW_INSTALLATION_DEFAULT
-      : { model: run.data.model, reasoning_effort: run.data.reasoning_effort },
+    model,
     modelCatalog: modelCatalog.data ?? null,
     setModel: (selection) => {
       const setFor = cardId;
@@ -1251,6 +1252,116 @@ function useConversationPane(
     sendDraftRef.current(draft.text);
   }, [draftOpen, draft, creating, registry]);
 
+  const existingId = open?.id ?? null;
+  const newConversation = useCommittedCallback(existingId, startAnother);
+  const interrupt = useCommittedCallback(existingId, store.interrupt);
+  const deleteQueuedEntry = useCommittedCallback(existingId, store.deleteQueuedEntry);
+  const steerQueuedEntry = useCommittedCallback(existingId, (entry: PendingQueueEntry) => {
+    const steer = store.steerQueuedEntry;
+    if (steer === undefined) return Promise.reject(new Error('Steering is no longer available in this view.'));
+    return steer(entry);
+  });
+  const setModel = useCommittedCallback(existingId, store.setModel);
+  const sendText = useCommittedCallback(existingId, (text: string) => open !== null
+    && store.send(open.id, text, attachments.items, true, edit.replacesIn(open.id)) !== null);
+  const sideQuestion = useCommittedCallback(existingId, (question: string) => {
+    if (open === null || options?.onSide === undefined || !store.historyReady) return false;
+    return options.onSide(open, store.turnsOf(open.id), question);
+  });
+  const attach = useCommittedCallback(existingId, attachments.attach);
+  const removeAttachment = useCommittedCallback(existingId, attachments.remove);
+  const { items: attachmentItems, ids: attachmentIds, busy: attachmentBusy, error: attachmentError, atCapacity } = attachments;
+  const composerAttachments = useMemo(() => ({ items: attachmentItems, ids: attachmentIds, busy: attachmentBusy,
+    error: attachmentError, atCapacity, attach, remove: removeAttachment }),
+  [attachmentItems, attachmentIds, attachmentBusy, attachmentError, atCapacity, attach, removeAttachment]);
+  const canSteer = store.steerQueuedEntry !== undefined;
+  const hasSideConversation = options?.onSide !== undefined;
+  const composerView = useMemo(() => ({
+    attachmentsSupported: store.attachmentsSupported,
+    contextUsage: store.contextUsage,
+    deleteQueuedEntry: deleteQueuedEntry,
+    historyReady: store.historyReady,
+    interrupt: interrupt,
+    model: store.model,
+    modelCatalog: store.modelCatalog,
+    pendingQueue: store.pendingQueue,
+    pendingQueueOverflow: store.pendingQueueOverflow,
+    queueWriteOut: store.queueWriteOut,
+    sendBlocked: store.sendBlocked,
+    sending: store.sending,
+    setModel: setModel,
+    steerQueuedEntry: canSteer ? steerQueuedEntry : undefined,
+    stopping: store.stopping,
+    working: store.working
+  }), [store.attachmentsSupported, store.contextUsage, deleteQueuedEntry, store.historyReady, interrupt, store.model, store.modelCatalog, store.pendingQueue, store.pendingQueueOverflow, store.queueWriteOut, store.sendBlocked, store.sending, setModel, store.stopping, store.working, canSteer, steerQueuedEntry]);
+  const { replacing, bar: editingBar } = edit;
+  const composerNode = useMemo(() => existingId === null ? null : (
+            <ChatComposer
+              /* Read at mount only, which is what makes it one-shot; the flag is dropped
+                               when the drawer closes. */
+              focusOnMount={composerFocusFor === existingId}
+              focusRequest={composerFocusRequest}
+              draft={{ text: composer.text, onChange: setComposerText }}
+              disabled={composerView.sendBlocked || !composerView.historyReady || replacing}
+              sendWaiting={replacing} {...(editingBar === undefined ? {} : { editing: editingBar })}
+              /* The images stay with the composer until the store reports them delivered; the press waits out its Edit. */
+              showSideCommand={options?.showSideCommand}
+              onSideConversation={!hasSideConversation || !composerView.historyReady ? undefined : sideQuestion}
+              onSend={sendText}
+              allowEmptyText={composerAttachments.items.length > 0}
+              /* The queue lives inside the composer, above the field: these messages have
+                               not reached the model, so they are not part of the conversation behind it. */
+              drawer={(
+                <>
+                  <PendingQueue
+                    /* Its write lock and refusal are the shown conversation's, never carried into the next one. */
+                    key={existingId}
+                    entries={composerView.pendingQueue}
+                    overflow={composerView.pendingQueueOverflow}
+                    busy={composerView.sending || composerView.queueWriteOut}
+                    onDelete={composerView.deleteQueuedEntry}
+                    onSteer={composerView.steerQueuedEntry}
+                  />
+                  <PlannerAttachmentDrawer attachments={composerAttachments} />
+                </>
+              )}
+              /* Renders nothing until the harness has reported a usage frame. */
+              sendAdornment={<ContextRing usage={composerView.contextUsage} />}
+              /* `stopping` keeps Stop shown while the interrupt is in flight; `interrupt()`
+                               already refuses a second one. */
+              onStop={composerView.working || composerView.stopping ? composerView.interrupt : undefined}
+              onNewConversation={options?.inline === true ? undefined : newConversation}
+              mentionTrigger={mentionTrigger}
+              /* The kernel reads the selection when it hands a batch to codex, so a change
+                               lands on the next turn not yet issued; a REFUSED turn is re-issued and
+                               reads it again. */
+              /* With `headerActions` unset Astryx does not render that row at all. */
+              footerActions={(
+                <HStack gap={1} align="center" className={footerStyles.group}>
+                  <PlannerAttachButton
+                    attachments={composerAttachments}
+                    support={{
+                      available: composerView.attachmentsSupported,
+                      reason: ATTACHED_WORKSPACE_REASON,
+                    }}
+                    disabled={composerView.sendBlocked || !composerView.historyReady || replacing}
+                  />
+                  <ModelPill
+                    /* Without a scope the catalog read is disabled, so no `unavailable` label can show. */
+                    /* An existing conversation keeps issue-time handling: no availability gate here (#1817). */
+                    groups={[{ provider: scopeProvider, catalog: composerView.modelCatalog, availability: null }]}
+                    provider={scopeProvider}
+                    selection={composerView.model}
+                    onChange={composerView.setModel}
+                    isDisabled={!composerView.historyReady}
+                  />
+                </HStack>
+              )}
+            />
+  ), [existingId, composerFocusFor, composerFocusRequest, composer.text, setComposerText, composerView,
+    replacing, editingBar, options?.showSideCommand, options?.inline, hasSideConversation, sideQuestion,
+    sendText, composerAttachments, newConversation, mentionTrigger, scopeProvider]);
+
   const renderDrawer = (resizeGroup: PaneResizeGroup | null = null) => (
       <Drawer
         resizeGroup={resizeGroup}
@@ -1352,69 +1463,7 @@ function useConversationPane(
                 <ChatFooterError message={store.blockedReason} />
               </ChatFooterNotice>
             )}
-            <ChatComposer
-              /* Read at mount only, which is what makes it one-shot; the flag is dropped
-                               when the drawer closes. */
-              focusOnMount={composerFocusFor === open.id}
-              focusRequest={composerFocusRequest}
-              draft={{ text: composer.text, onChange: setComposerText }}
-              disabled={store.sendBlocked || !store.historyReady || edit.replacing}
-              sendWaiting={edit.replacing} {...(edit.bar === undefined ? {} : { editing: edit.bar })}
-              /* The images stay with the composer until the store reports them delivered; the press waits out its Edit. */
-              showSideCommand={options?.showSideCommand}
-              onSideConversation={options?.onSide === undefined || !store.historyReady ? undefined
-                : (question) => options.onSide?.(open, store.turnsOf(open.id), question)}
-              onSend={(text) => store.send(open.id, text, attachments.items, true, edit.replacesIn(open.id)) !== null}
-              allowEmptyText={attachments.items.length > 0}
-              /* The queue lives inside the composer, above the field: these messages have
-                               not reached the model, so they are not part of the conversation behind it. */
-              drawer={(
-                <>
-                  <PendingQueue
-                    /* Its write lock and refusal are the shown conversation's, never carried into the next one. */
-                    key={open.id}
-                    entries={store.pendingQueue}
-                    overflow={store.pendingQueueOverflow}
-                    busy={store.sending || store.queueWriteOut}
-                    onDelete={store.deleteQueuedEntry}
-                    onSteer={store.steerQueuedEntry}
-                  />
-                  <PlannerAttachmentDrawer attachments={attachments} />
-                </>
-              )}
-              /* Renders nothing until the harness has reported a usage frame. */
-              sendAdornment={<ContextRing usage={store.contextUsage} />}
-              /* `stopping` keeps Stop shown while the interrupt is in flight; `interrupt()`
-                               already refuses a second one. */
-              onStop={store.working || store.stopping ? store.interrupt : undefined}
-              onNewConversation={options?.inline === true ? undefined : startAnother}
-              mentionTrigger={mentionTrigger}
-              /* The kernel reads the selection when it hands a batch to codex, so a change
-                               lands on the next turn not yet issued; a REFUSED turn is re-issued and
-                               reads it again. */
-              /* With `headerActions` unset Astryx does not render that row at all. */
-              footerActions={(
-                <HStack gap={1} align="center" className={footerStyles.group}>
-                  <PlannerAttachButton
-                    attachments={attachments}
-                    support={{
-                      available: store.attachmentsSupported,
-                      reason: ATTACHED_WORKSPACE_REASON,
-                    }}
-                    disabled={store.sendBlocked || !store.historyReady || edit.replacing}
-                  />
-                  <ModelPill
-                    /* Without a scope the catalog read is disabled, so no `unavailable` label can show. */
-                    /* An existing conversation keeps issue-time handling: no availability gate here (#1817). */
-                    groups={[{ provider: scopeProvider, catalog: store.modelCatalog, availability: null }]}
-                    provider={scopeProvider}
-                    selection={store.model}
-                    onChange={store.setModel}
-                    isDisabled={!store.historyReady}
-                  />
-                </HStack>
-              )}
-            />
+            {composerNode}
           </>
         )}
       >
@@ -1474,24 +1523,32 @@ function useConversationPane(
       </Drawer>
   );
 
-  return {
-    isOpen: open !== null || draftOpen,
-    close: closeDrawer,
-    list: (
+  const openConversation = useCommittedCallback(sourceScopeId, (conversation: Conversation) => {
+    setOpenTarget({ kind: 'row', id: conversation.id });
+  });
+  const preferencesRevision = preferences.getSnapshot();
+  const { ids: unreadIds } = useMemo(() => ({ revision: preferencesRevision,
+    ids: new Set(rows.filter(row => preferences.isUnread('conversation', row.id,
+      row.lastTurnCompletedAt ?? 0)).map(row => row.id)) }), [rows, preferences, preferencesRevision]);
+  const listNode = useMemo(() => (
       <ChatList
         conversations={store.conversations}
         cards={source.cards}
-        unreadIds={new Set(rows.filter(row => preferences.isUnread('conversation', row.id, row.lastTurnCompletedAt ?? 0)).map(row => row.id))}
-        activeId={open?.id ?? null}
+        unreadIds={unreadIds}
+        activeId={existingId}
         /* The two local echoes for the open row only, handed over as facts: the list
                    reads nothing off `Conversation.state`. */
-        local={open === null ? null : { id: open.id, working: store.working, stalled: store.stalled }}
+        local={existingId === null ? null : { id: existingId, working: store.working, stalled: store.stalled }}
         showTrack={options?.showTrack ?? true}
-        onOpen={(conversation) => {
-          setOpenTarget({ kind: 'row', id: conversation.id });
-        }}
+        onOpen={openConversation}
       />
-    ),
+  ), [store.conversations, source.cards, unreadIds, existingId, store.working, store.stalled,
+    options?.showTrack, openConversation]);
+
+  return {
+    isOpen: open !== null || draftOpen,
+    close: closeDrawer,
+    list: listNode,
     action: <PanelAction label="New conversation" onClick={start}><Icon name="plus" size="sm" /></PanelAction>,
     startConversation: start,
     drawer: renderDrawer(),
