@@ -1671,14 +1671,14 @@
       "oracle:INV-APP-118"
     ],
     "target": "core/domain/track.ts",
-    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -156,7 +156,8 @@\n /** Mirrors `calm_truth::validation::KERNEL_OVERLAY_PLUGIN_ID`. */\n const KERNEL_OVERLAY_PLUGIN_ID = 'kernel';\n const activityOverlayWireSchema = z.object({\n-  schemaVersion: z.literal(2),\n+  // MUT-1829-S1-1: a v1 row decodes again\n+  schemaVersion: z.union([z.literal(1), z.literal(2)]),\n   working: z.boolean(),\n   attention: attentionKindSchema,\n   activity_at_ms: z.number().nullable(),\n",
+    "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -162,7 +162,8 @@\n /** Mirrors `calm_truth::validation::KERNEL_OVERLAY_PLUGIN_ID`. */\n const KERNEL_OVERLAY_PLUGIN_ID = 'kernel';\n const activityOverlayWireSchema = z.object({\n-  schemaVersion: z.literal(3),\n+  // MUT-1829-S1-1: a v1 row decodes again\n+  schemaVersion: z.union([z.literal(1), z.literal(3)]),\n   working: z.boolean(),\n   attention: attentionKindSchema,\n   activity_at_ms: z.number().nullable(),\n",
     "expected_red": [
       "trackActivityFrom: the kernel activity overlay v1 activity overlay is ignored"
     ],
     "selection_paths": [
       "core/domain/track.test.ts"
     ],
-    "why_more_than_one": "Only the v1 case feeds a schemaVersion 1 row; every other activity fixture in the file is v2 (or not an activity payload at all) and decodes the same whether or not v1 is accepted."
+    "why_more_than_one": "Only the v1 case feeds a schemaVersion 1 row; every other activity fixture in the file is v3 (or v2, or not an activity payload at all) and decodes the same whether or not v1 is accepted."
   },
   {
     "mutation_id": "n1829-row-placeholder-text",

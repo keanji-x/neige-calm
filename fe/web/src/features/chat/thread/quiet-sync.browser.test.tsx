@@ -33,7 +33,7 @@ const read: ConversationActivity = {
 };
 const reply: ConversationTurn = { id: 'a1', author: 'agent', text: 'Nothing to reconcile.', atMs: NOW };
 const notify: ConversationTurn = {
-  id: 'n1', author: 'agent', text: 'You changed the block I was writing.', atMs: NOW, origin: 'notify',
+  id: 'n1', author: 'agent', text: 'You changed the block I was writing.', atMs: NOW, origin: 'ask',
 };
 
 async function frame() {

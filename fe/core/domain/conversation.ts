@@ -7,7 +7,7 @@ import type {
 import type { ApiFailure, ApiOperation } from '../api/types.js';
 import {
   TASK_LS_TOOL, REPORT_DELETE_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS,
-  TASK_ACCEPT_TOOL, TASK_REJECT_TOOL, DEV_PUBLISH_TOOL, TRACK_RENAME_TOOL, TRACK_TOOL_PREFIX, USER_NOTIFY_TOOL,
+  TASK_ACCEPT_TOOL, TASK_REJECT_TOOL, DEV_PUBLISH_TOOL, TRACK_RENAME_TOOL, TRACK_TOOL_PREFIX, USER_ASK_TOOL,
   MAIL_SEND_TOOL,
 } from '../keys/mcp-tools.js';
 import { classifyFailure, failureReason, refusedText, type FailureTable, type WriteFailure, type WriteText } from './failure-class.js';
@@ -104,8 +104,8 @@ export type ConversationTurn = Readonly<{
   atMs: number;
   /** Images this turn carried; absent and empty mean the same thing. */
   attachments?: readonly PlannerAttachment[];
-  /** Set when the agent said this through `neige_user_notify`; the quiet-sync fold keeps it outside the fold. */
-  origin?: 'notify';
+  /** Set when the agent asked this through `neige_user_ask`; the quiet-sync fold keeps it outside the fold. */
+  origin?: 'ask';
 }>;
 
 /**
@@ -837,11 +837,26 @@ function isUserMessage(itemType: string | null): boolean {
   return itemType === USER_MESSAGE || itemType === USER_MESSAGE_SNAKE_CASE;
 }
 
+/** One line per question: its title, then its options when it offers a choice. */
+function askText(questions: unknown): string {
+  if (!Array.isArray(questions)) return '';
+  return questions.flatMap((question: unknown) => {
+    if (typeof question !== 'object' || question === null) return [];
+    const { title, options } = question as { title?: unknown; options?: unknown };
+    if (typeof title !== 'string' || title.trim() === '') return [];
+    const choices = Array.isArray(options)
+      ? options.filter((option): option is string => typeof option === 'string' && option.trim() !== '')
+        .map((option) => option.trim())
+      : [];
+    return [choices.length > 0 ? `${title.trim()} (${choices.join(' / ')})` : title.trim()];
+  }).join('\n');
+}
+
 /*
- * `neige_user_notify` is speech: the row is an agent turn whose text is `arguments.text`. Only a
+ * `neige_user_ask` is speech: the row is an agent turn whose text is its questions. Only a
  * SUCCESSFUL `item/completed` mints it; a refused call falls through to the failed activity line.
  */
-function userNotifyToTurn(
+function userAskToTurn(
   item: Readonly<{
     id: number; item_uuid: string | null; item_type: string | null; method: string; params: string;
     created_at_ms: number;
@@ -857,23 +872,22 @@ function userNotifyToTurn(
   const payload = envelope.item as {
     tool?: unknown; arguments?: unknown; error?: unknown; status?: unknown;
   };
-  if (payload.tool !== USER_NOTIFY_TOOL) return null;
+  if (payload.tool !== USER_ASK_TOOL) return null;
   /* The same failure reading as the activity line: an MCP error member, or a failed status. */
   if ((payload.error !== undefined && payload.error !== null) || payload.status === 'failed') {
     return null;
   }
   const args = payload.arguments;
   if (typeof args !== 'object' || args === null) return null;
-  const raw = (args as { text?: unknown }).text;
-  const text = typeof raw === 'string' ? raw.trim() : '';
+  const text = askText((args as { questions?: unknown }).questions);
   if (text === '') return null;
   return {
-    id: `notify-${item.item_uuid ?? item.id}`,
+    id: `ask-${item.item_uuid ?? item.id}`,
     author: 'agent',
     text,
     atMs: typeof envelope.completedAtMs === 'number' && Number.isFinite(envelope.completedAtMs)
       ? envelope.completedAtMs : item.created_at_ms,
-    origin: 'notify',
+    origin: 'ask',
   };
 }
 
@@ -885,8 +899,8 @@ export function inputSegmentText(segment: HarnessInputSegment): string {
 }
 
 export function harnessItemToTurns(item: HarnessItem): readonly ConversationMessage[] {
-  const notify = userNotifyToTurn(item);
-  if (notify !== null) return [notify];
+  const ask = userAskToTurn(item);
+  if (ask !== null) return [ask];
   if (item.method !== 'item/completed' ||
       (!isAgentMessage(item.item_type) && !isUserMessage(item.item_type))) return [];
 
@@ -1272,9 +1286,9 @@ export function buildTranscript(items: readonly HarnessItem[]): readonly Transcr
     const turns = harnessItemToTurns(item);
     if (turns.length > 0) {
       for (const turn of turns) {
-        /* A notify bubble takes the key of the activity line its own `item/started` row minted, so
+        /* An ask bubble takes the key of the activity line its own `item/started` row minted, so
            the bubble replaces the line in place. */
-        const key = turn.author === 'agent' && turn.origin === 'notify'
+        const key = turn.author === 'agent' && turn.origin === 'ask'
           ? `activity-${item.item_uuid ?? item.id}` : `turn-${turn.id}`;
         if (!byKey.has(key)) { order.push(key); turnOf.set(key, item.turn_id); }
         byKey.set(key, turn);

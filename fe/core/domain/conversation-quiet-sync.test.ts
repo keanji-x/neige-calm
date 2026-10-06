@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   TASK_LS_TOOL, REPORT_DELETE_TOOL, REPORT_READ_TOOLS, REPORT_TOOL_PREFIX,
-  REPORT_WRITE_TOOLS, TRACK_TOOL_PREFIX, USER_NOTIFY_TOOL,
+  REPORT_WRITE_TOOLS, TRACK_TOOL_PREFIX, USER_ASK_TOOL,
 } from '../keys/mcp-tools.js';
 import {
-  REPORT_EDIT_AUTHORS, foldQuietSyncs, isNotifyTurn, isReportWriteTool, reportEditAuthor,
+  REPORT_EDIT_AUTHORS, foldQuietSyncs, isAskTurn, isReportWriteTool, reportEditAuthor,
   type QuietSyncGroup, type ReportEditAuthor, type TranscriptBlock,
 } from './conversation-quiet-sync.js';
 import {
@@ -46,8 +46,8 @@ function agent(id: string, text = 'I re-read the report.'): ConversationTurn {
   return { id, author: 'agent', text, atMs: NOW };
 }
 
-function notify(id: string, text = 'You changed the block I was writing.'): ConversationTurn {
-  return { id, author: 'agent', text, atMs: NOW, origin: 'notify' };
+function ask(id: string, text = 'You changed the block I was writing. Keep yours or mine?'): ConversationTurn {
+  return { id, author: 'agent', text, atMs: NOW, origin: 'ask' };
 }
 
 function activity(id: string, overrides: Partial<ConversationActivity> = {}): ConversationActivity {
@@ -101,19 +101,19 @@ describe('foldQuietSyncs', () => {
     expect(blocks.slice(1).every((block) => block.kind === 'entry')).toBe(true);
   });
 
-  it('lifts a notify turn out of the fold and keeps the rest folded', () => {
+  it('lifts an ask turn out of the fold and keeps the rest folded', () => {
     const blocks = foldQuietSyncs([
-      reportEdited('s1'), activity('act1'), notify('n1'), activity('act2'), agent('a1'),
+      reportEdited('s1'), activity('act1'), ask('n1'), activity('act2'), agent('a1'),
       you('u1'),
     ]);
     expect(blocks.map(ids)).toEqual([['s1', 'act1', 'act2', 'a1'], 'n1', 'u1']);
     const lifted = blocks[1];
     expect(lifted?.kind).toBe('entry');
-    expect(lifted?.kind === 'entry' && isNotifyTurn(lifted.entry)).toBe(true);
+    expect(lifted?.kind === 'entry' && isAskTurn(lifted.entry)).toBe(true);
     expect(lifted?.kind === 'entry' && lifted.entry.author).toBe('agent');
   });
 
-  it('keeps an ordinary agent reply inside the fold — only a notify is lifted', () => {
+  it('keeps an ordinary agent reply inside the fold — only an ask is lifted', () => {
     const blocks = foldQuietSyncs([reportEdited('s1'), agent('a1')]);
     expect(blocks.map(ids)).toEqual([['s1', 'a1']]);
   });
@@ -134,8 +134,8 @@ describe('foldQuietSyncs', () => {
     expect(blocks.map((block) => (block.kind === 'entry' ? block.entry : null))).toEqual(entries);
   });
 
-  it('keeps a notify outside any sync as an ordinary entry', () => {
-    const blocks = foldQuietSyncs([you('u1'), notify('n1')]);
+  it('keeps an ask outside any sync as an ordinary entry', () => {
+    const blocks = foldQuietSyncs([you('u1'), ask('n1')]);
     expect(blocks.map(ids)).toEqual(['u1', 'n1']);
   });
 
@@ -172,7 +172,7 @@ describe('foldQuietSyncs outcome', () => {
       const one = foldQuietSyncs([reportEdited('s1'), wrote('w1', { tool }), outcome('o1')]);
       expect(group(one[0]).outcome, tool).toBe('updated');
     }
-    const spoken = foldQuietSyncs([reportEdited('s1'), wrote('w1'), notify('n1'), outcome('o1')]);
+    const spoken = foldQuietSyncs([reportEdited('s1'), wrote('w1'), ask('n1'), outcome('o1')]);
     expect(group(spoken[0]).outcome).toBe('updated');
   });
 
@@ -181,7 +181,7 @@ describe('foldQuietSyncs outcome', () => {
     expect(group(foldQuietSyncs([reportEdited('s1'), wrote('w1')])[0]).outcome).toBeNull();
     expect(group(foldQuietSyncs([reportEdited('s1'), wrote('w1'), outcome('o1', 'failed')])[0]).outcome).toBeNull();
     expect(group(foldQuietSyncs([reportEdited('s1'), outcome('o1', 'interrupted')])[0]).outcome).toBeNull();
-    expect(group(foldQuietSyncs([reportEdited('s1'), notify('n1'), outcome('o1')])[0]).outcome).toBeNull();
+    expect(group(foldQuietSyncs([reportEdited('s1'), ask('n1'), outcome('o1')])[0]).outcome).toBeNull();
   });
 
   it('does not count a refused or still-running write, nor a read, nor a non-report tool', () => {
@@ -203,7 +203,7 @@ describe('foldQuietSyncs outcome', () => {
     expect(isReportWriteTool(`${REPORT_TOOL_PREFIX}blocks.something_new`)).toBe(true);
     for (const tool of REPORT_READ_TOOLS) expect(isReportWriteTool(tool), tool).toBe(false);
     for (const tool of REPORT_WRITE_TOOLS) expect(isReportWriteTool(tool), tool).toBe(true);
-    expect(isReportWriteTool(USER_NOTIFY_TOOL)).toBe(false);
+    expect(isReportWriteTool(USER_ASK_TOOL)).toBe(false);
     expect(isReportWriteTool(`${TRACK_TOOL_PREFIX}cat`)).toBe(false);
     expect(isReportWriteTool(`${REPORT_TOOL_PREFIX.slice(0, -1)}ing.x`)).toBe(false);
   });
@@ -304,51 +304,57 @@ describe('reportEditAuthor', () => {
   });
 });
 
-describe('user-notify rows', () => {
+describe('user-ask rows', () => {
   const row = (overrides: Partial<Row>): Row => ({
     id: 40, worker_session_id: 'runtime', card_id: 'card', track_id: 'track', thread_id: 'thread',
-    turn_id: 'turn', turn_error_text: null, item_uuid: 'exec-notify-1', item_type: 'mcpToolCall', method: 'item/completed',
+    turn_id: 'turn', turn_error_text: null, item_uuid: 'exec-ask-1', item_type: 'mcpToolCall', method: 'item/completed',
     params: '{}', created_at_ms: NOW, ...overrides,
   });
   /* The persisted shape: `params.item.arguments` on `item/started` and `item/completed` alike. */
-  const notifyParams = (extra: Record<string, unknown> = {}) => JSON.stringify({
+  const questions = (...titles: string[]) => ({ questions: titles.map((title) => ({ title })) });
+  const askParams = (extra: Record<string, unknown> = {}) => JSON.stringify({
     completedAtMs: NOW + 5,
     item: {
-      appContext: null, arguments: { text: '  Heads up: you edited the block I was writing.  ' },
-      durationMs: 3, error: null, id: 'exec-notify-1', pluginId: null, readOnlyHint: false,
-      result: { content: [{ text: '{"ok":true}', type: 'text' }], structuredContent: { ok: true } },
-      server: 'neige', status: 'completed', tool: USER_NOTIFY_TOOL, type: 'mcpToolCall', ...extra,
+      appContext: null,
+      arguments: { questions: [
+        { title: '  You edited the block I was writing: keep yours?  ', options: [' Keep mine ', 'Keep yours'] },
+        { title: 'Which branch?' },
+      ] },
+      durationMs: 3, error: null, id: 'exec-ask-1', pluginId: null, readOnlyHint: false,
+      result: { content: [{ text: '{"ask_id":7}', type: 'text' }], structuredContent: { ask_id: 7 } },
+      server: 'neige', status: 'completed', tool: USER_ASK_TOOL, type: 'mcpToolCall', ...extra,
     },
   });
 
-  it('reads a notify call as an agent turn with the text verbatim and trimmed', () => {
-    const turns = buildTranscript([row({ params: notifyParams() })]);
+  it('reads an ask call as an agent turn, one trimmed line per question with its options', () => {
+    const turns = buildTranscript([row({ params: askParams() })]);
     expect(turns).toEqual([{
-      id: 'notify-exec-notify-1', author: 'agent',
-      text: 'Heads up: you edited the block I was writing.', atMs: NOW + 5, origin: 'notify',
+      id: 'ask-exec-ask-1', author: 'agent',
+      text: 'You edited the block I was writing: keep yours? (Keep mine / Keep yours)\nWhich branch?',
+      atMs: NOW + 5, origin: 'ask',
     }]);
   });
 
   const started = () => row({
     id: 39, method: 'item/started',
     params: JSON.stringify({
-      item: { arguments: { text: 'Heads up' }, status: 'inProgress', tool: USER_NOTIFY_TOOL, type: 'mcpToolCall' },
+      item: { arguments: questions('Heads up?'), status: 'inProgress', tool: USER_ASK_TOOL, type: 'mcpToolCall' },
     }),
   });
 
   it('draws item/started as a running line that the completed row replaces in place', () => {
     expect(buildTranscript([started()])).toMatchObject([{ author: 'activity', state: 'running', verb: 'Calling' }]);
-    const completed = row({ params: notifyParams({ arguments: { text: 'Heads up' } }) });
+    const completed = row({ params: askParams({ arguments: questions('Heads up?') }) });
     const entries = buildTranscript([completed, started()]);
     expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({ id: 'notify-exec-notify-1', author: 'agent', text: 'Heads up', atMs: NOW + 5 });
+    expect(entries[0]).toMatchObject({ id: 'ask-exec-ask-1', author: 'agent', text: 'Heads up?', atMs: NOW + 5 });
   });
 
-  it('draws a refused notify as a failed line, not a bubble', () => {
+  it('draws a refused ask as a failed line, not a bubble', () => {
     const refused = row({
-      params: notifyParams({
-        arguments: { text: 'x'.repeat(2001) },
-        error: { message: 'tool call error: tool call failed\n\nCaused by:\n    Mcp error: -32602: text must be at most 2000 characters' },
+      params: askParams({
+        arguments: { questions: [{ title: 'Merge?', choices: ['yes'] }] },
+        error: { message: 'tool call error: tool call failed\n\nCaused by:\n    Mcp error: -32602: neige_user_ask: invalid args' },
         result: null, status: 'failed',
       }),
     });
@@ -356,24 +362,24 @@ describe('user-notify rows', () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
       author: 'activity', state: 'failed', verb: 'Called',
-      detail: 'Mcp error: -32602: text must be at most 2000 characters',
+      detail: 'Mcp error: -32602: neige_user_ask: invalid args',
     });
-    expect(entries.some(isNotifyTurn)).toBe(false);
-    const statusOnly = row({ params: notifyParams({ status: 'failed' }) });
+    expect(entries.some(isAskTurn)).toBe(false);
+    const statusOnly = row({ params: askParams({ status: 'failed' }) });
     expect(buildTranscript([statusOnly]).map((entry) => entry.author)).toEqual(['activity']);
   });
 
   it('leaves every other tool call an activity line', () => {
-    const other = row({ params: notifyParams({ tool: REPORT_READ_TOOLS[0] }) });
+    const other = row({ params: askParams({ tool: REPORT_READ_TOOLS[0] }) });
     const [entry] = buildTranscript([other]);
     expect(entry?.author).toBe('activity');
     expect(entry).toMatchObject({ verb: 'Read report' });
   });
 
-  it('is not a message without text', () => {
-    const blank = row({ params: notifyParams({ arguments: { text: '   ' } }) });
+  it('is not a message without a question', () => {
+    const blank = row({ params: askParams({ arguments: questions('   ') }) });
     expect(buildTranscript([blank]).map((entry) => entry.author)).toEqual(['activity']);
-    const missing = row({ params: notifyParams({ arguments: {} }) });
+    const missing = row({ params: askParams({ arguments: {} }) });
     expect(buildTranscript([missing]).map((entry) => entry.author)).toEqual(['activity']);
   });
 });

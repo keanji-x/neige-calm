@@ -623,6 +623,32 @@ export const ratifyResolvedSchema = z.object({
   }),
 });
 
+/** One question of an ask; the first option is the recommended one, none means a free answer. */
+export const askQuestionSchema = z.object({
+  title: z.string(),
+  options: z.array(z.string()),
+});
+
+/** The Planner asked the user; the event id is the ask's id. */
+export const askRequestedSchema = z.object({
+  ev: z.literal('ask.requested'),
+  data: z.object({
+    track_id: z.string(),
+    questions: z.array(askQuestionSchema),
+    source_item_id: z.string().optional(),
+  }),
+});
+
+/** The user answered every question of the ask `ask_id`, in order. */
+export const askAnsweredSchema = z.object({
+  ev: z.literal('ask.answered'),
+  data: z.object({
+    ask_id: z.number(),
+    track_id: z.string(),
+    answers: z.array(z.string()),
+  }),
+});
+
 /**
  * Anchor is externally tagged: bare `'at_start'` / `'at_end'`, or `{ after_block_id }` (may
  * reference an in-batch `temp:<temp_id>` block).
@@ -935,6 +961,8 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   forgePrMergedSchema,
   ratifyRequestedSchema,
   ratifyResolvedSchema,
+  askRequestedSchema,
+  askAnsweredSchema,
   proposalSubmittedSchema,
   proposalResolvedSchema,
   forgeScanCompletedSchema,
@@ -998,6 +1026,8 @@ export type WorkspaceReleasedEvent = z.infer<typeof workspaceReleasedSchema>;
 export type ForgePrMergedEvent = z.infer<typeof forgePrMergedSchema>;
 export type RatifyRequestedEvent = z.infer<typeof ratifyRequestedSchema>;
 export type RatifyResolvedEvent = z.infer<typeof ratifyResolvedSchema>;
+export type AskRequestedEvent = z.infer<typeof askRequestedSchema>;
+export type AskAnsweredEvent = z.infer<typeof askAnsweredSchema>;
 export type ProposalSubmittedEvent = z.infer<typeof proposalSubmittedSchema>;
 export type ProposalResolvedEvent = z.infer<typeof proposalResolvedSchema>;
 export type ForgeScanCompletedEvent = z.infer<typeof forgeScanCompletedSchema>;

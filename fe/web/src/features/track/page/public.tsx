@@ -48,7 +48,7 @@ export type TrackInputNotification = Readonly<{
   key: string;
   /** `ask`: the Planner asks the user something; `planner-down`: the Planner stopped. */
   kind: 'ask' | 'planner-down';
-  /** The kernel's words, shown verbatim: the Planner's question, or the reason it stopped. */
+  /** The kernel's words, shown verbatim: the Planner's questions, or the reason it stopped. */
   text: string;
   atMs: number;
 }>;

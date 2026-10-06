@@ -42,7 +42,7 @@ it('refills from the transcript what the turn said: prompt and steers, lead drop
 });
 
 const you = (id: string, text: string): TranscriptEntry => ({ id, author: 'you', text, atMs: 1 });
-const agent = (id: string, text: string, origin?: 'notify'): TranscriptEntry =>
+const agent = (id: string, text: string, origin?: 'ask'): TranscriptEntry =>
   ({ id, author: 'agent', text, atMs: 1, ...(origin === undefined ? {} : { origin }) });
 const outcome = (id: string, turnId: string): TranscriptEntry =>
   ({ id, author: 'turn', turnId, status: 'completed', elapsedMs: null, atMs: 1 });
@@ -50,7 +50,7 @@ const outcome = (id: string, turnId: string): TranscriptEntry =>
 it('hides the turn from its first message of yours, never what came between the turns', () => {
   const entries = [
     you('u0', 'Earlier'), agent('a0', 'Earlier answer'), outcome('o0', 'turn-0'),
-    agent('n', 'A notification between turns', 'notify'),
+    agent('n', 'A question between turns', 'ask'),
     you('u1', 'Prompt'), agent('a1', 'Answer'), outcome('o1', 'turn-1'),
   ];
   expect(withoutEditedTurn(entries, 'o1').map((entry) => entry.id)).toEqual(['u0', 'a0', 'o0', 'n']);

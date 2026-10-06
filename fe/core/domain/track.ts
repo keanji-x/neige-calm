@@ -141,12 +141,22 @@ function payloadField(payload: unknown, key: string): unknown {
 }
 
 const attentionKindSchema = z.enum(['none', 'input', 'failed']);
-const activityItemWireSchema = z.object({
-  source: z.enum(['ask', 'planner_down']),
-  key: z.string(),
-  text: z.string(),
-  at_ms: z.number(),
-});
+const activityItemWireSchema = z.discriminatedUnion('source', [
+  z.object({
+    source: z.literal('ask'),
+    key: z.string(),
+    text: z.string(),
+    at_ms: z.number(),
+    ask_id: z.number(),
+    questions: z.array(z.object({ title: z.string(), options: z.array(z.string()) })),
+  }),
+  z.object({
+    source: z.literal('planner_down'),
+    key: z.string(),
+    text: z.string(),
+    at_ms: z.number(),
+  }),
+]);
 const activityCardWireSchema = z.object({
   card_id: z.string(),
   state: z.enum(['working', 'input', 'failed']),
@@ -155,7 +165,7 @@ const activityCardWireSchema = z.object({
 /** Mirrors `calm_truth::validation::KERNEL_OVERLAY_PLUGIN_ID`. */
 const KERNEL_OVERLAY_PLUGIN_ID = 'kernel';
 const activityOverlayWireSchema = z.object({
-  schemaVersion: z.literal(2),
+  schemaVersion: z.literal(3),
   working: z.boolean(),
   attention: attentionKindSchema,
   activity_at_ms: z.number().nullable(),
@@ -170,9 +180,10 @@ function activityOverlayFields(payload: unknown): Partial<TrackActivity> | null 
   for (const row of parsed.data.items) {
     const item = activityItemWireSchema.safeParse(row);
     if (!item.success) continue;
-    attentionItems.push({
-      source: item.data.source, key: item.data.key, text: item.data.text, atMs: item.data.at_ms,
-    });
+    const base = { key: item.data.key, text: item.data.text, atMs: item.data.at_ms };
+    attentionItems.push(item.data.source === 'ask'
+      ? { ...base, source: 'ask', askId: item.data.ask_id, questions: item.data.questions }
+      : { ...base, source: 'planner_down' });
   }
   const cards: Record<string, CardActivity> = {};
   for (const row of parsed.data.cards) {

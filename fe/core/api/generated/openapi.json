@@ -3094,137 +3094,6 @@
         }
       }
     },
-    "/api/cards/{id}/ratify": {
-      "post": {
-        "tags": [
-          "cards"
-        ],
-        "operationId": "ratify_card",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Planner card id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RatifyCardRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Human ratify verdict recorded",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RatifyCardResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Malformed request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "`unauthorized`: no valid session cookie.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Card is not a planner codex card, or actor is not the authenticated user",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Card or track not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Track is not awaiting ratification",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "`payload_too_large`: the body is over the request size limit.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "415": {
-            "description": "`unsupported_media_type`: the request does not say `Content-Type: application/json`.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "`invalid_body`: the JSON is not the body's shape (a field missing or of the wrong type).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/fs/gitdiff": {
       "get": {
         "tags": [
@@ -8535,6 +8404,141 @@
         }
       }
     },
+    "/api/tracks/{id}/asks/{ask_id}/answer": {
+      "post": {
+        "tags": [
+          "tracks"
+        ],
+        "summary": "Answer every question of one ask. The ask must belong to this track and be unanswered; the\ncheck and the write share one immediate transaction.",
+        "operationId": "answer_ask",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Track id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ask_id",
+            "in": "path",
+            "description": "The `ask.requested` event id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnswerAskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Answered"
+          },
+          "400": {
+            "description": "Wrong number of answers, or an empty or over-long one",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`: no valid session cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The actor is not the authenticated user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such ask on this track, or no such track",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The ask is already answered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`: the body is over the request size limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`: the request does not say `Content-Type: application/json`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_body`: the JSON is not the body's shape (a field missing or of the wrong type).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tracks/{id}/backlinks": {
       "get": {
         "tags": [
@@ -10966,6 +10970,22 @@
           "claude"
         ]
       },
+      "AnswerAskRequest": {
+        "type": "object",
+        "required": [
+          "answers"
+        ],
+        "properties": {
+          "answers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "One answer per question of the ask, in its order. An answer need not be one of the options."
+          }
+        },
+        "additionalProperties": false
+      },
       "Area": {
         "type": "object",
         "required": [
@@ -12175,7 +12195,7 @@
         "properties": {
           "key": {
             "type": "string",
-            "description": "The item's `key` as the activity overlay lists it: `ask:ratify:<id>`, `ask:notify:<id>`\nor `planner_down:<id>`. Whether the item is still open is not checked."
+            "description": "The item's `key` as the activity overlay lists it: `ask:<ask_id>` or `planner_down:<id>`.\nWhether the item is still open is not checked."
           }
         },
         "additionalProperties": false
@@ -14119,50 +14139,6 @@
           "unavailable",
           "not_configured"
         ]
-      },
-      "RatifyCardDecision": {
-        "type": "string",
-        "enum": [
-          "grant",
-          "deny"
-        ]
-      },
-      "RatifyCardRequest": {
-        "type": "object",
-        "required": [
-          "decision"
-        ],
-        "properties": {
-          "decision": {
-            "$ref": "#/components/schemas/RatifyCardDecision"
-          },
-          "message": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "additionalProperties": false
-      },
-      "RatifyCardResponse": {
-        "type": "object",
-        "required": [
-          "card_id",
-          "track_id",
-          "decision"
-        ],
-        "properties": {
-          "card_id": {
-            "type": "string"
-          },
-          "decision": {
-            "$ref": "#/components/schemas/RatifyCardDecision"
-          },
-          "track_id": {
-            "type": "string"
-          }
-        }
       },
       "ReadFileResponse": {
         "type": "object",

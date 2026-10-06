@@ -13,7 +13,7 @@ const RESPONSE_WIRE_EXCEPTIONS = new Set([
   'InterruptPlannerCardResponse', 'ListdirResponse', 'ModelsResponse', 'PluginDetail', 'PluginListItem',
   'PlannerInputMutationResponse', 'PlannerInputStaleBody',
   'PlannerSteerResponse', 'PlannerSteerConflictBody',
-  'RatifyCardResponse', 'ReadFileResponse', 'ReportBlockWriteResponse',
+  'ReadFileResponse', 'ReportBlockWriteResponse',
   'ResetPlannerCardResponse', 'SendPlannerInputResponse',
   'SetPlannerModelResponse',
   'SettingsBag', 'Terminal',

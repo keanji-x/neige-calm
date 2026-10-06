@@ -39,7 +39,7 @@ function contrast(first: Rgb, second: Rgb): number {
 }
 
 const plannerNotification = [{
-  key: 'ask:ratify:1', kind: 'ask' as const, text: 'Merge PR #1811 now, or hold it?', atMs: 1,
+  key: 'ask:1', kind: 'ask' as const, text: 'Merge PR #1811 now, or hold it?', atMs: 1,
 }];
 
 describe('the track closed status in the page header', () => {
@@ -85,7 +85,7 @@ describe('the track closed status in the page header', () => {
     const onDismiss = vi.fn(() => Promise.resolve());
     renderPage({
       inputNotifications: [{
-        key: 'ask:ratify:1', kind: 'ask', atMs: Date.now(),
+        key: 'ask:1', kind: 'ask', atMs: Date.now(),
         text: 'Merge PR #1811 now? See [the PR](https://example.com/pr/1811).',
       }],
       onReply,
@@ -150,7 +150,7 @@ describe('the track closed status in the page header', () => {
     await userEvent.click(open);
     expect(onReply).toHaveBeenCalledOnce();
     await userEvent.click(dismiss);
-    expect(onDismiss).toHaveBeenCalledWith('ask:ratify:1');
+    expect(onDismiss).toHaveBeenCalledWith('ask:1');
     expect(onReply).toHaveBeenCalledOnce();
   });
 
@@ -159,7 +159,7 @@ describe('the track closed status in the page header', () => {
     const long = Array.from({ length: 12 }, (_, i) => `Line ${i} of a long upstream error body.`).join(' ');
     renderPage({
       inputNotifications: [
-        { key: 'ask:notify:1', kind: 'ask', atMs: 2, text: long },
+        { key: 'ask:1', kind: 'ask', atMs: 2, text: long },
         { key: 'planner_down:2', kind: 'planner-down', atMs: 1, text: long },
       ],
       onReply: vi.fn(),
@@ -176,7 +176,7 @@ describe('the track closed status in the page header', () => {
   it('keeps three type steps: the title largest, the body at body size, the meta line smallest', async () => {
     await browserPage.viewport(1200, 800);
     renderPage({
-      inputNotifications: [{ key: 'ask:notify:1', kind: 'ask', atMs: 1, text: '# Heading\n\nRun `deploy.sh` now?' }],
+      inputNotifications: [{ key: 'ask:1', kind: 'ask', atMs: 1, text: '# Heading\n\nRun `deploy.sh` now?' }],
       onReply: vi.fn(),
     });
     const notice = document.querySelector<HTMLElement>('[data-nc-needs-input-notice]')!;

@@ -48,19 +48,21 @@ const ASSISTANT_CARD = { ...PLANNER_CARD, id: 'conv-assistant-1', title: null, p
 const WORKER_CARD = { ...PLANNER_CARD, id: 'card-worker', title: 'Worker', payload: {}, sort: 3, updated_at: 4 };
 /* The kernel's `kernel/track/activity` overlay: `items` are what the aside lists,
  * `cards` the per-card verdicts every row and card head reads. */
-type ActivityItemWire = { source: 'ask' | 'planner_down'; key: string; text: string; at_ms: number };
+type ActivityItemWire =
+  | { source: 'ask'; key: string; text: string; at_ms: number; ask_id: number; questions: { title: string; options: string[] }[] }
+  | { source: 'planner_down'; key: string; text: string; at_ms: number };
 type ActivityCardWire = { card_id: string; state: 'working' | 'input' | 'failed' };
 const trackActivityOverlay = (payload: Partial<{
   working: boolean; attention: 'none' | 'input' | 'failed'; activity_at_ms: number | null;
   items: ActivityItemWire[]; cards: ActivityCardWire[];
 }> = {}, trackId = 'w1') => ({
   id: `activity-${trackId}`, plugin_id: 'kernel', entity_kind: 'track', entity_id: trackId, kind: 'activity',
-  payload: { schemaVersion: 2, working: false, attention: 'none', activity_at_ms: null, items: [], cards: [], ...payload },
+  payload: { schemaVersion: 3, working: false, attention: 'none', activity_at_ms: null, items: [], cards: [], ...payload },
   updated_at: 3,
 });
 /** The Planner's ask, in its words, as the projector lists it. */
 const askItem = (text: string, atMs: number): ActivityItemWire =>
-  ({ source: 'ask', key: `ask:ratify:${atMs}`, text, at_ms: atMs });
+  ({ source: 'ask', key: `ask:${atMs}`, text, at_ms: atMs, ask_id: atMs, questions: [{ title: text, options: [] }] });
 /** The Planner stopped: its failure reason, as the projector lists it. */
 const plannerDownItem = (text: string, atMs: number): ActivityItemWire =>
   ({ source: 'planner_down', key: `planner_down:${atMs}`, text, at_ms: atMs });
@@ -366,7 +368,7 @@ describe('track conversations', () => {
     fireEvent.click(within(askRow!).getByRole('button', { name: /^Dismiss: Needs your answer: / }));
     await waitFor(() => expect(dismissed).toBe(true));
     expect(requests.filter((request) => request.path === '/api/tracks/w1/activity/dismissals'))
-      .toEqual([expect.objectContaining({ method: 'POST', body: { key: 'ask:ratify:4' } })]);
+      .toEqual([expect.objectContaining({ method: 'POST', body: { key: 'ask:4' } })]);
     /* No optimistic removal: the row stays until the projector's `overlay.set` refreshes the track. */
     const notice = screen.getByRole('region', { name: 'Notifications' });
     expect(within(notice).getAllByRole('listitem')).toHaveLength(2);

@@ -34,8 +34,8 @@ export const TRACK_RENAME_TOOL = 'neige_track_rename';
 /** Development publication: pushes the candidate branch and opens or reuses its PR. */
 export const DEV_PUBLISH_TOOL = 'neige_dev_publish';
 
-/** The planner's way to speak to the reader from a background turn; rendered as an agent turn, text verbatim from `arguments.text`. */
-export const USER_NOTIFY_TOOL = 'neige_user_notify';
+/** The planner's one way to ask the reader (#2209); rendered as an agent turn whose text is its questions. */
+export const USER_ASK_TOOL = 'neige_user_ask';
 
 /** Mail to another Track of the Area (#2130); its line names the mail by `arguments.summary`. */
 export const MAIL_SEND_TOOL = 'neige_mail_send';

@@ -44,6 +44,12 @@ export type AreaResolve = { area_id: AreaId, folder_id: number, folder_path: str
 export type ArtifactRef = string;
 
 /**
+ * One question of an `ask.requested`: what the user is asked, and the answers offered. The first
+ * option is the recommended one; no options means a free-text answer.
+ */
+export type AskQuestion = { title: string, options: Array<string>, };
+
+/**
  * `<uuid-v4>.<ext>` — an attachment's id *and* its file name. The only constructor is
  * [`AttachmentId::parse`] and `Deserialize` goes through the same gate.
  */
@@ -200,7 +206,11 @@ payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_
 /**
  * The user's text with the decision, trimmed; absent when they sent none.
  */
-message?: string, } } | { "ev": "proposal.submitted", "data": { track_id: TrackId, proposal_id: string, 
+message?: string, } } | { "ev": "ask.requested", "data": { track_id: TrackId, questions: Array<AskQuestion>, 
+/**
+ * The provider item the question was translated from; absent for a `neige_user_ask` call.
+ */
+source_item_id?: string, } } | { "ev": "ask.answered", "data": { ask_id: number, track_id: TrackId, answers: Array<string>, } } | { "ev": "proposal.submitted", "data": { track_id: TrackId, proposal_id: string, 
 /**
  * Submitting plugin, injected kernel-side from the callback connection (never trusted from plugin input).
  */

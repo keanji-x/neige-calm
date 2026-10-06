@@ -1,6 +1,6 @@
 /*
  * The quiet sync: a planner turn woken only by a report edit is background work, and
- * the transcript folds it into one line. Notify speech and failed/interrupted outcomes
+ * the transcript folds it into one line. Asked questions and failed/interrupted outcomes
  * are lifted out after the fold.
  */
 
@@ -54,9 +54,9 @@ export function isReportEditedEntry(entry: TranscriptEntry): entry is Conversati
     && entry.quiet === true;
 }
 
-/** Speech the planner meant for the reader: lifted out of a fold, never into one. */
-export function isNotifyTurn(entry: TranscriptEntry): entry is ConversationTurn {
-  return entry.author === 'agent' && entry.origin === 'notify';
+/** A question the planner asked the reader: lifted out of a fold, never into one. */
+export function isAskTurn(entry: TranscriptEntry): entry is ConversationTurn {
+  return entry.author === 'agent' && entry.origin === 'ask';
 }
 
 /** A turn that did not end well is lifted out of a fold; a `completed` outcome stays inside. */
@@ -90,7 +90,7 @@ export function quietSyncOutcome(
 ): QuietSyncOutcome | null {
   if (!grouped.some(completedOutcome)) return null;
   if (grouped.some(isReportWriteActivity)) return 'updated';
-  return lifted.some(isNotifyTurn) ? null : 'accepted';
+  return lifted.some(isAskTurn) ? null : 'accepted';
 }
 
 export function foldQuietSyncs(entries: readonly TranscriptEntry[]): readonly TranscriptBlock[] {
@@ -110,7 +110,7 @@ export function foldQuietSyncs(entries: readonly TranscriptEntry[]): readonly Tr
     while (next < entries.length) {
       const candidate = entries[next];
       if (candidate === undefined || closesGroup(candidate)) break;
-      if (isNotifyTurn(candidate) || isFailedOutcome(candidate)) lifted.push(candidate);
+      if (isAskTurn(candidate) || isFailedOutcome(candidate)) lifted.push(candidate);
       else grouped.push(candidate);
       next += 1;
     }

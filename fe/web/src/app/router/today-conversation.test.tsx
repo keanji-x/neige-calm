@@ -195,7 +195,7 @@ describe('#1341 Today lists the launchpad track’s conversations', () => {
       launchpadRows: () => [conversationRow({ id: SUMMARY_CONVERSATION, title: null, state: 'turn_pending' })],
       overlays: () => [{
         id: 'activity-lp', plugin_id: 'kernel', entity_kind: 'track', entity_id: 'lp', kind: 'activity', updated_at: 3,
-        payload: { schemaVersion: 2, working: cards.length > 0, attention: 'none', activity_at_ms: null, items: [], cards },
+        payload: { schemaVersion: 3, working: cards.length > 0, attention: 'none', activity_at_ms: null, items: [], cards },
       }],
     });
     const row = () => screen.getByRole('button', { name: /^Conversation Today’s progress(?:,|$)/ });

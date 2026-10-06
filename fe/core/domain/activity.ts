@@ -20,15 +20,24 @@ export type CardActivity = 'working' | 'input' | 'failed';
 /** What a notification is: the Planner asks the user something, or the Planner stopped. */
 export type NotificationSource = 'ask' | 'planner_down';
 
-/** One thing addressed to the user and not yet handled, as the kernel listed it (`items[]`). */
-export type ActivityItem = Readonly<{
-  source: NotificationSource;
+/** One question of an ask: the first option is the recommended one; none means a free answer. */
+export type AskQuestion = Readonly<{ title: string; options: readonly string[] }>;
+
+type ActivityItemBase = Readonly<{
   /** The kernel's identity for it; the same source happening again is a new key. */
   key: string;
-  /** The kernel's words: the Planner's question, or the reason it stopped. */
+  /** The kernel's words: the Planner's questions, or the reason it stopped. */
   text: string;
   atMs: number;
 }>;
+
+/**
+ * One thing addressed to the user and not yet handled, as the kernel listed it (`items[]`). Only an
+ * ask carries its id (the answer route's `ask_id`) and its questions.
+ */
+export type ActivityItem =
+  | (ActivityItemBase & Readonly<{ source: 'ask'; askId: number; questions: readonly AskQuestion[] }>)
+  | (ActivityItemBase & Readonly<{ source: 'planner_down' }>);
 
 /**
  * Dismiss one item: the kernel stores its key and the projector drops it, so the row goes when the

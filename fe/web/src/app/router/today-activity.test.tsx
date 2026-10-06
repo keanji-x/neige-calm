@@ -22,7 +22,7 @@ const trackWire = (id: string, title: string) => ({
 });
 const activityOverlay = (trackId: string, payload: Record<string, unknown>) => ({
   id: `activity-${trackId}`, plugin_id: 'kernel', entity_kind: 'track', entity_id: trackId, kind: 'activity',
-  payload: { schemaVersion: 2, working: false, attention: 'none', activity_at_ms: null, items: [], cards: [], ...payload },
+  payload: { schemaVersion: 3, working: false, attention: 'none', activity_at_ms: null, items: [], cards: [], ...payload },
   updated_at: 1,
 });
 

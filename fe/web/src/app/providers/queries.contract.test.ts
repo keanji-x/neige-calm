@@ -211,7 +211,7 @@ describe('track list', () => {
     const second = { ...baseTrackWire, id: 'second', area_id: 'c2', sort: 1, updated_at: 30 };
     const activityOverlay = {
       id: 'activity-recent', plugin_id: 'kernel', entity_kind: 'track', entity_id: 'recent',
-      kind: 'activity', payload: { schemaVersion: 2 }, updated_at: 100,
+      kind: 'activity', payload: { schemaVersion: 3 }, updated_at: 100,
     };
     const { transport } = recordingTransport((request) => {
       if (request.path === '/api/areas') return ok([userArea, secondArea]);

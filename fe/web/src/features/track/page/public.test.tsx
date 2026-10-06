@@ -173,7 +173,7 @@ describe('TrackPage header', () => {
     const now = 1_790_000_000_000;
     renderPage({
       inputNotifications: [{
-        key: 'ask:ratify:7', kind: 'ask', text: 'Merge PR #1811 now, or hold it?', atMs: now - 3 * 60_000,
+        key: 'ask:7', kind: 'ask', text: 'Merge PR #1811 now, or hold it?', atMs: now - 3 * 60_000,
       }],
       onReply,
       nowMs: now,
@@ -214,7 +214,7 @@ describe('TrackPage header', () => {
     const onDismiss = vi.fn(() => Promise.resolve());
     renderPage({
       inputNotifications: [
-        { key: 'ask:ratify:7', kind: 'ask', atMs: 2, text: 'Merge **PR #1811** now?\n\n- hold it for the release\n'
+        { key: 'ask:7', kind: 'ask', atMs: 2, text: 'Merge **PR #1811** now?\n\n- hold it for the release\n'
           + '- ship it today\n\nRun `deploy.sh` after; see [the PR](https://example.com/pr/1811).' },
         { key: 'planner_down:9', kind: 'planner-down', atMs: 1,
           text: "400: The 'gpt-6-astra' model requires a newer version of Codex." },
@@ -250,7 +250,7 @@ describe('TrackPage header', () => {
   it('names a short markdown row by its plain words, without syntax or the link address', () => {
     renderPage({
       inputNotifications: [{
-        key: 'ask:notify:3', kind: 'ask', atMs: 1,
+        key: 'ask:3', kind: 'ask', atMs: 1,
         text: 'Ship **now**? See [the PR](https://example.com/a/very/long/path/that/must/not/be/read/out/pulls/1811).',
       }],
       onReply: vi.fn(),
@@ -268,7 +268,7 @@ describe('TrackPage header', () => {
     ['a 404', new ApiError({ kind: 'http', status: 404, code: 'not_found', message: 'track not found' }), null],
   ] as const)('reads %s through the dismissal’s table', async (_name, error, shown) => {
     renderPage({
-      inputNotifications: [{ key: 'ask:notify:3', kind: 'ask', atMs: 1, text: 'Ship now?' }],
+      inputNotifications: [{ key: 'ask:3', kind: 'ask', atMs: 1, text: 'Ship now?' }],
       onDismiss: vi.fn(() => Promise.reject(error)),
     });
     await userEvent.click(screen.getByRole('button', { name: 'Dismiss: Needs your answer: Ship now?' }));
@@ -279,7 +279,7 @@ describe('TrackPage header', () => {
 
   it('reopens a collapsed center when another notification arrives', async () => {
     const ask: TrackInputNotification = {
-      key: 'ask:notify:1', kind: 'ask', text: 'Which branch?', atMs: 1,
+      key: 'ask:1', kind: 'ask', text: 'Which branch?', atMs: 1,
     };
     const down: TrackInputNotification = {
       key: 'planner_down:2', kind: 'planner-down', text: 'unexpected status 403 Forbidden', atMs: 2,

@@ -53,7 +53,7 @@ function agent(id: string, text: string): ConversationTurn {
 }
 
 function notify(id: string, text: string): ConversationTurn {
-  return { id, author: 'agent', text, atMs: NOW, origin: 'notify' };
+  return { id, author: 'agent', text, atMs: NOW, origin: 'ask' };
 }
 
 function activity(id: string, overrides: Partial<ConversationActivity> = {}): ConversationActivity {
