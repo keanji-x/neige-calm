@@ -68,8 +68,8 @@ NOISE_EVENT_KINDS = (
     "overlay.set", "overlay.deleted", "harness.item.added", "harness.phase.changed", "claude.hook",
     "plugin.tool.registered",
 )
-# Transcript items that are the turn's input or the Planner's own prose, not something it did.
 TRANSCRIPT_LOSS_KINDS = ("harness.transcript.cleared", "harness.transcript.rewound")
+# Transcript items that are the turn's input or the Planner's own prose, not something it did.
 NOT_ACTIONS = ("userMessage", "agentMessage", "reasoning")
 BOOKKEEPING = ("id", "type", "status", "error", "durationMs", "tool")
 
