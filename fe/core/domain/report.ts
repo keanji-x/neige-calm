@@ -352,6 +352,12 @@ export function deriveReportOutline(blocks: readonly ReportBlock[] | null): Repo
         referenceText: 'visible',
         traversal: 'recursive',
       });
+      const boundary = headings.find(heading => heading.depth === 1 || lastH1 === null);
+      const continuation = markdownExcerpt(block.payload.markdown.slice(0, boundary?.position.start.offset));
+      const previous = outline.at(-1);
+      if (lastNumbered !== null && previous !== undefined && continuation !== '') {
+        outline[outline.length - 1] = { ...previous, excerpt: `${previous.excerpt} ${continuation}`.trim() };
+      }
       for (const [index, heading] of headings.entries()) {
         const next = headings.slice(index + 1).find(candidate => candidate.depth <= heading.depth);
         const section = block.payload.markdown.slice(heading.position.end.offset, next?.position.start.offset);

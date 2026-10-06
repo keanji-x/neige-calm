@@ -980,9 +980,22 @@ describe('ChatThread’s exchange rail', () => {
     outer.remove();
   });
 
+  it('previews the answer belonging to consecutive user messages in one exchange', () => {
+    const { outer, pane } = drawerPane();
+    const turns = exchangeTurns(RAIL_FIXTURE_EXCHANGES);
+    turns.splice(1, 0, turn({ id: 'followup', author: 'you', text: 'One more detail', atMs: NOW + 1 }));
+    render(<ChatThread canContinue={false} cards={{}} stalled={false}
+      conversation={conversation()} turns={turns} />, { container: pane });
+    expect(railDots()).toHaveLength(RAIL_FIXTURE_EXCHANGES);
+    act(() => { railDots()[0].focus(); });
+    expect(document.querySelector('[data-nc-rail-preview] p')?.textContent).toBe('Answer 0');
+    outer.remove();
+  });
+
   it('previews the matching reply and leaves the latest unanswered exchange empty', async () => {
     const { outer, pane } = drawerPane();
-    const turns = exchangeTurns(RAIL_FIXTURE_EXCHANGES).slice(0, -1).filter(entry => entry.id !== 'agent-2');
+    const turns = exchangeTurns(RAIL_FIXTURE_EXCHANGES).slice(0, -1)
+      .map(entry => entry.id === 'agent-2' ? turnOutcome({ id: 'failed-2', atMs: entry.atMs }) : entry);
     render(<ChatThread canContinue={false} cards={{}} stalled={false}
       conversation={conversation()} turns={turns} />, { container: pane });
     act(() => { railDots()[0].focus(); });

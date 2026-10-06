@@ -426,7 +426,7 @@ function exchangesOf(turns: readonly TranscriptEntry[]): readonly Exchange[] {
        for the type checker, which cannot read that from the domain function. */
     if (!opensExchange(turns, index) || turn.author !== 'you') return;
     const following = turns.slice(index + 1);
-    const nextPrompt = following.findIndex(entry => entry.author === 'you');
+    const nextPrompt = following.findIndex((_entry, followingIndex) => opensExchange(turns, index + followingIndex + 1));
     const exchange = nextPrompt < 0 ? following : following.slice(0, nextPrompt);
     const reply = exchange.find(entry => entry.author === 'agent');
     found.push({ id: turn.id, text: turn.text, excerpt: markdownExcerpt(reply !== undefined && reply.author === 'agent' ? reply.text : '') });

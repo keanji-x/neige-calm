@@ -1227,6 +1227,8 @@ describe('the exchange rail, as the engine lays it out', () => {
     const name = dots()[3].getAttribute('aria-label')!;
     expect(preview.querySelector('div')?.textContent).toBe(LONG_PROMPT);
     expect(preview.querySelector('p')?.textContent).toBe('Short.');
+    expect(Number.parseFloat(getComputedStyle(preview.querySelector('div')!).fontSize))
+      .toBeGreaterThan(Number.parseFloat(getComputedStyle(preview.querySelector('p')!).fontSize));
     expect(name.length).toBeLessThan(LONG_PROMPT.length);
     expect(name).toContain('…');
 
@@ -1290,7 +1292,7 @@ describe('the exchange rail, as the engine lays it out', () => {
     await settle();
     await userEvent.hover(pane());
     await pause(150);
-    await act(async () => { dots()[29].focus(); });
+    act(() => { dots()[29].focus(); });
     await pause(150);
     const last = railPreview()!.getBoundingClientRect();
     expect(last.top).toBeGreaterThanOrEqual(0);
@@ -1753,7 +1755,7 @@ describe('the exchange rail, as the engine lays it out', () => {
       </Drawer>
     </div>);
     await pause(300);
-    await act(async () => { dots()[0].focus(); });
+    act(() => { dots()[0].focus(); });
     await frame();
     expect(railPreview()).not.toBeNull();
     await userEvent.keyboard('{Escape}');
@@ -1767,7 +1769,7 @@ describe('the exchange rail, as the engine lays it out', () => {
     await frame();
     expect(railPreview()).toBeNull();
     expect(onClose).not.toHaveBeenCalled();
-    await act(async () => { screen.getByRole('textbox', { name: 'Preview test composer' }).focus(); });
+    act(() => { screen.getByRole('textbox', { name: 'Preview test composer' }).focus(); });
     await userEvent.hover(dots()[3]);
     await pause(600);
     expect(railPreview()).not.toBeNull();

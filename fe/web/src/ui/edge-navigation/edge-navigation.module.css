@@ -104,15 +104,12 @@
     overflow-wrap: anywhere;
     color: var(--text);
   }
-  @media (pointer: coarse) {
-    .railPreview { display: none; }
-  }
   .previewTitle {
     display: -webkit-box;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
     overflow: hidden;
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     font-weight: var(--weight-medium);
     line-height: var(--leading-snug);
   }

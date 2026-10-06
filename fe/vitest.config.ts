@@ -95,6 +95,11 @@ export default defineConfig({
               },
             })),
             instances: [{ browser: 'chromium' }],
+            commands: {
+              tap: async ({ iframe }, selector: string) => {
+                await iframe.locator(selector).tap();
+              },
+            },
           },
         },
       },

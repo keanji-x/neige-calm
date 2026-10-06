@@ -42,6 +42,8 @@ export function EdgeNavigator({ items, activeId, onSelect, label, className, pre
     const track = trackRef.current;
     const focused = document.activeElement;
     if (track === null || focused === null || !track.contains(focused)) return;
+    // Follow the active item for keyboard roving; a pointer press keeps its own focus.
+    if (!focused.matches(':focus-visible')) return;
     const stop = dotRefs.current[litStopRef.current];
     if (stop == null || stop === focused) return;
     stop.focus({ preventScroll: true });
@@ -207,6 +209,7 @@ function NavigationDot({ item, previewSide, onNode, onClick, ...buttonProps }: R
   return <>
     <button {...buttonProps} ref={node => { onNode(node); preview.ref(node); }}
       aria-describedby={preview.isOpen ? preview.id : undefined}
+      onBlur={event => { preview.hide(); buttonProps.onBlur?.(event); }}
       onClick={event => { preview.hide(); onClick?.(event); }} />
     {preview.renderHoverCard(<div data-nc-rail-preview="">
       <div className={styles.previewTitle}>{railPreviewText(item.title)}</div>

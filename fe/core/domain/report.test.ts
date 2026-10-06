@@ -880,6 +880,18 @@ describe('deriveReportOutline', () => {
     ]);
   });
 
+  it('assembles a section across continuation blocks and stops before the next heading', () => {
+    const blocks = readTrackReport([card({ payload: { body: 'x', blocks: [
+      prose('b-1', '# Findings'),
+      prose('b-2', 'The actual findings live in this continuation block.'),
+      prose('b-3', 'More **evidence** before the next section.\n\n# Next section\n\nUnrelated details.'),
+    ] } })])?.blocks ?? null;
+    expect(deriveReportOutline(blocks).map(item => item.excerpt)).toEqual([
+      'The actual findings live in this continuation block. More evidence before the next section.',
+      'Unrelated details.',
+    ]);
+  });
+
   it('leaves an empty section empty instead of borrowing the next section', () => {
     const blocks = readTrackReport([card({ payload: { body: 'x', blocks: [
       prose('b-1', '# Empty\n\n# Filled\n\nIts own answer.'),

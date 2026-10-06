@@ -2,6 +2,9 @@
    media feature nothing in a page can set. A tablet, not a phone: a phone width paints no seam at all. */
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
+import { commands, userEvent } from 'vitest/browser';
+
+declare module 'vitest/browser' { interface BrowserCommands { tap(selector: string): Promise<void> } }
 
 /* The whole cascade before the component: a CSS Module imported first registers `@layer features` ahead of everything. */
 import '../../../styles/entry.css';
@@ -397,26 +400,22 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
     }
   });
 
-  /* The component's `pointerType` guard stops the layer being created; the stylesheet's `display: none` is the backstop, asserted by forcing the layer up with a mouse `pointerover` and reading the computed display. */
-  it('never paints the prompt, by the guard and by the rule behind it', async () => {
+  /* Touch activation skips the layer; keyboard focus on a tablet still gets a visible preview. */
+  it('keeps touch jumps direct and shows a usable preview for keyboard navigation', async () => {
     render(<RailPane turns={railTurns(8)} />);
     await settle();
-
-    dots()[3].dispatchEvent(new PointerEvent('pointerenter', {
-      bubbles: true, pointerType: 'touch',
-    }));
+    await commands.tap('button[aria-label="Jump to exchange 4: Ask 3"]');
     await pause(600);
     expect(railPreview()).toBeNull();
-
-    dots()[3].dispatchEvent(new PointerEvent('pointerenter', {
-      bubbles: true, pointerType: 'mouse',
-    }));
-    dots()[3].dispatchEvent(new MouseEvent('mouseenter'));
-    await pause(600);
+    await userEvent.keyboard('{ArrowUp}');
+    await settle();
     const preview = railPreview();
     expect(preview).not.toBeNull();
-    expect(getComputedStyle(preview!.closest('[popover]')!).display).toBe('none');
-    expect(preview!.getBoundingClientRect().height).toBe(0);
+    expect(getComputedStyle(preview!.closest('[popover]')!).display).not.toBe('none');
+    expect(preview!.getBoundingClientRect().height).toBeGreaterThan(0);
+    await userEvent.keyboard('{Escape}');
+    await settle();
+    expect(railPreview()).toBeNull();
   });
 
   /* Under a finger the 320px cap is reached at twelve exchanges (11 → 308px, 12 → 336px); the fine branch reaches it at twenty-two. The cap is read off the engine. */
