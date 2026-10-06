@@ -136,13 +136,10 @@ pub(crate) async fn listdir(
     State(_s): State<RouteState>,
     Query(q): Query<ListdirQuery>,
 ) -> Result<Json<ListdirResponse>> {
-    let raw = q
-        .path
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(default_start);
+    let raw = match q.path.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(path) => request_path(path)?,
+        None => default_start(),
+    };
 
     let canon = match tokio::fs::canonicalize(&raw).await {
         Ok(p) => p,
@@ -242,7 +239,7 @@ pub(crate) async fn readfile(
     State(_s): State<RouteState>,
     Query(q): Query<PathQuery>,
 ) -> Result<Json<ReadFileResponse>> {
-    let raw = PathBuf::from(q.path.trim());
+    let raw = request_path(&q.path)?;
     Ok(Json(read_file_response(&raw).await?))
 }
 
@@ -263,7 +260,7 @@ pub(crate) async fn readfile_raw(
     State(_s): State<RouteState>,
     Query(q): Query<PathQuery>,
 ) -> Result<Response> {
-    let raw = PathBuf::from(q.path.trim());
+    let raw = request_path(&q.path)?;
     read_file_raw_response(&raw).await
 }
 
@@ -354,7 +351,7 @@ pub(crate) async fn gitstatus(
     State(_s): State<RouteState>,
     Query(q): Query<PathQuery>,
 ) -> Result<Json<GitStatusResponse>> {
-    let raw = PathBuf::from(q.path.trim());
+    let raw = request_path(&q.path)?;
     Ok(Json(git_status_response(&raw).await?))
 }
 
@@ -378,7 +375,10 @@ pub(crate) async fn gitdiff(
     State(_s): State<RouteState>,
     Query(q): Query<GitDiffQuery>,
 ) -> Result<Json<GitDiffResponse>> {
-    let raw = PathBuf::from(q.path.trim());
+    let raw = request_path(&q.path)?;
+    if let Some(old_path) = q.old_path.as_deref() {
+        request_path(old_path)?;
+    }
     Ok(Json(git_diff_response(&raw, q.old_path.as_deref()).await?))
 }
 
@@ -402,6 +402,7 @@ async fn canonicalize_regular_file(raw: &Path) -> Result<(PathBuf, Metadata)> {
 }
 
 fn workspace_relative_path(raw: &str) -> Result<PathBuf> {
+    request_path(raw)?;
     let raw = raw.trim();
     if raw.is_empty() {
         return Err(CalmError::BadRequest(
@@ -644,9 +645,9 @@ fn map_workspace_open_err(
             requested.display(),
             workspace_root.display()
         )),
-        Errno::ENOENT | Errno::ENOTDIR | Errno::EINVAL => {
-            CalmError::PathNotFound(format!("path {} not found", requested.display()))
-        }
+        Errno::ENOENT | Errno::ENOTDIR => missing_path(requested),
+        // nix answers EINVAL for a path it cannot pass to the kernel (an interior NUL): malformed, by the one rule.
+        Errno::EINVAL | Errno::ENAMETOOLONG => malformed_path(requested),
         Errno::ENXIO | Errno::ENODEV => CalmError::BadRequest(format!(
             "path {} is not a regular file",
             requested.display()
@@ -919,12 +920,8 @@ async fn canonicalize_file_or_parent(raw: &Path) -> Result<PathBuf> {
     match tokio::fs::canonicalize(raw).await {
         Ok(p) => Ok(p),
         Err(e) if e.kind() == ErrorKind::NotFound => {
-            let parent = raw.parent().ok_or_else(|| {
-                CalmError::BadRequest(format!("path {} not found", raw.display()))
-            })?;
-            let name = raw.file_name().ok_or_else(|| {
-                CalmError::BadRequest(format!("path {} not found", raw.display()))
-            })?;
+            let parent = raw.parent().ok_or_else(|| missing_path(raw))?;
+            let name = raw.file_name().ok_or_else(|| missing_path(raw))?;
             let parent = tokio::fs::canonicalize(parent)
                 .await
                 .map_err(|e| map_io_err(parent, e))?;
@@ -1122,15 +1119,33 @@ fn default_start() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
 }
 
+/// Every path a request names, before any syscall sees it: a path the kernel cannot take (an interior NUL) is
+/// malformed. An over-long name passes here and is refused the same way by the kernel (`ENAMETOOLONG`).
+fn request_path(raw: &str) -> Result<PathBuf> {
+    let raw = raw.trim();
+    if raw.contains('\0') {
+        return Err(malformed_path(Path::new(raw)));
+    }
+    Ok(PathBuf::from(raw))
+}
+
+/// The one answer for a path that does not exist (or runs through a file): 404 `path_not_found`, whose remedy is
+/// restoring the path.
+fn missing_path(path: &Path) -> CalmError {
+    CalmError::PathNotFound(format!("path {} not found", path.display()))
+}
+
+/// The one answer for a malformed path, from the request validator and from both errno mappers: 400, never the
+/// 404 `path_not_found` whose remedy is restoring a path.
+fn malformed_path(path: &Path) -> CalmError {
+    CalmError::BadRequest(format!("path {} is not a valid path", path.display()))
+}
+
 fn map_io_err(path: &std::path::Path, e: std::io::Error) -> CalmError {
     match e.kind() {
-        ErrorKind::NotFound | ErrorKind::NotADirectory => {
-            CalmError::PathNotFound(format!("path {} not found", path.display()))
-        }
-        // A path the OS cannot take at all (an interior NUL byte): malformed, not missing, so no restore hint.
-        ErrorKind::InvalidInput => {
-            CalmError::BadRequest(format!("path {} is not a valid path", path.display()))
-        }
+        ErrorKind::NotFound | ErrorKind::NotADirectory => missing_path(path),
+        // A path the OS cannot take at all (an interior NUL byte, a name past NAME_MAX): malformed, by the one rule.
+        ErrorKind::InvalidInput | ErrorKind::InvalidFilename => malformed_path(path),
         ErrorKind::PermissionDenied => {
             CalmError::Forbidden(format!("permission denied reading {}", path.display()))
         }
@@ -1308,31 +1323,115 @@ mod tests {
         assert!(matches!(err, CalmError::PathNotFound(_)));
     }
 
-    /// Malformed is not missing: a NUL byte in the path answers 400 `bad_request`, while an absent file and a file
-    /// under a regular file (`NotADirectory`) answer 404 `path_not_found`.
+    /// Malformed is not missing, on every route that takes a path: a NUL byte or an over-long name answers 400
+    /// `bad_request`, while an absent file and a file under a regular file (`NotADirectory`) answer 404
+    /// `path_not_found`. Absolute and Track workspace routes alike, so neither mapper decides it alone.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_malformed_path_is_a_bad_request_and_a_missing_one_is_path_not_found() {
-        let tmp = tempfile::tempdir().unwrap();
-        let malformed = read_file_response(&tmp.path().join("bad\0name.txt"))
+        let workspace = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let root = workspace.path();
+        git(root, &["init"]);
+        std::fs::write(root.join("file.txt"), "x").unwrap();
+        let (state, track, _) = route_state_with_workspace_tracks(root, other.path()).await;
+        let bad_request = (StatusCode::BAD_REQUEST, "bad_request".to_string());
+        let path_not_found = (StatusCode::NOT_FOUND, "path_not_found".to_string());
+
+        /* Every path-taking route, by the relative name it is asked about. */
+        let answer = |name: String| {
+            let state = state.clone();
+            let track = track.clone();
+            let absolute = root.join(&name).to_string_lossy().into_owned();
+            async move {
+                let path = || {
+                    Query(PathQuery {
+                        path: absolute.clone(),
+                    })
+                };
+                let workspace = || Query(WorkspacePathQuery { path: name.clone() });
+                let mut answers = Vec::new();
+                let Err(e) = listdir(
+                    State(state.clone()),
+                    Query(ListdirQuery {
+                        path: Some(absolute.clone()),
+                    }),
+                )
+                .await
+                else {
+                    panic!("listdir {name:?} answered")
+                };
+                answers.push(("listdir", answered(e).await));
+                let Err(e) = readfile(State(state.clone()), path()).await else {
+                    panic!("readfile {name:?} answered")
+                };
+                answers.push(("readfile", answered(e).await));
+                let e = readfile_raw(State(state.clone()), path())
+                    .await
+                    .unwrap_err();
+                answers.push(("readfile-raw", answered(e).await));
+                let Err(e) = read_track_workspace_file(
+                    State(state.clone()),
+                    AxumPath(track.clone()),
+                    workspace(),
+                )
+                .await
+                else {
+                    panic!("workspace readfile {name:?} answered")
+                };
+                answers.push(("workspace readfile", answered(e).await));
+                let e = read_track_workspace_file_raw(
+                    State(state.clone()),
+                    AxumPath(track),
+                    workspace(),
+                )
+                .await
+                .unwrap_err();
+                answers.push(("workspace readfile-raw", answered(e).await));
+                answers
+            }
+        };
+
+        for name in ["bad\0name.txt".to_string(), "n".repeat(300)] {
+            for (route, answer) in answer(name.clone()).await {
+                assert_eq!(answer, bad_request, "{route} {name:?}");
+            }
+            /* The git routes, for the path and for the old path of a rename. */
+            let Err(e) = gitstatus(
+                State(state.clone()),
+                Query(PathQuery {
+                    path: root.join(&name).to_string_lossy().into_owned(),
+                }),
+            )
             .await
-            .unwrap_err();
-        assert_eq!(
-            answered(malformed).await,
-            (StatusCode::BAD_REQUEST, "bad_request".to_string())
-        );
-        let file = tmp.path().join("file.txt");
-        std::fs::write(&file, "x").unwrap();
-        for missing in [
-            tmp.path().join("missing.txt"),
-            file.join("under-a-file.txt"),
-        ] {
-            let err = read_file_response(&missing).await.unwrap_err();
-            assert_eq!(
-                answered(err).await,
-                (StatusCode::NOT_FOUND, "path_not_found".to_string()),
-                "{}",
-                missing.display()
-            );
+            else {
+                panic!("gitstatus {name:?} answered")
+            };
+            assert_eq!(answered(e).await, bad_request, "gitstatus {name:?}");
+            /* The old path is only ever a name in HEAD, never opened: only a NUL makes it malformed. */
+            let renamed = name
+                .contains('\0')
+                .then(|| (root.join("file.txt"), Some(name.clone())));
+            for (path, old_path) in [(root.join(&name), None)].into_iter().chain(renamed) {
+                let Err(e) = gitdiff(
+                    State(state.clone()),
+                    Query(GitDiffQuery {
+                        path: path.to_string_lossy().into_owned(),
+                        old_path,
+                    }),
+                )
+                .await
+                else {
+                    panic!("gitdiff {name:?} answered")
+                };
+                assert_eq!(answered(e).await, bad_request, "gitdiff {name:?}");
+            }
+        }
+
+        for name in ["missing.txt", "file.txt/under-a-file.txt"] {
+            for (route, answer) in answer(name.to_string()).await {
+                assert_eq!(answer, path_not_found, "{route} {name}");
+            }
         }
     }
 

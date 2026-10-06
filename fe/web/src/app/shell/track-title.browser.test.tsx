@@ -120,6 +120,22 @@ describe('a failed inline rename', () => {
     expect(onRenameTrack.mock.calls.map(([name]) => name)).toEqual(['Kept draft', 'Kept draft']);
   });
 
+  /* #2256 review: Escape from inside the failure cancels the editor exactly as Escape in the input does, and the
+     cancelled edit's failure does not come back when the title is opened again. */
+  it('cancels the editor on Escape from Dismiss, as Escape in the input does', async () => {
+    await failRename(vi.fn<(title: string) => Promise<void>>().mockRejectedValue(new Error('socket hang up')));
+    await userEvent.tab();
+    await expect.element(page.getByRole('alert').getByRole('button', { name: /^Dismiss/ })).toHaveFocus();
+    await userEvent.keyboard('{Escape}');
+    await expect.element(page.getByRole('textbox', { name: 'Track title' })).not.toBeInTheDocument();
+    await expect.element(page.getByRole('button', { name: 'Rename track' })).toHaveFocus();
+    /* Past the Enter commit's click guard (300 ms), which would swallow an immediate reopen. */
+    await new Promise((done) => { setTimeout(done, 350); });
+    await userEvent.click(page.getByRole('button', { name: 'Rename track' }));
+    await expect.element(page.getByRole('textbox', { name: 'Track title' })).toHaveValue(track().title);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
   it('keeps the draft when Dismiss is reached and pressed from the keyboard', async () => {
     const input = await failRename(vi.fn<(title: string) => Promise<void>>().mockRejectedValue(new Error('socket hang up')));
     await userEvent.tab();
