@@ -1426,7 +1426,7 @@
       "oracle:INV-APP-118"
     ],
     "target": "web/src/features/today/public.tsx",
-    "patch": "diff --git a/web/src/features/today/public.tsx b/web/src/features/today/public.tsx\n--- a/web/src/features/today/public.tsx\n+++ b/web/src/features/today/public.tsx\n@@ -147,5 +147,5 @@\n   const working = tracks.filter(isWorking);\n   const isVisible = (track: Track) => (showClosed || !isClosed(track)) && (showRead || isTrackUnread?.(track) === true);\n-  const activityTracks = tracks.filter(isVisible);\n+  const activityTracks = tracks.filter((track) => isVisible(track) && isWorking(track));\n   const panel = (\n     <aside className={styles.panelColumn} data-nc-panel=\"\">\n",
+    "patch": "diff --git a/web/src/features/today/public.tsx b/web/src/features/today/public.tsx\n--- a/web/src/features/today/public.tsx\n+++ b/web/src/features/today/public.tsx\n@@ -147,5 +147,5 @@\n   const working = tracks.filter(isWorking);\n   const isVisible = (track: Track) => (showClosed || !isClosed(track)) && (showRead || isTrackUnread?.(track) === true);\n-  const activityTracks = tracks.filter(isVisible);\n+  const activityTracks = tracks.filter((track) => isVisible(track) && isWorking(track));\n   const panel = (\n     <aside className={styles.panelColumn}>\n",
     "expected_red": [
       "Today rows carry the track read receipt",
       "Today clock counts waiting on you and working by the kernel verdict, and groups Open by the open state",
