@@ -8,6 +8,8 @@ import { renderPage } from '../../features/track/page/test-fixtures.tsx';
 import { ReportDocument } from '../../features/report/document/public.tsx';
 import { ReportFileViewer } from '../../features/report/file-viewer/public.tsx';
 import shell from '../shell/shell.module.css';
+import nativeSource from '../../../../../test-data/native-view-v1.json?raw';
+import { nativeViewPayloadSchema } from '../../../../core/domain/report-view.ts';
 
 const markdown = '# Findings\n\n报告正文保持稳定的行长。窗口变窄时自动重排，打开文件时继续使用相同的阅读宽度。';
 const files: WorkspaceFilePort = {
@@ -73,4 +75,30 @@ it('scales the reading ceiling with the root font size without overflowing the c
   const heading = document.querySelector<HTMLElement>('[data-nc-report] h2')!;
   expect(Number.parseFloat(getComputedStyle(heading).fontSize)).toBe(27.5);
   expect(paragraph.getBoundingClientRect().right).toBeLessThanOrEqual(paragraph.closest('[data-nc-report]')!.getBoundingClientRect().right);
+});
+
+// An inline View is part of the reading column; its inspection dialog owns expansion.
+it.each([390, 900, 1440, 1920])('aligns a mixed prose/View report on both edges at %ipx', async width => {
+  await page.viewport(width, 1000);
+  const fixture = JSON.parse(nativeSource) as { valid: unknown };
+  const payload = nativeViewPayloadSchema.parse(fixture.valid);
+  const view = renderPage({ report: <ReportDocument report={{ summary: '', body: '', blocks: [
+    { id: 'before-view', kind: 'prose', payload: { markdown: 'Before the native view.' } },
+    { id: 'mixed-view', kind: 'view', payload },
+    { id: 'after-view', kind: 'prose', payload: { markdown: 'After the native view.' } },
+  ] }} backlinkCounts={new Map([['mixed-view', 3]])} empty={<></>} /> });
+  view.container.className = shell.main;
+  const before = document.getElementById('before-view')!.getBoundingClientRect();
+  const native = document.getElementById('mixed-view')!.getBoundingClientRect();
+  const after = document.getElementById('after-view')!.getBoundingClientRect();
+  expect(native.left).toBeCloseTo(before.left, 0);
+  expect(native.right).toBeCloseTo(before.right, 0);
+  expect(after.left).toBeCloseTo(before.left, 0);
+  expect(after.right).toBeCloseTo(before.right, 0);
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+  if (width >= 1440) {
+    const note = document.querySelector<HTMLElement>('[title="3 reports cite this block"]')!.getBoundingClientRect();
+    expect(note.left).toBeGreaterThanOrEqual(native.right);
+    expect(note.top).toBeLessThan(native.top + 40);
+  }
 });

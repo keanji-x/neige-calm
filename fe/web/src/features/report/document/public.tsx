@@ -186,8 +186,8 @@ function BlockSlot({
   previewViewports?: PreviewViewportStore;
 }) {
   return (
-    <div className={block.kind === 'view' ? `${styles.row} ${styles.nativeRow}` : styles.row}>
-      <div className={block.kind === 'view' ? `${styles.block} ${styles.nativeBlock}` : styles.block} id={block.id}>
+    <div className={styles.row}>
+      <div className={styles.block} id={block.id}>
         {block.kind === 'prose'
           ? <ProseBlock
               markdown={block.payload.markdown}
@@ -203,7 +203,7 @@ function BlockSlot({
               previewViewports={previewViewports} />}
       </div>
       {backlinks > 0 && (
-        <span className={block.kind === 'view' ? `${styles.sidenote} ${styles.nativeSidenote}` : styles.sidenote} title={`${backlinks} report${backlinks === 1 ? '' : 's'} cite this block`}>
+        <span className={styles.sidenote} title={`${backlinks} report${backlinks === 1 ? '' : 's'} cite this block`}>
           ◂ {backlinks}
         </span>
       )}
