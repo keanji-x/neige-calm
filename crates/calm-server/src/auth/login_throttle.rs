@@ -16,7 +16,9 @@
 //! lockout). Traffic that arrives through a local reverse proxy (e.g. `tailscale serve` forwarding
 //! to the listener) shares the proxy's address, so every client behind it shares one budget: a
 //! failing client throttles all of them, the owner included, for at most [`MAX_LOCKOUT`].
-//! Forwarded-for headers are not trusted, since any client can write them.
+//! Forwarded-for headers are not trusted, since any client can write them. A /64 is the IPv6 key, so
+//! a holder of a wider prefix (a /48 has 65536 /64s) can still spread attempts over more than
+//! [`MAX_PEERS`] keys and push a throttled record out.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
