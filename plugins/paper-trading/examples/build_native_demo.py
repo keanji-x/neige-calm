@@ -66,6 +66,7 @@ class ScriptedBroker:
         # Window records like the SDK bridge: today's orders and executions, plus history from `since`
         # (None once nothing is unresolved, so older resolved orders take reconcile's archived path).
         now = self.clock()
+        day = now.astimezone(NEW_YORK).date()
         start = timestamp(since) if since is not None else None
         today = lambda at: at.astimezone(NEW_YORK).date() == now.astimezone(NEW_YORK).date()
         recent = lambda at: start is not None and start <= at <= now
@@ -76,7 +77,9 @@ class ScriptedBroker:
                          'cash_usd': str(self.cash), 'available_cash_usd': str(self.cash),
                          'shares': self.shares, 'available_shares': self.shares,
                          'quote': {'price': str(self.price), 'at': self.quote_at.isoformat(), 'status': 'Normal',
-                                   'trading_day': True, 'half_day': False},  # observed on full sessions only
+                                   # Observed on full sessions only.
+                                   'calendar_date': day.isoformat(), 'trading_day': True, 'half_day': False,
+                                   'regular_close_at': new_york(day, 16, 0).isoformat()},
                          'market_open': self.market_open, 'orders': orders, 'fills': fills})
 
     def submit(self, request):

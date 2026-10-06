@@ -55,7 +55,9 @@ async fn real_spy_app_admits_planner_plan_and_worker_execution_request() {
             "cash_usd": "10000", "available_cash_usd": "10000", "shares": 0, "available_shares": 0,
             "quote": {
                 "price": "100", "at": now.to_rfc3339(), "status": "Normal",
-                "trading_day": true, "half_day": false
+                "calendar_date": now.date_naive().to_string(),
+                "trading_day": true, "half_day": false,
+                "regular_close_at": (now + chrono::Duration::hours(2)).to_rfc3339()
             },
             "market_open": true, "orders": [], "fills": []
         }})

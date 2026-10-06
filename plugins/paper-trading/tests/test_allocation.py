@@ -32,7 +32,8 @@ def allocation_rig(tmp_path):
     snapshot = {'identity': {'account_no': 'PAPER123', 'account_channel': 'lb_papertrading'},
                 'cash_usd': '10000', 'available_cash_usd': '10000', 'shares': 0, 'available_shares': 0,
                 'quote': {'price': '100', 'at': NOW.isoformat(), 'status': 'Normal',
-                          'trading_day': True, 'half_day': False},
+                          'calendar_date': '2026-09-30', 'trading_day': True, 'half_day': False,
+                          'regular_close_at': '2026-09-30T20:00:00+00:00'},
                 'market_open': True, 'orders': [], 'fills': []}
     path = home / 'allocation-broker.json'; path.write_text(json.dumps({'snapshot': snapshot}))
 
@@ -459,18 +460,27 @@ def test_spy_status_snapshot_carries_the_broker_trading_day(allocation_rig, trad
     state = r.read(); state['snapshot']['quote'] |= {'trading_day': trading_day, 'half_day': half_day}; r.write(state)
     r.step()
     snapshot = r.status()['snapshot']
-    assert (snapshot['trading_day'], snapshot['half_day']) == (trading_day, half_day)
+    assert {k: snapshot[k] for k in ('calendar_date', 'trading_day', 'half_day', 'regular_close_at')} == {
+        'calendar_date': '2026-09-30', 'trading_day': trading_day, 'half_day': half_day,
+        'regular_close_at': '2026-09-30T20:00:00+00:00'}
 
 
-@pytest.mark.parametrize('calendar', [{}, {'trading_day': None}, {'trading_day': False, 'half_day': True}])
-def test_spy_snapshot_without_a_broker_calendar_is_refused_not_guessed(allocation_rig, calendar):
+@pytest.mark.parametrize('change', [
+    {'trading_day': None}, {'half_day': None}, {'trading_day': None, 'half_day': None},
+    {'trading_day': False, 'half_day': True},
+    {'calendar_date': None}, {'calendar_date': 20260930}, {'calendar_date': '20260930'}, {'calendar_date': '2026-09-31'},
+    {'regular_close_at': None}, {'regular_close_at': '2026-09-30T16:00:00'}, {'regular_close_at': 'tomorrow'}])
+def test_spy_snapshot_without_a_broker_calendar_is_refused_not_guessed(allocation_rig, change):
     r = allocation_rig
     first = r.step()
     assert first['error'] is None and first['snapshot']['trading_day'] is True
     state = r.read(); quote = state['snapshot']['quote']
-    for key in ('trading_day', 'half_day'):
-        quote.pop(key)
-    quote.update(calendar); r.write(state)
+    for key, value in change.items():
+        if value is None:
+            quote.pop(key)
+        else:
+            quote[key] = value
+    r.write(state)
     r.app.clock = lambda: NOW + timedelta(minutes=1)
     after = r.step()
     assert 'trading calendar' in after['error'] and after['snapshot'] == first['snapshot']

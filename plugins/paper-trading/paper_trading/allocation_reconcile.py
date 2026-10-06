@@ -1,4 +1,5 @@
 """Validate whole broker observations before atomically adopting executions."""
+from datetime import date
 import json
 from decimal import Decimal
 
@@ -8,6 +9,22 @@ from .ledger import encoded
 BROKER_TERMINAL = {"Filled", "Canceled", "Rejected", "Expired", "PartialWithdrawal"}
 BROKER_ACTIVE = {"NotReported", "New", "WaitToNew", "PartialFilled", "WaitToReplace",
                  "PendingReplace", "Replaced", "WaitToCancel", "PendingCancel"}
+
+
+def calendar_fields(quote):
+    """The broker calendar for the New York date it was queried for; refused, never guessed."""
+    trading_day, half_day = quote.get('trading_day'), quote.get('half_day')
+    calendar_date, close = quote.get('calendar_date'), quote.get('regular_close_at')
+    try:
+        if type(trading_day) is not bool or type(half_day) is not bool or (half_day and not trading_day):
+            raise ValueError
+        if type(calendar_date) is not str or date.fromisoformat(calendar_date).isoformat() != calendar_date:
+            raise ValueError
+        close = timestamp(close).isoformat()
+    except ValueError:
+        raise ValueError('broker trading calendar is required') from None
+    return {'calendar_date': calendar_date, 'trading_day': trading_day, 'half_day': half_day,
+            'regular_close_at': close}
 
 
 def validate_snapshot(raw, config, now):
@@ -26,14 +43,12 @@ def validate_snapshot(raw, config, now):
         raise ValueError('normal, non-future SPY quote required')
     if type(raw['market_open']) is not bool:
         raise ValueError('broker market session is required')
-    trading_day, half_day = raw['quote'].get('trading_day'), raw['quote'].get('half_day')
-    if type(trading_day) is not bool or type(half_day) is not bool or (half_day and not trading_day):
-        raise ValueError('broker trading calendar is required')
+    calendar = calendar_fields(raw['quote'])
     equity = cash + shares * price
     return {'at': now.isoformat(), 'cash_usd': str(cash), 'available_cash_usd': str(available),
             'shares': shares, 'available_shares': available_shares, 'price': str(price),
             'quote_at': quote_at.isoformat(), 'market_open': raw['market_open'],
-            'trading_day': trading_day, 'half_day': half_day,
+            **calendar,
             'equity_usd': str(equity),
             'actual_spy_bps': str(Decimal(shares) * price / equity * 10000) if equity else '0'}
 

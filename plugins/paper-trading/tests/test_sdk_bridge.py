@@ -298,3 +298,19 @@ def test_sdk_calendar_failure_fails_the_snapshot_instead_of_guessing(sdk):
     sdk.state.calendar = 'error'
     with pytest.raises(RuntimeError, match='calendar unavailable'):
         bridge.snapshot(sdk.asset, sdk.trade, sdk.quote, 'PAPER123', {'since': None})
+
+
+def test_sdk_snapshot_crossing_midnight_keeps_the_queried_calendar_date(sdk, monkeypatch):
+    from paper_trading.allocation_reconcile import validate_snapshot
+    # Sunday 23:59:59 New York at the SDK read; the App validates two seconds later, on Monday.
+    read_at, validated_at = datetime(2026, 10, 5, 3, 59, 59, tzinfo=timezone.utc), datetime(2026, 10, 5, 4, 0, 1, tzinfo=timezone.utc)
+    class Clock(datetime):
+        @classmethod
+        def now(cls, zone=None): return read_at
+    monkeypatch.setattr(bridge, 'datetime', Clock)
+    sdk.state.quote_at, sdk.state.calendar = read_at, 'holiday'
+    raw = json.loads(json.dumps(bridge.snapshot(sdk.asset, sdk.trade, sdk.quote, 'PAPER123', {'since': None})))
+    snapshot = validate_snapshot(raw, NS(account_no='PAPER123'), validated_at)
+    assert snapshot['at'] == validated_at.isoformat()
+    assert (snapshot['calendar_date'], snapshot['trading_day']) == ('2026-10-04', False)
+    assert snapshot['regular_close_at'] == '2026-10-04T20:00:00+00:00'

@@ -129,14 +129,16 @@ creates four weekly Calendar entries from the Track, in America/New_York:
 weekday pre-market research 08:45, execution 09:45 and post-close review
 16:30, and a Saturday weekly review at 10:00. Each entry wakes the Planner at
 its start; the kernel needs Calendar wake and weekly recurrence (#1967), and
-it does not start a Planner that never ran. The Planner skips a day the
-`spy.status` snapshot marks closed: its `trading_day` and `half_day` come from
-the broker calendar the App's SDK reads, and a failed calendar read fails the
-whole reconciliation, so the Planner stops instead of guessing. Pre-market research ends in either a
+it does not start a Planner that never ran. Pre-market and post-close refresh
+and stop unless the `spy.status` snapshot's `calendar_date` is today's New York
+date and `trading_day` is true. The snapshot's `calendar_date`, `trading_day`,
+`half_day` and `regular_close_at` come from the broker calendar the App's SDK
+reads for that date; a failed or incomplete calendar read fails the whole
+reconciliation, so the Planner stops instead of guessing. Execution acts only on
+a queued decision, which pre-market saves only on a confirmed trading day. Pre-market research ends in either a
 hold or `spy.plan` with decision ID `spy-YYYYMMDD` (the App accepts 1-55
 lowercase letters, digits or hyphens and a validity of at most 24 hours; the
-Recipe ends it at that day's regular-session close, 13:00 New York on a half
-day). At the execution step the Planner
+Recipe ends it no later than the snapshot's `regular_close_at`). At the execution step the Planner
 declares one `codex`, `access: "read_only"` task `spy-exec-<decision_id>`;
 Claude Workers receive no plugin MCP tools. Only one unresolved decision is
 permitted, and every blocked or uncertain state stays in the Report for

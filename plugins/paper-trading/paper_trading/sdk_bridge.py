@@ -124,7 +124,8 @@ def market(quote, now=None):
     closing = time(13) if half_day else time(16)
     is_open = local.date() == queried_date and trading_day and time(9, 30) <= local.time().replace(tzinfo=None) < closing
     return {'price': str(row.last_done), 'at': utc(row.timestamp), 'status': enum(row.trade_status),
-            'trading_day': trading_day, 'half_day': half_day,
+            # The calendar's own date: the caller's later clock may already be past midnight.
+            'calendar_date': queried_date.isoformat(), 'trading_day': trading_day, 'half_day': half_day,
             'regular_open_at': datetime.combine(queried_date, time(9, 30), tzinfo=NY).astimezone(timezone.utc).isoformat(),
             'regular_close_at': datetime.combine(queried_date, closing, tzinfo=NY).astimezone(timezone.utc).isoformat()}, is_open
 
