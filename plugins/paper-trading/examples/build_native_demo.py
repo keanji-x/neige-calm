@@ -75,7 +75,8 @@ class ScriptedBroker:
         return deepcopy({'identity': {'account_no': CONFIG['account_no'], 'account_channel': 'lb_papertrading'},
                          'cash_usd': str(self.cash), 'available_cash_usd': str(self.cash),
                          'shares': self.shares, 'available_shares': self.shares,
-                         'quote': {'price': str(self.price), 'at': self.quote_at.isoformat(), 'status': 'Normal'},
+                         'quote': {'price': str(self.price), 'at': self.quote_at.isoformat(), 'status': 'Normal',
+                                   'trading_day': True, 'half_day': False},  # observed on full sessions only
                          'market_open': self.market_open, 'orders': orders, 'fills': fills})
 
     def submit(self, request):

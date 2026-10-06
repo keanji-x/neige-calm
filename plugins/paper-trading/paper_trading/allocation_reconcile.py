@@ -26,10 +26,14 @@ def validate_snapshot(raw, config, now):
         raise ValueError('normal, non-future SPY quote required')
     if type(raw['market_open']) is not bool:
         raise ValueError('broker market session is required')
+    trading_day, half_day = raw['quote'].get('trading_day'), raw['quote'].get('half_day')
+    if type(trading_day) is not bool or type(half_day) is not bool or (half_day and not trading_day):
+        raise ValueError('broker trading calendar is required')
     equity = cash + shares * price
     return {'at': now.isoformat(), 'cash_usd': str(cash), 'available_cash_usd': str(available),
             'shares': shares, 'available_shares': available_shares, 'price': str(price),
             'quote_at': quote_at.isoformat(), 'market_open': raw['market_open'],
+            'trading_day': trading_day, 'half_day': half_day,
             'equity_usd': str(equity),
             'actual_spy_bps': str(Decimal(shares) * price / equity * 10000) if equity else '0'}
 

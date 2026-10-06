@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import json
 from pathlib import Path
+import re
 import time
 
 import pytest
@@ -30,7 +31,8 @@ def allocation_rig(tmp_path):
               'max_order_bps': 10000, 'poll_seconds': 5, 'drift_bps': 0}
     snapshot = {'identity': {'account_no': 'PAPER123', 'account_channel': 'lb_papertrading'},
                 'cash_usd': '10000', 'available_cash_usd': '10000', 'shares': 0, 'available_shares': 0,
-                'quote': {'price': '100', 'at': NOW.isoformat(), 'status': 'Normal'},
+                'quote': {'price': '100', 'at': NOW.isoformat(), 'status': 'Normal',
+                          'trading_day': True, 'half_day': False},
                 'market_open': True, 'orders': [], 'fills': []}
     path = home / 'allocation-broker.json'; path.write_text(json.dumps({'snapshot': snapshot}))
 
@@ -449,6 +451,38 @@ def test_spy_unsubmitted_decision_expires_while_the_broker_is_unavailable(alloca
     assert after['decisions'][0]['state'] == 'expired' and not r.submits()
     r.plan(decision_id='replacement', valid_until=(NOW + timedelta(hours=3)).isoformat())
     assert r.status()['decisions'][-1]['state'] == 'queued'
+
+
+@pytest.mark.parametrize('trading_day,half_day', [(True, False), (True, True), (False, False)])
+def test_spy_status_snapshot_carries_the_broker_trading_day(allocation_rig, trading_day, half_day):
+    r = allocation_rig
+    state = r.read(); state['snapshot']['quote'] |= {'trading_day': trading_day, 'half_day': half_day}; r.write(state)
+    r.step()
+    snapshot = r.status()['snapshot']
+    assert (snapshot['trading_day'], snapshot['half_day']) == (trading_day, half_day)
+
+
+@pytest.mark.parametrize('calendar', [{}, {'trading_day': None}, {'trading_day': False, 'half_day': True}])
+def test_spy_snapshot_without_a_broker_calendar_is_refused_not_guessed(allocation_rig, calendar):
+    r = allocation_rig
+    first = r.step()
+    assert first['error'] is None and first['snapshot']['trading_day'] is True
+    state = r.read(); quote = state['snapshot']['quote']
+    for key in ('trading_day', 'half_day'):
+        quote.pop(key)
+    quote.update(calendar); r.write(state)
+    r.app.clock = lambda: NOW + timedelta(minutes=1)
+    after = r.step()
+    assert 'trading calendar' in after['error'] and after['snapshot'] == first['snapshot']
+
+
+def test_spy_agent_text_never_sends_the_planner_to_the_longbridge_cli():
+    manifest = json.loads((ROOT / 'manifest.json').read_text())
+    texts = {'spy-recipe.md': (ROOT / 'spy-recipe.md').read_text()}
+    texts |= {tool['name']: json.dumps(tool, ensure_ascii=False) for tool in manifest['exposes_tools']}
+    assert len(texts) == len(TOOLS) + 1
+    for name, text in texts.items():
+        assert not re.search(r'longbridge|\bcli\b|k-line', text, flags=re.I), name
 
 
 def _opening(r, opening, shares):

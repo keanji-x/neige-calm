@@ -101,7 +101,7 @@
     },
     {
       "name": "spy.status",
-      "description": "Read persisted SPY/cash snapshot, targets, order identities, actual fills and errors without contacting the broker. Check snapshot time. Requires host-provided owning Track and Planner/Worker identity.",
+      "description": "Read persisted SPY/cash snapshot (price, quote time, market_open, and the New York trading_day/half_day from the broker calendar), targets, order identities, actual fills and errors without contacting the broker. Check snapshot time. Requires host-provided owning Track and Planner/Worker identity.",
       "input_schema": {
         "type": "object",
         "properties": {},
