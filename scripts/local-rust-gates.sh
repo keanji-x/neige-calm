@@ -30,8 +30,10 @@ cargo build --release -p calm-server -p calm-codex-bridge -p neige-mcp-stdio-shi
 step "5/6 openapi drift (DEFAULT features)"
 # The maintained frontend owns the OpenAPI and wire outputs; this Rust-only check compares the JSON spec.
 # A private file: a concurrent run writing a shared path would make this one report false drift.
-openapi_check="$(mktemp "${TMPDIR:-/tmp}/neige-openapi-check.XXXXXX.json")"
-trap 'rm -f "$openapi_check"' EXIT
+# `mktemp -d` with a fixed name inside: a suffix after the X's is not portable (BSD mktemp).
+openapi_dir="$(mktemp -d "${TMPDIR:-/tmp}/neige-openapi-check.XXXXXX")"
+trap 'rm -rf "$openapi_dir"' EXIT
+openapi_check="$openapi_dir/openapi.json"
 cargo run --quiet --manifest-path Cargo.toml --bin emit-openapi > "$openapi_check"
 openapi_stale=0
 for spec in fe/core/api/generated/openapi.json; do

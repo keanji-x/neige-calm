@@ -8,11 +8,14 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
+use calm_server::error::CalmError;
 use calm_server::event::EventBus;
+use calm_server::plugin_host::lifecycle::LifecycleDb;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, DaemonClient};
@@ -51,6 +54,14 @@ fn write_app(plugins_dir: &Path, id: &str, overrides: &Value) {
 
 /// A host whose registry and rows are seeded as a boot would find them: `(id, enabled, overrides)`.
 async fn boot(plugins: &[(&str, bool, Value)]) -> Fx {
+    boot_with(plugins, |_| None).await
+}
+
+/// [`boot`], with the plugin-row port `db` builds over the seeded repo, when it builds one.
+async fn boot_with(
+    plugins: &[(&str, bool, Value)],
+    db: impl FnOnce(Arc<dyn Repo>) -> Option<Arc<dyn LifecycleDb>>,
+) -> Fx {
     let tmp = tempfile::tempdir().unwrap();
     let (plugins_dir, data_dir) = (tmp.path().join("plugins"), tmp.path().join("data"));
     std::fs::create_dir_all(&plugins_dir).unwrap();
@@ -72,7 +83,7 @@ async fn boot(plugins: &[(&str, bool, Value)]) -> Fx {
     let (registry, report) = PluginRegistry::load_from_dir(&plugins_dir).unwrap();
     assert!(report.skipped.is_empty(), "{:?}", report.skipped);
     let events = EventBus::new();
-    let host = Arc::new(PluginHost::new_full(
+    let mut host = PluginHost::new_full(
         Arc::new(registry),
         repo.clone(),
         plugins_dir,
@@ -83,7 +94,11 @@ async fn boot(plugins: &[(&str, bool, Value)]) -> Fx {
             calm_server::card_role_cache::CardRoleCache::new(),
             calm_server::track_area_cache::TrackAreaCache::new(),
         ),
-    ));
+    );
+    if let Some(db) = db(repo.clone()) {
+        host = host.with_lifecycle_db(db);
+    }
+    let host = Arc::new(host);
     let state = AppState::from_parts(
         repo.clone(),
         events,
@@ -215,6 +230,52 @@ async fn a_minted_name_refusal_leaves_the_row_as_it_found_it() {
         }
         call(&fx, "POST", "/api/plugins/mint-a/disable").await;
     }
+}
+
+/// The plugin-row port over the repo, except that turning a plugin off fails: an enable's rollback.
+struct RollbackFails(Arc<dyn Repo>);
+
+#[async_trait]
+impl LifecycleDb for RollbackFails {
+    async fn enabled_row(&self, id: &str) -> Result<Option<bool>, CalmError> {
+        Ok(self.0.plugin_get_by_id(id).await?.map(|p| p.enabled))
+    }
+
+    async fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), CalmError> {
+        if !enabled {
+            return Err(CalmError::Internal("injected rollback failure".into()));
+        }
+        self.0.plugin_update_enabled(id, enabled).await?;
+        Ok(())
+    }
+}
+
+/// A conflict refusal whose rollback fails leaves the row enabled, so the refusal is published after
+/// all: the enabled plugin's live state says why it is not running.
+#[tokio::test]
+async fn a_refusal_whose_rollback_fails_publishes_why_the_enabled_plugin_is_not_running() {
+    let fx = boot_with(
+        &[("mint-a", false, json!({})), ("mint.a", false, json!({}))],
+        |repo| Some(Arc::new(RollbackFails(repo))),
+    )
+    .await;
+    let (status, _) = call(&fx, "POST", "/api/plugins/mint-a/enable").await;
+    assert_eq!(status, StatusCode::OK);
+    wait_running(&fx, "mint-a").await;
+    let before = plugin_states(&fx, "mint.a").await;
+
+    let (status, body) = call(&fx, "POST", "/api/plugins/mint.a/enable").await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert!(row_enabled(&fx, "mint.a").await, "the rollback failed");
+    let after = plugin_states(&fx, "mint.a").await;
+    assert_eq!(after.len(), before.len() + 1, "{after:?}");
+    let (state, last_error) = after.last().unwrap();
+    assert_eq!(state, "crashed");
+    assert!(
+        last_error.as_deref().is_some_and(|e| e.contains("mint-a")),
+        "the conflict is the reason: {last_error:?}"
+    );
+    fx.state.plugin.stop("mint-a").await.ok();
 }
 
 /// Every live state published for `id`, oldest first, as `(state, last_error)`, from the persisted

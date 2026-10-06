@@ -2,10 +2,11 @@
 //! parameters, `Query<T>` for the query string. Each deserializes exactly as axum's own extractor
 //! does, but a rejection answers the `ErrorBody` contract (`{error, code}`) with the status axum
 //! gives it, instead of axum's plain-text body. `tests/cases/extractor_scan.rs` keeps axum's
-//! `Json`, `Path` and `Query` out of every handler's arguments.
+//! `Json` out of every handler's arguments, and clippy keeps out its `Path` and `Query`.
 //!
 //! `Path` and `Query` keep axum's names on purpose: utoipa's axum integration recognises those
-//! extractors by name, and infers a handler's documented parameters from them.
+//! extractors by name, and infers a handler's documented parameters from them. axum's own are
+//! disallowed types (`crates/calm-server/clippy.toml`) outside the two impls here.
 
 use axum::extract::{FromRequest, FromRequestParts, Request};
 use axum::http::StatusCode;
@@ -68,6 +69,8 @@ pub(crate) const PARAM_REJECTION: (StatusCode, &str) = (
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Path<T>(pub T);
 
+// The one place axum's `Path` may be named: `clippy.toml` disallows it everywhere else.
+#[allow(clippy::disallowed_types)]
 impl<T, S> FromRequestParts<S> for Path<T>
 where
     T: DeserializeOwned + Send,
@@ -87,6 +90,8 @@ where
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Query<T>(pub T);
 
+// The one place axum's `Query` may be named: `clippy.toml` disallows it everywhere else.
+#[allow(clippy::disallowed_types)]
 impl<T, S> FromRequestParts<S> for Query<T>
 where
     T: DeserializeOwned,

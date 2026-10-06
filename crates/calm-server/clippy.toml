@@ -1,0 +1,7 @@
+# Handlers take `crate::extract::{Path, Query}`: their rejections answer the `ErrorBody` contract
+# (`{error, code}`), axum's answer plain text. Clippy resolves every spelling of these types,
+# aliases and renamed imports included; `crate::extract` alone wraps them.
+disallowed-types = [
+    { path = "axum::extract::Path", reason = "use `crate::extract::Path`: its rejection answers `{error, code}`" },
+    { path = "axum::extract::Query", reason = "use `crate::extract::Query`: its rejection answers `{error, code}`" },
+]

@@ -1,20 +1,23 @@
-//! Source-scan guard: no function or closure in calm-server takes axum's `Json`, `Path` or `Query`
-//! as an argument. Those extractors answer a rejection with axum's plain-text body; the ones in
-//! `calm_server::extract` (`JsonBody<T>`, `Path<T>`, `Query<T>`) answer it as an `ErrorBody`
-//! (#2132, #2175).
+//! Source-scan guard against axum's extractors, whose rejections answer plain text where the ones
+//! in `calm_server::extract` (`JsonBody<T>`, `Path<T>`, `Query<T>`) answer an `ErrorBody` (#2132,
+//! #2175). It checks spellings, not resolved names, so it claims only these:
 //!
-//! `Json` is refused by name, so `Json<T>`, `axum::Json<T>` and `Option<Json<T>>` are all caught,
-//! and so is an argument pattern that destructures a `Json` without a type (`|axum::Json(body)| …`);
-//! returning `Json<T>` stays allowed. A name rule is only sound while `Json` has no other name, so
-//! the scan also refuses every alias: a `use` that renames any `Json` (`use axum::Json as X`,
-//! `use axum::{Json as X}`, or a local re-export renamed, `use self::a::Json as X`), and any `type`
-//! alias whose aliased type names a `Json`.
+//! - No function or closure argument names `Json`: its type has a path segment `Json`
+//!   (`Json<T>`, `axum::Json<T>`, `Option<Json<T>>`), or its pattern destructures a tuple struct
+//!   whose path ends in `Json` (`|axum::Json(body)| …`). Returning `Json<T>` stays allowed.
+//! - No alias can give `Json`, axum, or anything in axum another name: a `use` that renames any
+//!   `Json` (on any path, so a renamed local re-export too), any rename through `axum`
+//!   (`use axum::{self as X}`, `use axum::extract as X`, `use axum::routing::get as X`),
+//!   `use axum as X`, `extern crate axum as X`, and a `type` alias naming a `Json`. So every path
+//!   into axum is spelled from the literal `axum`, and `Json` keeps its own name.
+//! - The literal spellings of axum's `Path` and `Query`: an argument or `type` alias whose path
+//!   runs through `axum` and ends in either, and a `use` that brings either, the `axum::extract`
+//!   module, or a glob over it into scope.
 //!
-//! `Path` and `Query` cannot be refused by name: the crate's own extractors carry those names, so
-//! utoipa still infers the documented parameters. They are refused by origin instead: an argument
-//! or alias whose path runs through `axum` and ends in `Path` or `Query`, and every `use` that
-//! brings either into scope from `axum`, including the module `axum::extract` itself (through which
-//! `extract::Path` would no longer name `axum`), a glob over it, and a rename of `axum`.
+//! The semantic guard for `Path` and `Query` is clippy: `crates/calm-server/clippy.toml` makes
+//! axum's two disallowed types everywhere outside `calm_server::extract`, through any alias. It
+//! checks types, not patterns; an untyped closure pattern that destructures them is caught here,
+//! by its literal spelling, which the rename ban keeps literal.
 
 use std::path::{Path, PathBuf};
 
@@ -50,8 +53,8 @@ impl RefusedExtractors {
     }
 
     /// A `use`, at any depth of a grouped tree, that renames a `Json` (on any path: a module can
-    /// re-export axum's under its own), or that brings axum's `Path`, `Query` or `extract` module
-    /// into scope, or renames `axum` itself.
+    /// re-export axum's under its own), renames anything through `axum` or `axum` itself, or brings
+    /// axum's `Path`, `Query` or `extract` module into scope.
     fn check_use(&mut self, prefix: &mut Vec<String>, tree: &syn::UseTree) {
         let through_axum = |prefix: &[String]| prefix.iter().any(|segment| segment == "axum");
         let at = |prefix: &[String], leaf: &dyn std::fmt::Display| {
@@ -74,10 +77,9 @@ impl RefusedExtractors {
             }
             syn::UseTree::Rename(rename) => {
                 let leaf = rename.ident.to_string();
-                if leaf == "Json"
-                    || leaf == "axum"
-                    || (through_axum(prefix) && refused_axum_leaf(prefix, &leaf))
-                {
+                // Any rename through `axum`, `self` included: modules and items cannot be told
+                // apart by syntax, and a renamed module would hide `axum` from every path under it.
+                if leaf == "Json" || leaf == "axum" || through_axum(prefix) {
                     let leaf = format!("{leaf} as {}", rename.rename);
                     self.hits.push(at(prefix, &leaf));
                 }
@@ -111,8 +113,8 @@ impl RefusedExtractors {
     }
 }
 
-/// Under a path through `axum`: the `Path` and `Query` extractors, and the `extract` module itself
-/// (as a name, or as `self` in a group under it).
+/// Imported unrenamed under a path through `axum`: the `Path` and `Query` extractors, and the
+/// `extract` module itself (as a name, or as `self` in a group under it).
 fn refused_axum_leaf(prefix: &[String], leaf: &str) -> bool {
     match leaf {
         "Path" | "Query" | "extract" => true,
@@ -308,6 +310,12 @@ fn the_scan_flags_every_refused_extractor_shape_and_nothing_else() {
         "use axum::extract::{self, State};",
         "use axum::extract::*;",
         "use axum as web;",
+        // Any rename through `axum`: a renamed crate or module hides `axum` from the paths under it.
+        "use axum::{self as web}; async fn h(web::extract::Path(id): web::extract::Path<String>) {}",
+        "use axum::{self as web}; fn r() { let _ = get(|web::extract::Query(q)| async move {}); }",
+        "use axum::{Router, extract::{self as ex, State}};",
+        "use axum::extract as ex;",
+        "use axum::routing::get as route;",
         "extern crate axum as web;",
         "type Params<T> = axum::extract::Path<T>;",
     ];
@@ -332,6 +340,8 @@ fn the_scan_flags_every_refused_extractor_shape_and_nothing_else() {
         "fn r() { let _ = axum::extract::Path::<String>::from_request_parts(parts, state); }",
         "use axum::extract::{FromRef, State, rejection::JsonRejection};",
         "use std::path::Path;",
+        "use axum::{self, Router};",
+        "use crate::routes::fs as files;",
     ];
     for source in allowed {
         assert!(refused_extractors(source).is_empty(), "{source}");

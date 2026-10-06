@@ -192,9 +192,22 @@ impl PluginHost {
         match self.spawn_under_reporting(&guard, None, report).await {
             Ok(()) | Err(HostError::AlreadyRunning(_)) => {}
             Err(e) => {
+                let unpublished = report == super::ConflictReport::Silent
+                    && matches!(
+                        e,
+                        HostError::TemplateConflict { .. } | HostError::MintedNameConflict { .. }
+                    );
                 let answer = spawn_error_to_calm(e);
-                if answer.status().is_client_error() && !found {
-                    self.lifecycle_db.set_enabled(id, false).await?;
+                if answer.status().is_client_error()
+                    && !found
+                    && let Err(rollback) = self.lifecycle_db.set_enabled(id, false).await
+                {
+                    // The row stays enabled after all, so the refusal the spawn left unpublished is
+                    // published now: an enabled plugin says why it is not running.
+                    if unpublished {
+                        self.emit_crashed_under(&guard, &answer.reason()).await;
+                    }
+                    return Err(rollback);
                 }
                 return Err(answer);
             }
