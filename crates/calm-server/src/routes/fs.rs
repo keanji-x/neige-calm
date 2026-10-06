@@ -126,7 +126,7 @@ pub struct GitDiffResponse {
     params(("path" = Option<String>, Query, description = "Absolute path to list; omitted → $HOME")),
     responses(
         (status = 200, description = "Directory listing", body = ListdirResponse),
-        (status = 400, description = "Path is not a directory", body = ErrorBody),
+        (status = 400, description = "Path is invalid or not a directory", body = ErrorBody),
         (status = 403, description = "Read permission denied", body = ErrorBody),
         (status = 404, description = "Path doesn't exist (`path_not_found`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
@@ -232,7 +232,7 @@ fn directory_entry_visible(name: &str) -> bool {
     params(("path" = String, Query, description = "Absolute path to a text file")),
     responses(
         (status = 200, description = "Read text file contents", body = ReadFileResponse),
-        (status = 400, description = "Path is not a file, or is binary/non-UTF-8", body = ErrorBody),
+        (status = 400, description = "Path is invalid, not a file, or binary/non-UTF-8", body = ErrorBody),
         (status = 403, description = "Read permission denied", body = ErrorBody),
         (status = 404, description = "Path doesn't exist (`path_not_found`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
@@ -253,7 +253,7 @@ pub(crate) async fn readfile(
     params(("path" = String, Query, description = "Absolute path to an image file")),
     responses(
         (status = 200, description = "Read raw image bytes", body = Vec<u8>, content_type = "application/octet-stream"),
-        (status = 400, description = "Path is not a file, has an unsupported extension, or exceeds the image cap", body = ErrorBody),
+        (status = 400, description = "Path is invalid, not a file, has an unsupported extension, or exceeds the image cap", body = ErrorBody),
         (status = 403, description = "Read permission denied", body = ErrorBody),
         (status = 404, description = "Path doesn't exist (`path_not_found`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
@@ -344,7 +344,7 @@ pub(crate) async fn read_track_workspace_file_raw(
     params(("path" = String, Query, description = "Absolute path to a directory inside a git repository")),
     responses(
         (status = 200, description = "Working tree status", body = GitStatusResponse),
-        (status = 400, description = "Path is not a directory or not inside a git repository", body = ErrorBody),
+        (status = 400, description = "Path is invalid, not a directory, or not inside a git repository", body = ErrorBody),
         (status = 403, description = "Read permission denied", body = ErrorBody),
         (status = 404, description = "Path doesn't exist (`path_not_found`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
@@ -368,7 +368,7 @@ pub(crate) async fn gitstatus(
     ),
     responses(
         (status = 200, description = "HEAD and working-tree text for a changed file", body = GitDiffResponse),
-        (status = 400, description = "Path is not inside a git repository or file is binary/non-UTF-8", body = ErrorBody),
+        (status = 400, description = "Path is invalid or not inside a git repository, or the file is binary/non-UTF-8", body = ErrorBody),
         (status = 403, description = "Read permission denied", body = ErrorBody),
         (status = 404, description = "Neither the path nor its parent folder exists (`path_not_found`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
@@ -1124,8 +1124,12 @@ fn default_start() -> PathBuf {
 
 fn map_io_err(path: &std::path::Path, e: std::io::Error) -> CalmError {
     match e.kind() {
-        ErrorKind::NotFound | ErrorKind::NotADirectory | ErrorKind::InvalidInput => {
+        ErrorKind::NotFound | ErrorKind::NotADirectory => {
             CalmError::PathNotFound(format!("path {} not found", path.display()))
+        }
+        // A path the OS cannot take at all (an interior NUL byte): malformed, not missing, so no restore hint.
+        ErrorKind::InvalidInput => {
+            CalmError::BadRequest(format!("path {} is not a valid path", path.display()))
         }
         ErrorKind::PermissionDenied => {
             CalmError::Forbidden(format!("permission denied reading {}", path.display()))
@@ -1302,6 +1306,34 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, CalmError::PathNotFound(_)));
+    }
+
+    /// Malformed is not missing: a NUL byte in the path answers 400 `bad_request`, while an absent file and a file
+    /// under a regular file (`NotADirectory`) answer 404 `path_not_found`.
+    #[tokio::test]
+    async fn a_malformed_path_is_a_bad_request_and_a_missing_one_is_path_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let malformed = read_file_response(&tmp.path().join("bad\0name.txt"))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            answered(malformed).await,
+            (StatusCode::BAD_REQUEST, "bad_request".to_string())
+        );
+        let file = tmp.path().join("file.txt");
+        std::fs::write(&file, "x").unwrap();
+        for missing in [
+            tmp.path().join("missing.txt"),
+            file.join("under-a-file.txt"),
+        ] {
+            let err = read_file_response(&missing).await.unwrap_err();
+            assert_eq!(
+                answered(err).await,
+                (StatusCode::NOT_FOUND, "path_not_found".to_string()),
+                "{}",
+                missing.display()
+            );
+        }
     }
 
     #[tokio::test]

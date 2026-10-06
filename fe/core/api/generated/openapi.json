@@ -2369,7 +2369,7 @@
             }
           },
           "400": {
-            "description": "Path is not inside a git repository or file is binary/non-UTF-8",
+            "description": "Path is invalid or not inside a git repository, or the file is binary/non-UTF-8",
             "content": {
               "application/json": {
                 "schema": {
@@ -2440,7 +2440,7 @@
             }
           },
           "400": {
-            "description": "Path is not a directory or not inside a git repository",
+            "description": "Path is invalid, not a directory, or not inside a git repository",
             "content": {
               "application/json": {
                 "schema": {
@@ -2511,7 +2511,7 @@
             }
           },
           "400": {
-            "description": "Path is not a directory",
+            "description": "Path is invalid or not a directory",
             "content": {
               "application/json": {
                 "schema": {
@@ -2582,7 +2582,7 @@
             }
           },
           "400": {
-            "description": "Path is not a file, or is binary/non-UTF-8",
+            "description": "Path is invalid, not a file, or binary/non-UTF-8",
             "content": {
               "application/json": {
                 "schema": {
@@ -2658,7 +2658,7 @@
             }
           },
           "400": {
-            "description": "Path is not a file, has an unsupported extension, or exceeds the image cap",
+            "description": "Path is invalid, not a file, has an unsupported extension, or exceeds the image cap",
             "content": {
               "application/json": {
                 "schema": {

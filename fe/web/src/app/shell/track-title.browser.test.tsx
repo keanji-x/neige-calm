@@ -92,3 +92,41 @@ describe('shared Track title in production hosts', () => {
     expect(decoration(screen.getByRole('button', { name: 'Alpha, closed' }))).toBe('line-through');
   });
 });
+
+/* #2248 review: the rename failure's Dismiss sits beside the input; pressing it must not count as leaving the editor. */
+describe('a failed inline rename', () => {
+  async function failRename(onRenameTrack: (title: string) => Promise<void>) {
+    await page.viewport(1280, 720);
+    renderPage({ onRenameTrack });
+    await userEvent.click(page.getByRole('button', { name: 'Rename track' }));
+    const input = page.getByRole('textbox', { name: 'Track title' });
+    await userEvent.clear(input);
+    await userEvent.type(input, 'Kept draft');
+    await userEvent.keyboard('{Enter}');
+    await expect.element(page.getByRole('alert').getByText('The rename is unconfirmed.')).toBeVisible();
+    return input;
+  }
+
+  it('keeps the draft in the open editor and clears the failure when Dismiss is clicked', async () => {
+    const onRenameTrack = vi.fn<(title: string) => Promise<void>>()
+      .mockRejectedValueOnce(new Error('socket hang up')).mockResolvedValue(undefined);
+    const input = await failRename(onRenameTrack);
+    await userEvent.click(page.getByRole('alert').getByRole('button', { name: /^Dismiss/ }));
+    expect(screen.queryByRole('alert')).toBeNull();
+    await expect.element(input).toHaveValue('Kept draft');
+    await expect.element(input).toHaveFocus();
+    /* The editor is still the reader's: Enter sends the kept draft again. */
+    await userEvent.keyboard('{Enter}');
+    expect(onRenameTrack.mock.calls.map(([name]) => name)).toEqual(['Kept draft', 'Kept draft']);
+  });
+
+  it('keeps the draft when Dismiss is reached and pressed from the keyboard', async () => {
+    const input = await failRename(vi.fn<(title: string) => Promise<void>>().mockRejectedValue(new Error('socket hang up')));
+    await userEvent.tab();
+    await expect.element(page.getByRole('alert').getByRole('button', { name: /^Dismiss/ })).toHaveFocus();
+    await userEvent.keyboard('{Enter}');
+    expect(screen.queryByRole('alert')).toBeNull();
+    await expect.element(input).toHaveValue('Kept draft');
+    await expect.element(input).toHaveFocus();
+  });
+});
