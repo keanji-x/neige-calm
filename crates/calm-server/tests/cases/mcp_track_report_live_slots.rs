@@ -487,7 +487,7 @@ async fn live_slot_template_write_read_and_stale_cas() {
     )
     .await
     .unwrap_err();
-    assert_eq!(error.code, -32001);
+    assert_eq!(error.code, -32409);
     let after = read_full(&boot, &created["id"]).await;
     assert_eq!(after["doc_rev"], updated["doc_rev"]);
     assert_eq!(

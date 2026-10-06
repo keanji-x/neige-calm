@@ -138,24 +138,24 @@ async fn removed_revision_params_are_refused_as_unknown_parameters() {
         (
             TOOL_REPORT_COMMIT,
             json!({ "if_doc_rev": 0, "message": "m", "summary": "x" }),
-            "unknown key `if_doc_rev`",
+            "unknown argument `if_doc_rev`",
         ),
         (
             TOOL_REPORT_COMMIT,
             json!({ "message": "m", "ops": [
                 { "op": "upsert", "id": index[1].0, "if_rev": index[1].1, "kind": "prose", "markdown": "# x\n" }
             ] }),
-            "ops[0]: unknown key `if_rev`",
+            "ops[0]: unknown argument `if_rev`",
         ),
         (
             TOOL_REPORT_WRITE,
             json!({ "body": "# overwrite\n", "if_doc_rev": 0 }),
-            "unknown key `if_doc_rev`",
+            "unknown argument `if_doc_rev`",
         ),
         (
             TOOL_REPORT_WRITE,
             json!({ "body": "# overwrite\n", "if_rev": 1 }),
-            "unknown key `if_rev`",
+            "unknown argument `if_rev`",
         ),
     ];
     for (tool, args, needle) in cases {
@@ -433,7 +433,7 @@ async fn kinds_refuses_worker() {
     )
     .await
     .expect_err("worker must be denied");
-    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert_eq!(err.code, RpcError::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -639,7 +639,7 @@ async fn upsert_replace_bumps_rev() {
 }
 
 #[tokio::test]
-async fn upsert_of_a_block_another_writer_replaced_returns_32001_and_writes_nothing() {
+async fn upsert_of_a_block_another_writer_replaced_returns_32409_and_writes_nothing() {
     let boot = boot().await;
     let index = index_of(&read(&boot, json!({})).await);
     let (id, rev) = index[1].clone();
@@ -791,7 +791,7 @@ async fn commit_refuses_worker() {
     )
     .await
     .expect_err("worker must be denied");
-    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert_eq!(err.code, RpcError::FORBIDDEN);
     assert!(err.message.contains("Planner"), "msg = {err:?}");
 }
 
@@ -1379,7 +1379,7 @@ async fn write_markdown_refuses_worker() {
     )
     .await
     .expect_err("worker must be denied");
-    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert_eq!(err.code, RpcError::FORBIDDEN);
 }
 
 /// A schedulable planner task declaration: the full shape the projection materializes into a `tasks` row.
@@ -1722,7 +1722,7 @@ async fn commit_three_ops_and_summary_land_atomically_with_one_doc_rev_bump() {
 }
 
 #[tokio::test]
-async fn commit_stale_doc_rev_returns_32001_and_writes_nothing() {
+async fn commit_stale_doc_rev_returns_32409_and_writes_nothing() {
     let boot = boot().await;
     let index = seed_two_blocks(&boot).await; // the planner read docRev 1
     let (a_id, _) = index[0].clone();
@@ -2103,7 +2103,7 @@ async fn commit_rejects_duplicate_block_ids_before_touching_the_doc() {
     assert_eq!(before.doc_rev, 1);
     let mut rx = boot.ctx.events.subscribe();
 
-    // A content-changing upsert would bump A to rev 2, so a later op on A could never match the read — refused up front instead of failing -32001.
+    // A content-changing upsert would bump A to rev 2, so a later op on A could never match the read — refused up front instead of failing -32409.
     let cases: Vec<(&str, Value)> = vec![
         (
             "upsert then delete the same id",

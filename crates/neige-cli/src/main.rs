@@ -14,11 +14,33 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
 const ENV_SOCKET: &str = "NEIGE_MCP_SOCKET";
 const ENV_TOKEN: &str = "NEIGE_MCP_TOKEN";
-/// 128 + SIGPIPE: stdout or stderr is gone, so nothing more can be said.
-const EXIT_WRITE_FAILED: u8 = 141;
+/// The only exit codes the forwarder emits itself; every other exit is the kernel's (0, 1, 4),
+/// written back verbatim (`docs/conventions/agent-commands.md` §5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LocalExit {
+    /// Its environment: a missing variable or a non-UTF-8 argument.
+    Environment,
+    /// The kernel is unreachable or the protocol failed.
+    Transport,
+    /// 128 + SIGPIPE: stdout or stderr is gone, so nothing more can be said.
+    WriteFailed,
+}
+
+impl LocalExit {
+    #[cfg(test)]
+    const ALL: [Self; 3] = [Self::Environment, Self::Transport, Self::WriteFailed];
+
+    fn code(self) -> u8 {
+        match self {
+            Self::Environment => 2,
+            Self::Transport => 3,
+            Self::WriteFailed => 141,
+        }
+    }
+}
 
 /// A local failure: its stderr line and exit code.
-struct Failure(String, u8);
+struct Failure(String, LocalExit);
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -32,7 +54,9 @@ async fn main() -> ExitCode {
     }
     match forward(args).await {
         Ok((stdout, stderr, exit)) => emit(stdout.as_bytes(), stderr.as_bytes(), exit),
-        Err(Failure(message, exit)) => emit(b"", format!("neige: {message}\n").as_bytes(), exit),
+        Err(Failure(message, exit)) => {
+            emit(b"", format!("neige: {message}\n").as_bytes(), exit.code())
+        }
     }
 }
 
@@ -44,7 +68,7 @@ fn emit(stdout: &[u8], stderr: &[u8], exit: u8) -> ExitCode {
     ExitCode::from(if written.is_ok() {
         exit
     } else {
-        EXIT_WRITE_FAILED
+        LocalExit::WriteFailed.code()
     })
 }
 
@@ -54,7 +78,7 @@ fn env_var(name: &str) -> Result<OsString, Failure> {
         .ok_or_else(|| {
             Failure(
                 format!("missing {name} env var; run from a neige planner terminal"),
-                2,
+                LocalExit::Environment,
             )
         })
 }
@@ -66,13 +90,20 @@ async fn forward(args: Vec<OsString>) -> Result<(String, String, u8), Failure> {
         .into_iter()
         .enumerate()
         .map(|(index, arg)| {
-            arg.into_string()
-                .map_err(|_| Failure(format!("argument {} is not valid UTF-8", index + 1), 5))
+            arg.into_string().map_err(|_| {
+                Failure(
+                    format!("argument {} is not valid UTF-8", index + 1),
+                    LocalExit::Environment,
+                )
+            })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let stream = UnixStream::connect(&socket)
-        .await
-        .map_err(|e| Failure(format!("connect {}: {e}", socket.to_string_lossy()), 3))?;
+    let stream = UnixStream::connect(&socket).await.map_err(|e| {
+        Failure(
+            format!("connect {}: {e}", socket.to_string_lossy()),
+            LocalExit::Transport,
+        )
+    })?;
     let (rd, mut wr) = stream.into_split();
     let mut reader = BufReader::new(rd);
     // A token that is not UTF-8 cannot be a kernel token; the kernel refuses it (-32401).
@@ -92,7 +123,10 @@ async fn forward(args: Vec<OsString>) -> Result<(String, String, u8), Failure> {
         .and_then(|exit| u8::try_from(exit).ok());
     match (text("stdout"), text("stderr"), exit) {
         (Some(stdout), Some(stderr), Some(exit)) => Ok((stdout, stderr, exit)),
-        _ => Err(Failure(format!("neige/cli: invalid result: {result}"), 4)),
+        _ => Err(Failure(
+            format!("neige/cli: invalid result: {result}"),
+            LocalExit::Transport,
+        )),
     }
 }
 
@@ -103,7 +137,7 @@ async fn request(
     method: &str,
     line: &str,
 ) -> Result<Value, Failure> {
-    let failed = |message: String| Failure(format!("{method}: {message}"), 4);
+    let failed = |message: String| Failure(format!("{method}: {message}"), LocalExit::Transport);
     let mut frame = line.as_bytes().to_vec();
     frame.push(b'\n');
     wr.write_all(&frame)
@@ -133,4 +167,20 @@ async fn request(
         .get_mut("result")
         .map(Value::take)
         .ok_or_else(|| failed("response has neither result nor error".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LocalExit;
+    use std::collections::BTreeSet;
+
+    /// The kernel's codes (`calm-server` `kernel_exit_codes_are_exactly_0_1_4`), passed through.
+    const KERNEL: [u8; 3] = [0, 1, 4];
+
+    #[test]
+    fn forwarder_exit_codes_are_exactly_2_3_141() {
+        let local: BTreeSet<u8> = LocalExit::ALL.iter().map(|exit| exit.code()).collect();
+        assert_eq!(local, BTreeSet::from([2, 3, 141]));
+        assert!(KERNEL.iter().all(|code| !local.contains(code)));
+    }
 }

@@ -420,7 +420,7 @@ async fn invalid_tags_and_non_planner_writes_are_refused_before_any_write() {
     )
     .await
     .expect_err("a worker lists tags but does not change them");
-    assert_eq!(err.code, INVALID_PARAMS, "{err:?}");
+    assert_eq!(err.code, -32403, "{err:?}");
     assert!(
         err.message.contains("only the Planner changes report tags"),
         "{err:?}"

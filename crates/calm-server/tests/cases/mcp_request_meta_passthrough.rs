@@ -217,7 +217,7 @@ fn identity_capture_registry() -> (Arc<ToolRegistry>, mpsc::UnboundedReceiver<To
             description: "Capture resolved identity for PR3b tests.".into(),
             input_schema: json!({
                 "type": "object",
-                "properties": {}
+                "properties": { "x": {} }
             }),
             annotations: None,
             visible_to_roles: &[CardRole::Planner],

@@ -1605,7 +1605,7 @@ async fn cli_query_connectors_are_refused_app_only_surfaces() {
         .dispatch_neige_callback(CLI_ID, "neige.overlay.set", json!({}), None)
         .await
         .expect_err("neige.* must be refused for a cli-query connector");
-    assert_eq!(err.code, -32002, "{err:?}");
+    assert_eq!(err.code, -32503, "{err:?}");
     assert!(
         err.message.contains("cli-query"),
         "the refusal must name the KIND: {}",
@@ -2847,7 +2847,7 @@ async fn neige_callbacks_are_refused_for_connectors() {
         .dispatch_neige_callback(CONNECTOR_ID, "neige.kv.get", json!({ "key": "k" }), None)
         .await
         .expect_err("connectors have no neige.* channel");
-    assert_eq!(err.code, -32002);
+    assert_eq!(err.code, -32503);
     assert!(
         err.message.contains("mcp-http"),
         "the refusal must name the kind: {}",

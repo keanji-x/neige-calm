@@ -52,6 +52,7 @@ fn ls_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "path": { "type": "string" }
             }
@@ -69,6 +70,7 @@ fn cat_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({
             "type": "object",
+            "additionalProperties": false,
             "required": ["path"],
             "properties": {
                 "path": { "type": "string" },
@@ -117,7 +119,7 @@ async fn track_ls(
 fn entries_result(entries: Vec<TrackFsEntry>) -> Result<Value, RpcError> {
     serde_json::to_value(entries)
         .map(|entries| json!({ "entries": entries }))
-        .map_err(|e| RpcError::internal(format!("track_file: json serialization: {e}")))
+        .map_err(|e| RpcError::internal(format!("json serialization: {e}")))
 }
 
 async fn track_cat(
@@ -156,13 +158,13 @@ async fn track_cat(
         .await
         .map_err(track_fs_error_to_rpc)?;
     serde_json::to_value(content)
-        .map_err(|e| RpcError::internal(format!("track_file: json serialization: {e}")))
+        .map_err(|e| RpcError::internal(format!("json serialization: {e}")))
 }
 
 fn parse_path_arg(args: &Value, required: bool) -> Result<String, RpcError> {
     let obj = args
         .as_object()
-        .ok_or_else(|| RpcError::invalid_params("neige.track: arguments must be an object"))?;
+        .ok_or_else(|| RpcError::invalid_params("arguments must be an object"))?;
     let Some(raw) = obj.get("path") else {
         if required {
             return Err(RpcError::invalid_params(
@@ -173,7 +175,7 @@ fn parse_path_arg(args: &Value, required: bool) -> Result<String, RpcError> {
     };
     let path = raw
         .as_str()
-        .ok_or_else(|| RpcError::invalid_params("neige.track: `path` must be a string"))?;
+        .ok_or_else(|| RpcError::invalid_params("`path` must be a string"))?;
     Ok(normalize_path(path))
 }
 
@@ -222,7 +224,7 @@ fn guide_cat(name: &str) -> Result<Value, RpcError> {
         .ok_or_else(|| {
             let names: Vec<&str> = GUIDES.iter().map(|(guide, _)| *guide).collect();
             RpcError::invalid_params(format!(
-                "neige.track: no guide `{GUIDE_DIR}/{name}`; guides: {}",
+                "no guide `{GUIDE_DIR}/{name}`; guides: {}",
                 names.join(", ")
             ))
         })?;
@@ -316,7 +318,7 @@ async fn own_report(
     let (report_card, _) = load_report_for_track(ctx, &track).await?;
     let snapshot = load_report_doc_snapshot(ctx.repo.as_ref(), report_card.id.as_str())
         .await
-        .map_err(|e| RpcError::internal(format!("track_file: {e}")))?;
+        .map_err(|e| RpcError::internal(format!("{e}")))?;
     match selection {
         Some(selection) => {
             let ids = selection.block_ids(&snapshot.blocks)?;
@@ -340,7 +342,7 @@ fn markdown_content(content: String) -> Result<Value, RpcError> {
         content,
         content_type: "text/markdown".into(),
     })
-    .map_err(|e| RpcError::internal(format!("track_file: json serialization: {e}")))
+    .map_err(|e| RpcError::internal(format!("json serialization: {e}")))
 }
 
 pub(crate) async fn resolve_track_for_identity(
@@ -352,20 +354,20 @@ pub(crate) async fn resolve_track_for_identity(
         .repo
         .card_get(&card_id_str)
         .await
-        .map_err(|e| RpcError::internal(format!("track_file: card lookup: {e}")))?
+        .map_err(|e| RpcError::internal(format!("card lookup: {e}")))?
         .ok_or_else(|| {
             RpcError::internal(format!(
-                "track_file: bound card {card_id_str} not found (deleted mid-connection?)"
+                "bound card {card_id_str} not found (deleted mid-connection?)"
             ))
         })?;
     let track = ctx
         .repo
         .track_get(card.track_id.as_str())
         .await
-        .map_err(|e| RpcError::internal(format!("track_file: track lookup: {e}")))?
+        .map_err(|e| RpcError::internal(format!("track lookup: {e}")))?
         .ok_or_else(|| {
             RpcError::internal(format!(
-                "track_file: track {} for card {} not found",
+                "track {} for card {} not found",
                 card.track_id.as_str(),
                 card_id_str
             ))
@@ -376,7 +378,7 @@ pub(crate) async fn resolve_track_for_identity(
 pub(crate) fn track_fs_error_to_rpc(err: TrackFsError) -> RpcError {
     match err {
         TrackFsError::PathNotAvailable(message) => RpcError::invalid_params(message),
-        TrackFsError::Forbidden(message) => RpcError::custom(-32403, message),
+        TrackFsError::Forbidden(message) => RpcError::forbidden(message),
         TrackFsError::Internal(message) => RpcError::internal(message),
     }
 }

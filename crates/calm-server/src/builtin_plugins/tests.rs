@@ -155,7 +155,7 @@ async fn builtin_native_calls_require_bound_dev_and_live_component() {
                 .await
                 .err()
                 .unwrap();
-            assert_eq!(error.code, -32602, "{name} must reject {role:?}");
+            assert_eq!(error.code, -32403, "{name} must reject {role:?}");
             assert!(error.message.contains("tool requires role"), "{error:?}");
         }
     }
@@ -165,7 +165,7 @@ async fn builtin_native_calls_require_bound_dev_and_live_component() {
             .await
             .err()
             .unwrap();
-        assert_eq!(error.code, -32002, "stale identity called disabled {name}");
+        assert_eq!(error.code, -32503, "stale identity called disabled {name}");
         assert!(error.message.contains("enable it in Settings"));
         let mut assistant = identity.clone();
         assistant.role = CardRole::Assistant;

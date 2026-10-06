@@ -903,7 +903,7 @@ fn rpc_to_calm(e: RpcError) -> CalmError {
     // Kernel-extension codes map to plugin-aware variants; bare JSON-RPC codes land as 400.
     match e.code {
         -32001 => CalmError::PluginPermission(e.message),
-        -32002 => CalmError::PluginInstall(e.message),
+        RpcError::UNAVAILABLE => CalmError::PluginInstall(e.message),
         -32003 => CalmError::PluginPermission(e.message),
         -32004 => CalmError::NotFound(e.message),
         RpcError::INVALID_PARAMS => CalmError::BadRequest(e.message),

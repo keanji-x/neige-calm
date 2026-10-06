@@ -161,12 +161,12 @@ async fn forwarder_local_failures_are_fixed() {
         "{stderr:?}"
     );
 
-    // Non-UTF-8 argv: exit 5, before any connection.
+    // Non-UTF-8 argv: exit 2, before any connection.
     let listener = listen(&socket);
     let mut cmd = command(Some(&socket), Some("t"));
     cmd.arg("cat").arg(OsStr::from_bytes(b"\xff"));
     let out = run_without_server(&mut cmd).await;
-    assert_eq!(out.status.code(), Some(5));
+    assert_eq!(out.status.code(), Some(2));
     assert_eq!(
         String::from_utf8(out.stderr).unwrap(),
         "neige: argument 2 is not valid UTF-8\n"
@@ -186,7 +186,7 @@ async fn forwarder_local_failures_are_fixed() {
         "--version or non-UTF-8 argv connected to the kernel"
     );
 
-    // JSON-RPC error: exit 4 with `<method>: <message> (code N)`; `--version` among other args is forwarded.
+    // JSON-RPC error: exit 3 with `<method>: <message> (code N)`; `--version` among other args is forwarded.
     let child = command(Some(&socket), Some("t"))
         .args(["ls", "--version"])
         .spawn()
@@ -195,7 +195,7 @@ async fn forwarder_local_failures_are_fixed() {
     assert!(cli.contains(r#""argv":["ls","--version"]"#), "{cli}");
     reply(&mut wr, json!({ "jsonrpc": "2.0", "id": 2, "error": { "code": -32601, "message": "method not found: neige/cli" } })).await;
     let out = finish(child).await;
-    assert_eq!(out.status.code(), Some(4));
+    assert_eq!(out.status.code(), Some(3));
     assert_eq!(
         String::from_utf8(out.stderr).unwrap(),
         "neige: neige/cli: method not found: neige/cli (code -32601)\n"

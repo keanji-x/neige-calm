@@ -1429,7 +1429,7 @@ fn entry(name: &str, kind: &str, size: Option<usize>, updated_at: Option<i64>) -
 
 fn path_not_available(path: &str) -> TrackFsError {
     TrackFsError::PathNotAvailable(format!(
-        "neige.track: path not available in this view: {}",
+        "path not available in this view: {}",
         if path.is_empty() { "/" } else { path }
     ))
 }

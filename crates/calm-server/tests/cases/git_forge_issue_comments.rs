@@ -193,7 +193,7 @@ async fn planner_issue_comments_are_recorded_deduplicated_and_refreshable() {
 
     fx.plugin_host.disable(PLUGIN_ID).await.unwrap();
     let denied = call(&fx, &token, &thread, 11, COMMENT, args).await;
-    assert_eq!(denied["error"]["code"], -32002, "{denied}");
+    assert_eq!(denied["error"]["code"], -32503, "{denied}");
     assert_eq!(
         std::fs::read_to_string(state.join("issue_comment_count"))
             .unwrap()

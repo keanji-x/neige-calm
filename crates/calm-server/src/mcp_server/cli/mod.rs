@@ -14,7 +14,7 @@ use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{AppContext, ConnectionIdentity, ToolRegistry};
 use crate::mcp_server::transport::call_registered_tool;
 
-/// The only exit codes the kernel emits; the forwarder alone uses 2, 3, 5 and 141, and 4 for its transport failures.
+/// The only exit codes the kernel emits; the forwarder alone uses 2, 3 and 141.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CliExit {
     Success,
@@ -128,7 +128,11 @@ async fn run(
         Err(error) => Output::error(
             CliExit::Failed,
             parsed.json,
-            format!("{tool}: {} (code {})", error.message, error.code),
+            if error.led_by(tool) {
+                format!("{} (code {})", error.message, error.code)
+            } else {
+                format!("{tool}: {} (code {})", error.message, error.code)
+            },
             json!({ "kind": "rpc", "method": tool, "rpc_error": error }),
         ),
         Ok(result) => {
@@ -148,7 +152,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     /// Exit codes only the forwarder emits (docs/architecture/1801-kernel-served-cli.md §3.3).
-    const FORWARDER_RESERVED: [u8; 4] = [2, 3, 5, 141];
+    const FORWARDER_RESERVED: [u8; 3] = [2, 3, 141];
 
     #[test]
     fn kernel_exit_codes_are_exactly_0_1_4() {

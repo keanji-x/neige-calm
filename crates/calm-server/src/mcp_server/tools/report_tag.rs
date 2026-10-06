@@ -23,7 +23,6 @@ pub const TOOL_REPORT_TAG: &str = "neige_report_tag";
 
 /// The only taggable path: the caller's own report.
 const REPORT_PATH: &str = "report.md";
-const KEYS: &[&str] = &["path", "add", "remove"];
 /// Rolls back a call that left the tag list unchanged; no row writer's conflict message equals it.
 const NO_CHANGE: &str = "neige_report_tag: no tag changed";
 
@@ -79,11 +78,6 @@ async fn report_tag(
     let obj = args
         .as_object()
         .ok_or_else(|| RpcError::invalid_params(format!("{tool}: arguments must be an object")))?;
-    if let Some(key) = obj.keys().find(|key| !KEYS.contains(&key.as_str())) {
-        return Err(RpcError::invalid_params(format!(
-            "{tool}: unknown argument `{key}`; the tagged report is always the caller's own"
-        )));
-    }
     let path = obj
         .get("path")
         .and_then(Value::as_str)
@@ -98,7 +92,7 @@ async fn report_tag(
     // Changing tags moves the report's update time, and the report is Planner-authored: the write
     // gate admits no Worker event outside the Worker's own card scope. Workers only list.
     if !(add.is_empty() && remove.is_empty()) && identity.role != CardRole::Planner {
-        return Err(RpcError::invalid_params(format!(
+        return Err(RpcError::forbidden(format!(
             "{tool}: only the Planner changes report tags; a {:?} may only list them",
             identity.role
         )));
@@ -185,8 +179,5 @@ fn tag_list(obj: &Map<String, Value>, key: &str) -> Result<Vec<String>, RpcError
 }
 
 fn map_err(tool: &str, e: CalmError) -> RpcError {
-    match e {
-        CalmError::BadRequest(m) => RpcError::invalid_params(format!("{tool}: {m}")),
-        other => RpcError::internal(format!("{tool}: {other}")),
-    }
+    crate::mcp_server::framing::calm_error(e).for_tool(tool)
 }

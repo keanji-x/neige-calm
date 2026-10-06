@@ -47,6 +47,7 @@ fn track_gc_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({
             "type": "object",
+            "additionalProperties": false,
             "required": ["track_id", "keep"],
             "properties": {
                 "track_id": { "type": "string", "minLength": 1 },
@@ -65,7 +66,7 @@ fn vacuum_descriptor() -> ToolDescriptor {
         description: include_str!("../../../prompts/tools/neige_admin_vacuum.md")
             .trim_end()
             .to_string(),
-        input_schema: json!({ "type": "object", "properties": {} }),
+        input_schema: json!({ "type": "object", "additionalProperties": false, "properties": {} }),
         annotations: None,
         visible_to_roles: &[],
     }
@@ -149,5 +150,5 @@ async fn vacuum(
 fn track_vcs_repo(ctx: &AppContext) -> Result<&dyn TrackVcsRepo, RpcError> {
     ctx.track_vcs
         .as_deref()
-        .ok_or_else(|| RpcError::internal("neige.admin requires sqlite-backed track-vcs"))
+        .ok_or_else(|| RpcError::internal("requires sqlite-backed track-vcs"))
 }

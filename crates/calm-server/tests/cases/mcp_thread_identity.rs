@@ -941,10 +941,7 @@ async fn tools_call_thread_id_drives_role_gate() {
     )
     .await;
     let worker_resp = recv_frame(&mut rd).await;
-    assert_eq!(
-        worker_resp["error"]["code"],
-        json!(RpcError::INVALID_PARAMS)
-    );
+    assert_eq!(worker_resp["error"]["code"], json!(RpcError::FORBIDDEN));
 
     send_frame(
         &mut wr,
@@ -1066,7 +1063,7 @@ async fn cardbound_role_gate_still_applies() {
         resp.get("error").is_some(),
         "ReportCard CardBound identity must still be rejected: {resp:#?}"
     );
-    assert_eq!(resp["error"]["code"], json!(RpcError::INVALID_PARAMS));
+    assert_eq!(resp["error"]["code"], json!(RpcError::FORBIDDEN));
     let _ = &boot.server;
 }
 

@@ -18,7 +18,7 @@ fn access(identity: &ToolCallIdentity) -> Result<Access, RpcError> {
     let track = identity
         .track_id
         .clone()
-        .ok_or_else(|| RpcError::invalid_params("calendar requires a Track"))?;
+        .ok_or_else(|| RpcError::forbidden("calendar requires a Track"))?;
     Ok(Access {
         track: Some(track.clone()),
         actor: identity.to_actor_id(),
@@ -154,7 +154,7 @@ pub fn register(registry: &mut ToolRegistry) {
                     };
                     result
                         .map(ToolResult::structured)
-                        .map_err(|e| RpcError::custom(-32000, e.to_string()))
+                        .map_err(crate::mcp_server::framing::calm_error)
                 })
             }),
         );

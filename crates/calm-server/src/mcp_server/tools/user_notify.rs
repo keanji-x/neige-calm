@@ -64,17 +64,17 @@ fn validate_text(args: &Value) -> Result<String, RpcError> {
     let text = args
         .get("text")
         .and_then(Value::as_str)
-        .ok_or_else(|| RpcError::invalid_params("user_notify: missing `text` (string)"))?
+        .ok_or_else(|| RpcError::invalid_params("neige_user_notify: missing `text` (string)"))?
         .trim();
     if text.is_empty() {
         return Err(RpcError::invalid_params(
-            "user_notify: `text` must not be empty or whitespace-only",
+            "neige_user_notify: `text` must not be empty or whitespace-only",
         ));
     }
     let chars = text.chars().count();
     if chars > MAX_TEXT_CHARS {
         return Err(RpcError::invalid_params(format!(
-            "user_notify: `text` is {chars} characters; the limit is {MAX_TEXT_CHARS}"
+            "neige_user_notify: `text` is {chars} characters; the limit is {MAX_TEXT_CHARS}"
         )));
     }
     Ok(text.to_string())

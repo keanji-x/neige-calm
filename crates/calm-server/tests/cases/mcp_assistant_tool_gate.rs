@@ -1,6 +1,6 @@
 //! The full role verdict for a `CardRole::Assistant` MCP token. Discovery is not inspected:
-//! `tools/call` routes by name regardless, so each denied tool gets a raw call asserting `-32602`
-//! AND the role-refusal message (a malformed-arguments rejection is also `-32602`).
+//! `tools/call` routes by name regardless, so each denied tool gets a raw call asserting `-32403`
+//! AND the role-refusal message.
 
 #![cfg(unix)]
 
@@ -163,14 +163,9 @@ async fn assistant_token_cannot_call_denied_tools_by_name() {
             continue;
         }
         let message = error["message"].as_str().unwrap_or_default();
-        let role_refusal = match error["code"].as_i64() {
-            // The `require_role*` refusal.
-            Some(-32602) => message.contains("tool requires role"),
-            // The conventions' role refusal (agent-commands.md §5), raised before any argument
-            // is read.
-            Some(-32403) => message.contains("only a Planner"),
-            _ => false,
-        };
+        // The role refusal (agent-commands.md §5): `require_role*` or the tool's own wording.
+        let role_refusal = error["code"].as_i64() == Some(-32403)
+            && (message.contains("tool requires role") || message.contains("only a Planner"));
         assert!(
             role_refusal,
             "`{tool}` must refuse for the *role* reason (not argument parsing); got: {resp:#?}"

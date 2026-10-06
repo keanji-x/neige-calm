@@ -151,13 +151,10 @@ pub(crate) async fn disabled_plugin_error(
     if plugin.enabled {
         return None;
     }
-    Some(crate::mcp_server::framing::RpcError::custom(
-        -32002,
-        format!(
-            "plugin `{}` is disabled; enable it in Settings before calling its tools",
-            manifest.id
-        ),
-    ))
+    Some(crate::mcp_server::framing::RpcError::unavailable(format!(
+        "plugin `{}` is disabled; enable it in Settings before calling its tools",
+        manifest.id
+    )))
 }
 
 #[cfg(test)]

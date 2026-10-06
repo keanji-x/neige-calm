@@ -53,7 +53,7 @@ pub fn classify(path: &str) -> Option<Result<AreaPath<'_>, String>> {
         Ok(AreaPath::Report(file))
     } else {
         Err(format!(
-            "neige.track: path not available in this view: {path} (under `area/` there is only \
+            "path not available in this view: {path} (under `area/` there is only \
              `area/reports/<name>.md`)"
         ))
     })

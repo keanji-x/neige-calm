@@ -696,7 +696,7 @@ async fn cancel_terminal_or_unknown_task_rejected() {
     )
     .await
     .expect_err("done task can't be canceled");
-    assert_eq!(err.code, -32602);
+    assert_eq!(err.code, -32409);
     assert!(
         err.message.contains("only pending and running tasks"),
         "{err:?}"
@@ -710,7 +710,7 @@ async fn cancel_terminal_or_unknown_task_rejected() {
     )
     .await
     .expect_err("unknown task");
-    assert_eq!(err.code, -32602);
+    assert_eq!(err.code, -32404);
     assert!(err.message.contains("unknown task `ghost`"), "{err:?}");
 }
 
@@ -887,7 +887,7 @@ async fn plan_tools_refuse_worker_callers_at_mcp_entry() {
         let err = call_tool(&boot, tool, worker_identity(&boot), args)
             .await
             .expect_err("worker refused");
-        assert_eq!(err.code, -32602, "{tool}: {err:?}");
+        assert_eq!(err.code, -32403, "{tool}: {err:?}");
         assert!(err.message.contains("Planner"), "{tool}: {err:?}");
     }
     assert_eq!(

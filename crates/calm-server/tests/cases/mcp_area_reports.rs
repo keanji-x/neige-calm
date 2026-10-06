@@ -438,7 +438,7 @@ async fn a_worker_is_forbidden_every_area_path_and_find() {
     assistant.role = CardRole::Assistant;
     assert_refused(
         find(&boot, assistant, json!({ "path": "area/reports/" })).await,
-        INVALID_PARAMS,
+        FORBIDDEN,
         "tool requires role",
     );
     // The Worker's own-track views are unchanged.

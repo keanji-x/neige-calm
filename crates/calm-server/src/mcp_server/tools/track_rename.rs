@@ -47,18 +47,17 @@ fn track_rename_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({
             "type": "object",
+            "additionalProperties": false,
             "required": ["title"],
             "properties": {
                 "title": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "The track's name. Trimmed before it is stored; \
-                                    whitespace-only is rejected."
+                    "description": "The track's name, trimmed; not blank."
                 },
                 "message": {
                     "type": "string",
-                    "description": "Optional short rationale, persisted as the \
-                                    event's agent_message."
+                    "description": "Optional audit note: why this write."
                 }
             }
         }),
@@ -81,12 +80,12 @@ async fn track_rename(
     let title = args
         .get("title")
         .and_then(Value::as_str)
-        .ok_or_else(|| RpcError::invalid_params("track_rename: missing `title` (string)"))?
+        .ok_or_else(|| RpcError::invalid_params("neige_track_rename: missing `title` (string)"))?
         .trim()
         .to_string();
     if title.is_empty() {
         return Err(RpcError::invalid_params(
-            "track_rename: `title` must not be empty or whitespace-only",
+            "neige_track_rename: `title` must not be empty or whitespace-only",
         ));
     }
     let message = args
@@ -101,20 +100,20 @@ async fn track_rename(
         .repo
         .card_get(&card_id)
         .await
-        .map_err(|e| RpcError::internal(format!("track_rename: card lookup: {e}")))?
+        .map_err(|e| RpcError::internal(format!("neige_track_rename: card lookup: {e}")))?
         .ok_or_else(|| {
             RpcError::internal(format!(
-                "track_rename: bound card {card_id} not found (deleted mid-connection?)"
+                "neige_track_rename: bound card {card_id} not found (deleted mid-connection?)"
             ))
         })?;
     let track = ctx
         .repo
         .track_get(card.track_id.as_str())
         .await
-        .map_err(|e| RpcError::internal(format!("track_rename: track lookup: {e}")))?
+        .map_err(|e| RpcError::internal(format!("neige_track_rename: track lookup: {e}")))?
         .ok_or_else(|| {
             RpcError::internal(format!(
-                "track_rename: track {} for card {card_id} not found",
+                "neige_track_rename: track {} for card {card_id} not found",
                 card.track_id.as_str()
             ))
         })?;
@@ -170,11 +169,7 @@ async fn track_rename(
     match result {
         Ok((track, _ids)) => Ok(json!({ "ok": true, "title": track.title })),
         Err(CalmError::Conflict(msg)) if msg.starts_with(REFUSED_MARKER) => Ok(parse_refusal(&msg)),
-        Err(CalmError::Forbidden(msg)) => Err(RpcError::custom(
-            -32403,
-            format!("track_rename: forbidden: {msg}"),
-        )),
-        Err(e) => Err(RpcError::internal(format!("track_rename: {e}"))),
+        Err(e) => Err(crate::mcp_server::framing::calm_error(e)),
     }
 }
 

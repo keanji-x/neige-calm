@@ -1902,7 +1902,7 @@ impl PluginHost {
     }
 
     /// Dispatch a `neige.*` callback against the in-kernel handler, using the same `CallbackCtx` the plugin's inbound router builds; the plugin process is never asked.
-    /// `call_id` lands in `events.correlation` as `user_tool_call:<call_id>`. Returns `RpcError::Custom(-32002, ...)` if the plugin isn't running.
+    /// `call_id` lands in `events.correlation` as `user_tool_call:<call_id>`. Returns `RpcError::unavailable` (-32503) if the plugin isn't running.
     pub async fn dispatch_neige_callback(
         &self,
         plugin_id: &str,
@@ -1915,9 +1915,9 @@ impl PluginHost {
             let rp = table
                 .live
                 .get(plugin_id)
-                .ok_or_else(|| RpcError::custom(-32002, "plugin not running"))?;
+                .ok_or_else(|| RpcError::unavailable("plugin not running"))?;
             if !matches!(rp.status, PluginRuntimeStatus::Running) {
-                return Err(RpcError::custom(-32002, "plugin not running"));
+                return Err(RpcError::unavailable("plugin not running"));
             }
             // The `neige.*` channel does not exist for connectors, so a non-`Stdio` client is refused here.
             let Some(stdio) = rp.mcp.as_ref().and_then(|c| c.as_stdio()) else {
@@ -1927,13 +1927,10 @@ impl PluginHost {
                         "has no MCP client (it is running without a live transport)".to_string()
                     }
                 };
-                return Err(RpcError::custom(
-                    -32002,
-                    format!(
-                        "plugin `{plugin_id}` {detail}; \
+                return Err(RpcError::unavailable(format!(
+                    "plugin `{plugin_id}` {detail}; \
                          neige.* callbacks are only available to app plugins"
-                    ),
-                ));
+                )));
             };
             (Arc::clone(stdio), Arc::clone(&rp.subscriptions))
         };

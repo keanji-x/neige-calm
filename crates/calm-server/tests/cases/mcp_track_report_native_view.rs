@@ -53,7 +53,7 @@ async fn native_view_upsert_read_roundtrip_and_cas_are_one_truth() {
     )
     .await
     .unwrap_err();
-    assert_eq!(error.code, -32001);
+    assert_eq!(error.code, -32409);
     let after = call_tool(
         &boot,
         "neige_report_read",

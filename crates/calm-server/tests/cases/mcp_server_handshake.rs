@@ -712,7 +712,7 @@ async fn planner_role_cannot_call_task_complete_or_fail() {
     let err = completed
         .get("error")
         .expect("planner task.complete must be rejected");
-    assert_eq!(err["code"], json!(RpcError::INVALID_PARAMS), "{err:#?}");
+    assert_eq!(err["code"], json!(RpcError::FORBIDDEN), "{err:#?}");
 
     send_frame(
         &mut wr,
@@ -728,7 +728,7 @@ async fn planner_role_cannot_call_task_complete_or_fail() {
     let err = failed
         .get("error")
         .expect("planner task.fail must be rejected");
-    assert_eq!(err["code"], json!(RpcError::INVALID_PARAMS), "{err:#?}");
+    assert_eq!(err["code"], json!(RpcError::FORBIDDEN), "{err:#?}");
     let _ = (&b.server, &b.repo);
 }
 

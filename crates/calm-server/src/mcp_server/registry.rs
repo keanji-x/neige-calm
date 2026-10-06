@@ -102,18 +102,14 @@ fn provider_session_actor(provider: &AgentProvider, session_id: WorkerSessionId)
     }
 }
 
-/// Soft role gate for planner-only MCP tools, purely UX: the real boundary is
-/// `role_gate::enforce_role` inside every eventized write. This gives a deterministic
-/// `-32602 planner-only tool` error instead of the in-tx `-32403`.
+/// Soft role gate for role-gated MCP tools, purely UX: the real boundary is
+/// `role_gate::enforce_role` inside every eventized write. Both answer `-32403` (§5).
 pub fn require_role(identity: &ToolCallIdentity, required: CardRole) -> Result<(), RpcError> {
     if identity.role != required {
-        return Err(RpcError::custom(
-            RpcError::INVALID_PARAMS,
-            format!(
-                "tool requires role={required:?} got={got:?}",
-                got = identity.role
-            ),
-        ));
+        return Err(RpcError::forbidden(format!(
+            "tool requires role={required:?} got={got:?}",
+            got = identity.role
+        )));
     }
     Ok(())
 }
@@ -124,13 +120,53 @@ pub fn require_role_any(identity: &ToolCallIdentity, allowed: &[CardRole]) -> Re
     if allowed.contains(&identity.role) {
         return Ok(());
     }
-    Err(RpcError::custom(
-        RpcError::INVALID_PARAMS,
-        format!(
-            "tool requires role in {allowed:?} got={got:?}",
-            got = identity.role
-        ),
-    ))
+    Err(RpcError::forbidden(format!(
+        "tool requires role in {allowed:?} got={got:?}",
+        got = identity.role
+    )))
+}
+
+/// Closed input (§4 of `docs/conventions/agent-commands.md`): the first key of `obj` outside
+/// `valid` is refused with every valid key. `at` is the tool name, or `<tool>: <path>` for a
+/// nested object. The registry runs it on every kernel tool's top-level arguments.
+pub(crate) fn refuse_unknown_keys<S: AsRef<str>>(
+    obj: &serde_json::Map<String, Value>,
+    valid: &[S],
+    at: &str,
+) -> Result<(), RpcError> {
+    let Some(key) = obj
+        .keys()
+        .find(|key| !valid.iter().any(|valid| valid.as_ref() == key.as_str()))
+    else {
+        return Ok(());
+    };
+    let mut names: Vec<&str> = valid.iter().map(AsRef::as_ref).collect();
+    names.sort_unstable();
+    let names = if names.is_empty() {
+        "none".to_string()
+    } else {
+        names.join(", ")
+    };
+    // A removed key keeps its pointer to what replaced it (principle 7).
+    let retired = match key.as_str() {
+        "lifecycle" => {
+            "; `lifecycle` is removed: close with neige_track_close; ask with \
+                        neige_user_notify or neige_ratify_request"
+        }
+        _ => "",
+    };
+    Err(RpcError::invalid_params(format!(
+        "{at}: unknown argument `{key}`; valid: {names}{retired}"
+    )))
+}
+
+/// The top-level keys a tool's declared input schema accepts: the one source of its closed input.
+fn schema_keys(schema: &Value) -> Vec<String> {
+    schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|properties| properties.keys().cloned().collect())
+        .unwrap_or_default()
 }
 
 /// The scheduler triggers a tool may fire after its commit (see [`AppContext::scheduler_poke`]).
@@ -303,9 +339,30 @@ pub fn role_gated_write_annotations() -> Value {
     })
 }
 
-/// Map of tool name → handler + descriptor.
+/// A visibility fence a tool runs before its closed input: a built-in plugin's native tool is
+/// unknown (`-32601`) to a caller whose Track does not bind the running plugin.
+pub type ToolFence = Arc<
+    dyn Fn(
+            Arc<AppContext>,
+            ToolCallIdentity,
+        ) -> Pin<Box<dyn Future<Output = Result<(), RpcError>> + Send>>
+        + Send
+        + Sync,
+>;
+
+struct Entry {
+    descriptor: ToolDescriptor,
+    handler: ToolHandler,
+    fence: Option<ToolFence>,
+    keys: Arc<[String]>,
+}
+
+/// Map of tool name → handler + descriptor. [`Self::lookup`] returns the guarded handler, the one
+/// order every kernel tool call runs in: the managed-track grant, the tool's fence, closed input
+/// (keys from the declared schema), then the handler (its role gate, arguments, state). Every
+/// refusal is led by the tool name (§5).
 pub struct ToolRegistry {
-    by_name: HashMap<String, (ToolDescriptor, ToolHandler)>,
+    by_name: HashMap<String, Entry>,
 }
 
 impl ToolRegistry {
@@ -316,41 +373,80 @@ impl ToolRegistry {
     }
 
     pub fn register(&mut self, descriptor: ToolDescriptor, handler: ToolHandler) {
-        let name = descriptor.name.clone();
-        let guarded: ToolHandler = Arc::new(move |ctx, identity, args| {
-            let handler = handler.clone();
-            let name = name.clone();
-            Box::pin(async move {
-                crate::managed_track::require_tool_allowed(&ctx, &identity, &name).await?;
-                handler(ctx, identity, args).await
-            })
-        });
-        self.by_name
-            .insert(descriptor.name.clone(), (descriptor, guarded));
+        self.register_fenced(descriptor, None, handler);
+    }
+
+    pub fn register_fenced(
+        &mut self,
+        descriptor: ToolDescriptor,
+        fence: Option<ToolFence>,
+        handler: ToolHandler,
+    ) {
+        let keys = schema_keys(&descriptor.input_schema).into();
+        self.by_name.insert(
+            descriptor.name.clone(),
+            Entry {
+                descriptor,
+                handler,
+                fence,
+                keys,
+            },
+        );
     }
 
     pub fn lookup(&self, name: &str) -> Option<ToolHandler> {
-        self.by_name.get(name).map(|(_, h)| h.clone())
+        let entry = self.by_name.get(name)?;
+        let name = entry.descriptor.name.clone();
+        let handler = entry.handler.clone();
+        let fence = entry.fence.clone();
+        let keys = entry.keys.clone();
+        Some(Arc::new(move |ctx, identity, args| {
+            let (name, handler, fence, keys) =
+                (name.clone(), handler.clone(), fence.clone(), keys.clone());
+            Box::pin(async move {
+                let result = async {
+                    crate::managed_track::require_tool_allowed(&ctx, &identity, &name).await?;
+                    if let Some(fence) = fence {
+                        fence(ctx.clone(), identity.clone()).await?;
+                    }
+                    if let Some(obj) = args.as_object() {
+                        refuse_unknown_keys(obj, &keys, &name)?;
+                    }
+                    handler(ctx, identity, args).await
+                }
+                .await;
+                result.map_err(|error| error.for_tool(&name))
+            })
+        }))
+    }
+
+    /// The handler as registered, without the guard: for re-registering a built-in plugin's
+    /// native tool into the kernel registry, which guards it there.
+    pub(crate) fn unguarded(&self, name: &str) -> Option<ToolHandler> {
+        self.by_name.get(name).map(|entry| entry.handler.clone())
     }
 
     /// Owned clones so the caller can serialize without holding a borrow across an await.
     pub fn descriptors(&self) -> Vec<ToolDescriptor> {
-        self.by_name.values().map(|(d, _)| d.clone()).collect()
+        self.by_name
+            .values()
+            .map(|entry| entry.descriptor.clone())
+            .collect()
     }
 
     pub fn descriptors_for_role(&self, role: CardRole) -> Vec<ToolDescriptor> {
-        self.by_name
-            .values()
-            .map(|(d, _)| d.clone())
-            .filter(|d| d.visible_to_roles.contains(&role))
-            .collect()
+        self.descriptors_visible_to_any_role(&[role])
     }
 
     pub fn descriptors_visible_to_any_role(&self, roles: &[CardRole]) -> Vec<ToolDescriptor> {
         self.by_name
             .values()
-            .filter(|d| roles.iter().any(|role| d.0.visible_to_roles.contains(role)))
-            .map(|(d, _)| d.clone())
+            .filter(|entry| {
+                roles
+                    .iter()
+                    .any(|role| entry.descriptor.visible_to_roles.contains(role))
+            })
+            .map(|entry| entry.descriptor.clone())
             .collect()
     }
 }
@@ -462,7 +558,7 @@ mod tests {
 
         let err = require_role_any(&identity_with_role(CardRole::Worker), &allowed)
             .expect_err("worker must be denied");
-        assert_eq!(err.code, RpcError::INVALID_PARAMS);
+        assert_eq!(err.code, RpcError::FORBIDDEN);
         assert!(
             err.message.contains("Planner") && err.message.contains("ReportCard"),
             "error should mention allowed roles: {err:?}"

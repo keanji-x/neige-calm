@@ -10,13 +10,10 @@ impl Args {
     pub fn parse(args: &Value) -> Result<Self, RpcError> {
         let invalid = || {
             RpcError::invalid_params(
-                "plan_list: expected optional detail=summary|full and a nonblank exact key; null and unknown arguments are invalid",
+                "neige_task_ls: expected optional detail=summary|full and a nonblank exact key; null arguments are invalid",
             )
         };
         let object = args.as_object().ok_or_else(invalid)?;
-        if object.keys().any(|key| key != "detail" && key != "key") {
-            return Err(invalid());
-        }
         let summary = match object.get("detail") {
             None => false,
             Some(Value::String(detail)) if detail == "full" => false,

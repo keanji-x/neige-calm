@@ -5,7 +5,6 @@ use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolRegistry, read_only_annotations,
 };
 use crate::mcp_server::result::ToolResult;
-use crate::mcp_server::tools::write_args::refuse_unknown_keys;
 use crate::model::CardRole;
 use crate::workspace_reports::{self, ReportChangesQuery, ReportEditsQuery};
 use serde::Deserialize;
@@ -40,19 +39,8 @@ pub fn register_into(registry: &mut ToolRegistry) {
             json!({"type":"object","required":["date","track_id","through_event_id"],"properties":{"date":{"type":"string"},"track_id":{"type":"string"},"cursor":{"type":"string"},"through_event_id":{"type":"integer","minimum":0}},"additionalProperties":false}),
         ),
     ] {
-        // Closed input (§4): the schema's own keys are the valid ones, so a retired key such as
-        // `after` is refused naming them.
-        let keys: Arc<[String]> = schema["properties"]
-            .as_object()
-            .expect("workspace schemas declare properties")
-            .keys()
-            .cloned()
-            .collect();
         let handler: ToolHandler = Arc::new(move |ctx, identity, args| {
-            let keys = keys.clone();
             Box::pin(async move {
-                let valid: Vec<&str> = keys.iter().map(String::as_str).collect();
-                refuse_unknown_keys(&args, name, &valid)?;
                 dispatch(ctx, identity, args, name)
                     .await
                     .map(ToolResult::structured)
@@ -116,7 +104,7 @@ async fn dispatch(
                 .track_get(&args.track_id)
                 .await
                 .map_err(|e| RpcError::internal(e.to_string()))?
-                .ok_or_else(|| RpcError::invalid_params("report Track not found"))?;
+                .ok_or_else(|| RpcError::not_found("report Track not found"))?;
             let visible = ctx
                 .repo
                 .area_get(track.area_id.as_str())
@@ -124,10 +112,7 @@ async fn dispatch(
                 .map_err(|e| RpcError::internal(e.to_string()))?
                 .is_some_and(|area| area.kind == crate::model::AreaKind::User);
             if !visible {
-                return Err(RpcError::custom(
-                    -32403,
-                    "report is outside user-visible Areas",
-                ));
+                return Err(RpcError::forbidden("report is outside user-visible Areas"));
             }
             let (card, _) = super::track_report::load_report_for_track(&ctx, &track).await?;
             let snapshot = crate::track_report_read::load_report_read_snapshot(
@@ -165,10 +150,7 @@ async fn dispatch(
 }
 
 fn error(error: crate::error::CalmError) -> RpcError {
-    match error {
-        crate::error::CalmError::BadRequest(message) => RpcError::invalid_params(message),
-        other => RpcError::internal(other.to_string()),
-    }
+    crate::mcp_server::framing::calm_error(error)
 }
 
 #[cfg(test)]

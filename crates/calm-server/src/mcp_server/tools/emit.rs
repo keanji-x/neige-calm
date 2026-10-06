@@ -44,6 +44,7 @@ fn task_done_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({
             "type": "object",
+            "additionalProperties": false,
             "required": ["attempt_id"],
             "properties": {
                 "attempt_id": { "type": "string", "minLength": 1 },
@@ -65,15 +66,17 @@ async fn task_done(
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Worker)?;
 
-    let attempt_id = required_attempt_id(&args, "task_done")?;
+    let attempt_id = required_attempt_id(&args, TOOL_TASK_DONE)?;
     let commit_message = commit_message_arg(&args)?;
     let result = args.get("result").cloned().unwrap_or(Value::Null);
     let artifacts_val = args
         .get("artifacts")
         .cloned()
         .unwrap_or(Value::Array(vec![]));
-    let artifacts: Vec<crate::event::ArtifactRef> = serde_json::from_value(artifacts_val)
-        .map_err(|e| RpcError::invalid_params(format!("task_done: invalid artifacts: {e}")))?;
+    let artifacts: Vec<crate::event::ArtifactRef> =
+        serde_json::from_value(artifacts_val).map_err(|e| {
+            RpcError::invalid_params(format!("neige_task_done: invalid artifacts: {e}"))
+        })?;
 
     let report = WorkerTaskReport::Completed {
         attempt_id: attempt_id.clone(),
@@ -94,9 +97,9 @@ fn commit_message_arg(args: &Value) -> Result<DeliveryMessage, RpcError> {
         None => Ok(DeliveryMessage::Kernel),
         Some(Value::String(text)) => CommitMessage::parse(text)
             .map(DeliveryMessage::Worker)
-            .map_err(|error| RpcError::invalid_params(format!("task_done: {error}"))),
+            .map_err(|error| RpcError::invalid_params(format!("neige_task_done: {error}"))),
         Some(_) => Err(RpcError::invalid_params(
-            "task_done: commit_message must be a string",
+            "neige_task_done: commit_message must be a string",
         )),
     }
 }
@@ -129,6 +132,7 @@ fn task_fail_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({
             "type": "object",
+            "additionalProperties": false,
             "required": ["attempt_id", "reason"],
             "properties": {
                 "attempt_id": { "type": "string", "minLength": 1 },
@@ -148,12 +152,12 @@ async fn task_fail(
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Worker)?;
 
-    let attempt_id = required_attempt_id(&args, "task_fail")?;
+    let attempt_id = required_attempt_id(&args, TOOL_TASK_FAIL)?;
     let reason = args
         .get("reason")
         .and_then(|v| v.as_str())
         .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| RpcError::invalid_params("task_fail: missing `reason` (non-empty)"))?
+        .ok_or_else(|| RpcError::invalid_params("neige_task_fail: missing `reason` (non-empty)"))?
         .to_string();
 
     let report = WorkerTaskReport::Failed {
@@ -188,15 +192,9 @@ async fn commit_worker_task_report_for_identity(
 
     match result {
         Ok(_) => Ok(()),
-        Err(CalmError::Forbidden(msg)) => {
-            // Role gate refusal — a custom error code so a mis-roled card sees a deterministic failure shape.
-            Err(RpcError::custom(
-                -32403,
-                format!("emit {kind_tag}: forbidden: {msg}"),
-            ))
+        Err(e @ (CalmError::Forbidden(_) | CalmError::Conflict(_) | CalmError::NotFound(_))) => {
+            Err(crate::mcp_server::framing::calm_error(e))
         }
-        Err(CalmError::Conflict(msg)) => Err(RpcError::custom(-32409, msg)),
-        Err(CalmError::NotFound(msg)) => Err(RpcError::custom(-32404, msg)),
         Err(e) => Err(RpcError::internal(format!("emit {kind_tag}: {e}"))),
     }
 }

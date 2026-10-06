@@ -8,7 +8,6 @@ use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     require_role, role_gated_write_annotations,
 };
-use crate::mcp_server::tools::write_args::refuse_unknown_keys;
 use crate::model::{CardRole, Track};
 use crate::ratify_state::ratify_request_pending_tx;
 use serde::Deserialize;
@@ -44,6 +43,7 @@ fn ratify_request_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({
             "type": "object",
+            "additionalProperties": false,
             "required": ["text"],
             "properties": {
                 "text": { "type": "string", "minLength": 1 }
@@ -67,12 +67,12 @@ async fn ratify_request(
     args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Planner)?;
-    refuse_unknown_keys(&args, TOOL_RATIFY_REQUEST, &["text"])?;
-    let args: RatifyRequestArgs = serde_json::from_value(args)
-        .map_err(|e| RpcError::invalid_params(format!("ratify_request: invalid args: {e}")))?;
+    let args: RatifyRequestArgs = serde_json::from_value(args).map_err(|e| {
+        RpcError::invalid_params(format!("neige_ratify_request: invalid args: {e}"))
+    })?;
     if args.text.trim().is_empty() {
         return Err(RpcError::invalid_params(
-            "ratify_request: text must not be empty",
+            "neige_ratify_request: text must not be empty",
         ));
     }
 
@@ -97,13 +97,13 @@ async fn ratify_request(
                         .await?
                         .is_open()
                     {
-                        return Err(CalmError::BadRequest(
-                            "ratify_request: the track is closed; only the user reopens it".into(),
+                        return Err(CalmError::Conflict(
+                            "neige_ratify_request: the track is closed; only the user reopens it".into(),
                         ));
                     }
                     if ratify_request_pending_tx(tx, &track_id).await? {
-                        return Err(CalmError::BadRequest(
-                            "ratify_request: a ratify request is already pending; wait for the \
+                        return Err(CalmError::Conflict(
+                            "neige_ratify_request: a ratify request is already pending; wait for the \
                              user's grant or deny"
                                 .into(),
                         ));
@@ -119,12 +119,7 @@ async fn ratify_request(
 
     match result {
         Ok((_unit, _ids)) => Ok(json!({ "ok": true })),
-        Err(CalmError::BadRequest(msg)) => Err(RpcError::invalid_params(msg)),
-        Err(CalmError::Forbidden(msg)) => Err(RpcError::custom(
-            -32403,
-            format!("ratify_request: forbidden: {msg}"),
-        )),
-        Err(e) => Err(RpcError::internal(format!("ratify_request: {e}"))),
+        Err(e) => Err(crate::mcp_server::framing::calm_error(e)),
     }
 }
 
@@ -137,20 +132,20 @@ async fn resolve_track_for_identity(
         .repo
         .card_get(&card_id_str)
         .await
-        .map_err(|e| RpcError::internal(format!("review: card lookup: {e}")))?
+        .map_err(|e| RpcError::internal(format!("card lookup: {e}")))?
         .ok_or_else(|| {
             RpcError::internal(format!(
-                "review: bound card {card_id_str} not found (deleted mid-connection?)"
+                "bound card {card_id_str} not found (deleted mid-connection?)"
             ))
         })?;
     let track = ctx
         .repo
         .track_get(card.track_id.as_str())
         .await
-        .map_err(|e| RpcError::internal(format!("review: track lookup: {e}")))?
+        .map_err(|e| RpcError::internal(format!("track lookup: {e}")))?
         .ok_or_else(|| {
             RpcError::internal(format!(
-                "review: track {} for card {} not found",
+                "track {} for card {} not found",
                 card.track_id.as_str(),
                 card_id_str
             ))

@@ -541,13 +541,17 @@ async fn assert_same_refusal(boot: &CardBoot, argv: &[&str], tool: &str, args: V
         error["message"].as_str().unwrap(),
         error["code"].as_i64().unwrap(),
     );
+    assert!(
+        message.starts_with(&format!("{tool}: ")),
+        "§5: the refusal is led by the tool name: {message}"
+    );
 
     let (stdout, stderr, exit) = cli(boot, argv).await;
     assert_eq!(exit, 4, "{argv:?}: {stderr}");
     assert_eq!(stdout, "");
     assert_eq!(
         stderr,
-        format!("neige: {tool}: {message} (code {code})\n"),
+        format!("neige: {message} (code {code})\n"),
         "{argv:?}"
     );
 
@@ -558,7 +562,7 @@ async fn assert_same_refusal(boot: &CardBoot, argv: &[&str], tool: &str, args: V
     let parsed: Value = serde_json::from_str(&stderr).expect("--json error is JSON");
     assert_eq!(
         parsed["error"]["message"],
-        json!(format!("{tool}: {message} (code {code})"))
+        json!(format!("{message} (code {code})"))
     );
     assert_eq!(
         parsed["error"]["detail"],

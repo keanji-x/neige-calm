@@ -489,18 +489,17 @@ async fn task_accept_and_reject_refuse_retired_keys_and_a_missing_reason() {
         (
             TOOL_TASK_ACCEPT,
             json!({"attempt_id": "k", "status": "accepted", "message": "m"}),
-            "neige_task_accept: unknown argument `status`; valid: `attempt_id`, `message`",
+            "neige_task_accept: unknown argument `status`; valid: attempt_id, message",
         ),
         (
             TOOL_TASK_ACCEPT,
             json!({"attempt_id": "k", "reason": "r", "message": "m"}),
-            "neige_task_accept: unknown argument `reason`; valid: `attempt_id`, `message`",
+            "neige_task_accept: unknown argument `reason`; valid: attempt_id, message",
         ),
         (
             TOOL_TASK_REJECT,
             json!({"attempt_id": "k", "status": "rejected", "reason": "r", "message": "m"}),
-            "neige_task_reject: unknown argument `status`; valid: `attempt_id`, `message`, \
-             `reason`",
+            "neige_task_reject: unknown argument `status`; valid: attempt_id, message, reason",
         ),
         (
             TOOL_TASK_REJECT,
@@ -525,16 +524,17 @@ async fn task_accept_and_reject_refuse_retired_keys_and_a_missing_reason() {
 #[tokio::test]
 async fn task_verdict_worker_refused_at_mcp_entry() {
     let boot = boot().await;
-    for tool in [TOOL_TASK_ACCEPT, TOOL_TASK_REJECT] {
-        let err = call_tool(
-            &boot,
-            tool,
-            worker_identity(&boot),
+    for (tool, args) in [
+        (TOOL_TASK_ACCEPT, json!({"attempt_id": "k", "message": "m"})),
+        (
+            TOOL_TASK_REJECT,
             json!({"attempt_id": "k", "reason": "r", "message": "m"}),
-        )
-        .await
-        .expect_err("worker can't record a planner verdict");
-        assert_eq!(err.code, -32602);
+        ),
+    ] {
+        let err = call_tool(&boot, tool, worker_identity(&boot), args)
+            .await
+            .expect_err("worker can't record a planner verdict");
+        assert_eq!(err.code, -32403);
         assert!(err.message.contains("Planner"), "{tool}: {err:?}");
     }
 }

@@ -543,7 +543,7 @@ async fn read_refuses_worker() {
     let err = call_tool(&boot, TOOL_REPORT_READ, worker_identity(&boot), json!({}))
         .await
         .expect_err("worker must be denied");
-    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert_eq!(err.code, RpcError::FORBIDDEN);
     assert!(err.message.contains("Planner"), "msg = {err:?}");
 }
 
@@ -578,7 +578,7 @@ async fn whole_document_write_requires_a_read_and_rejects_stale_planner_writer()
     )
     .await
     .unwrap_err();
-    assert_eq!(conflict.code, -32001);
+    assert_eq!(conflict.code, -32409);
     assert!(conflict.message.contains("current doc_rev is 1"));
     assert!(
         conflict

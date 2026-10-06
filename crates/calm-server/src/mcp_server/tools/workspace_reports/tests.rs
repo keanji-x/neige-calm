@@ -478,20 +478,16 @@ async fn workspace_tools_refuse_the_retired_after_with_their_valid_keys() {
         .unwrap();
     let id = identity(&route, &track).await;
     for (tool, args, valid) in [
-        (
-            "neige_workspace_ls",
-            json!({"after":"t"}),
-            "valid: `cursor`",
-        ),
+        ("neige_workspace_ls", json!({"after":"t"}), "valid: cursor"),
         (
             "neige_workspace_diff",
             json!({"date":"2026-10-03","after":"t"}),
-            "valid: `cursor`, `date`, `through_event_id`",
+            "valid: cursor, date, through_event_id",
         ),
         (
             "neige_workspace_log",
             json!({"date":"2026-10-03","track_id":track.id,"through_event_id":0,"after":0}),
-            "valid: `cursor`, `date`, `through_event_id`, `track_id`",
+            "valid: cursor, date, through_event_id, track_id",
         ),
     ] {
         let error = call(&route, &id, tool, args).await.unwrap_err();

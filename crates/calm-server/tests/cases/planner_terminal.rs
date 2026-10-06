@@ -560,13 +560,13 @@ async fn terminal_writes_refuse_the_retired_request_id_and_observe_keys() {
         assert_eq!(response["error"]["code"], -32602, "{tool}: {response}");
         let message = response["error"]["message"].as_str().unwrap();
         assert!(
-            message.contains(&format!("unknown field `{retired}`")),
+            message.contains(&format!("unknown argument `{retired}`")),
             "{tool}: {message}"
         );
         let renamed = if retired == "observe" {
-            "`read`"
+            " read"
         } else {
-            "`idempotency_key`"
+            " idempotency_key"
         };
         assert!(message.contains(renamed), "{tool}: {message}");
     }

@@ -5,6 +5,8 @@ mod mcp_bootstrap_discovery;
 
 #[path = "cases/mcp_assistant_tool_gate.rs"]
 mod mcp_assistant_tool_gate;
+#[path = "cases/mcp_closed_input.rs"]
+mod mcp_closed_input;
 #[path = "cases/mcp_emit_tools.rs"]
 mod mcp_emit_tools;
 #[path = "cases/mcp_plan.rs"]

@@ -1,5 +1,5 @@
 //! Two real assistant conversations interleaving on one track's report: both read the same
-//! revision from their own `neige_report_read`, A writes, B's write is refused with `-32001` and
+//! revision from their own `neige_report_read`, A writes, B's write is refused with `-32409` and
 //! must have written nothing. Only the CRDT bytes, the read projection and the event-log length
 //! are compared; that is sound only while every projection write shares the report-write transaction.
 
@@ -141,12 +141,12 @@ async fn read_both(boot: &Boot) -> (Value, Value) {
     (a_read, b_read)
 }
 
-/// -32001 is shared by the block-rev and docRev comparators; `detail` is the fragment only
+/// -32409 is shared by the block-rev and docRev comparators; `detail` is the fragment only
 /// one of them can produce, including the exact stale rev B was holding.
 fn assert_rev_conflict(err: calm_server::plugin_host::mcp::RpcError, mouth: &str, detail: &str) {
     assert_eq!(
         err.code, RPC_REV_CONFLICT,
-        "{mouth}: the second writer must get -32001 (rev conflict), got: {err:?}"
+        "{mouth}: the second writer must get -32409 (rev conflict), got: {err:?}"
     );
     assert!(
         err.message.contains(detail),

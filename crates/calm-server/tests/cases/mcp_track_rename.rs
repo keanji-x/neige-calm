@@ -412,7 +412,7 @@ async fn non_planner_roles_are_forbidden() {
         )
         .await
         .expect_err("only a planner card may name a track");
-        assert_eq!(err.code, RpcError::INVALID_PARAMS, "role={role:?}");
+        assert_eq!(err.code, RpcError::FORBIDDEN, "role={role:?}");
         assert!(
             err.message.contains("tool requires role"),
             "role={role:?}: expected the role refusal, got {:?}",

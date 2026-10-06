@@ -200,7 +200,7 @@ async fn backlinks_for_track_with_byte_cap(
         .find(|card| card.track_id.as_str() == track_id)
         .ok_or_else(|| {
             CalmError::Internal(format!(
-                "report_backlinks: track {track_id} has no track-report card (invariant violation)"
+                "track {track_id} has no track-report card (invariant violation)"
             ))
         })?;
     let target_card_id = target_card.id.clone();
@@ -229,10 +229,7 @@ async fn backlinks_for_track_with_byte_cap(
     let mut wire_budget = WireBudget::new(max_skipped_sources);
     'cards: for card in report_cards {
         let source_title = tracks.get(card.track_id.as_str()).ok_or_else(|| {
-            CalmError::Internal(format!(
-                "report_backlinks: source track {} vanished mid-read",
-                card.track_id
-            ))
+            CalmError::Internal(format!("source track {} vanished mid-read", card.track_id))
         })?;
         let snapshot = match load_report_read_snapshot(repo, card.id.as_str()).await {
             Ok(snapshot) => snapshot,
@@ -285,7 +282,7 @@ async fn backlinks_for_track_with_byte_cap(
     }
     if non_target_sources > 0 && readable_non_target_sources == 0 {
         return Err(CalmError::Internal(format!(
-            "report_backlinks: all {skipped_sources} source reports were unreadable"
+            "all {skipped_sources} source reports were unreadable"
         )));
     }
     Ok(BacklinkPage {

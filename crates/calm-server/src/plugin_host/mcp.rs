@@ -115,6 +115,12 @@ impl RpcError {
     pub const METHOD_NOT_FOUND: i64 = -32601;
     pub const INVALID_PARAMS: i64 = -32602;
     pub const INTERNAL_ERROR: i64 = -32603;
+    /// Agent-facing codes of `docs/conventions/agent-commands.md` §5, one meaning each.
+    pub const FORBIDDEN: i64 = -32403;
+    pub const NOT_FOUND: i64 = -32404;
+    pub const CONFLICT: i64 = -32409;
+    /// A dependency is unavailable now: the plugin is disabled or not running.
+    pub const UNAVAILABLE: i64 = -32503;
 
     pub fn method_not_found(method: &str) -> Self {
         Self {
@@ -138,6 +144,38 @@ impl RpcError {
             message: msg.into(),
             data: None,
         }
+    }
+
+    pub fn forbidden(msg: impl Into<String>) -> Self {
+        Self::custom(Self::FORBIDDEN, msg)
+    }
+
+    pub fn not_found(msg: impl Into<String>) -> Self {
+        Self::custom(Self::NOT_FOUND, msg)
+    }
+
+    pub fn conflict(msg: impl Into<String>) -> Self {
+        Self::custom(Self::CONFLICT, msg)
+    }
+
+    pub fn unavailable(msg: impl Into<String>) -> Self {
+        Self::custom(Self::UNAVAILABLE, msg)
+    }
+
+    /// The message led by the full tool name (§5). Already led, or a `-32601` (whose message
+    /// lists the session's tools), it is unchanged.
+    pub fn for_tool(mut self, tool: &str) -> Self {
+        if !self.led_by(tool) && self.code != Self::METHOD_NOT_FOUND {
+            self.message = format!("{tool}: {}", self.message);
+        }
+        self
+    }
+
+    /// Whether the message already starts with `tool:`.
+    pub fn led_by(&self, tool: &str) -> bool {
+        self.message
+            .strip_prefix(tool)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(':'))
     }
 
     pub fn custom(code: i64, msg: impl Into<String>) -> Self {

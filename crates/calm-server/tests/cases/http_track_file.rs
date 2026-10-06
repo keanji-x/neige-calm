@@ -143,7 +143,7 @@ async fn unknown_path_returns_400_with_mcp_message() {
         body["error"]
             .as_str()
             .unwrap()
-            .contains("neige.track: path not available in this view: nope"),
+            .contains("path not available in this view: nope"),
         "{body}"
     );
 }

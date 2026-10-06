@@ -149,7 +149,9 @@ Decisions, one line each:
 - **Flags:** a boolean names the extra effect it adds when true and defaults to false (`dry_run`,
   `include_empty`, `with_markers`, `claim`, `read`). A boolean never switches the operation; that
   is a verb. On the CLI a flag takes no value.
-- **Closed input:** a kernel tool refuses an unknown top-level key with the valid keys.
+- **Closed input:** a kernel tool refuses an unknown top-level key with the valid keys. Every
+  kernel schema declares `additionalProperties: false`, and the registry refuses the key from that
+  schema's `properties` for every tool (B4), so no tool keeps its own list.
 
 ## 5. Results and errors
 
@@ -173,12 +175,20 @@ Agent-facing JSON-RPC codes, one meaning each:
 | -32603 | internal error |
 | -32002, -32401, -32426 | session protocol only (not initialized, unknown token, old client); never from a tool |
 
-- The message starts with the full tool name: `neige_task_cancel: task t3 is verifying; …`.
+- The message starts with the full tool name: `neige_task_cancel: task t3 is verifying; …`. The
+  registry leads every refusal of a kernel tool with its name (B4).
+- **Order** of every kernel tool call (`ToolRegistry::lookup`): the session's identity, the
+  managed-track grant (-32403), a built-in plugin's visibility fence (-32601 or -32503), closed
+  input (-32602), then the tool's role gate (-32403), its arguments and its state. Closed input
+  precedes the role gate for every tool alike: it names only the keys of the public schema
+  (`neige tool describe`), reads no state, and the role gate still runs before any state read or
+  write.
 - Error `data` carries machine fields (`refusal`, current revisions). Text and data say the same.
 - **CLI exit codes:** `0` success, `1` usage (unknown object, action, option, missing `--force`),
   `4` the tool refused or its result could not be rendered. The forwarder alone uses `2` (its
   environment: missing variable or non-UTF-8 argument), `3` (kernel unreachable or protocol
-  failure) and `141` (write failed). Each code has one meaning across both.
+  failure) and `141` (write failed). Each code has one meaning across both
+  (`kernel_exit_codes_are_exactly_0_1_4`, `forwarder_exit_codes_are_exactly_2_3_141`).
 
 ## 6. Plugins
 
@@ -247,7 +257,7 @@ Enforced by tests (existing): `kernel_tool_names_follow_the_grammar` (B0 changes
 `no_retired_tool_names_remain`, `kernel_tool_callables_are_injective_and_unhashed`,
 `unknown_tool_error_lists_the_sessions_tools`, `kernel_exit_codes_are_exactly_0_1_4`.
 
-Added by the slices (registry-driven, Appendix B); the last one is still proposed (B4):
+Added by the slices (registry-driven, Appendix B):
 
 - `served_tool_names_use_the_word_alphabet`: every name in `tools/list` matches `[A-Za-z0-9_]+`,
   kernel and plugin tools alike (B5 adds the built-ins, the repository manifests and a connector
@@ -268,8 +278,12 @@ Added by the slices (registry-driven, Appendix B); the last one is still propose
   `track_ls area/reports/` calls through the kernel socket return objects whose keys, recursively,
   are snake_case (a block's `payload` skipped), and `neige --json` prints the same JSON;
   `no_kernel_tool_returns_a_top_level_array` calls every read-only kernel tool.
-- `every_kernel_tool_refuses_unknown_arguments`: calls each registered kernel tool with an unknown
-  key and asserts -32602 `<tool>: unknown argument …` naming the valid keys.
+- `every_kernel_tool_refuses_unknown_arguments` (B4): an authenticated Planner session calls each
+  registered kernel tool through the kernel socket with `{"zz": 1}` (a built-in's tool on a Track
+  its plugin owns) and gets -32602 ``<tool>: unknown argument `zz`; valid: <schema keys>``; each
+  schema declares `additionalProperties: false`.
+- `forwarder_exit_codes_are_exactly_2_3_141` (B4): the forwarder's own exits, disjoint from the
+  kernel's.
 
 ## 9. Known gaps
 
@@ -279,6 +293,13 @@ Added by the slices (registry-driven, Appendix B); the last one is still propose
 - `report_write` and `track_rename` take an optional `message`; other writes require one.
 - `admin` and `ratify` are not things acted on (cut, Appendix B).
 - Plugin host-callback error codes (-32001/-32003/-32004) differ from §5; plugin channel only.
+- KNOWN GAP (B4): the terminal tools answer every runtime failure -32403, a stale observation
+  included; their errors are untyped, so §5's split (-32409 for a stale anchor) needs typed
+  terminal errors first. The e2e harness matches the refusal text, not the code.
+- Internal (-32603) messages of shared domain modules keep a module tag after the tool name
+  (`neige_report_commit: track_report: …`); the tag names the module, not a tool.
+- A nested object's unknown key (`ops[]`, `call`, `manual`, calendar `task`) is refused by its
+  tool, not by the registry.
 - Paged tools have fixed page sizes; `limit` is not offered on them.
 - A connector tool whose `mcp__neige__plugin_<id>_<tool>` exceeds 128 bytes is still cut and
   hash-suffixed by Codex (#2003 K1); `served_tool_names_fit_the_codex_cap` covers kernel and
@@ -341,14 +362,14 @@ prefix. Consumers: P prompts and templates, G goldens, F `fe`, T tests, R recipe
 | output: `time_zone` (workspace, creation identity) | `timezone` | unreleased (0136) | P, F wire types |
 | output: `docRev`, `schemaVersion`, `taskDiagnostics` (report read/write/commit) | `doc_rev`, `schema_version`, `task_diagnostics` | — | P, refusal texts, T |
 | output: `trackId`, `updatedAt` (`report_find`, `track ls area/reports/`) | `track_id`, `updated_at`; wrapped as `{reports: […]}` | — | P, CLI render, T |
-| error: role refusal -32602 (`require_role`) | -32403 | — | T |
-| error: report revision conflict -32001 | -32409 (data unchanged) | — | P, T |
-| error: plugin disabled / not running -32002 | -32503 | — | T, `routes/plugins.rs` mapping |
-| error: calendar store -32000 | -32602/-32409 by cause | — | T |
-| error prefixes `plan_cancel:`, `track_report:`, `task_verdict:`, … | the tool name | — | T |
-| 18 schemas without closed input; shared parsers ignore unknown keys | refuse unknown keys (§4) | — | T |
-| forwarder exit 4 for transport failures | 3 | — | T, `1801` doc |
-| forwarder exit 5 for a non-UTF-8 argument (`neige-cli/src/main.rs:70`) | 2 | — | T (`neige-cli/tests/forwarder.rs`), `1801` doc |
+| error: role refusal -32602 (`require_role`) | -32403 (done, B4) | — | T |
+| error: report revision conflict -32001 | -32409 (data unchanged) (done, B4) | — | P, T |
+| error: plugin disabled / not running -32002 | -32503 (done, B4) | — | T, `routes/plugins.rs` mapping |
+| error: calendar store -32000 | -32602/-32404/-32409 by cause (done, B4) | — | T |
+| error prefixes `plan_cancel:`, `track_report:`, `task_verdict:`, … | the tool name (done, B4) | — | T |
+| 18 schemas without closed input; shared parsers ignore unknown keys | refuse unknown keys (§4) (done, B4) | — | T |
+| forwarder exit 4 for transport failures | 3 (done, B4) | — | T, `1801` doc |
+| forwarder exit 5 for a non-UTF-8 argument (`neige-cli/src/main.rs:70`) | 2 (done, B4) | — | T (`neige-cli/tests/forwarder.rs`), `1801` doc |
 
 ## Appendix B — Implementation slices (proposal)
 

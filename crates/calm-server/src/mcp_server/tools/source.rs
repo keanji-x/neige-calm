@@ -10,7 +10,7 @@ use crate::error::CalmError;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    read_only_annotations, require_role, role_gated_write_annotations,
+    read_only_annotations, refuse_unknown_keys, require_role, role_gated_write_annotations,
 };
 use crate::mcp_server::transport::plugin_tool_names::names_track_visible_plugin_tool;
 use crate::model::CardRole;
@@ -114,17 +114,6 @@ fn list_descriptor() -> ToolDescriptor {
     }
 }
 
-const CAPTURE_KEYS: &[&str] = &[
-    "call",
-    "manual",
-    "source_id",
-    "provenance",
-    "title",
-    "published_at",
-    "content_id",
-    "quotes",
-];
-
 async fn source_capture(
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
@@ -135,9 +124,8 @@ async fn source_capture(
     let track_id = identity
         .track_id
         .clone()
-        .ok_or_else(|| RpcError::invalid_params(format!("{tool}: caller has no track")))?;
+        .ok_or_else(|| RpcError::forbidden(format!("{tool}: caller has no track")))?;
     let obj = require_object(&args, tool)?;
-    reject_unknown_keys(obj, CAPTURE_KEYS, tool)?;
     // A key is "present" when it is in the object, whatever its value: `manual: null` next to `call` is still two branches at once.
     let has = |key: &str| obj.contains_key(key);
     match (has("call"), has("manual"), has("source_id")) {
@@ -223,7 +211,7 @@ async fn capture_call(
         .get("call")
         .and_then(Value::as_object)
         .ok_or_else(|| RpcError::invalid_params(format!("{tool}: `call` must be an object")))?;
-    reject_unknown_keys(call, &["tool", "args"], tool)?;
+    refuse_unknown_keys(call, &["tool", "args"], &format!("{tool}: call"))?;
     let requested_tool = required_string(call, "tool", tool)?;
     let call_args = match call.get("args") {
         None | Some(Value::Null) => None,
@@ -362,7 +350,7 @@ async fn capture_manual(
         .get("manual")
         .and_then(Value::as_object)
         .ok_or_else(|| RpcError::invalid_params(format!("{tool}: `manual` must be an object")))?;
-    reject_unknown_keys(manual, &["text", "url"], tool)?;
+    refuse_unknown_keys(manual, &["text", "url"], &format!("{tool}: manual"))?;
     let text = required_string(manual, "text", tool)?;
     if text.is_empty() {
         return Err(RpcError::invalid_params(format!(
@@ -535,10 +523,9 @@ async fn source_list(
     let track_id = identity
         .track_id
         .as_deref()
-        .ok_or_else(|| RpcError::invalid_params(format!("{tool}: caller has no track")))?;
+        .ok_or_else(|| RpcError::forbidden(format!("{tool}: caller has no track")))?;
     if !args.is_null() {
-        let obj = require_object(&args, tool)?;
-        reject_unknown_keys(obj, &[], tool)?;
+        require_object(&args, tool)?;
     }
     let pool = ctx
         .sqlite_pool
@@ -577,29 +564,12 @@ pub fn list_entry(row: &SourceRow) -> Value {
 }
 
 fn map_err(tool: &str, e: CalmError) -> RpcError {
-    match e {
-        CalmError::BadRequest(m) => RpcError::invalid_params(format!("{tool}: {m}")),
-        CalmError::Forbidden(m) => RpcError::custom(-32403, format!("{tool}: forbidden: {m}")),
-        other => RpcError::internal(format!("{tool}: {other}")),
-    }
+    crate::mcp_server::framing::calm_error(e).for_tool(tool)
 }
 
 fn require_object<'a>(args: &'a Value, tool: &str) -> Result<&'a Map<String, Value>, RpcError> {
     args.as_object()
         .ok_or_else(|| RpcError::invalid_params(format!("{tool}: arguments must be an object")))
-}
-
-pub(crate) fn reject_unknown_keys(
-    obj: &Map<String, Value>,
-    allowed: &[&str],
-    tool: &str,
-) -> Result<(), RpcError> {
-    if let Some(key) = obj.keys().find(|key| !allowed.contains(&key.as_str())) {
-        return Err(RpcError::invalid_params(format!(
-            "{tool}: unknown key `{key}`"
-        )));
-    }
-    Ok(())
 }
 
 fn required_string(obj: &Map<String, Value>, key: &str, tool: &str) -> Result<String, RpcError> {

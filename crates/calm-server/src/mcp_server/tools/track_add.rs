@@ -141,7 +141,7 @@ fn track_add_descriptor() -> ToolDescriptor {
 }
 
 fn forbidden(reason: impl std::fmt::Display) -> RpcError {
-    RpcError::custom(-32403, format!("{TOOL_TRACK_ADD}: forbidden: {reason}"))
+    RpcError::forbidden(format!("{TOOL_TRACK_ADD}: forbidden: {reason}"))
 }
 
 fn invalid(reason: impl std::fmt::Display) -> RpcError {
@@ -203,13 +203,10 @@ async fn track_add(
     let args = parse_args(args)?;
     let (card, creator) = resolve_creator(&ctx, &identity).await?;
     if let Some(closed_at) = creator.closed_at {
-        return Err(RpcError::custom(
-            -32409,
-            format!(
-                "{TOOL_TRACK_ADD}: Track {} closed at {closed_at}; a closed Track adds none",
-                creator.id
-            ),
-        ));
+        return Err(RpcError::conflict(format!(
+            "{TOOL_TRACK_ADD}: Track {} closed at {closed_at}; a closed Track adds none",
+            creator.id
+        )));
     }
     let pool = authorize_creator(&ctx, &creator).await?;
     let planner_provider =
@@ -318,7 +315,7 @@ fn refusal_error(creator: &Track, refusal: TrackAddRefusal) -> RpcError {
             }
         }
         TrackAddRefusal::ProviderUnavailable(reason) => {
-            RpcError::custom(-32503, format!("{TOOL_TRACK_ADD}: {reason}"))
+            RpcError::unavailable(format!("{TOOL_TRACK_ADD}: {reason}"))
         }
         TrackAddRefusal::Create(error) => match error {
             CalmError::Forbidden(m) => forbidden(m),
@@ -326,10 +323,10 @@ fn refusal_error(creator: &Track, refusal: TrackAddRefusal) -> RpcError {
             | CalmError::IdempotencyKeyExhausted(m)
             | CalmError::IdempotencyKeyReused(m)
             | CalmError::IdempotencyKeyConcurrent(m) => {
-                RpcError::custom(-32409, format!("{TOOL_TRACK_ADD}: {m}"))
+                RpcError::conflict(format!("{TOOL_TRACK_ADD}: {m}"))
             }
             CalmError::BadRequest(m) | CalmError::IdempotencyKeyInvalid(m) => invalid(m),
-            CalmError::NotFound(m) => RpcError::custom(-32404, format!("{TOOL_TRACK_ADD}: {m}")),
+            CalmError::NotFound(m) => RpcError::not_found(format!("{TOOL_TRACK_ADD}: {m}")),
             other => internal(other),
         },
     }
@@ -441,16 +438,10 @@ mod tests {
             parse_args(spaced).unwrap_err().code,
             RpcError::INVALID_PARAMS
         );
-        // `message` takes the shared write-args path: trimmed, and `lifecycle` named and refused.
-        let mut padded = ok.clone();
+        // `message` takes the shared write-args path: trimmed. (A `lifecycle` key is refused by
+        // the registry's closed input before this parser runs.)
+        let mut padded = ok;
         padded["message"] = json!("  cover SPY \n");
         assert_eq!(parse_args(padded).unwrap().message, "cover SPY");
-        let mut lifecycle = ok;
-        lifecycle["lifecycle"] = json!("done");
-        let refused = parse_args(lifecycle).unwrap_err();
-        assert!(
-            refused.message.contains("`lifecycle` is removed"),
-            "{refused:?}"
-        );
     }
 }

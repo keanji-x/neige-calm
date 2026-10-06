@@ -95,8 +95,8 @@ CLI 层从 `ToolResult::into_structured()`（`mcp/result.rs:77`）拿数据，�
   `--json` 的输出由内核生成、转发器原样透传，转发器完全不知道 `--json` 的存在。
 - 命令层面的错误（usage、工具的 `RpcError`、渲染错误）都是**成功的** JSON-RPC 响应，只是 `exit` 为 1 或 4，
   stderr 的格式与今天一致：`neige: <msg>` 或 `{"error":{message,detail}}`。
-- 内核只给出退出码 {0,1,4}：`mcp/cli` 的退出码是只有这三个值的类型 `CliExit`，测试 `kernel_exit_codes_are_exactly_0_1_4` 断言该集合，并断言它与转发器保留的 {2,3,5,141} 不相交。
-  2、3、5、141 只由转发器给出（§3.3）；4 两边都用：内核用于工具和渲染错误，转发器用于传输失败。
+- 内核只给出退出码 {0,1,4}：`mcp/cli` 的退出码是只有这三个值的类型 `CliExit`，测试 `kernel_exit_codes_are_exactly_0_1_4` 断言该集合，并断言它与转发器保留的 {2,3,141} 不相交。
+  2、3、141 只由转发器给出（§3.3），类型 `LocalExit`，测试 `forwarder_exit_codes_are_exactly_2_3_141` 断言该集合（#2087 B4：传输失败从 4 改为 3，非 UTF-8 参数从 5 改为 2）；每个码两边只有一个含义。
 - JSON-RPC `error` 只用于传输层：围栏拒绝（§4）、协议版本不符、非 CardBound 身份，以及旧内核回的 `-32601`。
 
 ### 3.3 转发器自己的输出（冻结，只有这些）
@@ -104,8 +104,8 @@ CLI 层从 `ToolResult::into_structured()`（`mcp/result.rs:77`）拿数据，�
 |---|---|---|
 | `NEIGE_MCP_SOCKET` 或 `NEIGE_MCP_TOKEN` 未设或为空串 | `neige: missing <VAR> env var; run from a neige planner terminal` | 2 |
 | 连接失败 | `neige: connect <sock>: <err>` | 3 |
-| JSON-RPC error、断连、帧无法解析 | `neige: <method>: <message> (code N)`（无 code 时省略括号） | 4 |
-| argv 含非 UTF-8（今天 `env::args()` 直接 panic，退出码 101） | `neige: argument <i> is not valid UTF-8` | 5 |
+| JSON-RPC error、断连、帧无法解析 | `neige: <method>: <message> (code N)`（无 code 时省略括号） | 3 |
+| argv 含非 UTF-8（今天 `env::args()` 直接 panic，退出码 101） | `neige: argument <i> is not valid UTF-8` | 2 |
 | 写 stdout/stderr 失败，含 EPIPE（`neige cat x \| head`） | 不再写任何东西，静默退出 | 141（128+SIGPIPE，与 shell 惯例一致） |
 
 这些一律纯文本，因为转发器不解析 argv，也就不认识 `--json`（KNOWN GAP K2）。
@@ -135,7 +135,7 @@ CLI 层从 `ToolResult::into_structured()`（`mcp/result.rs:77`）拿数据，�
 如果 `current_exe` 取不到，消息改为 `...; the kernel bin dir is unavailable: <err>`，但**照样拒绝**。
 
 旧客户端看到的是 `main.rs:135-140` + `:1209-1221` 渲染的结果：
-`neige: initialize: this neige binary ... run <abs>/neige (code -32426)`，退出码 4。带 `--json` 时输出 `{"error":{..."rpc_error":{code,message}}}`。
+`neige: initialize: this neige binary ... run <abs>/neige (code -32426)`，退出码 3（#2087 B4 前为 4）。带 `--json` 时输出 `{"error":{..."rpc_error":{code,message}}}`。
 
 ### 4.2 不会误伤的客户端（实测）
 - 仓库里所有向内核 socket 发 initialize 的地方，只有 `cli/main.rs:122-125` 用了 `"neige"`（`rg clientInfo` 的结果：测试夹具

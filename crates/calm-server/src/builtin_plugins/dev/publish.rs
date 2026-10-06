@@ -62,6 +62,7 @@ fn dev_publish_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({
             "type": "object",
+            "additionalProperties": false,
             "required": ["idempotency_key", "title", "body"],
             "properties": {
                 "idempotency_key": { "type": "string", "minLength": 1 },
@@ -79,15 +80,15 @@ fn required_string(args: &Value, name: &str, non_empty: bool) -> Result<String, 
         .and_then(Value::as_str)
         .filter(|value| !non_empty || !value.trim().is_empty())
         .map(str::to_string)
-        .ok_or_else(|| RpcError::invalid_params(format!("dev_publish: missing `{name}`")))
+        .ok_or_else(|| RpcError::invalid_params(format!("neige_dev_publish: missing `{name}`")))
 }
 
 fn refused(text: String) -> RpcError {
-    RpcError::custom(-32409, format!("refused: {text}"))
+    RpcError::conflict(format!("refused: {text}"))
 }
 
 fn internal(error: impl std::fmt::Display) -> RpcError {
-    RpcError::internal(format!("dev_publish: {error}"))
+    RpcError::internal(format!("neige_dev_publish: {error}"))
 }
 
 /// D3: the tip may be published only when a `done` attempt of this track produced it. `facts`
@@ -308,10 +309,9 @@ async fn dev_publish(
     .await?
     .map_err(|error| {
         // The one submit refusal a Planner can cause: its key already names another commit.
-        RpcError::custom(
-            -32409,
-            format!("refused: publish-key-reused: {error}; call again with a new idempotency_key"),
-        )
+        RpcError::conflict(format!(
+            "refused: publish-key-reused: {error}; call again with a new idempotency_key"
+        ))
     })?;
     let result = runtime.wait(&submitted.op_id).await.map_err(internal)?;
     let op_id = result.op_id;
@@ -337,13 +337,10 @@ async fn dev_publish(
 
 /// A publish that ran and did not land. Its key is spent (operation keys are permanent).
 fn publish_failed(op_id: &str, reason: &str) -> RpcError {
-    RpcError::custom(
-        -32409,
-        format!(
-            "publish-failed: operation {op_id}: {reason}. Nothing more runs under this \
+    RpcError::conflict(format!(
+        "publish-failed: operation {op_id}: {reason}. Nothing more runs under this \
              idempotency_key: fix the cause, then call again with a new one."
-        ),
-    )
+    ))
 }
 
 #[cfg(test)]

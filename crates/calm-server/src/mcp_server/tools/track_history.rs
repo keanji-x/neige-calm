@@ -52,6 +52,7 @@ fn diff_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({
             "type": "object",
+            "additionalProperties": false,
             "required": ["from"],
             "properties": {
                 "from": { "type": "string" },
@@ -72,6 +73,7 @@ fn cat_at_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({
             "type": "object",
+            "additionalProperties": false,
             "required": ["commit", "path"],
             "properties": {
                 "commit": { "type": "string" },
@@ -91,6 +93,7 @@ fn log_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "path": { "type": "string" },
                 "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
@@ -183,7 +186,7 @@ async fn track_log(
 fn track_vcs_repo(ctx: &AppContext) -> Result<&dyn TrackVcsRepo, RpcError> {
     ctx.track_vcs
         .as_deref()
-        .ok_or_else(|| RpcError::internal("neige.track history requires sqlite-backed track-vcs"))
+        .ok_or_else(|| RpcError::internal("history requires sqlite-backed track-vcs"))
 }
 
 async fn resolve_commit_in_track(
@@ -197,17 +200,15 @@ async fn resolve_commit_in_track(
         .map_err(vcs_error_to_rpc)?
     {
         Some(record) if record.track_id == *track_id => Ok(record.hash),
-        Some(_) => Err(RpcError::invalid_params(format!(
-            "neige.track: commit {commit_hash} is outside the bound track"
+        Some(_) => Err(RpcError::not_found(format!(
+            "commit {commit_hash} is outside the bound track"
         ))),
         None => vcs
             .resolve_commit_prefix(track_id, commit_hash)
             .await
             .map_err(vcs_error_to_rpc)?
             .map(|record| record.hash)
-            .ok_or_else(|| {
-                RpcError::invalid_params(format!("neige.track: unknown commit {commit_hash}"))
-            }),
+            .ok_or_else(|| RpcError::not_found(format!("unknown commit {commit_hash}"))),
     }
 }
 
@@ -299,8 +300,10 @@ fn commit_log_json(commit: CommitLogEntry) -> Value {
 
 fn vcs_error_to_rpc(err: calm_truth::TruthError) -> RpcError {
     match err {
-        calm_truth::TruthError::Core(calm_types::error::CoreError::NotFound(message))
-        | calm_truth::TruthError::Core(calm_types::error::CoreError::BadRequest(message)) => {
+        calm_truth::TruthError::Core(calm_types::error::CoreError::NotFound(message)) => {
+            RpcError::not_found(message)
+        }
+        calm_truth::TruthError::Core(calm_types::error::CoreError::BadRequest(message)) => {
             RpcError::invalid_params(message)
         }
         other => RpcError::internal(format!("{other}")),

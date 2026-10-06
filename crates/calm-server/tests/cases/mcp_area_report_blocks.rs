@@ -325,7 +325,8 @@ async fn sections_text_equals_calm_report_read_select_on_every_report_path() {
         assert_eq!(err.code, INVALID_PARAMS, "{path}: {err:?}");
         assert_eq!(
             err.message,
-            "unknown section `Nope`; this report's sections are:\n  # Goal\n  # Findings\n  # Next",
+            "neige_track_cat: unknown section `Nope`; this report's sections are:\n  # Goal\n  \
+             # Findings\n  # Next",
             "{path}"
         );
     }

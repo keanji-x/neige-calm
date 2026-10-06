@@ -591,12 +591,12 @@ async fn dispatch_plugin_tools_call(
     require_role_any(&identity, PLUGIN_TOOL_ROLES)?;
     match kind {
         None => {
-            // Connector tools materialize with `kind: None`, so without this arm they would fall through to the stdio-only accessor and get a spurious `-32002 not running`.
+            // Connector tools materialize with `kind: None`, so without this arm they would fall through to the stdio-only accessor and get a spurious `-32503 not running`.
             let client = plugin_host
                 .connector_client(&plugin_id)
                 .await
                 .ok_or_else(|| {
-                    RpcError::custom(-32002, format!("plugin `{plugin_id}` not running"))
+                    RpcError::unavailable(format!("plugin `{plugin_id}` not running"))
                 })?;
             // Only a Planner's call carrying a track is recorded for `neige_source_capture`; the identity is the resolved one, never anything in the request.
             let record_for = match (&identity.role, identity.track_id.as_deref()) {
@@ -655,7 +655,7 @@ async fn dispatch_plugin_tools_call(
                 return dispatch_forge_action_result(ctx, result, &plugin_id, identity).await;
             }
             let client = plugin_host.mcp_client(&plugin_id).await.ok_or_else(|| {
-                RpcError::custom(-32002, format!("plugin `{plugin_id}` not running"))
+                RpcError::unavailable(format!("plugin `{plugin_id}` not running"))
             })?;
             dispatch_forge_action_plugin_tool(
                 ctx, client, &plugin_id, &tool_name, arguments, identity,
@@ -884,9 +884,10 @@ fn forge_caller_scope(
 ) -> Result<crate::plugin_host::forge_caller::ForgeCallerScope, RpcError> {
     Ok(crate::plugin_host::forge_caller::ForgeCallerScope {
         plugin_id: plugin_id.to_owned(),
-        track_id: identity.track_id.clone().ok_or_else(|| {
-            RpcError::invalid_params("forge action requires a track-scoped caller")
-        })?,
+        track_id: identity
+            .track_id
+            .clone()
+            .ok_or_else(|| RpcError::forbidden("forge action requires a track-scoped caller"))?,
         card_id: identity.card_id.clone(),
     })
 }
@@ -945,7 +946,7 @@ async fn dispatch_forge_action_result(
     let track_id = identity
         .track_id
         .clone()
-        .ok_or_else(|| RpcError::invalid_params("forge action requires a track-scoped caller"))?;
+        .ok_or_else(|| RpcError::forbidden("forge action requires a track-scoped caller"))?;
     let card_id = identity.card_id.clone();
     let cwd_lease = resolve_forge_cwd(ctx, &identity, &track_id).await?;
 

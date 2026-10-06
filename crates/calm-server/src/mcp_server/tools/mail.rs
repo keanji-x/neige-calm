@@ -21,10 +21,6 @@ use crate::model::CardRole;
 pub const MAX_SUMMARY_CHARS: usize = 200;
 pub const MAX_TEXT_CHARS: usize = 8000;
 
-const SEND_KEYS: &[&str] = &["track_id", "mail_id", "summary", "text"];
-const LS_KEYS: &[&str] = &["cursor"];
-const CAT_KEYS: &[&str] = &["mail_id"];
-
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(send_descriptor(), wrap(send));
     registry.register(ls_descriptor(), wrap(ls));
@@ -100,23 +96,10 @@ fn cat_descriptor() -> ToolDescriptor {
     }
 }
 
-/// The argument object, refusing a key outside `keys` with the valid ones.
-fn arguments<'a>(
-    tool: &str,
-    args: &'a Value,
-    keys: &[&str],
-) -> Result<&'a Map<String, Value>, RpcError> {
-    let object = args
-        .as_object()
-        .ok_or_else(|| invalid(tool, "arguments", "arguments must be an object"))?;
-    if let Some(key) = object.keys().find(|key| !keys.contains(&key.as_str())) {
-        return Err(invalid(
-            tool,
-            "arguments",
-            &format!("unknown argument `{key}`; the keys are {}", keys.join(", ")),
-        ));
-    }
-    Ok(object)
+/// The argument object; the registry has already refused a key outside the schema.
+fn arguments<'a>(tool: &str, args: &'a Value) -> Result<&'a Map<String, Value>, RpcError> {
+    args.as_object()
+        .ok_or_else(|| invalid(tool, "arguments", "arguments must be an object"))
 }
 
 fn text_argument(
@@ -138,7 +121,7 @@ fn text_argument(
 /// The checked send request, or the §6 argument refusal.
 fn send_request(args: &Value) -> Result<SendRequest, RpcError> {
     const TOOL: &str = TOOL_MAIL_SEND;
-    let object = arguments(TOOL, args, SEND_KEYS)?;
+    let object = arguments(TOOL, args)?;
     let to = match (
         text_argument(TOOL, object, "track_id")?,
         text_argument(TOOL, object, "mail_id")?,
@@ -195,7 +178,7 @@ async fn ls(
     args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Planner)?;
-    let object = arguments(TOOL_MAIL_LS, &args, LS_KEYS)?;
+    let object = arguments(TOOL_MAIL_LS, &args)?;
     let cursor = text_argument(TOOL_MAIL_LS, object, "cursor")?;
     mail::ls(&ctx, &identity, cursor.as_deref()).await
 }
@@ -206,7 +189,7 @@ async fn cat(
     args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Planner)?;
-    let object = arguments(TOOL_MAIL_CAT, &args, CAT_KEYS)?;
+    let object = arguments(TOOL_MAIL_CAT, &args)?;
     let mail_id = text_argument(TOOL_MAIL_CAT, object, "mail_id")?
         .ok_or_else(|| invalid(TOOL_MAIL_CAT, "arguments", "missing `mail_id` (string)"))?;
     mail::cat(&ctx, &identity, &mail_id).await
@@ -271,8 +254,5 @@ mod tests {
             refusal(blank),
             "neige_mail_send: text is 1..8000 characters"
         );
-        let mut extra = target;
-        extra["cc"] = json!("x");
-        assert!(refusal(extra).contains("unknown argument `cc`"));
     }
 }

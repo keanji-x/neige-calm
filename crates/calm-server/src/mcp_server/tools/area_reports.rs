@@ -18,8 +18,6 @@ use crate::track_fs_view::{TrackFsEntry, TrackFsError, normalize_path};
 
 pub const TOOL_REPORT_FIND: &str = "neige_report_find";
 
-const FIND_KEYS: &[&str] = &["path", "name", "tag"];
-
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(find_descriptor(), wrap(report_find));
 }
@@ -161,11 +159,6 @@ async fn report_find(
     let obj = args
         .as_object()
         .ok_or_else(|| RpcError::invalid_params(format!("{tool}: arguments must be an object")))?;
-    if let Some(key) = obj.keys().find(|key| !FIND_KEYS.contains(&key.as_str())) {
-        return Err(RpcError::invalid_params(format!(
-            "{tool}: unknown argument `{key}`; the searched area is always the caller's own"
-        )));
-    }
     let text = |key: &str| -> Result<Option<String>, RpcError> {
         match obj.get(key) {
             None => Ok(None),

@@ -231,7 +231,7 @@ async fn disabled_plugin_hints_require_an_eligible_planner_and_exact_tool() {
     let (mut rd, mut wr) = connect(&fx.socket_path).await;
     handshake(&mut rd, &mut wr, &token).await;
     let error = call_expect_error(&mut rd, &mut wr, 10, EXPOSED_NAME, Some(&thread)).await;
-    assert_eq!(error["code"], -32002);
+    assert_eq!(error["code"], -32503);
     assert!(
         error["message"]
             .as_str()
@@ -284,8 +284,8 @@ async fn assistant_token_cannot_call_a_plugin_tool() {
         .unwrap_or_else(|| panic!("plugin tool must refuse an assistant: {refused:#?}"));
     assert_eq!(
         error["code"].as_i64(),
-        Some(-32602),
-        "plugin-tool role refusal is INVALID_PARAMS: {refused:#?}"
+        Some(-32403),
+        "plugin-tool role refusal is FORBIDDEN: {refused:#?}"
     );
     assert!(
         error["message"]

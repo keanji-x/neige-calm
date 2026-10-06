@@ -496,9 +496,7 @@ impl HttpMcpClient {
             };
             RpcError::internal(format!("mcp-http {method_owned} request task {what}"))
         })?
-        .map_err(|e| {
-            RpcError::custom(-32002, self.scrub(format!("mcp-http {method_owned}: {e}")))
-        })?;
+        .map_err(|e| RpcError::unavailable(self.scrub(format!("mcp-http {method_owned}: {e}"))))?;
 
         // The choke point: everything below is derived from this value, scrubbed as a JSON tree (decoded strings and keys), never as raw text.
         let mut parsed = parse_scrubbed(&self.secret_forms, &text, &method_owned)?;

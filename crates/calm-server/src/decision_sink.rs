@@ -70,20 +70,20 @@ impl CardDecisionSink {
             .repo
             .card_get(&card_id_str)
             .await
-            .map_err(|e| CalmError::Internal(format!("emit: card lookup: {e}")))?
+            .map_err(|e| CalmError::Internal(format!("card lookup: {e}")))?
             .ok_or_else(|| {
                 CalmError::Internal(format!(
-                    "emit: bound card {card_id_str} not found (deleted mid-connection?)"
+                    "bound card {card_id_str} not found (deleted mid-connection?)"
                 ))
             })?;
         let track = self
             .repo
             .track_get(card.track_id.as_str())
             .await
-            .map_err(|e| CalmError::Internal(format!("emit: track lookup: {e}")))?
+            .map_err(|e| CalmError::Internal(format!("track lookup: {e}")))?
             .ok_or_else(|| {
                 CalmError::Internal(format!(
-                    "emit: track {} for card {} not found",
+                    "track {} for card {} not found",
                     card.track_id.as_str(),
                     card_id_str
                 ))
@@ -221,20 +221,20 @@ impl CardDecisionSink {
             .repo
             .card_get(&card_id_str)
             .await
-            .map_err(|e| CalmError::Internal(format!("track_state: card lookup: {e}")))?
+            .map_err(|e| CalmError::Internal(format!("card lookup: {e}")))?
             .ok_or_else(|| {
                 CalmError::Internal(format!(
-                    "track_state: bound card {card_id_str} not found (deleted mid-connection?)"
+                    "bound card {card_id_str} not found (deleted mid-connection?)"
                 ))
             })?;
         let track = self
             .repo
             .track_get(card.track_id.as_str())
             .await
-            .map_err(|e| CalmError::Internal(format!("track_state: track lookup: {e}")))?
+            .map_err(|e| CalmError::Internal(format!("track lookup: {e}")))?
             .ok_or_else(|| {
                 CalmError::Internal(format!(
-                    "track_state: track {} for card {} not found",
+                    "track {} for card {} not found",
                     card.track_id.as_str(),
                     card_id_str
                 ))

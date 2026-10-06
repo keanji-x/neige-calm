@@ -10,7 +10,6 @@ edition = "2024"
 [[bin]]
 name = "neige"
 path = "src/main.rs"
-test = false
 
 [dependencies]
 tokio = { version = "1", features = ["rt", "macros", "io-util", "net"] }

@@ -706,11 +706,11 @@ async fn capture_field_matrix_refusals() {
         ),
         (
             json!({ "call": { "tool": REGISTRY_NAME }, "provenance": "full_text", "title": "x", "bogus": 1 }),
-            "unknown key `bogus`",
+            "unknown argument `bogus`",
         ),
         (
             json!({ "call": { "tool": REGISTRY_NAME, "extra": 1 }, "provenance": "full_text", "title": "x" }),
-            "unknown key `extra`",
+            "call: unknown argument `extra`; valid: args, tool",
         ),
         (
             json!({ "call": { "tool": REGISTRY_NAME }, "provenance": "full_text", "title": "x", "published_at": "yesterday" }),
@@ -770,7 +770,7 @@ async fn capture_over_the_per_track_quota_is_forbidden() {
 }
 
 #[tokio::test]
-async fn non_planner_roles_are_refused_with_invalid_params() {
+async fn non_planner_roles_are_forbidden() {
     let boot = boot().await;
     record(
         &boot,
@@ -785,11 +785,13 @@ async fn non_planner_roles_are_refused_with_invalid_params() {
         let err = call_tool(&boot, TOOL_SOURCE_CAPTURE, identity.clone(), args.clone())
             .await
             .unwrap_err();
-        assert_invalid_params(&err, "tool requires role=Planner");
+        assert_eq!(err.code, -32403, "{err}");
+        assert!(err.message.contains("tool requires role=Planner"), "{err}");
         let err = call_tool(&boot, TOOL_SOURCE_LS, identity, json!({}))
             .await
             .unwrap_err();
-        assert_invalid_params(&err, "tool requires role=Planner");
+        assert_eq!(err.code, -32403, "{err}");
+        assert!(err.message.contains("tool requires role=Planner"), "{err}");
     }
     assert!(list(&boot).await.is_empty());
 }

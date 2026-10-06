@@ -133,7 +133,7 @@ pub(super) async fn cancel_running_in_tx(
         tracing::warn!(
             task_id = %current.id,
             card_id,
-            "plan_cancel: no live worker session to mark; the canceled worker is not reaped"
+            "neige_task_cancel: no live worker session to mark; the canceled worker is not reaped"
         );
     }
     Ok((rows, mark.released))

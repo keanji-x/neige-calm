@@ -74,7 +74,7 @@ async fn area_outline(
         .repo
         .track_report_cards_by_area(identity.area_id.as_str())
         .await
-        .map_err(|error| RpcError::internal(format!("area_outline: {error}")))?;
+        .map_err(|error| RpcError::internal(format!("neige_area_ls: {error}")))?;
     cards.sort_by(|left, right| left.track_id.as_str().cmp(right.track_id.as_str()));
 
     let total_tracks = cards.len();
@@ -85,11 +85,11 @@ async fn area_outline(
             .repo
             .track_get(card.track_id.as_str())
             .await
-            .map_err(|error| RpcError::internal(format!("area_outline: {error}")))?
-            .ok_or_else(|| RpcError::internal("area_outline: track vanished mid-read"))?;
+            .map_err(|error| RpcError::internal(format!("neige_area_ls: {error}")))?
+            .ok_or_else(|| RpcError::internal("neige_area_ls: track vanished mid-read"))?;
         let snapshot = load_report_read_snapshot(ctx.repo.as_ref(), card.id.as_str())
             .await
-            .map_err(|error| RpcError::internal(format!("area_outline: {error}")))?;
+            .map_err(|error| RpcError::internal(format!("neige_area_ls: {error}")))?;
         let omitted = snapshot.blocks.len().saturating_sub(MAX_BLOCKS_PER_TRACK);
         if omitted > 0 {
             block_truncations.insert(track.id.as_str().to_string(), omitted);
@@ -157,7 +157,7 @@ async fn area_outline(
         > MAX_RESPONSE_BYTES
     {
         return Err(RpcError::internal(
-            "area_outline: truncation metadata exceeds response byte cap",
+            "neige_area_ls: truncation metadata exceeds response byte cap",
         ));
     }
     Ok(response)
@@ -288,10 +288,10 @@ async fn report_backlinks(
     require_role(&identity, CardRole::Planner)?;
     let track_id = identity
         .track_id
-        .ok_or_else(|| RpcError::invalid_params("neige_link_ls requires a track-scoped caller"))?;
+        .ok_or_else(|| RpcError::forbidden("neige_link_ls requires a track-scoped caller"))?;
     let page = crate::report_backlinks::backlinks_for_track(ctx.repo.as_ref(), &track_id)
         .await
-        .map_err(|error| RpcError::internal(format!("report_backlinks: {error}")))?;
+        .map_err(|error| RpcError::internal(format!("neige_link_ls: {error}")))?;
     Ok(crate::report_backlinks::mcp_payload(&page))
 }
 

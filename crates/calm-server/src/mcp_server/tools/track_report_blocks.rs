@@ -1,14 +1,14 @@
 //! The agent report write surface (`neige_report_commit`, `neige_report_write`) plus the read-only `neige_report_describe`.
 //! Neither write takes a revision (#1883): the anchors are what this session last read through `neige_report_read`, checked inside
-//! the persist transaction against CRDT truth; a mismatch is `-32001` and writes nothing.
+//! the persist transaction against CRDT truth; a mismatch is `-32409` and writes nothing.
 
 use crate::decision_sink::{CardDecisionSink, ReportOpCommit};
 use crate::error::CalmError;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
-    AppContext, ToolCallIdentity, ToolHandler, ToolHandlerFuture, ToolRegistry, require_role_any,
+    AppContext, ToolCallIdentity, ToolHandler, ToolHandlerFuture, ToolRegistry,
+    refuse_unknown_keys, require_role_any,
 };
-use crate::mcp_server::tools::source::reject_unknown_keys;
 use crate::mcp_server::tools::track_report::{resolve_report_for_caller, updated_report_doc_rev};
 use crate::mcp_server::tools::write_args::{parse_optional_write_args, parse_write_args};
 use crate::model::CardRole;
@@ -28,10 +28,10 @@ pub const TOOL_REPORT_DESCRIBE: &str = "neige_report_describe";
 pub const TOOL_REPORT_WRITE: &str = "neige_report_write";
 pub const TOOL_REPORT_COMMIT: &str = "neige_report_commit";
 
-/// JSON-RPC error code for an `if_rev` optimistic-concurrency conflict (kernel-extension range).
-pub const RPC_REV_CONFLICT: i64 = -32001;
+/// The §5 conflict code a stale report revision answers.
+pub const RPC_REV_CONFLICT: i64 = RpcError::CONFLICT;
 
-/// The one `-32001` constructor for every report write. `data` carries the current revisions the message names
+/// The one `-32409` constructor for every report write. `data` carries the current revisions the message names
 /// (`doc_rev` from `current doc_rev is N`, `rev` from `current rev is N`) so a retry can re-anchor without a full read.
 pub(crate) fn rev_conflict_error(message: String) -> RpcError {
     let mut data = serde_json::Map::new();
@@ -93,7 +93,6 @@ async fn write_markdown(
     let tool = TOOL_REPORT_WRITE;
     let obj = require_object(&args, tool)?;
     let message = parse_optional_write_args(&args, tool)?;
-    reject_unknown_keys(obj, &["body", "summary", "message"], tool)?;
     let body = required_string(obj, "body", tool)?;
     let summary_override = optional_string(obj, "summary", tool)?;
 
@@ -169,7 +168,6 @@ async fn commit(
     let tool = TOOL_REPORT_COMMIT;
     let obj = require_object(&args, tool)?;
     let message = parse_write_args(&args, tool)?;
-    reject_unknown_keys(obj, &["message", "summary", "ops"], tool)?;
     let summary = optional_string(obj, "summary", tool)?;
     let raw_ops = match obj.get("ops") {
         None | Some(Value::Null) => &[][..],
@@ -268,7 +266,7 @@ fn parse_batch_op(
     let obj = raw
         .as_object()
         .ok_or_else(|| RpcError::invalid_params(format!("{at}: must be an object")))?;
-    reject_unknown_keys(
+    refuse_unknown_keys(
         obj,
         &[
             "op", "section", "id", "kind", "markdown", "payload", "position", "to_index",
@@ -420,9 +418,7 @@ fn reject_duplicate_block_ids(ops: &[BatchBlockOp], tool: &str) -> Result<(), Rp
 fn map_commit_err(tool: &str, e: CalmError) -> RpcError {
     match e {
         CalmError::Conflict(m) => rev_conflict_error(format!("{tool}: {m}")),
-        CalmError::BadRequest(m) => RpcError::invalid_params(format!("{tool}: {m}")),
-        CalmError::Forbidden(m) => RpcError::custom(-32403, format!("{tool}: forbidden: {m}")),
-        other => RpcError::internal(format!("{tool}: {other}")),
+        other => crate::mcp_server::framing::calm_error(other).for_tool(tool),
     }
 }
 

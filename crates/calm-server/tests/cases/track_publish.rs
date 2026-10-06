@@ -78,6 +78,15 @@ async fn publish_titled(fx: &Fx, key: &str, title: &str, body: &str) -> Result<V
         json!({"idempotency_key": key, "title": title, "body": body}),
     )
     .await
+    .map_err(|mut error| {
+        // Every refusal is led by the tool name (§5); the assertions below read the rest.
+        let rest = error
+            .message
+            .strip_prefix(&format!("{TOOL}: "))
+            .unwrap_or_else(|| panic!("not led by {TOOL}: {error:?}"));
+        error.message = rest.to_string();
+        error
+    })
 }
 
 /// The shim's record of PR `number`'s title and body, as the last create or edit set them.

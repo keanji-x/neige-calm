@@ -324,7 +324,7 @@ async fn ratify_request_takes_text_and_refuses_the_retired_reason() {
             .expect_err("the retired reason must be refused");
         assert_eq!(err.code, -32602, "{args}");
         assert_eq!(
-            err.message, "neige_ratify_request: unknown argument `reason`; valid: `text`",
+            err.message, "neige_ratify_request: unknown argument `reason`; valid: text",
             "{args}"
         );
     }
@@ -375,10 +375,7 @@ async fn ratify_request_refuses_a_closed_track() {
     let err = request_ratification(&boot, "ask after close")
         .await
         .expect_err("a closed track must refuse a ratify request");
-    assert_eq!(
-        err.code,
-        calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
-    );
+    assert_eq!(err.code, calm_server::plugin_host::mcp::RpcError::CONFLICT);
     assert!(err.message.contains("the track is closed"), "{err:?}");
 
     let events = events_for_track(&boot, &["ratify.requested"]).await;
@@ -398,10 +395,7 @@ async fn ratify_request_rejects_duplicate_pending_request_without_second_event()
     let err = request_ratification(&boot, "merge_hold retry")
         .await
         .expect_err("pending request must reject duplicate");
-    assert_eq!(
-        err.code,
-        calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
-    );
+    assert_eq!(err.code, calm_server::plugin_host::mcp::RpcError::CONFLICT);
     assert!(
         err.message.contains("a ratify request is already pending"),
         "{err:?}"

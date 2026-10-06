@@ -3,6 +3,7 @@
     "name": "neige_admin_gc",
     "description_sha256": "4a2ad238060ed23e06ab148bcbc0979ee9557244284ad93c3816ece03f12bdc5",
     "input_schema": {
+      "additionalProperties": false,
       "properties": {
         "dry_run": {
           "type": "boolean"
@@ -28,6 +29,7 @@
     "name": "neige_admin_vacuum",
     "description_sha256": "26d0d3c385621c2af572c88fd8cc44f0531d1acd4c134d2a82deaf753b00e0b4",
     "input_schema": {
+      "additionalProperties": false,
       "properties": {},
       "type": "object"
     },
@@ -214,7 +216,7 @@
   },
   {
     "name": "neige_calendar_rm",
-    "description_sha256": "23b4cccb761627ddc540a4a539ab1796d5e9a9a6a32a62b9425e98f1c2b92a2d",
+    "description_sha256": "45a7c0ab6aa98dddf93a4e2c7fa813ce592d89ef6a4be7a5f33e008ad14a595c",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -382,6 +384,7 @@
     "name": "neige_dev_publish",
     "description_sha256": "99ea201ee839d77c7f48bd349d6c1fa3449ef0881b5b4c91652131709e904dff",
     "input_schema": {
+      "additionalProperties": false,
       "properties": {
         "body": {
           "type": "string"
@@ -508,7 +511,7 @@
       "additionalProperties": false,
       "properties": {
         "preview_id": {
-          "description": "Stable name of this preview within the track, e.g. `fe`.",
+          "description": "Stable preview name in this track, e.g. `fe`.",
           "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
           "type": "string"
         },
@@ -548,7 +551,7 @@
       "additionalProperties": false,
       "properties": {
         "preview_id": {
-          "description": "Stable name of this preview within the track, e.g. `fe`.",
+          "description": "Stable preview name in this track, e.g. `fe`.",
           "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
           "type": "string"
         }
@@ -571,6 +574,7 @@
     "name": "neige_ratify_request",
     "description_sha256": "ada9c58440c39d1e7f4e8c649ff5f61c7e789fd2396e2dd9246c8b47bf766d96",
     "input_schema": {
+      "additionalProperties": false,
       "properties": {
         "text": {
           "minLength": 1,
@@ -593,12 +597,12 @@
   },
   {
     "name": "neige_report_commit",
-    "description_sha256": "9e3873af2c7168e5e915c4c1aae3c9ed25a2a0b52f86c0fe3a8db21511c297f8",
+    "description_sha256": "eaaae5f21418eed29b5640fd620a5803929fb3f02459d646e900823c3ac24efe",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
         "message": {
-          "description": "Why this write; stored on its event as agent_message.",
+          "description": "The audit note: why this write.",
           "minLength": 1,
           "type": "string"
         },
@@ -681,6 +685,7 @@
     "name": "neige_report_describe",
     "description_sha256": "004d0d3ec01d99d01ad8bfef1615cb008b115f532cc7f79b9f84767d919e28df",
     "input_schema": {
+      "additionalProperties": false,
       "properties": {},
       "type": "object"
     },
@@ -722,6 +727,7 @@
     "name": "neige_report_read",
     "description_sha256": "2c9d41530459e1dc8c1f79f46324a2618f3d2709b921334b334aa9b98628e3db",
     "input_schema": {
+      "additionalProperties": false,
       "properties": {
         "blocks": {
           "items": {
@@ -803,7 +809,7 @@
   },
   {
     "name": "neige_report_write",
-    "description_sha256": "8e48a22ece1375064949422b5c0f0cdc24efcb7483bccd49ae72099b430d6635",
+    "description_sha256": "0563dd7228afcaac619f05a11c2154b576831c71cf07163ed2828e33ba78906f",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -812,7 +818,7 @@
           "type": "string"
         },
         "message": {
-          "description": "Optional: why this write; stored on its event as agent_message.",
+          "description": "Optional audit note: why this write.",
           "minLength": 1,
           "type": "string"
         },
@@ -934,7 +940,7 @@
           "type": "string"
         },
         "message": {
-          "description": "Why this write; stored on its event as agent_message.",
+          "description": "The audit note: why this write.",
           "minLength": 1,
           "type": "string"
         }
@@ -958,13 +964,14 @@
     "name": "neige_task_cancel",
     "description_sha256": "dd1896d21a0446dcfe7ec74b727b893fe76d635347c612e82633e72dfcb83965",
     "input_schema": {
+      "additionalProperties": false,
       "properties": {
         "key": {
           "minLength": 1,
           "type": "string"
         },
         "message": {
-          "description": "Why this write; stored on its event as agent_message.",
+          "description": "The audit note: why this write.",
           "minLength": 1,
           "type": "string"
         }
@@ -988,6 +995,7 @@
     "name": "neige_task_done",
     "description_sha256": "4a89098b9d1bc6cd378b4f9771957201df9dda3f6b6498d37c194ff9483257bc",
     "input_schema": {
+      "additionalProperties": false,
       "properties": {
         "artifacts": {
           "type": "array"
@@ -1019,6 +1027,7 @@
     "name": "neige_task_fail",
     "description_sha256": "c4c54e75b8e898f1b0206e530fd2bd739d0f06b7b9918a92ec3a97c82f787a3d",
     "input_schema": {
+      "additionalProperties": false,
       "properties": {
         "attempt_id": {
           "minLength": 1,
@@ -1057,7 +1066,7 @@
           "type": "string"
         },
         "key": {
-          "description": "One exact current task key in this Track; no prefix matching or whitespace normalization.",
+          "description": "One exact current task key in this Track (no prefix match).",
           "minLength": 1,
           "type": "string"
         }
@@ -1082,11 +1091,12 @@
           "type": "string"
         },
         "message": {
-          "description": "Why this write; stored on its event as agent_message.",
+          "description": "The audit note: why this write.",
           "minLength": 1,
           "type": "string"
         },
         "reason": {
+          "minLength": 1,
           "type": "string"
         }
       },
@@ -1616,6 +1626,7 @@
     "name": "neige_track_cat",
     "description_sha256": "132603fae84b07e49577f575c24f72c894a560da3ef6e1c74fa1632cfde2f330",
     "input_schema": {
+      "additionalProperties": false,
       "properties": {
         "blocks": {
           "description": "Report paths only: print just these blocks, as neige_report_read blocks does.",
@@ -1651,9 +1662,10 @@
     "name": "neige_track_close",
     "description_sha256": "9e303c81363887445660330f4105ce7893393a8dd6119083d9eddddc76d84726",
     "input_schema": {
+      "additionalProperties": false,
       "properties": {
         "message": {
-          "description": "Why this write; stored on its event as agent_message.",
+          "description": "The audit note: why this write.",
           "minLength": 1,
           "type": "string"
         }
@@ -1676,6 +1688,7 @@
     "name": "neige_track_diff",
     "description_sha256": "d48847a7cd155b6e8597b8752c3ffe7bd0a9e9869ef3d9fb1750cc22d0ac478a",
     "input_schema": {
+      "additionalProperties": false,
       "properties": {
         "from": {
           "type": "string"
@@ -1701,6 +1714,7 @@
     "name": "neige_track_log",
     "description_sha256": "cb4868d442016f91ce5682cab8a9575b6da7a85ed2c74f7e897807bf24038f3f",
     "input_schema": {
+      "additionalProperties": false,
       "properties": {
         "include_empty": {
           "default": false,
@@ -1726,6 +1740,7 @@
     "name": "neige_track_ls",
     "description_sha256": "890cfb0f14e71fe974933c7d3b18c303edbc43f2cc75d9f864485ec09326eec2",
     "input_schema": {
+      "additionalProperties": false,
       "properties": {
         "path": {
           "type": "string"
@@ -1742,13 +1757,14 @@
     "name": "neige_track_rename",
     "description_sha256": "c3e4e48c3acd7b414db1c5da410c7df89d44be53da5bcbb8613410efff661601",
     "input_schema": {
+      "additionalProperties": false,
       "properties": {
         "message": {
-          "description": "Optional short rationale, persisted as the event's agent_message.",
+          "description": "Optional audit note: why this write.",
           "type": "string"
         },
         "title": {
-          "description": "The track's name. Trimmed before it is stored; whitespace-only is rejected.",
+          "description": "The track's name, trimmed; not blank.",
           "minLength": 1,
           "type": "string"
         }
@@ -1771,6 +1787,7 @@
     "name": "neige_track_show",
     "description_sha256": "e09a7ace969e7040e2355637360efd9f836fc334213798a2358bfa70ed974ed9",
     "input_schema": {
+      "additionalProperties": false,
       "properties": {
         "commit": {
           "type": "string"
@@ -1794,6 +1811,7 @@
     "name": "neige_track_status",
     "description_sha256": "1d00a8579c0109ef5dec79f5ac95a5d89bf382983064aea431c802cac6bd2145",
     "input_schema": {
+      "additionalProperties": false,
       "properties": {},
       "type": "object"
     },

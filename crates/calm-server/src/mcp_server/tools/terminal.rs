@@ -158,7 +158,7 @@ fn parse<T: serde::de::DeserializeOwned>(args: Value) -> Result<T, RpcError> {
     serde_json::from_value(args).map_err(|error| RpcError::invalid_params(error.to_string()))
 }
 fn failure(error: impl std::fmt::Display) -> RpcError {
-    RpcError::custom(-32403, error.to_string())
+    RpcError::forbidden(error.to_string())
 }
 /// A write refused because the card is a codex task Worker carries a machine-readable `data.refusal`.
 fn write_failure(error: anyhow::Error) -> RpcError {

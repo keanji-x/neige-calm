@@ -166,7 +166,7 @@ async fn bootstrap_discovery_does_not_grant_native_call_authority() {
         tools_call_frame(3, PUBLISH, &boot.thread_id, json!({})),
     )
     .await;
-    assert_eq!(response["error"]["code"], -32602, "{response:#}");
+    assert_eq!(response["error"]["code"], -32403, "{response:#}");
     crate::support::mcp::set_persisted_card_role(
         boot.repo.as_ref(),
         &boot.card_id,
@@ -182,7 +182,7 @@ async fn bootstrap_discovery_does_not_grant_native_call_authority() {
         tools_call_frame(3, PUBLISH, &boot.thread_id, json!({})),
     )
     .await;
-    assert_eq!(response["error"]["code"], -32002, "{response:#}");
+    assert_eq!(response["error"]["code"], -32503, "{response:#}");
     assert!(
         !stopped
             .iter()

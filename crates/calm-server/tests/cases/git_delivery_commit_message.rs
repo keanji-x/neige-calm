@@ -171,9 +171,12 @@ async fn invalid_commit_message_refuses_the_report_before_any_write() {
     for (message, refusal) in [
         (
             json!("fix: x\0y"),
-            "task_done: commit_message has a NUL byte",
+            "neige_task_done: commit_message has a NUL byte",
         ),
-        (json!(42), "task_done: commit_message must be a string"),
+        (
+            json!(42),
+            "neige_task_done: commit_message must be a string",
+        ),
     ] {
         let error = done_with(&fx, &worker, &task.id, message.clone())
             .await

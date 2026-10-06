@@ -222,7 +222,7 @@ async fn task_fail_rejects_blank_reason() {
         );
         assert_eq!(
             resp["error"]["message"],
-            json!("task_fail: missing `reason` (non-empty)"),
+            json!("neige_task_fail: missing `reason` (non-empty)"),
             "{reason:?}"
         );
     }
@@ -238,7 +238,7 @@ async fn task_fail_rejects_blank_reason() {
     assert_eq!(stdout, "");
     assert_eq!(
         stderr,
-        "neige: neige_task_fail: task_fail: missing `reason` (non-empty) (code -32602)\n"
+        "neige: neige_task_fail: missing `reason` (non-empty) (code -32602)\n"
     );
     assert_eq!(
         task_failed_event_count(&b).await,
@@ -248,11 +248,10 @@ async fn task_fail_rejects_blank_reason() {
 }
 
 #[tokio::test]
-async fn smuggled_card_id_in_args_is_ignored() {
-    // The transport binds the identity at handshake; a `card_id` field in `arguments` must not let
-    // the caller claim a different card.
+async fn smuggled_card_id_in_args_is_refused() {
+    // The transport binds the identity at handshake; a `card_id` or `actor` in `arguments` is no
+    // key of the schema, so the closed input refuses the call before the handler runs (§4).
     let b = boot_with_role(CardRole::Worker).await;
-    let mut rx = b.events.subscribe_filtered();
     let (mut rd, mut wr) = connect(&b.socket_path).await;
     handshake(&mut rd, &mut wr, &b.raw_token).await;
 
@@ -271,24 +270,14 @@ async fn smuggled_card_id_in_args_is_ignored() {
     )
     .await;
     let resp = recv_frame(&mut rd).await;
-    assert!(resp.get("error").is_none(), "tool errored: {resp:#?}");
-
-    let env = wait_for_kind(&mut rx, "task.completed").await;
-    match &env.actor {
-        ActorId::AiCodexSession(sid) => assert_eq!(
-            sid.as_str(),
-            b.session_id.as_str(),
-            "smuggled card_id must not override session identity binding"
+    assert_eq!(resp["error"]["code"], json!(-32602), "{resp:#?}");
+    assert_eq!(
+        resp["error"]["message"],
+        json!(
+            "neige_task_done: unknown argument `actor`; valid: artifacts, attempt_id, \
+             commit_message, result"
         ),
-        other => panic!("expected AiCodexSession actor; got {other:?}"),
-    }
-    match &env.scope {
-        EventScope::Card { card, .. } => assert_eq!(
-            card.as_str(),
-            b.card_id.as_str(),
-            "smuggled card_id must not change the event scope"
-        ),
-        other => panic!("expected Card scope; got {other:?}"),
-    }
+        "{resp:#?}"
+    );
     let _ = (&b.server, &b.repo);
 }

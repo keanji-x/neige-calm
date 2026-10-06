@@ -10,7 +10,6 @@ use crate::mcp_server::result::ToolResult;
 use crate::mcp_server::tools::report_links::unknown_block;
 use crate::mcp_server::tools::track_file::Selection;
 use crate::mcp_server::tools::track_report_hydrate::{hydrated_block_index, parse_resolve_arg};
-use crate::mcp_server::tools::write_args::refuse_unknown_keys;
 use crate::model::{Card, CardRole, Track};
 use crate::track_report::TrackReportPayload;
 use crate::track_report_read::{
@@ -85,6 +84,7 @@ fn read_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "blocks": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
                 "sections": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
@@ -108,7 +108,6 @@ pub(crate) async fn report_read(
 ) -> Result<Value, RpcError> {
     // Assistant reads too: this is the read every agent report write is anchored by (#1883).
     require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])?;
-    refuse_unknown_keys(&args, TOOL_REPORT_READ, READ_KEYS)?;
     let select = parse_select_arg(&args, TOOL_REPORT_READ)?;
     let with_markers = match args.get("with_markers") {
         None | Some(Value::Null) => false,
@@ -124,7 +123,7 @@ pub(crate) async fn report_read(
     let (track, _, report_card, _) = resolve_report_for_caller(&ctx, &identity).await?;
     let snapshot = load_report_read_snapshot(ctx.repo.as_ref(), report_card.id.as_str())
         .await
-        .map_err(|e| RpcError::internal(format!("track_report: {e}")))?;
+        .map_err(|e| RpcError::internal(format!("{e}")))?;
     // The index is always present.
     let all = || {
         snapshot
@@ -223,9 +222,6 @@ enum ReadSelect {
     Part(Selection),
 }
 
-/// The closed input of `neige_report_read` (§4).
-const READ_KEYS: &[&str] = &["blocks", "sections", "detail", "with_markers", "resolve"];
-
 /// Top-level `blocks` / `sections` (the names `neige_track_cat` uses) choose the parts, and
 /// `detail` how much: `full` (the default) returns text, `index` only the anchors and no text.
 fn parse_select_arg(args: &Value, tool: &str) -> Result<ReadSelect, RpcError> {
@@ -264,20 +260,20 @@ pub(crate) async fn resolve_report_for_caller(
         .repo
         .card_get(&card_id_str)
         .await
-        .map_err(|e| RpcError::internal(format!("track_report: planner card lookup: {e}")))?
+        .map_err(|e| RpcError::internal(format!("planner card lookup: {e}")))?
         .ok_or_else(|| {
             RpcError::internal(format!(
-                "track_report: bound planner card {card_id_str} not found (deleted mid-connection?)"
+                "bound planner card {card_id_str} not found (deleted mid-connection?)"
             ))
         })?;
     let track = ctx
         .repo
         .track_get(planner_card.track_id.as_str())
         .await
-        .map_err(|e| RpcError::internal(format!("track_report: track lookup: {e}")))?
+        .map_err(|e| RpcError::internal(format!("track lookup: {e}")))?
         .ok_or_else(|| {
             RpcError::internal(format!(
-                "track_report: track {} for planner card {} not found",
+                "track {} for planner card {} not found",
                 planner_card.track_id.as_str(),
                 card_id_str
             ))
@@ -296,20 +292,20 @@ pub(crate) async fn load_report_for_track(
         .repo
         .cards_by_track(track.id.as_str())
         .await
-        .map_err(|e| RpcError::internal(format!("track_report: cards_by_track: {e}")))?;
+        .map_err(|e| RpcError::internal(format!("cards_by_track: {e}")))?;
     let report_card = cards
         .into_iter()
         .find(|c| c.kind == "track-report")
         .ok_or_else(|| {
             RpcError::internal(format!(
-                "track_report: track {} has no track-report card (invariant violation)",
+                "track {} has no track-report card (invariant violation)",
                 track.id.as_str()
             ))
         })?;
     let payload: TrackReportPayload =
         serde_json::from_value(report_card.payload.clone()).map_err(|e| {
             RpcError::internal(format!(
-                "track_report: malformed payload on card {}: {e}",
+                "malformed payload on card {}: {e}",
                 report_card.id.as_str()
             ))
         })?;

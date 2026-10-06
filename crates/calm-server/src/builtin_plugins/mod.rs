@@ -131,23 +131,16 @@ pub fn register_native_tools(registry: &mut ToolRegistry) {
         for descriptor in plugin.native.descriptors() {
             let id = plugin.manifest.id.clone();
             let name = descriptor.name.clone();
-            let handler = plugin.native.lookup(&name).expect("compiled handler");
+            let handler = plugin.native.unguarded(&name).expect("compiled handler");
             assert!(
                 registry.lookup(&descriptor.name).is_none(),
                 "a compiled tool must not shadow another handler"
             );
-            registry.register(
-                descriptor,
-                Arc::new(move |ctx, identity, args| {
-                    let id = id.clone();
-                    let name = name.clone();
-                    let handler = handler.clone();
-                    Box::pin(async move {
-                        require_bound(&ctx, &identity, &id, &name).await?;
-                        handler(ctx, identity, args).await
-                    })
-                }),
-            );
+            let fence: crate::mcp_server::registry::ToolFence = Arc::new(move |ctx, identity| {
+                let (id, name) = (id.clone(), name.clone());
+                Box::pin(async move { require_bound(&ctx, &identity, &id, &name).await })
+            });
+            registry.register_fenced(descriptor, Some(fence), handler);
         }
     }
 }

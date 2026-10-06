@@ -16,6 +16,7 @@ pub(super) fn kinds_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {}
         }),
         annotations: Some(read_only_annotations()),
@@ -334,12 +335,14 @@ fn task_kind() -> Value {
                 },
                 "acceptance": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "\\S" },
                 "gate": {
-                    "type": "object", "additionalProperties": false, "required": ["steps"],
+                    "type": "object",
+                    "additionalProperties": false, "required": ["steps"],
                     "properties": {
                         "cwd": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^[^\\S\\x00-\\x1F\\x7F]*/[^\\x00-\\x1F\\x7F]*$" },
                         "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 7200 },
                         "steps": { "type": "array", "minItems": 1, "items": {
-                            "type": "object", "additionalProperties": false, "required": ["name", "cmd"],
+                            "type": "object",
+                            "additionalProperties": false, "required": ["name", "cmd"],
                             "properties": {
                                 "name": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^(?=.*\\S)[^\\x00-\\x1F\\x7F]*$" },
                                 "cmd": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^(?=.*\\S)[^\\x00-\\x1F\\x7F]*$" }
@@ -449,7 +452,7 @@ fn optional_message_schema() -> Value {
     json!({
         "type": "string",
         "minLength": 1,
-        "description": "Optional: why this write; stored on its event as agent_message."
+        "description": "Optional audit note: why this write."
     })
 }
 

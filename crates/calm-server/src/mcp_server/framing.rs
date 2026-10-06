@@ -6,6 +6,19 @@ pub(crate) use crate::plugin_host::mcp::{
     RequestId, RpcError, build_error_response_frame, build_ok_response_frame,
 };
 
+/// The one `CalmError` → §5 code mapping for a kernel tool (`docs/conventions/agent-commands.md`);
+/// the registry leads the message with the tool name.
+pub(crate) fn calm_error(error: crate::error::CalmError) -> RpcError {
+    use crate::error::CalmError;
+    match error {
+        CalmError::BadRequest(message) => RpcError::invalid_params(message),
+        CalmError::Forbidden(message) => RpcError::forbidden(format!("forbidden: {message}")),
+        CalmError::NotFound(message) => RpcError::not_found(message),
+        CalmError::Conflict(message) => RpcError::conflict(message),
+        other => RpcError::internal(other.to_string()),
+    }
+}
+
 /// Decoded JSON-RPC frame for the kernel-as-MCP-server direction; request-level `_meta` is
 /// preserved separately from `params`.
 #[derive(Debug)]

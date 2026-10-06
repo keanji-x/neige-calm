@@ -104,12 +104,7 @@ pub(crate) async fn require_workspace_reports(
     identity: &ToolCallIdentity,
 ) -> std::result::Result<Tz, RpcError> {
     require_role(identity, CardRole::Planner)?;
-    let denied = || {
-        RpcError::custom(
-            -32403,
-            "workspace report reads require a kernel-issued grant",
-        )
-    };
+    let denied = || RpcError::forbidden("workspace report reads require a kernel-issued grant");
     let card = ctx
         .repo
         .card_get(&identity.card_id)
@@ -234,8 +229,7 @@ pub(crate) async fn require_tool_allowed(
     name: &str,
 ) -> std::result::Result<(), RpcError> {
     if !report_planning_tool(name) && reports_only_card(ctx, &identity.card_id).await? {
-        return Err(RpcError::custom(
-            -32403,
+        return Err(RpcError::forbidden(
             "This Planner may read reports and maintain its own report only.",
         ));
     }

@@ -141,7 +141,7 @@ async fn track_gc_rejects_worker_identity() {
     .await
     .expect_err("worker rejected");
 
-    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert_eq!(err.code, RpcError::FORBIDDEN);
     assert!(err.message.contains("Planner"), "unexpected error: {err:?}");
     assert_eq!(commit_count(&pool, &boot.track_id).await, 5);
     assert_eq!(object_count(&pool).await, 10);

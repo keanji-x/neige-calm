@@ -10,7 +10,6 @@ use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     require_role, role_gated_write_annotations,
 };
-use crate::mcp_server::tools::write_args::refuse_unknown_keys;
 use crate::model::CardRole;
 use crate::preview::PreviewRegistry;
 use serde_json::{Value, json};
@@ -48,7 +47,7 @@ fn preview_id_schema() -> Value {
     json!({
         "type": "string",
         "pattern": KEY_PATTERN,
-        "description": "Stable name of this preview within the track, e.g. `fe`."
+        "description": "Stable preview name in this track, e.g. `fe`."
     })
 }
 
@@ -106,7 +105,7 @@ fn caller_track(tool: &str, identity: &ToolCallIdentity) -> Result<TrackId, RpcE
         .track_id
         .as_deref()
         .map(TrackId::from)
-        .ok_or_else(|| RpcError::invalid_params(format!("{tool} requires a track-scoped caller")))
+        .ok_or_else(|| RpcError::forbidden(format!("{tool} requires a track-scoped caller")))
 }
 
 /// `KEY_PATTERN`, spelled out.
@@ -131,7 +130,6 @@ fn parse_preview_id(tool: &str, args: &Value) -> Result<String, RpcError> {
 
 fn parse_add_args(args: &Value) -> Result<(String, u16, String), RpcError> {
     let tool = TOOL_PREVIEW_ADD;
-    refuse_unknown_keys(args, tool, ADD_KEYS)?;
     let key = parse_preview_id(tool, args)?;
     let target_port = args
         .get("target_port")
@@ -177,7 +175,6 @@ fn rm(
     args: &Value,
 ) -> Result<Value, RpcError> {
     let track_id = caller_track(TOOL_PREVIEW_RM, identity)?;
-    refuse_unknown_keys(args, TOOL_PREVIEW_RM, RM_KEYS)?;
     let key = parse_preview_id(TOOL_PREVIEW_RM, args)?;
     let port = registry.unregister(&track_id, &key);
     Ok(json!({ "preview_id": key, "port": port }))
@@ -226,8 +223,12 @@ mod tests {
     }
 
     fn message(result: Result<Value, RpcError>) -> String {
+        refusal(result, RpcError::INVALID_PARAMS)
+    }
+
+    fn refusal(result: Result<Value, RpcError>, code: i64) -> String {
         let error = result.expect_err("must be refused");
-        assert_eq!(error.code, RpcError::INVALID_PARAMS);
+        assert_eq!(error.code, code, "{error:?}");
         error.message
     }
 
@@ -292,43 +293,19 @@ mod tests {
         let reg = pool();
         for role in [CardRole::Worker, CardRole::Assistant, CardRole::ReportCard] {
             let who = caller(role, Some("track-a"));
-            assert!(message(add(&reg, &who, &args("fe", 5173))).contains("requires role"));
+            let forbidden = |result| refusal(result, RpcError::FORBIDDEN);
+            assert!(forbidden(add(&reg, &who, &args("fe", 5173))).contains("requires role"));
             assert!(
-                message(rm(&reg, &who, &json!({"preview_id": "fe"}))).contains("requires role")
+                forbidden(rm(&reg, &who, &json!({"preview_id": "fe"}))).contains("requires role")
             );
         }
         let trackless = caller(CardRole::Planner, None);
-        let refused = message(add(&reg, &trackless, &args("fe", 5173)));
+        let refused = refusal(
+            add(&reg, &trackless, &args("fe", 5173)),
+            RpcError::FORBIDDEN,
+        );
         assert!(refused.contains("track-scoped"), "{refused}");
         assert!(reg.for_track(&TrackId::from("track-a")).is_empty());
-    }
-
-    /// The track comes from the identity only; a `track_id`, the retired `key` or any other
-    /// unknown key is refused with the valid keys, and nothing is added or removed.
-    #[test]
-    fn unknown_arguments_are_refused_with_the_valid_keys() {
-        let reg = pool();
-        let a = caller(CardRole::Planner, Some("track-a"));
-        for extra in ["track_id", "key", "extra"] {
-            let mut spoofed = args("fe", 5173);
-            spoofed[extra] = json!("track-b");
-            let refused = message(add(&reg, &a, &spoofed));
-            assert_eq!(
-                refused,
-                format!(
-                    "neige_preview_add: unknown argument `{extra}`; valid: `preview_id`, \
-                     `target_port`, `title`"
-                )
-            );
-        }
-        assert!(reg.for_track(&TrackId::from("track-a")).is_empty());
-        add(&reg, &a, &args("fe", 5173)).unwrap();
-        let refused = message(rm(&reg, &a, &json!({"preview_id": "fe", "key": "fe"})));
-        assert_eq!(
-            refused,
-            "neige_preview_rm: unknown argument `key`; valid: `preview_id`"
-        );
-        assert_eq!(reg.for_track(&TrackId::from("track-a")).len(), 1);
     }
 
     #[test]

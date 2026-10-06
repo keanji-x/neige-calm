@@ -268,7 +268,7 @@ async fn worker_is_still_refused_at_the_block_channel_entry() {
             .await
             .err()
             .unwrap_or_else(|| panic!("{tool}: a worker token must be refused"));
-        assert_eq!(err.code, RpcError::INVALID_PARAMS, "{tool}: {err:?}");
+        assert_eq!(err.code, RpcError::FORBIDDEN, "{tool}: {err:?}");
         assert!(
             err.message.contains("tool requires role"),
             "{tool} must refuse for the ROLE reason, not on argument parsing \

@@ -234,8 +234,8 @@ async fn retired_select_and_malformed_selections_are_refused() {
         assert_eq!(err.code, RpcError::INVALID_PARAMS, "{old}");
         assert_eq!(
             err.message,
-            "neige_report_read: unknown argument `select`; valid: `blocks`, `sections`, \
-             `detail`, `with_markers`, `resolve`",
+            "neige_report_read: unknown argument `select`; valid: blocks, detail, resolve, \
+             sections, with_markers",
             "{old}"
         );
     }

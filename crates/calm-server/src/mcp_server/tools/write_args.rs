@@ -1,49 +1,11 @@
 use crate::mcp_server::framing::RpcError;
-use serde_json::{Map, Value};
-
-/// The shared parsers ignore unknown keys, so a removed `lifecycle` would otherwise vanish
-/// silently for a session that still passes it; every write tool refuses it the same way.
-pub(crate) fn refuse_lifecycle_key(obj: &Map<String, Value>, tool: &str) -> Result<(), RpcError> {
-    if obj.contains_key("lifecycle") {
-        return Err(RpcError::invalid_params(format!(
-            "{tool}: `lifecycle` is removed: close with neige_track_close; ask with \
-             neige_user_notify or neige_ratify_request"
-        )));
-    }
-    Ok(())
-}
-
-/// A closed input (§4 of `docs/conventions/agent-commands.md`): the first key outside `valid` is
-/// refused with the valid keys, so a retired key never vanishes silently.
-pub(crate) fn refuse_unknown_keys(
-    args: &Value,
-    tool: &str,
-    valid: &[&str],
-) -> Result<(), RpcError> {
-    let Some(obj) = args.as_object() else {
-        return Err(RpcError::invalid_params(format!(
-            "{tool}: arguments must be an object"
-        )));
-    };
-    match obj.keys().find(|key| !valid.contains(&key.as_str())) {
-        Some(key) => Err(RpcError::invalid_params(format!(
-            "{tool}: unknown argument `{key}`; valid: {}",
-            valid
-                .iter()
-                .map(|key| format!("`{key}`"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))),
-        None => Ok(()),
-    }
-}
+use serde_json::Value;
 
 /// The required, non-empty `message` of a write tool.
 pub(crate) fn parse_write_args(args: &Value, tool: &str) -> Result<String, RpcError> {
     let obj = args
         .as_object()
         .ok_or_else(|| RpcError::invalid_params(format!("{tool}: arguments must be an object")))?;
-    refuse_lifecycle_key(obj, tool)?;
     Ok(obj
         .get("message")
         .and_then(Value::as_str)
@@ -62,7 +24,6 @@ pub(crate) fn parse_optional_write_args(
     let obj = args
         .as_object()
         .ok_or_else(|| RpcError::invalid_params(format!("{tool}: arguments must be an object")))?;
-    refuse_lifecycle_key(obj, tool)?;
     match obj.get("message") {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(s)) => {
@@ -85,7 +46,7 @@ pub(crate) fn message_schema() -> Value {
     serde_json::json!({
         "type": "string",
         "minLength": 1,
-        "description": "Why this write; stored on its event as agent_message."
+        "description": "The audit note: why this write."
     })
 }
 

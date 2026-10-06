@@ -703,7 +703,7 @@ async fn i4_a_workers_call_leaves_nothing_for_the_planner_to_capture() {
             }),
         )
         .await;
-    assert_eq!(frame["error"]["code"], -32602, "{frame}");
+    assert_eq!(frame["error"]["code"], -32403, "{frame}");
     assert!(
         frame["error"]["message"]
             .as_str()

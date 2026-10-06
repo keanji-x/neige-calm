@@ -10,7 +10,7 @@ use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     read_only_annotations, require_role, require_role_any, role_gated_write_annotations,
 };
-use crate::mcp_server::tools::write_args::{message_schema, parse_write_args, refuse_unknown_keys};
+use crate::mcp_server::tools::write_args::{message_schema, parse_write_args};
 use crate::model::{Card, CardRole, Track, TrackPatch};
 use crate::recorder_shadow::{RecorderShadowDecisionKind, RecorderShadowProbe};
 use crate::track_report::TrackReportPayload;
@@ -56,6 +56,7 @@ fn track_state_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {}
         }),
         annotations: Some(read_only_annotations()),
@@ -74,13 +75,13 @@ async fn track_state(
         .repo
         .cards_by_track(track.id.as_str())
         .await
-        .map_err(|e| RpcError::internal(format!("track_state: cards_by_track: {e}")))?;
+        .map_err(|e| RpcError::internal(format!("neige_track_status: cards_by_track: {e}")))?;
     crate::session_projection_lookup::project_runtime_into_cards_payload(
         ctx.repo.as_ref(),
         &mut cards,
     )
     .await
-    .map_err(|e| RpcError::internal(format!("track_state: runtime projection: {e}")))?;
+    .map_err(|e| RpcError::internal(format!("neige_track_status: runtime projection: {e}")))?;
 
     // The role cache is the canonical source the role gate already trusts; `Card` doesn't carry `role` on the struct.
     let cards_json: Vec<Value> = cards
@@ -104,7 +105,7 @@ async fn track_state(
         .repo
         .tasks_by_track(track.id.as_str())
         .await
-        .map_err(|e| RpcError::internal(format!("track_state: tasks_by_track: {e}")))?
+        .map_err(|e| RpcError::internal(format!("neige_track_status: tasks_by_track: {e}")))?
         .into_iter()
         .map(|task| {
             json!({
@@ -176,7 +177,7 @@ fn task_verdict_descriptor(verdict: Verdict) -> ToolDescriptor {
             include_str!("../../../prompts/tools/neige_task_accept.md").trim_end(),
         ),
         Verdict::Reject => {
-            properties["reason"] = json!({ "type": "string" });
+            properties["reason"] = json!({ "type": "string", "minLength": 1 });
             include_str!("../../../prompts/tools/neige_task_reject.md")
                 .trim_end()
                 .to_string()
@@ -205,7 +206,6 @@ async fn task_verdict(
     require_role(&identity, CardRole::Planner)?;
     let tool = verdict.tool();
     let message = parse_write_args(&args, tool)?;
-    refuse_unknown_keys(&args, tool, verdict.keys())?;
     let attempt_id = crate::mcp_server::tools::emit::required_attempt_id(&args, tool)?;
 
     let event = match verdict {
@@ -231,19 +231,13 @@ async fn task_verdict(
         },
     };
 
-    let kind_tag = event.kind_tag();
     let res = CardDecisionSink::from_app_context(&ctx)
         .commit_planner_verdict(&identity, event)
         .await;
 
     match res {
         Ok(_) => Ok(json!({ "ok": true })),
-        Err(CalmError::Forbidden(msg)) => Err(RpcError::custom(
-            -32403,
-            format!("emit {kind_tag}: forbidden: {msg}"),
-        )),
-        Err(CalmError::NotFound(msg)) => Err(RpcError::custom(-32404, msg)),
-        Err(e) => Err(RpcError::internal(format!("emit {kind_tag}: {e}"))),
+        Err(e) => Err(crate::mcp_server::framing::calm_error(e)),
     }
 }
 
@@ -255,6 +249,7 @@ fn track_close_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({
             "type": "object",
+            "additionalProperties": false,
             "required": ["message"],
             "properties": {
                 "message": message_schema()
@@ -278,8 +273,7 @@ async fn track_close(
         .await
         .map_err(|e| RpcError::internal(e.to_string()))?
     {
-        return Err(RpcError::custom(
-            -32403,
+        return Err(RpcError::forbidden(
             "The kernel controls this Track’s lifecycle.",
         ));
     }
@@ -334,13 +328,7 @@ async fn track_close(
     let closed = match written {
         Ok((closed_at, _)) => closed_at,
         Err(_) if let Some(closed_at) = already_closed.get() => *closed_at,
-        Err(CalmError::Forbidden(msg)) => {
-            return Err(RpcError::custom(
-                -32403,
-                format!("{TOOL_TRACK_CLOSE}: forbidden: {msg}"),
-            ));
-        }
-        Err(e) => return Err(RpcError::internal(format!("{TOOL_TRACK_CLOSE}: {e}"))),
+        Err(e) => return Err(crate::mcp_server::framing::calm_error(e)),
     };
     Ok(json!({ "closed_at": closed }))
 }
@@ -355,20 +343,20 @@ async fn resolve_track_for_identity(
         .repo
         .card_get(&card_id_str)
         .await
-        .map_err(|e| RpcError::internal(format!("track_state: card lookup: {e}")))?
+        .map_err(|e| RpcError::internal(format!("card lookup: {e}")))?
         .ok_or_else(|| {
             RpcError::internal(format!(
-                "track_state: bound card {card_id_str} not found (deleted mid-connection?)"
+                "bound card {card_id_str} not found (deleted mid-connection?)"
             ))
         })?;
     let track = ctx
         .repo
         .track_get(card.track_id.as_str())
         .await
-        .map_err(|e| RpcError::internal(format!("track_state: track lookup: {e}")))?
+        .map_err(|e| RpcError::internal(format!("track lookup: {e}")))?
         .ok_or_else(|| {
             RpcError::internal(format!(
-                "track_state: track {} for card {} not found",
+                "track {} for card {} not found",
                 card.track_id.as_str(),
                 card_id_str
             ))
@@ -403,7 +391,7 @@ mod tests {
     fn require_role_rejects_worker_for_planner_tool() {
         let id = identity_with_role(CardRole::Worker);
         let err = require_role(&id, CardRole::Planner).expect_err("worker must be denied");
-        assert_eq!(err.code, RpcError::INVALID_PARAMS);
+        assert_eq!(err.code, RpcError::FORBIDDEN);
         assert!(
             err.message.contains("Planner"),
             "error should mention required role: {err:?}"

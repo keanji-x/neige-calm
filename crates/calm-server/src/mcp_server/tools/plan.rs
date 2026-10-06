@@ -331,6 +331,7 @@ fn plan_cancel_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({
             "type": "object",
+            "additionalProperties": false,
             "required": ["key", "message"],
             "properties": {
                 "key": { "type": "string", "minLength": 1 },
@@ -361,13 +362,13 @@ where
     Fut: std::future::Future<Output = ()>,
 {
     require_role(&identity, CardRole::Planner)?;
-    let message = parse_write_args(&args, "plan_cancel")?;
+    let message = parse_write_args(&args, TOOL_TASK_CANCEL)?;
 
     let key = args
         .get("key")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| RpcError::invalid_params("plan_cancel: missing `key` (non-empty)"))?
+        .ok_or_else(|| RpcError::invalid_params("neige_task_cancel: missing `key` (non-empty)"))?
         .to_string();
 
     let (_card, track) = resolve_track_for_identity(&ctx, &identity).await?;
@@ -375,9 +376,11 @@ where
         .repo
         .task_current_get(track.id.as_str(), &key)
         .await
-        .map_err(|e| RpcError::internal(format!("plan_cancel: task_get: {e}")))?
+        .map_err(|e| RpcError::internal(format!("neige_task_cancel: task_get: {e}")))?
         .ok_or_else(|| {
-            RpcError::invalid_params(format!("plan_cancel: unknown task `{key}` in this track"))
+            RpcError::not_found(format!(
+                "neige_task_cancel: unknown task `{key}` in this track"
+            ))
         })?;
 
     let task_id = task.id.clone();
@@ -392,8 +395,8 @@ where
         TaskStatus::Pending => false,
         TaskStatus::Dispatched | TaskStatus::Running | TaskStatus::Verifying => true,
         TaskStatus::Done | TaskStatus::Failed => {
-            return Err(RpcError::invalid_params(format!(
-                "plan_cancel: task {key} is already {}; only pending and running tasks can be canceled",
+            return Err(RpcError::conflict(format!(
+                "neige_task_cancel: task {key} is already {}; only pending and running tasks can be canceled",
                 cancel_running::status_str(task.status)
             )));
         }
@@ -488,12 +491,12 @@ where
             }
             Ok(json!({ "ok": true }))
         }
-        Err(e) => Err(map_plan_error("plan_cancel", e)),
+        Err(e) => Err(map_plan_error(TOOL_TASK_CANCEL, e)),
     }
 }
 
 /// Sentinel: the cancel tx found nothing left to write (a concurrent cancel won); never surfaced.
-const CANCEL_ALREADY_APPLIED: &str = "plan_cancel: already applied by a concurrent cancel";
+const CANCEL_ALREADY_APPLIED: &str = "neige_task_cancel: already applied by a concurrent cancel";
 
 /// Fixtures-only deterministic seam for the cancel pre-read/write race.
 #[cfg(feature = "fixtures")]
@@ -519,7 +522,7 @@ fn plan_list_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({
             "type": "object",
-            "properties": {"detail":{"type":"string","enum":["summary","full"]},"key":{"type":"string","minLength":1,"description":"One exact current task key in this Track; no prefix matching or whitespace normalization."}},
+            "properties": {"detail":{"type":"string","enum":["summary","full"]},"key":{"type":"string","minLength":1,"description":"One exact current task key in this Track (no prefix match)."}},
             "additionalProperties":false
         }),
         annotations: Some(read_only_annotations()),
@@ -617,7 +620,7 @@ async fn plan_list(
         })
     })
     .await
-    .map_err(|error| map_plan_error("plan_list", error))?;
+    .map_err(|error| map_plan_error(TOOL_TASK_LS, error))?;
     // After the commit: `candidate.upstream` runs git, which must never hold the write
     // transaction, and runs it on a blocking thread, not a runtime worker.
     let bases: Vec<Option<String>> = entries.iter().map(|(_, base)| base.clone()).collect();
@@ -698,12 +701,7 @@ fn task_list_entry(t: &Task) -> Value {
 }
 
 fn map_plan_error(tool: &str, e: CalmError) -> RpcError {
-    match e {
-        CalmError::BadRequest(m) => RpcError::invalid_params(format!("{tool}: {m}")),
-        CalmError::Conflict(m) => RpcError::custom(-32409, format!("{tool}: {m}")),
-        CalmError::Forbidden(m) => RpcError::custom(-32403, format!("{tool}: forbidden: {m}")),
-        other => RpcError::internal(format!("{tool}: {other}")),
-    }
+    crate::mcp_server::framing::calm_error(e).for_tool(tool)
 }
 
 /// A missing thread-mapped card while its daemon is active is a delete-while-active race, surfaced as `InternalError`.
@@ -716,20 +714,20 @@ async fn resolve_track_for_identity(
         .repo
         .card_get(&card_id_str)
         .await
-        .map_err(|e| RpcError::internal(format!("plan: card lookup: {e}")))?
+        .map_err(|e| RpcError::internal(format!("card lookup: {e}")))?
         .ok_or_else(|| {
             RpcError::internal(format!(
-                "plan: bound card {card_id_str} not found (deleted mid-connection?)"
+                "bound card {card_id_str} not found (deleted mid-connection?)"
             ))
         })?;
     let track = ctx
         .repo
         .track_get(card.track_id.as_str())
         .await
-        .map_err(|e| RpcError::internal(format!("plan: track lookup: {e}")))?
+        .map_err(|e| RpcError::internal(format!("track lookup: {e}")))?
         .ok_or_else(|| {
             RpcError::internal(format!(
-                "plan: track {} for card {} not found",
+                "track {} for card {} not found",
                 card.track_id.as_str(),
                 card_id_str
             ))
