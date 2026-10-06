@@ -242,6 +242,22 @@ pub(crate) async fn require_tool_allowed(
     Ok(())
 }
 
+/// A managed Track's Planner starts on its first send. `create_managed_track` is the only writer
+/// of `managed_track_identities` and never starts a model (#2024), so no creator start of this
+/// Track's cards can be pending: a person's send may run the card's first start (#2184). Any other
+/// Track's creator owns its cards' first start, and a send must not pre-empt it.
+pub(crate) async fn planner_starts_on_first_send(ctx: &AppContext, track_id: &str) -> Result<bool> {
+    let Some(pool) = ctx.sqlite_pool.as_ref() else {
+        return Ok(false);
+    };
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM managed_track_identities WHERE track_id=?1)",
+    )
+    .bind(track_id)
+    .fetch_one(pool)
+    .await?)
+}
+
 pub(crate) async fn kernel_controls_lifecycle(ctx: &AppContext, track_id: &str) -> Result<bool> {
     let Some(pool) = ctx.sqlite_pool.as_ref() else {
         return Ok(false);

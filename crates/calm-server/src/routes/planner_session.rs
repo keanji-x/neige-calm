@@ -47,11 +47,12 @@ fn starting() -> CalmError {
 /// * an active row with a registered harness → reused (unlocked fast path);
 /// * an active row with a registry miss → re-spawned from its snapshot (no Codex RPC);
 /// * a person's send to a `failed` carrier with a recoverable snapshot → `planner_recovery`;
-/// * a person's send to a card with no thread to preserve (never started, or only failed starts
-///   that never got a thread) → one `planner-harness-start`;
+/// * a person's send to a card whose starts all failed before getting a thread, or to a managed
+///   Track's never-started card (`managed_track::planner_starts_on_first_send`) → one
+///   `planner-harness-start`;
 /// * a `starting` row, or a start in flight on a card with nothing to preserve → 503, retry;
-/// * anything else (a retired, superseded or unrecoverable carrier holding a thread, or a
-///   transcript) → 409 `planner_harness_dormant`. Row-intrinsic dormancy is checked before daemon
+/// * anything else (a carrier holding a thread, a transcript, or a never-started card whose
+///   creator owns its first start) → 409 `planner_harness_dormant`. Row-intrinsic dormancy is checked before daemon
 ///   liveness, so such a row is 409 even with the daemon down.
 ///
 /// Everything past the fast path runs under the per-card `planner_recovery_locks` guard, which
@@ -147,7 +148,8 @@ pub(crate) async fn ensure_planner_session(
 
 /// A person's send found no session to use. Only a card whose start would lose nothing is
 /// started: a carrier holding a thread, or a transcript, is a conversation, and minting a new one
-/// over it is `/planner/reset`'s decision, never a send's. The start is unkeyed, so a refused
+/// over it is `/planner/reset`'s decision, never a send's. A never-started card is started only
+/// when no creator's start can still be coming: one would supersede this send's session. The start is unkeyed, so a refused
 /// start (the backend down: 503) leaves nothing behind and the next send starts it.
 async fn start_fresh(
     s: &RouteState,
@@ -160,22 +162,30 @@ async fn start_fresh(
     PlannerHarness,
     Option<PerCardLockGuard>,
 )> {
-    match s
-        .repo
-        .session_projection_conversation_for_card(&card_id.to_string())
-        .await?
-    {
-        CardConversation::NoThreadToPreserve => {}
-        CardConversation::StartInFlight => return Err(starting()),
-        CardConversation::ThreadToPreserve => return Err(dormant(card_id)),
-    }
-    #[cfg(feature = "fixtures")]
-    crate::test_seams::pause_point(crate::test_seams::PLANNER_FIRST_START, card_id.as_str()).await;
     let card = s
         .repo
         .card_get(card_id.as_str())
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+    match s
+        .repo
+        .session_projection_conversation_for_card(&card_id.to_string())
+        .await?
+    {
+        CardConversation::OnlyFailedStarts => {}
+        CardConversation::NeverStarted
+            if crate::managed_track::planner_starts_on_first_send(
+                &s.mcp_context,
+                card.track_id.as_str(),
+            )
+            .await? => {}
+        CardConversation::NeverStarted | CardConversation::ThreadToPreserve => {
+            return Err(dormant(card_id));
+        }
+        CardConversation::StartInFlight => return Err(starting()),
+    }
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point(crate::test_seams::PLANNER_FIRST_START, card_id.as_str()).await;
     // The start adapter's own readiness refusal is a 500; this is the send's 503, as for recovery.
     let provider = s
         .write

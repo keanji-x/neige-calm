@@ -14,7 +14,7 @@ pub(super) async fn card_conversation(
     pool: &SqlitePool,
     card_id: &str,
 ) -> Result<CardConversation> {
-    let (thread_to_preserve, start_in_flight): (bool, bool) = sqlx::query_as(
+    let (thread_to_preserve, start_in_flight, any_row): (bool, bool, bool) = sqlx::query_as(
         r#"SELECT
              EXISTS(SELECT 1 FROM worker_sessions
                     WHERE card_id = ?1
@@ -28,7 +28,8 @@ pub(super) async fn card_conversation(
              EXISTS(SELECT 1 FROM operations
                     WHERE kind = 'planner-harness-start'
                       AND phase NOT IN ('succeeded', 'failed', 'stuck')
-                      AND json_extract(payload_json, '$.spec_card_id') = ?1)"#,
+                      AND json_extract(payload_json, '$.spec_card_id') = ?1),
+             EXISTS(SELECT 1 FROM worker_sessions WHERE card_id = ?1)"#,
     )
     .bind(card_id)
     .fetch_one(pool)
@@ -37,7 +38,9 @@ pub(super) async fn card_conversation(
         CardConversation::ThreadToPreserve
     } else if start_in_flight {
         CardConversation::StartInFlight
+    } else if any_row {
+        CardConversation::OnlyFailedStarts
     } else {
-        CardConversation::NoThreadToPreserve
+        CardConversation::NeverStarted
     })
 }

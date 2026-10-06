@@ -78,9 +78,9 @@ fn planner_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
 /// queued: it is removed and this message queued in the transaction that binds the key, and the
 /// provider drops the turn when the next one starts. There is no lazy recovery on this path.
 ///
-/// A person's plain send to a card with no thread to preserve (never started, or only failed
-/// starts that never got a thread, and no transcript) starts its conversation first, then queues
-/// the message.
+/// A person's plain send to a card with no transcript whose starts all failed before getting a
+/// thread, or to a never-started card of a kernel-managed Track (whose creation starts no model),
+/// starts its conversation first, then queues the message.
 #[utoipa::path(
     post,
     path = "/api/cards/{id}/planner/input",

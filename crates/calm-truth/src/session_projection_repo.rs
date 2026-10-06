@@ -101,9 +101,12 @@ impl WorkerSessionInit {
 /// finds no session it can use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CardConversation {
-    /// No carrier holds a thread (no row, or only `failed`, completed rows with no thread and no
-    /// `last_thread_id`), no transcript item, and no start in flight: a fresh start loses nothing.
-    NoThreadToPreserve,
+    /// No session row, no transcript item and no start in flight: nothing ever started the card.
+    /// Whether a send may start it is the card's creator's contract, not this read's.
+    NeverStarted,
+    /// Only `failed`, completed rows with no thread and no `last_thread_id`, no transcript item,
+    /// and no start in flight: the card's starts ran and failed, and a fresh start loses nothing.
+    OnlyFailedStarts,
     /// Nothing to preserve yet, but a `planner-harness-start` for the card has not finished.
     StartInFlight,
     /// A row that holds or may hold a thread, whatever its state, or a transcript item.

@@ -26,9 +26,10 @@
 # Rust names say `transcript` and `turn_input`.
 # #2087 B5 bounded exception: harness_item/crates 273 -> 274 comes solely from migration 0148's
 # one UPDATE of the existing transcript table; its test reads rows back through the same helper.
-# #2184 bounded exception: spec/crates 496 -> 500 comes solely from four reads of the frozen
-# `planner-harness-start` payload key `spec_card_id` (the fresh-start predicate's SQL, its unit
-# test's operation row, and two tests counting a card's start operations); harness_item/crates
+# #2184 bounded exception: spec/crates 496 -> 501 comes solely from five uses of the frozen
+# `planner-harness-start` payload key `spec_card_id` (the fresh-start predicate's SQL, the
+# operation rows of its unit test and of the in-flight route test, and two tests counting a
+# card's start operations); harness_item/crates
 # 274 -> 275 is the predicate's one read of the existing transcript table plus two test inserts,
 # net of two `reset_harness_items` field references removed with today_summary's retry.
 # Patterns are boundary-anchored per case; the two words' uppercase branches are deliberately

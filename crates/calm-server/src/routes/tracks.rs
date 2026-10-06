@@ -1269,6 +1269,12 @@ async fn create_track_with_planner_harness(
     }
     let (track, _, planner_card_id, report_card_id) =
         create_track_structure(s.clone(), actor.to_actor_id(), p, options).await?;
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point(
+        crate::test_seams::TRACK_CREATE_BEFORE_PLANNER_START,
+        track.area_id.as_str(),
+    )
+    .await;
     start_planner_harness(&s, &actor, &track, planner_card_id, report_card_id).await?;
     Ok((StatusCode::CREATED, Json(track)).into_response())
 }
@@ -1704,7 +1710,9 @@ async fn create_track_structure(
 }
 
 /// Trusted callers reuse the ordinary cards, report initialization and workspace materialization.
-/// The identity and grant are committed atomically; creation never sends a model message.
+/// The identity and grant are committed atomically; creation never sends a model message and
+/// never starts one: the Planner's first start is its first send's
+/// (`managed_track::planner_starts_on_first_send`, #2184). Adding a start here would race it.
 pub(crate) async fn create_managed_track(
     s: RouteState,
     p: NewTrack,

@@ -1,4 +1,5 @@
-//! #2184 — a harness card with no thread to preserve starts on a person's send. The daily Track is
+//! #2184 — a harness card with no thread to preserve starts on a person's send, unless its creator
+//! still owns the first start. The daily Track is
 //! created model-free (#2024), and an ordinary Track's create-time start can fail; the first
 //! `POST /planner/input` must start the conversation and queue the message, not answer 409
 //! `planner_harness_dormant`. A carrier holding a thread, or a transcript, keeps the dormant answer.
@@ -21,7 +22,8 @@ use calm_server::session_projection_repo::{AgentProvider, WorkerSessionInit, Wor
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, RouteState, WriteContext};
 use calm_server::test_seams::{
-    PLANNER_FIRST_START, PLANNER_INPUT_REPLAY_MISSED, PausePoint, install_pause_for_test,
+    PLANNER_FIRST_START, PLANNER_INPUT_REPLAY_MISSED, PausePoint,
+    TRACK_CREATE_BEFORE_PLANNER_START, install_pause_for_test,
 };
 use calm_server::track_area_cache::TrackAreaCache;
 use chrono::{DateTime, Utc};
@@ -427,39 +429,12 @@ async fn an_ordinary_track_whose_create_time_start_failed_starts_on_the_first_se
         .shared_codex_appserver
         .fail_next_thread_start_for_test();
     let app = router(&state);
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/tracks")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({
-                        "planner_provider": "codex",
-                        "area_id": area.id,
-                        "title": "inert planner",
-                        "cwd": null,
-                        "attach_folder": false,
-                        "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]},
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = response.status();
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let (status, body) = create_ordinary_track(app.clone(), area.id.to_string(), "inert").await;
     assert!(
         status.is_success(),
-        "the create answers success with an inert Planner: {status} {}",
-        String::from_utf8_lossy(&bytes)
+        "the create answers success with an inert Planner: {status} {body}"
     );
-    let track_id = serde_json::from_slice::<Value>(&bytes).unwrap()["id"]
-        .as_str()
-        .expect("created track id")
-        .to_string();
+    let track_id = body["id"].as_str().expect("created track id").to_string();
     let planner_card_id: String =
         sqlx::query_scalar("SELECT id FROM cards WHERE track_id = ?1 AND role = 'planner'")
             .bind(&track_id)
@@ -562,6 +537,151 @@ async fn a_failed_row_that_names_a_thread_stays_dormant() {
     );
     assert_eq!(boot.start_ops().await, 1);
     boot.shutdown().await;
+}
+
+/// `POST /api/tracks`, message-less: the production create, whose Planner start is its own.
+async fn create_ordinary_track(
+    app: axum::Router,
+    area_id: String,
+    title: &'static str,
+) -> (StatusCode, Value) {
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/tracks")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "planner_provider": "codex",
+                        "area_id": area_id,
+                        "title": title,
+                        "cwd": null,
+                        "attach_folder": false,
+                        "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]},
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+/// Codex review (#2184): an ordinary create commits its cards, then submits its own start. A send
+/// in that window must not start the card, or the create's start would supersede the session the
+/// send's message went to. The never-started card of a non-managed Track stays 409.
+#[tokio::test]
+async fn a_send_between_a_creates_commit_and_its_start_does_not_pre_empt_the_creator() {
+    let (tmp, repo, state) = app_state(AppServer::Running).await;
+    let area = repo
+        .area_create(NewArea {
+            name: "racing create".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let app = router(&state);
+    let parked = PausePoint {
+        entered: Arc::new(Notify::new()),
+        release: Arc::new(Notify::new()),
+    };
+    install_pause_for_test(
+        TRACK_CREATE_BEFORE_PLANNER_START,
+        area.id.as_str(),
+        parked.clone(),
+    );
+    let create = tokio::spawn(create_ordinary_track(
+        app.clone(),
+        area.id.to_string(),
+        "racing",
+    ));
+    within(
+        parked.entered.notified(),
+        "the create parks before its start",
+    )
+    .await;
+    let planner_card_id: String = sqlx::query_scalar(
+        "SELECT c.id FROM cards c JOIN tracks t ON t.id = c.track_id \
+          WHERE t.area_id = ?1 AND c.role = 'planner'",
+    )
+    .bind(area.id.as_str())
+    .fetch_one(repo.pool())
+    .await
+    .expect("the create committed its Planner card before its start");
+    let boot = Boot {
+        app,
+        state,
+        repo,
+        planner_card_id,
+        _tmp: tmp,
+    };
+
+    let (status, body) =
+        post_input(boot.app.clone(), &boot.input_uri(), "too soon", &new_id()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert_eq!(
+        body["code"],
+        json!("planner_harness_dormant"),
+        "body={body}"
+    );
+    assert_eq!(boot.start_ops().await, 0, "the send submitted no start");
+    assert_eq!(boot.session_rows().await, 0);
+
+    parked.release.notify_one();
+    let (status, created) = create.await.unwrap();
+    assert!(status.is_success(), "{status} {created}");
+    let active = boot
+        .repo
+        .session_projection_active_for_card(&boot.planner_card_id)
+        .await
+        .unwrap()
+        .expect("the create's own start ran");
+
+    let (status, body) = post_input(boot.app.clone(), &boot.input_uri(), "now", &new_id()).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(
+        body["worker_session_id"],
+        json!(active.id),
+        "the creator's session"
+    );
+    assert_eq!(boot.start_ops().await, 1, "one start: the creator's");
+    assert_eq!(boot.active_session_rows().await, 1);
+    boot.wait_delivered("now").await;
+    boot.shutdown().await;
+}
+
+/// A start of the card that has not finished answers 503, and the send submits no second one.
+#[tokio::test]
+async fn a_send_while_a_start_is_in_flight_is_503_and_starts_nothing() {
+    let boot = boot(AppServer::Running).await;
+    // Leased far ahead by another owner, so no driver of this server picks it up.
+    sqlx::query(
+        "INSERT INTO operations (id, operation_key, kind, payload_hash, target_type, \
+           target_json, payload_json, phase, lease_owner, lease_until_ms, created_at_ms, \
+           updated_at_ms) \
+         VALUES ('in-flight', 'in-flight', 'planner-harness-start', 'h', 'track', '{}', ?1, \
+           'tx_committed', 'elsewhere', 9223372036854775807, 0, 0)",
+    )
+    .bind(json!({ "spec_card_id": boot.planner_card_id }).to_string())
+    .execute(boot.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(boot.start_ops().await, 1, "premise: one start in flight");
+
+    let (status, body) = post_input(boot.app.clone(), &boot.input_uri(), "hurry", &new_id()).await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "body={body}");
+    assert_eq!(boot.start_ops().await, 1, "no second start was submitted");
+    assert_eq!(boot.session_rows().await, 0);
+    assert_eq!(boot.bindings().await, 0, "the message was not stored");
 }
 
 /// A retired row is history: the send must not mint a second conversation over it.

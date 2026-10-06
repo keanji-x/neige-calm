@@ -61,7 +61,7 @@ async fn conversation(repo: &SqlxRepo, card_id: &str) -> CardConversation {
 }
 
 #[tokio::test]
-async fn a_fresh_start_is_allowed_only_when_no_carrier_holds_a_thread_and_no_transcript_exists() {
+async fn only_failed_threadless_starts_or_nothing_at_all_leave_no_conversation() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let (card_id, _) = card(&repo).await;
     let (other_card, _) = card(&repo).await;
@@ -82,7 +82,7 @@ async fn a_fresh_start_is_allowed_only_when_no_carrier_holds_a_thread_and_no_tra
     );
     assert_eq!(
         conversation(&repo, &card_id).await,
-        CardConversation::NoThreadToPreserve
+        CardConversation::NeverStarted
     );
 
     sqlx::query(
@@ -100,7 +100,7 @@ async fn a_fresh_start_is_allowed_only_when_no_carrier_holds_a_thread_and_no_tra
     );
     assert_eq!(
         conversation(&repo, &other_card).await,
-        CardConversation::NoThreadToPreserve,
+        CardConversation::NeverStarted,
         "another card's start is not this card's"
     );
     for finished in ["succeeded", "failed", "stuck"] {
@@ -111,7 +111,7 @@ async fn a_fresh_start_is_allowed_only_when_no_carrier_holds_a_thread_and_no_tra
             .unwrap();
         assert_eq!(
             conversation(&repo, &card_id).await,
-            CardConversation::NoThreadToPreserve,
+            CardConversation::NeverStarted,
             "a {finished} start is not in flight"
         );
     }
@@ -154,7 +154,7 @@ async fn a_fresh_start_is_allowed_only_when_no_carrier_holds_a_thread_and_no_tra
         .await;
     assert_eq!(
         conversation(&repo, &card_id).await,
-        CardConversation::NoThreadToPreserve,
+        CardConversation::OnlyFailedStarts,
         "a failed start that never got a thread preserves nothing"
     );
     for (holding, restore, why) in [
@@ -193,7 +193,7 @@ async fn a_fresh_start_is_allowed_only_when_no_carrier_holds_a_thread_and_no_tra
         shape(restore).await;
         assert_eq!(
             conversation(&repo, &card_id).await,
-            CardConversation::NoThreadToPreserve,
+            CardConversation::OnlyFailedStarts,
             "restored after: {why}"
         );
     }

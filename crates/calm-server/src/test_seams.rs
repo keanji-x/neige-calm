@@ -62,6 +62,11 @@ pub const PLANNER_INPUT_REPLAY_MISSED: &str = "planner-input-replay-missed";
 #[cfg(feature = "fixtures")]
 pub const PLANNER_FIRST_START: &str = "planner-first-start";
 
+/// Where a message-less track create has committed its cards and not yet submitted its
+/// Planner's start (#2184); keyed by the track's area id, which the test knows in advance.
+#[cfg(feature = "fixtures")]
+pub const TRACK_CREATE_BEFORE_PLANNER_START: &str = "track-create-before-planner-start";
+
 /// Where an operation insert has found no row under its `(kind, idempotency_key)` and is about to
 /// write one, or where a keyed commit (`OperationRuntime::commit_keyed`) is about to begin the
 /// transaction that checks its key; keyed by the idempotency key.
