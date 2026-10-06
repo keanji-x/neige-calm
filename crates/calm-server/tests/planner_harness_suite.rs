@@ -78,6 +78,8 @@ mod planner_replace;
 mod planner_repoint_restart_lock;
 #[path = "cases/planner_restart.rs"]
 mod planner_restart;
+#[path = "cases/planner_restart_compensation.rs"]
+mod planner_restart_compensation;
 #[path = "cases/planner_start_fence_invariant.rs"]
 mod planner_start_fence_invariant;
 #[path = "cases/planner_steer.rs"]

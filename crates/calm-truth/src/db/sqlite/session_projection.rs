@@ -519,8 +519,6 @@ pub async fn session_mark_superseded_runtime_tx(
     Ok(())
 }
 
-/// Tolerant harness phase-mirror / compensation write; deliberately skips the
-/// runtime status matrix and emits no event.
 /// The card's current session when it failed mid-conversation and still owes its queue (#2192):
 /// a wedge or a system error leaves it `failed`, never completed, and unharvested. A failed start
 /// is completed, and keeps its queue for its creator's retry.
@@ -559,6 +557,8 @@ pub async fn session_restore_failed_carrier_runtime_tx(
     session_repoint_current_links_tx(tx, &runtime.card_id, &session).await
 }
 
+/// Tolerant harness phase-mirror / compensation write; deliberately skips the
+/// runtime status matrix and emits no event.
 pub async fn session_restore_from_superseded_runtime_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     id: &String,

@@ -1881,108 +1881,139 @@ async fn return_harvested_queues_and_fail_tx(
     journal: &[HarvestedFromJournalEntry],
 ) -> Result<()> {
     let now = crate::model::now_ms();
-    let successor_state = session_handle_state_by_id_tx(tx, worker_session_id)
+    let successor = session_handle_state_by_id_tx(tx, worker_session_id)
+        .await
+        .map_err(CalmError::from)?
+        .filter(is_harness_snapshot_value)
+        .map(HarnessSnapshot::from_value_strict);
+    let successor_entries = successor
+        .as_ref()
+        .map(HarnessSnapshot::pending_entries)
+        .unwrap_or_default();
+    let held: std::collections::HashSet<&str> = successor_entries
+        .iter()
+        .flat_map(|entry| entry.message_ids().iter().map(String::as_str))
+        .collect();
+    let mut returned_any_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for entry in journal {
+        // What the successor still owes goes back; what it no longer holds, it delivered.
+        let (returning, delivered): (Vec<&HarvestedMessage>, Vec<&HarvestedMessage>) = entry
+            .messages
+            .iter()
+            .partition(|m| m.ids.iter().any(|id| held.contains(id.as_str())));
+        if returning.is_empty() && delivered.is_empty() {
+            continue;
+        }
+        let Some(source_state) = session_handle_state_by_id_tx(tx, &entry.worker_session_id)
+            .await
+            .map_err(CalmError::from)?
+        else {
+            continue;
+        };
+        if !is_harness_snapshot_value(&source_state) {
+            continue;
+        }
+        let mut source = HarnessSnapshot::from_value_strict(source_state);
+        let mut source_entries = source.pending_entries();
+        // #2192: a failed carrier keeps its own copy of what it gave away, so it must drop what the successor delivered,
+        // or restoring it would deliver that again. Only while the row still carries this take's stamp: a re-driven
+        // give-back finds it cleared, and what it returned the first time is owed, not delivered. A row that kept no copy
+        // (every other source) holds none of these ids, so this changes nothing there.
+        if !delivered.is_empty() && source_still_stamped_tx(tx, &entry.worker_session_id).await? {
+            let delivered_ids: std::collections::HashSet<String> = delivered
+                .iter()
+                .flat_map(|m| m.ids.iter().cloned())
+                .collect();
+            // A fold can hold a delivered id next to an owed one; the entry stays while any id is owed.
+            source_entries.retain_mut(|queued| {
+                !(queued.remove_message_ids(&delivered_ids) && queued.is_user_authored())
+            });
+        }
+        // Idempotent against the SOURCE row too: a retired runtime can re-buffer a batch onto its own row after the harvest took it, and pushing it again would deliver the instance twice.
+        let already_on_source: std::collections::HashSet<String> = source_entries
+            .iter()
+            .flat_map(|entry| entry.message_ids().iter().cloned())
+            .collect();
+        for message in &returning {
+            if message
+                .ids
+                .iter()
+                .any(|id| already_on_source.contains(id.as_str()))
+            {
+                // Already back where it belongs; still counts as returned, so it is pruned from the failing runtime below.
+                returned_any_ids.extend(message.ids.iter().cloned());
+                continue;
+            }
+            // The entry goes back under the id it left with, so a give-back returns the same addressable instance rather than a renamed copy.
+            source_entries.push(QueueEntry::user_message_moved(
+                message.text.clone(),
+                message.ids.clone(),
+                message.entry_id.clone().map(QueueEntryId::from_wire),
+            ));
+            returned_any_ids.extend(message.ids.iter().cloned());
+        }
+        source.set_pending_entries(source_entries);
+        session_set_handle_state_of_any_runtime_tx(
+            tx,
+            &entry.worker_session_id,
+            Some(serde_json::to_value(&source)?),
+            now,
+        )
         .await
         .map_err(CalmError::from)?;
-    if let Some(state) = successor_state
-        && is_harness_snapshot_value(&state)
+        // A row this operation stamped and returned nothing to keeps its stamp: its queue is somewhere else, legitimately.
+        if returning.is_empty() {
+            continue;
+        }
+        tracing::info!(
+            worker_session_id = %worker_session_id,
+            returned_to = %entry.worker_session_id,
+            returned = returning.len(),
+            "planner harness: a failed mint returned undelivered user messages"
+        );
+        session_clear_queue_harvested_tx(tx, &entry.worker_session_id)
+            .await
+            .map_err(CalmError::from)?;
+    }
+    if let Some(mut successor) = successor
+        && !returned_any_ids.is_empty()
     {
-        let mut successor = HarnessSnapshot::from_value_strict(state);
-        let successor_entries = successor.pending_entries();
-        let held: std::collections::HashSet<&str> = successor_entries
-            .iter()
-            .flat_map(|entry| entry.message_ids().iter().map(String::as_str))
-            .collect();
-        let mut returned_any_ids: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        for entry in journal {
-            let returning: Vec<&HarvestedMessage> = entry
-                .messages
-                .iter()
-                .filter(|m| m.ids.iter().any(|id| held.contains(id.as_str())))
-                .collect();
-            if returning.is_empty() {
+        // SUBTRACT the returned ids; do not delete the entry: `try_fold_tail` can fold a returned id next to a never-harvested one, and the folded text cannot be split.
+        let mut kept = Vec::new();
+        for mut entry in successor_entries {
+            // Two different things make an entry hold no ids, and only one of them means "returned".
+            let emptied_by_the_return = entry.remove_message_ids(&returned_any_ids);
+            if emptied_by_the_return && entry.is_user_authored() {
                 continue;
             }
-            let Some(source_state) = session_handle_state_by_id_tx(tx, &entry.worker_session_id)
-                .await
-                .map_err(CalmError::from)?
-            else {
-                continue;
-            };
-            if !is_harness_snapshot_value(&source_state) {
-                continue;
-            }
-            let mut source = HarnessSnapshot::from_value_strict(source_state);
-            // Idempotent against the SOURCE row too: a retired runtime can re-buffer a batch onto its own row after the harvest took it, and pushing it again would deliver the instance twice.
-            let mut source_entries = source.pending_entries();
-            let already_on_source: std::collections::HashSet<String> = source_entries
-                .iter()
-                .flat_map(|entry| entry.message_ids().iter().cloned())
-                .collect();
-            for message in &returning {
-                if message
-                    .ids
-                    .iter()
-                    .any(|id| already_on_source.contains(id.as_str()))
-                {
-                    // Already back where it belongs; still counts as returned, so it is pruned from the failing runtime below.
-                    returned_any_ids.extend(message.ids.iter().cloned());
-                    continue;
-                }
-                // The entry goes back under the id it left with, so a give-back returns the same addressable instance rather than a renamed copy.
-                source_entries.push(QueueEntry::user_message_moved(
-                    message.text.clone(),
-                    message.ids.clone(),
-                    message.entry_id.clone().map(QueueEntryId::from_wire),
-                ));
-                returned_any_ids.extend(message.ids.iter().cloned());
-            }
-            source.set_pending_entries(source_entries);
-            session_set_handle_state_of_any_runtime_tx(
-                tx,
-                &entry.worker_session_id,
-                Some(serde_json::to_value(&source)?),
-                now,
-            )
-            .await
-            .map_err(CalmError::from)?;
-            // A row this operation stamped and returned nothing to keeps its stamp: its queue is somewhere else, legitimately.
-            tracing::info!(
-                worker_session_id = %worker_session_id,
-                returned_to = %entry.worker_session_id,
-                returned = returning.len(),
-                "planner harness: a failed mint returned undelivered user messages"
-            );
-            session_clear_queue_harvested_tx(tx, &entry.worker_session_id)
-                .await
-                .map_err(CalmError::from)?;
+            kept.push(entry);
         }
-        if !returned_any_ids.is_empty() {
-            // SUBTRACT the returned ids; do not delete the entry: `try_fold_tail` can fold a returned id next to a never-harvested one, and the folded text cannot be split.
-            let mut kept = Vec::new();
-            for mut entry in successor_entries {
-                // Two different things make an entry hold no ids, and only one of them means "returned".
-                let emptied_by_the_return = entry.remove_message_ids(&returned_any_ids);
-                if emptied_by_the_return && entry.is_user_authored() {
-                    continue;
-                }
-                kept.push(entry);
-            }
-            successor.set_pending_entries(kept);
-            session_set_handle_state_of_any_runtime_tx(
-                tx,
-                worker_session_id,
-                Some(serde_json::to_value(&successor)?),
-                now,
-            )
-            .await
-            .map_err(CalmError::from)?;
-        }
+        successor.set_pending_entries(kept);
+        session_set_handle_state_of_any_runtime_tx(
+            tx,
+            worker_session_id,
+            Some(serde_json::to_value(&successor)?),
+            now,
+        )
+        .await
+        .map_err(CalmError::from)?;
     }
     session_fail_if_active_runtime_tx(tx, &worker_session_id.to_string())
         .await
         .map_err(CalmError::from)
+}
+
+/// Whether a give-back source still carries the harvest stamp of the take being undone.
+async fn source_still_stamped_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    worker_session_id: &str,
+) -> Result<bool> {
+    let stamp: Option<Option<i64>> =
+        sqlx::query_scalar("SELECT queue_harvested_at_ms FROM worker_sessions WHERE id = ?1")
+            .bind(worker_session_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    Ok(stamp.flatten().is_some())
 }
 
 /// The undo journal, as JSON for `operations.tx_output_json`.
