@@ -478,7 +478,7 @@
     color: var(--text-3);
     pointer-events: none;
     translate: 0 -50%;
-    transition: rotate var(--motion-snappy) ease-out;
+    transition: rotate var(--motion-snappy) var(--ease-layout);
   }
 
   .chevronOpen {

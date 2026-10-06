@@ -65,7 +65,7 @@
     flex: none;
     align-self: center;
     color: var(--text-3);
-    transition: rotate var(--motion-snappy) ease-out;
+    transition: rotate var(--motion-snappy) var(--ease-layout);
   }
 
   .task[open] > .head .marker {

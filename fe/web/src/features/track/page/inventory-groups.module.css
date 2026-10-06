@@ -77,7 +77,7 @@
     pointer-events: none;
   }
   .label { min-inline-size: 0; text-align: start; }
-  .chevron { justify-self: center; transition: rotate var(--motion-quick) ease-out; }
+  .chevron { justify-self: center; transition: rotate var(--motion-snappy) var(--ease-layout); }
   .group[open] > .summary .chevron { rotate: 90deg; }
   @media (prefers-reduced-motion: reduce) {
     .chevron { transition: none; }

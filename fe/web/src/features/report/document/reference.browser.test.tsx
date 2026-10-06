@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import '../../../styles/entry.css';
 
 import type { ReportBlock } from '../../../../../core/domain/report.ts';
+import { readMotionTransition } from '../../../ui/motion/transition.ts';
 import { ReportDocument } from './public.tsx';
 
 afterEach(() => { document.body.replaceChildren(); });
@@ -93,6 +94,9 @@ describe('the reference heading, as the engine lays it out', () => {
 
     const reference = document.querySelector('[data-nc-report-reference]')!;
     const marker = reference.querySelector('h2 > span:first-child')!;
+    const motion = readMotionTransition(marker, 'disclosure');
+    expect(parseFloat(getComputedStyle(marker).transitionDuration)).toBe(motion.duration);
+    expect(getComputedStyle(marker).transitionTimingFunction).toBe(`cubic-bezier(${motion.ease.join(', ')})`);
     const box = marker.getBoundingClientRect();
     const word = reference.querySelector('h2 > span:nth-child(2)')!.getBoundingClientRect();
 

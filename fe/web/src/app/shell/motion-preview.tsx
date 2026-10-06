@@ -1,6 +1,8 @@
 import { useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { useState } from '../../ui/state/public.ts';
+import { ReportDocument } from '../../features/report/document/public.tsx';
+import { InventoryGroups } from '../../features/track/page/inventory-groups.tsx';
 import { Dialog } from '../../ui/dialog/public.tsx';
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { ChatComposer, ChatThread } from '../../features/chat/thread/public.tsx';
@@ -67,6 +69,17 @@ function Preview() {
       </Drawer>
     </section>
     <p style={{ color: 'var(--text-3)', fontSize: 12, marginTop: 16 }}>交互预览 · 使用实际对话组件 · 内容仅保存在当前页面</p>
+    <section style={{ marginTop: 28 }}>
+      <h2 style={{ fontSize: 22, marginBottom: 16 }}>折叠与展开</h2>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 24 }}>
+        <ReportDocument report={{ summary: '', body: '', blocks: [
+          { id: 'preview-prose', kind: 'prose', payload: { markdown: '# 组件动效\n\n展开内容保持即时，箭头轻柔接上。' } },
+          { id: 'preview-task', kind: 'task', payload: { key: '检查动效', kind: 'codex', declared_by: 'spec', ready: true, goal: '保留内容与键盘交互。' } },
+        ] }} empty={<p>暂无内容</p>} />
+        <InventoryGroups noun="task" groups={[{ key: 'preview', label: '任务分组', expanded: true, rows: ['清晰可读', '操作自然'] }]}
+          renderRows={rows => rows.map(row => <p key={row}>{row}</p>)} />
+      </div>
+    </section>
     <Dialog open={dialogOpen} title="创建任务" initialFocusRef={dialogInput} onClose={() => setDialogOpen(false)}>
       <label>任务名称<input ref={dialogInput} defaultValue="整理今天的工作" /></label>
       <p>内容保持清晰，打开时轻柔接入，关闭后回到原来的位置。</p>
