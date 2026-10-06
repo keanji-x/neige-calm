@@ -817,6 +817,13 @@ describe('the exchange rail, as the engine lays it out', () => {
       const { top, left, width, height } = dot.getBoundingClientRect();
       return { top, left, width, height };
     };
+    // Scroll changes the active ink; capture its resting state after the native size transition settles.
+    await expect.poll(currentDot).toBe(0);
+    const railStyle = getComputedStyle(railTrack());
+    const expectedResting = dots().map(dot => Number.parseFloat(railStyle.getPropertyValue(
+      dot.getAttribute('aria-current') === 'true' ? '--nc-rail-dot-current' : '--nc-rail-dot',
+    )));
+    await expect.poll(() => dots().map((_, index) => ink(index))).toEqual(expectedResting);
     const boxes = dots().map(hitbox);
     const resting = dots().map((_, index) => ink(index));
     await userEvent.hover(dots()[4]);
