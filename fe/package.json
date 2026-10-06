@@ -11,7 +11,7 @@
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
     "test": "vitest run --project platform-independent --project web-dom",
-    "gen:api": "cargo test --quiet --manifest-path ../Cargo.toml -p calm-types export_bindings_ && cargo run --quiet --manifest-path ../Cargo.toml --bin emit-openapi > core/api/generated/openapi.json",
+    "gen:api": "cargo test --quiet --manifest-path ../Cargo.toml -p calm-types export_bindings_ && out=core/api/generated/openapi.json && if cargo run --quiet --manifest-path ../Cargo.toml --bin emit-openapi > \"$out.tmp\" && test -s \"$out.tmp\"; then mv \"$out.tmp\" \"$out\"; else rm -f \"$out.tmp\"; echo \"gen:api: emit-openapi failed or wrote nothing; $out left unchanged\" >&2; exit 1; fi",
     "test:browser": "vitest run --project browser --project browser-coarse",
     "test:mutation": "npm run test:mutation:fixtures && node tools/mutation/run.mjs",
     "test:mutation:run": "node tools/mutation/run.mjs",
