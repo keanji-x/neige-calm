@@ -8,6 +8,8 @@
   }
 
   .pageFrame {
+    /* Static page switches must not acquire transitions from global reduced-motion durations. */
+    transition: none;
     position: absolute;
     inset: 0;
     overflow: auto;

@@ -238,10 +238,13 @@ describe('Unified mobile headers', () => {
       await page.getByRole('button', { name: 'Open areas' }).click();
       await page.getByRole('button', { name: 'Product', exact: true }).click();
       const tracks = document.querySelector<HTMLElement>('[data-nc-workspace-page="tracks"]')!;
+      expect(getComputedStyle(tracks).transitionProperty).toBe('none');
       expect(tracks.getAnimations()).toHaveLength(0);
       expect(tracks.getBoundingClientRect().left).toBe(0);
       await page.getByRole('button', { name: 'Back to Areas' }).click();
-      expect(document.querySelector<HTMLElement>('[data-nc-workspace-page="areas"]')!.getBoundingClientRect().left).toBe(0);
+      const areas = document.querySelector<HTMLElement>('[data-nc-workspace-page="areas"]')!;
+      expect(getComputedStyle(areas).transitionProperty).toBe('none');
+      expect(areas.getBoundingClientRect().left).toBe(0);
     } finally {
       await commands.emulateReducedMotion(false);
       await page.viewport(1280, 720);
