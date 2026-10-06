@@ -89,6 +89,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0149_forge_pr_published_event_version.sql",
     "0150_ask_event_version.sql",
     "0151_native_plugin_tool_names.sql",
+    "0152_operations_awaiting_retry.sql",
 ];
 
 #[test]
