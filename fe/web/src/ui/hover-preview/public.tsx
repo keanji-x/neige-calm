@@ -1,14 +1,12 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
-import { Icon } from '../icon/public.tsx';
 import { useState } from '../state/public.ts';
 import { inPreviewBridge, placePreview, PREVIEW_GAP, PREVIEW_WIDTH, PREVIEW_MAX_HEIGHT, PREVIEW_MIN_HEIGHT, type Placement } from './placement.ts';
 import styles from './preview.module.css';
 
-type Phase = 'closed' | 'waiting' | 'preview' | 'ready';
+type Phase = 'closed' | 'waiting' | 'open';
 const HOVER_DELAY = 300;
-const READY_DELAY = 1000;
 const LEAVE_DELAY = 180;
 const TRAVEL_DELAY = 800;
 
@@ -36,8 +34,7 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
   const [engaged, setEngaged] = useState(false);
   const [phase, setPhase] = useState<Phase>('closed');
   const [placement, setPlacement] = useState<Placement>({ x: PREVIEW_GAP, y: PREVIEW_GAP, width: PREVIEW_WIDTH, maxHeight: PREVIEW_MAX_HEIGHT, side: 'right' });
-  const visible = phase === 'preview' || phase === 'ready';
-  const ready = phase === 'ready';
+  const visible = phase === 'open';
   const cancelLeave = useCallback(() => {
     travelling.current = false;
     if (leaveTimer.current !== null) clearTimeout(leaveTimer.current);
@@ -48,12 +45,11 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
     anchor.current?.querySelector<HTMLElement>('button, a, [tabindex]')?.focus({ preventScroll: true });
     skipFocus.current = false;
   }, []);
-  const close = (restoreFocus = false) => {
+  const close = useCallback(() => {
     cancelLeave();
     setPhase('closed');
-    if (restoreFocus) focusTrigger();
-  };
-  const activate = () => { cancelLeave(); setPhase('ready'); };
+  }, [cancelLeave, setPhase]);
+  const activate = () => { cancelLeave(); setPhase('open'); };
   const focusContent = useCallback(() => {
     body.current?.focus({ preventScroll: true });
   }, []);
@@ -73,9 +69,8 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
     if (leaveTimer.current !== null) clearTimeout(leaveTimer.current);
   }, []);
   useEffect(() => {
-    if (!engaged || (phase !== 'waiting' && phase !== 'preview')) return;
-    const timeout = setTimeout(() => setPhase(phase === 'waiting' ? 'preview' : 'ready'),
-      phase === 'waiting' ? HOVER_DELAY : READY_DELAY);
+    if (!engaged || phase !== 'waiting') return;
+    const timeout = setTimeout(() => setPhase('open'), HOVER_DELAY);
     return () => { clearTimeout(timeout); };
   }, [phase, engaged]);
 
@@ -145,8 +140,16 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
       const layers = document.querySelectorAll('[data-nc-escape-layer]');
       if (layers.item(layers.length - 1) !== card.current) return;
       event.preventDefault();
-      setPhase('closed');
+      close();
       if (card.current?.contains(document.activeElement)) focusTrigger();
+      cancelLeave();
+    };
+    const outsidePress = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node) || anchor.current?.contains(target)) return;
+      // Descendant previews are portals; pressing within any preview remains interaction.
+      if (target instanceof Element && target.closest('[data-nc-link-preview]') !== null) return;
+      close();
     };
     const scroll = (event: Event) => {
       // Only scrolling an ancestor moves this preview's anchor; portal children own their scrolling.
@@ -155,13 +158,15 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
     };
     window.addEventListener('resize', reposition);
     document.addEventListener('keydown', escape);
+    document.addEventListener('pointerdown', outsidePress, true);
     document.addEventListener('scroll', scroll, true);
     return () => {
       window.removeEventListener('resize', reposition);
       document.removeEventListener('keydown', escape);
+      document.removeEventListener('pointerdown', outsidePress, true);
       document.removeEventListener('scroll', scroll, true);
     };
-  }, [visible, reposition, focusTrigger]);
+  }, [visible, reposition, focusTrigger, close, cancelLeave]);
 
   return <span ref={anchor} className={styles.anchor} role="presentation"
     onPointerEnter={(event) => { if (event.pointerType !== 'touch') enter(); }}
@@ -185,7 +190,7 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
     {trigger(activate)}
     {visible && createPortal(<div ref={card} className={`${styles.card} ${placement.maxHeight < PREVIEW_MIN_HEIGHT ? styles.compact : ''}`} role="dialog"
       aria-label={`Preview: ${title}`} id={id} data-nc-link-preview=""
-      data-nc-ready={ready ? '' : undefined} data-nc-escape-layer=""
+      data-nc-escape-layer=""
       style={{ left: placement.x, top: placement.y, width: placement.width, maxHeight: placement.maxHeight }}
       onPointerEnter={enter} onPointerLeave={leave}
       onFocus={enter} onBlur={(event) => {
@@ -194,15 +199,8 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
       }}>
       <div className={styles.header}>
         <span className={styles.title}>{title}</span>
-        <button type="button" className={styles.control} aria-label={ready ? 'Preview ready' : 'Enable preview interaction'}
-          aria-pressed={ready} onClick={activate} title={ready ? 'Move into the preview to interact; move away to dismiss' : 'Keep hovering to interact, or click now'}>
-          {ready ? <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3" /></svg>
-            : <svg className={styles.ring} viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="9" /><circle key={engaged ? 'active' : 'paused'} className={styles.progress} cx="12" cy="12" r="9" pathLength="1" style={{ animationDuration: `${READY_DELAY}ms`, animationPlayState: engaged ? 'running' : 'paused' }} /></svg>}
-        </button>
-        <button type="button" className={styles.control} aria-label="Close preview" onClick={() => close(true)}><Icon name="close" /></button>
       </div>
       <div ref={body} className={styles.body} tabIndex={-1} role="region" aria-label={`Preview content: ${title}`}>{children}</div>
-      <div className={styles.footer} role="status">{ready ? 'Move inside to interact · move away to dismiss' : 'Keep hovering, then move inside to interact'}</div>
     </div>, document.body)}
   </span>;
 }

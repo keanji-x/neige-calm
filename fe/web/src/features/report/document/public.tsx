@@ -415,7 +415,7 @@ function Inline({ node, ...context }: { node: SafeInline } & BlockContext): Reac
       if (context.inLink) return body;
       const renderMarkdown = (text: string, basePath?: string) => <ProseBlock
         markdown={text} blockId={null} {...context} fileBasePath={basePath ?? fileBasePath} />;
-      const wrap = (destination: PreviewDestination, trigger: (pin: () => void) => ReactNode, onOpen?: () => void) => (
+      const wrap = (destination: PreviewDestination, trigger: (activate: () => void) => ReactNode, onOpen?: () => void) => (
         <ReportLinkPreview destination={destination} resources={linkPreview} label={label}
           trigger={trigger} onOpen={onOpen} renderMarkdown={renderMarkdown} />
       );
@@ -423,7 +423,7 @@ function Inline({ node, ...context }: { node: SafeInline } & BlockContext): Reac
       if (target !== null && (onOpenLink !== undefined || linkPreview !== undefined)) {
         const open = onOpenLink === undefined ? undefined : () => onOpenLink(target);
         return wrap({ kind: 'reference', destination: node.destination, target },
-          (pin) => <button type="button" className={styles.link} onClick={open ?? pin}>{body}</button>, open);
+          (activate) => <button type="button" className={styles.link} onClick={open ?? activate}>{body}</button>, open);
       }
       const sourceTarget = image ? null : parseReportSourceLink(node.destination);
       if (sourceTarget !== null) {
@@ -437,12 +437,12 @@ function Inline({ node, ...context }: { node: SafeInline } & BlockContext): Reac
       if (path !== null && (onOpenFileLink !== undefined || linkPreview !== undefined)) {
         const open = onOpenFileLink === undefined ? undefined : () => onOpenFileLink({ path });
         return wrap({ kind: 'file', path },
-          (pin) => <button type="button" className={styles.link} title={path} onClick={open ?? pin}>{body}</button>, open);
+          (activate) => <button type="button" className={styles.link} title={path} onClick={open ?? activate}>{body}</button>, open);
       }
       const url = externalPreviewUrl(node.destination);
       if (url !== null) {
         return wrap({ kind: 'web', url, image: image || /\.(png|jpe?g|gif|webp|avif|svg)(?:[?#]|$)/i.test(url) },
-          (pin) => <button type="button" className={styles.link} onClick={pin}>{body}</button>);
+          (activate) => <button type="button" className={styles.link} onClick={activate}>{body}</button>);
       }
       return body;
     }

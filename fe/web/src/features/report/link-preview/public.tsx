@@ -33,7 +33,7 @@ export function ReportLinkPreview({ destination, resources, label, trigger, rend
   destination: PreviewDestination;
   resources?: ReportLinkPreviewResources;
   label: string;
-  trigger: (pin: () => void) => ReactNode;
+  trigger: (activate: () => void) => ReactNode;
   renderMarkdown: (text: string, basePath?: string) => ReactNode;
   onOpen?: () => void;
 }>) {

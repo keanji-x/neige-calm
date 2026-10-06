@@ -23,8 +23,7 @@ describe('preview in a real browser', () => {
     await page.getByRole('button', { name: 'Long notes', exact: true }).hover();
     await expect.poll(() => document.querySelector('[data-nc-link-preview]')).not.toBeNull();
     const card = document.querySelector<HTMLElement>('[data-nc-link-preview]')!;
-    expect(card.querySelector('circle')).not.toBeNull();
-    await expect.poll(() => card.hasAttribute('data-nc-ready')).toBe(true);
+    expect(card.querySelector('button[aria-pressed], svg')).toBeNull();
     const before = performance.now();
     await page.getByRole('dialog').hover({ position: { x: 30, y: -6 }, force: true });
     await expect.poll(() => performance.now() - before).toBeGreaterThan(350);
@@ -112,7 +111,7 @@ describe('preview in a real browser', () => {
     </section><button type="button" data-testid="far-outside" style={{ position: 'fixed', left: 1100, top: 80 }}>Elsewhere</button></>);
     const trigger = page.getByRole('button', { name: 'Side notes', exact: true });
     await trigger.hover();
-    await expect.poll(() => document.querySelector('[data-nc-ready]'), { timeout: 3000 }).not.toBeNull();
+    await expect.poll(() => document.querySelector('[data-nc-link-preview]')).not.toBeNull();
     const anchor = trigger.element().getBoundingClientRect();
     const dialog = page.getByRole('dialog');
     const card = dialog.element().getBoundingClientRect();
@@ -131,6 +130,17 @@ describe('preview in a real browser', () => {
     await page.getByTestId('far-outside').hover();
     await expect.poll(() => document.querySelector('[data-nc-link-preview]')).toBeNull();
   });
+  it('closes on a click outside the preview and keeps its content usable without toolbar buttons', async () => {
+    await page.viewport(1200, 900);
+    const onRead = vi.fn(); mount(onRead);
+    await page.getByRole('button', { name: 'Long notes', exact: true }).click();
+    const card = page.getByRole('dialog');
+    expect(card.getByRole('button').length).toBe(1);
+    await card.getByRole('button', { name: 'Continue reading' }).click();
+    expect(onRead).toHaveBeenCalledOnce();
+    await page.getByTestId('outside').click();
+    expect(card.query()).toBeNull();
+  });
   it('places a child preview beside its parent without covering either card trigger', async () => {
     await page.viewport(1600, 900);
     render(<div style={{ padding: 80 }}><HoverPreview title="Parent" trigger={(activate) => <button onClick={activate}>Parent</button>}>
@@ -144,7 +154,7 @@ describe('preview in a real browser', () => {
     const child = page.getByRole('dialog', { name: 'Preview: Child' }).element().getBoundingClientRect();
     expect(child.left >= parent.right || child.right <= parent.left || child.top >= parent.bottom || child.bottom <= parent.top).toBe(true);
   });
-  it('clamps a ready preview after viewport resize and closes with Escape', async () => {
+  it('clamps an open preview after viewport resize and closes with Escape', async () => {
     await page.viewport(1200, 900); mount();
     await page.getByRole('button', { name: 'Long notes', exact: true }).click();
     const card = document.querySelector<HTMLElement>('[data-nc-link-preview]')!;

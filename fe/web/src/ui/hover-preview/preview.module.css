@@ -25,17 +25,9 @@
   /* A transparent edge joins the link-to-card gap, even during slow movement. */
   .card::before { content: ""; position: absolute; inset: calc(-1 * var(--space-6)); z-index: -1; }
   .title { flex: 1; min-inline-size: 0; padding: var(--space-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
-  .control { display: grid; place-items: center; flex-shrink: 0; inline-size: 2rem; block-size: 2rem; border-radius: var(--radius-sm); color: var(--text-2); }
-  .control:hover { background: var(--surface-code); color: var(--text); }
-  .control[aria-pressed="true"] { color: var(--accent); }
   .body { min-block-size: 0; padding: var(--space-8); overflow: auto; overscroll-behavior: contain; }
-  .footer { padding: var(--space-4) var(--space-8); border-block-start: 1px solid var(--hairline); color: var(--text-3); font-size: var(--text-xs); }
-  .ring { fill: none; stroke: var(--hairline); stroke-width: 2; transform: rotate(-90deg); }
-  .progress { stroke: var(--accent); stroke-dasharray: 1; stroke-dashoffset: 1; animation: fill-ring linear forwards; }
-  @keyframes fill-ring { to { stroke-dashoffset: 0; } }
   @keyframes appear { from { opacity: 0; } to { opacity: 1; } }
   @media (prefers-reduced-motion: reduce) {
     .card { animation: none; }
-    .progress { animation: none; stroke-dashoffset: 0; }
   }
 }

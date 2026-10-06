@@ -11,23 +11,23 @@ function advance(ms: number) { act(() => { vi.advanceTimersByTime(ms); }); }
 function hover() { fireEvent.pointerEnter(screen.getByRole('button', { name: 'Notes' }).parentElement!); }
 
 describe('HoverPreview lifecycle', () => {
-  it('delays preview, becomes ready, then dismisses when the pointer leaves', () => {
+  it('delays preview, opens an interactive card without redundant controls, then dismisses on leave', () => {
     mount(); hover(); advance(299);
     expect(screen.queryByRole('dialog')).toBeNull();
     advance(1);
-    expect(screen.getByRole('dialog').hasAttribute('data-nc-ready')).toBe(false);
-    advance(1000);
-    expect(screen.getByRole('dialog').hasAttribute('data-nc-ready')).toBe(true);
-    fireEvent.pointerLeave(screen.getByRole('button', { name: 'Notes' }).parentElement!);
+    const dialog = screen.getByRole('dialog');
+    expect(dialog.querySelector('button, svg')).toBeNull();
+    expect(dialog.textContent).toContain('Preview body');
     advance(2000);
+    expect(screen.getByRole('dialog')).toBe(dialog);
+    fireEvent.pointerLeave(screen.getByRole('button', { name: 'Notes' }).parentElement!);
+    advance(180);
     expect(screen.queryByRole('dialog')).toBeNull();
   });
-  it('does not become ready after the pointer leaves just before the dwell deadline', () => {
-    mount(); hover(); advance(1200);
+  it('cancels an accidental hover before opening', () => {
+    mount(); hover(); advance(100);
     fireEvent.pointerLeave(screen.getByRole('button', { name: 'Notes' }).parentElement!);
-    advance(100);
-    expect(screen.getByRole('dialog').hasAttribute('data-nc-ready')).toBe(false);
-    advance(80);
+    advance(2000);
     expect(screen.queryByRole('dialog')).toBeNull();
   });
   it('allows pointer transfer into the card before the leave grace ends', () => {
@@ -36,9 +36,9 @@ describe('HoverPreview lifecycle', () => {
     advance(100);
     fireEvent.pointerEnter(screen.getByRole('dialog'));
     advance(1000);
-    expect(screen.getByRole('dialog').hasAttribute('data-nc-ready')).toBe(true);
+    expect(screen.getByRole('dialog')).toBeTruthy();
   });
-  it('keeps a ready card while entering it, then closes when leaving the card', () => {
+  it('keeps an open card while entering it, then closes when leaving the card', () => {
     mount(); hover(); advance(1300);
     fireEvent.pointerLeave(screen.getByRole('button', { name: 'Notes' }).parentElement!);
     advance(100);
@@ -53,8 +53,8 @@ describe('HoverPreview lifecycle', () => {
     mount();
     const trigger = screen.getByRole('button', { name: 'Notes' });
     fireEvent.keyDown(trigger, { key: 'ArrowDown' });
-    expect(screen.getByRole('dialog').hasAttribute('data-nc-ready')).toBe(true);
-    fireEvent.click(screen.getByRole('button', { name: 'Close preview' }));
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    fireEvent.keyDown(document, { key: 'Escape' });
     advance(2000);
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(document.activeElement).toBe(trigger);
@@ -84,6 +84,26 @@ describe('HoverPreview lifecycle', () => {
     expect(screen.getByRole('dialog', { name: 'Preview: Parent' })).toBeTruthy();
     fireEvent.scroll(document);
     expect(screen.queryByRole('dialog')).toBeNull();
+  });
+  it('dismisses on outside press without relying on mouse leave or focus blur', () => {
+    mount();
+    fireEvent.click(screen.getByRole('button', { name: 'Notes' }));
+    const outside = document.createElement('button');
+    document.body.append(outside);
+    fireEvent.pointerDown(outside, { pointerType: 'touch' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    outside.remove();
+  });
+  it('does not dismiss ancestors when pressing inside a nested preview', () => {
+    render(<HoverPreview title="Parent" trigger={(activate) => <button onClick={activate}>Parent</button>}>
+      <HoverPreview title="Child" trigger={(activate) => <button onClick={activate}>Child</button>}>
+        <p>Child content</p>
+      </HoverPreview>
+    </HoverPreview>);
+    fireEvent.click(screen.getByRole('button', { name: 'Parent' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Child' }));
+    fireEvent.pointerDown(screen.getByText('Child content'));
+    expect(screen.getAllByRole('dialog')).toHaveLength(2);
   });
   it('unmount disposes all timers and its portal', () => {
     const view = mount(); hover(); advance(300);
