@@ -84,7 +84,7 @@ import {
 import type { ReportSourceLinkTarget } from '../../../../core/domain/report-source.ts';
 import {
   buildTranscript, conversationName, conversationNameFrom, CONVERSATION_STATE_SOURCE,
-  CONVERSATION_CREATE_TEXT, conversationCreateFailure, CONVERSATION_TEXT_MAX, harnessItemToTurns, isOptimisticConversationTurn,
+  CONVERSATION_CREATE_TEXT, conversationCreateFailure, conversationCreateUnknownText, CONVERSATION_TEXT_MAX, harnessItemToTurns, isOptimisticConversationTurn,
   isConversationMessage, kernelQueuesInput, MODEL_CHANGE_TEXT, PLANNER_MODEL_FAILURES,
   serverItemHighWater,
   trackConversationCardId,
@@ -1100,7 +1100,7 @@ function useConversationPane(
           const landing = await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key, current);
           if (landing === 'landed') return;
           if (landing === 'unknown') {
-            amendDraft(attempt, { error: CONVERSATION_CREATE_TEXT.unknown, remedy: recheck });
+            amendDraft(attempt, { error: conversationCreateUnknownText(recheck), remedy: recheck });
             return;
           }
           attempt = rekeyDraft(attempt, mintIdempotencyKey());

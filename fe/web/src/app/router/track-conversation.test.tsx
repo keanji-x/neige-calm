@@ -17,7 +17,9 @@ import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts'
 import { invalidationPlanFor } from '../../../../core/events/invalidation-plan.ts';
 import { applyEventEffects } from '../events/query-invalidation-adapter.ts';
 import type { Conversation, TranscriptEntry } from '../../../../core/domain/conversation.ts';
-import { CONVERSATION_CREATE_TEXT, MAX_ATTACHMENTS_PER_MESSAGE, trackConversationCardId } from '../../../../core/domain/conversation.ts';
+import {
+  CONVERSATION_CREATE_TEXT, conversationCreateUnknownText, MAX_ATTACHMENTS_PER_MESSAGE, trackConversationCardId,
+} from '../../../../core/domain/conversation.ts';
 import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
 import { createUiPreferences, type UiPreferenceStorage } from '../providers/ui-preferences.tsx';
 import { DATABASE_ID_KEY } from '../../../../core/keys/storage.ts';
@@ -3041,6 +3043,28 @@ describe('track conversations', () => {
       await write('changed words');
       await says(CONVERSATION_CREATE_TEXT.unknown);
       expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+      expect(creates(requests, CONVERSATIONS)).toHaveLength(1);
+    });
+
+    /* #2175 (review of #2226): the same unknown outcome after a "Send as a new conversation" press names that press,
+       the only remedy the footer offers there. */
+    it('a new conversation whose look-back fails: unconfirmed, offering the new conversation again', async () => {
+      let listFails = false;
+      const { requests } = setup((request) => {
+        if (request.path !== CONVERSATIONS) return undefined;
+        if (request.method === 'POST') return failure(409, 'idempotency_key_reused', 'this key was already used for another first message');
+        return listFails ? failure(503, 'unavailable', 'List unavailable') : undefined;
+      });
+      await screen.findByRole('button', { name: 'Conversation Planner chat' });
+      await openDraft();
+      await write('a key that is spent');
+      const sendAsNew = await screen.findByRole('button', { name: 'Send as a new conversation' });
+      await waitFor(() => expect(sendAsNew.hasAttribute('disabled')).toBe(false));
+      listFails = true;
+      fireEvent.click(sendAsNew);
+      await says(conversationCreateUnknownText('new-conversation'));
+      expect(screen.getByRole('button', { name: 'Send as a new conversation' })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
       expect(creates(requests, CONVERSATIONS)).toHaveLength(1);
     });
 

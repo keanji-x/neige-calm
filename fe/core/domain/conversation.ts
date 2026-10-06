@@ -788,6 +788,15 @@ export const CONVERSATION_CREATE_TEXT: WriteText = Object.freeze({
 });
 
 /**
+ * The unknown sentence for each remedy a draft offers while its create is unconfirmed: the sentence names the button the
+ * footer shows. Both buttons look for this key's conversation before anything new is created.
+ */
+export function conversationCreateUnknownText(remedy: 'retry' | 'new-conversation'): string {
+  return remedy === 'retry' ? CONVERSATION_CREATE_TEXT.unknown
+    : 'Starting the conversation is unconfirmed. Sending it as a new conversation checks for that one first.';
+}
+
+/**
  * What a failed create (`null`: no answer was read) means for the draft, with its sentence: `retry` says only that it is
  * unconfirmed, every other kind the server's reason. No transport text shows; the connection is the global indicator's.
  */
