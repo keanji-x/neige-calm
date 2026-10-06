@@ -696,7 +696,7 @@ mod tests {
             .unwrap_err(),
         );
         assert_eq!(field, "template_input.merge_policy");
-        assert!(reason.contains("ask"), "{reason}");
+        assert!(reason.contains("\"ask\""), "{reason}");
         assert!(reason.contains("auto-merge"), "{reason}");
     }
 

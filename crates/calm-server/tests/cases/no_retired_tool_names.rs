@@ -45,8 +45,8 @@ const RETIRED_PLUGIN_NAME: &str = concat!(
 /// spellings are retired.
 const RETIRED_NATIVE_NAME: &str = r"\bneige_(?:dev_publish|calendar_(?:add|ls|set|rm))\b";
 
-/// #2209: the dev merge policy that asks before merging is `ask`, the one way the Planner asks the
-/// user; the value named after the retired ratify mechanism is retired with it.
+/// #2323: the dev merge policy that asks before merging is `ask`, the one way the Planner asks the
+/// user since #2209; the value named after the retired ratify mechanism is retired with it.
 const RETIRED_MERGE_POLICY: &str = r"\bhold-for-ratify\b";
 
 /// The retired MCP server key as a client spells it, assembled from two literals so this file does

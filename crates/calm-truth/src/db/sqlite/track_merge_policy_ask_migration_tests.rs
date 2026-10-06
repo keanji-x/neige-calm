@@ -22,8 +22,12 @@ fn migrator_through(version: i64) -> sqlx::migrate::Migrator {
 const ROWS: &[(&str, Option<&str>, Option<&str>)] = &[
     (
         "asks",
-        Some(r#"{"issue_number":1870,"merge_policy":"hold-for-ratify","repo":"o/r"}"#),
-        Some(r#"{"issue_number":1870,"merge_policy":"ask","repo":"o/r"}"#),
+        Some(
+            r#"{"issue_number":1870,"merge_policy":"hold-for-ratify","notes":"was hold-for-ratify","repo":"o/r"}"#,
+        ),
+        Some(
+            r#"{"issue_number":1870,"merge_policy":"ask","notes":"was hold-for-ratify","repo":"o/r"}"#,
+        ),
     ),
     (
         "auto",
@@ -39,6 +43,17 @@ const ROWS: &[(&str, Option<&str>, Option<&str>)] = &[
         "other-key",
         Some(r#"{"policy":"hold-for-ratify"}"#),
         Some(r#"{"policy":"hold-for-ratify"}"#),
+    ),
+    (
+        "not-text",
+        Some(r#"{"merge_policy":["hold-for-ratify"]}"#),
+        Some(r#"{"merge_policy":["hold-for-ratify"]}"#),
+    ),
+    ("json-null", Some("null"), Some("null")),
+    (
+        "invalid",
+        Some(r#"{"merge_policy":"hold-for-ratify""#),
+        Some(r#"{"merge_policy":"hold-for-ratify""#),
     ),
     ("none", None, None),
 ];
