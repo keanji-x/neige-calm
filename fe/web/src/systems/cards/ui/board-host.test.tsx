@@ -2,7 +2,8 @@
 import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ReactNode } from 'react';
+import { Children, cloneElement, isValidElement, type ReactElement, type ReactNode } from 'react';
+import { calcGridItemPosition, type GridConfig, type PositionStrategy } from 'react-grid-layout/core';
 
 type GridCapture = {
   layout: Array<{ i: string; x: number; y: number; w: number; h: number; minW?: number; minH?: number }>;
@@ -25,6 +26,9 @@ vi.mock('react-grid-layout', () => ({
   }),
   GridLayout: (props: {
     layout: GridCapture['layout'];
+    width: number;
+    gridConfig: GridConfig;
+    positionStrategy: PositionStrategy;
     dragConfig?: { handle?: string };
     resizeConfig?: { handles?: readonly string[] };
     onLayoutChange: GridCapture['onLayoutChange'];
@@ -34,7 +38,16 @@ vi.mock('react-grid-layout', () => ({
     grid.dragHandle = props.dragConfig?.handle;
     grid.resizeHandles = props.resizeConfig?.handles;
     grid.onLayoutChange = props.onLayoutChange;
-    return <div data-testid="grid-stub">{props.children}</div>;
+    return <div data-testid="grid-stub">{Children.map(props.children, child => {
+      if (!isValidElement(child)) throw new Error('Expected grid child');
+      const item = props.layout.find(item => item.i === child.key);
+      if (item === undefined) throw new Error('Missing grid layout');
+      const position = calcGridItemPosition({
+        containerWidth: props.width, cols: props.gridConfig.cols, margin: props.gridConfig.margin,
+        containerPadding: props.gridConfig.containerPadding, rowHeight: props.gridConfig.rowHeight, maxRows: Infinity,
+      }, item.x, item.y, item.w, item.h);
+      return cloneElement(child as ReactElement<{ style: React.CSSProperties }>, { style: props.positionStrategy.calcStyle(position) });
+    })}</div>;
   },
 }));
 

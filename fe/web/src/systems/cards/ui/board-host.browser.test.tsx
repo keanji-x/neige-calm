@@ -146,7 +146,7 @@ it('settles a remaining card with native spring geometry after compaction', asyn
     (animation.effect as KeyframeEffect).getKeyframes().some(frame => frame.transform !== undefined));
   await expect.poll(geometry).toBeDefined();
   const frames = (geometry()!.effect as KeyframeEffect).getKeyframes();
-  expect(frames.length, JSON.stringify({before, style: cell.getAttribute("style"), frames})).toBeGreaterThan(2);
+  expect(frames.length).toBeGreaterThan(2);
   expect(cell.isConnected).toBe(true);
   await expect.poll(() => cell.getAnimations().length).toBe(0);
   expect(cell.getBoundingClientRect().top).toBeLessThan(before);
@@ -185,4 +185,24 @@ it('hands an in-flight compaction to the pointer without jumping', async () => {
   } finally {
     act(() => { document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: point.clientX, clientY: point.clientY + 80 })); });
   }
+});
+
+it('compacts directly when reduced motion is enabled', async () => {
+  await commands.emulateReducedMotion(true);
+  const registry = createCardRegistry(); registry.register(entry);
+  const host = createCardHost(registry);
+  const item = (id: string, originalIndex: number): BoardHostItem => ({
+    card: { type: 'board-scroll-term', id, title: id }, title: id, originalIndex, activity: null,
+  });
+  const first = item('reduce-first', 0), second = item('reduce-second', 1);
+  const scene = (items: readonly BoardHostItem[]) => <div style={{ display: 'flex', inlineSize: 900, blockSize: 600 }}>
+    <BoardHost host={host} items={items} activeCardId={null} visible />
+  </div>;
+  const view = render(scene([first, second]));
+  await expect.poll(() => document.querySelector('[data-nc-card-id="reduce-second"]')).not.toBeNull();
+  const cell = document.querySelector<HTMLElement>('[data-nc-card-id="reduce-second"]')!;
+  const before = cell.getBoundingClientRect().top;
+  view.rerender(scene([second]));
+  expect(cell.getAnimations()).toHaveLength(0);
+  expect(cell.getBoundingClientRect().top).toBeLessThan(before);
 });

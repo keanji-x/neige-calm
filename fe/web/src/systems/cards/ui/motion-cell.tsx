@@ -29,11 +29,12 @@ export const MotionCell = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivEleme
     else if (externalRef !== null) externalRef.current = element;
   }, [externalRef]);
   const cancel = useEffectEvent(() => { active.current?.cancel(); active.current = null; });
-  const immediate = useEffectEvent(() => { cancel(); settled.current = target; });
-  const move = useEffectEvent(() => {
+  const immediate = useEffectEvent((value: SpringPoint) => { cancel(); settled.current = value; });
+  const reduce = useEffectEvent(() => { immediate(target); });
+  const move = useEffectEvent((target: SpringPoint, enabled: boolean) => {
     const element = ref.current;
     if (element === null) return;
-    if (!enabled || window.matchMedia('(prefers-reduced-motion: reduce)').matches) { immediate(); return; }
+    if (!enabled || window.matchMedia('(prefers-reduced-motion: reduce)').matches) { immediate(target); return; }
     const from = active.current?.sample() ?? { value: settled.current, velocity: { x: 0, y: 0 } };
     cancel();
     if (from.value.x === target.x && from.value.y === target.y && from.velocity.x === 0 && from.velocity.y === 0) return;
@@ -45,10 +46,11 @@ export const MotionCell = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivEleme
       settled.current = target; cancel();
     }, () => { /* Direct manipulation discarded this animation. */ });
   });
-  useLayoutEffect(() => { move(); }, [target.x, target.y, enabled]);
+  // Pass render-owned targets explicitly: a vendor layout effect can update children before Effect Events refresh.
+  useLayoutEffect(() => { move({ x: target.x, y: target.y }, enabled); }, [target.x, target.y, enabled]);
   useLayoutEffect(() => {
     const preference = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const change = () => { if (preference.matches) immediate(); };
+    const change = () => { if (preference.matches) reduce(); };
     preference.addEventListener('change', change);
     return () => { preference.removeEventListener('change', change); cancel(); };
   }, []);

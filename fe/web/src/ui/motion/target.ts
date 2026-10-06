@@ -12,13 +12,14 @@ export function useSpringTarget(
   const active = useRef<SpringPlayback | null>(null);
   const settled = useRef(initial);
   const cancel = useEffectEvent(() => { active.current?.cancel(); active.current = null; });
-  const immediate = useEffectEvent(() => {
+  const immediate = useEffectEvent((target: number, present: boolean, onSettled: (value: number) => void) => {
     cancel(); settled.current = target;
     if (present) onSettled(target);
   });
-  const move = useEffectEvent(() => {
+  const reduce = useEffectEvent(() => { immediate(target, present, onSettled); });
+  const move = useEffectEvent((target: number, present: boolean, enabled: boolean) => {
     if (!present) { cancel(); settled.current = initial; return; }
-    if (!enabled || window.matchMedia('(prefers-reduced-motion: reduce)').matches) { immediate(); return; }
+    if (!enabled || window.matchMedia('(prefers-reduced-motion: reduce)').matches) { immediate(target, present, onSettled); return; }
     const element = primary.current;
     if (element === null) return;
     const moving = active.current !== null;
@@ -33,10 +34,10 @@ export function useSpringTarget(
       settled.current = target; cancel(); onSettled(target);
     }, () => { /* Cancellation discarded this phase. */ });
   });
-  useLayoutEffect(() => { move(); }, [target, present, enabled]);
+  useLayoutEffect(() => { move(target, present, enabled); }, [target, present, enabled]);
   useLayoutEffect(() => {
     const preference = window.matchMedia('(prefers-reduced-motion: reduce)');
-    const change = () => { if (preference.matches) immediate(); };
+    const change = () => { if (preference.matches) reduce(); };
     preference.addEventListener('change', change);
     return () => { preference.removeEventListener('change', change); cancel(); };
   }, []);

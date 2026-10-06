@@ -186,7 +186,8 @@ export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: 
             margin: MARGIN,
             containerPadding: PADDING,
           }}
-          dragConfig={{ handle: DRAG_HANDLE }}
+          // Emit the public start callback before the vendor publishes pointer geometry.
+          dragConfig={{ handle: DRAG_HANDLE, threshold: 0 }}
           resizeConfig={{ handles: RESIZE_HANDLES, handleComponent: resizeHandle }}
           positionStrategy={positionStrategy}
           onDragStart={() => { setManipulating(true); }}
