@@ -6,7 +6,7 @@ use crate::error::CalmError;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    require_role, role_gated_write_annotations,
+    role_gated_write_annotations,
 };
 use crate::model::CardRole;
 use serde_json::{Value, json};
@@ -55,7 +55,8 @@ fn task_done_descriptor() -> ToolDescriptor {
         }),
         annotations: Some(role_gated_write_annotations()),
         // Visible to workers so a codex worker's `tools/list` advertises the native completion tool.
-        visible_to_roles: &[CardRole::Worker],
+        roles: &[CardRole::Worker],
+        listed_for: &[CardRole::Worker],
     }
 }
 
@@ -64,8 +65,6 @@ async fn task_done(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Worker)?;
-
     let attempt_id = required_attempt_id(&args, TOOL_TASK_DONE)?;
     let commit_message = commit_message_arg(&args)?;
     let result = args.get("result").cloned().unwrap_or(Value::Null);
@@ -141,7 +140,8 @@ fn task_fail_descriptor() -> ToolDescriptor {
         }),
         annotations: Some(role_gated_write_annotations()),
         // Visible to workers (see `task_done_descriptor`).
-        visible_to_roles: &[CardRole::Worker],
+        roles: &[CardRole::Worker],
+        listed_for: &[CardRole::Worker],
     }
 }
 
@@ -150,8 +150,6 @@ async fn task_fail(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Worker)?;
-
     let attempt_id = required_attempt_id(&args, TOOL_TASK_FAIL)?;
     let reason = args
         .get("reason")

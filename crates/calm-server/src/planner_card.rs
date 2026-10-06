@@ -170,7 +170,7 @@ mod tests {
         let guidance = TASK_ACCEPTANCE_GUIDANCE.trim();
         let prompt = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, "acceptance-track");
         let descriptors = crate::mcp_server::build_default_registry()
-            .descriptors_for_role(calm_types::model::CardRole::Planner);
+            .descriptors_listed_for(calm_types::model::CardRole::Planner);
         let descriptions = ["neige_task_accept"].map(|name| {
             descriptors
                 .iter()
@@ -534,7 +534,7 @@ mod tests {
 
         let prompt = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, "track-registry");
         let visible: BTreeSet<String> = crate::mcp_server::build_default_registry()
-            .descriptors_for_role(calm_types::model::CardRole::Planner)
+            .descriptors_listed_for(calm_types::model::CardRole::Planner)
             .into_iter()
             .map(|descriptor| descriptor.name)
             .collect();
@@ -576,7 +576,7 @@ mod tests {
             .map(|descriptor| descriptor.name)
             .collect();
         let visible: BTreeSet<String> = registry
-            .descriptors_for_role(role)
+            .descriptors_listed_for(role)
             .into_iter()
             .map(|descriptor| descriptor.name)
             .collect();
@@ -676,7 +676,7 @@ mod tests {
         }
     }
 
-    /// `neige_report_read` is callable but hidden: its handler admits the Assistant while its descriptor is visible to Planner only, so the prompt is the Assistant's only contract for the read.
+    /// Every tool the Assistant prompts name, `neige_report_read` included (#2289), is listed for the Assistant.
     /// `neige` CLI mentions are not `neige_*` tokens and are pinned only by the goldens.
     #[test]
     fn assistant_prompts_name_only_tools_the_assistant_role_can_see() {
@@ -694,7 +694,7 @@ mod tests {
                 label,
                 &render_system_prompt(template, "track-registry"),
                 calm_types::model::CardRole::Assistant,
-                &["neige_report_read"],
+                &[],
                 &[],
                 false,
                 3,

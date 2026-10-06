@@ -13,7 +13,7 @@ use crate::event::{Event, EventScope};
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    require_role_any, role_gated_write_annotations,
+    role_gated_write_annotations,
 };
 use crate::model::CardRole;
 use crate::report_tags::{MAX_TAGS_PER_REPORT, normalize_tag, store};
@@ -64,7 +64,8 @@ fn descriptor() -> ToolDescriptor {
             "additionalProperties": false
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[],
+        roles: &[CardRole::Planner, CardRole::Worker],
+        listed_for: &[],
     }
 }
 
@@ -73,7 +74,6 @@ async fn report_tag(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Planner, CardRole::Worker])?;
     let tool = TOOL_REPORT_TAG;
     let obj = args
         .as_object()

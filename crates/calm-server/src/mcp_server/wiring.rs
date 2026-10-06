@@ -228,7 +228,8 @@ mod tests {
             .iter()
             .filter(|d| d.name.starts_with("neige_terminal_"))
         {
-            assert_eq!(descriptor.visible_to_roles, &[CardRole::Planner]);
+            assert_eq!(descriptor.roles, &[CardRole::Planner]);
+            assert_eq!(descriptor.listed_for, &[CardRole::Planner]);
             let read = matches!(
                 descriptor.name.as_str(),
                 "neige_terminal_show" | "neige_terminal_read"

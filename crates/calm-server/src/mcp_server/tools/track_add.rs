@@ -136,7 +136,11 @@ fn track_add_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Planner],
+        // The registry gates this before both handler arms: a keyed replay resumes without a
+        // create transaction, so the in-transaction role gate alone would let any role replay a
+        // Planner's request.
+        roles: &[CardRole::Planner],
+        listed_for: &[CardRole::Planner],
     }
 }
 
@@ -192,14 +196,6 @@ async fn track_add(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    // Before both arms: a keyed replay resumes without a create transaction, so the in-transaction
-    // role gate alone would let any role replay a Planner's request.
-    if identity.role != CardRole::Planner {
-        return Err(forbidden(format!(
-            "only a Planner may add a Track; this caller is a {:?}",
-            identity.role
-        )));
-    }
     let args = parse_args(args)?;
     let (card, creator) = resolve_creator(&ctx, &identity).await?;
     if let Some(closed_at) = creator.closed_at {
@@ -395,7 +391,7 @@ mod tests {
     fn descriptor_is_planner_only_closed_and_requires_all_five_inputs() {
         let descriptor = track_add_descriptor();
         assert_eq!(descriptor.name, TOOL_TRACK_ADD);
-        assert_eq!(descriptor.visible_to_roles, &[CardRole::Planner]);
+        assert_eq!(descriptor.roles, &[CardRole::Planner]);
         assert_eq!(
             descriptor.input_schema["additionalProperties"],
             json!(false)

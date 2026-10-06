@@ -23,7 +23,10 @@
       ],
       "type": "object"
     },
-    "visible_to_roles": []
+    "roles": [
+      "planner"
+    ],
+    "listed_for": []
   },
   {
     "name": "neige_admin_vacuum",
@@ -33,7 +36,10 @@
       "properties": {},
       "type": "object"
     },
-    "visible_to_roles": []
+    "roles": [
+      "planner"
+    ],
+    "listed_for": []
   },
   {
     "name": "neige_area_ls",
@@ -46,7 +52,10 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -61,7 +70,10 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -83,7 +95,10 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "visible_to_roles": []
+    "roles": [
+      "planner"
+    ],
+    "listed_for": []
   },
   {
     "name": "neige_mail_ls",
@@ -100,7 +115,10 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "visible_to_roles": []
+    "roles": [
+      "planner"
+    ],
+    "listed_for": []
   },
   {
     "name": "neige_mail_send",
@@ -136,7 +154,10 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -176,7 +197,10 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -202,7 +226,10 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -287,7 +314,11 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner",
+      "assistant"
+    ],
+    "listed_for": [
       "planner",
       "assistant"
     ]
@@ -303,7 +334,11 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner",
+      "assistant"
+    ],
+    "listed_for": [
       "planner",
       "assistant"
     ]
@@ -332,7 +367,10 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "visible_to_roles": []
+    "roles": [
+      "planner"
+    ],
+    "listed_for": []
   },
   {
     "name": "neige_report_read",
@@ -380,8 +418,13 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "visible_to_roles": [
-      "planner"
+    "roles": [
+      "planner",
+      "assistant"
+    ],
+    "listed_for": [
+      "planner",
+      "assistant"
     ]
   },
   {
@@ -416,7 +459,11 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "visible_to_roles": []
+    "roles": [
+      "planner",
+      "worker"
+    ],
+    "listed_for": []
   },
   {
     "name": "neige_report_write",
@@ -447,7 +494,11 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner",
+      "assistant"
+    ],
+    "listed_for": [
       "planner",
       "assistant"
     ]
@@ -521,7 +572,10 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -536,7 +590,10 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -567,7 +624,10 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -598,7 +658,10 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -630,7 +693,10 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "visible_to_roles": [
+    "roles": [
+      "worker"
+    ],
+    "listed_for": [
       "worker"
     ]
   },
@@ -659,7 +725,10 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "visible_to_roles": [
+    "roles": [
+      "worker"
+    ],
+    "listed_for": [
       "worker"
     ]
   },
@@ -687,7 +756,10 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -723,7 +795,10 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -815,7 +890,10 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -989,7 +1067,10 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -1081,7 +1162,10 @@
       "openWorldHint": true,
       "readOnlyHint": false
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -1164,7 +1248,10 @@
       "openWorldHint": true,
       "readOnlyHint": true
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -1189,7 +1276,10 @@
       "openWorldHint": true,
       "readOnlyHint": true
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -1229,7 +1319,10 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -1267,7 +1360,11 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "visible_to_roles": []
+    "roles": [
+      "planner",
+      "worker"
+    ],
+    "listed_for": []
   },
   {
     "name": "neige_track_close",
@@ -1291,7 +1388,10 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -1319,7 +1419,11 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "visible_to_roles": []
+    "roles": [
+      "planner",
+      "worker"
+    ],
+    "listed_for": []
   },
   {
     "name": "neige_track_log",
@@ -1345,7 +1449,11 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "visible_to_roles": []
+    "roles": [
+      "planner",
+      "worker"
+    ],
+    "listed_for": []
   },
   {
     "name": "neige_track_ls",
@@ -1362,7 +1470,11 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "visible_to_roles": []
+    "roles": [
+      "planner",
+      "worker"
+    ],
+    "listed_for": []
   },
   {
     "name": "neige_track_rename",
@@ -1390,7 +1502,10 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -1416,7 +1531,11 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "visible_to_roles": []
+    "roles": [
+      "planner",
+      "worker"
+    ],
+    "listed_for": []
   },
   {
     "name": "neige_track_status",
@@ -1429,7 +1548,11 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "visible_to_roles": []
+    "roles": [
+      "planner",
+      "worker"
+    ],
+    "listed_for": []
   },
   {
     "name": "neige_user_ask",
@@ -1470,7 +1593,10 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -1492,7 +1618,10 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -1521,7 +1650,10 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -1555,7 +1687,10 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -1574,7 +1709,10 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   },
@@ -1706,7 +1844,11 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner",
+      "assistant"
+    ],
+    "listed_for": [
       "planner",
       "assistant"
     ]
@@ -1737,7 +1879,11 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner",
+      "assistant"
+    ],
+    "listed_for": [
       "planner",
       "assistant"
     ]
@@ -1766,7 +1912,11 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner",
+      "assistant"
+    ],
+    "listed_for": [
       "planner",
       "assistant"
     ]
@@ -1903,7 +2053,11 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner",
+      "assistant"
+    ],
+    "listed_for": [
       "planner",
       "assistant"
     ]
@@ -1938,7 +2092,10 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "visible_to_roles": [
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
       "planner"
     ]
   }

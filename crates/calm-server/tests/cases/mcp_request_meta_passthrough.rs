@@ -220,7 +220,13 @@ fn identity_capture_registry() -> (Arc<ToolRegistry>, mpsc::UnboundedReceiver<To
                 "properties": { "x": {} }
             }),
             annotations: None,
-            visible_to_roles: &[CardRole::Planner],
+            roles: &[
+                CardRole::Planner,
+                CardRole::Worker,
+                CardRole::Assistant,
+                CardRole::ReportCard,
+            ],
+            listed_for: &[CardRole::Planner],
         },
         handler,
     );

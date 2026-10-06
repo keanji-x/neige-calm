@@ -102,20 +102,9 @@ fn provider_session_actor(provider: &AgentProvider, session_id: WorkerSessionId)
     }
 }
 
-/// Soft role gate for role-gated MCP tools, purely UX: the real boundary is
+/// The soft role gate: the registry runs it on every kernel tool's declared
+/// [`ToolDescriptor::roles`], and dispatch on every manifest plugin tool. The real boundary is
 /// `role_gate::enforce_role` inside every eventized write. Both answer `-32403` (§5).
-pub fn require_role(identity: &ToolCallIdentity, required: CardRole) -> Result<(), RpcError> {
-    if identity.role != required {
-        return Err(RpcError::forbidden(format!(
-            "tool requires role={required:?} got={got:?}",
-            got = identity.role
-        )));
-    }
-    Ok(())
-}
-
-/// Variant of [`require_role`] for read-only tools shared by a small
-/// fixed set of roles.
 pub fn require_role_any(identity: &ToolCallIdentity, allowed: &[CardRole]) -> Result<(), RpcError> {
     if allowed.contains(&identity.role) {
         return Ok(());
@@ -305,9 +294,12 @@ pub struct ToolDescriptor {
     /// to decide whether the tool needs explicit approval; missing annotations default to
     /// "approval required".
     pub annotations: Option<Value>,
-    /// Which roles see this tool in `tools/list`; `tools/call` still routes by name regardless.
-    /// Explicit `&[]` for tools that must not appear in any role's list.
-    pub visible_to_roles: &'static [CardRole],
+    /// The roles that may call this tool. The registry refuses every other role before the
+    /// handler runs (`-32403`), so a handler never re-checks the caller's role.
+    pub roles: &'static [CardRole],
+    /// The roles whose `tools/list` shows this tool, a subset of `roles`: a context-budget
+    /// choice, never a grant. Explicit `&[]` for a tool served only by name (a CLI view).
+    pub listed_for: &'static [CardRole],
 }
 
 impl ToolDescriptor {
@@ -328,7 +320,7 @@ pub fn read_only_annotations() -> Value {
 }
 
 /// Annotations telling codex not to insert a second approval prompt. Use ONLY for tools whose
-/// handler explicitly checks `CardRole` — the kernel's role gate is the actual authorization
+/// declared `roles` the registry gates — the kernel's role gate is the actual authorization
 /// boundary; a tool that writes outside the caller's track/area must keep approval ON.
 pub fn role_gated_write_annotations() -> Value {
     json!({
@@ -358,8 +350,8 @@ struct Entry {
 
 /// Map of tool name → handler + descriptor. [`Self::lookup`] returns the guarded handler, the one
 /// order every kernel tool call runs in: the managed-track grant, the tool's fence, closed input
-/// (keys from the declared schema), then the handler (its role gate, arguments, state). Every
-/// refusal is led by the tool name (§5).
+/// (keys from the declared schema), the declared `roles`, then the handler (its arguments and
+/// state). Every refusal is led by the tool name (§5).
 pub struct ToolRegistry {
     by_name: HashMap<String, Entry>,
 }
@@ -396,6 +388,7 @@ impl ToolRegistry {
     pub fn lookup(&self, name: &str) -> Option<ToolHandler> {
         let entry = self.by_name.get(name)?;
         let name = entry.descriptor.name.clone();
+        let roles = entry.descriptor.roles;
         let handler = entry.handler.clone();
         let fence = entry.fence.clone();
         let keys = entry.keys.clone();
@@ -411,6 +404,7 @@ impl ToolRegistry {
                     if let Some(obj) = args.as_object() {
                         refuse_unknown_keys(obj, &keys, &name)?;
                     }
+                    require_role_any(&identity, roles)?;
                     handler(ctx, identity, args).await
                 }
                 .await;
@@ -433,17 +427,18 @@ impl ToolRegistry {
             .collect()
     }
 
-    pub fn descriptors_for_role(&self, role: CardRole) -> Vec<ToolDescriptor> {
-        self.descriptors_visible_to_any_role(&[role])
+    /// The tools `role`'s `tools/list` shows (`listed_for`), not every tool it may call.
+    pub fn descriptors_listed_for(&self, role: CardRole) -> Vec<ToolDescriptor> {
+        self.descriptors_listed_for_any(&[role])
     }
 
-    pub fn descriptors_visible_to_any_role(&self, roles: &[CardRole]) -> Vec<ToolDescriptor> {
+    pub fn descriptors_listed_for_any(&self, roles: &[CardRole]) -> Vec<ToolDescriptor> {
         self.by_name
             .values()
             .filter(|entry| {
                 roles
                     .iter()
-                    .any(|role| entry.descriptor.visible_to_roles.contains(role))
+                    .any(|role| entry.descriptor.listed_for.contains(role))
             })
             .map(|entry| entry.descriptor.clone())
             .collect()
@@ -568,13 +563,14 @@ mod tests {
         );
     }
 
-    fn fake_descriptor(name: &str, visible_to_roles: &'static [CardRole]) -> ToolDescriptor {
+    fn fake_descriptor(name: &str, listed_for: &'static [CardRole]) -> ToolDescriptor {
         ToolDescriptor {
             name: name.to_string(),
             description: "fake".to_string(),
             input_schema: json!({ "type": "object" }),
             annotations: None,
-            visible_to_roles,
+            roles: listed_for,
+            listed_for,
         }
     }
 
@@ -585,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn descriptors_visible_to_any_role_returns_union_without_hidden_tools() {
+    fn descriptors_listed_for_any_returns_union_without_hidden_tools() {
         let mut registry = ToolRegistry::new();
         registry.register(
             fake_descriptor("neige_planner_only", &[CardRole::Planner]),
@@ -609,7 +605,7 @@ mod tests {
         );
 
         let mut names = registry
-            .descriptors_visible_to_any_role(&[CardRole::Planner, CardRole::Worker])
+            .descriptors_listed_for_any(&[CardRole::Planner, CardRole::Worker])
             .into_iter()
             .map(|descriptor| descriptor.name)
             .collect::<Vec<_>>();
@@ -646,7 +642,7 @@ mod tests {
                 CardRole::Assistant,
             ] {
                 let names = registry
-                    .descriptors_for_role(role)
+                    .descriptors_listed_for(role)
                     .into_iter()
                     .map(|descriptor| descriptor.name)
                     .collect::<Vec<_>>();
@@ -657,4 +653,5 @@ mod tests {
             }
         }
     }
+
 }

@@ -708,7 +708,7 @@ async fn i4_a_workers_call_leaves_nothing_for_the_planner_to_capture() {
         frame["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("requires role=Planner"),
+            .contains("requires role in [Planner]"),
         "{frame}"
     );
     let (status, list) = get(

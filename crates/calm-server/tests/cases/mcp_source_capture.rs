@@ -786,12 +786,18 @@ async fn non_planner_roles_are_forbidden() {
             .await
             .unwrap_err();
         assert_eq!(err.code, -32403, "{err}");
-        assert!(err.message.contains("tool requires role=Planner"), "{err}");
+        assert!(
+            err.message.contains("tool requires role in [Planner]"),
+            "{err}"
+        );
         let err = call_tool(&boot, TOOL_SOURCE_LS, identity, json!({}))
             .await
             .unwrap_err();
         assert_eq!(err.code, -32403, "{err}");
-        assert!(err.message.contains("tool requires role=Planner"), "{err}");
+        assert!(
+            err.message.contains("tool requires role in [Planner]"),
+            "{err}"
+        );
     }
     assert!(list(&boot).await.is_empty());
 }

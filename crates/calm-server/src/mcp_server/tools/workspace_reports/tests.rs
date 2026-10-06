@@ -143,16 +143,22 @@ async fn workers_assistants_and_forged_bindings_are_refused() {
         .await
         .unwrap();
     let id = identity(&route, &track).await;
+    // Other roles are refused by the registry's gate on the declared roles, before the handler.
+    let ls = crate::mcp_server::build_default_registry()
+        .lookup("neige_workspace_ls")
+        .unwrap();
     for role in [CardRole::Worker, CardRole::Assistant, CardRole::ReportCard] {
+        let error = ls(
+            route.mcp_context.clone(),
+            ToolCallIdentity { role, ..id.clone() },
+            json!({}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, -32403, "{role:?}");
         assert!(
-            dispatch(
-                route.mcp_context.clone(),
-                ToolCallIdentity { role, ..id.clone() },
-                json!({}),
-                "neige_workspace_ls"
-            )
-            .await
-            .is_err()
+            error.message.contains("tool requires role in [Planner]"),
+            "{error:?}"
         );
     }
     assert!(

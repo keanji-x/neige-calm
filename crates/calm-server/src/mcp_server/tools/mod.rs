@@ -79,8 +79,10 @@ mod tests {
         /// renders `"annotations": null`.
         #[serde(skip_serializing_if = "Option::is_none")]
         annotations: Option<&'a Value>,
-        /// Serde strings of `CardRole`, not the Rust variant names.
-        visible_to_roles: &'a [CardRole],
+        /// Serde strings of `CardRole`, not the Rust variant names: who may call the tool.
+        roles: &'a [CardRole],
+        /// Who sees it in `tools/list`, a subset of `roles`.
+        listed_for: &'a [CardRole],
     }
 
     fn description_sha256(description: &str) -> String {
@@ -94,7 +96,8 @@ mod tests {
             description_sha256: description_sha256(&descriptor.description),
             input_schema: &descriptor.input_schema,
             annotations: descriptor.annotations.as_ref(),
-            visible_to_roles: descriptor.visible_to_roles,
+            roles: descriptor.roles,
+            listed_for: descriptor.listed_for,
         }
     }
 
@@ -183,7 +186,7 @@ mod tests {
         const SURFACE_MAX_BYTES: usize = 30_120;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
-        let descriptors = build_default_registry().descriptors_for_role(CardRole::Planner);
+        let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);
         assert!(
             descriptors.len() >= 20,
             "anti-vacuity: the Planner sees {} tools",
@@ -216,7 +219,8 @@ mod tests {
             description: "fixture".to_string(),
             input_schema: serde_json::json!({ "type": "object" }),
             annotations,
-            visible_to_roles: &[CardRole::Planner],
+            roles: &[CardRole::Planner],
+            listed_for: &[CardRole::Planner],
         };
         let absent = render_golden_rows(&[descriptor(None)]);
         let null = render_golden_rows(&[descriptor(Some(Value::Null))]);

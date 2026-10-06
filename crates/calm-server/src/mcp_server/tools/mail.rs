@@ -12,7 +12,7 @@ use crate::mail::{
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    read_only_annotations, require_role, role_gated_write_annotations,
+    read_only_annotations, role_gated_write_annotations,
 };
 use crate::mcp_server::result::ToolResult;
 use crate::model::CardRole;
@@ -57,7 +57,8 @@ fn send_descriptor() -> ToolDescriptor {
         }),
         // The handler checks the role and writes only inside the caller's Area (D13).
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Planner],
+        roles: &[CardRole::Planner],
+        listed_for: &[CardRole::Planner],
     }
 }
 
@@ -74,7 +75,8 @@ fn ls_descriptor() -> ToolDescriptor {
             "additionalProperties": false
         }),
         annotations: Some(read_only_annotations()),
-        visible_to_roles: &[],
+        roles: &[CardRole::Planner],
+        listed_for: &[],
     }
 }
 
@@ -92,7 +94,8 @@ fn cat_descriptor() -> ToolDescriptor {
             "additionalProperties": false
         }),
         annotations: Some(read_only_annotations()),
-        visible_to_roles: &[],
+        roles: &[CardRole::Planner],
+        listed_for: &[],
     }
 }
 
@@ -166,7 +169,6 @@ async fn send(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Planner)?;
     let request = send_request(&args)?;
     let sent = mail::send(&ctx, &identity, request).await?;
     Ok(json!({ "mail_id": sent.mail_id, "hop": hop_label(sent.hop) }))
@@ -177,7 +179,6 @@ async fn ls(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Planner)?;
     let object = arguments(TOOL_MAIL_LS, &args)?;
     let cursor = text_argument(TOOL_MAIL_LS, object, "cursor")?;
     mail::ls(&ctx, &identity, cursor.as_deref()).await
@@ -188,7 +189,6 @@ async fn cat(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Planner)?;
     let object = arguments(TOOL_MAIL_CAT, &args)?;
     let mail_id = text_argument(TOOL_MAIL_CAT, object, "mail_id")?
         .ok_or_else(|| invalid(TOOL_MAIL_CAT, "arguments", "missing `mail_id` (string)"))?;

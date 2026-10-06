@@ -162,9 +162,10 @@ async fn assistant_token_cannot_call_denied_tools_by_name() {
             continue;
         }
         let message = error["message"].as_str().unwrap_or_default();
-        // The role refusal (agent-commands.md §5): `require_role*` or the tool's own wording.
+        // The role refusal (agent-commands.md §5): the registry's gate on the declared roles.
         let role_refusal = error["code"].as_i64() == Some(-32403)
-            && (message.contains("tool requires role") || message.contains("only a Planner"));
+            && message.contains("tool requires role in [")
+            && message.contains("got=Assistant");
         assert!(
             role_refusal,
             "`{tool}` must refuse for the *role* reason (not argument parsing); got: {resp:#?}"

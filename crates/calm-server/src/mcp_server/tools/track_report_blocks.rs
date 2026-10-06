@@ -6,12 +6,10 @@ use crate::decision_sink::{CardDecisionSink, ReportOpCommit};
 use crate::error::CalmError;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
-    AppContext, ToolCallIdentity, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    refuse_unknown_keys, require_role_any,
+    AppContext, ToolCallIdentity, ToolHandler, ToolHandlerFuture, ToolRegistry, refuse_unknown_keys,
 };
 use crate::mcp_server::tools::track_report::{resolve_report_for_caller, updated_report_doc_rev};
 use crate::mcp_server::tools::write_args::{parse_optional_write_args, parse_write_args};
-use crate::model::CardRole;
 use crate::report_read_ledger::LastRead;
 use crate::track_report::{BatchBlockOp, DocAnchor, MAX_BATCH_OPS, ReportBlock, ReportDocOp};
 use calm_types::report_blocks;
@@ -77,10 +75,9 @@ where
 
 async fn blocks_kinds(
     _ctx: Arc<AppContext>,
-    identity: ToolCallIdentity,
+    _identity: ToolCallIdentity,
     _args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])?;
     Ok(kinds_table())
 }
 
@@ -89,7 +86,6 @@ async fn write_markdown(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])?;
     let tool = TOOL_REPORT_WRITE;
     let obj = require_object(&args, tool)?;
     let message = parse_optional_write_args(&args, tool)?;
@@ -164,7 +160,6 @@ async fn commit(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])?;
     let tool = TOOL_REPORT_COMMIT;
     let obj = require_object(&args, tool)?;
     let message = parse_write_args(&args, tool)?;

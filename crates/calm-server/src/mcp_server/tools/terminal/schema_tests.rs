@@ -26,7 +26,7 @@ fn properties(schema: &Value) -> BTreeSet<String> {
 /// Every tool's input schema must stay under the local 4000-byte compaction threshold.
 #[test]
 fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
-    let descriptors = build_default_registry().descriptors_for_role(CardRole::Planner);
+    let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);
     let terminal_schemas: serde_json::Map<String, Value> = descriptors
         .iter()
         .filter(|descriptor| descriptor.name.starts_with("neige_terminal_"))
@@ -232,7 +232,7 @@ fn terminal_discovery_is_flat_with_optional_selectors_and_closed_action_arms() {
 /// The input action union carries exactly the live actions, each a closed arm.
 #[test]
 fn input_schema_lists_only_live_actions() {
-    let descriptors = build_default_registry().descriptors_for_role(CardRole::Planner);
+    let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);
     let input = &descriptors
         .iter()
         .find(|descriptor| descriptor.name == "neige_terminal_input")

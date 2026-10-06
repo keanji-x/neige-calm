@@ -52,7 +52,8 @@ pub fn register_into(registry: &mut ToolRegistry) {
                 description: description.trim_end().into(),
                 input_schema: schema,
                 annotations: Some(read_only_annotations()),
-                visible_to_roles: &[CardRole::Planner],
+                roles: &[CardRole::Planner],
+                listed_for: &[CardRole::Planner],
             },
             handler,
         );

@@ -20,7 +20,8 @@ pub(super) fn kinds_descriptor() -> ToolDescriptor {
             "properties": {}
         }),
         annotations: Some(read_only_annotations()),
-        visible_to_roles: &[CardRole::Planner, CardRole::Assistant],
+        roles: &[CardRole::Planner, CardRole::Assistant],
+        listed_for: &[CardRole::Planner, CardRole::Assistant],
     }
 }
 
@@ -432,7 +433,8 @@ pub(super) fn write_markdown_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Planner, CardRole::Assistant],
+        roles: &[CardRole::Planner, CardRole::Assistant],
+        listed_for: &[CardRole::Planner, CardRole::Assistant],
     }
 }
 
@@ -497,7 +499,8 @@ pub(super) fn commit_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Planner, CardRole::Assistant],
+        roles: &[CardRole::Planner, CardRole::Assistant],
+        listed_for: &[CardRole::Planner, CardRole::Assistant],
     }
 }
 

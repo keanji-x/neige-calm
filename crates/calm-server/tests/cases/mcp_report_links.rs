@@ -385,6 +385,6 @@ async fn report_link_reads_reject_non_planner_caller() {
         )
         .await
         .unwrap_err();
-        assert!(error.message.contains("requires role=Planner"));
+        assert!(error.message.contains("requires role in [Planner]"));
     }
 }

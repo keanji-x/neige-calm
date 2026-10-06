@@ -7,7 +7,7 @@ use crate::ids::CardId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    refuse_unknown_keys, require_role, role_gated_write_annotations,
+    refuse_unknown_keys, role_gated_write_annotations,
 };
 use crate::model::CardRole;
 use serde_json::{Value, json};
@@ -61,7 +61,8 @@ fn user_ask_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Planner],
+        roles: &[CardRole::Planner],
+        listed_for: &[CardRole::Planner],
     }
 }
 
@@ -111,7 +112,6 @@ async fn user_ask(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Planner)?;
     let questions = parse_questions(&args)?;
     let planner_card = CardId::from(identity.card_id.clone());
     let actor = identity.to_actor_id();
@@ -144,7 +144,7 @@ mod tests {
     fn descriptor_is_planner_only_closed_and_named() {
         let d = user_ask_descriptor();
         assert_eq!(d.name, TOOL_USER_ASK);
-        assert_eq!(d.visible_to_roles, &[CardRole::Planner]);
+        assert_eq!(d.roles, &[CardRole::Planner]);
         assert_eq!(d.input_schema["additionalProperties"], json!(false));
         assert_eq!(d.input_schema["required"], json!(["questions"]));
         assert_eq!(

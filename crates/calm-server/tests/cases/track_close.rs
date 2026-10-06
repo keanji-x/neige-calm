@@ -93,7 +93,10 @@ async fn track_close_needs_a_message_and_the_planner_role() {
     )
     .await
     .expect_err("a worker cannot close the track");
-    assert!(err.message.contains("requires role=Planner"), "{err:?}");
+    assert!(
+        err.message.contains("requires role in [Planner]"),
+        "{err:?}"
+    );
     assert!(
         boot.repo
             .track_get(boot.track_id.as_str())

@@ -2,7 +2,7 @@
 
 use crate::error::{CalmError, Result};
 use crate::mcp_server::framing::RpcError;
-use crate::mcp_server::registry::{AppContext, ToolCallIdentity, require_role};
+use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
 use crate::model::CardRole;
 use chrono_tz::Tz;
 use sqlx::{Sqlite, Transaction};
@@ -103,7 +103,6 @@ pub(crate) async fn require_workspace_reports(
     ctx: &AppContext,
     identity: &ToolCallIdentity,
 ) -> std::result::Result<Tz, RpcError> {
-    require_role(identity, CardRole::Planner)?;
     let denied = || RpcError::forbidden("workspace report reads require a kernel-issued grant");
     let card = ctx
         .repo

@@ -386,7 +386,7 @@ async fn bootstrap_tool_descriptors(
     ctx: &Arc<AppContext>,
     registry: &ToolRegistry,
 ) -> Vec<ToolDescriptor> {
-    let mut descriptors = registry.descriptors_visible_to_any_role(PLUGIN_TOOL_ROLES);
+    let mut descriptors = registry.descriptors_listed_for_any(PLUGIN_TOOL_ROLES);
     extend_plugin_tool_descriptors(
         ctx,
         &mut descriptors,
@@ -460,7 +460,8 @@ pub(crate) fn plugin_tool_descriptors_from(
                     .input_schema
                     .unwrap_or_else(|| json!({ "type": "object" })),
                 annotations: entry.annotations,
-                visible_to_roles: PLUGIN_TOOL_ROLES,
+                roles: PLUGIN_TOOL_ROLES,
+                listed_for: PLUGIN_TOOL_ROLES,
             });
         }
     }

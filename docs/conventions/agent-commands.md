@@ -178,10 +178,10 @@ Agent-facing JSON-RPC codes, one meaning each:
   registry leads every refusal of a kernel tool with its name (B4).
 - **Order** of every kernel tool call (`ToolRegistry::lookup`): the session's identity, the
   managed-track grant (-32403), a built-in plugin's visibility fence (-32601 or -32503), closed
-  input (-32602), then the tool's role gate (-32403), its arguments and its state. Closed input
-  precedes the role gate for every tool alike: it names only the keys of the public schema
-  (`neige tool describe`), reads no state, and the role gate still runs before any state read or
-  write.
+  input (-32602), then the tool's declared `roles` (-32403), and only then the handler: its
+  arguments and its state. Closed input precedes the role gate for every tool alike: it names only
+  the keys of the public schema (`neige tool describe`), reads no state, and the role gate still
+  runs before any state read or write.
 - Error `data` carries machine fields (`refusal`, current revisions). Text and data say the same.
 - **CLI exit codes:** `0` success, `1` usage (unknown object, action, option, missing `--force`),
   `4` the tool refused or its result could not be rendered. The forwarder alone uses `2` (its
@@ -239,7 +239,9 @@ Agent-facing JSON-RPC codes, one meaning each:
   natives such as `plugin_gitforge_publish` included, or null for a kernel tool; `kind` is the kind
   its manifest declares (`forge-action`) or null (#2227).
 - `listed` (shown in `tools/list`) is a context-budget choice. A tool is hidden when shell use
-  serves it better. Listing is never a grant; the tool's role gate decides.
+  serves it better. Listing is never a grant: a tool declares `roles` (who may call it) and
+  `listed_for` (the subset whose `tools/list` shows it, a context-budget choice), and the
+  registry gates `roles` before the handler runs.
 - `neige help`, `neige help <object>`, `neige help <object> <action>` (and `--help`). Command help
   shows the usage line and every option (its schema key), and for a report view, the read to make
   before a write ("`track cat` is a view; a report write needs `neige_report_read`").

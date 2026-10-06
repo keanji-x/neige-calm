@@ -11,7 +11,7 @@ use crate::area_reports::{self, AreaPath, Filter, REPORTS_DIR};
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    read_only_annotations, require_role_any,
+    read_only_annotations,
 };
 use crate::model::CardRole;
 use crate::track_fs_view::{TrackFsEntry, TrackFsError, normalize_path};
@@ -55,12 +55,13 @@ fn find_descriptor() -> ToolDescriptor {
             "additionalProperties": false
         }),
         annotations: Some(read_only_annotations()),
-        visible_to_roles: &[],
+        roles: &[CardRole::Planner],
+        listed_for: &[],
     }
 }
 
-/// Other tracks' reports are the Planner's to read; a Worker is Forbidden. (Roles outside the track
-/// views' Planner|Worker are refused earlier, by the same role gate as `neige_track_ls`.)
+/// The `area/` paths of the track views: other tracks' reports are the Planner's to read, and a
+/// Worker, which `neige_track_ls` / `neige_track_cat` admit for its own track, is Forbidden here.
 fn require_planner(identity: &ToolCallIdentity) -> Result<(), RpcError> {
     if identity.role == CardRole::Planner {
         return Ok(());
@@ -153,8 +154,6 @@ async fn report_find(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Planner, CardRole::Worker])?;
-    require_planner(&identity)?;
     let tool = TOOL_REPORT_FIND;
     let obj = args
         .as_object()

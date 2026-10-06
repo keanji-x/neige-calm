@@ -6,7 +6,7 @@ use crate::area_reports;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    read_only_annotations, require_role_any,
+    read_only_annotations,
 };
 use crate::mcp_server::tools::report_links::{unknown_block, unknown_section};
 use crate::mcp_server::tools::track_report::load_report_for_track;
@@ -58,7 +58,8 @@ fn ls_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(read_only_annotations()),
-        visible_to_roles: &[],
+        roles: &[CardRole::Planner, CardRole::Worker],
+        listed_for: &[],
     }
 }
 
@@ -89,7 +90,8 @@ fn cat_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(read_only_annotations()),
-        visible_to_roles: &[],
+        roles: &[CardRole::Planner, CardRole::Worker],
+        listed_for: &[],
     }
 }
 
@@ -98,7 +100,6 @@ async fn track_ls(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Planner, CardRole::Worker])?;
     let path = parse_path_arg(&args, false)?;
     if let Some(area_path) = area_reports::classify(&path) {
         return super::area_reports::ls(&ctx, &identity, area_path).await;
@@ -127,7 +128,6 @@ async fn track_cat(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Planner, CardRole::Worker])?;
     let path = parse_path_arg(&args, true)?;
     let selection = parse_selection_arg(&args)?;
     if let Some(area_path) = area_reports::classify(&path) {

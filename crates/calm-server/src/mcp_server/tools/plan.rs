@@ -8,7 +8,7 @@ use crate::event::{Event, EventScope};
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    read_only_annotations, require_role, role_gated_write_annotations,
+    read_only_annotations, role_gated_write_annotations,
 };
 use crate::mcp_server::tools::write_args::{message_schema, parse_write_args};
 use crate::model::TaskKind;
@@ -339,7 +339,8 @@ fn plan_cancel_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Planner],
+        roles: &[CardRole::Planner],
+        listed_for: &[CardRole::Planner],
     }
 }
 
@@ -361,7 +362,6 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
-    require_role(&identity, CardRole::Planner)?;
     let message = parse_write_args(&args, TOOL_TASK_CANCEL)?;
 
     let key = args
@@ -526,7 +526,8 @@ fn plan_list_descriptor() -> ToolDescriptor {
             "additionalProperties":false
         }),
         annotations: Some(read_only_annotations()),
-        visible_to_roles: &[CardRole::Planner],
+        roles: &[CardRole::Planner],
+        listed_for: &[CardRole::Planner],
     }
 }
 
@@ -535,7 +536,6 @@ async fn plan_list(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Planner)?;
     let args = list::Args::parse(&args)?;
     let (_card, track) = resolve_track_for_identity(&ctx, &identity).await?;
     let summary = args.summary;

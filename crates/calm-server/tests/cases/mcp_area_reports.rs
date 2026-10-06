@@ -424,6 +424,7 @@ async fn a_worker_is_forbidden_every_area_path_and_find() {
             "Planner's view",
         );
     }
+    // `neige_report_find` is Planner-only: the registry refuses the Worker by its declared roles.
     assert_refused(
         find(
             &boot,
@@ -432,7 +433,7 @@ async fn a_worker_is_forbidden_every_area_path_and_find() {
         )
         .await,
         FORBIDDEN,
-        "Planner's view",
+        "tool requires role in [Planner] got=Worker",
     );
     let mut assistant = planner(side);
     assistant.role = CardRole::Assistant;

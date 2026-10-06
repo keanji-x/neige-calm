@@ -1,7 +1,7 @@
 //! Hidden MCP drill-ins for track-vcs history.
 //!
 //! These handlers are registered as wire-callable tools but use
-//! `visible_to_roles: &[]`, so they do not appear in `tools/list` for any
+//! `listed_for: &[]`, so they do not appear in `tools/list` for any
 //! role. Human-facing drill-in goes through `neige track diff`, `neige track show`, and
 //! `neige track log`, served by `mcp_server::cli`; planner turns receive the summarized
 //! since-last-turn block.
@@ -10,7 +10,7 @@ use crate::ids::TrackId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    read_only_annotations, require_role_any,
+    read_only_annotations,
 };
 use crate::mcp_server::tools::track_file::resolve_track_for_identity;
 use crate::model::CardRole;
@@ -61,7 +61,8 @@ fn diff_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(read_only_annotations()),
-        visible_to_roles: &[],
+        roles: &[CardRole::Planner, CardRole::Worker],
+        listed_for: &[],
     }
 }
 
@@ -81,7 +82,8 @@ fn cat_at_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(read_only_annotations()),
-        visible_to_roles: &[],
+        roles: &[CardRole::Planner, CardRole::Worker],
+        listed_for: &[],
     }
 }
 
@@ -101,7 +103,8 @@ fn log_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(read_only_annotations()),
-        visible_to_roles: &[],
+        roles: &[CardRole::Planner, CardRole::Worker],
+        listed_for: &[],
     }
 }
 
@@ -110,7 +113,6 @@ async fn track_diff(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Planner, CardRole::Worker])?;
     let vcs = track_vcs_repo(&ctx)?;
     let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
     let obj = object_args(&args, TOOL_TRACK_DIFF)?;
@@ -145,7 +147,6 @@ async fn track_cat_at(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Planner, CardRole::Worker])?;
     let vcs = track_vcs_repo(&ctx)?;
     let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
     let obj = object_args(&args, TOOL_TRACK_SHOW)?;
@@ -166,7 +167,6 @@ async fn track_log(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Planner, CardRole::Worker])?;
     let vcs = track_vcs_repo(&ctx)?;
     let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
     let obj = object_args(&args, TOOL_TRACK_LOG)?;

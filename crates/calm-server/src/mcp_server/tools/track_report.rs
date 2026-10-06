@@ -4,7 +4,7 @@
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    read_only_annotations, require_role_any,
+    read_only_annotations,
 };
 use crate::mcp_server::result::ToolResult;
 use crate::mcp_server::tools::report_links::unknown_block;
@@ -97,7 +97,8 @@ fn read_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(read_only_annotations()),
-        visible_to_roles: &[CardRole::Planner],
+        roles: &[CardRole::Planner, CardRole::Assistant],
+        listed_for: &[CardRole::Planner, CardRole::Assistant],
     }
 }
 
@@ -106,8 +107,6 @@ pub(crate) async fn report_read(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    // Assistant reads too: this is the read every agent report write is anchored by (#1883).
-    require_role_any(&identity, &[CardRole::Planner, CardRole::Assistant])?;
     let select = parse_select_arg(&args, TOOL_REPORT_READ)?;
     let with_markers = match args.get("with_markers") {
         None | Some(Value::Null) => false,

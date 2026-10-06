@@ -8,7 +8,7 @@ use crate::event::{Event, EventScope};
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    read_only_annotations, require_role, require_role_any, role_gated_write_annotations,
+    read_only_annotations, role_gated_write_annotations,
 };
 use crate::mcp_server::tools::write_args::{message_schema, parse_write_args};
 use crate::model::{Card, CardRole, Track, TrackPatch};
@@ -60,7 +60,8 @@ fn track_state_descriptor() -> ToolDescriptor {
             "properties": {}
         }),
         annotations: Some(read_only_annotations()),
-        visible_to_roles: &[],
+        roles: &[CardRole::Planner, CardRole::Worker],
+        listed_for: &[],
     }
 }
 
@@ -69,7 +70,6 @@ async fn track_state(
     identity: ToolCallIdentity,
     _args: Value,
 ) -> Result<Value, RpcError> {
-    require_role_any(&identity, &[CardRole::Planner, CardRole::Worker])?;
     let (caller, track) = resolve_track_for_identity(&ctx, &identity).await?;
     let mut cards = ctx
         .repo
@@ -193,7 +193,8 @@ fn task_verdict_descriptor(verdict: Verdict) -> ToolDescriptor {
             "properties": properties
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Planner],
+        roles: &[CardRole::Planner],
+        listed_for: &[CardRole::Planner],
     }
 }
 
@@ -203,7 +204,6 @@ async fn task_verdict(
     args: Value,
     verdict: Verdict,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Planner)?;
     let tool = verdict.tool();
     let message = parse_write_args(&args, tool)?;
     let attempt_id = crate::mcp_server::tools::emit::required_attempt_id(&args, tool)?;
@@ -256,7 +256,8 @@ fn track_close_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Planner],
+        roles: &[CardRole::Planner],
+        listed_for: &[CardRole::Planner],
     }
 }
 
@@ -266,7 +267,6 @@ async fn track_close(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Planner)?;
     let message = parse_write_args(&args, TOOL_TRACK_CLOSE)?;
     let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
     if crate::managed_track::kernel_controls_lifecycle(&ctx, track.id.as_str())
@@ -362,43 +362,4 @@ async fn resolve_track_for_identity(
             ))
         })?;
     Ok((card, track))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::CardRole;
-
-    fn identity_with_role(role: CardRole) -> ToolCallIdentity {
-        ToolCallIdentity {
-            card_id: "card-1".to_string(),
-            role,
-            provider: crate::session_projection_repo::AgentProvider::Codex,
-            session_id: "session-1".to_string(),
-            track_id: Some("track-1".to_string()),
-            area_id: "area-1".to_string(),
-            thread_id: "thread-1".to_string(),
-        }
-    }
-
-    #[test]
-    fn require_role_accepts_matching_role() {
-        let id = identity_with_role(CardRole::Planner);
-        assert!(require_role(&id, CardRole::Planner).is_ok());
-    }
-
-    #[test]
-    fn require_role_rejects_worker_for_planner_tool() {
-        let id = identity_with_role(CardRole::Worker);
-        let err = require_role(&id, CardRole::Planner).expect_err("worker must be denied");
-        assert_eq!(err.code, RpcError::FORBIDDEN);
-        assert!(
-            err.message.contains("Planner"),
-            "error should mention required role: {err:?}"
-        );
-        assert!(
-            err.message.contains("Worker"),
-            "error should mention got role: {err:?}"
-        );
-    }
 }

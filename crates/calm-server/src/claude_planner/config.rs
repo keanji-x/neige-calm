@@ -146,7 +146,7 @@ impl ClaudePlannerHost {
         let calm_tools = ToolNames::new(
             crate::mcp_server::wiring::MCP_SERVER_KEY,
             crate::mcp_server::build_default_registry()
-                .descriptors_for_role(CardRole::Planner)
+                .descriptors_listed_for(CardRole::Planner)
                 .into_iter()
                 .map(|descriptor| descriptor.name),
         );

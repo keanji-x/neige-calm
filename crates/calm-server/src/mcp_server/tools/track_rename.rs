@@ -9,7 +9,7 @@ use crate::event::{Event, EventScope};
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    require_role, role_gated_write_annotations,
+    role_gated_write_annotations,
 };
 use crate::model::{CardRole, TrackPatch};
 use serde_json::{Value, json};
@@ -62,7 +62,8 @@ fn track_rename_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Planner],
+        roles: &[CardRole::Planner],
+        listed_for: &[CardRole::Planner],
     }
 }
 
@@ -75,8 +76,6 @@ async fn track_rename(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Planner)?;
-
     let title = args
         .get("title")
         .and_then(Value::as_str)
@@ -215,6 +214,6 @@ mod tests {
     fn descriptor_is_planner_only_and_named() {
         let d = track_rename_descriptor();
         assert_eq!(d.name, TOOL_TRACK_RENAME);
-        assert_eq!(d.visible_to_roles, &[CardRole::Planner]);
+        assert_eq!(d.roles, &[CardRole::Planner]);
     }
 }

@@ -1,5 +1,5 @@
 //! `neige_source_capture` and `neige_source_ls`: turn a plugin result the Planner just read into a stable, verifiable source.
-//! Both handlers check `require_role(Planner)` themselves; tools still dispatch by name.
+//! Both are Planner-only: their descriptors declare it and the registry gates it.
 
 use std::sync::Arc;
 
@@ -10,7 +10,7 @@ use crate::error::CalmError;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    read_only_annotations, refuse_unknown_keys, require_role, role_gated_write_annotations,
+    read_only_annotations, refuse_unknown_keys, role_gated_write_annotations,
 };
 use crate::mcp_server::transport::plugin_tool_names::names_track_visible_plugin_tool;
 use crate::model::CardRole;
@@ -98,7 +98,8 @@ fn capture_descriptor() -> ToolDescriptor {
             "additionalProperties": false
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Planner],
+        roles: &[CardRole::Planner],
+        listed_for: &[CardRole::Planner],
     }
 }
 
@@ -110,7 +111,8 @@ fn list_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
         annotations: Some(read_only_annotations()),
-        visible_to_roles: &[CardRole::Planner],
+        roles: &[CardRole::Planner],
+        listed_for: &[CardRole::Planner],
     }
 }
 
@@ -119,7 +121,6 @@ async fn source_capture(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Planner)?;
     let tool = TOOL_SOURCE_CAPTURE;
     let track_id = identity
         .track_id
@@ -518,7 +519,6 @@ async fn source_list(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Planner)?;
     let tool = TOOL_SOURCE_LS;
     let track_id = identity
         .track_id

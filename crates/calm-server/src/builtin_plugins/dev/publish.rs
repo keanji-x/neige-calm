@@ -23,7 +23,7 @@ use crate::git_candidate::candidate::{TrackCandidate, track_candidates};
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    require_role, role_gated_write_annotations,
+    role_gated_write_annotations,
 };
 use crate::mcp_server::transport::forge_action_payload;
 use crate::mcp_server::transport::{PluginForgePayload, submit_forge_action_with_key};
@@ -72,7 +72,8 @@ fn dev_publish_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Planner],
+        roles: &[CardRole::Planner],
+        listed_for: &[CardRole::Planner],
     }
 }
 
@@ -274,7 +275,6 @@ async fn dev_publish(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Planner)?;
     let idempotency_key = required_string(&args, "idempotency_key", true)?;
     let title = required_string(&args, "title", true)?;
     let body = required_string(&args, "body", false)?;
@@ -353,7 +353,7 @@ mod tests {
     fn descriptor_is_planner_only_and_declares_its_local_name() {
         let d = dev_publish_descriptor();
         assert_eq!(d.name, "publish");
-        assert_eq!(d.visible_to_roles, &[CardRole::Planner]);
+        assert_eq!(d.roles, &[CardRole::Planner]);
         let mut registry = ToolRegistry::new();
         register_into(&mut registry);
         assert!(registry.lookup("publish").is_some());

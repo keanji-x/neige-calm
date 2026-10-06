@@ -1955,9 +1955,9 @@ mod tests {
             .find(|descriptor| descriptor.name == "neige_track_close")
             .expect("GIVE-UP tool descriptor");
         assert!(
-            descriptor.visible_to_roles == [crate::model::CardRole::Planner],
+            descriptor.roles == [crate::model::CardRole::Planner],
             "only the Planner closes a track: {:?}",
-            descriptor.visible_to_roles
+            descriptor.roles
         );
 
         let template = TemplateDescriptor { id: "dev".into() };

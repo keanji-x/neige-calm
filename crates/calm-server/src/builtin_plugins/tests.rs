@@ -83,7 +83,7 @@ impl Fixture {
     }
     async fn tool_names(&self, identity: &ToolCallIdentity) -> Vec<String> {
         let registry = crate::mcp_server::build_default_registry();
-        let mut descriptors = registry.descriptors_for_role(identity.role);
+        let mut descriptors = registry.descriptors_listed_for(identity.role);
         let scope = plugin_scope_for_track(&self.ctx, identity.track_id.as_deref()).await;
         crate::mcp_server::transport::extend_plugin_tool_descriptors_for_role(
             &self.ctx,
@@ -440,9 +440,7 @@ fn builtin_native_tools_are_served_under_their_minted_names() {
     let mut served: Vec<(String, String, Vec<CardRole>)> = registry
         .descriptors()
         .into_iter()
-        .filter_map(|d| {
-            owner(&d.name).map(|p| (p.manifest().id.clone(), d.name, d.visible_to_roles.to_vec()))
-        })
+        .filter_map(|d| owner(&d.name).map(|p| (p.manifest().id.clone(), d.name, d.roles.to_vec())))
         .collect();
     served.sort_by(|a, b| a.1.cmp(&b.1));
     let want: Vec<(String, String, Vec<CardRole>)> = NATIVE_TOOLS
@@ -487,3 +485,4 @@ fn builtin_native_tools_never_mint_a_manifest_tool_name() {
         "compiled tools mint a manifest tool's name: {colliding:?}"
     );
 }
+

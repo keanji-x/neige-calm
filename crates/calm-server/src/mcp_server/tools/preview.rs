@@ -8,7 +8,7 @@ use crate::ids::TrackId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    require_role, role_gated_write_annotations,
+    role_gated_write_annotations,
 };
 use crate::model::CardRole;
 use crate::preview::PreviewRegistry;
@@ -78,7 +78,8 @@ fn add_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Planner],
+        roles: &[CardRole::Planner],
+        listed_for: &[CardRole::Planner],
     }
 }
 
@@ -95,12 +96,12 @@ fn rm_descriptor() -> ToolDescriptor {
             "properties": { "preview_id": preview_id_schema() }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Planner],
+        roles: &[CardRole::Planner],
+        listed_for: &[CardRole::Planner],
     }
 }
 
 fn caller_track(tool: &str, identity: &ToolCallIdentity) -> Result<TrackId, RpcError> {
-    require_role(identity, CardRole::Planner)?;
     identity
         .track_id
         .as_deref()
@@ -288,17 +289,11 @@ mod tests {
         assert_eq!(add(&reg, &a, &args("fe", 5173)).unwrap()["port"], 4050);
     }
 
+    /// Other roles are refused by the registry's gate on the declared `roles`
+    /// (`mcp_tool_role_matrix`), before these run.
     #[test]
-    fn other_roles_and_trackless_callers_are_refused() {
+    fn trackless_callers_are_refused() {
         let reg = pool();
-        for role in [CardRole::Worker, CardRole::Assistant, CardRole::ReportCard] {
-            let who = caller(role, Some("track-a"));
-            let forbidden = |result| refusal(result, RpcError::FORBIDDEN);
-            assert!(forbidden(add(&reg, &who, &args("fe", 5173))).contains("requires role"));
-            assert!(
-                forbidden(rm(&reg, &who, &json!({"preview_id": "fe"}))).contains("requires role")
-            );
-        }
         let trackless = caller(CardRole::Planner, None);
         let refused = refusal(
             add(&reg, &trackless, &args("fe", 5173)),

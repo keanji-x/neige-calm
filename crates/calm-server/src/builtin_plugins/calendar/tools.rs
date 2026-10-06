@@ -3,7 +3,7 @@ use super::store::{self, Access, Change};
 use crate::mcp_server::{
     framing::RpcError,
     registry::{
-        ToolCallIdentity, ToolDescriptor, ToolRegistry, read_only_annotations, require_role_any,
+        ToolCallIdentity, ToolDescriptor, ToolRegistry, read_only_annotations,
         role_gated_write_annotations,
     },
     result::ToolResult,
@@ -14,7 +14,6 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 const ROLES: &[CardRole] = &[CardRole::Planner, CardRole::Assistant];
 fn access(identity: &ToolCallIdentity) -> Result<Access, RpcError> {
-    require_role_any(identity, ROLES)?;
     let track = identity
         .track_id
         .clone()
@@ -104,7 +103,8 @@ pub fn register(registry: &mut ToolRegistry) {
                 } else {
                     role_gated_write_annotations()
                 }),
-                visible_to_roles: ROLES,
+                roles: ROLES,
+                listed_for: ROLES,
             },
             Arc::new(move |ctx, identity, args| {
                 Box::pin(async move {

@@ -39,7 +39,7 @@ pub(crate) async fn tool_descriptors_for_connection(
             None => {
                 let card = ensure_card_bound_session_active(ctx, bound, "tools/list").await?;
                 let scope = plugin_scope_for_track(ctx, Some(card.track_id.as_str())).await;
-                let mut descriptors = registry.descriptors_for_role(bound.role);
+                let mut descriptors = registry.descriptors_listed_for(bound.role);
                 extend_plugin_tool_descriptors_for_role(ctx, &mut descriptors, card.role, &scope)
                     .await;
                 filter_profile(ctx, bound.card_id.as_str(), descriptors).await?
@@ -57,7 +57,7 @@ async fn tool_descriptors_for_identity(
     identity: &ToolCallIdentity,
 ) -> Result<Vec<ToolDescriptor>, RpcError> {
     let scope = plugin_scope_for_track(ctx, identity.track_id.as_deref()).await;
-    let mut descriptors = registry.descriptors_for_role(identity.role);
+    let mut descriptors = registry.descriptors_listed_for(identity.role);
     extend_plugin_tool_descriptors_for_role(ctx, &mut descriptors, identity.role, &scope).await;
     filter_profile(ctx, &identity.card_id, descriptors).await
 }

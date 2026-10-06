@@ -325,7 +325,8 @@ mod tests {
             description: "Read only".into(),
             input_schema: json!({"type":"object"}),
             annotations: None,
-            visible_to_roles: &[CardRole::Planner],
+            roles: &[CardRole::Planner],
+            listed_for: &[CardRole::Planner],
         }
     }
 
@@ -463,7 +464,7 @@ mod tests {
     #[test]
     fn tool_list_includes_cli_covered_hidden_tools() {
         let registry = build_default_registry();
-        let planner = registry.descriptors_for_role(CardRole::Planner);
+        let planner = registry.descriptors_listed_for(CardRole::Planner);
         assert!(
             !planner.iter().any(|tool| tool.name == "neige_track_cat"),
             "precondition: track.cat is hidden from the Planner's tools/list"
@@ -498,7 +499,7 @@ mod tests {
                 name: "neige_track_cat".into(),
             },
             entries(
-                registry.descriptors_for_role(CardRole::Planner),
+                registry.descriptors_listed_for(CardRole::Planner),
                 &registry,
                 None,
                 &BTreeSet::new(),

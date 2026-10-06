@@ -227,19 +227,20 @@ async fn tools_list_for_worker_role_returns_completion_tools() {
     );
 }
 
-/// `neige_report_read` is deliberately absent: an assistant can call it, but its descriptor is visible only to Planner.
+/// The read every report write is anchored by is listed beside the writes (#2289).
 /// #1883: the single-op block writers are gone; the assistant writes through `commit`.
 #[tokio::test]
-async fn tools_list_for_assistant_role_returns_the_report_write_surface_only() {
+async fn tools_list_for_assistant_role_returns_the_report_surface_only() {
     let names = tools_list_names_for_role(CardRole::Assistant).await;
     assert_eq!(
         names,
         vec![
             "neige_report_commit",
             "neige_report_describe",
+            "neige_report_read",
             "neige_report_write",
         ],
-        "assistant tools/list must be exactly the report write surface",
+        "assistant tools/list must be exactly the report read and write surface",
     );
 }
 

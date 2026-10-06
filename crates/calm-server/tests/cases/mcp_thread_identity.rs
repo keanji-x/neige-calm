@@ -19,7 +19,7 @@ use calm_server::event::EventBus;
 use calm_server::mcp_server::auth;
 use calm_server::mcp_server::handshake::TOKEN_NOT_RECOGNIZED_CODE;
 use calm_server::mcp_server::registry::{
-    ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, require_role,
+    ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture,
 };
 use calm_server::mcp_server::{McpServer, ToolRegistry, build_default_registry};
 use calm_server::model::{CardRole, NewArea, NewTrack, now_ms};
@@ -179,15 +179,21 @@ fn capture_identity_registry() -> (Arc<ToolRegistry>, mpsc::UnboundedReceiver<To
 
 fn role_gate_registry() -> Arc<ToolRegistry> {
     let mut registry = ToolRegistry::new();
-    let handler: ToolHandler = Arc::new(move |_ctx, identity, _args| -> ToolHandlerFuture {
+    let handler: ToolHandler = Arc::new(move |_ctx, _identity, _args| -> ToolHandlerFuture {
         Box::pin(async move {
-            require_role(&identity, CardRole::Planner)?;
             Ok(calm_server::mcp_server::result::ToolResult::structured(
                 json!({ "role": "planner" }),
             ))
         })
     });
-    registry.register(test_descriptor("test.planner_only"), handler);
+    // The registry gates the declared roles; the handler does not re-check them.
+    registry.register(
+        ToolDescriptor {
+            roles: &[CardRole::Planner],
+            ..test_descriptor("test.planner_only")
+        },
+        handler,
+    );
     Arc::new(registry)
 }
 
@@ -197,9 +203,18 @@ fn test_descriptor(name: &str) -> ToolDescriptor {
         description: "test tool".into(),
         input_schema: json!({ "type": "object", "properties": {} }),
         annotations: None,
-        visible_to_roles: &[CardRole::Planner],
+        // Identity-resolution fixtures: every role may call them; the role gate is tested elsewhere.
+        roles: FIXTURE_ROLES,
+        listed_for: &[CardRole::Planner],
     }
 }
+
+const FIXTURE_ROLES: &[CardRole] = &[
+    CardRole::Planner,
+    CardRole::Worker,
+    CardRole::Assistant,
+    CardRole::ReportCard,
+];
 
 async fn seed_thread(boot: &Boot, card_id: &str, thread_id: &str, _role: CardRole) {
     let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
@@ -1166,7 +1181,8 @@ async fn tools_list_cardbound_without_thread_id_uses_bound_role() {
             description: "worker test tool".into(),
             input_schema: json!({ "type": "object", "properties": {} }),
             annotations: None,
-            visible_to_roles: &[CardRole::Worker],
+            roles: FIXTURE_ROLES,
+            listed_for: &[CardRole::Worker],
         },
         handler,
     );

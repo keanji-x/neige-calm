@@ -2,7 +2,6 @@
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    require_role,
 };
 use crate::mcp_server::result::ToolResult;
 use crate::model::{Card, CardRole, new_id};
@@ -69,7 +68,8 @@ pub fn register_into(registry: &mut ToolRegistry) {
             input_schema,
             // Terminal programs may reach network/filesystem; no auto-approval annotation.
             annotations:Some(json!({"readOnlyHint":matches!(name,"neige_terminal_read"|"neige_terminal_show"),"destructiveHint":!matches!(name,"neige_terminal_read"|"neige_terminal_show"),"openWorldHint":true})),
-            visible_to_roles:&[CardRole::Planner],
+            roles: &[CardRole::Planner],
+            listed_for: &[CardRole::Planner],
         },handler);
     }
 }
@@ -302,7 +302,6 @@ async fn call(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<ToolResult, RpcError> {
-    require_role(&identity, CardRole::Planner)?;
     let service = ctx
         .terminal_interaction
         .get()

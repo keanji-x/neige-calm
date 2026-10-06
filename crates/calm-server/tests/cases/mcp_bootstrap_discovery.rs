@@ -88,7 +88,7 @@ async fn bootstrap_catalog_covers_every_builtin_bound_role_catalog() {
                 missing.is_empty(),
                 "bootstrap omitted bound tools: {missing:?}"
             );
-            for descriptor in registry.descriptors_for_role(role) {
+            for descriptor in registry.descriptors_listed_for(role) {
                 if builtin_plugins::owner(&descriptor.name)
                     .is_some_and(|p| p.manifest().id == *owner)
                 {

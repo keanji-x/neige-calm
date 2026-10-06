@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    read_only_annotations, require_role,
+    read_only_annotations,
 };
 use crate::model::CardRole;
 use crate::track_report_read::load_report_read_snapshot;
@@ -48,7 +48,8 @@ fn outline_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
         annotations: Some(read_only_annotations()),
-        visible_to_roles: &[CardRole::Planner],
+        roles: &[CardRole::Planner],
+        listed_for: &[CardRole::Planner],
     }
 }
 
@@ -60,7 +61,8 @@ fn backlinks_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
         annotations: Some(read_only_annotations()),
-        visible_to_roles: &[CardRole::Planner],
+        roles: &[CardRole::Planner],
+        listed_for: &[CardRole::Planner],
     }
 }
 
@@ -69,7 +71,6 @@ async fn area_outline(
     identity: ToolCallIdentity,
     _args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Planner)?;
     let mut cards = ctx
         .repo
         .track_report_cards_by_area(identity.area_id.as_str())
@@ -285,7 +286,6 @@ async fn report_backlinks(
     identity: ToolCallIdentity,
     _args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Planner)?;
     let track_id = identity
         .track_id
         .ok_or_else(|| RpcError::forbidden("neige_link_ls requires a track-scoped caller"))?;

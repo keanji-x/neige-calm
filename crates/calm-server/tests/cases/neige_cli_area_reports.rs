@@ -344,16 +344,25 @@ async fn planner_browses_searches_and_reads_area_reports_through_neige() {
 async fn a_worker_is_refused_area_reports_through_neige() {
     let boot = boot_with_role(CardRole::Worker).await;
     add_report(&boot, &boot.track_id, "own\n").await;
-    for argv in [
-        &["track", "ls", "area/reports/"][..],
-        &["track", "cat", "area/reports/mcp-test.md"][..],
-        &["report", "find", "area/reports/", "--tag", "x"][..],
+    for (argv, refusal) in [
+        (
+            &["track", "ls", "area/reports/"][..],
+            "area/reports/ is the Planner's view",
+        ),
+        (
+            &["track", "cat", "area/reports/mcp-test.md"][..],
+            "area/reports/ is the Planner's view",
+        ),
+        // A Planner-only tool: its declared roles refuse the Worker before the handler.
+        (
+            &["report", "find", "area/reports/", "--tag", "x"][..],
+            "tool requires role in [Planner] got=Worker",
+        ),
     ] {
         let (stdout, stderr, exit) = neige(&boot, argv).await;
         assert_eq!((exit, stdout.as_str()), (4, ""), "{argv:?}");
         assert!(
-            stderr.contains("area/reports/ is the Planner's view")
-                && stderr.ends_with("(code -32403)\n"),
+            stderr.contains(refusal) && stderr.ends_with("(code -32403)\n"),
             "{argv:?}: {stderr}"
         );
     }

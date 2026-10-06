@@ -1,14 +1,13 @@
 //! Hidden MCP admin maintenance tools.
 //!
 //! These handlers are registered as wire-callable tools but use
-//! `visible_to_roles: &[]`, so they do not appear in `tools/list` for any
+//! `listed_for: &[]`, so they do not appear in `tools/list` for any
 //! role. Human-facing access goes through the `neige` maintenance commands.
 
 use crate::ids::TrackId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    require_role,
 };
 use crate::mcp_server::tools::track_file::resolve_track_for_identity;
 use crate::model::CardRole;
@@ -56,7 +55,8 @@ fn track_gc_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: None,
-        visible_to_roles: &[],
+        roles: &[CardRole::Planner],
+        listed_for: &[],
     }
 }
 
@@ -68,7 +68,8 @@ fn vacuum_descriptor() -> ToolDescriptor {
             .to_string(),
         input_schema: json!({ "type": "object", "additionalProperties": false, "properties": {} }),
         annotations: None,
-        visible_to_roles: &[],
+        roles: &[CardRole::Planner],
+        listed_for: &[],
     }
 }
 
@@ -77,7 +78,6 @@ async fn track_gc(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Planner)?;
     let track_vcs = track_vcs_repo(&ctx)?;
     let (_card, track) = resolve_track_for_identity(&ctx, &identity).await?;
 
@@ -134,10 +134,9 @@ async fn track_gc(
 
 async fn vacuum(
     ctx: Arc<AppContext>,
-    identity: ToolCallIdentity,
+    _identity: ToolCallIdentity,
     _args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Planner)?;
     let track_vcs = track_vcs_repo(&ctx)?;
     track_vcs.vacuum().await.map_err(|e| {
         RpcError::internal(format!(
