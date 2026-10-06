@@ -7,7 +7,7 @@ use calm_truth::session_projection_row::ACTIVE_CARD_RUNTIME_SELECT;
 
 use crate::error::{CalmError, Result};
 use crate::operation::Phase;
-use crate::routes::cards::MAX_PLANNER_INPUT_CHARS;
+use crate::routes::planner_cards::MAX_PLANNER_INPUT_CHARS;
 use crate::state::{RouteState, WorkerState};
 
 pub(crate) const PLANNER_HARNESS_START: &str = "planner-harness-start";

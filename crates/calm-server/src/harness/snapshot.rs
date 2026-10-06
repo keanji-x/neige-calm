@@ -518,7 +518,7 @@ mod tests {
         assert!(
             is_harness_snapshot_value(&pre_1255),
             "a pre-#1255 row must still be recognised as a harness snapshot — \
-             `routes::cards::get_planner_run` uses this to decide dormant-vs-live"
+             `routes::planner_cards::get_planner_run` uses this to decide dormant-vs-live"
         );
 
         let snapshot = HarnessSnapshot::from_value_strict(pre_1255);
@@ -558,7 +558,7 @@ mod tests {
         assert!(
             is_harness_snapshot_value(&pre_1505),
             "a pre-#1505 row must still be recognised as a harness snapshot — \
-             `routes::cards::get_planner_run` uses this to decide dormant-vs-live"
+             `routes::planner_cards::get_planner_run` uses this to decide dormant-vs-live"
         );
 
         let snapshot = HarnessSnapshot::from_value_strict(pre_1505);

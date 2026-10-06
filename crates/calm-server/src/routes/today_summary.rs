@@ -355,7 +355,7 @@ mod tests {
         })
         .unwrap();
         assert!(
-            widest.chars().count() < crate::routes::cards::MAX_PLANNER_INPUT_CHARS,
+            widest.chars().count() < crate::routes::planner_cards::MAX_PLANNER_INPUT_CHARS,
             "the prompt must fit `planner/input` for every possible count; it is \
              {} chars",
             widest.chars().count()
@@ -363,7 +363,7 @@ mod tests {
         // The bootstrap travels the same channel under the identical ceiling.
         assert!(
             TODAY_SUMMARY_BOOTSTRAP_TEXT.chars().count()
-                < crate::routes::cards::MAX_PLANNER_INPUT_CHARS
+                < crate::routes::planner_cards::MAX_PLANNER_INPUT_CHARS
         );
         assert!(!TODAY_SUMMARY_BOOTSTRAP_TEXT.trim().is_empty());
     }

@@ -39,7 +39,8 @@ use crate::operation::planner_plugin_instructions::{
 };
 use crate::per_card_lock::{PerCardLockGuard, PerCardLocks, lock_card, new_per_card_locks};
 use crate::plugin_host::{PluginHost, manifest::TemplateDescriptor};
-use crate::routes::cards::{MAX_PLANNER_INPUT_CHARS, card_scope, card_scope_tx};
+use crate::routes::cards::{card_scope, card_scope_tx};
+use crate::routes::planner_cards::MAX_PLANNER_INPUT_CHARS;
 use crate::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };

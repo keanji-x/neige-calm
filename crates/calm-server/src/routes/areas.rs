@@ -16,7 +16,7 @@ use crate::operation::workspace_lease::{
     any_track_has_active_forge_action, release_workspace_leases_for_track_tx,
     sweep_workspace_worktrees_for_tracks,
 };
-use crate::routes::cards::quiesce_shared_card_active_turn;
+use crate::routes::planner_cards::quiesce_shared_card_active_turn;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::quiesce_terminal_artifacts_for_deletion;
 use crate::workspace_materialize::validate_attached_workspace;

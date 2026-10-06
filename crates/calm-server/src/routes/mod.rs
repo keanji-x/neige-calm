@@ -25,6 +25,7 @@ pub mod harness_live;
 pub mod idempotency_key;
 pub mod models;
 pub mod overlays;
+pub mod planner_cards;
 pub mod planner_input;
 pub mod planner_input_send;
 pub mod planner_model;

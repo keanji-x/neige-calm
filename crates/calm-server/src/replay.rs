@@ -271,7 +271,7 @@ pub async fn force_planner_phase(
         .write()
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-    if !crate::routes::cards::card_runs_headless_harness(&card, role) {
+    if !crate::routes::planner_cards::card_runs_headless_harness(&card, role) {
         return Err(CalmError::Forbidden(format!(
             "card {card_id} is not a planner codex card",
         )));

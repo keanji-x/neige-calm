@@ -11,10 +11,7 @@ use crate::model::{
 };
 use crate::report_backlinks::BacklinkQuote;
 use crate::routes::area_folders::ResolveQuery;
-use crate::routes::cards::{
-    CreateCardBody, GetPlannerRunResponse, HarnessItemsQuery, InterruptPlannerCardResponse,
-    PlannerRunTokenUsage, ResetPlannerCardResponse, ViaToolCall,
-};
+use crate::routes::cards::{CreateCardBody, HarnessItemsQuery, ViaToolCall};
 use crate::routes::claude_cards::NewClaudeCardBody;
 use crate::routes::codex_cards::NewCodexCardBody;
 use crate::routes::fs::{
@@ -24,6 +21,10 @@ use crate::routes::models::{
     CatalogModel, DefaultSource, ModelDefaults, ModelSource, ModelsResponse, ReasoningEffortOption,
 };
 use crate::routes::overlays::{OverlayDeleteBody, OverlayQuery};
+use crate::routes::planner_cards::{
+    GetPlannerRunResponse, InterruptPlannerCardResponse, PlannerRunTokenUsage,
+    ResetPlannerCardResponse,
+};
 use crate::routes::planner_input::{
     DeletePlannerInputBody, EditPlannerInputBody, PlannerInputMutationResponse,
     PlannerInputStaleBody, PlannerSteerConflictBody, PlannerSteerRefusedBody, PlannerSteerResponse,
@@ -142,9 +143,9 @@ use utoipa::{Modify, OpenApi, ToSchema};
         crate::routes::harness_live::get_harness_live,
         crate::routes::planner_input_send::send_planner_input,
         crate::routes::cards::ratify_card,
-        crate::routes::cards::interrupt_planner_card,
-        crate::routes::cards::get_planner_run,
-        crate::routes::cards::reset_planner_card,
+        crate::routes::planner_cards::interrupt_planner_card,
+        crate::routes::planner_cards::get_planner_run,
+        crate::routes::planner_cards::reset_planner_card,
         // This list is hand-maintained: omitting a handler is not a compile error and not a drift failure — the endpoint simply never reaches either generated client.
         crate::routes::planner_input::edit_planner_input,
         crate::routes::planner_input::delete_planner_input,

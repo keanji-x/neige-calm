@@ -431,7 +431,7 @@ mod tests {
             tracks_touched: i64::MIN,
         });
         assert!(
-            widest.chars().count() < crate::routes::cards::MAX_PLANNER_INPUT_CHARS,
+            widest.chars().count() < crate::routes::planner_cards::MAX_PLANNER_INPUT_CHARS,
             "the briefing must fit `planner/input` for every possible count; it \
              is {} chars",
             widest.chars().count()
