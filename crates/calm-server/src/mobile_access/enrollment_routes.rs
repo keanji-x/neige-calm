@@ -2,9 +2,9 @@
 use super::routes::{MobileAction, no_store, owner};
 use crate::auth::{AuthState, Principal, build_session_cookie};
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::extract::{JsonBody, Path};
+use crate::extract::{Json, JsonBody, Path};
 use axum::{
-    Json, Router,
+    Router,
     extract::{DefaultBodyLimit, State},
     http::header,
     response::Response,

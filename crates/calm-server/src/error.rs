@@ -1,7 +1,7 @@
 //! Unified error type; `IntoResponse` turns it into a JSON `{error, code}` body with an HTTP status.
 
+use crate::extract::Json;
 use axum::{
-    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
 };

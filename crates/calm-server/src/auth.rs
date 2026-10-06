@@ -5,9 +5,9 @@ pub mod login_throttle;
 
 use crate::config::Config;
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::extract::JsonBody;
+use crate::extract::{Json, JsonBody};
 use axum::{
-    Extension, Json, Router,
+    Extension, Router,
     body::Body,
     extract::{ConnectInfo, FromRequestParts, Request, State},
     http::{HeaderMap, HeaderValue, Method, StatusCode, header, request::Parts},

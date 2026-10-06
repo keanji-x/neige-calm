@@ -13,7 +13,7 @@ use calm_server::state::{AppState, CodexClient, DaemonClient};
 
 async fn collect_replay_order(
     axum::extract::State(replayed): axum::extract::State<Arc<tokio::sync::Mutex<Vec<String>>>>,
-    axum::Json(body): axum::Json<serde_json::Value>,
+    calm_server::extract::JsonBody(body): calm_server::extract::JsonBody<serde_json::Value>,
 ) -> axum::http::StatusCode {
     let sequence = body
         .get("sequence")

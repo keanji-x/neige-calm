@@ -1,8 +1,7 @@
 //! `GET /api/cards/{id}/harness/live`: the reply text the running turn has streamed and not stored
 //! yet (#1923 S2). Mounted by the cards router, which owns `/api/cards/{id}/**`.
 
-use crate::extract::Path;
-use axum::Json;
+use crate::extract::{Json, Path};
 use axum::extract::State;
 use calm_types::harness::HarnessLiveReplies;
 

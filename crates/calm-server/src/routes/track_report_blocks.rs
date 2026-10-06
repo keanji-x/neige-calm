@@ -3,11 +3,11 @@
 use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::extract::{JsonBody, Path};
+use crate::extract::{Json, JsonBody, Path};
 use crate::state::{AppState, RouteState};
 use crate::track_report::{self, ReportDocOp, ReportEditTarget};
 use axum::{
-    Json, Router,
+    Router,
     extract::State,
     routing::{patch, post},
 };

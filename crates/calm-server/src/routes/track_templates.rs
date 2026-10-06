@@ -4,11 +4,11 @@
 //! instantiates. This endpoint performs no write of any kind.
 
 use crate::error::{ErrorBody, Result};
-use crate::extract::Path;
+use crate::extract::{Json, Path};
 use crate::routes::tracks::{compile_template, resolve_template_binding};
 use crate::state::{AppState, RouteState};
 use crate::templates::{Template, task_payload_key_and_instruction};
-use axum::{Json, Router, extract::State, routing::get};
+use axum::{Router, extract::State, routing::get};
 use serde::Serialize;
 use serde_json::Value;
 use utoipa::ToSchema;
