@@ -2,13 +2,14 @@
 //! text frames; history, replay and reconnect epochs all live in the daemon.
 
 use crate::error::Result;
+use crate::extract::Path;
 use crate::model::Terminal;
 use crate::state::AppState;
 use crate::terminal_renderer::{ClientPumpContext, RendererEntry, run_client_pump};
 use axum::{
     Router,
     extract::{
-        Path, State,
+        State,
         ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade},
     },
     response::IntoResponse,

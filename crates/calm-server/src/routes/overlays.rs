@@ -7,19 +7,14 @@ use crate::db::sqlite::{overlay_delete_tx, overlay_upsert_tx};
 use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
-use crate::json_body::JsonBody;
+use crate::extract::{JsonBody, Query};
 use crate::model::{NewOverlay, Overlay};
 use crate::state::{AppState, RouteState};
 use crate::validation::{
     KERNEL_OVERLAY_PLUGIN_ID, OVERLAY_ENTITY_SCOPE_REGISTRY, should_skip_overlay,
     validate_overlay_payload,
 };
-use axum::{
-    Json, Router,
-    extract::{Query, State},
-    http::StatusCode,
-    routing::get,
-};
+use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 

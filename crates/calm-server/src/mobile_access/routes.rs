@@ -1,8 +1,8 @@
 use super::MobileStatus;
 use crate::auth::{AuthState, Principal, build_session_cookie};
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::json_body::JsonBody;
-use axum::extract::{DefaultBodyLimit, Path, State};
+use crate::extract::{JsonBody, Path};
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};

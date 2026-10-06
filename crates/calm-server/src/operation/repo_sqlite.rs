@@ -272,37 +272,15 @@ impl OperationRepo for SqlxOperationRepo {
             }
         };
         let events = output.post_commit_events.clone();
-        let mut output_for_db = output.clone();
-        output_for_db.post_commit_events.clear();
-        let output_text = serde_json::to_string(&output_for_db)?;
-        let now = now_ms();
-        let result = sqlx::query(
-            r#"UPDATE operations
-               SET tx_output_json = ?1,
-                   target_type = ?2,
-                   target_id = ?3,
-                   target_json = ?4,
-                   phase = 'tx_committed',
-                   phase_detail_json = NULL,
-                   lease_owner = NULL,
-                   lease_until_ms = NULL,
-                   updated_at_ms = ?5
-               WHERE id = ?6
-                 AND lease_owner = ?7"#,
+        let written = write_phase_and_tx_output(
+            &mut *tx,
+            &op.id,
+            Some(required_lease_owner(op)?),
+            &Phase::TxCommitted,
+            &output,
         )
-        .bind(&output_text)
-        .bind(&output.target_type)
-        .bind(&output.target_id)
-        .bind(serde_json::to_string(&json!({
-            "type": output.target_type,
-            "id": output.target_id,
-        }))?)
-        .bind(now)
-        .bind(&op.id)
-        .bind(required_lease_owner(op)?)
-        .execute(&mut *tx)
         .await?;
-        if result.rows_affected() == 0 {
+        if !written {
             let _ = tx.rollback().await;
             return Ok(None);
         }
@@ -356,46 +334,15 @@ impl OperationRepo for SqlxOperationRepo {
         phase: Phase,
         output: &TxOutput,
     ) -> Result<Option<Operation>> {
-        let (tag, detail) = phase.serialize_split();
-        let detail_text = optional_json_text(detail.as_ref())?;
-        let completed_at = matches!(
-            phase,
-            Phase::Succeeded | Phase::Failed | Phase::Stuck { .. }
+        let written = write_phase_and_tx_output(
+            &self.pool,
+            &op.id,
+            Some(required_lease_owner(op)?),
+            &phase,
+            output,
         )
-        .then(now_ms);
-        let mut output_for_db = output.clone();
-        output_for_db.post_commit_events.clear();
-        let result = sqlx::query(
-            r#"UPDATE operations
-               SET phase = ?1,
-                   phase_detail_json = ?2,
-                   tx_output_json = ?3,
-                   target_type = ?4,
-                   target_id = ?5,
-                   target_json = ?6,
-                   lease_owner = NULL,
-                   lease_until_ms = NULL,
-                   completed_at_ms = COALESCE(?7, completed_at_ms),
-                   updated_at_ms = ?8
-               WHERE id = ?9
-                 AND lease_owner = ?10"#,
-        )
-        .bind(tag.as_str())
-        .bind(detail_text)
-        .bind(serde_json::to_string(&output_for_db)?)
-        .bind(&output.target_type)
-        .bind(&output.target_id)
-        .bind(serde_json::to_string(&json!({
-            "type": output.target_type,
-            "id": output.target_id,
-        }))?)
-        .bind(completed_at)
-        .bind(now_ms())
-        .bind(&op.id)
-        .bind(required_lease_owner(op)?)
-        .execute(&self.pool)
         .await?;
-        if result.rows_affected() == 0 {
+        if !written {
             return Ok(None);
         }
         self.find_by_id(&op.id)
@@ -763,6 +710,60 @@ pub(super) async fn fetch_claimed_parked(
     .fetch_optional(pool)
     .await?;
     row.as_ref().map(operation_from_row).transpose()
+}
+
+/// Settle `phase` and `output` on the row `op_id` and release its lease, provided the row's
+/// `lease_owner` is still `lease_owner`: the driver's claim, or `None` for a row nobody leased (a
+/// keyed commit's own, inside the transaction that inserted it). `IS` compares NULL as a value, so
+/// either guard is exact. The stored output leaves out its post-commit events, which are delivered,
+/// not kept. `false` when the guard missed and nothing was written.
+pub(super) async fn write_phase_and_tx_output<'e>(
+    executor: impl sqlx::SqliteExecutor<'e>,
+    op_id: &str,
+    lease_owner: Option<&str>,
+    phase: &Phase,
+    output: &TxOutput,
+) -> Result<bool> {
+    let (tag, detail) = phase.serialize_split();
+    let now = now_ms();
+    let completed_at = matches!(
+        phase,
+        Phase::Succeeded | Phase::Failed | Phase::Stuck { .. }
+    )
+    .then_some(now);
+    let mut output_for_db = output.clone();
+    output_for_db.post_commit_events.clear();
+    let result = sqlx::query(
+        r#"UPDATE operations
+           SET phase = ?1,
+               phase_detail_json = ?2,
+               tx_output_json = ?3,
+               target_type = ?4,
+               target_id = ?5,
+               target_json = ?6,
+               lease_owner = NULL,
+               lease_until_ms = NULL,
+               completed_at_ms = COALESCE(?7, completed_at_ms),
+               updated_at_ms = ?8
+           WHERE id = ?9
+             AND lease_owner IS ?10"#,
+    )
+    .bind(tag.as_str())
+    .bind(optional_json_text(detail.as_ref())?)
+    .bind(serde_json::to_string(&output_for_db)?)
+    .bind(&output.target_type)
+    .bind(&output.target_id)
+    .bind(serde_json::to_string(&json!({
+        "type": output.target_type,
+        "id": output.target_id,
+    }))?)
+    .bind(completed_at)
+    .bind(now)
+    .bind(op_id)
+    .bind(lease_owner)
+    .execute(executor)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 /// The one `operations` INSERT: a `pending` row `id` under `key`.

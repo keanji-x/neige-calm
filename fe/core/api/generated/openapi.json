@@ -4025,7 +4025,7 @@
             }
           },
           "500": {
-            "description": "Spawn failed / internal error; the plugin stays enabled",
+            "description": "Spawn failed / internal error; the plugin may have been left enabled (a failed spawn keeps `enabled`, so autospawn retries it)",
             "content": {
               "application/json": {
                 "schema": {
@@ -9105,7 +9105,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable machine-readable code (see `CalmError::code`). Three more are written by routes\ndirectly: `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`."
+            "description": "Stable machine-readable code (see `CalmError::code`). Four more are written by routes\ndirectly: `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`, `login_throttled`."
           },
           "error": {
             "type": "string",

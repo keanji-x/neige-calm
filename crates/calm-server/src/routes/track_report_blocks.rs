@@ -3,12 +3,12 @@
 use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::json_body::JsonBody;
+use crate::extract::{JsonBody, Path};
 use crate::state::{AppState, RouteState};
 use crate::track_report::{self, ReportDocOp, ReportEditTarget};
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::State,
     routing::{patch, post},
 };
 use calm_types::report_blocks;

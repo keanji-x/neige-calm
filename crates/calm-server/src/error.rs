@@ -2,7 +2,7 @@
 
 use axum::{
     Json,
-    http::{HeaderValue, StatusCode, header},
+    http::StatusCode,
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
@@ -16,8 +16,8 @@ pub struct ErrorBody {
     /// The reason, without the variant's log prefix (`CalmError::reason`): a 404 says `plugin x`,
     /// not `not found: plugin x`; the `code` already says which kind of failure it is.
     pub error: String,
-    /// Stable machine-readable code (see `CalmError::code`). Three more are written by routes
-    /// directly: `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`.
+    /// Stable machine-readable code (see `CalmError::code`). Four more are written by routes
+    /// directly: `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`, `login_throttled`.
     pub code: String,
     /// The dotted path of the one field the refusal is about (`config.retries`,
     /// `template_input.issue_url`); `error` is then that field's reason alone. Absent rather than
@@ -89,11 +89,6 @@ pub enum CalmError {
 
     #[error("unauthorized")]
     Unauthorized,
-
-    /// 429 — this peer failed to log in too often; its credentials were not evaluated. The response
-    /// carries `Retry-After`.
-    #[error("Too many failed sign-in attempts. Try again in {retry_after_secs} seconds.")]
-    LoginThrottled { retry_after_secs: u64 },
 
     /// 403 — non-plugin permission gate (filesystem read denied, etc.).
     #[error("forbidden: {0}")]
@@ -207,7 +202,6 @@ impl CalmError {
             CalmError::InvalidBody(_) => "invalid_body",
             CalmError::UnsupportedMediaType(_) => "unsupported_media_type",
             CalmError::Unauthorized => "unauthorized",
-            CalmError::LoginThrottled { .. } => "login_throttled",
             CalmError::Forbidden(_) => "forbidden",
             CalmError::PluginInstall(_) => "plugin_install",
             CalmError::PluginPermission(_) => "plugin_permission",
@@ -259,7 +253,6 @@ impl CalmError {
             | CalmError::PluginInstall(_)
             | CalmError::PluginConfigTooLarge(_) => StatusCode::BAD_REQUEST,
             CalmError::Unauthorized => StatusCode::UNAUTHORIZED,
-            CalmError::LoginThrottled { .. } => StatusCode::TOO_MANY_REQUESTS,
             CalmError::Forbidden(_) | CalmError::PluginPermission(_) => StatusCode::FORBIDDEN,
             CalmError::PluginKernelTooOld(_)
             | CalmError::InvalidBody(_)
@@ -316,8 +309,8 @@ impl CalmError {
             | CalmError::OperationFailed(m)
             | CalmError::Internal(m) => m.clone(),
             CalmError::InvalidField { reason, .. } => reason.clone(),
-            // Their `Display` carries no prefix: it is the whole sentence.
-            CalmError::Unauthorized | CalmError::LoginThrottled { .. } => self.to_string(),
+            // Its `Display` carries no prefix: it is the whole sentence.
+            CalmError::Unauthorized => self.to_string(),
             CalmError::Db(e) => e.to_string(),
             CalmError::Io(e) => e.to_string(),
             CalmError::Serde(e) => e.to_string(),
@@ -344,13 +337,7 @@ impl CalmError {
 
 impl IntoResponse for CalmError {
     fn into_response(self) -> Response {
-        let mut response = (self.status(), Json(self.body())).into_response();
-        if let CalmError::LoginThrottled { retry_after_secs } = self {
-            response
-                .headers_mut()
-                .insert(header::RETRY_AFTER, HeaderValue::from(retry_after_secs));
-        }
-        response
+        (self.status(), Json(self.body())).into_response()
     }
 }
 
@@ -519,9 +506,6 @@ impl From<CalmError> for calm_truth::TruthError {
                 calm_types::error::CoreError::BadRequest(format!("{field}: {reason}")).into()
             }
             CalmError::Unauthorized => calm_types::error::CoreError::Unauthorized.into(),
-            refused @ CalmError::LoginThrottled { .. } => {
-                calm_truth::TruthError::Internal(refused.to_string())
-            }
             CalmError::Forbidden(m) => calm_truth::TruthError::Forbidden(m),
             CalmError::ServiceUnavailable(m) => {
                 calm_types::error::CoreError::ServiceUnavailable(m).into()
