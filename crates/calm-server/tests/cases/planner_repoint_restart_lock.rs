@@ -15,7 +15,7 @@ use tower::ServiceExt;
 
 use crate::planner_first_start::{AppServer, Boot, app_state, post_input, router};
 
-async fn request(
+pub(crate) async fn request(
     app: axum::Router,
     method: &'static str,
     uri: String,
@@ -61,7 +61,15 @@ fn user_repo(at: &Path) -> PathBuf {
     at.to_path_buf()
 }
 
-async fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+/// A joined task, bounded so a future deadlock fails the test instead of hanging it.
+pub(crate) async fn joined<T>(task: tokio::task::JoinHandle<T>, what: &str) -> T {
+    tokio::time::timeout(Duration::from_secs(10), task)
+        .await
+        .unwrap_or_else(|_| panic!("timed out: {what}"))
+        .unwrap()
+}
+
+pub(crate) async fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !done() {
         assert!(Instant::now() < deadline, "timed out: {what}");
@@ -164,9 +172,9 @@ async fn a_send_during_the_repoint_restart_waits_on_the_cards_lock() {
     );
 
     drop(thread_start);
-    let (status, body) = repoint.await.unwrap();
+    let (status, body) = joined(repoint, "the re-point finishes").await;
     assert_eq!(status, StatusCode::OK, "body={body}");
-    let (status, body) = send.await.unwrap();
+    let (status, body) = joined(send, "the send finishes").await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     let active = boot
         .repo

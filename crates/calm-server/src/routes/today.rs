@@ -551,6 +551,13 @@ pub(crate) async fn ensure_today_launchpad(
         "reuse"
     };
     let hash = stable_payload_hash(&serde_json::json!({"actor":"kernel","request":&req}))?;
+    // The card already exists, so a send may be using it: hold its lock through the start, as
+    // `/planner/reset` and the workspace re-point do. Nothing else is held here (`state.rs`).
+    let _recovery_guard = crate::per_card_lock::lock_card(
+        &RouteState::from_ref(&app).planner_recovery_locks,
+        &out.dto.planner_card_id,
+    )
+    .await;
     let op = app
         .operation_runtime
         .submit(
