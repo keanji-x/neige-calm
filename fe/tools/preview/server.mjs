@@ -16,7 +16,7 @@ const html = (css, entry) => `<!doctype html><html lang="zh-CN"><head><meta char
 /** @type {() => Promise<void>} */
 let close;
 if (config.mode === 'production') {
-  const outDir = resolve(config.fe, `node_modules/.cache/preview-${config.kind}-${config.port}`); const virtual = '\0neige-preview-entry';
+  const outDir = resolve(config.fe, `node_modules/.cache/preview-${config.kind}-${config.port}-${session}`); const virtual = '\0neige-preview-entry';
   await mkdir(outDir, { recursive: true });
   await build({ ...shared, plugins: [...plugins, { name: 'neige-preview-entry',
     resolveId(id) { if (id === 'neige-preview-entry') return virtual; },

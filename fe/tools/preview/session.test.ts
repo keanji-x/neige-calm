@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, writeFile, chmod, access, rm } from 'node:fs/promises';
@@ -21,4 +23,24 @@ it.each(['owned', 'foreign-owner', 'foreign-identity'])('stops only its declared
     if (kind === 'owned') { expect((await action).stdout).toContain('"service":"stopped"'); await expect(access(stopped)).resolves.toBeUndefined(); }
     else { await expect(action).rejects.toThrow('another session'); await expect(access(stopped)).rejects.toBeDefined(); }
   } finally { await rm(fixture, { recursive: true, force: true }); }
+});
+
+it.each([['failed', 'failed', '0'], ['active', 'dead', '123'], ['active', 'running', '0']])('refuses HTTP-ready assets for supervisor %s/%s/PID%s', async (state, substate, pid) => {
+  const fixture = await mkdtemp(resolve(tmpdir(), 'preview-failed-supervisor-'));
+  const metadata = resolve(fixture, 'identity.json');
+  const config = previewConfig('5229', 'motion', 'production');
+  const server = createServer((request, response) => {
+    if (request.url === '/next/motion-preview') {
+      const identity = JSON.parse(readFileSync(metadata, 'utf8')) as { session: string };
+      response.setHeader('content-type', 'text/html'); response.end(`<meta name="nc-preview-session" content="${identity.session}"><div id="root"></div><script src="/next/entry.js"></script>`);
+    } else { response.setHeader('content-type', 'text/javascript'); response.end('export const ready=true;'); }
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address(); if (address === null || typeof address === 'string') throw new Error('No port');
+  const supervisor = `#!${process.execPath}\nconst fs=require('node:fs');const file=${JSON.stringify(metadata)};if(!fs.existsSync(file))console.log('LoadState=not-found\\nActiveState=inactive');else console.log('LoadState=loaded\\nActiveState=${state}\\nSubState=${substate}\\nMainPID=${pid}\\nWorkingDirectory=${config.fe}\\nDescription='+fs.readFileSync(file,'utf8')+'\\nNRestarts=3');`;
+  const start = `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(metadata)},process.argv.find(a=>a.startsWith('--description=')).slice('--description='.length));`;
+  try {
+    for (const [name, content] of [['systemctl', supervisor], ['systemd-run', start]]) { const path = resolve(fixture, name); await writeFile(path, content); await chmod(path, 0o755); }
+    await expect(run(process.execPath, [resolve(import.meta.dirname, 'session.mjs'), 'start', '--port', String(address.port)], { env: { ...process.env, PATH: `${fixture}:${dirname(process.execPath)}:${process.env.PATH}` } })).rejects.toThrow('failed');
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(fixture, { recursive: true, force: true }); }
 });

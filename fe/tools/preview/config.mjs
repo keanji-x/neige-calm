@@ -17,12 +17,14 @@ export async function previewReadiness(config, session) {
   if (!page.ok || !page.headers.get('content-type')?.includes('text/html')) throw new Error('Preview page is not ready');
   const html = await page.text(); if (!html.includes('id="root"')) throw new Error('Preview page has no root');
   if (!html.includes(`<meta name="nc-preview-session" content="${session}">`)) throw new Error('Preview session identity does not match');
-  const assets = [...html.matchAll(/<(?:script|link)\b[^>]*?(?:src|href)="([^"]+)"/g)].map(match => match[1]);
-  if (!assets.some(path => path.endsWith('.js') || path.includes('/@fs'))) throw new Error('Preview entry is missing');
-  for (const path of assets) {
+  const assets = [...html.matchAll(/<(script|link)\b[^>]*?(?:src|href)="([^"]+)"/g)].map(match => ({ tag: match[1], path: match[2] }));
+  if (!assets.some(asset => asset.tag === 'script')) throw new Error('Preview entry is missing');
+  for (const { tag, path } of assets) {
     const url = new URL(path, config.url); if (url.origin !== new URL(config.url).origin) throw new Error('Preview asset must be local');
     const asset = await fetch(url, { signal: AbortSignal.timeout(2000), redirect: 'error' }); const type = asset.headers.get('content-type') ?? '';
-    if (!asset.ok || type.includes('text/html') || !(await asset.text()).trim()) throw new Error(`Preview asset is not ready: ${path}`);
+    const essence = type.split(';', 1)[0].trim().toLowerCase();
+    const usableType = tag === 'script' ? essence === 'text/javascript' || essence === 'application/javascript' : essence === 'text/css';
+    if (!asset.ok || !usableType || !(await asset.text()).trim()) throw new Error(`Preview asset is not ready: ${path}`);
   }
   return { service: 'ready', url: config.url, forwarding: 'not-verified' };
 }
