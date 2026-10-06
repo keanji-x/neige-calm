@@ -4,17 +4,28 @@
 One record per line. First one `track` record per Track, then every `turn` record of all the
 Tracks in start order. Every Track kind has the same shape; nothing here knows a domain.
 
+The trace has only the turns still in the Planner's transcript. A Planner reset deletes the whole
+transcript (event harness.transcript.cleared) and a rewind deletes the latest turns
+(harness.transcript.rewound); those turns are not printed and not reconstructed, and the events
+they caused fall into events_before_first_turn or the window of the turn before them. Every such
+loss is listed in the track record's transcript_losses, so the reader knows where the gaps are.
+
 {"type": "track", "track", "title", "area_id", "created_at", "closed_at", "creator_track_id",
  "planner_card" (null: the Track has no Planner, so it has no turns), "excerpt_chars" (the cap
- on every excerpt below, null under --full), "events_before_first_turn": [event...] (from
- --since, or the beginning, to the first turn printed)}
+ on every excerpt below, null under --full),
+ "transcript_losses": [{"id", "at", "kind", "payload"}]  every reset or rewind of this Track's
+     transcript (payload: the stored payload as an object, e.g. cleared_item_count, or
+     removed_item_count and turn_id),
+ "events_before_first_turn": [event...]  this Track's events before its first remaining turn
+     (all of them when no turn remains)}
 
 {"type": "turn", "track", "turn_id", "started_at" (its first transcript item), "completed_at" and
  "duration_ms" (null while the turn has no turn/completed row: running, or never closed),
  "status" and "error" (from turn/completed, else null),
  "trigger": [segment...]  every segment of the turn's userMessage rows, in order; a steer adds a
-     row mid-turn, so its segments have a later `at`. Null when the row recorded no segments.
-     segment = {"at", "presentation", "text", "origin"}; origin = {"observation" (the Observation
+     row mid-turn, so its segments have a later `at`. Null when no row recorded segments; when
+     only some did, each other row stands as one segment whose fields other than `at` are null.
+     segment = {"at", "presentation", "text", "attachment_count", "origin"}; origin = {"observation" (the Observation
      type tag, e.g. task_completed, track_wake, user_message), "event_id" (events.id or null),
      "event_kind" (that event's kind, or null), "source" (track_wake only: the wake event's
      source, e.g. dev.neige.mail)}. Rows written before #2206 T1 have "origin": null: not
@@ -30,14 +41,15 @@ Tracks in start order. Every Track kind has the same shape; nothing here knows a
      turn's window, minus NOISE_EVENT_KINDS,
  "bypass": [{"source", "command"}]  track-scorecard's bypass hits in the turn's window}
 
-A turn's window runs from its start to the next turn's start (or --until, or no end for the last
+A turn's window runs from its start to the next remaining turn's start (no end for the last
 turn): what the turn caused and what arrived before the next one. Event payloads, args, results,
 errors, goals and segment texts are strings (structured values as JSON text) and are cut to
 EXCERPT_CHARS with a "…[+N chars]" tail unless --full. Per-turn token usage is not recorded yet.
 
 Usage: scripts/track-trace.py --db PATH [--since MS] [--until MS] [--full] (--area AREA_ID | TRACK_ID...)
        scripts/track-trace.py --selftest   (builds a tiny database and checks the records; CI runs it)
---since/--until select turns by start time (epoch ms, inclusive). The database is opened read-only.
+--since/--until only select which turns are printed, by start time (epoch ms, inclusive); no
+record's content depends on them. The database is opened read-only.
 """
 
 import argparse
@@ -51,11 +63,13 @@ from track_db import REQUIRED_COLUMNS, bypass_hits, check_schema, open_db, plann
 EXCERPT_CHARS = 300
 NO_END = 1 << 62
 # Projections of rows the trace already reads (transcript items, phases) and UI or hook state.
+# Never add harness.transcript.cleared/rewound: they mark the turns the trace cannot show.
 NOISE_EVENT_KINDS = (
     "overlay.set", "overlay.deleted", "harness.item.added", "harness.phase.changed", "claude.hook",
     "plugin.tool.registered",
 )
 # Transcript items that are the turn's input or the Planner's own prose, not something it did.
+TRANSCRIPT_LOSS_KINDS = ("harness.transcript.cleared", "harness.transcript.rewound")
 NOT_ACTIONS = ("userMessage", "agentMessage", "reasoning")
 BOOKKEEPING = ("id", "type", "status", "error", "durationMs", "tool")
 
@@ -132,22 +146,25 @@ def origin(db, raw):
 
 
 def trigger(db, card, turn_id, cap):
-    segments = []
+    segments, recorded = [], False
     for at, raw in db.execute(
         "SELECT created_at_ms, input_segments FROM harness_items WHERE card_id = ? AND turn_id = ?"
         " AND item_type = 'userMessage' AND method = 'item/completed' ORDER BY id",
         (card, turn_id),
     ):
         if raw is None:
-            return None
+            segments.append({"at": at, "presentation": None, "text": None, "attachment_count": None, "origin": None})
+            continue
+        recorded = True
         for segment in json.loads(raw):
             segments.append({
                 "at": at,
                 "presentation": segment["presentation"],
                 "text": excerpt(segment["text"], cap),
+                "attachment_count": len(segment.get("attachments") or []),
                 "origin": origin(db, segment.get("origin")),
             })
-    return segments
+    return segments if recorded else None
 
 
 def events(db, track_id, start, end, cap):
@@ -173,6 +190,17 @@ def tasks(db, track_id, start, end, cap):
     ]
 
 
+def transcript_losses(db, track_id):
+    marks = ",".join("?" * len(TRANSCRIPT_LOSS_KINDS))
+    return [
+        {"id": i, "at": at, "kind": kind, "payload": json.loads(payload)}
+        for i, at, kind, payload in db.execute(
+            f"SELECT id, at, kind, payload FROM events WHERE scope_track = ? AND kind IN ({marks}) ORDER BY id",
+            (track_id, *TRANSCRIPT_LOSS_KINDS),
+        )
+    ]
+
+
 def track_trace(db, track_id, since, until, cap):
     """The Track's header record and its turn records."""
     row = db.execute(
@@ -183,19 +211,17 @@ def track_trace(db, track_id, since, until, cap):
     title, area_id, created_at, closed_at, creator = row
     card = planner_card(db, track_id)
     every = [] if card is None else planner_turns(db, card)
-    end = NO_END if until is None else until + 1
-    begin = 0 if since is None else since
-    chosen = [i for i, t in enumerate(every) if begin <= t[1] < end]
-    first = every[chosen[0]][1] if chosen else end
     header = {
         "type": "track", "track": track_id, "title": title, "area_id": area_id, "created_at": created_at,
         "closed_at": closed_at, "creator_track_id": creator, "planner_card": card, "excerpt_chars": cap,
-        "events_before_first_turn": events(db, track_id, begin, first, cap),
+        "transcript_losses": transcript_losses(db, track_id),
+        "events_before_first_turn": events(db, track_id, 0, every[0][1] if every else NO_END, cap),
     }
     turns = []
-    for i in chosen:
-        turn_id, started, completed, params = every[i]
-        stop = min(every[i + 1][1], end) if i + 1 < len(every) else end
+    for i, (turn_id, started, completed, params) in enumerate(every):
+        if (since is not None and started < since) or (until is not None and started > until):
+            continue
+        stop = every[i + 1][1] if i + 1 < len(every) else NO_END
         params = params or {}
         turns.append({
             "type": "turn", "track": track_id, "turn_id": turn_id, "started_at": started, "completed_at": completed,
@@ -228,18 +254,21 @@ def area_tracks(db, area_id):
 
 
 def selftest_db():
-    """A database with only the required columns: one Track, its Planner, two turns."""
+    """A database with only the required columns: one Track, its Planner, three turns."""
     db = sqlite3.connect(":memory:")
     for table, columns in REQUIRED_COLUMNS.items():
         db.execute(f"CREATE TABLE {table} ({', '.join(columns)})")
     db.execute("INSERT INTO tracks VALUES ('t', 'area', 'Trace', 100, NULL, 'parent')")
     db.execute("INSERT INTO cards VALUES ('planner', 't', 'planner')")
     event_rows = [
-        (1, "track.wake_requested", {"source": "dev.neige.mail"}, "Kernel", 900),
-        (2, "task.completed", {"key": "a"}, "Kernel", 950),
-        (3, "forge.pr.opened", {"head_sha": "abc"}, "Kernel", 1500),
-        (4, "overlay.set", {}, "Kernel", 1600),
-        (5, "task.failed", {"key": "b"}, "AiPlannerSession", 2500),
+        (1, "harness.transcript.cleared", {"cleared_item_count": 9}, "Kernel", 800),
+        (2, "track.wake_requested", {"source": "dev.neige.mail"}, "Kernel", 900),
+        (3, "task.completed", {"key": "a"}, "Kernel", 950),
+        (4, "forge.pr.opened", {"head_sha": "abc"}, "Kernel", 1500),
+        (5, "overlay.set", {}, "Kernel", 1600),
+        (6, "task.failed", {"key": "b"}, "AiPlannerSession", 2500),
+        (7, "harness.transcript.rewound", {"removed_item_count": 2, "turn_id": "gone"}, "Kernel", 2600),
+        (8, "track.updated", {}, "User", 3500),
     ]
     for i, kind, payload, actor, at in event_rows:
         db.execute("INSERT INTO events VALUES (?, ?, ?, ?, ?, 't', NULL)",
@@ -247,23 +276,31 @@ def selftest_db():
     db.execute("INSERT INTO tasks VALUES ('t', 'fix', 'codex', ?, 'running', 1050)", ("x" * 400,))
     segments_1 = [
         {"presentation": "system", "text": "Task a completed.", "attachments": [],
-         "origin": {"observation": "task_completed", "event_id": 2}},
+         "origin": {"observation": "task_completed", "event_id": 3}},
         {"presentation": "system", "text": "Mail arrived.", "attachments": [],
-         "origin": {"observation": "track_wake", "event_id": 1}},
+         "origin": {"observation": "track_wake", "event_id": 2}},
     ]
-    segments_2 = [{"presentation": "user", "text": "User says: go", "attachments": []}]
+    segments_2 = [{"presentation": "user", "text": "User says: go", "attachments": [{"path": "a.png"}]}]
     failed = {"type": "mcpToolCall", "tool": "neige_task_declare", "status": "failed", "arguments": {"key": "fix"},
               "error": {"message": "tool call failed: DB locked"}, "result": None, "durationMs": 7}
     shell = {"type": "commandExecution", "command": "git push origin x", "status": "completed",
              "aggregatedOutput": "y" * 400, "exitCode": 0, "durationMs": 3}
+    hung = {"type": "commandExecution", "command": "sleep 99", "status": "inProgress"}
+    user = {"item": {"type": "userMessage"}}
     rows = [
-        ("turn-1", "u1", "userMessage", "item/completed", {"item": {"type": "userMessage"}}, 1000, segments_1),
+        ("turn-1", "u1", "userMessage", "item/completed", user, 1000, segments_1),
         ("turn-1", "m1", "mcpToolCall", "item/started", {"item": dict(failed, status="inProgress")}, 1005, None),
         ("turn-1", "m1", "mcpToolCall", "item/completed", {"item": failed}, 1010, None),
         ("turn-1", "r1", "reasoning", "item/completed", {"item": {"type": "reasoning"}}, 1015, None),
         ("turn-1", "c1", "commandExecution", "item/completed", {"item": shell}, 1020, None),
+        # Two turn/completed rows: the latest one counts, whatever its params sort as.
+        ("turn-1", None, None, "turn/completed", {"status": "interrupted", "error": None}, 1090, None),
         ("turn-1", None, None, "turn/completed", {"status": "completed", "error": None}, 1100, None),
-        ("turn-2", "u2", "userMessage", "item/completed", {"item": {"type": "userMessage"}}, 2000, segments_2),
+        ("turn-2", "u2", "userMessage", "item/completed", user, 2000, segments_2),
+        ("turn-2", "c2", "commandExecution", "item/started", {"item": hung}, 2050, None),
+        ("turn-2", "u2b", "userMessage", "item/completed", user, 2100, None),
+        ("turn-3", "u3", "userMessage", "item/completed", user, 3000, None),
+        ("turn-3", None, None, "turn/completed", {"status": "completed", "error": None}, 3200, None),
     ]
     for n, (turn, uuid, item_type, method, params, at, segs) in enumerate(rows, 1):
         db.execute("INSERT INTO harness_items VALUES (?, 'planner', ?, ?, ?, ?, ?, ?, ?)",
@@ -281,22 +318,29 @@ def selftest():
         if got != want:
             failures.append(f"{name}: expected {want!r}, got {got!r}")
 
-    expect("record types", [r["type"] for r in records], ["track", "turn", "turn"])
-    header, one, two = (records + [{}, {}, {}])[:3]
+    expect("record types", [r["type"] for r in records], ["track", "turn", "turn", "turn"])
+    header, one, two, three = (records + [{}, {}, {}, {}])[:4]
     expect("header", {k: header.get(k) for k in ("track", "area_id", "creator_track_id", "planner_card")},
            {"track": "t", "area_id": "area", "creator_track_id": "parent", "planner_card": "planner"})
-    expect("events before the first turn", [e["id"] for e in header.get("events_before_first_turn", [])], [1, 2])
-    expect("turn ids", [one.get("turn_id"), two.get("turn_id")], ["turn-1", "turn-2"])
-    expect("turn 1 times", [one.get(k) for k in ("started_at", "completed_at", "duration_ms", "status")],
-           [1000, 1100, 100, "completed"])
+    expect("transcript losses", [(e["id"], e["kind"], e["payload"]) for e in header.get("transcript_losses", [])], [
+        (1, "harness.transcript.cleared", {"cleared_item_count": 9}),
+        (7, "harness.transcript.rewound", {"removed_item_count": 2, "turn_id": "gone"}),
+    ])
+    expect("events before the first turn", [e["id"] for e in header.get("events_before_first_turn", [])], [1, 2, 3])
+    expect("turn ids", [r.get("turn_id") for r in (one, two, three)], ["turn-1", "turn-2", "turn-3"])
+    expect("turn 1 times (latest turn/completed)",
+           [one.get(k) for k in ("started_at", "completed_at", "duration_ms", "status")], [1000, 1100, 100, "completed"])
     expect("turn 2 still running", [two.get(k) for k in ("completed_at", "duration_ms", "status")], [None, None, None])
     expect("turn 1 trigger", [(s["presentation"], s["origin"]) for s in one.get("trigger") or []], [
-        ("system", {"observation": "task_completed", "event_id": 2, "event_kind": "task.completed"}),
-        ("system", {"observation": "track_wake", "event_id": 1, "event_kind": "track.wake_requested",
+        ("system", {"observation": "task_completed", "event_id": 3, "event_kind": "task.completed"}),
+        ("system", {"observation": "track_wake", "event_id": 2, "event_kind": "track.wake_requested",
                     "source": "dev.neige.mail"}),
     ])
-    expect("turn 2 trigger (pre-T1 row)", two.get("trigger"),
-           [{"at": 2000, "presentation": "user", "text": "User says: go", "origin": None}])
+    expect("turn 2 trigger (pre-T1 row, then a row without segments)", two.get("trigger"), [
+        {"at": 2000, "presentation": "user", "text": "User says: go", "attachment_count": 1, "origin": None},
+        {"at": 2100, "presentation": None, "text": None, "attachment_count": None, "origin": None},
+    ])
+    expect("turn 3 trigger (no segments recorded)", three.get("trigger"), None)
     acts = one.get("actions") or []
     expect("turn 1 actions", [(a["item_type"], a["tool"], a["finished"], a["ok"], a["error"]) for a in acts], [
         ("mcpToolCall", "neige_task_declare", True, False, "tool call failed: DB locked"),
@@ -304,20 +348,24 @@ def selftest():
     ])
     expect("action args", [a["args"] for a in acts], ['{"key": "fix"}', "git push origin x"])
     expect("result excerpt", acts[1]["result"] if len(acts) > 1 else None, "y" * 300 + "…[+100 chars]")
-    expect("turn 2 actions", two.get("actions"), [])
+    expect("turn 2 actions (unfinished)",
+           [(a["at"], a["args"], a["finished"], a["ok"]) for a in two.get("actions", [])], [(2050, "sleep 99", False, None)])
     expect("turn 1 tasks", [(t["key"], t["goal"]) for t in one.get("tasks", [])], [("fix", "x" * 300 + "…[+100 chars]")])
     expect("turn 2 tasks", two.get("tasks"), [])
-    expect("turn 1 events (noise left out)", [(e["id"], e["actor"]) for e in one.get("events", [])], [(3, "Kernel")])
-    expect("turn 2 events", [e["id"] for e in two.get("events", [])], [5])
+    expect("turn 1 events (noise left out)", [(e["id"], e["actor"]) for e in one.get("events", [])], [(4, "Kernel")])
+    expect("turn 2 events (losses kept)", [e["id"] for e in two.get("events", [])], [6, 7])
+    expect("turn 3 events", [e["id"] for e in three.get("events", [])], [8])
     expect("turn 1 bypass", one.get("bypass"), [{"source": "planner shell", "command": "git push origin x"}])
     expect("turn 2 bypass", two.get("bypass"), [])
-    expect("--since picks turn 2", [r.get("turn_id") for r in trace(db, ["t"], since=1500)], [None, "turn-2"])
+    expect("--since picks turns 2 and 3", [r.get("turn_id") for r in trace(db, ["t"], since=1500)],
+           [None, "turn-2", "turn-3"])
+    expect("--until picks turn 1 and changes no record", trace(db, ["t"], until=1200), [header, one])
     expect("--full keeps the whole text", trace(db, ["t"], cap=None)[1]["tasks"][0]["goal"], "x" * 400)
     for failure in failures:
         print("FAIL " + failure, file=sys.stderr)
     if failures:
         sys.exit(1)
-    print("OK: the trace records of the two-turn fixture match")
+    print("OK: the trace records of the three-turn fixture match")
 
 
 def main():

@@ -92,15 +92,18 @@ def planner_card(db, track_id):
 
 
 def planner_turns(db, card_id):
-    """Every turn in the Planner's transcript, oldest first, as (turn_id, started_at, completed_at,
-    turn/completed params or None). A turn starts with its first transcript item; older
-    turn/completed rows carry no startedAt. completed_at is None while no turn/completed row exists."""
+    """Every turn left in the Planner's transcript, oldest first, as (turn_id, started_at,
+    completed_at, turn/completed params or None). A turn starts with its first transcript item;
+    older turn/completed rows carry no startedAt. completed_at is None while no turn/completed row
+    exists; with several, the latest one counts. A reset or rewind deletes rows, so its turns are gone."""
     rows = db.execute(
-        "SELECT turn_id, min(created_at_ms) AS started,"
-        " max(CASE WHEN method = 'turn/completed' THEN created_at_ms END),"
-        " max(CASE WHEN method = 'turn/completed' THEN params END)"
-        " FROM harness_items WHERE card_id = ? AND turn_id IS NOT NULL GROUP BY turn_id ORDER BY started, turn_id",
-        (card_id,),
+        "WITH done AS (SELECT turn_id, created_at_ms, params,"
+        " row_number() OVER (PARTITION BY turn_id ORDER BY created_at_ms DESC, id DESC) AS n"
+        " FROM harness_items WHERE card_id = ? AND method = 'turn/completed')"
+        " SELECT h.turn_id, min(h.created_at_ms) AS started, d.created_at_ms, d.params FROM harness_items h"
+        " LEFT JOIN done d ON d.turn_id = h.turn_id AND d.n = 1"
+        " WHERE h.card_id = ? AND h.turn_id IS NOT NULL GROUP BY h.turn_id ORDER BY started, h.turn_id",
+        (card_id, card_id),
     ).fetchall()
     return [(turn, started, completed, None if params is None else json.loads(params)) for turn, started, completed, params in rows]
 
