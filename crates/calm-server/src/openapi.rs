@@ -136,6 +136,7 @@ use utoipa::OpenApi;
         crate::routes::cards::get_harness_items,
         crate::routes::harness_live::get_harness_live,
         crate::routes::planner_input_send::send_planner_input,
+        crate::routes::planner_input_send::send_planner_follow_up,
         crate::routes::cards::ratify_card,
         crate::routes::cards::interrupt_planner_card,
         crate::routes::cards::get_planner_run,

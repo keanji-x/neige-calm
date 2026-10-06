@@ -1546,6 +1546,107 @@
         }
       }
     },
+    "/api/cards/{id}/planner/input/steer": {
+      "post": {
+        "tags": [
+          "cards"
+        ],
+        "summary": "Accept a human follow-up durably, then attempt to steer the active turn in the same\nserialized harness command. If no turn can take it, it remains queued. A replay\nacknowledges the original acceptance and never reissues steering.",
+        "operationId": "send_planner_follow_up",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Planner card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "Required; one key per message",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendPlannerInputRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Durably accepted; queue and transcript show delivery",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SendPlannerInputResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input or replacement requested",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Human actor required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency conflict or dormant harness",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Queue full or harness unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/cards/{id}/planner/input/{entry_id}": {
       "delete": {
         "tags": [

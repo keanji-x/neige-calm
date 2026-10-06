@@ -798,7 +798,7 @@ describe('planner conversation regressions', () => {
       expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Say it now' }));
+    fireEvent.click(within(screen.getByRole('region', { name: 'Queued messages' })).getByRole('button', { name: 'Say it now' }));
 
     await waitFor(() => {
       expect(requests.some((request) => request.path.endsWith('/steer'))).toBe(true);
@@ -835,7 +835,7 @@ describe('planner conversation regressions', () => {
     });
     const readsBeforeSteer = runReads;
 
-    fireEvent.click(screen.getByRole('button', { name: 'Say it now' }));
+    fireEvent.click(within(screen.getByRole('region', { name: 'Queued messages' })).getByRole('button', { name: 'Say it now' }));
     await waitFor(() => {
       expect(requests.some((request) => request.path.endsWith('/steer'))).toBe(true);
     });
@@ -856,10 +856,10 @@ describe('planner conversation regressions', () => {
     await waitFor(() => {
       expect(document.querySelector('[data-nc-pending-entry="entry-9"]')?.textContent).toContain('came back');
     });
-    expect(screen.getByRole('button', { name: 'Say it now' })).toBeTruthy();
+    expect(within(screen.getByRole('region', { name: 'Queued messages' })).getByRole('button', { name: 'Say it now' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Delete this message' })).toBeTruthy();
     /* And a steer from here writes against the rev the page lists now. */
-    fireEvent.click(screen.getByRole('button', { name: 'Say it now' }));
+    fireEvent.click(within(screen.getByRole('region', { name: 'Queued messages' })).getByRole('button', { name: 'Say it now' }));
     await waitFor(() => {
       expect(requests.filter((request) => request.path.endsWith('/steer'))).toHaveLength(2);
     });
@@ -904,7 +904,7 @@ describe('planner conversation regressions', () => {
       expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Say it now' }));
+    fireEvent.click(within(screen.getByRole('region', { name: 'Queued messages' })).getByRole('button', { name: 'Say it now' }));
 
     expect(await screen.findByText(/stays queued and will go with the next turn/)).toBeTruthy();
     expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
@@ -934,7 +934,7 @@ describe('planner conversation regressions', () => {
       expect(document.querySelector('[data-nc-pending-entry="entry-9"]')).not.toBeNull();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Say it now' }));
+    fireEvent.click(within(screen.getByRole('region', { name: 'Queued messages' })).getByRole('button', { name: 'Say it now' }));
 
     const notice = await screen.findByText(/not known whether this message reached/);
     expect(notice.textContent).toMatch(/stays queued and will go with the next turn/);
@@ -1127,13 +1127,13 @@ describe('planner conversation regressions', () => {
     },
   );
 
-  it('keeps Stop working, and offers nothing else beside it', async () => {
+  it('keeps Stop working beside follow-up controls', async () => {
     const { requests } = setup((request) => request.path.endsWith('/planner/run')
       ? ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' })
       : undefined);
     await openConversation();
     const stop = await screen.findByRole('button', { name: 'Stop' });
-    expect(screen.queryByRole('button', { name: 'Queue message' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Queue message' }).getAttribute('aria-disabled')).toBe('true');
     fireEvent.click(stop);
     await waitFor(() => {
       expect(requests.filter((request) => request.path.endsWith('/planner/interrupt'))).toHaveLength(1);
@@ -1222,4 +1222,70 @@ describe('planner conversation regressions', () => {
     resolveInterrupt(ok({ card_id: CARD.id, worker_session_id: 'runtime', stopped: true }));
   });
 
+});
+
+it('retires the original optimistic echo after editing and delivering a queued message', async () => {
+  let listed = false; let delivered = false;
+  let entry = { entry_id: 'edited-entry', text: 'original words', rev: 0, queued_at_ms: 5 };
+  setup((request) => {
+    if (request.path.endsWith('/planner/run')) return ok({ ...PLANNER_RUN_IDLE,
+      phase: delivered ? 'idle' : 'turn_running', pending: listed && !delivered ? [entry] : [], pending_overflow: 0 });
+    if (request.path.includes('/harness/items') && delivered) return ok([{
+      id: 1, worker_session_id: 'runtime', card_id: CARD.id, track_id: TRACK.id, thread_id: 'thread',
+      turn_id: 'turn', turn_error_text: null, item_uuid: 'edited-entry', item_type: 'userMessage',
+      method: 'item/completed', params: JSON.stringify({ item: { content: [{ type: 'text', text: 'updated words' }] } }), created_at_ms: 10,
+    }]);
+    if (request.method === 'POST' && request.path.endsWith('/planner/input')) {
+      listed = true;
+      return ok({ card_id: CARD.id, worker_session_id: 'runtime', entry_id: entry.entry_id });
+    }
+    if (request.method === 'PATCH' && request.path.endsWith('/planner/input/edited-entry')) {
+      entry = { ...entry, text: 'updated words', rev: 1 };
+      return ok({ card_id: CARD.id, entry_id: entry.entry_id, text: entry.text, rev: entry.rev });
+    }
+    if (request.method === 'POST' && request.path.endsWith('/edited-entry/steer')) {
+      delivered = true;
+      return ok({ card_id: CARD.id, worker_session_id: 'runtime', entry_id: entry.entry_id, steered: true, turn_id: 'turn' });
+    }
+    return undefined;
+  });
+  await openConversation();
+  await screen.findByRole('button', { name: 'Stop' });
+  await typeInto(messageField(), 'original words'); await sendWithEnter(messageField());
+  await screen.findByRole('button', { name: 'Edit this message' });
+  fireEvent.click(screen.getByRole('button', { name: 'Edit this message' }));
+  fireEvent.change(screen.getByRole('textbox', { name: 'Queued message' }), { target: { value: 'updated words' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save message' }));
+  await screen.findByText('updated words');
+  fireEvent.click(within(screen.getByRole('region', { name: 'Queued messages' })).getByRole('button', { name: 'Say it now' }));
+  await waitFor(() => { expect(document.querySelector('[data-nc-pending-entry]')).toBeNull(); });
+  await waitFor(() => { expect(screen.queryAllByText('original words')).toHaveLength(0); });
+  expect(screen.getAllByText('updated words')).toHaveLength(1);
+  fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+  await openConversation();
+  expect(screen.queryAllByText('original words')).toHaveLength(0);
+  expect(screen.getAllByText('updated words')).toHaveLength(1);
+});
+
+it('preserves direct steering intent and its key through automatic and manual retry', async () => {
+  let accept = false;
+  const { requests } = setup((request) => {
+    if (request.path.endsWith('/planner/run')) return ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running' });
+    if (request.path.endsWith('/planner/input/steer')) return accept
+      ? ok({ card_id: CARD.id, worker_session_id: 'runtime', entry_id: 'direct-retry' })
+      : { status: 503, statusText: 'Unavailable', body: { error: 'try later' } };
+    return undefined;
+  });
+  await openConversation(); await screen.findByRole('button', { name: 'Stop' });
+  await typeInto(messageField(), 'guide the current turn');
+  fireEvent.keyDown(messageField(), { key: 'Enter', ctrlKey: true, shiftKey: true });
+  const retry = await screen.findByRole('button', { name: 'Try again' });
+  const attempts = requests.filter((request) => request.path.endsWith('/planner/input/steer'));
+  expect(attempts.length).toBeGreaterThan(1);
+  accept = true; fireEvent.click(retry);
+  await waitFor(() => { expect(requests.filter((request) => request.path.endsWith('/planner/input/steer')).length).toBe(attempts.length + 1); });
+  const all = requests.filter((request) => request.path.endsWith('/planner/input/steer'));
+  expect(new Set(all.map((request) => request.headers?.['Idempotency-Key'])).size).toBe(1);
+  expect(all.every((request) => (request.body as { text: string }).text === 'guide the current turn')).toBe(true);
+  expect(requests.filter((request) => request.method === 'POST' && request.path.endsWith('/planner/input'))).toHaveLength(0);
 });

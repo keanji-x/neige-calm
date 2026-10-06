@@ -164,7 +164,7 @@ impl Fixture {
 
     pub(super) async fn enqueue(&self, entries: Vec<QueueEntry>) {
         self.harness
-            .observe_durable_entries(entries, crate::harness::SendKey::unique_for_test())
+            .observe_durable_entries(entries, crate::harness::SendKey::unique_for_test(), false)
             .await
             .unwrap();
     }

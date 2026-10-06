@@ -107,7 +107,7 @@ pub(super) async fn handle_replace(
         })?;
 
     let (ack, checkpoint) =
-        stage_durable_entries(inner, vec![HarnessObservationDelivery { entry }]).await?;
+        stage_durable_entries(inner, vec![HarnessObservationDelivery { entry }], false).await?;
 
     let state = match &plan.previous_turn_id {
         Some(previous) => HarnessState::TurnCompleted {

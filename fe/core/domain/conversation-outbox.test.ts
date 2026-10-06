@@ -9,7 +9,7 @@ import {
 const row = (id: string, text = 'same'): ConversationTurn => ({ id, author: 'you', text, atMs: 1 });
 
 const op = (key: string, phase: SendOpPhase, { before = 4, text = 'same', queued = false, entryId = null as string | null, atMs = 2 } = {}): SendOp => ({
-  key, fromComposer: true, replaces: null,
+  key, followUp: 'queue', fromComposer: true, replaces: null,
   echo: { id: `echo-${key}`, author: 'you', text, atMs, serverHighWaterBefore: before, queued, entryId },
   ...phase,
 });

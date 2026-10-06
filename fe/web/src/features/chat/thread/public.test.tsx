@@ -1281,3 +1281,55 @@ it('shows a paused runtime with the same disclosure and separator, even without 
   expect(screen.queryByRole('button', { name: 'Start a new conversation' })).toBeNull();
   expect(container.querySelector('[data-nc-turn-outcome]')).toBeNull();
 });
+
+describe('direct follow-up shortcuts', () => {
+  it('steers on Ctrl+Shift+Enter without queuing first', () => {
+    const onSend = vi.fn();
+    const onSteer = vi.fn();
+    render(<ChatComposer onSend={onSend} onStop={vi.fn()} onSteer={onSteer} />);
+    const field = screen.getByRole('textbox', { name: 'Message' });
+    field.textContent = 'change direction';
+    fireEvent.input(field);
+    fireEvent.keyDown(field, { key: 'Enter', ctrlKey: true, shiftKey: true });
+    expect(onSteer).toHaveBeenCalledWith('change direction');
+    expect(onSend).not.toHaveBeenCalled();
+  });
+});
+
+it('always queues on Enter and steers directly on Cmd+Shift+Enter', () => {
+  const onSend = vi.fn(); const onSteer = vi.fn();
+  render(<ChatComposer onSend={onSend} onSteer={onSteer} onStop={vi.fn()} />);
+  const field = screen.getByRole('textbox', { name: 'Message' });
+  field.textContent = 'queue by default'; fireEvent.input(field);
+  fireEvent.keyDown(field, { key: 'Enter' });
+  expect(onSend).toHaveBeenCalledWith('queue by default');
+  field.textContent = 'steer once'; fireEvent.input(field);
+  fireEvent.keyDown(field, { key: 'Enter', metaKey: true, shiftKey: true });
+  expect(onSteer).toHaveBeenCalledWith('steer once');
+  expect(screen.queryByRole('radiogroup', { name: 'Follow-up behavior' })).toBeNull();
+});
+
+it('does not steer on the shortcut while composing or disabled', () => {
+  const onSteer = vi.fn();
+  const { rerender } = render(<ChatComposer onSend={vi.fn()} onSteer={onSteer} />);
+  const field = screen.getByRole('textbox', { name: 'Message' });
+  field.textContent = 'keep draft'; fireEvent.input(field);
+  fireEvent.keyDown(field, { key: 'Enter', ctrlKey: true, shiftKey: true, isComposing: true });
+  expect(onSteer).not.toHaveBeenCalled();
+  rerender(<ChatComposer onSend={vi.fn()} onSteer={onSteer} disabled />);
+  fireEvent.keyDown(field, { key: 'Enter', ctrlKey: true, shiftKey: true });
+  expect(onSteer).not.toHaveBeenCalled();
+});
+
+it('does not submit the main draft from a queue editor inside the drawer', () => {
+  const onSend = vi.fn(); const onSteer = vi.fn();
+  render(<ChatComposer onSend={onSend} onSteer={onSteer} allowEmptyText
+    draft={{ text: 'main draft', onChange: vi.fn() }}
+    drawer={<textarea aria-label="Queued message" defaultValue="queue draft" />} />);
+  const editor = screen.getByRole('textbox', { name: 'Queued message' });
+  fireEvent.keyDown(editor, { key: 'Enter', ctrlKey: true, shiftKey: true });
+  fireEvent.keyDown(editor, { key: 'Enter' });
+  expect(onSteer).not.toHaveBeenCalled();
+  expect(onSend).not.toHaveBeenCalled();
+  expect((editor as HTMLTextAreaElement).value).toBe('queue draft');
+});

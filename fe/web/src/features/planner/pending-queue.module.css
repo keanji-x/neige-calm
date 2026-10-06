@@ -56,7 +56,8 @@
     /* Asymmetric on purpose: the text needs an inset from the bubble's edge,
        the icon button carries its own. */
     padding: var(--space-px) var(--space-1) var(--space-px) var(--space-3);
-    border-radius: var(--radius-pill);
+    /* Inset rows follow the composer's card curvature instead of a capsule. */
+    border-radius: max(var(--radius-sm), calc(var(--radius-chat, var(--radius-lg)) - var(--space-2)));
     background: var(--surface-chip);
   }
 

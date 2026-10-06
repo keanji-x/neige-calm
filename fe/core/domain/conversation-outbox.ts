@@ -1,6 +1,6 @@
 import {
   isConversationMessage, mergeTranscript, reconcileUserEchoes,
-  type ConversationMessage, type ConversationTurn, type OptimisticConversationTurn, type TranscriptEntry,
+  type FollowUpBehavior, type ConversationMessage, type ConversationTurn, type OptimisticConversationTurn, type TranscriptEntry,
 } from './conversation.js';
 import type { SendFailureKind } from './conversation-delivery.js';
 import { withoutEditedTurn } from './conversation-composer.js';
@@ -29,6 +29,7 @@ export type SendOpPhase = Readonly<
  */
 export type SendOp = Readonly<{
   key: string;
+  followUp: FollowUpBehavior;
   /** The message as first shown: its id, place (`atMs`) and `serverHighWaterBefore` are the op's. */
   echo: OptimisticConversationTurn;
   /** Whether its images came from the composer, which a delivered attempt then clears (a Regenerate's never did). */

@@ -314,6 +314,7 @@ enum HarnessObservationCommand {
     Durable {
         deliveries: Vec<HarnessObservationDelivery>,
         key: SendKey,
+        steer: bool,
         persisted: oneshot::Sender<Result<DurableAck>>,
     },
     /// A human edit or delete against one queue entry. Rides the same mpsc as every other command,
@@ -417,7 +418,14 @@ async fn restore_durable_user_message(inner: &Inner, checkpoint: DurableUserMess
 async fn stage_durable_entries(
     inner: &Arc<Inner>,
     deliveries: Vec<HarnessObservationDelivery>,
+    steer: bool,
 ) -> Result<(DurableAck, DurableUserMessageCheckpoint)> {
+    // Steering must never fold into an older message and deliver somebody else's queued intent.
+    if steer && inner.pending_queue.lock().await.len() >= MAX_PENDING_QUEUE_LEN {
+        return Err(CalmError::ServiceUnavailable(
+            "planner harness pending queue full, retry shortly".into(),
+        ));
+    }
     let checkpoint = checkpoint_durable_user_message(inner).await;
     let mut ack = DurableAck { entry_id: None };
     for delivery in deliveries {
@@ -569,14 +577,34 @@ impl PlannerHarness {
         attachments: Vec<BoundAttachment>,
         key: SendKey,
     ) -> Result<DurableAck> {
-        self.observe_durable_entries(vec![QueueEntry::user_message(text, None, attachments)], key)
-            .await
+        self.observe_durable_entries(
+            vec![QueueEntry::user_message(text, None, attachments)],
+            key,
+            false,
+        )
+        .await
+    }
+
+    /// A direct follow-up shares the durable-send transaction and the existing steer owner.
+    pub async fn observe_user_message_steer_durable(
+        &self,
+        text: String,
+        attachments: Vec<BoundAttachment>,
+        key: SendKey,
+    ) -> Result<DurableAck> {
+        self.observe_durable_entries(
+            vec![QueueEntry::user_message(text, None, attachments)],
+            key,
+            true,
+        )
+        .await
     }
 
     async fn observe_durable_entries(
         &self,
         entries: Vec<QueueEntry>,
         key: SendKey,
+        steer: bool,
     ) -> Result<DurableAck> {
         let _durable_guard = self.inner.durable_observation.lock().await;
         if self.inner.shutting_down.load(Ordering::SeqCst) {
@@ -595,6 +623,7 @@ impl PlannerHarness {
                     .try_send(HarnessObservationCommand::Durable {
                         deliveries,
                         key,
+                        steer,
                         persisted,
                     })
                     .map_err(map_observation_send_error)?;
@@ -606,7 +635,8 @@ impl PlannerHarness {
             }
             #[cfg(feature = "fixtures")]
             ObservationIngress::Unstarted(_) => {
-                let (ack, checkpoint) = stage_durable_entries(&self.inner, deliveries).await?;
+                let (ack, checkpoint) =
+                    stage_durable_entries(&self.inner, deliveries, steer).await?;
                 if let Err(error) =
                     persist_snapshot_for_durable_send(&self.inner, &key, ack.entry_id.as_ref())
                         .await
@@ -1246,11 +1276,21 @@ async fn run_loop(
                             tracing::warn!(error = %e, "planner harness snapshot persist failed after observation");
                         }
                     }
-                    HarnessObservationCommand::Durable { deliveries, key, persisted } => {
-                        let result = match stage_durable_entries(&inner, deliveries).await {
+                    HarnessObservationCommand::Durable { deliveries, key, steer, persisted } => {
+                        let result = match stage_durable_entries(&inner, deliveries, steer).await {
                             Ok((ack, checkpoint)) => {
                                 match persist_snapshot_for_durable_send(&inner, &key, ack.entry_id.as_ref()).await {
-                                    Ok(()) => Ok(ack),
+                                    Ok(()) => {
+                                        if steer && let Some(entry_id) = &ack.entry_id {
+                                            // Accepted intent must stay accepted even if the steer fails. The existing
+                                            // handler restores refused/unknown entries, and the run read reconciles them.
+                                            let outcome = handle_steer(&inner, entry_id, 0, &ActorId::User).await;
+                                            if let Err(error) = outcome {
+                                                tracing::error!(%error, "direct follow-up accepted; steering failed");
+                                            }
+                                        }
+                                        Ok(ack)
+                                    },
                                     Err(error) => {
                                         restore_durable_user_message(&inner, checkpoint).await;
                                         Err(error)
