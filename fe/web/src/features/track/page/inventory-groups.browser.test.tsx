@@ -191,3 +191,27 @@ it('keeps inventory activity metadata nonvisual and free of animation', async ()
   expect(document.querySelectorAll('[data-nc-activity="working"]')).toHaveLength(2);
   for (const marker of document.querySelectorAll('[data-nc-activity]')) expect(getComputedStyle(marker).animationName).toBe('none');
 });
+
+it('keeps a visible task anchored when rows above it are inserted and removed', async () => {
+  await page.viewport(1200, 800);
+  const tasks = Array.from({ length: 60 }, (_, index) => task(`Task ${String(index).padStart(2, '0')}`, 'running', 'codex'));
+  const content = (rows: readonly ReportTaskRow[]) => <div style={{ inlineSize: 300 }}><PanelCard>
+    {paintDesktopPanel(makeDesktopPainter({}), derive({ cards: [], tasks: rows }))}
+  </PanelCard></div>;
+  const view = render(content(tasks));
+  const group = document.querySelector<HTMLElement>('[data-nc-inventory-group="working"]')!;
+  const scrollport = group.querySelector<HTMLElement>('summary + div')!;
+  const anchor = await page.getByRole('button', { name: 'Task 30', exact: true }).findElement();
+  scrollport.scrollTop += anchor.getBoundingClientRect().top - scrollport.getBoundingClientRect().top;
+  const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+  await frame();
+  const before = anchor.getBoundingClientRect().top;
+  view.rerender(content([task('Inserted above', 'running', 'codex'), ...tasks]));
+  await frame();
+  expect(anchor.isConnected).toBe(true);
+  expect(anchor.getBoundingClientRect().top).toBeCloseTo(before, 0);
+  view.rerender(content(tasks.slice(10)));
+  await frame();
+  expect(anchor.isConnected).toBe(true);
+  expect(anchor.getBoundingClientRect().top).toBeCloseTo(before, 0);
+});

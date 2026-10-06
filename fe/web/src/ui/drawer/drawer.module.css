@@ -114,7 +114,9 @@
     border-radius: var(--nc-card-radius);
     background: var(--surface-card);
     box-shadow: var(--shadow-float);
-    animation: drawer-in var(--motion-medium) var(--ease-enter);
+    opacity: 1;
+    translate: 0 0;
+    transition: opacity var(--motion-medium) var(--ease-enter), translate var(--motion-medium) var(--ease-enter);
   }
 
   /*
@@ -181,10 +183,12 @@
     inset-inline-end: 0;
     inline-size: var(--space-10);
     z-index: var(--z-overlay);
-    /* Same animation, same duration, same easing, same source token as the
+    /* Same transition, same duration, same easing, same source token as the
        card above — the two enter and leave as one object, and any change to
        one is a change to both. */
-    animation: drawer-in var(--motion-medium) var(--ease-enter);
+    opacity: 1;
+    translate: 0 0;
+    transition: opacity var(--motion-medium) var(--ease-enter), translate var(--motion-medium) var(--ease-enter);
     pointer-events: none;
   }
 
@@ -364,24 +368,16 @@
    * was in the way and is now gone) and wrong here: the conversation is not
    * destroyed by closing it. See the note in public.tsx.
    */
-  @keyframes drawer-in {
-    from {
-      opacity: 0;
-      translate: 0 12px;
-    }
-  }
-
-  @keyframes drawer-out {
-    to {
-      opacity: 0;
-      translate: 0 12px;
-    }
+  @starting-style {
+    .drawer,
+    .seam { opacity: 0; translate: 0 var(--space-6); }
   }
 
   .drawerClosing {
-    /* `forwards`, so the card stays at zero opacity for the frame between the
-       animation ending and React unmounting it. */
-    animation: drawer-out var(--motion-snappy) var(--ease-exit) forwards;
+    opacity: 0;
+    translate: 0 var(--space-6);
+    transition-duration: var(--motion-snappy);
+    transition-timing-function: var(--ease-exit);
 
     /* It is on its way out; it must not intercept a click meant for the page
        behind it. */
@@ -393,7 +389,10 @@
      the seam itself; what this has to add is the children's, which `.seam > *`
      turned back on and a box on its way out must not keep. */
   .seamClosing {
-    animation: drawer-out var(--motion-snappy) var(--ease-exit) forwards;
+    opacity: 0;
+    translate: 0 var(--space-6);
+    transition-duration: var(--motion-snappy);
+    transition-timing-function: var(--ease-exit);
   }
 
   .seamClosing > * {
@@ -413,7 +412,7 @@
       border-radius: 0;
       background: var(--surface-card);
       box-shadow: none;
-      animation: none;
+      transition: none;
     }
 
     /* The desktop exchange rail mounts in the page seam beside the card. A
@@ -442,7 +441,7 @@
   @media (prefers-reduced-motion: reduce) {
     .drawer,
     .seam {
-      animation: none;
+      transition: none;
     }
   }
 

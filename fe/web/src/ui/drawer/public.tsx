@@ -101,8 +101,21 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
     setClosing(retracts);
   }
   // A desktop exit may still be running when the viewport becomes compact.
-  // Compact pages disappear in this commit; no mobile animationend is owed.
+  // Compact pages disappear in this commit; no mobile transitionend is owed.
   if (compact && closing) setClosing(false);
+
+  // An already invisible card has no opacity transition to finish (for example close before first paint).
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    if (closing && panel !== null && getComputedStyle(panel).opacity === '0') setClosing(false);
+  }, [closing]);
+
+  useEffect(() => {
+    const preference = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
+    const settle = () => { if (preference?.matches) setClosing(false); };
+    preference?.addEventListener?.('change', settle);
+    return () => { preference?.removeEventListener?.('change', settle); };
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -151,7 +164,7 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
     if (fallback !== null && document.contains(fallback)) fallback.focus();
   }, [open, closing]);
 
-  /* Compact pages and reduced motion skip the exit animation, so closing never waits for one the stylesheet does not play. */
+  /* Compact pages and reduced motion skip the exit transition, so closing never waits for one the stylesheet does not play. */
   if (!open && !closing) return null;
   /* `data-nc-drawer` is the marker `app/shell` hides the trailing PanelCard by; a CSS Module class cannot be named across modules. It stays on during the closing animation. */
   const card = (
@@ -167,7 +180,9 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
       /* Labelled once: by the painted desktop title, or, compact, by the name the shared Header also paints. */
       {...(compact && !inline ? { 'aria-label': frame.title } : { 'aria-labelledby': titleId })}
       tabIndex={-1}
-      onAnimationEnd={() => { if (closing) setClosing(false); }}
+      onTransitionEnd={event => {
+        if (closing && event.target === event.currentTarget && event.propertyName === 'opacity') setClosing(false);
+      }}
     >
       {/* The header is before the scroller in the DOM, so the first Tab out of the container lands on its controls. */}
       {compact && !inline ? (
