@@ -269,6 +269,7 @@ export function useConversationStore(
     historyError: history.error === null ? null : readErrorText(history.error, 'The conversation history could not be loaded.'),
     runError: run.error === null ? null : readErrorText(run.error, 'The conversation’s status could not be loaded.'),
     runLoading: run.isFetching,
+    runReady: run.data !== undefined,
     actionError: actionError?.cardId === cardId ? actionError.message : null,
     failedSend: view.failed,
     retrySend: outbox.retrySend,

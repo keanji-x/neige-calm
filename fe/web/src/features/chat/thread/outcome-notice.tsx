@@ -15,11 +15,12 @@ const FAILURE_HINTS: Readonly<Record<string, string>> = Object.freeze({
 });
 
 /** One stable row across live, request, pause and terminal transitions. */
-export function CurrentStatusNotice({ outcome, canContinue, live, statusUnconfirmed, stalled, stalledReason, feedback, copyAction, editAction, regenerateAction, runningAnchor }: {
+export function CurrentStatusNotice({ outcome, canContinue, live, statusUnconfirmed, statusLoading, stalled, stalledReason, feedback, copyAction, editAction, regenerateAction, runningAnchor }: {
   outcome: ConversationTurnOutcome | null;
   canContinue: boolean;
   live: boolean;
   statusUnconfirmed: boolean;
+  statusLoading: boolean;
   stalled: boolean;
   stalledReason: string | null;
   feedback: ConversationStopFeedback | null;
@@ -38,7 +39,9 @@ export function CurrentStatusNotice({ outcome, canContinue, live, statusUnconfir
   if (statusUnconfirmed) {
     heading = 'Status unconfirmed'; tone = 'warning';
     details = <>
-      <p className={styles.outcomeReason}>Reload the status below to check the conversation’s current state.</p>
+      <p className={styles.outcomeReason}>{statusLoading
+        ? 'Checking the conversation’s current state.'
+        : 'The conversation’s current state has not been confirmed.'}</p>
       {feedback !== null && <>
         <p className={styles.outcomeReason}>{stopFeedbackHeading(feedback)}</p>
         <StopFeedbackDetails feedback={feedback} />

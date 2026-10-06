@@ -56,3 +56,20 @@ it('retries history independently and retains the last readable transcript', asy
   expect(fixture.requests.slice(before).every(request => request.method === 'GET' && request.path.includes('/harness/items'))).toBe(true);
   expect(fixture.requests.length).toBeGreaterThan(before);
 });
+
+it('keeps execution status unconfirmed throughout a cold retry', async () => {
+  const fixture = renderConversationReadFixture(true);
+  await openConversation();
+  const retry = await screen.findByRole('button', { name: 'Reload status' });
+  fixture.failRun(false);
+  const release = fixture.pauseRun();
+  try {
+    fireEvent.click(retry);
+    await waitFor(() => expect(fixture.client.isFetching({ queryKey: queryKeys.plannerRun('daily-planner') })).toBe(1));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Reload status' })).toBeNull());
+    await screen.findByText('Status unconfirmed', { exact: true });
+    expect(screen.getByText('Checking the conversation’s current state.')).toBeTruthy();
+    expect(screen.queryByText('Running', { exact: true })).toBeNull();
+  } finally { await act(async () => { release(); }); }
+  await screen.findByText('Running', { exact: true });
+});

@@ -68,6 +68,8 @@ export type ChatThreadProps = Readonly<{
   stalledReason?: string | null;
   /** A failed status read cannot confirm current execution from cached facts. History stays readable. */
   statusUnconfirmed?: boolean;
+  /** Read progress describes the status query, independently of model execution. */
+  statusLoading?: boolean;
   stopFeedback?: ConversationStopFeedback | null;
   /** The caller declares composer availability; a transcript outcome cannot authorize sends. */
   canContinue: boolean;
@@ -85,7 +87,7 @@ export type ChatThreadProps = Readonly<{
   imageFiles?: ReplyImageFiles | null;
 }>;
 
-export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason, statusUnconfirmed = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null }: ChatThreadProps) {
+export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null }: ChatThreadProps) {
   /* The live mark is the sender's pending send or the kernel's verdict — never `conversation.state`, which sits at `turn_pending`/`running` long after a turn ended. The local wedge outranks both. */
   const live = !statusUnconfirmed && !stalled && (pending || cardActivityOf({ cards }, conversation.id) === 'working');
   const lastTurn = turns[turns.length - 1];
@@ -103,7 +105,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
       // Enter immediately. Presentation must not delay edit state or the caret.
       editMessage(currentOutcome);
     } };
-  const currentMeta = <CurrentStatusNotice outcome={currentOutcome} canContinue={canContinue && !statusUnconfirmed} live={live} statusUnconfirmed={statusUnconfirmed}
+  const currentMeta = <CurrentStatusNotice outcome={currentOutcome} canContinue={canContinue && !statusUnconfirmed} live={live} statusUnconfirmed={statusUnconfirmed} statusLoading={statusLoading}
     stalled={stalled} stalledReason={stalledReason ?? null} feedback={stopFeedback} copyAction={copyAction} editAction={editAction} regenerateAction={regenerateAction} runningAnchor={runningAnchor} />;
   const endRef = useRef<HTMLDivElement | null>(null);
   /** The box every marker lookup starts from. Not `.thread` itself: the stylesheet's `> * + *` rules space that element's children. */

@@ -33,6 +33,8 @@ export type ConversationStore = Readonly<{
   /** The run read failed: phase, queue and model may be stale, and a send answered after an unknown attempt waits on it. */
   runError: string | null;
   runLoading: boolean;
+  /** The current card has supplied a run response; an absent error alone does not establish this. */
+  runReady: boolean;
   actionError: string | null;
   /** The send that gave up, held by this conversation's outbox until its Try again, Edit or Dismiss. */
   failedSend: FailedSendOp | null;

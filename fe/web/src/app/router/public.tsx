@@ -437,7 +437,7 @@ function useConversationPane(
   const edit = useConversationEdit({ conversationId: composerId, transcript: composerId === null ? [] : store.turnsOf(composerId),
     historyReady: store.historyReady, focusComposer });
   /* The one readiness every response action and the continue guidance share. */
-  const canContinue = store.runError === null && store.historyReady && !store.sendBlocked && !store.working && !store.stopping;
+  const canContinue = store.runReady && store.runError === null && store.historyReady && !store.sendBlocked && !store.working && !store.stopping;
   /* A conversation's provider is fixed for its life; its model picker offers that provider's group alone. */
   const scopeProvider: AgentProvider = scope === null ? 'codex' : scope.provider;
   const go = useGo();
@@ -1039,7 +1039,8 @@ function useConversationPane(
                 pending={store.pending.has(open.id)}
                 cards={source.cards}
                 stalled={store.stalled}
-                statusUnconfirmed={store.runError !== null}
+                statusUnconfirmed={!store.runReady || store.runError !== null}
+                statusLoading={store.runLoading}
                 copyText={edit.held === null ? writeClipboardText : undefined}
                 regenerateMessage={respondable
                   ? async (message) => { await store.send(open.id, message.text, message.attachments ?? [], false, null); }
