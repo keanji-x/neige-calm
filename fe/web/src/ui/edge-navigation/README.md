@@ -5,8 +5,11 @@ accessible labels, preview titles and body excerpts, placement, active items and
 jump handlers. This primitive imports no domain types and reads no application data.
 
 Fine-pointer rows are 20px tall; coarse-pointer rows are 44px tall. The intrinsic
-track is centered and scrolls when its content exceeds 320px. Hover changes ink
-rather than moving targets. One roving tab stop supports Arrow, Home and End.
+track is centered and scrolls when its content exceeds 320px. Pointer proximity smoothly enlarges neighboring ink toward 8px without changing
+button geometry. One bounded frame reads all fixed row boxes, then writes only
+ink sizes; scroll, resize and item changes recompute the same profile. Leaving
+or cancelling the pointer resets it; touch and coarse pointers do not magnify.
+Keyboard focus keeps a clear 8px dot. One roving tab stop supports Arrow, Home and End.
 
 One Astryx `useHoverCard` owns the whole track interaction. First entry waits
 180ms; moving between rows immediately updates the same card and anchor without

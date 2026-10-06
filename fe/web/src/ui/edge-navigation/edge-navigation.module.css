@@ -45,16 +45,19 @@
   }
   .railDot::before {
     content: '';
-    inline-size: var(--nc-rail-dot);
-    block-size: var(--nc-rail-dot);
+    --nc-dot-base: var(--nc-rail-dot);
+    inline-size: var(--nc-dot-base);
+    block-size: var(--nc-dot-base);
     border-radius: var(--radius-pill);
     background: var(--nc-rail-ink);
-    transition: background-color var(--motion-quick) ease-out;
+    transition:
+      inline-size var(--motion-quick) ease-out,
+      block-size var(--motion-quick) ease-out,
+      background-color var(--motion-quick) ease-out;
   }
   .railDot:hover::before {
     background: var(--text-2);
   }
-  .railDot:hover::before,
   .railDot:focus-visible::before {
     inline-size: var(--dot-md);
     block-size: var(--dot-md);
@@ -63,9 +66,19 @@
     outline-offset: -2px;
   }
   .railDotActive::before {
-    inline-size: var(--nc-rail-dot-current);
-    block-size: var(--nc-rail-dot-current);
+    --nc-dot-base: var(--nc-rail-dot-current);
     background: var(--accent);
+  }
+  @media (pointer: fine) {
+    .railDot::before {
+      --nc-dot-size: calc(var(--nc-dot-base) + (var(--dot-md) - var(--nc-dot-base)) * var(--nc-dot-proximity, 0));
+      inline-size: var(--nc-dot-size);
+      block-size: var(--nc-dot-size);
+    }
+    .railDot:hover::before {
+      inline-size: var(--dot-md);
+      block-size: var(--dot-md);
+    }
   }
   .railPreview {
     max-inline-size: min(17rem, var(--nc-rail-preview-max-inline-size, 17rem));

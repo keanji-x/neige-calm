@@ -6,6 +6,7 @@ import styles from './edge-navigation.module.css';
 
 export type NavigationItem = Readonly<{ id: string; title: string; excerpt: string; label: string }>;
 const RAIL_PREVIEW_MAX = 240;
+const RAIL_INK_REACH = 3;
 function railPreviewText(text: string): string {
   const line = text.replace(/\s+/g, ' ').trim();
   return line.length <= RAIL_PREVIEW_MAX ? line : `${line.slice(0, RAIL_PREVIEW_MAX - 1)}…`;
@@ -22,6 +23,8 @@ export function EdgeNavigator({ items, activeId, onSelect, label, className, pre
 }>) {
   const trackRef = useRef<HTMLDivElement | null>(null);
   const dotRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const pointerY = useRef<number | null>(null);
+  const itemKey = items.map(item => item.id).join('\0');
   const [roved, setRoved] = useState<string | null>(null);
   const [previewed, setPreviewed] = useState<string | null>(null);
   const preview = useHoverCard({
@@ -66,6 +69,67 @@ export function EdgeNavigator({ items, activeId, onSelect, label, className, pre
     if (track === null) return;
     return observeResize(track, show);
   }, [activeIndex]);
+  useEffect(() => {
+    const track = trackRef.current;
+    if (track === null) return;
+    const trackedDots = [...dotRefs.current];
+    const fine = window.matchMedia('(pointer: fine)');
+    let queued: number | null = null;
+    const paint = () => {
+      queued = null;
+      const at = fine.matches ? pointerY.current : null;
+      const dots = dotRefs.current;
+      // Read fixed hitboxes together before writing ink-only properties.
+      const boxes = at === null ? [] : dots.map(dot => dot?.getBoundingClientRect() ?? null);
+      dots.forEach((dot, index) => {
+        if (dot === null) return;
+        const box = boxes[index];
+        if (at === null || box == null || box.height === 0) {
+          dot.style.removeProperty('--nc-dot-proximity');
+          return;
+        }
+        const near = Math.max(0, 1 - Math.abs(box.top + box.height / 2 - at) / (box.height * RAIL_INK_REACH));
+        const proximity = Math.round(near * near * (3 - 2 * near) * 1000) / 1000;
+        if (proximity === 0) dot.style.removeProperty('--nc-dot-proximity');
+        else dot.style.setProperty('--nc-dot-proximity', `${proximity}`);
+      });
+    };
+    const schedule = () => { if (queued === null) queued = requestAnimationFrame(paint); };
+    const reset = () => {
+      if (pointerY.current === null) return;
+      pointerY.current = null;
+      schedule();
+    };
+    const move = (event: PointerEvent) => {
+      if (event.pointerType === 'touch' || !fine.matches) { reset(); return; }
+      pointerY.current = event.clientY;
+      schedule();
+    };
+    const press = (event: PointerEvent) => { if (event.pointerType === 'touch') reset(); };
+    track.addEventListener('pointermove', move, { passive: true });
+    track.addEventListener('pointerdown', press, { passive: true });
+    track.addEventListener('pointerleave', reset);
+    track.addEventListener('pointercancel', reset);
+    track.addEventListener('scroll', schedule, { passive: true });
+    fine.addEventListener('change', reset);
+    const stopResize = observeResize(track, schedule);
+    const stopHostResize = track.parentElement === null ? () => {} : observeResize(track.parentElement, schedule);
+    window.addEventListener('resize', schedule);
+    schedule();
+    return () => {
+      track.removeEventListener('pointermove', move);
+      track.removeEventListener('pointerdown', press);
+      track.removeEventListener('pointerleave', reset);
+      track.removeEventListener('pointercancel', reset);
+      track.removeEventListener('scroll', schedule);
+      fine.removeEventListener('change', reset);
+      stopResize();
+      stopHostResize();
+      window.removeEventListener('resize', schedule);
+      if (queued !== null) cancelAnimationFrame(queued);
+      for (const dot of trackedDots) dot?.style.removeProperty('--nc-dot-proximity');
+    };
+  }, [itemKey]);
   const rove = (to: number) => {
     const next = Math.max(0, Math.min(items.length - 1, to));
     setRoved(items[next]?.id ?? null);

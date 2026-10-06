@@ -806,6 +806,75 @@ describe('the exchange rail, as the engine lays it out', () => {
   });
 
   /* The falloff is a smoothstep: at one dot out it is above a straight ramp (0.844 vs 0.750) and at three below (0.156 vs 0.250); at two they agree exactly, so the discriminating pair is 1 and 3. */
+  it('magnifies neighboring ink by proximity without moving rows or changing the aimed preview', async () => {
+    await page.viewport(1400, 900);
+    render(<RailPane turns={promptTurns(10, index => `Prompt ${index}`)} />);
+    await frame();
+    await scrollPaneTo(0);
+    await userEvent.hover(screen.getByRole('button', { name: 'Outside navigation' }));
+    const ink = (index: number) => Number.parseFloat(getComputedStyle(dots()[index], '::before').width);
+    const boxes = dots().map(dot => dot.getBoundingClientRect().toJSON());
+    const resting = dots().map((_, index) => ink(index));
+    await userEvent.hover(dots()[4]);
+    await pause(150);
+    expect(ink(4)).toBeCloseTo(8, 1);
+    expect(ink(3)).toBeGreaterThan(resting[3]);
+    expect(ink(3)).toBeGreaterThan(ink(2));
+    expect(ink(2)).toBeGreaterThan(resting[2]);
+    expect(ink(3)).toBeCloseTo(ink(5), 1);
+    expect(dots().map(dot => dot.getBoundingClientRect().toJSON())).toEqual(boxes);
+    await pause(150);
+    expect(railPreview()?.querySelector('div')?.textContent).toBe('Prompt 4');
+    const popup = railPreview();
+    const aboveAtCenter = ink(3);
+    const belowAtCenter = ink(5);
+    await userEvent.hover(dots()[4], { position: { x: 12, y: 19 } });
+    await pause(150);
+    expect(ink(3)).toBeLessThan(aboveAtCenter);
+    expect(ink(5)).toBeGreaterThan(belowAtCenter);
+    expect(railPreview()).toBe(popup);
+    expect(railPreview()?.querySelector('div')?.textContent).toBe('Prompt 4');
+    expect(dots().map(dot => dot.getBoundingClientRect().toJSON())).toEqual(boxes);
+    await userEvent.hover(dots()[5]);
+    await pause(150);
+    expect(ink(5)).toBeCloseTo(8, 1);
+    expect(ink(6)).toBeGreaterThan(ink(7));
+    expect(railPreview()).toBe(popup);
+    expect(railPreview()?.querySelector('div')?.textContent).toBe('Prompt 5');
+    expect(dots().map(dot => dot.getBoundingClientRect().toJSON())).toEqual(boxes);
+    await userEvent.hover(screen.getByRole('button', { name: 'Outside navigation' }));
+    await pause(150);
+    expect(dots().map((_, index) => ink(index))).toEqual(resting);
+    expect(dots().map(dot => dot.getBoundingClientRect().toJSON())).toEqual(boxes);
+  });
+
+  it('recomputes ink under a stationary pointer after scroll, host resize and item changes', async () => {
+    await page.viewport(1400, 900);
+    const view = render(<RailPane turns={promptTurns(30)} />);
+    await frame();
+    await scrollPaneTo(0);
+    await userEvent.hover(dots()[4]);
+    await pause(150);
+    const proximity = (index: number) => Number(dots()[index].style.getPropertyValue('--nc-dot-proximity'));
+    expect(proximity(4)).toBeGreaterThan(proximity(5));
+    railTrack().scrollTop = 20;
+    await settle();
+    await pause(150);
+    expect(proximity(5)).toBeGreaterThan(proximity(4));
+    railTrack().parentElement!.style.blockSize = '360px';
+    await settle();
+    await pause(150);
+    expect(proximity(6)).toBeGreaterThan(proximity(5));
+    const before = dots().slice(0, 10).map((_, index) => proximity(index));
+    view.rerender(<RailPane turns={promptTurns(31)} />);
+    await settle();
+    await pause(150);
+    expect(dots().slice(0, 10).map((_, index) => proximity(index))).toEqual(before);
+    await userEvent.hover(screen.getByRole('button', { name: 'Outside navigation' }));
+    await pause(150);
+    expect(dots().every(dot => dot.style.getPropertyValue('--nc-dot-proximity') === '')).toBe(true);
+  });
+
   it('scans stable rows with one narrow continuous preview and a short first-entry delay', async () => {
     await page.viewport(1400, 900);
     // Only the hook's JS delays are controlled: pointer moves, CSS motion and RAF stay real.

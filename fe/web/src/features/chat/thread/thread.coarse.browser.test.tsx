@@ -142,7 +142,7 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
     expect(centre(3) - centre(2)).toBe(44);
 
     expect(dotInk(resting)).toBe(6);
-    expect(dotInk(lit)).toBe(8);
+    await expect.poll(() => dotInk(lit)).toBe(8);
 
     /* Every row is a direct stable target; the shared layer sits outside the scroll track. */
     expect(railTrack().firstElementChild).toBe(dots()[0]);
@@ -159,6 +159,10 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
     await commands.tap('button[aria-label="Jump to exchange 4: Ask 3"]');
     await pause(600);
     expect(railPreview()).toBeNull();
+    expect(dots().every(dot => dot.style.getPropertyValue('--nc-dot-proximity') === '')).toBe(true);
+    dots().forEach((dot, index) => {
+      if (dot.getAttribute('aria-current') !== 'true') expect(dotInk(index)).toBe(6);
+    });
     await userEvent.keyboard('{ArrowUp}');
     await settle();
     const preview = railPreview();
@@ -170,7 +174,7 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
     expect(railPreview()).toBeNull();
   });
 
-  /* Under a finger the 320px cap is reached at eight exchanges (11 → 308px, 12 → 336px); the fine branch reaches it at twenty-two. The cap is read off the engine. */
+  /* Under a finger the 320px cap is reached at eight exchanges (7 → 308px, 8 → 352px); the fine branch reaches it at seventeen. The cap is read off the engine. */
   it('overflows the 320px cap at eight exchanges, and stays reachable past it', async () => {
     render(<RailPane turns={railTurns(7)} paneHeight={700} />);
     await settle();
