@@ -609,8 +609,12 @@ mod tests {
                 &BTreeSet::from([running.to_string()]),
             )
             .unwrap();
+            let row = rows
+                .iter()
+                .find(|entry| entry.tool.name == "plugin_ab_c_d")
+                .unwrap();
             assert_eq!(
-                rows[0].plugin,
+                row.plugin,
                 Some(PluginOwner {
                     id: running.into(),
                     kind: None
