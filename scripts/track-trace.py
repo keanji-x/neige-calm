@@ -52,10 +52,11 @@ loss is listed in the track record's transcript_losses, so the reader knows wher
 A turn's window runs from its start to the next remaining turn's start (no end for the last
 turn): what the turn caused and what arrived before the next one. Unless --full, every text is cut
 to EXCERPT_CHARS with a "…[+N chars]" tail: segment texts, messages, goals, errors (a structured
-error as JSON text), and each string leaf of an event payload or of an action's args and result.
-The cap is per leaf, so short fields (failing_step, exit_code, head_sha, a short error or reason)
-always survive whole and only long bodies and logs are cut. A task's error is cut at
-TASK_ERROR_CHARS instead. Per-turn token usage is not recorded yet.
+error as JSON text), and each top-level field of an event payload or of an action's JSON args and
+result. The cap is per top-level field: a string field is cut on its own, and a nested object or
+array is cut as one JSON text. So short top-level fields (failing_step, exit_code, head_sha, a
+short error or reason) always survive whole, and only long bodies, logs and nested snapshots are
+cut. A task's error is cut at TASK_ERROR_CHARS instead. Per-turn token usage is not recorded yet.
 
 Usage: scripts/track-trace.py --db PATH [--since MS] [--until MS] [--full] (--area AREA_ID | TRACK_ID...)
        scripts/track-trace.py --selftest   (builds a tiny database and checks the records; CI runs it)
@@ -72,7 +73,7 @@ sys.dont_write_bytecode = True  # importing track_db must not leave scripts/__py
 from track_db import REQUIRED_COLUMNS, bypass_hits, check_schema, open_db, planner_card, planner_turns  # noqa: E402
 
 EXCERPT_CHARS = 300
-TASK_ERROR_CHARS = 2000
+TASK_ERROR_CHARS = 4000
 NO_END = 1 << 62
 # Projections of rows the trace already reads (transcript items, phases) and UI or hook state.
 # Never add harness.transcript.cleared/rewound: they mark the turns the trace cannot show.
@@ -96,12 +97,16 @@ def excerpt(value, cap):
 
 
 def capped(value, cap):
-    """`value` with every string leaf cut by excerpt(); short leaves survive whole, whatever their depth."""
+    """`value` with each top-level field (or element) cut by excerpt() on its own; a nested object
+    or array is cut as one JSON text, so a short top-level field survives whole."""
+    def field(v):
+        return excerpt(v, cap) if isinstance(v, (str, dict, list)) else v
+
     if isinstance(value, dict):
-        return {k: capped(v, cap) for k, v in value.items()}
+        return {k: field(v) for k, v in value.items()}
     if isinstance(value, list):
-        return [capped(v, cap) for v in value]
-    return excerpt(value, cap) if isinstance(value, str) else value
+        return [field(v) for v in value]
+    return field(value)
 
 
 def tool_result(result):
@@ -311,11 +316,14 @@ def selftest_db():
         (1, "harness.transcript.cleared", {"cleared_item_count": 9}, "Kernel", 800),
         (2, "track.wake_requested", {"source": "dev.neige.mail"}, "Kernel", 900),
         (3, "task.completed", {"key": "a"}, "Kernel", 950),
-        (4, "task.gate_result", {"log_tail": "z" * 400, "error": "step lint exited 1", "exit_code": 1}, "Kernel", 1500),
+        (4, "task.gate_result", {"log_tail": "z" * 400, "error": "step lint exited 1", "exit_code": 1,
+                                 "target": {"head": "abc"}}, "Kernel", 1500),
         (5, "overlay.set", {}, "Kernel", 1600),
-        (6, "task.failed", {"idempotency_key": "t:b", "reason": "worker: " + "r" * 2100}, "AiPlannerSession", 2500),
+        (6, "task.failed", {"idempotency_key": "t:b", "reason": "spawn failed: DB locked"}, "Kernel", 2500),
         (7, "harness.transcript.rewound", {"removed_item_count": 2, "turn_id": "gone"}, "Kernel", 2600),
         (8, "track.updated", {}, "User", 3500),
+        # A later failure of the same task: its reason is the task's error.
+        (9, "task.failed", {"idempotency_key": "t:b", "reason": "worker: " + "r" * 4100}, "AiPlannerSession", 2700),
     ]
     for i, kind, payload, actor, at in event_rows:
         db.execute("INSERT INTO events VALUES (?, ?, ?, ?, ?, 't', NULL)",
@@ -331,7 +339,7 @@ def selftest_db():
     ]
     segments_2 = [{"presentation": "user", "text": "User says: go", "attachments": [{"path": "a.png"}]}]
     failed = {"type": "mcpToolCall", "tool": "neige_task_declare", "status": "failed",
-              "arguments": {"key": "fix", "goal": "g" * 400},
+              "arguments": {"key": "fix", "goal": "g" * 400, "context": {"why": "w"}},
               "error": {"message": "tool call failed: DB locked"}, "result": None, "durationMs": 7}
     shell = {"type": "commandExecution", "command": "git push origin x", "status": "completed",
              "aggregatedOutput": "y" * 400, "exitCode": 0, "durationMs": 3}
@@ -399,8 +407,8 @@ def selftest():
         ("mcpToolCall", "neige_task_declare", True, False, "tool call failed: DB locked"),
         ("commandExecution", None, True, True, None),
     ])
-    expect("action args (a tool call's per leaf)", [a["args"] for a in acts],
-           [{"key": "fix", "goal": "g" * 300 + "…[+100 chars]"}, "git push origin x"])
+    expect("action args (a tool call's top-level fields capped)", [a["args"] for a in acts],
+           [{"key": "fix", "goal": "g" * 300 + "…[+100 chars]", "context": '{"why": "w"}'}, "git push origin x"])
     expect("turn 1 messages (not actions)", one.get("messages"), [{"at": 1018, "text": "Declaring fix first."}])
     expect("turn 2 messages", two.get("messages"), [])
     expect("result excerpt", acts[1]["result"] if len(acts) > 1 else None, "y" * 300 + "…[+100 chars]")
@@ -411,11 +419,12 @@ def selftest():
         ("gate", "failed", "gate-red", "g"),
     ])
     expect("turn 2 task error (latest task.failed reason)", [(t["key"], t.get("error")) for t in two.get("tasks", [])],
-           [("b", "worker: " + "r" * 1992 + "…[+108 chars]")])
+           [("b", "worker: " + "r" * 3992 + "…[+108 chars]")])
     expect("turn 1 events (noise left out)", [(e["id"], e["actor"]) for e in one.get("events", [])], [(4, "Kernel")])
-    expect("event payload capped per leaf", [e["payload"] for e in one.get("events", [])],
-           [{"log_tail": "z" * 300 + "…[+100 chars]", "error": "step lint exited 1", "exit_code": 1}])
-    expect("turn 2 events (losses kept)", [e["id"] for e in two.get("events", [])], [6, 7])
+    expect("event payload capped per top-level field", [e["payload"] for e in one.get("events", [])],
+           [{"log_tail": "z" * 300 + "…[+100 chars]", "error": "step lint exited 1", "exit_code": 1,
+             "target": '{"head": "abc"}'}])
+    expect("turn 2 events (losses kept)", [e["id"] for e in two.get("events", [])], [6, 7, 9])
     expect("turn 3 events", [e["id"] for e in three.get("events", [])], [8])
     expect("turn 1 bypass", one.get("bypass"), [{"source": "planner shell", "command": "git push origin x"}])
     expect("turn 2 bypass", two.get("bypass"), [])
@@ -424,7 +433,7 @@ def selftest():
     expect("--until picks turn 1 and changes no record", trace(db, ["t"], until=1200), [header, one])
     full = trace(db, ["t"], cap=None)
     expect("--full keeps the whole text", [full[1]["tasks"][0]["goal"], full[2]["tasks"][0].get("error")],
-           ["x" * 400, "worker: " + "r" * 2100])
+           ["x" * 400, "worker: " + "r" * 4100])
     for failure in failures:
         print("FAIL " + failure, file=sys.stderr)
     if failures:
