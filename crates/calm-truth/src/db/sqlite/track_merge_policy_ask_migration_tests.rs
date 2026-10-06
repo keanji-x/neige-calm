@@ -18,7 +18,7 @@ fn migrator_through(version: i64) -> sqlx::migrate::Migrator {
     }
 }
 
-/// Stored inputs as 4140 holds them (minified JSON text), with the expected value after 0152.
+/// Stored inputs as 4140 holds them (minified JSON text), with the expected value after 0153.
 const ROWS: &[(&str, Option<&str>, Option<&str>)] = &[
     (
         "asks",
