@@ -39,6 +39,9 @@ mod planner_input_idempotency;
 mod planner_input_idempotency_tests;
 mod read;
 mod session_conversation;
+pub use session_conversation::{
+    PLANNER_START_CARD_KEY, PLANNER_START_OPERATION_KIND, TERMINAL_OPERATION_PHASES,
+};
 #[cfg(test)]
 mod session_conversation_tests;
 mod session_mirror;

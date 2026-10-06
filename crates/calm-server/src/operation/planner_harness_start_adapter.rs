@@ -2452,6 +2452,11 @@ mod tests {
             "the planner-card field must still serialize as `spec_card_id`: {json}"
         );
         assert_eq!(
+            json[calm_truth::db::sqlite::PLANNER_START_CARD_KEY],
+            serde_json::json!("c1"),
+            "calm-truth's first-start read names the card under its serialized key (#2228): {json}"
+        );
+        assert_eq!(
             object.get("profile").and_then(serde_json::Value::as_str),
             Some("spec"),
             "the default profile must still serialize as `spec`: {json}"
