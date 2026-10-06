@@ -1,5 +1,7 @@
 mod support;
 
+#[path = "cases/worker_flow_db_contention.rs"]
+mod worker_flow_db_contention;
 #[path = "cases/worker_flow_driver_boot.rs"]
 mod worker_flow_driver_boot;
 #[path = "cases/worker_flow_driver_card_added.rs"]

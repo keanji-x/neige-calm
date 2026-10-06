@@ -13,12 +13,11 @@ use calm_types::worker_flow::RawRef;
 use tokio_util::sync::CancellationToken;
 
 use crate::db::Repo;
-use crate::model::now_ms;
 use crate::worker_flow::codex_normalizer::{
     RolloutLine, is_turn_context, normalize_rollout_line, rollout_line_source_uuid,
     rollout_record_type, session_meta_id,
 };
-use crate::worker_flow::cursor::{self, CODEX_ROLLOUT_SOURCE_KIND};
+use crate::worker_flow::cursor::{self, CODEX_ROLLOUT_SOURCE_KIND, CursorWriter};
 
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const DEFAULT_LAZY_RETRY_DELAY: Duration = Duration::from_millis(100);
@@ -155,19 +154,26 @@ impl CodexRolloutFlowSource {
         path: PathBuf,
     ) -> Result<(), CoreError> {
         let source_path = path.to_string_lossy().to_string();
-        let mut cursor = cursor::get(
+        let stored = cursor::get(
             self.repo.as_ref(),
             &self.runtime.card_id,
             CODEX_ROLLOUT_SOURCE_KIND,
         )
         .await?
-        .filter(|c| c.source_path == source_path)
-        .map(|c| CursorState {
-            record_index: c.record_index.max(0) as u64,
-            last_source_uuid: c.last_source_uuid,
-            last_line_hash: c.last_line_hash,
-        })
-        .unwrap_or_default();
+        .filter(|c| c.source_path == source_path);
+        let mut writer = CursorWriter::new(
+            &self.runtime.card_id,
+            CODEX_ROLLOUT_SOURCE_KIND,
+            &source_path,
+            stored.as_ref(),
+        );
+        let mut cursor = stored
+            .map(|c| CursorState {
+                record_index: c.record_index.max(0) as u64,
+                last_source_uuid: c.last_source_uuid,
+                last_line_hash: c.last_line_hash,
+            })
+            .unwrap_or_default();
         let mut position: Option<Position> = None;
 
         loop {
@@ -195,7 +201,7 @@ impl CodexRolloutFlowSource {
             }
 
             if lines.is_empty() {
-                persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor).await?;
+                persist_cursor(&mut writer, &*self.repo, &cursor).await?;
                 if !self.runtime_is_alive().await {
                     tracing::info!(
                         card_id = %self.runtime.card_id,
@@ -283,8 +289,7 @@ impl CodexRolloutFlowSource {
             });
             while (cursor.record_index as usize) < lines.len() {
                 if self.stop.is_cancelled() {
-                    persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor)
-                        .await?;
+                    persist_cursor(&mut writer, &*self.repo, &cursor).await?;
                     return Ok(());
                 }
 
@@ -336,12 +341,11 @@ impl CodexRolloutFlowSource {
                 cursor.record_index += 1;
                 if cursor.record_index % self.options.cursor_persist_every.max(1) == 0 {
                     // TODO: item insert + cursor write are two sqlite commits; a crash between them re-inserts on restart.
-                    persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor)
-                        .await?;
+                    persist_cursor(&mut writer, &*self.repo, &cursor).await?;
                 }
             }
 
-            persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor).await?;
+            persist_cursor(&mut writer, &*self.repo, &cursor).await?;
             // TODO: session_projection_complete_for_terminal bypasses the event bus; canonicalize via Event emission.
             if !self.runtime_is_alive().await {
                 tracing::info!(
@@ -449,23 +453,19 @@ async fn record_with_backpressure(
 }
 
 async fn persist_cursor(
+    writer: &mut CursorWriter,
     repo: &dyn Repo,
-    card_id: &str,
-    source_path: &str,
     cursor: &CursorState,
 ) -> Result<(), CoreError> {
-    cursor::upsert(
-        repo,
-        card_id,
-        CODEX_ROLLOUT_SOURCE_KIND,
-        source_path,
-        cursor.record_index as i64,
-        0,
-        cursor.last_source_uuid.as_deref(),
-        cursor.last_line_hash.as_deref(),
-        now_ms(),
-    )
-    .await
+    writer
+        .persist(
+            repo,
+            cursor.record_index as i64,
+            0,
+            cursor.last_source_uuid.as_deref(),
+            cursor.last_line_hash.as_deref(),
+        )
+        .await
 }
 
 fn hash_line(raw: &str) -> String {

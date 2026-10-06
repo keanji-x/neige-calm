@@ -16,12 +16,11 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio_util::sync::CancellationToken;
 
 use crate::db::Repo;
-use crate::model::now_ms;
 use crate::worker_flow::claude_normalizer::{
     ClaudeNormalizerState, normalize_record_with_state, record_cwd, record_starts_turn,
     record_type, source_uuid,
 };
-use crate::worker_flow::cursor;
+use crate::worker_flow::cursor::{self, CursorWriter};
 
 pub const CLAUDE_TRANSCRIPT_SOURCE_KIND: &str = "claude_transcript";
 
@@ -148,20 +147,27 @@ impl ClaudeTranscriptFlowSource {
         path: PathBuf,
     ) -> Result<(), CoreError> {
         let source_path = path.to_string_lossy().to_string();
-        let mut cursor = cursor::get(
+        let stored = cursor::get(
             self.repo.as_ref(),
             &self.runtime.card_id,
             CLAUDE_TRANSCRIPT_SOURCE_KIND,
         )
         .await?
-        .filter(|c| c.source_path == source_path)
-        .map(|c| CursorState {
-            record_index: c.record_index.max(0) as u64,
-            byte_offset: c.byte_offset.max(0) as u64,
-            last_source_uuid: c.last_source_uuid,
-            last_line_hash: c.last_line_hash,
-        })
-        .unwrap_or_default();
+        .filter(|c| c.source_path == source_path);
+        let mut writer = CursorWriter::new(
+            &self.runtime.card_id,
+            CLAUDE_TRANSCRIPT_SOURCE_KIND,
+            &source_path,
+            stored.as_ref(),
+        );
+        let mut cursor = stored
+            .map(|c| CursorState {
+                record_index: c.record_index.max(0) as u64,
+                byte_offset: c.byte_offset.max(0) as u64,
+                last_source_uuid: c.last_source_uuid,
+                last_line_hash: c.last_line_hash,
+            })
+            .unwrap_or_default();
         let (mut position, mut state) = reconstruct_prefix_once(
             &path,
             cursor.byte_offset,
@@ -182,7 +188,7 @@ impl ClaudeTranscriptFlowSource {
 
         loop {
             if self.stop.is_cancelled() {
-                persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor).await?;
+                persist_cursor(&mut writer, &*self.repo, &cursor).await?;
                 return Ok(());
             }
 
@@ -216,7 +222,7 @@ impl ClaudeTranscriptFlowSource {
             let mut lines = read.lines;
             let mut exit_after_batch = false;
             if lines.is_empty() {
-                persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor).await?;
+                persist_cursor(&mut writer, &*self.repo, &cursor).await?;
                 if !self.runtime_is_alive().await {
                     let final_read = match read_transcript_lines(&path, cursor.byte_offset, true)
                         .await
@@ -253,8 +259,7 @@ impl ClaudeTranscriptFlowSource {
                     lines = final_read.lines;
                     exit_after_batch = true;
                     if lines.is_empty() {
-                        persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor)
-                            .await?;
+                        persist_cursor(&mut writer, &*self.repo, &cursor).await?;
                         tracing::info!(
                             card_id = %self.runtime.card_id,
                             runtime_id = %self.runtime.id,
@@ -270,8 +275,7 @@ impl ClaudeTranscriptFlowSource {
 
             for line in lines {
                 if self.stop.is_cancelled() {
-                    persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor)
-                        .await?;
+                    persist_cursor(&mut writer, &*self.repo, &cursor).await?;
                     return Ok(());
                 }
 
@@ -336,12 +340,11 @@ impl ClaudeTranscriptFlowSource {
                 cursor.record_index = cursor.record_index.saturating_add(1);
                 cursor.byte_offset = line.offset_after;
                 if cursor.record_index % self.options.cursor_persist_every.max(1) == 0 {
-                    persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor)
-                        .await?;
+                    persist_cursor(&mut writer, &*self.repo, &cursor).await?;
                 }
             }
 
-            persist_cursor(&*self.repo, &self.runtime.card_id, &source_path, &cursor).await?;
+            persist_cursor(&mut writer, &*self.repo, &cursor).await?;
             if exit_after_batch {
                 tracing::info!(
                     card_id = %self.runtime.card_id,
@@ -510,23 +513,19 @@ async fn record_with_backpressure(
 }
 
 async fn persist_cursor(
+    writer: &mut CursorWriter,
     repo: &dyn Repo,
-    card_id: &str,
-    source_path: &str,
     cursor: &CursorState,
 ) -> Result<(), CoreError> {
-    cursor::upsert(
-        repo,
-        card_id,
-        CLAUDE_TRANSCRIPT_SOURCE_KIND,
-        source_path,
-        cursor.record_index as i64,
-        cursor.byte_offset as i64,
-        cursor.last_source_uuid.as_deref(),
-        cursor.last_line_hash.as_deref(),
-        now_ms(),
-    )
-    .await
+    writer
+        .persist(
+            repo,
+            cursor.record_index as i64,
+            cursor.byte_offset as i64,
+            cursor.last_source_uuid.as_deref(),
+            cursor.last_line_hash.as_deref(),
+        )
+        .await
 }
 
 async fn reconstruct_prefix_once(
