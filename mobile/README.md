@@ -73,9 +73,12 @@ its local data. This is a test build, not a signed store release.
 The generated Android project is checked in. Do not run `android:init` as a
 routine build step: initialization can overwrite Android customizations. If
 regenerating it deliberately, preserve the cleartext/backup restrictions, Gradle
-worker limit, and MainActivity behavior. App icons come from
-`../fe/web/src/ui/brand/neige-mark.svg`; the bundled copy is `www/neige-mark.svg`.
-Regenerate icon assets with `npm run tauri -- icon www/neige-mark.svg`.
+worker limit, and MainActivity behavior. App icons come from the shared generated
+`../fe/web/src/ui/brand/neige-app.svg`; `www/neige-app.svg` is the generated launcher copy.
+Regenerate the shared source with `(cd ../fe && node tools/pwa/generate-icons.mjs)`,
+then regenerate native assets with `npm run tauri -- icon app-icon.json`.
+The manifest uses a generated foreground inset into Android's central 72dp viewport
+on its 108dp adaptive layer, preserving the white border under launcher masks.
 The generator also emits iOS, macOS, and Windows icons; those unused platform
 assets are ignored. Keep the Android resources and PNG icons referenced by the
 Tauri configuration in version control.

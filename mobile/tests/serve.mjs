@@ -11,7 +11,7 @@ const assets = new Map([
   ['/server-binding.js', ['server-binding.js', 'text/javascript']],
   ['/server-config.js', ['server-config.js', 'text/javascript']],
   ['/style.css', ['style.css', 'text/css']],
-  ['/neige-mark.svg', ['neige-mark.svg', 'image/svg+xml']],
+  ['/neige-app.svg', ['neige-app.svg', 'image/svg+xml']],
 ]);
 
 createServer(async (request, response) => {

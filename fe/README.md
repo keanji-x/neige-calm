@@ -27,7 +27,9 @@ The app still needs a running server and network connection. This installation
 support adds no service worker or offline cache; reload to receive a deployed
 frontend update. Chrome manages updates to installed names and icons separately.
 
-The icons are generated from `web/src/ui/brand/neige-mark.svg`. To regenerate them:
+The app icons use a white snowflake on a blue-purple circle with a white background.
+They are composed from `web/src/ui/brand/neige-mark.svg`, which remains the in-app
+mark. To regenerate the SVG favicon and PNG installation icons:
 
 ```sh
 npx playwright install --with-deps chromium

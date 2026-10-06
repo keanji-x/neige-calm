@@ -1,8 +1,5 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/neige-mark-dark.svg">
-    <img src="fe/web/src/ui/brand/neige-mark.svg" width="104" alt="">
-  </picture>
+  <img src="fe/web/src/ui/brand/neige-app.svg" width="104" alt="Neige Calm">
 </p>
 
 <h1 align="center">Neige Calm</h1>

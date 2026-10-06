@@ -1,0 +1,4 @@
+{
+  "default": "../fe/web/src/ui/brand/neige-app.svg",
+  "android_fg": "app-icon-foreground.svg"
+}
