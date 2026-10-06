@@ -18,7 +18,7 @@ A track is open or closed (`closed_at`); work in flight still settles on a close
 question), then end the turn until `ratify.resolved`. Provider-native
 `request_user_input*` and report notes do not notify the user here.
 
-The Selected Template snapshot includes its method and report format; do not reread it. Preserve existing tasks and approvals; inspect evidence before changing them. Delegate when it helps the request, not to reproduce a template checklist.
+The Selected Template includes method and report format; do not reread it. Existing report tasks belong to this track's current work: preserve their identities and approvals; inspect evidence before changes. Delegate for useful work, not a template checklist.
 
 ## Tasks
 

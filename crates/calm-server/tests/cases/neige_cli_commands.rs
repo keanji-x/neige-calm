@@ -190,7 +190,7 @@ async fn cli_state_text_is_one_fact_per_line() {
         fact("tasks"),
         vec!["tasks      fix-login running start=checkout"]
     );
-    assert_eq!(fact("live").len(), 1, "{text}");
+    assert_eq!(fact("sessions").len(), 1, "{text}");
     let own: Vec<&str> = text
         .lines()
         .filter(|l| l.contains(&boot.card_id) && !l.starts_with("you"))
@@ -220,7 +220,7 @@ async fn cli_state_text_is_one_fact_per_line() {
     assert_eq!(exit, 0, "{text}");
     let live: Vec<&str> = text
         .lines()
-        .skip_while(|l| !l.starts_with("live"))
+        .skip_while(|l| !l.starts_with("sessions"))
         .collect();
     assert_eq!(live.len(), 1, "an exited worker is not live: {text}");
     assert!(
@@ -273,7 +273,7 @@ async fn cli_state_marks_stored_readers_without_live_workers() {
     let rows: Vec<_> = text
         .lines()
         .skip_while(|row| !row.starts_with("tasks"))
-        .take_while(|row| !row.starts_with("live"))
+        .take_while(|row| !row.starts_with("sessions"))
         .collect();
     assert_eq!(
         rows,
@@ -310,7 +310,7 @@ async fn report_completed(boot: &CardBoot, worker_token: &str, task_id: &str) {
 fn live_row<'a>(text: &'a str, card: &str) -> &'a str {
     let rows: Vec<&str> = text
         .lines()
-        .skip_while(|line| !line.starts_with("live"))
+        .skip_while(|line| !line.starts_with("sessions"))
         .filter(|line| line.contains(card))
         .collect();
     assert_eq!(rows.len(), 1, "{card}: {text}");
@@ -349,11 +349,11 @@ async fn cli_state_shows_a_reported_task_done_beside_its_live_worker_session() {
     let (text, stderr, exit) = cli(&boot, &["track", "status"]).await;
     assert_eq!((exit, stderr.as_str()), (0, ""), "{text}");
     assert!(
-        text.contains("\ntasks      fix-login done start=checkout\nlive "),
+        text.contains("\ntasks      fix-login done start=checkout\nsessions "),
         "{text}"
     );
     assert!(
-        live_row(&text, worker).ends_with("  worker   codex  session running"),
+        live_row(&text, worker).ends_with("  worker   codex  session open"),
         "{text}"
     );
 }
@@ -431,15 +431,15 @@ async fn cli_state_shows_a_key_once_at_its_current_attempt() {
     let (text, _, exit) = cli(&boot, &["track", "status"]).await;
     assert_eq!(exit, 0, "{text}");
     assert!(
-        text.contains("\ntasks      fix-login done read_only start=checkout\nlive "),
+        text.contains("\ntasks      fix-login done read_only start=checkout\nsessions "),
         "{text}"
     );
     assert!(
-        live_row(&text, &retry).ends_with("  session running"),
+        live_row(&text, &retry).ends_with("  session open"),
         "{text}"
     );
     assert!(
-        live_row(&text, first).ends_with("  session running"),
+        live_row(&text, first).ends_with("  session open"),
         "{text}"
     );
     assert_eq!(
@@ -516,7 +516,7 @@ async fn cli_state_lists_every_current_task_whatever_its_worker_session() {
     let tasks: Vec<&str> = text
         .lines()
         .skip_while(|line| !line.starts_with("tasks"))
-        .take_while(|line| !line.starts_with("live"))
+        .take_while(|line| !line.starts_with("sessions"))
         .collect();
     assert_eq!(
         tasks,
@@ -528,7 +528,7 @@ async fn cli_state_lists_every_current_task_whatever_its_worker_session() {
         "{text}"
     );
     assert!(
-        live_row(&text, live).ends_with("  session running"),
+        live_row(&text, live).ends_with("  session open"),
         "{text}"
     );
     assert!(
