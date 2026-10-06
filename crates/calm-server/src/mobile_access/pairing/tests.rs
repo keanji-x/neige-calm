@@ -88,7 +88,7 @@ fn mobile_pairing_disable_revokes_sessions_claims_and_live_transports() {
     let pending = claimed(&mut state);
     state.approve(&pending.id).unwrap();
     let connection = state.connections.clone();
-    state.disable(&sessions);
+    state.disable(&sessions).unwrap();
     assert!(connection.is_cancelled());
     assert!(sessions.get(&session).is_none());
     state.origin = Some("https://pair.example.ts.net".into());
@@ -159,17 +159,14 @@ fn mobile_pairing_refused_invitation_keeps_the_live_one() {
     let mut state = enabled();
     let (live, _, _) = state.invite().unwrap();
     for n in 0..MAX_DEVICES {
-        state.devices.insert(
-            format!("device-{n}"),
-            Device {
-                public: PairedDevice {
-                    id: format!("device-{n}"),
-                    device_name: format!("Phone {n}"),
-                },
-                session: format!("session-{n}"),
-                grant: DeviceGrant::Scan,
-            },
-        );
+        state
+            .grants
+            .mint(
+                state.origin.as_deref().unwrap(),
+                format!("Phone {n}"),
+                DeviceGrant::Scan,
+            )
+            .unwrap();
     }
     // A refusal changes nothing: the invitation already on screen stays live.
     assert!(state.invite().is_err());

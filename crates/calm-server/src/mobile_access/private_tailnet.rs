@@ -21,6 +21,13 @@ pub struct PrivateTailnetConfig {
     ingress_socket: PathBuf,
 }
 impl PrivateTailnetConfig {
+    pub(super) fn credential_path(&self) -> PathBuf {
+        self.ingress_socket
+            .parent()
+            .expect("validated private directory")
+            .join("mobile-grants.json")
+    }
+
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let config: Self = serde_json::from_slice(&std::fs::read(path)?)?;
         anyhow::ensure!(cfg!(target_os = "linux"), "Private Tailnet requires Linux");
@@ -85,6 +92,7 @@ pub(super) struct Controller {
     operation: Arc<tokio::sync::Mutex<()>>,
     pairings: Arc<Mutex<PairingState>>,
     sessions: SessionStore,
+    stop: CancellationToken,
 }
 /// Held by the binary outside AuthState to break the router/auth ownership cycle.
 pub struct PrivateIngress {
@@ -96,6 +104,10 @@ impl Drop for PrivateIngress {
     }
 }
 impl Controller {
+    pub fn stop(&self) {
+        self.stop.cancel();
+    }
+
     pub fn enrollment_client(&self) -> TailnetClient {
         self.client.clone()
     }
@@ -106,7 +118,19 @@ impl Controller {
         sessions: SessionStore,
     ) -> anyhow::Result<(Self, PrivateIngress)> {
         let listener = bind_private(&config.ingress_socket).await?;
+        // Bind first: a refused second server must never attach the active server's grant file.
+        pairings
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Mobile access lock poisoned"))?
+            .grants
+            .load(config.credential_path())?;
         let client = TailnetClient::new(config.control_socket);
+        let initial_status = client
+            .request(TailnetAction::Status)
+            .await
+            .ok()
+            .map(|r| r.status);
+        reconcile_origin(&pairings, &sessions, initial_status)?;
         let stop = CancellationToken::new();
         let weak = Arc::downgrade(&router);
         let operation = Arc::new(tokio::sync::Mutex::new(()));
@@ -124,7 +148,12 @@ impl Controller {
                     listener,
                     state: pairings.clone(),
                 },
-                (*router).clone(),
+                (*router)
+                    .clone()
+                    .layer(axum::middleware::from_fn_with_state(
+                        pairings.clone(),
+                        require_ready,
+                    )),
             );
             let monitor = async {
                 loop {
@@ -135,14 +164,16 @@ impl Controller {
                             .await
                             .ok()
                             .map(|r| r.status);
-                        reconcile_origin(&pairings, &sessions, status);
+                        if let Err(error) = reconcile_origin(&pairings, &sessions, status) {
+                            tracing::error!(%error, "private mobile credential reconciliation failed");
+                        }
                     }
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             };
             tokio::select! { _=task_stop.cancelled()=>{},_ = std::future::IntoFuture::into_future(server)=>{},_=monitor=>{} }
             if let Ok(mut state) = pairings.lock() {
-                state.disable(&sessions);
+                state.suspend();
             }
         });
         Ok((
@@ -151,6 +182,7 @@ impl Controller {
                 operation,
                 pairings,
                 sessions,
+                stop: stop.clone(),
             },
             PrivateIngress { stop },
         ))
@@ -167,7 +199,7 @@ impl Controller {
             &self.pairings,
             &self.sessions,
             Some(response.status.clone()),
-        );
+        )?;
         Ok(response)
     }
     pub async fn status(&self) -> Result<TailnetStatus> {
@@ -175,28 +207,46 @@ impl Controller {
     }
 }
 
+/// This private-ingress gate owns readiness; the generic session gate owns authorization.
+async fn require_ready(
+    axum::extract::State(pairings): axum::extract::State<Arc<Mutex<PairingState>>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response> {
+    // Revocation remains available even while reconnecting or repairing storage.
+    if request.method() != axum::http::Method::POST
+        || request.uri().path() != crate::auth::LOGOUT_PATH
+    {
+        pairings
+            .lock()
+            .map_err(|_| CalmError::Internal("Mobile access lock poisoned".into()))?
+            .grants
+            .ensure_ready()?;
+    }
+    Ok(next.run(request).await)
+}
+
 fn reconcile_origin(
     pairings: &Arc<Mutex<PairingState>>,
     sessions: &SessionStore,
     status: Option<TailnetStatus>,
-) {
+) -> Result<()> {
     // A network outage or a temporarily unavailable control socket is not an
     // owner revocation. Preserve paired sessions until an explicit stop/logout
     // or a newly verified origin changes the selected node.
-    let Some(status) = status else { return };
+    let Some(status) = status else { return Ok(()) };
     if let Ok(mut state) = pairings.lock() {
         if !status.desired_enabled {
-            state.disable(sessions);
-            return;
+            state.disable(sessions)?;
+            return Ok(());
         }
         if status.https_ready
             && let Some(origin) = status.origin
-            && state.origin.as_ref() != Some(&origin)
         {
-            state.disable(sessions);
-            state.origin = Some(origin);
+            state.activate(origin, sessions)?;
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]

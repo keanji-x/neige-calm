@@ -48,13 +48,17 @@ stay in local configuration and never enter source control.
   it from history, exchanges it in POST bodies, sets a Secure/HttpOnly session
   cookie on the server origin, and then navigates to Next. No cross-origin cookie
   injection or remote Tauri permissions are needed.
-- Reuse the existing in-memory session lifetime. Paired devices can be revoked;
-  disabling access revokes their sessions and pending invitations. Server restart
-  requires a new scan, matching existing session invalidation. Durable device
-  credentials are a separate future change.
+- Private Tailnet persists completed device grants as token hashes with device
+  metadata and an origin binding in its private state directory. There is no server
+  expiry; a persistent Secure/HttpOnly/SameSite=Strict cookie carries the token.
+  Password sessions and pending invitations remain process-local. Paired devices
+  can be revoked; disabling access revokes their grants and pending invitations.
+  Server restart restores completed Private Tailnet grants after enabled state and
+  the same origin are verified. Legacy Funnel sessions remain process-local.
 - Revocation also cancels the public transports, including already-upgraded
   WebSockets. Other paired devices reconnect with still-valid sessions. Provider
-  exit invalidates invitations and sessions and closes the ingress immediately.
+  exit closes the ingress immediately. Private Tailnet process shutdown suspends
+  grants; legacy Funnel provider exit revokes its process-local sessions.
 - The public ingress does not offer password login; authorization comes from the
   owner-approved QR exchange. Local password login remains on the existing local
   listener. Only whoami/logout are shared with the public auth surface.
@@ -117,7 +121,17 @@ for Android, choose 扫码连接, confirm the displayed hostname, and request pa
 Compare the six-digit code on both screens and approve on the owner page. The
 phone then enters the real Next workspace. Revoke removes its session and closes
 live streams. Other phones reconnect; Disable removes all mobile grants and the
-owned tunnel. After a server restart, enable access and pair again.
+owned tunnel. Private Tailnet restores completed grants after server restart once
+access is verified enabled at the same origin. A shutdown suspends ingress without
+revoking grants; explicit logout, device revocation, Disable, and origin changes
+commit invalidation before reporting success. Credential snapshots use atomic
+replacement, mode 0600 in the existing owner-controlled mode-0700 directory, and
+contain no raw bearer tokens. Storage errors refuse successful grant/revoke actions
+and suspend credential lookup. A private ingress waiting for verification returns
+a retryable 503, preserving client login state. Browser storage clearing still requires pairing
+again. Password sessions, pending QR claims, and legacy Funnel sessions do not
+survive restart. Owner password changes do not revoke independent device grants;
+use device revocation or Disable to revoke them.
 
 ## Repeatable small-loop check
 

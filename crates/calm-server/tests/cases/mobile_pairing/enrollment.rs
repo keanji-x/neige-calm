@@ -36,7 +36,7 @@ pub(super) fn control_response(bytes: &[u8]) -> calm_types::enrollment::Enrollme
     }
 }
 
-async fn scan(f: &Fixture) -> (Value, Value) {
+pub(super) async fn scan(f: &Fixture) -> (Value, Value) {
     assert_eq!(
         request(
             &f.local,

@@ -2,6 +2,7 @@
 pub use calm_types::mobile_access::MobileStatus;
 pub mod enrollment_routes;
 pub mod funnel;
+mod grants;
 mod ingress;
 pub mod pairing;
 pub mod private_tailnet;
@@ -36,9 +37,11 @@ impl std::fmt::Debug for MobileAccess {
 
 impl MobileAccess {
     pub fn new(sessions: SessionStore) -> Self {
+        let pairings = PairingState::default();
+        sessions.set_backend(pairings.grants.clone());
         Self {
             inner: Arc::new(Inner {
-                pairings: Arc::new(Mutex::new(PairingState::default())),
+                pairings: Arc::new(Mutex::new(pairings)),
                 control: tokio::sync::Mutex::new(funnel::Controller::default()),
                 sessions,
                 unavailable: AtomicBool::new(false),
@@ -123,8 +126,11 @@ impl MobileAccess {
     /// Kernel shutdown revokes its ingress, but does not change app-owned
     /// desiredEnabled or stop the independent Tailnet child.
     pub async fn shutdown(&self) -> Result<()> {
-        self.lock()?.disable(&self.inner.sessions);
-        self.inner.private.lock().await.take();
+        if let Some(controller) = self.inner.private.lock().await.take() {
+            controller.stop();
+        }
+        // Shutdown never revokes durable grants, including partially failed private setup.
+        self.lock()?.suspend();
         self.inner.control.lock().await.stop().await
     }
 
@@ -193,7 +199,7 @@ impl MobileAccess {
     }
 
     pub async fn disable(&self) -> Result<()> {
-        self.lock()?.disable(&self.inner.sessions);
+        self.lock()?.disable(&self.inner.sessions)?;
         if let Some(private) = self.inner.private.lock().await.as_ref() {
             private
                 .request(calm_types::tailnet::TailnetAction::Disable)
@@ -201,9 +207,17 @@ impl MobileAccess {
             return Ok(());
         }
         let mut control = self.inner.control.lock().await;
-        self.lock()?.disable(&self.inner.sessions);
+        self.lock()?.disable(&self.inner.sessions)?;
         control.stop().await
     }
+}
+
+/// Persistent browser storage; server grants have no expiry and remain explicitly revocable.
+fn build_device_cookie(value: &str) -> axum_extra::extract::cookie::Cookie<'static> {
+    let mut cookie = crate::auth::build_session_cookie(value);
+    cookie.set_secure(true);
+    cookie.make_permanent();
+    cookie
 }
 
 #[cfg(test)]

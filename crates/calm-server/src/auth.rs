@@ -1,4 +1,5 @@
-//! Global session gate: single-user owner login, in-memory sessions keyed by an unsigned `calm-session` cookie (HttpOnly, SameSite=Strict, dies on restart).
+//! Global session gate: process-local password sessions and owner-managed mobile credentials.
+//! Cookies are HttpOnly and SameSite=Strict; paired-device grants can survive restart.
 //! `dev_autologin` promotes every request to the owner without a cookie; production must never enable it.
 
 pub mod login_throttle;
@@ -28,6 +29,9 @@ use uuid::Uuid;
 
 /// Name of the session cookie. Frontend and backend MUST agree on this.
 pub const SESSION_COOKIE: &str = "calm-session";
+
+/// The idempotent credential-revocation endpoint can run during feature reconnection.
+pub(crate) const LOGOUT_PATH: &str = "/api/auth/logout";
 
 /// Owner principal id; every successful login lands on this exact string.
 pub const OWNER_USER_ID: &str = "local-owner";
@@ -94,10 +98,18 @@ pub enum SessionAuthority {
     PairedDevice,
 }
 
-/// In-memory session store; a process restart wipes sessions.
+/// Optional credential backend owned by the feature that issues its sessions.
+/// The generic gate only consumes credential lookup and revocation.
+pub(crate) trait SessionBackend: std::fmt::Debug + Send + Sync {
+    fn get(&self, token: &str) -> Option<Session>;
+    fn remove(&self, token: &str) -> Result<()>;
+}
+
+/// Process-local sessions with an optional feature-owned credential backend.
 #[derive(Debug, Clone, Default)]
 pub struct SessionStore {
     inner: Arc<Mutex<HashMap<String, Session>>>,
+    backend: Arc<Mutex<Option<Arc<dyn SessionBackend>>>>,
 }
 
 impl SessionStore {
@@ -121,9 +133,16 @@ impl SessionStore {
         id
     }
 
+    pub(crate) fn set_backend(&self, backend: Arc<dyn SessionBackend>) {
+        *self.backend.lock().expect("session backend lock poisoned") = Some(backend);
+    }
+
     pub fn get(&self, id: &str) -> Option<Session> {
         match self.inner.lock() {
-            Ok(g) => g.get(id).cloned(),
+            Ok(g) => g
+                .get(id)
+                .cloned()
+                .or_else(|| self.backend.lock().ok()?.as_ref()?.get(id)),
             Err(_) => {
                 tracing::error!("session store mutex poisoned on get");
                 None
@@ -132,10 +151,20 @@ impl SessionStore {
     }
 
     /// Idempotent — removing an unknown id is a no-op.
-    pub fn remove(&self, id: &str) {
-        if let Ok(mut g) = self.inner.lock() {
-            g.remove(id);
+    pub fn remove(&self, id: &str) -> Result<()> {
+        self.inner
+            .lock()
+            .map_err(|_| CalmError::Internal("Session lock poisoned".into()))?
+            .remove(id);
+        if let Some(backend) = self
+            .backend
+            .lock()
+            .map_err(|_| CalmError::Internal("Session backend lock poisoned".into()))?
+            .as_ref()
+        {
+            backend.remove(id)?;
         }
+        Ok(())
     }
 }
 
@@ -397,7 +426,7 @@ pub fn router() -> Router<AuthState> {
 pub fn session_router() -> Router<AuthState> {
     Router::new()
         .route("/api/auth/whoami", get(whoami_handler))
-        .route("/api/auth/logout", post(logout_handler))
+        .route(LOGOUT_PATH, post(logout_handler))
 }
 
 /// The SHA-256 digests of a username and password, so the comparison runs over fixed-size values.
@@ -472,7 +501,7 @@ impl IntoResponse for LoginError {
         (status = 429, body = ErrorBody,
             description = "`login_throttled`: this peer failed too often and the credentials were not evaluated.",
             headers(("Retry-After" = u64, description = "Seconds until this peer may try again."))),
-        (status = 500, body = ErrorBody, description = "The connection carries no peer address."),
+        (status = 500, body = ErrorBody, description = "The connection carries no peer address, or credential storage could not be updated."),
     )
 )]
 pub async fn login_handler(
@@ -520,7 +549,7 @@ pub async fn login_handler(
 
     // Tear down any previous session on this request so a successful login leaves no zombie sessions.
     for existing in session_cookies(&headers) {
-        auth.sessions.remove(existing);
+        auth.sessions.remove(existing)?;
     }
 
     let new_id = auth.sessions.create(SessionAuthority::PasswordLogin);
@@ -543,10 +572,10 @@ async fn whoami_handler(State(auth): State<AuthState>, headers: HeaderMap) -> Re
     Ok(Json(WhoamiBody::from(&principal)).into_response())
 }
 
-/// POST /api/auth/logout — always 200; idempotent.
+/// POST /api/auth/logout — idempotent; storage errors refuse successful logout.
 async fn logout_handler(State(auth): State<AuthState>, headers: HeaderMap) -> Result<Response> {
     for id in session_cookies(&headers) {
-        auth.sessions.remove(id);
+        auth.sessions.remove(id)?;
     }
     let cookie = build_logout_cookie();
     let mut resp = Json(serde_json::json!({"ok": true})).into_response();
@@ -684,7 +713,7 @@ mod tests {
         let store = SessionStore::new();
         let id = store.create(SessionAuthority::PasswordLogin);
         assert!(store.get(&id).is_some());
-        store.remove(&id);
+        store.remove(&id).unwrap();
         assert!(store.get(&id).is_none());
     }
 

@@ -261,8 +261,8 @@ impl Controller {
         };
         {
             let mut locked = state.lock().map_err(|_| unavailable())?;
-            locked.disable(&sessions);
-            locked.origin = Some(origin);
+            locked.disable(&sessions)?;
+            locked.activate(origin, &sessions)?;
         }
         let stop = CancellationToken::new();
         let stop_task = stop.clone();
@@ -312,8 +312,10 @@ async fn run_ingress(
         _ = child.wait() => {},
         _ = std::future::IntoFuture::into_future(server) => {},
     }
-    if let Ok(mut locked) = state.lock() {
-        locked.disable(&sessions);
+    if let Ok(mut locked) = state.lock()
+        && let Err(error) = locked.disable(&sessions)
+    {
+        tracing::error!(%error, "mobile credential revocation failed");
     }
     let _ = child.kill().await;
 }

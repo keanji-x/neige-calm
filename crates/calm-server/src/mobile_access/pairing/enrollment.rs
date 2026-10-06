@@ -69,7 +69,7 @@ impl PairingState {
         if self.origin.is_none() {
             return Err(access_off());
         }
-        if self.devices.len() >= MAX_DEVICES {
+        if self.grants.list().len() >= MAX_DEVICES {
             return Err(CalmError::BadRequest("Device limit reached".into()));
         }
         let previous = self.scan.take().map(|row| row.id);
@@ -197,22 +197,14 @@ impl PairingState {
                 .map(|_| session.clone())
                 .ok_or(CalmError::Unauthorized);
         }
-        if self.devices.len() >= MAX_DEVICES {
+        if self.grants.list().len() >= MAX_DEVICES {
             return Err(CalmError::BadRequest("Device limit reached".into()));
         }
-        let session = sessions.create(crate::auth::SessionAuthority::PairedDevice);
-        let id = Uuid::new_v4().to_string();
-        self.devices.insert(
-            id.clone(),
-            Device {
-                public: PairedDevice {
-                    id,
-                    device_name: claim.device_name.clone(),
-                },
-                session: session.clone(),
-                grant: DeviceGrant::Scan,
-            },
-        );
+        let origin = self.origin.as_deref().ok_or(CalmError::Unauthorized)?;
+        let session = self
+            .grants
+            .mint(origin, claim.device_name.clone(), DeviceGrant::Scan)?;
+        sessions.set_backend(self.grants.clone());
         row.session = Some(session.clone());
         Ok(session)
     }
@@ -306,10 +298,13 @@ mod tests {
         let first = state.redeem_scan(&redeem(&id), &sessions).unwrap();
         let second = state.redeem_scan(&redeem(&id), &sessions).unwrap();
         assert_eq!(first, second);
-        assert_eq!(state.devices.len(), 1);
-        sessions.remove(&first);
+        assert_eq!(state.grants.list().len(), 1);
+        sessions.remove(&first).unwrap();
         assert!(state.redeem_scan(&redeem(&id), &sessions).is_err());
-        assert_eq!(state.devices.len(), 1);
+        assert!(
+            state.grants.list().is_empty(),
+            "logout also removes the device grant"
+        );
     }
     #[test]
     fn scan_revoke_disable_and_cancel_fence_redeem() {
@@ -321,10 +316,10 @@ mod tests {
             let session = state.redeem_scan(&redeem(&id), &sessions).unwrap();
             match action {
                 "revoke" => {
-                    let device = state.devices.keys().next().unwrap().clone();
+                    let device = state.grants.list()[0].id.clone();
                     state.revoke(&device, &sessions).unwrap();
                 }
-                "disable" => state.disable(&sessions),
+                "disable" => state.disable(&sessions).unwrap(),
                 _ => state.cancel_scan(&id),
             }
             state.origin = Some("https://fixture.ts.net".into());
@@ -352,7 +347,7 @@ mod tests {
                 .unwrap_err(),
         );
         let (id, generation, _, _) = state.begin_scan().unwrap();
-        state.disable(&SessionStore::new());
+        state.disable(&SessionStore::new()).unwrap();
         gone(
             state
                 .finish_scan(
@@ -408,5 +403,51 @@ mod tests {
             state.begin_scan().unwrap();
         }
         assert!(state.begin_scan().is_err());
+    }
+    #[test]
+    fn scan_unrelated_device_revocation_preserves_invitation_phases() {
+        for phase in ["unclaimed", "claimed", "completed"] {
+            let sessions = SessionStore::new();
+            let mut state = state();
+            let (_, payload, _) = state.invite().unwrap();
+            let older = state
+                .claim(PairingClaim {
+                    ticket: payload.split("#v1.").nth(1).unwrap().into(),
+                    device_name: "Older phone".into(),
+                })
+                .unwrap();
+            state.approve(&older.id).unwrap();
+            let older_session = state
+                .redeem(
+                    PairingRedeem {
+                        id: older.id,
+                        secret: older.secret,
+                    },
+                    &sessions,
+                )
+                .unwrap()
+                .unwrap();
+            let older_device = state.grants.list()[0].id.clone();
+            let (id, ticket) = ready(&mut state);
+            if phase != "unclaimed" {
+                state.claim_scan(claim(&id, &ticket)).unwrap();
+            }
+            let completed = if phase == "completed" {
+                Some(state.redeem_scan(&redeem(&id), &sessions).unwrap())
+            } else {
+                None
+            };
+            state.revoke(&older_device, &sessions).unwrap();
+            assert!(sessions.get(&older_session).is_none());
+            state.claim_scan(claim(&id, &ticket)).unwrap_or_else(|e| {
+                panic!("{phase} scan must survive unrelated device revocation: {e}")
+            });
+            let live = state.redeem_scan(&redeem(&id), &sessions).unwrap();
+            if let Some(completed) = completed {
+                assert_eq!(live, completed, "retry returns the existing grant");
+            }
+            assert!(sessions.get(&live).is_some());
+            assert_eq!(state.grants.list().len(), 1);
+        }
     }
 }

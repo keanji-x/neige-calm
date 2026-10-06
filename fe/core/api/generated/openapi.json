@@ -1114,7 +1114,7 @@
             }
           },
           "500": {
-            "description": "The connection carries no peer address.",
+            "description": "The connection carries no peer address, or credential storage could not be updated.",
             "content": {
               "application/json": {
                 "schema": {

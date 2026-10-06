@@ -1,3 +1,4 @@
+use super::grants::{DeviceGrant, GrantStore, MAX_DEVICES};
 use crate::auth::SessionStore;
 use crate::error::{CalmError, Result};
 use calm_types::mobile_access::{
@@ -6,17 +7,17 @@ use calm_types::mobile_access::{
 use rand::{RngCore, rngs::OsRng};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 const PAIR_TTL: Duration = Duration::from_secs(180);
 const MAX_PENDING: usize = 8;
-const MAX_DEVICES: usize = 16;
 mod enrollment;
 use enrollment::ScanInvitation;
 
-fn secret() -> String {
+pub(super) fn secret() -> String {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
     hex::encode(bytes)
@@ -68,26 +69,12 @@ struct Invitation {
     claim: Option<Claim>,
 }
 
-/// How a device joined.
-enum DeviceGrant {
-    /// It redeemed the legacy pairing with this id, so a repeated approve of that id is answered as done.
-    Pairing(String),
-    /// It redeemed a scan enrollment, which the owner approved by creating its QR.
-    Scan,
-}
-
-struct Device {
-    public: PairedDevice,
-    session: String,
-    grant: DeviceGrant,
-}
-
 /// Every grant/revoke transition holds this one lock, including session creation.
 /// No caller may create a paired session outside `redeem`.
 pub(super) struct PairingState {
     pub origin: Option<String>,
     pending: HashMap<String, Invitation>,
-    devices: HashMap<String, Device>,
+    pub(super) grants: Arc<GrantStore>,
     scan: Option<ScanInvitation>,
     scan_window: Instant,
     scan_requests: u32,
@@ -100,7 +87,7 @@ impl Default for PairingState {
         Self {
             origin: None,
             pending: HashMap::new(),
-            devices: HashMap::new(),
+            grants: Arc::new(GrantStore::default()),
             scan: None,
             scan_window: Instant::now(),
             scan_requests: 0,
@@ -111,14 +98,31 @@ impl Default for PairingState {
 }
 
 impl PairingState {
-    pub fn disable(&mut self, sessions: &SessionStore) {
+    pub fn suspend(&mut self) {
         self.origin = None;
         self.pending.clear();
         self.scan = None;
-        for (_, device) in self.devices.drain() {
-            sessions.remove(&device.session);
-        }
+        self.grants.suspend();
         self.disconnect();
+    }
+
+    pub fn disable(&mut self, _sessions: &SessionStore) -> Result<()> {
+        self.suspend();
+        self.grants.disable()
+    }
+
+    pub fn activate(&mut self, origin: String, sessions: &SessionStore) -> Result<()> {
+        if self
+            .origin
+            .as_ref()
+            .is_some_and(|current| current != &origin)
+        {
+            self.suspend();
+        }
+        self.grants.activate(&origin)?;
+        sessions.set_backend(self.grants.clone());
+        self.origin = Some(origin);
+        Ok(())
     }
 
     fn disconnect(&mut self) {
@@ -142,13 +146,7 @@ impl PairingState {
                     })
             })
             .collect();
-        (
-            pending,
-            self.devices
-                .values()
-                .map(|device| device.public.clone())
-                .collect(),
-        )
+        (pending, self.grants.list())
     }
 
     fn expire(&mut self) {
@@ -173,7 +171,7 @@ impl PairingState {
             .values()
             .filter(|row| row.claim.is_some())
             .count();
-        if claimed >= MAX_PENDING || self.devices.len() >= MAX_DEVICES {
+        if claimed >= MAX_PENDING || self.grants.list().len() >= MAX_DEVICES {
             return Err(CalmError::BadRequest(
                 "Pairing limit reached; revoke a device or wait for an invitation to expire".into(),
             ));
@@ -231,11 +229,7 @@ impl PairingState {
         if self.origin.is_none() {
             return Err(access_off());
         }
-        if self
-            .devices
-            .values()
-            .any(|device| matches!(&device.grant, DeviceGrant::Pairing(pairing) if pairing == id))
-        {
+        if self.grants.approved(id) {
             return Ok(());
         }
         let claim = self
@@ -272,38 +266,27 @@ impl PairingState {
         if !claim.approved {
             return Ok(None);
         }
-        if self.devices.len() >= MAX_DEVICES {
+        if self.grants.list().len() >= MAX_DEVICES {
             return Err(CalmError::BadRequest("Device limit reached".into()));
         }
         let name = claim.device_name.clone();
+        let origin = self.origin.clone().ok_or(CalmError::Unauthorized)?;
+        let session = self
+            .grants
+            .mint(&origin, name, DeviceGrant::Pairing(request.id.clone()))?;
+        sessions.set_backend(self.grants.clone());
         self.pending.remove(&request.id);
-        let session = sessions.create(crate::auth::SessionAuthority::PairedDevice);
-        let id = Uuid::new_v4().to_string();
-        self.devices.insert(
-            id.clone(),
-            Device {
-                public: PairedDevice {
-                    id,
-                    device_name: name,
-                },
-                session: session.clone(),
-                grant: DeviceGrant::Pairing(request.id),
-            },
-        );
         Ok(Some(session))
     }
 
-    pub fn revoke(&mut self, id: &str, sessions: &SessionStore) -> Result<()> {
-        let device = self
-            .devices
-            .remove(id)
-            .ok_or_else(|| CalmError::NotFound("No paired device with this id".into()))?;
-        sessions.remove(&device.session);
-        if self
+    pub fn revoke(&mut self, id: &str, _sessions: &SessionStore) -> Result<()> {
+        let invalidates_scan = self
             .scan
             .as_ref()
-            .is_some_and(|row| row.session.as_ref() == Some(&device.session))
-        {
+            .and_then(|row| row.session.as_deref())
+            .is_some_and(|token| self.grants.owns_session(id, token));
+        self.grants.revoke(id)?;
+        if invalidates_scan {
             self.scan = None;
         }
         // Close live streams as well as rejecting subsequent requests. Other

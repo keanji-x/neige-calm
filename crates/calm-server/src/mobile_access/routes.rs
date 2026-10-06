@@ -1,5 +1,5 @@
 use super::MobileStatus;
-use crate::auth::{AuthState, Principal, build_session_cookie};
+use crate::auth::{AuthState, Principal};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::extract::{Json, JsonBody, Path};
 use axum::Router;
@@ -218,8 +218,7 @@ pub async fn redeem(
     let Some(session) = auth.mobile.lock()?.redeem(body, &auth.sessions)? else {
         return Ok(no_store(StatusCode::ACCEPTED));
     };
-    let mut cookie = build_session_cookie(&session);
-    cookie.set_secure(true);
+    let cookie = super::build_device_cookie(&session);
     let mut response = no_store(StatusCode::NO_CONTENT);
     response.headers_mut().insert(
         header::SET_COOKIE,
@@ -290,7 +289,7 @@ pub async fn tailnet_logout(
     JsonBody(_body): JsonBody<MobileAction>,
 ) -> Result<Response> {
     owner(&auth, &principal)?;
-    auth.mobile.lock()?.disable(&auth.sessions);
+    auth.mobile.lock()?.disable(&auth.sessions)?;
     auth.mobile
         .tailnet_action(calm_types::tailnet::TailnetAction::Logout)
         .await?;

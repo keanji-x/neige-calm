@@ -1,6 +1,6 @@
 //! v2 is intentionally separate from the legacy approval endpoints.
 use super::routes::{MobileAction, no_store, owner};
-use crate::auth::{AuthState, Principal, build_session_cookie};
+use crate::auth::{AuthState, Principal};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::extract::{Json, JsonBody, Path};
 use axum::{
@@ -273,8 +273,7 @@ pub async fn redeem(
     }
     let session = auth.mobile.lock()?.redeem_scan(&body, &auth.sessions)?;
     auth.mobile.schedule_key_cleanup(body.enrollment_id.clone());
-    let mut cookie = build_session_cookie(&session);
-    cookie.set_secure(true);
+    let cookie = super::build_device_cookie(&session);
     let mut response = no_store(Json(EnrollmentRedeemed {
         enrollment_id: body.enrollment_id,
         attempt_id: body.attempt_id,

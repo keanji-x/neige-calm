@@ -39,7 +39,8 @@ state; the selected provider exclusively owns this deployment's pairing state.
 Existing configuration files without a Tailnet section do not opt in on upgrade.
 
 The default state is `<calm-data-dir>/tailnet`, separate from release files. It
-contains node identity, desired.json, and private Unix control sockets. Paths can
+contains node identity, desired.json, mobile-grants.json, and private Unix control
+sockets. Paths can
 be overridden with `state_dir` and `binary` in the Tailnet section; the state path
 must be short enough for Unix sockets. The directory is 0700 and state/control
 files are 0600. Only one app and one helper can own it. Never point it at a system
@@ -55,9 +56,14 @@ pending login/approval never causes a crash-restart loop.
 
 The helper is a peer of the Neige kernel, not its descendant. Kernel restart
 keeps the node running and returns a recognizable HTTP 503 while the fixed
-restricted Unix ingress is unavailable. Kernel sessions remain in memory, so a kernel
-restart can still require Neige pairing again. Full neige-app restart stops the
-helper. Parent-death signaling and private state locks prevent orphan adoption
+restricted Unix ingress is unavailable. Completed phone grants survive kernel
+and neige-app restart in mobile-grants.json; there is no server expiry. Only token
+hashes, device metadata, and the verified origin are stored. Grants resume after
+access is verified enabled at the same origin. Logout, device revocation, Disable,
+and a verified origin change invalidate them durably. Password sessions and QR
+invitations remain process-local. The first upgrade from process-local phone
+sessions requires pairing once to create the persistent grant. Full neige-app
+restart stops the helper. Parent-death signaling and private state locks prevent orphan adoption
 or two simultaneous writers. Five crashes in five minutes open a circuit; an
 explicit Disable/Enable retries it.
 

@@ -814,3 +814,6 @@ async fn private_tailnet_disable_closes_active_websocket_and_revokes_session() {
     drop(f);
     control.abort();
 }
+
+#[path = "mobile_pairing/restart.rs"]
+mod restart;
