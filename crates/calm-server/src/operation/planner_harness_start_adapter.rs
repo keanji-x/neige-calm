@@ -1703,9 +1703,22 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             "fail_runtime" => {
                 let worker_session_id = step.arg_string("runtime_id", "planner harness")?;
                 let journal = read_harvested_from_journal(_output);
+                // For the log line only; a missing value is not this step's concern.
+                let card_id = _output
+                    .data
+                    .get("card_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
                 write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
                     Box::pin(async move {
-                        return_harvested_queues_and_fail_tx(tx, &worker_session_id, &journal).await
+                        return_harvested_queues_and_fail_tx(
+                            tx,
+                            &card_id,
+                            &worker_session_id,
+                            &journal,
+                        )
+                        .await
                     })
                 })
                 .await
@@ -1877,6 +1890,7 @@ async fn overwrite_queue_from_the_runtimes_own_row_tx(
 /// Fail the runtime and return what it harvested, in one transaction: either it commits or none of it happened.
 async fn return_harvested_queues_and_fail_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    card_id: &str,
     worker_session_id: &str,
     journal: &[HarvestedFromJournalEntry],
 ) -> Result<()> {
@@ -1916,10 +1930,22 @@ async fn return_harvested_queues_and_fail_tx(
         let mut source = HarnessSnapshot::from_value_strict(source_state);
         let mut source_entries = source.pending_entries();
         // #2192: a failed carrier keeps its own copy of what it gave away, so it must drop what the successor delivered,
-        // or restoring it would deliver that again. Only while the row still carries this take's stamp: a re-driven
-        // give-back finds it cleared, and what it returned the first time is owed, not delivered. A row that kept no copy
-        // (every other source) holds none of these ids, so this changes nothing there.
+        // or restoring it would deliver that again. Only while the row is still stamped: a re-driven give-back finds the
+        // stamp cleared, and what it returned the first time is owed, not delivered. Any stamp is this take's: while the
+        // card points at the successor, the carrier is not the card's session, so no other start can take it and stamp it.
+        // A row that kept no copy (every other source) holds none of these ids, so this changes nothing there.
         if !delivered.is_empty() && source_still_stamped_tx(tx, &entry.worker_session_id).await? {
+            if successor.is_none() {
+                // No readable successor snapshot reads as "holds nothing", so every journalled message counts as delivered.
+                tracing::warn!(
+                    card_id,
+                    worker_session_id,
+                    source_session = %entry.worker_session_id,
+                    dropped = delivered.len(),
+                    "planner harness give-back: the failed start's session has no readable snapshot; \
+                     the carrier drops the journalled messages it gave away"
+                );
+            }
             let delivered_ids: std::collections::HashSet<String> = delivered
                 .iter()
                 .flat_map(|m| m.ids.iter().cloned())

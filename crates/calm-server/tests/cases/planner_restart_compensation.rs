@@ -2,6 +2,7 @@
 //! carrier, owing exactly what the new session did not deliver: the queue it kept, attachments
 //! included, minus anything the new session already handed to the model.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -9,7 +10,8 @@ use async_trait::async_trait;
 use axum::http::StatusCode;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::error::{CalmError, Result as CalmResult};
-use calm_server::harness::{HarnessSnapshot, HarnessState, is_harness_snapshot_value};
+use calm_server::harness::queue::{FoldOutcome, try_fold_tail};
+use calm_server::harness::{HarnessSnapshot, HarnessState, SendKey, is_harness_snapshot_value};
 use calm_server::model::new_id;
 use calm_server::operation::planner_harness_start_adapter::PlannerHarnessStartAdapter;
 use calm_server::operation::{
@@ -381,6 +383,266 @@ async fn a_failed_start_does_not_give_back_what_its_new_session_delivered() {
         boot.deliveries(QUEUED, &image.path),
         vec![true],
         "delivered once"
+    );
+    boot.shutdown().await;
+}
+
+/// Review channel A's `probe_partial_fold_owed_redriven`: the production adapter, except that the
+/// spawn drops the entry holding `delivered` from the new session's row (as a delivery would) and
+/// fails, and the compensation's `fail_runtime` and `restore_old_runtime` each run twice, as after
+/// a crash between a step's commit and its checkpoint.
+struct DropThenFailRedriven {
+    inner: PlannerHarnessStartAdapter,
+    repo: Arc<SqlxRepo>,
+    card_id: String,
+    delivered: &'static str,
+}
+
+#[async_trait]
+impl ProviderAdapter for DropThenFailRedriven {
+    fn kind(&self) -> &'static str {
+        self.inner.kind()
+    }
+
+    fn phases(&self) -> &'static [PhaseTag] {
+        self.inner.phases()
+    }
+
+    fn app_server_interact_kind(
+        &self,
+        output: &TxOutput,
+        op: &Operation,
+    ) -> CalmResult<AppServerInteractKind> {
+        self.inner.app_server_interact_kind(output, op)
+    }
+
+    async fn validate(&self, input: &Value) -> CalmResult<()> {
+        self.inner.validate(input).await
+    }
+
+    async fn prepare_tx<'tx>(
+        &self,
+        tx: &mut Tx<'tx>,
+        input: &Value,
+        op: &Operation,
+    ) -> CalmResult<TxOutput> {
+        self.inner.prepare_tx(tx, input, op).await
+    }
+
+    async fn app_server_interact(
+        &self,
+        output: &mut TxOutput,
+        op: &Operation,
+        ctx: &SpawnCtx,
+    ) -> CalmResult<AppServerInteractOutcome> {
+        self.inner.app_server_interact(output, op, ctx).await
+    }
+
+    async fn spawn_side_effect(
+        &self,
+        _output: &TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<SpawnOutcome> {
+        let (id, state): (String, Option<String>) = sqlx::query_as(
+            "SELECT id, handle_state_json FROM worker_sessions WHERE card_id = ?1 \
+               AND state IN ('starting','running','idle','turn_pending')",
+        )
+        .bind(&self.card_id)
+        .fetch_one(self.repo.pool())
+        .await
+        .unwrap();
+        let mut snapshot =
+            HarnessSnapshot::from_value_strict(serde_json::from_str(&state.unwrap()).unwrap());
+        let before = snapshot.pending_entries();
+        let kept: Vec<_> = before
+            .iter()
+            .filter(|entry| !format!("{:?}", entry.observation()).contains(self.delivered))
+            .cloned()
+            .collect();
+        assert_eq!(kept.len() + 1, before.len(), "premise: one entry delivered");
+        snapshot.set_pending_entries(kept);
+        sqlx::query("UPDATE worker_sessions SET handle_state_json = ?1 WHERE id = ?2")
+            .bind(serde_json::to_string(&snapshot).unwrap())
+            .bind(&id)
+            .execute(self.repo.pool())
+            .await
+            .unwrap();
+        Err(CalmError::Internal(
+            "test: the start failed after its new session delivered one message".into(),
+        ))
+    }
+
+    async fn plan_compensation(
+        &self,
+        from_phase: PhaseTag,
+        reason: &str,
+        output: &TxOutput,
+        op: &Operation,
+    ) -> CalmResult<CompensationStateVersioned> {
+        self.inner
+            .plan_compensation(from_phase, reason, output, op)
+            .await
+    }
+
+    async fn compensate_step(
+        &self,
+        step: &CompensationStep,
+        output: &TxOutput,
+        op: &Operation,
+        ctx: &SpawnCtx,
+    ) -> CalmResult<()> {
+        self.inner.compensate_step(step, output, op, ctx).await?;
+        if step.op == "fail_runtime" || step.op == "restore_old_runtime" {
+            self.inner.compensate_step(step, output, op, ctx).await?;
+        }
+        Ok(())
+    }
+}
+
+/// A re-driven give-back must not take what it returned the first time for delivered. Q1 (with an
+/// image) and Q2 are one folded entry, Q3 another; the new session delivers Q3 and fails, and the
+/// compensation runs twice. The fold is owed, so it stays pending, image included, and the next
+/// restart delivers it once and never re-sends Q3.
+#[tokio::test]
+async fn a_redriven_give_back_keeps_what_the_new_session_still_owes() {
+    const Q1: &str = "the folded message with the image";
+    const Q2: &str = "the message folded behind it";
+    const Q3: &str = "the message the new session already sent";
+    let mut boot = ordinary_track().await;
+    let image = bound_image(&boot);
+
+    let wedged = boot.active().await.id;
+    let harness = boot.state.harness.get(&wedged).unwrap();
+    harness
+        .set_state_for_test(HarnessState::TurnRunning {
+            turn_id: "unconfirmed".into(),
+            started_at: Instant::now(),
+        })
+        .await;
+    for (text, attachments) in [(Q1, vec![image.clone()]), (Q2, vec![]), (Q3, vec![])] {
+        harness
+            .observe_user_message_durable(text.into(), attachments, SendKey::unique_for_test())
+            .await
+            .unwrap();
+    }
+    harness
+        .set_state_for_test(HarnessState::Wedged {
+            since: Instant::now(),
+            reason: "interrupt_timeout".into(),
+        })
+        .await;
+    harness.persist_snapshot().await.unwrap();
+    // Fold Q2 into Q1 on the wedged row (the backpressure fold), so one entry carries two ids.
+    let state: String =
+        sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE id = ?1")
+            .bind(&wedged)
+            .fetch_one(boot.repo.pool())
+            .await
+            .unwrap();
+    let mut snapshot = HarnessSnapshot::from_value_strict(serde_json::from_str(&state).unwrap());
+    let mut entries = snapshot.pending_entries();
+    for entry in entries.iter_mut() {
+        entry.ensure_message_id();
+    }
+    let q3 = entries.pop().unwrap();
+    let q2 = entries.pop().unwrap();
+    let mut queue: VecDeque<_> = entries.into_iter().collect();
+    assert!(
+        matches!(
+            try_fold_tail(&mut queue, &q2, 10_000),
+            FoldOutcome::Folded { .. }
+        ),
+        "premise: folded"
+    );
+    queue.push_back(q3);
+    let entries: Vec<_> = queue.into_iter().collect();
+    assert_eq!(
+        entries[0].message_ids().len(),
+        2,
+        "premise: the fold holds two ids"
+    );
+    snapshot.set_pending_entries(entries);
+    sqlx::query("UPDATE worker_sessions SET handle_state_json = ?1 WHERE id = ?2")
+        .bind(serde_json::to_string(&snapshot).unwrap())
+        .bind(&wedged)
+        .execute(boot.repo.pool())
+        .await
+        .unwrap();
+
+    let original = boot.state.clone();
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
+    let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.pool().clone()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(DropThenFailRedriven {
+        inner: PlannerHarnessStartAdapter::new(
+            boot.repo.clone(),
+            boot.state.shared_codex_appserver.clone(),
+            boot.state.thread_seals().clone(),
+            boot.state.harness.clone(),
+            boot.state.plugin.clone(),
+            boot.state.card_role_cache.clone(),
+            boot.state.track_area_cache.clone(),
+            None,
+            boot.state.claude_planner_wiring().host,
+        ),
+        repo: boot.repo.clone(),
+        card_id: boot.planner_card_id.clone(),
+        delivered: Q3,
+    });
+    let completion = OperationCompletionBus::new();
+    let runtime = Arc::new(OperationRuntime::new_unchecked(
+        operation_repo.clone(),
+        vec![adapter],
+        boot.state.events.clone(),
+        completion.clone(),
+        SpawnCtx::new(
+            route_repo,
+            operation_repo,
+            boot.state.daemon.clone(),
+            boot.state.terminal_renderer.clone(),
+            boot.state.events.clone(),
+            completion,
+        ),
+    ));
+    boot.state = boot.state.clone().with_operation_runtime(runtime);
+    boot.app = crate::planner_first_start::router(&boot.state);
+
+    let (status, body) = boot.fresh_start("restart").await;
+    assert!(
+        !status.is_success(),
+        "premise: the start failed: {status} body={body}"
+    );
+    assert_eq!(boot.current_session().await, Some(wedged.clone()));
+    assert_eq!(boot.harvested_at(&wedged).await, None, "unstamped");
+    let (status, run) = get(boot.app.clone(), boot.card_uri("planner/run")).await;
+    assert_eq!(status, StatusCode::OK, "body={run}");
+    let pending = run["pending"].as_array().unwrap();
+    assert_eq!(pending.len(), 1, "only the fold is owed: {run}");
+    let text = pending[0]["text"].as_str().unwrap();
+    assert!(text.contains(Q1) && text.contains(Q2), "{run}");
+    assert_eq!(
+        pending[0]["attachments"].as_array().map(Vec::len),
+        Some(1),
+        "{run}"
+    );
+
+    boot.state = original;
+    boot.app = crate::planner_first_start::router(&boot.state);
+    let (status, body) = boot.fresh_start("restart").await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    wait_for("the fold reaches the model", async || {
+        !boot.deliveries(Q1, &image.path).is_empty() && boot.queued_copies(Q1).await.is_empty()
+    })
+    .await;
+    assert_eq!(
+        boot.deliveries(Q1, &image.path),
+        vec![true],
+        "the fold once, with its image"
+    );
+    assert_eq!(boot.deliveries(Q2, &image.path).len(), 1);
+    assert!(
+        boot.deliveries(Q3, &image.path).is_empty(),
+        "Q3 never re-sent"
     );
     boot.shutdown().await;
 }
