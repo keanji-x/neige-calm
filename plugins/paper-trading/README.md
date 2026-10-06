@@ -115,10 +115,11 @@ Longbridge endpoint overrides, model keys or arbitrary Python import paths.
 
 ### Track and Worker setup
 
-Save `spy-recipe.md` and `spy-research-recipe.md` as user Recipes. Enable the
-App first, then create the owner Track (the 总览) from `spy-recipe.md` on a
-current kernel, managed or attached: a Planner thread that starts before the
-App is enabled cannot call its tools (#2014). Codex tasks run in the Track's checkout:
+Save `spy-recipe.md` and `spy-research-recipe.md` as user Recipes. Create the
+owner Track (the 总览) from `spy-recipe.md` on a current kernel, managed or
+attached, set `owner_track_id` to its id, enable or reload the App, then reset
+the Track's Planner before its first message: a Planner thread that started
+before the App was enabled cannot call its tools (#2014). Codex tasks run in the Track's checkout:
 a managed Track gets its own Git workspace and an attached Track gets its
 `neige/track-<id>` worktree. An attached Track created before per-track
 worktrees refuses Codex tasks with `track-without-worktree`; create a new
@@ -142,7 +143,8 @@ reads for that date; a failed or incomplete calendar read fails the whole
 reconciliation, so the Planner stops instead of guessing. On a confirmed
 trading day pre-market mails the research Track (`neige_mail_send`), which
 researches, rewrites its report and replies with a suggested ratio and its
-sourced reasons. The reply wakes the 总览 Planner, which before 09:30 decides:
+sourced reasons. The reply wakes the 总览 Planner, which before 09:30 captures
+the reply as its own manual source (source IDs are Track-local) and decides:
 either a hold or `spy.plan` with decision ID `spy-YYYYMMDD` (the App accepts 1-55
 lowercase letters, digits or hyphens and a validity of at most 24 hours; the
 Recipe ends it no later than the snapshot's `regular_close_at`). Without a reply
