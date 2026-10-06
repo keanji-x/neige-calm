@@ -115,3 +115,13 @@ def test_recipes_link_each_others_reports():
     portfolio, research = ((ROOT / recipe).read_text() for recipe in (PORTFOLIO, INSTRUMENT))
     assert '研究链接' in portfolio and '- [<symbol> 研究](neige://wave/<track_id>)' in portfolio
     assert '[组合 Track](neige://wave/<portfolio_track_id>)' in research
+
+
+def test_agent_texts_never_send_a_planner_to_the_longbridge_cli():
+    # Planners use the plugin's SDK only (#2183): prices and the trading day come from invest status.
+    for where, text in agent_texts():
+        assert not re.search(r'longbridge|\bcli\b|k-line', text, flags=re.I), where
+    portfolio, research = ((ROOT / recipe).read_text() for recipe in (PORTFOLIO, INSTRUMENT))
+    assert "unless its calendar_date is today's New York date and trading_day is true" in portfolio
+    assert "valid_until no later than the snapshot's regular_close_at" in portfolio
+    assert "Take the symbol's price from plugin_invest_instrument_status" in research

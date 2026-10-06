@@ -3,6 +3,7 @@
 Generalized from `plugins/paper-trading/paper_trading/allocation_reconcile.py`: orders are the legs of
 decisions, and holdings are checked for every symbol, not SPY alone.
 """
+from datetime import date
 import json
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -17,6 +18,24 @@ BROKER_ACTIVE = {"NotReported", "ReplacedNotReported", "ProtectedNotReported", "
                  "WaitToCancel", "PendingCancel"}
 RESOLVED = ('settled', 'canceled', 'rejected', 'expired')
 NEW_YORK = ZoneInfo('America/New_York')
+
+
+def calendar_fields(session):
+    """The broker calendar for the New York date it was queried for; refused, never guessed."""
+    if not isinstance(session, dict):
+        raise ValueError('broker trading calendar is required')
+    trading_day, half_day = session.get('trading_day'), session.get('half_day')
+    calendar_date, close = session.get('calendar_date'), session.get('regular_close_at')
+    try:
+        if type(trading_day) is not bool or type(half_day) is not bool or (half_day and not trading_day):
+            raise ValueError
+        if type(calendar_date) is not str or date.fromisoformat(calendar_date).isoformat() != calendar_date:
+            raise ValueError
+        close = timestamp(close).isoformat()
+    except ValueError:
+        raise ValueError('broker trading calendar is required') from None
+    return {'calendar_date': calendar_date, 'trading_day': trading_day, 'half_day': half_day,
+            'regular_close_at': close}
 
 
 def validate_snapshot(raw, config, now):
@@ -53,12 +72,13 @@ def validate_snapshot(raw, config, now):
         equity += shares * price
     if type(raw['market_open']) is not bool:
         raise ValueError('broker market session is required')
+    calendar = calendar_fields(raw.get('session'))
     # The trading session this observation values: the New York date of its newest quote, so a
     # weekend or holiday read re-values the last session instead of inventing a new one.
     newest = max((timestamp(q['at']) for q in quotes.values()), default=None)
     return {'at': now.isoformat(), 'date': newest.astimezone(NEW_YORK).date().isoformat() if newest else None,
             'cash_usd': str(cash), 'available_cash_usd': str(available),
-            'equity_usd': str(equity), 'market_open': raw['market_open'],
+            'equity_usd': str(equity), 'market_open': raw['market_open'], **calendar,
             'positions': dict(sorted(positions.items())), 'quotes': dict(sorted(quotes.items()))}
 
 

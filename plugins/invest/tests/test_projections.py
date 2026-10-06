@@ -4,6 +4,7 @@ from decimal import Decimal
 import json
 
 import jsonschema
+import pytest
 
 from account import SimulatedAccount
 from invest.views import units
@@ -248,3 +249,27 @@ def test_sample_date_never_moves_backwards(rig):
     state = r.step()
     assert [s['date'] for s in state['valuations']] == ['2026-10-05']
     assert state['snapshot']['date'] == '2026-10-05'
+
+
+def test_snapshot_carries_the_broker_calendar(rig):
+    snapshot = rig.step()['snapshot']
+    assert {k: snapshot[k] for k in ('calendar_date', 'trading_day', 'half_day', 'regular_close_at')} == {
+        'calendar_date': '2026-09-30', 'trading_day': True, 'half_day': False,
+        'regular_close_at': '2026-09-30T20:00:00+00:00'}
+
+
+@pytest.mark.parametrize('change', [
+    None, {'trading_day': None}, {'trading_day': 'true'}, {'half_day': None}, {'half_day': True, 'trading_day': False},
+    {'calendar_date': None}, {'calendar_date': 20260930}, {'calendar_date': '20260930'}, {'calendar_date': '2026-09-31'},
+    {'regular_close_at': None}, {'regular_close_at': '2026-09-30T16:00:00'}])
+def test_snapshot_without_a_broker_calendar_is_refused_not_guessed(rig, change):
+    first = rig.step()
+    state = rig.read()
+    if change is None:
+        del state['snapshot']['session']
+    else:
+        state['snapshot']['session'].update(change)
+    rig.write(state)
+    rig.clock = lambda: NOW + timedelta(minutes=1)
+    after = rig.step()
+    assert 'trading calendar' in after['error'] and after['snapshot'] == first['snapshot']

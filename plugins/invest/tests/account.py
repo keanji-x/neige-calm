@@ -1,7 +1,19 @@
 """An in-process simulated paper account for long or wide histories: every market order fills at the
 quoted price at once. The production Portfolio still validates, reconciles and sizes everything."""
 from copy import deepcopy
+from datetime import datetime, time, timezone
 from decimal import Decimal
+from zoneinfo import ZoneInfo
+
+NEW_YORK = ZoneInfo('America/New_York')
+
+
+def session(at, trading_day=True, half_day=False):
+    """The broker calendar block `sdk_bridge.market` reports for the New York date of `at`."""
+    day = at.astimezone(NEW_YORK).date()
+    edge = lambda hour, minute=0: datetime.combine(day, time(hour, minute), tzinfo=NEW_YORK).astimezone(timezone.utc).isoformat()
+    return {'calendar_date': day.isoformat(), 'trading_day': trading_day, 'half_day': half_day,
+            'regular_open_at': edge(9, 30), 'regular_close_at': edge(13 if half_day else 16)}
 
 
 class SimulatedAccount:
@@ -18,7 +30,7 @@ class SimulatedAccount:
             'positions': {s: {'shares': n, 'available_shares': n} for s, n in self.positions.items()},
             'quotes': {s: {'price': str(self.prices[s]), 'at': self.clock().isoformat(), 'status': 'Normal'}
                        for s in sorted(quoted)},
-            'market_open': True, 'orders': self.orders, 'fills': self.fills})
+            'session': session(self.clock()), 'market_open': True, 'orders': self.orders, 'fills': self.fills})
 
     def submit(self, request):
         order_id = f'sim-{len(self.orders) + 1}'

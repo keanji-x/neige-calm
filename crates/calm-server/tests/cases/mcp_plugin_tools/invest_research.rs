@@ -43,6 +43,9 @@ async fn invest_recipe_slots_resolve() {
             "cash_usd": "10000", "available_cash_usd": "10000",
             "positions": {"SPY.US": {"shares": 10, "available_shares": 10}},
             "quotes": {"SPY.US": {"price": "500", "at": chrono::Utc::now().to_rfc3339(), "status": "Normal"}},
+            "session": {"calendar_date": "2026-09-30", "trading_day": true, "half_day": false,
+                        "regular_open_at": "2026-09-30T13:30:00+00:00",
+                        "regular_close_at": "2026-09-30T20:00:00+00:00"},
             "market_open": true, "orders": [], "fills": []
         }})
         .to_string(),

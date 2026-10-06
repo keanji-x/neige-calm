@@ -54,6 +54,9 @@ async fn chart_series_resolves_through_invest() {
             "snapshot": {
                 "identity": {"account_no": "PAPER123", "account_channel": "lb_papertrading"},
                 "cash_usd": "10000", "available_cash_usd": "10000", "positions": {}, "quotes": {},
+                "session": {"calendar_date": "2026-09-30", "trading_day": true, "half_day": false,
+                            "regular_open_at": "2026-09-30T13:30:00+00:00",
+                            "regular_close_at": "2026-09-30T20:00:00+00:00"},
                 "market_open": true, "orders": [], "fills": []
             },
             "series": {"NVDA.US": {"complete_through": nvda["complete_through"], "bars": bars}}

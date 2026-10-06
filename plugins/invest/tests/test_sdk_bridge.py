@@ -18,7 +18,7 @@ def sdk(monkeypatch):
     state = NS(positions={'AAA.US': (50, 50), 'BBB.US': (10, 10)}, total='5000', cash='5000', settling='0',
                prices={'AAA.US': '100', 'BBB.US': '200', 'CCC.US': '10'}, quote_at=NOW, status='Normal',
                channel='lb_papertrading', account='PAPER123', orders=[], history=[], currency='USD',
-               history_queries=[])
+               history_queries=[], calendar='trading')
 
     def listed(rows, status):
         wanted = None if status is None else {bridge.enum(s) for s in status}
@@ -62,7 +62,8 @@ def sdk(monkeypatch):
                        trade_status='TradeStatus.' + state.status) for s in symbols if s in state.prices]
 
         def trading_days(self, market, begin, end):
-            return NS(trading_days=[begin], half_trading_days=[])
+            return NS(trading_days=[begin] if state.calendar == 'trading' else [],
+                      half_trading_days=[begin] if state.calendar == 'half' else [])
 
     class Asset:
         def statements(self, kind, start_date, limit):
@@ -106,6 +107,35 @@ def test_snapshot_quotes_requested_and_held_symbols_in_one_call(sdk):
     assert raw['positions'] == {'AAA.US': {'shares': 50, 'available_shares': 50},
                                 'BBB.US': {'shares': 10, 'available_shares': 10}}
     assert set(raw['quotes']) == {'AAA.US', 'BBB.US', 'CCC.US'} and raw['market_open'] is True
+
+
+@pytest.mark.parametrize('calendar,trading_day,half_day,close', [
+    ('trading', True, False, '2026-09-30T20:00:00+00:00'),
+    ('half', True, True, '2026-09-30T17:00:00+00:00'),
+    ('holiday', False, False, '2026-09-30T20:00:00+00:00')])
+def test_snapshot_session_carries_the_broker_calendar_for_its_date(sdk, calendar, trading_day, half_day, close):
+    sdk.state.calendar = calendar
+    raw = bridge.snapshot(sdk.asset, sdk.trade, sdk.quote, 'PAPER123', {'since': None, 'symbols': []})
+    assert {k: raw['session'][k] for k in ('calendar_date', 'trading_day', 'half_day', 'regular_close_at')} == {
+        'calendar_date': '2026-09-30', 'trading_day': trading_day, 'half_day': half_day, 'regular_close_at': close}
+    assert raw['market_open'] is (calendar != 'holiday')
+
+
+def test_snapshot_crossing_midnight_keeps_the_queried_calendar_date(sdk, monkeypatch):
+    from invest.reconcile import validate_snapshot
+    # Sunday 23:59:59 New York at the SDK read; the App validates two seconds later, on Monday.
+    read_at = datetime(2026, 10, 5, 3, 59, 59, tzinfo=timezone.utc)
+    validated_at = datetime(2026, 10, 5, 4, 0, 1, tzinfo=timezone.utc)
+    class Clock(datetime):
+        @classmethod
+        def now(cls, zone=None): return read_at
+    monkeypatch.setattr(bridge, 'datetime', Clock)
+    sdk.state.quote_at, sdk.state.calendar = read_at, 'holiday'
+    raw = json.loads(json.dumps(bridge.snapshot(sdk.asset, sdk.trade, sdk.quote, 'PAPER123', {'since': None, 'symbols': []})))
+    snapshot = validate_snapshot(raw, NS(account_no='PAPER123'), validated_at)
+    assert snapshot['at'] == validated_at.isoformat()
+    assert (snapshot['calendar_date'], snapshot['trading_day']) == ('2026-10-04', False)
+    assert snapshot['regular_close_at'] == '2026-10-04T20:00:00+00:00'
 
 
 def test_submit_is_a_cash_funded_market_order_for_any_us_symbol(sdk):

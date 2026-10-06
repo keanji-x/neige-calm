@@ -166,11 +166,14 @@ def market(quote, symbols, now=None):
     queried_date = local.date()
     days = quote.trading_days(Market.US, queried_date, queried_date)
     local = (now or datetime.now(timezone.utc)).astimezone(NY)
-    closing = time(13) if local.date() in days.half_trading_days else time(16)
-    trading_dates = set(days.trading_days) | set(days.half_trading_days)
-    is_open = local.date() == queried_date and local.date() in trading_dates and \
+    half_day = queried_date in days.half_trading_days
+    trading_day = half_day or queried_date in days.trading_days
+    closing = time(13) if half_day else time(16)
+    is_open = local.date() == queried_date and trading_day and \
         time(9, 30) <= local.time().replace(tzinfo=None) < closing
-    session = {'regular_open_at': datetime.combine(queried_date, time(9, 30), tzinfo=NY).astimezone(timezone.utc).isoformat(),
+    # The calendar answers for the queried New York date, even when the read crosses midnight.
+    session = {'calendar_date': queried_date.isoformat(), 'trading_day': trading_day, 'half_day': half_day,
+               'regular_open_at': datetime.combine(queried_date, time(9, 30), tzinfo=NY).astimezone(timezone.utc).isoformat(),
                'regular_close_at': datetime.combine(queried_date, closing, tzinfo=NY).astimezone(timezone.utc).isoformat()}
     return quotes, session, is_open
 

@@ -13,6 +13,7 @@ from invest.errors import Refused
 from invest.ledger import encoded
 from invest.portfolio import Portfolio
 from invest.settings import InvestConfig
+from account import session
 
 ROOT = Path(__file__).parents[1]
 
@@ -61,7 +62,7 @@ class Rig:
         self.write({'snapshot': {
             'identity': {'account_no': 'PAPER123', 'account_channel': 'lb_papertrading'},
             'cash_usd': '10000', 'available_cash_usd': '10000', 'positions': {}, 'quotes': {},
-            'market_open': True, 'orders': [], 'fills': []}})
+            'session': session(NOW), 'market_open': True, 'orders': [], 'fills': []}})
         self.clock = lambda: NOW
         self.configure()
 
