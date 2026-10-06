@@ -6,9 +6,9 @@ use crate::ids::CardId;
 use crate::mail::TOOL_MAIL_SEND;
 use crate::model::Track;
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
+use crate::operation::planner_start_fence::CardStartFence;
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::idempotency_key::{calm_error_from_operation_failure, stable_payload_hash};
-use crate::routes::planner_start_fence::CardStartFence;
 use crate::state::RouteState;
 
 use super::{KeyedActor, ResumedStart, SendPath, resumed_start};
@@ -142,7 +142,13 @@ pub(super) async fn start_planner_harness_with_first_message(
     }))?;
     // Taken inside the same-key claim the plan holds (`state.rs` lock order); the card exists
     // already, so a send or a reset may be using it.
-    let fence = CardStartFence::lock(s, &request.planner_card_id).await;
+    let fence = CardStartFence::lock(
+        &s.planner_recovery_locks,
+        &s.repo,
+        &s.operation_runtime,
+        &request.planner_card_id,
+    )
+    .await;
     // A genuine retry follows a failed start, and a reset or re-point may have given the card a
     // conversation since (#2212). That is the send's to continue, not this start's to supersede.
     if arm == SubmitArm::GenuineRetry

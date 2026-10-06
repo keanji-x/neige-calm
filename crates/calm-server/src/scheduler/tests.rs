@@ -616,6 +616,7 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
         events,
         write,
         Arc::downgrade(&runtime),
+        crate::per_card_lock::new_per_card_locks(),
         Arc::new(Semaphore::new(1)),
         std::env::temp_dir().join("neige-scheduler-test-gate-logs"),
         crate::scheduler::WorkerIdleWake::new(
@@ -748,6 +749,7 @@ async fn running_timeout_race_lost_does_not_teardown_or_release_lease() {
         events,
         write,
         Weak::<OperationRuntime>::new(),
+        crate::per_card_lock::new_per_card_locks(),
         Arc::new(Semaphore::new(1)),
         std::env::temp_dir().join("neige-scheduler-test-gate-logs"),
         crate::scheduler::WorkerIdleWake::new(

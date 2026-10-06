@@ -23,6 +23,7 @@ use crate::model::{
     TrackWorkspacePatch, new_id,
 };
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
+use crate::operation::planner_start_fence::CardStartFence;
 use crate::operation::workspace_lease::{
     WorkspaceTrackSweep, release_workspace_leases_for_track_tx,
     sweep_workspace_worktrees_for_tracks, track_has_active_forge_action,
@@ -34,7 +35,6 @@ use crate::routes::area_folders::{find_owner, is_descendant_of, normalize_path};
 use crate::routes::codex_cards::default_cwd;
 use crate::routes::idempotency_key::stable_payload_hash;
 use crate::routes::planner_cards::quiesce_shared_card_active_turn;
-use crate::routes::planner_start_fence::CardStartFence;
 use crate::session_projection_lookup::project_runtime_into_cards_payload;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
@@ -1278,7 +1278,13 @@ async fn create_track_with_planner_harness(
     )
     .await;
     // A fresh card: nothing can have started it, so there is nothing to read before starting.
-    let fence = CardStartFence::lock(&s, &CardId::from(planner_card_id.clone())).await;
+    let fence = CardStartFence::lock(
+        &s.planner_recovery_locks,
+        &s.repo,
+        &s.operation_runtime,
+        &CardId::from(planner_card_id.clone()),
+    )
+    .await;
     start_planner_harness(&fence, &actor, &track, planner_card_id, report_card_id).await?;
     Ok((StatusCode::CREATED, Json(track)).into_response())
 }
@@ -2544,7 +2550,13 @@ async fn restart_planner_harness_at(s: &RouteState, actor: &Actor, track: &Track
     // lazy recovery or first start cannot interleave with it. The start waits on the operation
     // runtime's drive mutex, and `planner_recovery::recover` takes `track_delete_locks`, both
     // after this lock (`state.rs`); every caller has already dropped both of its guards.
-    let fence = CardStartFence::lock(s, &CardId::from(planner_card_id.clone())).await;
+    let fence = CardStartFence::lock(
+        &s.planner_recovery_locks,
+        &s.repo,
+        &s.operation_runtime,
+        &CardId::from(planner_card_id.clone()),
+    )
+    .await;
     let request = PlannerHarnessStartOperationPayload {
         actor: actor.to_actor_id(),
         track_id: track.id.to_string(),

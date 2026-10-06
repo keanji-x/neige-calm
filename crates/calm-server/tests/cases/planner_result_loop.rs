@@ -70,6 +70,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
         events,
         boot.ctx.write.clone(),
         Arc::downgrade(&runtime),
+        calm_server::per_card_lock::new_per_card_locks(),
         Arc::new(tokio::sync::Semaphore::new(1)),
         boot.ctx.gate_logs_dir.clone(),
         calm_server::scheduler::WorkerIdleWake::new(

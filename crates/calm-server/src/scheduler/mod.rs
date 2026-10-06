@@ -29,7 +29,7 @@ use crate::db::sqlite::{
     task_mark_sub_track_running_tx, task_report_success_from_worker_tx,
     task_stamp_missing_running_deadline_tx, tasks_by_track_tx, track_find_tx,
 };
-use crate::db::{Repo, write_with_actor_events_typed};
+use crate::db::{Repo, RouteRepo, write_with_actor_events_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope};
 use crate::ids::{ActorId, TrackId};
@@ -38,6 +38,7 @@ use crate::operation::child_track_adapter::{CHILD_TRACK_KIND, ChildTrackOperatio
 use crate::operation::claude_adapter::ClaudeWorkerOperationPayload;
 use crate::operation::codex_adapter::CodexWorkerOperationPayload;
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
+use crate::operation::planner_start_fence::CardStartFence;
 use crate::operation::task_verify_adapter::{
     GateResultCtx, TASK_VERIFY_KIND, TaskVerifyOperationPayload, apply_gate_result_in_tx,
     gate_attempt_key,
@@ -47,6 +48,7 @@ use crate::operation::workspace_lease::{
     ReleaseDelivery, release_workspace_lease_for_card_repo, release_workspace_lease_for_card_tx,
 };
 use crate::operation::{OperationKey, OperationOutcome, OperationRuntime, Tx};
+use crate::per_card_lock::PerCardLocks;
 use crate::routes::idempotency_key::stable_payload_hash;
 use crate::state::WriteContext;
 use crate::task_context::{ContextMetrics, TaskContextMonitor, context_ref};
@@ -395,6 +397,9 @@ pub struct Scheduler {
     /// Same `Weak` discipline as the dispatcher's `Inner` — the
     /// scheduler must not keep AppState resources alive after shutdown.
     operation_runtime: Weak<OperationRuntime>,
+    /// The process's one `planner_recovery_locks` map, shared with `RouteState` from boot: the
+    /// child-track bootstrap starts the child's Planner under that card's `CardStartFence`.
+    pub(crate) planner_recovery_locks: PerCardLocks,
     /// The dispatcher's global spawn semaphore: caps total cross-track spawn work.
     semaphore: Arc<Semaphore>,
     /// Persisted running liveness window, resolved once from
@@ -448,11 +453,13 @@ pub struct PostClaimDriveTestHook {
 }
 
 impl Scheduler {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         repo: Arc<dyn Repo>,
         events: EventBus,
         write: WriteContext,
         operation_runtime: Weak<OperationRuntime>,
+        planner_recovery_locks: PerCardLocks,
         semaphore: Arc<Semaphore>,
         gate_logs_dir: std::path::PathBuf,
         worker_idle: WorkerIdleWake,
@@ -462,6 +469,7 @@ impl Scheduler {
             events,
             write,
             operation_runtime,
+            planner_recovery_locks,
             semaphore,
             gate_logs_dir,
             Self::task_run_timeout_from_env(),
@@ -476,6 +484,7 @@ impl Scheduler {
         events: EventBus,
         write: WriteContext,
         operation_runtime: Weak<OperationRuntime>,
+        planner_recovery_locks: PerCardLocks,
         semaphore: Arc<Semaphore>,
         gate_logs_dir: std::path::PathBuf,
         task_run_timeout: Duration,
@@ -486,6 +495,7 @@ impl Scheduler {
             events,
             write,
             operation_runtime,
+            planner_recovery_locks,
             semaphore,
             gate_logs_dir,
             task_run_timeout,
@@ -499,6 +509,7 @@ impl Scheduler {
         events: EventBus,
         write: WriteContext,
         operation_runtime: Weak<OperationRuntime>,
+        planner_recovery_locks: PerCardLocks,
         semaphore: Arc<Semaphore>,
         gate_logs_dir: std::path::PathBuf,
         task_run_timeout: Duration,
@@ -509,6 +520,7 @@ impl Scheduler {
             events,
             write,
             operation_runtime,
+            planner_recovery_locks,
             semaphore,
             task_run_timeout,
             worker_idle,
@@ -1269,33 +1281,34 @@ impl Scheduler {
             // Not a conversation create; nothing to brief.
             opening_briefing: None,
         };
-        let bootstrap_payload = serde_json::to_value(&bootstrap)?;
-        // The one `planner-harness-start` submitted outside `CardStartFence` (#2252): the scheduler
-        // holds only a `Weak` operation runtime and is built with the dispatcher before
-        // `RouteState`'s lock maps exist, so it does not yet hold the card's `planner_recovery_locks`
-        // (sharing that map from boot would bring this start inside the fence).
-        // The child's creator owns this start, so a send answers 409/503 here rather than starting
-        // the card itself (`planner_session::send_owns_first_start`); a concurrent reset is not
-        // fenced. `tests/cases/planner_start_fence_invariant.rs` names this exception.
-        let bootstrap_id = runtime
-            .submit(
-                crate::routes::conversations_shared::PLANNER_HARNESS_START,
-                OperationKey {
-                    operation_key: new_id(),
-                    // The key carries a digest of the cwd: the runtime refuses "same key, different
-                    // payload hash" permanently, so a re-pointed child would otherwise fail forever.
-                    idempotency_key: Some(format!(
-                        "child-track:{child_id}:bootstrap:{}",
-                        crate::workspace_materialize::workspace_key_digest(cwd)
-                    )),
-                    payload_hash: stable_payload_hash(&bootstrap_payload)?,
-                },
-                bootstrap_payload,
-            )
-            .await?;
+        // Under the child card's start fence (#2275), like every other start: a reset or send of
+        // the just-minted child waits for this start instead of interleaving with it. Held from
+        // the submit through the wait, and nothing else: the scheduler holds its per-track pass
+        // lock and a spawn permit here, which no fence holder ever waits on, and neither the drive
+        // mutex nor `track_delete_locks` (see `state.rs`'s lock order).
+        let route_repo: Arc<dyn RouteRepo> = self.repo.clone();
+        let fence = CardStartFence::lock(
+            &self.planner_recovery_locks,
+            &route_repo,
+            &runtime,
+            &bootstrap.planner_card_id,
+        )
+        .await;
+        let key = OperationKey {
+            operation_key: new_id(),
+            // The key carries a digest of the cwd: the runtime refuses "same key, different
+            // payload hash" permanently, so a re-pointed child would otherwise fail forever.
+            idempotency_key: Some(format!(
+                "child-track:{child_id}:bootstrap:{}",
+                crate::workspace_materialize::workspace_key_digest(cwd)
+            )),
+            payload_hash: stable_payload_hash(&serde_json::to_value(&bootstrap)?)?,
+        };
+        let outcome = fence.start(&bootstrap, key).await?.outcome;
+        drop(fence);
         // Bootstrap is strictly before the dispatched→running flip. A crash
         // can therefore only leave a dispatched row, which resume re-drives.
-        match runtime.wait(&bootstrap_id).await?.outcome {
+        match outcome {
             OperationOutcome::Succeeded { .. } | OperationOutcome::SucceededViaCollision { .. } => {
                 self.mark_sub_track_running(&task.id).await
             }

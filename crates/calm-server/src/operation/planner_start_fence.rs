@@ -1,12 +1,14 @@
-//! The one way a route submits `planner-harness-start` (#2252). A start replaces whatever
+//! The one way anything submits `planner-harness-start` (#2252, #2275). A start replaces whatever
 //! session the card had, so it must not interleave with another start of the same card or with
-//! a send's lazy recovery: every submitter holds the card's `planner_recovery_locks` guard
-//! through the start and its wait, and this type is the only thing that can both hold that
-//! guard and submit. `tests/cases/planner_start_fence_invariant.rs` keeps the submit here.
+//! a send's lazy recovery: every submitter — each route, and the scheduler's child-track
+//! bootstrap — holds the card's `planner_recovery_locks` guard through the start and its wait,
+//! and this type is the only thing that can both hold that guard and submit.
+//! `tests/cases/planner_start_fence_invariant.rs` keeps the submit here.
 //!
 //! Lock order (`state.rs`): the fence is `planner_recovery_locks`, so a caller may hold
-//! `area_delete_locks`, `conversation_first_message_locks` or `planner_input_key_locks` when it
-//! takes it, and never the operation runtime's drive mutex or `track_delete_locks`.
+//! `area_delete_locks`, `conversation_first_message_locks`, `planner_input_key_locks`, or the
+//! scheduler's per-track pass lock and a spawn permit when it takes it, and never the operation
+//! runtime's drive mutex or `track_delete_locks`.
 
 use std::sync::Arc;
 
@@ -15,10 +17,9 @@ use crate::error::{CalmError, Result};
 use crate::ids::CardId;
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
 use crate::operation::{OperationKey, OperationResult, OperationRuntime};
-use crate::per_card_lock::{PerCardLockGuard, lock_card};
+use crate::per_card_lock::{PerCardLockGuard, PerCardLocks, lock_card};
 use crate::routes::conversations_shared::PLANNER_HARNESS_START;
 use crate::session_projection_repo::CardConversation;
-use crate::state::RouteState;
 
 /// The card's `planner_recovery_locks` guard, and with it the right to start the card.
 pub(crate) struct CardStartFence {
@@ -29,14 +30,20 @@ pub(crate) struct CardStartFence {
 }
 
 impl CardStartFence {
-    /// Wait for the card's `planner_recovery_locks` guard. The only constructor. The card need
-    /// not exist yet: a conversation create fences the id its operation will mint.
-    pub(crate) async fn lock(s: &RouteState, card_id: &CardId) -> Self {
-        let guard = lock_card(&s.planner_recovery_locks, card_id.as_str()).await;
+    /// Wait for the card's guard in `locks`, the process's one `planner_recovery_locks` map
+    /// (`BootState` hands the same map to the routes and the scheduler). The only constructor.
+    /// The card need not exist yet: a conversation create fences the id its operation will mint.
+    pub(crate) async fn lock(
+        locks: &PerCardLocks,
+        repo: &Arc<dyn RouteRepo>,
+        operation_runtime: &Arc<OperationRuntime>,
+        card_id: &CardId,
+    ) -> Self {
+        let guard = lock_card(locks, card_id.as_str()).await;
         Self {
             card_id: card_id.clone(),
-            repo: s.repo.clone(),
-            operation_runtime: s.operation_runtime.clone(),
+            repo: repo.clone(),
+            operation_runtime: operation_runtime.clone(),
             _guard: guard,
         }
     }

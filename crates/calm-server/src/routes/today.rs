@@ -16,10 +16,10 @@ use crate::model::{
     TrackWorkspaceKind, new_id, now_ms,
 };
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
+use crate::operation::planner_start_fence::CardStartFence;
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::conversations_shared::{PLANNER_HARNESS_START, retryable_operation_key};
 use crate::routes::idempotency_key::stable_payload_hash;
-use crate::routes::planner_start_fence::CardStartFence;
 use crate::state::{AppState, RouteState};
 use crate::track_report::TrackReportPayload;
 use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;
@@ -515,7 +515,13 @@ pub(crate) async fn ensure_today_launchpad(
     // decision and the start, as `/planner/reset` and the workspace re-point do. Nothing else is
     // held here (`state.rs`).
     let route = RouteState::from_ref(&app);
-    let fence = CardStartFence::lock(&route, &planner_card_id).await;
+    let fence = CardStartFence::lock(
+        &route.planner_recovery_locks,
+        &route.repo,
+        &route.operation_runtime,
+        &planner_card_id,
+    )
+    .await;
     // "Does the Planner need a start at this path?" is decided under the fence, after any
     // concurrent ensure's start has settled (#2251), and from DURABLE state: materialization runs
     // after the transaction commits, so if it fails or the process dies before the operation is

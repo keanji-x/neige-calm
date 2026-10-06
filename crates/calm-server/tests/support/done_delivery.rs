@@ -26,6 +26,8 @@ use serde_json::json;
 pub struct Wiring {
     pub runtime: Arc<OperationRuntime>,
     pub dispatcher: Arc<Dispatcher>,
+    /// The map the dispatcher's scheduler fences child bootstraps on, handed to the state too.
+    planner_recovery_locks: calm_server::per_card_lock::PerCardLocks,
     shared: Arc<SharedCodexAppServer>,
     renderer: Arc<TerminalRendererRegistry>,
     daemon: Arc<DaemonClient>,
@@ -59,6 +61,7 @@ impl Wiring {
             track_area_cache: track_areas,
             card_kind_registry: Arc::new(calm_server::card_kind::CardKindRegistry::builtins()),
             dispatcher: self.dispatcher.clone(),
+            planner_recovery_locks: self.planner_recovery_locks.clone(),
             mcp_server: None,
             mcp_context: ctx.clone(),
             harness: self.harness.clone(),
@@ -131,6 +134,7 @@ pub async fn wire(
             .unwrap(),
     );
     let harness = HarnessRegistry::new();
+    let planner_recovery_locks = calm_server::per_card_lock::new_per_card_locks();
     let dispatcher = Dispatcher::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
         repo_dyn,
         events,
@@ -142,12 +146,14 @@ pub async fn wire(
         harness.clone(),
         shared.clone(),
         runtime.clone(),
+        planner_recovery_locks.clone(),
         1,
         gate_logs.to_path_buf(),
     );
     Wiring {
         runtime,
         dispatcher: Arc::new(dispatcher),
+        planner_recovery_locks,
         shared,
         renderer,
         daemon,

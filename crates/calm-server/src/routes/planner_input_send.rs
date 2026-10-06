@@ -11,11 +11,11 @@ use crate::event::{Event, EventScope};
 use crate::extract::{Json, JsonBody, Path};
 use crate::harness::SendKey;
 use crate::ids::{ActorId, CardId};
+use crate::operation::planner_start_fence::CardStartFence;
 use crate::per_card_lock::lock_key;
 use crate::routes::idempotency_key::{parse_idempotency_key_header, stable_payload_hash};
 use crate::routes::planner_cards::{card_runs_headless_harness, validate_planner_input};
 use crate::routes::planner_session::dormant;
-use crate::routes::planner_start_fence::CardStartFence;
 use crate::routes::track_report_blocks::require_rest_user_actor_for;
 use crate::session_projection_repo::WorkerSessionProjection;
 use crate::state::{CodexShellState, RouteState, WorkerState};
@@ -331,7 +331,13 @@ async fn live_planner_harness(
     crate::harness::PlannerHarness,
     Option<CardStartFence>,
 )> {
-    let fence = CardStartFence::lock(s, card_id).await;
+    let fence = CardStartFence::lock(
+        &s.planner_recovery_locks,
+        &s.repo,
+        &s.operation_runtime,
+        card_id,
+    )
+    .await;
     let runtime = s
         .repo
         .session_projection_active_for_card(&card_id.to_string())

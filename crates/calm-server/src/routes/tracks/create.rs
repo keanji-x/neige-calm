@@ -12,12 +12,12 @@ use crate::error::{CalmError, Result};
 use crate::ids::{ActorId, CardId};
 use crate::model::{NewTrack, RequestTheme, Track};
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
+use crate::operation::planner_start_fence::CardStartFence;
 use crate::per_card_lock::lock_card;
 use crate::routes::conversations_shared::{
     PLANNER_HARNESS_START, first_message_digest, retryable_operation_key, validate_first_message,
 };
 use crate::routes::idempotency_key::{parse_idempotency_key_header, stable_payload_hash};
-use crate::routes::planner_start_fence::CardStartFence;
 use crate::session_projection_repo::CardConversation;
 use crate::state::RouteState;
 
@@ -746,7 +746,13 @@ pub(super) async fn resume_message_less(
     let track = adopt_prior_track(&s, &track_id, true).await?;
     // Inside the same-key claim (`state.rs` lock order), and after `adopt_prior_track` let go of
     // `track_delete_locks`, which the fence never holds.
-    let fence = CardStartFence::lock(&s, &CardId::from(planner_card_id.clone())).await;
+    let fence = CardStartFence::lock(
+        &s.planner_recovery_locks,
+        &s.repo,
+        &s.operation_runtime,
+        &CardId::from(planner_card_id.clone()),
+    )
+    .await;
     match resumed_start(fence.conversation().await?)? {
         ResumedStart::Start => {
             super::start_planner_harness(&fence, &actor, &track, planner_card_id, report_card_id)

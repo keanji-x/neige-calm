@@ -3604,6 +3604,7 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
         events.clone(),
         write.clone(),
         std::sync::Weak::new(),
+        crate::per_card_lock::new_per_card_locks(),
         Arc::clone(&semaphore),
         std::env::temp_dir().join("neige-dispatcher-test-gate-logs"),
         crate::scheduler::WorkerIdleWake::new(

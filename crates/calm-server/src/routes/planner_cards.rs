@@ -14,10 +14,10 @@ use crate::operation::planner_harness_shutdown_adapter::PlannerHarnessShutdownOp
 use crate::operation::planner_harness_start_adapter::{
     HarnessProfile, PlannerHarnessStartOperationPayload,
 };
+use crate::operation::planner_start_fence::CardStartFence;
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::idempotency_key::{calm_error_from_operation_failure, stable_payload_hash};
 use crate::routes::planner_session::dormant;
-use crate::routes::planner_start_fence::CardStartFence;
 use crate::session_projection_lookup::card_is_shared_planner;
 use crate::session_projection_repo::WorkerSessionProjection;
 use crate::state::{CodexShellState, RouteState};
@@ -533,7 +533,13 @@ async fn fresh_start_planner_card(
     profile: HarnessProfile,
     start: HarnessCardStart,
 ) -> Result<ResetPlannerCardResponse> {
-    let fence = CardStartFence::lock(&s, &card.id).await;
+    let fence = CardStartFence::lock(
+        &s.planner_recovery_locks,
+        &s.repo,
+        &s.operation_runtime,
+        &card.id,
+    )
+    .await;
     let active_runtime = s
         .repo
         .session_projection_active_for_card(&card.id.to_string())

@@ -655,6 +655,9 @@ impl Dispatcher {
             HarnessRegistry::new(),
             shared_codex_appserver,
             operation_runtime,
+            // No `RouteState` shares this dispatcher's runtime, so its scheduler fences child
+            // bootstraps on a map of its own; `state.rs` passes the routes' map instead.
+            crate::per_card_lock::new_per_card_locks(),
             permits,
             crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
         )
@@ -684,6 +687,9 @@ impl Dispatcher {
             HarnessRegistry::new(),
             shared_codex_appserver,
             operation_runtime,
+            // No `RouteState` shares this dispatcher's runtime, so its scheduler fences child
+            // bootstraps on a map of its own; `state.rs` passes the routes' map instead.
+            crate::per_card_lock::new_per_card_locks(),
             permits,
             crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
         )
@@ -729,11 +735,17 @@ impl Dispatcher {
             harness,
             shared_codex_appserver,
             operation_runtime,
+            // No `RouteState` shares this dispatcher's runtime, so its scheduler fences child
+            // bootstraps on a map of its own; `state.rs` passes the routes' map instead.
+            crate::per_card_lock::new_per_card_locks(),
             permits,
             crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
         )
     }
 
+    /// `planner_recovery_locks` is the map the routes' `CardStartFence` uses when this dispatcher
+    /// serves an `AppState` (`BootState` builds it first): the scheduler's child-track bootstrap
+    /// takes its card's fence there.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_with_terminal_renderer_and_harness_and_operation_runtime(
         repo: Arc<dyn Repo>,
@@ -746,6 +758,7 @@ impl Dispatcher {
         harness: HarnessRegistry,
         shared_codex_appserver: Arc<SharedCodexAppServer>,
         operation_runtime: Arc<OperationRuntime>,
+        planner_recovery_locks: crate::per_card_lock::PerCardLocks,
         permits: usize,
         gate_logs_dir: PathBuf,
     ) -> Self {
@@ -760,6 +773,7 @@ impl Dispatcher {
             events.clone(),
             write.clone(),
             Arc::downgrade(&operation_runtime),
+            planner_recovery_locks,
             Arc::clone(&semaphore),
             gate_logs_dir,
             crate::scheduler::WorkerIdleWake::new(

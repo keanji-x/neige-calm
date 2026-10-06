@@ -543,6 +543,7 @@ impl Fx {
             self.events.clone(),
             self.write.clone(),
             Arc::downgrade(&runtime),
+            calm_server::per_card_lock::new_per_card_locks(),
             Arc::new(tokio::sync::Semaphore::new(4)),
             std::env::temp_dir().join("neige-test-gate-logs"),
             calm_server::scheduler::WorkerIdleWake::new(

@@ -20,12 +20,12 @@ use crate::operation::planner_harness_start_adapter::{
     ASSISTANT_HARNESS_PROFILE_MARKER, HarnessProfile, LazyMintCardSeed, OpeningBriefing,
     PlannerHarnessStartOperationPayload,
 };
+use crate::operation::planner_start_fence::CardStartFence;
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::conversations_shared::{retryable_operation_key, validate_first_message};
 use crate::routes::idempotency_key::{
     calm_error_from_operation_failure, parse_idempotency_key_header, stable_payload_hash,
 };
-use crate::routes::planner_start_fence::CardStartFence;
 use crate::session_projection_repo::WorkerSessionState;
 use crate::state::{AppState, RouteState, WorkerState};
 use calm_truth::session_projection_row::LAST_TURN_COMPLETED_MS_SUBQUERY;
@@ -218,7 +218,13 @@ pub(crate) async fn create_track_conversation_inner(
     let operation_key = retryable_operation_key(&s, &derived.operation_key).await?;
     // The operation mints the card, so the fence is on the id it derives: a send or reset of
     // that card waits for the mint's start to settle.
-    let fence = CardStartFence::lock(&s, &payload.planner_card_id).await;
+    let fence = CardStartFence::lock(
+        &s.planner_recovery_locks,
+        &s.repo,
+        &s.operation_runtime,
+        &payload.planner_card_id,
+    )
+    .await;
     let result = fence
         .start(
             &payload,

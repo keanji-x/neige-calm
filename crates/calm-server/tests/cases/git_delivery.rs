@@ -334,6 +334,7 @@ pub(super) fn spawn_dispatcher(
         harness.clone(),
         SharedCodexAppServer::new_stub(boot.repo.clone()),
         runtime.clone(),
+        calm_server::per_card_lock::new_per_card_locks(),
         4,
         boot.ctx.gate_logs_dir.clone(),
     )

@@ -1,6 +1,7 @@
-//! #2252 — every route-level `planner-harness-start` goes through `CardStartFence::start`, which
-//! holds the card's `planner_recovery_locks` guard through the submit and its wait. A start
-//! submitted anywhere else can interleave with a send's recovery or another start of the card.
+//! #2252, #2275 — every `planner-harness-start`, each route's and the scheduler's child-track
+//! bootstrap, goes through `CardStartFence::start`, which holds the card's `planner_recovery_locks`
+//! guard through the submit and its wait. A start submitted anywhere else can interleave with a
+//! send's recovery or another start of the card.
 //! If this test fails, route the new submit through the fence; a new read-only lookup of the
 //! kind is added below with its reason.
 
@@ -46,18 +47,10 @@ const ALLOWED: &[(&str, usize, usize, &str)] = &[
         "the launchpad's read-only \"a start succeeded at this path\" lookup",
     ),
     (
-        "src/routes/planner_start_fence.rs",
+        "src/operation/planner_start_fence.rs",
         0,
         2,
-        "the fence: the only route-level submit",
-    ),
-    (
-        "src/scheduler/mod.rs",
-        0,
-        1,
-        "the one named exception: the child-track bootstrap. The scheduler holds only a `Weak` \
-         operation runtime and is built before `RouteState`'s lock maps, so it does not yet hold \
-         the card's lock; sharing the lock map from boot would remove this entry",
+        "the fence: the only submit",
     ),
 ];
 
@@ -77,12 +70,8 @@ const SHAPES: &[(&str, &str)] = &[
     ),
     ("src/routes/today.rs", ".bind(PLANNER_HARNESS_START)"),
     (
-        "src/routes/planner_start_fence.rs",
+        "src/operation/planner_start_fence.rs",
         ".submit(PLANNER_HARNESS_START,",
-    ),
-    (
-        "src/scheduler/mod.rs",
-        ".submit(crate::routes::conversations_shared::PLANNER_HARNESS_START,",
     ),
 ];
 
@@ -128,7 +117,7 @@ fn planner_harness_start_is_submitted_only_through_the_card_start_fence() {
     assert!(
         unexpected.is_empty(),
         "`planner-harness-start` is submitted only by `CardStartFence::start` \
-         (src/routes/planner_start_fence.rs); a new mention needs the fence or a reviewed entry \
+         (src/operation/planner_start_fence.rs); a new mention needs the fence or a reviewed entry \
          in ALLOWED:\n{}",
         unexpected.join("\n")
     );
@@ -143,7 +132,7 @@ fn planner_harness_start_is_submitted_only_through_the_card_start_fence() {
             "{file} should mention the kind exactly once as `{shape}`"
         );
     }
-    let fence = std::fs::read_to_string(manifest_dir.join("src/routes/planner_start_fence.rs"))
+    let fence = std::fs::read_to_string(manifest_dir.join("src/operation/planner_start_fence.rs"))
         .expect("read the fence");
     assert_eq!(
         fence.matches(".submit(").count(),

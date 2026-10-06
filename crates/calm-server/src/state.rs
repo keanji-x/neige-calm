@@ -105,14 +105,18 @@ pub struct RouteState {
     pub templates: &'static crate::templates::TemplateRoster,
     pub terminal_renderer: Arc<TerminalRendererRegistry>,
     pub(crate) hook_ingest_cache: Arc<StdMutex<HookIngestCache>>,
-    /// Per-card lock for lazy planner harness recovery, and every route's `planner-harness-start`
-    /// through `routes::planner_start_fence::CardStartFence`, its one holder that submits. Lock order:
+    /// Per-card lock for lazy planner harness recovery, and every `planner-harness-start` through
+    /// `operation::planner_start_fence::CardStartFence`, its one holder that submits: each route's,
+    /// and the scheduler's child-track bootstrap, which shares this map from `BootState`. Lock order:
     /// `conversation_first_message_locks` → `planner_input_key_locks` → `planner_recovery_locks`
     /// → the operation runtime's drive mutex (`lock_for_track_delete`; a start submitted and
     /// waited on under this lock) → `track_delete_locks` (a send's `planner_recovery::recover`),
     /// never the reverse. So no caller may hold the drive mutex or `track_delete_locks` when it
     /// takes this lock: the workspace re-point drops both before its restart, and the launchpad
     /// `ensure` holds neither. A track create's `area_delete_locks` guard comes before all of these.
+    /// The scheduler takes it holding only its per-track pass lock and a spawn permit, which no
+    /// holder of this lock waits on: a holder's start is driven by its own `wait`, never by the
+    /// scheduler, and no operation adapter re-enters this lock under the drive mutex.
     pub(crate) planner_recovery_locks: crate::per_card_lock::PerCardLocks,
     /// Per-card claim for the Today bootstrap's first-message send. A SEPARATE map from
     /// `planner_recovery_locks`: the claim is held across a call that takes that lock and
@@ -195,6 +199,9 @@ pub struct BootState {
     pub track_area_cache: TrackAreaCache,
     pub card_kind_registry: Arc<CardKindRegistry>,
     pub dispatcher: Arc<Dispatcher>,
+    /// The one `planner_recovery_locks` map, built before the dispatcher so its scheduler's
+    /// child-track bootstrap and every route's `CardStartFence` lock the same card guard.
+    pub planner_recovery_locks: crate::per_card_lock::PerCardLocks,
     pub mcp_server: Option<Arc<McpServer>>,
     pub mcp_context: Arc<crate::mcp_server::registry::AppContext>,
     pub harness: HarnessRegistry,
@@ -228,7 +235,7 @@ impl BootState {
             mcp_context: self.mcp_context.clone(),
             templates: self.templates,
             hook_ingest_cache,
-            planner_recovery_locks: crate::per_card_lock::new_per_card_locks(),
+            planner_recovery_locks: self.planner_recovery_locks,
             conversation_first_message_locks: crate::per_card_lock::new_per_card_locks(),
             track_create_mint_rendezvous: None,
             planner_attachment_locks: crate::per_card_lock::new_per_card_locks(),
@@ -673,6 +680,32 @@ impl AppState {
             .map_or(0, |lock| Arc::strong_count(lock.value()))
     }
 
+    /// Fixtures only: a booted scheduler over THIS state's current operation runtime, built as
+    /// the dispatcher builds its own and on the dispatcher's scheduler's start-fence locks. A
+    /// fixture's `with_*` builders replace the runtime the dispatcher's scheduler was given, so a
+    /// test that drives the scheduler against the routes' runtime asks for one here, after its
+    /// last `with_*`.
+    #[cfg(feature = "fixtures")]
+    pub fn scheduler_for_test(&self) -> Arc<crate::scheduler::Scheduler> {
+        let scheduler = crate::scheduler::Scheduler::new(
+            self.raw.clone(),
+            self.events.clone(),
+            self.route.write.clone(),
+            Arc::downgrade(&self.operation_runtime),
+            self.dispatcher.scheduler().planner_recovery_locks.clone(),
+            Arc::new(tokio::sync::Semaphore::new(8)),
+            TaskVerifyAdapter::default_gate_logs_dir(),
+            crate::scheduler::WorkerIdleWake::new(
+                self.shared_codex_appserver.clone(),
+                crate::scheduler::WORKER_IDLE_TURN_GRACE,
+                crate::scheduler::WORKER_IDLE_PROBE_TIMEOUT,
+            ),
+        );
+        scheduler.mark_boot_sweep_complete();
+        scheduler.mark_context_sweep_boot_complete();
+        scheduler
+    }
+
     /// Fixture assembly only: run this state's Claude Planners under `config` (the typed
     /// `--claude-planner-config`), keeping its marker instance and instructions directory.
     #[cfg(feature = "fixtures")]
@@ -853,6 +886,7 @@ impl AppState {
             Arc::new(tokio::sync::OnceCell::new()),
             TaskVerifyAdapter::default_gate_logs_dir(),
         );
+        let planner_recovery_locks = crate::per_card_lock::new_per_card_locks();
         let dispatcher = Arc::new(
             Dispatcher::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
                 repo.clone(),
@@ -865,6 +899,7 @@ impl AppState {
                 harness.clone(),
                 shared_codex_appserver.clone(),
                 operation_runtime.clone(),
+                planner_recovery_locks.clone(),
                 Dispatcher::permits_from_env(8),
                 TaskVerifyAdapter::default_gate_logs_dir(),
             ),
@@ -891,6 +926,7 @@ impl AppState {
             track_area_cache,
             card_kind_registry,
             dispatcher,
+            planner_recovery_locks,
             mcp_server: None,
             mcp_context,
             harness,
@@ -1291,6 +1327,7 @@ impl AppState {
 
         // Spawned between role-cache seed and plugin autospawn so the bus has a
         // `*.Requested`-aware listener before plugins start emitting.
+        let planner_recovery_locks = crate::per_card_lock::new_per_card_locks();
         let dispatcher = Arc::new(
             crate::dispatcher::Dispatcher::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
                 repo.clone(),
@@ -1303,6 +1340,7 @@ impl AppState {
                 harness.clone(),
                 shared_codex_appserver.clone(),
                 operation_runtime.clone(),
+                planner_recovery_locks.clone(),
                 crate::dispatcher::Dispatcher::permits_from_env(8),
                 gate_logs_dir.clone(),
             ),
@@ -1374,6 +1412,7 @@ impl AppState {
             track_area_cache,
             card_kind_registry,
             dispatcher,
+            planner_recovery_locks,
             mcp_server: Some(mcp_server),
             mcp_context,
             harness,

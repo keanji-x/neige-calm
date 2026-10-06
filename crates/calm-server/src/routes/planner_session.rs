@@ -9,8 +9,8 @@ use crate::harness::{PlannerHarness, effective_runtime_thread_id, is_harness_sna
 use crate::ids::CardId;
 use crate::model::Card;
 use crate::operation::planner_harness_start_adapter::profile_mints_its_own_card;
+use crate::operation::planner_start_fence::CardStartFence;
 use crate::routes::planner_cards::{HarnessCardStart, start_harness_card};
-use crate::routes::planner_start_fence::CardStartFence;
 use crate::session_projection_repo::{
     AgentProvider, CardConversation, WorkerSessionKind, WorkerSessionProjection, WorkerSessionState,
 };
@@ -85,7 +85,13 @@ pub(crate) async fn ensure_planner_session(
         return Ok((runtime, harness, None));
     }
 
-    let fence = CardStartFence::lock(s, card_id).await;
+    let fence = CardStartFence::lock(
+        &s.planner_recovery_locks,
+        &s.repo,
+        &s.operation_runtime,
+        card_id,
+    )
+    .await;
     // Re-fetch under the lock and use only this row: `/planner/reset` or a racing Send may have moved it.
     let Some(runtime) = planner_recovery::candidate(s, card_id, human_send).await? else {
         if !human_send {
