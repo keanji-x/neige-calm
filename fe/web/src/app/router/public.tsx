@@ -1709,7 +1709,10 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
           /* The same receipt key and comparison point as the rail, so a track reads as
                        unread on Today exactly when it does there. */
           unread={preferences.isUnread('track', track.id, track.activityAt ?? 0)}
-          onOpen={(trackId) => go({ name: 'track', trackId })}
+          onOpen={(trackId) => {
+            preferences.markRead('track', trackId, track.activityAt ?? 0);
+            go({ name: 'track', trackId });
+          }}
           onDelete={deletion.request}
           actions={{
             areaPinned: preferences.areaTrackPinned(track.areaId, track.id),

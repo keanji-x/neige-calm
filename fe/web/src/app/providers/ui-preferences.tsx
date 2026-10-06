@@ -12,6 +12,7 @@ export type UiPreferences = ReturnType<typeof createUiPreferences>;
  * in different tabs cannot replace other Tracks' or Areas' preferences. */
 export function createUiPreferences(storage?: UiPreferenceStorage) {
   const memory = new Map<string, Preference>();
+  const unpersisted = new Set<string>();
   const listeners = new Set<() => void>();
   let revision = 0;
   /* Seeded from the database's STABLE identity, never the per-boot `DB_INSTANCE_ID_KEY`: receipts keyed
@@ -49,13 +50,15 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
     }
     return createStorageKey('ui', 'recovery', encodeURIComponent(recoveryScope), encodeURIComponent(key));
   };
-  const read = (key: string): Preference => {
-    if (memory.has(key)) return memory.get(key) ?? null;
+  const read = (key: string, fresh = false): Preference => {
+    if (memory.has(key) && (!fresh || storage === undefined || unpersisted.has(key))) return memory.get(key) ?? null;
     let value: Preference = null;
     try {
       const parsed: unknown = JSON.parse(storage?.getItem(storageKey(key)) ?? 'null');
       if (typeof parsed === 'boolean' || (typeof parsed === 'string' && parsed.length > 0)) value = parsed;
     } catch {
+      // Unavailable storage retains this instance's choices, including manual unread.
+      if (fresh) return memory.get(key) ?? null;
       // Malformed or unavailable storage leaves the default display usable.
     }
     memory.set(key, value);
@@ -65,8 +68,12 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
     if ((persist ? read(key) : memory.get(key)) === value) return;
     memory.set(key, value);
     try {
-      if (persist) storage?.setItem(storageKey(key), JSON.stringify(value));
+      if (persist) {
+        storage?.setItem(storageKey(key), JSON.stringify(value));
+        unpersisted.delete(key);
+      }
     } catch {
+      unpersisted.add(key);
       // The current app instance still remembers the choice when storage fails.
     }
     if (!notifyLayout) return;
@@ -89,6 +96,12 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
       return Math.max(baseline, cached, stampOf(JSON.parse(storage?.getItem(storageKey(key)) ?? 'null')));
     } catch { return Math.max(baseline, cached); }
   };
+  const writeManualUnread = (kind: 'track' | 'conversation', id: string, unread: boolean) => {
+    if (database === null) return;
+    const key = `${receiptKey(kind, id)}:unread`;
+    read(key, true); // Refresh before write's no-op check: another tab may have changed it.
+    write(key, unread, true);
+  };
   return Object.freeze({
     readScope: () => database,
     /** `nowMs` is the server time the scope was confirmed at; it becomes the baseline the first time this device sees `id`. A `null` scope writes nothing. */
@@ -103,16 +116,16 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
     isUnread(kind: 'track' | 'conversation', id: string, updatedAt: number): boolean {
       // No scope, no verdict: "everything is unread until /api/version answers" is a lie on every page load.
       if (database === null) return false;
-      return read(`${receiptKey(kind, id)}:unread`) === true || updatedAt > receipt(receiptKey(kind, id));
+      return read(`${receiptKey(kind, id)}:unread`, true) === true || updatedAt > receipt(receiptKey(kind, id));
     },
     markRead(kind: 'track' | 'conversation', id: string, updatedAt: number): void {
       const key = receiptKey(kind, id);
-      if (database !== null) write(`${key}:unread`, false, true);
+      writeManualUnread(kind, id, false);
       if (Number.isFinite(updatedAt) && updatedAt > receipt(key)) write(key, String(updatedAt), true, database !== null);
     },
     /** Explicit unread is independent of activity timestamps and the baseline. */
     markUnread(kind: 'track' | 'conversation', id: string): void {
-      if (database !== null) write(`${receiptKey(kind, id)}:unread`, true, true);
+      writeManualUnread(kind, id, true);
     },
     areaTrackPinned(areaId: string, trackId: string): boolean {
       if (database === null) return false;
@@ -123,7 +136,7 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
     },
     setRecoveryScope(scope: string): void {
       if (recoveryScope === scope) return;
-      recoveryScope = scope; receiptNamespace = receiptNamespaceOf(scope); memory.clear(); notify();
+      recoveryScope = scope; receiptNamespace = receiptNamespaceOf(scope); memory.clear(); unpersisted.clear(); notify();
     },
     // Only layout changes are live: conversation selection is restored on route
     // entry and owned by React while open, so saving it must not move focus.

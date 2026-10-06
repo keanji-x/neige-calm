@@ -175,7 +175,13 @@ export function Sidebar({
     // The receipt compares the overlay's completion high-water mark, not `updatedAt`
     // (which moves on every rename and pin); `null` is never unread.
     isUnread,
-    onGo,
+    onGo: (target: NavTarget) => {
+      if (target.name === 'track') {
+        const track = userTracks.find((candidate) => candidate.id === target.trackId);
+        if (track !== undefined) preferences.markRead('track', track.id, track.activityAt ?? 0);
+      }
+      onGo(target);
+    },
     nowMs,
     onSetPinned: setPinned,
     onDelete: trackConfirm.request,

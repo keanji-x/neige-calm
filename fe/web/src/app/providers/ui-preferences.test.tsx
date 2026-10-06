@@ -421,3 +421,30 @@ it('clears manual unread when the real visible-view receipt opens the Track agai
   view.rerender(tree(true));
   expect(preferences.isUnread('track', 't', 0)).toBe(false);
 });
+
+
+it('acknowledges manual unread persisted by another tab despite cached read state', () => {
+  const storage = memoryStorage();
+  const first = createUiPreferences(storage);
+  const second = createUiPreferences(storage);
+  first.setReadScope('db', 1_000);
+  second.setReadScope('db', 1_000);
+  first.markRead('track', 't', 0);
+  second.markUnread('track', 't');
+  first.markRead('track', 't', 0);
+  const restored = createUiPreferences(storage);
+  restored.setReadScope('db');
+  expect(restored.isUnread('track', 't', 0)).toBe(false);
+  second.markUnread('track', 't');
+  expect(restored.isUnread('track', 't', 0)).toBe(true);
+});
+
+
+it('retains manual unread in memory when storage writes fail but reads still work', () => {
+  const preferences = createUiPreferences({ getItem: () => null, setItem: () => { throw new Error('quota'); } });
+  preferences.setReadScope('db');
+  preferences.markUnread('track', 't');
+  expect(preferences.isUnread('track', 't', 0)).toBe(true);
+  preferences.markRead('track', 't', 0);
+  expect(preferences.isUnread('track', 't', 0)).toBe(false);
+});

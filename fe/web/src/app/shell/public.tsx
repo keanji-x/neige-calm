@@ -343,6 +343,8 @@ export function AppShell({
                 readLoading={readLoading}
                 onRetryRead={retryRead}
                 onOpenTrack={(trackId) => {
+                  const track = workspace.tracks.find((candidate) => candidate.id === trackId);
+                  if (track !== undefined) preferences.markRead('track', track.id, track.activityAt ?? 0);
                   closeMobileSection();
                   // The sheets are the only writers of `?from=`: the surface the reader returns to.
                   go({ name: 'track', trackId, from: 'pages' });
@@ -374,6 +376,8 @@ export function AppShell({
                 })}
                 isUnread={(track) => preferences.isUnread('track', track.id, track.activityAt ?? 0)}
                 onOpenTrack={(trackId) => {
+                  const track = workspace.tracks.find((candidate) => candidate.id === trackId);
+                  if (track !== undefined) preferences.markRead('track', track.id, track.activityAt ?? 0);
                   closeMobileSection();
                   go({ name: 'track', trackId, from: areaIdOf(trackId) === undefined ? 'pages' : 'area' });
                 }}
@@ -412,9 +416,9 @@ export function AppShell({
           />}
           </div>
 
+          <OperationFeedback feedback={pinFeedback} />
         </div>
       </div>
-      <OperationFeedback feedback={pinFeedback} />
       <main ref={drawerWidth.mainRef} className={styles.main} style={drawerWidth.style} inert={narrowRail && mobileNavOpen} aria-hidden={narrowRail && mobileNavOpen ? true : undefined}>
         {/* One flex item. Routes compose ErrorBox + page + Drawer as siblings;
             `:first-child` on `.main` would flex the banner, not the page. */}

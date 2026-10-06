@@ -734,3 +734,15 @@ it('offers personal Track actions without navigation and pins before the Area li
   expect(preferences.areaTrackPinned('c1', 'old')).toBe(false);
   expect(group.queryByRole('button', { name: 'Track Old' })).toBeNull();
 });
+
+
+it('acknowledges manually unread current Track when its real navigation row is selected again', async () => {
+  const preferences = createUiPreferences();
+  preferences.setReadScope('db', 1_000);
+  renderSidebar({ tracks: [track()], currentPath: '/track/w1' }, preferences);
+  await userEvent.click(screen.getByRole('button', { name: 'Actions for track Task' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Mark as unread' }));
+  expect(preferences.isUnread('track', 'w1', 0)).toBe(true);
+  await userEvent.click(screen.getByRole('button', { name: 'Track Task' }));
+  expect(preferences.isUnread('track', 'w1', 0)).toBe(false);
+});

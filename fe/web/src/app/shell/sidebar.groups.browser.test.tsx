@@ -9,6 +9,7 @@ import { createUiPreferences, UiPreferencesProvider } from '../providers/ui-pref
 import { ThemeProvider } from '../theme/public.tsx';
 import styles from './shell.module.css';
 import { Sidebar } from './sidebar.tsx';
+import { TrackRow } from '../../features/track/row/public.tsx';
 
 afterEach(() => { cleanup(); delete document.documentElement.dataset.theme; });
 
@@ -225,4 +226,21 @@ it('uses the three-dot Track menu with keyboard and keeps actions separate from 
   await userEvent.keyboard('{Escape}');
   await expect.element(menu).toHaveFocus();
   expect(onGo).not.toHaveBeenCalled();
+});
+
+
+it('reserves room for menu actions and metadata in Today compact rows', async () => {
+  await page.viewport(1400, 900);
+  const track: Track = { id: 't', title: 'Compact row', areaId: 'a', sort: 0, cwd: '/tmp', agentCwd: '/tmp',
+    pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY };
+  render(<ThemeProvider storage={{ getItem: () => 'light', setItem: () => undefined }}>
+    <div style={{ inlineSize: '20rem' }}><TrackRow track={track} variant="compact" nowMs={10_000}
+      onOpen={vi.fn()} onDelete={vi.fn()}
+      actions={{ areaPinned: false, onSetPinned: vi.fn(), onSetAreaPinned: vi.fn(), onMarkUnread: vi.fn() }} /></div>
+  </ThemeProvider>);
+  const row = page.getByRole('button', { name: 'Track Compact row', exact: true });
+  await row.hover();
+  const remove = page.getByRole('button', { name: 'Delete Compact row', exact: true }).element().getBoundingClientRect();
+  const age = row.element().lastElementChild!.getBoundingClientRect();
+  expect(age.right).toBeLessThanOrEqual(remove.left);
 });

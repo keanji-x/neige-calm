@@ -14,6 +14,7 @@ import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../.
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from '../router/public.tsx';
+import { createUiPreferences, type UiPreferences } from '../providers/ui-preferences.tsx';
 import { bootTestCardRuntime } from '../router/test-card-runtime.ts';
 
 afterEach(() => { document.body.replaceChildren(); });
@@ -75,7 +76,7 @@ const REVIEW_CARD = {
 
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
 
-function setup(path: string, areaName = AREA.name, onRequest: (request: ApiRequest) => void = () => undefined) {
+function setup(path: string, areaName = AREA.name, onRequest: (request: ApiRequest) => void = () => undefined, uiPreferences?: UiPreferences) {
   const transport: ApiTransportPort = {
     send(request) {
       onRequest(request);
@@ -101,6 +102,7 @@ function setup(path: string, areaName = AREA.name, onRequest: (request: ApiReque
     client,
     cards: bootTestCardRuntime(),
     onSignOut: vi.fn(),
+    uiPreferences,
   });
   router.update({ history: createMemoryHistory({ initialEntries: [path] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
@@ -632,4 +634,20 @@ describe('Track mobile presentation', () => {
   });
 
 
+});
+
+
+it('clears manual unread when reopening the current Track through mobile navigation', async () => {
+  await page.viewport(390, 844);
+  const preferences = createUiPreferences();
+  preferences.setReadScope('db', 1_000);
+  const router = setup('/track/w1', AREA.name, () => undefined, preferences);
+  await openTrackNavigation();
+  await page.getByRole('button', { name: 'Actions for track Responsive mobile UI', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Mark as unread', exact: true }).click();
+  expect(preferences.isUnread('track', 'w1', 0)).toBe(true);
+  await page.getByRole('button', { name: 'Responsive mobile UI', exact: true }).click();
+  await expect.poll(() => document.querySelector('main')?.hasAttribute('inert')).toBe(false);
+  expect(router.state.location.pathname).toBe('/track/w1');
+  expect(preferences.isUnread('track', 'w1', 0)).toBe(false);
 });
