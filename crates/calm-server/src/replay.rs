@@ -317,7 +317,7 @@ pub async fn force_planner_phase(
                                 WorkerSessionKind::CodexCard
                             },
                             agent_provider: Some(AgentProvider::Codex),
-                            // `Idle`, not `Starting`: a `starting` row trips `ensure_live_planner_harness`'s 503 guard. The first `persist_snapshot` overwrites status anyway.
+                            // `Idle`, not `Starting`: a `starting` row trips `ensure_planner_session`'s 503 guard. The first `persist_snapshot` overwrites status anyway.
                             status: WorkerSessionState::Idle,
                             terminal_run_id: None,
                             thread_id: Some(DEV_FORCED_THREAD_ID.into()),

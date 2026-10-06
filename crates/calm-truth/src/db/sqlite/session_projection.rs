@@ -16,9 +16,10 @@ use super::session_row::{agent_provider_to_db, runtime_message};
 use super::{SqlxRepo, begin_immediate_tx, derive_session_identity};
 use crate::model::*;
 use crate::session_projection_repo::{
-    AgentProvider, CardId as RuntimeCardId, Result as WorkerSessionProjectionResult,
-    ThreadAttribution, Tx as WorkerSessionProjectionTx, WorkerSessionKind, WorkerSessionProjection,
-    WorkerSessionProjectionRepo, WorkerSessionProjectionRepoError,
+    AgentProvider, CardConversation, CardId as RuntimeCardId,
+    Result as WorkerSessionProjectionResult, ThreadAttribution, Tx as WorkerSessionProjectionTx,
+    WorkerSessionKind, WorkerSessionProjection, WorkerSessionProjectionRepo,
+    WorkerSessionProjectionRepoError,
 };
 use crate::session_projection_row::{
     ACTIVE_CARD_RUNTIME_SELECT, WS_BACKED_CARD_RUNTIME_SELECT, WS_CARD_KEYED_RUNTIME_SELECT,
@@ -628,6 +629,13 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         runtime_get_projectable_for_card_from_pool(&self.pool, card_id).await
     }
 
+    async fn session_projection_conversation_for_card(
+        &self,
+        card_id: &crate::session_projection_repo::CardId,
+    ) -> WorkerSessionProjectionResult<CardConversation> {
+        super::session_conversation::card_conversation(&self.pool, card_id).await
+    }
+
     async fn session_projection_system_error_recovery_matches(
         &self,
         runtime: &WorkerSessionProjection,
@@ -763,7 +771,7 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
                        -- to the in-flight turn is lost for good because no run
                        -- loop is behind it any more. The conversation itself is
                        -- not permanently stranded — the next `POST /planner/input`
-                       -- goes through `ensure_live_planner_harness`, which does not
+                       -- goes through `ensure_planner_session`, which does not
                        -- consult this selector and lazily rebuilds the harness —
                        -- so the damage is one silently dropped turn plus a
                        -- dormant-looking card until the user pokes it again.

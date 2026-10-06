@@ -19,13 +19,9 @@ use crate::activity_window::{
 use crate::actor::Actor;
 use crate::conversation_keys::{DerivedConversationKeys, derive_track_conversation_keys};
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::ids::ActorId;
-use crate::operation::planner_harness_start_adapter::{
-    HarnessProfile, OpeningBriefing, PlannerHarnessStartOperationPayload,
-};
+use crate::operation::planner_harness_start_adapter::OpeningBriefing;
 use crate::per_card_lock::lock_card;
 use crate::prompts::render_named;
-use crate::routes::cards::run_planner_card_operation;
 use crate::routes::conversations_shared::user_message_enqueued_on_active_runtime;
 use crate::routes::planner_input_send::{SendPlannerInputRequest, send_planner_input_keyed};
 use crate::routes::today::ensure_today_launchpad;
@@ -135,7 +131,7 @@ fn summary_prompt(activity: &WorkspaceActivityWindow) -> Result<String> {
     tag = "tracks",
     responses(
         (status = 200, description = "The summary conversation has been asked to write today's progress. The conversation is created on first use and reused thereafter; the reply arrives asynchronously as a report edit, not in this response.", body = TodaySummaryStarted),
-        (status = 409, description = "Distinguished by the body's `code`:\n* `today_summary_no_activity` — nothing happened in the workspace today, so no conversation was created and no message was sent (INV-TODAYDOC-007).\n* `conflict` / `planner_harness_dormant` — from the underlying conversation create or planner input; a dormant harness is retried once automatically before it can reach here.", body = ErrorBody),
+        (status = 409, description = "Distinguished by the body's `code`:\n* `today_summary_no_activity` — nothing happened in the workspace today, so no conversation was created and no message was sent (INV-TODAYDOC-007).\n* `conflict` / `planner_harness_dormant` — from the underlying conversation create or planner input; a summary conversation with no thread to preserve is started by the send instead.", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
         (status = 503, description = "Shared codex app-server not running, a harness start is still in flight, or the observation queue is saturated — retry shortly", body = ErrorBody),
     ),
@@ -253,8 +249,8 @@ pub(crate) async fn write_today_summary(
         if let Some(barrier) = &app.today_summary_bootstrap_rendezvous {
             barrier.wait().await;
         }
-        // Held across genuinely blocking work: on the dormant branch `send_summary` submits a
-        // `planner-harness-start` and waits on it, so a wedged app-server holds this claim for
+        // Held across genuinely blocking work: a send to a card with no thread to preserve submits
+        // a `planner-harness-start` and waits on it, so a wedged app-server holds this claim for
         // as long as that runs. The blast radius is one card.
         let _first_message_claim =
             lock_card(&s.conversation_first_message_locks, &derived.card_id).await;
@@ -290,10 +286,10 @@ fn create_conflict_is_recoverable(error: &CalmError, card_exists: bool) -> bool 
     ) && card_exists
 }
 
-/// Send the summary, recovering once from a dormant harness. The recovery re-submits
-/// `planner-harness-start` and must NOT call `/planner/reset`, which hard-codes
-/// `reset_harness_items: true` and would erase the transcript. The 503 states are
-/// transient and are not recovered here.
+/// Send one message to the summary conversation under one key. The send path's own session
+/// entry point decides what the card needs first (`planner_session::ensure_planner_session`): a
+/// card with no thread to preserve is started there, a conversation with one is never replaced
+/// here (that is `/planner/reset`, which erases the transcript), and the 503 states are transient.
 async fn send_summary(
     s: &RouteState,
     w: &WorkerState,
@@ -301,74 +297,21 @@ async fn send_summary(
     card_id: &str,
     text: String,
 ) -> Result<()> {
-    // One key for this summary, kept across the dormant retry below: both attempts are one intent.
-    let idempotency_key = crate::model::new_id();
-    let send = |text: String| {
-        send_planner_input_keyed(
-            s,
-            w,
-            cs,
-            synthetic_actor(),
-            card_id.to_string(),
-            SendPlannerInputRequest {
-                text,
-                attachments: Vec::new(),
-                replaces_turn: None,
-            },
-            idempotency_key.clone(),
-        )
-    };
-    match send(text.clone()).await {
-        Ok(_) => Ok(()),
-        Err(CalmError::PlannerHarnessDormant(reason)) => {
-            tracing::info!(
-                card_id,
-                reason,
-                "today summary: harness dormant, re-submitting planner-harness-start"
-            );
-            restart_summary_harness(s, card_id).await?;
-            send(text).await.map(|_| ())
-        }
-        Err(other) => Err(other),
-    }
-}
-
-/// Re-open the summary conversation's harness without touching its transcript.
-async fn restart_summary_harness(s: &RouteState, card_id: &str) -> Result<()> {
-    let card = s
-        .repo
-        .card_get(card_id)
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-    let track = s
-        .repo
-        .track_get(card.track_id.as_str())
-        .await?
-        .ok_or_else(|| {
-            CalmError::NotFound(format!("track {} for card {card_id}", card.track_id))
-        })?;
-    let payload = serde_json::to_value(PlannerHarnessStartOperationPayload {
-        // Constructed directly, because `Actor("kernel").to_actor_id()` falls through to
-        // `ActorId::User`. Nobody asked for this restart, so it is the kernel's.
-        actor: ActorId::Kernel,
-        track_id: track.id.to_string(),
-        planner_card_id: card.id.clone(),
-        report_card_id: None,
-        sort: None,
-        cwd: track.workspace.path.clone(),
-        goal: None,
-        // `true` here is `/planner/reset`'s behaviour and would delete the conversation.
-        reset_harness_items: false,
-        force_new_thread: true,
-        // This card is the assistant conversation this module minted; starting it as `Planner`
-        // would give the thread the planner prompt while the card row still said `assistant`.
-        profile: HarnessProfile::Assistant,
-        create_card: None,
-        first_message: None,
-        create_request_sha256: None,
-        opening_briefing: None,
-    })?;
-    run_planner_card_operation(s, "planner-harness-start", payload).await
+    send_planner_input_keyed(
+        s,
+        w,
+        cs,
+        synthetic_actor(),
+        card_id.to_string(),
+        SendPlannerInputRequest {
+            text,
+            attachments: Vec::new(),
+            replaces_turn: None,
+        },
+        crate::model::new_id(),
+    )
+    .await
+    .map(|_| ())
 }
 
 #[cfg(test)]

@@ -12,7 +12,7 @@ wave	crates	733
 wave	fe	17
 wave	docs	12
 wave	e2e	0
-spec	crates	496
+spec	crates	500
 spec	fe	63
 spec	docs	0
 spec	e2e	1
@@ -20,7 +20,7 @@ runtime_id	crates	1246
 runtime_id	fe	0
 runtime_id	docs	1
 runtime_id	e2e	4
-harness_item	crates	274
+harness_item	crates	275
 harness_item	fe	95
 harness_item	docs	2
 harness_item	e2e	0

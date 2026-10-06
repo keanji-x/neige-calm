@@ -57,6 +57,11 @@ pub async fn pause_point(point: &str, key: &str) {
 #[cfg(feature = "fixtures")]
 pub const PLANNER_INPUT_REPLAY_MISSED: &str = "planner-input-replay-missed";
 
+/// Where a person's send has found, under the per-card recovery lock, a card with no thread to
+/// preserve and is about to start it (#2184); keyed by card id.
+#[cfg(feature = "fixtures")]
+pub const PLANNER_FIRST_START: &str = "planner-first-start";
+
 /// Where an operation insert has found no row under its `(kind, idempotency_key)` and is about to
 /// write one, or where a keyed commit (`OperationRuntime::commit_keyed`) is about to begin the
 /// transaction that checks its key; keyed by the idempotency key.

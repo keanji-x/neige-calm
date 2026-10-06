@@ -277,21 +277,6 @@ impl Boot {
             .unwrap()
     }
 
-    /// The distinct actors of every event of one kind written after `mark` about `card_id`.
-    /// Watermarked and keyed by kind: unrelated kernel-authored rows land in the same window.
-    async fn actors_for_card_after(&self, mark: i64, card_id: &str, kind: &str) -> Vec<String> {
-        sqlx::query_scalar(
-            "SELECT DISTINCT actor FROM events \
-              WHERE id > ?1 AND scope_card = ?2 AND kind = ?3 ORDER BY actor",
-        )
-        .bind(mark)
-        .bind(card_id)
-        .bind(kind)
-        .fetch_all(self.repo.pool())
-        .await
-        .unwrap()
-    }
-
     /// The **production** predicate statement, run against this server's database:
     /// `user_message_enqueued_on_active_runtime` is `pub(crate)`, so its SQL is executed verbatim instead.
     async fn enqueued_on_active_runtime(&self, track_id: &str, card_id: &str) -> bool {
@@ -316,13 +301,6 @@ impl Boot {
             .await
             .unwrap()
             .map(|runtime| runtime.id)
-    }
-
-    async fn last_event_id(&self) -> i64 {
-        sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM events")
-            .fetch_one(self.repo.pool())
-            .await
-            .unwrap()
     }
 
     /// How many times each `needle` was **actually delivered**, matched by bytes over this server's turns
@@ -922,10 +900,11 @@ async fn a_real_report_edit_is_counted_as_activity() {
     );
 }
 
-/// Recovering through `/planner/reset` would erase the card's harness items (`reset_harness_items: true`),
-/// which are the conversation itself, so the assertion is on the item count and not on the response.
+/// A summary conversation whose carrier holds a thread is a conversation: the trigger must
+/// neither replace it with a fresh start nor go through `/planner/reset`, which would erase the
+/// card's harness items (`reset_harness_items: true`). It answers 409 and the transcript stays.
 #[tokio::test]
-async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
+async fn a_summary_conversation_with_a_thread_to_preserve_is_dormant_and_keeps_its_transcript() {
     let b = boot().await;
     let track_id = b.user_track("dormant").await;
     b.edit_report(&track_id, "something happened").await;
@@ -954,67 +933,39 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
         .await
         .unwrap();
 
-    // Everything after this point is the recovery's doing.
-    let mark = b.last_event_id().await;
-
-    // Dormancy, in the shape `ensure_live_planner_harness` tests for: no session row in an active state.
+    // Dormancy: no session row in an active state, while the retired row keeps its thread.
     sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE card_id = ?1")
         .bind(&card_id)
         .execute(b.repo.pool())
         .await
         .unwrap();
+    // The card's own starts: the trigger also ensures the launchpad, which runs its own.
+    let starts = format!(
+        "SELECT COUNT(*) FROM operations WHERE kind = 'planner-harness-start' \
+           AND json_extract(payload_json, '$.spec_card_id') = '{card_id}'"
+    );
+    let starts_before = b.scalar(&starts).await;
 
     let (status, second) = b.summary(None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={second}");
     assert_eq!(
-        status,
-        StatusCode::OK,
-        "a dormant harness must be restarted rather than surfaced: {second}"
+        second["code"],
+        json!("planner_harness_dormant"),
+        "a conversation with a thread is surfaced, not replaced: {second}"
     );
-    assert_eq!(second["card_id"], json!(card_id), "and on the same card");
+    assert_eq!(
+        b.scalar(&starts).await,
+        starts_before,
+        "no start was submitted over the conversation"
+    );
     assert_eq!(
         b.scalar(&format!(
             "SELECT COUNT(*) FROM harness_items WHERE id = {sentinel} AND card_id = '{card_id}'"
         ))
         .await,
         1,
-        "the recovery must not erase the transcript — that is the difference \
-         between re-submitting a start and going through `/planner/reset`"
-    );
-    // Three messages: the mint's bootstrap, a SECOND bootstrap onto the restarted session (a new codex thread
-    // holding none of the old context), and the summary; the first trigger's summary is stranded on the superseded session's queue.
-    assert_eq!(
-        b.delivered(
-            &card_id,
-            &[TODAY_SUMMARY_BOOTSTRAP_TEXT, summary_marker()],
-            3
-        )
-        .await,
-        vec![2, 1],
-        "the recovery must deliver the SUMMARY the trigger was for, onto a \
-         restarted session that was given the standing instruction first: the \
-         mint's bootstrap, the restarted session's own bootstrap, and one \
-         reachable summary — the first trigger's summary was stranded on the \
-         superseded session's queue"
-    );
-    // The restart is the kernel's: `Actor("kernel").to_actor_id()` silently degrades to `User`, so
-    // `ActorId::Kernel` is constructed directly.
-    // `card.updated` specifically: the event `PlannerHarnessStartAdapter` writes under the operation payload's `actor`.
-    let restart_actors = b
-        .actors_for_card_after(mark, &card_id, "card.updated")
-        .await;
-    assert_eq!(
-        restart_actors,
-        vec![stored(ActorId::Kernel)],
-        "the dormant recovery's `planner-harness-start` must be attributed to the \
-         kernel — it is the one act here no human asked for, and \
-         `Actor(\"kernel\").to_actor_id()` silently degrades to User, so it is \
-         also the one place this module builds an `ActorId` by hand"
-    );
-    assert_eq!(
-        b.actors_for("harness.user_message.enqueued").await,
-        vec![stored(ActorId::User)],
-        "…while the messages stay the human's: the two attributions must not \
-         collapse into one"
+        "the transcript must survive — that is the difference between this answer \
+         and going through `/planner/reset`"
     );
 }
 

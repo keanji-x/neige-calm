@@ -8,14 +8,14 @@ use crate::actor::Actor;
 use crate::db::sqlite::planner_input_binding_get;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
-use crate::harness::{SendKey, is_harness_snapshot_value};
+use crate::harness::SendKey;
 use crate::ids::{ActorId, CardId};
 use crate::json_body::JsonBody;
 use crate::per_card_lock::{PerCardLockGuard, lock_card, lock_key};
 use crate::routes::cards::{card_runs_headless_harness, validate_planner_input};
 use crate::routes::idempotency_key::{parse_idempotency_key_header, stable_payload_hash};
 use crate::routes::track_report_blocks::require_rest_user_actor_for;
-use crate::session_projection_repo::{WorkerSessionProjection, WorkerSessionState};
+use crate::session_projection_repo::WorkerSessionProjection;
 use crate::state::{CodexShellState, RouteState, WorkerState};
 
 use axum::{
@@ -26,7 +26,7 @@ use axum::{
 use calm_types::planner_attachment::AttachmentId;
 use calm_types::worker::WorkerSessionId;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::json;
 use utoipa::ToSchema;
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -77,6 +77,10 @@ fn planner_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
 /// With `replaces_turn`, the named turn must be the conversation's latest, finished, with nothing
 /// queued: it is removed and this message queued in the transaction that binds the key, and the
 /// provider drops the turn when the next one starts. There is no lazy recovery on this path.
+///
+/// A person's plain send to a card with no thread to preserve (never started, or only failed
+/// starts that never got a thread, and no transcript) starts its conversation first, then queues
+/// the message.
 #[utoipa::path(
     post,
     path = "/api/cards/{id}/planner/input",
@@ -190,7 +194,7 @@ pub(crate) async fn send_planner_input_keyed(
 
     // `_recovery_guard` holds the per-card recovery lock until end of scope, so a concurrent `/planner/reset` can't supersede the just-recovered runtime before the observe/audit below.
     let (runtime, harness, _recovery_guard) = match replaces_turn {
-        None => ensure_live_planner_harness(s, w, cs, &card.id, actor.as_str() == "user").await?,
+        None => super::planner_session::ensure_planner_session(s, w, cs, &card.id, &actor).await?,
         Some(_) => live_planner_harness(s, &card.id).await?,
     };
     let track = s
@@ -341,102 +345,5 @@ async fn live_planner_harness(
         .await?
         .ok_or_else(dormant)?;
     let harness = s.harness.get(&runtime.id).ok_or_else(dormant)?;
-    Ok((runtime, harness, Some(guard)))
-}
-
-/// Resolve a live [`PlannerHarness`] handle for a planner card. Fast path: active runtime row + registry hit. Registry miss with an active row: lazily re-spawn via `spawn_recovered_harness` (no Codex RPC). A human send can also recover a `failed` carrier through `planner_recovery`.
-/// No eligible row, or an unrecoverable one (no thread anywhere, or a corrupt snapshot) → typed 409 `PlannerHarnessDormant` so the client steers the user to `/planner/reset`.
-/// Takes the per-card lock and re-fetches under it so racing Sends can't double-spawn; `/planner/reset` takes the SAME lock, and the guard is RETURNED so the caller holds it through enqueue/audit. Row-intrinsic dormancy (409) is checked before daemon liveness (503).
-#[allow(deprecated)]
-async fn ensure_live_planner_harness(
-    s: &RouteState,
-    w: &WorkerState,
-    cs: &CodexShellState,
-    card_id: &CardId,
-    human_send: bool,
-) -> Result<(
-    WorkerSessionProjection,
-    crate::harness::PlannerHarness,
-    Option<PerCardLockGuard>,
-)> {
-    let dormant = || {
-        CalmError::PlannerHarnessDormant(format!(
-            "no recoverable planner harness session for card {card_id}; reset to start a session",
-        ))
-    };
-    // Unlocked fast path only: its reads can straddle a racing Send's recovery commit, so a miss
-    // here is not dormancy (#1820); only the locked re-check below answers 409.
-    if let Some(runtime) = super::planner_recovery::candidate(s, card_id, human_send).await?
-        && runtime.status != WorkerSessionState::Failed
-        && let Some(harness) = s.harness.get(&runtime.id)
-    {
-        return Ok((runtime, harness, None));
-    }
-
-    let guard = lock_card(&s.planner_recovery_locks, card_id.as_str()).await;
-    // Re-fetch under the lock and use only this row: `/planner/reset` or a racing Send may have moved it.
-    let runtime = super::planner_recovery::candidate(s, card_id, human_send)
-        .await?
-        .ok_or_else(dormant)?;
-    let runtime = if runtime.status == WorkerSessionState::Failed {
-        super::planner_recovery::recover(s, w, cs, runtime).await?
-    } else {
-        runtime
-    };
-    if let Some(harness) = s.harness.get(&runtime.id) {
-        return Ok((runtime, harness, Some(guard)));
-    }
-    // A `starting` row means `planner-harness-start` is still in flight: the adapter writes the row BEFORE the harness is registered, so recovering here would spawn a harness the start op then shuts down, dropping any queued input. 503 so the client retries.
-    if runtime.status == WorkerSessionState::Starting {
-        return Err(CalmError::ServiceUnavailable(
-            "planner harness is starting; retry shortly".into(),
-        ));
-    }
-    // Row-intrinsic dormancy runs BEFORE the daemon liveness probe, so an unrecoverable row 409s (Reset) even when the daemon is down. Pre-validate the snapshot: the strict deserializer inside recovery panics on unknown shapes.
-    let snapshot_value = match runtime.handle_state_json.as_ref() {
-        Some(value) if is_harness_snapshot_value(value) => value,
-        _ => return Err(dormant()),
-    };
-    // A half-failed start can leave an active row without a thread; mirror boot recovery's fallback to the snapshot's `last_thread_id`, and only when BOTH are absent is the row unrecoverable.
-    let has_thread = |t: Option<&str>| t.map(str::trim).is_some_and(|trimmed| !trimmed.is_empty());
-    if !has_thread(runtime.thread_id.as_deref())
-        && !has_thread(snapshot_value.get("last_thread_id").and_then(Value::as_str))
-    {
-        return Err(dormant());
-    }
-    // A recovered harness can't issue turns without its backend; surface that instead of spawning a silently-wedged task.
-    // A Claude Planner needs its config and its pinned binary, not the shared app-server (#1791 §4.1 row 11).
-    if runtime.kind == crate::session_projection_repo::WorkerSessionKind::SharedPlanner
-        && runtime.agent_provider == Some(crate::session_projection_repo::AgentProvider::Claude)
-    {
-        s.claude_planner.check_ready().await?;
-    } else if !cs.shared_codex_appserver.is_running() {
-        return Err(CalmError::ServiceUnavailable(
-            cs.shared_codex_appserver.not_running_message(),
-        ));
-    }
-    let runtime_id = runtime.id.clone();
-    let harness = crate::harness::spawn_recovered_harness(
-        w.repo.clone(),
-        s.events.clone(),
-        s.write.role_cache().clone(),
-        s.write.area_cache().clone(),
-        cs.shared_codex_appserver.clone(),
-        s.thread_seals.clone(),
-        &s.claude_planner_wiring(),
-        &s.harness,
-        &s.track_delete_locks,
-        runtime.clone(),
-        crate::harness::ClaimMode::Replace,
-    )
-    .await?
-    .installed()
-    .ok_or_else(dormant)?;
-    tracing::info!(
-        card_id = %card_id,
-        runtime_id = %runtime_id,
-        "planner harness lazily recovered on /planner/input registry miss"
-    );
-    // Return the guard so the caller keeps the per-card lock alive through `harness.observe` and the audit event.
     Ok((runtime, harness, Some(guard)))
 }

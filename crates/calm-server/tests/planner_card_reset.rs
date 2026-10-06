@@ -1297,9 +1297,12 @@ async fn send_planner_input_non_planner_card_403() {
     );
 }
 
+/// No active runtime, but a retired one holding a thread: a conversation exists, so the send
+/// neither recovers nor starts (#2184 starts only a card with no thread to preserve). The app-server
+/// is running, so the 409 is the row's answer and not a stand-in for a daemon refusal.
 #[tokio::test]
 async fn send_planner_input_no_active_runtime_409_dormant() {
-    let boot = boot().await;
+    let boot = boot_fake_running().await;
     let card = seed_codex_card_with_role(&boot, CardRole::Planner).await;
     seed_inactive_planner_runtime(&boot, &card).await;
 
@@ -1321,6 +1324,12 @@ async fn send_planner_input_no_active_runtime_409_dormant() {
             .as_str()
             .is_some_and(|error| error.contains("reset")),
         "dormant body should point at reset: body={body}"
+    );
+    assert!(
+        planner_harness_start_payloads(&boot.repo, card.id.as_str())
+            .await
+            .is_empty(),
+        "a card with a conversation is never started by a send"
     );
 }
 

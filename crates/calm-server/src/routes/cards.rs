@@ -1135,20 +1135,6 @@ pub(crate) async fn reset_planner_card(
             "card {id} is not a planner codex card",
         )));
     }
-    // Recovery declines malformed persisted Planner runtimes so a boot pass can continue; this reset boundary keeps the HTTP 403 contract rather than a generic operation failure.
-    if role == CardRole::Planner {
-        let track = s
-            .repo
-            .track_get(card.track_id.as_str())
-            .await?
-            .ok_or_else(|| CalmError::NotFound(format!("track {}", card.track_id)))?;
-        if track.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE) {
-            return Err(CalmError::Forbidden(format!(
-                "planner harness is disabled for area chat track {}",
-                track.id
-            )));
-        }
-    }
     let response = reset_planner_card_shared(s, actor, card).await?;
     Ok(Json(response))
 }
@@ -1173,41 +1159,7 @@ async fn reset_planner_harness_card(
     card: Card,
     runtime: Option<WorkerSessionProjection>,
 ) -> Result<ResetPlannerCardResponse> {
-    let track = s
-        .repo
-        .track_get(card.track_id.as_str())
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("track {}", card.track_id)))?;
-
-    // A marked conversation card restarts under its OWN profile: restarting an assistant under `Planner` would re-mint its thread with the planner prompt while the card row still says `assistant`.
-    // No profile inherits the track title as a goal on this user-driven reset path.
-    let role = s.write.verify_role(&card.id);
-    let profile = if crate::plain_chat::card_is_plain_chat(&card, role, true) {
-        HarnessProfile::PlainChat
-    } else if crate::plain_chat::card_is_track_assistant(&card, role, true) {
-        HarnessProfile::Assistant
-    } else {
-        HarnessProfile::Planner
-    };
-    let start_request = PlannerHarnessStartOperationPayload {
-        actor: actor.to_actor_id(),
-        track_id: track.id.to_string(),
-        planner_card_id: card.id.clone(),
-        report_card_id: None,
-        sort: None,
-        cwd: track.workspace.agent_cwd().to_string(),
-        goal: None,
-        reset_harness_items: true,
-        force_new_thread: true,
-        profile,
-        create_card: None,
-        first_message: None,
-        create_request_sha256: None,
-        // Not a conversation create; nothing to brief. `None` is skipped by serde.
-        opening_briefing: None,
-    };
-    let start_payload = serde_json::to_value(start_request)?;
-    run_planner_card_operation(&s, "planner-harness-start", start_payload).await?;
+    start_harness_card(&s, &actor, &card, HarnessCardStart::Reset).await?;
 
     if let Some(runtime) = runtime {
         let shutdown_payload = serde_json::to_value(PlannerHarnessShutdownOperationPayload {
@@ -1241,7 +1193,74 @@ async fn reset_planner_harness_card(
     })
 }
 
-/// Submit one planner-card operation and wait for it, mapping its outcome onto a `CalmError`. Shared with `routes::today_summary`'s dormant recovery so failure classes map identically.
+/// How [`start_harness_card`] starts an existing harness card.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HarnessCardStart {
+    /// `/planner/reset`: a new thread, and the transcript cleared.
+    Reset,
+    /// A send to a card with no thread to preserve (#2184): there is nothing to clear.
+    Fresh,
+}
+
+/// Run one `planner-harness-start` for an existing harness card and wait for it. The one
+/// derivation of that start's payload, shared by reset and a send's fresh start; the caller holds the
+/// card's `planner_recovery_locks` guard.
+pub(crate) async fn start_harness_card(
+    s: &RouteState,
+    actor: &Actor,
+    card: &Card,
+    start: HarnessCardStart,
+) -> Result<()> {
+    let track = s
+        .repo
+        .track_get(card.track_id.as_str())
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("track {}", card.track_id)))?;
+    let role = s.write.verify_role(&card.id);
+    // The start adapter refuses this too; answering here keeps the HTTP 403 contract rather than a generic operation failure.
+    if role == Some(CardRole::Planner) && track.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE)
+    {
+        return Err(CalmError::Forbidden(format!(
+            "planner harness is disabled for area chat track {}",
+            track.id
+        )));
+    }
+    // A marked conversation card starts under its OWN profile: starting an assistant under `Planner` would mint its thread with the planner prompt while the card row still says `assistant`.
+    // No profile inherits the track title as a goal on these user-driven paths.
+    let profile = if crate::plain_chat::card_is_plain_chat(card, role, true) {
+        HarnessProfile::PlainChat
+    } else if crate::plain_chat::card_is_track_assistant(card, role, true) {
+        HarnessProfile::Assistant
+    } else {
+        HarnessProfile::Planner
+    };
+    let reset = start == HarnessCardStart::Reset;
+    let start_request = PlannerHarnessStartOperationPayload {
+        actor: actor.to_actor_id(),
+        track_id: track.id.to_string(),
+        planner_card_id: card.id.clone(),
+        report_card_id: None,
+        sort: None,
+        cwd: track.workspace.agent_cwd().to_string(),
+        goal: None,
+        reset_harness_items: reset,
+        force_new_thread: reset,
+        profile,
+        create_card: None,
+        first_message: None,
+        create_request_sha256: None,
+        // Not a conversation create; nothing to brief. `None` is skipped by serde.
+        opening_briefing: None,
+    };
+    run_planner_card_operation(
+        s,
+        "planner-harness-start",
+        serde_json::to_value(start_request)?,
+    )
+    .await
+}
+
+/// Submit one planner-card operation and wait for it, mapping its outcome onto a `CalmError`, so every planner-card route maps failure classes identically.
 pub(crate) async fn run_planner_card_operation(
     s: &RouteState,
     kind: &str,

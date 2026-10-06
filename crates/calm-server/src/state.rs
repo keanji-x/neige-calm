@@ -657,6 +657,17 @@ impl AppState {
             .await;
     }
 
+    /// Fixtures only: how many handles share the card's `planner_recovery_locks` entry (0 when
+    /// none). A holder counts three (map, guard, owned guard); each waiter adds two, so a race
+    /// test can see a second request queue on the lock.
+    #[cfg(feature = "fixtures")]
+    pub fn planner_recovery_lock_handles_for_test(&self, card_id: &str) -> usize {
+        self.route
+            .planner_recovery_locks
+            .get(card_id)
+            .map_or(0, |lock| Arc::strong_count(lock.value()))
+    }
+
     /// Fixture assembly only: run this state's Claude Planners under `config` (the typed
     /// `--claude-planner-config`), keeping its marker instance and instructions directory.
     #[cfg(feature = "fixtures")]

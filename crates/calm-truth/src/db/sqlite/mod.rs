@@ -38,6 +38,9 @@ mod planner_input_idempotency;
 #[cfg(test)]
 mod planner_input_idempotency_tests;
 mod read;
+mod session_conversation;
+#[cfg(test)]
+mod session_conversation_tests;
 mod session_mirror;
 mod session_projection;
 mod session_repo_impl;

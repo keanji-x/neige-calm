@@ -3139,7 +3139,7 @@ async fn a_runtime_that_is_no_longer_the_cards_carrier_does_not_issue_its_queue(
         "a retired runtime must leave its queue for whoever the mint handed it to; issuing it \
          anyway is how the same sentence reaches the agent twice"
     );
-    // The handle stays REGISTERED and alive (`ensure_live_planner_harness` does not health-check a registered
+    // The handle stays REGISTERED and alive (`ensure_planner_session` does not health-check a registered
     // handle), but a durable send through it is REFUSED: `session_set_handle_state_tx` matches no retired row.
     let handle = b
         .state
