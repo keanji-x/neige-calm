@@ -813,7 +813,11 @@ describe('the exchange rail, as the engine lays it out', () => {
     await scrollPaneTo(0);
     await userEvent.hover(screen.getByRole('button', { name: 'Outside navigation' }));
     const ink = (index: number) => Number.parseFloat(getComputedStyle(dots()[index], '::before').width);
-    const boxes = dots().map(dot => dot.getBoundingClientRect().toJSON());
+    const hitbox = (dot: HTMLElement) => {
+      const { top, left, width, height } = dot.getBoundingClientRect();
+      return { top, left, width, height };
+    };
+    const boxes = dots().map(hitbox);
     const resting = dots().map((_, index) => ink(index));
     await userEvent.hover(dots()[4]);
     await pause(150);
@@ -822,7 +826,7 @@ describe('the exchange rail, as the engine lays it out', () => {
     expect(ink(3)).toBeGreaterThan(ink(2));
     expect(ink(2)).toBeGreaterThan(resting[2]);
     expect(ink(3)).toBeCloseTo(ink(5), 1);
-    expect(dots().map(dot => dot.getBoundingClientRect().toJSON())).toEqual(boxes);
+    expect(dots().map(hitbox)).toEqual(boxes);
     await pause(150);
     expect(railPreview()?.querySelector('div')?.textContent).toBe('Prompt 4');
     const popup = railPreview();
@@ -834,18 +838,18 @@ describe('the exchange rail, as the engine lays it out', () => {
     expect(ink(5)).toBeGreaterThan(belowAtCenter);
     expect(railPreview()).toBe(popup);
     expect(railPreview()?.querySelector('div')?.textContent).toBe('Prompt 4');
-    expect(dots().map(dot => dot.getBoundingClientRect().toJSON())).toEqual(boxes);
+    expect(dots().map(hitbox)).toEqual(boxes);
     await userEvent.hover(dots()[5]);
     await pause(150);
     expect(ink(5)).toBeCloseTo(8, 1);
     expect(ink(6)).toBeGreaterThan(ink(7));
     expect(railPreview()).toBe(popup);
     expect(railPreview()?.querySelector('div')?.textContent).toBe('Prompt 5');
-    expect(dots().map(dot => dot.getBoundingClientRect().toJSON())).toEqual(boxes);
+    expect(dots().map(hitbox)).toEqual(boxes);
     await userEvent.hover(screen.getByRole('button', { name: 'Outside navigation' }));
     await pause(150);
     expect(dots().map((_, index) => ink(index))).toEqual(resting);
-    expect(dots().map(dot => dot.getBoundingClientRect().toJSON())).toEqual(boxes);
+    expect(dots().map(hitbox)).toEqual(boxes);
   });
 
   it('recomputes ink under a stationary pointer after scroll, host resize and item changes', async () => {
