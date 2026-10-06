@@ -124,6 +124,8 @@
 - { path: fe/web/src/ui/brand, type: directory, owner: ui/brand, readonly: false, basis: "#1211 品牌资产；neige-mark.svg 由 app/shell 的工作区栏与 features/area 的新建页共同引用，放在 ui 是因为 features/** 不得进入 app/**" }
 - { path: fe/web/src/features/chat, type: directory, owner: features/chat, readonly: false, basis: "对话列表；数据源为 WorkerSessionProjection + HarnessItem，端点未落地 (#997)" }
 
+- { path: fe/web/src/ui/motion, type: directory, owner: ui/motion, readonly: false, basis: "local edit-motion design; generic interruptible intrinsic size motion" }
+
 # Non-runtime styles owner (§3 diseases 6/7 and frozen interface §6.8).
 - { path: fe/web/src/styles, type: directory, owner: styles, readonly: true, basis: "frozen interface §6.8" }
 

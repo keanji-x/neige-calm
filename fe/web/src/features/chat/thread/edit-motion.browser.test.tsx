@@ -1,61 +1,100 @@
-/* Edit's motion against a real engine: one View Transition carries a copy of the message to the composer field, which stays put; visual only. */
-import { act, render, screen } from '@testing-library/react';
+/* Exercise the real Edit action and composer: mode changes are local and text never scales. */
+import { act, cleanup, render, screen } from '@testing-library/react';
+import { commands } from 'vitest/browser';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import '../../../styles/entry.css';
-
-import { moveIntoComposer } from './edit-motion.ts';
+import { ChatComposer, ChatThread } from './public.tsx';
 import { useState } from '../../../ui/state/public.ts';
+import type { Conversation, TranscriptEntry } from '../../../../../core/domain/conversation.ts';
 
-afterEach(() => { vi.restoreAllMocks(); document.body.replaceChildren(); });
-
-/** The drawer card as far as the motion reads it: the message, then the composer it moves into. */
-function Scene({ onUpdate }: { onUpdate: () => void }) {
-  const [moved, setMoved] = useState(false);
-  return (
-    <div data-nc-drawer="">
-      <p data-nc-turn="you" {...(moved ? { 'data-nc-editing': '' } : {})}>Original prompt</p>
-      <button type="button" onClick={() => moveIntoComposer(document.querySelector('[data-nc-turn="you"]'), () => {
-        onUpdate();
-        setMoved(true);
-      })}>Edit</button>
-      <div data-nc-composer=""><div contentEditable="true" suppressContentEditableWarning>{moved ? 'Original prompt' : ''}</div></div>
-    </div>
-  );
+const TEXT = 'Review the animation system and explain how editing can feel more natural. Keep the message readable and the rest of the conversation still. '.repeat(3);
+const conversation: Conversation = Object.freeze({ id: 'edit', trackId: 'track', title: null, kind: 'codex', state: 'idle', updatedAt: 1 });
+function Scene({ onUpdate = () => {} }: { onUpdate?: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState('');
+  const turns: TranscriptEntry[] = [
+    { id: 'you', author: 'you', text: TEXT, atMs: 1 },
+    { id: 'outcome', author: 'turn', turnId: 'turn', status: 'completed', elapsedMs: null, atMs: 2 },
+  ];
+  return <div data-nc-drawer="" style={{ width: 440 }}>
+    <ChatThread conversation={conversation} turns={turns} cards={{}} stalled={false} canContinue={false}
+      editing={editing ? 'outcome' : null} editMessage={() => { onUpdate(); setEditing(true); setText(TEXT); }} />
+    <ChatComposer onSend={() => {}} draft={{ text, onChange: setText }} focusRequest={editing ? 1 : 0}
+      {...(editing ? { editing: { preview: TEXT, onCancel: () => { setEditing(false); setText(''); } } } : {})} />
+  </div>;
 }
+const size = () => document.querySelector<HTMLElement>('[data-nc-size-motion]')!;
+const field = () => document.querySelector<HTMLElement>('[contenteditable="true"]')!;
+const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+const edit = () => act(() => { screen.getByRole('button', { name: 'Edit message' }).click(); });
+const cancel = () => act(() => { screen.getByRole('button', { name: 'Cancel edit' }).click(); });
+const settled = () => expect.poll(() => size().style.height).toBe('');
 
-it('carries the message into the field as one transition of at most 250 ms, keeps the message, and leaves no name behind', async () => {
+afterEach(async () => { cleanup(); vi.restoreAllMocks(); await commands.emulateReducedMotion(false); });
+
+it('enters edit immediately without a document transition or scaled text', () => {
   const start = vi.spyOn(document, 'startViewTransition');
   const update = vi.fn();
   render(<Scene onUpdate={update} />);
-  const message = document.querySelector<HTMLElement>('[data-nc-turn="you"]')!;
-  act(() => { screen.getByRole('button', { name: 'Edit' }).click(); });
-  expect(start).toHaveBeenCalledOnce();
-  expect(message.style.viewTransitionName).toBe('nc-edited-message');
-  const transition = start.mock.results[0].value as ViewTransition;
-  await transition.ready;
+  edit();
   expect(update).toHaveBeenCalledOnce();
-  expect(message.isConnected && message.hasAttribute('data-nc-editing')).toBe(true);
-  expect(message.style.viewTransitionName).toBe('');
-  const field = document.querySelector<HTMLElement>('[contenteditable="true"]')!;
-  expect(field.textContent).toBe('Original prompt');
-  expect(field.style.viewTransitionName).toBe('nc-edited-message');
-  const moving = document.getAnimations().filter((animation) =>
-    (animation.effect as KeyframeEffect | null)?.pseudoElement === '::view-transition-group(nc-edited-message)');
-  expect(moving.length).toBeGreaterThan(0);
-  for (const animation of moving) expect(Number(animation.effect?.getTiming().duration)).toBeLessThanOrEqual(250);
-  await transition.finished;
-  expect(field.style.viewTransitionName).toBe('');
+  expect(start).not.toHaveBeenCalled();
+  expect(field().textContent).toBe(TEXT);
+  expect(document.activeElement).toBe(field());
+  expect(getComputedStyle(field()).transform).toBe('none');
+  expect(document.querySelector('[data-nc-turn="you"]')?.hasAttribute('data-nc-editing')).toBe(true);
 });
 
-it('makes the same change at once, with no transition, under reduced motion', () => {
-  const start = vi.spyOn(document, 'startViewTransition');
-  vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({ matches: query === '(prefers-reduced-motion: reduce)' }) as MediaQueryList);
-  const update = vi.fn();
-  render(<Scene onUpdate={update} />);
-  act(() => { screen.getByRole('button', { name: 'Edit' }).click(); });
-  expect(start).not.toHaveBeenCalled();
-  expect(update).toHaveBeenCalledOnce();
-  expect(document.querySelector('[data-nc-turn="you"]')?.hasAttribute('data-nc-editing')).toBe(true);
-  expect(document.querySelector<HTMLElement>('[contenteditable="true"]')!.style.viewTransitionName).toBe('');
+it('expands and contracts the live composer locally, then releases its height', async () => {
+  render(<Scene />);
+  await frame();
+  const initial = size().getBoundingClientRect().height;
+  edit();
+  expect(size().style.height).not.toBe('');
+  await frame();
+  const natural = size().firstElementChild!.getBoundingClientRect().height;
+  expect(natural).toBeGreaterThan(initial);
+  expect(size().getBoundingClientRect().height).toBeLessThan(natural);
+  expect(getComputedStyle(size()).transform).toBe('none');
+  await settled();
+  expect(size().getBoundingClientRect().height).toBeCloseTo(natural, 0);
+  cancel();
+  expect(size().style.height).not.toBe('');
+  expect(field().textContent).toBe('');
+  await settled();
+  expect(size().getBoundingClientRect().height).toBeCloseTo(initial, 0);
+  expect(size().style.overflow).toBe('');
+});
+
+it('reverses from the painted size without losing the caret or retaining stale inline styles', async () => {
+  render(<Scene />);
+  edit();
+  await frame();
+  const interrupted = size().getBoundingClientRect().height;
+  cancel();
+  expect(size().getBoundingClientRect().height).toBeCloseTo(interrupted, 0);
+  edit();
+  expect(field().textContent).toBe(TEXT);
+  expect(document.activeElement).toBe(field());
+  // Input remains live during animation.
+  act(() => { field().textContent = 'Still editable'; field().dispatchEvent(new InputEvent('input', { bubbles: true })); });
+  expect(field().textContent).toBe('Still editable');
+  await settled();
+  expect(size().style.overflow).toBe('');
+});
+
+it('skips travel under reduced motion and stops a transition when the preference changes', async () => {
+  await commands.emulateReducedMotion(true);
+  render(<Scene />);
+  edit();
+  expect(field().textContent).toBe(TEXT);
+  expect(size().style.height).toBe('');
+  cancel();
+  await commands.emulateReducedMotion(false);
+  edit();
+  expect(size().style.height).not.toBe('');
+  await commands.emulateReducedMotion(true);
+  await expect.poll(() => size().style.height).toBe('');
+  expect(field().textContent).toBe(TEXT);
 });

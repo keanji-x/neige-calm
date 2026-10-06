@@ -40,7 +40,7 @@ import styles from './thread.module.css';
 import { sideQuestion } from '../../../../../core/domain/side-conversation.ts';
 import { currentResponseMessage, latestUserMessage } from '../../../../../core/domain/conversation-actions.ts';
 import { CurrentStatusNotice } from './outcome-notice.tsx';
-import { moveIntoComposer } from './edit-motion.ts';
+import { SizeMotion } from '../../../ui/motion/size.tsx';
 import { editedTurnMessageIds } from '../../../../../core/domain/conversation-composer.ts';
 import type { ConversationStopFeedback } from '../../../../../core/domain/conversation-stop.ts';
 import type { RunningTurnAnchor } from '../../../../../core/domain/conversation-meta.ts';
@@ -96,9 +96,8 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
   const editAction = editMessage === undefined || regenerateTarget === null || live || stalled || currentOutcome === null
     || currentOutcome.turnId === '' ? null
     : { id: `${conversation.id}:${currentOutcome.turnId}`, run: () => {
-      /* The turn is the latest, so the last message of yours on screen is its own; it stays, a copy moves. */
-      const said = [...frameRef.current?.querySelectorAll<HTMLElement>('[data-nc-turn="you"]') ?? []].at(-1) ?? null;
-      moveIntoComposer(said, () => editMessage(currentOutcome));
+      // Enter immediately. Presentation must not delay edit state or the caret.
+      editMessage(currentOutcome);
     } };
   const currentMeta = <CurrentStatusNotice outcome={currentOutcome} canContinue={canContinue} live={live}
     stalled={stalled} stalledReason={stalledReason ?? null} feedback={stopFeedback} copyAction={copyAction} editAction={editAction} regenerateAction={regenerateAction} runningAnchor={runningAnchor} />;
@@ -576,7 +575,7 @@ export function ChatComposer({
       return;
     }
     const messageField = root.querySelector<HTMLElement>('[contenteditable="true"], textarea');
-    messageField?.focus();
+    messageField?.focus({ preventScroll: true });
     if (messageField !== null && document.activeElement === messageField) {
       wantsFieldFocus.current = false;
       parkedFocus.current = null;
@@ -709,47 +708,49 @@ export function ChatComposer({
         }
       }}
     >
-      <AstryxChatComposer
-        density="compact"
-        value={draft}
-        onChange={setDraft}
-        placeholder="Say something"
-        isDisabled={disabled}
-        isStopShown={stopShown}
-        footerActions={footerActions}
-        /* Handed over whole — "one interrupt at a time" is the router's rule. */
-        onStop={onStop}
-        /* Astryx's own `handleSubmit` refuses only an empty draft and `isDisabled`, never `isStopShown`. */
-        onSubmit={submit}
-        {...(drawer === undefined ? {} : { drawer })}
-        {...(editing === undefined && headerActions === undefined ? {} : { headerActions: editing === undefined ? headerActions : (
-          <div className={styles.editBar} data-nc-edit-bar="">
-            <span className={styles.editBarLabel}>Editing message</span>
-            <span className={styles.editBarPreview}>{editing.preview}</span>
-            <button type="button" className={styles.editBarCancel} aria-label="Cancel edit" title="Cancel edit"
-              disabled={sendWaiting} onClick={editing.onCancel}><Icon name="close" size="sm" /></button>
-          </div>
-        ) })}
-        sendActions={sendDoor === undefined && sendAdornment === undefined ? undefined : (
-          <>{sendAdornment}{sendDoor}</>
-        )}
-        input={(
-          <ChatComposerInput
-            label="Message"
-            placeholder="Say something"
-            /* No triggers where there is neither a command nor a mention: otherwise the field becomes an `aria-expanded="false"` combobox that can never expand. */
-            {...(triggers.length === 0 ? {} : { triggers })}
-            /* The `@` source waits out keystrokes itself (`MENTION_SEARCH_DELAY_MS` says why Astryx's own delay must be off); the `/` source is synchronous and never delayed. */
-            debounceMs={0}
-          />
-        )}
-        /* Send's availability is Astryx's own (`canSend`). Astryx renders `aria-disabled` only with a `tooltip`, which `ChatSendButton` does not take, so this is a native `disabled` that drops focus to `<body>` — the focus effect above moves it back into the field first. */
-        /* `ChatSendButton` has no busy state and a fixed label; in those two states this is its button under the name it then has. */
-        sendButton={sendWaiting ? <Button label="Sending…" variant="primary" isIconOnly isLoading icon={sendIcon} className={styles.sendOwn} />
-          : editing === undefined ? <ChatSendButton />
-            : <Button label="Replace message" variant="primary" isIconOnly icon={sendIcon} className={styles.sendOwn}
-              isDisabled={disabled || (draft.trim() === '' && !allowEmptyText)} onClick={() => { submit(draft); }} />}
-      />
+      <SizeMotion motionKey={editing !== undefined}>
+        <AstryxChatComposer
+          density="compact"
+          value={draft}
+          onChange={setDraft}
+          placeholder="Say something"
+          isDisabled={disabled}
+          isStopShown={stopShown}
+          footerActions={footerActions}
+          /* Handed over whole — "one interrupt at a time" is the router's rule. */
+          onStop={onStop}
+          /* Astryx's own `handleSubmit` refuses only an empty draft and `isDisabled`, never `isStopShown`. */
+          onSubmit={submit}
+          {...(drawer === undefined ? {} : { drawer })}
+          {...(editing === undefined && headerActions === undefined ? {} : { headerActions: editing === undefined ? headerActions : (
+            <div className={styles.editBar} data-nc-edit-bar="">
+              <span className={styles.editBarLabel}>Editing message</span>
+              <span className={styles.editBarPreview}>{editing.preview}</span>
+              <button type="button" className={styles.editBarCancel} aria-label="Cancel edit" title="Cancel edit"
+                disabled={sendWaiting} onClick={editing.onCancel}><Icon name="close" size="sm" /></button>
+            </div>
+          ) })}
+          sendActions={sendDoor === undefined && sendAdornment === undefined ? undefined : (
+            <>{sendAdornment}{sendDoor}</>
+          )}
+          input={(
+            <ChatComposerInput
+              label="Message"
+              placeholder="Say something"
+              /* No triggers where there is neither a command nor a mention: otherwise the field becomes an `aria-expanded="false"` combobox that can never expand. */
+              {...(triggers.length === 0 ? {} : { triggers })}
+              /* The `@` source waits out keystrokes itself (`MENTION_SEARCH_DELAY_MS` says why Astryx's own delay must be off); the `/` source is synchronous and never delayed. */
+              debounceMs={0}
+            />
+          )}
+          /* Send's availability is Astryx's own (`canSend`). Astryx renders `aria-disabled` only with a `tooltip`, which `ChatSendButton` does not take, so this is a native `disabled` that drops focus to `<body>` — the focus effect above moves it back into the field first. */
+          /* `ChatSendButton` has no busy state and a fixed label; in those two states this is its button under the name it then has. */
+          sendButton={sendWaiting ? <Button label="Sending…" variant="primary" isIconOnly isLoading icon={sendIcon} className={styles.sendOwn} />
+            : editing === undefined ? <ChatSendButton />
+              : <Button label="Replace message" variant="primary" isIconOnly icon={sendIcon} className={styles.sendOwn}
+                isDisabled={disabled || (draft.trim() === '' && !allowEmptyText)} onClick={() => { submit(draft); }} />}
+        />
+      </SizeMotion>
     </div>
   );
 }

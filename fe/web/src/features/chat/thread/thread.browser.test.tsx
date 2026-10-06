@@ -1795,7 +1795,7 @@ describe('the exchange rail, as the engine lays it out', () => {
     expect(getComputedStyle(leavingSeam).animationName).not.toBe(enteringName);
     expect(timing(leavingSeam)).toBe(timing(leavingCard));
 
-    /* The exit is one `--motion-medium`; wait it out rather than guessing. */
+    /* The exit is one `--motion-snappy`; wait it out rather than guessing. */
     const startedAt = performance.now();
     while (host.querySelector('[data-nc-drawer]') !== null
       && performance.now() - startedAt < 2_000) await pause(20);

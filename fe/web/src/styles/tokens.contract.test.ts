@@ -62,6 +62,7 @@ const MOTION = [
   '--motion-instant', '--motion-quick', '--motion-snappy', '--motion-medium', '--motion-slow',
   '--motion-pulse',
 ] as const;
+const EASING = ['--ease-enter', '--ease-exit', '--ease-layout'] as const;
 const STATUS = ['--success', '--error'] as const;
 const FONT_ALIASES = ['--font-display', '--font-numeric', '--font-code'] as const;
 const MISC = [
@@ -92,7 +93,7 @@ const SHADOW = ['--shadow-float'] as const;
 const THEMED_ALIASES = ['--text-on-accent'] as const;
 const INVENTORY = [
   ...POSITIONAL, ...CONCRETE_SURFACES, ...PROSE_SURFACES, ...OVERLAYS,
-  ...TYPE_SCALE, ...LEADING, ...TRACKING, ...RADIUS, ...SPACING, ...MOTION, ...STATUS, ...FONT_ALIASES,
+  ...TYPE_SCALE, ...LEADING, ...TRACKING, ...RADIUS, ...SPACING, ...MOTION, ...EASING, ...STATUS, ...FONT_ALIASES,
   ...MISC, ...Z_INDEX,
   ...BOX_SCALE, ...WEIGHTS, ...AREA_IDENTITY, ...SHADOW, ...THEMED_ALIASES,
 ] as const;
@@ -234,6 +235,11 @@ describe('styles/tokens single-mode scalar contracts', () => {
 
   it.each(MOTION)('%s uses seconds and has no dark override', (name) => {
     expect(root.get(name)).toMatch(/^\d+(?:\.\d+)?s$/);
+    expect(dark.has(name)).toBe(false);
+  });
+
+  it.each(EASING)('%s is a cubic curve shared by both themes', (name) => {
+    expect(root.get(name)).toMatch(/^cubic-bezier\([\d., ]+\)$/);
     expect(dark.has(name)).toBe(false);
   });
 

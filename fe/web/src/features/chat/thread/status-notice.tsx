@@ -12,7 +12,7 @@ export type CopyResponseAction = Readonly<{ id: string; text: string; run: () =>
  * Regenerate is a send, whose failure the outbox reads through its table and shows above the composer.
  */
 export type ResponseAction = Readonly<{ id: string; run: () => Promise<void> }>;
-/** Edit answers at once (the message moves to the composer); its replace and any failure are the caller's. */
+/** Edit answers at once (the composer receives the message); its replace and any failure are the caller's. */
 export type EditAction = Readonly<{ id: string; run: () => void }>;
 
 type ActionView = { readonly key: string; active: boolean };

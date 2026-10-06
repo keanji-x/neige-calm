@@ -47,6 +47,8 @@ export type MotionToken =
   | '--motion-instant' | '--motion-quick' | '--motion-snappy'
   | '--motion-medium' | '--motion-slow' | '--motion-pulse';
 
+export type EasingToken = '--ease-enter' | '--ease-exit' | '--ease-layout';
+
 export type WeightToken =
   | '--weight-normal' | '--weight-medium' | '--weight-semibold';
 
@@ -77,4 +79,4 @@ export type ZIndexToken =
   | '--z-base' | '--z-raised' | '--z-sticky' | '--z-overlay' | '--z-modal' | '--z-toast';
 
 export type StyleToken =
-  | ColorToken | ScalarToken | FontToken | ZIndexToken | BoxScaleToken | ShadowToken;
+  | ColorToken | ScalarToken | EasingToken | FontToken | ZIndexToken | BoxScaleToken | ShadowToken;

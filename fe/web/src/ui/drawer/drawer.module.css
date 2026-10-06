@@ -114,7 +114,7 @@
     border-radius: var(--nc-card-radius);
     background: var(--surface-card);
     box-shadow: var(--shadow-float);
-    animation: drawer-in var(--motion-medium) ease-out;
+    animation: drawer-in var(--motion-medium) var(--ease-enter);
   }
 
   /*
@@ -184,7 +184,7 @@
     /* Same animation, same duration, same easing, same source token as the
        card above — the two enter and leave as one object, and any change to
        one is a change to both. */
-    animation: drawer-in var(--motion-medium) ease-out;
+    animation: drawer-in var(--motion-medium) var(--ease-enter);
     pointer-events: none;
   }
 
@@ -347,7 +347,7 @@
 
   /*
    * It rises 12px and fades, and leaves the same way — same distance, same
-   * duration, reversed.
+   * direction, with a shorter exit.
    *
    * The 12px is kept from the edge-panel shape, and it is still the right
    * motion for the card one, for a different reason. A panel welded to an edge
@@ -381,7 +381,7 @@
   .drawerClosing {
     /* `forwards`, so the card stays at zero opacity for the frame between the
        animation ending and React unmounting it. */
-    animation: drawer-out var(--motion-medium) ease-in forwards;
+    animation: drawer-out var(--motion-snappy) var(--ease-exit) forwards;
 
     /* It is on its way out; it must not intercept a click meant for the page
        behind it. */
@@ -393,7 +393,7 @@
      the seam itself; what this has to add is the children's, which `.seam > *`
      turned back on and a box on its way out must not keep. */
   .seamClosing {
-    animation: drawer-out var(--motion-medium) ease-in forwards;
+    animation: drawer-out var(--motion-snappy) var(--ease-exit) forwards;
   }
 
   .seamClosing > * {

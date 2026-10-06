@@ -386,6 +386,9 @@
     --motion-medium: 0.24s;
     --motion-slow: 1s;
     --motion-pulse: 2.2s;
+    --ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+    --ease-layout: cubic-bezier(0.22, 1, 0.36, 1);
 
     --success: oklch(54% 0.14 145);
     --error: oklch(51% 0.14 25);
