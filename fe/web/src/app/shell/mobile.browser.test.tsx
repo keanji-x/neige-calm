@@ -658,6 +658,7 @@ it('retains unread when a selected Track detail cannot be loaded', async () => {
   const preferences = createUiPreferences();
   preferences.setReadScope('db', 1_000);
   setup('/track/w1', AREA.name, () => undefined, preferences);
+  await page.getByRole('button', { name: 'Track Remote access', exact: true }).hover();
   await page.getByRole('button', { name: 'Actions for track Remote access', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Mark as unread', exact: true }).click();
   expect(preferences.isUnread('track', 'w2', 0)).toBe(true);
@@ -673,6 +674,7 @@ it('acknowledges a repeated desktop selection only in the rendered Track view', 
   preferences.setReadScope('db', 1_000);
   setup('/track/w1', AREA.name, () => undefined, preferences);
   const group = page.getByRole('group', { name: 'area Product', exact: true });
+  await group.getByRole('button', { name: 'Track Responsive mobile UI', exact: true }).hover();
   await group.getByRole('button', { name: 'Actions for track Responsive mobile UI', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Mark as unread', exact: true }).click();
   expect(preferences.isUnread('track', 'w1', 0)).toBe(true);

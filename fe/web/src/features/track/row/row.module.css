@@ -247,7 +247,11 @@
   }
 
   .wrapper:hover .action,
-  .wrapper:focus-within .action {
+  .wrapper:focus-within .action,
+  .wrapper:has(.menuButton[aria-expanded='true']) .action,
+  .wrapper:hover .menuButton,
+  .wrapper:focus-within .menuButton,
+  .wrapper:has(.menuButton[aria-expanded='true']) .menuButton {
     opacity: 1;
     pointer-events: auto;
   }
@@ -377,21 +381,56 @@
   .variantRail.hasMenu .title { text-overflow: clip; }
 
   .menuSlot {
+    pointer-events: none;
     position: absolute;
     inset-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm));
     inset-block-start: 50%;
     translate: 0 -50%;
   }
 
-  .menuButton { inline-size: var(--control-h-sm); block-size: var(--control-h-sm); }
+  .menuButton {
+    inline-size: var(--control-h-sm);
+    block-size: var(--control-h-sm);
+    opacity: 0;
+    pointer-events: none;
+    transition: none;
+  }
+
+  .wrapper:hover .menuButton,
+  .wrapper:focus-within .menuButton,
+  .wrapper:has(.menuButton[aria-expanded='true']) .menuButton {
+    transition: opacity var(--motion-quick) ease-out;
+  }
+
+  .wrapper:hover .menuSlot,
+  .wrapper:focus-within .menuSlot,
+  .wrapper:has(.menuButton[aria-expanded='true']) .menuSlot { pointer-events: auto; }
   .row.hasMenu,
   .row.hasMenu.hasRemove,
   .row.hasMenu.hasPin.hasRemove { padding-inline-end: calc(var(--space-2) * 4 + var(--control-h-sm) * 3); }
   .wrapperRail .row.hasMenu,
-  .wrapperRail .row.hasMenu.hasPin { padding-inline-end: calc(var(--space-2) * 3 + var(--control-h-sm) * 2); }
+  .wrapperRail .row.hasMenu.hasPin { padding-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm)); }
+  .wrapperRail:hover .row.hasMenu,
+  .wrapperRail:focus-within .row.hasMenu,
+  .wrapperRail:has(.menuButton[aria-expanded='true']) .row.hasMenu {
+    padding-inline-end: calc(var(--space-2) * 3 + var(--control-h-sm) * 2);
+  }
   .wrapper:has(.hasMenu) .remove { inset-inline-end: var(--space-2); }
   .wrapperPanel:has(.hasMenu) .remove { inset-inline-end: 0; }
   .wrapperPanel:has(.hasMenu) .menuSlot { inset-inline-end: calc(var(--space-2) + var(--control-h-sm)); }
   .wrapper:not(.wrapperRail):has(.hasMenu) .pin { inset-inline-end: calc(var(--space-2) * 3 + var(--control-h-sm) * 2); }
 
+  @media (hover: none) {
+    .menuSlot { pointer-events: auto; }
+    .menuButton { opacity: 1; pointer-events: auto; }
+    .wrapperRail .row.hasMenu,
+    .wrapperRail .row.hasMenu.hasPin { padding-inline-end: calc(var(--space-2) * 3 + var(--control-h-sm) * 2); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .menuButton,
+    .wrapper:hover .menuButton,
+    .wrapper:focus-within .menuButton,
+    .wrapper:has(.menuButton[aria-expanded='true']) .menuButton { transition: none; }
+  }
 }

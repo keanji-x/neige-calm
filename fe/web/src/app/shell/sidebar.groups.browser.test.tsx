@@ -226,6 +226,7 @@ it('uses the three-dot Track menu with keyboard and keeps actions separate from 
   const menu = page.getByRole('button', { name: 'Actions for track Older' });
   await expect.element(menu).toBeVisible();
   const row = page.getByRole('button', { name: 'Track Older', exact: true }).element();
+  await page.elementLocator(row).hover();
   expect(menu.element().getBoundingClientRect().right).toBeLessThanOrEqual(row.getBoundingClientRect().right);
   await menu.click();
   await page.getByRole('menuitem', { name: 'Pin globally', exact: true }).click();
@@ -280,6 +281,7 @@ it('fades only overflowing rail titles and keeps the action menu distinct', asyn
   const titleNode = () => document.querySelector<HTMLElement>('button[data-nc-role="row"] [title]')!;
   for (const title of [chinese, english]) {
     view.rerender(tree(title, '14rem'));
+    await page.getByRole('button', { name: `Track ${title}`, exact: true }).hover();
     expect(titleNode().scrollWidth).toBeGreaterThan(titleNode().clientWidth);
     await expect.poll(() => getComputedStyle(titleNode()).maskImage).toContain('linear-gradient');
     expect(getComputedStyle(titleNode()).textOverflow).toBe('clip');
@@ -295,4 +297,42 @@ it('fades only overflowing rail titles and keeps the action menu distinct', asyn
   // A layout resize without changing React props must also remove the fade.
   titleNode().closest('button')!.parentElement!.parentElement!.style.inlineSize = '40rem';
   await expect.poll(() => getComputedStyle(titleNode()).maskImage).toBe('none');
+});
+
+
+it('reveals Track controls on hover or focus and lets the title use idle space', async () => {
+  await page.viewport(1400, 900);
+  const title = 'A long navigation title used to verify space for hover actions';
+  const track: Track = { id: 'hover', title, areaId: 'a', sort: 0, cwd: '/tmp', agentCwd: '/tmp',
+    pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY };
+  render(<ThemeProvider storage={{ getItem: () => 'light', setItem: () => undefined }}>
+    <div style={{ inlineSize: '14rem' }}><TrackRow track={track} variant="rail" onOpen={vi.fn()} onDelete={vi.fn()}
+      actions={{ areaPinned: false, onSetPinned: vi.fn(), onSetAreaPinned: vi.fn(), onMarkUnread: vi.fn() }} /></div>
+    <button type="button">Outside row</button>
+  </ThemeProvider>);
+  const outside = page.getByRole('button', { name: 'Outside row', exact: true });
+  await outside.hover();
+  const row = page.getByRole('button', { name: `Track ${title}`, exact: true });
+  const menu = page.getByRole('button', { name: `Actions for track ${title}`, exact: true });
+  const remove = page.getByRole('button', { name: `Delete ${title}`, exact: true });
+  const caption = row.element().querySelector<HTMLElement>('[title]')!;
+  await expect.poll(() => getComputedStyle(menu.element()).opacity).toBe('0');
+  await expect.poll(() => getComputedStyle(remove.element()).opacity).toBe('0');
+  const idleWidth = caption.clientWidth;
+  await row.hover();
+  await expect.poll(() => getComputedStyle(menu.element()).opacity).toBe('1');
+  await expect.poll(() => getComputedStyle(remove.element()).opacity).toBe('1');
+  expect(caption.clientWidth).toBeLessThan(idleWidth);
+  expect(caption.getBoundingClientRect().right).toBeLessThanOrEqual(menu.element().getBoundingClientRect().left);
+  await outside.click();
+  await expect.poll(() => getComputedStyle(menu.element()).opacity).toBe('0');
+  await userEvent.keyboard('{Shift>}{Tab}{/Shift}{Shift>}{Tab}{/Shift}');
+  await expect.element(menu).toHaveFocus();
+  await expect.poll(() => getComputedStyle(menu.element()).opacity).toBe('1');
+  await userEvent.keyboard('{Enter}');
+  await expect.element(page.getByRole('menuitem', { name: 'Pin globally', exact: true })).toHaveFocus();
+  expect(menu.element().getAttribute('aria-expanded')).toBe('true');
+  expect(getComputedStyle(menu.element()).opacity).toBe('1');
+  await userEvent.keyboard('{Escape}');
+  await expect.element(menu).toHaveFocus();
 });

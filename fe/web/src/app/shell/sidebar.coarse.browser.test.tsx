@@ -55,4 +55,11 @@ it('keeps Area actions reachable on a wide no-hover touch display', () => {
     expect(getComputedStyle(pin).pointerEvents).toBe('auto');
   }
   expect(document.querySelectorAll('[aria-label^="Pin Touch"], [aria-label^="Unpin Touch"]')).toHaveLength(3);
+  const menus = document.querySelectorAll<HTMLButtonElement>('button[aria-label^="Actions for track Touch"]');
+  expect(menus).toHaveLength(3);
+  for (const menu of menus) {
+    expect(getComputedStyle(menu).opacity).toBe('1');
+    expect(getComputedStyle(menu).pointerEvents).toBe('auto');
+  }
+
 });
