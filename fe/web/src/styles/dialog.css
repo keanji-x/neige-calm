@@ -14,6 +14,7 @@
     place-items: center;
     padding: var(--space-8);
     background: var(--overlay-scrim);
+    animation: dialog-backdrop-enter var(--motion-quick) var(--ease-feedback);
   }
 
   .dialog-panel {
@@ -29,7 +30,7 @@
 
     /* Overlays are §2.6's stated exception to "no entrance animation": entering
        costs --motion-medium, leaving is instant. */
-    animation: dialog-enter var(--motion-medium) ease-out;
+    animation: dialog-enter var(--motion-medium) var(--ease-enter);
   }
 
   /* The wide form carries child views, whose height changes as the user drills
@@ -127,15 +128,20 @@
     visibility: hidden;
   }
 
+  @keyframes dialog-backdrop-enter {
+    from { background-color: transparent; }
+  }
+
   @keyframes dialog-enter {
     from {
       opacity: 0;
-      scale: 0.98;
+      translate: 0 var(--space-4);
     }
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .dialog-panel {
+    .dialog-panel,
+    .dialog-overlay {
       animation: none;
     }
   }

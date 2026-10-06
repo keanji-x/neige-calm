@@ -33,7 +33,7 @@ const TOKEN_INVENTORY = [
   '--radius-pill', '--space-0', '--space-px', '--space-1', '--space-2', '--space-3', '--space-4',
   '--space-5', '--space-6', '--space-7', '--space-8', '--space-9', '--space-10', '--space-11',
   '--space-12', '--motion-instant', '--motion-quick', '--motion-snappy', '--motion-medium',
-  '--motion-slow', '--motion-pulse', '--ease-enter', '--ease-exit', '--ease-layout', '--font-sans', '--font-serif', '--font-mono',
+  '--motion-slow', '--motion-pulse', '--ease-enter', '--ease-exit', '--ease-layout', '--ease-feedback', '--ease-emphasis', '--font-sans', '--font-serif', '--font-mono',
   '--font-display', '--font-numeric', '--font-code', '--z-base', '--z-raised', '--z-sticky',
   '--z-overlay', '--z-modal', '--z-toast',
   '--weight-normal', '--weight-medium', '--weight-semibold',

@@ -62,7 +62,7 @@ const MOTION = [
   '--motion-instant', '--motion-quick', '--motion-snappy', '--motion-medium', '--motion-slow',
   '--motion-pulse',
 ] as const;
-const EASING = ['--ease-enter', '--ease-exit', '--ease-layout'] as const;
+const EASING = ['--ease-enter', '--ease-exit', '--ease-layout', '--ease-feedback', '--ease-emphasis'] as const;
 const STATUS = ['--success', '--error'] as const;
 const FONT_ALIASES = ['--font-display', '--font-numeric', '--font-code'] as const;
 const MISC = [

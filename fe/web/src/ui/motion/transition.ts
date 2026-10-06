@@ -1,12 +1,19 @@
 /** Semantic recipes shared by CSS and imperative Motion consumers. */
-export type MotionIntent = 'enter' | 'exit' | 'layout';
+const RECIPES = Object.freeze({
+  enter: Object.freeze({ duration: '--motion-medium', ease: '--ease-enter' }),
+  exit: Object.freeze({ duration: '--motion-snappy', ease: '--ease-exit' }),
+  layout: Object.freeze({ duration: '--motion-medium', ease: '--ease-layout' }),
+  disclosure: Object.freeze({ duration: '--motion-snappy', ease: '--ease-layout' }),
+  feedback: Object.freeze({ duration: '--motion-quick', ease: '--ease-feedback' }),
+  emphasis: Object.freeze({ duration: '--motion-slow', ease: '--ease-emphasis' }),
+});
+export type MotionIntent = keyof typeof RECIPES;
 export type MotionTransition = Readonly<{ duration: number; ease: [number, number, number, number] }>;
 
 /** Read the owning surface's tokens; keep missing or invalid configuration explicit. */
 export function readMotionTransition(element: Element, intent: MotionIntent): MotionTransition {
   const style = getComputedStyle(element);
-  const durationToken = intent === 'exit' ? '--motion-snappy' : '--motion-medium';
-  const easeToken = `--ease-${intent}`;
+  const { duration: durationToken, ease: easeToken } = RECIPES[intent];
   const duration = style.getPropertyValue(durationToken).trim().match(/^(\d*\.?\d+)(ms|s)$/);
   const curve = style.getPropertyValue(easeToken).trim().match(/^cubic-bezier\(([^)]+)\)$/);
   const coordinates = curve?.[1].split(',').map(value =>

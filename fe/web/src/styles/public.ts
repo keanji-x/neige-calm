@@ -47,7 +47,7 @@ export type MotionToken =
   | '--motion-instant' | '--motion-quick' | '--motion-snappy'
   | '--motion-medium' | '--motion-slow' | '--motion-pulse';
 
-export type EasingToken = '--ease-enter' | '--ease-exit' | '--ease-layout';
+export type EasingToken = '--ease-enter' | '--ease-exit' | '--ease-layout' | '--ease-feedback' | '--ease-emphasis';
 
 export type WeightToken =
   | '--weight-normal' | '--weight-medium' | '--weight-semibold';

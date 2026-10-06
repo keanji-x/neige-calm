@@ -3,7 +3,7 @@
 ## Ownership and entry points
 
 - `styles` owns duration and easing tokens, shared by both themes.
-- `ui/motion/transition.ts` exports `MotionIntent`, `MotionTransition` and `readMotionTransition(surface, intent)`. It converts the surface's CSS tokens into Motion options. Enter uses medium/enter, exit uses snappy/exit, and layout uses medium/layout. Millisecond and second duration overrides are supported; absent or invalid tokens throw rather than silently adopting library defaults.
+- `ui/motion/transition.ts` exports `MotionIntent`, `MotionTransition` and `readMotionTransition(surface, intent)`. It converts the surface's CSS tokens into Motion options. Enter uses medium/enter, exit uses snappy/exit, layout uses medium/layout, disclosure uses snappy/layout, feedback uses quick/feedback, and emphasis uses slow/emphasis. Millisecond and second duration overrides are supported; absent or invalid tokens throw rather than silently adopting library defaults.
 - `ui/motion/size.tsx` exports `SizeMotion({ motionKey, children })`, an interruptible intrinsic-height primitive. The caller supplies a stable string or boolean presentation mode. No domain identifiers, field selectors, or backend state enter the primitive.
 
 CSS consumers use the same token pairs directly; hover/color changes remain CSS transitions. Motion coordinates live layout where CSS alone cannot do so. Decorative repeating SVG animation remains owned by brand components. New consumers extend this owner rather than introducing per-feature animation runners.
@@ -21,3 +21,5 @@ Children must size intrinsically; do not derive their height as a percentage of 
 Chat edit calls its action immediately, changes the composer's mode key, and marks the original message in place. Drawer and seam use matching enter/exit token pairs. These consumers do not impose chat policy on the primitive.
 
 `transition.test.ts` pins token conversion, local overrides and explicit rejection. `size.browser.test.tsx` exercises generic panels with margins, floats, live controls, dynamic content, StrictMode disposal and reduced motion. Chat edit tests additionally cover immediate refill/focus and rapid cancellation/re-entry through the production action. Future primitives should bring equivalent standalone lifecycle coverage before migrating more surfaces.
+
+Dialog consumes entry and backdrop-feedback recipes through CSS. It uses a small lift plus opacity without scaling text, dismisses immediately, and keeps focus/inert/keyboard behavior with the existing dialog owner. See `docs/motion-adoption.md` and #2208 for the staged migration.

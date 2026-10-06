@@ -22,6 +22,7 @@ const vite = await createServer({
   configFile: false,
   root: resolve(import.meta.dirname, '../../web'),
   base: '/next/',
+  cacheDir: resolve(import.meta.dirname, '../../node_modules/.cache/motion-preview'),
   plugins: [react()],
   define: { __NC_BUNDLED__: 'false', __NC_VERSION__: JSON.stringify('preview'), __NC_BUILD__: JSON.stringify('preview') },
   optimizeDeps: { entries: [entry] },

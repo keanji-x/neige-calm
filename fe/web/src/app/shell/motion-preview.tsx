@@ -1,5 +1,7 @@
+import { useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { useState } from '../../ui/state/public.ts';
+import { Dialog } from '../../ui/dialog/public.tsx';
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { ChatComposer, ChatThread } from '../../features/chat/thread/public.tsx';
 import { isComposerEmpty, isSameComposer } from '../../../../core/domain/conversation-composer.ts';
@@ -10,6 +12,8 @@ const longText = '我们希望编辑消息时，原来的对话保持稳定，�
 const conversation: Conversation = Object.freeze({ id: 'preview', trackId: 'preview', title: '动画预览', kind: 'codex', state: 'idle', updatedAt: 1 });
 function Preview() {
   const [open, setOpen] = useState(true);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const dialogInput = useRef<HTMLInputElement>(null);
   const [prompt, setPrompt] = useState(shortText);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
@@ -33,6 +37,7 @@ function Preview() {
       <div style={{ display: 'flex', gap: 8 }}>
         <button onClick={() => sample(shortText)}>短消息</button>
         <button onClick={() => sample(longText)}>长消息</button>
+        <button onClick={() => setDialogOpen(true)}>打开弹窗</button>
         <button onClick={() => setOpen(!open)}>{open ? '收起对话' : '打开对话'}</button>
       </div>
     </div>
@@ -62,6 +67,11 @@ function Preview() {
       </Drawer>
     </section>
     <p style={{ color: 'var(--text-3)', fontSize: 12, marginTop: 16 }}>交互预览 · 使用实际对话组件 · 内容仅保存在当前页面</p>
+    <Dialog open={dialogOpen} title="创建任务" initialFocusRef={dialogInput} onClose={() => setDialogOpen(false)}>
+      <label>任务名称<input ref={dialogInput} defaultValue="整理今天的工作" /></label>
+      <p>内容保持清晰，打开时轻柔接入，关闭后回到原来的位置。</p>
+      <button onClick={() => setDialogOpen(false)}>完成</button>
+    </Dialog>
   </main>;
 }
 function mountPreview() {

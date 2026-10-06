@@ -3,7 +3,7 @@ import { readMotionTransition } from './transition.ts';
 
 function surface() {
   const element = document.createElement('div');
-  element.style.cssText = '--motion-medium:.24s;--motion-snappy:150ms;--ease-enter:cubic-bezier(.16,1,.3,1);--ease-exit:cubic-bezier(.4,0,1,1);--ease-layout:cubic-bezier(.22,1,.36,1)';
+  element.style.cssText = '--motion-medium:.24s;--motion-snappy:150ms;--motion-quick:100ms;--motion-slow:1s;--ease-enter:cubic-bezier(.16,1,.3,1);--ease-exit:cubic-bezier(.4,0,1,1);--ease-layout:cubic-bezier(.22,1,.36,1);--ease-feedback:cubic-bezier(.2,0,0,1);--ease-emphasis:cubic-bezier(.4,0,.2,1)';
   document.body.append(element);
   return element;
 }
@@ -14,6 +14,13 @@ it('reads enter, exit and layout recipes from the owning surface', () => {
   expect(readMotionTransition(element, 'enter')).toEqual({ duration: .24, ease: [.16, 1, .3, 1] });
   expect(readMotionTransition(element, 'exit')).toEqual({ duration: .15, ease: [.4, 0, 1, 1] });
   expect(readMotionTransition(element, 'layout')).toEqual({ duration: .24, ease: [.22, 1, .36, 1] });
+});
+
+it('reads disclosure, feedback and emphasis from declared recipes', () => {
+  const element = surface();
+  expect(readMotionTransition(element, 'disclosure')).toEqual({ duration: .15, ease: [.22, 1, .36, 1] });
+  expect(readMotionTransition(element, 'feedback')).toEqual({ duration: .1, ease: [.2, 0, 0, 1] });
+  expect(readMotionTransition(element, 'emphasis')).toEqual({ duration: 1, ease: [.4, 0, .2, 1] });
 });
 
 it('honors local token overrides including millisecond durations', () => {
