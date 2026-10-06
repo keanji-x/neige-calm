@@ -234,8 +234,9 @@ Running is ambience and lives in the panel.
   in `crates/calm-server`; neither is a statement this page can make.
 - **Reset** (#1343) — `documentAction` carries it, and it is the only control
   the document region has. It posts `POST /api/today/launchpad/report/reset`,
-  which puts the report back to the kernel's canonical empty document and
-  touches nothing else — no conversation is created, reset or deleted.
+  which puts the report back to the kernel's canonical empty document, data
+  blocks included: a task the report declared is withdrawn as its block-level
+  DELETE would withdraw it (#2295). No conversation is created, reset or deleted.
 
   Three things about it are decisions rather than details:
 

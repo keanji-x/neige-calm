@@ -7260,7 +7260,7 @@
         "tags": [
           "tracks"
         ],
-        "summary": "`POST /api/today/launchpad/report/reset` — put today's report back to the canonical\nempty document. The kernel calls `TrackReportPayload::initial()` itself; nothing\ncrosses the wire. Touches the report and nothing else. The revision anchor is read\nhere, so an edit landing in between yields the ordinary CRDT 409 and writes nothing.",
+        "summary": "`POST /api/today/launchpad/report/reset` — put today's report back to the canonical\nempty document. The kernel calls `TrackReportPayload::initial()` itself; nothing\ncrosses the wire. Data blocks go too, each as if deleted by id: the task projection\ndrops a removed task's pending row and marks a claimed one stale, in the same write.\nConversations are untouched. The revision anchor is read here, so an edit landing in\nbetween yields the ordinary CRDT 409 and writes nothing.",
         "operationId": "reset_today_launchpad_report",
         "responses": {
           "200": {
@@ -7269,16 +7269,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TodayLaunchpadReportReset"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "The report holds a non-prose block, which the report write guard lets no whole-document replace remove",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }

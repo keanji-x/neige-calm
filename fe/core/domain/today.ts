@@ -78,8 +78,9 @@ export function nameTodaySummaryConversation(trackId: string, row: Conversation)
 }
 
 /**
- * What a failed reset says. The server reads the current revision itself, so a retry is safe: 400 (a report that is not
- * prose), 403 and 404 refuse it. A 409 is a revision race with a writer, and it and anything else leave it unknown.
+ * What a failed reset says. The server reads the current revision itself, so a retry is safe: 403 and 404 refuse it,
+ * and so would a 400, which writes nothing either. A 409 is a revision race with a writer, and it and anything else
+ * leave it unknown.
  */
 export const REPORT_RESET_FAILURES: FailureTable<WriteClass> = Object.freeze({
   rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 403, 404]), is: 'refused' as const })]),
