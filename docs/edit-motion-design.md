@@ -10,4 +10,4 @@ Acceptance: production-component browser tests cover immediate content and focus
 
 ## Owner change request
 
-The user authorized this implementation on 2026-10-06. The root orchestrator accepts these narrowly scoped changes: register `ui/motion` in `fe/module-file-inventory.yaml`; add MIT Motion to `fe/package.json` and its lockfile; extend styles tokens, public types and inventory tests with easing names. Frozen ownership controls and unrelated interfaces retain their contracts. Issue publication was subsequently authorized: https://github.com/keanji-x/neige-calm/issues/2191.
+The user authorized this implementation on 2026-10-06. The root orchestrator accepts these narrowly scoped changes: register `ui/motion` and development-only `tools/preview` in `fe/module-file-inventory.yaml`; add MIT Motion to `fe/package.json` and its lockfile; extend styles tokens, public types and inventory tests with easing names. Frozen ownership controls and unrelated interfaces retain their contracts. Issue publication was subsequently authorized: https://github.com/keanji-x/neige-calm/issues/2191.
