@@ -488,9 +488,9 @@ def test_spy_snapshot_without_a_broker_calendar_is_refused_not_guessed(allocatio
 
 def test_spy_agent_text_never_sends_the_planner_to_the_longbridge_cli():
     manifest = json.loads((ROOT / 'manifest.json').read_text())
-    texts = {'spy-recipe.md': (ROOT / 'spy-recipe.md').read_text()}
+    texts = {name: (ROOT / name).read_text() for name in ('spy-recipe.md', 'spy-research-recipe.md')}
     texts |= {tool['name']: json.dumps(tool, ensure_ascii=False) for tool in manifest['exposes_tools']}
-    assert len(texts) == len(TOOLS) + 1
+    assert len(texts) == len(TOOLS) + 2
     for name, text in texts.items():
         assert not re.search(r'longbridge|\bcli\b|k-line', text, flags=re.I), name
 

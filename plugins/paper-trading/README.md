@@ -37,10 +37,10 @@ flag verifies that the committed file is byte-identical to a fresh run.
 ## Automatic SPY/cash profile
 
 This profile runs a daily SPY/cash target allocation with the official
-Longbridge paper account. The Planner reads the SPY price and the trading day
-from `spy.status` and its research evidence from Wisburg; it never uses the
-Longbridge CLI or holds broker credentials. The Planner captures source references and persists a
-basis-point target; an ordinary Codex Worker task requests execution of that
+Longbridge paper account. The 总览 Planner reads the SPY price and the trading day
+from `spy.status`; its SPY 研究 Track reads research evidence from Wisburg.
+Neither uses the Longbridge CLI or holds broker credentials. The research Track captures source references and the 总览
+Planner persists a basis-point target; an ordinary Codex Worker task requests execution of that
 immutable decision. The App's background loop calculates integer shares,
 submits one DAY market order and reconciles actual broker fills. The App never
 creates targets or submits an additional order to eliminate residual drift;
@@ -115,8 +115,10 @@ Longbridge endpoint overrides, model keys or arbitrary Python import paths.
 
 ### Track and Worker setup
 
-Save `spy-recipe.md` as a user Recipe and create the owner Track from it on a
-current kernel, managed or attached. Codex tasks run in the Track's checkout:
+Save `spy-recipe.md` and `spy-research-recipe.md` as user Recipes. Enable the
+App first, then create the owner Track (the 总览) from `spy-recipe.md` on a
+current kernel, managed or attached: a Planner thread that starts before the
+App is enabled cannot call its tools (#2014). Codex tasks run in the Track's checkout:
 a managed Track gets its own Git workspace and an attached Track gets its
 `neige/track-<id>` worktree. An attached Track created before per-track
 worktrees refuses Codex tasks with `track-without-worktree`; create a new
@@ -124,8 +126,11 @@ Track instead. The Worker task is `access: "read_only"`, so the checkout must
 only be clean; the App ledger lives in the plugin data directory, not in Git.
 Only the user closes the strategy Track.
 
-The Recipe runs the Track unattended. On the first user message the Planner
-creates four weekly Calendar entries from the Track, in America/New_York:
+The Recipe runs the Track unattended. The 总览 Report is only the account
+dashboard: the three live views and one link to the SPY 研究 Track. Research
+lives in that Track's report. On the first user message, which gives the
+research Recipe's id, the 总览 Planner creates the SPY 研究 Track with
+`neige_track_add` and four weekly Calendar entries from the 总览 Track, in America/New_York:
 weekday pre-market research 08:45, execution 09:45 and post-close review
 16:30, and a Saturday weekly review at 10:00. Each entry wakes the Planner at
 its start; the kernel needs Calendar wake and weekly recurrence (#1967), and
@@ -134,11 +139,16 @@ and stop unless the `spy.status` snapshot's `calendar_date` is today's New York
 date and `trading_day` is true. The snapshot's `calendar_date`, `trading_day`,
 `half_day` and `regular_close_at` come from the broker calendar the App's SDK
 reads for that date; a failed or incomplete calendar read fails the whole
-reconciliation, so the Planner stops instead of guessing. Execution acts only on
-a queued decision, which pre-market saves only on a confirmed trading day. Pre-market research ends in either a
-hold or `spy.plan` with decision ID `spy-YYYYMMDD` (the App accepts 1-55
+reconciliation, so the Planner stops instead of guessing. On a confirmed
+trading day pre-market mails the research Track (`neige_mail_send`), which
+researches, rewrites its report and replies with a suggested ratio and its
+sourced reasons. The reply wakes the 总览 Planner, which before 09:30 decides:
+either a hold or `spy.plan` with decision ID `spy-YYYYMMDD` (the App accepts 1-55
 lowercase letters, digits or hyphens and a validity of at most 24 hours; the
-Recipe ends it no later than the snapshot's `regular_close_at`). At the execution step the Planner
+Recipe ends it no later than the snapshot's `regular_close_at`). Without a reply
+in time there is no decision that day. Execution acts only on a queued decision,
+which the pre-market decision saves only on a confirmed trading day. The
+Saturday weekly review also asks the research Track for its review by mail. At the execution step the Planner
 declares one `codex`, `access: "read_only"` task `spy-exec-<decision_id>`;
 Claude Workers receive no plugin MCP tools. Only one unresolved decision is
 permitted, and every blocked or uncertain state stays in the Report for

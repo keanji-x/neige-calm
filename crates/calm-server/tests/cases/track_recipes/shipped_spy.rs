@@ -51,6 +51,34 @@ async fn the_shipped_spy_recipe_is_admitted_with_its_template_views_intact() {
     assert_eq!(h1s, declared);
 }
 
+#[tokio::test]
+async fn the_shipped_spy_research_recipe_is_admitted_as_a_report_without_views() {
+    let boot = boot().await;
+    let body = plugin_file("spy-research-recipe.md");
+    let (status, created) = send(
+        boot.app.clone(),
+        "POST",
+        "/api/track-recipes",
+        Some("user"),
+        Some(json!({ "title": "spy research", "body": body })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={created}");
+    let stored = created["body"].as_str().expect("body");
+    assert!(fences(stored).is_empty(), "{stored}");
+
+    let header = calm_types::report_contract::check_document(stored)
+        .unwrap()
+        .expect("contract header");
+    let declared: Vec<String> = header.sections.into_iter().map(|s| s.h1).collect();
+    let h1s: Vec<String> = headings(stored)
+        .into_iter()
+        .filter(|(level, _)| *level == 1)
+        .map(|(_, text)| text)
+        .collect();
+    assert_eq!(h1s, declared);
+}
+
 #[test]
 fn every_slot_of_the_committed_spy_example_resolves_a_valid_unit() {
     let example: Value = serde_json::from_str(&plugin_file("examples/native-demo.json")).unwrap();
