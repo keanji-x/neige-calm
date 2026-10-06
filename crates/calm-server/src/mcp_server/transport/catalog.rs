@@ -45,11 +45,11 @@ pub(crate) async fn tool_descriptors_for_connection(
     Ok(descriptors)
 }
 
-/// The kernel MCP entry's catalog generation (#2014): a digest of exactly what a bootstrap
-/// `tools/list` serves, sorted by name. Equal catalogs give equal values, so a restart over an
-/// unchanged running plugin set rewrites nothing; any served change (a tool added or removed, or a
-/// reload that changed a schema) gives a new one.
-pub(crate) async fn bootstrap_catalog_generation(
+/// The catalog digest in the kernel MCP entry's generation (#2014): a digest of exactly what a
+/// bootstrap `tools/list` serves, sorted by name. Equal catalogs give equal values, so a restart
+/// over an unchanged running plugin set rewrites nothing; any served change (a tool added or
+/// removed, or a reload that changed a schema) gives a new one.
+pub(crate) async fn bootstrap_catalog_digest(
     ctx: &Arc<AppContext>,
     registry: &ToolRegistry,
 ) -> String {

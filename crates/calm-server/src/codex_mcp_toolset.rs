@@ -7,6 +7,19 @@
 //! every loaded thread whose entry changed, and that thread's next model request carries the new
 //! list. A plain reload with an unchanged entry does nothing, which is why the generation exists.
 //!
+//! The generation is `<catalog digest>.<write counter>`. The digest alone misses a catalog that
+//! changes and changes back inside one debounce window, for example a plugin reload or a crash and
+//! respawn: a thread that started in the gap listed the catalog without that plugin, yet the final
+//! digest equals the written one. So a window in which any plugin entered Running forces a write
+//! with the next counter, and with it a reload. A plugin that left Running and stayed out changes
+//! the digest by itself, and one that came back emitted a Running. The price: a plugin flap
+//! restarts every loaded thread's kernel MCP shim once per window. Flaps are rare, either
+//! initiated by the owner or a crash, and the restart is cheap next to a thread missing tools.
+//! A plugin crash loop is bounded by the host's crash window (5 crashes, backoff 1/2/4/8 s): about
+//! two catalog flips per cycle, so roughly ten forced reloads before the plugin goes terminal, and
+//! a `tools/call` in flight survives each one. A plugin that enters Running without serving tools
+//! also forces one; that keeps the rule a plain state check instead of a catalog diff per plugin.
+//!
 //! A written generation stays owed to the daemon until a reload is sent: when none is connected,
 //! or the request fails, the reload is retried at the next daemon Running and at the next plugin
 //! change. Every transition into Running also sends one reload, because an adopted daemon keeps
@@ -30,10 +43,20 @@ use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::sync::watch;
 
 use crate::event::{BroadcastEnvelope, Event, EventBus};
-use crate::mcp_server::transport::bootstrap_catalog_generation;
+use crate::mcp_server::transport::bootstrap_catalog_digest;
 use crate::mcp_server::{AppContext, ToolRegistry};
+use crate::plugin_host::PluginRuntimeStatus;
 use crate::shared_codex_appserver::{DaemonReadiness, McpServerReload, SharedCodexAppServer};
 use crate::shared_codex_home::SharedCodexHome;
+
+/// `None` for an event other than plugin state; otherwise whether the plugin entered Running, the
+/// one state whose tools a bootstrap `tools/list` serves.
+fn entered_running(envelope: &BroadcastEnvelope) -> Option<bool> {
+    match &envelope.event {
+        Event::PluginState { state, .. } => Some(state == PluginRuntimeStatus::Running.wire_name()),
+        _ => None,
+    }
+}
 
 /// How long a burst of plugin-state changes is gathered before one refresh, so a crash loop
 /// cannot storm the daemon with reloads.
@@ -60,7 +83,8 @@ impl CodexMcpToolset {
         let mut readiness = self.appserver.readiness_receiver();
         // A daemon already Running is handled as a transition into Running.
         readiness.mark_changed();
-        self.write_generation().await;
+        // A restart over an unchanged catalog leaves the file untouched.
+        self.write_generation(false).await;
         // Detached: the task owns its parts.
         tokio::spawn(self.follow(plugin_events, readiness));
     }
@@ -79,17 +103,27 @@ impl CodexMcpToolset {
         loop {
             tokio::select! {
                 event = plugin_events.recv() => {
-                    match event {
-                        Ok(envelope) if matches!(envelope.event, Event::PluginState { .. }) => {}
-                        Ok(_) => continue,
-                        // Missed events may include a plugin-state change, so refresh.
-                        Err(RecvError::Lagged(_)) => {}
+                    let mut force = match event {
+                        Ok(envelope) => match entered_running(&envelope) {
+                            Some(entered) => entered,
+                            None => continue,
+                        },
+                        // Missed events may include a plugin entering Running.
+                        Err(RecvError::Lagged(_)) => true,
                         Err(RecvError::Closed) => return,
-                    }
+                    };
                     tokio::time::sleep(self.debounce).await;
                     // Drain what the window gathered; one refresh covers all of it.
-                    while let Ok(_) | Err(TryRecvError::Lagged(_)) = plugin_events.try_recv() {}
-                    if self.write_generation().await || reload_owed {
+                    loop {
+                        match plugin_events.try_recv() {
+                            Ok(envelope) => {
+                                force |= entered_running(&envelope) == Some(true);
+                            }
+                            Err(TryRecvError::Lagged(_)) => force = true,
+                            Err(TryRecvError::Empty | TryRecvError::Closed) => break,
+                        }
+                    }
+                    if self.write_generation(force).await || reload_owed {
                         reload_owed = !self.reload().await;
                     }
                 }
@@ -99,10 +133,10 @@ impl CodexMcpToolset {
                         continue;
                     }
                     let now = *readiness.borrow_and_update();
-                    let entered_running =
+                    let daemon_came_up =
                         now.running && !(seen.running && seen.generation == now.generation);
                     seen = now;
-                    if entered_running {
+                    if daemon_came_up {
                         reload_owed = !self.reload().await;
                     }
                 }
@@ -111,10 +145,10 @@ impl CodexMcpToolset {
     }
 
     /// Whether the kernel entry was rewritten with a new generation; the caller owes the daemon a
-    /// reload for it.
-    async fn write_generation(&self) -> bool {
-        let generation = bootstrap_catalog_generation(&self.ctx, &self.registry).await;
-        match self.home.ensure_mcp_toolset(&generation) {
+    /// reload for it. `force` rewrites it even when the catalog digest is unchanged.
+    async fn write_generation(&self, force: bool) -> bool {
+        let digest = bootstrap_catalog_digest(&self.ctx, &self.registry).await;
+        match self.home.ensure_mcp_toolset(&digest, force) {
             Ok(changed) => changed,
             Err(error) => {
                 tracing::warn!(

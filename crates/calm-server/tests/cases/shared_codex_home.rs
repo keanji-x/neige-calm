@@ -614,15 +614,16 @@ args = ["--bar"]
             );
     }
 
-    /// #2014: the catalog generation is one more `env` key of the kernel entry; the boot-written
-    /// keys survive it, a boot rewrite keeps it, and it never creates an entry Codex cannot start.
+    /// #2014: the catalog generation `<digest>.<n>` is one more `env` key of the kernel entry; the
+    /// boot-written keys survive it, a boot rewrite keeps it, and it never creates an entry Codex
+    /// cannot start. An equal digest is left alone unless forced; every write bumps the counter.
     #[test]
     fn mcp_toolset_lives_in_the_kernel_entry_and_needs_one() {
         let root = tempfile::tempdir().expect("tempdir");
         let home = shared_home(&root);
         home.seed_from(None).expect("seed empty");
         std::fs::write(home.path().join("config.toml"), "").expect("write empty config");
-        home.ensure_mcp_toolset("gen-1")
+        home.ensure_mcp_toolset("d1", false)
             .expect_err("no kernel entry to update");
         assert!(
             parsed_config(&home).get("mcp_servers").is_none(),
@@ -635,12 +636,22 @@ args = ["--bar"]
         };
         home.ensure_daemon_mcp_config(&shim, "daemon-token")
             .expect("write kernel entry");
-        assert!(home.ensure_mcp_toolset("gen-1").expect("first write"));
-        assert!(!home.ensure_mcp_toolset("gen-1").expect("same value"));
+        let toolset = |home: &SharedCodexHome| {
+            parsed_config(home)["mcp_servers"]["neige"]["env"]["NEIGE_MCP_TOOLSET"]
+                .as_str()
+                .map(str::to_string)
+        };
+        assert!(home.ensure_mcp_toolset("d1", false).expect("first write"));
+        assert_eq!(toolset(&home).as_deref(), Some("d1.1"));
+        assert!(!home.ensure_mcp_toolset("d1", false).expect("same digest"));
+        assert!(home.ensure_mcp_toolset("d1", true).expect("forced"));
+        assert_eq!(toolset(&home).as_deref(), Some("d1.2"));
+        assert!(home.ensure_mcp_toolset("d2", false).expect("new digest"));
+        assert_eq!(toolset(&home).as_deref(), Some("d2.3"));
         home.ensure_daemon_mcp_config(&shim, "daemon-token")
             .expect("boot rewrite");
         let env = parsed_config(&home)["mcp_servers"]["neige"]["env"].clone();
-        assert_eq!(env["NEIGE_MCP_TOOLSET"].as_str(), Some("gen-1"));
+        assert_eq!(env["NEIGE_MCP_TOOLSET"].as_str(), Some("d2.3"));
         assert_eq!(env["NEIGE_MCP_DAEMON_TOKEN"].as_str(), Some("daemon-token"));
         assert_eq!(
             env["NEIGE_MCP_SOCKET"].as_str(),
