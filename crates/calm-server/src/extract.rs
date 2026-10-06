@@ -4,9 +4,10 @@
 //! axum's plain-text body. `Json<T>` is the JSON response body: it answers exactly as axum's does
 //! and is not an extractor, so no handler argument can take it.
 //!
-//! This is the one file that may name axum's three: `tests/cases/extractor_scan.rs` refuses every
-//! spelling of them anywhere else in the crate's source, and `crates/calm-server/clippy.toml` makes
-//! them disallowed types outside the impls here.
+//! This is the one file that may name axum's three. `tests/cases/request_rejections.rs` proves on
+//! every documented route that a rejection answers an `ErrorBody`; `tests/cases/extractor_scan.rs`
+//! catches the spellings a contributor would naturally write elsewhere in the crate's source; and
+//! `crates/calm-server/clippy.toml` makes them disallowed types outside the impls here.
 //!
 //! `Path` and `Query` keep axum's names on purpose: utoipa's axum integration recognises those
 //! extractors by name, and infers a handler's documented parameters from them.

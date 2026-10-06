@@ -61,6 +61,8 @@ mod plugin_names_migration;
 mod preview_gateway;
 #[path = "cases/repo.rs"]
 mod repo;
+#[path = "cases/request_rejections.rs"]
+mod request_rejections;
 #[path = "cases/rest_track_previews.rs"]
 mod rest_track_previews;
 #[path = "cases/role_enforcement.rs"]

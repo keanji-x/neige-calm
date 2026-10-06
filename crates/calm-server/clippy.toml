@@ -1,8 +1,9 @@
 # Handlers take `crate::extract::{JsonBody, Path, Query}` and answer `crate::extract::Json`: their
 # rejections answer the `ErrorBody` contract (`{error, code}`), axum's answer plain text. Clippy
 # resolves every spelling of these types, aliases and renamed imports included; only the impls in
-# `crate::extract` may name them. Type positions only: `tests/cases/extractor_scan.rs` refuses
-# every spelling, patterns and expressions included.
+# `crate::extract` may name them. Type positions only; `tests/cases/request_rejections.rs` is the
+# behavioural proof for documented routes, and `tests/cases/extractor_scan.rs` catches the
+# spellings a contributor would naturally write, patterns included.
 disallowed-types = [
     { path = "axum::Json", reason = "use `crate::extract::JsonBody` for a request body and `crate::extract::Json` for a response: axum's answers its rejections in plain text" },
     { path = "axum::extract::Path", reason = "use `crate::extract::Path`: its rejection answers `{error, code}`" },
