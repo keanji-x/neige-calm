@@ -21,6 +21,7 @@ it('remounts a failed report image for a fresh load', async () => {
     fileRoot="/repo" wide onClose={() => {}} />);
   const image = await screen.findByRole('img');
   fireEvent.error(image);
+  expect(screen.getByRole('alert').querySelector('span:not([aria-hidden])')?.textContent).toBe('Could not read this image.');
   await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
   expect(await screen.findByRole('img')).not.toBe(image);
 });

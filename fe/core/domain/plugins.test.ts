@@ -3,9 +3,10 @@ import { z } from 'zod';
 
 import { performApiRequest } from '../api/client.js';
 import { ApiError, NotSentError } from './failure-class.js';
+import { probeFailureText } from './read-failure.js';
 import {
   EMPTY_CONNECTOR_DRAFT, PLUGIN_CONFIG_TEXT, configDraftFrom, configFieldsOf, configPatchFrom, configWriteError,
-  connectorCheckFailureText, connectorDraftError, installConnectorOperation, installLocalPathOperation, toolsAllowOf,
+  CONNECTOR_CHECK_TEXT, connectorDraftError, installConnectorOperation, installLocalPathOperation, toolsAllowOf,
   patchPluginConfigOperation, pluginDetailSchema, pluginListItemSchema, reloadOutcome,
   reloadPluginOperation, storedConfigOf, uninstallPluginOperation,
   type ConnectorInstallDraft,
@@ -400,13 +401,25 @@ describe('reloadOutcome (#1284 §2.4)', () => {
   });
 });
 
-describe('connectorCheckFailureText', () => {
+describe('a failed connector check', () => {
   it('shows the kernel’s account of the upstream server, else a fixed sentence', () => {
-    expect(connectorCheckFailureText({ kind: 'http', status: 502, code: 'mcp_setup_failed', message: 'HTTP 401: authentication failed' }))
+    expect(probeFailureText(answered(502, 'mcp_setup_failed', 'HTTP 401: authentication failed'), CONNECTOR_CHECK_TEXT))
       .toBe('HTTP 401: authentication failed');
-    for (const failure of [lost.failure, { kind: 'decode' as const, message: 'API response did not match its schema' }, null]) {
-      expect(connectorCheckFailureText(failure)).toBe('The connection check could not finish. Try again.');
+    expect(probeFailureText(answered(502, 'mcp_setup_failed', ''), CONNECTOR_CHECK_TEXT)).toBe('The connection check failed.');
+    for (const error of [lost, new ApiError({ kind: 'decode', message: 'API response did not match its schema' }), new Error('x')]) {
+      expect(probeFailureText(error, CONNECTOR_CHECK_TEXT)).toBe('The connection check could not finish. Try again.');
     }
+  });
+
+  it('names the field a refusal is about', () => {
+    expect(probeFailureText(new ApiError({ kind: 'http', status: 400, code: 'bad_request', field: 'url', message: 'must use https' }),
+      CONNECTOR_CHECK_TEXT)).toBe('url: must use https');
+  });
+
+  /* The session's 401 is not the upstream server refusing the connector's credentials, which the check answers as 502. */
+  it('reads a signed-out session as a check that never ran', () => {
+    expect(probeFailureText(new ApiError({ kind: 'unauthorized', status: 401, code: 'unauthorized', message: 'unauthorized' }),
+      CONNECTOR_CHECK_TEXT)).toBe('The connection check could not finish. Try again.');
   });
 });
 

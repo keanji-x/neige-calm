@@ -126,8 +126,9 @@ pub struct GitDiffResponse {
     params(("path" = Option<String>, Query, description = "Absolute path to list; omitted → $HOME")),
     responses(
         (status = 200, description = "Directory listing", body = ListdirResponse),
-        (status = 400, description = "Path doesn't exist or is not a directory", body = ErrorBody),
+        (status = 400, description = "Path is not a directory", body = ErrorBody),
         (status = 403, description = "Read permission denied", body = ErrorBody),
+        (status = 404, description = "Path doesn't exist (`path_not_found`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -231,8 +232,9 @@ fn directory_entry_visible(name: &str) -> bool {
     params(("path" = String, Query, description = "Absolute path to a text file")),
     responses(
         (status = 200, description = "Read text file contents", body = ReadFileResponse),
-        (status = 400, description = "Path doesn't exist, is not a file, or is binary/non-UTF-8", body = ErrorBody),
+        (status = 400, description = "Path is not a file, or is binary/non-UTF-8", body = ErrorBody),
         (status = 403, description = "Read permission denied", body = ErrorBody),
+        (status = 404, description = "Path doesn't exist (`path_not_found`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -251,8 +253,9 @@ pub(crate) async fn readfile(
     params(("path" = String, Query, description = "Absolute path to an image file")),
     responses(
         (status = 200, description = "Read raw image bytes", body = Vec<u8>, content_type = "application/octet-stream"),
-        (status = 400, description = "Path doesn't exist, is not a file, has an unsupported extension, or exceeds the image cap", body = ErrorBody),
+        (status = 400, description = "Path is not a file, has an unsupported extension, or exceeds the image cap", body = ErrorBody),
         (status = 403, description = "Read permission denied", body = ErrorBody),
+        (status = 404, description = "Path doesn't exist (`path_not_found`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -274,9 +277,9 @@ pub(crate) async fn readfile_raw(
     ),
     responses(
         (status = 200, description = "Workspace text file contents", body = ReadFileResponse),
-        (status = 400, description = "Path is invalid, outside the Track workspace, missing, a directory, or binary/non-UTF-8", body = ErrorBody),
+        (status = 400, description = "Path is invalid, outside the Track workspace, a directory, or binary/non-UTF-8", body = ErrorBody),
         (status = 403, description = "Read permission denied", body = ErrorBody),
-        (status = 404, description = "Track not found", body = ErrorBody),
+        (status = 404, description = "Track not found (`not_found`), or the path doesn't exist in its workspace (`path_not_found`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -309,9 +312,9 @@ pub(crate) async fn read_track_workspace_file(
     ),
     responses(
         (status = 200, description = "Workspace image bytes", body = Vec<u8>, content_type = "application/octet-stream"),
-        (status = 400, description = "Path is invalid, outside the Track workspace, missing, not a file, unsupported, or too large", body = ErrorBody),
+        (status = 400, description = "Path is invalid, outside the Track workspace, not a file, unsupported, or too large", body = ErrorBody),
         (status = 403, description = "Read permission denied", body = ErrorBody),
-        (status = 404, description = "Track not found", body = ErrorBody),
+        (status = 404, description = "Track not found (`not_found`), or the path doesn't exist in its workspace (`path_not_found`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -343,6 +346,7 @@ pub(crate) async fn read_track_workspace_file_raw(
         (status = 200, description = "Working tree status", body = GitStatusResponse),
         (status = 400, description = "Path is not a directory or not inside a git repository", body = ErrorBody),
         (status = 403, description = "Read permission denied", body = ErrorBody),
+        (status = 404, description = "Path doesn't exist (`path_not_found`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -366,6 +370,7 @@ pub(crate) async fn gitstatus(
         (status = 200, description = "HEAD and working-tree text for a changed file", body = GitDiffResponse),
         (status = 400, description = "Path is not inside a git repository or file is binary/non-UTF-8", body = ErrorBody),
         (status = 403, description = "Read permission denied", body = ErrorBody),
+        (status = 404, description = "Neither the path nor its parent folder exists (`path_not_found`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -640,7 +645,7 @@ fn map_workspace_open_err(
             workspace_root.display()
         )),
         Errno::ENOENT | Errno::ENOTDIR | Errno::EINVAL => {
-            CalmError::BadRequest(format!("path {} not found", requested.display()))
+            CalmError::PathNotFound(format!("path {} not found", requested.display()))
         }
         Errno::ENXIO | Errno::ENODEV => CalmError::BadRequest(format!(
             "path {} is not a regular file",
@@ -1119,8 +1124,8 @@ fn default_start() -> PathBuf {
 
 fn map_io_err(path: &std::path::Path, e: std::io::Error) -> CalmError {
     match e.kind() {
-        ErrorKind::NotFound | ErrorKind::InvalidInput => {
-            CalmError::BadRequest(format!("path {} not found", path.display()))
+        ErrorKind::NotFound | ErrorKind::NotADirectory | ErrorKind::InvalidInput => {
+            CalmError::PathNotFound(format!("path {} not found", path.display()))
         }
         ErrorKind::PermissionDenied => {
             CalmError::Forbidden(format!("permission denied reading {}", path.display()))
@@ -1296,7 +1301,7 @@ mod tests {
         let err = read_file_response(&tmp.path().join("missing.txt"))
             .await
             .unwrap_err();
-        assert!(matches!(err, CalmError::BadRequest(_)));
+        assert!(matches!(err, CalmError::PathNotFound(_)));
     }
 
     #[tokio::test]
@@ -1556,6 +1561,84 @@ mod tests {
         assert!(matches!(escaping, CalmError::BadRequest(_)));
     }
 
+    /// The status and code an HTTP answer carries for `error`, as `IntoResponse` writes them.
+    async fn answered(error: CalmError) -> (StatusCode, String) {
+        let response = error.into_response();
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        (status, body["code"].as_str().unwrap().to_string())
+    }
+
+    /// A missing path answers 404 with its own code, so a reader can say "not found" by status and code; a gone Track
+    /// answers 404 `not_found`, which restoring a path cannot fix.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_missing_path_answers_404_path_not_found_apart_from_a_gone_track() {
+        let workspace_a = tempfile::tempdir().unwrap();
+        let workspace_b = tempfile::tempdir().unwrap();
+        let (state, track_a, _) =
+            route_state_with_workspace_tracks(workspace_a.path(), workspace_b.path()).await;
+        let missing_path = || {
+            Query(WorkspacePathQuery {
+                path: "gone/notes.txt".into(),
+            })
+        };
+        let path_not_found = (StatusCode::NOT_FOUND, "path_not_found".to_string());
+
+        let text = read_track_workspace_file(
+            State(state.clone()),
+            AxumPath(track_a.clone()),
+            missing_path(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(answered(text).await, path_not_found);
+        let raw =
+            read_track_workspace_file_raw(State(state.clone()), AxumPath(track_a), missing_path())
+                .await
+                .unwrap_err();
+        assert_eq!(answered(raw).await, path_not_found);
+
+        let gone_track = read_track_workspace_file(
+            State(state.clone()),
+            AxumPath("missing-track".into()),
+            missing_path(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            answered(gone_track).await,
+            (StatusCode::NOT_FOUND, "not_found".to_string())
+        );
+
+        let absolute = workspace_a.path().join("gone");
+        let query = || {
+            Query(PathQuery {
+                path: absolute.join("notes.txt").to_string_lossy().into_owned(),
+            })
+        };
+        let Err(text) = readfile(State(state.clone()), query()).await else {
+            panic!("a missing file was read");
+        };
+        assert_eq!(answered(text).await, path_not_found);
+        let raw = readfile_raw(State(state.clone()), query())
+            .await
+            .unwrap_err();
+        assert_eq!(answered(raw).await, path_not_found);
+        let Err(listing) = listdir(
+            State(state),
+            Query(ListdirQuery {
+                path: Some(absolute.to_string_lossy().into_owned()),
+            }),
+        )
+        .await
+        else {
+            panic!("a missing folder was listed");
+        };
+        assert_eq!(answered(listing).await, path_not_found);
+    }
+
     #[tokio::test]
     async fn workspace_file_rejects_absolute_and_parent_paths_before_io() {
         let workspace = tempfile::tempdir().unwrap();
@@ -1669,7 +1752,7 @@ mod tests {
         let err = read_file_raw_response(&tmp.path().join("missing.png"))
             .await
             .unwrap_err();
-        assert!(matches!(err, CalmError::BadRequest(_)));
+        assert!(matches!(err, CalmError::PathNotFound(_)));
         assert!(err.to_string().contains("not found"));
     }
 

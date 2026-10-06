@@ -274,7 +274,7 @@ describe('TrackPage header', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Dismiss: Needs your answer: Ship now?' }));
     await act(async () => { await new Promise((done) => { setTimeout(done, 10); }); });
     if (shown === null) expect(screen.queryByRole('alert')).toBeNull();
-    else expect((await screen.findByRole('alert')).textContent).toBe(shown);
+    else expect(within(await screen.findByRole('alert')).getByText(shown)).toBeTruthy();
   });
 
   it('reopens a collapsed center when another notification arrives', async () => {

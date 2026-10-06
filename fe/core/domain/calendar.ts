@@ -33,6 +33,10 @@ export type CalendarEdit = Readonly<{ task: CalendarDraft }> | CalendarUpdate;
 export function calendarListOperation(from: string, until: string, timezone: string): ApiOperation<CalendarListedEntry[]> {
   return { method: 'GET', path: `/api/calendar/tasks?from=${encodeURIComponent(from)}&until=${encodeURIComponent(until)}&timezone=${encodeURIComponent(timezone)}`, responseSchema: calendarListedEntrySchema.array() };
 }
+/** `GET /api/calendar/tasks/{id}`: one task by id, a cancelled one included, which the list leaves out. */
+export function calendarReadOperation(id: string): ApiOperation<CalendarEntry> {
+  return { method: 'GET', path: `/api/calendar/tasks/${encodeURIComponent(id)}`, responseSchema: calendarEntrySchema };
+}
 export function calendarWriteOperation(write: CalendarWrite): ApiOperation<CalendarEntry> {
   if ('id' in write) {
     const { id, ...body } = write;
@@ -90,22 +94,12 @@ export function calendarUpdateAttempts() {
   return casAttempts(CALENDAR_WRITE_FAILURES.update);
 }
 
-/** The list window an update is read back through: the widest the server lists (366 days), centred on the sent schedule. */
-export function calendarReadBackWindow(task: CalendarDraft): CalendarWindow & { timezone: string } {
-  const schedule = task.schedule;
-  const anchor = schedule.kind === 'all_day' ? schedule.date : schedule.kind === 'timed' ? schedule.start.slice(0, 10) : schedule.from;
-  const timezone = schedule.kind === 'all_day' ? 'UTC' : schedule.timezone;
-  return { from: shiftCalendarDate(anchor, -183), until: shiftCalendarDate(anchor, 183), timezone };
-}
-
 /**
- * Whether the tasks `listed` through {@link calendarReadBackWindow} hold exactly what one update sent, which is how an
- * update whose answer was lost is known to have landed. The list leaves out cancelled tasks, so a cancel has landed when
- * the task is no longer listed around its own schedule; an edit, when the task is listed with the very task it sent.
+ * Whether the task read back by id ({@link calendarReadOperation}) holds exactly what one update sent, which is how an
+ * update whose answer was lost is known to have landed: the very task it sent, cancelled exactly when it cancelled.
  */
-export function calendarUpdateLanded(listed: readonly CalendarListedEntry[], write: CalendarUpdate): Landed<undefined> {
-  const entry = listed.find((candidate) => candidate.id === write.id);
-  const held = write.cancelled ? entry === undefined : entry !== undefined && canonicalJson(entry.task) === canonicalJson(write.task);
+export function calendarUpdateLanded(stored: CalendarEntry, write: CalendarUpdate): Landed<undefined> {
+  const held = stored.cancelled === write.cancelled && canonicalJson(stored.task) === canonicalJson(write.task);
   return held ? { stored: undefined } : null;
 }
 

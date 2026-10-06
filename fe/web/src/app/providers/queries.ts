@@ -26,9 +26,9 @@ import {
 } from '../../../../core/domain/report-series.ts';
 import { trackSourceOperation, type TrackSourceDetail } from '../../../../core/domain/report-source.ts';
 import { dismissActivityItemOperation } from '../../../../core/domain/activity.ts';
-import { readErrorText } from '../../../../core/domain/read-failure.ts';
+import { probeFailureText, readErrorText } from '../../../../core/domain/read-failure.ts';
 import {
-  checkConnectorOperation, connectorCheckFailureText, type ConnectorCheckResult,
+  checkConnectorOperation, CONNECTOR_CHECK_TEXT, type ConnectorCheckResult,
   installConnectorOperation, installLocalPathOperation, patchPluginConfigOperation,
   pluginDetailOperation, pluginsOperation, reloadPluginOperation, setPluginEnabledOperation,
   uninstallPluginOperation, PLUGIN_TOGGLE_FAILURES, PLUGIN_TOGGLE_TEXT, PLUGIN_UNINSTALL_FAILURES,
@@ -1063,7 +1063,7 @@ export function usePluginInstall(
         const result = await runOperation(transport, checkConnectorOperation(draft), unauthorized);
         return { ok: true, tools: result.tools };
       } catch (error) {
-        return { ok: false, message: connectorCheckFailureText(error instanceof ApiError ? error.failure : null) };
+        return { ok: false, message: probeFailureText(error, CONNECTOR_CHECK_TEXT) };
       }
     },
     installConnector: (draft) => run(installConnectorOperation(draft)),

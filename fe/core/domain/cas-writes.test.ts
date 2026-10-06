@@ -4,8 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ApiFailure } from '../api/types.js';
 import {
-  CALENDAR_WRITE_FAILURES, CALENDAR_WRITE_TEXT, calendarReadBackWindow, calendarUpdateLanded, calendarWriteFailureText,
-  type CalendarListedEntry, type CalendarUpdate,
+  CALENDAR_WRITE_FAILURES, CALENDAR_WRITE_TEXT, calendarReadOperation, calendarUpdateLanded, calendarWriteFailureText,
+  type CalendarEntry, type CalendarUpdate,
 } from './calendar.js';
 import { ApiError, casAttempts, classifyFailure, NotSentError, readWriteFailure, type FailureTable } from './failure-class.js';
 import { RECIPE_CREATE_FAILURES, RECIPE_SAVE_FAILURES, RECIPE_SAVE_TEXT, recipeSaveLanded, type TrackRecipe } from './track.js';
@@ -167,25 +167,28 @@ describe('what a read-back holds', () => {
 
   const timed = { kind: 'timed' as const, start: '2026-10-02T14:00:00+08:00', end: '2026-10-02T15:00:00+08:00', timezone: 'Asia/Shanghai' };
   const write: CalendarUpdate = { id: 'one', expected_version: 3, task: { title: 'A', description: 'd', schedule: timed }, cancelled: false };
-  const listed = (task: CalendarUpdate['task']): CalendarListedEntry => ({
-    id: 'one', task, version: 4, cancelled: false, source_track_id: null, created_by: 'user', created_at: 1, updated_at: 2, occurrences: [],
+  const stored = (task: CalendarUpdate['task'], cancelled = false): CalendarEntry => ({
+    id: 'one', task, version: 4, cancelled, source_track_id: null, created_by: 'user', created_at: 1, updated_at: 2,
   });
 
-  it('finds a calendar edit when the listed task is the one sent, whatever its key order', () => {
+  it('finds a calendar edit when the stored task is the one sent, whatever its key order', () => {
     const reordered = { schedule: { timezone: timed.timezone, end: timed.end, start: timed.start, kind: timed.kind }, description: 'd', title: 'A' };
-    expect(calendarUpdateLanded([listed(reordered)], write)).toEqual({ stored: undefined });
-    expect(calendarUpdateLanded([listed({ ...write.task, title: 'B' })], write)).toBeNull();
-    expect(calendarUpdateLanded([], write)).toBeNull();
+    expect(calendarUpdateLanded(stored(reordered), write)).toEqual({ stored: undefined });
+    expect(calendarUpdateLanded(stored({ ...write.task, title: 'B' }), write)).toBeNull();
+    /* Cancelled since: not the edit this attempt sent. */
+    expect(calendarUpdateLanded(stored(write.task, true), write)).toBeNull();
   });
 
-  it('finds a calendar cancel when the task is no longer listed around its schedule', () => {
-    expect(calendarUpdateLanded([], { ...write, cancelled: true })).toEqual({ stored: undefined });
-    expect(calendarUpdateLanded([listed(write.task)], { ...write, cancelled: true })).toBeNull();
+  /* #2175-15: read by id, a cancelled task included, so a cancel is confirmed by its own flag, not by the task's absence
+     from a list window, which a task moved elsewhere also gives. */
+  it('finds a calendar cancel only when the stored task is cancelled and holds the task it sent', () => {
+    expect(calendarUpdateLanded(stored(write.task, true), { ...write, cancelled: true })).toEqual({ stored: undefined });
+    expect(calendarUpdateLanded(stored(write.task), { ...write, cancelled: true })).toBeNull();
+    const moved = { ...write.task, schedule: { ...timed, start: '2027-10-02T14:00:00+08:00', end: '2027-10-02T15:00:00+08:00' } };
+    expect(calendarUpdateLanded(stored(moved), { ...write, cancelled: true })).toBeNull();
   });
 
-  it('reads back through the widest window the server lists, centred on the sent schedule', () => {
-    expect(calendarReadBackWindow(write.task)).toEqual({ from: '2026-04-02', until: '2027-04-03', timezone: 'Asia/Shanghai' });
-    expect(calendarReadBackWindow({ ...write.task, schedule: { kind: 'all_day', date: '2026-10-02' } }))
-      .toEqual({ from: '2026-04-02', until: '2027-04-03', timezone: 'UTC' });
+  it('reads the task back by its id', () => {
+    expect(calendarReadOperation('a/b')).toMatchObject({ method: 'GET', path: '/api/calendar/tasks/a%2Fb' });
   });
 });

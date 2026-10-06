@@ -4,7 +4,7 @@ import { z } from 'zod';
 
 import { agentProviderSchema, type AgentProvider } from '../api/schemas.js';
 import type { ApiOperation } from '../api/types.js';
-import type { FailureTable, WriteFailure, WriteText } from './failure-class.js';
+import type { ProbeText } from './read-failure.js';
 
 const checkedAtSchema = z.number();
 
@@ -31,18 +31,8 @@ export function agentProvidersOperation(recheck: boolean): ApiOperation<Provider
   };
 }
 
-/**
- * A failed Recheck. It is a read-only probe (a failed check is an answer, never an error), read through the write rule
- * for its words alone: an answered failure says the server's reason, anything else (a lost or unreadable answer) a
- * fixed sentence. The previous answer stays on screen either way.
- */
-export const RECHECK_FAILURES: FailureTable<WriteFailure> = Object.freeze({
-  rules: Object.freeze([Object.freeze({ status: Object.freeze({ from: 400, to: 599 }), is: 'refused' as const })]),
-  unauthorized: 'refused',
-  otherwise: 'unknown',
-});
-
-export const RECHECK_TEXT: WriteText = Object.freeze({ refused: 'The recheck failed.', unknown: 'The recheck did not complete. Try again.' });
+/** A failed Recheck, a read-only probe read by `probeFailureText`; the previous answer stays on screen either way. */
+export const RECHECK_TEXT: ProbeText = Object.freeze({ answered: 'The recheck failed.', unfinished: 'The recheck did not complete. Try again.' });
 
 /**
  * Whether track create refuses `provider` while it is not `ready` (#1817), and so whether a picker may

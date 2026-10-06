@@ -14,7 +14,7 @@ use crate::{
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    routing::{get, post},
+    routing::get,
 };
 
 /// The answers every calendar route shares, from [`access`].
@@ -25,7 +25,7 @@ const UNAVAILABLE: &str = "`service_unavailable`: the Calendar plugin is not run
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/calendar/tasks", get(list).post(create))
-        .route("/api/calendar/tasks/{id}", post(update))
+        .route("/api/calendar/tasks/{id}", get(read).post(update))
 }
 async fn access(s: &RouteState, actor: &Actor) -> Result<Access> {
     crate::routes::track_report_blocks::require_rest_user_actor_for(
@@ -66,6 +66,23 @@ pub async fn list(
 ) -> Result<Json<Vec<Listed>>> {
     let access = access(&s, &actor).await?;
     Ok(Json(store::list(&s.mcp_context, &access, window).await?))
+}
+/// One task by id, a cancelled one included (the list leaves those out): how a client reads back an update or cancel
+/// whose answer was lost.
+#[utoipa::path(get, path="/api/calendar/tasks/{id}", tag="calendar", params(("id"=String, Path)), responses(
+    (status=200, body=Entry, description="The task, cancelled or not"),
+    (status=403, body=ErrorBody, description=FORBIDDEN),
+    (status=404, body=ErrorBody, description="`not_found`: no calendar task with this id"),
+    (status=500, body=ErrorBody),
+    (status=503, body=ErrorBody, description=UNAVAILABLE),
+))]
+pub async fn read(
+    State(s): State<RouteState>,
+    actor: Actor,
+    Path(id): Path<String>,
+) -> Result<Json<Entry>> {
+    let access = access(&s, &actor).await?;
+    Ok(Json(store::read(&s.mcp_context, &access, &id).await?))
 }
 #[utoipa::path(post, path="/api/calendar/tasks", tag="calendar", request_body=Create, responses(
     (status=200, body=Entry, description="Created, or the entry an earlier create under the same `idempotency_key` made"),

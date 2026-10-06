@@ -1,3 +1,4 @@
+import { Button } from '@astryxdesign/core/Button';
 import type { PaneResizeGroup } from '../../ui/drawer/resize-group.ts';
 import { sideConversationSnapshot } from '../../../../core/domain/side-conversation.ts';
 import type { SideConversation } from '../../../../core/domain/conversation.ts';
@@ -1290,20 +1291,19 @@ function useConversationPane(
           </>
         ) : open === null ? undefined : (
           <>
-            {store.historyError !== null && (
+            {/* The conversation's two reads, one notice: its Try again reads again each one that failed. A send answered
+                after an unknown attempt holds the composer until a run read started after it lands (#2068). */}
+            {(store.historyError !== null || store.runError !== null) && (
               <ChatFooterNotice>
-                <ChatFooterError message={store.historyError} />
-                <ChatFooterRemedy disabled={store.historyLoading} onClick={store.retryHistory}>
-                  {store.historyLoading ? 'Loading…' : 'Try again'}
-                </ChatFooterRemedy>
-              </ChatFooterNotice>
-            )}
-            {/* A send answered after an unknown attempt holds the composer until a run read started after it lands (#2068). */}
-            {store.runError !== null && (
-              <ChatFooterNotice>
-                <ChatFooterError message={store.runError} />
-                <ChatFooterRemedy disabled={store.runLoading} onClick={store.retryRun}>
-                  {store.runLoading ? 'Loading…' : 'Try again'}
+                <ChatFooterError message={[store.historyError, store.runError].filter((text) => text !== null).join(' ')} />
+                <ChatFooterRemedy
+                  disabled={(store.historyError !== null && store.historyLoading) || (store.runError !== null && store.runLoading)}
+                  onClick={() => {
+                    if (store.historyError !== null) store.retryHistory();
+                    if (store.runError !== null) store.retryRun();
+                  }}>
+                  {(store.historyError !== null && store.historyLoading) || (store.runError !== null && store.runLoading)
+                    ? 'Loading…' : 'Try again'}
                 </ChatFooterRemedy>
               </ChatFooterNotice>
             )}
@@ -1677,14 +1677,8 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
       }}
     />}
     {activityError !== null && <ErrorBox message={activityError} onRetry={workspace.retryOverlays} />}
-    {deletion.feedback.error !== null && <div role="alert" data-nc-error-box="">
-      <span>{deletion.feedback.error}</span>
-      <button type="button" data-nc-action="tertiary" onClick={deletion.feedback.clear}>Dismiss</button>
-    </div>}
-    {resetConfirm.feedback.error !== null && <div role="alert" data-nc-error-box="">
-      <span>{resetConfirm.feedback.error}</span>
-      <button type="button" data-nc-action="tertiary" onClick={resetConfirm.feedback.clear}>Dismiss</button>
-    </div>}
+    <OperationFeedback feedback={deletion.feedback} />
+    <OperationFeedback feedback={resetConfirm.feedback} />
     <OperationFeedback feedback={pinFeedback} />
     <TodayPage
       conversationPanel={compact ? undefined : chat.drawer}
@@ -2382,10 +2376,8 @@ function TrackRouteBody({
     />
     <OperationFeedback feedback={cardDeletion.feedback} />
     {/* Only while the dialog is closed: `NewCardForm` renders the same `error` inline. */}
-    {cardDraft === null && <OperationFeedback feedback={cardCreateFeedback}>
-      <span>{cardCreateFeedback.error}</span>
-      {retryCardCreate !== null && <button type="button" data-nc-action="tertiary" onClick={retryCardCreate}>Try again</button>}
-    </OperationFeedback>}
+    {cardDraft === null && <OperationFeedback feedback={cardCreateFeedback}
+      action={retryCardCreate === null ? undefined : <Button label="Try again" variant="ghost" onClick={retryCardCreate} />} />}
     {/* The source card is painted over the conversation's, which stays in the DOM
             underneath and so is `inert` for the duration. The wrapper is a static block
             so the drawer's absolute box still resolves against `.main`. */}

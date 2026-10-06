@@ -1,6 +1,7 @@
 import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
+import { ApiError } from '../../../../../core/domain/failure-class.ts';
 import type { TemplateDetail } from '../../../../../core/domain/template.ts';
 import { NewTrackForm } from './public.tsx';
 import { TemplatePreview } from './template-preview.tsx';
@@ -54,4 +55,18 @@ it('previews a recipe locally without loading a same-named template', async () =
   await userEvent.click(screen.getByText('View recipe content'));
   expect(screen.getByText('# My own content')).toBeTruthy();
   expect(loadTemplate).not.toHaveBeenCalled();
+});
+
+/* The read rule: a refusal adds the server's reason after the preview's own sentence; a fault or lost answer never does. */
+it.each([
+  [{ kind: 'http', status: 404, code: 'not_found', message: 'template retired' } as const,
+    'Could not load the template preview. Your selection is still available. template retired'],
+  [{ kind: 'http', status: 500, code: 'internal', message: 'db: disk I/O error' } as const,
+    'Could not load the template preview. Your selection is still available.'],
+  [{ kind: 'transport', message: 'Failed to fetch' } as const,
+    'Could not load the template preview. Your selection is still available.'],
+])('says a failed preview read %j by the read rule', async (failure, text) => {
+  render(<TemplatePreview id="chosen" title="Chosen" loadTemplate={() => Promise.reject(new ApiError(failure))} />);
+  await screen.findByRole('button', { name: 'Retry preview' });
+  expect(screen.getByRole('region', { name: 'Selected template' }).querySelector('[aria-live] span')?.textContent).toBe(text);
 });

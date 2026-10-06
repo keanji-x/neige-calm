@@ -417,6 +417,6 @@ it('puts a dismissible delete failure before Today content', async () => {
   const alert = await screen.findByRole('alert');
   const todayContent = within(screen.getByRole('main')).getByRole('heading', { level: 1 });
   expect(alert.compareDocumentPosition(todayContent) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  await userEvent.click(within(alert).getByRole('button', { name: 'Dismiss' }));
+  await userEvent.click(within(alert).getByRole('button', { name: /^Dismiss/ }));
   expect(screen.queryByRole('alert')).toBeNull();
 });

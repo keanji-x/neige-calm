@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 
@@ -20,7 +20,8 @@ it('shows the caller’s reading of a rejected write, never the error’s own te
   render(<Harness read={() => 'The delete is unconfirmed.'} />);
   await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
   const alert = await screen.findByRole('alert');
-  expect(alert.textContent).toBe('The delete is unconfirmed.');
+  expect(within(alert).getByText('The delete is unconfirmed.')).toBeTruthy();
+  expect(alert.textContent).not.toContain('Transport request failed');
   expect(screen.getByText('settled false')).toBeTruthy();
 });
 
@@ -81,4 +82,25 @@ it('keeps a new delete target when the cancelled request settles', async () => {
   await new Promise((done) => { setTimeout(done, 10); });
   expect(screen.getByText('w2')).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Confirm' })).toBeTruthy();
+});
+
+/* #2175-17: the route-level alert is the Astryx error banner: the caller's way out beside the sentence, and Dismiss clears it. */
+it('offers the caller’s action and a Dismiss that clears the failure', async () => {
+  const onTryAgain = vi.fn();
+  function ActionHarness() {
+    const feedback = useOperationFeedback();
+    return <><button type="button" onClick={() => { void feedback.run(Promise.reject(new Error('x')), () => 'Not created.'); }}>Create</button>
+      <OperationFeedback feedback={feedback} action={<button type="button" onClick={onTryAgain}>Try again</button>} /></>;
+  }
+  render(<ActionHarness />);
+  await userEvent.click(screen.getByRole('button', { name: 'Create' }));
+  const alert = await screen.findByRole('alert');
+  expect(document.querySelectorAll('[data-nc-operation-feedback]')).toHaveLength(1);
+  await userEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
+  expect(onTryAgain).toHaveBeenCalledOnce();
+  await userEvent.click(within(alert).getByRole('button', { name: /^Dismiss/ }));
+  expect(screen.queryByRole('alert')).toBeNull();
+  /* Cleared, not hidden: the next failure shows again. */
+  await userEvent.click(screen.getByRole('button', { name: 'Create' }));
+  expect(within(await screen.findByRole('alert')).getByText('Not created.')).toBeTruthy();
 });

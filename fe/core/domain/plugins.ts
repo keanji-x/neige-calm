@@ -2,12 +2,13 @@
 
 import { z } from 'zod';
 
-import type { ApiFailure, ApiOperation } from '../api/types.js';
+import type { ApiOperation } from '../api/types.js';
 import type { McpCheckResult } from '../api/generated/wire.js';
 import {
-  NotSentError, classifyFailure, failureReason, refusalText, writeFailureOf,
+  NotSentError, classifyFailure, refusalText, writeFailureOf,
   type FailureTable, type WriteClass, type WriteText,
 } from './failure-class.js';
+import type { ProbeText } from './read-failure.js';
 
 /**
  * The kernel's wire-name set for a plugin's runtime state. `unavailable` is a connector's normal
@@ -263,12 +264,12 @@ export function installConnectorOperation(draft: ConnectorInstallDraft): ApiOper
 }
 
 /**
- * `POST /api/plugins/mcp/check` is a read-only probe, outside the write tables: an answered failure is the kernel's
- * account of the upstream server (400/502 `mcp_setup_failed`); anything else is this fixed sentence.
+ * `POST /api/plugins/mcp/check` is a read-only probe, read by `probeFailureText`: an answered failure is the kernel's
+ * account of the upstream server (400/502 `mcp_setup_failed`).
  */
-export function connectorCheckFailureText(failure: ApiFailure | null): string {
-  return failure?.kind === 'http' && failure.message !== '' ? failureReason(failure) : 'The connection check could not finish. Try again.';
-}
+export const CONNECTOR_CHECK_TEXT: ProbeText = Object.freeze({
+  answered: 'The connection check failed.', unfinished: 'The connection check could not finish. Try again.',
+});
 
 /** Check is a transient POST; its body must never become a query key/cache. */
 export const connectorCheckSchema: z.ZodType<McpCheckResult> = z.object({ tools: z.array(z.string()) });

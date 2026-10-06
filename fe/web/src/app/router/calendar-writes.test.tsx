@@ -21,8 +21,8 @@ const stale: ApiTransportResponse = { status: 409, statusText: 'Conflict',
   body: { error: 'calendar task changed; reload before editing', code: 'conflict' } };
 const lost = (): Promise<ApiTransportResponse> => Promise.reject(new Error('socket hang up'));
 const RAW = /socket hang up|Transport request failed|timed out|schema|offline|connection|Nothing was sent|conflict:/i;
-/** Where the read-back window around ENTRY's date starts. */
-const READ_BACK_FROM = 'from=2026-04-02&';
+/** The read-back of ENTRY by its id, which answers a cancelled task too (#2175-15). */
+const READ_BACK = '/api/calendar/tasks/one';
 const STALE_TEXT = 'This task changed somewhere else. Close it and open it again to edit the current version.';
 
 type World = { entries: CalendarEntry[] };
@@ -37,7 +37,17 @@ function renderCalendar(write: Write) {
     if (request.method !== 'GET') { writes.push(request); return write(request, world, writes.length); }
     reads.push(request.path);
     if (request.path === '/api/plugins') return Promise.resolve(ok([PLUGIN]));
-    return Promise.resolve(ok(world.entries.filter((entry) => !entry.cancelled).map((entry) => ({ ...entry, occurrences: [] }))));
+    if (request.path.startsWith('/api/calendar/tasks/')) {
+      const entry = world.entries.find((candidate) => request.path === `/api/calendar/tasks/${candidate.id}`);
+      return Promise.resolve(entry === undefined
+        ? { status: 404, statusText: 'Not Found', body: { error: 'calendar task', code: 'not_found' } } : ok(entry));
+    }
+    /* The list answers the window it was asked for, without cancelled tasks, as the server does for all-day tasks. */
+    const query = new URLSearchParams(request.path.slice(request.path.indexOf('?') + 1));
+    const inWindow = (entry: CalendarEntry) => entry.task.schedule.kind !== 'all_day'
+      || (entry.task.schedule.date >= (query.get('from') ?? '') && entry.task.schedule.date < (query.get('until') ?? ''));
+    return Promise.resolve(ok(world.entries.filter((entry) => !entry.cancelled && inWindow(entry))
+      .map((entry) => ({ ...entry, occurrences: [] }))));
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}>
@@ -90,8 +100,8 @@ describe('a calendar update whose answer was lost', () => {
     await userEvent.click(dialog.getByRole('button', { name: 'Save changes' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(writes.map((request) => request.body)).toEqual([writes[0].body, writes[0].body]);
-    /* Read back through the widest window the server lists, centred on the sent date. */
-    expect(reads).toContain(`/api/calendar/tasks?${READ_BACK_FROM}until=2027-04-03&timezone=UTC`);
+    /* Read back by id, not through a list window around the sent date. */
+    expect(reads).toContain(READ_BACK);
   });
 
   it('still calls a retried save stale when someone else changed the task', async () => {
@@ -122,12 +132,27 @@ describe('a calendar update whose answer was lost', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
+  /* A task moved far from its date is missing from any list window around it, as a cancelled one is; read by id, it is
+     still there and not cancelled, so the retried cancel is stale, not confirmed. */
+  it('still calls a retried cancel stale when someone else moved the task a year away', async () => {
+    renderCalendar((_request, world, attempt) => {
+      if (attempt > 1) return Promise.resolve(stale);
+      world.entries = [{ ...ENTRY, task: { ...ENTRY.task, schedule: { kind: 'all_day', date: '2027-10-02' } }, version: 4 }];
+      return lost();
+    });
+    const dialog = await openResearch();
+    await userEvent.click(dialog.getByRole('button', { name: 'Cancel task' }));
+    expect(await alertText()).toBe('Cancelling the task is unconfirmed. Cancel it again to check.');
+
+    await userEvent.click(dialog.getByRole('button', { name: 'Cancel task' }));
+    await waitFor(async () => expect(await alertText()).toBe(STALE_TEXT));
+  });
+
   it('calls a first 409 stale without reading the task back', async () => {
     const { reads } = renderCalendar(() => Promise.resolve(stale));
     await renameTo('Research done');
     await waitFor(async () => expect(await alertText()).toBe(STALE_TEXT));
-    /* The read-back window is the only one that starts six months before the task; the list reads never do. */
-    expect(reads.filter((path) => path.includes(READ_BACK_FROM))).toEqual([]);
+    expect(reads.filter((path) => path === READ_BACK)).toEqual([]);
   });
 
   it('shows a refused update in the server’s words', async () => {

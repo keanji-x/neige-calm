@@ -33,7 +33,7 @@ type FileState =
   | Readonly<{ kind: 'loading' }>
   | Readonly<{ kind: 'loaded'; path: string; text: string; truncated: boolean }>
   | Readonly<{ kind: 'image'; path: string }>
-  | Readonly<{ kind: 'error'; failure: ApiFailure | null }>;
+  | Readonly<{ kind: 'error'; failure: ApiFailure | null; resource: 'file' | 'image' }>;
 
 /** A failed read, kept for {@link FileReadError} to read: the failure it carried, or `null` when it carried none. */
 type ReadFailed = Readonly<{ failure: ApiFailure | null }>;
@@ -156,7 +156,7 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
       })
       .catch((error: unknown) => {
         if (cancelled) return;
-        setFileState({ kind: 'error', failure: readFailureOf(error) });
+        setFileState({ kind: 'error', failure: readFailureOf(error), resource: 'file' });
       });
     return () => { cancelled = true; };
   }, [files, selectedCodePath, tab, fileRetry]);
@@ -311,7 +311,7 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
               theme={theme}
               rawUrl={files.rawUrl}
               onRetry={() => setFileRetry((value) => value + 1)}
-              onImageError={() => setFileState({ kind: 'error', failure: null })}
+              onImageError={() => setFileState({ kind: 'error', failure: null, resource: 'image' })}
             />
           )
           : (
@@ -346,7 +346,7 @@ function CodeTab({ state, selectedPath, theme, rawUrl, onRetry, onImageError }: 
   if (state.kind === 'idle' || state.kind === 'loading') {
     return <p className="fv-state">Loading file…</p>;
   }
-  if (state.kind === 'error') return <FileReadError failure={state.failure} onRetry={onRetry} />;
+  if (state.kind === 'error') return <FileReadError failure={state.failure} resource={state.resource} onRetry={onRetry} />;
   if (state.kind === 'image') {
     return (
       <div className="fv-image-wrap">

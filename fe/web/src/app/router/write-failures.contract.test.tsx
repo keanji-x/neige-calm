@@ -150,7 +150,7 @@ describe('a DELETE retried after a lost answer and answered 404 is done', () => 
       return Promise.resolve(notFound);
     });
     await deleteFromRail();
-    expect((await screen.findByRole('alert')).textContent).toBe('The delete is unconfirmed.');
+    expect(within(await screen.findByRole('alert')).getByText('The delete is unconfirmed.')).toBeTruthy();
     await deleteFromRail();
     await waitFor(() => expect(within(screen.getByRole('navigation', { name: 'Workspace' })).queryByText('Reliable')).toBeNull());
     expect(screen.queryAllByRole('alert').map((alert) => alert.textContent)).toEqual([]);
@@ -171,7 +171,7 @@ describe('a DELETE retried after a lost answer and answered 404 is done', () => 
       await userEvent.click(screen.getByRole('button', { name: 'Delete card' }));
     };
     await deleteCard();
-    expect((await screen.findByRole('alert')).textContent).toBe('The delete is unconfirmed.');
+    expect(within(await screen.findByRole('alert')).getByText('The delete is unconfirmed.')).toBeTruthy();
     await deleteCard();
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Delete card Build log' })).toBeNull());
     expect(screen.queryAllByRole('alert').map((alert) => alert.textContent)).toEqual([]);

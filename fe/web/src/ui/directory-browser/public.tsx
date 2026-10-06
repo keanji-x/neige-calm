@@ -14,6 +14,8 @@ export interface DirectoryEntry { name: string; path: string; isDirectory: boole
 export interface DirectoryListing { path: string; parent: string | null; entries: readonly DirectoryEntry[] }
 /** A failed listing rejects with an `Error` whose message is the sentence to show; the host owns what it says. */
 export type ListDirectory = (path?: string) => Promise<DirectoryListing>;
+/** The fixed sentence for a listing that failed: the host's read rule starts from it, and the browser shows it alone for a rejection that carries none. */
+export const DIRECTORY_LIST_FAILED = 'Could not list this folder.';
 export interface DirectoryBrowserProps {
   listDirectory: ListDirectory; initialPath: string | null; onCancel: () => void; onSelect: (path: string) => void;
   mode?: DirectoryMode; selectLabel?: string;
@@ -46,7 +48,7 @@ export function DirectoryBrowser({ listDirectory, initialPath, onCancel, onSelec
       setLoading(false);
       requestAnimationFrame(() => requestAnimationFrame(() => inputRef.current?.focus()));
     }).catch((reason: unknown) => {
-      if (requestSequence.current === sequence) { setLoading(false); setError(reason instanceof Error && reason.message !== '' ? reason.message : 'Could not list this folder.'); }
+      if (requestSequence.current === sequence) { setLoading(false); setError(reason instanceof Error && reason.message !== '' ? reason.message : DIRECTORY_LIST_FAILED); }
     });
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- initialPath is a mount-time seed; navigation owns all later loads.
