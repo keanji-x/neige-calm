@@ -167,7 +167,7 @@ fn mobile_pairing_refused_invitation_keeps_the_live_one() {
                     device_name: format!("Phone {n}"),
                 },
                 session: format!("session-{n}"),
-                pairing: None,
+                grant: DeviceGrant::Scan,
             },
         );
     }

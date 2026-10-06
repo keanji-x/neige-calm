@@ -97,18 +97,17 @@ impl PairingState {
     ) -> Result<()> {
         self.expire();
         if ttl.is_zero() || ttl > PAIR_TTL {
-            return Err(CalmError::BadRequest(
-                "Issuer returned invalid key deadlines or capabilities".into(),
-            ));
+            return Err(issuer_invalid());
         }
-        if self.origin.as_deref() != Some(origin) {
-            return Err(scan_slot_gone());
-        }
+        // Disable and an origin change both clear the slot, so a live slot means access is on as it was at begin.
         let row = self
             .scan
             .as_mut()
             .filter(|r| r.id == id && r.generation == generation && !r.ready)
             .ok_or_else(scan_slot_gone)?;
+        if self.origin.as_deref() != Some(origin) {
+            return Err(issuer_origin_mismatch());
+        }
         row.expires = Instant::now() + ttl;
         row.ready = true;
         Ok(())
@@ -211,7 +210,7 @@ impl PairingState {
                     device_name: claim.device_name.clone(),
                 },
                 session: session.clone(),
-                pairing: None,
+                grant: DeviceGrant::Scan,
             },
         );
         row.session = Some(session.clone());
@@ -375,6 +374,25 @@ mod tests {
                 )
                 .unwrap_err(),
         );
+    }
+
+    #[test]
+    fn scan_issuer_origin_mismatch_is_an_issuer_refusal_not_an_expired_slot() {
+        let mut state = state();
+        let (id, generation, ticket, _) = state.begin_scan().unwrap();
+        // Access is on and the slot is live: the issuer answered for an origin this workspace does not serve.
+        let error = state
+            .finish_scan(
+                &id,
+                &generation,
+                "https://other.ts.net",
+                Duration::from_secs(100),
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), "bad_request", "{error}");
+        assert!(error.to_string().contains("origin"), "{error}");
+        assert!(!error.to_string().contains("expired"), "{error}");
+        assert!(state.claim_scan(claim(&id, &ticket)).is_err());
     }
 
     #[test]

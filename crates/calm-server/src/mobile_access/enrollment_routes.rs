@@ -136,9 +136,7 @@ pub async fn create(
             || !key.auth_key.starts_with("tskey-auth-")
             || key.auth_key.len() > 1024
         {
-            return Err(CalmError::BadRequest(
-                "Issuer returned invalid key deadlines or capabilities".into(),
-            ));
+            return Err(super::pairing::issuer_invalid());
         }
         let envelope = ScanEnvelope {
             version: 2,

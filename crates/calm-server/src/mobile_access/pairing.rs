@@ -41,6 +41,19 @@ pub(super) fn scan_slot_gone() -> CalmError {
     )
 }
 
+/// The issuer's key deadlines are out of range or its key is not a Tailnet auth key.
+pub(super) fn issuer_invalid() -> CalmError {
+    CalmError::BadRequest("Issuer returned invalid key deadlines or capabilities".into())
+}
+
+/// The slot is still live but the issuer answered for an origin this workspace does not serve.
+fn issuer_origin_mismatch() -> CalmError {
+    CalmError::BadRequest(
+        "Issuer returned a key for a different origin than mobile access serves; create a new one"
+            .into(),
+    )
+}
+
 struct Claim {
     secret_hash: [u8; 32],
     device_name: String,
@@ -55,11 +68,18 @@ struct Invitation {
     claim: Option<Claim>,
 }
 
+/// How a device joined.
+enum DeviceGrant {
+    /// It redeemed the legacy pairing with this id, so a repeated approve of that id is answered as done.
+    Pairing(String),
+    /// It redeemed a scan enrollment, which the owner approved by creating its QR.
+    Scan,
+}
+
 struct Device {
     public: PairedDevice,
     session: String,
-    /// The legacy pairing this device redeemed, so a repeated approve of it is answered as done.
-    pairing: Option<String>,
+    grant: DeviceGrant,
 }
 
 /// Every grant/revoke transition holds this one lock, including session creation.
@@ -214,7 +234,7 @@ impl PairingState {
         if self
             .devices
             .values()
-            .any(|device| device.pairing.as_deref() == Some(id))
+            .any(|device| matches!(&device.grant, DeviceGrant::Pairing(pairing) if pairing == id))
         {
             return Ok(());
         }
@@ -267,7 +287,7 @@ impl PairingState {
                     device_name: name,
                 },
                 session: session.clone(),
-                pairing: Some(request.id),
+                grant: DeviceGrant::Pairing(request.id),
             },
         );
         Ok(Some(session))

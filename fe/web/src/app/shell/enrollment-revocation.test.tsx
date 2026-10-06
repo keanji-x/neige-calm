@@ -1,11 +1,12 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { ApiRequest, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import { MOBILE_WRITE_TEXT } from '../../../../core/domain/mobile-access.ts';
 import { MobileAccessHost } from './mobile-access-host.tsx';
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); onlineManager.setOnline(true); });
 function status(enabled: boolean) {
  return {provider:'private-tailnet',available:true,publicUrl:enabled?'https://fixture.example.ts.net':null,pending:[],devices:[],
  tailnet:{desiredEnabled:enabled,phase:enabled?'online':'disabled',nodeState:enabled?'online':'stopped',processRunning:enabled,childPid:enabled?123:null,
@@ -67,4 +68,19 @@ it('keeps an issued QR through offline degraded status without inventing revocat
  await view.change(next);await screen.findByText('degraded');await view.change(status(true));await screen.findByText('online');
  expect(screen.getByAltText('Scan once to join and pair this Neige workspace')).toBeTruthy();
  expect(view.send.mock.calls.filter(([r])=>r.method==='DELETE')).toHaveLength(0);
+});
+
+/* A press refused offline sent nothing, so it must not retire the scan generation either (#2175 item 10): the live QR
+   stays on screen, and no create, cancel or disable leaves the browser. */
+it.each(['Add phone','Cancel invitation','Disable'])('offline, %s keeps the live QR and sends nothing',async(name)=>{
+ const view=mount(()=>Promise.resolve(ok(issued())));
+ fireEvent.click(await screen.findByRole('button',{name:'Add phone'}));await screen.findByAltText('Scan once to join and pair this Neige workspace');
+ const writes=()=>view.send.mock.calls.filter(([r])=>r.method!=='GET').map(([r])=>`${r.method} ${r.path}`);
+ await waitFor(()=>expect(screen.getByRole<HTMLButtonElement>('button',{name}).disabled).toBe(false));
+ const before=writes();
+ act(()=>onlineManager.setOnline(false));
+ fireEvent.click(screen.getByRole('button',{name}));
+ expect((await screen.findByRole('alert')).textContent).toContain(MOBILE_WRITE_TEXT.refused);
+ expect(writes()).toEqual(before);
+ expect(screen.getByAltText('Scan once to join and pair this Neige workspace')).toBeTruthy();
 });

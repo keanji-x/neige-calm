@@ -1,5 +1,5 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { ApiRequest, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
@@ -8,7 +8,7 @@ import { MOBILE_WRITE_TEXT } from '../../../../core/domain/mobile-access.ts';
 import { SessionGate } from '../auth/session-gate.tsx';
 import { MobileAccessHost } from './mobile-access-host.tsx';
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); onlineManager.setOnline(true); });
 
 const identity = { userId: 'owner', displayName: 'Owner', role: 'admin', sessionId: 'owner-session' };
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
@@ -101,4 +101,17 @@ it('a second QR whose answer is lost takes the first one off screen: the server 
   expect((await screen.findByRole('alert')).textContent).toContain(MOBILE_WRITE_TEXT.unknown);
   expect(screen.queryByAltText('Scan to pair this Neige workspace')).toBeNull();
   expect(creates).toBe(2);
+});
+
+/* Offline, every write is refused where it is pressed (#2175 item 10): it never leaves the browser, so the pane says it
+   was not made rather than that its outcome is unknown, and the session stays. */
+it.each(['Revoke', 'Approve 123456', 'Create QR code', 'Disable'])('offline, %s is refused at the press and sends nothing', async (name) => {
+  const view = mount(() => Promise.reject(new Error('a write left the browser while offline')));
+  const button = await screen.findByRole('button', { name });
+  act(() => onlineManager.setOnline(false));
+  fireEvent.click(button);
+  expect((await screen.findByRole('alert')).textContent).toContain(MOBILE_WRITE_TEXT.refused);
+  expect(view.send.mock.calls.filter(([r]) => r.method !== 'GET').map(([r]) => `${r.method} ${r.path}`)).toEqual([]);
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>('button', { name }).disabled).toBe(false));
+  sessionKept(view);
 });

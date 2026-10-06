@@ -17,6 +17,10 @@ import {
 import { MobileAccessPane } from '../../features/settings/mobile-access.tsx';
 import { useOperationFeedback, type FailureReading } from '../../ui/operation-feedback/public.tsx';
 import { useState } from '../../ui/state/public.ts';
+import { useRecoveryMutation } from '../providers/recovery-mutation.ts';
+
+/** One mobile write, given the transport the recovery runner admitted it on; it runs only once the write is sent. */
+type MobileWrite = (admitted: ApiTransportPort) => Promise<unknown>;
 
 /** A request's value, or its failure as the rejection the runner and the status queries read. */
 async function valueOf<T>(request: Promise<ApiResult<T>>): Promise<T> {
@@ -96,29 +100,39 @@ export function MobileAccessHost({ transport, unauthorized, onBack }: Readonly<{
     return () => clearTimeout(timeout);
   }, [login, setLogin]);
 
+  /* Offline, a write is refused at the press and never sent (#2131 class 9); its local effects live inside `MobileWrite`,
+     so a refused press leaves the QR, the sign-in link and the scan generation as they were. */
+  const write = useRecoveryMutation(transport, { gcTime: 0, mutationFn: (send: MobileWrite, admitted: ApiTransportPort) => send(admitted) });
+
   /**
-   * One write at a time, settled by the non-chat runner through the write's table. Whatever it answered, the list is
-   * read again, so `done` and `unknown` show what is in effect.
+   * One write at a time, admitted by the recovery runner and settled by the non-chat runner through the write's table.
+   * Whatever it answered, the list is read again, so `done` and `unknown` show what is in effect.
    */
-  async function act(write: () => Promise<unknown>, read: FailureReading) {
+  async function act(send: MobileWrite, read: FailureReading) {
     if (acting.current) return;
     acting.current = true;
     setBusy(true);
-    try { await feedback.run(write(), read); await query.refetch(); }
+    try { await feedback.run(write.mutateAsync(send), read); await client.refetchQueries({ queryKey: ['mobile-access'], exact: true }); }
     finally { acting.current = false; if (active.current) setBusy(false); }
   }
 
-  async function createEnrollment() {
+  /**
+   * The scan generation fence: a create retires the shown QR and takes a new generation only once it is sent, and its
+   * answer lands only while that generation is still the latest and the node it was issued for still serves access.
+   * Any other answer is cancelled on the server, never shown.
+   */
+  async function createEnrollment(admitted: ApiTransportPort) {
     const current = ++generation.current;
     const authority = observed.current;
     setEnrollment(null);
-    const created = await valueOf(createScanEnrollment(transport, unauthorized));
+    const created = await valueOf(createScanEnrollment(admitted, unauthorized));
     const latest = client.getQueryData<MobileAccessStatus>(['mobile-access']);
     const node = latest?.tailnet;
     const revoked = latest?.provider !== 'private-tailnet' || node?.desiredEnabled !== true
       || (node.httpsReady && node.origin !== null && authority?.origin != null && node.origin !== authority.origin)
       || (node.nodeId !== null && authority?.nodeId != null && node.nodeId !== authority.nodeId);
     if (!active.current || generation.current !== current || revoked) {
+      // A cleanup of a key no screen shows, not a new intent: it goes out even if this write's admission has lapsed.
       await cancelScanEnrollment(transport, unauthorized, created.enrollmentId);
       return;
     }
@@ -134,22 +148,25 @@ export function MobileAccessHost({ transport, unauthorized, onBack }: Readonly<{
     enrollment={enrollment}
     cleanup={scanStatus.data?.detail ?? null}
     onCancelEnrollment={() => {
-      const id = enrollment?.enrollmentId; retireEnrollment();
-      if (id !== undefined) void act(async () => { client.setQueryData(['mobile-enrollment-status'], await valueOf(cancelScanEnrollment(transport, unauthorized, id))); }, state);
+      const id = enrollment?.enrollmentId;
+      if (id !== undefined) void act(async (admitted) => {
+        retireEnrollment();
+        client.setQueryData(['mobile-enrollment-status'], await valueOf(cancelScanEnrollment(admitted, unauthorized, id)));
+      }, state);
     }}
     login={query.data?.tailnet?.nodeState === 'needs-login' && query.data.tailnet.desiredEnabled ? login : null}
-    onLogin={() => { void act(async () => { setLogin(await valueOf(loginPrivateTailnet(transport, unauthorized))); }, state); }}
-    onLogout={() => { retireEnrollment(); void act(async () => { setLogin(null); setInvitation(null); await valueOf(logoutPrivateTailnet(transport, unauthorized)); }, state); }}
+    onLogin={() => { void act(async (admitted) => { setLogin(await valueOf(loginPrivateTailnet(admitted, unauthorized))); }, state); }}
+    onLogout={() => { void act(async (admitted) => { retireEnrollment(); setLogin(null); setInvitation(null); await valueOf(logoutPrivateTailnet(admitted, unauthorized)); }, state); }}
     busy={busy}
     error={feedback.error ?? statusReadErrorText(query.error) ?? statusReadErrorText(scanStatus.error)}
     onBack={onBack}
     onRefresh={() => { feedback.clear(); void query.refetch(); void scanStatus.refetch(); }}
-    onEnable={() => { void act(() => valueOf(setMobileAccess(transport, unauthorized, true)), state); }}
-    onDisable={() => { retireEnrollment(); void act(async () => { await valueOf(setMobileAccess(transport, unauthorized, false)); setInvitation(null); setLogin(null); }, state); }}
-    onCreate={() => { void act(query.data?.provider === 'private-tailnet' ? createEnrollment : async () => { setInvitation(null); setInvitation(await valueOf(createMobileInvitation(transport, unauthorized))); },
+    onEnable={() => { void act((admitted) => valueOf(setMobileAccess(admitted, unauthorized, true)), state); }}
+    onDisable={() => { void act(async (admitted) => { retireEnrollment(); await valueOf(setMobileAccess(admitted, unauthorized, false)); setInvitation(null); setLogin(null); }, state); }}
+    onCreate={() => { void act(query.data?.provider === 'private-tailnet' ? createEnrollment : async (admitted) => { setInvitation(null); setInvitation(await valueOf(createMobileInvitation(admitted, unauthorized))); },
       writeFailureText(MOBILE_INVITATION_FAILURES, MOBILE_WRITE_TEXT)); }}
-    onApprove={(id) => { void act(async () => { await valueOf(approveMobilePair(transport, unauthorized, id)); setInvitation(null); },
+    onApprove={(id) => { void act(async (admitted) => { await valueOf(approveMobilePair(admitted, unauthorized, id)); setInvitation(null); },
       writeFailureText(MOBILE_APPROVE_FAILURES, MOBILE_WRITE_TEXT)); }}
-    onRevoke={(id) => { void act(() => valueOf(revokeMobileDevice(transport, unauthorized, id)), writeFailureText(MOBILE_REVOKE_FAILURES, MOBILE_WRITE_TEXT)); }}
+    onRevoke={(id) => { void act((admitted) => valueOf(revokeMobileDevice(admitted, unauthorized, id)), writeFailureText(MOBILE_REVOKE_FAILURES, MOBILE_WRITE_TEXT)); }}
   />;
 }
