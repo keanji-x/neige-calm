@@ -1458,3 +1458,210 @@ async fn resetting_without_a_launchpad_is_a_404_and_creates_nothing() {
     assert_eq!(count(&b, "SELECT COUNT(*) FROM tracks").await, 0);
     assert_eq!(count(&b, "SELECT COUNT(*) FROM operations").await, 0);
 }
+
+async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, Value) {
+    let response = app
+        .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+async fn report(b: &Boot, track_id: &str) -> Value {
+    let (status, report) = get_json(b.app.clone(), &format!("/api/tracks/{track_id}/report")).await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    report
+}
+
+/// Adds one data block through the block-level route the report editor uses; returns its id.
+async fn add_data_block(b: &Boot, track_id: &str, kind: &str, payload: Value) -> String {
+    let doc_rev = report(b, track_id).await["docRev"].clone();
+    let (status, created) = post(
+        b.app.clone(),
+        &format!("/api/tracks/{track_id}/report/blocks"),
+        None,
+        Some(serde_json::json!({ "kind": kind, "payload": payload, "ifDocRev": doc_rev })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create {kind}: {created}");
+    created["id"].as_str().unwrap().to_string()
+}
+
+/// A ready user task declaration: it projects into a pending task row.
+fn user_task(key: &str) -> Value {
+    serde_json::json!({
+        "key": key, "kind": "terminal", "command": "true", "declared_by": "user", "ready": true,
+    })
+}
+
+fn fixture_table() -> Value {
+    serde_json::json!({
+        "columns": [{ "key": "name", "label": "Name", "align": "left" }],
+        "rows": [{ "name": "alpha" }],
+    })
+}
+
+/// Today's report holding a pending task `queued`, a claimed task `claimed` and a table.
+/// Returns the launchpad track id and the two task block ids.
+async fn launchpad_with_data_blocks(b: &Boot) -> (String, Vec<String>) {
+    let (_, ensured) = ensure(b.app.clone()).await;
+    let track_id = ensured["track_id"].as_str().unwrap().to_string();
+    let queued = add_data_block(b, &track_id, "task", user_task("queued")).await;
+    let claimed = add_data_block(b, &track_id, "task", user_task("claimed")).await;
+    add_data_block(b, &track_id, "table", fixture_table()).await;
+    let claimed_id: String =
+        sqlx::query_scalar("SELECT id FROM current_tasks WHERE track_id=?1 AND key='claimed'")
+            .bind(&track_id)
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(b.repo.pool())
+        .await
+        .unwrap();
+    let claimed_rows =
+        calm_server::db::sqlite::task_claim_pending_tx(&mut tx, &claimed_id, 1, &[], false)
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(claimed_rows, 1, "the fixture must hold a claimed task");
+    (track_id, vec![queued, claimed])
+}
+
+/// Each task row of the track as `key|status|stale`, sorted.
+async fn task_rows(b: &Boot, track_id: &str) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT key || '|' || status || '|' || (context_stale_at_ms IS NOT NULL) \
+         FROM tasks WHERE track_id=?1 ORDER BY key",
+    )
+    .bind(track_id)
+    .fetch_all(b.repo.pool())
+    .await
+    .unwrap()
+}
+
+/// The distinct kinds of the events persisted after event `after`, sorted.
+async fn event_kinds_after(b: &Boot, after: i64) -> Vec<String> {
+    sqlx::query_scalar("SELECT DISTINCT kind FROM events WHERE id > ?1 ORDER BY kind")
+        .bind(after)
+        .fetch_all(b.repo.pool())
+        .await
+        .unwrap()
+}
+
+async fn last_event_id(b: &Boot) -> i64 {
+    count(b, "SELECT COALESCE(MAX(id), 0) FROM events").await
+}
+
+/// Reset is the owner asking for the canonical empty document, so the data blocks go too,
+/// read back through the same `GET` the report view uses.
+#[tokio::test]
+async fn resetting_todays_report_clears_data_blocks() {
+    let b = boot().await;
+    let (track_id, _) = launchpad_with_data_blocks(&b).await;
+    let before = report(&b, &track_id).await;
+    let kinds: Vec<&str> = before["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|block| block["kind"].as_str().unwrap())
+        .collect();
+    assert!(
+        kinds.contains(&"task") && kinds.contains(&"table"),
+        "the fixture must hold data blocks: {before}"
+    );
+
+    let (status, reset) = post(
+        b.app.clone(),
+        "/api/today/launchpad/report/reset",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "reset={reset}");
+
+    let after = report(&b, &track_id).await;
+    let initial = TrackReportPayload::initial();
+    assert_eq!(after["summary"], Value::String(initial.summary));
+    assert_eq!(after["body"], Value::String(initial.body), "{after}");
+    assert!(
+        after["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|block| block["kind"] == "prose"),
+        "{after}"
+    );
+    let (_, resolved) = resolve(b.app.clone()).await;
+    assert_eq!(
+        resolved["report_has_noninitial_content"],
+        Value::Bool(false),
+        "{resolved}"
+    );
+}
+
+/// What Reset does to the tasks is what the block-level DELETE does: the pending row goes, the
+/// claimed row is marked stale, and the same kinds of events are emitted. The DELETE leaves a
+/// tombstone block; Reset leaves none, since it puts back the initial document.
+#[tokio::test]
+async fn resetting_todays_report_has_the_task_side_effects_of_a_block_delete() {
+    let deleted = boot().await;
+    let (track_id, task_blocks) = launchpad_with_data_blocks(&deleted).await;
+    let fixture_end = last_event_id(&deleted).await;
+    for block_id in &task_blocks {
+        let rev = report(&deleted, &track_id).await["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|block| block["id"] == block_id.as_str())
+            .unwrap()["rev"]
+            .clone();
+        let response = deleted
+            .app
+            .clone()
+            .oneshot(
+                Request::delete(format!("/api/tracks/{track_id}/report/blocks/{block_id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "ifBlockRev": rev }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "delete {block_id}");
+    }
+    let delete_rows = task_rows(&deleted, &track_id).await;
+    let delete_events = event_kinds_after(&deleted, fixture_end).await;
+
+    let reset = boot().await;
+    let (track_id, _) = launchpad_with_data_blocks(&reset).await;
+    let fixture_end = last_event_id(&reset).await;
+    let (status, body) = post(
+        reset.app.clone(),
+        "/api/today/launchpad/report/reset",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "reset={body}");
+
+    assert_eq!(
+        delete_rows,
+        vec!["claimed|dispatched|1".to_string()],
+        "the block DELETE baseline"
+    );
+    assert_eq!(task_rows(&reset, &track_id).await, delete_rows);
+    assert_eq!(
+        event_kinds_after(&reset, fixture_end).await,
+        delete_events,
+        "the same kinds of events as the block DELETE"
+    );
+    for kind in ["card.updated", "track.report_edited", "plan.updated"] {
+        assert!(
+            delete_events.iter().any(|emitted| emitted == kind),
+            "{kind} missing from {delete_events:?}"
+        );
+    }
+}

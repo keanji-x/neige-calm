@@ -164,15 +164,16 @@ pub struct TodayLaunchpadReportReset {
 
 /// `POST /api/today/launchpad/report/reset` — put today's report back to the canonical
 /// empty document. The kernel calls `TrackReportPayload::initial()` itself; nothing
-/// crosses the wire. Touches the report and nothing else. The revision anchor is read
-/// here, so an edit landing in between yields the ordinary CRDT 409 and writes nothing.
+/// crosses the wire. Data blocks go too, each as if deleted by id: the task projection
+/// drops a removed task's pending row and marks a claimed one stale, in the same write.
+/// Conversations are untouched. The revision anchor is read here, so an edit landing in
+/// between yields the ordinary CRDT 409 and writes nothing.
 #[utoipa::path(
     post,
     path = "/api/today/launchpad/report/reset",
     tag = "tracks",
     responses(
         (status = 200, description = "Today's report is back to the canonical empty document. Conversations are untouched.", body = TodayLaunchpadReportReset),
-        (status = 400, description = "The report holds a non-prose block, which the report write guard lets no whole-document replace remove", body = ErrorBody),
         (status = 401, description = "Missing or invalid session", body = ErrorBody),
         (status = 403, description = "Non-user actor (worker / plugin / planner) rejected, exactly as on `POST /api/tracks/{id}/report`", body = ErrorBody),
         (status = 404, description = "There is no launchpad track yet, so there is no report to reset", body = ErrorBody),
@@ -204,12 +205,11 @@ pub(crate) async fn reset_today_launchpad_report(
     )
     .await?;
     let target = crate::track_report::ReportEditTarget::resolve(s.repo.as_ref(), &track_id).await?;
-    crate::track_report::write::rest_user_replace(
+    crate::track_report::write::rest_user_reset(
         s.repo.as_ref(),
         &s.events,
         &s.write,
         target,
-        TrackReportPayload::initial(),
         snapshot.doc_rev,
     )
     .await?;

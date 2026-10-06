@@ -383,6 +383,10 @@ pub enum ReportDocOp {
     },
     /// The block-level REST delete: `if_rev` is mandatory.
     DeleteBlock { id: String, if_rev: u32 },
+    /// Today's Reset: the user asking for [`TrackReportPayload::initial`]. Every non-prose block
+    /// counts as deleted by id, the one way a live task may leave the document, and the prose stomp
+    /// guard does not apply. No tombstone is left: one would keep the report from being the initial one.
+    ResetToInitial { if_doc_rev: u64 },
     /// `neige_report_commit`: an ordered list of block ops + optional summary under ONE document anchor.
     /// A failure anywhere aborts the whole persist transaction; the doc rev advances exactly once.
     /// A `Delete` op may retire a live task it names by id; a section op may not.
@@ -732,6 +736,16 @@ pub(crate) fn apply_report_op_traced(
             apply_move(doc, id, *to_index).map(Some)
         }
         ReportDocOp::DeleteBlock { id, if_rev } => apply_delete(doc, id, *if_rev).map(|()| None),
+        ReportDocOp::ResetToInitial { if_doc_rev } => {
+            check_doc_rev(doc, *if_doc_rev)?;
+            // The initial body is prose only, so aligning onto it removes every data block. Aligning
+            // with them still present keeps their ids reserved: no new block can be minted onto one.
+            let initial = TrackReportPayload::initial();
+            doc.update(&initial.summary, &initial.body)
+                .map_err(internal)?;
+            written = Written::AllProse;
+            Ok(None)
+        }
         ReportDocOp::Batch {
             doc_anchor,
             summary,
@@ -868,6 +882,11 @@ pub(crate) fn apply_report_op_traced(
     // document. `op` is the normalized op, so a user delete rewritten into a tombstone grants no exemption.
     let deleted_by_id: Vec<&str> = match &op {
         ReportDocOp::DeleteBlock { id, .. } => vec![id.as_str()],
+        ReportDocOp::ResetToInitial { .. } => before
+            .iter()
+            .filter(|block| block.kind != KIND_PROSE)
+            .map(|block| block.id.as_str())
+            .collect(),
         ReportDocOp::Batch { ops, .. } => ops
             .iter()
             .filter_map(|op| match op {
@@ -985,6 +1004,8 @@ impl ReportEditTarget {
     }
 }
 
+#[cfg(test)]
+mod reset_tests;
 mod sections;
 /// The writer and the complete set of ways to reach it. The mutating function is a private `fn`
 /// in there, so "which code can write a track report" is a question `rustc` answers.

@@ -77,6 +77,30 @@ pub(crate) async fn rest_user_replace(
     Ok(updated)
 }
 
+/// `POST /api/today/launchpad/report/reset` — the user's reset to the canonical empty report. The
+/// one door to [`ReportDocOp::ResetToInitial`]: no other caller can clear data blocks wholesale.
+pub(crate) async fn rest_user_reset(
+    repo: &dyn RouteRepo,
+    events: &EventBus,
+    write: &WriteContext,
+    target: ReportEditTarget,
+    if_doc_rev: u64,
+) -> Result<Card, CalmError> {
+    let (updated, _trace) = persist(
+        repo,
+        events,
+        write,
+        ActorId::User,
+        EditAuthor::User,
+        target,
+        ReportDocOp::ResetToInitial { if_doc_rev },
+        None,
+        None,
+    )
+    .await?;
+    Ok(updated)
+}
+
 /// `POST|PATCH|DELETE /api/tracks/{id}/report/blocks*` — the user's typed block-channel edits.
 pub(crate) async fn rest_user_block_op(
     repo: &dyn RouteRepo,

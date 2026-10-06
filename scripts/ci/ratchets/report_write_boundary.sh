@@ -18,6 +18,7 @@ require_path "$BOUNDARY_FILE"
 
 # The pinned entry set, one `visibility|name` per line; the `pub` one is test-only and R4 additionally requires its cfg.
 EXPECTED_ENTRIES="pub(crate)|rest_user_replace
+pub(crate)|rest_user_reset
 pub(crate)|rest_user_block_op
 pub(crate)|agent_report_op
 pub(crate)|structural_init_report_tx
