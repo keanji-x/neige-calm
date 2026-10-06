@@ -64,4 +64,9 @@ function Preview() {
     <p style={{ color: 'var(--text-3)', fontSize: 12, marginTop: 16 }}>交互预览 · 使用实际对话组件 · 内容仅保存在当前页面</p>
   </main>;
 }
-createRoot(document.getElementById('root')!).render(<Preview />);
+function mountPreview() {
+  const root = createRoot(document.getElementById('root')!);
+  root.render(<Preview />);
+  import.meta.hot?.dispose(() => root.unmount());
+}
+mountPreview();
