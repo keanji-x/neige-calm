@@ -3,6 +3,8 @@
 
 use serde_json::{Value, json};
 
+use calm_types::event::AskQuestion;
+
 use super::codex_events::planner_event;
 use super::planner_event::{ItemPhase, PlannerEvent, PlannerEventKind};
 use crate::codex_appserver::Notification;
@@ -105,17 +107,94 @@ fn item_started_and_completed_keep_their_params_and_other_item_frames_are_ignore
         let PlannerEventKind::Item {
             phase,
             params: carried,
+            questions,
         } = event.kind
         else {
             panic!("{method}: {event:?}");
         };
         assert_eq!((phase, phase.method()), (expected, method));
         assert_eq!(carried, params);
+        assert!(questions.is_empty(), "a plain reply asks nothing");
     }
     for method in ["item/reasoning/delta", "item/other"] {
         let event = wire(method, params.clone());
         assert_eq!(event.thread_id.as_deref(), Some("thr-1"), "{method}");
         assert!(matches!(event.kind, PlannerEventKind::Ignored), "{method}");
+    }
+}
+
+/// A captured native question (`request_user_input_async`, #2209 U2), as the app-server sent it.
+const NATIVE_QUESTION: &str =
+    include_str!("../../tests/fixtures/item_completed_native_question.json");
+
+fn native_question_params() -> Value {
+    serde_json::from_str::<Value>(NATIVE_QUESTION).unwrap()["params"].clone()
+}
+
+fn questions_of(event: PlannerEvent) -> Vec<AskQuestion> {
+    match event.kind {
+        PlannerEventKind::Item { questions, .. } => questions,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_native_question_carries_its_questions_and_keeps_its_params() {
+    let params = native_question_params();
+    let expected = vec![AskQuestion {
+        title:
+            "#2061 正文要求消除未选中时的「100% 占比」，而你消息中的这句话也可能是在指定保留它。\
+                是否按 issue 修复：未选中时显示总量，选中切片时显示该切片占比？"
+                .into(),
+        options: vec![
+            "按 issue 修复，未选中显示总量".into(),
+            "未选中仍显示「100% 占比」".into(),
+        ],
+    }];
+    for method in ["item/started", "item/completed"] {
+        let event = wire(method, params.clone());
+        let PlannerEventKind::Item {
+            params: carried,
+            questions,
+            ..
+        } = event.kind
+        else {
+            panic!("{method}: {event:?}");
+        };
+        assert_eq!(carried, params, "{method}: the stored item is unchanged");
+        assert_eq!(questions, expected, "{method}");
+    }
+}
+
+#[test]
+fn only_an_agent_message_with_parsable_questions_asks() {
+    let with_item = |item: Value| json!({ "threadId": "thr-1", "turnId": "turn-1", "item": item });
+    let asked = |item: Value| questions_of(wire("item/completed", with_item(item)));
+    assert_eq!(
+        asked(json!({ "id": "a", "type": "agentMessage", "questions": [{ "title": "Free?" }] })),
+        vec![AskQuestion {
+            title: "Free?".into(),
+            options: Vec::new()
+        }],
+        "options are optional"
+    );
+    assert_eq!(
+        asked(json!({ "id": "a", "type": "agentMessage",
+            "questions": [{ "title": "Free?", "options": null }] })),
+        vec![AskQuestion {
+            title: "Free?".into(),
+            options: Vec::new()
+        }],
+        "null options are no options"
+    );
+    for item in [
+        json!({ "id": "a", "type": "agentMessage", "text": "hi" }),
+        json!({ "id": "a", "type": "agentMessage", "questions": null }),
+        json!({ "id": "a", "type": "agentMessage", "questions": [{ "options": ["x"] }] }),
+        json!({ "id": "a", "type": "agentMessage", "questions": "Which?" }),
+        json!({ "id": "a", "type": "reasoning", "questions": [{ "title": "Which?" }] }),
+    ] {
+        assert_eq!(asked(item.clone()), Vec::new(), "{item}");
     }
 }
 

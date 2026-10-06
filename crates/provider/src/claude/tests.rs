@@ -121,7 +121,7 @@ pub(super) fn items<'a>(notifications: &'a [PlannerEvent], method: &str) -> Vec<
     notifications
         .iter()
         .filter_map(|n| match &n.kind {
-            PlannerEventKind::Item { phase, params } if phase.method() == method => {
+            PlannerEventKind::Item { phase, params, .. } if phase.method() == method => {
                 Some(&params["item"])
             }
             _ => None,
@@ -738,7 +738,7 @@ fn closing_a_turn_fails_every_tool_item_left_without_a_result() {
         let started_at = notifications
             .iter()
             .find_map(|n| match &n.kind {
-                PlannerEventKind::Item { phase, params }
+                PlannerEventKind::Item { phase, params, .. }
                     if *phase == ItemPhase::Started
                         && params["item"]["type"] == "commandExecution" =>
                 {

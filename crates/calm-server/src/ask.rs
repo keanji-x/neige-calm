@@ -84,12 +84,8 @@ pub async fn ask_requested_tx(
     source_item_id: Option<String>,
 ) -> Result<(EventScope, Event)> {
     let questions = validate_questions(questions)?;
-    let track_id: String = sqlx::query_scalar("SELECT track_id FROM cards WHERE id = ?1")
-        .bind(planner_card.as_str())
-        .fetch_optional(&mut **tx)
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("card {planner_card}")))?;
-    let track = crate::db::sqlite::track_get_tx(tx, &TrackId::from(track_id)).await?;
+    let track_id = card_track_tx(tx, planner_card).await?;
+    let track = crate::db::sqlite::track_get_tx(tx, &track_id).await?;
     Ok((
         EventScope::Track {
             track: track.id.clone(),
@@ -101,6 +97,43 @@ pub async fn ask_requested_tx(
             source_item_id,
         },
     ))
+}
+
+/// A question the provider's own model put to the user (#2209 U2), translated into the Planner's
+/// ask through [`ask_requested_tx`], once per provider item: `None` when the card's track already
+/// has the `ask.requested` from `source_item_id`, so a duplicate frame, a replay or a restart asks
+/// nothing twice. The check and the caller's insert share `tx`.
+pub async fn provider_ask_requested_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    planner_card: &CardId,
+    questions: Vec<AskQuestion>,
+    source_item_id: String,
+) -> Result<Option<(EventScope, Event)>> {
+    let track_id = card_track_tx(tx, planner_card).await?;
+    let asked: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM events WHERE scope_track = ?1 AND kind = 'ask.requested' \
+            AND json_extract(payload, '$.source_item_id') = ?2)",
+    )
+    .bind(track_id.as_str())
+    .bind(&source_item_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if asked {
+        return Ok(None);
+    }
+    ask_requested_tx(tx, planner_card, questions, Some(source_item_id))
+        .await
+        .map(Some)
+}
+
+/// The track `card` lives on, read in `tx`.
+async fn card_track_tx(tx: &mut Transaction<'_, Sqlite>, card: &CardId) -> Result<TrackId> {
+    let track_id: String = sqlx::query_scalar("SELECT track_id FROM cards WHERE id = ?1")
+        .bind(card.as_str())
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("card {card}")))?;
+    Ok(TrackId::from(track_id))
 }
 
 /// The `ask.answered` for `ask_id` on `track`, ready for the caller's event batch as the user's

@@ -5,6 +5,7 @@
 //! Item bodies and turn records stay JSON: they are neige's stored planner item schema, written
 //! byte for byte into the transcript item rows and the turn-outcome rows.
 
+use calm_types::event::AskQuestion;
 use serde_json::Value;
 
 /// One event about a Planner thread.
@@ -40,9 +41,13 @@ pub enum PlannerEventKind {
         turn_id: String,
     },
     /// `params` is the stored item envelope: `threadId`, `turnId`, `item` and its timestamp.
+    /// `questions` are what the item asks the user, in neige's terms, when the provider's own model
+    /// put a question to the user in it; empty for every other item. Only the provider's arm reads
+    /// its wire shape for them.
     Item {
         phase: ItemPhase,
         params: Value,
+        questions: Vec<AskQuestion>,
     },
     /// The next piece of an `agentMessage` item's text (#1923). Handled in memory only: unlike
     /// every other event but `Approval`, it does not write the snapshot.

@@ -52,6 +52,8 @@ mod planner_harness_items_rest;
 mod planner_harness_live_replies;
 #[path = "cases/planner_harness_mcp_tool_render_persist.rs"]
 mod planner_harness_mcp_tool_render_persist;
+#[path = "cases/planner_harness_native_ask.rs"]
+mod planner_harness_native_ask;
 #[path = "cases/planner_harness_report_edit_debounce.rs"]
 mod planner_harness_report_edit_debounce;
 #[path = "cases/planner_harness_reset_clears_items.rs"]

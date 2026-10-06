@@ -2113,7 +2113,11 @@ async fn on_notification(
             announce_restored_entries(inner, restored).await;
             return Ok(());
         }
-        PlannerEventKind::Item { phase, params } => {
+        PlannerEventKind::Item {
+            phase,
+            params,
+            questions,
+        } => {
             let method = phase.method();
             let Some(item) = params.get("item") else {
                 tracing::debug!(
@@ -2233,6 +2237,10 @@ async fn on_notification(
             live_reply::on_item(live, phase, &params);
             if phase == ItemPhase::Completed && legacy_segments_json.is_some() {
                 *inner.legacy_issued_input_segments.lock().await = None;
+            }
+            // Only a completed item has asked: a started one may still change.
+            if phase == ItemPhase::Completed && !questions.is_empty() {
+                native_ask::ask_from_item(inner, item_uuid.as_deref(), questions).await;
             }
             emit_item_added(
                 inner,
@@ -4188,6 +4196,7 @@ mod tests {
 }
 
 mod live_reply;
+mod native_ask;
 mod replace_command;
 
 #[cfg(test)]

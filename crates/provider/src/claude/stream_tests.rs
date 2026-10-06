@@ -31,11 +31,21 @@ fn item_events(events: &[PlannerEvent]) -> Vec<(String, String, String)> {
     events
         .iter()
         .filter_map(|event| match &event.kind {
-            PlannerEventKind::Item { phase, params } => Some((
-                phase.method().to_owned(),
-                params["item"]["id"].as_str().unwrap().to_owned(),
-                params["item"]["type"].as_str().unwrap().to_owned(),
-            )),
+            PlannerEventKind::Item {
+                phase,
+                params,
+                questions,
+            } => {
+                assert!(
+                    questions.is_empty(),
+                    "a Claude item never asks: {questions:?}"
+                );
+                Some((
+                    phase.method().to_owned(),
+                    params["item"]["id"].as_str().unwrap().to_owned(),
+                    params["item"]["type"].as_str().unwrap().to_owned(),
+                ))
+            }
             _ => None,
         })
         .collect()
@@ -167,7 +177,9 @@ fn a_replys_deltas_fall_between_its_start_and_its_completion() {
         let positions: Vec<&str> = events
             .iter()
             .filter_map(|event| match &event.kind {
-                PlannerEventKind::Item { phase, params } if params["item"]["id"] == id.as_str() => {
+                PlannerEventKind::Item { phase, params, .. }
+                    if params["item"]["id"] == id.as_str() =>
+                {
                     Some(phase.method())
                 }
                 PlannerEventKind::ReplyDelta { item_id, .. } if *item_id == id => Some("delta"),
@@ -203,7 +215,7 @@ fn the_stream_changes_no_stored_item() {
         events
             .iter()
             .filter_map(|event| match &event.kind {
-                PlannerEventKind::Item { phase, params } => {
+                PlannerEventKind::Item { phase, params, .. } => {
                     Some((phase.method().to_owned(), params["item"].clone()))
                 }
                 _ => None,

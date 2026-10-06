@@ -628,6 +628,36 @@ async fn a_late_frame_of_the_removed_turn_writes_no_row() {
     );
 }
 
+/// #2209 U2: a late native question of the removed turn asks the user nothing; the same question
+/// in a turn still on the transcript does.
+#[tokio::test]
+async fn a_late_question_of_the_removed_turn_asks_nothing() {
+    let boot = two_turns().await;
+    boot.harness.pause_issuance_for_dev();
+    let (status, body) = replace(&boot, TURN_B, "edited").await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let question = |id: &str| {
+        json!({ "id": id, "type": "agentMessage", "delivery": "async", "text": "Which?",
+            "questions": [{ "title": "Which?", "options": ["A", "B"] }] })
+    };
+    emit_item(&boot, TURN_B, question("late-question"));
+    emit_item(&boot, TURN_A, question("kept-question"));
+    // Frames are handled in order, so once the kept question is asked the late one was handled.
+    wait_for("the kept question's ask", || async {
+        !boot.event_payloads("ask.requested").await.is_empty()
+    })
+    .await;
+    let asked: Vec<Value> = boot.event_payloads("ask.requested").await;
+    assert_eq!(
+        asked
+            .iter()
+            .map(|ask| ask["source_item_id"].clone())
+            .collect::<Vec<_>>(),
+        vec![json!("kept-question")],
+        "{asked:?}"
+    );
+}
+
 /// Deleted on purpose (#2043): the eight-image cap guarded only the input the rewind route handed
 /// back as one message. The cut never reads images, and the replacing message is checked as any
 /// send is, so a turn whose prompt and steer carried nine images can be replaced.

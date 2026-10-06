@@ -1,0 +1,34 @@
+{
+  "_provenance": [
+    "CAPTURED, not hand-authored: the `params` of one `item/completed` row (harness_items id 28745)",
+    "a Codex Planner stored on the 4140 instance while working on #2061, read once and copied",
+    "verbatim. The model called Codex's built-in `request_user_input_async` tool; the app-server",
+    "reports that call as an `agentMessage` carrying `delivery: \"async\"` and",
+    "`questions: [{ title, options? }]`, both EXPERIMENTAL in Codex's schema (#2209 U2).",
+    "",
+    "`threadId` is the real one; the tests substitute their own seeded thread id over it before",
+    "emitting the frame, because the run loop drops a frame of any other thread."
+  ],
+  "params": {
+    "completedAtMs": 1791192159428,
+    "item": {
+      "delivery": "async",
+      "id": "call_3JC4f04gLFDW8kyo92TOgOPa",
+      "memoryCitation": null,
+      "phase": "final_answer",
+      "questions": [
+        {
+          "options": [
+            "按 issue 修复，未选中显示总量",
+            "未选中仍显示「100% 占比」"
+          ],
+          "title": "#2061 正文要求消除未选中时的「100% 占比」，而你消息中的这句话也可能是在指定保留它。是否按 issue 修复：未选中时显示总量，选中切片时显示该切片占比？"
+        }
+      ],
+      "text": "#2061 正文要求消除未选中时的「100% 占比」，而你消息中的这句话也可能是在指定保留它。是否按 issue 修复：未选中时显示总量，选中切片时显示该切片占比？\n- 按 issue 修复，未选中显示总量\n- 未选中仍显示「100% 占比」",
+      "type": "agentMessage"
+    },
+    "threadId": "01a10b5e-80bf-7a01-8c29-8c4b7f61662c",
+    "turnId": "01a10b5e-8139-7263-8557-6e7848de7082"
+  }
+}

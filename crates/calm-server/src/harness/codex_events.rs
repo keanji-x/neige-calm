@@ -3,6 +3,8 @@
 //! exactly the frames it saw before the mapping existed. The snapshot write sees them too, except
 //! a reply delta (#1923), which the run loop keeps in memory only.
 
+use calm_types::event::AskQuestion;
+use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::broadcast::{self, error::RecvError};
 
@@ -51,10 +53,12 @@ pub(crate) fn planner_event(notification: Notification) -> PlannerEvent {
         Notification::Item { method, params } => match method.as_str() {
             "item/started" => PlannerEventKind::Item {
                 phase: ItemPhase::Started,
+                questions: item_questions(&params),
                 params,
             },
             "item/completed" => PlannerEventKind::Item {
                 phase: ItemPhase::Completed,
+                questions: item_questions(&params),
                 params,
             },
             "item/agentMessage/delta" => reply_delta(&params),
@@ -78,6 +82,46 @@ pub(crate) fn planner_event(notification: Notification) -> PlannerEvent {
         },
     };
     PlannerEvent { thread_id, kind }
+}
+
+/// One question as Codex's `request_user_input_async` tool puts it on an `agentMessage`
+/// (EXPERIMENTAL in the app-server schema): `options` is optional, the first one recommended.
+#[derive(Deserialize)]
+struct WireQuestion {
+    title: String,
+    options: Option<Vec<String>>,
+}
+
+/// The questions an item asks the user: an `agentMessage` carrying `questions`, the record of the
+/// model's non-blocking question tool (its `delivery` is `async`; the call already returned). Every
+/// other item, and one whose questions do not parse, asks nothing and stays an ordinary item.
+fn item_questions(params: &Value) -> Vec<AskQuestion> {
+    let Some(item) = params.get("item") else {
+        return Vec::new();
+    };
+    if item.get("type").and_then(Value::as_str) != Some("agentMessage") {
+        return Vec::new();
+    }
+    let Some(questions) = item.get("questions").filter(|q| !q.is_null()) else {
+        return Vec::new();
+    };
+    match Vec::<WireQuestion>::deserialize(questions) {
+        Ok(questions) => questions
+            .into_iter()
+            .map(|question| AskQuestion {
+                title: question.title,
+                options: question.options.unwrap_or_default(),
+            })
+            .collect(),
+        Err(error) => {
+            tracing::warn!(
+                item_id = ?item.get("id"),
+                %error,
+                "planner harness: an agentMessage's questions do not parse; it asks nothing"
+            );
+            Vec::new()
+        }
+    }
 }
 
 /// `item/agentMessage/delta` carries `threadId`, `turnId`, `itemId` and `delta`, all required by

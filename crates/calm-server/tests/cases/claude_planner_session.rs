@@ -31,10 +31,20 @@ fn oversized_text() -> Vec<InputItem> {
 fn item_types(seen: &[PlannerEvent]) -> Vec<(String, String)> {
     seen.iter()
         .filter_map(|n| match &n.kind {
-            PlannerEventKind::Item { phase, params } => Some((
-                phase.method().to_string(),
-                params["item"]["type"].as_str().unwrap_or("").to_string(),
-            )),
+            PlannerEventKind::Item {
+                phase,
+                params,
+                questions,
+            } => {
+                assert!(
+                    questions.is_empty(),
+                    "a Claude item never asks: {questions:?}"
+                );
+                Some((
+                    phase.method().to_string(),
+                    params["item"]["type"].as_str().unwrap_or("").to_string(),
+                ))
+            }
             _ => None,
         })
         .collect()
@@ -269,7 +279,7 @@ async fn a_killed_cli_settles_failed_with_its_exit_status() {
             .await
             .expect("the tool call starts")
             .expect("notification");
-        if matches!(&next.kind, PlannerEventKind::Item { phase, params }
+        if matches!(&next.kind, PlannerEventKind::Item { phase, params, .. }
             if *phase == ItemPhase::Started && params["item"]["id"] == "toolu_hold")
         {
             break;
@@ -295,7 +305,7 @@ async fn a_killed_cli_settles_failed_with_its_exit_status() {
     let message = completed["error"]["message"].as_str().unwrap_or("");
     assert!(message.starts_with("claude exited"), "{message}");
     let closed = seen.iter().find_map(|n| match &n.kind {
-        PlannerEventKind::Item { phase, params }
+        PlannerEventKind::Item { phase, params, .. }
             if *phase == ItemPhase::Completed && params["item"]["id"] == "toolu_hold" =>
         {
             Some(params["item"]["status"].clone())

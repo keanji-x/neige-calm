@@ -308,7 +308,12 @@ impl TurnTranslator {
             "item": item,
         });
         params[at_key] = json!(now_ms);
-        self.event(PlannerEventKind::Item { phase, params })
+        // The CLI's own question tool blocks for its answer: it is not an ask (#2209).
+        self.event(PlannerEventKind::Item {
+            phase,
+            params,
+            questions: Vec::new(),
+        })
     }
 
     fn user_message(&self, uuid: &Uuid) -> Value {
