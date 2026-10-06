@@ -285,7 +285,7 @@ async fn planner_lists_finds_and_reads_every_report_of_its_area() {
 
     assert_eq!(
         ls(&boot, planner(own), "area/").await.unwrap(),
-        json!({ "entries": [{ "name": "reports/", "kind": "dir" }] })
+        json!({ "entries": [{ "name": "reports/", "kind": "dir", "updated_at": null }] })
     );
     let listing = ls(&boot, planner(own), "/area/reports/").await.unwrap();
     assert_eq!(
@@ -708,3 +708,6 @@ async fn more_reports_than_the_cap_are_refused_not_truncated() {
 
 #[path = "mcp_area_report_blocks.rs"]
 mod blocks;
+
+#[path = "mcp_area_ls_paging.rs"]
+mod area_ls_paging;

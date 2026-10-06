@@ -199,3 +199,160 @@ async fn no_kernel_tool_returns_a_top_level_array() {
         assert!(value.is_object(), "{tool} {args}: {value}");
     }
 }
+
+/// Every key under `value` ending in `_at`, as `(path, value)`, and every key ending in `_at_ms`
+/// (the retired spelling) into `retired`. A block's `payload` is opaque (§4) and `published_at` is
+/// the caller's own text (§9), so neither is entered.
+fn time_keys(value: &Value, at: &str, out: &mut Vec<(String, Value)>, retired: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                let path = format!("{at}.{key}");
+                if key.ends_with("_at_ms") {
+                    retired.push(path.clone());
+                }
+                if key == "payload" || key == "published_at" {
+                    continue;
+                }
+                if key.ends_with("_at") {
+                    out.push((path.clone(), child.clone()));
+                }
+                time_keys(child, &path, out, retired);
+            }
+        }
+        Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                time_keys(child, &format!("{at}[{index}]"), out, retired);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `YYYY-MM-DDTHH:MM:SS.mmm` and an explicit offset, as `time_format::at` writes it.
+fn is_rfc3339_ms_with_offset(text: &str) -> bool {
+    let millis = text
+        .get(19..23)
+        .is_some_and(|ms| ms.starts_with('.') && ms[1..].bytes().all(|b| b.is_ascii_digit()));
+    let offset = text.get(23..).is_some_and(|offset| {
+        offset.len() == 6 && (offset.starts_with('+') || offset.starts_with('-'))
+    });
+    millis && offset && chrono::DateTime::parse_from_rfc3339(text).is_ok()
+}
+
+/// #2087 C2 (§4): every time in a real tool result is an RFC 3339 string with an explicit offset
+/// at millisecond precision, keyed `<event>_at`; an absent time is `null`.
+#[tokio::test]
+async fn tool_result_times_are_rfc3339_with_an_offset() {
+    let boot = boot_with_role(CardRole::Planner).await;
+    add_report(&boot).await;
+    let track = boot.track_id.as_str();
+    let body = format!("# Plan\n\nSee [this plan](neige://wave/{track}).\n");
+    let mut results = Vec::new();
+    for (tool, args) in [
+        ("neige_report_read", json!({})),
+        (
+            "neige_report_write",
+            json!({"body": body, "message": "draft"}),
+        ),
+        (
+            "neige_report_commit",
+            json!({"message": "declare a task", "ops": [
+                {"op": "upsert", "kind": "task", "payload": {
+                    "key": "build", "kind": "terminal", "command": "true", "depends_on": [],
+                    "declared_by": PLANNER_DECLARATION_AUTHOR, "ready": true
+                }}
+            ]}),
+        ),
+        ("neige_report_read", json!({})),
+        ("neige_report_find", json!({"path": "area/reports/"})),
+        ("neige_link_ls", json!({})),
+        ("neige_task_ls", json!({})),
+        (
+            "neige_source_capture",
+            json!({"manual": {"text": "quoted text"}, "provenance": "manual",
+                   "title": "Note", "published_at": "2026-10-01"}),
+        ),
+        ("neige_source_ls", json!({})),
+        ("neige_track_log", json!({})),
+        ("neige_track_ls", json!({"path": "/"})),
+        ("neige_track_ls", json!({"path": "cards/"})),
+        ("neige_track_ls", json!({"path": "runs/"})),
+        ("neige_track_status", json!({})),
+        ("neige_track_close", json!({"message": "done"})),
+        ("neige_area_ls", json!({})),
+        ("neige_track_status", json!({})),
+    ] {
+        results.push((tool, ok(&boot, tool, args).await));
+    }
+
+    let (mut seen, mut present) = (Vec::new(), Vec::new());
+    for (tool, value) in &results {
+        let (mut times, mut retired) = (Vec::new(), Vec::new());
+        time_keys(value, "", &mut times, &mut retired);
+        assert!(
+            retired.is_empty(),
+            "{tool} keeps `_at_ms` keys {retired:?}: {value}"
+        );
+        for (path, time) in times {
+            present.push(format!("{tool} {}", path.rsplit('.').next().unwrap()));
+            match &time {
+                Value::Null => {}
+                Value::String(text) if is_rfc3339_ms_with_offset(text) => {
+                    seen.push(format!("{tool} {}", path.rsplit('.').next().unwrap()));
+                }
+                other => panic!("{tool}{path} is {other}, not an RFC 3339 time: {value}"),
+            }
+        }
+    }
+    for expected in [
+        "neige_report_read updated_at",
+        "neige_report_write updated_at",
+        "neige_report_commit updated_at",
+        "neige_report_find updated_at",
+        "neige_link_ls updated_at",
+        "neige_task_ls created_at",
+        "neige_source_ls captured_at",
+        "neige_track_log created_at",
+        "neige_track_ls updated_at",
+        "neige_track_status created_at",
+        "neige_track_status updated_at",
+        "neige_track_close closed_at",
+        "neige_area_ls closed_at",
+        "neige_track_status closed_at",
+    ] {
+        assert!(
+            seen.iter().any(|key| key == expected),
+            "anti-vacuity: no {expected} time in {seen:?}"
+        );
+    }
+    // An absent time is present as `null` (§4): an open track's close, an unfinished task, a
+    // runtime that never completed a turn, a directory entry.
+    for expected in [
+        "neige_task_ls finished_at",
+        "neige_track_ls updated_at",
+        "neige_track_status pinned_at",
+        "neige_track_status last_turn_completed_at",
+    ] {
+        assert!(
+            present.iter().any(|key| key == expected),
+            "anti-vacuity: no {expected} key in {present:?}"
+        );
+    }
+    let runtime = &results[13].1["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|card| card["id"] == boot.card_id.as_str())
+        .expect("the caller's card")["runtime"];
+    assert!(
+        runtime["updated_at"].is_string()
+            && runtime.get("last_turn_completed_at") == Some(&Value::Null),
+        "a runtime that never completed a turn: {runtime}"
+    );
+    let source = &results[8].1["sources"][0];
+    assert_eq!(
+        source["published_at"], "2026-10-01",
+        "given text is returned as given"
+    );
+}

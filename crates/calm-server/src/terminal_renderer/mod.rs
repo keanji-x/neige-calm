@@ -137,7 +137,7 @@ pub struct TerminalExitInfo {
     pub code: Option<i32>,
     pub pty_seq: u32,
     pub render_rev: u32,
-    /// When the renderer recorded the exit: the one instant every connection reports as `exited_at_ms`.
+    /// When the renderer recorded the exit: the one instant every connection reports as `exited_at`.
     pub exited_at: std::time::SystemTime,
 }
 

@@ -119,10 +119,13 @@ pub async fn commit_belongs_to_track(
     Ok(record.track_id == *track_id)
 }
 
+/// Newest first, at most `limit` commits older than `after` (a commit of this track's history,
+/// the previous page's last one); `has_more` when an older one matches too.
 pub async fn log(
     pool: &SqlitePool,
     track_id: &TrackId,
     path: Option<&str>,
+    after: Option<&CommitRecord>,
     limit: usize,
     include_empty: bool,
 ) -> Result<CommitLog> {
@@ -135,8 +138,8 @@ pub async fn log(
         limit.saturating_add(1)
     };
     let mut out = Vec::new();
-    let mut before = None::<CommitRecord>;
-    let mut truncated = false;
+    let mut before = after.cloned();
+    let mut has_more = false;
     'pages: loop {
         let records =
             commit_records_for_track_pool(pool, track_id, page_size, changes_only, before.as_ref())
@@ -166,7 +169,7 @@ pub async fn log(
                 changed_paths,
             });
             if out.len() > limit {
-                truncated = true;
+                has_more = true;
                 break 'pages;
             }
         }
@@ -178,7 +181,7 @@ pub async fn log(
     out.truncate(limit);
     Ok(CommitLog {
         commits: out,
-        truncated,
+        has_more,
     })
 }
 

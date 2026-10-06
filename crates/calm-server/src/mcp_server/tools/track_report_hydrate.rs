@@ -9,8 +9,9 @@ use serde_json::{Value, json};
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::AppContext;
 use crate::mcp_server::tool_visibility::{TrackPluginScope, plugin_scope_for_track};
+use crate::report_series::Detail;
 use crate::report_series::hydrate::hydrate_chart_series;
-use crate::report_series::{Detail, resolved_at_text};
+use crate::time_format;
 use calm_types::report_blocks::kinds::LIVE_SOURCE_PREFIX;
 use calm_types::report_blocks::kinds::validate_inline_table_overlay;
 use calm_types::report_blocks::live_refs::view_live_slots;
@@ -100,17 +101,45 @@ pub(crate) async fn hydrated_block_index(
                 ResolveMode::Full => Detail::Full,
                 ResolveMode::Summary | ResolveMode::None => Detail::Summary,
             };
-            entry["resolved"] =
-                hydrate_chart_series(ctx, track_id, block, detail, Some(scope)).await;
+            let mut resolved = hydrate_chart_series(
+                ctx,
+                track_id,
+                block,
+                detail,
+                Some(scope),
+                crate::time_format::at,
+            )
+            .await;
+            with_hydration_times(&mut resolved);
+            entry["resolved"] = resolved;
         } else if is_overlay_block(block) {
-            entry["resolved"] = match &overlays {
+            let mut resolved = match &overlays {
                 Ok(overlays) => hydrate_overlay(track_id, block, mode, overlays),
                 Err(reason) => json!({ "status": "unavailable", "reason": reason }),
             };
+            if block.kind == KIND_VIEW {
+                if let Some(cells) = resolved.get_mut("cells").and_then(Value::as_array_mut) {
+                    cells.iter_mut().for_each(with_hydration_times);
+                }
+            } else {
+                with_hydration_times(&mut resolved);
+            }
+            entry["resolved"] = resolved;
         }
         index.push(entry);
     }
     index
+}
+
+/// Every hydrated series, table and view cell carries `resolved_at` and `observed_at`, `null`
+/// on a branch that has no such time (pending, unavailable, no snapshot), so the tool result has
+/// one shape (agent-commands §4). The REST series route keeps its own shape.
+fn with_hydration_times(resolved: &mut Value) {
+    if let Some(object) = resolved.as_object_mut() {
+        for key in ["resolved_at", "observed_at"] {
+            object.entry(key).or_insert(Value::Null);
+        }
+    }
 }
 
 fn is_overlay_block(block: &ReportBlock) -> bool {
@@ -166,7 +195,7 @@ fn hydrate_overlay(
     // A live reference, mixed view/table object, or malformed row is not an inline table.
     if validate_inline_table_overlay(&overlay.payload).is_err() {
         return json!({ "status": "unavailable", "reason": "overlay payload is not an inline table",
-                       "resolved_at": resolved_at_text(overlay.updated_at) });
+                       "resolved_at": time_format::at(overlay.updated_at) });
     }
     let columns = overlay.payload.get("columns").and_then(Value::as_array);
     let rows = overlay.payload.get("rows").and_then(Value::as_array);
@@ -174,12 +203,12 @@ fn hydrate_overlay(
         return json!({
             "status": "unavailable",
             "reason": "overlay payload is not a table",
-            "resolved_at": resolved_at_text(overlay.updated_at),
+            "resolved_at": time_format::at(overlay.updated_at),
         });
     };
     let mut out = json!({
         "status": "ok",
-        "resolved_at": resolved_at_text(overlay.updated_at),
+        "resolved_at": time_format::at(overlay.updated_at),
         "columns": columns.len(),
         "rows": rows.len(),
     });
@@ -229,7 +258,7 @@ fn hydrate_slot(
         }
         Ok(Some(overlay)) => overlay,
     };
-    out["resolved_at"] = json!(resolved_at_text(overlay.updated_at));
+    out["resolved_at"] = time_format::at(overlay.updated_at);
     if let Err(reason) = validate_unit(slot.expects, &overlay.payload) {
         out["status"] = json!("unavailable");
         out["reason"] = json!(reason);
@@ -238,7 +267,7 @@ fn hydrate_slot(
     out["status"] = json!("ok");
     // `validate_unit` bounded `observedAt` to a non-negative integer millisecond time.
     if let Some(observed_at) = overlay.payload["snapshot"]["observedAt"].as_f64() {
-        out["observed_at"] = json!(resolved_at_text(observed_at as i64));
+        out["observed_at"] = time_format::at(observed_at as i64);
     }
     if mode == ResolveMode::Full {
         out["data"] = overlay.payload.clone();

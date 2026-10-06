@@ -24,12 +24,19 @@ fn log_renders_null_message_and_event_id_but_requires_a_hash() {
     let value = json!({ "commits": [
         { "hash": "abcdef123456", "event_id": 42, "message": "m" },
         { "hash": "0123", "event_id": null, "message": null }
-    ]});
+    ], "next_cursor": "0123"});
     assert_eq!(
         render(Render::Log, "neige_track_log", false, &value).unwrap(),
-        "abcdef12 event=42 m\n0123 event=- \n"
+        "abcdef12 event=42 m\n0123 event=- \nnext_cursor: \"0123\"\n"
     );
-    let value = json!({ "commits": [{ "event_id": 1, "message": "m" }] });
+    let last = json!({ "commits": [], "next_cursor": null });
+    assert_eq!(
+        render(Render::Log, "neige_track_log", false, &last).unwrap(),
+        "next_cursor: null\n"
+    );
+    let value = json!({ "commits": [{ "event_id": 1, "message": "m" }], "next_cursor": null });
+    assert!(render(Render::Log, "neige_track_log", false, &value).is_err());
+    let value = json!({ "commits": [], "truncated": false });
     assert!(render(Render::Log, "neige_track_log", false, &value).is_err());
 }
 
@@ -82,15 +89,15 @@ fn draft_track_state() -> Value {
     json!({
         "track": {
             "id": "trk_1", "area_id": "area_1", "title": "", "closed_at": null,
-            "cwd": "/tmp/x", "sort": 0.5, "created_at": 1, "updated_at": 2
+            "cwd": "/tmp/x", "sort": 0.5, "created_at": "2026-10-07T09:00:00.000+08:00", "updated_at": "2026-10-07T09:00:00.000+08:00"
         },
         "caller_card_id": "crd_planner",
         "cards": [
             { "id": "crd_planner", "kind": "codex", "role": "planner", "sort": 1.0,
-              "created_at": 1, "updated_at": 1,
+              "created_at": "2026-10-07T09:00:00.000+08:00", "updated_at": "2026-10-07T09:00:00.000+08:00",
               "runtime": { "worker_session_id": "ws_1", "kind": "codex", "status": "running" } },
             { "id": "crd_report", "kind": "track-report", "role": "reportcard", "sort": 2.0,
-              "created_at": 1, "updated_at": 1, "runtime": null }
+              "created_at": "2026-10-07T09:00:00.000+08:00", "updated_at": "2026-10-07T09:00:00.000+08:00", "runtime": null }
         ],
         "report_startup_read_required": false,
         "tasks": []
@@ -102,20 +109,20 @@ fn working_track_state() -> Value {
     json!({
         "track": {
             "id": "trk_2", "area_id": "area_1", "title": "Fix login redirect",
-            "closed_at": null, "cwd": "/tmp/y", "sort": 0.5, "created_at": 1, "updated_at": 2
+            "closed_at": null, "cwd": "/tmp/y", "sort": 0.5, "created_at": "2026-10-07T09:00:00.000+08:00", "updated_at": "2026-10-07T09:00:00.000+08:00"
         },
         "caller_card_id": "crd_planner",
         "cards": [
             { "id": "crd_planner", "kind": "codex", "role": "planner", "sort": 1.0,
-              "created_at": 1, "updated_at": 1,
+              "created_at": "2026-10-07T09:00:00.000+08:00", "updated_at": "2026-10-07T09:00:00.000+08:00",
               "runtime": { "worker_session_id": "ws_1", "kind": "codex", "status": "idle" } },
             { "id": "crd_report", "kind": "track-report", "role": "reportcard", "sort": 2.0,
-              "created_at": 1, "updated_at": 1, "runtime": null },
+              "created_at": "2026-10-07T09:00:00.000+08:00", "updated_at": "2026-10-07T09:00:00.000+08:00", "runtime": null },
             { "id": "crd_worker", "kind": "claude", "role": "worker", "sort": 3.0,
-              "created_at": 1, "updated_at": 1,
+              "created_at": "2026-10-07T09:00:00.000+08:00", "updated_at": "2026-10-07T09:00:00.000+08:00",
               "runtime": { "worker_session_id": "ws_2", "kind": "claude", "status": "running" } },
             { "id": "crd_old", "kind": "codex", "role": "worker", "sort": 4.0,
-              "created_at": 1, "updated_at": 1,
+              "created_at": "2026-10-07T09:00:00.000+08:00", "updated_at": "2026-10-07T09:00:00.000+08:00",
               "runtime": { "worker_session_id": "ws_3", "kind": "codex", "status": "exited" } }
         ],
         "report_startup_read_required": true,
@@ -158,18 +165,15 @@ fn state_text_of_a_draft_track_says_untitled_and_names_the_caller() {
 #[test]
 fn state_text_prints_the_close_time_of_a_closed_track() {
     let mut value = draft_track_state();
-    let closed_at = 1_790_000_000_000_i64;
-    value["track"]["closed_at"] = json!(closed_at);
+    let at = "2026-09-21T22:13:20.000+08:00";
+    value["track"]["closed_at"] = json!(at);
     let text = render(Render::Status, "neige_track_status", false, &value).unwrap();
-    let at = chrono::Local
-        .timestamp_millis_opt(closed_at)
-        .single()
-        .unwrap()
-        .to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
     assert_eq!(
         lines_starting(&text, "closed_at"),
         vec![format!("closed_at  {at}")]
     );
+    value["track"]["closed_at"] = json!(1_790_000_000_000_i64);
+    assert!(render(Render::Status, "neige_track_status", false, &value).is_err());
 }
 
 #[test]
@@ -444,7 +448,7 @@ fn state_shape_errors_name_the_missing_fact() {
             },
         ),
         (
-            "neige_track_status track missing number-or-null closed_at",
+            "neige_track_status track missing string-or-null closed_at",
             |v| {
                 v["track"].as_object_mut().unwrap().remove("closed_at");
             },
@@ -532,7 +536,7 @@ fn state_text_shows_each_key_once_at_its_current_execution() {
 #[test]
 fn closed_track_keeps_open_sessions_distinct_from_finished_work() {
     let mut value = working_track_state();
-    value["track"]["closed_at"] = json!(1_000);
+    value["track"]["closed_at"] = json!("1970-01-01T08:00:01.000+08:00");
     value["tasks"][0]["status"] = json!("done");
     let text = render(Render::Status, "neige_track_status", false, &value).unwrap();
     assert!(text.contains("fix-login done start=checkout"), "{text}");

@@ -12,6 +12,7 @@ use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     read_only_annotations,
 };
+use crate::mcp_server::tools::paging::{self, Page};
 use crate::mcp_server::tools::track_file::resolve_track_for_identity;
 use crate::model::CardRole;
 use crate::track_vcs::{self, CommitLogEntry, FileDiff};
@@ -22,6 +23,9 @@ use std::sync::Arc;
 pub const TOOL_TRACK_DIFF: &str = "neige_track_diff";
 pub const TOOL_TRACK_SHOW: &str = "neige_track_show";
 pub const TOOL_TRACK_LOG: &str = "neige_track_log";
+
+/// Commits per `neige_track_log` page (agent-commands §9: a paged tool has a fixed page size).
+const LOG_PAGE: usize = 50;
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(diff_descriptor(), wrap(track_diff));
@@ -98,7 +102,7 @@ fn log_descriptor() -> ToolDescriptor {
             "additionalProperties": false,
             "properties": {
                 "path": { "type": "string" },
-                "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+                "cursor": { "type": "string" },
                 "include_empty": { "type": "boolean", "default": false }
             }
         }),
@@ -171,16 +175,28 @@ async fn track_log(
     let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
     let obj = object_args(&args, TOOL_TRACK_LOG)?;
     let path = optional_string(obj, "path", TOOL_TRACK_LOG)?;
-    let limit = optional_limit(obj, TOOL_TRACK_LOG)?;
     let include_empty = optional_bool(obj, "include_empty", TOOL_TRACK_LOG)?.unwrap_or(false);
+    // The cursor is the last emitted commit's hash: the next page starts at the commit before it.
+    let after = match paging::cursor_arg(&args, TOOL_TRACK_LOG)? {
+        None => None,
+        Some(cursor) => match vcs.commit_record(cursor).await.map_err(vcs_error_to_rpc)? {
+            Some(record) if record.track_id == track.id => Some(record),
+            _ => return Err(paging::foreign_cursor(TOOL_TRACK_LOG, cursor)),
+        },
+    };
     let log = vcs
-        .log(&track.id, path, limit, include_empty)
+        .log(&track.id, path, after.as_ref(), LOG_PAGE, include_empty)
         .await
         .map_err(vcs_error_to_rpc)?;
-    Ok(json!({
-        "commits": log.commits.into_iter().map(commit_log_json).collect::<Vec<_>>(),
-        "truncated": log.truncated,
-    }))
+    // The page also ends early at the byte budget; its last row is still the resume point.
+    let mut page = Page::new(LOG_PAGE);
+    for commit in log.commits {
+        if !page.push(commit.hash.clone(), commit_log_json(commit)) {
+            break;
+        }
+    }
+    let (commits, next_cursor) = page.finish(log.has_more);
+    Ok(json!({ "commits": commits, "next_cursor": next_cursor }))
 }
 
 fn track_vcs_repo(ctx: &AppContext) -> Result<&dyn TrackVcsRepo, RpcError> {
@@ -243,23 +259,6 @@ fn optional_string<'a>(
     }
 }
 
-fn optional_limit(obj: &Map<String, Value>, tool: &str) -> Result<usize, RpcError> {
-    match obj.get("limit") {
-        None | Some(Value::Null) => Ok(50),
-        Some(Value::Number(number)) => {
-            let Some(limit) = number.as_u64() else {
-                return Err(RpcError::invalid_params(format!(
-                    "{tool}: `limit` must be a positive integer"
-                )));
-            };
-            Ok((limit as usize).clamp(1, 200))
-        }
-        Some(_) => Err(RpcError::invalid_params(format!(
-            "{tool}: `limit` must be an integer if provided"
-        ))),
-    }
-}
-
 fn optional_bool(
     obj: &Map<String, Value>,
     key: &str,
@@ -292,7 +291,7 @@ fn commit_log_json(commit: CommitLogEntry) -> Value {
         "hash": commit.hash,
         "parent_hash": commit.parent_hash,
         "event_id": commit.event_id,
-        "created_at": commit.created_at,
+        "created_at": crate::time_format::at(commit.created_at),
         "message": commit.message,
         "changed_paths": commit.changed_paths,
     })

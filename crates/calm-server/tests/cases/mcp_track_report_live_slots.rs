@@ -276,7 +276,12 @@ async fn live_slots_resolve_their_own_units() {
     {
         assert_eq!(cell["status"], "ok", "{cell}");
         assert_eq!(cell["source"], format!("neige://plugin/operations/{kind}"));
-        assert_eq!(cell["observed_at"], "2026-09-22T00:00:00Z");
+        let observed = chrono::DateTime::parse_from_rfc3339(cell["observed_at"].as_str().unwrap());
+        assert_eq!(
+            observed.unwrap().timestamp_millis(),
+            1_790_035_200_000,
+            "{cell}"
+        );
         assert!(cell["resolved_at"].is_string());
         assert!(cell.get("data").is_none());
     }
@@ -335,7 +340,10 @@ async fn live_slot_pending_is_not_storage_unavailable() {
     assert_eq!(cells(view).len(), 1);
     assert_eq!(cells(view)[0]["status"], "pending");
     assert!(cells(view)[0].get("reason").is_none());
-    assert!(cells(view)[0].get("resolved_at").is_none());
+    // An absent time is present as null (§4).
+    for key in ["resolved_at", "observed_at"] {
+        assert_eq!(cells(view)[0].get(key), Some(&Value::Null), "{key}: {view}");
+    }
 
     // Corrupt only this test's in-memory repository, after the report exists.
     sqlx::query("DROP TABLE overlays")

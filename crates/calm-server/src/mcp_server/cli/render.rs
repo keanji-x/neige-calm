@@ -5,7 +5,6 @@
 use std::borrow::Cow;
 
 use calm_types::task_execution::{TaskAccess, TaskStart};
-use chrono::TimeZone as _;
 use serde_json::{Value, json};
 
 use crate::model::TaskStatus;
@@ -139,21 +138,18 @@ fn state(tool: &str, json: bool, value: &Value) -> Result<String, RenderError> {
     let title = required_str(track, "title", tool, "track")?;
     let closed_at = match track.get("closed_at") {
         Some(Value::Null) => "-".to_string(),
-        Some(Value::Number(ms)) => ms
-            .as_i64()
-            .and_then(|ms| chrono::Local.timestamp_millis_opt(ms).single())
-            .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, false))
-            .ok_or_else(|| {
-                shape(
-                    format!("{tool} track closed_at is not a unix-ms time"),
-                    tool,
-                    "track",
-                    track,
-                )
-            })?,
+        Some(Value::String(at)) if chrono::DateTime::parse_from_rfc3339(at).is_ok() => at.clone(),
+        Some(Value::String(_)) => {
+            return Err(shape(
+                format!("{tool} track closed_at is not an RFC 3339 time"),
+                tool,
+                "track",
+                track,
+            ));
+        }
         _ => {
             return Err(shape(
-                format!("{tool} track missing number-or-null closed_at"),
+                format!("{tool} track missing string-or-null closed_at"),
                 tool,
                 "track",
                 track,
@@ -450,6 +446,7 @@ fn diff(tool: &str, value: &Value) -> Result<String, RenderError> {
 }
 
 /// `message` and `event_id` are nullable on the wire: null prints as an empty message and `event=-`.
+/// The last line is `next_cursor: <cursor or null>`, as `neige tool ls` ends its page.
 fn log(tool: &str, value: &Value) -> Result<String, RenderError> {
     let commits = value
         .get("commits")
@@ -472,6 +469,19 @@ fn log(tool: &str, value: &Value) -> Result<String, RenderError> {
         let message = commit.get("message").and_then(Value::as_str).unwrap_or("");
         let short = hash.get(..8).unwrap_or(hash);
         out.push_str(&format!("{short} event={event} {message}\n"));
+    }
+    match value.get("next_cursor") {
+        Some(cursor @ (Value::Null | Value::String(_))) => {
+            out.push_str(&format!("next_cursor: {cursor}\n"));
+        }
+        _ => {
+            return Err(shape(
+                format!("{tool} returned no string-or-null next_cursor"),
+                tool,
+                "value",
+                value,
+            ));
+        }
     }
     Ok(out)
 }

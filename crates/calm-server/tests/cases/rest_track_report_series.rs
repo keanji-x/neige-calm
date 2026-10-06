@@ -325,7 +325,7 @@ async fn series_route_enqueues_when_no_row() {
 }
 
 #[tokio::test]
-async fn series_route_and_mcp_read_return_the_same_bytes() {
+async fn series_route_and_mcp_read_return_the_same_bytes_but_the_time_format() {
     let fx = SeriesFixture::boot(FixtureOptions::default()).await;
     let route = Route::new(&fx).await;
     let block_id = resolved_seam_block(&fx).await;
@@ -338,10 +338,29 @@ async fn series_route_and_mcp_read_return_the_same_bytes() {
             json!({ "resolve": { block_id.clone(): "full" } }),
         ),
     ] {
-        let (status, http) = route.get(fx.track_id(), &block_id, &query).await;
+        let (status, mut http) = route.get(fx.track_id(), &block_id, &query).await;
         assert_eq!(status, StatusCode::OK, "{http}");
         let read = fx.read(resolve).await;
-        let mcp = SeriesFixture::resolved_of(&read, &block_id).clone();
+        let mut mcp = SeriesFixture::resolved_of(&read, &block_id).clone();
+        // Only `resolved_at`'s format differs: REST keeps UTC seconds, the tool gives the
+        // server's offset at milliseconds (agent-commands §4), naming the same instant.
+        let instant = |value: &Value| {
+            chrono::DateTime::parse_from_rfc3339(value["resolved_at"].as_str().unwrap())
+                .unwrap()
+                .timestamp()
+        };
+        assert!(
+            http["resolved_at"].as_str().unwrap().ends_with('Z'),
+            "{http}"
+        );
+        assert_eq!(instant(&http), instant(&mcp), "{query}");
+        http["resolved_at"] = Value::Null;
+        mcp["resolved_at"] = Value::Null;
+        // The tool also always carries `observed_at` (null for a series); REST omits it.
+        assert_eq!(
+            mcp.as_object_mut().unwrap().remove("observed_at"),
+            Some(Value::Null)
+        );
         assert_eq!(http, mcp, "{query}");
         assert_eq!(
             serde_json::to_string(&http).unwrap(),

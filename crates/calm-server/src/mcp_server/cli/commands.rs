@@ -181,7 +181,7 @@ pub(crate) const COMMANDS: &[Command] = &[
         tool: track_history::TOOL_TRACK_LOG,
         positionals: &[pos("path", false)],
         options: &[
-            opt("--limit", "limit", OptValue::Integer, false),
+            opt("--cursor", "cursor", OptValue::Text, false),
             opt("--include-empty", "include_empty", OptValue::Flag, false),
         ],
         confirm: None,

@@ -131,7 +131,8 @@ pub struct CommitLogEntry {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CommitLog {
     pub commits: Vec<CommitLogEntry>,
-    pub truncated: bool,
+    /// More commits match past the last one.
+    pub has_more: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

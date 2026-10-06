@@ -65,8 +65,16 @@ async fn read_hydrates_chart_series_summary_from_row() {
         .as_str()
         .expect("resolved_at")
         .to_string();
-    assert!(resolved_at.ends_with('Z'), "RFC 3339 UTC: {resolved_at}");
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(&resolved_at).is_ok() && resolved_at.contains('.'),
+        "RFC 3339 at milliseconds: {resolved_at}"
+    );
     resolved.as_object_mut().unwrap().remove("resolved_at");
+    // A series has no observation time of its own: the tool gives it as null (§4).
+    assert_eq!(
+        resolved.as_object_mut().unwrap().remove("observed_at"),
+        Some(Value::Null)
+    );
     assert_eq!(resolved, seam["resolved"], "summary comes from the row");
     // Summary by default: no points anywhere.
     for entry in resolved["series"].as_array().unwrap() {

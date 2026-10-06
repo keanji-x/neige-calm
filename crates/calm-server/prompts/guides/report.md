@@ -10,7 +10,7 @@ A `track.report_edited` observation carries a block diff: blocks added, removed 
 
 ## Links
 
-`neige_area_ls` gives every report's block ids and the link syntax; read chosen blocks with `neige track cat <report path> --blocks <id>,<id>`. `neige_link_ls` lists links to your report.
+`neige_area_ls` gives every report's block ids and the link syntax; read chosen blocks with `neige track cat <report path> --blocks <id>,<id>`. `neige_link_ls` lists links to your report. Both page: a page may end early at 32 KiB, so follow `next_cursor` until it is null.
 
 ## Sources
 

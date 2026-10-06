@@ -192,12 +192,12 @@ pub async fn list(
         return Err(TrackFsError::PathNotAvailable(if filter.is_search() {
             format!(
                 "{count} reports match, more than the {MAX_REPORTS_PER_LISTING} one listing \
-                 returns; narrow the search with a tighter --name GLOB or a --tag TAG"
+                 returns; narrow the search with a tighter `name` glob or a `tag`"
             )
         } else {
             format!(
                 "{REPORTS_DIR}/ holds {count} reports, more than the {MAX_REPORTS_PER_LISTING} one \
-                 listing returns; narrow it with `neige report find {REPORTS_DIR}/ --name GLOB` or `--tag TAG`"
+                 listing returns; narrow it with neige_report_find: `path` `{REPORTS_DIR}/` and a `name` glob or a `tag`"
             )
         }));
     }

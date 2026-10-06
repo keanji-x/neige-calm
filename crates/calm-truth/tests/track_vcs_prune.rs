@@ -436,13 +436,13 @@ async fn default_log_treats_oldest_retained_commit_as_visible_history_root() {
     let deleted = prune_once(fixture.pool(), &fixture.track_id, 1).await;
     assert_eq!(deleted, 3);
 
-    let log = track_vcs::log(fixture.pool(), &fixture.track_id, None, 1, false)
+    let log = track_vcs::log(fixture.pool(), &fixture.track_id, None, None, 1, false)
         .await
         .expect("default log after prune");
     assert_eq!(log.commits.len(), 1, "log = {log:?}");
     assert_eq!(log.commits[0].hash, head.hash);
     assert_eq!(log.commits[0].changed_paths, vec!["file-3.txt"]);
-    assert!(!log.truncated);
+    assert!(!log.has_more);
 }
 
 #[tokio::test]
@@ -456,7 +456,7 @@ async fn log_reports_a_missing_parent_tree_as_corruption() {
         .await
         .expect("delete parent tree object");
 
-    let err = track_vcs::log(fixture.pool(), &fixture.track_id, None, 1, false)
+    let err = track_vcs::log(fixture.pool(), &fixture.track_id, None, None, 1, false)
         .await
         .expect_err("missing tree for a retained parent must fail loudly");
     let message = err.to_string();
@@ -505,13 +505,13 @@ async fn default_log_finds_changes_beyond_one_thousand_empty_commits() {
     .expect("advance head across empty commits");
     tx.commit().await.expect("commit empty history");
 
-    let log = track_vcs::log(fixture.pool(), &fixture.track_id, None, 1, false)
+    let log = track_vcs::log(fixture.pool(), &fixture.track_id, None, None, 1, false)
         .await
         .expect("default log beyond empty commits");
     assert_eq!(log.commits.len(), 1, "log = {log:?}");
     assert_eq!(log.commits[0].hash, changed.hash);
     assert!(!log.commits[0].changed_paths.is_empty());
-    assert!(log.truncated);
+    assert!(log.has_more);
 }
 
 #[tokio::test]

@@ -335,10 +335,6 @@ const MAIL_COLUMNS: &str = "m.id, m.from_track_id, m.to_track_id, m.reply_to, m.
 const OTHER_TRACK_JOIN: &str = "JOIN tracks t ON t.id = \
      CASE WHEN m.to_track_id = ?1 THEN m.from_track_id ELSE m.to_track_id END";
 
-fn rfc3339(ms: i64) -> Value {
-    json!(crate::time_format::rfc3339_local_ms(ms))
-}
-
 impl MailRow {
     fn summary_json(&self, caller: &str) -> serde_json::Map<String, Value> {
         let incoming = self.to_track_id == caller;
@@ -360,8 +356,8 @@ impl MailRow {
             "summary": self.summary,
             "hop": hop_label(self.hop),
             "state": state,
-            "sent_at": rfc3339(self.sent_at),
-            "read_at": self.read_at.map_or(Value::Null, rfc3339),
+            "sent_at": crate::time_format::at(self.sent_at),
+            "read_at": crate::time_format::at_opt(self.read_at),
         });
         let Value::Object(row) = row else {
             unreachable!("json! of an object literal")

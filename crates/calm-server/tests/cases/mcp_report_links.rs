@@ -246,10 +246,10 @@ async fn outline_gives_a_contract_block_an_empty_heading_but_keeps_its_id() {
 }
 
 #[tokio::test]
-async fn outline_of_a_area_full_of_contract_bearing_reports_has_headroom_under_the_caps() {
+async fn outline_of_an_area_full_of_contract_bearing_reports_pages_at_fifty_tracks() {
     // An area at the realistic ceiling — 51 tracks, each with the contract plus four sections —
-    // still fits the outline response; only the track cap degrades, reported. The
-    // `MAX_RESPONSE_BYTES` and `MAX_BLOCKS_PER_TRACK` branches are untaken here by construction.
+    // fits a page under its byte budget, so the row count ends the first page and the second
+    // holds the one track left. No block is clipped.
     let boot = boot().await;
     let mut seeded = Vec::new();
     for index in 0..50 {
@@ -271,28 +271,33 @@ async fn outline_of_a_area_full_of_contract_bearing_reports_has_headroom_under_t
     // Measured at 17029 bytes; the lower bound catches a fixture broken into emptiness.
     assert!(
         (10 * 1024..=32 * 1024).contains(&bytes),
-        "expected a real, capped payload for 51 contract-bearing tracks; got {bytes} bytes"
+        "expected a real page for 50 contract-bearing tracks; got {bytes} bytes"
     );
-
-    // The track cap IS taken (51 against `MAX_TRACKS = 50`) and reported.
-    let tracks = value["tracks"].as_array().unwrap();
-    assert_eq!(tracks.len(), 50);
-    assert_eq!(value["truncated"]["tracks"], 1);
-    // The byte-truncation branch did not fire.
-    assert!(value["truncated"]["bytes"].is_null());
-
-    // `truncated.blocks` is omitted entirely when empty, so the whole key must be absent.
-    assert!(
-        value["truncated"]["blocks"].is_null(),
-        "nothing was dropped, so `truncated.blocks` must be absent entirely; got {}",
-        value["truncated"]["blocks"]
-    );
+    assert!(value.get("truncated").is_none(), "{value}");
+    let first = value["tracks"].as_array().unwrap();
+    assert_eq!(first.len(), 50);
+    assert_eq!(value["next_cursor"], first[49]["track_id"]);
+    let rest = call_tool(
+        &boot,
+        TOOL_AREA_LS,
+        planner_identity(&boot),
+        json!({ "cursor": value["next_cursor"] }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(rest["next_cursor"], Value::Null, "{rest}");
+    let tracks: Vec<&Value> = first
+        .iter()
+        .chain(rest["tracks"].as_array().unwrap())
+        .collect();
+    assert_eq!(tracks.len(), 51, "50 seeded and the boot track");
 
     // The loop must also prove it looked at the seeded tracks: ids that stopped matching would
     // skip every iteration and still pass.
     let mut verified = 0usize;
     let mut foreign = Vec::new();
     for track in tracks {
+        assert_eq!(track["blocks_truncated"], 0, "{track}");
         let id = track["track_id"].as_str().unwrap();
         if !seeded.iter().any(|seed| seed.id.as_str() == id) {
             foreign.push(id.to_string());
@@ -305,19 +310,11 @@ async fn outline_of_a_area_full_of_contract_bearing_reports_has_headroom_under_t
             "every block of a seeded track is listed ({id})"
         );
     }
-    // 51 tracks (50 seeded + boot) and `MAX_TRACKS` lists the 50 lowest ids, so exactly one falls
-    // off, and which one depends on where the random ids sort.
-    assert!(
-        (seeded.len() - 1..=seeded.len()).contains(&verified),
-        "expected to have checked all {} seeded tracks (at most one displaced by the track cap); \
-         checked {verified}",
-        seeded.len()
-    );
-    assert!(
-        foreign
-            .iter()
-            .all(|id| id.as_str() == boot.track_id.as_str()),
-        "the only listable track this test did not seed is the boot track; got {foreign:?}"
+    assert_eq!(verified, seeded.len(), "every seeded track is on a page");
+    assert_eq!(
+        foreign,
+        [boot.track_id.as_str()],
+        "the only listed track this test did not seed is the boot track"
     );
 }
 
@@ -355,7 +352,11 @@ async fn backlinks_returns_link_from_footnote_definition_with_stable_shape() {
         .unwrap();
     let backlink = &value["backlinks"][0];
     let src_block_id = backlink["src_block_id"].as_str().unwrap();
-    let updated_at = backlink["updated_at"].as_i64().unwrap();
+    let updated_at = backlink["updated_at"].as_str().unwrap();
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(updated_at).is_ok(),
+        "{updated_at}"
+    );
     assert_eq!(
         value,
         json!({
@@ -367,7 +368,7 @@ async fn backlinks_returns_link_from_footnote_definition_with_stable_shape() {
                 "label": "footnote",
                 "updated_at": updated_at,
             }],
-            "truncated": false,
+            "next_cursor": null,
             "skipped_sources": 0,
         })
     );

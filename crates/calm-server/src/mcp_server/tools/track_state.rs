@@ -93,9 +93,9 @@ async fn track_state(
                 "kind": c.kind,
                 "role": role,
                 "sort": c.sort,
-                "created_at": c.created_at,
-                "updated_at": c.updated_at,
-                "runtime": c.runtime.clone(),
+                "created_at": crate::time_format::at(c.created_at),
+                "updated_at": crate::time_format::at(c.updated_at),
+                "runtime": c.runtime.as_ref().map_or(Value::Null, runtime_output),
             })
         })
         .collect();
@@ -121,8 +121,14 @@ async fn track_state(
     let creation = crate::managed_track::creation_identity(&ctx, track.id.as_str())
         .await
         .map_err(|e| RpcError::internal(e.to_string()))?;
+    let mut track_row = json!(track);
+    crate::time_format::rewrite_at(
+        &mut track_row,
+        &["pinned_at", "closed_at", "created_at", "updated_at"],
+    );
+    crate::time_format::rewrite_at(&mut track_row["workspace"], &["frozen_at"]);
     let mut result = json!({
-        "track": track,
+        "track": track_row,
         "caller_card_id": caller.id,
         "cards": cards_json,
         "report_startup_read_required": report_startup_read_required(&cards),
@@ -132,6 +138,23 @@ async fn track_state(
         result["creation_identity"] = identity;
     }
     Ok(result)
+}
+
+/// A card's runtime as the REST card serves it, with its two unix-ms times as `<event>_at`
+/// RFC 3339 strings, always present and `null` when absent (agent-commands §4); the REST card
+/// omits an absent one.
+fn runtime_output(runtime: &crate::model::CardRuntimeView) -> Value {
+    let mut out = json!(runtime);
+    if let Some(object) = out.as_object_mut() {
+        for (from, to) in [
+            ("updated_at_ms", "updated_at"),
+            ("last_turn_completed_ms", "last_turn_completed_at"),
+        ] {
+            let ms = object.remove(from).and_then(|ms| ms.as_i64());
+            object.insert(to.into(), crate::time_format::at_opt(ms));
+        }
+    }
+    out
 }
 
 /// False only for an unwritten report (the header placeholder, or the frozen pre-header body byte for byte) or when the track has no report card.
@@ -330,7 +353,7 @@ async fn track_close(
         Err(_) if let Some(closed_at) = already_closed.get() => *closed_at,
         Err(e) => return Err(crate::mcp_server::framing::calm_error(e)),
     };
-    Ok(json!({ "closed_at": closed }))
+    Ok(json!({ "closed_at": crate::time_format::at(closed) }))
 }
 
 /// A missing thread-mapped card while its daemon is active is a delete-while-active race, surfaced as `InternalError`.

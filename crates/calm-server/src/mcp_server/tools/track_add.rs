@@ -226,7 +226,7 @@ async fn track_add(
         .add(request)
         .await
         .map_err(|refusal| refusal_error(&creator, refusal))?;
-    Ok(json!({ "track_id": track.id, "created_at": track.created_at }))
+    Ok(json!({ "track_id": track.id, "created_at": crate::time_format::at(track.created_at) }))
 }
 
 /// The creator Track is the caller card's own Track, read live.

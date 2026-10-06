@@ -24,6 +24,7 @@ pub trait TrackVcsRepo: Send + Sync + 'static {
         &self,
         track_id: &TrackId,
         path: Option<&str>,
+        after: Option<&CommitRecord>,
         limit: usize,
         include_empty: bool,
     ) -> Result<CommitLog>;
@@ -87,10 +88,11 @@ impl TrackVcsRepo for SqlxTrackVcsRepo {
         &self,
         track_id: &TrackId,
         path: Option<&str>,
+        after: Option<&CommitRecord>,
         limit: usize,
         include_empty: bool,
     ) -> Result<CommitLog> {
-        track_vcs::log(&self.pool, track_id, path, limit, include_empty).await
+        track_vcs::log(&self.pool, track_id, path, after, limit, include_empty).await
     }
 
     async fn commit_record(&self, commit_hash: &str) -> Result<Option<CommitRecord>> {

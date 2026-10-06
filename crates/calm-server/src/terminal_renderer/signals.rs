@@ -28,6 +28,7 @@ pub struct Signal {
 }
 
 impl Signal {
+    /// The tool-result form: `received_at` as RFC 3339 (agent-commands §4).
     pub fn to_json(&self) -> Value {
         json!({
             "seq": self.seq,
@@ -35,7 +36,7 @@ impl Signal {
             "notification_type": self.notification_type,
             "message": self.message,
             "claude_session_id": self.claude_session_id,
-            "received_at_ms": self.received_at_ms,
+            "received_at": crate::time_format::at(self.received_at_ms),
         })
     }
 }

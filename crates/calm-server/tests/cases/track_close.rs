@@ -19,8 +19,10 @@ async fn planner_close_stamps_closed_at_and_refuses_a_lifecycle_key() {
     .await
     .expect("the planner closes its track");
     let closed_at = out["closed_at"]
-        .as_i64()
-        .expect("closed_at is a unix-ms time");
+        .as_str()
+        .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+        .expect("closed_at is an RFC 3339 time")
+        .timestamp_millis();
     let track = boot
         .repo
         .track_get(boot.track_id.as_str())
@@ -54,7 +56,7 @@ async fn planner_close_stamps_closed_at_and_refuses_a_lifecycle_key() {
     )
     .await
     .expect("closing a closed track is a no-op");
-    assert_eq!(again["closed_at"], json!(closed_at));
+    assert_eq!(again["closed_at"], out["closed_at"]);
     let no_event = tokio::time::timeout(std::time::Duration::from_millis(150), rx.recv()).await;
     assert!(no_event.is_err(), "a no-op close emitted {no_event:?}");
 

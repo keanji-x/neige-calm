@@ -86,14 +86,15 @@ pub(crate) async fn ls(
 ) -> Result<Value, RpcError> {
     require_planner(identity)?;
     let entries = match path.map_err(RpcError::invalid_params)? {
-        AreaPath::Root => serde_json::to_value(vec![TrackFsEntry {
-            name: "reports/".into(),
-            kind: "dir".into(),
-            size: None,
-            updated_at: None,
-            extra: serde_json::Map::new(),
-        }])
-        .map(|entries| json!({ "entries": entries })),
+        AreaPath::Root => {
+            return super::track_file::entries_result(vec![TrackFsEntry {
+                name: "reports/".into(),
+                kind: "dir".into(),
+                size: None,
+                updated_at: None,
+                extra: serde_json::Map::new(),
+            }]);
+        }
         AreaPath::Reports => serde_json::to_value(
             area_reports::list(pool(ctx)?, &identity.area_id, &Filter::default())
                 .await

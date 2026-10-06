@@ -161,7 +161,7 @@ pub(crate) async fn report_read(
         "summary": snapshot.summary,
         "schema_version": snapshot.schema_version,
         "doc_rev": snapshot.doc_rev,
-        "updated_at": snapshot.updated_at,
+        "updated_at": crate::time_format::at(snapshot.updated_at),
         "blocks": index,
     });
     if let Some((text, _)) = text {

@@ -43,10 +43,14 @@
   },
   {
     "name": "neige_area_ls",
-    "description_sha256": "4360cabc664acf82bbad5a0208fc0ea6e289007018e3ed1a798219addf8a398d",
+    "description_sha256": "804393cf1ac1b41c07014a1859696ec9b1e12659467685a262cabc821ba51c5a",
     "input_schema": {
       "additionalProperties": false,
-      "properties": {},
+      "properties": {
+        "cursor": {
+          "type": "string"
+        }
+      },
       "type": "object"
     },
     "annotations": {
@@ -61,10 +65,14 @@
   },
   {
     "name": "neige_link_ls",
-    "description_sha256": "9d36b5487437516fdb5dc91024bc7ced7e1ee0a209af183e64d7e22a3c6f99ca",
+    "description_sha256": "3575a4736e718132e74fa64044e1182b82c40210d56e48d92ff4320b2f469283",
     "input_schema": {
       "additionalProperties": false,
-      "properties": {},
+      "properties": {
+        "cursor": {
+          "type": "string"
+        }
+      },
       "type": "object"
     },
     "annotations": {
@@ -1427,18 +1435,16 @@
   },
   {
     "name": "neige_track_log",
-    "description_sha256": "cb4868d442016f91ce5682cab8a9575b6da7a85ed2c74f7e897807bf24038f3f",
+    "description_sha256": "c2cdb7dc9466ba7ad27a61a922cc52476fc8dc62171e9b1e64de142193910357",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
+        "cursor": {
+          "type": "string"
+        },
         "include_empty": {
           "default": false,
           "type": "boolean"
-        },
-        "limit": {
-          "maximum": 200,
-          "minimum": 1,
-          "type": "integer"
         },
         "path": {
           "type": "string"
@@ -1539,7 +1545,7 @@
   },
   {
     "name": "neige_track_status",
-    "description_sha256": "1d00a8579c0109ef5dec79f5ac95a5d89bf382983064aea431c802cac6bd2145",
+    "description_sha256": "0d5c2fd387cbe88cb81875ad28e64a9296e992d241b1a99bee5552d7d5cc652b",
     "input_schema": {
       "additionalProperties": false,
       "properties": {},

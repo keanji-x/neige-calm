@@ -306,34 +306,34 @@ fn tag_maps_path_and_repeated_add_and_remove_in_order() {
 }
 
 #[test]
-fn log_maps_path_limit_and_include_empty() {
+fn log_maps_path_cursor_and_include_empty() {
     let parsed = parse_args(&[
         "track",
         "log",
         "report.md",
-        "--limit",
-        "7",
+        "--cursor",
+        "abc123",
         "--include-empty",
     ])
     .expect("parse");
     assert_eq!(
         parsed.args,
-        json!({ "path": "report.md", "limit": 7, "include_empty": true })
+        json!({ "path": "report.md", "cursor": "abc123", "include_empty": true })
     );
     assert!(!parsed.json);
     assert_eq!(
-        refusal(&["track", "log", "--limit", "seven"]),
-        "track log --limit must be a non-negative integer"
+        refusal(&["track", "log", "--limit", "7"]),
+        "unknown option `--limit` for `neige track log`; expected one of: --cursor, --include-empty, --path, --json"
     );
 }
 
-/// H4: range and non-empty rules belong to the tool (log clamps 0 to 1, an empty `to`/`path` is none,
-/// a blank reason is refused by `neige_task_fail`).
+/// H4: range and non-empty rules belong to the tool (an unminted cursor is refused by the tool, an
+/// empty `to`/`path` is none, a blank reason is refused by `neige_task_fail`).
 #[test]
 fn values_reach_the_tool_unchecked() {
     assert_eq!(
-        tool_args(&["track", "log", "--limit", "0"]),
-        json!({ "limit": 0 })
+        tool_args(&["track", "log", "--cursor", ""]),
+        json!({ "cursor": "" })
     );
     assert_eq!(
         tool_args(&["track", "diff", "a", "--to", "", "--path", ""]),

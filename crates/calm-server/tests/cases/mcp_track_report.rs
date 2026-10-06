@@ -532,8 +532,10 @@ async fn read_returns_initial_seeded_body() {
     assert_eq!(out.get("schema_version").and_then(Value::as_u64), Some(4));
     assert_eq!(out.get("doc_rev").and_then(Value::as_u64), Some(0));
     assert!(
-        out.get("updated_at").and_then(Value::as_i64).unwrap_or(0) > 0,
-        "updated_at is a positive timestamp; got {out:?}",
+        out.get("updated_at")
+            .and_then(Value::as_str)
+            .is_some_and(|at| chrono::DateTime::parse_from_rfc3339(at).is_ok()),
+        "updated_at is an RFC 3339 time; got {out:?}",
     );
 }
 
@@ -614,8 +616,10 @@ async fn write_markdown_replaces_body_and_emits_card_updated() {
     .expect("planner writes successfully");
     let new_updated_at = out
         .get("updated_at")
-        .and_then(Value::as_i64)
-        .expect("updated_at i64");
+        .and_then(Value::as_str)
+        .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+        .expect("updated_at is RFC 3339")
+        .timestamp_millis();
     assert_eq!(out.get("doc_rev").and_then(Value::as_u64), Some(1));
 
     let envs = sub.await.expect("collector ok");

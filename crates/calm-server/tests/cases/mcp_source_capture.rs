@@ -156,7 +156,7 @@ async fn capture_call_stores_the_joined_text_blocks_and_anchors() {
     assert!(
         receipt["matched_call"]["completed_at"]
             .as_str()
-            .is_some_and(|t| t.ends_with('Z')),
+            .is_some_and(|t| chrono::DateTime::parse_from_rfc3339(t).is_ok() && t.contains('.')),
         "{receipt}"
     );
 

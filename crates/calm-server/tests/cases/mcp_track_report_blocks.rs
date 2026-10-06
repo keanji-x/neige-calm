@@ -528,7 +528,7 @@ async fn upsert_new_block_appends_and_emits_both_events() {
         .to_string();
     assert!(id.starts_with("b_"));
     assert_eq!(out.get("rev").and_then(Value::as_u64), Some(1));
-    assert!(out.get("updated_at").and_then(Value::as_i64).is_some());
+    assert!(out.get("updated_at").and_then(Value::as_str).is_some());
     assert_eq!(out.get("doc_rev").and_then(Value::as_u64), Some(1));
 
     let envs = sub.await.expect("collector ok");

@@ -873,8 +873,8 @@ async fn history_view_of_coloured_output_pads_short_lines() {
     let rows = live["rows"].as_u64().unwrap() as usize;
     assert!(history_rows >= 1, "{live}");
     // A running program: a capture instant, no exit instant.
-    assert!(live["observed_at_ms"].is_i64(), "{live}");
-    assert_eq!(live["exited_at_ms"], Value::Null, "{live}");
+    assert!(live["observed_at"].is_string(), "{live}");
+    assert_eq!(live.get("exited_at"), Some(&Value::Null), "{live}");
     for offset in [1, 4, history_rows] {
         let history = h
             .ok(

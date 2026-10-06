@@ -546,7 +546,7 @@ class CollectorTests(unittest.TestCase):
             state = row(1)["params"]["item"]["result"]["structuredContent"]
             wait = {"mode": "signal", "outcome": "signal", "waited_ms": 900, "settled": repaint == "settled",
                     "signal": {"seq": 7, "event": "stop", "notification_type": None, "message": None,
-                               "received_at_ms": 1780977421069}}
+                               "received_at": "2026-06-09T11:57:01.069+08:00"}}
             if repaint is not None:
                 wait["repaint"] = {"outcome": repaint, "waited_ms": 812}
             if conditions is not None:
@@ -611,14 +611,14 @@ class CollectorTests(unittest.TestCase):
     def signals(hooks_seen=True, events=()):
         return {"hooks_seen": hooks_seen, "last_seq": 7, "since_previous_observation": [
             {"seq": 7 - len(events) + index + 1, "event": event, "notification_type": None,
-             "message": None, "received_at_ms": 1780977421069} for index, event in enumerate(events)]}
+             "message": None, "received_at": "2026-06-09T11:57:01.069+08:00"} for index, event in enumerate(events)]}
 
     def signal_wait_state(self, outcome="signal", event="Stop"):
         state = row(1)["params"]["item"]["result"]["structuredContent"]
         wait = {"mode": "signal", "outcome": outcome, "waited_ms": 812, "settled": True}
         if outcome == "signal":
             wait["signal"] = {"seq": 7, "event": event, "notification_type": None, "message": None,
-                              "received_at_ms": 1780977421069}
+                              "received_at": "2026-06-09T11:57:01.069+08:00"}
         state.update({"wait": wait, "signals": self.signals(True, (event,))})
         return state
 

@@ -688,8 +688,8 @@ fn task_list_entry(t: &Task) -> Value {
         "gate": gate,
         "worker_card_id": t.worker_card_id,
         "gate_result": gate_result,
-        "created_at_ms": t.created_at_ms,
-        "finished_at_ms": t.finished_at_ms,
+        "created_at": crate::time_format::at(t.created_at_ms),
+        "finished_at": crate::time_format::at_opt(t.finished_at_ms),
     });
     let instruction_field = if t.kind == TaskKind::Terminal {
         "command"

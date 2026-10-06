@@ -149,7 +149,9 @@ async fn write_markdown(
         &blocks,
         &every,
     );
-    Ok(json!({ "updated_at": card.updated_at, "doc_rev": doc_rev, "warnings": warnings }))
+    Ok(
+        json!({ "updated_at": crate::time_format::at(card.updated_at), "doc_rev": doc_rev, "warnings": warnings }),
+    )
 }
 
 /// The one-call update: the whole op list lands as one [`ReportDocOp::Batch`] inside one persist
@@ -243,7 +245,7 @@ async fn commit(
         })
         .collect::<Vec<_>>();
     Ok(json!({
-        "updated_at": card.updated_at,
+        "updated_at": crate::time_format::at(card.updated_at),
         "doc_rev": doc_rev,
         "blocks": blocks,
         "warnings": warnings,

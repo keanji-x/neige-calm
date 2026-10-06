@@ -1,4 +1,4 @@
-//! The one read-side step both readers (`neige_report_read` and `GET /api/tracks/{id}/report/series/{block_id}`) share, so the route returns the same bytes the read does.
+//! The one read-side step both readers (`neige_report_read` and `GET /api/tracks/{id}/report/series/{block_id}`) share, so the route returns the same bytes the read does, except that each passes its own `resolved_at` format (REST: UTC seconds; the tool: agent-commands §4).
 //! Nothing here calls a plugin and nothing writes the database: a miss is an in-memory `enqueue`.
 
 use std::sync::Arc;
@@ -18,6 +18,7 @@ pub(crate) async fn hydrate_chart_series(
     block: &ReportBlock,
     detail: Detail,
     scope: Option<&TrackPluginScope>,
+    format_at: fn(i64) -> Value,
 ) -> Value {
     let request = match SeriesRequest::from_payload(&block.payload) {
         Ok(request) => request,
@@ -25,7 +26,7 @@ pub(crate) async fn hydrate_chart_series(
             return Resolved::Pending {
                 reason: Some(format!("payload does not derive a request: {error}")),
             }
-            .to_json();
+            .to_json(format_at);
         }
     };
     let resolver = &ctx.series_resolver;
@@ -71,7 +72,7 @@ pub(crate) async fn hydrate_chart_series(
             *reason = Some(miss);
         }
     }
-    let mut out = resolved.to_json();
+    let mut out = resolved.to_json(format_at);
     out["view"] = Value::String(request.view.clone());
     out["field"] = Value::String(request.field.clone());
     out["period"] = Value::String(request.period.clone());

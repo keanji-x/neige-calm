@@ -359,7 +359,8 @@ async fn track_add_records_provenance_not_parent() {
 
     // `repo.track_get` reads `TRACK_SELECT_COLUMNS`; the detail route reads the `w.` list.
     let track = boot.repo.track_get(&track_id).await.unwrap().unwrap();
-    assert_eq!(out["created_at"], json!(track.created_at));
+    let created_at = chrono::DateTime::parse_from_rfc3339(out["created_at"].as_str().unwrap());
+    assert_eq!(created_at.unwrap().timestamp_millis(), track.created_at);
     assert_eq!(track.creator_track_id.as_deref(), Some(creator.as_str()));
     assert_eq!(track.creator_key.as_deref(), Some("invest-US-SPY-1"));
     assert_eq!(track.recipe_id.as_deref(), Some(boot.recipe_id.as_str()));

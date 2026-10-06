@@ -18,7 +18,7 @@ use crate::plugin_results::{ARGS_CANON_VERSION, Recorded, ResultStatus, args_sha
 use crate::report_sources::{
     self, Detail, MAX_BODY_BYTES, MAX_BODY_BYTES_PER_TRACK, MAX_CONTENT_ID_BYTES,
     MAX_PUBLISHED_AT_BYTES, MAX_SOURCES_PER_TRACK, MAX_TITLE_BYTES, MAX_URL_BYTES, NewSource,
-    Origin, Provenance, Quote, SourceRow, append_quotes, captured_at_text, store,
+    Origin, Provenance, Quote, SourceRow, append_quotes, store,
 };
 use calm_types::report_source_links::is_source_id;
 
@@ -238,7 +238,7 @@ async fn capture_call(
     let matched_call = json!({
         "tool": recorded.registry_name(),
         "args": matched_args,
-        "completed_at": captured_at_text(recorded.completed_at),
+        "completed_at": crate::time_format::at(recorded.completed_at),
     });
     let origin = Origin::Plugin {
         plugin_id,
@@ -551,7 +551,7 @@ pub fn list_entry(row: &SourceRow) -> Value {
             .map(|Quote { id, text, .. }| json!({ "id": id, "text": text }))
             .collect::<Vec<_>>(),
         "body_bytes": row.body_bytes,
-        "captured_at": captured_at_text(row.captured_at),
+        "captured_at": crate::time_format::at(row.captured_at),
     });
     let object = entry.as_object_mut().expect("entry is an object");
     if let Some(content_id) = row.origin.content_id() {

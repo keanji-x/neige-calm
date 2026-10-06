@@ -367,7 +367,10 @@ async fn hook_post_for_a_terminal_card_lands_in_the_ring_and_never_projects_stat
     assert_eq!(listed[0]["seq"], before + 1);
     assert_eq!(listed[0]["message"], "done now");
     assert_eq!(listed[0]["claude_session_id"], "posted-session");
-    assert!(listed[0]["received_at_ms"].as_i64().unwrap() > 0);
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(listed[0]["received_at"].as_str().unwrap()).is_ok(),
+        "{view}"
+    );
     assert_eq!(view["wait"]["baseline_signal_seq"], before);
     let again = h
         .ok("neige_terminal_read", json!({"terminal_id":terminal}))

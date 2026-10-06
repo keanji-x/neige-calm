@@ -1,24 +1,33 @@
 //! Planner-only discovery reads for track-report links.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     read_only_annotations,
 };
+use crate::mcp_server::tools::paging::{self, Page};
 use crate::model::CardRole;
 use crate::track_report_read::load_report_read_snapshot;
 
 pub const TOOL_AREA_LS: &str = "neige_area_ls";
 pub const TOOL_LINK_LS: &str = "neige_link_ls";
 
-const MAX_TRACKS: usize = 50;
+const TRACKS_PER_PAGE: usize = 50;
 const MAX_BLOCKS_PER_TRACK: usize = 40;
-const MAX_RESPONSE_BYTES: usize = 32 * 1024;
+const LINKS_PER_PAGE: usize = 100;
+
+/// The one input of both listings: the previous page's `next_cursor`.
+fn cursor_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": { "cursor": { "type": "string" } },
+        "additionalProperties": false
+    })
+}
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(outline_descriptor(), wrap(area_outline));
@@ -46,7 +55,7 @@ fn outline_descriptor() -> ToolDescriptor {
         description: include_str!("../../../prompts/tools/neige_area_ls.md")
             .trim_end()
             .to_string(),
-        input_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+        input_schema: cursor_schema(),
         annotations: Some(read_only_annotations()),
         roles: &[CardRole::Planner],
         listed_for: &[CardRole::Planner],
@@ -59,7 +68,7 @@ fn backlinks_descriptor() -> ToolDescriptor {
         description: include_str!("../../../prompts/tools/neige_link_ls.md")
             .trim_end()
             .to_string(),
-        input_schema: json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+        input_schema: cursor_schema(),
         annotations: Some(read_only_annotations()),
         roles: &[CardRole::Planner],
         listed_for: &[CardRole::Planner],
@@ -69,19 +78,27 @@ fn backlinks_descriptor() -> ToolDescriptor {
 async fn area_outline(
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
-    _args: Value,
+    args: Value,
 ) -> Result<Value, RpcError> {
+    let cursor = paging::cursor_arg(&args, TOOL_AREA_LS)?;
     let mut cards = ctx
         .repo
         .track_report_cards_by_area(identity.area_id.as_str())
         .await
         .map_err(|error| RpcError::internal(format!("neige_area_ls: {error}")))?;
     cards.sort_by(|left, right| left.track_id.as_str().cmp(right.track_id.as_str()));
+    if let Some(cursor) = cursor
+        && !cards.iter().any(|card| card.track_id.as_str() == cursor)
+    {
+        return Err(paging::foreign_cursor(TOOL_AREA_LS, cursor));
+    }
 
-    let total_tracks = cards.len();
-    let mut tracks = Vec::new();
-    let mut block_truncations = BTreeMap::new();
-    for card in cards.into_iter().take(MAX_TRACKS) {
+    // Keyset on the track id: the page resumes after the last row's track.
+    let mut page = Page::new(TRACKS_PER_PAGE);
+    for card in cards
+        .into_iter()
+        .filter(|card| cursor.is_none_or(|after| card.track_id.as_str() > after))
+    {
         let track = ctx
             .repo
             .track_get(card.track_id.as_str())
@@ -91,10 +108,6 @@ async fn area_outline(
         let snapshot = load_report_read_snapshot(ctx.repo.as_ref(), card.id.as_str())
             .await
             .map_err(|error| RpcError::internal(format!("neige_area_ls: {error}")))?;
-        let omitted = snapshot.blocks.len().saturating_sub(MAX_BLOCKS_PER_TRACK);
-        if omitted > 0 {
-            block_truncations.insert(track.id.as_str().to_string(), omitted);
-        }
         let blocks: Vec<Value> = snapshot
             .blocks
             .iter()
@@ -107,88 +120,19 @@ async fn area_outline(
                 })
             })
             .collect();
-        tracks.push(json!({
+        let row = json!({
             "track_id": track.id,
             "title": track.title,
-            "closed_at": track.closed_at,
+            "closed_at": crate::time_format::at_opt(track.closed_at),
             "blocks": blocks,
-        }));
-    }
-
-    let mut omitted_tracks = total_tracks.saturating_sub(MAX_TRACKS);
-    let initial = outline_response(tracks.clone(), omitted_tracks, &block_truncations, false);
-    let mut estimated_bytes =
-        serde_json::to_vec(&initial).map_or(usize::MAX, |serialized| serialized.len());
-    let bytes_truncated = estimated_bytes > MAX_RESPONSE_BYTES;
-    // Reserve room for truncation metadata.
-    let target_bytes = MAX_RESPONSE_BYTES.saturating_sub(4096);
-    if bytes_truncated {
-        for track in tracks.iter_mut().rev() {
-            let Some(track_id) = track
-                .get("track_id")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-            else {
-                continue;
-            };
-            let Some(blocks) = track.get_mut("blocks").and_then(Value::as_array_mut) else {
-                continue;
-            };
-            while estimated_bytes > target_bytes {
-                let Some(block) = blocks.pop() else {
-                    break;
-                };
-                estimated_bytes = estimated_bytes.saturating_sub(
-                    serde_json::to_vec(&block).map_or(0, |serialized| serialized.len() + 1),
-                );
-                *block_truncations.entry(track_id.clone()).or_default() += 1;
-            }
-        }
-        while estimated_bytes > target_bytes {
-            let Some(track) = tracks.pop() else {
-                break;
-            };
-            estimated_bytes = estimated_bytes.saturating_sub(
-                serde_json::to_vec(&track).map_or(0, |serialized| serialized.len() + 1),
-            );
-            omitted_tracks += 1;
-            if let Some(track_id) = track.get("track_id").and_then(Value::as_str) {
-                block_truncations.remove(track_id);
-            }
+            "blocks_truncated": snapshot.blocks.len().saturating_sub(MAX_BLOCKS_PER_TRACK),
+        });
+        if !page.push(track.id.as_str().to_string(), row) {
+            break;
         }
     }
-    let response = outline_response(tracks, omitted_tracks, &block_truncations, bytes_truncated);
-    if serde_json::to_vec(&response).map_or(usize::MAX, |serialized| serialized.len())
-        > MAX_RESPONSE_BYTES
-    {
-        return Err(RpcError::internal(
-            "neige_area_ls: truncation metadata exceeds response byte cap",
-        ));
-    }
-    Ok(response)
-}
-
-fn outline_response(
-    tracks: Vec<Value>,
-    omitted_tracks: usize,
-    block_truncations: &BTreeMap<String, usize>,
-    bytes_truncated: bool,
-) -> Value {
-    let mut response = Map::from_iter([("tracks".into(), Value::Array(tracks))]);
-    let mut truncated = Map::new();
-    if omitted_tracks > 0 {
-        truncated.insert("tracks".into(), json!(omitted_tracks));
-    }
-    if !block_truncations.is_empty() {
-        truncated.insert("blocks".into(), json!(block_truncations));
-    }
-    if bytes_truncated {
-        truncated.insert("bytes".into(), Value::Bool(true));
-    }
-    if !truncated.is_empty() {
-        response.insert("truncated".into(), Value::Object(truncated));
-    }
-    Value::Object(response)
+    let (tracks, next_cursor) = page.finish(false);
+    Ok(json!({ "tracks": tracks, "next_cursor": next_cursor }))
 }
 
 /// The refusal of a block selection naming `id`, which is no block of `blocks`: the report's blocks
@@ -288,15 +232,28 @@ fn truncate_chars(value: &str, limit: usize) -> String {
 async fn report_backlinks(
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
-    _args: Value,
+    args: Value,
 ) -> Result<Value, RpcError> {
+    let cursor = paging::cursor_arg(&args, TOOL_LINK_LS)?;
+    let after = cursor
+        .map(|cursor| {
+            crate::report_backlinks::parse_cursor(cursor)
+                .ok_or_else(|| paging::foreign_cursor(TOOL_LINK_LS, cursor))
+        })
+        .transpose()?;
     let track_id = identity
         .track_id
         .ok_or_else(|| RpcError::forbidden("neige_link_ls requires a track-scoped caller"))?;
-    let page = crate::report_backlinks::backlinks_for_track(ctx.repo.as_ref(), &track_id)
-        .await
-        .map_err(|error| RpcError::internal(format!("neige_link_ls: {error}")))?;
-    Ok(crate::report_backlinks::mcp_payload(&page))
+    crate::report_backlinks::mcp_page(
+        ctx.repo.as_ref(),
+        &track_id,
+        after,
+        LINKS_PER_PAGE,
+        paging::PAGE_BYTES,
+    )
+    .await
+    .map_err(|error| RpcError::internal(format!("neige_link_ls: {error}")))?
+    .ok_or_else(|| paging::foreign_cursor(TOOL_LINK_LS, cursor.unwrap_or_default()))
 }
 
 #[cfg(test)]

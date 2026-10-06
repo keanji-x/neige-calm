@@ -95,7 +95,7 @@ async fn dispatch(
                 .then(|| rows[workspace_reports::PAGE_SIZE - 1].0.clone());
             rows.truncate(workspace_reports::PAGE_SIZE);
             Ok(
-                json!({"reports":rows.into_iter().map(|(track_id,title,area_id,area_name,closed_at)|json!({"track_id":track_id,"title":title,"area_id":area_id,"area_name":area_name,"closed_at":closed_at})).collect::<Vec<_>>(),"next_cursor":next_cursor,"timezone":zone.name()}),
+                json!({"reports":rows.into_iter().map(|(track_id,title,area_id,area_name,closed_at)|json!({"track_id":track_id,"title":title,"area_id":area_id,"area_name":area_name,"closed_at":crate::time_format::at_opt(closed_at)})).collect::<Vec<_>>(),"next_cursor":next_cursor,"timezone":zone.name()}),
             )
         }
         TOOL_WORKSPACE_CAT => {
@@ -137,12 +137,18 @@ async fn dispatch(
         }
         TOOL_WORKSPACE_LOG => {
             let query: ReportEditsQuery = serde_json::from_value(args).map_err(invalid)?;
-            serde_json::to_value(
-                workspace_reports::edits(pool, &query, zone)
-                    .await
-                    .map_err(error)?,
-            )
-            .map_err(|e| RpcError::internal(e.to_string()))
+            let page = workspace_reports::edits(pool, &query, zone)
+                .await
+                .map_err(error)?;
+            // The REST page keeps `at` in unix ms; the tool names the time `edited_at` (§4).
+            let edits: Vec<Value> = page
+                .edits
+                .into_iter()
+                .map(|entry| {
+                    json!({"event_id": entry.event_id, "edited_at": crate::time_format::at(entry.at), "edit": entry.edit})
+                })
+                .collect();
+            Ok(json!({"edits": edits, "next_cursor": page.next_cursor}))
         }
         _ => Err(RpcError::internal(
             "unregistered workspace report operation",

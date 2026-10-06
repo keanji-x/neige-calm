@@ -140,8 +140,8 @@ pub(super) fn summary(entry: &Value) -> Value {
                 "/priority",
                 "/gate",
                 "/worker_card_id",
-                "/created_at_ms",
-                "/finished_at_ms",
+                "/created_at",
+                "/finished_at",
             ]
             .into_iter()
             .map(str::to_owned),

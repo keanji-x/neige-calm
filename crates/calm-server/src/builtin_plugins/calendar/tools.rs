@@ -54,13 +54,15 @@ struct Rm {
     entry_id: String,
     expected_version: i64,
 }
-/// The tools name an entry's id `entry_id` (§4); the stored entry and the REST payload keep `id`.
+/// The tools name an entry's id `entry_id` and give its times as RFC 3339 strings (§4); the stored
+/// entry and the REST payload keep `id` and unix ms.
 fn entry_output(mut entry: Value) -> Value {
     if let Some(obj) = entry.as_object_mut()
         && let Some(id) = obj.remove("id")
     {
         obj.insert("entry_id".into(), id);
     }
+    crate::time_format::rewrite_at(&mut entry, &["created_at", "updated_at"]);
     entry
 }
 pub fn register(registry: &mut ToolRegistry) {

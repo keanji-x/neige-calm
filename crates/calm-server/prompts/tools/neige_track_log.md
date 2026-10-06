@@ -1,1 +1,1 @@
-Hidden drill-in: list recent track-vcs commits for the current MCP-bound track. Commits without file changes are hidden by default. Arguments: `{ path?, limit?, include_empty? }`.
+Hidden drill-in: list track-vcs commits of the current MCP-bound track, newest first, 50 per page (fewer when a page reaches 32 KiB). Commits without file changes are hidden by default. Arguments: `{ path?, cursor?, include_empty? }`. Returns `{ commits: [{ hash, parent_hash, event_id, created_at, message, changed_paths }], next_cursor }`; pass next_cursor as cursor for the next page.

@@ -93,9 +93,9 @@ async fn cli_output_equals_direct_tool_call() {
             Render::Log,
         ),
         (
-            vec!["track", "log", "--limit", "0", "--include-empty"],
+            vec!["track", "log", "--cursor", &c2, "--include-empty"],
             "neige_track_log",
-            json!({ "limit": 0, "include_empty": true }),
+            json!({ "cursor": c2, "include_empty": true }),
             Render::Log,
         ),
         (
@@ -148,6 +148,110 @@ async fn cli_output_equals_direct_tool_call() {
         cat.starts_with("{\n  \""),
         "track.json is pretty-printed: {cat}"
     );
+}
+
+/// #2087 C2 (§5): `neige_track_log` pages 50 commits at a time by `cursor`, newest first, and
+/// never drops a commit; `limit` and `truncated` are gone and a cursor it did not mint is refused.
+#[tokio::test]
+async fn track_log_pages_by_cursor_without_losing_a_commit() {
+    let boot = boot_with_role(CardRole::Planner).await;
+    seed_linear_commits(&boot.repo.sqlite_pool().unwrap(), &boot.track_id, 120).await;
+    let (mut seen, mut cursor, mut sizes) = (Vec::new(), None::<String>, Vec::new());
+    loop {
+        let args = cursor
+            .as_ref()
+            .map_or(json!({}), |c| json!({ "cursor": c }));
+        let page = direct_ok(&boot, "neige_track_log", args).await;
+        assert!(page.get("truncated").is_none(), "{page}");
+        let commits = page["commits"].as_array().unwrap();
+        sizes.push(commits.len());
+        seen.extend(
+            commits
+                .iter()
+                .map(|c| c["hash"].as_str().unwrap().to_string()),
+        );
+        match &page["next_cursor"] {
+            Value::String(next) => {
+                assert_eq!(Some(next.as_str()), seen.last().map(String::as_str));
+                cursor = Some(next.clone());
+            }
+            Value::Null => break,
+            other => panic!("next_cursor {other}"),
+        }
+    }
+    assert_eq!(sizes, [50, 50, 20]);
+    let expected: Vec<String> = (0..120).rev().map(|index| commit(&boot, index)).collect();
+    assert_eq!(seen, expected, "every commit once, newest first");
+
+    let (text, stderr, exit) = cli(&boot, &["track", "log", "--cursor", &commit(&boot, 20)]).await;
+    assert_eq!((exit, stderr.as_str()), (0, ""), "{text}");
+    assert_eq!(
+        text.lines().count(),
+        21,
+        "20 commits, then the cursor line: {text}"
+    );
+    assert!(text.ends_with("next_cursor: null\n"), "{text}");
+
+    for (args, refusal) in [
+        (json!({ "cursor": "nope" }), "names no row of this listing"),
+        (json!({ "limit": 5 }), "unknown argument `limit`"),
+    ] {
+        let resp = direct(&boot, "neige_track_log", args).await;
+        assert_eq!(resp["error"]["code"], -32602, "{resp}");
+        let message = resp["error"]["message"].as_str().unwrap();
+        assert!(
+            message.starts_with("neige_track_log: ") && message.contains(refusal),
+            "{message}"
+        );
+    }
+}
+
+/// A `neige_track_log` page also ends early at its 32 KiB byte budget, and the next page resumes
+/// after the last commit it emitted.
+#[tokio::test]
+async fn track_log_page_ends_early_at_the_byte_budget() {
+    let boot = boot_with_role(CardRole::Planner).await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    seed_linear_commits(&pool, &boot.track_id, 50).await;
+    sqlx::query("UPDATE track_vcs_commits SET message = ?1 WHERE track_id = ?2")
+        .bind("m".repeat(1024))
+        .bind(boot.track_id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (mut seen, mut cursor, mut sizes) = (Vec::new(), None::<String>, Vec::new());
+    loop {
+        let args = cursor
+            .as_ref()
+            .map_or(json!({}), |c| json!({ "cursor": c }));
+        let page = direct_ok(&boot, "neige_track_log", args).await;
+        let commits = page["commits"].as_array().unwrap();
+        let bytes: usize = commits
+            .iter()
+            .map(|c| serde_json::to_vec(c).unwrap().len() + 1)
+            .sum();
+        assert!(bytes <= 32 * 1024, "{bytes} bytes");
+        sizes.push(commits.len());
+        seen.extend(
+            commits
+                .iter()
+                .map(|c| c["hash"].as_str().unwrap().to_string()),
+        );
+        match &page["next_cursor"] {
+            Value::String(next) => {
+                assert_eq!(Some(next.as_str()), seen.last().map(String::as_str));
+                cursor = Some(next.clone());
+            }
+            Value::Null => break,
+            other => panic!("next_cursor {other}"),
+        }
+    }
+    assert!(
+        sizes.len() > 1 && sizes[0] < 50,
+        "the byte budget ended the page: {sizes:?}"
+    );
+    let expected: Vec<String> = (0..50).rev().map(|index| commit(&boot, index)).collect();
+    assert_eq!(seen, expected, "every commit once, newest first");
 }
 
 #[tokio::test]

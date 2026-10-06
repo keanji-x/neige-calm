@@ -1,8 +1,8 @@
 # Agent command and MCP naming convention
 
 Status: normative for every new or changed kernel tool, `neige` command and native plugin tool.
-The served surface conforms as of the merge of slices B0–B5 and the C1 cleanup, except the gaps
-§9 records. Appendices A–B record the conformance work and the PR of each slice; Appendix C
+The served surface conforms as of the merge of slices B0–B5 and the C1 and C2 cleanups, except the
+gaps §9 records. Appendices A–B record the conformance work and the PR of each slice; Appendix C
 records the owner's decisions (2026-10-04; revised the same day to the `_` separator, C9; B5
 descoped 2026-10-05, C10). Builds on #2003 (`docs/architecture/2003-cli-mcp-naming.md`: brand,
 grammar, mechanical CLI) and #2053 (Worker report actions). Issue: #2087.
@@ -138,6 +138,7 @@ Decisions, one line each:
 | `summary` / `title` | one-line summary / display name |
 | `path` | a track-relative view path (`report.md`, `area/reports/x.md`) |
 | `cursor` / `next_cursor` | paging: pass the previous result's `next_cursor` (an opaque **string**) as `cursor` |
+| `<event>_at` | a time in a result: an RFC 3339 string with an explicit offset at millisecond precision (`created_at`, `closed_at`) |
 | `limit` | the most rows to return, where a tool offers it |
 | `from` / `to` | range endpoints; a window is half-open `[from, to)` |
 | `until` | the inclusive last date of a recurrence only (RFC 5545 `UNTIL`) |
@@ -149,6 +150,12 @@ Decisions, one line each:
   `isError`, a fixed protocol), JSON Schema keywords, and opaque payloads (a block's `payload`, a
   plugin's result).
 - **Spelling:** American English (`canceled`, `color`).
+- **Times (C2):** an event time is written at the server's local offset
+  (`time_format::at`, `2026-10-07T09:00:00.000+08:00`), never as integer milliseconds, a `_ms`
+  key or UTC `Z`; an absent time is `null`. A calendar schedule's `start` and `end` keep the
+  entry's own zone offset. A caller-supplied time is returned as given (§9). A tool converts at
+  its boundary: REST and WS structs it shares (`TrackBacklink`, `CalendarEntry`, the track row)
+  keep integer milliseconds, because `fe` reads them.
 - **Flags:** a boolean names the extra effect it adds when true and defaults to false (`dry_run`,
   `include_empty`, `with_markers`, `claim`, `read`). A boolean never switches the operation; that
   is a verb. On the CLI a flag takes no value.
@@ -166,8 +173,11 @@ Decisions, one line each:
   returns its post-state (ids, new revision, timestamps); with none, `{"ok": true}`. `ok` is never
   false: a refusal is an error.
 - **Lists:** rows under a plural key. A paged list always carries `next_cursor` (`null` on the last
-  page). An unpaged list over its cap is refused with a hint to narrow it and never truncated
-  silently. `<field>_truncated` marks content clipped inside one row.
+  page): the last row's sort key, so a page has a fixed row count and may end early at a byte
+  budget, never dropping a row (`mcp_server::tools::paging`). An unpaged list over its cap is
+  refused with a hint to narrow it, worded in input keys, and never truncated silently.
+  `<field>_truncated` marks content clipped inside one row (`neige_area_ls`'s `blocks_truncated`
+  counts the blocks past 40).
 
 Agent-facing JSON-RPC codes, one meaning each:
 
@@ -288,7 +298,8 @@ Adding or changing a tool or command:
    exception (#2130, owner): `neige_mail_send` must be listed to be discoverable, so S1 trimmed
    restated schema facts from eight Planner descriptions (164 B) and raised
    `planner_tool_surface_fits_its_byte_budget`'s cap by the remaining 430 B, to 30,430 B. #2209
-   lowered it to the measured 30,120 B; C1 measured 30,118 B across 33 Planner tools.
+   lowered it to the measured 30,120 B; C1 measured 30,118 B across 33 Planner tools, and C2
+   30,116 B after `cursor` on `area_ls` and `link_ls`.
 
 Enforced by tests (existing): `kernel_tool_names_follow_the_grammar` (B0 changed it to §2's
 `neige_<word>_<word>`), `every_option_is_its_schema_key`, `prompt_neige_mentions_name_served_commands` (H8),
@@ -330,6 +341,17 @@ Added by the slices (registry-driven, Appendix B):
 - `shipped_recipes_name_plugin_tools_by_their_minted_names` (C1): every `plugins/*/*recipe.md`
   and built-in template names a plugin tool by its minted name; a raw name stays only as a
   `neige://plugin/<id>/<raw>` segment.
+- `tool_result_times_are_rfc3339_with_an_offset` (C2): real report, link, task, source, track
+  log, `track_ls` (`/`, `cards/`, `runs/`), status and close calls through the kernel socket
+  return every `_at` key, recursively, as null or `YYYY-MM-DDTHH:MM:SS.mmm±HH:MM`, and no
+  `_at_ms` key (`payload` and `published_at` skipped); it names the times it must find, and the
+  absent ones it must find as `null`.
+- `area_ls_pages_end_at_the_byte_budget_and_lose_no_track`,
+  `tool_pages_return_every_link_once_across_sources`,
+  `track_log_pages_by_cursor_without_losing_a_commit` and
+  `track_log_page_ends_early_at_the_byte_budget` (C2): following `next_cursor` returns every row
+  once, in order, a page ends at its row count or byte budget, and a cursor that names no row of
+  the listing is refused (-32602, "start again without cursor").
 
 ## 9. Known gaps
 
@@ -351,7 +373,29 @@ Added by the slices (registry-driven, Appendix B):
   (`neige_report_commit: track_report: …`); the tag names the module, not a tool.
 - A nested object's unknown key (`ops[]`, `call`, `manual`, calendar `task`) is refused by its
   tool, not by the registry.
-- Paged tools have fixed page sizes; `limit` is not offered on them.
+- Paged tools have fixed page sizes; `limit` is not offered on them (`neige_track_log` dropped it
+  in C2: no prompt, guide, template or recipe named it).
+- `source_capture` and `source_ls` return `published_at` as the caller gave it (a date or an RFC
+  3339 time), not respelled (§4 times).
+- The terminal `wait.signal_at_ms` is an elapsed duration (ms after the wait began), not a time,
+  so it keeps its unit suffix; `observed_at`, `exited_at` and a signal's `received_at` are times.
+- `neige_track_status` returns the REST card's `runtime` with `updated_at_ms` and
+  `last_turn_completed_ms` respelled `updated_at` and `last_turn_completed_at`, and
+  `neige_workspace_log` names a REST edit's `at` `edited_at`. The series route keeps
+  `resolved_at` in UTC seconds; `neige_report_read` gives the same instant at the server offset.
+- A full `resolve` read's `data` and `table` carry the plugin's unit as stored (`observedAt` in
+  ms), like `payload`. `neige_track_cat` file contents (`track.json`, `runs/<id>.json`, …) are
+  file views and keep the REST representation (unix ms).
+- `neige_report_read` gives every hydrated series, table and view cell both `resolved_at` and
+  `observed_at`, `null` on a branch without that time (pending, unavailable, no snapshot); the
+  REST series route omits an absent one.
+- A `neige_track_ls` `runs/` row's `verdict.at` is a time named `at`, as in the REST entry; its
+  value is RFC 3339 like every other time.
+- C2 swept for the class by instrumenting `ToolResult` over the whole `calm-server` suite: the
+  only integers left under an `_at` or `_ms` key are the terminal durations `wait.waited_ms`,
+  `wait.repaint.waited_ms` and `wait.signal_at_ms`.
+- `neige_link_ls`'s cursor counts links inside one source report, so an edit to that report
+  between two pages can repeat or skip one of its links.
 - A connector tool whose `mcp__neige__plugin_<id>_<tool>` exceeds 128 bytes is still cut and
   hash-suffixed by Codex (#2003 K1); `served_tool_names_fit_the_codex_cap` covers kernel and
   native tools only.
@@ -428,6 +472,8 @@ templates, G goldens, F `fe`, T tests, R recipes.
 | forwarder exit 5 for a non-UTF-8 argument (`neige-cli/src/main.rs:70`) | 2 | — | T (`neige-cli/tests/forwarder.rs`), `1801` doc | B4 #2233 |
 | `ratify_request`, `user_notify` | `user_ask` | history events kept, not rewritten | P, templates, F, T | #2209 #2263 |
 | `dev_publish`, `calendar_add` / `ls` / `set` / `rm` (compiled built-in tools) | `plugin_gitforge_publish`, `plugin_calendar_add` / `ls` / `set` / `rm` | rewritten by 0151 | P, templates, R, F `DEV_PUBLISH_TOOL`, T | #2227 #2274 |
+| output times: integer ms (area, link, track, report, task, workspace, calendar), `created_at_ms` / `finished_at_ms`, `observed_at_ms` / `exited_at_ms` / signal `received_at_ms`, UTC `Z` (source, hydrate) | RFC 3339 at the server offset, ms precision; `created_at` / `finished_at`, `observed_at` / `exited_at` / `received_at` | — | P, CLI render, T | C2 #2255 |
+| `area_ls` / `link_ls` clipped with `truncated`; `track_log` `limit` + `truncated` | paged by `cursor` / `next_cursor` (50 tracks, 100 links, 50 commits; 32 KiB); `blocks_truncated` per track | — | P, CLI `track log --cursor`, T | C2 #2255 |
 
 ## Appendix B — Implementation slices
 
@@ -453,7 +499,8 @@ budgets (7,500 B each) before and after; trim wording, never raise a cap.
 renames stored names adds its own migration: a merged migration is frozen, and main deploys between
 slices, so B1b and B1c cannot extend B1a's.
 B0, B1 and B5 carry migrations (L2). Order: B0 → B1a → B1b → B1c → B2 → B5, then B3 and B4, then
-the C1 cleanup (migration 0154 for the grandfathered plugins' recipe names).
+the C1 cleanup (migration 0154 for the grandfathered plugins' recipe names), then C2 (#2255: one
+time format in results; paging instead of truncation).
 B0 is a mechanical respelling (≈ 1,360 occurrences of a dotted kernel name outside `docs/`, 804 of
 them in `crates/calm-server/tests`). The other slices stay near 1k lines; B1a is the largest
 (≈ 260 name occurrences in crates, fe, plugins and docs).

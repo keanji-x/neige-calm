@@ -194,6 +194,7 @@ pub(crate) async fn get_report_series(
         block,
         query.detail.into(),
         None,
+        crate::report_series::rest_resolved_at,
     )
     .await;
     Ok((StatusCode::OK, Json(resolved)).into_response())

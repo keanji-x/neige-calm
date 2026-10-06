@@ -271,7 +271,7 @@ impl TerminalInteraction {
             (state.control, state.exited, state.exit_code)
         };
         // The exit instant is the renderer's once-only record, read only once this connection's
-        // mirror says exited, so `exited`, `exit_code` and `exited_at_ms` are one consistent triple.
+        // mirror says exited, so `exited`, `exit_code` and `exited_at` are one consistent triple.
         let exited_at = match exited {
             true => client
                 .entry
@@ -312,8 +312,8 @@ impl TerminalInteraction {
             "task_status":resolved.task_status,"controllable":resolved.controllable,"task":resolved.binding.task,"worker_session_id":resolved.binding.worker_session_id,"card_id":resolved.binding.card_id,
             "observation_revision":revision.to_string(),"cols":frame.cols,"rows":frame.rows,"cursor":frame.cursor,
             "alternate":frame.alternate,"scroll_offset":frame.scroll_offset,"history_rows":frame.history_rows,
-            "text":frame.text,"exited":exited,"exit_code":exit_code,"observed_at_ms":observation::epoch_ms(observed_at),
-            "exited_at_ms":exited_at.map(observation::epoch_ms),"wait":waited.to_json(),"changed_since_previous_observation":changed_since_previous,
+            "text":frame.text,"exited":exited,"exit_code":exit_code,"observed_at":crate::time_format::at(observation::epoch_ms(observed_at)),
+            "exited_at":crate::time_format::at_opt(exited_at.map(observation::epoch_ms)),"wait":waited.to_json(),"changed_since_previous_observation":changed_since_previous,
             "previous_observation_revision":previous.map(|prior| prior.revision.to_string()),
             "signals":{"hooks_seen":signals.last_seq > 0,"last_seq":signals.last_seq,
                 "since_previous_observation":signals.signals.iter().map(|signal| signal.to_json()).collect::<Vec<_>>(),

@@ -317,13 +317,23 @@ fn content_json(value: &Value) -> Value {
     serde_json::from_str(content).expect("content is JSON")
 }
 
+/// A tool time (RFC 3339, §4) as unix ms.
+fn tool_ms(value: &Value) -> i64 {
+    let text = value
+        .as_str()
+        .unwrap_or_else(|| panic!("a tool time is a string: {value}"));
+    chrono::DateTime::parse_from_rfc3339(text)
+        .expect("RFC 3339")
+        .timestamp_millis()
+}
+
 fn entry_updated_at(entries: &[Value], name: &str) -> i64 {
-    entries
-        .iter()
-        .find(|entry| entry["name"] == name)
-        .unwrap_or_else(|| panic!("missing {name}: {entries:?}"))["updated_at"]
-        .as_i64()
-        .expect("entry updated_at is i64")
+    tool_ms(
+        &entries
+            .iter()
+            .find(|entry| entry["name"] == name)
+            .unwrap_or_else(|| panic!("missing {name}: {entries:?}"))["updated_at"],
+    )
 }
 
 #[allow(deprecated)]
@@ -963,14 +973,14 @@ async fn ls_card_directory_includes_hook_event_views() {
             .iter()
             .find(|entry| entry["name"] == leaf)
             .unwrap_or_else(|| panic!("missing {leaf}: {entries:?}"));
-        assert_eq!(entry["updated_at"], json!(100));
+        assert_eq!(tool_ms(&entry["updated_at"]), 100);
     }
     for leaf in ["events.json", "conversation.md"] {
         let entry = entries
             .iter()
             .find(|entry| entry["name"] == leaf)
             .unwrap_or_else(|| panic!("missing {leaf}: {entries:?}"));
-        assert_eq!(entry["updated_at"], json!(900));
+        assert_eq!(tool_ms(&entry["updated_at"]), 900);
     }
 }
 
@@ -1470,9 +1480,9 @@ async fn run_listing_updated_at_uses_latest_verdict_timestamp() {
         .iter()
         .find(|run| run["attempt_id"] == "verdict-mtime")
         .unwrap_or_else(|| panic!("missing verdict-mtime: {runs:?}"));
-    assert_eq!(entry["finished_at"], json!(100));
-    assert_eq!(entry["verdict"]["at"], json!(200));
-    assert_eq!(entry["updated_at"], json!(200));
+    assert_eq!(tool_ms(&entry["finished_at"]), 100);
+    assert_eq!(tool_ms(&entry["verdict"]["at"]), 200);
+    assert_eq!(tool_ms(&entry["updated_at"]), 200);
 }
 
 #[tokio::test]
@@ -2287,15 +2297,14 @@ async fn hidden_track_history_tools_are_callable_and_patch_report() {
         .unwrap();
     assert_ne!(no_change_head, after);
 
-    let log = call_tool(
-        &boot,
-        TOOL_TRACK_LOG,
-        planner_identity(&boot),
-        json!({ "limit": 1 }),
-    )
-    .await
-    .expect("hidden log is callable");
-    assert_eq!(log["truncated"], json!(true));
+    let log = call_tool(&boot, TOOL_TRACK_LOG, planner_identity(&boot), json!({}))
+        .await
+        .expect("hidden log is callable");
+    assert_eq!(
+        log["next_cursor"],
+        Value::Null,
+        "one page holds them: {log:#?}"
+    );
     let commits = log["commits"].as_array().expect("commits array");
     assert!(
         commits.iter().any(|commit| commit["changed_paths"]
@@ -2316,7 +2325,7 @@ async fn hidden_track_history_tools_are_callable_and_patch_report() {
         &boot,
         TOOL_TRACK_LOG,
         planner_identity(&boot),
-        json!({ "limit": 1, "include_empty": true }),
+        json!({ "include_empty": true }),
     )
     .await
     .expect("hidden log can include commits without file changes on request");

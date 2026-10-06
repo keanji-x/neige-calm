@@ -98,27 +98,31 @@ fn submit(terminal: &str, request: &str, text: &str, extra: Value) -> Value {
     }
     args
 }
-/// `observed_at_ms` is an integer within a minute of this process's clock; `exited_at_ms` is null
-/// before the exit and, after it, between `since` and the capture instant. Returns `observed_at_ms`.
+/// `observed_at` is an RFC 3339 time within a minute of this process's clock; `exited_at` is null
+/// before the exit and, after it, between `since` and the capture instant. Returns `observed_at`
+/// in unix ms.
 fn assert_observation_times(state: &Value, since: i64, exited: bool) -> i64 {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64;
-    let observed_at = state["observed_at_ms"]
-        .as_i64()
-        .unwrap_or_else(|| panic!("observed_at_ms must be an integer: {state}"));
+    let ms = |key: &str| {
+        state[key]
+            .as_str()
+            .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+            .map(|at| at.timestamp_millis())
+            .unwrap_or_else(|| panic!("{key} must be an RFC 3339 time: {state}"))
+    };
+    let observed_at = ms("observed_at");
     assert!((now - observed_at).abs() < 60_000, "{observed_at} vs {now}");
     if !exited {
-        assert_eq!(state["exited_at_ms"], Value::Null, "{state}");
+        assert_eq!(state.get("exited_at"), Some(&Value::Null), "{state}");
         return observed_at;
     }
-    let exited_at = state["exited_at_ms"]
-        .as_i64()
-        .unwrap_or_else(|| panic!("exited_at_ms must be an integer: {state}"));
+    let exited_at = ms("exited_at");
     assert!(
         since <= exited_at && exited_at <= observed_at,
-        "exited_at_ms {exited_at} outside [{since}, {observed_at}]: {state}"
+        "exited_at {exited_at} outside [{since}, {observed_at}]: {state}"
     );
     observed_at
 }
@@ -855,7 +859,7 @@ async fn control_release_on_an_exited_terminal_confirms_through_the_registry() {
     assert_eq!(exited["exit_code"], 3, "known before the release: {exited}");
     // The release readback repeats the same exit instant.
     assert_observation_times(state, before_exit, true);
-    assert_eq!(state["exited_at_ms"], exited["exited_at_ms"], "{state}");
+    assert_eq!(state["exited_at"], exited["exited_at"], "{state}");
     assert_eq!(registry_owner(&h, &terminal), None);
     // A connection attached after the exit receives only the replayed `TerminalExited`, and still
     // reports the renderer's exit instant, never its own attach instant.
@@ -883,9 +887,10 @@ async fn control_release_on_an_exited_terminal_confirms_through_the_registry() {
     };
     assert_eq!(fresh["exit_code"], 3, "{fresh}");
     let fresh_observed = assert_observation_times(&fresh, before_exit, true);
-    assert_eq!(fresh["exited_at_ms"], exited["exited_at_ms"], "{fresh}");
+    assert_eq!(fresh["exited_at"], exited["exited_at"], "{fresh}");
+    let fresh_exited = chrono::DateTime::parse_from_rfc3339(fresh["exited_at"].as_str().unwrap());
     assert!(
-        fresh["exited_at_ms"].as_i64().unwrap() < fresh_observed - 2000,
+        fresh_exited.unwrap().timestamp_millis() < fresh_observed - 2000,
         "the exit instant must predate the fresh attach by the sleep: {fresh}"
     );
     // The claim arm on an exited terminal: the binding check refuses it.

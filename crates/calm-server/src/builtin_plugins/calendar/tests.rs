@@ -222,7 +222,8 @@ fn listed(entry: &serde_json::Value) -> serde_json::Value {
     listed["occurrences"] = json!([{"start": schedule["start"], "end": schedule["end"]}]);
     listed
 }
-/// A tool's entry with the stored `id` the tools show as `entry_id`.
+/// A tool's entry with the stored `id` the tools show as `entry_id`, and the stored unix-ms times
+/// the tools show as RFC 3339 strings (agent-commands §4).
 fn as_stored(entry: &serde_json::Value) -> serde_json::Value {
     let mut stored = entry.clone();
     let obj = stored.as_object_mut().unwrap();
@@ -230,6 +231,11 @@ fn as_stored(entry: &serde_json::Value) -> serde_json::Value {
         .remove("entry_id")
         .expect("a tool entry carries entry_id");
     obj.insert("id".into(), id);
+    for key in ["created_at", "updated_at"] {
+        let text = obj[key].as_str().expect("a tool entry time is a string");
+        let at = chrono::DateTime::parse_from_rfc3339(text).expect("RFC 3339");
+        obj.insert(key.into(), json!(at.timestamp_millis()));
+    }
     stored
 }
 /// The entry of a calendar tool's result.

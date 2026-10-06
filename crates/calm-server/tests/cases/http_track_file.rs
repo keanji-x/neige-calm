@@ -73,8 +73,13 @@ async fn http_ls_and_cat_match_mcp_outputs() {
         let (status, http) =
             get_json(&app, ls_uri(track_id, Some(path.as_str())), Some(&cookie)).await;
         assert_eq!(status, StatusCode::OK, "HTTP ls {path}: {http}");
-        // The tool wraps the REST rows under `entries` (§5); the rows are the same.
-        assert_eq!(http, mcp["entries"], "HTTP ls {path} must match MCP");
+        // The tool wraps the REST rows under `entries` (§5); the rows are the same but for the
+        // times: RFC 3339 in the tool (§4), unix ms in REST, which omits an absent `updated_at`.
+        assert_eq!(
+            http,
+            rest_rows(&mcp["entries"]),
+            "HTTP ls {path} must match MCP"
+        );
     }
 
     let initial_payload_path = format!("cards/{}/.payload.json", boot.worker_card_id.as_str());
@@ -184,4 +189,30 @@ async fn gate_log_path_returns_403_over_http() {
             .contains("is not available on this surface"),
         "{body}"
     );
+}
+
+/// The tool's `neige_track_ls` rows with their RFC 3339 times read back as REST's unix ms, and a
+/// `null` `updated_at` dropped as REST omits it.
+fn rest_rows(entries: &Value) -> Value {
+    let ms = |value: &mut Value| {
+        if let Some(text) = value.as_str() {
+            let at = chrono::DateTime::parse_from_rfc3339(text).expect("an RFC 3339 tool time");
+            *value = json!(at.timestamp_millis());
+        }
+    };
+    let mut rows = entries.clone();
+    for row in rows.as_array_mut().expect("entries") {
+        for key in ["updated_at", "requested_at", "finished_at"] {
+            if let Some(value) = row.get_mut(key) {
+                ms(value);
+            }
+        }
+        if let Some(at) = row.get_mut("verdict").and_then(|v| v.get_mut("at")) {
+            ms(at);
+        }
+        if row["updated_at"].is_null() {
+            row.as_object_mut().unwrap().remove("updated_at");
+        }
+    }
+    rows
 }

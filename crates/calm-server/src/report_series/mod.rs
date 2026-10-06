@@ -53,11 +53,17 @@ pub enum Resolved {
     },
 }
 
-/// `resolved_at` on the wire: RFC 3339, second precision, UTC.
+/// `resolved_at` on the REST wire: RFC 3339, second precision, UTC.
 pub fn resolved_at_text(resolved_at_ms: i64) -> String {
     chrono::DateTime::from_timestamp_millis(resolved_at_ms)
         .map(|t| t.format("%Y-%m-%dT%H:%M:%SZ").to_string())
         .unwrap_or_else(|| resolved_at_ms.to_string())
+}
+
+/// [`resolved_at_text`] as a JSON value, the REST route's time format for [`Resolved::to_json`];
+/// a tool result passes `time_format::at` instead (agent-commands §4).
+pub fn rest_resolved_at(resolved_at_ms: i64) -> Value {
+    Value::String(resolved_at_text(resolved_at_ms))
 }
 
 impl Resolved {
@@ -79,9 +85,9 @@ impl Resolved {
         }
     }
 
-    /// The flattened wire object. `series[j].points` is attached from `data`
-    /// when present; the caller adds the block's presentation fields.
-    pub fn to_json(&self) -> Value {
+    /// The flattened wire object, its `resolved_at` written by `format_at`. `series[j].points` is
+    /// attached from `data` when present; the caller adds the block's presentation fields.
+    pub fn to_json(&self, format_at: fn(i64) -> Value) -> Value {
         match self {
             Self::Pending { reason } => {
                 let mut out = json!({ "status": "pending" });
@@ -96,7 +102,7 @@ impl Resolved {
             } => json!({
                 "status": "unavailable",
                 "reason": reason,
-                "resolved_at": resolved_at_text(*resolved_at),
+                "resolved_at": format_at(*resolved_at),
             }),
             Self::Ok {
                 as_of,
@@ -124,7 +130,7 @@ impl Resolved {
                 json!({
                     "status": "ok",
                     "as_of": as_of,
-                    "resolved_at": resolved_at_text(*resolved_at),
+                    "resolved_at": format_at(*resolved_at),
                     "pinned": pinned,
                     "series": series,
                 })
@@ -142,10 +148,10 @@ mod tests {
         let pending = Resolved::Pending {
             reason: Some("plugin x is not running".into()),
         }
-        .to_json();
+        .to_json(rest_resolved_at);
         assert_eq!(pending["status"], "pending");
         assert_eq!(pending["reason"], "plugin x is not running");
-        let bare = Resolved::Pending { reason: None }.to_json();
+        let bare = Resolved::Pending { reason: None }.to_json(rest_resolved_at);
         assert!(bare.get("reason").is_none());
 
         let ok = Resolved::Ok {
@@ -155,7 +161,7 @@ mod tests {
             summary: json!({ "series": [{ "asset": "US:NVDA", "status": "ok", "n": 2 }] }),
             data: Some(json!({ "series": [{ "asset": "US:NVDA", "points": [[0, 1.0]] }] })),
         }
-        .to_json();
+        .to_json(rest_resolved_at);
         assert_eq!(ok["status"], "ok");
         assert_eq!(ok["pinned"], true);
         assert_eq!(ok["series"][0]["n"], 2);
@@ -169,7 +175,7 @@ mod tests {
             summary: json!({ "series": [{ "asset": "US:NVDA", "status": "ok" }] }),
             data: None,
         }
-        .to_json();
+        .to_json(rest_resolved_at);
         assert!(summary_only["series"][0].get("points").is_none());
     }
 }

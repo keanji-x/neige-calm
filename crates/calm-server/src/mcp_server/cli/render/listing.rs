@@ -3,7 +3,7 @@
 //! `UPDATED_AT  TAGS  NAME` table; `find` prints one readable `area/reports/` path per line.
 //! Times print as `YYYY-MM-DD HH:MM` in the server's local time; `--json` is the tool result as is.
 
-use chrono::{DateTime, Local, TimeZone};
+use chrono::DateTime;
 use serde_json::Value;
 use unicode_width::UnicodeWidthStr;
 
@@ -80,9 +80,9 @@ fn track_entries(tool: &str, entries: &[Value], long: bool) -> Result<String, Re
         }
         let time = match entry.get("updated_at") {
             None | Some(Value::Null) => NONE.to_string(),
-            Some(ms) => ms
-                .as_i64()
-                .and_then(|ms| Local.timestamp_millis_opt(ms).single())
+            Some(at) => at
+                .as_str()
+                .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
                 .map(|at| at.format(TIME_FORMAT).to_string())
                 .ok_or_else(|| {
                     shape(
@@ -211,9 +211,10 @@ mod tests {
     #[test]
     fn long_track_entries_print_their_own_time_or_a_dash() {
         let at = 1_790_000_000_000;
+        let rfc3339 = local(at).to_rfc3339_opts(chrono::SecondsFormat::Millis, false);
         let entries = json!({ "entries": [
-            { "name": "report.md", "kind": "file", "updated_at": at },
-            { "name": "cards/", "kind": "dir" }
+            { "name": "report.md", "kind": "file", "updated_at": rfc3339 },
+            { "name": "cards/", "kind": "dir", "updated_at": null }
         ] });
         assert_eq!(
             ls(true, false, &entries),
@@ -221,6 +222,19 @@ mod tests {
                 "- {}  report.md\nd —                 cards/\n",
                 local(at).format("%Y-%m-%d %H:%M")
             )
+        );
+        let unix_ms = json!({ "entries": [{ "name": "x", "kind": "file", "updated_at": at }] });
+        assert!(
+            render(
+                Render::Ls {
+                    long: true,
+                    reports: false
+                },
+                "neige_track_ls",
+                false,
+                &unix_ms
+            )
+            .is_err()
         );
     }
 

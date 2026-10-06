@@ -116,11 +116,25 @@ async fn track_ls(
     entries_result(entries)
 }
 
-/// A track-view listing: rows under `entries` (§5, never a bare array).
-fn entries_result(entries: Vec<TrackFsEntry>) -> Result<Value, RpcError> {
-    serde_json::to_value(entries)
-        .map(|entries| json!({ "entries": entries }))
-        .map_err(|e| RpcError::internal(format!("json serialization: {e}")))
+/// A track-view listing: rows under `entries` (§5, never a bare array). The REST entry keeps unix
+/// ms and omits an absent `updated_at`; a row here always carries `updated_at` and gives every
+/// time as RFC 3339 or null (§4).
+pub(crate) fn entries_result(entries: Vec<TrackFsEntry>) -> Result<Value, RpcError> {
+    let rows = entries
+        .into_iter()
+        .map(|entry| {
+            let updated_at = crate::time_format::at_opt(entry.updated_at);
+            let mut row = serde_json::to_value(entry)?;
+            row["updated_at"] = updated_at;
+            crate::time_format::rewrite_at(&mut row, &["requested_at", "finished_at"]);
+            if let Some(verdict) = row.get_mut("verdict") {
+                crate::time_format::rewrite_at(verdict, &["at"]);
+            }
+            Ok(row)
+        })
+        .collect::<Result<Vec<Value>, serde_json::Error>>()
+        .map_err(|e| RpcError::internal(format!("json serialization: {e}")))?;
+    Ok(json!({ "entries": rows }))
 }
 
 async fn track_cat(

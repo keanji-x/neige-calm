@@ -7,6 +7,7 @@ pub mod admin;
 pub mod area_reports;
 pub mod emit;
 pub mod mail;
+pub(crate) mod paging;
 pub mod plan;
 pub mod preview;
 pub mod report_links;
