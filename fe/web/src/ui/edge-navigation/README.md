@@ -1,8 +1,12 @@
 # Edge navigation
 
 `EdgeNavigator` renders a stable vertical index. Report and Chat supply item IDs,
-accessible labels, preview titles and body excerpts, placement, active items and
-jump handlers. This primitive imports no domain types and reads no application data.
+accessible labels, preview titles and a required synchronous, pure
+`readExcerpt: () => string` callback, placement, active items and jump handlers.
+This primitive imports no domain types and reads no application data. It calls
+only the current item's excerpt reader while the preview is open. The host owns
+content derivation; changing the items updates an open preview without retaining
+a second content cache.
 
 Fine-pointer rows are 20px tall; coarse-pointer rows are 44px tall. The intrinsic
 track is centered and scrolls when its content exceeds 320px. Pointer proximity smoothly enlarges neighboring ink toward 8px without changing

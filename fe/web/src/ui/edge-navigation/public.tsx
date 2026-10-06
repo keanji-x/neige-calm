@@ -4,7 +4,7 @@ import { useState } from '../state/public.ts';
 import { observeResize } from './resize.ts';
 import styles from './edge-navigation.module.css';
 
-export type NavigationItem = Readonly<{ id: string; title: string; excerpt: string; label: string }>;
+export type NavigationItem = Readonly<{ id: string; title: string; readExcerpt: () => string; label: string }>;
 const RAIL_PREVIEW_MAX = 240;
 const RAIL_INK_REACH = 3;
 function railPreviewText(text: string): string {
@@ -46,6 +46,8 @@ export function EdgeNavigator({ items, activeId, onSelect, label, className, pre
   const selectedIndex = items.findIndex(item => item.id === previewed);
   const previewIndex = selectedIndex < 0 ? tabStop : selectedIndex;
   const selected = items[previewIndex];
+  // A closed preview does not consume its body; content policy stays with the host.
+  const excerpt = preview.isOpen && selected !== undefined ? selected.readExcerpt() : '';
   const litStopRef = useRef(litStop);
   const previewOpenRef = useRef(preview.isOpen);
   litStopRef.current = litStop;
@@ -195,7 +197,7 @@ export function EdgeNavigator({ items, activeId, onSelect, label, className, pre
       </div>
       {selected !== undefined && preview.renderHoverCard(<div data-nc-rail-preview="">
         <div className={styles.previewTitle}>{railPreviewText(selected.title)}</div>
-        {selected.excerpt.trim() !== '' && <p className={styles.previewExcerpt}>{railPreviewText(selected.excerpt)}</p>}
+        {excerpt.trim() !== '' && <p className={styles.previewExcerpt}>{railPreviewText(excerpt)}</p>}
       </div>, { className: styles.railPreview, style: {
         inlineSize: 'min(17rem, var(--nc-rail-preview-max-inline-size, 17rem))',
         maxInlineSize: 'min(17rem, var(--nc-rail-preview-max-inline-size, 17rem))',
