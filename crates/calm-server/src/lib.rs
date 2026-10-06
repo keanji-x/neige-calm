@@ -540,6 +540,7 @@ pub mod card_role_cache;
 pub(crate) mod claude_code_env;
 pub mod claude_planner;
 pub mod codex_appserver;
+pub mod codex_mcp_toolset;
 pub mod config;
 /// Area folder claim rules, re-exported at the old crate path.
 pub use calm_truth::area_folder_claim;

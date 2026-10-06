@@ -536,6 +536,15 @@ impl CodexAppServer {
         Ok(())
     }
 
+    /// `config/mcpServer/reload` — no params, answers `{}`. Codex 0.159.2 re-reads `config.toml` and
+    /// restarts, for every loaded thread, each MCP server whose resolved entry changed; an unchanged
+    /// entry is a no-op, so a caller that wants a re-list must change the entry first (#2014).
+    pub async fn mcp_server_reload(&self) -> Result<()> {
+        self.request::<Value>("config/mcpServer/reload", Value::Null)
+            .await?;
+        Ok(())
+    }
+
     pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<()> {
         let response: Result<Value> = self
             .request(
@@ -748,5 +757,7 @@ mod thread_revert_wire_tests;
 #[cfg(test)]
 mod thread_start_wire_tests;
 
+#[cfg(test)]
+mod mcp_server_reload_wire_tests;
 #[cfg(test)]
 mod thread_compact_wire_tests;

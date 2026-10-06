@@ -732,6 +732,14 @@ pub struct SharedCodexAppServer {
     fake: Option<Arc<FakeSharedCodexAppServer>>,
 }
 
+/// What [`SharedCodexAppServer::mcp_server_reload`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpServerReload {
+    Sent,
+    /// No daemon connection: nothing was sent.
+    NotConnected,
+}
+
 #[cfg(feature = "fixtures")]
 pub type StartedThreadParam = (Option<String>, bool, Option<CardRole>);
 
@@ -793,6 +801,8 @@ pub struct FakeSharedCodexAppServer {
     reverted_threads: std::sync::Mutex<Vec<(String, String, u64)>>,
     /// Answer `thread/revert` with codex's `turn not found` refusal, as a repeated revert gets.
     revert_turn_not_found: AtomicBool,
+    /// How many `config/mcpServer/reload` requests reached this fake.
+    mcp_server_reloads: AtomicU64,
 }
 
 /// One recorded `turn/steer`: thread, `expectedTurnId`, input, `clientUserMessageId`.
@@ -830,6 +840,7 @@ impl FakeSharedCodexAppServer {
             turn_steer_return_hook: std::sync::Mutex::new(None),
             reverted_threads: std::sync::Mutex::new(Vec::new()),
             revert_turn_not_found: AtomicBool::new(false),
+            mcp_server_reloads: AtomicU64::new(0),
         }
     }
 }
@@ -1707,6 +1718,22 @@ impl SharedCodexAppServer {
             .thread_compact_start(thread_id)
             .await?;
         Ok(())
+    }
+
+    /// `config/mcpServer/reload` on the connected daemon; never spawns or heals one. Without a
+    /// connection it is [`McpServerReload::NotConnected`]: a daemon started later reads the
+    /// current `config.toml` itself, and threads it resumes build their MCP servers from it.
+    pub async fn mcp_server_reload(&self) -> Result<McpServerReload> {
+        #[cfg(feature = "fixtures")]
+        if let Some(fake) = self.fake.as_ref() {
+            fake.mcp_server_reloads.fetch_add(1, Ordering::SeqCst);
+            return Ok(McpServerReload::Sent);
+        }
+        let Some(client) = self.running_client().await else {
+            return Ok(McpServerReload::NotConnected);
+        };
+        client.mcp_server_reload().await?;
+        Ok(McpServerReload::Sent)
     }
 
     pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<()> {
@@ -3587,6 +3614,14 @@ impl SharedCodexAppServer {
     #[cfg(feature = "fixtures")]
     pub fn clear_active_turn_for_test(&self, thread_id: &str) {
         self.active_turns.remove(thread_id);
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn mcp_server_reload_count_for_test(&self) -> u64 {
+        self.fake
+            .as_ref()
+            .map(|fake| fake.mcp_server_reloads.load(Ordering::SeqCst))
+            .unwrap_or(0)
     }
 
     #[cfg(feature = "fixtures")]

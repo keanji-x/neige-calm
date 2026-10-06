@@ -614,6 +614,42 @@ args = ["--bar"]
             );
     }
 
+    /// #2014: the catalog generation is one more `env` key of the kernel entry; the boot-written
+    /// keys survive it, a boot rewrite keeps it, and it never creates an entry Codex cannot start.
+    #[test]
+    fn mcp_toolset_lives_in_the_kernel_entry_and_needs_one() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = shared_home(&root);
+        home.seed_from(None).expect("seed empty");
+        std::fs::write(home.path().join("config.toml"), "").expect("write empty config");
+        home.ensure_mcp_toolset("gen-1")
+            .expect_err("no kernel entry to update");
+        assert!(
+            parsed_config(&home).get("mcp_servers").is_none(),
+            "a refused update must not leave a partial kernel entry"
+        );
+
+        let shim = McpShimConfig {
+            shim_bin: root.path().join("bin/neige-mcp-stdio-shim"),
+            socket_path: root.path().join("mcp/kernel.sock"),
+        };
+        home.ensure_daemon_mcp_config(&shim, "daemon-token")
+            .expect("write kernel entry");
+        assert!(home.ensure_mcp_toolset("gen-1").expect("first write"));
+        assert!(!home.ensure_mcp_toolset("gen-1").expect("same value"));
+        home.ensure_daemon_mcp_config(&shim, "daemon-token")
+            .expect("boot rewrite");
+        let env = parsed_config(&home)["mcp_servers"]["neige"]["env"].clone();
+        assert_eq!(env["NEIGE_MCP_TOOLSET"].as_str(), Some("gen-1"));
+        assert_eq!(env["NEIGE_MCP_DAEMON_TOKEN"].as_str(), Some("daemon-token"));
+        assert_eq!(
+            env["NEIGE_MCP_SOCKET"].as_str(),
+            Some(shim.socket_path.to_string_lossy().as_ref())
+        );
+        home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
+            .expect("the generation is not another server");
+    }
+
     #[test]
     fn verify_expected_mcp_servers_rejects_unexpected_entry_naming_it() {
         let root = tempfile::tempdir().expect("tempdir");

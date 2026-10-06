@@ -1,5 +1,7 @@
 #[path = "cases/actor_wiring.rs"]
 mod actor_wiring;
+#[path = "cases/codex_mcp_toolset.rs"]
+mod codex_mcp_toolset;
 #[path = "cases/connector_host.rs"]
 mod connector_host;
 #[path = "cases/minted_name_claims.rs"]
