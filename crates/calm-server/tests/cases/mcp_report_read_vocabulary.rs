@@ -68,14 +68,14 @@ async fn detail_index_returns_anchors_without_text_and_records_no_read() {
         "index must not carry text: {out}"
     );
     assert!(out.get("body").is_none(), "{out}");
-    assert_eq!(out["docRev"].as_u64(), Some(current_doc_rev(&boot).await));
+    assert_eq!(out["doc_rev"].as_u64(), Some(current_doc_rev(&boot).await));
     let blocks = out["blocks"].as_array().expect("blocks");
     assert_eq!(blocks.len(), 3);
     for block in blocks {
         assert!(block["id"].is_string() && block["kind"].is_string() && block["rev"].is_u64());
     }
     assert_eq!(out["summary"], "a large report");
-    assert!(out.get("taskDiagnostics").is_some(), "{out}");
+    assert!(out.get("task_diagnostics").is_some(), "{out}");
     let line = wire["content"][0]["text"].as_str().unwrap();
     assert!(line.contains(" · index only · "), "{line}");
     assert!(line.len() < 300, "{line}");
@@ -143,7 +143,7 @@ async fn blocks_return_only_those_blocks_in_document_order_and_anchor_only_them(
         Some(3),
         "the index stays whole"
     );
-    assert_eq!(out["docRev"].as_u64(), Some(current_doc_rev(&boot).await));
+    assert_eq!(out["doc_rev"].as_u64(), Some(current_doc_rev(&boot).await));
     let read = anchors(&boot, &reader).expect("a blocks read anchors");
     assert!(!read.whole);
     let mut seen: Vec<&String> = read.blocks.keys().collect();

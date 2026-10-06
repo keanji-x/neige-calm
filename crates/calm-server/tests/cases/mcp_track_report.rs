@@ -529,8 +529,8 @@ async fn read_returns_initial_seeded_body() {
         Some(TrackReportPayload::initial().body.as_str())
     );
     assert_eq!(out.get("summary").and_then(Value::as_str), Some(""));
-    assert_eq!(out.get("schemaVersion").and_then(Value::as_u64), Some(4));
-    assert_eq!(out.get("docRev").and_then(Value::as_u64), Some(0));
+    assert_eq!(out.get("schema_version").and_then(Value::as_u64), Some(4));
+    assert_eq!(out.get("doc_rev").and_then(Value::as_u64), Some(0));
     assert!(
         out.get("updated_at").and_then(Value::as_i64).unwrap_or(0) > 0,
         "updated_at is a positive timestamp; got {out:?}",
@@ -580,7 +580,11 @@ async fn whole_document_write_requires_a_read_and_rejects_stale_planner_writer()
     .unwrap_err();
     assert_eq!(conflict.code, -32001);
     assert!(conflict.message.contains("current doc_rev is 1"));
-    assert!(conflict.message.contains("this session last read docRev 0"));
+    assert!(
+        conflict
+            .message
+            .contains("this session last read doc_rev 0")
+    );
     assert!(conflict.message.contains("re-read"));
     let read = call_tool(&boot, TOOL_REPORT_READ, planner_identity(&boot), json!({}))
         .await
@@ -612,7 +616,7 @@ async fn write_markdown_replaces_body_and_emits_card_updated() {
         .get("updated_at")
         .and_then(Value::as_i64)
         .expect("updated_at i64");
-    assert_eq!(out.get("docRev").and_then(Value::as_u64), Some(1));
+    assert_eq!(out.get("doc_rev").and_then(Value::as_u64), Some(1));
 
     let envs = sub.await.expect("collector ok");
     assert_eq!(
@@ -1373,7 +1377,7 @@ async fn full_read_delivers_the_document_once_behind_a_one_line_summary() {
     );
     let doc_rev = current_doc_rev(&boot).await;
     assert!(
-        line.starts_with(&format!("docRev {doc_rev} · 3 blocks · ")),
+        line.starts_with(&format!("doc_rev {doc_rev} · 3 blocks · ")),
         "{line}"
     );
     assert!(
@@ -1390,9 +1394,9 @@ async fn full_read_delivers_the_document_once_behind_a_one_line_summary() {
             .unwrap_or_default()
     );
     assert_eq!(structured["text"].as_str(), Some(body.as_str()));
-    assert_eq!(structured["docRev"].as_u64(), Some(doc_rev));
+    assert_eq!(structured["doc_rev"].as_u64(), Some(doc_rev));
     assert_eq!(structured["blocks"].as_array().map(Vec::len), Some(3));
-    assert!(structured.get("taskDiagnostics").is_some(), "{structured}");
+    assert!(structured.get("task_diagnostics").is_some(), "{structured}");
 }
 
 /// The receipt's summary clip is a byte budget on a char boundary; a CJK summary clipped by chars would blow the size bound.
@@ -1476,9 +1480,9 @@ async fn rev_conflicts_carry_the_current_revisions_in_error_data() {
             "{tool}: {err:?}"
         );
         assert_eq!(
-            err.data.as_ref().and_then(|d| d["docRev"].as_u64()),
+            err.data.as_ref().and_then(|d| d["doc_rev"].as_u64()),
             Some(current),
-            "{tool}: data.docRev must be the current doc rev: {err:?}"
+            "{tool}: data.doc_rev must be the current doc rev: {err:?}"
         );
     }
 
@@ -1500,8 +1504,8 @@ async fn rev_conflicts_carry_the_current_revisions_in_error_data() {
     // Both anchors, so the retry needs no full re-read.
     assert_eq!(
         err.data,
-        Some(json!({"docRev": current, "rev": rev})),
-        "data must carry the current docRev AND the block's current rev: {err:?}"
+        Some(json!({"doc_rev": current, "rev": rev})),
+        "data must carry the current doc_rev AND the block's current rev: {err:?}"
     );
     // Nothing was written: the anchors a retry would use are unchanged.
     assert_eq!(current_doc_rev(&boot).await, current);

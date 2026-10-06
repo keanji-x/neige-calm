@@ -260,7 +260,7 @@ async fn live_two_days() -> LiveRun {
         ok_series("US:NVDA", "2026-09-13", &[("2026-09-10", 1.0), ("2026-09-11", 2.0), ("2026-09-13", 3.0)])
     ]}));
     let first = fx.read(json!({})).await;
-    let doc_rev_before = first["docRev"].as_u64().unwrap();
+    let doc_rev_before = first["doc_rev"].as_u64().unwrap();
     assert_eq!(fx.run_recorded_jobs().await, vec![wrote("ok", false)]);
     let day_one = fx.row(&block_id).await.expect("row");
     assert_eq!(day_one.as_of, "2026-09-13");
@@ -302,7 +302,7 @@ async fn stale_live_row_is_served_and_refreshed() {
         json!(["2026-09-14", 4.0])
     );
     assert_eq!(
-        run.read_after_stale["docRev"].as_u64().unwrap(),
+        run.read_after_stale["doc_rev"].as_u64().unwrap(),
         run.doc_rev_before,
         "a refresh is not a document edit"
     );

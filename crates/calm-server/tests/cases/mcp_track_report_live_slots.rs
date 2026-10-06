@@ -284,7 +284,7 @@ async fn live_slots_resolve_their_own_units() {
     let full = read_full(&boot, id).await;
     assert_eq!(cells(resolved(&full, id))[0]["data"], summary_unit);
     assert_eq!(cells(resolved(&full, id))[1]["data"], history_unit);
-    assert_eq!(full["docRev"], summary["docRev"]);
+    assert_eq!(full["doc_rev"], summary["doc_rev"]);
 }
 
 #[tokio::test]
@@ -347,7 +347,7 @@ async fn live_slot_pending_is_not_storage_unavailable() {
         resolved(&broken, id),
         &json!({"status": "unavailable", "reason": "overlay storage unavailable"})
     );
-    assert_eq!(broken["docRev"], pending["docRev"]);
+    assert_eq!(broken["doc_rev"], pending["doc_rev"]);
 }
 
 #[tokio::test]
@@ -375,7 +375,7 @@ async fn live_slot_none_resolution_reads_no_overlay() {
         .unwrap();
     let none = read(&boot, json!({"resolve": {id.as_str().unwrap(): "none"}})).await;
     assert!(resolved(&none, id).is_null());
-    assert_eq!(none["docRev"], before["docRev"]);
+    assert_eq!(none["doc_rev"], before["doc_rev"]);
 }
 
 #[tokio::test]
@@ -489,7 +489,7 @@ async fn live_slot_template_write_read_and_stale_cas() {
     .unwrap_err();
     assert_eq!(error.code, -32001);
     let after = read_full(&boot, &created["id"]).await;
-    assert_eq!(after["docRev"], updated["docRev"]);
+    assert_eq!(after["doc_rev"], updated["doc_rev"]);
     assert_eq!(
         cells(resolved(&after, &created["id"]))[0]["source"],
         "neige://plugin/operations/capacity.updated"

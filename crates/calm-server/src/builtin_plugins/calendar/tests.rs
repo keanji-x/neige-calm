@@ -339,7 +339,7 @@ async fn calendar_native_tools_enforce_scope_role_session_and_enablement() {
     .unwrap();
     assert_eq!(
         serde_json::to_value(other_list).unwrap()["structuredContent"],
-        json!([])
+        json!({"entries": []})
     );
     assert!(
         rm(
@@ -562,7 +562,7 @@ async fn calendar_planner_timed_roundtrip_and_bound_track_limit() {
     .unwrap();
     assert_eq!(
         serde_json::to_value(visible).unwrap()["structuredContent"],
-        json!([listed(&first)])
+        json!({"entries": [listed(&first)]})
     );
     let mut moved = timed.clone();
     moved["schedule"]["start"] = json!("2026-10-02T11:00:00+08:00");
@@ -598,7 +598,7 @@ async fn calendar_planner_timed_roundtrip_and_bound_track_limit() {
     .unwrap();
     assert_eq!(
         serde_json::to_value(visible).unwrap()["structuredContent"],
-        json!([])
+        json!({"entries": []})
     );
     assert!(
         store::list(&fx.ctx, &human(), window())
@@ -674,7 +674,7 @@ async fn calendar_planner_local_time_roundtrip_and_dst_refusal() {
     .unwrap();
     assert_eq!(
         serde_json::to_value(visible).unwrap()["structuredContent"],
-        json!([listed(&first)])
+        json!({"entries": [listed(&first)]})
     );
     let mut moved = task.clone();
     moved["schedule"]["start"] = json!("2026-10-02T11:00");

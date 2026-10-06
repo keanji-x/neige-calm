@@ -59,9 +59,9 @@ async fn every_guide_named_in_planner_md_is_served() {
     )
     .await
     .expect("guide/ lists");
-    let listed: BTreeSet<String> = listed
+    let listed: BTreeSet<String> = listed["entries"]
         .as_array()
-        .expect("ls returns an array")
+        .expect("ls returns `entries`")
         .iter()
         .map(|entry| entry["name"].as_str().expect("entry name").to_string())
         .collect();

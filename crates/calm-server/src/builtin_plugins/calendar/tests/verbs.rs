@@ -60,7 +60,7 @@ async fn calendar_rm_stops_future_wakes_and_has_no_undo() {
     )
     .await
     .unwrap();
-    assert_eq!(listed, json!([]));
+    assert_eq!(listed, json!({"entries": []}));
 
     // Neither a set nor a second rm brings the entry back.
     for (tool, args) in [
@@ -128,7 +128,7 @@ async fn calendar_ls_window_is_half_open() {
         )
         .await
         .unwrap();
-        let ids: Vec<_> = listed
+        let ids: Vec<_> = listed["entries"]
             .as_array()
             .unwrap()
             .iter()

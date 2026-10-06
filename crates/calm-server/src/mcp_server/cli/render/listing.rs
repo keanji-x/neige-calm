@@ -23,7 +23,7 @@ pub(super) fn ls(
     reports: bool,
     value: &Value,
 ) -> Result<String, RenderError> {
-    let entries = entries(tool, value)?;
+    let entries = rows(tool, value, if reports { "reports" } else { "entries" })?;
     if json {
         return Ok(compact(value));
     }
@@ -40,7 +40,7 @@ pub(super) fn ls(
 }
 
 pub(super) fn find(tool: &str, json: bool, value: &Value) -> Result<String, RenderError> {
-    let entries = entries(tool, value)?;
+    let entries = rows(tool, value, "reports")?;
     if json {
         return Ok(compact(value));
     }
@@ -51,15 +51,20 @@ pub(super) fn find(tool: &str, json: bool, value: &Value) -> Result<String, Rend
     })
 }
 
-fn entries<'a>(tool: &str, value: &'a Value) -> Result<&'a [Value], RenderError> {
-    value.as_array().map(Vec::as_slice).ok_or_else(|| {
-        shape(
-            format!("{tool} returned non-array structuredContent"),
-            tool,
-            "value",
-            value,
-        )
-    })
+/// The rows of a listing, under `key` (`entries`, or `reports` on `area/reports/`).
+fn rows<'a>(tool: &str, value: &'a Value, key: &str) -> Result<&'a [Value], RenderError> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .ok_or_else(|| {
+            shape(
+                format!("{tool} returned no `{key}` array"),
+                tool,
+                "value",
+                value,
+            )
+        })
 }
 
 /// `d name`, or with `long` `d YYYY-MM-DD HH:MM  name` (`—` for an entry without a time).
@@ -111,11 +116,11 @@ fn report_name<'a>(tool: &str, entry: &'a Value) -> Result<&'a str, RenderError>
 fn report_table(tool: &str, entries: &[Value]) -> Result<String, RenderError> {
     let mut rows = Vec::with_capacity(entries.len());
     for entry in entries {
-        let updated_at = required_str(entry, "updatedAt", tool, "entry")?;
+        let updated_at = required_str(entry, "updated_at", tool, "entry")?;
         let time = DateTime::parse_from_rfc3339(updated_at)
             .map_err(|_| {
                 shape(
-                    format!("{tool} entry updatedAt is not RFC 3339"),
+                    format!("{tool} entry updated_at is not RFC 3339"),
                     tool,
                     "entry",
                     entry,
@@ -186,9 +191,9 @@ mod tests {
 
     #[test]
     fn ls_entry_without_kind_is_a_render_error() {
-        let entries = json!([
+        let entries = json!({ "entries": [
             { "name": "cards/", "kind": "dir" }, { "name": "track.json", "kind": "file" }
-        ]);
+        ] });
         assert_eq!(ls(false, false, &entries), "d cards/\n- track.json\n");
         let err = render(
             Render::Ls {
@@ -197,7 +202,7 @@ mod tests {
             },
             "neige_track_ls",
             false,
-            &json!([{ "name": "x" }]),
+            &json!({ "entries": [{ "name": "x" }] }),
         )
         .unwrap_err();
         assert_eq!(err.message, "neige_track_ls entry missing string kind");
@@ -206,10 +211,10 @@ mod tests {
     #[test]
     fn long_track_entries_print_their_own_time_or_a_dash() {
         let at = 1_790_000_000_000;
-        let entries = json!([
+        let entries = json!({ "entries": [
             { "name": "report.md", "kind": "file", "updated_at": at },
             { "name": "cards/", "kind": "dir" }
-        ]);
+        ] });
         assert_eq!(
             ls(true, false, &entries),
             format!(
@@ -221,12 +226,12 @@ mod tests {
 
     fn reports() -> Value {
         let at = |ms: i64| local(ms).to_rfc3339_opts(chrono::SecondsFormat::Millis, false);
-        json!([
-            { "path": "area/reports/认证 方案.md", "title": "认证 方案", "trackId": "t1",
-              "tags": ["认证", "架构"], "updatedAt": at(1_790_000_000_000) },
-            { "path": "area/reports/x%2Fy~abcdef12.md", "title": "x/y", "trackId": "abcdef1234",
-              "tags": [], "updatedAt": at(1_789_000_000_000) }
-        ])
+        json!({ "reports": [
+            { "path": "area/reports/认证 方案.md", "title": "认证 方案", "track_id": "t1",
+              "tags": ["认证", "架构"], "updated_at": at(1_790_000_000_000) },
+            { "path": "area/reports/x%2Fy~abcdef12.md", "title": "x/y", "track_id": "abcdef1234",
+              "tags": [], "updated_at": at(1_789_000_000_000) }
+        ] })
     }
 
     /// Mixed CJK/ASCII tags: every row's NAME starts at the header's NAME display column.
@@ -235,18 +240,18 @@ mod tests {
         use unicode_width::UnicodeWidthStr;
         let at = local(1_790_000_000_000).to_rfc3339_opts(chrono::SecondsFormat::Millis, false);
         let entry = |name: &str, tags: Value| {
-            json!({ "path": format!("area/reports/{name}"), "title": name, "trackId": "t",
-                    "tags": tags, "updatedAt": at })
+            json!({ "path": format!("area/reports/{name}"), "title": name, "track_id": "t",
+                    "tags": tags, "updated_at": at })
         };
         let table = ls(
             true,
             true,
-            &json!([
+            &json!({ "reports": [
                 entry("认证 方案.md", json!(["认证", "架构"])),
                 entry("login.md", json!(["auth", "x"])),
                 entry("登录 排查~abcdef12.md", json!(["排障"])),
                 entry("none.md", json!([])),
-            ]),
+            ] }),
         );
         let columns: Vec<usize> = table
             .lines()
@@ -285,7 +290,7 @@ mod tests {
             )
         );
         assert_eq!(
-            ls(true, true, &json!([])),
+            ls(true, true, &json!({ "reports": [] })),
             "UPDATED_AT        TAGS  NAME\n",
             "an empty directory still prints its header"
         );
@@ -310,7 +315,7 @@ mod tests {
     #[test]
     fn report_entry_shape_errors_name_the_missing_field() {
         let mut bad = reports();
-        bad[0]["updatedAt"] = json!("yesterday");
+        bad["reports"][0]["updated_at"] = json!("yesterday");
         let err = render(
             Render::Ls {
                 long: true,
@@ -323,10 +328,10 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             err.message,
-            "neige_track_ls entry updatedAt is not RFC 3339"
+            "neige_track_ls entry updated_at is not RFC 3339"
         );
         let mut bad = reports();
-        bad[1]["path"] = json!("report.md");
+        bad["reports"][1]["path"] = json!("report.md");
         let err = render(
             Render::Ls {
                 long: false,

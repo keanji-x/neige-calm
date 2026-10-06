@@ -170,12 +170,12 @@ async fn task_recovery_history_retains_current_dependency_blocker() {
     )
     .await
     .unwrap();
-    let reason = report["taskDiagnostics"]
+    let reason = report["task_diagnostics"]
         .as_array()
         .unwrap()
         .iter()
         .find(|value| value["key"] == "c")
-        .unwrap()["pendingReason"]["message"]
+        .unwrap()["pending_reason"]["message"]
         .clone();
     assert!(reason.as_str().unwrap().contains("`b`"));
     let view = serde_json::to_value(
@@ -356,12 +356,12 @@ async fn task_recovery_blocker_names_a_busy_track_like_report_read() {
     .await
     .unwrap();
     let pending_reason = |key: &str| {
-        report["taskDiagnostics"]
+        report["task_diagnostics"]
             .as_array()
             .unwrap()
             .iter()
             .find(|entry| entry["key"] == key)
-            .unwrap()["pendingReason"]
+            .unwrap()["pending_reason"]
             .clone()
     };
     let reason = pending_reason("b");

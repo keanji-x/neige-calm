@@ -209,12 +209,12 @@ async fn planner_browses_searches_and_reads_area_reports_through_neige() {
             .unwrap();
     assert_eq!(
         listed,
-        json!([
-            { "path": "area/reports/认证 方案.md", "title": "认证 方案", "trackId": boot.track_id.as_str(),
-              "tags": ["认证", "架构"], "updatedAt": rfc(local_ms(14, 30)) },
-            { "path": "area/reports/登录 排查.md", "title": "登录 排查", "trackId": login.as_str(),
-              "tags": ["认证", "排障"], "updatedAt": rfc(local_ms(10, 15)) }
-        ])
+        json!({ "reports": [
+            { "path": "area/reports/认证 方案.md", "title": "认证 方案", "track_id": boot.track_id.as_str(),
+              "tags": ["认证", "架构"], "updated_at": rfc(local_ms(14, 30)) },
+            { "path": "area/reports/登录 排查.md", "title": "登录 排查", "track_id": login.as_str(),
+              "tags": ["认证", "排障"], "updated_at": rfc(local_ms(10, 15)) }
+        ] })
     );
 
     assert_eq!(
@@ -266,7 +266,7 @@ async fn planner_browses_searches_and_reads_area_reports_through_neige() {
             ]
         )
         .await,
-        "[]\n"
+        "{\"reports\":[]}\n"
     );
 
     assert_eq!(

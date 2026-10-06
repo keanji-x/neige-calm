@@ -62,7 +62,7 @@ async fn native_view_upsert_read_roundtrip_and_cas_are_one_truth() {
     )
     .await
     .unwrap();
-    assert_eq!(after["docRev"], updated["docRev"]);
+    assert_eq!(after["doc_rev"], updated["doc_rev"]);
     assert!(
         after["text"]
             .as_str()

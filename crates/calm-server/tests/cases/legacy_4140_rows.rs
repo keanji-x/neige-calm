@@ -261,7 +261,7 @@ async fn legacy_4140_rows_load() {
             .unwrap_or_else(|error| panic!("{track}: report.read: {error:?}"));
         assert!(report.to_string().contains(key), "{track}: {report}");
         // Its isolated block is kept as history and never scheduled (S4).
-        let retired: Vec<&Value> = report["taskDiagnostics"]
+        let retired: Vec<&Value> = report["task_diagnostics"]
             .as_array()
             .unwrap_or_else(|| panic!("{track}: {report}"))
             .iter()

@@ -912,13 +912,13 @@ fn check_doc_anchor(doc: &ReportDoc, anchor: DocAnchor, needed: bool) -> Result<
             if needed && current != read {
                 return Err(CalmError::Conflict(format!(
                     "document revision conflict: current doc_rev is {current}, this session last \
-                     read docRev {read} — re-read the report and retry"
+                     read doc_rev {read} — re-read the report and retry"
                 )));
             }
             Ok(current == read)
         }
         DocAnchor::Unread if needed => Err(CalmError::BadRequest(
-            "this session has not read the report's docRev: a summary, a created or moved block \
+            "this session has not read the report's doc_rev: a summary, a created or moved block \
              and a created section need it — read the report with neige_report_read and retry"
                 .into(),
         )),
@@ -933,7 +933,7 @@ fn check_doc_rev(doc: &ReportDoc, expected: u64) -> Result<(), CalmError> {
     if current != expected {
         return Err(CalmError::Conflict(format!(
             "document revision conflict: current doc_rev is {current}, expected if_doc_rev {expected} \
-             — re-read the report and retry with the current docRev"
+             — re-read the report and retry with the current doc_rev"
         )));
     }
     Ok(())

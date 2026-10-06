@@ -4,8 +4,8 @@
 
 A `track.report_edited` observation carries a block diff: blocks added, removed or modified and the lines changed; a `task` block also shows `ready` and `key` old → new. Several saves of one edit arrive as one diff.
 
-- If your latest `neige_report_read` returned a `docRev` at least the diff's `docRev`, you already read the edit. Do not re-read just to confirm.
-- The diff's block ids and `docRev` locate the change; they do not replace a read before you write.
+- If your latest `neige_report_read` returned a `doc_rev` at least the diff's `doc_rev`, you already read the edit. Do not re-read just to confirm.
+- The diff's block ids and `doc_rev` locate the change; they do not replace a read before you write.
 - A conflict is an edit you have not absorbed that diverges from work still in flight: it changed the `task` block of a running or not-yet-started task, changed what you were about to write this turn, or overturns a decision recorded in the report or an earlier explicit request. A user rewriting a finished block, even one you just wrote, is their final say, not a conflict: accept it silently. When you can keep the user's content and still finish the request, merge instead of asking.
 
 ## Links

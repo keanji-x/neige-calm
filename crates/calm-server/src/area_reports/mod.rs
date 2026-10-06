@@ -60,9 +60,8 @@ pub fn classify(path: &str) -> Option<Result<AreaPath<'_>, String>> {
     })
 }
 
-/// One listed report; also the `--json` shape of `ls`/`find` on `area/reports/`.
+/// One listed report: a row of `{reports: […]}`, the `--json` shape of `ls`/`find` on `area/reports/`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ReportEntry {
     /// `area/reports/<name>.md`, readable with `neige track cat`.
     pub path: String,

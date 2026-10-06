@@ -32,11 +32,11 @@ pub const TOOL_REPORT_COMMIT: &str = "neige_report_commit";
 pub const RPC_REV_CONFLICT: i64 = -32001;
 
 /// The one `-32001` constructor for every report write. `data` carries the current revisions the message names
-/// (`docRev` from `current doc_rev is N`, `rev` from `current rev is N`) so a retry can re-anchor without a full read.
+/// (`doc_rev` from `current doc_rev is N`, `rev` from `current rev is N`) so a retry can re-anchor without a full read.
 pub(crate) fn rev_conflict_error(message: String) -> RpcError {
     let mut data = serde_json::Map::new();
     if let Some(doc_rev) = number_after(&message, "current doc_rev is ") {
-        data.insert("docRev".into(), Value::from(doc_rev));
+        data.insert("doc_rev".into(), Value::from(doc_rev));
     }
     if let Some(rev) = number_after(&message, "current rev is ") {
         data.insert("rev".into(), Value::from(rev));
@@ -110,7 +110,7 @@ async fn write_markdown(
         }) => doc_rev,
         _ => {
             return Err(RpcError::invalid_params(format!(
-                "{tool}: this session has not read the whole report at its current docRev — \
+                "{tool}: this session has not read the whole report at its current doc_rev — \
                  read it with a full neige_report_read (`with_markers: true` keeps the block ids), \
                  then retry"
             )));
@@ -154,7 +154,7 @@ async fn write_markdown(
         &blocks,
         &every,
     );
-    Ok(json!({ "updated_at": card.updated_at, "docRev": doc_rev, "warnings": warnings }))
+    Ok(json!({ "updated_at": card.updated_at, "doc_rev": doc_rev, "warnings": warnings }))
 }
 
 /// The one-call update: the whole op list lands as one [`ReportDocOp::Batch`] inside one persist
@@ -251,7 +251,7 @@ async fn commit(
         .collect::<Vec<_>>();
     Ok(json!({
         "updated_at": card.updated_at,
-        "docRev": doc_rev,
+        "doc_rev": doc_rev,
         "blocks": blocks,
         "warnings": warnings,
     }))
@@ -487,7 +487,7 @@ mod rev_conflict_tests {
     fn rev_conflict_error_parses_the_current_revisions_it_names() {
         let doc = rev_conflict_error(
             "neige_report_commit: document revision conflict: current doc_rev is 12, expected \
-             if_doc_rev 11 — re-read the report and retry with the current docRev"
+             if_doc_rev 11 — re-read the report and retry with the current doc_rev"
                 .into(),
         );
         assert_eq!(doc.code, RPC_REV_CONFLICT);
@@ -495,19 +495,19 @@ mod rev_conflict_tests {
             doc.message
                 .starts_with("neige_report_commit: document revision conflict")
         );
-        assert_eq!(doc.data, Some(json!({"docRev": 12})));
+        assert_eq!(doc.data, Some(json!({"doc_rev": 12})));
 
         let block = rev_conflict_error(
             "neige_report_commit: ops[0]: rev conflict on block b_1: current rev is 7, expected \
              if_rev 3; current doc_rev is 12 — re-read the report and retry with the current rev"
                 .into(),
         );
-        assert_eq!(block.data, Some(json!({"docRev": 12, "rev": 7})));
+        assert_eq!(block.data, Some(json!({"doc_rev": 12, "rev": 7})));
 
         let edit = rev_conflict_error(
             "document revision conflict: current doc_rev is 3, expected if_doc_rev 2".into(),
         );
-        assert_eq!(edit.data, Some(json!({"docRev": 3})));
+        assert_eq!(edit.data, Some(json!({"doc_rev": 3})));
 
         // No `data` at all rather than an empty object a retry might misread as "rev 0".
         let bare = rev_conflict_error("track_report: something else conflicted".into());

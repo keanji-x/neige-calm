@@ -145,7 +145,7 @@ async fn read_sections_then_replace_without_revs_keeps_ids_and_touches_only_the_
     )
     .await
     .expect("no revs: the read anchors the write");
-    assert!(out["docRev"].as_u64().is_some(), "{out}");
+    assert!(out["doc_rev"].as_u64().is_some(), "{out}");
     let after = section_blocks(&boot, "# 概要").await;
     assert_eq!(
         after[0], before[0],

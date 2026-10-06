@@ -22,7 +22,7 @@ async fn read(boot: &Boot, args: Value) -> Value {
 }
 
 async fn doc_rev(boot: &Boot) -> u64 {
-    read(boot, json!({})).await["docRev"]
+    read(boot, json!({})).await["doc_rev"]
         .as_u64()
         .expect("read returns docRev")
 }
@@ -114,7 +114,7 @@ async fn upsert_chart_series_lands_as_canonical_fence() {
     .expect("chart.series upsert succeeds");
     let id = out["id"].as_str().expect("upsert returns id").to_string();
     assert_eq!(out["rev"].as_u64(), Some(1));
-    assert_eq!(out["docRev"].as_u64(), Some(if_doc_rev + 1));
+    assert_eq!(out["doc_rev"].as_u64(), Some(if_doc_rev + 1));
 
     let read_out = read(&boot, json!({})).await;
     let text = read_out["text"].as_str().unwrap();
@@ -189,7 +189,7 @@ async fn commit_accepts_future_as_of() {
     let out = commit_one_series(&boot, payload.clone())
         .await
         .expect("a cutoff in the future is not a write-end error");
-    assert_eq!(out["docRev"].as_u64(), Some(before + 1));
+    assert_eq!(out["doc_rev"].as_u64(), Some(before + 1));
 
     let read_out = read(&boot, json!({})).await;
     assert_eq!(chart_series_fences(&read_out), vec![payload]);

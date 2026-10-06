@@ -116,10 +116,11 @@ pub fn register(registry: &mut ToolRegistry) {
                                 until: to,
                                 timezone,
                             };
+                            // Rows under `entries` (§5): a result is never a bare array.
                             store::list(&ctx, &access, window).await.map(|listed| {
-                                Value::Array(
-                                    listed.into_iter().map(|v| entry_output(json!(v))).collect(),
-                                )
+                                let entries: Vec<Value> =
+                                    listed.into_iter().map(|v| entry_output(json!(v))).collect();
+                                json!({ "entries": entries })
                             })
                         }
                         "add" => store::create(&ctx, access, parse(action, args)?)

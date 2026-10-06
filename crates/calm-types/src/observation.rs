@@ -48,7 +48,7 @@ pub enum Observation {
         /// observation queued before this field existed.
         #[serde(default)]
         body_before: Option<String>,
-        /// The report's `docRev` once this edit had landed, so the turn text can tell the planner whether
+        /// The report's `doc_rev` once this edit had landed, so the turn text can tell the planner whether
         /// its last `neige_report_read` already contained the edit; best-effort, `None` when unknown.
         #[serde(default)]
         doc_rev_after: Option<u64>,
@@ -291,8 +291,8 @@ impl Observation {
                 );
                 if let Some(doc_rev) = doc_rev_after {
                     text.push_str(&format!(
-                        "After this edit the report is at docRev {doc_rev}. \
-                         If your last neige_report_read returned docRev >= {doc_rev}, \
+                        "After this edit the report is at doc_rev {doc_rev}. \
+                         If your last neige_report_read returned doc_rev >= {doc_rev}, \
                          this edit is already in what you read.\n"
                     ));
                 }
@@ -1004,8 +1004,8 @@ mod tests {
             "the diff form must not order a re-read: {text}"
         );
         assert!(
-            !text.contains("docRev"),
-            "no docRev line without doc_rev_after: {text}"
+            !text.contains("doc_rev"),
+            "no doc_rev line without doc_rev_after: {text}"
         );
         assert!(
             text.contains("\n## modified: `## Thesis` (-1/+1 lines)\n"),
@@ -1051,8 +1051,8 @@ mod tests {
         assert_eq!(
             lines.next(),
             Some(
-                "After this edit the report is at docRev 8. If your last neige_report_read \
-                 returned docRev >= 8, this edit is already in what you read."
+                "After this edit the report is at doc_rev 8. If your last neige_report_read \
+                 returned doc_rev >= 8, this edit is already in what you read."
             )
         );
         assert_eq!(lines.next(), Some(DATA_LINE));
@@ -1139,7 +1139,7 @@ mod tests {
             }
         ));
         let text = obs.to_turn_text();
-        assert!(!text.contains("docRev"), "{text}");
+        assert!(!text.contains("doc_rev"), "{text}");
         assert!(!text.contains(CHANNEL_LINE_OPENING), "{text}");
         assert!(text.contains(DATA_LINE), "{text}");
         assert!(

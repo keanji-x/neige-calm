@@ -60,7 +60,7 @@ fn clip_to_bytes(text: &str, budget: usize) -> Option<&str> {
 }
 
 fn read_summary_line(value: &Value) -> String {
-    let doc_rev = &value["docRev"];
+    let doc_rev = &value["doc_rev"];
     let blocks = value["blocks"].as_array().map_or(0, Vec::len);
     let payload = match value.get("text").and_then(Value::as_str) {
         Some(text) => format!("{} bytes", text.len()),
@@ -73,7 +73,7 @@ fn read_summary_line(value: &Value) -> String {
         None => summary.to_string(),
     };
     format!(
-        "docRev {doc_rev} · {blocks} blocks · {payload} · {summary}; full state in structuredContent"
+        "doc_rev {doc_rev} · {blocks} blocks · {payload} · {summary}; full state in structuredContent"
     )
 }
 
@@ -161,19 +161,56 @@ pub(crate) async fn report_read(
         hydrated_block_index(&ctx, track.id.as_str(), &snapshot.blocks, &resolve_modes).await;
     let mut response = json!({
         "summary": snapshot.summary,
-        "schemaVersion": snapshot.schema_version,
-        "docRev": snapshot.doc_rev,
+        "schema_version": snapshot.schema_version,
+        "doc_rev": snapshot.doc_rev,
         "updated_at": snapshot.updated_at,
         "blocks": index,
     });
     if let Some((text, _)) = text {
         response["text"] = Value::String(text);
     }
-    // `taskDiagnostics` is the dispatched-task runtime projection `neige_task_ls` withholds from the assistant; only the Planner gets it.
+    // `task_diagnostics` is the dispatched-task runtime projection `neige_task_ls` withholds from the assistant; only the Planner gets it.
     if identity.role == CardRole::Planner {
-        response["taskDiagnostics"] = json!(snapshot.task_diagnostics);
+        response["task_diagnostics"] = task_diagnostics_output(json!(snapshot.task_diagnostics));
     }
     Ok(response)
+}
+
+/// The tool spelling of the task verdicts (§4 snake_case keys): `BlockVerdict` is also the REST
+/// wire the fe reads in camelCase, so the keys are respelled here, at the tool boundary. A
+/// `gate_result` and a diagnostic's `message_args` are data and keep their keys.
+fn task_diagnostics_output(value: Value) -> Value {
+    match value {
+        Value::Array(items) => {
+            Value::Array(items.into_iter().map(task_diagnostics_output).collect())
+        }
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(key, value)| {
+                    let key = snake_case(&key);
+                    let value = match key.as_str() {
+                        "gate_result" | "message_args" => value,
+                        _ => task_diagnostics_output(value),
+                    };
+                    (key, value)
+                })
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn snake_case(key: &str) -> String {
+    let mut out = String::with_capacity(key.len() + 4);
+    for ch in key.chars() {
+        if ch.is_ascii_uppercase() {
+            out.push('_');
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -326,24 +363,43 @@ mod tests {
     }
 
     #[test]
+    fn task_diagnostics_output_respells_keys_but_not_data() {
+        let out = task_diagnostics_output(json!([{
+            "blockId": "b_1",
+            "pendingReason": {"kind": "notAdmitted", "diagnosticCodes": ["x"]},
+            "diagnostics": [{"relatedBlockIds": [], "messageArgs": {"blockKey": 1}}],
+            "gateResult": {"exitCode": 0},
+        }]));
+        assert_eq!(
+            out,
+            json!([{
+                "block_id": "b_1",
+                "pending_reason": {"kind": "notAdmitted", "diagnostic_codes": ["x"]},
+                "diagnostics": [{"related_block_ids": [], "message_args": {"blockKey": 1}}],
+                "gate_result": {"exitCode": 0},
+            }])
+        );
+    }
+
+    #[test]
     fn read_summary_line_is_one_short_line() {
         let line = read_summary_line(&json!({
-            "docRev": 12,
+            "doc_rev": 12,
             "blocks": [{"id": "b_1"}, {"id": "b_2"}],
             "text": "héllo",
             "summary": "first line\nsecond line",
         }));
         assert_eq!(
             line,
-            "docRev 12 · 2 blocks · 6 bytes · first line; full state in structuredContent"
+            "doc_rev 12 · 2 blocks · 6 bytes · first line; full state in structuredContent"
         );
-        let index = read_summary_line(&json!({"docRev": 0, "blocks": [], "summary": ""}));
+        let index = read_summary_line(&json!({"doc_rev": 0, "blocks": [], "summary": ""}));
         assert_eq!(
             index,
-            "docRev 0 · 0 blocks · index only · ; full state in structuredContent"
+            "doc_rev 0 · 0 blocks · index only · ; full state in structuredContent"
         );
         let long = "字".repeat(200);
-        let clipped = read_summary_line(&json!({"docRev": 1, "blocks": [], "summary": long}));
+        let clipped = read_summary_line(&json!({"doc_rev": 1, "blocks": [], "summary": long}));
         assert!(
             clipped.contains(&format!("· {}…;", "字".repeat(SUMMARY_LINE_BYTES / 3))),
             "{clipped}"

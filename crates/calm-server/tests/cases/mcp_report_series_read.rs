@@ -118,7 +118,7 @@ async fn read_reports_route_misses_as_pending_without_rows() {
     );
     assert!(fx.resolver().take_recorded_jobs().is_empty(), "no job");
     assert_eq!(fx.resolver().inflight_len(), 0, "keys released on miss");
-    assert!(read["docRev"].is_u64(), "the read itself is whole: {read}");
+    assert!(read["doc_rev"].is_u64(), "the read itself is whole: {read}");
 }
 
 #[tokio::test]

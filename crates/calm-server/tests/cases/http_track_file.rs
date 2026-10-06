@@ -73,7 +73,8 @@ async fn http_ls_and_cat_match_mcp_outputs() {
         let (status, http) =
             get_json(&app, ls_uri(track_id, Some(path.as_str())), Some(&cookie)).await;
         assert_eq!(status, StatusCode::OK, "HTTP ls {path}: {http}");
-        assert_eq!(http, mcp, "HTTP ls {path} must match MCP");
+        // The tool wraps the REST rows under `entries` (§5); the rows are the same.
+        assert_eq!(http, mcp["entries"], "HTTP ls {path} must match MCP");
     }
 
     let initial_payload_path = format!("cards/{}/.payload.json", boot.worker_card_id.as_str());

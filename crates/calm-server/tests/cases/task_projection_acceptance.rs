@@ -246,8 +246,28 @@ async fn keys(boot: &Boot) -> Vec<String> {
         .unwrap()
 }
 
+/// The task verdicts of an MCP read (`task_diagnostics`, #2087 B3) or a REST read
+/// (`taskDiagnostics`): exactly one of the two spellings is present.
+fn verdicts(read: &Value) -> &Vec<Value> {
+    match (read.get("task_diagnostics"), read.get("taskDiagnostics")) {
+        (Some(mcp), None) => mcp.as_array().expect("task_diagnostics array"),
+        (None, Some(rest)) => rest.as_array().expect("taskDiagnostics array"),
+        _ => panic!("a read carries exactly one task-verdict list: {read}"),
+    }
+}
+
+/// The verdict's `pending_reason` key and its `diagnostic_codes` key on `surface`: the tool
+/// spells them snake_case, the REST wire camelCase.
+fn pending_keys(surface: &str) -> (&'static str, &'static str) {
+    match surface {
+        "MCP" => ("pending_reason", "diagnostic_codes"),
+        "REST" => ("pendingReason", "diagnosticCodes"),
+        other => panic!("unknown surface {other}"),
+    }
+}
+
 fn diagnostic_contains(read: &Value, key: &str, needle: &str) -> bool {
-    read["taskDiagnostics"].as_array().unwrap().iter().any(|v| {
+    verdicts(read).iter().any(|v| {
         v["key"] == key
             && v["diagnostics"].as_array().unwrap().iter().any(|d| {
                 d["message"]
@@ -258,7 +278,7 @@ fn diagnostic_contains(read: &Value, key: &str, needle: &str) -> bool {
 }
 
 fn has_diagnostic_code(read: &Value, key: &str, code: &str) -> bool {
-    read["taskDiagnostics"].as_array().unwrap().iter().any(|v| {
+    verdicts(read).iter().any(|v| {
         v["key"] == key
             && v["diagnostics"]
                 .as_array()
@@ -269,9 +289,7 @@ fn has_diagnostic_code(read: &Value, key: &str, code: &str) -> bool {
 }
 
 fn task_verdict<'a>(read: &'a Value, key: &str) -> &'a Value {
-    read["taskDiagnostics"]
-        .as_array()
-        .expect("taskDiagnostics array")
+    verdicts(read)
         .iter()
         .find(|verdict| verdict["key"] == key)
         .unwrap_or_else(|| panic!("task verdict for {key}"))
@@ -300,7 +318,8 @@ async fn pending_reasons_distinguish_dependency_busy_track_and_admission() {
         .unwrap();
 
     for (surface, response) in [("MCP", read(&boot).await), ("REST", rest_read(&boot).await)] {
-        let dependency = &task_verdict(&response, "dependency-blocked")["pendingReason"];
+        let (pending, codes) = pending_keys(surface);
+        let dependency = &task_verdict(&response, "dependency-blocked")[pending];
         assert_eq!(dependency["kind"], "dependencyBlocked", "{surface}");
         assert_eq!(dependency["dependencies"], json!(["occupier"]), "{surface}");
         assert!(
@@ -310,17 +329,17 @@ async fn pending_reasons_distinguish_dependency_busy_track_and_admission() {
             "{surface}: {dependency}"
         );
 
-        let busy = &task_verdict(&response, "track-busy")["pendingReason"];
+        let busy = &task_verdict(&response, "track-busy")[pending];
         assert_eq!(busy["kind"], "trackBusy", "{surface}");
         assert_eq!(
             busy["message"], "Waiting for the track's checkout: another task is using it",
             "{surface}"
         );
 
-        let rejected = &task_verdict(&response, "not-admitted")["pendingReason"];
+        let rejected = &task_verdict(&response, "not-admitted")[pending];
         assert_eq!(rejected["kind"], "notAdmitted", "{surface}");
         assert!(
-            rejected["diagnosticCodes"]
+            rejected[codes]
                 .as_array()
                 .is_some_and(|codes| codes.iter().any(|code| code == "planner_task_ceiling")),
             "{surface}: {rejected}"
@@ -367,7 +386,10 @@ async fn malformed_persisted_dependency_shape_keeps_report_reads_available() {
     for (surface, response) in [("MCP", read(&boot).await), ("REST", rest_read(&boot).await)] {
         let verdict = task_verdict(&response, "legacy-shape");
         assert_eq!(verdict["status"], "pending", "{surface}: {verdict}");
-        assert!(verdict["pendingReason"].is_null(), "{surface}: {verdict}");
+        assert!(
+            verdict[pending_keys(surface).0].is_null(),
+            "{surface}: {verdict}"
+        );
     }
 }
 
@@ -397,7 +419,10 @@ async fn syntactically_invalid_persisted_dependencies_also_degrade_to_empty() {
     for (surface, response) in [("MCP", read(&boot).await), ("REST", rest_read(&boot).await)] {
         let verdict = task_verdict(&response, "corrupt-dependencies");
         assert_eq!(verdict["status"], "pending", "{surface}: {verdict}");
-        assert!(verdict["pendingReason"].is_null(), "{surface}: {verdict}");
+        assert!(
+            verdict[pending_keys(surface).0].is_null(),
+            "{surface}: {verdict}"
+        );
     }
 }
 
@@ -462,14 +487,15 @@ async fn fresh_reference_error_overrides_an_existing_pending_rows_old_queue_reas
         .unwrap();
 
     for (surface, response) in [("MCP", read(&boot).await), ("REST", rest_read(&boot).await)] {
+        let (pending, codes) = pending_keys(surface);
         let verdict = task_verdict(&response, "source-task");
         assert_eq!(verdict["status"], "pending", "{surface}: {verdict}");
         assert_eq!(
-            verdict["pendingReason"]["kind"], "notAdmitted",
+            verdict[pending]["kind"], "notAdmitted",
             "{surface}: {verdict}"
         );
         assert!(
-            verdict["pendingReason"]["diagnosticCodes"]
+            verdict[pending][codes]
                 .as_array()
                 .is_some_and(|codes| codes.iter().any(|code| code == "reference_missing")),
             "{surface}: {verdict}"
@@ -505,7 +531,7 @@ async fn failed_dependency_reason_points_to_a_new_task() {
             hint["message"].as_str().unwrap().contains("new task key"),
             "{surface}: {hint}"
         );
-        let reason = &task_verdict(&response, "blocked-next")["pendingReason"];
+        let reason = &task_verdict(&response, "blocked-next")[pending_keys(surface).0];
         assert_eq!(reason["kind"], "dependencyBlocked", "{surface}");
         assert_eq!(reason["dependencies"], json!(["failed-first"]), "{surface}");
         let message = reason["message"].as_str().unwrap();
@@ -598,7 +624,7 @@ async fn report_blocks_gate_admission_matrix_pins_diagnostics_and_projection() {
 async fn agent_task_gate_cwd_not_admitted_at_claim() {
     let boot = new_boot().await;
     let gate = |cwd: Value| json!({"cwd": cwd, "steps": [{"name": "check", "cmd": "true"}]});
-    let doc_rev_before = read(&boot).await["docRev"].as_u64().unwrap();
+    let doc_rev_before = read(&boot).await["doc_rev"].as_u64().unwrap();
 
     let mut refused = task("claude-gate-cwd");
     refused["kind"] = json!("claude");
@@ -632,7 +658,7 @@ async fn agent_task_gate_cwd_not_admitted_at_claim() {
 
     let snapshot = read(&boot).await;
     assert!(
-        snapshot["docRev"].as_u64().unwrap() > doc_rev_before,
+        snapshot["doc_rev"].as_u64().unwrap() > doc_rev_before,
         "the report write itself is accepted: {snapshot}"
     );
     for key in ["claude-gate-cwd", "codex-gate-cwd"] {
@@ -652,10 +678,10 @@ async fn agent_task_gate_cwd_not_admitted_at_claim() {
                 .is_some_and(|message| message.contains("cd <subdir> && …")),
             "{key}: {diagnostic}"
         );
-        let reason = &verdict["pendingReason"];
+        let reason = &verdict["pending_reason"];
         assert_eq!(reason["kind"], "notAdmitted", "{key}: {reason}");
         assert!(
-            reason["diagnosticCodes"]
+            reason["diagnostic_codes"]
                 .as_array()
                 .is_some_and(|codes| codes.iter().any(|code| code == "gate_cwd_on_agent_task")),
             "{key}: {reason}"
@@ -722,14 +748,17 @@ async fn production_reads_attach_task_state_and_read_time_diagnostics() {
         .unwrap();
 
     for (name, response) in [("MCP", read(&boot).await), ("REST", rest_read(&boot).await)] {
-        let verdict = response["taskDiagnostics"]
-            .as_array()
-            .unwrap()
+        let verdict = verdicts(&response)
             .iter()
             .find(|verdict| verdict["key"] == "read-boundary")
             .unwrap_or_else(|| panic!("{name} verdict"));
         assert_eq!(verdict["status"], "dispatched", "{name} projected status");
-        let gate_result = verdict["gateResult"]
+        let gate_key = if name == "MCP" {
+            "gate_result"
+        } else {
+            "gateResult"
+        };
+        let gate_result = verdict[gate_key]
             .as_object()
             .expect("projected gate result");
         assert!(
@@ -1006,7 +1035,7 @@ async fn in_flight_reference_target_deletion_warns_on_both_reads_without_declara
     let body = format!("target text\n\n{}", render_fence("task", &declaration));
     let current = TrackReportPayload {
         schema_version: TrackReportPayload::SCHEMA_VERSION,
-        doc_rev: before["docRev"].as_u64().unwrap(),
+        doc_rev: before["doc_rev"].as_u64().unwrap(),
         summary: String::new(),
         body: body.clone(),
         blocks: Some(blocks),

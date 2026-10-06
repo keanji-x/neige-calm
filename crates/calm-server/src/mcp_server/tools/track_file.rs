@@ -43,7 +43,7 @@ where
     })
 }
 
-/// Return-shape contract consumed by `mcp_server::cli::render`: `ls` returns a bare JSON array; `cat` returns `{ content, content_type }`.
+/// Return-shape contract consumed by `mcp_server::cli::render`: `ls` returns `{ entries }` (`{ reports }` on `area/reports/`); `cat` returns `{ content, content_type }`.
 fn ls_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TRACK_LS.into(),
@@ -110,7 +110,13 @@ async fn track_ls(
         .ls(&track, Some(path.as_str()))
         .await
         .map_err(track_fs_error_to_rpc)?;
+    entries_result(entries)
+}
+
+/// A track-view listing: rows under `entries` (§5, never a bare array).
+fn entries_result(entries: Vec<TrackFsEntry>) -> Result<Value, RpcError> {
     serde_json::to_value(entries)
+        .map(|entries| json!({ "entries": entries }))
         .map_err(|e| RpcError::internal(format!("track_file: json serialization: {e}")))
 }
 
@@ -206,8 +212,7 @@ fn guide_ls() -> Result<Value, RpcError> {
             extra: serde_json::Map::new(),
         })
         .collect();
-    serde_json::to_value(entries)
-        .map_err(|e| RpcError::internal(format!("track_file: json serialization: {e}")))
+    entries_result(entries)
 }
 
 fn guide_cat(name: &str) -> Result<Value, RpcError> {

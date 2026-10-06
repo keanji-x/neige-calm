@@ -97,7 +97,7 @@ async fn retired_view_kind_is_refused_by_the_planner_block_upsert() {
              chart.candles, chart.series, table, app, task, preview, view. See neige_report_describe."
         )
     );
-    assert_eq!(read(&boot, json!({})).await["docRev"], before["docRev"]);
+    assert_eq!(read(&boot, json!({})).await["doc_rev"], before["doc_rev"]);
 }
 
 #[tokio::test]
@@ -121,7 +121,7 @@ async fn retired_view_kind_is_refused_by_the_planner_whole_document_write() {
              preview, view (see neige_report_describe)"
         )
     );
-    assert_eq!(read(&boot, json!({})).await["docRev"], before["docRev"]);
+    assert_eq!(read(&boot, json!({})).await["doc_rev"], before["doc_rev"]);
 }
 
 #[tokio::test]

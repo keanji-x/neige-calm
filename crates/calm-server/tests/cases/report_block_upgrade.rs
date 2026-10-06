@@ -103,7 +103,7 @@ async fn edit_preupgrade_report(missing_cache: bool, boundary_match: bool) {
         "task identity, kind, payload and revision must remain intact"
     );
     assert!(after.body.contains(boundary), "{}", after.body);
-    assert_eq!(edited["docRev"].as_u64(), Some(after.doc_rev));
+    assert_eq!(edited["doc_rev"].as_u64(), Some(after.doc_rev));
     call_tool(
         &boot,
         TOOL_REPORT_COMMIT,

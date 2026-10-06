@@ -11,6 +11,8 @@ mod mcp_emit_tools;
 mod mcp_plan;
 #[path = "cases/mcp_request_meta_passthrough.rs"]
 mod mcp_request_meta_passthrough;
+#[path = "cases/mcp_result_shapes.rs"]
+mod mcp_result_shapes;
 #[path = "cases/mcp_server_handshake.rs"]
 mod mcp_server_handshake;
 #[path = "cases/mcp_shim_round_trip.rs"]

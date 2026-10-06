@@ -18,7 +18,7 @@ The track views are read-only: `neige track ls [path]` lists, `neige track cat <
 - `neige track ls area/reports/` prints one `<title>.md` per report, newest first; `-l` adds times and tags.
 - `neige report find area/reports/ --name '<glob>' --tag <tag>` narrows by name and tag (AND).
 - `neige track cat area/reports/<name>.md` prints one; `--blocks <id>,<id>` narrows it.
-- Use the exact path a listing printed: a shared title gets a `~<id>` suffix, special characters are `%XX`-escaped, and a renamed track's old path stops resolving. `--json` adds `title`, `trackId`, `tags` and `updatedAt`.
+- Use the exact path a listing printed: a shared title gets a `~<id>` suffix, special characters are `%XX`-escaped, and a renamed track's old path stops resolving. `--json` adds `title`, `track_id`, `tags` and `updated_at`.
 
 Do not run or re-declare another track's tasks unless this track's request needs it; cite what you use.
 

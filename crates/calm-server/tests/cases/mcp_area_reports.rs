@@ -217,9 +217,9 @@ async fn find(boot: &Boot, who: ToolCallIdentity, args: Value) -> Result<Vec<Str
 }
 
 fn paths(listing: &Value) -> Vec<String> {
-    listing
+    listing["reports"]
         .as_array()
-        .expect("listing array")
+        .expect("listing `reports` array")
         .iter()
         .map(|entry| entry["path"].as_str().expect("path").to_string())
         .collect()
@@ -285,17 +285,17 @@ async fn planner_lists_finds_and_reads_every_report_of_its_area() {
 
     assert_eq!(
         ls(&boot, planner(own), "area/").await.unwrap(),
-        json!([{ "name": "reports/", "kind": "dir" }])
+        json!({ "entries": [{ "name": "reports/", "kind": "dir" }] })
     );
     let listing = ls(&boot, planner(own), "/area/reports/").await.unwrap();
     assert_eq!(
         listing,
-        json!([
+        json!({ "reports": [
             { "path": "area/reports/认证 方案.md", "title": "认证 方案",
-              "trackId": own.track_id.as_str(), "tags": ["认证", "架构"], "updatedAt": rfc3339(2_000_000) },
+              "track_id": own.track_id.as_str(), "tags": ["认证", "架构"], "updated_at": rfc3339(2_000_000) },
             { "path": "area/reports/登录 排查.md", "title": "登录 排查",
-              "trackId": other.track_id.as_str(), "tags": ["认证", "排障"], "updatedAt": rfc3339(1_000_000) }
-        ]),
+              "track_id": other.track_id.as_str(), "tags": ["认证", "排障"], "updated_at": rfc3339(1_000_000) }
+        ] }),
         "own track included, newest report first"
     );
     let root = ls(&boot, planner(own), "/").await.unwrap();
@@ -610,7 +610,7 @@ async fn a_body_write_is_read_back_and_moves_the_report_time() {
     .await
     .unwrap();
     assert_ne!(
-        value[0]["updatedAt"],
+        value["reports"][0]["updated_at"],
         json!(rfc3339(1_000)),
         "a body write moves the report time"
     );
@@ -653,7 +653,7 @@ async fn report_time_ignores_other_track_activity_and_follows_tag_changes() {
         )
         .await
         .unwrap();
-        value[0]["updatedAt"].clone()
+        value["reports"][0]["updated_at"].clone()
     };
     assert_eq!(time().await, json!(rfc3339(1_000)));
     tag(&boot, other, &["排障"]).await;

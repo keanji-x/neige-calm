@@ -264,6 +264,10 @@ Added by the slices (registry-driven, Appendix B); the last one is still propose
 - `kernel_tool_params_use_the_vocabulary`: every input key, recursively, is snake_case (opaque
   payloads skipped, §4), and no top-level key is a retired name (`id`, `after`, `cancelled`,
   `time_zone`, `request_id`, `select`, `until`).
+- `report_tool_results_are_snake_case` (B3): real `report_read`/`write`/`commit`/`find` and
+  `track_ls area/reports/` calls through the kernel socket return objects whose keys, recursively,
+  are snake_case (a block's `payload` skipped), and `neige --json` prints the same JSON;
+  `no_kernel_tool_returns_a_top_level_array` calls every read-only kernel tool.
 - `every_kernel_tool_refuses_unknown_arguments`: calls each registered kernel tool with an unknown
   key and asserts -32602 `<tool>: unknown argument …` naming the valid keys.
 
@@ -279,6 +283,9 @@ Added by the slices (registry-driven, Appendix B); the last one is still propose
 - A connector tool whose `mcp__neige__plugin_<id>_<tool>` exceeds 128 bytes is still cut and
   hash-suffixed by Codex (#2003 K1); `served_tool_names_fit_the_codex_cap` covers kernel and
   native tools only.
+- `report_read`'s `task_diagnostics` respells the REST `BlockVerdict` keys at the tool boundary
+  (the fe reads the camelCase wire); enum values such as `pending_reason.kind: "notAdmitted"` and the
+  data in `gate_result` and `message_args` keep their spelling.
 - `report_commit`'s nested `ops[].id` is a bare block id; renaming it to `block_id` changes the
   report op contract without an observed pain (kept).
 - KNOWN GAP (B5 descope, Appendix C item 10): the five installed external plugin ids keep `.` or

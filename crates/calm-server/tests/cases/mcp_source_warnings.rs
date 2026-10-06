@@ -17,7 +17,7 @@ const TOOL_REPORT_READ: &str = "neige_report_read";
 async fn doc_rev(boot: &Boot) -> u64 {
     call_tool(boot, TOOL_REPORT_READ, planner_identity(boot), json!({}))
         .await
-        .expect("read")["docRev"]
+        .expect("read")["doc_rev"]
         .as_u64()
         .expect("docRev")
 }
@@ -70,7 +70,7 @@ async fn commit_reports_a_dangling_source_id_and_still_writes() {
     )
     .await
     .expect("commit writes despite the dangling link");
-    assert_eq!(receipt["docRev"], rev + 1);
+    assert_eq!(receipt["doc_rev"], rev + 1);
     let blocks = receipt["blocks"].as_array().unwrap();
     let written = blocks.last().unwrap()["id"].as_str().unwrap();
     assert_eq!(

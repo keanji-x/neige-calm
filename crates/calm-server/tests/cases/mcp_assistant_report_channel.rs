@@ -26,7 +26,7 @@ async fn read(boot: &Boot, identity: ToolCallIdentity, args: Value) -> Value {
 }
 
 async fn doc_rev(boot: &Boot) -> u64 {
-    read(boot, planner_identity(boot), json!({})).await["docRev"]
+    read(boot, planner_identity(boot), json!({})).await["doc_rev"]
         .as_u64()
         .expect("docRev is numeric")
 }
@@ -247,7 +247,7 @@ async fn the_assistant_today_summary_path_is_a_full_read_then_write_markdown() {
     )
     .await
     .expect("a full read anchors the assistant's rewrite");
-    assert_eq!(out["docRev"], 1);
+    assert_eq!(out["doc_rev"], 1);
     assert!(
         body_text(&boot)
             .await

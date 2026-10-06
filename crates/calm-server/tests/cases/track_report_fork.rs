@@ -1379,7 +1379,7 @@ async fn forked_user_tombstone_is_normalized_to_planner_and_stays_planner_editab
     )
     .await
     .expect("planner author must be able to delete a forked tombstone");
-    assert!(delete.get("docRev").is_some(), "delete returns docRev");
+    assert!(delete.get("doc_rev").is_some(), "delete returns doc_rev");
 
     let (status, after) = request_json(
         &boot.app,

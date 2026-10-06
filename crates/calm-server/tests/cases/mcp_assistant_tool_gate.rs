@@ -210,16 +210,16 @@ async fn assistant_token_can_read_the_report_with_concurrency_tokens() {
     // The exact value: the fixture wrote twice through the persist boundary, so a correct `docRev`
     // can only come from the CRDT root register (the NULL-CRDT legacy branch returns 0).
     assert_eq!(
-        payload.get("docRev").and_then(serde_json::Value::as_u64),
+        payload.get("doc_rev").and_then(serde_json::Value::as_u64),
         Some(SEEDED_DOC_REV),
-        "`docRev` must be the CRDT-derived revision — it is what this read \
+        "`doc_rev` must be the CRDT-derived revision — it is what this read \
          anchors a later write to: {payload:#?}"
     );
     // `taskDiagnostics` is dispatched-task runtime state, the class `neige_task_ls` stays
     // Planner-only to withhold; it must not leak out the side.
     assert!(
-        payload.get("taskDiagnostics").is_none(),
-        "`taskDiagnostics` must be withheld from an assistant caller: {payload:#?}"
+        payload.get("task_diagnostics").is_none(),
+        "`task_diagnostics` must be withheld from an assistant caller: {payload:#?}"
     );
     let blocks = payload
         .get("blocks")
@@ -282,10 +282,10 @@ async fn planner_token_still_gets_task_diagnostics_from_the_report_read() {
     );
     let payload = tool_result_payload(&resp);
     let diagnostics = payload
-        .get("taskDiagnostics")
+        .get("task_diagnostics")
         .and_then(serde_json::Value::as_array)
         .unwrap_or_else(|| {
-            panic!("planner keeps the full `taskDiagnostics` payload: {payload:#?}")
+            panic!("planner keeps the full `task_diagnostics` payload: {payload:#?}")
         });
     assert!(
         !diagnostics.is_empty(),

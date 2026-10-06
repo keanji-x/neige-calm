@@ -593,7 +593,7 @@
   },
   {
     "name": "neige_report_commit",
-    "description_sha256": "589c88525ff8bd68182b7ba85a09a4a718f790eb2fd83cd9f7ff4ae82799380c",
+    "description_sha256": "9e3873af2c7168e5e915c4c1aae3c9ed25a2a0b52f86c0fe3a8db21511c297f8",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -694,7 +694,7 @@
   },
   {
     "name": "neige_report_find",
-    "description_sha256": "9bd09dad6a05fe739f814aac10e929843a9916d47dfda7d7b573ebc3816e8b8f",
+    "description_sha256": "2594bb5a08b001b6fd8534d67e6b63e85089443db9040760a55cd2678963c6bf",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -720,7 +720,7 @@
   },
   {
     "name": "neige_report_read",
-    "description_sha256": "63bdccd8856ecebb38bebe654d1f65a5e7ac944ce4b5affb291da538f2df56ca",
+    "description_sha256": "2c9d41530459e1dc8c1f79f46324a2618f3d2709b921334b334aa9b98628e3db",
     "input_schema": {
       "properties": {
         "blocks": {
@@ -803,7 +803,7 @@
   },
   {
     "name": "neige_report_write",
-    "description_sha256": "d71395563cd2a29bab3930fc72e45f8596f7658ff6f7bb89bfaf86fb93b214ed",
+    "description_sha256": "8e48a22ece1375064949422b5c0f0cdc24efcb7483bccd49ae72099b430d6635",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1045,7 +1045,7 @@
   },
   {
     "name": "neige_task_ls",
-    "description_sha256": "b4f6c2b911a1464daad190f050d788e259ec7fdb62708d582a1f8350953c7767",
+    "description_sha256": "7f7c6a048a585310658ffe07b9c9abeb1f5539da2c86e172c72cac2a94de2277",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1724,7 +1724,7 @@
   },
   {
     "name": "neige_track_ls",
-    "description_sha256": "1b161a56437746d949998c341eb08f19f6ba98b5c72f00bff4ce336a9ebd2251",
+    "description_sha256": "890cfb0f14e71fe974933c7d3b18c303edbc43f2cc75d9f864485ec09326eec2",
     "input_schema": {
       "properties": {
         "path": {

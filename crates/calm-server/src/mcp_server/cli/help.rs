@@ -57,7 +57,7 @@ const HELP: &[CommandHelp] = &[
         "Options:",
         "  -l          Long listing: update times (and tags under area/reports/)",
         "      --json  Emit compact JSON output; area/reports/ gives",
-        "              [{path, title, trackId, tags, updatedAt}]",
+        "              {reports: [{path, title, track_id, tags, updated_at}]}",
         "  -h, --help  Print help",
     ),
     command_help!(
@@ -163,7 +163,7 @@ const HELP: &[CommandHelp] = &[
         "Options:",
         "      --name <glob>  Match the file name, e.g. '*认证*'",
         "      --tag <tag>    Match one tag exactly",
-        "      --json         Emit [{path, title, trackId, tags, updatedAt}]",
+        "      --json         Emit {reports: [{path, title, track_id, tags, updated_at}]}",
         "  -h, --help         Print help",
     ),
     command_help!(

@@ -93,12 +93,14 @@ pub(crate) async fn ls(
             size: None,
             updated_at: None,
             extra: serde_json::Map::new(),
-        }]),
+        }])
+        .map(|entries| json!({ "entries": entries })),
         AreaPath::Reports => serde_json::to_value(
             area_reports::list(pool(ctx)?, &identity.area_id, &Filter::default())
                 .await
                 .map_err(track_fs_error_to_rpc)?,
-        ),
+        )
+        .map(|reports| json!({ "reports": reports })),
         AreaPath::Report(file) => {
             return Err(RpcError::invalid_params(format!(
                 "{REPORTS_DIR}/{file} is a report, not a directory; read it with `neige track cat`"
@@ -188,5 +190,6 @@ async fn report_find(
         .await
         .map_err(track_fs_error_to_rpc)?;
     serde_json::to_value(entries)
+        .map(|reports| json!({ "reports": reports }))
         .map_err(|e| RpcError::internal(format!("{tool}: json serialization: {e}")))
 }

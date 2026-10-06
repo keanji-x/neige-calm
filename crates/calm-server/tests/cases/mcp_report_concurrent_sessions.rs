@@ -96,7 +96,7 @@ fn blocks(read: &Value) -> &Vec<Value> {
 }
 
 fn doc_rev(read: &Value) -> u64 {
-    read["docRev"].as_u64().expect("docRev is numeric")
+    read["doc_rev"].as_u64().expect("docRev is numeric")
 }
 
 fn assert_same_starting_point(a: &Value, b: &Value) {
@@ -276,7 +276,7 @@ async fn two_assistant_sessions_reordering_blocks_second_writer_gets_doc_rev_con
         err,
         "commit move",
         &format!(
-            "document revision conflict: current doc_rev is {}, this session last read docRev {}",
+            "document revision conflict: current doc_rev is {}, this session last read doc_rev {}",
             doc_rev(&after_a.read),
             doc_rev(&b_read),
         ),
@@ -324,7 +324,7 @@ async fn two_assistant_sessions_rewriting_the_whole_document_second_writer_gets_
         err,
         "write_markdown",
         &format!(
-            "document revision conflict: current doc_rev is {}, this session last read docRev {}",
+            "document revision conflict: current doc_rev is {}, this session last read doc_rev {}",
             doc_rev(&after_a.read),
             doc_rev(&b_read),
         ),

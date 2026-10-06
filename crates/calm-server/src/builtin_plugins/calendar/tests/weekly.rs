@@ -47,7 +47,7 @@ async fn listed(
     )
     .await
     .unwrap();
-    let entries = serde_json::to_value(result).unwrap()["structuredContent"].clone();
+    let entries = serde_json::to_value(result).unwrap()["structuredContent"]["entries"].clone();
     entries
         .as_array()
         .unwrap()

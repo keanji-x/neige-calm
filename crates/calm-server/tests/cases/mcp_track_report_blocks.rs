@@ -104,7 +104,7 @@ async fn seed_two_blocks(boot: &Boot) -> Vec<(String, u64)> {
 async fn another_writer_invalidates_a_previously_read_whole_document() {
     let boot = boot().await;
     let before = read(&boot, json!({})).await;
-    assert_eq!(before["docRev"], 0);
+    assert_eq!(before["doc_rev"], 0);
     upsert_block(
         &boot,
         assistant_identity(&boot),
@@ -124,7 +124,7 @@ async fn another_writer_invalidates_a_previously_read_whole_document() {
     assert_eq!(conflict.code, RPC_REV_CONFLICT);
     assert!(conflict.message.contains("current doc_rev is 1"));
     let after = read(&boot, json!({})).await;
-    assert_eq!(after["docRev"], 1);
+    assert_eq!(after["doc_rev"], 1);
     assert_ne!(after["text"], "# stale rewrite\n");
 }
 
@@ -529,7 +529,7 @@ async fn upsert_new_block_appends_and_emits_both_events() {
     assert!(id.starts_with("b_"));
     assert_eq!(out.get("rev").and_then(Value::as_u64), Some(1));
     assert!(out.get("updated_at").and_then(Value::as_i64).is_some());
-    assert_eq!(out.get("docRev").and_then(Value::as_u64), Some(1));
+    assert_eq!(out.get("doc_rev").and_then(Value::as_u64), Some(1));
 
     let envs = sub.await.expect("collector ok");
     assert_eq!(envs.len(), 2, "got {envs:?}");
@@ -808,7 +808,7 @@ async fn move_reorders_without_touching_rev() {
     .expect("move succeeds");
 
     let payload = current_payload(&boot).await;
-    assert_eq!(out["docRev"], payload.doc_rev);
+    assert_eq!(out["doc_rev"], payload.doc_rev);
     assert_eq!(payload.body, "# B\n\nbeta\n# A\n\nalpha\n\n");
     let index = index_of(&read(&boot, json!({})).await);
     assert_eq!(
@@ -842,7 +842,7 @@ async fn write_markdown_needs_a_whole_read_at_the_current_doc_rev() {
     let first = write("# First\n\none\n")
         .await
         .expect("a full read anchors it");
-    assert_eq!(first["docRev"], 1);
+    assert_eq!(first["doc_rev"], 1);
 
     // Another writer moves the doc on; a read of one section there shows only part of it.
     upsert_block(
@@ -876,7 +876,7 @@ async fn write_markdown_needs_a_whole_read_at_the_current_doc_rev() {
     let own = write("# First\n\nthree\n")
         .await
         .expect("an own commit keeps the whole read");
-    assert_eq!(own["docRev"], 4);
+    assert_eq!(own["doc_rev"], 4);
     assert_eq!(current_payload(&boot).await.body, "# First\n\nthree\n");
 }
 
@@ -906,8 +906,8 @@ async fn an_own_write_markdown_counts_as_read_but_a_foreign_write_in_between_doe
         .await
         .expect("the own rewrite counts as read: no re-read before the summary");
     assert_eq!(
-        out["docRev"].as_u64(),
-        written["docRev"].as_u64().map(|r| r + 1)
+        out["doc_rev"].as_u64(),
+        written["doc_rev"].as_u64().map(|r| r + 1)
     );
 
     call_tool(
@@ -959,7 +959,7 @@ async fn write_markdown_with_markers_reuses_ids_and_strips_them() {
     );
 
     let payload = current_payload(&boot).await;
-    assert_eq!(out["docRev"], payload.doc_rev);
+    assert_eq!(out["doc_rev"], payload.doc_rev);
     assert_eq!(payload.body, "# A\n\nalpha\n\n# B\n\nbeta edited\n");
     assert!(!payload.body.contains("<!-- neige:"));
     assert_eq!(payload.summary, "seeded", "omitted summary is preserved");
@@ -1666,7 +1666,7 @@ async fn commit_three_ops_and_summary_land_atomically_with_one_doc_rev_bump() {
     .expect("commit succeeds");
 
     assert_eq!(
-        out["docRev"].as_u64(),
+        out["doc_rev"].as_u64(),
         Some(2),
         "one bump for three ops: {out}"
     );
@@ -1851,7 +1851,7 @@ async fn commit_summary_only_with_empty_ops_bumps_doc_rev_and_keeps_blocks() {
     )
     .await
     .expect("summary-only commit");
-    assert_eq!(out["docRev"].as_u64(), Some(2));
+    assert_eq!(out["doc_rev"].as_u64(), Some(2));
     let blocks = out["blocks"].as_array().unwrap();
     assert_eq!(
         blocks
@@ -1999,7 +1999,7 @@ async fn upsert_and_write_markdown_carry_message_for_the_planner() {
     )
     .await
     .expect("planner write_markdown with message");
-    assert_eq!(out["docRev"].as_u64(), Some(3));
+    assert_eq!(out["doc_rev"].as_u64(), Some(3));
     let envs = drain_events(&mut rx).await;
     assert_eq!(envs.len(), 2, "{envs:?}");
     match &envs[1].event {
@@ -2065,7 +2065,7 @@ async fn commit_touching_a_task_block_illegally_is_refused_as_a_whole() {
     )
     .await
     .expect("legal tombstone in a batch");
-    assert_eq!(out["docRev"].as_u64(), Some(before.doc_rev + 1));
+    assert_eq!(out["doc_rev"].as_u64(), Some(before.doc_rev + 1));
 }
 
 /// #1883: a batch `delete` naming a live task by id retires it, alongside the batch's other ops.
@@ -2086,7 +2086,7 @@ async fn commit_delete_naming_a_live_task_retires_it_inside_a_batch() {
     )
     .await
     .expect("a delete by id may retire a live task");
-    assert_eq!(out["docRev"].as_u64(), Some(before.doc_rev + 1));
+    assert_eq!(out["doc_rev"].as_u64(), Some(before.doc_rev + 1));
     let after = current_payload(&boot).await;
     assert!(after.body.contains("# Notes\n\nlands\n"));
     assert!(!after.body.contains("neige-block task"));
@@ -2168,7 +2168,7 @@ async fn commit_rejects_duplicate_block_ids_before_touching_the_doc() {
     )
     .await
     .expect("two creates");
-    assert_eq!(out["docRev"].as_u64(), Some(2));
+    assert_eq!(out["doc_rev"].as_u64(), Some(2));
 }
 
 /// Keys out of declaration order and an explicit `"omit_if_empty":false`, so a stored canonical line proves the ingress rewrote it.
@@ -2349,7 +2349,7 @@ async fn commit_whose_steps_leave_the_header_off_line_1_is_rejected_as_a_whole()
     )
     .await
     .expect("the upsert alone lands the header on line 1");
-    assert_eq!(out["docRev"], 2);
+    assert_eq!(out["doc_rev"], 2);
     assert_eq!(
         first_line(&current_payload(&boot).await.body),
         canonical_line(&one_section_header())

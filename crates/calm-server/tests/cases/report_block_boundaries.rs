@@ -65,7 +65,7 @@ async fn local_prose_edit_preserves_task_after_unterminated_block_upserts() {
     assert_eq!(task_keys(&boot).await, ["build"]);
     assert!(after.body.contains("local prose\n# Second"));
     assert!(after.body.contains("revised decision\n```neige-block task"));
-    assert_eq!(edited["docRev"].as_u64(), Some(after.doc_rev));
+    assert_eq!(edited["doc_rev"].as_u64(), Some(after.doc_rev));
     assert!(after.doc_rev > before.doc_rev);
     call_tool(
         &boot,
@@ -177,5 +177,5 @@ async fn marked_import_and_block_move_keep_unterminated_prose_separate() {
         replacement["rev"].as_u64().unwrap() + 1
     );
     assert!(after.body.contains("final draft\n```neige-block task"));
-    assert_eq!(out["docRev"].as_u64(), Some(after.doc_rev));
+    assert_eq!(out["doc_rev"].as_u64(), Some(after.doc_rev));
 }

@@ -753,9 +753,9 @@ async fn track_file_tools_support_two_calls_on_one_connection() {
         r1.get("error").is_none(),
         "first track file tools/call errored: {r1:#?}"
     );
-    let entries = r1["result"]["structuredContent"]
+    let entries = r1["result"]["structuredContent"]["entries"]
         .as_array()
-        .expect("ls structuredContent is array");
+        .expect("ls structuredContent carries `entries`");
     assert!(
         entries.iter().any(|entry| entry["name"] == "index.md"),
         "root listing should contain index.md: {entries:#?}"

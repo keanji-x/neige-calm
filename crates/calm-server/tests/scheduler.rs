@@ -1666,18 +1666,18 @@ async fn spawn_failure_status_detail_carries_the_real_reason() {
     let report = call_tool(&boot, TOOL_REPORT_READ, planner_identity(&boot), json!({}))
         .await
         .expect("report read");
-    let verdict = report["taskDiagnostics"]
+    let verdict = report["task_diagnostics"]
         .as_array()
-        .expect("taskDiagnostics array")
+        .expect("task_diagnostics array")
         .iter()
         .find(|v| v["key"] == json!("nogit"))
         .expect("verdict for the failed task")
         .clone();
     assert_eq!(verdict["status"], json!("failed"));
-    let wire_detail = verdict["statusDetail"].as_str().unwrap_or_default();
+    let wire_detail = verdict["status_detail"].as_str().unwrap_or_default();
     assert!(
         wire_detail.contains("track-without-worktree"),
-        "BlockVerdict.statusDetail must carry the reason, got {verdict}"
+        "the tool verdict status_detail must carry the reason, got {verdict}"
     );
 }
 

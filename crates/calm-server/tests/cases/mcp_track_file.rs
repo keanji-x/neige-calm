@@ -573,7 +573,7 @@ async fn ls_root_returns_top_level_entries() {
     )
     .await
     .expect("planner can list root");
-    let entries = out.as_array().expect("ls returns array");
+    let entries = out["entries"].as_array().expect("ls returns `entries`");
     let names: Vec<&str> = entries
         .iter()
         .map(|entry| entry["name"].as_str().unwrap())
@@ -948,7 +948,7 @@ async fn ls_card_directory_includes_hook_event_views() {
     )
     .await
     .expect("planner can list card directory");
-    let entries = out.as_array().expect("ls returns array");
+    let entries = out["entries"].as_array().expect("ls returns `entries`");
     let names: Vec<&str> = entries
         .iter()
         .map(|entry| entry["name"].as_str().unwrap())
@@ -1010,7 +1010,7 @@ async fn card_runtime_json_returns_typed_runtime_or_null() {
     )
     .await
     .expect("planner can list card directory before runtime exists");
-    let entries = listing.as_array().expect("ls returns array");
+    let entries = listing["entries"].as_array().expect("ls returns `entries`");
     assert_eq!(entry_updated_at(entries, "runtime.json"), 100);
 
     let out = call_tool(
@@ -1035,7 +1035,7 @@ async fn card_runtime_json_returns_typed_runtime_or_null() {
     )
     .await
     .expect("planner can list card directory after runtime exists");
-    let entries = listing.as_array().expect("ls returns array");
+    let entries = listing["entries"].as_array().expect("ls returns `entries`");
     let listed_updated_at = entry_updated_at(entries, "runtime.json");
     assert!(
         listed_updated_at >= session_projection_row.updated_at_ms,
@@ -1144,7 +1144,9 @@ async fn ls_runs_returns_projected_runs_for_bound_track() {
     )
     .await
     .expect("planner can list runs");
-    let runs = out.as_array().expect("runs ls returns array");
+    let runs = out["entries"]
+        .as_array()
+        .expect("runs ls returns `entries`");
     let names = runs
         .iter()
         .map(|run| run["name"].as_str().unwrap())
@@ -1216,7 +1218,7 @@ async fn runs_index_json_returns_same_run_set_as_ls_with_full_fields() {
     )
     .await
     .expect("planner can list runs");
-    let ls_keys: Vec<&str> = ls
+    let ls_keys: Vec<&str> = ls["entries"]
         .as_array()
         .unwrap()
         .iter()
@@ -1458,7 +1460,9 @@ async fn run_listing_updated_at_uses_latest_verdict_timestamp() {
     )
     .await
     .expect("planner can list runs");
-    let runs = out.as_array().expect("runs ls returns array");
+    let runs = out["entries"]
+        .as_array()
+        .expect("runs ls returns `entries`");
     let entry = runs
         .iter()
         .find(|run| run["attempt_id"] == "verdict-mtime")
@@ -2031,7 +2035,7 @@ async fn empty_track_has_empty_runs_projection() {
     )
     .await
     .expect("planner can list runs");
-    let runs = ls.as_array().expect("runs ls returns array");
+    let runs = ls["entries"].as_array().expect("runs ls returns `entries`");
     assert_eq!(runs.len(), 1, "runs = {runs:?}");
     assert_eq!(runs[0]["name"], json!("index.json"));
     assert_eq!(runs[0]["kind"], json!("file"));
@@ -2096,7 +2100,10 @@ async fn track_file_tools_allow_worker_bound_track_reads() {
     let ls = call_tool(&boot, TOOL_TRACK_LS, worker_identity(&boot), json!({}))
         .await
         .expect("worker can list its bound track");
-    assert!(ls.as_array().is_some(), "ls should return an array: {ls:?}");
+    assert!(
+        ls["entries"].as_array().is_some(),
+        "ls should return `entries`: {ls:?}"
+    );
 
     let cat = call_tool(
         &boot,
