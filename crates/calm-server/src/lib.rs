@@ -834,6 +834,28 @@ mod boot_order_tests {
         assert!(card_id_assert < reaper);
         assert!(recover < reaper);
     }
+
+    /// The Codex MCP catalog follower starts at boot, after plugin autospawn, so its boot write
+    /// already names the running set (#2014). Its readiness watch makes the order against the
+    /// daemon's boot irrelevant.
+    #[test]
+    fn codex_mcp_toolset_starts_after_plugin_autospawn() {
+        let state_rs = include_str!("state.rs");
+        let autospawn = state_rs
+            .find("plugin.autospawn_enabled().await")
+            .expect("boot autospawns plugins");
+        let toolset = state_rs
+            .find("crate::codex_mcp_toolset::CodexMcpToolset {")
+            .expect("boot starts the Codex MCP catalog follower");
+        assert!(autospawn < toolset);
+        let start = &state_rs[toolset..];
+        let end = start.find(".await;").expect("the start is awaited");
+        assert!(
+            start[..end].contains(".start(&events)"),
+            "{}",
+            &start[..end]
+        );
+    }
 }
 
 #[cfg(test)]

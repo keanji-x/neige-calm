@@ -801,8 +801,22 @@ pub struct FakeSharedCodexAppServer {
     reverted_threads: std::sync::Mutex<Vec<(String, String, u64)>>,
     /// Answer `thread/revert` with codex's `turn not found` refusal, as a repeated revert gets.
     revert_turn_not_found: AtomicBool,
-    /// How many `config/mcpServer/reload` requests reached this fake.
+    /// How many `config/mcpServer/reload` calls this fake answered as sent.
     mcp_server_reloads: AtomicU64,
+    /// How many `config/mcpServer/reload` calls reached this fake, whatever the answer.
+    mcp_server_reload_attempts: AtomicU64,
+    /// How the next `config/mcpServer/reload` calls are answered; sent unless a test says otherwise.
+    mcp_server_reload_answer: std::sync::Mutex<FakeMcpServerReload>,
+}
+
+/// A scripted [`SharedCodexAppServer::mcp_server_reload`] outcome.
+#[cfg(feature = "fixtures")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FakeMcpServerReload {
+    Sent,
+    NotConnected,
+    /// The request went out and failed.
+    Fail,
 }
 
 /// One recorded `turn/steer`: thread, `expectedTurnId`, input, `clientUserMessageId`.
@@ -841,6 +855,8 @@ impl FakeSharedCodexAppServer {
             reverted_threads: std::sync::Mutex::new(Vec::new()),
             revert_turn_not_found: AtomicBool::new(false),
             mcp_server_reloads: AtomicU64::new(0),
+            mcp_server_reload_attempts: AtomicU64::new(0),
+            mcp_server_reload_answer: std::sync::Mutex::new(FakeMcpServerReload::Sent),
         }
     }
 }
@@ -1726,8 +1742,22 @@ impl SharedCodexAppServer {
     pub async fn mcp_server_reload(&self) -> Result<McpServerReload> {
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
-            fake.mcp_server_reloads.fetch_add(1, Ordering::SeqCst);
-            return Ok(McpServerReload::Sent);
+            fake.mcp_server_reload_attempts
+                .fetch_add(1, Ordering::SeqCst);
+            let answer = *fake
+                .mcp_server_reload_answer
+                .lock()
+                .expect("fake shared codex mcp reload mutex poisoned");
+            return match answer {
+                FakeMcpServerReload::Sent => {
+                    fake.mcp_server_reloads.fetch_add(1, Ordering::SeqCst);
+                    Ok(McpServerReload::Sent)
+                }
+                FakeMcpServerReload::NotConnected => Ok(McpServerReload::NotConnected),
+                FakeMcpServerReload::Fail => Err(CalmError::CodexAppServer(
+                    "fixture: config/mcpServer/reload failed".into(),
+                )),
+            };
         }
         let Some(client) = self.running_client().await else {
             return Ok(McpServerReload::NotConnected);
@@ -3614,6 +3644,24 @@ impl SharedCodexAppServer {
     #[cfg(feature = "fixtures")]
     pub fn clear_active_turn_for_test(&self, thread_id: &str) {
         self.active_turns.remove(thread_id);
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn answer_mcp_server_reload_for_test(&self, answer: FakeMcpServerReload) {
+        if let Some(fake) = self.fake.as_ref() {
+            *fake
+                .mcp_server_reload_answer
+                .lock()
+                .expect("fake shared codex mcp reload mutex poisoned") = answer;
+        }
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn mcp_server_reload_attempt_count_for_test(&self) -> u64 {
+        self.fake
+            .as_ref()
+            .map(|fake| fake.mcp_server_reload_attempts.load(Ordering::SeqCst))
+            .unwrap_or(0)
     }
 
     #[cfg(feature = "fixtures")]

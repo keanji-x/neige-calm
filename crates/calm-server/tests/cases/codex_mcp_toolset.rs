@@ -12,10 +12,11 @@ use std::time::Duration;
 use calm_server::codex_mcp_toolset::{CodexMcpToolset, DEBOUNCE};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::event::EventBus;
+use calm_server::event::{Event, EventBus};
+use calm_server::ids::ActorId;
 use calm_server::mcp_server::{AppContext, McpShimConfig, ToolRegistry, build_default_registry};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
-use calm_server::shared_codex_appserver::SharedCodexAppServer;
+use calm_server::shared_codex_appserver::{FakeMcpServerReload, SharedCodexAppServer};
 use calm_server::shared_codex_home::{EXPECTED_MCP_SERVERS, SharedCodexHome};
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -132,6 +133,11 @@ async fn fixture(plugins: &[(&str, &[&str])]) -> Fx {
 impl Fx {
     /// The production boot entry: write the generation, then follow plugin state.
     async fn start(&self, debounce: Duration) {
+        self.start_following(&self.events, debounce).await;
+    }
+
+    /// [`Self::start`] following `bus` instead of the bus the plugin host emits on.
+    async fn start_following(&self, bus: &EventBus, debounce: Duration) {
         CodexMcpToolset {
             ctx: self.ctx.clone(),
             registry: self.registry.clone(),
@@ -139,7 +145,7 @@ impl Fx {
             appserver: self.appserver.clone(),
             debounce,
         }
-        .start(&self.events)
+        .start(bus)
         .await;
     }
 
@@ -164,6 +170,18 @@ impl Fx {
 
     fn reloads(&self) -> u64 {
         self.appserver.mcp_server_reload_count_for_test()
+    }
+
+    /// Wait until `want` reload calls reached the daemon, whatever they were answered.
+    async fn wait_reload_attempts(&self, want: u64) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while self.appserver.mcp_server_reload_attempt_count_for_test() < want {
+            assert!(
+                Instant::now() < deadline,
+                "expected {want} MCP reload attempts"
+            );
+            sleep(Duration::from_millis(25)).await;
+        }
     }
 
     async fn wait_reloads(&self, want: u64) {
@@ -244,19 +262,105 @@ async fn plugin_reload_rewrites_only_when_the_served_catalog_changed() {
 
 #[tokio::test]
 async fn a_burst_of_plugin_changes_is_one_reload() {
-    let debounce = Duration::from_secs(3);
     let fx = fixture(&[("dev.alpha", &["probe.a"]), ("dev.beta", &["probe.b"])]).await;
-    fx.start(debounce).await;
+    // The follower listens on its own bus, so the whole burst is queued before it wakes: no
+    // assumption about how fast the lifecycle operations finish.
+    let followed = EventBus::new();
+    fx.start_following(&followed, DEBOUNCE).await;
     let boot = fx.toolset().unwrap();
 
     let (alpha, beta) = tokio::join!(fx.host.enable("dev.alpha"), fx.host.enable("dev.beta"));
     alpha.unwrap();
     beta.unwrap();
     fx.host.disable("dev.beta").await.unwrap();
+    for (id, state) in [
+        ("dev.alpha", "running"),
+        ("dev.beta", "running"),
+        ("dev.beta", "disabled"),
+    ] {
+        followed.emit(
+            ActorId::Plugin(id.into()),
+            Event::PluginState {
+                id: id.into(),
+                state: state.into(),
+                last_error: None,
+            },
+        );
+    }
     fx.wait_reloads(1).await;
-    fx.settle(debounce).await;
+    fx.settle(DEBOUNCE).await;
     assert_eq!(fx.reloads(), 1, "the burst is gathered into one refresh");
     assert_ne!(fx.toolset().unwrap(), boot);
+    // The one refresh wrote the final catalog: a boot pass over it writes nothing.
+    let inode = fx.config_inode();
+    fx.start_following(&EventBus::new(), DEBOUNCE).await;
+    assert_eq!(fx.config_inode(), inode);
+}
+
+#[tokio::test]
+async fn each_daemon_running_sends_one_reload_for_an_adopted_daemon() {
+    let fx = fixture(&[("dev.tools", &["probe.one"])]).await;
+    fx.host.enable("dev.tools").await.unwrap();
+    // A restart whose running set differs from what the adopted daemon's threads listed: the boot
+    // write changes the generation and sends nothing while no daemon is Running.
+    fx.start(DEBOUNCE).await;
+    assert_eq!(fx.reloads(), 0);
+
+    // The boot takeover installs Running.
+    fx.appserver.publish_readiness_for_test(1, true);
+    fx.wait_reloads(1).await;
+    // The same incarnation re-stamped is not a new Running.
+    fx.appserver.publish_readiness_for_test(1, true);
+    fx.settle(DEBOUNCE).await;
+    assert_eq!(fx.reloads(), 1, "one Running is one reload");
+
+    // A respawn: transition entry, then the next incarnation.
+    fx.appserver.publish_readiness_for_test(1, false);
+    fx.appserver.publish_readiness_for_test(2, true);
+    fx.wait_reloads(2).await;
+    fx.settle(DEBOUNCE).await;
+    assert_eq!(fx.reloads(), 2);
+}
+
+#[tokio::test]
+async fn a_reload_owed_while_no_daemon_is_connected_is_sent_at_the_next_running() {
+    let fx = fixture(&[("dev.tools", &["probe.one"])]).await;
+    fx.start(DEBOUNCE).await;
+    fx.appserver
+        .answer_mcp_server_reload_for_test(FakeMcpServerReload::NotConnected);
+
+    fx.host.enable("dev.tools").await.unwrap();
+    fx.wait_reload_attempts(1).await;
+    assert_eq!(fx.reloads(), 0);
+
+    fx.appserver
+        .answer_mcp_server_reload_for_test(FakeMcpServerReload::Sent);
+    fx.appserver.publish_readiness_for_test(1, true);
+    fx.wait_reloads(1).await;
+    fx.settle(DEBOUNCE).await;
+    assert_eq!(fx.reloads(), 1);
+}
+
+#[tokio::test]
+async fn a_failed_reload_is_retried_at_the_next_plugin_change() {
+    let fx = fixture(&[("dev.tools", &["probe.one"]), ("dev.quiet", &[])]).await;
+    fx.start(DEBOUNCE).await;
+    fx.appserver
+        .answer_mcp_server_reload_for_test(FakeMcpServerReload::Fail);
+
+    fx.host.enable("dev.tools").await.unwrap();
+    fx.wait_reload_attempts(1).await;
+    assert_eq!(fx.reloads(), 0);
+    let written = fx.toolset().unwrap();
+
+    // A plugin change that leaves the catalog alone still pays the owed reload.
+    fx.appserver
+        .answer_mcp_server_reload_for_test(FakeMcpServerReload::Sent);
+    fx.host.enable("dev.quiet").await.unwrap();
+    fx.wait_reloads(1).await;
+    assert_eq!(fx.toolset().unwrap(), written);
+    fx.settle(DEBOUNCE).await;
+    assert_eq!(fx.reloads(), 1);
 }
 
 #[tokio::test]
