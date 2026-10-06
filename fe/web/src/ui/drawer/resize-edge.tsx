@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react';
 
 import { useState } from '../state/public.ts';
 import styles from './drawer.module.css';
+import { withScrollRestoration } from './follow-scroll.ts';
 import { capturePaneReadingPlaces, restorePaneReadingPlaces, type PaneReadingPlace, type PaneResizeGroup } from './resize-group.ts';
 
 /** Where the dragged edge went, in rem; `null` is the default width. The caller owns, applies and remembers it: `onPreview` once a frame while the edge moves, `onCommit` when it settles. The drawer stamps `data-nc-drawer-resizable` so the caller's stylesheet can apply the width only while this drawer is open. */
@@ -56,9 +57,11 @@ export function ResizeEdge({ resize, panelRef, scrollRef, group = null }: {
 
   /** Move the edge to `rem` with the reader kept on `place`, and return the width laid out. */
   const resizeTo = (places: readonly PaneReadingPlace[], rem: number | null) => {
-    resize.onPreview(rem);
-    restorePaneReadingPlaces(places);
-    return (panelRef.current?.getBoundingClientRect().width ?? 0) / remPx();
+    return withScrollRestoration(places.map(({ pane }) => pane), () => {
+      resize.onPreview(rem);
+      restorePaneReadingPlaces(places);
+      return (panelRef.current?.getBoundingClientRect().width ?? 0) / remPx();
+    });
   };
   const settle = (rem: number | null) => {
     const laid = resizeTo(capturePaneReadingPlaces(scrollRef.current, group), rem);

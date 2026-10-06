@@ -3,7 +3,7 @@
  * declines to compute it. `focus()` on a `visibility: hidden` element is a silent
  * no-op, so the seam between `ui/drawer` and `app/shell`'s `[data-nc-panel]` rule is tested here.
  */
-import { act, render, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, waitFor } from '@testing-library/react';
 import { page, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -646,6 +646,7 @@ describe('dragged conversation width', () => {
     mount({ initiallyOpen: true });
     await settled();
     const pane = scroller();
+    fireEvent.wheel(pane, { deltaY: -100 });
     pane.scrollTop += offsetInPane(wordBox('w350').top) - READING_LINE_PX - 2;
     const lineHeight = Number.parseFloat(getComputedStyle(paragraphStarting('w1 ')).lineHeight) + 1;
     for (const dx of [-300, 300]) {
@@ -666,6 +667,7 @@ describe('dragged conversation width', () => {
     const [above, below] = [paragraphStarting('Paragraph 4 '), paragraphStarting('Paragraph 5 ')];
     const gap = below.getBoundingClientRect().top - above.getBoundingClientRect().bottom;
     expect(gap).toBeGreaterThan(0);
+    fireEvent.wheel(pane, { deltaY: -100 });
     pane.scrollTop += offsetInPane(below.getBoundingClientRect().top) - READING_LINE_PX - gap / 2;
     for (const dx of [-300, 300]) {
       const before = offsetInPane(below.getBoundingClientRect().top);

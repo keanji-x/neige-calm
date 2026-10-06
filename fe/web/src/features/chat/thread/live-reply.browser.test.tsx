@@ -1,6 +1,6 @@
 /* A reply as it streams (#1923 S2): the pane follows its growth only for a reader at the end, and
    the stored reply that replaces it lands without a jump. Measured against a real engine. */
-import { act, render } from '@testing-library/react';
+import { act, fireEvent, render } from '@testing-library/react';
 import { page, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -65,6 +65,7 @@ describe('a streamed reply in a real engine', () => {
     await page.viewport(1280, 720);
     const { rerender } = render(<Pane turns={[...history, asked, live('First words')]} />);
     await frames();
+    fireEvent.wheel(pane(), { deltaY: 120 - pane().scrollTop });
     pane().scrollTop = 120;
     await frames();
     for (const length of [4, 10, 18]) {
@@ -118,6 +119,7 @@ describe('jump to the newest message', () => {
     await frames();
     expect(document.querySelector('[data-nc-chat-scroll-dock]')).toBeNull();
 
+    fireEvent.wheel(pane(), { deltaY: 120 - pane().scrollTop });
     pane().scrollTop = 120;
     await frames();
     const button = page.getByRole('button', { name: 'Scroll to bottom', exact: true });
@@ -148,6 +150,7 @@ describe('jump to the newest message', () => {
   it('supports keyboard activation and removes the control after a manual return', async () => {
     render(<Pane turns={history} />);
     await frames();
+    fireEvent.wheel(pane(), { deltaY: 120 - pane().scrollTop });
     pane().scrollTop = 120;
     await frames();
     const button = await page.getByRole('button', { name: 'Scroll to bottom', exact: true }).findElement();
@@ -156,6 +159,7 @@ describe('jump to the newest message', () => {
     await frames();
     expect(pane().scrollTop).toBe(atEnd());
     expect(document.querySelector('[data-nc-chat-scroll-dock]')).toBeNull();
+    fireEvent.wheel(pane(), { deltaY: -pane().scrollTop });
     pane().scrollTop = 0;
     await frames();
     expect(document.querySelector('[data-nc-chat-scroll-dock]')).not.toBeNull();
@@ -171,6 +175,7 @@ describe('jump to the newest message', () => {
     </Drawer>);
     const drawer = document.querySelector<HTMLElement>('[data-nc-drawer]')!;
     await Promise.all(drawer.getAnimations().map((animation) => animation.finished));
+    fireEvent.wheel(pane(), { deltaY: 120 - pane().scrollTop });
     pane().scrollTop = 120;
     await frames();
     const button = page.getByRole('button', { name: 'Scroll to bottom', exact: true });

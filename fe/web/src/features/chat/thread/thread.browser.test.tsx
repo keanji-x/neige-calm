@@ -1,5 +1,5 @@
 /* The composer, the exchange rail and the reply's type, measured against a real rendering engine. */
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { page, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -592,7 +592,10 @@ async function settle() {
 
 /** Put the pane where a reader would have put it, by the same `scrollTop` write the rail's press makes. */
 async function scrollPaneTo(top: number) {
+  fireEvent.wheel(pane(), { deltaY: top - pane().scrollTop });
   pane().scrollTop = top;
+  await settle();
+  pane().dispatchEvent(new Event('scrollend'));
   await settle();
 }
 
@@ -1576,8 +1579,8 @@ describe('the exchange rail, as the engine lays it out', () => {
     expect(scroller.scrollTop).toBe(scroller.scrollHeight - scroller.clientHeight);
   });
 
-  /* A resize dispatches no `scroll`: the composer shrinking or the window growing closes the distance silently. */
-  it('follows again after the pane grows around a parked reader', async () => {
+  /* Geometry can bring history near the tail without a reader choosing it. */
+  it('keeps a parked reader after the pane grows around them', async () => {
     await page.viewport(1400, 900);
     const { rerender } = render(<RailPane turns={railTurns(8)} paneHeight={400} />);
     await frame();
@@ -1588,6 +1591,7 @@ describe('the exchange rail, as the engine lays it out', () => {
     rerender(<RailPane turns={railTurns(8)} paneHeight={650} />);
     await settle();
     expect(remaining()).toBeLessThanOrEqual(64);
+    const parked = pane().scrollTop;
 
     rerender(<RailPane turns={[...railTurns(8), {
       id: 'late', author: 'agent' as const, text: `Later. ${LINE.repeat(4)}`, atMs: 99_000,
@@ -1595,7 +1599,7 @@ describe('the exchange rail, as the engine lays it out', () => {
     await settle();
 
     const scroller = pane();
-    expect(scroller.scrollTop).toBe(scroller.scrollHeight - scroller.clientHeight);
+    expect(scroller.scrollTop).toBe(parked);
   });
 
   it('bounds the rail by the pane and scrolls the lit dot into its own view', async () => {

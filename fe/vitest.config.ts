@@ -58,6 +58,10 @@ export default defineConfig({
             instances: [{ browser: 'chromium' }],
             /* `prefers-reduced-motion` is a media feature only the driver can emulate, so it is exposed as a command. */
             commands: {
+              wheelScroll: async ({ page, iframe }, selector: string, deltaY: number) => {
+                await iframe.locator(selector).hover();
+                await page.mouse.wheel(0, deltaY);
+              },
               emulateReducedMotion: async ({ page }, reduce: boolean) => {
                 await page.emulateMedia({ reducedMotion: reduce ? 'reduce' : 'no-preference' });
               },

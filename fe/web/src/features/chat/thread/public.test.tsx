@@ -63,9 +63,10 @@ function followPane() {
   const pane = document.createElement('div');
   pane.setAttribute('data-nc-drawer-scroll', '');
   let offset = 0;
+  let height = PANE_SCROLL_HEIGHT;
   const writes: number[] = [];
   Object.defineProperty(pane, 'scrollHeight', {
-    configurable: true, value: PANE_SCROLL_HEIGHT,
+    configurable: true, get: () => height,
   });
   Object.defineProperty(pane, 'clientHeight', {
     configurable: true, value: PANE_CLIENT_HEIGHT,
@@ -73,13 +74,18 @@ function followPane() {
   Object.defineProperty(pane, 'scrollTop', {
     configurable: true,
     get: () => offset,
-    set: (value: number) => { offset = value; writes.push(value); },
+    set: (value: number) => { offset = Math.max(0, Math.min(value, height - PANE_CLIENT_HEIGHT)); writes.push(value); },
   });
   document.body.append(pane);
   return {
     pane,
     writes,
-    scrollTo: (value: number) => { offset = value; fireEvent.scroll(pane); },
+    grow: () => { height += 100; },
+    scrollTo: (value: number) => {
+      fireEvent.wheel(pane, { deltaY: value - offset });
+      offset = value;
+      fireEvent.scroll(pane);
+    },
   };
 }
 
@@ -383,7 +389,7 @@ describe('ChatThread', () => {
   });
 
   it('does not follow a new turn when the reader has scrolled away', () => {
-    const { pane, writes, scrollTo } = followPane();
+    const { pane, writes, scrollTo, grow } = followPane();
     const { rerender } = render(
       <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(3)} />,
       { container: pane },
@@ -391,6 +397,7 @@ describe('ChatThread', () => {
     expect(writes).toEqual([PANE_SCROLL_HEIGHT]);
 
     scrollTo(100);
+    grow();
     rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(4)} />);
 
     expect(writes).toEqual([PANE_SCROLL_HEIGHT]);
@@ -399,34 +406,36 @@ describe('ChatThread', () => {
   });
 
   it('follows a new turn for a reader still at the end', () => {
-    const { pane, writes, scrollTo } = followPane();
+    const { pane, writes, scrollTo, grow } = followPane();
     const { rerender } = render(
       <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(3)} />,
       { container: pane },
     );
     scrollTo(PANE_SCROLL_HEIGHT - PANE_CLIENT_HEIGHT);
+    grow();
     rerender(<ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(4)} />);
 
-    expect(writes).toEqual([PANE_SCROLL_HEIGHT, PANE_SCROLL_HEIGHT]);
+    expect(writes).toEqual([PANE_SCROLL_HEIGHT, PANE_SCROLL_HEIGHT + 100]);
     pane.remove();
   });
 
   it.each([true, false])('follows a new pause only when the reader is at the end (%s)', (atEnd) => {
-    const { pane, writes, scrollTo } = followPane();
+    const { pane, writes, scrollTo, grow } = followPane();
     const turns = exchangeTurns(3);
     const { rerender } = render(<ChatThread canContinue={false} cards={{}} stalled={false}
       conversation={conversation()} turns={turns} />, { container: pane });
     const position = atEnd ? PANE_SCROLL_HEIGHT - PANE_CLIENT_HEIGHT : 100;
     scrollTo(position);
+    grow();
     rerender(<ChatThread canContinue={false} cards={{}} stalled stalledReason="Stopping is unconfirmed."
       conversation={conversation()} turns={turns} />);
-    expect(writes).toEqual(atEnd ? [PANE_SCROLL_HEIGHT, PANE_SCROLL_HEIGHT] : [PANE_SCROLL_HEIGHT]);
+    expect(writes).toEqual(atEnd ? [PANE_SCROLL_HEIGHT, PANE_SCROLL_HEIGHT + 100] : [PANE_SCROLL_HEIGHT]);
     if (!atEnd) expect(pane.scrollTop).toBe(position);
     pane.remove();
   });
 
   it('does not follow when older turns are loaded in front', () => {
-    const { pane, writes, scrollTo } = followPane();
+    const { pane, writes, scrollTo, grow } = followPane();
     const { rerender } = render(
       <ChatThread canContinue={false} cards={{}} stalled={false} conversation={conversation()} turns={exchangeTurns(3)} />,
       { container: pane },
@@ -440,19 +449,20 @@ describe('ChatThread', () => {
     );
 
     expect(writes).toEqual([PANE_SCROLL_HEIGHT]);
+    grow();
     rerender(
       <ChatThread canContinue={false} cards={{}} stalled={false}
         conversation={conversation()}
         turns={[...earlier, ...exchangeTurns(3), turn({ id: 'late', author: 'agent' })]}
       />,
     );
-    expect(writes).toEqual([PANE_SCROLL_HEIGHT, PANE_SCROLL_HEIGHT]);
+    expect(writes).toEqual([PANE_SCROLL_HEIGHT, PANE_SCROLL_HEIGHT + 100]);
     pane.remove();
   });
 
   /* `buildTranscript` collapses a trailing `Thought` into the reply that answers it, so the count can stay the same while the last id changes. */
   it('follows a turn that replaced the last one without changing the count', () => {
-    const { pane, writes, scrollTo } = followPane();
+    const { pane, writes, scrollTo, grow } = followPane();
     const thinking = [
       turn({ id: 'q1' }),
       turn({ id: 'thought', author: 'agent', text: 'Thought' }),
@@ -463,6 +473,7 @@ describe('ChatThread', () => {
     );
     scrollTo(PANE_SCROLL_HEIGHT - PANE_CLIENT_HEIGHT);
     expect(writes).toEqual([PANE_SCROLL_HEIGHT]);
+    grow();
 
     rerender(
       <ChatThread canContinue={false} cards={{}} stalled={false}
@@ -471,7 +482,7 @@ describe('ChatThread', () => {
       />,
     );
 
-    expect(writes).toEqual([PANE_SCROLL_HEIGHT, PANE_SCROLL_HEIGHT]);
+    expect(writes).toEqual([PANE_SCROLL_HEIGHT, PANE_SCROLL_HEIGHT + 100]);
     pane.remove();
   });
 

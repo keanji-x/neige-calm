@@ -21,6 +21,7 @@ import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
 import { EdgeNavigator } from '../../../ui/edge-navigation/public.tsx';
 import { observeResize } from '../../../ui/edge-navigation/resize.ts';
+import { createScrollFollower } from '../../../ui/drawer/follow-scroll.ts';
 import { drawerSeamAround } from '../../../ui/drawer/public.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { triggerMenuKeyRoute } from '../../../ui/trigger-menu-keys/public.ts';
@@ -157,8 +158,10 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
   /** Re-derive the lit dot from the painted boxes; a no-op before the rail effect has installed it. */
   const readActive = useRef<() => void>(() => {});
   /** Whether the reader is parked at the end of the transcript — the only state in which a newly appended turn may move the pane. */
-  const followsNewest = useRef(true);
   const [scrolledUp, setScrolledUp] = useState(false);
+  const [scrollFollower] = useState(() => createScrollFollower({
+    bottomSlack: FOLLOW_BOTTOM_SLACK_PX, onAwayChange: setScrolledUp,
+  }));
   /** The turn at the end of the transcript as of this render — what the follow
    *  effect below both depends on and decides by. */
   const newestId = lastTurn?.id;
@@ -170,31 +173,24 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
   const followedNotice = useRef<string | null>(null);
   const noticeKind = stalled ? 'paused' : stopFeedback?.kind ?? null;
 
-  /* Follow the newest turn only for a reader already at the bottom, when the last turn's id, its streamed length or the runtime notice changes — not the count: *Load earlier* grows the count, and a collapsed `Thought` changes the id without it. A pane resize moves the reader without a `scroll`, so the same measurement runs from a `ResizeObserver`; text growing below the fold fires neither, so a reader at the bottom stays one. Write the pane's own `scrollTop`: `scrollIntoView` pans every ancestor scrollport. */
+  // Attach once per pane/conversation. Input intent survives streaming renders.
   useEffect(() => {
-    const end = endRef.current;
-    if (end == null) return;
-    const scroller = end.closest<HTMLElement>('[data-nc-drawer-scroll]');
-    if (scroller == null) return;
+    const content = frameRef.current;
+    const scroller = content?.closest<HTMLElement>('[data-nc-drawer-scroll]');
+    if (content == null || scroller == null) return;
+    return scrollFollower.attach(scroller, content);
+  }, [scrollFollower, hasTranscript, conversation.id]);
+
+  // Tail arrivals are distinct from older history being prepended. Content
+  // resize also follows late image loads, rewraps and disclosure growth.
+  useEffect(() => {
     const arrived = newestId !== followedTo.current || newestLength !== followedLength.current
       || noticeKind !== followedNotice.current;
     followedNotice.current = noticeKind;
     followedTo.current = newestId;
     followedLength.current = newestLength;
-    if (arrived && followsNewest.current) scroller.scrollTop = scroller.scrollHeight;
-    const measure = () => {
-      followsNewest.current = scroller.scrollHeight - scroller.scrollTop
-        - scroller.clientHeight <= FOLLOW_BOTTOM_SLACK_PX;
-      setScrolledUp(!followsNewest.current);
-    };
-    measure();
-    scroller.addEventListener('scroll', measure, { passive: true });
-    const unobserve = observeResize(scroller, measure);
-    return () => {
-      scroller.removeEventListener('scroll', measure);
-      unobserve();
-    };
-  }, [turns.length, newestId, newestLength, noticeKind]);
+    if (arrived) scrollFollower.followGrowth();
+  }, [scrollFollower, newestId, newestLength, noticeKind]);
 
   /* The lit dot is the last exchange whose opening marker sits at or above an edge: the pane's top while a pane-height of scroll remains, sliding to the bottom as it runs out (a hard switch jumped the mark by a pane's worth). Evaluated on every scroll rather than by an observer. `read()` stops at a zero-height pane, and that guard lives only there so a pane mounted at zero height still gets its listeners. */
   const exchangeKey = JSON.stringify(exchanges.map((exchange) => exchange.id));
@@ -360,7 +356,9 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
           activeId={active}
           onSelect={(id) => {
             /* The lookup comes first: a marker that is not there leaves the mark untouched. */
-            if (!jumpToExchange(frameRef.current, id)) return;
+            const target = exchangePosition(frameRef.current, id);
+            if (target === null) return;
+            scrollFollower.navigate(target);
             /* The mark moves on the press, then the rule re-reads the boxes: a write the engine clamps to the current offset fires no `scroll`, so nothing else would correct the press. */
             setActive(id);
             readActive.current();
@@ -397,13 +395,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
         <div className={styles.scrollDock}>
           <div className={styles.scrollDockContent} data-nc-chat-scroll-dock="">
             <div className={styles.scrollBlur} aria-hidden="true" />
-            <ChatLayoutScrollButton isVisible className={styles.scrollButton} onClick={() => {
-              const scroller = endRef.current?.closest<HTMLElement>('[data-nc-drawer-scroll]');
-              if (scroller == null) return;
-              followsNewest.current = true;
-              scroller.scrollTop = scroller.scrollHeight;
-              setScrolledUp(false);
-            }} />
+            <ChatLayoutScrollButton isVisible className={styles.scrollButton} onClick={scrollFollower.followToEnd} />
           </div>
         </div>
       )}
@@ -449,16 +441,15 @@ function railLabel(text: string): string {
   return line.length <= RAIL_LABEL_MAX ? line : `${line.slice(0, RAIL_LABEL_MAX - 1)}…`;
 }
 
-/** Put the exchange at the top of the drawer's pane by writing that pane's `scrollTop`, never `scrollIntoView` (which pans every ancestor scrollport). Returns whether there was somewhere to go, not whether the pane moved: the engine clamps the write. */
-function jumpToExchange(frame: HTMLElement | null, id: string): boolean {
-  if (frame === null) return false;
+/** Resolve before releasing follow intent: an absent exchange is a no-op. */
+function exchangePosition(frame: HTMLElement | null, id: string): (() => void) | null {
+  if (frame === null) return null;
   const marker = [...frame.querySelectorAll<HTMLElement>('[data-nc-exchange]')]
     .find((candidate) => candidate.dataset.ncExchange === id);
-  if (marker === undefined) return false;
+  if (marker === undefined) return null;
   const scroller = marker.closest<HTMLElement>('[data-nc-drawer-scroll]');
-  if (scroller === null) return false;
-  scroller.scrollTop += marker.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
-  return true;
+  if (scroller === null) return null;
+  return () => { scroller.scrollTop += marker.getBoundingClientRect().top - scroller.getBoundingClientRect().top; };
 }
 
 /** A duration is printed only when the reader felt it; most `item/completed` are a 12ms read. */

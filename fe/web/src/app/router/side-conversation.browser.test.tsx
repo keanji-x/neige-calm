@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, RouterProvider } from '@tanstack/react-router';
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, fireEvent, render } from '@testing-library/react';
 import { page, userEvent } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
 import type { ApiRequest, ApiTransportPort } from '../../../../core/api/types.ts';
@@ -159,6 +159,7 @@ it('preserves the sibling reading anchor when the shared width changes', async (
   await userEvent.keyboard('{ArrowLeft}'.repeat(12));
   const scrollers = document.querySelectorAll<HTMLElement>('[data-nc-drawer-scroll]');
   const sibling = scrollers[1];
+  fireEvent.wheel(sibling, { deltaY: -100 });
   sibling.scrollTop = sibling.scrollHeight * 0.4;
   const place = readingPlaceIn(sibling);
   expect(place.atEnd).toBe(false);

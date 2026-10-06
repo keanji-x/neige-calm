@@ -1,6 +1,6 @@
 /* A reply as it streams (#1923 S2), as a finger gets it (`vitest.config.ts`: `pointer: coarse`, touch): the pane
    follows its growth only for a reader at the end, and a narrow pane takes a growing code block without overflowing. */
-import { act, render } from '@testing-library/react';
+import { act, fireEvent, render } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import '../../../styles/entry.css';
@@ -61,6 +61,7 @@ describe('a streamed reply under a coarse pointer', () => {
   it('never moves the pane while the reader is reading history', async () => {
     const { rerender } = render(<Pane turns={[...history, asked, live('First words')]} />);
     await frames();
+    fireEvent.wheel(pane(), { deltaY: 120 - pane().scrollTop });
     pane().scrollTop = 120;
     await frames();
     for (const length of [4, 10, 18]) {
