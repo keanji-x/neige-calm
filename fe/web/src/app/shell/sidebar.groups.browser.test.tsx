@@ -8,7 +8,6 @@ import '../../styles/entry.css';
 import { createUiPreferences, UiPreferencesProvider } from '../providers/ui-preferences.tsx';
 import { ThemeProvider } from '../theme/public.tsx';
 import styles from './shell.module.css';
-import { readMotionTransition } from '../../ui/motion/transition.ts';
 import { Sidebar } from './sidebar.tsx';
 import { TrackRow } from '../../features/track/row/public.tsx';
 
@@ -63,9 +62,8 @@ it('places view options and preserves disclosure and keyboard navigation', async
     .querySelector<HTMLElement>('[title="Work"]')!;
   expect(areaTitle.getBoundingClientRect().left).toBeGreaterThan(areasTitle.getBoundingClientRect().left);
 
-  const motion = readMotionTransition(areasMarker, 'disclosure');
-  expect(parseFloat(getComputedStyle(areasMarker).transitionDuration)).toBe(motion.duration);
-  expect(getComputedStyle(areasMarker).transitionTimingFunction).toBe(`cubic-bezier(${motion.ease.join(', ')})`);
+  expect(areasMarker.hasAttribute('data-nc-spring-rotation')).toBe(true);
+  expect(getComputedStyle(areasMarker).transitionProperty).toBe('none');
   await today.hover();
   expect(getComputedStyle(areasMarker).opacity).toBe('0');
   await areasDisclosure.hover();

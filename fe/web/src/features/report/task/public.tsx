@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { boundedStatusDetail, type ReportTaskRow, type TaskBlockPayload } from '../../../../../core/domain/report.ts';
 import { taskStatusPhrase } from '../../../../../core/view/track-page.ts';
 import { useState } from '../../../ui/state/public.ts';
+import { SpringRotation } from '../../../ui/motion/rotation.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
 import styles from './task.module.css';
 
@@ -27,9 +28,9 @@ export function ReportTaskBlock({ payload, blockId, task, renderExecution }: {
   if (isWithdrawn(payload)) {
     const reason = payload.tombstone.reason;
     return (
-      <details className={styles.task} data-nc-task-state="withdrawn">
+      <details onToggle={event => { setExpanded(event.currentTarget.open); }} className={styles.task} data-nc-task-state="withdrawn">
         <summary className={styles.head}>
-          <span className={styles.marker}><Icon name="chevron-right" size="sm" /></span>
+          <SpringRotation className={styles.marker} angle={expanded ? 90 : 0}><Icon name="chevron-right" size="sm" /></SpringRotation>
           <span className={styles.kindLabel}>Task</span>
           <span className={styles.key}>{payload.key === '' ? blockId : payload.key}</span>
           <span className={styles.spacer} />
@@ -57,7 +58,7 @@ export function ReportTaskBlock({ payload, blockId, task, renderExecution }: {
   return (
     <details onToggle={(event) => { setExpanded(event.currentTarget.open); }} className={styles.task} data-nc-task-state={status ?? (live.ready ? 'ready' : 'not-ready')}>
       <summary className={styles.head}>
-        <span className={styles.marker}><Icon name="chevron-right" size="sm" /></span>
+        <SpringRotation className={styles.marker} angle={expanded ? 90 : 0}><Icon name="chevron-right" size="sm" /></SpringRotation>
         <span className={styles.kindLabel}>Task</span>
         <span className={styles.key}>{live.key === '' ? blockId : live.key}</span>
         <span className={styles.spacer} />

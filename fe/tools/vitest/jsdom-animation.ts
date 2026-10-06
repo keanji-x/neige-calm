@@ -1,6 +1,6 @@
 /** jsdom has no native animations. Model only the platform control protocol; browsers verify rendering. */
-if (typeof HTMLElement !== 'undefined' && typeof HTMLElement.prototype.animate !== 'function') {
-  Object.defineProperty(HTMLElement.prototype, 'animate', {
+if (typeof Element !== 'undefined' && typeof Element.prototype.animate !== 'function') {
+  Object.defineProperty(Element.prototype, 'animate', {
     configurable: true,
     value: function () {
       let resolve: (value: Animation) => void;

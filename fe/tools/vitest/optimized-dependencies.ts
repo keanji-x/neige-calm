@@ -9,6 +9,7 @@ export const OPTIMIZED_DEPENDENCIES = Object.freeze([
   '@fullcalendar/react/themes/monarch',
   'temporal-polyfill',
   'motion',
+  'react-grid-layout/core',
   '@astryxdesign/core/Switch',
   '@tanstack/react-query',
   '@tanstack/react-router',

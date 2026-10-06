@@ -5,7 +5,6 @@ import '../../../styles/entry.css';
 import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
 import { NEUTRAL_ACTIVITY, type CardWire } from '../../../../../core/domain/track.ts';
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
-import { readMotionTransition } from '../../../ui/motion/transition.ts';
 import { PanelCard } from '../../../ui/panel-card/public.tsx';
 import { makeDesktopPainter, paintDesktopPanel } from './desktop-painter.tsx';
 import { card, openableCardsOf } from './test-fixtures.tsx';
@@ -69,9 +68,8 @@ it('keeps completed work folded until requested and preserves its click destinat
   render(<div style={{ inlineSize: 260 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ onOpenTask: openTask }),
     derive({ cards: [], tasks: [task('A long completed task name', 'done', 'codex')] }))}</PanelCard></div>);
   const marker = document.querySelector<HTMLElement>('[data-nc-inventory-group] > summary > span:last-child')!;
-  const motion = readMotionTransition(marker, 'disclosure');
-  expect(parseFloat(getComputedStyle(marker).transitionDuration)).toBe(motion.duration);
-  expect(getComputedStyle(marker).transitionTimingFunction).toBe(`cubic-bezier(${motion.ease.join(', ')})`);
+  expect(marker.hasAttribute('data-nc-spring-rotation')).toBe(true);
+  expect(getComputedStyle(marker).transitionProperty).toBe('none');
   const row = page.getByRole('button', { name: 'A long completed task name' });
   expect(document.querySelector<HTMLElement>('[data-nc-row="A long completed task name"]')!.checkVisibility()).toBe(false);
   await page.getByText('Completed', { exact: true }).click();

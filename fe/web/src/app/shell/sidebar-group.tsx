@@ -7,6 +7,7 @@ import { useCollapsible } from '@astryxdesign/core/Collapsible';
 import { areaOf, type Area } from '../../../../core/domain/area.ts';
 import { AREA_TRACK_LIMIT, limitAreaTracks, type Track } from '../../../../core/domain/track.ts';
 import { TrackRow } from '../../features/track/row/public.tsx';
+import { SpringRotation } from '../../ui/motion/rotation.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
 import { ListText } from '../../ui/list-typography/public.tsx';
 import { useState } from '../../ui/state/public.ts';
@@ -58,9 +59,9 @@ export function SidebarGroup({ title, label, expanded, onToggle, level, manageme
     aria-label={`${disclosure.isOpen ? 'Collapse' : 'Expand'} ${label}`}
     onClick={disclosure.toggle}
   >
-    <span className={`${styles.chevron} ${disclosure.isOpen ? styles.chevronOpen : ''}`} aria-hidden="true">
+    <SpringRotation className={styles.chevron} angle={disclosure.isOpen ? 90 : 0}>
       <Icon name="chevron-right" />
-    </span>
+    </SpringRotation>
     <ListText tone={level === 'section' ? 'section' : 'group'} className={styles.areaName} title={title} fadeOverflow>{title}</ListText>
   </button>;
   return <div role="group" aria-label={label} className={level === 'section' ? styles.section : styles.areaGroup}>

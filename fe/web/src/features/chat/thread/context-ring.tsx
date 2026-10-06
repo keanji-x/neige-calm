@@ -1,6 +1,8 @@
 // How full this conversation's context is, beside the send button. Drawn from the kernel's
 // `percent` only: the prompt-and-tools floor is taken off both sides, so `used / window` is a different, wrong number.
 
+import { useRef } from 'react';
+import { useSpringTarget } from '../../../ui/motion/target.ts';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 
 import type { PlannerRunTokenUsage } from '../../../../../core/domain/conversation.ts';
@@ -69,19 +71,23 @@ export function ContextRing({ usage }: { usage: PlannerRunTokenUsage | null }) {
           />
           {/* `strokeLinecap: round` paints a dot at a dash length of zero, so a zero-percent arc must be no element. */}
           {percent > 0 && (
-            <circle
-              className={styles.fill}
-              cx={SIZE / 2} cy={SIZE / 2} r={RADIUS}
-              fill="none" strokeWidth={STROKE} strokeLinecap="round"
-              strokeDasharray={`${(CIRCUMFERENCE * percent) / 100} ${CIRCUMFERENCE}`}
-              /* Twelve o'clock, clockwise — the direction a dial is read. */
-              transform={`rotate(-90 ${SIZE / 2} ${SIZE / 2})`}
-            />
+            <ContextArc percent={percent} />
           )}
         </svg>
       </span>
     </Tooltip>
   );
+}
+
+function ContextArc({ percent }: Readonly<{ percent: number }>) {
+  const ref = useRef<SVGCircleElement | null>(null);
+  useSpringTarget(ref, null, percent, percent, true, true, () => {}, value => ({
+    strokeDasharray: `${CIRCUMFERENCE * Math.max(0, Math.min(100, value)) / 100} ${CIRCUMFERENCE}`,
+  }));
+  return <circle ref={ref} className={styles.fill} cx={SIZE / 2} cy={SIZE / 2} r={RADIUS}
+    fill="none" strokeWidth={STROKE} strokeLinecap="round"
+    strokeDasharray={`${CIRCUMFERENCE * percent / 100} ${CIRCUMFERENCE}`}
+    transform={`rotate(-90 ${SIZE / 2} ${SIZE / 2})`} />;
 }
 
 /** Plain spans that inherit colour, not `Text`: Astryx's tooltip is an inverted surface and `Text` re-asserts `--color-text-primary`, which rendered black on black. */

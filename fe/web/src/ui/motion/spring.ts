@@ -6,12 +6,16 @@ const RESPONSE = 20;
 const SAMPLE_MS = 10;
 
 export type SpringSample = Readonly<{ value: number; velocity: number }>;
-export type SpringPlayback = Readonly<{
+export type SpringPoint = Readonly<{ x: number; y: number }>;
+type Playback<Value> = Readonly<{
   animations: readonly Animation[];
   finished: Promise<void>;
-  sample: () => SpringSample;
+  sample: () => Readonly<{ value: Value; velocity: Value }>;
   cancel: () => void;
 }>;
+
+export type SpringPlayback = Playback<number>;
+export type PointPlayback = Playback<SpringPoint>;
 
 /** Motion owns the equation, analytical velocity and stopping criteria. */
 export function springTrajectory(from: number, to: number, velocity: number) {
@@ -28,31 +32,26 @@ export function springTrajectory(from: number, to: number, velocity: number) {
   return { duration, sample };
 }
 
-/** Adapt the shared library trajectory to owned native effects, without per-frame JS style writes. */
-export function playSpring(
-  elements: readonly HTMLElement[], from: number, to: number, velocity: number,
-  paint: (value: number) => Keyframe,
-): SpringPlayback {
+/** Shared native renderer, independent of scalar/vector geometry. */
+function playTrajectory<Value>(
+  elements: readonly (HTMLElement | SVGElement)[],
+  trajectory: Readonly<{ duration: number; sample: (time: number) => Readonly<{ value: Value; velocity: Value }> }>,
+  paint: (value: Value) => Keyframe,
+): Playback<Value> {
   if (elements.length === 0) throw new Error('Spring requires a surface');
   const document = elements[0].ownerDocument;
   if (elements.some(element => element.ownerDocument !== document)) throw new Error('Spring surfaces must share a document');
-  const trajectory = springTrajectory(from, to, velocity);
   const steps = Math.max(1, Math.ceil(trajectory.duration / SAMPLE_MS));
-  const keyframes = Array.from({ length: steps + 1 }, (_, index) =>
-    paint(trajectory.sample(trajectory.duration * index / steps).value));
+  const keyframes = Array.from({ length: steps + 1 }, (_, index) => paint(trajectory.sample(trajectory.duration * index / steps).value));
   const animations: Animation[] = [];
   try {
     for (const element of elements) animations.push(element.animate(keyframes, {
       duration: trajectory.duration, easing: 'linear', fill: 'both',
     }));
   } catch (error) {
-    for (const animation of animations) {
-      void animation.finished.catch(() => {});
-      animation.cancel();
-    }
+    for (const animation of animations) { void animation.finished.catch(() => {}); animation.cancel(); }
     throw error;
   }
-  // Same-document native play tasks share the next rendering time; do not backdate to a stale frame.
   return {
     animations,
     finished: Promise.all(animations.map(animation => animation.finished)).then(() => {}),
@@ -63,4 +62,27 @@ export function playSpring(
     },
     cancel: () => { for (const animation of animations) animation.cancel(); },
   };
+}
+
+export function playSpring(
+  elements: readonly (HTMLElement | SVGElement)[], from: number, to: number, velocity: number,
+  paint: (value: number) => Keyframe,
+): SpringPlayback {
+  return playTrajectory(elements, springTrajectory(from, to, velocity), paint);
+}
+
+export function playPointSpring(
+  elements: readonly (HTMLElement | SVGElement)[], from: SpringPoint, to: SpringPoint, velocity: SpringPoint,
+  paint: (value: SpringPoint) => Keyframe,
+): PointPlayback {
+  const x = springTrajectory(from.x, to.x, velocity.x);
+  const y = springTrajectory(from.y, to.y, velocity.y);
+  return playTrajectory(elements, {
+    duration: Math.max(x.duration, y.duration),
+    sample: time => {
+      const a = x.sample(Math.min(time, x.duration));
+      const b = y.sample(Math.min(time, y.duration));
+      return { value: { x: a.value, y: b.value }, velocity: { x: a.velocity, y: b.velocity } };
+    },
+  }, paint);
 }

@@ -220,8 +220,8 @@
 
   .react-grid-item,
   .react-grid-item.cssTransforms {
-    transition: transform var(--motion-medium) var(--ease-layout), box-shadow var(--motion-quick) var(--ease-feedback);
-    transition-property: transform, box-shadow;
+    transition: box-shadow var(--motion-quick) var(--ease-feedback);
+    transition-property: box-shadow;
   }
 
   .react-grid-item.react-grid-placeholder {

@@ -1,5 +1,5 @@
 import { act, render } from '@testing-library/react';
-import { page as browserPage, userEvent } from 'vitest/browser';
+import { commands, page as browserPage, userEvent } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
 
 import '../../../styles/entry.css';
@@ -31,7 +31,7 @@ const entry: CardEntry = {
   create: Object.freeze({ mode: 'kernel-minted-only' as const }),
 };
 
-afterEach(() => { document.body.replaceChildren(); });
+afterEach(async () => { document.body.replaceChildren(); await commands.emulateReducedMotion(false); });
 
 it('brings a newly selected card into the board viewport', async () => {
   await browserPage.viewport(1200, 800);
@@ -95,12 +95,13 @@ it('keeps the real dragged card under direct pointer control', async () => {
     expect(dragged).not.toBeNull();
     expect(dragged.classList.contains('react-draggable-dragging')).toBe(true);
     expect(getComputedStyle(dragged).transitionProperty).toBe('none');
+    expect(dragged.getAnimations()).toHaveLength(0);
   } finally {
     act(() => { document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: point.clientX, clientY: point.clientY + 80 })); });
   }
 });
 
-it('uses shared layout timing at rest and suppresses it during a real resize', async () => {
+it('keeps feedback timing at rest and suppresses motion during a real resize', async () => {
   await browserPage.viewport(1200, 800);
   const registry = createCardRegistry(); registry.register(entry);
   const host = createCardHost(registry);
@@ -108,7 +109,7 @@ it('uses shared layout timing at rest and suppresses it during a real resize', a
   render(<div style={{ display: 'flex', inlineSize: 900, blockSize: 600 }}><BoardHost host={host} items={items} activeCardId="resize-card" visible /></div>);
   await expect.poll(() => document.querySelector('[data-nc-card-id="resize-card"]')).not.toBeNull();
   const cell = document.querySelector<HTMLElement>('[data-nc-card-id="resize-card"]')!;
-  const motion = readMotionTransition(cell, 'layout');
+  const motion = readMotionTransition(cell, 'feedback');
   expect(parseFloat(getComputedStyle(cell).transitionDuration)).toBe(motion.duration);
   const handle = cell.querySelector<HTMLElement>('[data-nc-card-resize="se"]')!;
   const box = handle.getBoundingClientRect();
@@ -118,7 +119,70 @@ it('uses shared layout timing at rest and suppresses it during a real resize', a
     act(() => { document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, buttons: 1, clientX: point.clientX + 40, clientY: point.clientY + 40 })); });
     expect(cell.classList.contains('resizing')).toBe(true);
     expect(getComputedStyle(cell).transitionProperty).toBe('none');
+    expect(cell.getAnimations()).toHaveLength(0);
   } finally {
     act(() => { document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: point.clientX + 40, clientY: point.clientY + 40 })); });
+  }
+});
+
+it('settles a remaining card with native spring geometry after compaction', async () => {
+  await browserPage.viewport(1200, 800);
+  const registry = createCardRegistry(); registry.register(entry);
+  const host = createCardHost(registry);
+  const item = (id: string, originalIndex: number): BoardHostItem => ({
+    card: { type: 'board-scroll-term', id, title: id }, title: id, originalIndex, activity: null,
+  });
+  const first = item('first', 0), second = item('second', 1);
+  const scene = (items: readonly BoardHostItem[]) => <div style={{ display: 'flex', inlineSize: 900, blockSize: 600 }}>
+    <BoardHost host={host} items={items} activeCardId={null} visible />
+  </div>;
+  const view = render(scene([first, second]));
+  await expect.poll(() => document.querySelector('[data-nc-card-id="second"]')).not.toBeNull();
+  const cell = document.querySelector<HTMLElement>('[data-nc-card-id="second"]')!;
+  await expect.poll(() => cell.getAnimations().length).toBe(0);
+  const before = cell.getBoundingClientRect().top;
+  view.rerender(scene([second]));
+  const geometry = () => cell.getAnimations().find(animation =>
+    (animation.effect as KeyframeEffect).getKeyframes().some(frame => frame.transform !== undefined));
+  await expect.poll(geometry).toBeDefined();
+  const frames = (geometry()!.effect as KeyframeEffect).getKeyframes();
+  expect(frames.length, JSON.stringify({before, style: cell.getAttribute("style"), frames})).toBeGreaterThan(2);
+  expect(cell.isConnected).toBe(true);
+  await expect.poll(() => cell.getAnimations().length).toBe(0);
+  expect(cell.getBoundingClientRect().top).toBeLessThan(before);
+});
+
+it('hands an in-flight compaction to the pointer without jumping', async () => {
+  await browserPage.viewport(1200, 800);
+  const registry = createCardRegistry(); registry.register(entry);
+  const host = createCardHost(registry);
+  const item = (id: string, originalIndex: number): BoardHostItem => ({
+    card: { type: 'board-scroll-term', id, title: id }, title: id, originalIndex, activity: null,
+  });
+  const first = item('handoff-first', 0), second = item('handoff-second', 1);
+  const scene = (items: readonly BoardHostItem[]) => <div style={{ display: 'flex', inlineSize: 900, blockSize: 600 }}>
+    <BoardHost host={host} items={items} activeCardId={null} visible />
+  </div>;
+  const view = render(scene([first, second]));
+  await expect.poll(() => document.querySelector('[data-nc-card-id="handoff-second"]')).not.toBeNull();
+  const cell = document.querySelector<HTMLElement>('[data-nc-card-id="handoff-second"]')!;
+  await expect.poll(() => cell.getAnimations().length).toBe(0);
+  view.rerender(scene([second]));
+  const animation = cell.getAnimations().find(animation =>
+    (animation.effect as KeyframeEffect).getKeyframes().some(frame => frame.transform !== undefined))!;
+  expect(animation).toBeDefined();
+  animation.pause(); animation.currentTime = 80;
+  const before = cell.getBoundingClientRect();
+  const handle = cell.querySelector<HTMLElement>('[data-nc-card-drag]')!;
+  const box = handle.getBoundingClientRect();
+  const point = { clientX: box.left + 20, clientY: box.top + 10 };
+  try {
+    act(() => { handle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, buttons: 1, ...point })); });
+    expect(cell.getAnimations()).toHaveLength(0);
+    expect(cell.getBoundingClientRect().top).toBeCloseTo(before.top, 0);
+    act(() => { document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, buttons: 1, clientX: point.clientX, clientY: point.clientY + 80 })); });
+    expect(cell.getBoundingClientRect().top).toBeCloseTo(before.top + 80, 0);
+  } finally {
+    act(() => { document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: point.clientX, clientY: point.clientY + 80 })); });
   }
 });

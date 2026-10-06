@@ -42,7 +42,7 @@
 
   .fill {
     stroke: var(--text-3);
-    transition: stroke-dasharray var(--motion-medium) var(--ease-layout);
+    transition: none;
   }
 
   @media (prefers-reduced-motion: reduce) {

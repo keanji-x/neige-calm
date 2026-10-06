@@ -2,6 +2,7 @@ import { ListText } from '../../../ui/list-typography/public.tsx';
 import type { CSSProperties, ReactNode } from 'react';
 import type { InventoryGroup } from '../../../../../core/view/panel-groups.ts';
 import { useState } from '../../../ui/state/public.ts';
+import { SpringRotation } from '../../../ui/motion/rotation.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
 import styles from './inventory-groups.module.css';
 
@@ -29,7 +30,7 @@ export function InventoryGroups<T>({ groups, noun, renderRows }: Readonly<{
       <summary className={styles.summary} aria-label={`${group.label}, ${group.rows.length} ${noun}${group.rows.length === 1 ? '' : 's'}`}>
         <ListText tone="group" className={styles.label}>{group.label}</ListText>
         <ListText tone="count" aria-hidden="true">{group.rows.length}</ListText>
-        <span className={styles.chevron} aria-hidden="true"><Icon name="chevron-right" size="sm" /></span>
+        <SpringRotation className={styles.chevron} angle={group.open ? 90 : 0}><Icon name="chevron-right" size="sm" /></SpringRotation>
       </summary>
       <div className={styles.content}>{renderRows(group.rows)}</div>
     </details>)}

@@ -252,7 +252,7 @@
     margin-inline-start: calc(-1 * var(--_pull));
     margin-inline-end: max(0px, calc(var(--_pull) - var(--glyph-sm) - var(--space-7)));
     color: var(--text-3);
-    transition: rotate var(--motion-snappy) var(--ease-layout);
+    transition: none;
   }
 
   .detailEntry > .referenceSummary .referenceMarker {

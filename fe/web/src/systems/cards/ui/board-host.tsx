@@ -7,6 +7,8 @@ import {
   type ResizeHandleAxis,
 } from 'react-grid-layout';
 
+import { transformStrategy } from 'react-grid-layout/core';
+import { MotionCell, motionPositionStyle } from './motion-cell.tsx';
 import type { CardActivity } from '../../../../../core/domain/activity.js';
 import { useState } from '../../../ui/state/public.ts';
 import { FALLBACK_SIZE, type CardComponentProps, type RegisteredCard } from '../registry.js';
@@ -77,6 +79,8 @@ export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: 
   onRemoveCard?: (cardId: string) => void;
 }) {
   const { width, containerRef, mounted } = useContainerWidth();
+  const [manipulating, setManipulating] = useState(false);
+  const positionStrategy = useMemo(() => Object.freeze({ ...transformStrategy, calcStyle: motionPositionStyle }), []);
   const [stored, setStored] = useState<StoredPositions>(EMPTY_POSITIONS);
 
   const sized = useMemo(() => items.map((item) => ({
@@ -184,10 +188,16 @@ export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: 
           }}
           dragConfig={{ handle: DRAG_HANDLE }}
           resizeConfig={{ handles: RESIZE_HANDLES, handleComponent: resizeHandle }}
+          positionStrategy={positionStrategy}
+          onDragStart={() => { setManipulating(true); }}
+          onDragStop={() => { setManipulating(false); }}
+          onResizeStart={() => { setManipulating(true); }}
+          onResizeStop={() => { setManipulating(false); }}
           onLayoutChange={persistLayout}
         >
           {items.map((item) => (
-            <div
+            <MotionCell
+              enabled={visible && !manipulating}
               key={item.card.id}
               className="track-card"
               data-nc-card-cell=""
@@ -202,7 +212,7 @@ export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: 
                   ? undefined
                   : () => onRemoveCard(item.card.id)}
               />
-            </div>
+            </MotionCell>
           ))}
         </GridLayout>
       )}

@@ -3,7 +3,6 @@ import { commands, userEvent } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
 import '../../../styles/entry.css';
 import { ReportTaskBlock } from './public.tsx';
-import { readMotionTransition } from '../../../ui/motion/transition.ts';
 
 afterEach(async () => { cleanup(); await commands.emulateReducedMotion(false); });
 function task() {
@@ -13,9 +12,8 @@ function task() {
 }
 it('uses the shared disclosure recipe on the real task and preserves native expansion', async () => {
   const { summary, marker } = task();
-  const motion = readMotionTransition(marker, 'disclosure');
-  expect(parseFloat(getComputedStyle(marker).transitionDuration)).toBe(motion.duration);
-  expect(getComputedStyle(marker).transitionTimingFunction).toBe(`cubic-bezier(${motion.ease.join(', ')})`);
+  expect(marker.hasAttribute('data-nc-spring-rotation')).toBe(true);
+  expect(getComputedStyle(marker).transitionProperty).toBe('none');
   await userEvent.click(summary);
   expect(summary.closest('details')!.open).toBe(true);
   await expect.poll(() => getComputedStyle(marker).rotate).toBe('90deg');
