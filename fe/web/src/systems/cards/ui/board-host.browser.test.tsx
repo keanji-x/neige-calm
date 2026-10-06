@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { act, render } from '@testing-library/react';
 import { page as browserPage, userEvent } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
 
@@ -7,6 +7,7 @@ import '../../../styles/entry.css';
 import { useState } from '../../../ui/state/public.ts';
 import { createCardHost, createCardRegistry } from '../public.js';
 import type { CardEntry } from '../registry.js';
+import { readMotionTransition } from '../../../ui/motion/transition.ts';
 import { CardHead } from './card-head.tsx';
 import { BoardHost, type BoardHostItem } from './board-host.tsx';
 
@@ -75,4 +76,49 @@ it('brings a newly selected card into the board viewport', async () => {
   })).toBeGreaterThan(0);
   expect(selectedBox.top).toBeLessThan(boardBox.bottom);
   expect(selectedBox.bottom).toBeGreaterThan(boardBox.top);
+});
+
+it('keeps the real dragged card under direct pointer control', async () => {
+  await browserPage.viewport(1200, 800);
+  const registry = createCardRegistry(); registry.register(entry);
+  const host = createCardHost(registry);
+  const items: readonly BoardHostItem[] = [{ card: { type: 'board-scroll-term', id: 'direct-card', title: 'Direct card' }, title: 'Direct card', originalIndex: 0, activity: null }];
+  render(<div style={{ display: 'flex', inlineSize: 900, blockSize: 600 }}><BoardHost host={host} items={items} activeCardId="direct-card" visible /></div>);
+  await expect.poll(() => document.querySelector('[data-nc-card-id="direct-card"]')).not.toBeNull();
+  const handle = document.querySelector<HTMLElement>('[data-nc-card-id="direct-card"] [data-nc-card-drag]')!;
+  const box = handle.getBoundingClientRect();
+  const point = { clientX: box.left + 20, clientY: box.top + 10 };
+  try {
+    act(() => { handle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, buttons: 1, ...point })); });
+    act(() => { document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, buttons: 1, clientX: point.clientX, clientY: point.clientY + 80 })); });
+    const dragged = document.querySelector<HTMLElement>('[data-nc-card-id="direct-card"]')!;
+    expect(dragged).not.toBeNull();
+    expect(dragged.classList.contains('react-draggable-dragging')).toBe(true);
+    expect(getComputedStyle(dragged).transitionProperty).toBe('none');
+  } finally {
+    act(() => { document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: point.clientX, clientY: point.clientY + 80 })); });
+  }
+});
+
+it('uses shared layout timing at rest and suppresses it during a real resize', async () => {
+  await browserPage.viewport(1200, 800);
+  const registry = createCardRegistry(); registry.register(entry);
+  const host = createCardHost(registry);
+  const items: readonly BoardHostItem[] = [{ card: { type: 'board-scroll-term', id: 'resize-card', title: 'Resize card' }, title: 'Resize card', originalIndex: 0, activity: null }];
+  render(<div style={{ display: 'flex', inlineSize: 900, blockSize: 600 }}><BoardHost host={host} items={items} activeCardId="resize-card" visible /></div>);
+  await expect.poll(() => document.querySelector('[data-nc-card-id="resize-card"]')).not.toBeNull();
+  const cell = document.querySelector<HTMLElement>('[data-nc-card-id="resize-card"]')!;
+  const motion = readMotionTransition(cell, 'layout');
+  expect(parseFloat(getComputedStyle(cell).transitionDuration)).toBe(motion.duration);
+  const handle = cell.querySelector<HTMLElement>('[data-nc-card-resize="se"]')!;
+  const box = handle.getBoundingClientRect();
+  const point = { clientX: box.left + box.width / 2, clientY: box.top + box.height / 2 };
+  try {
+    act(() => { handle.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, buttons: 1, ...point })); });
+    act(() => { document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, buttons: 1, clientX: point.clientX + 40, clientY: point.clientY + 40 })); });
+    expect(cell.classList.contains('resizing')).toBe(true);
+    expect(getComputedStyle(cell).transitionProperty).toBe('none');
+  } finally {
+    act(() => { document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, button: 0, clientX: point.clientX + 40, clientY: point.clientY + 40 })); });
+  }
 });

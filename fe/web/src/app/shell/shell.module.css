@@ -323,7 +323,7 @@
     line-height: var(--leading-none);
     color: var(--text-3);
     cursor: pointer;
-    transition: background-color var(--motion-quick) ease-out, color var(--motion-quick) ease-out;
+    transition: background-color var(--motion-quick) var(--ease-feedback), color var(--motion-quick) var(--ease-feedback);
   }
 
   .iconButton:hover,
@@ -433,8 +433,8 @@
     border-radius: var(--radius-sm);
     text-align: start;
     cursor: pointer;
-    transition: background-color var(--motion-quick) ease-out,
-      color var(--motion-quick) ease-out;
+    transition: background-color var(--motion-quick) var(--ease-feedback),
+      color var(--motion-quick) var(--ease-feedback);
   }
 
   .groupHeading {
@@ -566,8 +566,8 @@
     inset-block-start: 50%;
     inset-inline-end: var(--space-2);
     translate: 0 -50%;
-    transition: background-color var(--motion-quick) ease-out,
-      color var(--motion-quick) ease-out;
+    transition: background-color var(--motion-quick) var(--ease-feedback),
+      color var(--motion-quick) var(--ease-feedback);
   }
 
   .areaActions {

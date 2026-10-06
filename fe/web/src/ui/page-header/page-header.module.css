@@ -87,7 +87,7 @@
        would read as a separate region from the content it labels. */
     background: var(--bg);
     border-block-end: 1px solid transparent;
-    transition: border-color var(--motion-quick) ease-out;
+    transition: border-color var(--motion-quick) var(--ease-feedback);
   }
 
   /* Receiving side of the shared main-region scroll listener specified by

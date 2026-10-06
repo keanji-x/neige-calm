@@ -31,8 +31,8 @@
     border-radius: var(--radius-sm);
     text-align: start;
     cursor: pointer;
-    transition: background-color var(--motion-quick) ease-out,
-      color var(--motion-quick) ease-out;
+    transition: background-color var(--motion-quick) var(--ease-feedback),
+      color var(--motion-quick) var(--ease-feedback);
   }
 
   .row:hover {
@@ -229,8 +229,8 @@
     opacity: 0;
     cursor: pointer;
     translate: 0 -50%;
-    transition: opacity var(--motion-quick) ease-out,
-      background-color var(--motion-quick) ease-out;
+    transition: opacity var(--motion-quick) var(--ease-feedback),
+      background-color var(--motion-quick) var(--ease-feedback);
 
     /* `opacity: 0` must block clicks, but it may not use `visibility: hidden`:
        that removes the element from the focus order, so `:focus-within` would
@@ -313,7 +313,7 @@
     inset-inline-end: calc(var(--space-2) + (var(--control-h-sm) - var(--dot-sm)) / 2);
     align-self: auto;
     translate: 0 -50%;
-    transition: opacity var(--motion-quick) ease-out;
+    transition: opacity var(--motion-quick) var(--ease-feedback);
   }
 
   .wrapperPanel .statusSlot {

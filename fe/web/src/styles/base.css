@@ -217,9 +217,9 @@
     font-weight: var(--weight-normal);
     line-height: var(--leading-none);
     cursor: pointer;
-    transition: background-color var(--motion-quick) ease-out,
-      color var(--motion-quick) ease-out,
-      border-color var(--motion-quick) ease-out;
+    transition: background-color var(--motion-quick) var(--ease-feedback),
+      color var(--motion-quick) var(--ease-feedback),
+      border-color var(--motion-quick) var(--ease-feedback);
   }
 
   [data-nc-action='primary'] {

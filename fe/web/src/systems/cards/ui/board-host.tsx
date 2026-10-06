@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, type ComponentType } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, type ComponentType, type Ref } from 'react';
 import {
   GridLayout,
   useContainerWidth,
   type Layout,
   type LayoutItem,
+  type ResizeHandleAxis,
 } from 'react-grid-layout';
 
 import type { CardActivity } from '../../../../../core/domain/activity.js';
@@ -25,6 +26,11 @@ const MARGIN = Object.freeze([GRID_MARGIN, GRID_MARGIN] as const);
 const PADDING = Object.freeze([0, 0] as const);
 const RESIZE_HANDLES = Object.freeze(['se'] as const);
 const DRAG_HANDLE = '.card-drag-handle';
+
+/** Preserve the vendor handle classes/ref and expose the board-owned semantic locator. */
+function resizeHandle(axis: ResizeHandleAxis, ref: Ref<HTMLElement>) {
+  return <span ref={ref} className={`react-resizable-handle react-resizable-handle-${axis}`} data-nc-card-resize={axis} />;
+}
 
 type ScheduledLayoutUpdate =
   | Readonly<{ kind: 'scheduling' }>
@@ -177,7 +183,7 @@ export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: 
             containerPadding: PADDING,
           }}
           dragConfig={{ handle: DRAG_HANDLE }}
-          resizeConfig={{ handles: RESIZE_HANDLES }}
+          resizeConfig={{ handles: RESIZE_HANDLES, handleComponent: resizeHandle }}
           onLayoutChange={persistLayout}
         >
           {items.map((item) => (

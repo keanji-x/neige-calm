@@ -90,7 +90,7 @@
       transition:
         inline-size var(--motion-instant) linear,
         block-size var(--motion-instant) linear,
-        background-color var(--motion-quick) ease-out;
+        background-color var(--motion-quick) var(--ease-feedback);
     }
     .railDotActive::before {
       --nc-dot-size: calc(

@@ -108,7 +108,7 @@
     line-height: var(--leading-none);
     cursor: pointer;
     opacity: 0;
-    transition: opacity var(--motion-quick), background var(--motion-quick), color var(--motion-quick);
+    transition: opacity var(--motion-quick) var(--ease-feedback), background var(--motion-quick) var(--ease-feedback), color var(--motion-quick) var(--ease-feedback);
     z-index: var(--z-raised);
   }
 
@@ -220,7 +220,7 @@
 
   .react-grid-item,
   .react-grid-item.cssTransforms {
-    transition: transform var(--motion-snappy) ease, box-shadow var(--motion-snappy) ease;
+    transition: transform var(--motion-medium) var(--ease-layout), box-shadow var(--motion-quick) var(--ease-feedback);
     transition-property: transform, box-shadow;
   }
 
@@ -230,12 +230,18 @@
     border-radius: var(--r);
     opacity: 0.7;
     z-index: var(--z-raised);
-    transition-duration: 100ms;
+    transition-duration: var(--motion-quick);
+    transition-timing-function: var(--ease-feedback);
   }
 
   [data-theme="dark"] .react-grid-item.react-grid-placeholder {
     /* stylelint-disable-next-line declaration-property-value-disallowed-list */
     background: oklch(40% 0.08 245 / 0.35);
+  }
+
+  .react-grid-item.react-draggable-dragging,
+  .react-grid-item.resizing {
+    transition: none;
   }
 
   .react-grid-item.react-draggable-dragging {
@@ -263,7 +269,7 @@
     bottom: 3px;
     right: 3px;
     opacity: 0;
-    transition: opacity var(--motion-quick), color var(--motion-quick);
+    transition: opacity var(--motion-quick) var(--ease-feedback), color var(--motion-quick) var(--ease-feedback);
     color: var(--text-4);
   }
 

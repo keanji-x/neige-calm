@@ -491,7 +491,7 @@
     letter-spacing: var(--tracking-wide);
     color: var(--accent);
     opacity: var(--report-section-number-opacity, 1);
-    transition: opacity var(--motion-quick) ease-out;
+    transition: opacity var(--motion-quick) var(--ease-feedback);
   }
 
   /* The outline's closed-state threshold is 68rem. Declare the default

@@ -698,8 +698,8 @@
     opacity: 0;
     cursor: pointer;
     translate: 0 -50%;
-    transition: opacity var(--motion-quick) ease-out,
-      background-color var(--motion-quick) ease-out;
+    transition: opacity var(--motion-quick) var(--ease-feedback),
+      background-color var(--motion-quick) var(--ease-feedback);
 
     /* Hidden by opacity, never by `visibility`: `visibility: hidden` drops the
        button out of the focus order, and `:focus-within` below would then never

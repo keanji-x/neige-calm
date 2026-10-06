@@ -410,7 +410,7 @@
     padding-block: var(--space-2);
     border-radius: var(--radius-sm);
     cursor: pointer;
-    transition: background-color var(--motion-quick) ease-out;
+    transition: background-color var(--motion-quick) var(--ease-feedback);
   }
 
   .day:hover {
