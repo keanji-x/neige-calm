@@ -1,0 +1,20 @@
+import { cleanup, render } from '@testing-library/react';
+import { afterEach, expect, it } from 'vitest';
+import { page, userEvent } from 'vitest/browser';
+import '../../../styles/entry.css';
+import { CardMotionPreview } from './motion-preview.tsx';
+afterEach(cleanup);
+it('uses real card removal, native compaction and reset in the preview', async () => {
+  await page.viewport(1200, 900); render(<CardMotionPreview />);
+  await expect.poll(() => document.querySelectorAll('[data-nc-card-cell]').length).toBe(3);
+  const second = document.querySelector<HTMLElement>('[data-nc-card-id="preview-working"]')!;
+  const before = second.getBoundingClientRect().top;
+  await userEvent.click(document.querySelector<HTMLButtonElement>('[aria-label="删除整理想法"]')!);
+  expect(document.querySelectorAll('[data-nc-card-cell]')).toHaveLength(2);
+  expect(second.getAnimations().some(animation => (animation.effect as KeyframeEffect).getKeyframes().length > 2)).toBe(true);
+  await expect.poll(() => second.getAnimations().length).toBe(0);
+  expect(second.getBoundingClientRect().top).toBeLessThan(before);
+  await userEvent.click(page.getByRole('button', { name: '重置卡片' }));
+  await expect.poll(() => document.querySelectorAll('[data-nc-card-cell]').length).toBe(3);
+  expect(second.isConnected).toBe(false);
+});

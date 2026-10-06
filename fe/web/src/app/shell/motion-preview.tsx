@@ -1,4 +1,5 @@
 import { useRef } from 'react';
+import { CardMotionPreview } from '../../systems/cards/public.ts';
 import { createRoot } from 'react-dom/client';
 import { useState } from '../../ui/state/public.ts';
 import { ReportDocument } from '../../features/report/document/public.tsx';
@@ -94,6 +95,7 @@ function Preview() {
         {(['thinking', 'execution', 'creation'] as const).map(kind => <div key={kind} style={{ width: 48, height: 48 }}><NeigeMotion kind={kind} /></div>)}
       </div>
     </section>
+    <CardMotionPreview />
     <Dialog open={dialogOpen} title="创建任务" initialFocusRef={dialogInput} onClose={() => setDialogOpen(false)}>
       <label>任务名称<input ref={dialogInput} defaultValue="整理今天的工作" /></label>
       <p>内容保持清晰，打开时轻柔接入，关闭后回到原来的位置。</p>

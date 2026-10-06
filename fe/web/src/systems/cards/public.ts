@@ -49,3 +49,6 @@ export type { BoardHostItem } from './ui/board-host.js';
 export { GRID_COLS, GRID_MARGIN, GRID_ROW_HEIGHT, layoutToPositions, packCards, reconcileLayout } from './ui/layout.js';
 export type { GridPlacement, StoredPosition, StoredPositions } from './ui/layout.js';
 
+
+// Development-only composition; uses the same BoardHost and card lifecycle.
+export { CardMotionPreview } from './ui/motion-preview.js';
