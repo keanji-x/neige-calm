@@ -1320,10 +1320,10 @@ async fn send_planner_input_no_active_runtime_409_dormant() {
         "body={body}"
     );
     assert!(
-        body["error"]
-            .as_str()
-            .is_some_and(|error| error.contains("reset")),
-        "dormant body should point at reset: body={body}"
+        body["error"].as_str().is_some_and(
+            |error| error.contains("start a fresh session") && !error.contains("reset")
+        ),
+        "dormant body should offer a fresh session, not a reset: body={body}"
     );
     assert!(
         planner_harness_start_payloads(&boot.repo, card.id.as_str())
