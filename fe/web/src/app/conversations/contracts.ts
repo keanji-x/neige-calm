@@ -1,5 +1,5 @@
 import type { AgentProvider, PlannerAttachment } from '../../../../core/api/generated/wire.ts';
-import type { Conversation, ConversationKind, ConversationState, ModelCatalog, ModelSelection, PendingQueueEntry, PlannerRunTokenUsage, PlannerQueueWriteOutcome, TranscriptEntry } from '../../../../core/domain/conversation.ts';
+import type { Conversation, SideConversation, ConversationKind, ConversationState, ModelCatalog, ModelSelection, PendingQueueEntry, PlannerRunTokenUsage, PlannerQueueWriteOutcome, TranscriptEntry } from '../../../../core/domain/conversation.ts';
 import type { FailedSendOp, ReplacedTurn } from '../../../../core/domain/conversation-outbox.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
 import type { RunningTurnAnchor } from '../../../../core/domain/conversation-meta.ts';
@@ -93,4 +93,11 @@ export type PlannerConversationScope = Readonly<{
   updatedAt: number;
   kind?: ConversationKind;
   state?: ConversationState | null;
+}>;
+
+/** First-message creation, its deterministic identity and its recovery read. */
+export type ConversationCreationSource = Readonly<{
+  derivedCardId: (idempotencyKey: string) => string;
+  create: (text: string, idempotencyKey: string, selection: ModelSelection, side?: SideConversation) => Promise<Conversation>;
+  refresh: () => Promise<readonly Conversation[]>;
 }>;

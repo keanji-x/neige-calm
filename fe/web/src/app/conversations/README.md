@@ -32,6 +32,15 @@ import the assembly here; query/route integration remains covered by the router.
 The extraction preserves function bodies and contract types, with AST parity
 checked against the source snapshot before moving them.
 
-This stage moves the shared store, not Pane's first-create/recovery workflow or
-layout state. Those remaining responsibilities are tracked in #2083; loaded
-DOM and streaming display work remain under #2235.
+`draft-actions.ts` assembles first-message commands from a required draft
+snapshot, the Registry edit/start/adopt/discard port, recovery-admitted transport,
+typed create/refresh/derived-id ports, capability booleans and open/close/onGone
+signals. Construction performs no IO or Hook initialization. Dispatched attempts
+retain their original scope/key/text and settle through the Registry, including
+unknown-result rereads and refused-before-dispatch restoration. Navigation
+destinations remain chosen by the route through its injected signals.
+
+Pane still observes capabilities, holds selection/layout/focus, and owns its
+cleanup, adoption and one-shot auto-send effects at their original Hook positions.
+Those remaining responsibilities are tracked in #2083; loaded DOM and streaming
+display work remain under #2235.
