@@ -12,44 +12,43 @@ fn the_start_kind_is_the_servers() {
     assert_eq!(PLANNER_START_OPERATION_KIND, PLANNER_HARNESS_START);
 }
 
-/// Exhaustive, so a new phase cannot be left out of the comparison.
-fn phase(tag: PhaseTag) -> Phase {
-    match tag {
-        PhaseTag::Pending => Phase::Pending,
-        PhaseTag::TxCommitted => Phase::TxCommitted,
-        PhaseTag::AppServerInteract => Phase::AppServerInteract {
-            kind: AppServerInteractKind::MintAndAwait { thread_id: None },
-        },
-        PhaseTag::SpawnStarted => Phase::SpawnStarted,
-        PhaseTag::SpawnSucceeded => Phase::SpawnSucceeded,
-        PhaseTag::Parked => Phase::Parked,
-        PhaseTag::Succeeded => Phase::Succeeded,
-        PhaseTag::Compensating => Phase::Compensating,
-        PhaseTag::Failed => Phase::Failed,
-        PhaseTag::Stuck => Phase::Stuck {
-            reason: "stuck".into(),
-            since: 0,
-        },
-    }
+/// One list makes both the exhaustive `match` in `phase` and `ALL_PHASES`, so a new `PhaseTag`
+/// fails to compile until it is listed, and once listed it is compared.
+macro_rules! phases {
+    ($($tag:ident => $phase:expr),* $(,)?) => {
+        const ALL_PHASES: &[PhaseTag] = &[$(PhaseTag::$tag),*];
+        fn phase(tag: PhaseTag) -> Phase {
+            match tag {
+                $(PhaseTag::$tag => $phase),*
+            }
+        }
+    };
+}
+
+phases! {
+    Pending => Phase::Pending,
+    TxCommitted => Phase::TxCommitted,
+    AppServerInteract => Phase::AppServerInteract {
+        kind: AppServerInteractKind::MintAndAwait { thread_id: None },
+    },
+    SpawnStarted => Phase::SpawnStarted,
+    SpawnSucceeded => Phase::SpawnSucceeded,
+    Parked => Phase::Parked,
+    Succeeded => Phase::Succeeded,
+    Compensating => Phase::Compensating,
+    Failed => Phase::Failed,
+    Stuck => Phase::Stuck {
+        reason: "stuck".into(),
+        since: 0,
+    },
 }
 
 /// Terminal means what the operation runtime means by it: the phase carries an outcome.
 #[test]
 fn the_terminal_phases_are_the_phases_with_an_outcome() {
-    let all = [
-        PhaseTag::Pending,
-        PhaseTag::TxCommitted,
-        PhaseTag::AppServerInteract,
-        PhaseTag::SpawnStarted,
-        PhaseTag::SpawnSucceeded,
-        PhaseTag::Parked,
-        PhaseTag::Succeeded,
-        PhaseTag::Compensating,
-        PhaseTag::Failed,
-        PhaseTag::Stuck,
-    ];
-    let mut terminal: Vec<&str> = all
-        .into_iter()
+    let mut terminal: Vec<&str> = ALL_PHASES
+        .iter()
+        .copied()
         .filter(|&tag| {
             let operation = Operation {
                 id: "op".into(),
