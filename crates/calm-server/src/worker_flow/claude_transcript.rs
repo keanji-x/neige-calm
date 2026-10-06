@@ -159,6 +159,7 @@ impl ClaudeTranscriptFlowSource {
             CLAUDE_TRANSCRIPT_SOURCE_KIND,
             &source_path,
             stored.as_ref(),
+            self.stop.clone(),
         );
         let mut cursor = stored
             .map(|c| CursorState {

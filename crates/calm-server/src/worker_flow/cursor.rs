@@ -5,6 +5,7 @@ use calm_truth::db::rows::WorkerFlowCursor;
 use calm_truth::db::sqlite::is_sqlite_busy;
 use calm_truth::db::{RepoOutOfDomain, RepoRead};
 use calm_types::error::CoreError;
+use tokio_util::sync::CancellationToken;
 
 use crate::model::now_ms;
 
@@ -37,12 +38,16 @@ struct Position {
 
 /// Writes one card's capture cursor for one source file. A source re-reads its file every poll, so
 /// only a cursor that moved is written, and SQLite writer contention is waited out instead of
-/// ending the capture (#1579).
+/// ending the capture (#1579). Once the source is stopped, a contended write is abandoned and no
+/// further write is attempted: the driver stops a source before attaching its replacement, which
+/// owns the same row.
 pub struct CursorWriter {
     card_id: String,
     source_kind: &'static str,
     source_path: String,
+    stop: CancellationToken,
     stored: Option<Position>,
+    abandoned: bool,
 }
 
 impl CursorWriter {
@@ -52,17 +57,20 @@ impl CursorWriter {
         source_kind: &'static str,
         source_path: &str,
         stored: Option<&WorkerFlowCursor>,
+        stop: CancellationToken,
     ) -> Self {
         Self {
             card_id: card_id.to_string(),
             source_kind,
             source_path: source_path.to_string(),
+            stop,
             stored: stored.map(|row| Position {
                 record_index: row.record_index,
                 byte_offset: row.byte_offset,
                 last_source_uuid: row.last_source_uuid.clone(),
                 last_line_hash: row.last_line_hash.clone(),
             }),
+            abandoned: false,
         }
     }
 
@@ -83,7 +91,7 @@ impl CursorWriter {
             last_source_uuid: last_source_uuid.map(str::to_string),
             last_line_hash: last_line_hash.map(str::to_string),
         };
-        if self.stored.as_ref() == Some(&next) {
+        if self.abandoned || self.stored.as_ref() == Some(&next) {
             return Ok(());
         }
         loop {
@@ -109,7 +117,14 @@ impl CursorWriter {
                         error = %err,
                         "worker-flow cursor write met SQLite writer contention; retrying"
                     );
-                    tokio::time::sleep(WRITER_CONTENTION_RETRY_DELAY).await;
+                    tokio::select! {
+                        _ = self.stop.cancelled() => {}
+                        _ = tokio::time::sleep(WRITER_CONTENTION_RETRY_DELAY) => {}
+                    }
+                    if self.stop.is_cancelled() {
+                        self.abandoned = true;
+                        return Ok(());
+                    }
                 }
                 Err(err) => {
                     return Err(CoreError::Internal(format!(

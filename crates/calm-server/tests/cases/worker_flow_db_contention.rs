@@ -199,3 +199,50 @@ async fn idle_codex_source_does_not_rewrite_an_unchanged_cursor() {
     stop.cancel();
     handle.await.unwrap().unwrap();
 }
+
+/// A cancelled source (the driver cancels it before attaching a replacement for the card) must not
+/// keep retrying a contended cursor write: a late write would overwrite the replacement's row.
+#[tokio::test]
+async fn cancelled_codex_source_abandons_a_contended_cursor_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, db_url) = file_repo(dir.path()).await;
+    let thread_id = "thread-cancel";
+    let card_id = "card-codex-cancel";
+    let seed = wf::seed_card_and_runtime(&repo, card_id, Some(thread_id)).await;
+    let path = wf::rollout_path(dir.path(), thread_id);
+    wf::write_rollout(
+        &path,
+        &[
+            wf::session_meta(thread_id),
+            wf::user_message("u-cancel", "before the lock"),
+        ],
+    );
+    let (stop, handle) =
+        wf::spawn_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
+    wf::wait_for_codex_cursor(&repo, card_id, 2).await;
+
+    let mut locker = sqlx::SqliteConnection::connect(&db_url).await.unwrap();
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut locker)
+        .await
+        .unwrap();
+    append_raw(&path, MALFORMED_LINE);
+    // The source polls every 20 ms; by now it is blocked in the cursor write.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    stop.cancel();
+    // Past the blocked attempt's busy timeout, with the lock still held.
+    tokio::time::sleep(Duration::from_millis(SQLITE_BUSY_TIMEOUT_MS + 1_500)).await;
+    let ended_under_lock = handle.is_finished();
+    sqlx::query("ROLLBACK").execute(&mut locker).await.unwrap();
+    drop(locker);
+
+    assert!(
+        ended_under_lock,
+        "a cancelled source kept retrying its cursor write under contention"
+    );
+    handle.await.unwrap().unwrap();
+    assert_eq!(
+        cursor_record_index(&repo, card_id, CODEX_ROLLOUT_SOURCE_KIND).await,
+        Some(2)
+    );
+}
