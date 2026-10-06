@@ -30,6 +30,8 @@ use crate::support::git_helpers::attached_repo_fixture;
 struct Boot {
     app: axum::Router,
     repo: Arc<SqlxRepo>,
+    /// The server's live task dispatcher, so a case can stop it from claiming the tasks it declares.
+    dispatcher: Arc<calm_server::dispatcher::Dispatcher>,
     /// This server's own mint counters, per instance so a sibling case in the same binary cannot move them.
     system_area_mint: Arc<SystemAreaMintCounters>,
     /// The managed workspace root this boot was pinned to.
@@ -98,6 +100,7 @@ async fn boot_with_rendezvous(
         None => state,
     };
     let system_area_mint = Arc::clone(&state.system_area_mint);
+    let dispatcher = Arc::clone(&state.dispatcher);
     let app = routes::router()
         // `POST /api/today/launchpad/report/reset` extracts a `Principal`, so the session layer has to be present.
         .layer(axum::Extension(calm_server::auth::Principal {
@@ -113,6 +116,7 @@ async fn boot_with_rendezvous(
     Boot {
         app,
         repo,
+        dispatcher,
         system_area_mint,
         workspace_root: tmp.path().join(root_name),
         _tmp: tmp,
@@ -1443,6 +1447,26 @@ async fn resetting_todays_report_refuses_a_non_user_actor() {
     );
 }
 
+/// The one 400 the reset route still answers: the actor middleware refuses a malformed header first.
+#[tokio::test]
+async fn resetting_with_a_malformed_actor_header_is_a_400_and_writes_nothing() {
+    let b = boot().await;
+    let (_, ensured) = ensure(b.app.clone()).await;
+    let track_id = ensured["track_id"].as_str().unwrap().to_string();
+    add_data_block(&b, &track_id, "table", fixture_table()).await;
+    let before = report(&b, &track_id).await;
+
+    let (status, body) = post(
+        b.app.clone(),
+        "/api/today/launchpad/report/reset",
+        Some("kernel"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert_eq!(report(&b, &track_id).await, before);
+}
+
 /// Nothing gets *created* in order to reset: `ensure` would start a harness.
 #[tokio::test]
 async fn resetting_without_a_launchpad_is_a_404_and_creates_nothing() {
@@ -1504,8 +1528,10 @@ fn fixture_table() -> Value {
 }
 
 /// Today's report holding a pending task `queued`, a claimed task `claimed` and a table.
-/// Returns the launchpad track id and the two task block ids.
+/// Returns the launchpad track id and the two task block ids. The dispatcher's event listener is
+/// stopped first, so only this fixture claims a task and every later row state is the write's own.
 async fn launchpad_with_data_blocks(b: &Boot) -> (String, Vec<String>) {
+    b.dispatcher.abort_event_listener_for_test();
     let (_, ensured) = ensure(b.app.clone()).await;
     let track_id = ensured["track_id"].as_str().unwrap().to_string();
     let queued = add_data_block(b, &track_id, "task", user_task("queued")).await;
