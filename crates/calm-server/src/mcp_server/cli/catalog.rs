@@ -9,6 +9,7 @@ use crate::mcp_server::{
 };
 use crate::plugin_host::PluginRegistry;
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// The CLI-only meta object; it is no tool.
@@ -121,6 +122,7 @@ fn entries(
     listed: Vec<ToolDescriptor>,
     registry: &ToolRegistry,
     plugins: Option<&PluginRegistry>,
+    running_ids: &BTreeSet<String>,
 ) -> Result<Vec<Entry>, String> {
     let mut tools: Vec<(ToolDescriptor, bool)> =
         listed.into_iter().map(|tool| (tool, true)).collect();
@@ -134,7 +136,8 @@ fn entries(
     let mut entries = tools
         .into_iter()
         .map(|(tool, listed)| {
-            let plugin = tool_owner(registry, plugins, &tool.name).map_err(|e| e.message)?;
+            let plugin =
+                tool_owner(registry, plugins, running_ids, &tool.name).map_err(|e| e.message)?;
             Ok(Entry {
                 tool,
                 listed,
@@ -288,8 +291,15 @@ pub(super) async fn run(
             );
         }
     };
-    let plugins = ctx.plugin_host.get().map(|host| host.registry().as_ref());
-    match entries(listed, registry, plugins).and_then(|entries| select(query, entries)) {
+    let host = ctx.plugin_host.get();
+    let running_ids = match host {
+        Some(host) => host.running_plugin_ids().await,
+        None => BTreeSet::new(),
+    };
+    let plugins = host.map(|host| host.registry().as_ref());
+    match entries(listed, registry, plugins, &running_ids)
+        .and_then(|entries| select(query, entries))
+    {
         Err(message) => Output::error(
             CliExit::Failed,
             json_mode,
@@ -463,7 +473,7 @@ mod tests {
                 prefix: "neige_track_".into(),
                 cursor: None,
             },
-            entries(planner, &registry, None).unwrap(),
+            entries(planner, &registry, None, &BTreeSet::new()).unwrap(),
         )
         .unwrap();
         let rows = page["tools"].as_array().unwrap();
@@ -487,7 +497,13 @@ mod tests {
             Query::Describe {
                 name: "neige_track_cat".into(),
             },
-            entries(registry.descriptors_for_role(CardRole::Planner), &registry, None).unwrap(),
+            entries(
+                registry.descriptors_for_role(CardRole::Planner),
+                &registry,
+                None,
+                &BTreeSet::new(),
+            )
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(
@@ -522,7 +538,8 @@ mod tests {
         ]
         .map(descriptor)
         .to_vec();
-        let rows: Vec<Value> = entries(listed, &registry, Some(&plugins))
+        let running: BTreeSet<String> = ["gitforge", "calendar", "invest"].map(String::from).into();
+        let rows: Vec<Value> = entries(listed, &registry, Some(&plugins), &running)
             .unwrap()
             .iter()
             .map(row)
@@ -532,7 +549,10 @@ mod tests {
             (row["plugin"].clone(), row["kind"].clone())
         };
         assert_eq!(owner("neige_dev_publish"), (json!("gitforge"), Value::Null));
-        assert_eq!(owner("neige_calendar_add"), (json!("calendar"), Value::Null));
+        assert_eq!(
+            owner("neige_calendar_add"),
+            (json!("calendar"), Value::Null)
+        );
         assert_eq!(
             owner("plugin_gitforge_git_commit"),
             (json!("gitforge"), json!("forge-action"))
@@ -554,10 +574,49 @@ mod tests {
                 .contains("plugin_gitforge_git_commit  —  listed  plugin:gitforge  forge-action\n")
         );
         assert!(text(&page).contains("neige_track_cat  neige track cat  hidden  kernel  —\n"));
-        let ghost = entries(vec![descriptor("plugin_ghost_tool")], &registry, Some(&plugins))
-            .err()
-            .unwrap();
+        let ghost = entries(
+            vec![descriptor("plugin_ghost_tool")],
+            &registry,
+            Some(&plugins),
+            &running,
+        )
+        .err()
+        .unwrap();
         assert!(ghost.contains("plugin_ghost_tool"), "{ghost}");
+    }
+
+    /// #2227 review: the host fences only running plugins against minting one name, so an installed,
+    /// stopped plugin may mint a running plugin's name. The row names the running owner, as
+    /// dispatch routes it, instead of failing the whole listing as ambiguous.
+    #[test]
+    fn a_stopped_plugin_minting_the_same_name_leaves_the_running_owner() {
+        let manifest = |id: &str, tool: &str| {
+            Manifest::parse(&format!(
+                r#"{{"manifest_version":2,"id":"{id}","version":"0.1.0","min_kernel_version":"0.1.0","display_name":"X","entrypoint":{{"command":"bin/tool"}},"exposes_tools":[{{"name":"{tool}"}}]}}"#
+            ))
+            .unwrap()
+        };
+        let plugins = PluginRegistry::from_manifests([
+            (manifest("ab-c", "d"), None),
+            (manifest("ab", "c_d"), None),
+        ]);
+        let registry = build_default_registry();
+        for running in ["ab-c", "ab"] {
+            let rows = entries(
+                vec![tool("plugin_ab_c_d".into())],
+                &registry,
+                Some(&plugins),
+                &BTreeSet::from([running.to_string()]),
+            )
+            .unwrap();
+            assert_eq!(
+                rows[0].plugin,
+                Some(PluginOwner {
+                    id: running.into(),
+                    kind: None
+                })
+            );
+        }
     }
 
     #[test]

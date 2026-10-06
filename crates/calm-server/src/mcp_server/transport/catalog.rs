@@ -107,11 +107,13 @@ pub(crate) struct PluginOwner {
 }
 
 /// Who serves `name`: `None` for a kernel tool. A built-in native answers by its compiled owner, a
-/// minted name by [`plugin_tool_route`] over the installed plugins, so a plugin that stops between
-/// listing and this lookup still names itself. A name nobody serves is an error, never "kernel".
+/// minted name by [`plugin_tool_route`] in dispatch's order: the running plugins (fenced against
+/// minting one name), then the installed ones, so a plugin that stops between listing and this
+/// lookup still names itself. A name nobody serves is an error, never "kernel".
 pub(crate) fn tool_owner(
     registry: &ToolRegistry,
     plugins: Option<&crate::plugin_host::PluginRegistry>,
+    running_ids: &BTreeSet<String>,
     name: &str,
 ) -> Result<Option<PluginOwner>, RpcError> {
     if let Some(plugin) = crate::builtin_plugins::owner(name) {
@@ -124,13 +126,20 @@ pub(crate) fn tool_owner(
         return Ok(None);
     }
     let route = match plugins {
-        Some(plugins) => {
-            let installed = plugins.list().into_iter().map(|m| m.id).collect();
-            plugin_tool_route(plugins, name, &installed)?
-        }
+        Some(plugins) => match plugin_tool_route(plugins, name, running_ids)? {
+            Some(route) => Some(route),
+            None => {
+                let installed = plugins.list().into_iter().map(|m| m.id).collect();
+                plugin_tool_route(plugins, name, &installed)?
+            }
+        },
         None => None,
     };
     route
         .map(|(id, _, kind)| Some(PluginOwner { id, kind }))
-        .ok_or_else(|| RpcError::internal(format!("tool `{name}` has no owner")))
+        .ok_or_else(|| {
+            RpcError::internal(format!(
+                "tool `{name}` has no owner; the plugin set changed while listing, retry"
+            ))
+        })
 }

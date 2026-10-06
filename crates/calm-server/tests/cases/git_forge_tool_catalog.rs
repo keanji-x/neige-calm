@@ -27,7 +27,11 @@ async fn tool_rows_name_the_git_forge_plugin_and_its_forge_action_kind() {
     let fx = boot_fixture().await;
 
     let page: Value = serde_json::from_str(
-        &cli(&fx, &["tool", "ls", "--prefix", "plugin_gitforge_", "--json"]).await,
+        &cli(
+            &fx,
+            &["tool", "ls", "--prefix", "plugin_gitforge_", "--json"],
+        )
+        .await,
     )
     .unwrap();
     let mut expected: Vec<Value> = read_manifest()
@@ -51,7 +55,11 @@ async fn tool_rows_name_the_git_forge_plugin_and_its_forge_action_kind() {
     );
 
     let kernel: Value = serde_json::from_str(
-        &cli(&fx, &["tool", "describe", "--name", "neige_track_ls", "--json"]).await,
+        &cli(
+            &fx,
+            &["tool", "describe", "--name", "neige_track_ls", "--json"],
+        )
+        .await,
     )
     .unwrap();
     assert_eq!(
