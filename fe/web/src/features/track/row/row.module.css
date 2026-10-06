@@ -212,9 +212,16 @@
    * from the next, and by adjacency.
    */
 
-  /* Row-level shortcuts. They are hover-revealed only because every one of them
-     has a second route (the track's own page); the space is reserved at rest so
-     revealing them never reflows the row. */
+  /* Row controls appear on hover/focus. The row keeps its geometry while the
+     rail title yields trailing space when controls are revealed. */
+  .menuButton {
+    inline-size: var(--control-h-sm);
+    block-size: var(--control-h-sm);
+    opacity: 0;
+    pointer-events: none;
+    transition: none;
+  }
+
   .action {
     position: absolute;
     inset-block-start: 50%;
@@ -248,12 +255,17 @@
 
   .wrapper:hover .action,
   .wrapper:focus-within .action,
-  .wrapper:has(.menuButton[aria-expanded='true']) .action,
+  .wrapper:has(.menuButton[aria-expanded='true']) .action {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
   .wrapper:hover .menuButton,
   .wrapper:focus-within .menuButton,
   .wrapper:has(.menuButton[aria-expanded='true']) .menuButton {
     opacity: 1;
     pointer-events: auto;
+    transition: opacity var(--motion-quick) ease-out;
   }
 
   /*
@@ -388,23 +400,8 @@
     translate: 0 -50%;
   }
 
-  .menuButton {
-    inline-size: var(--control-h-sm);
-    block-size: var(--control-h-sm);
-    opacity: 0;
-    pointer-events: none;
-    transition: none;
-  }
 
-  .wrapper:hover .menuButton,
-  .wrapper:focus-within .menuButton,
-  .wrapper:has(.menuButton[aria-expanded='true']) .menuButton {
-    transition: opacity var(--motion-quick) ease-out;
-  }
 
-  .wrapper:hover .menuSlot,
-  .wrapper:focus-within .menuSlot,
-  .wrapper:has(.menuButton[aria-expanded='true']) .menuSlot { pointer-events: auto; }
   .row.hasMenu,
   .row.hasMenu.hasRemove,
   .row.hasMenu.hasPin.hasRemove { padding-inline-end: calc(var(--space-2) * 4 + var(--control-h-sm) * 3); }
@@ -419,6 +416,10 @@
   .wrapperPanel:has(.hasMenu) .remove { inset-inline-end: 0; }
   .wrapperPanel:has(.hasMenu) .menuSlot { inset-inline-end: calc(var(--space-2) + var(--control-h-sm)); }
   .wrapper:not(.wrapperRail):has(.hasMenu) .pin { inset-inline-end: calc(var(--space-2) * 3 + var(--control-h-sm) * 2); }
+
+  .wrapper:hover .menuSlot,
+  .wrapper:focus-within .menuSlot,
+  .wrapper:has(.menuButton[aria-expanded='true']) .menuSlot { pointer-events: auto; }
 
   @media (hover: none) {
     .menuSlot { pointer-events: auto; }
