@@ -186,6 +186,8 @@ pub(super) struct KeyedActor {
     pub(super) start: ActorId,
     /// The `actor` the delivery's payload hash binds; a REST create keeps the header's spelling.
     pub(super) start_label: String,
+    /// How this caller sends to a running Planner, named when a retry finds one (#2212).
+    pub(super) send_path: SendPath,
 }
 
 impl KeyedActor {
@@ -194,8 +196,18 @@ impl KeyedActor {
             create: actor.to_actor_id(),
             start: actor.to_actor_id(),
             start_label: actor.as_str().to_string(),
+            send_path: SendPath::PlannerInput,
         }
     }
+}
+
+/// The way a keyed create's caller can reach a running Planner instead of the create.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum SendPath {
+    /// `POST /api/cards/{card}/planner/input`, for a REST caller.
+    PlannerInput,
+    /// `neige_mail_send` to the Track, for a Planner calling `neige_track_add`.
+    Mail,
 }
 
 /// One keyed create with a first message, as its caller derives it: the binding row's

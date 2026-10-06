@@ -761,9 +761,11 @@ impl Boot {
         )
     }
 
-    /// One `planner-harness-start` of `planner_card_id` with `force_new_thread: false`, submitted the way the
-    /// scheduler's child bootstrap submits it: straight to the operation runtime, outside any route and its
-    /// card fence. It takes the adapter's NON-deferred arm whatever session the card has.
+    /// One `planner-harness-start` of `planner_card_id` that mirrors the scheduler's child bootstrap in what
+    /// decides the arm: `force_new_thread: false`, the `KernelDispatcher` actor, and a submit straight to the
+    /// operation runtime outside any route and its card fence, so it takes the adapter's NON-deferred arm
+    /// whatever session the card has. It omits the bootstrap's `goal` seed, report card and keyed
+    /// `child-track:` idempotency key (it submits unkeyed); none of them decides the supersede or the harvest.
     async fn start_non_deferred_like_the_scheduler(&self, track: &Value, planner_card_id: &str) {
         use calm_server::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
         use calm_server::operation::{OperationKey, OperationOutcome};

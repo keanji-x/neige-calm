@@ -17,7 +17,7 @@ use crate::routes::codex_cards::default_cwd;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::RouteState;
 
-use super::create::{self, KeyedActor, KeyedCreate, KeyedPlan, TRACK_ADD_KEY_PREFIX};
+use super::create::{self, KeyedActor, KeyedCreate, KeyedPlan, SendPath, TRACK_ADD_KEY_PREFIX};
 use super::{CreateTrackOptions, FolderClaim, TrackInit};
 
 /// What the create transaction checks and stamps for a Track that another Track's Planner adds.
@@ -134,6 +134,7 @@ impl TrackCreator for RouteTrackCreator {
             create: create_actor,
             start_label: start_actor.to_string(),
             start: start_actor,
+            send_path: SendPath::Mail,
         };
         let plan = match plan {
             KeyedPlan::Resume(resume) => {

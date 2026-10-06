@@ -159,8 +159,9 @@ async fn a_keyed_retry_onto_a_card_started_since_is_a_conflict() {
     assert_eq!(retry, StatusCode::CONFLICT, "body={body}");
     assert_eq!(body["code"], "conflict", "body={body}");
     assert!(
-        body.to_string().contains("planner/input"),
-        "the 409 names the send path the message belongs to: {body}"
+        body.to_string().contains("already has a session")
+            && body.to_string().contains("planner/input"),
+        "the 409 states what it found and names the send path the message belongs to: {body}"
     );
     assert_eq!(b.start_ops(&card).await, starts, "the retry starts nothing");
     assert_eq!(
