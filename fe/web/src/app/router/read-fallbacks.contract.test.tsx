@@ -97,7 +97,7 @@ describe('degraded workspace reads stay usable', () => {
     await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
     await userEvent.click(await within(sheet).findByRole('button', { name: 'One' }));
     await within(sheet).findByRole('heading', { name: 'One' });
-    await within(sheet).findByRole('button', { name: /Reliable/ });
+    await within(sheet).findByRole('button', { name: /^Reliable/ });
     await waitFor(() => expect(within(sheet).queryByRole('alert')).toBeNull());
   });
 
