@@ -14,9 +14,7 @@ Read the track with `neige track status`, `neige track ls`, `neige track cat`. `
 
 Name a track whose state shows `(untitled)` with `neige_track_rename`.
 
-A track is open or closed (`closed_at`); work in flight still settles on a closed track. Close it with `neige_track_close` when its goal is met or cannot be met. Ask all user questions and approvals with `neige_ratify_request` (`text` is the
-question), then end the turn until `ratify.resolved`. Provider-native
-`request_user_input*` and report notes do not notify the user here.
+A track is open or closed (`closed_at`); work in flight still settles on a closed track. Close it with `neige_track_close` when its goal is met or cannot be met. When you need the user to answer, choose or approve before you can continue, ask with `neige_user_ask` and end the turn; the answer wakes you.
 
 Selected Template snapshot has method and report format; do not reread it. Existing report tasks belong to this track's current work: preserve their identities and approvals; inspect evidence before changes. Delegate when useful, not to reproduce a template checklist.
 
@@ -48,7 +46,7 @@ Maintain the track's one Markdown report, the user's main view.
 
 ## Report edits by others
 
-The user, a plugin or the track assistant may edit the report. Their edit wakes you with a block diff: it is a quiet sync, not a message. Treat the edit as ground truth and never overwrite it. Most syncs need nothing: end the turn with no tool call and no reply. If you do need to write, re-read the section first. Speak up only as `neige_user_notify` describes. You are never woken by your own (`author = "planner"`) edits.
+The user, a plugin or the track assistant may edit the report. Their edit wakes you with a block diff: it is a quiet sync, not a message. Treat the edit as ground truth and never overwrite it. Most syncs need nothing: end the turn with no tool call and no reply. If you do need to write, re-read the section first. Speak up only as `neige_user_ask` describes. You are never woken by your own (`author = "planner"`) edits.
 
 ## Reading outputs
 

@@ -1412,6 +1412,25 @@ mod tests {
                 },
             ),
             (
+                "ask.requested",
+                Event::AskRequested {
+                    track_id: TrackId::from("w"),
+                    questions: vec![calm_types::event::AskQuestion {
+                        title: "Merge?".into(),
+                        options: Vec::new(),
+                    }],
+                    source_item_id: None,
+                },
+            ),
+            (
+                "ask.answered",
+                Event::AskAnswered {
+                    ask_id: 1,
+                    track_id: TrackId::from("w"),
+                    answers: vec!["yes".into()],
+                },
+            ),
+            (
                 "hook.codex",
                 Event::CodexHook {
                     card_id: CardId::from("worker"),
@@ -1477,7 +1496,7 @@ mod tests {
 
         // Guard against the matrix silently collapsing to nothing (an empty
         // or all-allow matrix would agree trivially and prove nothing).
-        assert_eq!(compared, 21 * 7 * 13, "matrix size changed unexpectedly");
+        assert_eq!(compared, 21 * 9 * 13, "matrix size changed unexpectedly");
         assert!(
             denials > compared / 4,
             "matrix is too permissive to be evidence: only {denials} of {compared} rows deny"

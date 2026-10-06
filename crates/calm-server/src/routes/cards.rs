@@ -5,17 +5,16 @@ use crate::db::RepoRead;
 use crate::db::sqlite::{card_delete_tx, card_update_tx, terminal_delete_tx};
 use crate::db::{write_with_actor_events_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::event::{Event, EventScope, RatifyDecision};
+use crate::event::{Event, EventScope};
 use crate::git_candidate::delivery::AttemptOutcome;
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::json_body::JsonBody;
-use crate::model::{Card, CardPatch, CardRole, HarnessItem, new_id};
+use crate::model::{Card, CardPatch, HarnessItem, new_id};
 use crate::operation::card_create_adapter::{CARD_CREATE, CardCreateOperationPayload};
 use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_tx};
 use crate::operation::{OperationId, OperationKey};
 use crate::per_card_lock::lock_key;
 use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
-use crate::ratify_state::ratify_request_pending_tx;
 use crate::routes::idempotency_key::{
     keyed_card_answer, parse_idempotency_key_header, stable_payload_hash,
 };
@@ -108,7 +107,6 @@ pub fn router() -> Router<AppState> {
             "/api/cards/{id}/planner/input/{entry_id}/steer",
             post(crate::routes::planner_input::steer_planner_input),
         )
-        .route("/api/cards/{id}/ratify", post(ratify_card))
         .route(
             "/api/cards/{id}/planner/interrupt",
             post(interrupt_planner_card),
@@ -536,135 +534,6 @@ pub(crate) async fn update_card(
     .await?;
     project_runtime_into_card_payload(s.repo.as_ref(), &mut card).await?;
     Ok(Json(card))
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RatifyCardRequest {
-    pub decision: RatifyCardDecision,
-    pub message: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum RatifyCardDecision {
-    Grant,
-    Deny,
-}
-
-impl From<RatifyCardDecision> for RatifyDecision {
-    fn from(value: RatifyCardDecision) -> Self {
-        match value {
-            RatifyCardDecision::Grant => RatifyDecision::Grant,
-            RatifyCardDecision::Deny => RatifyDecision::Deny,
-        }
-    }
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct RatifyCardResponse {
-    #[schema(value_type = String)]
-    pub card_id: CardId,
-    #[schema(value_type = String)]
-    pub track_id: TrackId,
-    pub decision: RatifyCardDecision,
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/cards/{id}/ratify",
-    tag = "cards",
-    params(("id" = String, Path, description = "Planner card id")),
-    request_body = RatifyCardRequest,
-    responses(
-        (status = 200, description = "Human ratify verdict recorded", body = RatifyCardResponse),
-        (status = 400, description = "Malformed request", body = ErrorBody),
-        (status = 403, description = "Card is not a planner codex card, or actor is not the authenticated user", body = ErrorBody),
-        (status = 404, description = "Card or track not found", body = ErrorBody),
-        (status = 409, description = "Track is not awaiting ratification", body = ErrorBody),
-        (status = 500, description = "Internal error", body = ErrorBody),
-    ),
-)]
-pub(crate) async fn ratify_card(
-    State(s): State<RouteState>,
-    actor: Actor,
-    Path(id): Path<String>,
-    JsonBody(body): JsonBody<RatifyCardRequest>,
-) -> Result<Json<RatifyCardResponse>> {
-    if actor.as_str() != "user" {
-        return Err(CalmError::Forbidden(
-            "ratify verdicts must be authored by the authenticated user".into(),
-        ));
-    }
-
-    let card = s
-        .repo
-        .card_get(&id)
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    let role = s
-        .write
-        .verify_role(&card.id)
-        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    if card.kind != "codex" || role != CardRole::Planner {
-        return Err(CalmError::Forbidden(format!(
-            "card {id} is not a planner codex card",
-        )));
-    }
-    let track = s
-        .repo
-        .track_get(card.track_id.as_str())
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("track {} for card {id}", card.track_id)))?;
-
-    let actor_id = ActorId::User;
-    let scope = EventScope::Track {
-        track: track.id.clone(),
-        area: track.area_id.clone(),
-    };
-    let track_id = track.id.clone();
-    let card_id = card.id.clone();
-    let decision = body.decision;
-    let resolved_message = body
-        .message
-        .as_deref()
-        .map(str::trim)
-        .filter(|message| !message.is_empty())
-        .map(str::to_string);
-
-    write_with_actor_events_typed::<(), _>(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
-        let actor_id = actor_id.clone();
-        let scope = scope.clone();
-        let track_id = track_id.clone();
-        let resolved_message = resolved_message.clone();
-        Box::pin(async move {
-            if !ratify_request_pending_tx(tx, &track_id).await? {
-                return Err(CalmError::Conflict(
-                    "ratify: track is not awaiting ratification".into(),
-                ));
-            }
-
-            Ok((
-                (),
-                vec![(
-                    actor_id,
-                    scope,
-                    Event::RatifyResolved {
-                        track_id,
-                        decision: decision.into(),
-                        message: resolved_message,
-                    },
-                )],
-            ))
-        })
-    })
-    .await?;
-
-    Ok(Json(RatifyCardResponse {
-        card_id,
-        track_id: track.id,
-        decision,
-    }))
 }
 
 #[utoipa::path(

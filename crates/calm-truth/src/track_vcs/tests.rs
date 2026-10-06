@@ -271,7 +271,7 @@ async fn worktree_committed_only_batch_does_not_advance_head() {
 }
 
 #[tokio::test]
-async fn ratify_only_batch_does_not_advance_head() {
+async fn ratify_and_ask_batch_does_not_advance_head() {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open sqlite repo");
@@ -309,6 +309,19 @@ async fn ratify_only_batch_does_not_advance_head() {
             decision: RatifyDecision::Grant,
             message: None,
         },
+        Event::AskRequested {
+            track_id: track.id.clone(),
+            questions: vec![calm_types::event::AskQuestion {
+                title: "Merge PR #1?".into(),
+                options: vec!["Merge".into(), "Hold".into()],
+            }],
+            source_item_id: None,
+        },
+        Event::AskAnswered {
+            ask_id: 1,
+            track_id: track.id.clone(),
+            answers: vec!["Merge".into()],
+        },
     ];
     let mut tx = begin_immediate_tx(repo.pool())
         .await
@@ -322,7 +335,7 @@ async fn ratify_only_batch_does_not_advance_head() {
         MANIFEST_SCHEMA_VERSION,
     )
     .await
-    .expect("commit review/ratify batch");
+    .expect("commit ratify/ask batch");
     tx.commit().await.expect("commit transaction");
 
     let after = head(repo.pool(), &track.id).await.expect("head after");

@@ -141,8 +141,68 @@ fn permits_from_env_fallback_paths() {
 use crate::card_role_cache::CardRoleCache;
 use crate::event::{ArtifactRef, BroadcastEnvelope, EventScope};
 use crate::ids::AreaId;
-use calm_types::event::RatifyDecision;
+use calm_types::event::{AskQuestion, RatifyDecision};
 use calm_types::git_candidate::{DeliveryFailureCode, DeliverySettlement, DeliveryWakeReason};
+
+fn ask_requested(track: &TrackId) -> Event {
+    Event::AskRequested {
+        track_id: track.clone(),
+        questions: vec![
+            AskQuestion {
+                title: "Merge PR #7 (head abc)?".into(),
+                options: vec!["Merge".into(), "Hold".into()],
+            },
+            AskQuestion {
+                title: "Which region?".into(),
+                options: Vec::new(),
+            },
+        ],
+        source_item_id: None,
+    }
+}
+
+fn ask_answered(track: &TrackId, ask_id: i64) -> Event {
+    Event::AskAnswered {
+        ask_id,
+        track_id: track.clone(),
+        answers: vec!["Merge".into(), "eu-west, not us".into()],
+    }
+}
+
+/// An `ask.requested` row on `track` in `repo`, appended by that track's Planner card through the
+/// gated decision append (the reader is under test, not the writer); returns its id, the ask's id.
+async fn seed_ask(repo: &crate::db::sqlite::SqlxRepo, track: &str) -> i64 {
+    let planner = CardId::from(format!("planner-{track}"));
+    sqlx::query(
+        "INSERT OR IGNORE INTO cards \
+         (id, track_id, kind, sort, payload, role, deletable, body_crdt, created_at, updated_at) \
+         VALUES (?1, ?2, 'planner', 0, '{}', 'planner', 0, NULL, 1, 1)",
+    )
+    .bind(planner.as_str())
+    .bind(track)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+    let area: String = sqlx::query_scalar("SELECT area_id FROM tracks WHERE id = ?1")
+        .bind(track)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    let track = TrackId::from(track);
+    let scope = track_scope(&track, &AreaId::from(area));
+    let mut tx = repo.pool().begin().await.unwrap();
+    let id = crate::db::sqlite::append_decision_event_in_tx(
+        &mut tx,
+        &ActorId::AiPlanner(planner),
+        &scope,
+        None,
+        &ask_requested(&track),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    id
+}
 
 /// A candidate-shape settlement for `task_id` on track `w`; `wake_reason` is the only field the
 /// push predicate reads.
@@ -315,11 +375,13 @@ fn dispatcher_filter_matches_push_kinds() {
         track_id: track.clone(),
         reason: "cap_exhausted".into(),
     })));
-    assert!(filter.matches(&env(Event::RatifyResolved {
+    assert!(!filter.matches(&env(Event::RatifyResolved {
         track_id: track.clone(),
         decision: RatifyDecision::Grant,
         message: None,
     })));
+    assert!(!filter.matches(&env(ask_requested(&track))));
+    assert!(filter.matches(&env(ask_answered(&track, 7))));
     assert!(!filter.matches(&env(Event::ForgePrDiffRead {
         track_id: track.clone(),
         pr_number: 1,
@@ -1293,6 +1355,13 @@ fn event_warrants_planner_push_covers_push_allowlist() {
             track_id: track.clone(),
             reason: "cap_exhausted".into(),
         },
+        // #2209: historical rows; nothing writes them any more.
+        Event::RatifyResolved {
+            track_id: track.clone(),
+            decision: RatifyDecision::Grant,
+            message: None,
+        },
+        ask_requested(&track),
         Event::ForgePrPublished {
             track_id: track.clone(),
             pr_number: 1,
@@ -1344,11 +1413,7 @@ fn event_warrants_planner_push_covers_push_allowlist() {
             head_sha: "head-sha".into(),
             merge_sha: "merge-sha".into(),
         },
-        Event::RatifyResolved {
-            track_id: track.clone(),
-            decision: RatifyDecision::Grant,
-            message: None,
-        },
+        ask_answered(&track, 7),
         Event::ForgeScanCompleted {
             track_id: track.clone(),
             overlapping_prs: vec![1, 2],
@@ -1376,12 +1441,9 @@ fn event_warrants_planner_push_covers_push_allowlist() {
             forge_event.kind_tag()
         );
     }
-    // #2170: the Planner's own ratify request echoes its call and never wakes it.
+    // #2170 / #2209: the Planner's own question echoes its call and never wakes it.
     assert!(!event_warrants_planner_push(
-        &Event::RatifyRequested {
-            track_id: track.clone(),
-            reason: "merge_hold".into(),
-        },
+        &ask_requested(&track),
         &ActorId::AiPlanner(planner.clone()),
         &write
     ));
@@ -1699,11 +1761,17 @@ fn harness_observation_from_event_mapping_pin() {
             },
             Some("impl-parser")
         ),
-        Some(HarnessObservation::RatifyResolved {
-            track_id: track.clone(),
-            decision: RatifyDecision::Deny,
-            message: None,
-        })
+        None,
+        "#2209: a historical resolution wakes nobody"
+    );
+    assert_eq!(
+        harness_observation_from_event(&track, &ask_requested(&track), Some("impl-parser")),
+        None
+    );
+    assert_eq!(
+        harness_observation_from_event(&track, &ask_answered(&track, 7), Some("impl-parser")),
+        None,
+        "the answer needs the persisted question titles: `resolve_harness_observation` reads them"
     );
     assert_eq!(
         harness_observation_from_event(
@@ -1915,26 +1983,42 @@ fn harness_observation_from_event_mapping_pin() {
     );
 }
 
-/// #1873 item 1: the user's ratify text reaches the Planner's wake verbatim, for either decision.
-#[test]
-fn ratify_resolved_wake_carries_the_user_message_verbatim() {
-    let track = TrackId::from("track-1873");
-    let message = "Merge it, then close #1870.\nSquash subject: keep the PR title.";
-    for decision in [RatifyDecision::Grant, RatifyDecision::Deny] {
-        let observation = harness_observation_from_event(
-            &track,
-            &Event::RatifyResolved {
-                track_id: track.clone(),
-                decision,
-                message: Some(message.into()),
-            },
+/// #2209: live push and boot replay render the answer with the titles of the persisted
+/// `ask.requested`, one line per question; an ask that is not on the track maps to nothing.
+#[tokio::test]
+async fn ask_answered_wake_quotes_each_persisted_question() {
+    let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        "INSERT INTO areas(id,name,color,sort,created_at,updated_at) VALUES('c','Area','red',0,1,1);
+         INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('w','c','Track',0,1,1);
+         INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('x','c','Other',0,1,1);",
+    )
+    .execute(repo.pool())
+    .await
+    .unwrap();
+    let track = TrackId::from("w");
+    let ask_id = seed_ask(&repo, "w").await;
+    let observation = resolve_harness_observation(&repo, &track, &ask_answered(&track, ask_id))
+        .await
+        .unwrap()
+        .expect("an answer wakes the planner");
+    assert_eq!(
+        observation.to_turn_text(),
+        "The user answered your question \"Merge PR #7 (head abc)?\": Merge\n\
+         The user answered your question \"Which region?\": eu-west, not us"
+    );
+    assert!(observation.is_hard_fire());
+
+    let foreign = seed_ask(&repo, "x").await;
+    for missing in [foreign, ask_id + 1000] {
+        assert_eq!(
+            resolve_harness_observation(&repo, &track, &ask_answered(&track, missing))
+                .await
+                .unwrap(),
             None,
-        )
-        .expect("ratify.resolved wakes the planner");
-        let text = observation.to_turn_text();
-        assert!(
-            text.ends_with(&format!("The user's message, verbatim:\n{message}")),
-            "{text}"
+            "ask {missing} is not on track w"
         );
     }
 }
@@ -2182,9 +2266,15 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
                 decision: RatifyDecision::Grant,
                 message: None,
             },
-            ActorId::KernelDispatcher,
-            true,
-            true,
+            ActorId::User,
+            false,
+            false,
+        ),
+        row(
+            ask_requested(&track),
+            ActorId::AiPlanner(planner.clone()),
+            false,
+            false,
         ),
         row(
             Event::ForgeScanCompleted {
@@ -2745,6 +2835,9 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
         false,
         true,
     ));
+    // #2209: the answer's mapping reads the persisted question, seeded on the same repo.
+    let ask_id = seed_ask(&delivery_repo, "w").await;
+    rows.push(row(ask_answered(&track, ask_id), ActorId::User, true, true));
     PlannerPushWiringTable {
         write,
         track,
@@ -2777,7 +2870,12 @@ async fn planner_push_predicate_and_observation_mapping_agree() {
             "push predicate mismatch for {kind} (actor {})",
             row.actor
         );
-        let observation = if let Event::TaskGitDeliverySettled { task_id, .. } = &row.event {
+        let observation = if let Event::AskAnswered { .. } = &row.event {
+            assert!(harness_observation_from_event(&track, &row.event, None).is_none());
+            resolve_harness_observation(&delivery_repo, &track, &row.event)
+                .await
+                .expect("the persisted ask resolves")
+        } else if let Event::TaskGitDeliverySettled { task_id, .. } = &row.event {
             assert!(harness_observation_from_event(&track, &row.event, Some("deliver")).is_none());
             let resolved = resolve_harness_observation(&delivery_repo, &track, &row.event)
                 .await
@@ -3991,6 +4089,7 @@ fn confirmation_receipts_do_not_wake_the_planner_live_or_on_replay() {
             track_id: TrackId::from("w"),
             reason: "Which repository?".into(),
         },
+        ask_requested(&TrackId::from("w")),
         Event::ForgePrPublished {
             track_id: TrackId::from("w"),
             pr_number: 2169,

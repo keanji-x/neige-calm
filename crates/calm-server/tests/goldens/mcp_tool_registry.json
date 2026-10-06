@@ -468,7 +468,7 @@
   },
   {
     "name": "neige_mail_send",
-    "description_sha256": "246658df40e76e7678a858f6f80a61d2a37a29458c1b8a793e27cbb6c910f344",
+    "description_sha256": "b41f6ad6f422167a279d530b79f218cb6b8f6134b36a8ba26db7b5f83324fa5d",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -558,31 +558,6 @@
       },
       "required": [
         "preview_id"
-      ],
-      "type": "object"
-    },
-    "annotations": {
-      "destructiveHint": false,
-      "openWorldHint": false,
-      "readOnlyHint": false
-    },
-    "visible_to_roles": [
-      "planner"
-    ]
-  },
-  {
-    "name": "neige_ratify_request",
-    "description_sha256": "ada9c58440c39d1e7f4e8c649ff5f61c7e789fd2396e2dd9246c8b47bf766d96",
-    "input_schema": {
-      "additionalProperties": false,
-      "properties": {
-        "text": {
-          "minLength": 1,
-          "type": "string"
-        }
-      },
-      "required": [
-        "text"
       ],
       "type": "object"
     },
@@ -1821,20 +1796,36 @@
     "visible_to_roles": []
   },
   {
-    "name": "neige_user_notify",
-    "description_sha256": "e1fb6729dbd0638f09b09f301cc0dc31448a2aa490cf753f699b004aa0e1c0ef",
+    "name": "neige_user_ask",
+    "description_sha256": "7e2706064c805770baed08b9da82268ebaeaa2c845fce5de33c8fe8be80cd5e3",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
-        "text": {
-          "description": "What to say to the user, verbatim. Shown as one ordinary message from you.",
-          "maxLength": 2000,
-          "minLength": 1,
-          "type": "string"
+        "questions": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "options": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "title"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
         }
       },
       "required": [
-        "text"
+        "questions"
       ],
       "type": "object"
     },

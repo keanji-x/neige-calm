@@ -73,7 +73,7 @@ pub(crate) const PLANNER_CATCH_UP_KINDS: &[&str] = &[
     "forge.pr.checks",
     "forge.issue.closed",
     "forge.pr.merged",
-    "ratify.resolved",
+    "ask.answered",
     "codex.hook",
     "claude.hook",
 ];
@@ -130,14 +130,17 @@ pub(crate) fn event_warrants_planner_push_with_role(
         // Kernel-only at the role gate; waking the Planner is the event's only purpose.
         Event::TrackWakeRequested { .. } => true,
         Event::ForgePrMerged { .. }
-        | Event::RatifyResolved { .. }
         | Event::ForgeScanCompleted { .. }
         | Event::ForgePrOpened { .. }
         | Event::ForgePrChecks { .. }
         | Event::ForgeIssueClosed { .. } => true,
+        // User-only at the role gate: the user's answer is the wake the question waits for.
+        Event::AskAnswered { .. } => true,
         // These tools wait for their result: the caller already has the receipt. Keep the
         // events for the timeline/notifications, but do not schedule another Planner turn.
-        Event::RatifyRequested { .. } | Event::ForgePrPublished { .. } => false,
+        Event::AskRequested { .. } | Event::ForgePrPublished { .. } => false,
+        // #2209: historical rows only; nothing writes them and they wake nobody.
+        Event::RatifyRequested { .. } | Event::RatifyResolved { .. } => false,
         // Workspace / worktree lifecycle notices are read back on demand (`neige_task_ls`);
         Event::WorkspaceLeased { .. }
         | Event::WorkspaceReleased { .. }
@@ -1060,7 +1063,7 @@ impl Inner {
                 });
             }
             Event::ForgePrMerged { track_id, .. }
-            | Event::RatifyResolved { track_id, .. }
+            | Event::AskAnswered { track_id, .. }
             | Event::ForgeScanCompleted { track_id, .. }
             | Event::ForgePrOpened { track_id, .. }
             | Event::ForgePrChecks { track_id, .. }
@@ -1124,6 +1127,8 @@ impl Inner {
             | Event::ForgePrDiffRead { .. }
             | Event::ForgeIssueRead { .. }
             | Event::RatifyRequested { .. }
+            | Event::RatifyResolved { .. }
+            | Event::AskRequested { .. }
             // Proposal lifecycle events reach the planner via the plugin-authored
             // `track.report_edited` landed in the same tx.
             | Event::ProposalSubmitted { .. }
@@ -1357,6 +1362,12 @@ pub(crate) async fn resolve_harness_observation(
     if matches!(event, Event::TaskGitDeliverySettled { .. }) {
         return git_delivery_settled::observation(repo, track_id, event).await;
     }
+    if let Event::AskAnswered {
+        ask_id, answers, ..
+    } = event
+    {
+        return ask_answered::observation(repo, track_id, *ask_id, answers).await;
+    }
     let task_key = if let Event::TaskGateResult {
         task_id,
         idempotency_key,
@@ -1530,13 +1541,6 @@ pub(crate) fn harness_observation_from_event(
             track_id: track_id.clone(),
             pr_number: subject.pr_number,
         }),
-        Event::RatifyResolved {
-            decision, message, ..
-        } => Some(HarnessObservation::RatifyResolved {
-            track_id: track_id.clone(),
-            decision: *decision,
-            message: message.clone(),
-        }),
         Event::ForgeScanCompleted {
             overlapping_prs, ..
         } => Some(HarnessObservation::ForgeScanCompleted {
@@ -1614,7 +1618,11 @@ pub(crate) fn harness_observation_from_event(
             idempotency_key: hook_idempotency_key.clone(),
         }),
         Event::CodexHook { .. } | Event::ClaudeHook { .. } => None,
-        Event::RatifyRequested { .. } => None,
+        // Requires the persisted question titles read in `resolve_harness_observation`.
+        Event::AskAnswered { .. } => None,
+        Event::RatifyRequested { .. }
+        | Event::RatifyResolved { .. }
+        | Event::AskRequested { .. } => None,
         Event::AreaUpdated(_)
         | Event::AreaDeleted { .. }
         | Event::TrackUpdated(_)
@@ -1658,6 +1666,7 @@ fn sha256_hex(text: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
+mod ask_answered;
 mod git_delivery_settled;
 
 #[cfg(test)]

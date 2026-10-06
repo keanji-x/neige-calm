@@ -102,7 +102,7 @@ pub struct TrackRows {
     pub output: HashMap<String, i64>,
     /// The instant the rows were read, for the output window.
     pub now_ms: i64,
-    /// N0–N3 — what the two notification sources read.
+    /// N0–N4 — what the two notification sources read.
     pub notifications: NotificationRows,
 }
 
@@ -124,7 +124,7 @@ impl Fold {
     pub fn attention(&self) -> Attention {
         self.items
             .iter()
-            .map(|i| match i.source {
+            .map(|i| match i.source() {
                 NotificationSource::PlannerDown => Attention::Failed,
                 NotificationSource::Ask => Attention::Input,
             })
@@ -404,8 +404,7 @@ impl TrackActivityProjector {
             return Ok(Recompute::NoTrack);
         };
         let folded = fold(track_id, &rows);
-        let e2 = rows.notifications.notifies.iter().map(|n| n.at_ms).max();
-        let evidence = sql::evidence(&self.pool, track_id, e2).await?;
+        let evidence = sql::evidence(&self.pool, track_id).await?;
         let stored = sql::existing_activity_payload(&self.pool, track_id).await?;
         // The high-water mark is read from the raw JSON, independently of the struct parse: a payload
         // another binary version wrote must not re-seed the mark and light a spurious unread.
@@ -542,19 +541,11 @@ impl TrackActivityProjector {
     pub async fn track_for_event(&self, env: &BroadcastEnvelope) -> Option<String> {
         match &env.event {
             Event::HarnessPhaseChanged { track_id, .. } => Some(track_id.as_str().to_string()),
-            // The COMPLETED tool-call row only (the `item/started` twin would be a second recompute that
-            // finds nothing new), and every turn end: a codex system error persists its failed turn row
-            // AFTER the phase event, so only this event carries it.
+            // Every turn end: a codex system error persists its failed turn row AFTER the phase
+            // event, so only this event carries it.
             Event::HarnessItemAdded {
-                track_id,
-                item_type,
-                method,
-                ..
-            } if (item_type.as_deref() == Some("mcpToolCall") && method == "item/completed")
-                || method == "turn/completed" =>
-            {
-                Some(track_id.as_str().to_string())
-            }
+                track_id, method, ..
+            } if method == "turn/completed" => Some(track_id.as_str().to_string()),
             // A user's reply to the Planner closes its asks.
             Event::HarnessUserMessageEnqueued { track_id, .. } => {
                 Some(track_id.as_str().to_string())
@@ -566,8 +557,8 @@ impl TrackActivityProjector {
             | Event::TaskCompleted { .. }
             | Event::TaskFailed { .. }
             | Event::TaskGateResult { .. } => env.scope.track_id().map(|t| t.as_str().to_string()),
-            // A ratify request opens an ask and its resolution closes it.
-            Event::RatifyRequested { track_id, .. } | Event::RatifyResolved { track_id, .. } => {
+            // A question opens an ask and its answer closes it.
+            Event::AskRequested { track_id, .. } | Event::AskAnswered { track_id, .. } => {
                 Some(track_id.as_str().to_string())
             }
             Event::TrackReportEdited { track_id, .. } => Some(track_id.as_str().to_string()),

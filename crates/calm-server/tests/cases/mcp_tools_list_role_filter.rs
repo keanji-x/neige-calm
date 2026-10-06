@@ -16,7 +16,6 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "neige_mail_send",
         "neige_preview_add",
         "neige_preview_rm",
-        "neige_ratify_request",
         "neige_report_commit",
         "neige_report_describe",
         "neige_report_read",
@@ -35,7 +34,7 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "neige_track_add",
         "neige_track_close",
         "neige_track_rename",
-        "neige_user_notify",
+        "neige_user_ask",
         "neige_workspace_cat",
         "neige_workspace_diff",
         "neige_workspace_log",
@@ -118,6 +117,8 @@ fn removed_aliases_and_retired_shims_are_not_registered() {
         "neige_workspace_changes",                 // retired-name: rejection input
         "neige_workspace_edits",                   // retired-name: rejection input
         "plugin.dev.neige.git-forge_gh.pr.checks", // retired-name: rejection input
+        "neige_ratify_request",                    // retired-name: rejection input
+        "neige_user_notify",                       // retired-name: rejection input
     ] {
         assert!(
             registry.lookup(removed).is_none(),

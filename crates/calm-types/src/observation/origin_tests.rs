@@ -2,8 +2,7 @@
 
 use serde_json::Value;
 
-use super::{HookKind, MAIL_WAKE_SOURCE, Observation};
-use crate::event::RatifyDecision;
+use super::{AnsweredQuestion, HookKind, MAIL_WAKE_SOURCE, Observation};
 use crate::git_candidate::{DeliveryFailureCode, DeliverySettlement};
 use crate::ids::{CardId, TrackId};
 use crate::model::HarnessInputOrigin;
@@ -111,10 +110,12 @@ fn one_of_every_variant() -> Vec<Observation> {
             commit_sha: "s".into(),
             branch: "b".into(),
         },
-        Observation::RatifyResolved {
+        Observation::AskAnswered {
             track_id: track_id(),
-            decision: RatifyDecision::Deny,
-            message: None,
+            answers: vec![AnsweredQuestion {
+                title: "Merge?".into(),
+                answer: "Merge".into(),
+            }],
         },
     ];
     let arm = |observation: &Observation| match observation {
@@ -137,7 +138,7 @@ fn one_of_every_variant() -> Vec<Observation> {
         Observation::ForgeIssueClosed { .. } => 16,
         Observation::WorktreeProvisioned { .. } => 17,
         Observation::WorktreeCommitted { .. } => 18,
-        Observation::RatifyResolved { .. } => 19,
+        Observation::AskAnswered { .. } => 19,
     };
     let covered = samples
         .iter()

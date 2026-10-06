@@ -4,8 +4,9 @@
 
 use sqlx::{Row, SqlitePool};
 
-use super::notifications::{LastTurn, NotificationRows, NotifyRow, PendingRatify};
+use super::notifications::{LastTurn, NotificationRows, OpenAsk};
 use crate::error::Result;
+use crate::event::Event;
 
 /// E1 — harness turn end: the newest non-interrupted `turn/completed` transcript row per card,
 /// inlined from its exported macro so the two spellings cannot drift; a `const` so the plan test runs THIS text.
@@ -15,28 +16,25 @@ pub const E1_HARNESS_TURN_COMPLETED_SQL: &str = concat!(
     ") FROM cards c WHERE c.track_id = ?1"
 );
 
-/// N3 — the Planner card's transcript, one statement with two arms (`?1` = the Planner card):
-/// every successful `neige_user_notify` call (the completed MCP tool call row; a row whose
-/// `item.error` is set or whose `item.status` is `failed` is not one), and the newest `turn/completed`
-/// row that is not `interrupted`. `NOT MATERIALIZED` keeps both arms on
-/// `idx_transcript_card_method_created_at`; a `const` so the plan test runs THIS text.
-/// E2 is the `MAX` of the notify arm, uncut by any close rule.
-pub const N3_PLANNER_TRANSCRIPT_SQL: &str = "WITH h AS NOT MATERIALIZED ( \
-       SELECT id, method, item_type, params, created_at_ms FROM harness_items WHERE card_id = ?1) \
-     SELECT 'notify' AS arm, id, created_at_ms, \
-            json_extract(params, '$.item.arguments.text') AS text, NULL AS status FROM h \
-      WHERE method = 'item/completed' AND item_type = 'mcpToolCall' \
-        AND json_extract(params, '$.item.tool') = 'neige_user_notify' \
-        AND json_extract(params, '$.item.error') IS NULL \
-        AND COALESCE(json_extract(params, '$.item.status'), '') <> 'failed' \
-     UNION ALL \
-     SELECT * FROM ( \
-       SELECT 'turn' AS arm, id, created_at_ms, \
-              json_extract(params, '$.error.message') AS text, \
-              json_extract(params, '$.status') AS status FROM h \
-        WHERE method = 'turn/completed' \
-          AND COALESCE(json_extract(params, '$.status'), '') <> 'interrupted' \
-        ORDER BY created_at_ms DESC, id DESC LIMIT 1)";
+/// N3 — the Planner card's newest `turn/completed` transcript row that is not `interrupted`
+/// (`?1` = the Planner card), one range of `idx_transcript_card_method_created_at`; a `const` so
+/// the plan test runs THIS text.
+pub const N3_PLANNER_TRANSCRIPT_SQL: &str = "SELECT id, created_at_ms, \
+            json_extract(params, '$.error.message') AS text, \
+            json_extract(params, '$.status') AS status FROM harness_items \
+      WHERE card_id = ?1 AND method = 'turn/completed' \
+        AND COALESCE(json_extract(params, '$.status'), '') <> 'interrupted' \
+      ORDER BY created_at_ms DESC, id DESC LIMIT 1";
+
+/// N1 — every `ask.requested` of the track that no `ask.answered` names by `ask_id`; one answer
+/// answers all of an ask's questions. The two later close rules (a user message, a dismissal) are
+/// the fold's.
+pub const N1_UNANSWERED_ASKS_SQL: &str = "SELECT r.id, r.at, r.payload FROM events r \
+      WHERE r.scope_track = ?1 AND r.kind = 'ask.requested' \
+        AND NOT EXISTS (SELECT 1 FROM events a \
+                         WHERE a.scope_track = ?1 AND a.kind = 'ask.answered' \
+                           AND json_extract(a.payload, '$.ask_id') = r.id) \
+      ORDER BY r.id";
 
 /// `tracks` row slice the fold needs.
 #[derive(Debug, Clone)]
@@ -82,7 +80,8 @@ pub struct SessionRow {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Evidence {
     pub e1_harness_turn_completed: Option<i64>,
-    pub e2_user_notify: Option<i64>,
+    /// The newest `ask.requested` of the track, whether or not it is still open.
+    pub e2_ask_requested: Option<i64>,
     pub e7_agent_report_edit: Option<i64>,
 }
 
@@ -90,7 +89,7 @@ impl Evidence {
     pub fn max(&self) -> Option<i64> {
         [
             self.e1_harness_turn_completed,
-            self.e2_user_notify,
+            self.e2_ask_requested,
             self.e7_agent_report_edit,
         ]
         .into_iter()
@@ -214,14 +213,11 @@ async fn max_ms(pool: &SqlitePool, sql: &str, track_id: &str) -> Result<Option<i
     Ok(row.try_get::<Option<i64>, _>(0)?)
 }
 
-/// E1, E7 — two autocommit `MAX` statements; E2 is the caller's `MAX` over the N3 notify rows
-/// it already read. E3 is computed from the W rows by the caller; the interactive PTY card's last
-/// output is read from the renderer registry, not from a row.
-pub(crate) async fn evidence(
-    pool: &SqlitePool,
-    track_id: &str,
-    e2_user_notify: Option<i64>,
-) -> Result<Evidence> {
+/// E1, E2, E7 — three autocommit `MAX` statements. E3 is computed from the W rows by the caller;
+/// the interactive PTY card's last output is read from the renderer registry, not from a row.
+pub(crate) async fn evidence(pool: &SqlitePool, track_id: &str) -> Result<Evidence> {
+    // E2 — the Planner asked the user something.
+    let e2 = "SELECT MAX(at) FROM events WHERE scope_track = ?1 AND kind = 'ask.requested'";
     // E7 — a report rewrite by someone other than the user (`EditAuthor`
     // is bare-lowercase on the wire).
     let e7 = "SELECT MAX(at) FROM events \
@@ -229,34 +225,41 @@ pub(crate) async fn evidence(
                  AND json_extract(payload, '$.author') <> 'user'";
     Ok(Evidence {
         e1_harness_turn_completed: max_ms(pool, E1_HARNESS_TURN_COMPLETED_SQL, track_id).await?,
-        e2_user_notify,
+        e2_ask_requested: max_ms(pool, e2, track_id).await?,
         e7_agent_report_edit: max_ms(pool, e7, track_id).await?,
     })
 }
 
 /// N0–N4 — the rows of the two notification sources and the dismissed keys, five autocommit
-/// statements. N0: the track's one Planner card (a unique index); without one there is no notify
-/// row, no last turn and no U.
+/// statements. N0: the track's one Planner card (a unique index); without one there is no last
+/// turn and no U.
 pub(crate) async fn notification_rows(
     pool: &SqlitePool,
     track_id: &str,
 ) -> Result<NotificationRows> {
-    // N1 — the newest `ratify.*` event, kept only when it is a request (`events.id` is monotone,
-    // so a later resolution hides it).
-    let pending_ratify = sqlx::query(
-        "SELECT id, at, kind, json_extract(payload, '$.reason') AS reason FROM events \
-          WHERE scope_track = ?1 AND kind IN ('ratify.requested', 'ratify.resolved') \
-          ORDER BY id DESC LIMIT 1",
-    )
-    .bind(track_id)
-    .fetch_optional(pool)
-    .await?
-    .filter(|r| r.get::<&str, _>("kind") == "ratify.requested")
-    .map(|r| PendingRatify {
-        event_id: r.get("id"),
-        at_ms: r.get("at"),
-        reason: r.get("reason"),
-    });
+    let mut asks = Vec::new();
+    for r in sqlx::query(N1_UNANSWERED_ASKS_SQL)
+        .bind(track_id)
+        .fetch_all(pool)
+        .await?
+    {
+        let ask_id: i64 = r.get("id");
+        let decoded = serde_json::from_str::<serde_json::Value>(r.get("payload"))
+            .ok()
+            .and_then(|payload| Event::from_kind_and_payload("ask.requested", payload).ok());
+        match decoded {
+            Some(Event::AskRequested { questions, .. }) => asks.push(OpenAsk {
+                ask_id,
+                at_ms: r.get("at"),
+                questions,
+            }),
+            _ => tracing::warn!(
+                track_id = %track_id,
+                ask_id,
+                "track_activity: an ask.requested row does not decode; item dropped"
+            ),
+        }
+    }
     // N4 — the keys the user dismissed (primary key prefix).
     let dismissed =
         sqlx::query_scalar("SELECT item_key FROM activity_dismissals WHERE track_id = ?1")
@@ -273,7 +276,7 @@ pub(crate) async fn notification_rows(
             .await?;
     let Some(planner_card) = planner_card else {
         return Ok(NotificationRows {
-            pending_ratify,
+            asks,
             dismissed,
             ..NotificationRows::default()
         });
@@ -285,33 +288,19 @@ pub(crate) async fn notification_rows(
            AND json_extract(actor, '$.kind') = 'User'";
     let user_sent_at = max_ms(pool, user_sent, &planner_card).await?;
 
-    let mut notifies = Vec::new();
-    let mut last_turn = None;
-    for r in sqlx::query(N3_PLANNER_TRANSCRIPT_SQL)
+    let last_turn = sqlx::query(N3_PLANNER_TRANSCRIPT_SQL)
         .bind(&planner_card)
-        .fetch_all(pool)
+        .fetch_optional(pool)
         .await?
-    {
-        let (row_id, at_ms, text) = (r.get("id"), r.get("created_at_ms"), r.get("text"));
-        if r.get::<&str, _>("arm") == "notify" {
-            notifies.push(NotifyRow {
-                row_id,
-                at_ms,
-                text,
-            });
-        } else {
-            last_turn = Some(LastTurn {
-                row_id,
-                at_ms,
-                status: r.get("status"),
-                error_message: text,
-            });
-        }
-    }
+        .map(|r| LastTurn {
+            row_id: r.get("id"),
+            at_ms: r.get("created_at_ms"),
+            status: r.get("status"),
+            error_message: r.get("text"),
+        });
     Ok(NotificationRows {
-        pending_ratify,
+        asks,
         user_sent_at,
-        notifies,
         last_turn,
         dismissed,
     })

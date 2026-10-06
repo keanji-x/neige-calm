@@ -11,7 +11,7 @@ use calm_server::model::{
     Area, AreaKind, Card, CardRuntimeView, Overlay, Track, TrackWorkspace, TrackWorkspaceKind,
 };
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
-use calm_types::event::{RatifyDecision, TaskContextRef};
+use calm_types::event::{AskQuestion, RatifyDecision, TaskContextRef};
 use calm_types::git_candidate::{DeliveryFailureCode, DeliverySettlement, DeliveryWakeReason};
 use calm_types::proposal::{ProposalAnchor, ProposalDecision, ProposalOp};
 use calm_types::verify_target::{
@@ -888,6 +888,48 @@ golden_test!(
 );
 
 golden_test!(
+    ask_requested,
+    "ask.requested.json",
+    Event::AskRequested {
+        track_id: TrackId::from("track-01"),
+        questions: vec![
+            AskQuestion {
+                title: "Merge PR #7 (head abc)?".into(),
+                options: vec!["Merge".into(), "Hold".into()],
+            },
+            AskQuestion {
+                title: "Which region?".into(),
+                options: Vec::new(),
+            },
+        ],
+        source_item_id: None,
+    }
+);
+
+golden_test!(
+    ask_requested_native,
+    "ask.requested.native.json",
+    Event::AskRequested {
+        track_id: TrackId::from("track-01"),
+        questions: vec![AskQuestion {
+            title: "Which region?".into(),
+            options: Vec::new(),
+        }],
+        source_item_id: Some("item-28745".into()),
+    }
+);
+
+golden_test!(
+    ask_answered,
+    "ask.answered.json",
+    Event::AskAnswered {
+        ask_id: 28477,
+        track_id: TrackId::from("track-01"),
+        answers: vec!["Merge".into(), "eu-west".into()],
+    }
+);
+
+golden_test!(
     ratify_resolved,
     "ratify.resolved.json",
     Event::RatifyResolved {
@@ -1270,7 +1312,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 }
 
 /// Every `Event` variant's kind tag, in declaration order.
-const ALL_KIND_TAGS: [&str; 53] = [
+const ALL_KIND_TAGS: [&str; 55] = [
     "area.updated",
     "area.deleted",
     "track.updated",
@@ -1311,6 +1353,8 @@ const ALL_KIND_TAGS: [&str; 53] = [
     "forge.pr.merged",
     "ratify.requested",
     "ratify.resolved",
+    "ask.requested",
+    "ask.answered",
     "proposal.submitted",
     "proposal.resolved",
     "forge.scan.completed",
@@ -1355,7 +1399,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 84,
+        files, 87,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -1412,6 +1456,8 @@ fn kind_tag_list_matches_enum() {
             Event::ForgePrMerged { .. } => "forge.pr.merged",
             Event::RatifyRequested { .. } => "ratify.requested",
             Event::RatifyResolved { .. } => "ratify.resolved",
+            Event::AskRequested { .. } => "ask.requested",
+            Event::AskAnswered { .. } => "ask.answered",
             Event::ProposalSubmitted { .. } => "proposal.submitted",
             Event::ProposalResolved { .. } => "proposal.resolved",
             Event::ForgeScanCompleted { .. } => "forge.scan.completed",
@@ -1433,7 +1479,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        53,
+        55,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }

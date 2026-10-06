@@ -2722,7 +2722,7 @@ fn queue_report_edits_all_carry_diffs(queue: &VecDeque<QueueEntry>) -> bool {
 /// swallow the request) and only when `queue_report_edits_all_carry_diffs` holds.
 const REPORT_EDIT_BATCH_CHANNEL_LINE: &str = "This is a background sync turn: \
     an ordinary reply here is folded away by the front end. \
-    Call neige_user_notify only for a conflict with work still in flight, \
+    Call neige_user_ask only for a conflict with work still in flight, \
     data you cannot parse, or a decision only the user can make; \
     otherwise end the turn silently.\n";
 

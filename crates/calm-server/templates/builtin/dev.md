@@ -73,10 +73,10 @@ against the first line of `git config --get-all remote.origin.url` run in the tr
 configured origin URL, before any url.insteadOf rewrite; owner/name after
 stripping the host and a trailing .git).
 On mismatch do NOT proceed or declare execution tasks.
-Record both observed repositories in 待你定, ask the user to correct or confirm
-the repository with neige_ratify_request and
-`reason:"repo_mismatch: input.repo=<owner/name>, cwd.origin=<owner/name>"`
-(that exact prefix, then both observed values), and wait for the human decision.
+Record both observed repositories in 待你定, then ask with neige_user_ask, title
+`repo_mismatch: input.repo=<owner/name>, cwd.origin=<owner/name>，用哪个仓库？`
+(that exact prefix, then both observed values) and the two observed owner/name values
+as options, and continue only with the repository the user answers.
 Without input.repo, inspect the checkout and origin and use the user's request;
 resolve any actual conflict in repository identity before writes. A local checkout
 without a remote can still be developed; publication needs a confirmed remote.
@@ -114,10 +114,10 @@ Merge and approval
 - Merge only a head inspected with gh_pr_diff and reviewed as repository policy requires, when no blocking finding is open
   and gh_pr_checks is green. Pass that head_sha as expected_head_sha.
 - merge_policy `auto-merge` allows gh_pr_merge at that point without asking again.
-- `hold-for-ratify` — also the semantics whenever merge_policy is absent — first calls
-  neige_ratify_request with `text:"merge_hold: pr #<n> at <head_sha>"`; on
-  ratify.resolved grant, merge that head with gh_pr_merge (expected_head_sha = that
-  head_sha). A new head needs the applicable checks and review again before a new ratify.
+- `hold-for-ratify` — also the semantics whenever merge_policy is absent — first asks with
+  neige_user_ask: title `合并 PR #<n>（head <head_sha>）？`, options `合并` and `暂不合并`.
+  Merge with gh_pr_merge (expected_head_sha = that head_sha) only when the answer is `合并`
+  and the head is unchanged. A new head needs the applicable checks and review again before a new ask.
 -->
 
 <!-- neige:input-form {

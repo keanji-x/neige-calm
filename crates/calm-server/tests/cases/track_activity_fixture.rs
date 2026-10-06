@@ -668,6 +668,57 @@ impl Fx {
             .unwrap()
     }
 
+    /// The Planner card `card` (session `ws`) asks one question per title through the shared entry
+    /// `neige_user_ask` writes with. Returns the ask's id.
+    pub(crate) async fn ask(&self, card: &str, ws: &str, titles: &[&str]) -> i64 {
+        let card = CardId::from(card.to_string());
+        let actor = ActorId::AiPlannerSession(WorkerSessionId::from(ws));
+        let questions: Vec<calm_server::event::AskQuestion> = titles
+            .iter()
+            .map(|title| calm_server::event::AskQuestion {
+                title: (*title).to_string(),
+                options: Vec::new(),
+            })
+            .collect();
+        let (_, ids) = calm_server::db::write_with_actor_events_typed(
+            self.repo_dyn.as_ref(),
+            None,
+            &self.events,
+            &self.write,
+            move |tx| {
+                Box::pin(async move {
+                    let (scope, event) =
+                        calm_server::ask::ask_requested_tx(tx, &card, questions, None).await?;
+                    Ok(((), vec![(actor, scope, event)]))
+                })
+            },
+        )
+        .await
+        .unwrap();
+        ids[0]
+    }
+
+    /// The user answers `ask_id` on `track` through the shared entry the answer route writes with.
+    pub(crate) async fn answer(&self, track: &str, ask_id: i64, answers: &[&str]) {
+        let track = TrackId::from(track.to_string());
+        let answers: Vec<String> = answers.iter().map(|a| (*a).to_string()).collect();
+        calm_server::db::write_with_actor_events_typed(
+            self.repo_dyn.as_ref(),
+            None,
+            &self.events,
+            &self.write,
+            move |tx| {
+                Box::pin(async move {
+                    let (scope, event) =
+                        calm_server::ask::ask_answered_tx(tx, &track, ask_id, answers).await?;
+                    Ok(((), vec![(ActorId::User, scope, event)]))
+                })
+            },
+        )
+        .await
+        .unwrap();
+    }
+
     /// Pin a transcript row to a known instant AFTER the production writer stamped the clock.
     pub(crate) async fn pin_transcript_row(&self, id: i64, at_ms: i64) {
         sqlx::query("UPDATE harness_items SET created_at_ms = ?1 WHERE id = ?2")

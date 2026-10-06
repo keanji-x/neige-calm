@@ -75,7 +75,7 @@ Effect classes: **V** view (no state change, no anchor; access metadata excepted
 | `set` | W | replace one entry's value under `expected_version` | `git config set` |
 | `rm` | W | remove an entry from its collection | `rm`, `git rm` |
 | `capture` | W | store a recorded call result as an immutable source | none (domain) |
-| `notify` | W | put one ask on the user's notifications | `notify-send` |
+| `ask` | W | put questions on the user's notifications; the answer wakes the Planner (#2209) | none (plain English) |
 | `send` | W | deliver one message to another Track's Planner and wake it | `send(2)`, `sendmail` |
 | `input` | W | send text or keys to a terminal against the latest read | `tmux send-keys` |
 | `control` | W | claim, release or detach terminal control | none (domain) |
@@ -83,7 +83,6 @@ Effect classes: **V** view (no state change, no anchor; access metadata excepted
 | `close` | LC | end the track | `close(2)` |
 | `cancel` | LC | stop a pending or running task | `cancel` (lp/CUPS) |
 | `publish` | LC | push the track branch and open or reuse its PR | `npm publish` |
-| `request` | LC | ask a human to ratify the track | none (kept) |
 | `accept` | LC | record that an attempt meets the task (Planner) | none (plain English) |
 | `reject` | LC | record that an attempt does not meet the task, with a `reason` | none (plain English) |
 | `done` | LC | the Worker's claim that its attempt met the task (was `report_success`, #2053) | `task <id> done` (Taskwarrior) |
@@ -110,13 +109,13 @@ Decisions, one line each:
   `terminal_show`.
 - **CRUD words retire:** `create`/`register` → `add`, `update` → `set`, `unregister` and
   cancel-by-flag → `rm`. `mv` is not used: no tool moves an entry between containers.
-- **Domain verbs with no Unix equivalent stay** (`capture`, `control`, `request`, `accept`,
+- **Domain verbs with no Unix equivalent stay** (`capture`, `control`, `ask`, `accept`,
   `reject`, `publish`), each with one meaning.
 - **`done` / `fail` replace the two Worker compounds** so every action is one word. The Worker
   claims (`task_done`, `task_fail`); the Planner decides (`task_accept`, `task_reject`).
 - **A view may stamp access metadata** (e.g. a last-seen time) and refresh derived projections onto
   the caller's own Track; it never changes authority or domain state (#2104).
-- **`send` means mail only** (#2130): `add` would hide the wake (principle 2), `notify` is the
+- **`send` means mail only** (#2130): `add` would hide the wake (principle 2), `ask` is the
   user's notifications and `input` is a terminal. Appendix B's cut `terminal_input` → `send` stays
   cut.
 
@@ -293,7 +292,7 @@ Added by the slices (registry-driven, Appendix B):
 - Terminal snapshots are "observations", which is also the Planner's wake-item word.
 - Inside a terminal `input` step, `{type: "key", key: "Enter"}` is a keyboard key, not a task key.
 - `report_write` and `track_rename` take an optional `message`; other writes require one.
-- `admin` and `ratify` are not things acted on (cut, Appendix B).
+- `admin` is not a thing acted on (cut, Appendix B).
 - Plugin host-callback error codes (-32001/-32003/-32004) differ from §5; plugin channel only.
 - KNOWN GAP (B4): the terminal tools answer every runtime failure -32403, a stale observation
   included; their errors are untyped, so §5's split (-32409 for a stale anchor) needs typed
@@ -359,7 +358,7 @@ prefix. Consumers: P prompts and templates, G goldens, F `fe`, T tests, R recipe
 | params: `after` (workspace ×3; edits takes an integer) | `cursor` (string); `workspace_log` `next_cursor` becomes a string | — | P, T, F wire types `ReportEditsPage` |
 | param: calendar.list `until` | `to` | — | P, T |
 | param: terminal `request_id` | `idempotency_key` | — | P, T |
-| param: `ratify_request` `reason` (a question for a person) | `text` | — | P, T |
+| param: `ratify_request` `reason` (a question for a person) | `text`; the tool is retired by `user_ask` (#2209) | — | P, T |
 | param: `report_read` `select` | `blocks` / `sections` / `detail: full\|index` | — | P (report guides), T |
 | output: `time_zone` (workspace, creation identity) | `timezone` | unreleased (0136) | P, F wire types |
 | output: `docRev`, `schemaVersion`, `taskDiagnostics` (report read/write/commit) | `doc_rev`, `schema_version`, `task_diagnostics` | — | P, refusal texts, T |
@@ -387,7 +386,7 @@ guide budget (7,489 / 7,500 B) before and after; trim wording, never raise a cap
 | B1a | View verbs: `task_ls`/`task_cancel`, `source_ls`, `area_ls`, `link_ls`, `report_describe`, `track_status`, `workspace_ls`/`cat`/`diff`/`log`, `tool ls`; its own migration (numbered last) maps B0's output names (`neige_plan_list` …), renaming the stored `$.item.tool` values and the 1 recipe (revision bump); its test runs the real chain 0134 → B0 → B1 on seeded rows | synonyms, noun actions | No retired view name in the registry, prompts or `fe`; the migration rewrites only the tool field | Retired-name sweep extended with the B1a names; mutation: register `neige_plan_list` again → red: the sweep, the golden and the direct-call tests using the literal |
 | B1b | Terminal: `observe` → `read`, `resolve` → `show`, flag `observe` → `read`, `request_id` → `idempotency_key` | anchored read named two ways | Input still refuses without a prior read; approvals unchanged | `stale_observation` and "read first" refusal tests name `neige_terminal_read`; mutation: keep `observe` in the refusal text → red |
 | B1c | Calendar and preview: `add/ls/set/rm`, `entry_id`, `to`, `preview_id`; `task_accept` / `task_reject` | CRUD words, effect in a flag | `calendar_set` no longer takes `cancelled`; `rm` stops wakes | Migration test seeds accepted and rejected `task.verdict` rows and a `calendar.list` row and the recipe, and reads back the new names; new `kernel_tool_actions_are_in_the_vocabulary`; mutation: drop one map row → red, and register `neige_task_verdict` again → red |
-| B2 | Parameters and paging: `cursor` everywhere (string), `report_read` `blocks`/`sections`/`detail`, `ratify_request` `text`, outputs `timezone`, plus the parameter vocabulary test | `after` with two types; one selection spelled two ways | `workspace_log` pages with a string cursor; `fe` wire regenerated with `npm run gen:api` | New `kernel_tool_params_use_the_vocabulary`; mutation: rename `cursor` back to `after` on one tool → red |
+| B2 | Parameters and paging: `cursor` everywhere (string), `report_read` `blocks`/`sections`/`detail`, `ratify_request` `text` (retired by `user_ask`, #2209), outputs `timezone`, plus the parameter vocabulary test | `after` with two types; one selection spelled two ways | `workspace_log` pages with a string cursor; `fe` wire regenerated with `npm run gen:api` | New `kernel_tool_params_use_the_vocabulary`; mutation: rename `cursor` back to `after` on one tool → red |
 | B3 | Results: snake_case report outputs; `{reports: […]}` with `track_id`/`updated_at` | `docRev` beside `updated_at` | CLI `--json` and MCP agree; refusal texts say `doc_rev` | New `report_tool_results_are_snake_case` over real `read`/`write`/`commit`/`find` calls (recursion skips `payload`); mutation: restore `docRev` → red |
 | B4 | Errors and exits: transport-level unknown-key refusal for every kernel tool, codes per §5, tool-name prefixes, forwarder exits 3 (transport) and 2 (non-UTF-8 argument) | silent unknown keys; overloaded codes | Every kernel tool refuses `{"zz": 1}` with its valid keys | New `every_kernel_tool_refuses_unknown_arguments`; mutation: skip the check for one tool → red; existing `kernel_exit_codes_are_exactly_0_1_4` plus a forwarder twin |
 | B5 | Plugin ids and minted names, descoped (Appendix C, item 10): the two built-in ids become words (`calendar`, `gitforge`) in the manifests, kernel references, `fe` and one migration (0148: `plugins` row copy with `plugin_kv`/`plugin_tokens`, `tracks.plugin_scope`, the `operations.idempotency_key` prefix, transcript `plugin_<id>_…` names respelled as minted, recipes); git-forge's tool names respelled `_` (`gh.pr.checks` → `gh_pr_checks`) with its `idem_key` literals unchanged; every plugin tool name minted in `[A-Za-z0-9_]` by one function for discovery, routing and recorded results (§6); colliding minted tools and ids refused; the install route takes only `[a-z0-9]{2,32}` for a new id; `source_capture` drops its sanitized-spelling fallback and keeps only stripping the `mcp__<server>__` qualifier | ids in three shapes; `-` and `.` rewritten by Codex but not by Claude | Every served plugin name passes `served_tool_names_use_the_word_alphabet`; a connector tool named `foo.bar` is served as `…_foo_bar` and called upstream as `foo.bar`; nothing on 4140 holds an old built-in id outside history | New `plugin_ids_are_words`; mutation: restore `dev.neige.calendar` as the built-in id → red; mutation: route by the raw tool name → the `foo.bar` dispatch test red |
@@ -402,7 +401,7 @@ them in `crates/calm-server/tests`). The other slices stay near 1k lines; B1a is
 
 **Cut (recorded, no observed pain).** A cut item overrides the general rules above for that item
 until it is taken up: `admin.*` → `track_gc`/`db_vacuum` (hidden, 0 stored
-calls); `ratify_request` → another object; `terminal_input` → `send`; `terminal_control` split;
+calls); `terminal_input` → `send`; `terminal_control` split;
 `source_capture` → `add` (one recipe would need a rewrite); `{"ok": true}` → `{}`; `track_rename`'s
 `{ok: false, refused}` → -32409 (deliberately not an error today); calendar entry field
 `cancelled` (stored in 4 kv rows and served to `fe`); plugin tool word changes beyond the `_`

@@ -22,7 +22,7 @@ use calm_server::track_activity::{
 use calm_truth::validation::OVERLAY_KIND_REGISTRY;
 use calm_types::harness::HarnessPhaseTag;
 use calm_types::task_recovery::{TASK_CHILD_TRACK_ROUTE, TASK_IN_TRACK_ROUTE};
-use serde_json::{Value, json};
+use serde_json::json;
 
 use super::track_activity_fixture::{Fx, fx};
 
@@ -838,79 +838,62 @@ async fn e1_turn_completed_row_is_the_activity_instant() {
     );
 }
 
+/// E2 is the `ask.requested` event's `at`, open or not; the user's answer is no activity of the
+/// track, and a transcript tool call (here the retired notify tool's) is no evidence.
 #[tokio::test]
-async fn e2_user_notify_completed_row_is_the_activity_instant() {
+async fn e2_ask_requested_is_the_activity_instant() {
     let f = fx().await;
     let (t, planner, ws) = harness_track(&f, WorkerSessionState::Idle).await;
-    let notify = |status: &str, error: Option<&str>| {
-        let mut item = json!({
-            "id": "call-1", "type": "mcpToolCall", "server": "neige",
-            "tool": "neige_user_notify", "status": status,
-            "arguments": {"text": "Which branch should the release go out from?"},
-        });
-        if let Some(e) = error {
-            item["error"] = json!({"message": e});
-        }
-        json!({"threadId": "th-fixture", "turnId": "turn-fixture", "item": item})
-    };
+    let ask_id = f
+        .ask(
+            &planner,
+            &ws,
+            &["Which branch should the release go out from?"],
+        )
+        .await;
+    let asked_at: i64 = sqlx::query_scalar("SELECT at FROM events WHERE id = ?1")
+        .bind(ask_id)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        f.recompute(&t).await.activity_at_ms,
+        Some(asked_at),
+        "E2 = the ask.requested event's at"
+    );
 
-    let t2 = 1_700_000_100_000_i64;
-    let ok = f
+    tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+    f.answer(&t, ask_id, &["main"]).await;
+    let call = f
         .transcript_item(
             &ws,
             &planner,
             &t,
-            "call-1",
+            "call-notify",
             "mcpToolCall",
             "item/completed",
-            notify("completed", None),
+            json!({"item": {"id": "call-notify", "type": "mcpToolCall", "server": "neige",
+                            "tool": "neige_user_notify", "status": "completed", // retired-name: rejection input
+                            "arguments": {"text": "Ship it?"}}}),
         )
         .await;
-    f.pin_transcript_row(ok, t2).await;
+    f.pin_transcript_row(call, asked_at + 5_000).await;
     assert_eq!(
         f.recompute(&t).await.activity_at_ms,
-        Some(t2),
-        "E2 = the completed notify row's created_at_ms"
+        Some(asked_at),
+        "neither the answer nor a tool call row is evidence"
     );
-
-    let twins: [(&str, &str, Value); 4] = [
-        (
-            "call-err",
-            "item/completed",
-            notify("completed", Some("boom")),
-        ),
-        ("call-failed", "item/completed", notify("failed", None)),
-        ("call-started", "item/started", notify("inProgress", None)),
-        (
-            "call-other",
-            "item/completed",
-            json!({"item": {"id": "call-other", "type": "mcpToolCall", "server": "neige",
-                            "tool": "neige_task_done", "status": "completed"}}),
-        ),
-    ];
-    for (i, (uuid, method, params)) in twins.into_iter().enumerate() {
-        let id = f
-            .transcript_item(&ws, &planner, &t, uuid, "mcpToolCall", method, params)
-            .await;
-        f.pin_transcript_row(id, t2 + 5_000 * (i as i64 + 1)).await;
-        assert_eq!(
-            f.recompute(&t).await.activity_at_ms,
-            Some(t2),
-            "{uuid} ({method}) is not evidence"
-        );
-    }
 }
 
 /// The production E1 and N3 statements enter the transcript table through
-/// `idx_transcript_card_method_created_at` — one index range per card (both N3 arms), no table scan.
-/// N3's `LIMIT 1` arm is a co-routine; its `SCAN (subquery-N)` reads that co-routine, not a table.
+/// `idx_transcript_card_method_created_at` — one index range per card, no table scan.
 #[tokio::test]
-async fn e1_e2_query_plans_use_the_transcript_index() {
+async fn e1_n3_query_plans_use_the_transcript_index() {
     let f = fx().await;
     const INDEX: &str = "USING INDEX idx_transcript_card_method_created_at";
     for (label, sql, index_ranges) in [
         ("E1", E1_HARNESS_TURN_COMPLETED_SQL, 1),
-        ("N3", N3_PLANNER_TRANSCRIPT_SQL, 2),
+        ("N3", N3_PLANNER_TRANSCRIPT_SQL, 1),
     ] {
         let details: Vec<String> = sqlx::query(&format!("EXPLAIN QUERY PLAN {sql}"))
             .bind("track-1")
@@ -1075,7 +1058,7 @@ async fn high_water_mark_survives_an_unparseable_stored_payload() {
     };
     assert_eq!(p.activity_at_ms, Some(big), "{p:?}");
     let stored = f.stored(&t).await.unwrap();
-    assert_eq!(stored.schema_version, 2);
+    assert_eq!(stored.schema_version, 3);
     assert_eq!(stored.activity_at_ms, Some(big));
     assert!(
         !stored.working,
@@ -1223,7 +1206,7 @@ async fn activity_payload_passes_the_overlay_registry() {
         .await;
     f.exit_session(&chat_ws, WorkerSessionState::Failed, 6_000)
         .await;
-    // The Planner card: one `neige_user_notify` ask and a failed turn (planner down).
+    // The Planner card: one `neige_user_ask` ask and a failed turn (planner down).
     let planner = f
         .card(&t, "card-planner", "planner", CardRole::Planner)
         .await;
@@ -1238,18 +1221,7 @@ async fn activity_payload_passes_the_overlay_registry() {
             1_000,
         )
         .await;
-    f.transcript_item(
-        &planner_ws,
-        &planner,
-        &t,
-        "call-notify",
-        "mcpToolCall",
-        "item/completed",
-        json!({"item": {"id": "call-notify", "type": "mcpToolCall", "server": "neige",
-                        "tool": "neige_user_notify", "status": "completed",
-                        "arguments": {"text": "Ship it?"}}}),
-    )
-    .await;
+    f.ask(&planner, &planner_ws, &["Ship it?"]).await;
     f.turn_outcome(
         &planner_ws,
         &planner,
@@ -1262,7 +1234,7 @@ async fn activity_payload_passes_the_overlay_registry() {
     // Both sources are represented: an ask and planner down; a card folded to `failed`; working from `test`.
     assert!(p.working);
     assert_eq!(p.attention, Attention::Failed);
-    let mut sources: Vec<NotificationSource> = p.items.iter().map(|i| i.source).collect();
+    let mut sources: Vec<NotificationSource> = p.items.iter().map(|i| i.source()).collect();
     sources.sort();
     assert_eq!(
         sources,
@@ -1281,12 +1253,18 @@ async fn activity_payload_passes_the_overlay_registry() {
     OVERLAY_KIND_REGISTRY
         .validate("activity", &stored.payload)
         .expect("the projector's payload is the registry's shape");
-    assert_eq!(stored.payload["schemaVersion"], json!(2));
-    // Every item key is present, nothing else.
+    assert_eq!(stored.payload["schemaVersion"], json!(3));
+    // Every item key is present, nothing else: only an ask carries its id and questions.
     for item in stored.payload["items"].as_array().unwrap() {
         let mut keys: Vec<&String> = item.as_object().unwrap().keys().collect();
         keys.sort();
-        assert_eq!(keys, ["at_ms", "key", "source", "text"]);
+        match item["source"].as_str() {
+            Some("ask") => assert_eq!(
+                keys,
+                ["ask_id", "at_ms", "key", "questions", "source", "text"]
+            ),
+            _ => assert_eq!(keys, ["at_ms", "key", "source", "text"]),
+        }
     }
     // Every key is present, nothing else.
     let mut keys: Vec<&String> = stored.payload.as_object().unwrap().keys().collect();
@@ -1432,11 +1410,12 @@ async fn wakeup_table_resolves_every_row_of_the_design() {
             },
             Some(t.as_str()),
         ),
+        // #2209: no tool call is notification evidence any more.
         (
             "harness.item.added mcpToolCall item/completed".into(),
             EventScope::System,
             Fx::item_added(&t, &card, "item/completed", Some("mcpToolCall")),
-            Some(t.as_str()),
+            None,
         ),
         (
             "harness.item.added mcpToolCall item/started (not a completion)".into(),
@@ -1474,6 +1453,7 @@ async fn wakeup_table_resolves_every_row_of_the_design() {
             },
             Some(t.as_str()),
         ),
+        // #2209: historical rows; nothing reads them for a notification.
         (
             "ratify.requested".into(),
             EventScope::System,
@@ -1481,7 +1461,7 @@ async fn wakeup_table_resolves_every_row_of_the_design() {
                 track_id: tid.clone(),
                 reason: "merge?".into(),
             },
-            Some(t.as_str()),
+            None,
         ),
         (
             "ratify.resolved".into(),
@@ -1490,6 +1470,29 @@ async fn wakeup_table_resolves_every_row_of_the_design() {
                 track_id: tid.clone(),
                 decision: calm_types::event::RatifyDecision::Grant,
                 message: None,
+            },
+            None,
+        ),
+        (
+            "ask.requested".into(),
+            EventScope::System,
+            Event::AskRequested {
+                track_id: tid.clone(),
+                questions: vec![calm_server::event::AskQuestion {
+                    title: "Merge?".into(),
+                    options: Vec::new(),
+                }],
+                source_item_id: None,
+            },
+            Some(t.as_str()),
+        ),
+        (
+            "ask.answered".into(),
+            EventScope::System,
+            Event::AskAnswered {
+                ask_id: 1,
+                track_id: tid.clone(),
+                answers: vec!["yes".into()],
             },
             Some(t.as_str()),
         ),

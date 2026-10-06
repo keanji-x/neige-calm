@@ -31,7 +31,9 @@ pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 /// in the maintained bundle (`fe/web/src/app/providers/public.tsx`);
 /// a textual CI gate compares the Rust and frontend values.
 /// #2160 bumps 40 -> 41: a segment `presentation` may be `system_mail`, which older bundles reject.
-pub const WEB_COMPAT_VERSION: u32 = 42;
+/// #2209 bumps 42 -> 43: an activity overlay is `schemaVersion: 3` (an `ask` item carries
+/// `ask_id` and `questions`), which older bundles reject, dropping the whole activity.
+pub const WEB_COMPAT_VERSION: u32 = 43;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

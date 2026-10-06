@@ -22,12 +22,12 @@ use calm_server::db::sqlite::{
     session_start_runtime_tx,
 };
 use calm_server::db::write_with_actor_events_typed;
-use calm_server::event::{Event, EventBus, EventScope, RatifyDecision};
+use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::harness::{
     HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation, spawn_recovered_harness,
 };
 use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
-use calm_server::mcp_server::tools::review::TOOL_RATIFY_REQUEST;
+use calm_server::mcp_server::tools::user_ask::TOOL_USER_ASK;
 use calm_server::mcp_server::{
     AppContext, McpServer, ToolCallIdentity, ToolRegistry, build_default_registry,
 };
@@ -1058,7 +1058,7 @@ async fn reviewed_pr_merges_at_the_diffed_head_then_closes() {
 }
 
 #[tokio::test]
-async fn merge_hold_ratify_pauses_then_merges_on_grant() {
+async fn merge_hold_ask_pauses_then_merges_on_the_answer() {
     let _env_lock = FORGE_ENV_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -1076,26 +1076,28 @@ async fn merge_hold_ratify_pauses_then_merges_on_grant() {
         "Merge hold E2E",
     )
     .await;
-    let reason = format!("merge_hold: pr #{} at {}", pr.pr_number, pr.head_sha);
-    let request = request_ratification(&fx, &reason).await;
+    let title = format!("Merge PR #{} (head {})?", pr.pr_number, pr.head_sha);
+    let request = request_merge_ask(&fx, &title).await;
     assert!(
         event_rows(&fx.repo, "forge.pr.merged").await.is_empty(),
-        "merge must be absent while the hold awaits a grant"
+        "merge must be absent while the hold awaits the answer"
     );
 
-    let (status, body) = post_ratify(&fx, "grant").await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let resolved = wait_for_event_matching(&fx.repo, "ratify.resolved", |row| {
-        row.scope_track.as_deref() == Some(&fx.track_id) && row.payload["decision"] == "grant"
+    let (status, body) = post_answer(&fx, request.id, "Merge").await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let answered = wait_for_event_matching(&fx.repo, "ask.answered", |row| {
+        row.scope_track.as_deref() == Some(&fx.track_id)
+            && row.payload["ask_id"] == json!(request.id)
+            && row.payload["answers"] == json!(["Merge"])
     })
     .await;
-    assert!(request.id < resolved.id);
+    assert!(request.id < answered.id);
 
     let merged = merge_reviewed_pr(&fx, 64, &pr).await;
     close_issue(&fx, 66, &pr.repo_arg, 762).await;
-    close_track(&fx, "done after the merge grant").await;
+    close_track(&fx, "done after the merge answer").await;
 
-    assert!(resolved.id < merged.id);
+    assert!(answered.id < merged.id);
     assert_eq!(row_head_sha(&merged).as_deref(), Some(pr.head_sha.as_str()));
 
     fx.plugin_host
@@ -1105,7 +1107,7 @@ async fn merge_hold_ratify_pauses_then_merges_on_grant() {
 }
 
 #[tokio::test]
-async fn ratify_resolution_recovers_into_pending_queue() {
+async fn ask_answer_recovers_into_pending_queue() {
     let _env_lock = FORGE_ENV_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -1113,11 +1115,12 @@ async fn ratify_resolution_recovers_into_pending_queue() {
     let _env = setup_forge_env();
 
     let fx = boot_fixture().await;
-    request_ratification(&fx, "merge_hold: pr #760 at head-sha-recovery").await;
-    let (status, body) = post_ratify(&fx, "grant").await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    wait_for_event_matching(&fx.repo, "ratify.resolved", |row| {
-        row.scope_track.as_deref() == Some(&fx.track_id) && row.payload["decision"] == "grant"
+    let request = request_merge_ask(&fx, "Merge PR #760 (head head-sha-recovery)?").await;
+    let (status, body) = post_answer(&fx, request.id, "Merge").await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    wait_for_event_matching(&fx.repo, "ask.answered", |row| {
+        row.scope_track.as_deref() == Some(&fx.track_id)
+            && row.payload["ask_id"] == json!(request.id)
     })
     .await;
 
@@ -1152,17 +1155,18 @@ async fn ratify_resolution_recovers_into_pending_queue() {
     .installed()
     .expect("recovered harness");
 
-    // #2170: the Planner's own ratify.requested is not replayed; only the user's decision is.
+    // #2170 / #2209: the Planner's own ask.requested is not replayed; only the user's answer is,
+    // titled from the persisted question.
     let pending = wait_for_recovered_pending(&handle).await;
     assert!(
         pending.iter().any(|obs| matches!(
             obs,
-            Observation::RatifyResolved {
-                decision: RatifyDecision::Grant,
-                ..
-            }
+            Observation::AskAnswered { answers, .. }
+                if answers.len() == 1
+                    && answers[0].title == "Merge PR #760 (head head-sha-recovery)?"
+                    && answers[0].answer == "Merge"
         )),
-        "ratify.resolved grant must recover into pending queue: {pending:?}"
+        "ask.answered must recover into the pending queue: {pending:?}"
     );
 
     handle.shutdown().await.expect("shutdown recovered harness");
@@ -1894,27 +1898,33 @@ async fn call_review_tool(
         .map(calm_server::mcp_server::result::ToolResult::into_structured)
 }
 
-async fn request_ratification(fx: &Fixture, reason: &str) -> EventRow {
-    let before = event_rows(&fx.repo, "ratify.requested").await.len();
-    let resp = call_review_tool(fx, TOOL_RATIFY_REQUEST, json!({ "text": reason }))
-        .await
-        .expect("neige_ratify_request succeeds");
-    assert_eq!(resp["ok"], true, "ratify.request response: {resp}");
-    let rows = wait_for_event_count(&fx.repo, "ratify.requested", before + 1).await;
-    rows.last().expect("new ratify.requested").clone()
+/// A merge hold as the dev template asks it: one question, merging recommended.
+async fn request_merge_ask(fx: &Fixture, title: &str) -> EventRow {
+    let before = event_rows(&fx.repo, "ask.requested").await.len();
+    let resp = call_review_tool(
+        fx,
+        TOOL_USER_ASK,
+        json!({ "questions": [{ "title": title, "options": ["Merge", "Hold"] }] }),
+    )
+    .await
+    .expect("neige_user_ask succeeds");
+    let rows = wait_for_event_count(&fx.repo, "ask.requested", before + 1).await;
+    let row = rows.last().expect("new ask.requested").clone();
+    assert_eq!(
+        resp["ask_id"],
+        json!(row.id),
+        "neige_user_ask response: {resp}"
+    );
+    row
 }
 
-async fn post_ratify(fx: &Fixture, decision: &str) -> (StatusCode, Value) {
-    let body = serde_json::to_vec(&json!({
-        "decision": decision,
-        "message": format!("human says {decision}")
-    }))
-    .expect("ratify body json");
+async fn post_answer(fx: &Fixture, ask_id: i64, answer: &str) -> (StatusCode, Value) {
+    let body = serde_json::to_vec(&json!({ "answers": [answer] })).expect("answer body json");
     let resp = app_router_for_fixture(fx)
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/cards/{}/ratify", fx.planner_card_id))
+                .uri(format!("/api/tracks/{}/asks/{ask_id}/answer", fx.track_id))
                 .header("content-type", "application/json")
                 .body(Body::from(body))
                 .unwrap(),
@@ -2129,7 +2139,7 @@ async fn wait_for_recovered_pending(
         let pending = handle.pending_queue_for_test().await;
         if pending
             .iter()
-            .any(|obs| matches!(obs, Observation::RatifyResolved { .. }))
+            .any(|obs| matches!(obs, Observation::AskAnswered { .. }))
         {
             return pending;
         }

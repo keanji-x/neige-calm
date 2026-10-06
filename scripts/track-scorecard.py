@@ -16,9 +16,10 @@ Columns:
   publish       forge.pr.opened / forge.pr.published events (one per published head)
   ci_red        distinct heads whose forge.pr.checks concluded failure; --detail and --json also
                 name each failed check per head (events before #2170 did not record names)
-  interventions the user's messages to the Planner after the kickoff message, plus ratify
-                decisions
-  ratify        ratify requests (and how many were denied)
+  interventions the user's messages to the Planner after the kickoff message, plus answered
+                questions (ask.answered) and historical ratify decisions
+  asks          questions the Planner asked (ask.requested), and how many the user answered
+  ratify        historical ratify requests before #2209 (and how many were denied)
   bypass        commands that write git history or GitHub outside the kernel's delivery path,
                 counted once per terminal task, Planner shell command, Planner terminal input
                 or worker shell command. A worker owns its checkout, so only its remote writes
@@ -118,6 +119,8 @@ def scorecard(db, track_id):
         (track_id, planner),
     ).fetchall()
     followups = sum(1 for at, actor in messages[1:] if start <= at <= end and json.loads(actor)["kind"] == "User")
+    asks = len(events(db, track_id, ["ask.requested"], start, end))
+    answered = len(events(db, track_id, ["ask.answered"], start, end))
     ratify_requested = len(events(db, track_id, ["ratify.requested"], start, end))
     resolved = [json.loads(p)["decision"] for _, p, _, _ in events(db, track_id, ["ratify.resolved"], start, end)]
     rejected = sum(
@@ -142,8 +145,10 @@ def scorecard(db, track_id):
         "publish": publish,
         "ci_red": len(red_heads),
         "ci_red_heads": [{"head": h, "failed_checks": names} for h, names in red_heads.items()],
-        "interventions": followups + len(resolved),
+        "interventions": followups + answered + len(resolved),
         "user_messages": followups,
+        "asks": asks,
+        "asks_answered": answered,
         "ratify_requested": ratify_requested,
         "ratify_denied": sum(1 for d in resolved if d != "grant"),
         "bypass": len(hits),
@@ -164,6 +169,7 @@ COLUMNS = [
     ("publish", lambda c: c["publish"]),
     ("ci_red", lambda c: c["ci_red"]),
     ("interventions", lambda c: c["interventions"]),
+    ("asks", lambda c: "{} ({} answered)".format(c["asks"], c["asks_answered"])),
     ("ratify", lambda c: "{} ({} denied)".format(c["ratify_requested"], c["ratify_denied"])),
     ("bypass", lambda c: c["bypass"]),
 ]

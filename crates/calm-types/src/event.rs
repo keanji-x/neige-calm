@@ -227,7 +227,7 @@ impl EventScope {
 
 /// Sync-engine event envelope version. Bump together with a migration default whenever clients
 /// must gate on a new persisted wire shape.
-pub const SYNC_EVENT_VERSION: u32 = 25;
+pub const SYNC_EVENT_VERSION: u32 = 26;
 
 /// Evidence captured by the checks read, never reconstructed from a later PR head.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -288,6 +288,15 @@ pub struct ForgeMergeSubject {
 pub enum RatifyDecision {
     Grant,
     Deny,
+}
+
+/// One question of an `ask.requested`: what the user is asked, and the answers offered. The first
+/// option is the recommended one; no options means a free-text answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct AskQuestion {
+    pub title: String,
+    pub options: Vec<String>,
 }
 
 /// The full set of WS event envelopes the kernel emits on `/api/events`. ts-rs requires every
@@ -662,6 +671,24 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         message: Option<String>,
+    },
+    /// The Planner asks the user one or more questions (#2209). Its event id is the ask's id.
+    #[serde(rename = "ask.requested")]
+    AskRequested {
+        track_id: TrackId,
+        questions: Vec<AskQuestion>,
+        /// The provider item the question was translated from; absent for a `neige_user_ask` call.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        source_item_id: Option<String>,
+    },
+    /// The user answered every question of the `ask.requested` whose event id is `ask_id`;
+    /// `answers[i]` answers `questions[i]`.
+    #[serde(rename = "ask.answered")]
+    AskAnswered {
+        ask_id: i64,
+        track_id: TrackId,
+        answers: Vec<String>,
     },
 
     /// A plugin submitted a report-edit proposal. Append-only record: the full op list + anchors ride
@@ -1050,6 +1077,8 @@ impl Event {
             Event::ForgePrMerged { track_id, .. }
             | Event::RatifyRequested { track_id, .. }
             | Event::RatifyResolved { track_id, .. }
+            | Event::AskRequested { track_id, .. }
+            | Event::AskAnswered { track_id, .. }
             | Event::ForgeScanCompleted { track_id, .. }
             | Event::ForgePrOpened { track_id, .. }
             | Event::ForgePrPublished { track_id, .. }
@@ -1137,6 +1166,8 @@ impl Event {
             Event::ForgePrMerged { .. } => "forge.pr.merged",
             Event::RatifyRequested { .. } => "ratify.requested",
             Event::RatifyResolved { .. } => "ratify.resolved",
+            Event::AskRequested { .. } => "ask.requested",
+            Event::AskAnswered { .. } => "ask.answered",
             Event::ProposalSubmitted { .. } => "proposal.submitted",
             Event::ProposalResolved { .. } => "proposal.resolved",
             Event::ForgeScanCompleted { .. } => "forge.scan.completed",
@@ -1297,6 +1328,8 @@ pub fn topics(ev: &Event) -> Vec<String> {
         Event::ForgePrMerged { track_id, .. }
         | Event::RatifyRequested { track_id, .. }
         | Event::RatifyResolved { track_id, .. }
+        | Event::AskRequested { track_id, .. }
+        | Event::AskAnswered { track_id, .. }
         | Event::ForgeScanCompleted { track_id, .. }
         | Event::ForgePrOpened { track_id, .. }
         | Event::ForgePrPublished { track_id, .. }
@@ -1601,6 +1634,23 @@ mod scope_tests {
             message: None,
         };
         assert_eq!(ratify_resolved.kind_tag(), "ratify.resolved");
+
+        let ask_requested = Event::AskRequested {
+            track_id: TrackId::from("track-1"),
+            questions: vec![AskQuestion {
+                title: "Merge PR #1?".into(),
+                options: vec!["Merge".into(), "Hold".into()],
+            }],
+            source_item_id: None,
+        };
+        assert_eq!(ask_requested.kind_tag(), "ask.requested");
+
+        let ask_answered = Event::AskAnswered {
+            ask_id: 7,
+            track_id: TrackId::from("track-1"),
+            answers: vec!["Merge".into()],
+        };
+        assert_eq!(ask_answered.kind_tag(), "ask.answered");
 
         let forge_scan_completed = Event::ForgeScanCompleted {
             track_id: TrackId::from("track-1"),
@@ -2637,6 +2687,19 @@ mod scope_tests {
                 decision: RatifyDecision::Grant,
                 message: None,
             },
+            Event::AskRequested {
+                track_id: TrackId::from("track-1"),
+                questions: vec![AskQuestion {
+                    title: "Which branch?".into(),
+                    options: Vec::new(),
+                }],
+                source_item_id: Some("item-1".into()),
+            },
+            Event::AskAnswered {
+                ask_id: 7,
+                track_id: TrackId::from("track-1"),
+                answers: vec!["main".into()],
+            },
             Event::ProposalSubmitted {
                 track_id: TrackId::from("track-1"),
                 proposal_id: "pp-1".into(),
@@ -2905,6 +2968,23 @@ mod scope_tests {
                 serde_json::json!({
                     "track_id": "track-1",
                     "decision": "grant",
+                }),
+            ),
+            (
+                "ask.requested",
+                "ask.requested",
+                serde_json::json!({
+                    "track_id": "track-1",
+                    "questions": [{ "title": "Which branch?", "options": [] }],
+                }),
+            ),
+            (
+                "ask.answered",
+                "ask.answered",
+                serde_json::json!({
+                    "ask_id": 7,
+                    "track_id": "track-1",
+                    "answers": ["main"],
                 }),
             ),
             (

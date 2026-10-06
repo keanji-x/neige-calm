@@ -48,8 +48,8 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "neige_track_close",
     // Opening a top-level Track from a recipe is a Planner action.
     "neige_track_add",
-    // Speaking from a background sync turn is a planner action.
-    "neige_user_notify",
+    // Asking the user is a planner action.
+    "neige_user_ask",
     // Mail between the Tracks of an Area wakes another Planner (#2130).
     "neige_mail_send",
     "neige_mail_ls",
@@ -73,7 +73,6 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     // Planning, review, admin.
     "neige_task_cancel",
     "neige_task_ls",
-    "neige_ratify_request",
     "neige_admin_gc",
     "neige_admin_vacuum",
 ];

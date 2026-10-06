@@ -59,11 +59,11 @@ pub(super) fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str
          After implement-change is Done and its delivery settled, YOU the Planner must call neige_dev_publish with title, body and a stable idempotency_key. Use the returned pr_number, head_sha and branch. Call gh_pr_checks for that PR. Do not create an open-pr worker task.\n\
          Then declare review-pr with literal repo, pr_number, base_sha and head_sha: it must call gh_pr_diff, review against the issue, and report approved or changes_requested.\n\
          Declare merge only after the review task exists and merge only after approval and successful checks. Its gh_pr_merge must pass expected_head_sha equal to the reviewed head. It then calls gh_issue_close for #{issue_number} at the same repo.\n\
-         After merge completes and the issue closes, call neige_track_close. If review cannot converge, close the track with a reason; do not request ratification."
+         After merge completes and the issue closes, call neige_track_close. If review cannot converge, close the track with a reason; do not ask the user."
     )
 }
 
-/// Stage wait with the failure terminator folded in: `ratify.requested` at ANY point, or a close before the awaited one, fails fast with agent diagnostics.
+/// Stage wait with the failure terminator folded in: `ask.requested` at ANY point, or a close before the awaited one, fails fast with agent diagnostics.
 pub(super) async fn wait_capstone_event(
     fx: &Fixture,
     kind: &str,
@@ -74,14 +74,11 @@ pub(super) async fn wait_capstone_event(
 ) -> (i64, ActorId, Value) {
     let deadline = Instant::now() + budget;
     loop {
-        if !event_payloads(&fx.repo, "ratify.requested")
-            .await
-            .is_empty()
-        {
+        if !event_payloads(&fx.repo, "ask.requested").await.is_empty() {
             panic_with_agent_diag(
                 fx,
                 format!(
-                    "ratify.requested emitted during the steered GIVE-UP capstone (purity \
+                    "ask.requested emitted during the steered GIVE-UP capstone (purity \
                      violation) while waiting for {kind} ({describe})"
                 ),
             )
@@ -374,11 +371,11 @@ pub(super) async fn capstone_oracle(
         "exactly one forge.issue.closed event"
     );
 
-    // Purity: never ratified, never the injected-plan path, and the track closed.
+    // Purity: never asked the user, never the injected-plan path, and the track closed.
     assert_eq!(
-        event_payloads(&fx.repo, "ratify.requested").await.len(),
+        event_payloads(&fx.repo, "ask.requested").await.len(),
         0,
-        "steered GIVE-UP capstone must never request ratification"
+        "steered GIVE-UP capstone must never ask the user"
     );
     assert!(
         track_is_closed(fx).await,

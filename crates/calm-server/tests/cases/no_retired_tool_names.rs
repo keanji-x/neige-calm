@@ -6,10 +6,10 @@ use std::process::Command;
 
 /// The retired kernel tool names: the old `calm.` prefix on any kernel object, plus the removed
 /// aliases and shims by their own spelling, assembled so this file does not carry the B0 spelling
-/// of the retired publish tool.
+/// of the retired publish tool, nor the ratify and notify tools `neige_user_ask` replaced (#2209).
 const RETIRED_TOOL_NAME: &str = concat!(
     r"\b(?:calm\.(admin|area|calendar|dispatch_request|get_track_state|plan|preview|ratify|report|review|source|task|task_completed|task_failed|terminal|track|update_task_meta|user)|neige_",
-    r"track_publish)\b"
+    r"(?:track_publish|ratify_request|user_notify))\b"
 );
 
 /// #2087 B0: a kernel tool name never contains `.`, so a dotted `neige.<object>.` on any kernel
@@ -155,6 +155,9 @@ fn the_sweep_patterns_hit_only_retired_names() {
         "read gh.issue.view and",                    // retired-name: rejection input
         "\"gh.pr.checks\" =>",                       // retired-name: rejection input
         "with git.commit.",                          // retired-name: rejection input
+        "call neige_ratify_request with",            // retired-name: rejection input
+        "\"neige_user_notify\",",                    // retired-name: rejection input
+        "prompts/tools/neige_user_notify.md",        // retired-name: rejection input
         concat!("mcp__", "calm__neige_report_read"),
         concat!("allowed: mcp__", "calm Edit"),
     ] {
@@ -193,6 +196,9 @@ fn the_sweep_patterns_hit_only_retired_names() {
         "neige_preview_registered",
         "neige_task_accept",
         "neige_task_reject",
+        "neige_user_ask",
+        "ratify.requested",
+        "hold-for-ratify",
         "my_neige_task_verdict",
         "a task verdict",
         "xneige.track.cat",

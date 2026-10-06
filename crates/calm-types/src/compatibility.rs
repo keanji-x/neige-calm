@@ -13,4 +13,7 @@
 // bundle sends none and every message would be refused.
 // Revision 21 (#2043): Edit is `POST /planner/input` with `replaces_turn`; `POST /planner/rewind` is
 // gone. An older kernel would ignore the field and queue the edit as a new message.
-pub const REST_API_VERSION: &str = "21";
+// Revision 22 (#2209): `POST /api/cards/{id}/ratify` is gone and
+// `POST /api/tracks/{id}/asks/{ask_id}/answer` is new; a bundle of this revision would get 404 from
+// an older kernel when it answers a question.
+pub const REST_API_VERSION: &str = "22";

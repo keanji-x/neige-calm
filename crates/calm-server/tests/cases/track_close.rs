@@ -70,7 +70,7 @@ async fn planner_close_stamps_closed_at_and_refuses_a_lifecycle_key() {
     assert!(
         err.message.contains(
             "`lifecycle` is removed: close with neige_track_close; ask with \
-             neige_user_notify or neige_ratify_request"
+             neige_user_ask"
         ),
         "{err:?}"
     );

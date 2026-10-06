@@ -360,7 +360,7 @@
           "auto-merge"
         ],
         "default": "hold-for-ratify",
-        "description": "hold-for-ratify (default when absent): ratify.request before gh_pr_merge; auto-merge: merge after review and green checks without asking again"
+        "description": "hold-for-ratify (default when absent): ask the user with neige_user_ask before gh_pr_merge; auto-merge: merge after review and green checks without asking again"
       },
       "notes": {
         "type": "string",

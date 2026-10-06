@@ -29,7 +29,7 @@ async fn a_fresh_template_can_report_repository_mismatch_without_tasks_or_ratifi
         read["text"]
             .as_str()
             .unwrap()
-            .contains("ask the user to correct or confirm")
+            .contains("then ask with neige_user_ask")
     );
     let card = boot
         .repo

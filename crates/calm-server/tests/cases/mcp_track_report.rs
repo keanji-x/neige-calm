@@ -773,7 +773,7 @@ fn assert_lifecycle_removed(message: &str) {
     assert!(
         message.contains(
             "`lifecycle` is removed: close with neige_track_close; ask with \
-             neige_user_notify or neige_ratify_request"
+             neige_user_ask"
         ),
         "{message}"
     );

@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use super::track_mail_fixture::{Planner, World, mail_and_hop, refusal};
 
-const HANDOFF: &str = "hop 6/6 reached — hand off with neige_user_notify";
+const HANDOFF: &str = "hop 6/6 reached — hand off with neige_user_ask";
 
 fn line(title: &str, summary: &str, mail_id: &str) -> String {
     format!("Wake from mail ({mail_id}): \"{title}\": {summary} — neige mail cat {mail_id}")
@@ -217,14 +217,14 @@ async fn mail_hop_follows_the_worked_example() {
         .await
         .expect_err("the seventh hop is refused");
     assert_eq!(refusal(&error, "hop_limit").0, -32409);
-    let notified = w
+    let asked = w
         .call(
             a,
-            "neige_user_notify",
-            json!({"text": "The review loop needs you."}),
+            "neige_user_ask",
+            json!({"questions": [{"title": "The review loop needs you: continue?"}]}),
         )
         .await;
-    assert!(notified.get("error").is_none(), "{notified}");
+    assert!(asked.get("error").is_none(), "{asked}");
     w.complete(a).await;
     // Step 9: the user's reply restarts the chain.
     w.user_turn(a, "carry on").await;
@@ -500,20 +500,20 @@ async fn mail_send_refusals_follow_the_table() {
             to(closed.as_str()),
             "closed",
             -32409,
-            format!("{tool}: track {closed} is closed; hand off with neige_user_notify"),
+            format!("{tool}: track {closed} is closed; hand off with neige_user_ask"),
         ),
         (
             to(chat.as_str()),
             "no_planner",
             -32409,
-            format!("{tool}: track {chat} has no Planner; hand off with neige_user_notify"),
+            format!("{tool}: track {chat} has no Planner; hand off with neige_user_ask"),
         ),
         (
             to(daily.track_id.as_str()),
             "reports_only",
             -32409,
             format!(
-                "{tool}: track {} takes no mail; hand off with neige_user_notify",
+                "{tool}: track {} takes no mail; hand off with neige_user_ask",
                 daily.track_id
             ),
         ),

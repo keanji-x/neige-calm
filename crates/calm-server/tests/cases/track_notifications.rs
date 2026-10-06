@@ -1,18 +1,17 @@
-//! #1829 / #1876 — the two notification sources of `kernel/track/activity`: an ask (a pending
-//! `neige_ratify_request`, or a `neige_user_notify` call) and planner down (the Planner's newest
-//! finished turn failed). Every row is written through its production event writer; each case
-//! asserts the payload the projector computes. One test per row of the design's producer × state
-//! matrix (§7).
+//! #1829 / #1876 / #2209 — the two notification sources of `kernel/track/activity`: an ask (an
+//! unanswered `neige_user_ask`) and planner down (the Planner's newest finished turn failed). Every
+//! row is written through its production writer (the shared `calm_server::ask` entry for asks and
+//! answers); each case asserts the payload the projector computes. One test per row of the
+//! design's producer × state matrix (§7).
 //!
-//! Fixture sources are fixed so the mutation red sets hold: only rows 3, 3b, 4a, 4b and 5 ever
-//! resolve a ratify request; rows 2, 18 and 19 request one and never resolve it; rows 5–8 are
-//! notify-only, and only row 5 has a resolved request. Do not add a resolution to 2, 18 or 19.
+//! Fixture sources are fixed so the mutation red sets hold: only rows 3, 3b, 4a and 4b ever answer
+//! an ask; rows 2, 18, 19 and 24 ask and never answer. Do not add an answer to 2, 18, 19 or 24.
 //! Rows 4b, 18, 20 and 21 (Dismiss) are in `track_notification_dismissals.rs`.
 
 use std::time::Duration;
 
 use calm_server::db::write_with_events_typed;
-use calm_server::event::{Event, EventScope};
+use calm_server::event::{AskQuestion, Event, EventScope};
 use calm_server::ids::{ActorId, CardId, TrackId};
 use calm_server::model::{CardRole, now_ms};
 use calm_server::session_projection_repo::{WorkerSessionKind, WorkerSessionState};
@@ -91,23 +90,17 @@ async fn emit(f: &Fx, track: &str, actor: ActorId, event: Event) {
     .unwrap();
 }
 
-/// The Planner asks for ratification with `reason` (the `ratify.requested` of `neige_ratify_request`).
-pub(crate) async fn request_ratify(f: &Fx, p: &Planner, reason: &str) {
-    let event = Event::RatifyRequested {
-        track_id: TrackId::from(p.track.clone()),
-        reason: reason.to_string(),
-    };
-    emit(f, &p.track, p.actor(), event).await;
+/// The Planner asks one question per title (`Fx::ask`, the shared entry `neige_user_ask` writes
+/// with); returns the ask's id.
+pub(crate) async fn ask(f: &Fx, p: &Planner, titles: &[&str]) -> i64 {
+    settle().await;
+    f.ask(&p.card, &p.ws, titles).await
 }
 
-/// The user resolves the pending request (the `ratify.resolved` of `POST /api/cards/{id}/ratify`).
-pub(crate) async fn resolve_ratify(f: &Fx, p: &Planner) {
-    let event = Event::RatifyResolved {
-        track_id: TrackId::from(p.track.clone()),
-        decision: calm_types::event::RatifyDecision::Grant,
-        message: None,
-    };
-    emit(f, &p.track, ActorId::User, event).await;
+/// The user answers `ask_id` (`Fx::answer`, the shared entry the answer route writes with).
+pub(crate) async fn answer(f: &Fx, p: &Planner, ask_id: i64, answers: &[&str]) {
+    settle().await;
+    f.answer(&p.track, ask_id, answers).await;
 }
 
 /// `harness.user_message.enqueued` exactly as `POST /api/cards/{id}/planner/input` audits a send.
@@ -134,32 +127,6 @@ async fn send(f: &Fx, track: &str, card: &str, actor: ActorId) {
         )
         .await
         .unwrap();
-}
-
-/// One completed `neige_user_notify` call row of the Planner card; `error` / `status` shape a failed call.
-async fn notify_call(f: &Fx, p: &Planner, uuid: &str, status: &str, error: Option<&str>) -> i64 {
-    settle().await;
-    let mut item = json!({
-        "id": uuid, "type": "mcpToolCall", "server": "neige", "tool": "neige_user_notify",
-        "status": status, "arguments": {"text": format!("  Question {uuid}?  ")},
-    });
-    if let Some(message) = error {
-        item["error"] = json!({ "message": message });
-    }
-    f.transcript_item(
-        &p.ws,
-        &p.card,
-        &p.track,
-        uuid,
-        "mcpToolCall",
-        "item/completed",
-        json!({"threadId": "th-fixture", "turnId": "turn-fixture", "item": item}),
-    )
-    .await
-}
-
-async fn notify(f: &Fx, p: &Planner, uuid: &str) -> i64 {
-    notify_call(f, p, uuid, "completed", None).await
 }
 
 /// One `turn/completed` row of `card` through the turn outcome writer; `error` is `$.error.message`.
@@ -195,27 +162,24 @@ pub(crate) async fn turn(
 pub(crate) fn asks(p: &ActivityPayload) -> Vec<&ActivityItem> {
     p.items
         .iter()
-        .filter(|i| i.source == NotificationSource::Ask)
+        .filter(|i| i.source() == NotificationSource::Ask)
         .collect()
 }
 
 pub(crate) fn planner_down(p: &ActivityPayload) -> Vec<&ActivityItem> {
     p.items
         .iter()
-        .filter(|i| i.source == NotificationSource::PlannerDown)
+        .filter(|i| i.source() == NotificationSource::PlannerDown)
         .collect()
 }
 
-/// `(id, at)` of the track's newest `ratify.requested` event.
-async fn newest_ratify_request(f: &Fx, track: &str) -> (i64, i64) {
-    sqlx::query_as(
-        "SELECT id, at FROM events WHERE scope_track = ?1 AND kind = 'ratify.requested' \
-          ORDER BY id DESC LIMIT 1",
-    )
-    .bind(track)
-    .fetch_one(&f.pool)
-    .await
-    .unwrap()
+/// `at` of the `ask.requested` event `ask_id`.
+async fn asked_at(f: &Fx, ask_id: i64) -> i64 {
+    sqlx::query_scalar("SELECT at FROM events WHERE id = ?1 AND kind = 'ask.requested'")
+        .bind(ask_id)
+        .fetch_one(&f.pool)
+        .await
+        .unwrap()
 }
 
 /// A second projector over the same repo, run as the production loop, and its in-process wake;
@@ -242,29 +206,40 @@ pub(crate) async fn running_loop(
 
 // Row 1.
 #[tokio::test]
-async fn pending_ratify_is_an_ask_with_its_reason() {
+async fn open_ask_is_one_item_with_its_questions() {
     let f = fx().await;
     let p = codex_planner(&f).await;
-    request_ratify(&f, &p, "Merge PR #1811 now, or hold it for the release?").await;
-    let (id, at) = newest_ratify_request(&f, &p.track).await;
+    let id = ask(&f, &p, &["Merge PR #1811 now?", "Which region?"]).await;
+    let at = asked_at(&f, id).await;
     let a = f.recompute(&p.track).await;
     assert_eq!(a.attention, Attention::Input, "{a:?}");
-    assert_eq!(a.items.len(), 1, "{a:?}");
-    assert_eq!(a.items[0].source, NotificationSource::Ask);
     assert_eq!(
-        a.items[0].text,
-        "Merge PR #1811 now, or hold it for the release?"
+        a.items,
+        vec![ActivityItem::Ask {
+            key: format!("ask:{id}"),
+            text: "Merge PR #1811 now? / Which region?".into(),
+            at_ms: at,
+            ask_id: id,
+            questions: vec![
+                AskQuestion {
+                    title: "Merge PR #1811 now?".into(),
+                    options: Vec::new(),
+                },
+                AskQuestion {
+                    title: "Which region?".into(),
+                    options: Vec::new(),
+                },
+            ],
+        }]
     );
-    assert_eq!(a.items[0].key, format!("ask:ratify:{id}"));
-    assert_eq!(a.items[0].at_ms, at);
 }
 
 // Row 2.
 #[tokio::test]
-async fn user_send_after_ratify_request_closes_the_ask() {
+async fn user_send_after_an_ask_closes_it() {
     let f = fx().await;
     let p = codex_planner(&f).await;
-    request_ratify(&f, &p, "Which region?").await;
+    ask(&f, &p, &["Which region?"]).await;
     assert_eq!(f.recompute(&p.track).await.items.len(), 1);
     send(&f, &p.track, &p.card, ActorId::User).await;
     let a = f.recompute(&p.track).await;
@@ -274,81 +249,49 @@ async fn user_send_after_ratify_request_closes_the_ask() {
 
 // Row 3.
 #[tokio::test]
-async fn ratify_resolution_closes_the_ask() {
+async fn the_answer_closes_the_ask() {
     let f = fx().await;
     let p = codex_planner(&f).await;
-    request_ratify(&f, &p, "Which region?").await;
-    resolve_ratify(&f, &p).await;
+    let id = ask(&f, &p, &["Which region?", "Which tier?"]).await;
+    answer(&f, &p, id, &["eu", "gold"]).await;
     let a = f.recompute(&p.track).await;
-    assert!(a.items.is_empty(), "{a:?}");
+    assert!(
+        a.items.is_empty(),
+        "one answer answers every question: {a:?}"
+    );
     assert_eq!(a.attention, Attention::None);
 }
 
 // Row 3b.
 #[tokio::test]
-async fn ratify_resolution_leaves_an_earlier_notify_ask_open() {
+async fn answering_one_ask_leaves_another_open() {
     let f = fx().await;
     let p = codex_planner(&f).await;
-    request_ratify(&f, &p, "Which region?").await;
-    let call = notify(&f, &p, "call-during-request").await;
+    let first = ask(&f, &p, &["Which region?"]).await;
+    let second = ask(&f, &p, &["Which tier?"]).await;
     assert_eq!(f.recompute(&p.track).await.items.len(), 2);
-    resolve_ratify(&f, &p).await;
+    answer(&f, &p, first, &["eu"]).await;
     let a = f.recompute(&p.track).await;
-    assert_eq!(
-        a.items.len(),
-        1,
-        "only the user's reply answers a notify: {a:?}"
-    );
-    assert_eq!(a.items[0].key, format!("ask:notify:{call}"));
+    assert_eq!(a.items.len(), 1, "an answer closes only its own ask: {a:?}");
+    assert_eq!(a.items[0].key(), format!("ask:{second}"));
 }
 
 // Row 4a.
 #[tokio::test]
-async fn second_ratify_request_gives_a_new_key() {
+async fn a_new_ask_gives_a_new_key() {
     let f = fx().await;
     let p = codex_planner(&f).await;
-    request_ratify(&f, &p, "First question?").await;
-    let first = f.recompute(&p.track).await.items[0].key.clone();
-    resolve_ratify(&f, &p).await;
-    request_ratify(&f, &p, "Second question?").await;
+    let first = ask(&f, &p, &["First question?"]).await;
+    answer(&f, &p, first, &["yes"]).await;
+    ask(&f, &p, &["Second question?"]).await;
     let a = f.recompute(&p.track).await;
-    assert_eq!(a.items.len(), 1, "only the newest request is an ask: {a:?}");
-    assert_eq!(a.items[0].text, "Second question?");
+    assert_eq!(a.items.len(), 1, "{a:?}");
+    assert_eq!(a.items[0].text(), "Second question?");
     assert_ne!(
-        a.items[0].key, first,
+        a.items[0].key(),
+        format!("ask:{first}"),
         "the same source happening again is a new key"
     );
-}
-
-// Row 5.
-#[tokio::test]
-async fn notify_after_a_resolved_ratify_is_an_ask() {
-    let f = fx().await;
-    let p = codex_planner(&f).await;
-    request_ratify(&f, &p, "Old question?").await;
-    resolve_ratify(&f, &p).await;
-    let row = notify(&f, &p, "call-1").await;
-    let a = f.recompute(&p.track).await;
-    assert_eq!(a.attention, Attention::Input);
-    assert_eq!(a.items.len(), 1, "{a:?}");
-    assert_eq!(a.items[0].source, NotificationSource::Ask);
-    assert_eq!(a.items[0].key, format!("ask:notify:{row}"));
-    assert_eq!(
-        a.items[0].text, "Question call-1?",
-        "trimmed as the tool trims it"
-    );
-}
-
-// Row 6.
-#[tokio::test]
-async fn failed_notify_call_is_no_ask() {
-    let f = fx().await;
-    let p = codex_planner(&f).await;
-    notify_call(&f, &p, "call-err", "completed", Some("boom")).await;
-    notify_call(&f, &p, "call-failed", "failed", None).await;
-    let a = f.recompute(&p.track).await;
-    assert!(a.items.is_empty(), "{a:?}");
-    assert_eq!(a.attention, Attention::None);
 }
 
 // Row 7.
@@ -359,7 +302,7 @@ async fn assistant_send_does_not_close_the_ask() {
     let assistant = f
         .card(&p.track, "card-assistant", "codex", CardRole::Assistant)
         .await;
-    notify(&f, &p, "call-1").await;
+    ask(&f, &p, &["Which region?"]).await;
     send(&f, &p.track, &assistant, ActorId::User).await;
     let a = f.recompute(&p.track).await;
     assert_eq!(
@@ -374,7 +317,7 @@ async fn assistant_send_does_not_close_the_ask() {
 async fn ai_actor_send_does_not_close_the_ask() {
     let f = fx().await;
     let p = codex_planner(&f).await;
-    notify(&f, &p, "call-1").await;
+    ask(&f, &p, &["Which region?"]).await;
     send(&f, &p.track, &p.card, p.actor()).await;
     let a = f.recompute(&p.track).await;
     assert_eq!(asks(&a).len(), 1, "an AI-header send is no reply: {a:?}");
@@ -397,9 +340,9 @@ async fn failed_planner_turn_is_planner_down() {
     let a = f.recompute(&codex.track).await;
     assert_eq!(a.attention, Attention::Failed, "{a:?}");
     assert_eq!(a.items.len(), 1);
-    assert_eq!(a.items[0].source, NotificationSource::PlannerDown);
-    assert_eq!(a.items[0].key, format!("planner_down:{row}"));
-    assert_eq!(a.items[0].text, "unexpected status 403 Forbidden");
+    assert_eq!(a.items[0].source(), NotificationSource::PlannerDown);
+    assert_eq!(a.items[0].key(), format!("planner_down:{row}"));
+    assert_eq!(a.items[0].text(), "unexpected status 403 Forbidden");
 
     let claude = planner(&f, "c", WorkerSessionKind::ClaudeCard).await;
     let row = turn(
@@ -412,8 +355,8 @@ async fn failed_planner_turn_is_planner_down() {
     .await;
     let a = f.recompute(&claude.track).await;
     assert_eq!(a.attention, Attention::Failed, "{a:?}");
-    assert_eq!(a.items[0].key, format!("planner_down:{row}"));
-    assert_eq!(a.items[0].text, "claude exited before the result");
+    assert_eq!(a.items[0].key(), format!("planner_down:{row}"));
+    assert_eq!(a.items[0].text(), "claude exited before the result");
 }
 
 // Row 9b: the codex system-error order — the phase event first, the failed row after it with its one event.
@@ -480,7 +423,7 @@ async fn interrupted_turn_neither_raises_nor_closes() {
     turn(&f, &p, "turn-2", "interrupted", None).await;
     let a = f.recompute(&p.track).await;
     assert_eq!(a.items.len(), 1, "{a:?}");
-    assert_eq!(a.items[0].key, format!("planner_down:{failed}"));
+    assert_eq!(a.items[0].key(), format!("planner_down:{failed}"));
 
     let other = planner(&f, "i", WorkerSessionKind::SharedPlanner).await;
     turn(&f, &other, "turn-i", "interrupted", None).await;
@@ -496,7 +439,7 @@ async fn planner_that_never_completed_is_down() {
     let a = f.recompute(&p.track).await;
     assert_eq!(a.attention, Attention::Failed, "{a:?}");
     assert_eq!(a.items.len(), 1);
-    assert_eq!(a.items[0].key, format!("planner_down:{row}"));
+    assert_eq!(a.items[0].key(), format!("planner_down:{row}"));
 }
 
 // Row 13.
@@ -624,9 +567,9 @@ async fn planner_close_is_outcome_only() {
     assert_eq!(a.attention, Attention::None);
 }
 
-/// A notify ask and a failed turn landed on a closed track.
+/// An ask and a failed turn landed on a closed track.
 async fn open_notifications_on(f: &Fx, p: &Planner) {
-    notify(f, p, "call-late").await;
+    ask(f, p, &["Late question?"]).await;
     turn(f, p, "turn-late", "failed", Some("boom")).await;
 }
 
@@ -655,7 +598,7 @@ async fn closed_track_keeps_open_notifications() {
 async fn user_send_wakes_the_projector() {
     let f = fx().await;
     let p = codex_planner(&f).await;
-    request_ratify(&f, &p, "Which region?").await;
+    ask(&f, &p, &["Which region?"]).await;
     let (loop_task, _) = running_loop(&f, &p.track, |a| asks(a).len() == 1).await;
     send(&f, &p.track, &p.card, ActorId::User).await;
     let a = f
@@ -672,7 +615,7 @@ async fn user_send_wakes_the_projector() {
 async fn missing_text_drops_only_that_item() {
     let f = fx().await;
     let p = codex_planner(&f).await;
-    let ask = notify(&f, &p, "call-1").await;
+    let id = ask(&f, &p, &["Which region?"]).await;
     turn(&f, &p, "turn-1", "failed", None).await;
     let a = f.recompute(&p.track).await;
     assert_eq!(
@@ -680,27 +623,25 @@ async fn missing_text_drops_only_that_item() {
         1,
         "only the textless planner down goes: {a:?}"
     );
-    assert_eq!(a.items[0].key, format!("ask:notify:{ask}"));
+    assert_eq!(a.items[0].key(), format!("ask:{id}"));
     assert_eq!(a.attention, Attention::Input);
     assert_eq!(f.stored(&p.track).await, Some(a), "the overlay is written");
 }
 
 // Row 24.
 #[tokio::test]
-async fn closed_notify_still_advances_activity() {
+async fn closed_ask_still_advances_activity() {
     let f = fx().await;
     let p = codex_planner(&f).await;
-    let row = notify(&f, &p, "call-1").await;
-    let at = now_ms() - 60_000;
-    f.pin_transcript_row(row, at).await;
-    // The reply lands while the notify's wake-up is still queued: no recompute in between.
+    let id = ask(&f, &p, &["Which region?"]).await;
+    // The reply lands while the ask's wake-up is still queued: no recompute in between.
     send(&f, &p.track, &p.card, ActorId::User).await;
     let a = f.recompute(&p.track).await;
     assert!(a.items.is_empty(), "the reply closed the ask: {a:?}");
     assert_eq!(
         a.activity_at_ms,
-        Some(at),
-        "E2 counts every successful notify, open or not"
+        Some(asked_at(&f, id).await),
+        "E2 counts every ask.requested, open or not"
     );
 }
 
@@ -712,5 +653,5 @@ async fn planner_down_text_is_the_readable_error() {
     let body = r#"{"type":"error","status":400,"error":{"message":"Upgrade Codex."}}"#;
     turn(&f, &p, "turn-1", "failed", Some(body)).await;
     let a = f.recompute(&p.track).await;
-    assert_eq!(planner_down(&a)[0].text, "400: Upgrade Codex.");
+    assert_eq!(planner_down(&a)[0].text(), "400: Upgrade Codex.");
 }

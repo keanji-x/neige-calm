@@ -1858,8 +1858,9 @@ impl SharedCodexAppServer {
         // v9: the built-in plugin ids are words and every plugin tool name is minted in
         // `[A-Za-z0-9_]` (#2087 B5). v10: tool results are snake_case objects (`doc_rev`,
         // `{reports: […]}`, `{entries: […]}`) and their descriptions say so (#2087 B3). v11:
-        // every kernel schema is closed and the descriptions cite the §5 codes (#2087 B4).
-        h.update(b"env-schema-v11:2087|");
+        // every kernel schema is closed and the descriptions cite the §5 codes (#2087 B4). v12:
+        // `neige_user_ask` replaces the ratify-request and user-notify tools (#2209).
+        h.update(b"env-schema-v12:2209|");
         // The daemon loads `[mcp_servers.<key>]` at spawn, so an adopted daemon from before a key
         // rename would keep serving the old key (#2003).
         h.update(crate::mcp_server::wiring::MCP_SERVER_KEY.as_bytes());
@@ -4983,7 +4984,7 @@ mod tests {
             SharedCodexAppServer::compute_env_signature(ingest, None, None, Path::new("/k/bin"));
         assert_ne!(
             salted, pre_salt,
-            "compute_env_signature must be salted (env-schema-v11:2087)"
+            "compute_env_signature must be salted (env-schema-v12:2209)"
         );
     }
 
@@ -5161,6 +5162,28 @@ mod tests {
         assert_ne!(
             SharedCodexAppServer::compute_env_signature(ingest, None, None, bin),
             pre_closed_schemas
+        );
+    }
+
+    /// A daemon adopted from before the one ask lists the retired ratify-request and user-notify
+    /// tools; its signature (salt v11) must not match, so the first boot replaces it.
+    #[test]
+    fn env_signature_replaces_a_daemon_from_before_the_one_ask() {
+        let (ingest, bin) = ("http://127.0.0.1:8765", Path::new("/k/bin"));
+        let mut h = Sha256::new();
+        h.update(b"env-schema-v11:2087|");
+        h.update(crate::mcp_server::wiring::MCP_SERVER_KEY.as_bytes());
+        h.update(b"|");
+        h.update(bin.as_os_str().as_encoded_bytes());
+        h.update(b"|");
+        h.update(ingest.as_bytes());
+        h.update(b"|");
+        h.update(b"|");
+        let pre_one_ask = hex::encode(h.finalize())[..16].to_string();
+
+        assert_ne!(
+            SharedCodexAppServer::compute_env_signature(ingest, None, None, bin),
+            pre_one_ask
         );
     }
 

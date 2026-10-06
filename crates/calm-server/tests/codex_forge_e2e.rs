@@ -580,11 +580,11 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
         "gh shim must record exactly one real issue close"
     );
 
-    // Oracle (f): purity — no ratification grant, the plan must be the planner's own.
+    // Oracle (f): purity — no question to the user, the plan must be the planner's own.
     assert_eq!(
-        event_payloads(&fx.repo, "ratify.requested").await.len(),
+        event_payloads(&fx.repo, "ask.requested").await.len(),
         0,
-        "happy-path merge run must not request ratification"
+        "happy-path merge run must not ask the user"
     );
     assert!(
         !fx.used_injected_plan(),
@@ -599,7 +599,7 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
     shutdown_shared_codex(&fx.shared).await;
 }
 
-// CAPSTONE: one REAL run of the full issue→PR→merge→close backbone with a LIVE dispatcher — zero injected observations, zero seeded rows; ANY `ratify.requested` fails the test.
+// CAPSTONE: one REAL run of the full issue→PR→merge→close backbone with a LIVE dispatcher — zero injected observations, zero seeded rows; ANY `ask.requested` fails the test.
 // Real runs happen ONLY inside the isolation wrapper, never on the shared production box; without NEIGE_CODEX_BIN this self-skips.
 
 #[tokio::test]

@@ -128,26 +128,26 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(
         v["apiVersion"].as_str().unwrap(),
-        "21",
-        "#2043: Edit is a planner send that replaces a turn; the rewind route is gone"
+        "22",
+        "#2209: the ratify route is gone and the ask answer route is new"
     );
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),
         SYNC_EVENT_VERSION as u64
     );
     // `scripts/gate-sync-event-version-lockstep.sh` binds the constant to this literal, so bumping the constant alone cannot make this file agree with itself.
-    assert_eq!(v["syncEventVersion"].as_u64().unwrap(), 25);
+    assert_eq!(v["syncEventVersion"].as_u64().unwrap(), 26);
 
     assert_eq!(
         v["webCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 42);
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 43);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 42);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 43);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,

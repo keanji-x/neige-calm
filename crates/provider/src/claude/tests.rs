@@ -94,7 +94,7 @@ pub(super) fn visible_tools() -> ToolNames {
         [
             "neige_report_write",
             "neige_report_read",
-            "neige_user_notify",
+            "neige_user_ask",
             "plugin_dev-neige-market_market_quote",
         ]
         .map(String::from),

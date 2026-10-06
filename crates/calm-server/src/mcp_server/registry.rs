@@ -150,8 +150,7 @@ pub(crate) fn refuse_unknown_keys<S: AsRef<str>>(
     // A removed key keeps its pointer to what replaced it (principle 7).
     let retired = match key.as_str() {
         "lifecycle" => {
-            "; `lifecycle` is removed: close with neige_track_close; ask with \
-                        neige_user_notify or neige_ratify_request"
+            "; `lifecycle` is removed: close with neige_track_close; ask with neige_user_ask"
         }
         _ => "",
     };

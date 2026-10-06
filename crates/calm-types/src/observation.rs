@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::event::{EditAuthor, RatifyDecision};
+use crate::event::EditAuthor;
 use crate::git_candidate::{DeliveryFailureCode, DeliverySettlement};
 use crate::ids::{CardId, TrackId};
 use crate::model::{HarnessInputOrigin, HarnessInputPresentation, HarnessInputSegment};
@@ -167,12 +167,19 @@ pub enum Observation {
         commit_sha: String,
         branch: String,
     },
-    RatifyResolved {
+    /// The user answered a `neige_user_ask` (#2209): each question's title, read from the persisted
+    /// `ask.requested`, with the user's answer.
+    AskAnswered {
         track_id: TrackId,
-        decision: RatifyDecision,
-        #[serde(default)]
-        message: Option<String>,
+        answers: Vec<AnsweredQuestion>,
     },
+}
+
+/// One answered question of an [`Observation::AskAnswered`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnsweredQuestion {
+    pub title: String,
+    pub answer: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -226,7 +233,7 @@ impl Observation {
             Observation::ForgeIssueClosed { .. } => "forge_issue_closed",
             Observation::WorktreeProvisioned { .. } => "worktree_provisioned",
             Observation::WorktreeCommitted { .. } => "worktree_committed",
-            Observation::RatifyResolved { .. } => "ratify_resolved",
+            Observation::AskAnswered { .. } => "ask_answered",
         }
     }
 
@@ -257,7 +264,7 @@ impl Observation {
             | Observation::ForgeIssueClosed { .. }
             | Observation::WorktreeProvisioned { .. }
             | Observation::WorktreeCommitted { .. }
-            | Observation::RatifyResolved { .. } => HarnessInputPresentation::System,
+            | Observation::AskAnswered { .. } => HarnessInputPresentation::System,
         }
     }
 
@@ -278,7 +285,7 @@ impl Observation {
             | Observation::ForgeIssueClosed { .. }
             | Observation::WorktreeProvisioned { .. }
             | Observation::WorktreeCommitted { .. }
-            | Observation::RatifyResolved { .. } => true,
+            | Observation::AskAnswered { .. } => true,
             Observation::TrackGoal { .. }
             | Observation::ReportEdited { .. }
             | Observation::WorkspaceLeased { .. }
@@ -496,21 +503,16 @@ impl Observation {
                     "A worker git worktree committed branch {branch}. Re-read the track status."
                 )
             }
-            Observation::RatifyResolved {
-                decision, message, ..
-            } => {
-                let decision = match decision {
-                    RatifyDecision::Grant => "grant",
-                    RatifyDecision::Deny => "deny",
-                };
-                let mut text = format!(
-                    "Ratification was resolved with decision={decision}. Re-read the track status."
-                );
-                if let Some(message) = message {
-                    text.push_str(&format!("\nThe user's message, verbatim:\n{message}"));
-                }
-                text
-            }
+            Observation::AskAnswered { answers, .. } => answers
+                .iter()
+                .map(|answered| {
+                    format!(
+                        "The user answered your question \"{}\": {}",
+                        answered.title, answered.answer
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
         }
     }
 }
@@ -1213,15 +1215,40 @@ mod tests {
     }
 
     #[test]
-    fn ratify_resolution_is_hard_fire() {
-        let resolved = Observation::RatifyResolved {
+    fn an_answer_is_a_hard_fire_system_input_quoting_each_question() {
+        let answered = Observation::AskAnswered {
             track_id: TrackId::from("track-1"),
-            decision: RatifyDecision::Grant,
-            message: None,
+            answers: vec![
+                AnsweredQuestion {
+                    title: "Merge PR #7 (head abc)?".into(),
+                    answer: "Merge".into(),
+                },
+                AnsweredQuestion {
+                    title: "Which region?".into(),
+                    answer: "eu-west, not us".into(),
+                },
+            ],
         };
-        assert!(resolved.is_hard_fire());
-        assert!(resolved.to_turn_text().contains("decision=grant"));
-        assert!(!resolved.to_turn_text().contains("verbatim"));
+        assert!(answered.is_hard_fire());
+        assert_eq!(
+            answered.input_presentation(),
+            HarnessInputPresentation::System
+        );
+        assert_eq!(
+            answered.to_turn_text(),
+            "The user answered your question \"Merge PR #7 (head abc)?\": Merge\n\
+             The user answered your question \"Which region?\": eu-west, not us"
+        );
+    }
+
+    /// A pending queue persisted before #2209 may hold a `ratify_resolved` entry; it no longer
+    /// decodes, and the snapshot reader drops it instead of failing the queue.
+    #[test]
+    fn a_retired_ratify_observation_no_longer_decodes() {
+        let retired = serde_json::json!({
+            "type": "ratify_resolved", "track_id": "track-1", "decision": "grant",
+        });
+        assert!(serde_json::from_value::<Observation>(retired).is_err());
     }
     #[test]
     fn task_recovery_gate_text_pins_execution_and_gate_number() {

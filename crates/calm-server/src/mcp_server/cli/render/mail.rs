@@ -85,7 +85,7 @@ pub(super) fn cat(tool: &str, json: bool, value: &Value) -> Result<String, Rende
         })?;
     match (refused, value.get("next_hop")) {
         (true, Some(Value::Null)) => out.push_str(&format!(
-            "hop {MAX_HOP}/{MAX_HOP} reached — hand off with neige_user_notify\n"
+            "hop {MAX_HOP}/{MAX_HOP} reached — hand off with neige_user_ask\n"
         )),
         (false, Some(Value::Null)) => {}
         (false, Some(Value::String(next))) => {
@@ -116,7 +116,7 @@ mod tests {
             "next_hop": null, "refused": true
         });
         let rendered = cat("neige_mail_cat", false, &mail).unwrap();
-        assert!(rendered.ends_with("hop 6/6 reached — hand off with neige_user_notify\n"));
+        assert!(rendered.ends_with("hop 6/6 reached — hand off with neige_user_ask\n"));
         assert_eq!(cat("neige_mail_cat", true, &mail).unwrap(), compact(&mail));
         mail["refused"] = json!(false);
         assert!(

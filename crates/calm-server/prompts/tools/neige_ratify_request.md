@@ -1,1 +1,0 @@
-Planner-only: request human ratification for the current track. Needs an open track and no pending request; emits `ratify.requested` and changes nothing else. The request is an ask on the user's notifications until they reply or resolve it. `text` is shown to the user verbatim as the question; write it for a person.

@@ -38,6 +38,7 @@ pub mod theme;
 pub mod threads;
 pub mod today;
 pub mod today_summary;
+pub mod track_asks;
 pub mod track_conversations;
 pub mod track_previews;
 pub mod track_recipes;
@@ -65,6 +66,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(crate::mentions::router())
         .merge(tracks::router())
         .merge(activity_dismissals::router())
+        .merge(track_asks::router())
         .merge(track_conversations::router())
         .merge(track_previews::router())
         .merge(track_report_blocks::router())

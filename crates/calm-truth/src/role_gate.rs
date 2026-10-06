@@ -90,6 +90,12 @@ pub enum RoleViolation {
     #[error("only User may emit ratify.resolved (actor={actor})")]
     NotUserForRatifyResolved { actor: String },
 
+    #[error("only planner cards may emit ask.requested (actor={actor})")]
+    NotPlannerForAsk { actor: String },
+
+    #[error("only User may emit ask.answered (actor={actor})")]
+    NotUserForAskAnswered { actor: String },
+
     #[error(
         "only the submitting plugin may emit proposal.submitted (actor={actor}, payload plugin_id={payload_plugin})"
     )]
@@ -388,6 +394,24 @@ pub fn enforce_role(
                 });
             }
         }
+    }
+
+    // (2.12) Only the planner may ask the user (#2209): a native provider question is written as
+    // the Planner too, so there is no Kernel exception.
+    if matches!(event, Event::AskRequested { .. }) {
+        let is_planner = matches!(actor, ActorId::AiPlanner(card_id) if cache.get(card_id) == Some(CardRole::Planner));
+        if !is_planner {
+            return Err(RoleViolation::NotPlannerForAsk {
+                actor: actor.to_string(),
+            });
+        }
+    }
+
+    // (2.13) `ask.answered` is User-only: only the person answers a question.
+    if matches!(event, Event::AskAnswered { .. }) && !matches!(actor, ActorId::User) {
+        return Err(RoleViolation::NotUserForAskAnswered {
+            actor: actor.to_string(),
+        });
     }
 
     // (2.10) `proposal.submitted`: only a plugin, and only for itself — the
@@ -1217,6 +1241,25 @@ mod tests {
         }
     }
 
+    fn ask_requested() -> Event {
+        Event::AskRequested {
+            track_id: TrackId::from("w"),
+            questions: vec![calm_types::event::AskQuestion {
+                title: "Merge PR #1?".into(),
+                options: vec!["Merge".into(), "Hold".into()],
+            }],
+            source_item_id: None,
+        }
+    }
+
+    fn ask_answered() -> Event {
+        Event::AskAnswered {
+            ask_id: 1,
+            track_id: TrackId::from("w"),
+            answers: vec!["Merge".into()],
+        }
+    }
+
     fn session_actors() -> [(ActorId, &'static str); 3] {
         [
             (
@@ -1701,6 +1744,87 @@ mod tests {
             assert!(
                 matches!(err, RoleViolation::NotUserForRatifyResolved { .. }),
                 "{label}: expected NotUserForRatifyResolved, got {err:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn ask_requested_is_planner_only_with_no_kernel_exception_2209() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let planner = CardId::from("planner-1");
+        let assistant = CardId::from("assistant-1");
+        let worker = CardId::from("worker-1");
+        cache.insert(planner.clone(), CardRole::Planner, TrackId::from("w"));
+        cache.insert(assistant.clone(), CardRole::Assistant, TrackId::from("w"));
+        cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
+        let event = ask_requested();
+
+        let res = enforce_role(
+            &ActorId::AiPlanner(planner.clone()),
+            &event,
+            &track_scope("w", "c"),
+            &cache,
+            &wcc,
+        );
+        assert!(res.is_ok(), "the Planner asks: {res:?}");
+
+        for (actor, label) in [
+            (ActorId::Kernel, "Kernel"),
+            (ActorId::KernelDispatcher, "KernelDispatcher"),
+            (ActorId::User, "User"),
+            (ActorId::Plugin("p".into()), "Plugin(p)"),
+            (
+                ActorId::AiPlanner(assistant.clone()),
+                "AiPlanner(assistant)",
+            ),
+            (ActorId::AiPlanner(worker.clone()), "AiPlanner(worker)"),
+            (ActorId::AiCodex(worker.clone()), "AiCodex(worker)"),
+            (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
+            (
+                ActorId::AiPlannerSession(WorkerSessionId::from("sess-unresolved")),
+                "AiPlannerSession(unresolved)",
+            ),
+        ] {
+            let err = enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc)
+                .expect_err(&format!("{label} must be refused ask.requested"));
+            assert!(
+                matches!(err, RoleViolation::NotPlannerForAsk { .. }),
+                "{label}: expected NotPlannerForAsk, got {err:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn ask_answered_is_user_only_2209() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let planner = CardId::from("planner-1");
+        let worker = CardId::from("worker-1");
+        cache.insert(planner.clone(), CardRole::Planner, TrackId::from("w"));
+        cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
+        let event = ask_answered();
+
+        let res = enforce_role(&ActorId::User, &event, &track_scope("w", "c"), &cache, &wcc);
+        assert!(res.is_ok(), "the user answers: {res:?}");
+
+        for (actor, label) in [
+            (ActorId::AiPlanner(planner.clone()), "AiPlanner(planner)"),
+            (ActorId::AiCodex(worker.clone()), "AiCodex(worker)"),
+            (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
+            (ActorId::Plugin("p".into()), "Plugin(p)"),
+            (ActorId::Kernel, "Kernel"),
+            (ActorId::KernelDispatcher, "KernelDispatcher"),
+            (
+                ActorId::AiPlannerSession(WorkerSessionId::from("sess-planner")),
+                "AiPlannerSession(unresolved)",
+            ),
+        ] {
+            let err = enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc)
+                .expect_err(&format!("{label} must be refused ask.answered"));
+            assert!(
+                matches!(err, RoleViolation::NotUserForAskAnswered { .. }),
+                "{label}: expected NotUserForAskAnswered, got {err:?}",
             );
         }
     }

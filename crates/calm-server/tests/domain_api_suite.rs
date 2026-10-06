@@ -61,8 +61,6 @@ mod preview_gateway;
 mod repo;
 #[path = "cases/rest_track_previews.rs"]
 mod rest_track_previews;
-#[path = "cases/review_ratify.rs"]
-mod review_ratify;
 #[path = "cases/role_enforcement.rs"]
 mod role_enforcement;
 #[path = "cases/settings.rs"]
@@ -104,6 +102,8 @@ mod track_workspace_recycle;
 mod track_workspace_repoint;
 #[path = "cases/turn_error_text_wire.rs"]
 mod turn_error_text_wire;
+#[path = "cases/user_ask.rs"]
+mod user_ask;
 #[path = "cases/version.rs"]
 mod version;
 

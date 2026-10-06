@@ -11,7 +11,6 @@ pub mod plan;
 pub mod preview;
 pub mod report_links;
 pub mod report_tag;
-pub mod review;
 pub mod source;
 pub mod terminal;
 pub mod track_add;
@@ -22,7 +21,7 @@ pub mod track_report;
 pub mod track_report_blocks;
 pub(crate) mod track_report_hydrate;
 pub mod track_state;
-pub mod user_notify;
+pub mod user_ask;
 pub mod workspace_reports;
 pub(crate) mod write_args;
 
@@ -34,10 +33,9 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     report_links::register_into(registry);
     report_tag::register_into(registry);
     area_reports::register_into(registry);
-    review::register_into(registry);
     source::register_into(registry);
     track_rename::register_into(registry);
-    user_notify::register_into(registry);
+    user_ask::register_into(registry);
     mail::register_into(registry);
     preview::register_into(registry);
     track_state::register_into(registry);
@@ -179,7 +177,10 @@ mod tests {
         // descriptions freed 164, and the cap rose by the remaining 430 to the measured 30,430
         // across 33 tools. #2104 K1 added `neige_track_add` without raising it: trims to the
         // largest descriptions paid for it. Keep the aggregate bound and the per-description cap.
-        const SURFACE_MAX_BYTES: usize = 30_430;
+        // #2209: `neige_user_ask` (995 bytes: description 697, schema 298) replaced the ratify
+        // and notify tools (1,285) and the mail hand-off line lost 3, so the measured 30,413 fell
+        // to 30,120 and the cap follows it down.
+        const SURFACE_MAX_BYTES: usize = 30_120;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_for_role(CardRole::Planner);
@@ -517,9 +518,9 @@ mod tests {
     fn kernel_tool_actions_are_in_the_vocabulary() {
         const VERBS: &[&str] = &[
             "ls", "cat", "show", "status", "log", "diff", "find", "describe", "read", "write",
-            "commit", "tag", "rename", "add", "set", "rm", "capture", "notify", "send", "input",
-            "control", "open", "close", "cancel", "publish", "request", "accept", "reject", "done",
-            "fail", "gc", "vacuum",
+            "commit", "tag", "rename", "add", "set", "rm", "capture", "ask", "send", "input",
+            "control", "open", "close", "cancel", "publish", "accept", "reject", "done", "fail",
+            "gc", "vacuum",
         ];
         let word = regex::Regex::new(r"^[a-z0-9]+$").expect("word regex");
         let outside: Vec<String> = kernel_tool_names()

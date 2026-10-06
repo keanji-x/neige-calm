@@ -534,6 +534,8 @@ pub(crate) async fn probe_supervisor_for_terminal_at(
 pub mod activity_window;
 pub mod agent_providers;
 pub mod area_reports;
+/// One way to ask the user (#2209): `ask.requested` / `ask.answered`.
+pub mod ask;
 pub mod card_role_cache;
 pub(crate) mod claude_code_env;
 pub mod claude_planner;
@@ -573,7 +575,6 @@ pub(crate) mod proc_supervisor;
 pub(crate) mod prompts;
 pub mod provider_impls;
 pub mod proxy_env;
-pub(crate) mod ratify_state;
 pub(crate) mod recorder_shadow;
 pub mod replay;
 pub mod role_gate;

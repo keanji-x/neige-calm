@@ -83,7 +83,7 @@ pub const KERNEL_OVERLAY_PLUGIN_ID: &str = "kernel";
 /// `schemaVersion` for `Overlay.payload` when `kind == "file-viewer-nav"`.
 pub const OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Overlay.payload` when `kind == "activity"`.
-pub const OVERLAY_ACTIVITY_SCHEMA_VERSION: u32 = 2;
+pub const OVERLAY_ACTIVITY_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Copy)]
 pub struct OverlayKindEntry {
@@ -220,20 +220,29 @@ fn validate_activity_overlay_payload(payload: &Value) -> Result<()> {
 
     #[derive(Deserialize)]
     #[allow(dead_code)]
-    #[serde(rename_all = "snake_case")]
-    enum NotificationSource {
-        Ask,
-        PlannerDown,
+    #[serde(deny_unknown_fields)]
+    struct Question {
+        title: String,
+        options: Vec<String>,
     }
 
+    /// Tagged by `source`: only an `ask` item carries the ask's id and questions.
     #[derive(Deserialize)]
     #[allow(dead_code)]
-    #[serde(deny_unknown_fields)]
-    struct Item {
-        source: NotificationSource,
-        key: String,
-        text: String,
-        at_ms: i64,
+    #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+    enum Item {
+        Ask {
+            key: String,
+            text: String,
+            at_ms: i64,
+            ask_id: i64,
+            questions: Vec<Question>,
+        },
+        PlannerDown {
+            key: String,
+            text: String,
+            at_ms: i64,
+        },
     }
 
     #[derive(Deserialize)]
@@ -825,10 +834,13 @@ mod tests {
             "attention": "input",
             "activity_at_ms": 1789460968837_i64,
             "items": [
-                { "source": "ask", "key": "ask:ratify:28475",
-                  "text": "Merge the PR?", "at_ms": 1789460968837_i64 },
-                { "source": "ask", "key": "ask:notify:22801",
-                  "text": "Which branch?", "at_ms": 1789460968000_i64 },
+                { "source": "ask", "key": "ask:28475",
+                  "text": "Merge PR #7? / Which branch?", "at_ms": 1789460968837_i64,
+                  "ask_id": 28475,
+                  "questions": [
+                      { "title": "Merge PR #7?", "options": ["Merge", "Hold"] },
+                      { "title": "Which branch?", "options": [] }
+                  ] },
                 { "source": "planner_down", "key": "planner_down:22825",
                   "text": "unexpected status 403 Forbidden", "at_ms": 1789460960000_i64 }
             ],
@@ -874,17 +886,53 @@ mod tests {
                 p["items"][0]["text"] = Value::Null;
                 p
             },
-            // a v1 item (`kind` / `id` / `card_id`) is not a v2 item
+            // a v1 item (`kind` / `id` / `card_id`) is not a v3 item
             {
                 let mut p = activity_payload_fixture();
                 p["items"][0] = json!({ "kind": "input", "source": "card", "id": "card-1",
                                         "card_id": "card-1", "at_ms": 1 });
                 p
             },
-            // a v1 payload is below the registry's version
+            // a v2 ask item (no `ask_id` / `questions`) is not a v3 one
+            {
+                let mut p = activity_payload_fixture();
+                p["items"][0] = json!({ "source": "ask", "key": "ask:ratify:1",
+                                        "text": "Merge?", "at_ms": 1 });
+                p
+            },
+            {
+                let mut p = activity_payload_fixture();
+                p["items"][0].as_object_mut().unwrap().remove("questions");
+                p
+            },
+            {
+                let mut p = activity_payload_fixture();
+                p["items"][0]["questions"][1]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("options");
+                p
+            },
+            // a planner_down item carries no ask fields
+            {
+                let mut p = activity_payload_fixture();
+                p["items"][1]["ask_id"] = json!(1);
+                p
+            },
+            {
+                let mut p = activity_payload_fixture();
+                p["items"][1]["questions"] = json!([]);
+                p
+            },
+            // a v1 or v2 payload is below the registry's version
             {
                 let mut p = activity_payload_fixture();
                 p["schemaVersion"] = json!(1);
+                p
+            },
+            {
+                let mut p = activity_payload_fixture();
+                p["schemaVersion"] = json!(2);
                 p
             },
             // unknown top-level field

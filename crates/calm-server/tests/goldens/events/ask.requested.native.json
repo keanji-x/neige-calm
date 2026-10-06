@@ -1,0 +1,13 @@
+{
+  "description": "ask.requested translated from a provider's native question also names the provider item it came from",
+  "wire": {
+    "ev": "ask.requested",
+    "data": {
+      "track_id": "track-01",
+      "questions": [
+        { "title": "Which region?", "options": [] }
+      ],
+      "source_item_id": "item-28745"
+    }
+  }
+}

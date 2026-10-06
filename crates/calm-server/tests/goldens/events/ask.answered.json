@@ -1,0 +1,11 @@
+{
+  "description": "ask.answered names the ask by its ask.requested event id and answers each question in order",
+  "wire": {
+    "ev": "ask.answered",
+    "data": {
+      "ask_id": 28477,
+      "track_id": "track-01",
+      "answers": ["Merge", "eu-west"]
+    }
+  }
+}

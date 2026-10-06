@@ -1,11 +1,11 @@
 //! #2087 B0: the data migration that respells stored tool names with `_` as the only separator.
 //! Rows are seeded under the names production stores at migration 133, the real chain from 0134
 //! up to the #2087 migration runs, and the result is read back through the real readers: the
-//! activity projector for `neige_user_notify` and the recipe repository for the revision bump.
+//! stored transcript rows and the recipe repository for the revision bump. (The activity projector
+//! read `neige_user_notify` rows until #2209 retired the tool; the migrated row is checked as data.)
 
 use calm_server::model::CardRole;
 use calm_server::session_projection_repo::{WorkerSessionKind, WorkerSessionState};
-use calm_server::track_activity::NotificationSource;
 use calm_types::model::NewTrackRecipe;
 use serde_json::json;
 
@@ -132,30 +132,19 @@ async fn stored_tool_names_and_recipes_read_back_with_underscores() {
             .await;
         seeded.push((id, tool, params));
     }
-    f.transcript_item(
-        &ws,
-        &planner,
-        &t,
-        "call-notify",
-        "mcpToolCall",
-        "item/completed",
-        json!({"item": {"id": "call-notify", "type": "mcpToolCall", "server": "calm",
+    let notify = f
+        .transcript_item(
+            &ws,
+            &planner,
+            &t,
+            "call-notify",
+            "mcpToolCall",
+            "item/completed",
+            json!({"item": {"id": "call-notify", "type": "mcpToolCall", "server": "calm",
             "tool": "calm.user.notify", "status": "completed",
             "arguments": {"text": "Ship it?"}}}),
-    )
-    .await;
-    let asks = |p: &calm_server::track_activity::ActivityPayload| -> Vec<String> {
-        p.items
-            .iter()
-            .filter(|item| item.source == NotificationSource::Ask)
-            .map(|item| item.text.clone())
-            .collect()
-    };
-    assert_eq!(
-        asks(&f.recompute(&t).await),
-        Vec::<String>::new(),
-        "anti-vacuity: the projector does not read the old name"
-    );
+        )
+        .await;
 
     let old_body = "Read with calm.calendar.list, capture with calm.source.capture, then \
                     calm.report.commit.\nReport: calm.task.complete; fail: calm.task.fail...\n\
@@ -190,9 +179,13 @@ async fn stored_tool_names_and_recipes_read_back_with_underscores() {
         assert_eq!(tool_of(&f, id).await, params, "{old}");
     }
     assert_eq!(
-        asks(&f.recompute(&t).await),
-        ["Ship it?"],
-        "the activity projector reads the migrated notify row"
+        tool_of(&f, notify).await["item"]["tool"],
+        json!("neige_user_notify"),
+        "the chain respells the notify row; since #2209 no projection reads it"
+    );
+    assert!(
+        f.recompute(&t).await.items.is_empty(),
+        "#2209: a notify call is no ask"
     );
 
     let migrated = f

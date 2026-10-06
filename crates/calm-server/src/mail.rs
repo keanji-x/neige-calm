@@ -226,21 +226,21 @@ pub async fn send(
                     return Err(slot.refuse(
                         -32409,
                         "closed",
-                        format!("{TOOL}: track {to_track} is closed; hand off with neige_user_notify"),
+                        format!("{TOOL}: track {to_track} is closed; hand off with neige_user_ask"),
                     ));
                 }
                 if recipient.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE) {
                     return Err(slot.refuse(
                         -32409,
                         "no_planner",
-                        format!("{TOOL}: track {to_track} has no Planner; hand off with neige_user_notify"),
+                        format!("{TOOL}: track {to_track} has no Planner; hand off with neige_user_ask"),
                     ));
                 }
                 if crate::managed_track::reports_only_track(&mut **tx, &to_track).await? {
                     return Err(slot.refuse(
                         -32409,
                         "reports_only",
-                        format!("{TOOL}: track {to_track} takes no mail; hand off with neige_user_notify"),
+                        format!("{TOOL}: track {to_track} takes no mail; hand off with neige_user_ask"),
                     ));
                 }
                 let Some(turn) =
@@ -259,7 +259,7 @@ pub async fn send(
                     return Err(slot.refuse(
                         -32409,
                         "hop_limit",
-                        format!("{TOOL}: hop 6/6 reached — hand off with neige_user_notify"),
+                        format!("{TOOL}: hop 6/6 reached — hand off with neige_user_ask"),
                     ));
                 }
                 let mail_id = new_id();
