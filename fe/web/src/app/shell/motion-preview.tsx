@@ -1,6 +1,5 @@
 import { createRoot } from 'react-dom/client';
 import { useState } from '../../ui/state/public.ts';
-import '../../styles/entry.css';
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { ChatComposer, ChatThread } from '../../features/chat/thread/public.tsx';
 import { isComposerEmpty, isSameComposer } from '../../../../core/domain/conversation-composer.ts';

@@ -9,7 +9,7 @@ const entry = resolve(import.meta.dirname, '../../web/src/app/shell/motion-previ
 const server = createHttpServer(async (request, response) => {
   if (request.url?.split('?')[0] === '/next/motion-preview') {
     try {
-      const html = await vite.transformIndexHtml('/next/motion-preview', `<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Neige · 动画预览</title></head><body><div id="root"></div><script type="module" src="/@fs${entry}"></script></body></html>`);
+      const html = await vite.transformIndexHtml('/next/motion-preview', `<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Neige · 动画预览</title><link rel="stylesheet" href="/src/styles/entry.css"></head><body><div id="root"></div><script type="module" src="/@fs${entry}"></script></body></html>`);
       response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       response.end(html);
     } catch (error) {
