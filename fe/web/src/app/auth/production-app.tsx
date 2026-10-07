@@ -1,3 +1,6 @@
+import { useMemo } from 'react';
+import { GitHubPreviewProvider } from '../../systems/github-links/public.tsx';
+import { githubPreviewOperation, type GitHubPreviewPort } from '../../../../core/domain/github-preview.ts';
 import { QueryClient } from '@tanstack/react-query';
 import { RouterProvider, type AnyRouter } from '@tanstack/react-router';
 import { StrictMode, type ReactNode } from 'react';
@@ -38,15 +41,19 @@ export function ProductionApp({ transport, unauthorized, client, runtime, cursor
   recovery?: RecoverySession;
   renderLogin: () => ReactNode; renderError: (retry: () => void) => ReactNode;
 }>) {
+  const previewPort = useMemo<GitHubPreviewPort>(() => ({
+    read: (target, signal) => runOperation(transport, githubPreviewOperation(target, signal), unauthorized),
+  }), [transport, unauthorized]);
+  const content = <GitHubPreviewProvider port={previewPort}><RouterProvider router={router} /></GitHubPreviewProvider>;
   if (__NC_BUNDLED__) return <StrictMode><RecoveryGate transport={transport} unauthorized={unauthorized} client={client}
     runtime={runtime} cursorStore={cursorStore} renderLogin={renderLogin} renderEventBridge={renderEventBridge} recovery={recovery}>
-    <RouterProvider router={router} />
+    {content}
   </RecoveryGate></StrictMode>;
   return <StrictMode><SessionGate transport={transport} unauthorized={unauthorized} client={client}
     runtime={runtime} cursorStore={cursorStore}
     renderLogin={renderLogin} renderError={renderError}>
     <AppProviders client={client} runtime={runtime} cursorStore={cursorStore} renderEventBridge={renderEventBridge}>
-      <RouterProvider router={router} />
+      {content}
     </AppProviders>
   </SessionGate></StrictMode>;
 }

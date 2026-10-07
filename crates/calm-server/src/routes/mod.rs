@@ -22,6 +22,7 @@ pub mod codex_cards;
 pub mod conversations_shared;
 pub mod daily_planner;
 pub mod fs;
+pub mod github_preview;
 pub mod harness_live;
 pub mod idempotency_key;
 pub mod models;
@@ -91,6 +92,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(claude_cards::router())
         .merge(codex_cards::router())
         .merge(fs::router())
+        .merge(github_preview::router())
         .merge(models::router())
         .merge(agent_providers::router())
         .merge(settings::router())

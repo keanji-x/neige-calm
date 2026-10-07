@@ -70,6 +70,7 @@ use utoipa::{Modify, OpenApi, ToSchema};
         description = "Wire-format contract between calm-server (Rust) and web-calm (TS). Source of truth for generated TypeScript types.",
     ),
     paths(
+        crate::routes::github_preview::read,
         crate::auth::login_handler,
         crate::builtin_plugins::calendar::routes::list,
         crate::builtin_plugins::calendar::routes::read,

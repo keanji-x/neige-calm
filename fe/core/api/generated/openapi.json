@@ -4174,6 +4174,92 @@
         }
       }
     },
+    "/api/github/preview": {
+      "get": {
+        "tags": [
+          "github"
+        ],
+        "operationId": "read_github_preview",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/GitHubPreviewKind"
+            }
+          },
+          {
+            "name": "number",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Issue or PR summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubPreview"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid GitHub reference",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`: no valid session cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "GitHub unavailable or inaccessible",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/mobile/access": {
       "get": {
         "tags": [
@@ -13599,6 +13685,98 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "GitHubPreview": {
+        "type": "object",
+        "required": [
+          "kind",
+          "number",
+          "title",
+          "state",
+          "author",
+          "labels",
+          "excerpt",
+          "changes"
+        ],
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "changes": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GitHubPullChanges"
+              }
+            ]
+          },
+          "excerpt": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/GitHubPreviewKind"
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "state": {
+            "$ref": "#/components/schemas/GitHubPreviewState"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "GitHubPreviewKind": {
+        "type": "string",
+        "enum": [
+          "issue",
+          "pull"
+        ]
+      },
+      "GitHubPreviewState": {
+        "type": "string",
+        "enum": [
+          "open",
+          "closed",
+          "merged",
+          "draft"
+        ]
+      },
+      "GitHubPullChanges": {
+        "type": "object",
+        "required": [
+          "additions",
+          "deletions",
+          "changed_files"
+        ],
+        "properties": {
+          "additions": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "changed_files": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "deletions": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },

@@ -11,6 +11,7 @@ pub mod forge_action;
 pub mod forge_env;
 pub mod forge_git;
 pub mod git_candidate;
+pub mod github_preview;
 pub mod harness;
 pub mod ids;
 pub mod mcp_connector;

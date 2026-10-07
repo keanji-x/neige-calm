@@ -52,7 +52,7 @@ pub(super) fn live_auth_state(user: &str, pass: &str) -> AuthState {
     })
 }
 
-fn dev_auth_state() -> AuthState {
+pub(super) fn dev_auth_state() -> AuthState {
     AuthState::new(AuthConfig {
         username: None,
         password: None,
@@ -62,7 +62,7 @@ fn dev_auth_state() -> AuthState {
 }
 
 /// Exercise the production assembly rather than copying its security layers.
-fn app(state: AppState, auth_state: AuthState) -> axum::Router {
+pub(super) fn app(state: AppState, auth_state: AuthState) -> axum::Router {
     routes::application_router(state, auth_state)
 }
 

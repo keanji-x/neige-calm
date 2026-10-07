@@ -1,4 +1,5 @@
-import { memo, useMemo } from 'react';
+import { memo, useMemo, type ReactNode } from 'react';
+import { GitHubPreviewLink, useGitHubPreviewsEnabled } from '../../../systems/github-links/public.tsx';
 import { Markdown } from '@astryxdesign/core/Markdown';
 
 import type { WorkspaceFilePort } from '../../../../../core/domain/fs.ts';
@@ -33,10 +34,12 @@ function ReplyImage({ src, alt, imageFiles }: {
  * so code fences, ordinary links, and the copied response retain their original text.
  * `headingLevelStart={3}` leaves the page's h1 and sections' h2 above the reply. */
 export const Reply = memo(function Reply({ text, imageFiles }: { text: string; imageFiles: ReplyImageFiles | null }) {
+  const previewsEnabled = useGitHubPreviewsEnabled();
   const components = useMemo(() => ({
+    ...(previewsEnabled ? { link: ({ href, children }: { href: string; children: ReactNode }) => <GitHubPreviewLink href={href}>{children}</GitHubPreviewLink> } : {}),
     image: ({ src, alt }: { src: string; alt: string }) => (
       <ReplyImage key={src} src={src} alt={alt} imageFiles={imageFiles} />
     ),
-  }), [imageFiles]);
+  }), [imageFiles, previewsEnabled]);
   return <Markdown density="compact" headingLevelStart={3} components={components}>{text}</Markdown>;
 });

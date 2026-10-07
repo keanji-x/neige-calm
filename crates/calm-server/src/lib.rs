@@ -1010,3 +1010,5 @@ mod boot_reconcile_retry_tests {
 pub(crate) mod git_candidate;
 
 pub mod codex_authentication;
+
+pub mod github_preview;

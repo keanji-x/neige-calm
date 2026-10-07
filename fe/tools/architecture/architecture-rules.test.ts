@@ -309,6 +309,10 @@ describe('architecture allowlists', () => {
     const [viewSibling] = await eslint.lintText(source, { filePath: resolve(root, 'web/src/app/router/track-view-state-other.tsx') });
     expect(viewOwner.messages).toEqual([]);
     expect(viewSibling.messages.map((message) => message.ruleId)).toEqual(['architecture/no-create-context-outside-allowlist']);
+    const [githubOwner] = await eslint.lintText(source, { filePath: resolve(root, 'web/src/systems/github-links/public.tsx') });
+    const [githubSibling] = await eslint.lintText(source, { filePath: resolve(root, 'web/src/systems/github-links/other.tsx') });
+    expect(githubOwner.messages).toEqual([]);
+    expect(githubSibling.messages.map((message) => message.ruleId)).toEqual(['architecture/no-create-context-outside-allowlist']);
   });
 
   it('requires a substantive reason beside every exception', () => {
