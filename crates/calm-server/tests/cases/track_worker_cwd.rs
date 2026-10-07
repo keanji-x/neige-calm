@@ -435,6 +435,54 @@ async fn a_track_runs_one_worker_at_a_time() {
     assert_an_independent_codex_task_waits(fx).await;
 }
 
+/// #2404: a gated worker is shown its gate steps, in run order, to run before it reports; an
+/// ungated worker is not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_gated_worker_is_shown_its_gate_steps_in_order() {
+    let w = world().await;
+    let fx = &w.fx;
+    declare_task(fx, "ungated", json!({})).await;
+    let ungated = wait_running(fx, "ungated").await;
+    let prompt = worker_prompt(fx, &ungated).await;
+    assert!(!prompt.contains("Gate step"), "{prompt}");
+    assert!(!prompt.contains("This task has a gate"), "{prompt}");
+    ungated.complete(fx).await;
+
+    declare(
+        &fx.boot,
+        json!({
+            "key": "gated", "kind": "codex", "goal": "work on gated",
+            "declared_by": PLANNER_DECLARATION_AUTHOR, "ready": true,
+            "gate": {"steps": [
+                {"name": "format", "cmd": "cargo fmt --check"},
+                {"name": "focused tests", "cmd": "cargo test -p demo parser && test -s out.json"},
+            ]},
+        }),
+    )
+    .await;
+    let gated = wait_running(fx, "gated").await;
+    let prompt = worker_prompt(fx, &gated).await;
+    let format = prompt
+        .find("Gate step 1 `format`:\n```sh\ncargo fmt --check\n```")
+        .unwrap_or_else(|| panic!("{prompt}"));
+    let focused = prompt
+        .find("Gate step 2 `focused tests`:\n```sh\ncargo test -p demo parser && test -s out.json\n```")
+        .unwrap_or_else(|| panic!("{prompt}"));
+    assert!(format < focused, "{prompt}");
+    assert!(
+        prompt.contains("Before you report done, run every step yourself"),
+        "{prompt}"
+    );
+}
+
+async fn worker_prompt(fx: &Fx, started: &Started) -> String {
+    sqlx::query_scalar("SELECT json_extract(payload, '$.prompt') FROM cards WHERE id = ?1")
+        .bind(&started.identity.card_id)
+        .fetch_one(&fx.pool())
+        .await
+        .unwrap()
+}
+
 /// #2139 R2: a running terminal task holds the checkout like a codex worker: an independent ready
 /// codex `b` is not claimed, and the report read says why.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

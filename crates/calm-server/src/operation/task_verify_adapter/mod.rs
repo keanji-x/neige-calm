@@ -88,7 +88,28 @@ pub struct GateStep {
     pub cmd: String,
 }
 
+/// The gate steps a codex or claude task declares, in run order, for its worker's prompt (#2404).
+/// `None` when the task declares no gate or has no row.
+pub(crate) async fn declared_gate_steps_tx(
+    tx: &mut super::Tx<'_>,
+    task_id: &str,
+) -> Result<Option<Vec<GateStep>>> {
+    let Some(gate_json) = task_get_tx(tx, task_id)
+        .await?
+        .and_then(|task| task.gate_json)
+    else {
+        return Ok(None);
+    };
+    Ok(Some(GateSpec::parse(task_id, &gate_json)?.steps))
+}
+
 impl GateSpec {
+    /// A task row's stored `gate_json`; a row that does not parse is a kernel defect.
+    pub(crate) fn parse(task_id: &str, gate_json: &str) -> Result<Self> {
+        serde_json::from_str(gate_json)
+            .map_err(|e| CalmError::Internal(format!("task {task_id} gate_json: {e}")))
+    }
+
     pub fn timeout_secs_clamped(&self) -> i64 {
         self.timeout_secs
             .unwrap_or(GATE_TIMEOUT_DEFAULT_SECS)
@@ -435,8 +456,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
             .gate_json
             .as_deref()
             .ok_or_else(|| CalmError::Conflict(format!("task {} declares no gate", task.id)))?;
-        let gate: GateSpec = serde_json::from_str(gate_json)
-            .map_err(|e| CalmError::Internal(format!("task {} gate_json: {e}", task.id)))?;
+        let gate = GateSpec::parse(&task.id, gate_json)?;
 
         // Successful workers release their lease before the gate starts, retaining files.
         let area_id: Option<String> =

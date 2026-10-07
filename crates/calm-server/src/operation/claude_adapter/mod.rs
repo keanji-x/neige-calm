@@ -20,7 +20,7 @@ use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::McpServer;
 use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
 use crate::model::{Card, CardRole, new_id};
-use crate::operation::task_prompt::render_task_worker_prompt;
+use crate::operation::task_prompt::render_task_worker_prompt_tx;
 use crate::operation::worker_cleanup::{compensate_worker_rows, worker_spawn_failure_preserved};
 use crate::operation::workspace_lease::{
     ReleaseDelivery, acquire_workspace_lease_tx, prepare_worker_lease_tx,
@@ -780,14 +780,15 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             .join(&card_id)
             .join("settings.json");
         let settings_dir = settings_path_parent(&settings_path)?;
-        let rendered_prompt = render_task_worker_prompt(
+        let rendered_prompt = render_task_worker_prompt_tx(
+            tx,
             &payload.idempotency_key,
             &payload.goal,
             &payload.context,
             payload.acceptance_criteria.as_deref(),
-            plan.reader.as_ref(),
-            plan.catch_up.as_ref(),
-        );
+            &plan,
+        )
+        .await?;
         let command_line = build_claude_worker_command_line(
             &self.codex.claude_bin,
             &settings_path,
