@@ -47,9 +47,6 @@ const RELEASE_TIMEOUT: Duration = Duration::from_secs(60);
 const PARKED_DEADLINE_SLACK_SECS: i64 = 120;
 
 /// Trailing log bytes copied into `gate_result_json` and the event.
-#[cfg(test)]
-const LOG_TAIL_BYTES: u64 = 8 * 1024;
-
 /// A non-child cannot be `waitpid`ed; polling + exit-file is the only cross-restart observation.
 const REATTACH_POLL: Duration = Duration::from_secs(2);
 
@@ -297,7 +294,7 @@ pub fn gate_attempt_key(task_id: &str, attempt: i64) -> String {
 }
 
 pub struct TaskVerifyAdapter {
-    /// `<data_dir>/gate-logs` — wrapper scripts, logs, exit files.
+    /// `<data_dir>/gate-logs` — wrapper scripts, logs, exit files, step files.
     gate_logs_dir: PathBuf,
     #[cfg(test)]
     pub(crate) before_release:
@@ -355,6 +352,11 @@ impl TaskVerifyAdapter {
         self.gate_logs_dir
             .join(format!("{task_id}-g{attempt}.exit"))
     }
+
+    fn step_path(&self, task_id: &str, attempt: i64) -> PathBuf {
+        self.gate_logs_dir
+            .join(format!("{task_id}-g{attempt}.step"))
+    }
 }
 
 /// Kill the recorded gate group iff the identity triple still matches (verify-fail → skip; ESRCH swallowed).
@@ -380,6 +382,14 @@ fn exit_path_from_artifacts(artifacts: &SpawnArtifacts) -> Option<PathBuf> {
     artifacts
         .extra
         .get("exit_path")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+}
+
+fn step_path_from_artifacts(artifacts: &SpawnArtifacts) -> Option<PathBuf> {
+    artifacts
+        .extra
+        .get("step_path")
         .and_then(Value::as_str)
         .map(PathBuf::from)
 }
@@ -630,14 +640,16 @@ impl ProviderAdapter for TaskVerifyAdapter {
 
         super::admit_task_side_effect(ctx.repo.as_ref(), &frozen.task_id).await?;
 
-        // Unlink the stale exit file strictly after the kills, strictly before the spawn.
+        // Unlink the stale exit and step files strictly after the kills, strictly before the spawn.
         let exit_path = self.exit_path(&frozen.task_id, frozen.attempt);
+        let step_path = self.step_path(&frozen.task_id, frozen.attempt);
         let log_path = self.log_path(&frozen.task_id, frozen.attempt);
         let script_path = self.script_path(&frozen.task_id, frozen.attempt);
         tokio::fs::create_dir_all(&self.gate_logs_dir).await?;
         for stale in [
             &exit_path,
             &PathBuf::from(format!("{}.tmp", exit_path.display())),
+            &step_path,
         ] {
             match tokio::fs::remove_file(stale).await {
                 Ok(()) => {}
@@ -650,9 +662,12 @@ impl ProviderAdapter for TaskVerifyAdapter {
             ctx.repo.as_ref(),
             Path::new(&frozen.cwd),
             &frozen.gate.steps,
-            &script_path,
-            &log_path,
-            &exit_path,
+            super::gate_process::GateFiles {
+                script: &script_path,
+                log: &log_path,
+                exit: &exit_path,
+                step: &step_path,
+            },
             &gate_attempt_key(&frozen.task_id, frozen.attempt),
         )
         .await?;
@@ -697,6 +712,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
                 log_path: Some(log_path.display().to_string()),
                 extra: json!({
                     "exit_path": exit_path.display().to_string(),
+                    "step_path": step_path.display().to_string(),
                     "script_path": script_path.display().to_string(),
                 }),
             };
@@ -743,7 +759,11 @@ impl ProviderAdapter for TaskVerifyAdapter {
         let completion = ctx.completion.clone();
         let events = ctx.events.clone();
         let observer_pool = pool.clone();
-        let observer_log_path = log_path.clone();
+        let observer_evidence = GateEvidence {
+            log_path: log_path.clone(),
+            step_path: Some(step_path.clone()),
+            steps: frozen.gate.steps.clone(),
+        };
         let observer_frozen = frozen.clone();
         #[cfg(any(test, feature = "fixtures"))]
         let before_completion = self.before_completion.clone();
@@ -751,7 +771,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
             let observation = super::gate_process::observe_verdict(
                 child,
                 artifacts.clone(),
-                observer_log_path,
+                observer_evidence,
                 attempt,
                 timeout_secs,
             )
@@ -811,11 +831,15 @@ impl ProviderAdapter for TaskVerifyAdapter {
             .and_then(FrozenVerify::from_output)?;
         let exit_path = exit_path_from_artifacts(artifacts)
             .unwrap_or_else(|| self.exit_path(&frozen.task_id, frozen.attempt));
-        let log_path = log_path_from_artifacts(artifacts);
+        let evidence = GateEvidence {
+            log_path: log_path_from_artifacts(artifacts),
+            step_path: step_path_from_artifacts(artifacts),
+            steps: frozen.gate.steps.clone(),
+        };
         if !alive {
             return Ok(match read_exit_file(&exit_path) {
                 Ok(Some(code)) => {
-                    let verdict = verdict_from_exit_code(code, &log_path, frozen.attempt);
+                    let verdict = verdict_from_exit_code(code, &evidence, frozen.attempt);
                     // The leader is dead; descendants that outlived it are stopped before the
                     // after-sample (the driver's own kill skips a dead leader). The numeric pgid
                     // may have been recycled, so members are authenticated by the inherited marker.
@@ -845,7 +869,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
                 let rctx = frozen.result_ctx();
                 let attempt = frozen.attempt;
                 let artifacts = artifacts.clone();
-                let log_path = log_path.clone();
+                let evidence = evidence.clone();
                 tokio::spawn(async move {
                     loop {
                         if !verify_owned_pid(
@@ -858,15 +882,15 @@ impl ProviderAdapter for TaskVerifyAdapter {
                         tokio::time::sleep(REATTACH_POLL).await;
                     }
                     let verdict = match read_exit_file(&exit_path) {
-                        Ok(Some(code)) => verdict_from_exit_code(code, &log_path, attempt),
+                        Ok(Some(code)) => verdict_from_exit_code(code, &evidence, attempt),
                         Ok(None) => infra_verdict(
                             "reattached gate exited with no exit file",
-                            &log_path,
+                            &evidence,
                             attempt,
                         ),
                         Err(()) => infra_verdict(
                             "gate exit file present but unparseable (foreign artifact)",
-                            &log_path,
+                            &evidence,
                             attempt,
                         ),
                     };
@@ -1050,6 +1074,9 @@ impl ProviderAdapter for TaskVerifyAdapter {
 }
 
 #[cfg(test)]
+mod verdict_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1091,129 +1118,17 @@ mod tests {
             .expect("unset line");
         let first_step_pos = script.find("'::gate-step fmt'").expect("first step");
         assert!(unset_pos < first_step_pos, "unset precedes every step");
+        let unset_step_pos = script
+            .find("unset NEIGE_GATE_STEP_PATH")
+            .expect("unset step line");
+        let first_record_pos = script
+            .find("printf '%s\\n' 1 > \"$neige_gate_step_path\"")
+            .expect("first step record");
+        assert!(unset_step_pos < first_record_pos && first_record_pos < first_step_pos);
         assert!(
             script.contains("mv -f -- \"$neige_gate_exit_path.tmp\" \"$neige_gate_exit_path\"")
         );
         assert!(script.trim_end().ends_with("neige_gate_finish 0"));
-    }
-
-    #[test]
-    fn verdict_classification() {
-        let dir = std::env::temp_dir().join(format!("gate-verdict-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let log = dir.join("v.log");
-
-        std::fs::write(&log, "::gate-step fmt\nok\n").unwrap();
-        let v = verdict_from_exit_code(0, &log, 1);
-        assert!(v.passed);
-        assert_eq!(v.status_detail, None);
-        assert_eq!(v.failing_step, None);
-
-        std::fs::write(&log, "::gate-step fmt\nok\n::gate-step test\nboom\n").unwrap();
-        let v = verdict_from_exit_code(101, &log, 2);
-        assert!(!v.passed);
-        assert_eq!(v.status_detail.as_deref(), Some("gate-red"));
-        assert_eq!(v.failing_step.as_deref(), Some("test"));
-        assert_eq!(v.exit_code, Some(101));
-        assert_eq!(v.attempt, 2);
-
-        std::fs::write(&log, "").unwrap();
-        let v = verdict_from_exit_code(75, &log, 1);
-        assert!(!v.passed);
-        assert_eq!(v.status_detail.as_deref(), Some("gate-infra"));
-
-        let v = timeout_verdict(&log, 1, 7);
-        assert_eq!(v.status_detail.as_deref(), Some("gate-timeout"));
-        assert!(v.log_tail.contains("timed out after 7s"));
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn exit_file_parse_states() {
-        let dir = std::env::temp_dir().join(format!("gate-exit-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("a.exit");
-        assert_eq!(read_exit_file(&path), Ok(None), "absent");
-        std::fs::write(&path, "3\n").unwrap();
-        assert_eq!(read_exit_file(&path), Ok(Some(3)));
-        std::fs::write(&path, "not-a-code").unwrap();
-        assert_eq!(read_exit_file(&path), Err(()), "foreign artifact");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn log_tail_caps_at_8kib_and_finds_last_sentinel() {
-        let dir = std::env::temp_dir().join(format!("gate-tail-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let log = dir.join("big.log");
-        let mut content = String::from("::gate-step first\n");
-        content.push_str(&"x".repeat(20 * 1024));
-        content.push_str("\n::gate-step last\ntail-end\n");
-        std::fs::write(&log, &content).unwrap();
-        let (tail, sentinel) = read_log_tail(&log);
-        assert!(tail.len() <= LOG_TAIL_BYTES as usize);
-        assert!(tail.ends_with("tail-end\n"));
-        assert_eq!(sentinel.as_deref(), Some("last"));
-
-        // A log larger than the bounded read window still yields the right tail and the last sentinel.
-        let mut content = String::from("::gate-step ancient\n");
-        content.push_str(&"y".repeat(200 * 1024));
-        content.push_str("\n::gate-step recent\nbig-tail-end\n");
-        std::fs::write(&log, &content).unwrap();
-        let (tail, sentinel) = read_log_tail(&log);
-        assert!(tail.len() <= LOG_TAIL_BYTES as usize);
-        assert!(tail.ends_with("big-tail-end\n"));
-        assert_eq!(sentinel.as_deref(), Some("recent"));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// Against a REAL `/bin/sh`: dropping the only write end of the stdin pipe makes `read -r _go` hit EOF and the child exit 75 having executed nothing.
-    #[tokio::test]
-    async fn wrapper_handshake_eof_exits_75_having_run_nothing() {
-        let dir = std::env::temp_dir().join(format!(
-            "gate-handshake-{}-{}",
-            std::process::id(),
-            now_ms()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let marker = dir.join("step-ran");
-        let script_path = dir.join("wrapper.sh");
-        let exit_path = dir.join("wrapper.exit");
-        let steps = vec![GateStep {
-            name: "touch".into(),
-            cmd: format!("touch {}", marker.display()),
-        }];
-        std::fs::write(&script_path, render_gate_wrapper(&steps)).unwrap();
-
-        let mut child = tokio::process::Command::new("/bin/sh")
-            .arg(&script_path)
-            .current_dir(&dir)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .env("NEIGE_GATE_EXIT_PATH", &exit_path)
-            .spawn()
-            .unwrap();
-        // Kernel-death stand-in: drop the held stdin WITHOUT writing the go-token.
-        drop(child.stdin.take());
-        let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
-            .await
-            .expect("EOF must release the held wrapper promptly")
-            .unwrap();
-        assert_eq!(status.code(), Some(75), "{status:?}");
-        assert!(!marker.exists(), "no gate step may run before release");
-        assert!(
-            !exit_path.exists(),
-            "the handshake exit path bypasses neige_gate_finish"
-        );
-
-        let log = dir.join("empty.log");
-        std::fs::write(&log, "").unwrap();
-        let verdict = verdict_from_exit_code(75, &log, 1);
-        assert_eq!(verdict.status_detail.as_deref(), Some("gate-infra"));
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

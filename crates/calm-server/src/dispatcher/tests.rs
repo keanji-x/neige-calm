@@ -1224,34 +1224,51 @@ fn turn_text_names_target_mismatch() {
         }
         event
     };
-    for (step, code, detail, verdict) in [
-        (None, None, Some("gate-timeout"), "FAILED (gate-timeout)"),
-        (None, None, Some("gate-infra"), "FAILED (gate-infra)"),
+    // A red step is the first failing one, so its text says the steps before it passed (#2387).
+    const ORDER: &str = " Earlier steps passed; later steps did not run.";
+    for (step, code, detail, verdict, order) in [
+        (
+            None,
+            None,
+            Some("gate-timeout"),
+            "FAILED (gate-timeout)",
+            "",
+        ),
+        (None, None, Some("gate-infra"), "FAILED (gate-infra)", ""),
         (
             Some("test"),
             None,
             Some("gate-timeout"),
             "FAILED (gate-timeout) at step test",
+            "",
         ),
         (
             None,
             Some(75),
             Some("gate-infra"),
             "FAILED (gate-infra, exit 75)",
+            "",
         ),
-        (None, None, Some("gate-red"), "FAILED"),
-        (None, None, None, "FAILED"),
+        (None, None, Some("gate-red"), "FAILED", ""),
+        (None, None, None, "FAILED", ""),
         (
             Some("test"),
             Some(101),
             Some("gate-red"),
             "FAILED at step test (exit 101)",
+            ORDER,
         ),
-        (Some("test"), None, None, "FAILED at step test"),
-        (None, Some(75), None, "FAILED (exit 75)"),
+        (Some("test"), None, None, "FAILED at step test", ORDER),
+        (None, Some(75), None, "FAILED (exit 75)", ""),
     ] {
         let plain = text(&attributed(step, code, detail));
-        assert_eq!(plain, format!("Task impl-parser gate {verdict} {tail}"));
+        let (head, rest) = tail
+            .split_once(").")
+            .expect("tail starts with the gate run");
+        assert_eq!(
+            plain,
+            format!("Task impl-parser gate {verdict} {head}).{order}{rest}")
+        );
     }
     // An unsampled target keeps the verdict; `status_detail` alone says what happened.
     let unsampled = text(&event(

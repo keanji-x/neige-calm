@@ -8979,7 +8979,7 @@ async fn step_exit_ends_step_and_still_writes_exit_file() {
 }
 
 #[tokio::test]
-async fn gate_step_env_is_minimal_and_exit_path_scrubbed() {
+async fn gate_step_env_is_minimal_and_evidence_paths_scrubbed() {
     let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
     // Sentinel for the env_clear assertion: cargo always sets this for
     // the test process, so it stands in for "arbitrary kernel env".
@@ -8993,6 +8993,7 @@ async fn gate_step_env_is_minimal_and_exit_path_scrubbed() {
         "cwd": dir.to_str().unwrap(),
         "steps": [
             { "name": "no-exit-path", "cmd": "test -z \"$NEIGE_GATE_EXIT_PATH\"" },
+            { "name": "no-step-path", "cmd": "test -z \"$NEIGE_GATE_STEP_PATH\"" },
             { "name": "no-kernel-env", "cmd": "test -z \"$CARGO_MANIFEST_DIR\"" },
             { "name": "minimal-set", "cmd": "test -n \"$PATH\" && test -n \"$HOME\"" }
         ]
@@ -9253,10 +9254,12 @@ async fn parked_gate_dead_at_boot_fails_op_and_row_reconciles_gate_infra() {
 }
 
 /// The durable shape `spawn_side_effect` leaves behind: a parked `task-verify` op `#g1` with frozen tx_output and recorded spawn artifacts.
+/// `gate` is the task's `gate_json`, frozen as `prepare_tx` freezes it.
 async fn seed_parked_gate_op(
     boot: &Boot,
     task_id: &str,
     key: &str,
+    gate: &str,
     dir: &std::path::Path,
     artifacts: &calm_server::operation::SpawnArtifacts,
 ) -> String {
@@ -9285,7 +9288,7 @@ async fn seed_parked_gate_op(
         "key": key,
         "attempt": 1,
         "cwd": dir.to_str().unwrap(),
-        "gate": { "steps": [ { "name": "ok", "cmd": "true" } ] }
+        "gate": serde_json::from_str::<Value>(gate).unwrap(),
     });
     sqlx::query(
         r#"UPDATE operations
@@ -9356,7 +9359,7 @@ async fn boot_reattach_live_gate_lands_verdict_after_exit() {
         log_path: Some(log_path.display().to_string()),
         extra: json!({ "exit_path": exit_path.display().to_string() }),
     };
-    seed_parked_gate_op(&boot, &task_id, "reattach", &dir, &artifacts).await;
+    seed_parked_gate_op(&boot, &task_id, "reattach", &gate, &dir, &artifacts).await;
 
     let (runtime, _scheduler) = build_scheduler(
         &boot,
@@ -9419,8 +9422,10 @@ async fn parked_gate_dead_with_exit_file_recovers_real_verdict() {
     // Dead-process artifacts + the durable verdict the wrapper wrote
     // before the whole stack went down.
     let exit_path = dir.join(format!("{task_id}-g1.exit"));
+    let step_path = dir.join(format!("{task_id}-g1.step"));
     let log_path = dir.join(format!("{task_id}-g1.log"));
     std::fs::write(&log_path, "::gate-step boom\nboom-out\n").unwrap();
+    std::fs::write(&step_path, "1\n").unwrap();
     std::fs::write(&exit_path, "7\n").unwrap();
     let artifacts = calm_server::operation::SpawnArtifacts {
         pid: 999_999,
@@ -9428,9 +9433,12 @@ async fn parked_gate_dead_with_exit_file_recovers_real_verdict() {
         start_time: 1,
         boot_id: calm_server::proc_identity::read_boot_id().unwrap_or_else(|| "boot".into()),
         log_path: Some(log_path.display().to_string()),
-        extra: json!({ "exit_path": exit_path.display().to_string() }),
+        extra: json!({
+            "exit_path": exit_path.display().to_string(),
+            "step_path": step_path.display().to_string(),
+        }),
     };
-    seed_parked_gate_op(&boot, &task_id, "deadexit", &dir, &artifacts).await;
+    seed_parked_gate_op(&boot, &task_id, "deadexit", &gate, &dir, &artifacts).await;
 
     let (runtime, scheduler) = build_scheduler(
         &boot,
@@ -9495,7 +9503,7 @@ async fn parked_gate_dead_pre_deadline_fails_gate_infra_promptly() {
         log_path: Some(dir.join("predead-g1.log").display().to_string()),
         extra: json!({ "exit_path": dir.join("predead-g1.exit").display().to_string() }),
     };
-    seed_parked_gate_op(&boot, &task_id, "predead", &dir, &artifacts).await;
+    seed_parked_gate_op(&boot, &task_id, "predead", &gate, &dir, &artifacts).await;
 
     let (runtime, scheduler) = build_scheduler(
         &boot,
