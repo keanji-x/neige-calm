@@ -55,7 +55,19 @@ Pass `--acp-planner-config /absolute/path/acp-planner.json`:
 }
 ```
 
-Use an operator-owned private profile and authenticate through the native CLI outside Neige. All launch fields are required, unknown keys are refused, and the agent's initialize identity/version must match before session operations. The child inherits no ambient environment. Kernel PATH and marker/credential keys cannot be overridden by registration. Only the MCP shim gets the per-session MCP credential.
+Use an operator-owned private profile and authenticate through the native CLI outside Neige. All launch fields are required, unknown keys are refused, and the agent's initialize identity/version must match before session operations. The child inherits no ambient environment. Kernel PATH and marker/credential keys cannot be overridden by registration.
+
+Operational launches explicitly receive their active Planner card's
+`NEIGE_MCP_SOCKET` and `NEIGE_MCP_TOKEN`, using the same per-turn context as the
+MCP shim (#2413). This enables the kernel-served `neige` CLI without inheriting
+user or daemon credentials. Readiness launches receive neither. Managed ownership
+and active-carrier checks precede token issuance; launch/negotiation failures
+revoke it, as do setup failure, settlement and shutdown. The operator-registered
+native binary is trusted to hold the same card credential already delivered in
+its MCP descriptors; the advertised agent name/version remains a compatibility
+check, not cryptographic authentication of the executable. CLI commands still
+use the authoritative kernel parser and role checks; native permissions remain
+`never`.
 
 Model configuration ids and opaque values come from declared ACP `configOptions`, using standardized `model` and `thought_level` categories. Model queries never ask Codex for an ACP card. The catalog is populated by the managed session's setup; before that it is explicitly unavailable and the registered agent's own settings are inherited. A null choice keeps current native session settings. Unknown choices are judged during fresh setup before prompt dispatch, without silently substituting another model or effort.
 

@@ -213,10 +213,23 @@ impl AcpPlannerSession {
         )
         .await
         .map_err(CalmError::from)?;
-        let mut process =
-            Process::spawn(&params.host, config, &params.worker_session_id, &params.cwd).await?;
+        let token = mint_token(params).await?;
+        let mut process = match Process::spawn(
+            &params.host,
+            config,
+            &params.worker_session_id,
+            &params.cwd,
+            super::process::LaunchContext::Planner { mcp_token: &token },
+        )
+        .await
+        {
+            Ok(process) => process,
+            Err(error) => {
+                revoke(params).await?;
+                return Err(error.into());
+            }
+        };
         let prepared = async {
-            let token = mint_token(params).await?;
             let mcp = [protocol::McpServer::Stdio {
                 name: crate::mcp_server::wiring::MCP_SERVER_KEY.into(),
                 command: params.host.mcp_shim.to_string_lossy().into_owned(),
