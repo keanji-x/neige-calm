@@ -29,6 +29,19 @@ async fn boot(root: &Root) -> Stack {
     std::fs::write(&config_path,json!({"agents":[{"provider":"opencode","command":"/usr/bin/python3","args":["-u",PEER],"env":{"ACP_FIXTURE_ROOT":root.path()},"expected_agent_name":"Fixture ACP","expected_agent_version":"1"}]}).to_string()).unwrap();
     let mut config = root.config(false);
     config.acp_planner_config = Some(config_path);
+    // Use this build's production shim, never a host installation found on PATH.
+    let executable = std::env::current_exe().unwrap();
+    let shim = executable
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("neige-mcp-stdio-shim");
+    assert!(
+        shim.is_file(),
+        "build neige-mcp-stdio-shim before running the ACP stack tests"
+    );
+    config.mcp_stdio_shim_bin = Some(shim);
     Stack::boot_config(&config).await
 }
 async fn create(stack: &Stack) -> (String, String) {

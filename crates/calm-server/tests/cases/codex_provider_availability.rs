@@ -292,6 +292,11 @@ async fn authentication_refusal_explains_sign_in_instead_of_changing_the_model()
             )],
             &calm_server::planner_model::TurnModelSelection::inherit(),
             "fixture-client-id",
+            &[calm_server::harness::QueueEntry::user_message(
+                "auth regression".into(),
+                None,
+                Vec::new(),
+            )],
             None,
         )
         .await
