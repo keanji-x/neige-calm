@@ -120,14 +120,24 @@ pub(crate) async fn set_planner_model(
             "card {id} is not a planner codex card",
         )));
     }
-    let claude = crate::harness::profile::PlannerBinding::from_card(&card, role)
-        .is_some_and(|binding| binding.provider == AgentProvider::Claude);
+    let provider = crate::harness::profile::PlannerBinding::from_card(&card, role)
+        .ok_or_else(|| CalmError::Forbidden("The card has no declared Planner backend".into()))?
+        .provider;
+    let claude = provider == AgentProvider::Claude;
 
     let SetPlannerModelBody {
         model,
         reasoning_effort,
     } = body;
-    let advice = if claude {
+    let advice = if provider == AgentProvider::OpenCode {
+        s.acp_planner.configured(&provider)?;
+        catalog_advice(
+            CatalogSource::Acp,
+            model.as_deref(),
+            reasoning_effort.as_deref(),
+        )
+        .await
+    } else if claude {
         // #1822 6′: a Claude write needs Claude ready, as its create does (#1817), so the list is
         // in hand: an effort is judged against the chosen entry, and dropped for a model the list
         // does not carry (the CLI would ignore it). Codex is not asked.
@@ -254,6 +264,8 @@ pub(super) struct EffortAdjustment {
 
 /// Where a write's catalog comes from; the advice itself is the same for both.
 pub(super) enum CatalogSource<'a> {
+    /// ACP choices are checked against the agent's fresh setup metadata at issuance.
+    Acp,
     /// Codex's `model/list`, asked now. A catalog that cannot be read advises nothing: the
     /// selection is stored unjudged (#293).
     Codex(&'a CodexShellState),
@@ -276,6 +288,7 @@ pub(super) async fn catalog_advice(
     reasoning_effort: Option<&str>,
 ) -> CatalogAdvice {
     match source {
+        CatalogSource::Acp => CatalogAdvice::default(),
         CatalogSource::Codex(codex) => {
             // With no model chosen there is no catalog entry to judge against.
             let Some(model) = model else {

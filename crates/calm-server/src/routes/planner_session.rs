@@ -35,6 +35,7 @@ async fn require_backend(
     provider: AgentProvider,
 ) -> Result<()> {
     match provider {
+        AgentProvider::OpenCode => s.acp_planner.check_ready(&provider).await,
         AgentProvider::Claude => s.claude_planner.check_ready().await,
         AgentProvider::Codex if cs.shared_codex_appserver.is_running() => Ok(()),
         AgentProvider::Codex => Err(CalmError::ServiceUnavailable(

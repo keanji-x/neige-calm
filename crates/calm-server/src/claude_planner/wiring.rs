@@ -3,31 +3,21 @@
 
 use std::sync::Arc;
 
+#[cfg(any(test, feature = "fixtures"))]
 use super::config::ClaudePlannerHost;
 use super::session::{ClaudePlannerSession, ClaudePlannerSessionParams};
 use crate::db::Repo;
 use crate::error::{CalmError, Result};
+#[cfg(any(test, feature = "fixtures"))]
 use crate::plugin_host::PluginHost;
 use crate::thread_seals::ThreadSeals;
 
 /// Appended to the Planner rendering for Claude only (§5.2).
 const CLAUDE_FRAGMENT: &str = include_str!("../../prompts/claude-planner/long-lived-processes.md");
 
-#[derive(Clone)]
-pub struct ClaudePlannerWiring {
-    pub host: Arc<ClaudePlannerHost>,
-    /// Resolves the track's bound template for the instructions, as the Codex start does.
-    pub plugin: Arc<PluginHost>,
-}
-
-/// The row and harness facts a session is opened for.
-pub struct ClaudePlannerRow<'a> {
-    pub worker_session_id: &'a str,
-    pub card_id: &'a str,
-    pub track_id: &'a str,
-    /// The thread's lifetime token total from the harness snapshot.
-    pub prior_total_tokens: i64,
-}
+pub use crate::harness::wiring::{
+    PlannerRow as ClaudePlannerRow, PlannerWiring as ClaudePlannerWiring,
+};
 
 impl ClaudePlannerWiring {
     /// Render the instructions once and open the session. The host's config is not required here:
@@ -62,13 +52,13 @@ impl ClaudePlannerWiring {
         .map(|(upper, lower, value)| (upper.to_string(), lower.to_string(), value))
         .collect();
         let session = ClaudePlannerSession::open(ClaudePlannerSessionParams {
-            host: Arc::clone(&self.host),
+            host: Arc::clone(&self.claude),
             worker_session_id: row.worker_session_id.to_string(),
             card_id: row.card_id.to_string(),
             track_id: row.track_id.to_string(),
             cwd: track.workspace.agent_cwd().into(),
             instructions,
-            calm_tools: self.host.calm_tools.clone(),
+            calm_tools: self.claude.calm_tools.clone(),
             proxy,
             prior_total_tokens: row.prior_total_tokens,
             repo,
@@ -86,7 +76,11 @@ impl ClaudePlannerWiring {
     pub fn unconfigured_for_test(repo: Arc<dyn Repo>) -> Self {
         let route_repo: Arc<dyn crate::db::RouteRepo> = repo;
         Self {
-            host: Arc::new(
+            acp: Arc::new(
+                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
+                    .expect("ACP host"),
+            ),
+            claude: Arc::new(
                 ClaudePlannerHost::unconfigured_scratch().expect("scratch Claude Planner host"),
             ),
             plugin: Arc::new(PluginHost::new_full(

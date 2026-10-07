@@ -400,6 +400,9 @@ fn dispatcher_operation_runtime(
         write.area_cache().clone(),
         mcp_socket_path,
         claude_planner.clone(),
+        Arc::new(
+            crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().expect("ACP host"),
+        ),
     ));
     let planner_harness_interrupt_adapter =
         Arc::new(PlannerHarnessInterruptAdapter::new(harness.clone()));
@@ -408,6 +411,9 @@ fn dispatcher_operation_runtime(
         shared_codex_appserver.clone(),
         repo,
         claude_planner,
+        Arc::new(
+            crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().expect("ACP host"),
+        ),
     ));
     let task_verify_adapter = Arc::new(
         crate::operation::task_verify_adapter::TaskVerifyAdapter::new(
@@ -795,6 +801,7 @@ impl Dispatcher {
         let provider_registry = WorkerProviderRegistry::new(
             supervisor_sock_for_provider_registry(&daemon),
             shared_codex_appserver,
+            harness.clone(),
         );
         let reaper = Arc::new(Reaper::new(
             repo.clone(),

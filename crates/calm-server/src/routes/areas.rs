@@ -431,6 +431,12 @@ impl PreparedAreaDeletion {
                 track.id.as_str(),
             )
             .await?;
+            crate::acp_planner::config::sweep_track(
+                route.repo.as_ref(),
+                &route.acp_planner,
+                track.id.as_str(),
+            )
+            .await?;
             for thread_id in worker
                 .harness
                 .shutdown_track(&track.id, route.thread_seals.clone())

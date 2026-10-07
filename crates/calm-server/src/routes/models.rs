@@ -134,6 +134,8 @@ pub enum DefaultSource {
     /// The Claude CLI's own `default` entry in its model list (#1822): `default.model` is the model
     /// it resolves to. Only for a Claude Planner.
     ClaudeCli,
+    /// The managed agent's declared current session settings, read during ACP setup.
+    AcpSession,
     /// No default could be established: the read failed, no `card_id` was supplied, or a Claude
     /// Planner's CLI is not ready.
     Unknown,
@@ -207,10 +209,23 @@ pub(crate) async fn list_models(
         Some(card_id) => Some(resolve_card_workspace(&s, card_id).await?),
         None => None,
     };
+    if q.provider == Some(AgentProvider::OpenCode)
+        || card
+            .as_ref()
+            .is_some_and(|card| card.provider == AgentProvider::OpenCode)
+    {
+        return Ok(Json(acp_catalog(
+            q.card_id
+                .as_deref()
+                .and_then(|id| s.acp_planner.configuration(id)),
+        )));
+    }
     // #1822: a Claude Planner's catalog is the CLI's own list, cached by its availability
     // check, and Codex is not asked. A Claude that is not ready has no list to offer.
     if q.provider == Some(AgentProvider::Claude)
-        || card.as_ref().is_some_and(|card| card.claude_planner)
+        || card
+            .as_ref()
+            .is_some_and(|card| card.provider == AgentProvider::Claude)
     {
         let checked = s
             .provider_availability
@@ -304,6 +319,74 @@ fn claude_catalog(catalog: &ClaudeCatalog) -> ModelsResponse {
     }
 }
 
+fn acp_catalog(
+    cached: Option<(provider::acp::configuration::Configuration, i64)>,
+) -> ModelsResponse {
+    let Some((configuration, at)) = cached else {
+        return ModelsResponse {
+            models: Vec::new(),
+            default: ModelDefaults::default(),
+            default_source: DefaultSource::Unknown,
+            source: ModelSource::Unavailable,
+            fetched_at_ms: None,
+        };
+    };
+    let Some(model) = configuration.category("model") else {
+        return ModelsResponse {
+            models: Vec::new(),
+            default: ModelDefaults::default(),
+            default_source: DefaultSource::Unknown,
+            source: ModelSource::Unavailable,
+            fetched_at_ms: Some(at),
+        };
+    };
+    let thought = configuration.category("thought_level");
+    let efforts = thought
+        .map(|option| {
+            option
+                .choices()
+                .into_iter()
+                .map(|choice| ReasoningEffortOption {
+                    reasoning_effort: choice.value.clone(),
+                    description: Some(choice.name.clone()),
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    ModelsResponse {
+        models: model
+            .choices()
+            .into_iter()
+            .map(|choice| CatalogModel {
+                id: choice.value.clone(),
+                model: choice.value.clone(),
+                resolved_model: None,
+                display_name: choice.name.clone(),
+                description: String::new(),
+                is_default: choice.value == model.current_value,
+                supported_reasoning_efforts: if choice.value == model.current_value {
+                    efforts.clone()
+                } else {
+                    Vec::new()
+                },
+                default_reasoning_effort: if choice.value == model.current_value {
+                    thought.map(|option| option.current_value.clone())
+                } else {
+                    None
+                },
+            })
+            .collect(),
+        default: ModelDefaults {
+            model: Some(model.current_value.clone()),
+            reasoning_effort: thought.map(|option| option.current_value.clone()),
+            supported_reasoning_efforts: Some(efforts),
+        },
+        default_source: DefaultSource::AcpSession,
+        source: ModelSource::Live,
+        fetched_at_ms: Some(at),
+    }
+}
+
 /// A complete `config/read` whose `model` is unset is `config_read` + `null`, not `unknown`.
 fn defaults_from_config_read(config: CodexConfig) -> ModelDefaults {
     ModelDefaults {
@@ -316,7 +399,7 @@ fn defaults_from_config_read(config: CodexConfig) -> ModelDefaults {
 /// A card's workspace and whether it is a Claude Planner card.
 struct ResolvedCard {
     workspace: String,
-    claude_planner: bool,
+    provider: AgentProvider,
 }
 
 /// The workspace path a card's codex thread runs in — the same value
@@ -327,10 +410,11 @@ async fn resolve_card_workspace(s: &RouteState, card_id: &str) -> Result<Resolve
         .card_get(card_id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-    let claude_planner = s.write.verify_role(&card.id).is_some_and(|role| {
-        crate::harness::profile::PlannerBinding::from_card(&card, role)
-            .is_some_and(|binding| binding.provider == AgentProvider::Claude)
-    });
+    let provider = s
+        .write
+        .verify_role(&card.id)
+        .and_then(|role| crate::harness::profile::PlannerBinding::from_card(&card, role))
+        .map_or(AgentProvider::Codex, |binding| binding.provider);
     let track = s
         .repo
         .track_get(card.track_id.as_str())
@@ -340,6 +424,6 @@ async fn resolve_card_workspace(s: &RouteState, card_id: &str) -> Result<Resolve
         })?;
     Ok(ResolvedCard {
         workspace: track.workspace.agent_cwd().to_string(),
-        claude_planner,
+        provider,
     })
 }

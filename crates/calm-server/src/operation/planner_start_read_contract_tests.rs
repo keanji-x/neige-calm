@@ -54,6 +54,9 @@ async fn the_adapters_kind_is_the_const() {
             crate::claude_planner::config::ClaudePlannerHost::unconfigured_scratch()
                 .expect("scratch claude planner host"),
         ),
+        Arc::new(
+            crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch().expect("ACP host"),
+        ),
     );
     assert_eq!(adapter.kind(), PLANNER_HARNESS_START);
 }

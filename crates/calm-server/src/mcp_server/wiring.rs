@@ -125,7 +125,7 @@ pub async fn mint_and_persist_card_token(
 /// A Claude Planner harness's first-turn mint (#1791 §5.1): the card row and the session hash in
 /// the caller's one transaction, the session write through the guarded writer that refuses a row
 /// that is no longer active. The plaintext is returned to the harness only.
-pub async fn mint_and_persist_claude_planner_token(
+pub async fn mint_and_persist_managed_planner_token(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: &str,
     worker_session_id: &str,

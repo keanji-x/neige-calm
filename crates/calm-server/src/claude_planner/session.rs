@@ -606,7 +606,7 @@ impl ClaudePlannerSession {
         let worker_session_id = params.worker_session_id.clone();
         let token = crate::db::write_in_tx_typed(params.repo.as_ref(), move |tx| {
             Box::pin(async move {
-                crate::mcp_server::wiring::mint_and_persist_claude_planner_token(
+                crate::mcp_server::wiring::mint_and_persist_managed_planner_token(
                     tx,
                     &card_id,
                     &worker_session_id,

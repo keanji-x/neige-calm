@@ -3,7 +3,7 @@
 
 import { z } from 'zod';
 
-import { cardRuntimeViewSchema } from '../api/schemas.js';
+import { agentProviderSchema, cardRuntimeViewSchema } from '../api/schemas.js';
 import type { AgentProvider } from '../api/generated/wire.js';
 import type { ApiOperation } from '../api/types.js';
 import {
@@ -337,11 +337,13 @@ export function isBlankForKernel(text: string): boolean {
 /**
  * The backend of a Planner card, from its server-owned `planner_provider` key (#1791). Read only for
  * copy: the server refuses to run a Planner card whose key is missing or unknown, so any value other
- * than `claude` reads as Codex, the one backend such a card could have been minted with.
+ * than a declared provider retains the historical Codex display fallback.
  */
 export function plannerProviderOf(payload: unknown): AgentProvider {
-  return typeof payload === 'object' && payload !== null
-    && (payload as { planner_provider?: unknown }).planner_provider === 'claude' ? 'claude' : 'codex';
+  const value = typeof payload === 'object' && payload !== null
+    ? (payload as { planner_provider?: unknown }).planner_provider : undefined;
+  const parsed = agentProviderSchema.safeParse(value);
+  return parsed.success ? parsed.data : 'codex';
 }
 
 export type NewTrackBody = Readonly<{

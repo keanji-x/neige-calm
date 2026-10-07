@@ -152,7 +152,10 @@ impl ClaudePlannerHost {
         );
         Ok(Self {
             config,
-            instance: MarkerInstance::for_data_dir(data_dir)?,
+            instance: MarkerInstance::for_data_dir(
+                data_dir,
+                crate::claude_planner::stop::MARKER_KEY,
+            )?,
             instructions_dir: instructions_dir(data_dir)?,
             mcp_shim,
             mcp_socket,

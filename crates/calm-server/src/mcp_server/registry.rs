@@ -99,6 +99,8 @@ impl ToolCallIdentity {
 
 fn provider_session_actor(provider: &AgentProvider, session_id: WorkerSessionId) -> ActorId {
     match provider {
+        // The released identity contract permits OpenCode only for managed Planner sessions.
+        AgentProvider::OpenCode => ActorId::AiPlannerSession(session_id),
         AgentProvider::Codex => ActorId::AiCodexSession(session_id),
         AgentProvider::Claude => ActorId::AiClaudeSession(session_id),
     }

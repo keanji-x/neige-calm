@@ -348,7 +348,7 @@ export const modelCatalogSchema = z.object({
     /* `null` for codex, whose default's efforts are those of the entry `model` names. */
     supported_reasoning_efforts: z.array(reasoningEffortOptionSchema).nullable(),
   }),
-  default_source: z.enum(['config_read', 'config_toml', 'claude_cli', 'unknown']),
+  default_source: z.enum(['config_read', 'config_toml', 'claude_cli', 'acp_session', 'unknown']),
   source: z.enum(['live', 'unavailable']),
   fetched_at_ms: z.number().nullable(),
 });

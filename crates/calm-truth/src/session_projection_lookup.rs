@@ -50,6 +50,10 @@ pub async fn resolve_session_for_thread(
             repo.session_projection_active_by_session(AgentProvider::Claude, thread_id)
                 .await?
         }
+        AgentProvider::OpenCode => {
+            repo.session_projection_active_by_session(AgentProvider::OpenCode, thread_id)
+                .await?
+        }
     };
     Ok(active.map(|runtime| (WorkerSessionId::from(runtime.id), runtime.card_id)))
 }

@@ -48,6 +48,7 @@ export const RECHECK_TEXT: ProbeText = Object.freeze({ answered: 'The recheck fa
 export const CREATE_REFUSED_WHEN_UNAVAILABLE: Readonly<Record<AgentProvider, boolean>> = Object.freeze({
   codex: false,
   claude: true,
+  opencode: true,
 });
 
 /**

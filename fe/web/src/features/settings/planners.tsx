@@ -34,7 +34,7 @@ export type PlannersPaneProps = Readonly<{
   }> | null;
 }>;
 
-const PROVIDER_LABELS: Readonly<Record<AgentProvider, string>> = Object.freeze({ codex: 'Codex', claude: 'Claude' });
+const PROVIDER_LABELS: Readonly<Record<AgentProvider, string>> = Object.freeze({ codex: 'Codex', claude: 'Claude', opencode: 'OpenCode' });
 
 /** `unavailable` is warning, not error: a login or a config fix away. `not_configured` is a server fact, not a fault. */
 const STATUS_BADGES: Readonly<Record<ProviderAvailability['status'], Readonly<{

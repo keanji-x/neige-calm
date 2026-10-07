@@ -23,6 +23,7 @@ pub mod state;
 pub mod token_usage;
 pub(crate) mod turn_input;
 pub(crate) mod turn_outcome;
+pub mod wiring;
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
@@ -443,7 +444,10 @@ pub enum BootRows {
 /// A Claude Planner row: recovered at boot whatever the Codex daemon does, never by the deferred pass.
 fn is_claude_planner_row(runtime: &WorkerSessionProjection) -> bool {
     runtime.kind == WorkerSessionKind::SharedPlanner
-        && runtime.agent_provider == Some(AgentProvider::Claude)
+        && matches!(
+            runtime.agent_provider,
+            Some(AgentProvider::Claude | AgentProvider::OpenCode)
+        )
 }
 
 #[allow(clippy::too_many_arguments)]

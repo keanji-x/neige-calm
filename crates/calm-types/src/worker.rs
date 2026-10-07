@@ -202,6 +202,7 @@ impl ExitInterpretation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WorkerProviderKind {
+    OpenCode,
     Codex,
     Claude,
     Terminal,
@@ -213,6 +214,7 @@ impl WorkerProviderKind {
         match self {
             WorkerProviderKind::Codex => "codex",
             WorkerProviderKind::Claude => "claude",
+            WorkerProviderKind::OpenCode => "opencode",
             WorkerProviderKind::Terminal => "terminal",
         }
     }
@@ -225,6 +227,7 @@ impl TryFrom<String> for WorkerProviderKind {
         match value.as_str() {
             "codex" => Ok(WorkerProviderKind::Codex),
             "claude" => Ok(WorkerProviderKind::Claude),
+            "opencode" => Ok(WorkerProviderKind::OpenCode),
             "terminal" => Ok(WorkerProviderKind::Terminal),
             other => Err(format!("unknown worker_sessions.provider value `{other}`")),
         }
@@ -412,6 +415,7 @@ mod tests {
         for provider in [
             WorkerProviderKind::Codex,
             WorkerProviderKind::Claude,
+            WorkerProviderKind::OpenCode,
             WorkerProviderKind::Terminal,
         ] {
             assert_eq!(

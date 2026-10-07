@@ -1,5 +1,6 @@
 pub mod claude;
 pub mod codex;
+pub mod managed;
 mod supervisor;
 pub mod terminal;
 

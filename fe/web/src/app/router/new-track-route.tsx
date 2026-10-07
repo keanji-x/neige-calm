@@ -53,6 +53,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
      (`CREATE_REFUSED_WHEN_UNAVAILABLE`: Claude). */
   const codexCatalog = useQuery(modelCatalogQueryOptions(transport, { kind: 'provider', provider: 'codex' }, unauthorized));
   const claudeCatalog = useQuery(modelCatalogQueryOptions(transport, { kind: 'provider', provider: 'claude' }, unauthorized));
+  const opencodeCatalog = useQuery(modelCatalogQueryOptions(transport, { kind: 'provider', provider: 'opencode' }, unauthorized));
   const availability = useQuery(agentProvidersQueryOptions(transport, unauthorized));
   const trackMutations = useTrackMutations(transport, unauthorized);
   const templates = useTrackTemplates(transport, unauthorized);
@@ -163,6 +164,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
         groups={[
           { provider: 'codex', catalog: codexCatalog.data ?? null, availability: availabilityOf(availability.data, 'codex') },
           { provider: 'claude', catalog: claudeCatalog.data ?? null, availability: availabilityOf(availability.data, 'claude') },
+          { provider: 'opencode', catalog: opencodeCatalog.data ?? null, availability: availabilityOf(availability.data, 'opencode') },
         ]}
         provider={session.provider}
         effortControl={compactViewport ? 'in-menu' : 'separate'}

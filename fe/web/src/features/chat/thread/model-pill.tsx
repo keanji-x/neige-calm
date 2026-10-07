@@ -42,6 +42,10 @@ const PROVIDERS: Readonly<Record<AgentProvider, Readonly<{
     label: 'Claude', unavailable: 'Claude cannot run on this server right now', hiddenUntilKnown: true,
     switchNote: false,
   }),
+  opencode: Object.freeze({
+    label: 'OpenCode', unavailable: 'OpenCode cannot run on this server right now', hiddenUntilKnown: true,
+    switchNote: false,
+  }),
 });
 
 /**
@@ -70,7 +74,7 @@ function visibleModelGroups(groups: readonly ModelGroup[], provider: AgentProvid
 /** The name of the default a catalog says is followed (for Claude, the model its CLI default resolves to), or `null` when it cannot say. */
 function defaultNameOf(catalog: ModelCatalog | null): string | null {
   return catalog?.default_source === 'config_read' || catalog?.default_source === 'config_toml'
-    || catalog?.default_source === 'claude_cli'
+    || catalog?.default_source === 'claude_cli' || catalog?.default_source === 'acp_session'
     ? catalog.default.model
     : null;
 }
@@ -236,7 +240,8 @@ function GroupChoices({ group, selection, onChange }: Readonly<{
     )}
     <Choice
       /* A Claude default is described by the CLI's own entry: "Default", and the model it resolves to beside it. */
-      label={defaultName === null ? FOLLOW_DEFAULT_LABEL
+      label={group.catalog?.default_source === 'acp_session' ? `Session settings (${defaultName ?? 'current'})`
+        : defaultName === null ? FOLLOW_DEFAULT_LABEL
         : group.catalog?.default_source === 'claude_cli' ? <ResolvedLabel name={FOLLOW_DEFAULT_LABEL} resolved={defaultName} />
           : `${FOLLOW_DEFAULT_LABEL} (${defaultName})`}
       isSelected={selection !== null && selection.model === null}

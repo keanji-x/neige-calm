@@ -108,7 +108,11 @@ impl Root {
     }
 
     pub fn instance(&self) -> MarkerInstance {
-        MarkerInstance::for_data_dir(&self.data_dir()).expect("marker instance")
+        MarkerInstance::for_data_dir(
+            &self.data_dir(),
+            calm_server::claude_planner::stop::MARKER_KEY,
+        )
+        .expect("marker instance")
     }
 
     /// `with_config: false` boots the same root without `--claude-planner-config`.
@@ -204,9 +208,11 @@ impl Stack {
     }
 
     pub async fn boot_with(root: &Root, with_config: bool) -> Self {
-        let state = AppState::boot(&root.config(with_config))
-            .await
-            .expect("AppState::boot");
+        Self::boot_config(&root.config(with_config)).await
+    }
+
+    pub async fn boot_config(config: &Config) -> Self {
+        let state = AppState::boot(config).await.expect("AppState::boot");
         calm_server::recover_harnesses_after_daemon_boot(
             &state,
             Err(calm_server::error::CalmError::Internal(

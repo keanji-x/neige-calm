@@ -83,6 +83,10 @@ impl Wiring {
                 calm_server::claude_planner::config::ClaudePlannerHost::unconfigured_scratch()
                     .unwrap(),
             ),
+            acp_planner: Arc::new(
+                calm_server::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
+                    .expect("ACP host"),
+            ),
             activity_wake: calm_server::track_activity::ActivityWake::detached(),
         }
         .into_app_state()

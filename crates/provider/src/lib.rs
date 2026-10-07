@@ -1,4 +1,5 @@
 //! Agent provider contracts, protocol clients, and worker implementations.
+pub mod acp;
 pub mod claude;
 pub mod codex;
 pub mod events;

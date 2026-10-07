@@ -54,7 +54,7 @@ function availability(claude: 'ready' | 'not_configured') {
   ];
 }
 
-function mount(claude: unknown) {
+function mount(claude: unknown, opencode = false) {
   const creates: ApiRequest[] = [];
   const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
   const transport: ApiTransportPort = { send(request) {
@@ -66,7 +66,9 @@ function mount(claude: unknown) {
     if (request.path === '/api/areas') return Promise.resolve(ok([AREA]));
     if (request.path === '/api/models?provider=codex') return Promise.resolve(ok(LIVE_CATALOG));
     if (request.path === '/api/models?provider=claude') return Promise.resolve(ok(claude));
-    if (request.path === '/api/agent-providers') return Promise.resolve(ok(availability(claude === NO_CLAUDE ? 'not_configured' : 'ready')));
+    if (request.path === '/api/models?provider=opencode') return Promise.resolve(ok(NO_CLAUDE));
+    if (request.path === '/api/agent-providers') return Promise.resolve(ok([...availability(claude === NO_CLAUDE ? 'not_configured' : 'ready'),
+      { provider: 'opencode', status: opencode ? 'ready' : 'not_configured', reason: opencode ? null : 'Configure the agent', checked_at_ms: 1 }]));
     if (request.path === '/api/settings') return Promise.resolve(ok({}));
     return Promise.resolve(ok([]));
   } };
@@ -138,4 +140,19 @@ it('offers only Codex on a server without Claude Planners', async () => {
   await expect.element(page.getByRole('menuitem', { name: 'GPT-5' })).toBeVisible();
   await expect.element(page.getByRole('group', { name: 'Claude' })).not.toBeInTheDocument();
   await expect.element(page.getByRole('menuitem', { name: 'Sonnet' })).not.toBeInTheDocument();
+});
+
+it.each([1280, 390])('OpenCode can create a track with inherited agent settings (%ipx)', async (width) => {
+  await page.viewport(width, 844);
+  const { creates } = mount(NO_CLAUDE, true);
+  await openModelMenu('Model: Codex Default');
+  await page.getByRole('group', { name: 'OpenCode' }).getByRole('menuitem', { name: 'Default', exact: true }).click();
+  await expect.element(page.getByRole('button', { name: 'Model: OpenCode Default' })).toBeVisible();
+  await page.getByRole('combobox', { name: 'What this track should do' }).fill('Plan with OpenCode');
+  await page.getByRole('button', { name: 'Create track' }).click();
+  await expect.poll(() => creates.length).toBe(1);
+  expect(creates[0]?.body).toMatchObject({ planner_provider: 'opencode', first_message: 'Plan with OpenCode' });
+  expect(creates[0]?.body).not.toHaveProperty('model');
+  expect(creates[0]?.body).not.toHaveProperty('reasoning_effort');
+  expect(document.documentElement.scrollWidth).toBe(width);
 });

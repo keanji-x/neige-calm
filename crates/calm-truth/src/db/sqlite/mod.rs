@@ -42,12 +42,14 @@ mod session_conversation;
 pub use session_conversation::{
     PLANNER_START_CARD_KEY, PLANNER_START_OPERATION_KIND, TERMINAL_OPERATION_PHASES,
 };
+mod acp_submission;
 #[cfg(test)]
 mod session_conversation_tests;
 mod session_mirror;
 mod session_projection;
 mod session_repo_impl;
 mod session_row;
+pub use acp_submission::*;
 mod session_system_error_recovery;
 pub use session_system_error_recovery::{
     session_resume_system_error_tx, session_set_failed_harness_snapshot_tx,
