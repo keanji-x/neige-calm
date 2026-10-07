@@ -635,6 +635,26 @@ async fn a_turn_end_withdraws_its_held_asks() {
     rig.harness.shutdown().await.unwrap();
 }
 
+/// A turn that starts withdraws every open ask whose request no table holds: here one whose
+/// entry left the table without the run loop seeing it go.
+#[tokio::test]
+async fn a_turn_start_withdraws_an_ask_no_table_holds() {
+    let rig = rig().await;
+    let (ask_id, mut request) = rig.open("req-1", CONNECTION).await;
+    drop(rig.harness.held_requests().take(ask_id));
+    assert_eq!(request.told().await, Outcome::Refused);
+    assert!(
+        !rig.withdrawn(ask_id).await,
+        "nothing has swept since the entry left"
+    );
+    assert_eq!(rig.activity_items().await.len(), 1);
+
+    rig.start_turn().await;
+    wait_for("the turn-start sweep", || rig.withdrawn(ask_id)).await;
+    assert!(rig.activity_items().await.is_empty());
+    rig.harness.shutdown().await.unwrap();
+}
+
 /// A session that failed and came back idle under the same id still has the ask its old harness
 /// held; the harness built for it holds no request, so its construction sweep withdraws the ask.
 /// While the session is failed the ask is hidden, not closed.
