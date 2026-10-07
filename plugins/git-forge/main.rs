@@ -131,6 +131,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn issue_create_requires_caller_metadata_outside_arguments() {
+        let mut frame = json!({"params":{"name":"gh_issue_create","arguments":{"repo":"owner/repo","title":"Title","body":"Body","idem":"one"}}});
+        assert_eq!(
+            tools_call_reply(&frame, json!(1))["result"]["isError"],
+            true
+        );
+        frame["params"]["arguments"][FORGE_CALLER_META_KEY] =
+            json!({"plugin_id":"gitforge","track_id":"t","card_id":"c"});
+        assert_eq!(
+            tools_call_reply(&frame, json!(1))["result"]["isError"],
+            true
+        );
+        frame["params"]["_meta"] =
+            json!({FORGE_CALLER_META_KEY:{"plugin_id":"gitforge","track_id":"t","card_id":"a"}});
+        let first = tools_call_reply(&frame, json!(1));
+        assert_eq!(first["result"]["isError"], false);
+        frame["params"]["_meta"][FORGE_CALLER_META_KEY]["card_id"] = json!("b");
+        assert_ne!(
+            first["result"]["structuredContent"]["probe"],
+            tools_call_reply(&frame, json!(1))["result"]["structuredContent"]["probe"]
+        );
+        frame["params"]["_meta"][FORGE_CALLER_META_KEY]["plugin_id"] = json!("other");
+        assert_eq!(
+            tools_call_reply(&frame, json!(1))["result"]["isError"],
+            true
+        );
+    }
+
+    #[test]
     fn issue_comment_requires_caller_metadata_outside_arguments() {
         let args = json!({"repo":"owner/repo","issue":42,"body":"Update","idem":"plan-1"});
         let mut frame = json!({"params":{"name":"gh_issue_comment","arguments":args}});

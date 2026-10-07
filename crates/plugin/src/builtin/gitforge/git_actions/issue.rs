@@ -20,7 +20,7 @@ fn issue_number(args: &Value) -> Result<u64, String> {
     Ok(issue)
 }
 
-fn nonblank(args: &Value, name: &str) -> Result<String, String> {
+pub(super) fn nonblank(args: &Value, name: &str) -> Result<String, String> {
     let value = required_string(args, name)?;
     if value.trim().is_empty() {
         return Err(format!("required argument `{name}` must not be blank"));

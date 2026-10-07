@@ -421,6 +421,14 @@ case "$area:$verb" in
       issue_state=CLOSED
     fi
     case "$json_fields:$jq_expr" in
+      number,url,state,title,body,labels:)
+        if [ -f "$state/issues/$issue.body" ]; then
+          body=$(cat "$state/issues/$issue.body")
+        else
+          body=$(printf '# Issue %s\n\nFake issue body for dev ingestion.\n' "$issue")
+        fi
+        jq -n --argjson number "$issue" --arg state "$issue_state" --arg body "$body" --arg title "Issue $issue" --arg url "https://example.test/issues/$issue" '{number:$number,url:$url,state:$state,title:$title,body:$body,labels:[]}'
+        ;;
       state:*)
         printf '{"state":"%s"}\n' "$issue_state"
         ;;

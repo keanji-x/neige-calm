@@ -204,8 +204,43 @@
       }
     },
     {
+      "name": "gh_issue_create",
+      "description": "Create an issue with repo/title/body/idem. Retry identical arguments from the same card to obtain its real issue_number and issue_url; Unknown failures must not be retried with a new idem.",
+      "kind": "forge-action",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "repo": {"type": "string", "minLength": 1, "description": "owner/name or host/owner/name"},
+          "title": {"type": "string", "minLength": 1},
+          "body": {"type": "string", "minLength": 1},
+          "idem": {"type": "string", "minLength": 1}
+        },
+        "required": ["repo", "title", "body", "idem"],
+        "additionalProperties": false
+      },
+      "annotations": {"title": "Create Issue", "readOnlyHint": false, "destructiveHint": false, "openWorldHint": false}
+    },
+    {
+      "name": "gh_issue_search",
+      "description": "Search issues (not PRs), returning JSON number/url/state/title/body/labels. Bounded search is not a recovery oracle. Reuse attempt to replay, change it to refresh.",
+      "kind": "forge-action",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "repo": {"type": "string", "minLength": 1, "description": "owner/name or host/owner/name"},
+          "query": {"type": "string", "minLength": 1},
+          "state": {"type": "string", "enum": ["open", "closed", "all"], "default": "all"},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 30},
+          "attempt": {"type": ["string", "number"]}
+        },
+        "required": ["repo", "query"],
+        "additionalProperties": false
+      },
+      "annotations": {"title": "Search Issues", "readOnlyHint": true}
+    },
+    {
       "name": "gh_issue_view",
-      "description": "Lower GitHub issue views into a forge action",
+      "description": "Read issue JSON number/url/state/title/body/labels with an artifact and inline stdout; use a new attempt to refresh",
       "kind": "forge-action",
       "input_schema": {
         "type": "object",

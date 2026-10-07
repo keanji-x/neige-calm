@@ -2742,6 +2742,25 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
             false,
         ),
         row(
+            Event::ForgeIssueCreated {
+                track_id: track.clone(),
+                issue_number: 731,
+                issue_url: "https://github.com/owner/repo/issues/731".into(),
+            },
+            ActorId::KernelDispatcher,
+            false,
+            false,
+        ),
+        row(
+            Event::ForgeIssueSearched {
+                track_id: track.clone(),
+                artifact_path: "/tmp/issues.json".into(),
+            },
+            ActorId::KernelDispatcher,
+            false,
+            false,
+        ),
+        row(
             Event::WorktreeRemoved {
                 track_id: track.clone(),
                 card_id: worker.clone(),

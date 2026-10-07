@@ -101,6 +101,8 @@ pub async fn commit_events_with_author_in_tx(
                 | Event::ForgePrDiffRead { .. }
                 | Event::ForgePrChecks { .. }
                 | Event::ForgeIssueRead { .. }
+                | Event::ForgeIssueCreated { .. }
+                | Event::ForgeIssueSearched { .. }
                 | Event::ForgeIssueClosed { .. }
                 | Event::TrackWakeRequested { .. }
                 | Event::WorktreeProvisioned { .. }

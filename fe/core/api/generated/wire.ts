@@ -235,7 +235,7 @@ snapshot?: ForgeChecksSnapshot,
 /**
  * The read's failed checks; absent on events recorded before #2170.
  */
-failed_checks?: Array<ForgeFailedCheck>, } } | { "ev": "forge.issue.read", "data": { track_id: TrackId, issue_number: number, artifact_path: string, } } | { "ev": "forge.issue.closed", "data": { track_id: TrackId, issue_number: number, } } | { "ev": "worktree.provisioned", "data": { track_id: TrackId, card_id: CardId, path: string, } } | { "ev": "worktree.committed", "data": { track_id: TrackId, card_id: CardId, commit_sha: string, branch: string, 
+failed_checks?: Array<ForgeFailedCheck>, } } | { "ev": "forge.issue.read", "data": { track_id: TrackId, issue_number: number, artifact_path: string, } } | { "ev": "forge.issue.created", "data": { track_id: TrackId, issue_number: number, issue_url: string, } } | { "ev": "forge.issue.searched", "data": { track_id: TrackId, artifact_path: string, } } | { "ev": "forge.issue.closed", "data": { track_id: TrackId, issue_number: number, } } | { "ev": "worktree.provisioned", "data": { track_id: TrackId, card_id: CardId, path: string, } } | { "ev": "worktree.committed", "data": { track_id: TrackId, card_id: CardId, commit_sha: string, branch: string, 
 /**
  * #1727 S4: set by the kernel delivery path only; absent on legacy auto-commits.
  */

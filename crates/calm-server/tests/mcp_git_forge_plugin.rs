@@ -2,6 +2,9 @@
 
 mod support;
 
+#[path = "cases/git_forge_issue_creation.rs"]
+mod issue_creation;
+
 #[path = "cases/git_forge_track_worktree.rs"]
 mod git_forge_track_worktree;
 
@@ -110,6 +113,8 @@ fn real_manifest_parses() {
             "gh_pr_diff",
             "gh_pr_checks",
             "gh_pr_merge",
+            "gh_issue_create",
+            "gh_issue_search",
             "gh_issue_view",
             "gh_issue_close",
             "gh_issue_comment",

@@ -81,6 +81,8 @@ pub const SUPPORTED_FORGE_EVENT_KINDS: &[&str] = &[
     "forge.pr.published",
     "forge.pr.diff.read",
     "forge.issue.read",
+    "forge.issue.created",
+    "forge.issue.searched",
     "forge.pr.checks",
     "forge.issue.closed",
     "worktree.provisioned",

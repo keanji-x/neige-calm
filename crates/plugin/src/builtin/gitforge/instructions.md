@@ -12,7 +12,16 @@ The selected template determines when review and user ratification are required;
 
 Read issue requirements with `gh_issue_view`, and read the discussion with
 `gh_issue_comments`. Pass a new `attempt` to either tool when refreshing; reuse
-the attempt on retries.
+the attempt on retries. `gh_issue_view` returns JSON number/url/state/title/body/labels.
+
+Use `gh_issue_search` with repo/query to find related issues, including closed ones
+by default; state and limit (1..100, default 30) bound results. A new attempt
+refreshes them. Search is not an atomic deduplication or recovery guarantee.
+When issue creation is authorized, use `gh_issue_create` with repo/title/body and
+a stable idem. Repo is owner/name or host/owner/name. Retrieve completion with
+identical arguments from the same card; result.event contains issue_number and
+issue_url. Changed content under the same idem is rejected. An Unknown failure
+must be investigated rather than blindly retried with a new idem.
 
 Use `gh_issue_comment` to post a progress update, question, or result. Pass `repo`,
 `issue`, Markdown `body`, and a stable `idem` for that logical comment. Reuse

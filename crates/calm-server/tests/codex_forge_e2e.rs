@@ -680,7 +680,10 @@ async fn real_planner_drives_issue_to_close_capstone() {
     let issue_artifact = std::fs::read_to_string(issue_artifact_path)
         .unwrap_or_else(|e| panic!("read issue artifact {issue_artifact_path}: {e}"));
     assert_eq!(
-        issue_artifact.trim(),
+        serde_json::from_str::<Value>(&issue_artifact).unwrap()["body"]
+            .as_str()
+            .unwrap()
+            .trim(),
         CAPSTONE_ISSUE_BODY.trim(),
         "issue read artifact must carry the shim-seeded fixture body (S0)"
     );

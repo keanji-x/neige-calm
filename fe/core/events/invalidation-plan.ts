@@ -244,6 +244,8 @@ function policies(): PolicyMap {
   'forge.pr.diff.read': noop('Diff-read rows have no query consumer.'),
   'forge.pr.checks': noop('Forge check rows have no query consumer.'),
   'forge.issue.read': noop('Issue-read rows have no query consumer.'),
+  'forge.issue.created': noop('Issue creation has no query consumer.'),
+  'forge.issue.searched': noop('Issue search has no query consumer.'),
   'forge.issue.closed': noop('Issue-close rows have no query consumer.'),
   'track.wake_requested': noop('A Planner wake changes no queried row; the harness events that follow do.'),
   'worktree.provisioned': noop('Worktree rows have no query consumer.'),

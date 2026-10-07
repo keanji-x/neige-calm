@@ -690,6 +690,19 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
   });
 });
 
+describe('issue creation and search events (#2364)', () => {
+  it('requires real issue number and URL on created events', () => {
+    const data = { track_id: 'track-01', issue_number: 731, issue_url: 'https://github.com/owner/repo/issues/731' };
+    expect(wireEventSchema.parse({ ev: 'forge.issue.created', data }).data).toEqual(data);
+    expect(wireEventSchema.safeParse({ ev: 'forge.issue.created', data: { track_id: 'track-01', issue_number: 731 } }).success).toBe(false);
+  });
+  it('requires the search artifact', () => {
+    const data = { track_id: 'track-01', artifact_path: '/tmp/issues.json' };
+    expect(wireEventSchema.parse({ ev: 'forge.issue.searched', data }).data).toEqual(data);
+    expect(wireEventSchema.safeParse({ ev: 'forge.issue.searched', data: { track_id: 'track-01' } }).success).toBe(false);
+  });
+});
+
 describe('PR2 of #247: track.report_edited', () => {
   it('parses a valid track.report_edited with author=planner', () => {
     const parsed = wireEventSchema.parse({

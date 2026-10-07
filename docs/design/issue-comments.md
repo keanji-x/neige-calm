@@ -25,7 +25,7 @@ remain the authority boundary; this feature adds no permission bypass.
   no new domain event or persisted schema is introduced.
 - `gh_issue_comments` returns the discussion as JSON, requires `repo` and positive
   `issue`, and accepts `attempt` for fresh reads. `gh_issue_view` also accepts
-  `attempt` while preserving its existing default key and body-only result.
+  `attempt`; #2364 upgrades all view keys and returns structured issue JSON.
 
 ## Acceptance
 
