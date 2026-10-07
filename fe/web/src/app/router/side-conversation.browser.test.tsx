@@ -43,7 +43,7 @@ function setup(outcome?: 'interrupted' | 'failed', longText?: string, live?: { t
     }
     const cardId = request.path.split('/')[3];
     if (request.path.endsWith('/planner/run')) body = { card_id: cardId, worker_session_id: `session-${cardId}`,
-      phase: cardId === 'parent' && live !== undefined ? 'issuing_turn' : 'idle', model: null, reasoning_effort: null, blocked_reason: null, running_turn: null };
+      phase: cardId === 'parent' && live !== undefined ? 'issuing_turn' : 'idle', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, running_turn: null };
     if (request.path.endsWith('/harness/live')) body = cardId === 'parent' && live !== undefined
       ? { turn_id: 'live-parent', items: [{ item_id: 'streaming', text: live.text }] } : { turn_id: null, items: [] };
     if (request.path.endsWith('/planner/input')) body = { card_id: cardId, worker_session_id: `session-${cardId}` };

@@ -1,4 +1,4 @@
-import type { AgentProvider, PlannerAttachment } from '../../../../core/api/generated/wire.ts';
+import type { AgentProvider, PlannerAttachment, PlannerPermissionMode } from '../../../../core/api/generated/wire.ts';
 import type { Conversation, SideConversation, ConversationKind, ConversationState, ModelCatalog, ModelSelection, PendingQueueEntry, PlannerRunTokenUsage, PlannerQueueWriteOutcome, TranscriptEntry } from '../../../../core/domain/conversation.ts';
 import type { FailedSendOp, ReplacedTurn } from '../../../../core/domain/conversation-outbox.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
@@ -75,6 +75,10 @@ export type ConversationStore = Readonly<{
   modelCatalog: ModelCatalog | null;
   /** Store a whole new selection. Its failure lands in `actionError`, and only while its conversation is shown. */
   setModel: (selection: ModelSelection) => void;
+  /** Whether the Planner may pause a turn to ask first; `null` for a card that is not a Planner, and until the run read answers. */
+  permissionMode: PlannerPermissionMode | null;
+  /** Store a new mode for the next turn. Its failure lands in `actionError`, as a model change's does. */
+  setPermissionMode: (mode: PlannerPermissionMode) => void;
 }>;
 
 /** A server-backed list and the real Track whose rows may enter the tab registry. */

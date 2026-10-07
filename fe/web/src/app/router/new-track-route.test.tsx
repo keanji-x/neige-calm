@@ -246,7 +246,7 @@ function harness(options: {
       if (request.method === 'GET' && request.path === '/api/cards/card-planner/planner/run') {
         return Promise.resolve({ status: 200, statusText: 'OK', body: {
           card_id: 'card-planner', worker_session_id: 'runtime', phase: 'idle',
-          model: null, reasoning_effort: null, blocked_reason: null, running_turn: null,
+          model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, running_turn: null,
         } });
       }
       if (request.method === 'GET' && request.path.includes('/harness/items')) {

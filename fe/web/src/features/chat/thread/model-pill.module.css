@@ -17,9 +17,16 @@
    * holds to AA on every surface in the stylesheet.
    */
   .trigger,
-  .effort {
+  .effort,
+  .permission {
     font-size: var(--text-xs);
     color: var(--text-3);
+  }
+
+  /* Its two labels are short and fixed, so it keeps its width rather than truncating. */
+  .permission {
+    border-radius: var(--radius-pill);
+    flex: none;
   }
 
   /*
@@ -108,9 +115,15 @@
 
   /* A standing explanation, not a menu row: it must not look pressable. The
      type is `Text type="supporting"`; what is left here is the box. */
-  .note {
+  .note,
+  .permissionNote {
     max-inline-size: 9rem;
     padding: var(--space-1) var(--space-2);
     user-select: none;
+  }
+
+  /* Short and fixed, so it takes the menu's width rather than the model note's ceiling. */
+  .permissionNote {
+    max-inline-size: none;
   }
 }

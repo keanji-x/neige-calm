@@ -247,7 +247,7 @@ it.each([768, 600])('keeps both inputs inside their cards when the parent footer
     } };
     if (request.path.endsWith('/planner/run')) return { status: 200, statusText: 'OK', body: {
       card_id: 'daily-planner', worker_session_id: 'runtime', phase: wedged ? 'wedged' : 'idle', model: null,
-      reasoning_effort: null, blocked_reason: wedged ? 'The stop request timed out before the model confirmed that this turn had stopped.' : null,
+      reasoning_effort: null, permission_mode: 'never', blocked_reason: wedged ? 'The stop request timed out before the model confirmed that this turn had stopped.' : null,
       pending_queue: [], running_turn: null, final_reply: null,
     } };
     return undefined;

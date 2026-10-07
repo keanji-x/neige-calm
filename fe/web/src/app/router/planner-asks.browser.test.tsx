@@ -61,7 +61,7 @@ function setup(theme: 'light' | 'dark', ask: typeof ASK = ASK, reopen = false) {
       overlays: [{ id: 'activity', plugin_id: 'kernel', entity_kind: 'track', entity_id: TRACK.id, kind: 'activity', updated_at: 5,
         payload: { schemaVersion: 4, working: false, attention: 'input', activity_at_ms: 5, items: [reopen ? { ...ask, action: { kind: 'reopen_track', closed_at: 42 }, questions: [{ title: 'Continue this closed track?', options: ['Reopen and continue', 'Keep closed'] }] } : ask], cards: [] } }] };
     if (request.path.endsWith('/planner/run')) body = { card_id: PLANNER.id, worker_session_id: 'session', phase: 'idle',
-      model: null, reasoning_effort: null, blocked_reason: null, running_turn: null, attachments_supported: true };
+      model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, running_turn: null, attachments_supported: true };
     if (request.path.endsWith('/harness/live')) body = { turn_id: null, items: [] };
     if (request.path.includes('/harness/items')) body = [{ id: 1, worker_session_id: 'session', card_id: PLANNER.id,
       track_id: TRACK.id, thread_id: 'thread', turn_id: null, turn_error_text: null, item_uuid: null, item_type: 'agentMessage',

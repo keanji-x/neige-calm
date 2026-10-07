@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { OpenAsk } from '../../../../core/domain/ask.ts';
+import { HOLD_ASK_GONE_TEXT, type OpenAsk } from '../../../../core/domain/ask.ts';
 import { ApiError } from '../../../../core/domain/failure-class.ts';
 import { PlannerAskDrawer, type AnswerAsk } from './asks.tsx';
 
@@ -11,6 +11,10 @@ const TWO: OpenAsk = { askId: 7, delivery: 'wake', questions: [
   { title: 'Which branch?', options: ['main', 'release'] }, { title: 'Notes?', options: [] },
 ] };
 const SINGLE: OpenAsk = { askId: 9, delivery: 'wake', questions: [{ title: 'Merge PR #12?', options: ['Merge', 'Hold'] }] };
+/* A paused turn's request (#2348): one question, options only. */
+const HOLD: OpenAsk = { askId: 12, delivery: 'hold', questions: [
+  { title: 'Run `cargo test` (cwd /work)?', options: ['Allow', 'Allow for this session', 'Deny'] },
+] };
 const http = (status: number, message: string) => new ApiError({ kind: 'http', status, code: 'error', message });
 function setup(asks: readonly OpenAsk[], onAnswer: AnswerAsk = vi.fn(() => Promise.resolve())) {
   const view = render(<PlannerAskDrawer asks={asks} onAnswer={onAnswer} />);
@@ -142,4 +146,44 @@ it('offers only the two explicit choices for a lifecycle question, with no ambig
   expect(screen.queryByRole('textbox', { name: 'Continue this closed track?' })).toBeNull();
   expect(screen.getByRole('button', { name: 'Reopen and continue' })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Keep closed' })).toBeTruthy();
+});
+
+describe('PlannerAskDrawer with a paused turn (#2348)', () => {
+  it('says the turn is paused and offers its options only, with no field for words of one\'s own', () => {
+    setup([HOLD]);
+    const ask = screen.getByRole('group', { name: 'The Planner asks' });
+    expect(ask.textContent).toContain('Turn paused, waiting for your approval');
+    expect(ask.querySelector('[data-nc-ask-paused]')?.textContent).toBe('Turn paused, waiting for your approval');
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Your answer' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Answer' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /dismiss/i })).toBeNull();
+    /* An approval is not pre-approved: no option is marked until the reader picks one. */
+    for (const name of ['Allow', 'Allow for this session', 'Deny']) {
+      expect(screen.getByRole('button', { name }).getAttribute('aria-pressed')).toBe('false');
+    }
+  });
+  it('sends the clicked option by its index', async () => {
+    const { onAnswer } = setup([HOLD]);
+    await userEvent.click(screen.getByRole('button', { name: 'Deny' }));
+    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(12, [{ option: 2 }]));
+    expect(screen.queryByRole('group', { name: 'The Planner asks' })).toBeNull();
+  });
+  it('says a request that went away is no longer pending, and keeps the row until the overlay drops it', async () => {
+    const { rerender, onAnswer } = setup([HOLD], vi.fn<AnswerAsk>(() => Promise.reject(http(409, 'its paused request is gone'))));
+    await userEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    expect(await screen.findByText(HOLD_ASK_GONE_TEXT)).toBeTruthy();
+    expect(screen.queryByText('its paused request is gone')).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Run `cargo test` (cwd /work)?' })).toBeTruthy();
+    rerender(<PlannerAskDrawer asks={[]} onAnswer={onAnswer} />);
+    expect(screen.queryByRole('group', { name: 'The Planner asks' })).toBeNull();
+  });
+  it('leaves a wake ask beside it as it was', () => {
+    setup([HOLD, SINGLE]);
+    expect(screen.queryByRole('textbox')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '1 more ask' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Merge PR #12?' }));
+    expect(screen.getByRole('textbox', { name: 'Merge PR #12?' })).toBeTruthy();
+    expect(screen.queryByText('Turn paused, waiting for your approval')).toBeNull();
+  });
 });

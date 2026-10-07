@@ -64,13 +64,16 @@ import {
   type PlannerQueueWriteOutcome,
 } from '../../../../core/domain/conversation.ts';
 import { harnessLiveOperation } from '../../../../core/domain/conversation-live.ts';
+import { setPlannerPermissionModeOperation } from '../../../../core/domain/planner-permission-mode.ts';
 import { restartPlannerOperation } from '../../../../core/domain/conversation-restart.ts';
 import {
   ApiError, classifyFailure, DELETE_FAILURES, DELETE_TEXT, refusalText, writeFailureOf, writeFailureText,
 } from '../../../../core/domain/failure-class.ts';
 import { useState } from '../../ui/state/public.ts';
 import type { ServerVersionInfo } from './public.tsx';
-import type { AskAnswer, HarnessItem, UploadAttachmentResponse } from '../../../../core/api/generated/wire.ts';
+import type {
+  AskAnswer, HarnessItem, PlannerPermissionMode, SetPlannerPermissionModeResponse, UploadAttachmentResponse,
+} from '../../../../core/api/generated/wire.ts';
 import { cancelThenInvalidate } from '../events/query-refresh.ts';
 
 /** A failed capability preflight guarantees no Area POST was submitted. */
@@ -199,25 +202,35 @@ export function modelCatalogQueryOptions(transport: ApiTransportPort, scope: Mod
   };
 }
 
-export function usePlannerMutations(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
-  const client = useQueryClient();
-  /* One writer per mounted card, held across renders: a fresh writer each render would have nothing
-   * in flight to serialise against. Re-created when the card changes. */
-  const setModelRef = useRef<{ cardId: string; write: (selection: ModelSelection) => Promise<ModelSelectionResult> } | null>(null);
-  if (setModelRef.current === null || setModelRef.current.cardId !== cardId) {
-    setModelRef.current = {
+/**
+ * One serialised settings writer per mounted card, held across renders: a fresh writer each render would have nothing
+ * in flight to serialise against. Re-created when the card changes. Each call is admitted at the press.
+ */
+function useCardSettingWriter<A, R>(
+  transport: ApiTransportPort, cardId: string, operation: (cardId: string, value: A) => ApiOperation<R>,
+  unauthorized: UnauthorizedChannel,
+): (value: A) => Promise<R> {
+  const writer = useRef<{ cardId: string; write: (value: A) => Promise<R> } | null>(null);
+  if (writer.current === null || writer.current.cardId !== cardId) {
+    const serial = createSerialWriter((intent: { value: A; transport: ApiTransportPort }) =>
+      runOperation(intent.transport, operation(cardId, intent.value), unauthorized));
+    writer.current = {
       cardId,
-      write: (() => {
-        const serial = createSerialWriter((intent: { selection: ModelSelection; transport: ApiTransportPort }) =>
-          runOperation(intent.transport, setPlannerModelOperation(cardId, intent.selection), unauthorized));
-        return (selection: ModelSelection) => {
-          try { return serial({ selection, transport: admitTransport(transport) }); }
-          catch (error) { return Promise.reject(error instanceof Error ? error : new Error('连接尚未恢复')); }
-        };
-      })(),
+      write: (value: A) => {
+        try { return serial({ value, transport: admitTransport(transport) }); }
+        catch (error) { return Promise.reject(error instanceof Error ? error : new Error('连接尚未恢复')); }
+      },
     };
   }
-  const setModelWrite = setModelRef.current.write;
+  return writer.current.write;
+}
+
+export function usePlannerMutations(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
+  const client = useQueryClient();
+  const setModelWrite = useCardSettingWriter<ModelSelection, ModelSelectionResult>(
+    transport, cardId, setPlannerModelOperation, unauthorized);
+  const setPermissionModeWrite = useCardSettingWriter<PlannerPermissionMode, SetPlannerPermissionModeResponse>(
+    transport, cardId, setPlannerPermissionModeOperation, unauthorized);
   const transcriptKey = queryKeys.harnessItems(cardId);
   const refreshTranscript = () => client.invalidateQueries({ queryKey: transcriptKey });
   const refreshAfter = <T,>(result: T): T => {
@@ -285,6 +298,9 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
             .catch(() => undefined);
           return refreshAfter(result);
         }),
+    /* The stored mode is read back from `planner-run`, as the model is. */
+    setPermissionMode: (mode: PlannerPermissionMode): Promise<SetPlannerPermissionModeResponse> =>
+      setPermissionModeWrite(mode).then(refreshAfter),
     /* No `refreshAfter`: an upload changes nothing any query holds until a send names it. Every failure, the
      * admission's included, rejects with the sentence the strip shows, read against the route's table. */
     uploadAttachment: async (readBytes: () => Promise<Uint8Array>, contentType: string) => {

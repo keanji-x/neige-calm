@@ -7,7 +7,7 @@ export function renderConversationReadFixture(initialFailure = true) {
   let historyUnavailable = false;
   let runGate: Promise<void> | null = null;
   const run = { card_id: 'daily-planner', worker_session_id: 'runtime', phase: 'turn_running',
-    model: null, reasoning_effort: null, blocked_reason: null, running_turn: null };
+    model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, running_turn: null };
   const failure: ApiTransportResponse = { status: 503, statusText: 'Unavailable',
     body: { error: 'internal', message: 'private transport diagnostic' } };
   const fixture = renderDailyFixture({ initial: '/track/daily?panel=conversations', reply: async (request) => {

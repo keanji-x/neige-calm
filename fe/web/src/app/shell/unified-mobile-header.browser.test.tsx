@@ -53,7 +53,7 @@ function setup(path: string, areaName = AREA.name, onRequest: (request: ApiReque
     if (request.path === '/api/tracks/w2') return ok({ track: { ...track, id: 'w2', title: 'Another track' }, cards: [], overlays: [], can_reopen: false, can_close: true });
     if (request.path === '/api/tracks/w1/report') return ok({ taskDiagnostics: [] });
     if (request.path.endsWith('/sources/src_2c9e0a1b')) return ok(source);
-    if (request.path.endsWith('/planner/run')) return ok({ card_id: 'planner', worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null, running_turn: null });
+    if (request.path.endsWith('/planner/run')) return ok({ card_id: 'planner', worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, running_turn: null });
     if (request.path === '/api/settings') return ok({ settings: {} });
     return ok([]);
   }

@@ -32,7 +32,7 @@ const CARD_SAME_TRACK = { ...CARD, id: 'card-other', title: 'Other chat' };
 /* `model` and `reasoning_effort` are required in the response schema; `null` in
    both is a conversation following the installation default. */
 const PLANNER_RUN_IDLE = {
-  card_id: CARD.id, worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null, running_turn: null,
+  card_id: CARD.id, worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, running_turn: null,
 };
 
 function ok(body: unknown): ApiTransportResponse {
@@ -295,7 +295,7 @@ describe('planner conversation regressions', () => {
     expect(screen.queryByText(/Pick a model to start it again/)).toBeNull();
   });
 
-  it('offers exactly the close, the resize edge, Send and the model picker, and no other control at all', async () => {
+  it('offers exactly the close, the resize edge, Send, the model picker and the approval setting, and no other control at all', async () => {
     setupWithTurns();
     await openConversationWithTurns();
     const drawer = screen.getByRole('complementary', { name: 'Planner chat' });
@@ -304,7 +304,7 @@ describe('planner conversation regressions', () => {
       .map((button) => button.getAttribute('aria-label') ?? button.textContent);
     /* No catalog answers `GET /api/models`, so the trigger reads `Model: Default` and no effort control appears. */
     expect([...names].sort()).toEqual([
-      'Attach an image', 'Close conversation', 'Model: Default', 'Send',
+      'Approvals: Never', 'Attach an image', 'Close conversation', 'Model: Default', 'Send',
     ]);
     /* One shell contract and one shared host edge serve the conversation layout. */
     expect(screen.getAllByRole('separator').map((edge) => edge.getAttribute('aria-label'))).toEqual(['Resize conversation']);
@@ -1101,7 +1101,7 @@ describe('planner conversation regressions', () => {
     'phase %s applies %s policy to markers, composer state and subsequent sends',
     async (phase, policy) => {
       const { client, requests } = setup((request) => request.path.endsWith('/planner/run')
-        ? ok({ card_id: CARD.id, worker_session_id: 'runtime', phase, model: null, reasoning_effort: null, blocked_reason: null, running_turn: null })
+        ? ok({ card_id: CARD.id, worker_session_id: 'runtime', phase, model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, running_turn: null })
         /* The wedged case also carries the kernel's stale `working` verdict: the drawer's
                    own wedge must outrank it. */
         : policy === 'stalled' && request.path === '/api/tracks/w1'
@@ -1113,7 +1113,7 @@ describe('planner conversation regressions', () => {
              would look queued for the wrong reason. */
       await act(async () => {
         client.setQueryData(queryKeys.plannerRun(CARD.id),
-          { card_id: CARD.id, worker_session_id: 'runtime', phase, model: null, reasoning_effort: null, blocked_reason: null, running_turn: null });
+          { card_id: CARD.id, worker_session_id: 'runtime', phase, model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, running_turn: null });
         await Promise.resolve();
       });
       const input = () => requests.filter((request) => request.path.endsWith('/planner/input'));
@@ -1226,7 +1226,7 @@ describe('planner conversation regressions', () => {
       if (request.path.endsWith('/planner/run')) {
         return ok({
           card_id: CARD.id, worker_session_id: 'runtime', phase: 'turn_running',
-          model: null, reasoning_effort: null, blocked_reason: null, running_turn: null,
+          model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, running_turn: null,
         });
       }
       return request.path.endsWith('/planner/interrupt') ? pendingInterrupt : undefined;
