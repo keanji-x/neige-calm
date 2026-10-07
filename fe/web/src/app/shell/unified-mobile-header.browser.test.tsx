@@ -411,6 +411,9 @@ describe('Unified mobile headers', () => {
     const router = setup('/track/w1');
     const frames: Array<{ name: string; x: number; y: number; width: number; height: number; left: number; top: number }> = [];
     const record = async (name: string, header: Element) => {
+      await expect.poll(() => header.closest('#mobile-workspace-navigation')?.getAnimations({ subtree: true })
+        .filter((animation) => animation.effect?.getTiming().iterations !== Infinity)
+        .every((animation) => animation.playState !== 'running') ?? true).toBe(true);
       await Promise.all(header.closest('[data-nc-mobile-page], [data-nc-drawer], [data-nc-workspace-page]')?.getAnimations().map((animation) => animation.finished) ?? []);
       await Promise.all(header.getAnimations({ subtree: true }).filter((animation) => animation.effect?.getTiming().iterations !== Infinity)
         .map((animation) => animation.finished.catch(() => undefined)));
@@ -496,7 +499,7 @@ describe('Unified mobile headers', () => {
     await page.getByRole('button', { name: 'Back to Report' }).click();
     await page.getByRole('button', { name: 'Source detail', exact: true }).click();
     await page.getByText('Existing source text.', { exact: true }).findElement();
-    await record('source', document.querySelector('[data-nc-drawer] header')!);
+    await record('source', (await page.getByRole('button', { name: 'Back to Report', exact: true }).findElement()).closest('header')!);
     await page.getByRole('button', { name: 'Back to Report' }).click();
     await expect.poll(() => document.querySelector('[data-nc-drawer]')).toBeNull();
     await page.getByRole('button', { name: 'Open conversation history' }).click();

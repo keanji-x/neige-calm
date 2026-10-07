@@ -32,4 +32,3 @@ export function useThreadReadingView(id: string | null): ThreadReadingView {
     },
   }), [current, id]);
 }
-

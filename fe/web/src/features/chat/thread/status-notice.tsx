@@ -105,7 +105,7 @@ export function ThreadStatusNotice({ heading, children, clock, tone = 'neutral',
           }
         }}>
         {children === undefined ? <div className={styles.normal}>{title}</div>
-          : <Collapsible isOpen={detailsExpanded} onOpenChange={onDetailsExpandedChange} chevronPosition="start" trigger={title}>{children}</Collapsible>}
+          : <Collapsible defaultIsOpen={false} isOpen={detailsExpanded} onOpenChange={onDetailsExpandedChange} chevronPosition="start" trigger={title}>{children}</Collapsible>}
       </div>
       <div className={styles.actions} role="group" aria-label="Response actions">
         <IconButton label={copyAction === null ? 'Copy response (not available yet)' : feedback === null || feedback.kind === 'pending' ? 'Copy response'

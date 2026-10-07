@@ -11,6 +11,7 @@
     inline-size: fit-content;
     justify-content: flex-start;
     font-size: calc(var(--text-md) + var(--space-px));
+    font-weight: var(--weight-medium);
     line-height: 1.4118;
     border: 0 !important;
     border-radius: var(--radius-md) !important;
