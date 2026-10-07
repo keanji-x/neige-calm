@@ -6,7 +6,7 @@ Tracking: #2343. Related: #2292, #1928.
 
 Add ACP v1 to the existing `provider` crate and run managed OpenCode Planner sessions through the existing Harness. Transport and pure event/configuration translation are reusable; OpenCode identity is a server registration using `opencode acp`.
 
-The first delivery covers explicit text input, native text/tool output, declared model/effort selection, stop, reset, deletion and controlled restart. It does not connect to an independently running OpenCode server, import arbitrary native sessions, observe another client's activity, implement steer/edit/compaction, or add an interactive permissions workflow. Native permission requests use **never**: reply with the ACP cancelled outcome. Ordinary `neige_user_ask` remains the existing MCP flow. Image input is explicitly refused before dispatch.
+The first delivery covers explicit text input, native text/tool output, declared model/effort selection, stop, reset, deletion and controlled restart. It does not connect to an independently running OpenCode server, import arbitrary native sessions, observe another client's activity, or implement steer/edit/compaction. Native permission requests follow the card's permission mode (#2348, see Permissions below). Ordinary `neige_user_ask` remains the existing MCP flow. Image input is explicitly refused before dispatch.
 
 Review tier: **L2**. Process authority, durable session identity and submission recovery change. Two independent review channels must check abstraction ownership, duplicate logic and application assumptions, and converge after any behavioral fix.
 
@@ -66,8 +66,8 @@ revoke it, as do setup failure, settlement and shutdown. The operator-registered
 native binary is trusted to hold the same card credential already delivered in
 its MCP descriptors; the advertised agent name/version remains a compatibility
 check, not cryptographic authentication of the executable. CLI commands still
-use the authoritative kernel parser and role checks; native permissions remain
-`never`.
+use the authoritative kernel parser and role checks; native permission requests
+follow the card's permission mode.
 
 Model configuration ids and opaque values come from declared ACP `configOptions`, using standardized `model` and `thought_level` categories. Model queries never ask Codex for an ACP card. The catalog is populated by the managed session's setup; before that it is explicitly unavailable and the registered agent's own settings are inherited. A null choice keeps current native session settings. Unknown choices are judged during fresh setup before prompt dispatch, without silently substituting another model or effort.
 
@@ -82,9 +82,26 @@ The adaptation belongs to the MCP transport; report and terminal handlers keep
 their authoritative result contract. Authentication and native permissions are
 unchanged.
 
+## Permissions
+
+`session/request_permission` follows the permission mode the harness resolved when it issued the
+turn (#2348); `provider::acp::approvals` owns the mapping. Under `never` every request is answered
+`cancelled` where it is read. Under `ask` each request is a `hold` ask: one question whose title is
+the tool call's kind, title and files, and whose options are the agent's option names in its order.
+The chosen option is answered `selected` with that option's id; a request withdrawn or never asked
+is answered `cancelled`. The process is the held-request connection, so its requests end when the
+turn's driver has read its last frame. A stop sends `session/cancel` and then `cancelled` for every
+pending request under the lock every answer takes: OpenCode 1.18.35 still runs a command whose
+`selected` answer arrives after its turn was cancelled. Requests during session setup are always
+answered `cancelled`.
+
+Which actions ask is the operator profile's OpenCode `permission` configuration; Neige does not
+change it per mode. OpenCode's own `always` answer approves a command prefix for the rest of the
+process, which is one turn here; it is not written to disk.
+
 ## Acceptance
 
-Use deterministic stdio peers through the production transport and real boot/REST/Harness entry points. Check negotiation, bounded/malformed frames, correlated requests, cancellation, two turns, text/tool output, MCP authentication, never permissions without Ask creation, exact-key recovery, unknown-outcome fencing, same-session restart, lifecycle cleanup and unsupported-control refusal. Tests must wait for actual production decisions, not merely sleep before asserting zero writes.
+Use deterministic stdio peers through the production transport and real boot/REST/Harness entry points. Check negotiation, bounded/malformed frames, correlated requests, cancellation, two turns, text/tool output, MCP authentication, never permissions without Ask creation, held permission answers, cancel and exit withdrawal, exact-key recovery, unknown-outcome fencing, same-session restart, lifecycle cleanup and unsupported-control refusal. Tests must wait for actual production decisions, not merely sleep before asserting zero writes.
 
 Mutation-verify the small set of unique safety assertions in an exclusive recoverable worktree, predict the complete red set, restore exact production bytes and prove green. Run focused provider/server/compatibility tests, text gates, contract gates, quick Rust preflight and frontend/browser checks. Generate real wire/OpenAPI artifacts after schema changes. Real Codex E2E is prohibited on the shared host. Live OpenCode acceptance is separate from deterministic peer coverage and must not be claimed unless run.
 

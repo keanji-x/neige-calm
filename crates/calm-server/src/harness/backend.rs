@@ -211,8 +211,8 @@ impl PlannerBackend {
     /// #1822 6′); no catalog is consulted here, and the CLI judges the model. `rewind` is applied
     /// first: Codex reverts the thread before `turn/start`, Claude cuts the session in the spawn.
     /// `permission` is the conversation's permission mode as the card holds it now (#2348), read
-    /// once by the run loop for every arm: Codex sends its approval settings with every turn, and
-    /// the Claude spawn runs under it.
+    /// once by the run loop for every arm: Codex sends its approval settings with every turn, the
+    /// Claude spawn runs under it, and ACP answers its permission requests by it.
     #[allow(clippy::too_many_arguments)]
     pub async fn turn_start(
         &self,
@@ -237,7 +237,7 @@ impl PlannerBackend {
                     return Err(mismatched_rewind());
                 }
                 session
-                    .turn_start(thread_id, items, selection, client_id, claim)
+                    .turn_start(thread_id, items, selection, permission, client_id, claim)
                     .await
             }
             Arm::Codex(daemon, approvals) => {
@@ -452,15 +452,15 @@ impl PlannerBackend {
         }
     }
 
-    /// The registry installed the harness: a Claude session may start turns from now on, and the
-    /// requests a Claude or Codex Planner's turns pause on go to `held`, the harness's channel
-    /// (#2348).
+    /// The registry installed the harness: a Claude or ACP session may start turns from now on,
+    /// and the requests a Claude, Codex or ACP Planner's turns pause on go to `held`, the
+    /// harness's channel (#2348).
     pub fn mark_installed(&self, held: &HeldRequestSender) {
         match &self.0 {
             Arm::Codex(_, approvals) => {
                 let _ = approvals.held.set(held.clone());
             }
-            Arm::Acp(session) => session.mark_installed(),
+            Arm::Acp(session) => session.mark_installed(held.clone()),
             Arm::Claude(session) => session.mark_installed(held.clone()),
         }
     }
