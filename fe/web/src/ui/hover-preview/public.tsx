@@ -54,10 +54,13 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
   }, [cancelLeave, setPhase]);
   const dismissForNavigation = useCallback(() => {
     close();
+    // Hand the destination a connected opener before it captures return focus.
+    // Ancestors repeat this handoff, leaving focus on the root trigger.
+    focusTrigger();
     // A nested portal's trigger lives inside its parent card. Propagate through
     // that trigger so navigation dismisses ancestors without closing unrelated previews.
     anchor.current?.dispatchEvent(new Event(NAVIGATION_DISMISS, { bubbles: true }));
-  }, [close]);
+  }, [close, focusTrigger]);
   useEffect(() => {
     const element = card.current;
     if (!visible || element === null) return;

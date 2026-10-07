@@ -13,9 +13,10 @@ function hover() { fireEvent.pointerEnter(screen.getByRole('button', { name: 'No
 describe('HoverPreview lifecycle', () => {
   it('dismisses nested previews together for navigation while preserving ordinary local Escape', () => {
     const navigate = vi.fn();
+    const focusedAtNavigation: Element[] = [];
     render(<HoverPreview title="Parent" trigger={activate => <button onClick={activate}>Parent</button>}>
       <HoverPreview title="Child" trigger={activate => <button onClick={activate}>Child</button>}>
-        {dismiss => <button onClick={() => { dismiss(); navigate(); }}>Open destination</button>}
+        {dismiss => <button onClick={() => { dismiss(); focusedAtNavigation.push(document.activeElement!); navigate(); }}>Open destination</button>}
       </HoverPreview>
     </HoverPreview>);
     fireEvent.click(screen.getByRole('button', { name: 'Parent' }));
@@ -24,10 +25,12 @@ describe('HoverPreview lifecycle', () => {
     expect(screen.getByRole('dialog', { name: 'Preview: Parent' })).toBeTruthy();
     expect(screen.queryByRole('dialog', { name: 'Preview: Child' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Child' }));
+    screen.getByRole('button', { name: 'Open destination' }).focus();
     fireEvent.click(screen.getByRole('button', { name: 'Open destination' }));
     advance(2000);
     expect(screen.queryAllByRole('dialog')).toHaveLength(0);
     expect(navigate).toHaveBeenCalledOnce();
+    expect(focusedAtNavigation).toEqual([screen.getByRole('button', { name: 'Parent' })]);
   });
 
   it('delays preview, opens an interactive card without redundant controls, then dismisses on leave', () => {
