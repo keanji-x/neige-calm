@@ -662,10 +662,12 @@ impl ProviderAdapter for TaskVerifyAdapter {
             ctx.repo.as_ref(),
             Path::new(&frozen.cwd),
             &frozen.gate.steps,
-            &script_path,
-            &log_path,
-            &exit_path,
-            &step_path,
+            super::gate_process::GateFiles {
+                script: &script_path,
+                log: &log_path,
+                exit: &exit_path,
+                step: &step_path,
+            },
             &gate_attempt_key(&frozen.task_id, frozen.attempt),
         )
         .await?;

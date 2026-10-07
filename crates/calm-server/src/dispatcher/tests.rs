@@ -1200,7 +1200,13 @@ fn turn_text_names_target_mismatch() {
     // A red step is the first failing one, so its text says the steps before it passed (#2387).
     const ORDER: &str = " Earlier steps passed; later steps did not run.";
     for (step, code, detail, verdict, order) in [
-        (None, None, Some("gate-timeout"), "FAILED (gate-timeout)", ""),
+        (
+            None,
+            None,
+            Some("gate-timeout"),
+            "FAILED (gate-timeout)",
+            "",
+        ),
         (None, None, Some("gate-infra"), "FAILED (gate-infra)", ""),
         (
             Some("test"),
@@ -1229,7 +1235,9 @@ fn turn_text_names_target_mismatch() {
         (None, Some(75), None, "FAILED (exit 75)", ""),
     ] {
         let plain = text(&attributed(step, code, detail));
-        let (head, rest) = tail.split_once(").").expect("tail starts with the gate run");
+        let (head, rest) = tail
+            .split_once(").")
+            .expect("tail starts with the gate run");
         assert_eq!(
             plain,
             format!("Task impl-parser gate {verdict} {head}).{order}{rest}")

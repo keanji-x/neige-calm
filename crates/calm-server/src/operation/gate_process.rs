@@ -247,14 +247,19 @@ pub(crate) fn timeout_verdict(
     }
 }
 
+/// The files one gate attempt's wrapper is written to and writes.
+pub(crate) struct GateFiles<'a> {
+    pub script: &'a Path,
+    pub log: &'a Path,
+    pub exit: &'a Path,
+    pub step: &'a Path,
+}
+
 pub(crate) async fn spawn_held(
     repo: &dyn crate::db::RouteRepo,
     cwd: &Path,
     steps: &[GateStep],
-    script_path: &Path,
-    log_path: &Path,
-    exit_path: &Path,
-    step_path: &Path,
+    files: GateFiles<'_>,
     op_marker: &str,
 ) -> Result<tokio::process::Child> {
     if !cwd.is_dir() {
@@ -263,19 +268,19 @@ pub(crate) async fn spawn_held(
             cwd.display()
         )));
     }
-    tokio::fs::write(script_path, render_gate_wrapper(steps)).await?;
-    let log_file = std::fs::File::create(log_path)?;
+    tokio::fs::write(files.script, render_gate_wrapper(steps)).await?;
+    let log_file = std::fs::File::create(files.log)?;
     let log_file_err = log_file.try_clone()?;
     let mut cmd = tokio::process::Command::new("/bin/sh");
-    cmd.arg(script_path)
+    cmd.arg(files.script)
         .current_dir(cwd)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::from(log_file))
         .stderr(std::process::Stdio::from(log_file_err))
         // Start from an EMPTY environment: no `NEIGE_MCP_SOCKET`/`NEIGE_MCP_TOKEN` (the gate cannot write kernel state) and no incidental kernel secrets.
         .env_clear()
-        .env("NEIGE_GATE_EXIT_PATH", exit_path)
-        .env("NEIGE_GATE_STEP_PATH", step_path)
+        .env("NEIGE_GATE_EXIT_PATH", files.exit)
+        .env("NEIGE_GATE_STEP_PATH", files.step)
         // Authenticates this gate's descendants to the recovery group sweep. UNLIKE `NEIGE_GATE_EXIT_PATH`
         // the wrapper does NOT `unset` it, so every descendant inherits it; a process that later recycles
         // the numeric pgid does not carry it. See `stop_group` / `group_members_with_env_marker`.

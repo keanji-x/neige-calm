@@ -5,11 +5,7 @@ use super::*;
 const LOG_TAIL_BYTES: usize = 8 * 1024;
 
 fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "gate-{name}-{}-{}",
-        std::process::id(),
-        now_ms()
-    ));
+    let dir = std::env::temp_dir().join(format!("gate-{name}-{}-{}", std::process::id(), now_ms()));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -45,7 +41,7 @@ async fn run_wrapper(dir: &Path, evidence: &GateEvidence) -> i32 {
         .stdout(std::process::Stdio::from(log_file.try_clone().unwrap()))
         .stderr(std::process::Stdio::from(log_file))
         .env("NEIGE_GATE_EXIT_PATH", dir.join("wrapper.exit"))
-        .env("NEIGE_GATE_STEP_PATH", step_path(&evidence))
+        .env("NEIGE_GATE_STEP_PATH", step_path(evidence))
         .spawn()
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
@@ -135,7 +131,11 @@ async fn a_red_step_with_long_output_keeps_its_attribution() {
     assert_eq!(verdict.status_detail.as_deref(), Some("gate-red"));
     assert_eq!(verdict.failing_step.as_deref(), Some("frontend contracts"));
     assert_eq!(verdict.exit_code, Some(3));
-    assert!(verdict.log_tail.ends_with("5 failed\n"), "{}", verdict.log_tail);
+    assert!(
+        verdict.log_tail.ends_with("5 failed\n"),
+        "{}",
+        verdict.log_tail
+    );
     assert!(!verdict.log_tail.contains('\u{1b}'), "no escape sequences");
     std::fs::remove_dir_all(&dir).ok();
 }
