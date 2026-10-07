@@ -435,8 +435,6 @@ async fn a_track_runs_one_worker_at_a_time() {
     assert_an_independent_codex_task_waits(fx).await;
 }
 
-/// #2139 R2: a running terminal task holds the checkout like a codex worker: an independent ready
-/// codex `b` is not claimed, and the report read says why.
 /// #2404: a gated worker is shown its gate steps, in run order, to run before it reports; an
 /// ungated worker is not.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -472,7 +470,7 @@ async fn a_gated_worker_is_shown_its_gate_steps_in_order() {
         .unwrap_or_else(|| panic!("{prompt}"));
     assert!(format < focused, "{prompt}");
     assert!(
-        prompt.contains("Before neige_task_done, run every step yourself"),
+        prompt.contains("Before you report done, run every step yourself"),
         "{prompt}"
     );
 }
@@ -485,6 +483,8 @@ async fn worker_prompt(fx: &Fx, started: &Started) -> String {
         .unwrap()
 }
 
+/// #2139 R2: a running terminal task holds the checkout like a codex worker: an independent ready
+/// codex `b` is not claimed, and the report read says why.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_running_terminal_task_holds_the_checkout() {
     let w = world().await;

@@ -21,7 +21,7 @@ use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::McpServer;
 use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
 use crate::model::{Card, CardRole, new_id, now_ms};
-use crate::operation::task_prompt::render_task_worker_prompt;
+use crate::operation::task_prompt::render_task_worker_prompt_tx;
 use crate::operation::worker_cleanup::{WorkerCleanupOutcome, compensate_worker_rows};
 use crate::operation::workspace_lease::{
     ReleaseDelivery, acquire_workspace_lease_tx, prepare_worker_lease_tx,
@@ -787,18 +787,15 @@ impl ProviderAdapter for CodexWorkerAdapter {
         .await?;
         let cwd = plan.path.to_string_lossy().to_string();
         let env = build_codex_env(self.repo.as_ref(), self.codex.as_ref(), &card_id).await?;
-        let gate_steps =
-            super::task_verify_adapter::declared_gate_steps_tx(tx, &payload.idempotency_key)
-                .await?;
-        let rendered_prompt = render_task_worker_prompt(
+        let rendered_prompt = render_task_worker_prompt_tx(
+            tx,
             &payload.idempotency_key,
             &payload.goal,
             &payload.context,
             payload.acceptance_criteria.as_deref(),
-            plan.reader.as_ref(),
-            plan.catch_up.as_ref(),
-            gate_steps.as_deref(),
-        );
+            &plan,
+        )
+        .await?;
         let scope = card_scope(
             self.repo.as_ref(),
             CardId::from(card_id.clone()),

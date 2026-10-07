@@ -2,14 +2,38 @@
 
 use serde_json::Value;
 
-use super::task_verify_adapter::GateStep;
-use super::workspace_lease::worker::{CatchUpFacts, ReaderFacts};
+use super::Tx;
+use super::task_verify_adapter::{GateStep, declared_gate_steps_tx};
+use super::workspace_lease::worker::{CatchUpFacts, ReaderFacts, WorkerLeasePlan};
+use crate::error::Result;
+
+/// The prompt both worker adapters freeze in their prepare transaction: the attempt's lease plan
+/// and its declared gate are read here, from the `tasks` row, never from the op payload.
+pub(crate) async fn render_task_worker_prompt_tx(
+    tx: &mut Tx<'_>,
+    attempt_id: &str,
+    goal: &str,
+    context: &Value,
+    acceptance: Option<&str>,
+    plan: &WorkerLeasePlan,
+) -> Result<String> {
+    let gate = declared_gate_steps_tx(tx, attempt_id).await?;
+    Ok(render_task_worker_prompt(
+        attempt_id,
+        goal,
+        context,
+        acceptance,
+        plan.reader.as_ref(),
+        plan.catch_up.as_ref(),
+        gate.as_deref(),
+    ))
+}
 
 /// The task prompt both worker adapters render. A read-only task (#1917) is told it shares the
 /// checkout, which nothing enforces, and is given its repo, checkout, head and base (#1933). A
 /// catch-up (#2058 D7) is told where it starts and what to replay. A gated task is shown its gate
 /// steps to run before it reports (#2404).
-pub(crate) fn render_task_worker_prompt(
+fn render_task_worker_prompt(
     attempt_id: &str,
     goal: &str,
     context: &Value,
@@ -32,10 +56,14 @@ pub(crate) fn render_task_worker_prompt(
 fn render_gate_precheck(steps: &[GateStep]) -> String {
     let mut out = String::from(
         "\n\nThis task has a gate. After you report done, the kernel runs these steps in order \
-         from the checkout root, each under /bin/sh, and the first failing step fails the task. \
-         Before neige_task_done, run every step yourself, in order, from the checkout root, and \
-         fix what fails; report done only when all of them pass. If a step fails for a reason your \
-         change does not cause, report the failure with the step name and its output instead.",
+         from the checkout root, each under /bin/sh with no sandbox, on the changes it commits; \
+         the first failing step fails the task. Before you report done, run every step yourself, \
+         in order, from the checkout root. When a step fails because of the change, fix it; report \
+         done only when no step fails that way. When a step cannot run here (sandbox, permissions, \
+         a missing service or tool, or a check that needs the kernel's commit), still report done \
+         and name the step and its error in your result: the kernel's run decides. When a step \
+         fails for a reason the change does not cause, report the failure with the step name and \
+         its output.",
     );
     for (index, step) in steps.iter().enumerate() {
         out.push_str(&format!(
@@ -156,7 +184,7 @@ mod tests {
             .expect(&out);
         let attempt = out.find("\n\nTask attempt_id: t:build").expect(&out);
         assert!(fmt < test && test < attempt, "{out}");
-        assert!(out.contains("report done only when all of them pass"), "{out}");
+        assert!(out.contains("report done only when no step fails that way"), "{out}");
     }
 
     #[test]
