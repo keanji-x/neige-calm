@@ -147,6 +147,6 @@ it.each([
   }
   await expect.poll(() => requests.filter(request => request.path.endsWith('/answer')).length).toBe(1);
   const answer = requests.find(request => request.path.endsWith('/answer'));
-  expect(answer?.body).toEqual({ answers: largeAsk(count, long).questions.map(question => question.options[0]) });
+  expect(answer?.body).toEqual({ answers: largeAsk(count, long).questions.map(() => ({ option: 0 })) });
   await expect.element(ask).not.toBeInTheDocument();
 });
