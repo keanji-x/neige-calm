@@ -1,4 +1,4 @@
-//! Ending a `running` Track worker's execution (#1785 S1): the liveness deadline, a codex worker
+//! Ending a `running` Track worker's execution (#1785 S1): the liveness windows, a codex worker
 //! whose turn ended (normally or in an error) without a task report, and the Planner's cancel
 //! all fail or cancel the row and write the same cleanup marker, which the reconcile sweep turns
 //! into a worker reap.
@@ -9,8 +9,10 @@ use std::time::Duration;
 use dashmap::DashMap;
 use provider::worker::{CodexDaemonProbe, CodexLivenessFacts, ThreadStatusLite, TurnStatusLite};
 
-use super::{InflightGuard, Scheduler, duration_ms_i64, is_race_lost, race_lost_err};
-use crate::db::sqlite::{TaskReporter, task_fail_from_worker_tx};
+use super::{
+    InflightGuard, LivenessExpiry, Scheduler, duration_ms_i64, is_race_lost, race_lost_err,
+};
+use crate::db::sqlite::{TaskReporter, task_fail_from_worker_tx, task_running_liveness_tx};
 use crate::db::write_with_actor_events_typed;
 use crate::error::Result;
 use crate::event::{Event, EventScope};
@@ -46,6 +48,16 @@ impl WorkerCleanupReason {
             Self::PlannerCanceled => "planner_canceled",
         }
     }
+}
+
+/// Fixtures only: parks a liveness fail after the sweep judged the worker expired and before the
+/// fail tx re-reads its facts, so a test can land progress in between.
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct LivenessFailTestHook {
+    pub judged: Arc<tokio::sync::Notify>,
+    pub resume: Arc<tokio::sync::Notify>,
 }
 
 /// Wall clock in Unix ms; injected so a fixture can pin `now` against recorded thread facts.
@@ -116,46 +128,44 @@ fn turn_ended_past_grace(
 
 /// How a running worker's execution ends; each variant fixes the row detail and the event text.
 pub(super) enum RunningWorkerFailure {
-    LivenessTimeout,
+    /// The sweep saw this window outlived; the fail tx re-judges it on fresh facts.
+    LivenessTimeout(LivenessExpiry),
     /// The live read ran against this card's thread, so the fail CAS is pinned to it.
-    TurnEnded {
-        card_id: String,
-        end: TurnEnd,
-    },
+    TurnEnded { card_id: String, end: TurnEnd },
 }
 
 impl RunningWorkerFailure {
     const fn detail(&self) -> &'static str {
         match self {
-            Self::LivenessTimeout => "worker-timeout",
+            Self::LivenessTimeout(_) => "worker-timeout",
             Self::TurnEnded { .. } => WORKER_TURN_ENDED,
         }
     }
 
-    const fn reason(&self) -> &'static str {
+    fn reason(&self) -> String {
         match self {
-            Self::LivenessTimeout => "worker exceeded the running liveness deadline",
+            Self::LivenessTimeout(expiry) => expiry.reason(),
             Self::TurnEnded {
                 end: TurnEnd::Ended,
                 ..
-            } => "worker turn ended without a task report",
+            } => "worker turn ended without a task report".to_string(),
             Self::TurnEnded {
                 end: TurnEnd::Failed,
                 ..
-            } => "worker turn ended in an error without a task report",
+            } => "worker turn ended in an error without a task report".to_string(),
         }
     }
 
     const fn cleanup_reason(&self) -> WorkerCleanupReason {
         match self {
-            Self::LivenessTimeout => WorkerCleanupReason::LivenessTimeout,
+            Self::LivenessTimeout(_) => WorkerCleanupReason::LivenessTimeout,
             Self::TurnEnded { .. } => WorkerCleanupReason::TurnEnded,
         }
     }
 
     fn guard_card_id(&self) -> Option<&str> {
         match self {
-            Self::LivenessTimeout => None,
+            Self::LivenessTimeout(_) => None,
             Self::TurnEnded { card_id, .. } => Some(card_id),
         }
     }
@@ -285,6 +295,18 @@ impl Scheduler {
             Some(card_id) => Some(card_id.to_string()),
             None => self.worker_card_id_for_task(&task).await,
         };
+        #[cfg(feature = "fixtures")]
+        if matches!(failure, RunningWorkerFailure::LivenessTimeout(_)) {
+            let hook = self
+                .liveness_fail_test_hook
+                .lock()
+                .expect("liveness fail hook lock")
+                .take();
+            if let Some(hook) = hook {
+                hook.judged.notify_one();
+                hook.resume.notified().await;
+            }
+        }
 
         match self
             .fail_task_liveness_timeout(&task, &track, &failure, cleanup_card_id.as_deref())
@@ -305,7 +327,9 @@ impl Scheduler {
     }
 
     /// Kernel `dispatched/running → failed(<failure detail>)` plus `task.failed` and the cleanup
-    /// marker in one tx. `Ok(false)` = another writer moved the row first.
+    /// marker in one tx. `Ok(false)` = another writer moved the row first, or, for a liveness
+    /// timeout, the worker's facts in this tx no longer show it expired (progress landed after
+    /// the sweep read them).
     pub(super) async fn fail_task_liveness_timeout(
         &self,
         task: &Task,
@@ -320,7 +344,9 @@ impl Scheduler {
         let task_id = task.id.clone();
         let track_id = track.id.clone();
         let detail = failure.detail();
-        let reason = failure.reason().to_string();
+        let reason = failure.reason();
+        let liveness_recheck = matches!(failure, RunningWorkerFailure::LivenessTimeout(_))
+            .then(|| (self.worker_liveness, self.liveness_floor()));
         let cleanup_reason = failure.cleanup_reason();
         let guard_card_id = failure.guard_card_id().map(str::to_string);
         let timeout_cleanup_card_id = timeout_cleanup_card_id.map(str::to_string);
@@ -332,6 +358,20 @@ impl Scheduler {
             move |tx| {
                 Box::pin(async move {
                     let now = now_ms();
+                    let reason = if let Some((liveness, floor_ms)) = liveness_recheck {
+                        let facts = task_running_liveness_tx(
+                            tx,
+                            &task_id,
+                            timeout_cleanup_card_id.as_deref(),
+                        )
+                        .await?;
+                        match facts.and_then(|facts| liveness.expiry(&facts, now, floor_ms)) {
+                            Some(expiry) => expiry.reason(),
+                            None => return Err(race_lost_err()),
+                        }
+                    } else {
+                        reason
+                    };
                     let reporter = match guard_card_id.as_deref() {
                         Some(card_id) => TaskReporter::Card {
                             card_id,
@@ -392,6 +432,15 @@ impl Scheduler {
             Err(e) if is_race_lost(&e) => Ok(false),
             Err(e) => Err(e),
         }
+    }
+
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub fn set_liveness_fail_test_hook(&self, hook: LivenessFailTestHook) {
+        *self
+            .liveness_fail_test_hook
+            .lock()
+            .expect("liveness fail hook lock") = Some(hook);
     }
 
     /// Reap now the workers whose cleanup marker a committed cancel just wrote; the reconcile

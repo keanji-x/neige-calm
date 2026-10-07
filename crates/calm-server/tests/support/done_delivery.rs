@@ -153,6 +153,7 @@ pub async fn wire(
         planner_recovery_locks.clone(),
         1,
         gate_logs.to_path_buf(),
+        calm_server::scheduler::WorkerLiveness::DEFAULT,
     );
     Wiring {
         runtime,

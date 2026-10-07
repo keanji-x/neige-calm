@@ -45,8 +45,8 @@ use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes::idempotency_key::stable_payload_hash;
 use calm_server::scheduler::{
     ClaimFenceTestHook, PostClaimDriveTestHook, Scheduler, TerminalTaskHook,
-    WORKER_IDLE_PROBE_TIMEOUT, WORKER_IDLE_TURN_GRACE, WorkerIdleWake, build_child_track_payload,
-    build_worker_payload,
+    WORKER_IDLE_PROBE_TIMEOUT, WORKER_IDLE_TURN_GRACE, WorkerIdleWake, WorkerLiveness,
+    build_child_track_payload, build_worker_payload,
 };
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -320,16 +320,16 @@ fn build_scheduler_with_semaphore(
     (runtime, scheduler)
 }
 
-fn build_scheduler_with_timeouts(
+fn build_scheduler_with_liveness(
     boot: &Boot,
     adapters: Vec<Arc<dyn ProviderAdapter>>,
-    task_run_timeout: std::time::Duration,
+    worker_liveness: WorkerLiveness,
 ) -> (Arc<OperationRuntime>, Arc<Scheduler>) {
-    let (runtime, scheduler) = build_scheduler_unbooted_with_timeouts(
+    let (runtime, scheduler) = build_scheduler_unbooted_with(
         boot,
         adapters,
         Arc::new(tokio::sync::Semaphore::new(8)),
-        Some(task_run_timeout),
+        worker_liveness,
         production_idle(boot),
     );
     // These tests model the post-boot steady state so backstop sweeps run for real.
@@ -344,7 +344,13 @@ fn build_scheduler_unbooted(
     adapters: Vec<Arc<dyn ProviderAdapter>>,
     semaphore: Arc<tokio::sync::Semaphore>,
 ) -> (Arc<OperationRuntime>, Arc<Scheduler>) {
-    build_scheduler_unbooted_with_timeouts(boot, adapters, semaphore, None, production_idle(boot))
+    build_scheduler_unbooted_with(
+        boot,
+        adapters,
+        semaphore,
+        WorkerLiveness::DEFAULT,
+        production_idle(boot),
+    )
 }
 
 /// The production idle recheck over the boot's fake-running shared codex app-server.
@@ -361,11 +367,11 @@ fn build_scheduler_with_idle(
     boot: &Boot,
     worker_idle: WorkerIdleWake,
 ) -> (Arc<OperationRuntime>, Arc<Scheduler>) {
-    let (runtime, scheduler) = build_scheduler_unbooted_with_timeouts(
+    let (runtime, scheduler) = build_scheduler_unbooted_with(
         boot,
         vec![],
         Arc::new(tokio::sync::Semaphore::new(8)),
-        None,
+        WorkerLiveness::DEFAULT,
         worker_idle,
     );
     scheduler.mark_boot_sweep_complete();
@@ -373,11 +379,11 @@ fn build_scheduler_with_idle(
     (runtime, scheduler)
 }
 
-fn build_scheduler_unbooted_with_timeouts(
+fn build_scheduler_unbooted_with(
     boot: &Boot,
     adapters: Vec<Arc<dyn ProviderAdapter>>,
     semaphore: Arc<tokio::sync::Semaphore>,
-    task_run_timeout: Option<std::time::Duration>,
+    worker_liveness: WorkerLiveness,
     worker_idle: WorkerIdleWake,
 ) -> (Arc<OperationRuntime>, Arc<Scheduler>) {
     let operation_repo = Arc::new(SqlxOperationRepo::new(
@@ -408,30 +414,17 @@ fn build_scheduler_unbooted_with_timeouts(
         completion,
         spawn_ctx,
     ));
-    let scheduler = if let Some(task_run_timeout) = task_run_timeout {
-        Scheduler::new_with_timeouts_for_test(
-            boot.repo.clone(),
-            boot.events.clone(),
-            boot.write.clone(),
-            Arc::downgrade(&runtime),
-            calm_server::per_card_lock::new_per_card_locks(),
-            semaphore,
-            std::env::temp_dir().join("neige-test-gate-logs"),
-            task_run_timeout,
-            worker_idle,
-        )
-    } else {
-        Scheduler::new(
-            boot.repo.clone(),
-            boot.events.clone(),
-            boot.write.clone(),
-            Arc::downgrade(&runtime),
-            calm_server::per_card_lock::new_per_card_locks(),
-            semaphore,
-            std::env::temp_dir().join("neige-test-gate-logs"),
-            worker_idle,
-        )
-    };
+    let scheduler = Scheduler::new(
+        boot.repo.clone(),
+        boot.events.clone(),
+        boot.write.clone(),
+        Arc::downgrade(&runtime),
+        calm_server::per_card_lock::new_per_card_locks(),
+        semaphore,
+        std::env::temp_dir().join("neige-test-gate-logs"),
+        worker_liveness,
+        worker_idle,
+    );
     (runtime, scheduler)
 }
 
@@ -2161,7 +2154,7 @@ async fn sweep_running_codex_past_liveness_deadline_fails_and_releases_lease_row
     assert_eq!(failed.len(), 1);
     assert_eq!(
         failed[0].1["reason"],
-        json!("worker exceeded the running liveness deadline")
+        json!("worker ran past its running cap")
     );
 }
 
@@ -2440,8 +2433,14 @@ async fn sweep_stamps_null_running_codex_liveness_deadline_before_timing_out() {
     terminal_running.status = TaskStatus::Running;
     seed_task(&boot, terminal_running).await;
 
-    let (_runtime, scheduler) =
-        build_scheduler_with_timeouts(&boot, vec![], std::time::Duration::from_millis(70));
+    let (_runtime, scheduler) = build_scheduler_with_liveness(
+        &boot,
+        vec![],
+        WorkerLiveness {
+            idle: WorkerLiveness::DEFAULT.idle,
+            cap: Duration::from_millis(70),
+        },
+    );
 
     let before = now_ms();
     scheduler.sweep_all().await;
@@ -7337,6 +7336,9 @@ mod long_task_reliability;
 #[path = "cases/scheduler_running_worker.rs"]
 mod scheduler_running_worker;
 
+#[path = "cases/scheduler_worker_liveness.rs"]
+mod scheduler_worker_liveness;
+
 #[path = "cases/scheduler_runs_canceled.rs"]
 mod scheduler_runs_canceled;
 
@@ -7490,8 +7492,14 @@ async fn seed_child_task(boot: &Boot, child_id: &str, key: &str, status: TaskSta
 #[tokio::test]
 async fn acceptance_11_sub_track_parent_survives_two_timeout_sweeps_without_deadline() {
     let boot = boot().await;
-    let (_runtime, scheduler) =
-        build_scheduler_with_timeouts(&boot, vec![], Duration::from_millis(1));
+    let (_runtime, scheduler) = build_scheduler_with_liveness(
+        &boot,
+        vec![],
+        WorkerLiveness {
+            idle: Duration::from_millis(1),
+            cap: Duration::from_millis(1),
+        },
+    );
     let (task_id, _) = seed_child_parent(&boot, "long-child", false, None).await;
     for _ in 0..2 {
         tokio::time::sleep(Duration::from_millis(3)).await;

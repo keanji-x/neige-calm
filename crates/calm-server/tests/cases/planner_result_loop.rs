@@ -73,6 +73,7 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
         calm_server::per_card_lock::new_per_card_locks(),
         Arc::new(tokio::sync::Semaphore::new(1)),
         boot.ctx.gate_logs_dir.clone(),
+        calm_server::scheduler::WorkerLiveness::DEFAULT,
         calm_server::scheduler::WorkerIdleWake::new(
             calm_server::shared_codex_appserver::SharedCodexAppServer::new_stub(boot.repo.clone()),
             calm_server::scheduler::WORKER_IDLE_TURN_GRACE,

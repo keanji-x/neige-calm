@@ -298,40 +298,6 @@ fn reconcile_secs_from_env_fallback_paths() {
 }
 
 #[test]
-fn task_liveness_timeout_env_fallback_paths() {
-    let saved_run = std::env::var("NEIGE_TASK_RUN_TIMEOUT_SECS").ok();
-    fn set(var: &str, v: &str) {
-        // SAFETY: single-threaded test; no concurrent env reader.
-        unsafe { std::env::set_var(var, v) };
-    }
-    fn remove(var: &str) {
-        // SAFETY: see `set`.
-        unsafe { std::env::remove_var(var) };
-    }
-
-    remove("NEIGE_TASK_RUN_TIMEOUT_SECS");
-    assert_eq!(
-        Scheduler::task_run_timeout_from_env(),
-        Duration::from_secs(DEFAULT_TASK_RUN_TIMEOUT_SECS)
-    );
-    set("NEIGE_TASK_RUN_TIMEOUT_SECS", "47");
-    assert_eq!(
-        Scheduler::task_run_timeout_from_env(),
-        Duration::from_secs(47)
-    );
-    set("NEIGE_TASK_RUN_TIMEOUT_SECS", "-1");
-    assert_eq!(
-        Scheduler::task_run_timeout_from_env(),
-        Duration::from_secs(DEFAULT_TASK_RUN_TIMEOUT_SECS)
-    );
-
-    match saved_run {
-        Some(v) => set("NEIGE_TASK_RUN_TIMEOUT_SECS", &v),
-        None => remove("NEIGE_TASK_RUN_TIMEOUT_SECS"),
-    }
-}
-
-#[test]
 fn worker_payload_is_pure_function_of_the_row() {
     let codex = task("a", TaskStatus::Pending, &[], 0);
     let (kind1, p1) = build_worker_payload(&codex).unwrap();
@@ -619,6 +585,7 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
         crate::per_card_lock::new_per_card_locks(),
         Arc::new(Semaphore::new(1)),
         std::env::temp_dir().join("neige-scheduler-test-gate-logs"),
+        crate::scheduler::WorkerLiveness::DEFAULT,
         crate::scheduler::WorkerIdleWake::new(
             crate::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone()),
             crate::scheduler::WORKER_IDLE_TURN_GRACE,
@@ -752,6 +719,7 @@ async fn running_timeout_race_lost_does_not_teardown_or_release_lease() {
         crate::per_card_lock::new_per_card_locks(),
         Arc::new(Semaphore::new(1)),
         std::env::temp_dir().join("neige-scheduler-test-gate-logs"),
+        crate::scheduler::WorkerLiveness::DEFAULT,
         crate::scheduler::WorkerIdleWake::new(
             crate::shared_codex_appserver::SharedCodexAppServer::new_stub(concrete.clone()),
             crate::scheduler::WORKER_IDLE_TURN_GRACE,
@@ -759,7 +727,12 @@ async fn running_timeout_race_lost_does_not_teardown_or_release_lease() {
         ),
     );
 
-    scheduler.fail_running_liveness_timeout(snapshot).await;
+    scheduler
+        .fail_running_worker(
+            snapshot,
+            RunningWorkerFailure::LivenessTimeout(LivenessExpiry::Cap),
+        )
+        .await;
 
     let state: String =
         sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = 'lease-race'")

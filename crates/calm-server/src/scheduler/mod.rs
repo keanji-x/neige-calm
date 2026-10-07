@@ -5,6 +5,9 @@
 mod git_delivery;
 mod running_worker;
 mod worker_failure;
+mod worker_liveness;
+#[cfg(feature = "fixtures")]
+pub use running_worker::LivenessFailTestHook;
 use running_worker::RunningWorkerFailure;
 pub(crate) use running_worker::WorkerCleanupReason;
 pub use running_worker::{
@@ -12,11 +15,13 @@ pub use running_worker::{
     WorkerIdleClock, WorkerIdleWake,
 };
 pub(crate) use worker_failure::{fail_tasks_for_deleted_card_tx, fail_worker_task_tx};
+pub(crate) use worker_liveness::LivenessExpiry;
+pub use worker_liveness::WorkerLiveness;
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::Weak;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
 use dashmap::DashMap;
@@ -24,10 +29,11 @@ use serde_json::{Value, json};
 use tokio::sync::{Notify, Semaphore};
 
 use crate::db::sqlite::{
-    SuccessReportFlip, TaskReporter, begin_immediate_tx, status_detail_with_reason,
-    task_claim_pending_tx, task_fail_from_worker_tx, task_get_tx, task_mark_running_tx,
-    task_mark_sub_track_running_tx, task_report_success_from_worker_tx,
-    task_stamp_missing_running_deadline_tx, tasks_by_track_tx, track_find_tx,
+    RunningLivenessFacts, SuccessReportFlip, TaskReporter, begin_immediate_tx,
+    status_detail_with_reason, task_claim_pending_tx, task_fail_from_worker_tx, task_get_tx,
+    task_mark_running_tx, task_mark_sub_track_running_tx, task_report_success_from_worker_tx,
+    task_running_liveness_tx, task_stamp_missing_running_liveness_tx, tasks_by_track_tx,
+    track_find_tx,
 };
 use crate::db::{Repo, RouteRepo, write_with_actor_events_typed};
 use crate::error::{CalmError, Result};
@@ -55,10 +61,6 @@ use crate::task_context::{ContextMetrics, TaskContextMonitor, context_ref};
 
 /// Default reconcile-tick period (liveness backstop).
 pub const DEFAULT_RECONCILE_SECS: u64 = 300;
-
-/// Default wall-clock window for agent workers to report task
-/// completion/failure after the running stamp.
-pub const DEFAULT_TASK_RUN_TIMEOUT_SECS: u64 = 7200;
 
 /// Sentinel: a guarded flip affected 0 rows because another writer won; carried through
 /// `CalmError::Conflict` so the eventized-write helper rolls back without persisting events.
@@ -402,9 +404,10 @@ pub struct Scheduler {
     pub(crate) planner_recovery_locks: PerCardLocks,
     /// The dispatcher's global spawn semaphore: caps total cross-track spawn work.
     semaphore: Arc<Semaphore>,
-    /// Persisted running liveness window, resolved once from
-    /// `NEIGE_TASK_RUN_TIMEOUT_SECS`.
-    task_run_timeout: Duration,
+    /// The running-worker windows: the cap is stamped per task, the idle window applies live.
+    worker_liveness: WorkerLiveness,
+    /// When this scheduler was built; no worker counts as idle before a full window past it.
+    liveness_floor_ms: AtomicI64,
     /// Live recheck behind the sweep's idle arm (#1785).
     worker_idle: WorkerIdleWake,
     /// Per-task single-flight for spawned idle rechecks.
@@ -432,6 +435,8 @@ pub struct Scheduler {
     reconcile_child_reopen_after_snapshot_test_hook: AtomicBool,
     #[cfg(feature = "fixtures")]
     poke_count: std::sync::atomic::AtomicUsize,
+    #[cfg(feature = "fixtures")]
+    liveness_fail_test_hook: std::sync::Mutex<Option<LivenessFailTestHook>>,
 }
 
 /// Deterministic integration-test rendezvous after closure resolution and
@@ -462,57 +467,7 @@ impl Scheduler {
         planner_recovery_locks: PerCardLocks,
         semaphore: Arc<Semaphore>,
         gate_logs_dir: std::path::PathBuf,
-        worker_idle: WorkerIdleWake,
-    ) -> Arc<Self> {
-        Self::new_with_timeouts(
-            repo,
-            events,
-            write,
-            operation_runtime,
-            planner_recovery_locks,
-            semaphore,
-            gate_logs_dir,
-            Self::task_run_timeout_from_env(),
-            worker_idle,
-        )
-    }
-
-    #[doc(hidden)]
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_with_timeouts_for_test(
-        repo: Arc<dyn Repo>,
-        events: EventBus,
-        write: WriteContext,
-        operation_runtime: Weak<OperationRuntime>,
-        planner_recovery_locks: PerCardLocks,
-        semaphore: Arc<Semaphore>,
-        gate_logs_dir: std::path::PathBuf,
-        task_run_timeout: Duration,
-        worker_idle: WorkerIdleWake,
-    ) -> Arc<Self> {
-        Self::new_with_timeouts(
-            repo,
-            events,
-            write,
-            operation_runtime,
-            planner_recovery_locks,
-            semaphore,
-            gate_logs_dir,
-            task_run_timeout,
-            worker_idle,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn new_with_timeouts(
-        repo: Arc<dyn Repo>,
-        events: EventBus,
-        write: WriteContext,
-        operation_runtime: Weak<OperationRuntime>,
-        planner_recovery_locks: PerCardLocks,
-        semaphore: Arc<Semaphore>,
-        gate_logs_dir: std::path::PathBuf,
-        task_run_timeout: Duration,
+        worker_liveness: WorkerLiveness,
         worker_idle: WorkerIdleWake,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -522,7 +477,8 @@ impl Scheduler {
             operation_runtime,
             planner_recovery_locks,
             semaphore,
-            task_run_timeout,
+            worker_liveness,
+            liveness_floor_ms: AtomicI64::new(now_ms()),
             worker_idle,
             idle_checks: Self::new_idle_checks(),
             gate_logs_dir,
@@ -538,6 +494,8 @@ impl Scheduler {
             reconcile_child_reopen_after_snapshot_test_hook: AtomicBool::new(false),
             #[cfg(feature = "fixtures")]
             poke_count: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(feature = "fixtures")]
+            liveness_fail_test_hook: std::sync::Mutex::new(None),
         })
     }
 
@@ -606,15 +564,11 @@ impl Scheduler {
         Self::reconcile_secs_from_env_var("NEIGE_SCHEDULER_RECONCILE_SECS", default)
     }
 
-    pub fn task_run_timeout_from_env() -> Duration {
-        Duration::from_secs(Self::reconcile_secs_from_env_var(
-            "NEIGE_TASK_RUN_TIMEOUT_SECS",
-            DEFAULT_TASK_RUN_TIMEOUT_SECS,
-        ))
-    }
-
-    pub fn task_run_timeout_ms(&self) -> i64 {
-        duration_ms_i64(self.task_run_timeout)
+    /// Fixtures only: move the boot floor back, as if this scheduler had booted at `floor_ms`.
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub fn set_liveness_floor_for_test(&self, floor_ms: i64) {
+        self.liveness_floor_ms.store(floor_ms, Ordering::SeqCst);
     }
 
     /// Fire-and-forget trigger: schedule the track on a fresh task. Used
@@ -1486,7 +1440,7 @@ impl Scheduler {
             &mut tx,
             task_id,
             worker_card_id,
-            self.task_run_timeout_ms(),
+            self.worker_liveness.cap_ms(),
         )
         .await?;
         tx.commit().await?;
@@ -1605,7 +1559,7 @@ impl Scheduler {
                 return pending_tracks;
             }
         };
-        for mut task in tasks {
+        for task in tasks {
             match task.status {
                 TaskStatus::Pending => {
                     pending_tracks.insert(task.track_id.clone());
@@ -1621,32 +1575,35 @@ impl Scheduler {
                     self.reconcile_running_terminal(task).await;
                 }
                 TaskStatus::Running if task_has_running_liveness_deadline(&task) => {
-                    let stamped = match self
-                        .stamp_missing_running_liveness_deadline(&mut task)
+                    let card_id = self.worker_card_id_for_task(&task).await;
+                    let facts = match self
+                        .running_liveness_facts(&task.id, card_id.as_deref())
                         .await
                     {
-                        Ok(stamped) => stamped,
+                        Ok(Some(facts)) => facts,
+                        // The row left `running` since the scan.
+                        Ok(None) => continue,
                         Err(e) => {
                             tracing::warn!(
                                 task_id = %task.id,
                                 error = %e,
-                                "scheduler sweep: running liveness deadline stamp failed; next sweep retries"
+                                "scheduler sweep: running liveness read failed; next sweep retries"
                             );
                             continue;
                         }
                     };
-                    if !stamped {
-                        continue;
-                    }
-                    if task.status == TaskStatus::Running
-                        && task_has_running_liveness_deadline(&task)
-                        && task
-                            .running_deadline_ms
-                            .is_some_and(|deadline| now_ms() > deadline)
+                    match self
+                        .worker_liveness
+                        .expiry(&facts, now_ms(), self.liveness_floor())
                     {
-                        self.fail_running_liveness_timeout(task).await;
-                    } else if task.status == TaskStatus::Running {
-                        self.spawn_worker_idle_check(&task);
+                        Some(expiry) => {
+                            self.fail_running_worker(
+                                task,
+                                RunningWorkerFailure::LivenessTimeout(expiry),
+                            )
+                            .await;
+                        }
+                        None => self.spawn_worker_idle_check(&task),
                     }
                 }
                 TaskStatus::Running => {}
@@ -1665,41 +1622,29 @@ impl Scheduler {
         pending_tracks
     }
 
-    async fn stamp_missing_running_liveness_deadline(&self, task: &mut Task) -> Result<bool> {
-        if !task_has_running_liveness_deadline(task)
-            || task.status != TaskStatus::Running
-            || task.running_deadline_ms.is_some()
-        {
-            return Ok(true);
-        }
+    /// The running worker's liveness facts, first stamping a start or deadline the row lacks
+    /// (rows already running before either column existed). `None`: the row is not `running`.
+    async fn running_liveness_facts(
+        &self,
+        task_id: &str,
+        worker_card_id: Option<&str>,
+    ) -> Result<Option<RunningLivenessFacts>> {
         let pool = self
             .repo
             .sqlite_pool()
             .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
         let mut tx = begin_immediate_tx(&pool).await?;
         let now = now_ms();
-        let deadline = now.saturating_add(self.task_run_timeout_ms());
-        let rows = task_stamp_missing_running_deadline_tx(&mut tx, &task.id, now, deadline).await?;
-        let current = if rows == 0 {
-            task_get_tx(&mut tx, &task.id).await?
-        } else {
-            None
-        };
+        let deadline = now.saturating_add(self.worker_liveness.cap_ms());
+        task_stamp_missing_running_liveness_tx(&mut tx, task_id, now, deadline).await?;
+        let facts = task_running_liveness_tx(&mut tx, task_id, worker_card_id).await?;
         tx.commit().await?;
-        if rows > 0 {
-            task.running_deadline_ms = Some(deadline);
-            task.updated_at_ms = now;
-        } else if let Some(current) = current {
-            *task = current;
-        } else {
-            return Ok(false);
-        }
-        Ok(true)
+        Ok(facts)
     }
 
-    async fn fail_running_liveness_timeout(self: &Arc<Self>, task: Task) {
-        self.fail_running_worker(task, RunningWorkerFailure::LivenessTimeout)
-            .await;
+    /// When this scheduler booted, or the fixture's stand-in for it.
+    pub(super) fn liveness_floor(&self) -> i64 {
+        self.liveness_floor_ms.load(Ordering::SeqCst)
     }
 
     async fn sweep_timeout_worker_cleanups(self: &Arc<Self>) {

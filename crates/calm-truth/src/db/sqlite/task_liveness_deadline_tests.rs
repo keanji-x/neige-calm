@@ -1,7 +1,8 @@
 use super::{
-    SqlxRepo, task_claim_pending_tx, task_get_tx, task_mark_running_tx,
-    task_stamp_missing_running_deadline_tx,
+    RunningLivenessFacts, SqlxRepo, task_claim_pending_tx, task_get_tx, task_mark_running_tx,
+    task_running_liveness_tx, task_stamp_missing_running_liveness_tx,
 };
+use crate::db::RepoOutOfDomain;
 use crate::model::{Task, TaskKind, TaskStatus, now_ms};
 
 fn task(key: &str, status: TaskStatus) -> Task {
@@ -148,14 +149,65 @@ async fn mark_running_stamps_running_liveness_deadline() {
         .await
         .expect("read running")
         .expect("running row");
+    let facts = task_running_liveness_tx(&mut tx, &id, Some("worker-card"))
+        .await
+        .expect("read liveness facts");
     tx.commit().await.expect("commit");
     assert_eq!(running.status, TaskStatus::Running);
     assert_eq!(running.worker_card_id.as_deref(), Some("worker-card"));
     assert_eq!(running.running_deadline_ms, Some(9200));
+    assert_eq!(
+        facts,
+        Some(RunningLivenessFacts {
+            started_at_ms: 2000,
+            deadline_ms: 9200,
+            last_progress_ms: None,
+        })
+    );
 }
 
 #[tokio::test]
-async fn stamp_missing_running_liveness_deadline_includes_claude_and_excludes_terminal() {
+async fn liveness_facts_take_the_latest_cursor_of_the_worker_card_only() {
+    let repo = SqlxRepo::open("sqlite::memory:")
+        .await
+        .expect("open in-memory sqlite repo");
+    let row = task("progress", TaskStatus::Pending);
+    let id = row.id.clone();
+    let mut tx = repo.pool().begin().await.expect("begin insert tx");
+    insert_task(&mut tx, &row).await;
+    task_claim_pending_tx(&mut tx, &id, 1000, &[], false)
+        .await
+        .expect("claim pending");
+    task_mark_running_tx(&mut tx, &id, Some("worker-card"), 2000, 9200)
+        .await
+        .expect("mark running");
+    tx.commit().await.expect("commit");
+    super::worker_flow_cursor_tests::seed_worker_cards(&repo, &["worker-card", "other-card"]).await;
+    for (card, kind, at) in [
+        ("worker-card", "codex_rollout", 4000),
+        ("worker-card", "claude_transcript", 5000),
+        ("other-card", "codex_rollout", 8000),
+    ] {
+        repo.worker_flow_cursor_upsert(card, kind, "/rollout.jsonl", 1, 10, None, None, at)
+            .await
+            .expect("upsert cursor");
+    }
+    let mut tx = repo.pool().begin().await.expect("begin read tx");
+    let facts = task_running_liveness_tx(&mut tx, &id, Some("worker-card"))
+        .await
+        .expect("read facts")
+        .expect("running facts");
+    let unknown_card = task_running_liveness_tx(&mut tx, &id, None)
+        .await
+        .expect("read facts without a card")
+        .expect("running facts");
+    tx.commit().await.expect("commit");
+    assert_eq!(facts.last_progress_ms, Some(5000));
+    assert_eq!(unknown_card.last_progress_ms, None);
+}
+
+#[tokio::test]
+async fn stamp_missing_running_liveness_includes_claude_and_excludes_terminal() {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open in-memory sqlite repo");
@@ -169,11 +221,11 @@ async fn stamp_missing_running_liveness_deadline_includes_claude_and_excludes_te
     insert_task(&mut tx, &claude).await;
     insert_task(&mut tx, &terminal).await;
 
-    let rows = task_stamp_missing_running_deadline_tx(&mut tx, &claude_id, 3000, 9700)
+    let rows = task_stamp_missing_running_liveness_tx(&mut tx, &claude_id, 3000, 9700)
         .await
         .expect("stamp claude");
     assert_eq!(rows, 1);
-    let rows = task_stamp_missing_running_deadline_tx(&mut tx, &terminal_id, 3000, 9700)
+    let rows = task_stamp_missing_running_liveness_tx(&mut tx, &terminal_id, 3000, 9700)
         .await
         .expect("stamp terminal");
     assert_eq!(rows, 0);
@@ -185,7 +237,58 @@ async fn stamp_missing_running_liveness_deadline_includes_claude_and_excludes_te
         .await
         .expect("read terminal")
         .expect("terminal row");
+    let stamped_facts = task_running_liveness_tx(&mut tx, &claude_id, None)
+        .await
+        .expect("read claude facts");
     tx.commit().await.expect("commit");
     assert_eq!(stamped.running_deadline_ms, Some(9700));
     assert_eq!(terminal.running_deadline_ms, None);
+    assert_eq!(
+        stamped_facts,
+        Some(RunningLivenessFacts {
+            started_at_ms: 3000,
+            deadline_ms: 9700,
+            last_progress_ms: None,
+        })
+    );
+}
+
+/// A row running before the start column existed keeps the deadline it carries; only its start
+/// is stamped, once.
+#[tokio::test]
+async fn stamp_missing_running_liveness_keeps_an_existing_deadline_once() {
+    let repo = SqlxRepo::open("sqlite::memory:")
+        .await
+        .expect("open in-memory sqlite repo");
+    let mut legacy = task("legacy", TaskStatus::Running);
+    legacy.running_deadline_ms = Some(1234);
+    let id = legacy.id.clone();
+    let mut tx = repo.pool().begin().await.expect("begin insert tx");
+    insert_task(&mut tx, &legacy).await;
+    assert_eq!(
+        task_running_liveness_tx(&mut tx, &id, None)
+            .await
+            .expect("read unstamped facts"),
+        None
+    );
+    let rows = task_stamp_missing_running_liveness_tx(&mut tx, &id, 3000, 9700)
+        .await
+        .expect("stamp legacy");
+    assert_eq!(rows, 1);
+    let rows = task_stamp_missing_running_liveness_tx(&mut tx, &id, 4000, 9999)
+        .await
+        .expect("restamp legacy");
+    assert_eq!(rows, 0);
+    let facts = task_running_liveness_tx(&mut tx, &id, None)
+        .await
+        .expect("read stamped facts");
+    tx.commit().await.expect("commit");
+    assert_eq!(
+        facts,
+        Some(RunningLivenessFacts {
+            started_at_ms: 3000,
+            deadline_ms: 1234,
+            last_progress_ms: None,
+        })
+    );
 }

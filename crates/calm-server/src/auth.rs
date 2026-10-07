@@ -662,6 +662,8 @@ mod tests {
             shared_codex_appserver_start_timeout_secs: 120,
             shared_codex_appserver_stop_grace_secs: 60,
             track_add_max_open: 16,
+            worker_idle_timeout_secs: crate::scheduler::WorkerLiveness::DEFAULT_IDLE_SECS,
+            worker_run_cap_secs: crate::scheduler::WorkerLiveness::DEFAULT_CAP_SECS,
             shared_codex_appserver_log_dir: None,
         };
         let err = AuthConfig::from_config(&cfg).unwrap_err();
@@ -703,6 +705,8 @@ mod tests {
             shared_codex_appserver_start_timeout_secs: 120,
             shared_codex_appserver_stop_grace_secs: 60,
             track_add_max_open: 16,
+            worker_idle_timeout_secs: crate::scheduler::WorkerLiveness::DEFAULT_IDLE_SECS,
+            worker_run_cap_secs: crate::scheduler::WorkerLiveness::DEFAULT_CAP_SECS,
             shared_codex_appserver_log_dir: None,
         };
         let auth = AuthConfig::from_config(&cfg).expect("dev autologin allows missing password");

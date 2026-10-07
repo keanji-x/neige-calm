@@ -48,6 +48,7 @@ pub fn spawn_dispatcher_with_harness(fx: &Fixture) -> Dispatcher {
         calm_server::per_card_lock::new_per_card_locks(),
         4,
         std::env::temp_dir().join("neige-test-gate-logs"),
+        calm_server::scheduler::WorkerLiveness::DEFAULT,
     )
 }
 
