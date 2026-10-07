@@ -570,9 +570,9 @@ describe('shared desktop primary header', () => {
     const header = document.querySelector<HTMLElement>('[data-nc-header-rows]')!;
     const title = document.querySelector<HTMLElement>('[aria-label="Rename track"]')!;
     const centre = (element: HTMLElement) => { const box = element.getBoundingClientRect(); return box.top + box.height / 2; };
-    expect(centre(title) - centre(today)).toBeCloseTo(8, 0);
-    expect(centre(title) - centre(collapse)).toBeCloseTo(8, 0);
-    expect(header.getBoundingClientRect().height).toBe(56);
+    expect(centre(title) - centre(today)).toBeCloseTo(0, 0);
+    expect(centre(title) - centre(collapse)).toBeCloseTo(0, 0);
+    expect(header.getBoundingClientRect().height).toBe(40);
     expect(today.parentElement!.getBoundingClientRect().height).toBe(40);
     expect(getComputedStyle(header).borderBlockEndColor).toBe('rgba(0, 0, 0, 0)');
     expect(getComputedStyle(today.parentElement!).borderBlockEndColor).toBe('rgba(0, 0, 0, 0)');
@@ -590,14 +590,26 @@ describe('shared desktop primary header', () => {
     expect(rail.scrollTop).toBeGreaterThan(0);
     expect(header.getBoundingClientRect().top).toBeCloseTo(initial.header, 0);
     expect(today.getBoundingClientRect().top).toBeCloseTo(initial.today, 0);
-    expect(centre(title) - centre(collapse)).toBeCloseTo(8, 0);
+    expect(centre(title) - centre(collapse)).toBeCloseTo(0, 0);
   });
 
-  it('uses the same 56px primary header on Today', async () => {
+  it('uses the same navigation height and title alignment on Today', async () => {
     await page.viewport(1440, 900);
     setup('/', AREA.name, () => undefined, 'Responsive mobile UI', { viewportRoot: true });
     await waitFor(() => expect(document.querySelector('[data-nc-header-rows]')).not.toBeNull());
     const header = document.querySelector<HTMLElement>('[data-nc-header-rows]')!;
-    expect(header.getBoundingClientRect().height).toBe(56);
+    expect(header.getBoundingClientRect().height).toBe(40);
+    const title = document.querySelector<HTMLElement>('[aria-label="Rename track"]')!;
+    const today = document.querySelector<HTMLElement>('[aria-label="Go to Today"]')!;
+    const centre = (element: HTMLElement) => { const box = element.getBoundingClientRect(); return box.top + box.height / 2; };
+    expect(centre(title)).toBeCloseTo(centre(today), 0);
+    // A relative scale change must move both headers together.
+    const previousSize = document.documentElement.style.fontSize;
+    try {
+      document.documentElement.style.fontSize = '20px';
+      expect(header.getBoundingClientRect().height).toBe(50);
+      expect(centre(title)).toBeCloseTo(centre(today), 0);
+    } finally { document.documentElement.style.fontSize = previousSize; }
+    await page.screenshot({ path: './__screenshots__/header-alignment-fixed.png' });
   });
 });

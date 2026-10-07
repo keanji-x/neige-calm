@@ -192,17 +192,18 @@
   .crumbSep {
     color: var(--text-4);
   }
-  /* Desktop chrome shares a primary band; secondary rows extend below it. */
+  /* Desktop page chrome and the navigation rail share one height token.
+     Secondary rows extend below this primary band; mobile keeps its touch-sized header. */
   @media (width >= 60rem) {
     :where(*):has(> .header) {
       --header-band: 0px;
-      --header-h: var(--header-primary-h);
+      --header-h: var(--navigation-header-height);
     }
     :where(*):has(> .header[data-nc-header-rows='2']) {
-      --header-h: calc(var(--header-primary-h) + var(--row-h-sm) + var(--space-3));
+      --header-h: calc(var(--navigation-header-height) + var(--row-h-sm) + var(--space-3));
     }
     :where(*):has(> .header[data-nc-header-rows='3']) {
-      --header-h: calc(var(--header-primary-h) + var(--row-h-sm) * 2 + var(--space-3) * 2);
+      --header-h: calc(var(--navigation-header-height) + var(--row-h-sm) * 2 + var(--space-3) * 2);
     }
     .header {
       flex-shrink: 0;
@@ -219,8 +220,8 @@
     }
     .titleRow {
       flex-shrink: 0;
-      block-size: calc(var(--header-primary-h) - 1px);
-      min-block-size: calc(var(--header-primary-h) - 1px);
+      block-size: calc(var(--navigation-header-height) - 1px);
+      min-block-size: calc(var(--navigation-header-height) - 1px);
     }
     .title {
       min-inline-size: 0;

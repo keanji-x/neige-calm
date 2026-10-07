@@ -353,7 +353,7 @@ describe('the drawer against a real rendering engine', () => {
            spacing token stops meaning what the stylesheet claims. */
     const laid = getComputedStyle(card);
     expect(laid.position).toBe('absolute');
-    expect(laid.insetBlockStart).toBe('64px');
+    expect(laid.insetBlockStart).toBe('48px');
     expect(laid.insetBlockEnd).toBe('28px');
     expect(laid.insetInlineEnd).toBe('24px');
     await untilGone.call(null).catch(() => undefined);
@@ -815,7 +815,7 @@ it('keeps the desktop conversation and its seam below the fixed primary header',
   const header = document.querySelector<HTMLElement>('[data-nc-header-rows]')!;
   const drawer = document.querySelector<HTMLElement>('[data-nc-drawer]')!;
   const seam = document.querySelector<HTMLElement>('[data-nc-drawer-seam]')!;
-  expect(header.getBoundingClientRect().height).toBe(56);
+  expect(header.getBoundingClientRect().height).toBe(40);
   expect(drawer.getBoundingClientRect().top).toBeGreaterThanOrEqual(header.getBoundingClientRect().bottom + 8);
   expect(seam.getBoundingClientRect().top).toBeCloseTo(drawer.getBoundingClientRect().top, 0);
   const box = header.getBoundingClientRect();

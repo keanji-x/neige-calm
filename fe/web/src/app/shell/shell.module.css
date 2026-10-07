@@ -820,7 +820,7 @@
     .main [data-nc-drawer-stack],
     .main [data-nc-drawer],
     .main [data-nc-drawer-seam] {
-      inset-block-start: calc(var(--header-primary-h) + var(--space-4));
+      inset-block-start: calc(var(--navigation-header-height) + var(--space-4));
     }
 
     /* The shared host owns header clearance; its cards stay inside their cells. */
