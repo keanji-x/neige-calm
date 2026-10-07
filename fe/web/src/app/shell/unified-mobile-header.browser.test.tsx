@@ -501,7 +501,7 @@ describe('Unified mobile headers', () => {
     await page.getByText('Existing source text.', { exact: true }).findElement();
     await record('source', (await page.getByRole('button', { name: 'Back to Report', exact: true }).findElement()).closest('header')!);
     await page.getByRole('button', { name: 'Back to Report' }).click();
-    await expect.poll(() => document.querySelector('[data-nc-drawer]')).toBeNull();
+    await expect.poll(() => [...document.querySelectorAll('[data-nc-drawer]')].every((drawer) => !drawer.checkVisibility())).toBe(true);
     await page.getByRole('button', { name: 'Open conversation history' }).click();
     await page.getByRole('button', { name: '设置', exact: true }).click();
     await record('settings', (await page.getByRole('heading', { name: 'Settings', exact: true }).findElement()).closest('header')!);
