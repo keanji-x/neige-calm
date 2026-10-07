@@ -92,9 +92,9 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0152_operations_awaiting_retry.sql",
     "0153_merge_policy_ask.sql",
     "0154_recipe_minted_names.sql",
-        "0155_planner_permission_mode.sql",
-        "0155_acp_planner_sessions.sql",
-        "0156_acp_submission_journal.sql",
+    "0155_planner_permission_mode.sql",
+    "0156_acp_planner_sessions.sql",
+    "0157_acp_submission_journal.sql",
 ];
 
 #[test]
