@@ -13,7 +13,7 @@ test('keeps the unified Today report and calendar usable when Areas is unavailab
   await expect.poll(() => served).toBeGreaterThan(0);
   await expect(page.getByRole('region', { name: 'Calendar tasks' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Rename track' })).toBeVisible();
-  const indicator = page.getByRole('button', { name: '连接状态：连接异常' });
+  const indicator = page.getByRole('button', { name: /连接状态：(?:连接异常|.*数据读取失败)/ });
   await indicator.click();
   const details = page.getByRole('dialog', { name: '连接详情' });
   await expect(details).toContainText('Areas');

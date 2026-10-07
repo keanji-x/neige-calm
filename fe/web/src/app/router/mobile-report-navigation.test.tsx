@@ -48,6 +48,7 @@ const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 
 function setup(path: string) {
   const transport: ApiTransportPort = {
     send(request) {
+      if (request.path.startsWith('/api/today/daily')) return Promise.resolve(ok(null));
       if (request.path === '/api/areas') return Promise.resolve(ok([AREA, OTHER_AREA]));
       if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([TRACK]));
       if (request.path === '/api/areas/c2/tracks') return Promise.resolve(ok([]));
@@ -243,10 +244,10 @@ describe('workspace header navigation', () => {
     expect(document.querySelector('nav[aria-label="Primary"]')).toBeNull();
   });
 
-  it('opens the first Area composer at home and switches Area from the centered selector', async () => {
+  it('keeps Today at home and starts an Area composer only after selecting an Area', async () => {
     const router = setup('/');
-    await waitFor(() => { expect(href(router)).toBe('/area/c1/new'); });
-    await userEvent.click(screen.getByRole('button', { name: 'Switch area, Product' }));
+    await waitFor(() => { expect(href(router)).toBe('/'); });
+    await userEvent.click(await screen.findByRole('button', { name: 'Switch area, Product' }));
     await userEvent.click(screen.getByRole('menuitem', { name: 'Second' }));
     await waitFor(() => { expect(href(router)).toBe('/area/c2/new'); });
     expect(screen.getByRole('button', { name: 'Switch area, Second' })).toBeTruthy();
