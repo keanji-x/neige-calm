@@ -131,9 +131,12 @@ impl ProviderAdapter for PlannerHarnessShutdownAdapter {
     ) -> Result<SpawnOutcome> {
         let worker_session_id = output.output_string("runtime_id", "planner harness")?;
         // A registered harness is shut down first, whatever a row read would say; its backend names its provider.
-        if let Some(harness) = self.harness_registry.remove(&worker_session_id) {
+        if let Some(harness) = self
+            .harness_registry
+            .shutdown_and_remove(&worker_session_id)
+            .await?
+        {
             let claude = harness.provider() == AgentProvider::Claude;
-            harness.shutdown().await?;
             if claude {
                 self.stop_claude_planner(&worker_session_id).await;
             }

@@ -1087,9 +1087,9 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             output.output_optional_string("old_runtime_id", "planner harness")?
             && old_worker_session_id != worker_session_id
         {
-            if let Some(old_handle) = self.harness_registry.remove(&old_worker_session_id) {
-                old_handle.shutdown().await?;
-            }
+            self.harness_registry
+                .shutdown_and_remove(&old_worker_session_id)
+                .await?;
             if provider == AgentProvider::OpenCode {
                 crate::planner_process::stop(&self.acp_host.instance, &old_worker_session_id)
                     .await?;
@@ -1408,9 +1408,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         if provider == AgentProvider::OpenCode
             && let Some(displaced) = old_worker_session_id.as_ref()
         {
-            if let Some(handle) = self.harness_registry.remove(displaced) {
-                handle.shutdown().await?;
-            }
+            self.harness_registry.shutdown_and_remove(displaced).await?;
             crate::planner_process::stop(&self.acp_host.instance, displaced).await?;
         }
         drop(mint_lock_guard);
@@ -1495,12 +1493,10 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         if provider == AgentProvider::Claude {
             claude_spawn_failure::fire(&card_id).await?;
         }
-        let (reservation, previous_live) = self
+        let reservation = self
             .harness_registry
-            .reserve_replacing(worker_session_id.clone());
-        if let Some(existing) = previous_live {
-            existing.shutdown().await?;
-        }
+            .reserve_after_shutdown(worker_session_id.clone())
+            .await?;
         if provider == AgentProvider::OpenCode {
             snapshot = crate::acp_planner::recovery::load_quiesced(
                 self.repo.as_ref(),
@@ -1659,9 +1655,9 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         match step.op.as_str() {
             "abort_harness_task" => {
                 let worker_session_id = step.arg_string("runtime_id", "planner harness")?;
-                if let Some(handle) = self.harness_registry.remove(&worker_session_id) {
-                    handle.shutdown().await?;
-                }
+                self.harness_registry
+                    .shutdown_and_remove(&worker_session_id)
+                    .await?;
                 Ok(())
             }
             "interrupt_thread" => {

@@ -107,9 +107,72 @@ impl HarnessRegistry {
         Self::default()
     }
 
-    /// The live replies of the harnesses this registry holds. A harness is given this instance in
-    /// [`PlannerHarnessParams`](crate::harness::PlannerHarnessParams), and its writer takes the
-    /// card's entry when the registry installs it.
+    /// Complete predecessor shutdown before transferring its discoverable slot.
+    pub async fn reserve_after_shutdown(
+        &self,
+        runtime_id: String,
+    ) -> crate::error::Result<HarnessReservation> {
+        loop {
+            let previous = self.get(&runtime_id);
+            if let Some(previous) = previous.as_ref() {
+                previous.shutdown().await?;
+            }
+            let id = self.next_reservation_id();
+            match self.0.map.entry(runtime_id.clone()) {
+                Entry::Occupied(mut occupied) => {
+                    if let Slot::Live(current) = occupied.get()
+                        && !previous
+                            .as_ref()
+                            .is_some_and(|previous| current.same_instance(previous))
+                    {
+                        continue;
+                    }
+                    occupied.insert(Slot::Reserved(id));
+                }
+                Entry::Vacant(vacant) => {
+                    vacant.insert(Slot::Reserved(id));
+                }
+            }
+            return Ok(HarnessReservation {
+                registry: self.clone(),
+                worker_session_id: runtime_id,
+                id,
+                done: false,
+            });
+        }
+    }
+
+    /// Retain a discoverable owner throughout shutdown, including caller cancellation.
+    pub async fn shutdown_and_remove(
+        &self,
+        runtime_id: &str,
+    ) -> crate::error::Result<Option<PlannerHarness>> {
+        let mut stopped = None;
+        loop {
+            let Some(handle) = self.get(&runtime_id.to_owned()) else {
+                return Ok(stopped);
+            };
+            handle.shutdown().await?;
+            let removed = self.remove_if_same(runtime_id, &handle);
+            stopped = Some(handle);
+            if removed {
+                return Ok(stopped);
+            }
+        }
+    }
+
+    /// Remove only the predecessor whose shutdown the caller confirmed.
+    pub(crate) fn remove_if_same(&self, runtime_id: &str, expected: &PlannerHarness) -> bool {
+        if let Entry::Occupied(occupied) = self.0.map.entry(runtime_id.to_owned())
+            && matches!(occupied.get(), Slot::Live(current) if current.same_instance(expected))
+        {
+            occupied.remove();
+            return true;
+        }
+        false
+    }
+
+    /// The shared live-reply registry used by installed harnesses and REST reads.
     pub fn live_replies(&self) -> &Arc<LiveReplies> {
         &self.0.live_replies
     }
@@ -125,6 +188,7 @@ impl HarnessRegistry {
 
     /// Direct Live install (test seams). Stomps whatever occupies the slot; production goes
     /// through reserve → install.
+    #[cfg(any(test, feature = "fixtures"))]
     pub fn insert(&self, runtime_id: String, handle: PlannerHarness) -> Option<PlannerHarness> {
         handle.mark_installed();
         match self.0.map.insert(runtime_id, Slot::Live(handle)) {
@@ -152,6 +216,7 @@ impl HarnessRegistry {
 
     /// Atomic swap to `Reserved(fresh_id)` regardless of the prior slot, returning the previous
     /// Live handle so the caller can shut it down outside the map lock; a prior guard becomes inert.
+    #[cfg(any(test, feature = "fixtures"))]
     pub fn reserve_replacing(
         &self,
         runtime_id: String,
@@ -189,6 +254,7 @@ impl HarnessRegistry {
     }
 
     /// Removes **Live entries only**; no-ops on `Reserved` (Drop is the owner's cancel).
+    #[cfg(any(test, feature = "fixtures"))]
     pub fn remove(&self, runtime_id: &str) -> Option<PlannerHarness> {
         match self.0.map.entry(runtime_id.to_owned()) {
             Entry::Occupied(occupied) => match occupied.get() {
@@ -228,7 +294,7 @@ impl HarnessRegistry {
             if let Some(thread_id) = handle.shutdown_for_deletion(thread_seals.clone()).await? {
                 seals.seal(thread_id);
             }
-            let _ = self.remove(&worker_session_id);
+            self.remove_if_same(&worker_session_id, &handle);
         }
         Ok(seals.retain())
     }

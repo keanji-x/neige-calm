@@ -27,6 +27,8 @@ The durable receipt is the settlement authority: final outcome and ordered item 
 
 External Harness checkpoint persistence takes the same issuance lock as queue drain; shutdown, which already owns that lock, uses the internal writer. Managed ACP sessions own their driver task and join it before recovery or replacement can continue, even when credential/process cleanup fails. Joining borrows the stored handle, so cancellation of a shutdown cannot detach a remaining receipt writer. No timed wait is treated as quiescence evidence.
 
+The kernel registry retains the predecessor's discoverable live slot throughout shutdown. Replacement reserves only after that shutdown completes and atomically checks instance identity; removal uses the same identity check. Cancellation therefore leaves a predecessor available for the next recovery attempt to join. Removing before shutdown and immediate replacement are restricted to fixture seams.
+
 Process cleanup and boot credential revocation select only sessions registered in `acp_managed_sessions`. The `NEIGE_ACP_PLANNER` namespace and canonical data-dir instance marker exclude independent native clients and other Neige instances. Existing migrations are unchanged; additions are 0155 and 0156 on the initial base.
 
 ## Configuration

@@ -236,13 +236,7 @@ pub async fn spawn_recovered_harness(
     }
     // The reservation sits after recovery replay, immediately before handle construction/install.
     let reservation = match claim_mode {
-        ClaimMode::Replace => {
-            let (reservation, previous_live) = registry.reserve_replacing(runtime_id.clone());
-            if let Some(existing) = previous_live {
-                existing.shutdown().await?;
-            }
-            reservation
-        }
+        ClaimMode::Replace => registry.reserve_after_shutdown(runtime_id.clone()).await?,
         ClaimMode::SkipIfClaimed {
             expected_generation,
         } => {

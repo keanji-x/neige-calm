@@ -877,6 +877,9 @@ impl PlannerHarness {
     pub fn provider(&self) -> crate::session_projection_repo::AgentProvider {
         self.inner.backend.provider()
     }
+    pub(crate) fn same_instance(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
 
     /// Fixtures only: the Claude session behind this harness, for its interleaving hooks.
     #[cfg(feature = "fixtures")]

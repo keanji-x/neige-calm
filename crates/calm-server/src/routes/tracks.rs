@@ -2360,7 +2360,7 @@ async fn repoint_track_workspace(
         let outcome = shutdown_fenced_harness(&harness, &track_id).await;
         match outcome {
             Ok(()) => {
-                let _ = w.harness.remove(runtime_id);
+                w.harness.remove_if_same(runtime_id, &harness);
             }
             Err(error) => tracing::error!(
                 track_id,
