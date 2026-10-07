@@ -3712,6 +3712,7 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
         crate::per_card_lock::new_per_card_locks(),
         Arc::clone(&semaphore),
         std::env::temp_dir().join("neige-dispatcher-test-gate-logs"),
+        crate::scheduler::WorkerLiveness::DEFAULT,
         crate::scheduler::WorkerIdleWake::new(
             crate::shared_codex_appserver::SharedCodexAppServer::new_stub(repo.clone()),
             crate::scheduler::WORKER_IDLE_TURN_GRACE,

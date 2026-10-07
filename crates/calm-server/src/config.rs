@@ -2,6 +2,9 @@
 
 use clap::Parser;
 use std::path::PathBuf;
+use std::time::Duration;
+
+use crate::scheduler::WorkerLiveness;
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "calm-server", version, about = "neige-calm kernel")]
@@ -178,6 +181,28 @@ pub struct Config {
     )]
     pub track_add_max_open: u32,
 
+    /// How long a running Codex or Claude worker may go without transcript progress (a new
+    /// message, tool call or tool result) before its task fails as `worker-timeout`. One command
+    /// records nothing until it returns, so this must cover the longest single command a worker
+    /// runs.
+    #[arg(
+        long,
+        env = "CALM_WORKER_IDLE_TIMEOUT_SECS",
+        default_value_t = WorkerLiveness::DEFAULT_IDLE_SECS,
+        value_parser = clap::value_parser!(u64).range(WorkerLiveness::MIN_SECS..)
+    )]
+    pub worker_idle_timeout_secs: u64,
+
+    /// How long a running Codex or Claude worker may run in total, progress or not, before its
+    /// task fails as `worker-timeout`.
+    #[arg(
+        long,
+        env = "CALM_WORKER_RUN_CAP_SECS",
+        default_value_t = WorkerLiveness::DEFAULT_CAP_SECS,
+        value_parser = clap::value_parser!(u64).range(WorkerLiveness::MIN_SECS..)
+    )]
+    pub worker_run_cap_secs: u64,
+
     /// Log directory for the shared codex app-server child.
     #[arg(long, env = "CALM_SHARED_CODEX_APPSERVER_LOG_DIR")]
     pub shared_codex_appserver_log_dir: Option<PathBuf>,
@@ -245,9 +270,49 @@ impl Config {
         format!("http://{listen}")
     }
 
+    pub fn worker_liveness(&self) -> WorkerLiveness {
+        WorkerLiveness {
+            idle: Duration::from_secs(self.worker_idle_timeout_secs),
+            cap: Duration::from_secs(self.worker_run_cap_secs),
+        }
+    }
+
     pub fn shared_codex_appserver_log_dir_resolved(&self) -> PathBuf {
         self.shared_codex_appserver_log_dir
             .clone()
             .unwrap_or_else(|| self.data_dir_resolved().join("logs/shared-codex-appserver"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_liveness_windows_default_and_reject_less_than_a_minute() {
+        assert_eq!(
+            Config::parse_from(["calm-server"]).worker_liveness(),
+            WorkerLiveness::DEFAULT
+        );
+        let set = Config::parse_from([
+            "calm-server",
+            "--worker-idle-timeout-secs",
+            "60",
+            "--worker-run-cap-secs",
+            "7200",
+        ]);
+        assert_eq!(
+            set.worker_liveness(),
+            WorkerLiveness {
+                idle: Duration::from_secs(60),
+                cap: Duration::from_secs(7200),
+            }
+        );
+        for flag in ["--worker-idle-timeout-secs", "--worker-run-cap-secs"] {
+            assert!(
+                Config::try_parse_from(["calm-server", flag, "59"]).is_err(),
+                "{flag}"
+            );
+        }
     }
 }

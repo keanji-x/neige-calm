@@ -62,6 +62,7 @@ mod task_attempt;
 mod task_attempt_migration_tests;
 #[cfg(test)]
 mod task_attempt_tests;
+mod task_liveness;
 mod task_projection;
 mod track;
 mod track_occupancy;
@@ -137,14 +138,16 @@ pub use task::{
     task_claim_pending_tx, task_complete_from_worker_tx, task_fail_delivery_tx,
     task_fail_from_worker_tx, task_gate_attempt_bump_tx, task_get_tx, task_mark_running_tx,
     task_mark_sub_track_running_tx, task_report_success_from_worker_tx,
-    task_stamp_missing_running_deadline_tx, task_start_verifying_from_worker_tx,
-    task_update_pending_tx, tasks_by_track_tx, track_require_task_gates_tx,
-    worker_card_declared_head_tx, worker_op_targets_card_tx,
+    task_start_verifying_from_worker_tx, task_update_pending_tx, tasks_by_track_tx,
+    track_require_task_gates_tx, worker_card_declared_head_tx, worker_op_targets_card_tx,
 };
 pub use task_attempt::{
     task_attempt_current_by_track_pool, task_attempt_current_by_track_tx,
     task_attempt_current_pool, task_attempt_current_tx, task_attempt_get_tx, task_current_get_pool,
     task_current_get_tx, task_history_by_key_pool,
+};
+pub use task_liveness::{
+    RunningLivenessFacts, task_running_liveness_tx, task_stamp_missing_running_liveness_tx,
 };
 pub use task_projection::{
     BlockVerdict, PROJECTION_DRIFT_TASK_FIELDS, TaskPendingReason, TaskProjectionOutcome,

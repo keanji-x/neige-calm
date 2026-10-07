@@ -3,6 +3,11 @@ use crate::db::{RepoOutOfDomain, RepoRead};
 use crate::model::{CardRole, NewArea, NewCard, NewTrack, RequestTheme};
 
 async fn seed_card(repo: &SqlxRepo) -> String {
+    seed_worker_cards(repo, &["card-cursor"]).await.remove(0)
+}
+
+/// Worker cards with these ids on one fresh track.
+pub(super) async fn seed_worker_cards(repo: &SqlxRepo, ids: &[&str]) -> Vec<String> {
     let mut tx = repo.pool().begin().await.unwrap();
     let area = area_create_tx(
         &mut tx,
@@ -34,24 +39,28 @@ async fn seed_card(repo: &SqlxRepo) -> String {
     )
     .await
     .unwrap();
-    let card = card_create_with_id_tx(
-        &mut tx,
-        "card-cursor".into(),
-        NewCard {
-            track_id: track.id.clone(),
-            title: None,
-            kind: "worker".into(),
-            sort: None,
-            payload: serde_json::json!({}),
-        },
-        CardRole::Worker,
-        true,
-        repo.card_role_cache(),
-    )
-    .await
-    .unwrap();
+    let mut cards = Vec::new();
+    for id in ids {
+        let card = card_create_with_id_tx(
+            &mut tx,
+            (*id).into(),
+            NewCard {
+                track_id: track.id.clone(),
+                title: None,
+                kind: "worker".into(),
+                sort: None,
+                payload: serde_json::json!({}),
+            },
+            CardRole::Worker,
+            true,
+            repo.card_role_cache(),
+        )
+        .await
+        .unwrap();
+        cards.push(card.id.to_string());
+    }
     tx.commit().await.unwrap();
-    card.id.to_string()
+    cards
 }
 
 #[tokio::test]

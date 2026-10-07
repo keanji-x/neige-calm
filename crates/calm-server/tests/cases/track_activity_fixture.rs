@@ -546,6 +546,7 @@ impl Fx {
             calm_server::per_card_lock::new_per_card_locks(),
             Arc::new(tokio::sync::Semaphore::new(4)),
             std::env::temp_dir().join("neige-test-gate-logs"),
+            calm_server::scheduler::WorkerLiveness::DEFAULT,
             calm_server::scheduler::WorkerIdleWake::new(
                 calm_server::shared_codex_appserver::SharedCodexAppServer::new_stub(
                     self.repo_dyn.clone(),

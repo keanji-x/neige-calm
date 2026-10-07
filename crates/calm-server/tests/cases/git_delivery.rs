@@ -337,6 +337,7 @@ pub(super) fn spawn_dispatcher(
         calm_server::per_card_lock::new_per_card_locks(),
         4,
         boot.ctx.gate_logs_dir.clone(),
+        calm_server::scheduler::WorkerLiveness::DEFAULT,
     )
 }
 

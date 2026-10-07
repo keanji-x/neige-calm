@@ -254,34 +254,11 @@ pub async fn task_mark_running_tx(
            SET status = 'running',
                worker_card_id = COALESCE(worker_card_id, ?1),
                running_deadline_ms = ?2,
+               running_started_at_ms = ?3,
                updated_at_ms = ?3
            WHERE id = ?4 AND status = 'dispatched'"#,
     )
     .bind(worker_card_id)
-    .bind(running_deadline_ms)
-    .bind(now)
-    .bind(id)
-    .execute(&mut **tx)
-    .await?;
-    Ok(res.rows_affected())
-}
-
-/// Backfill for agent tasks already running when liveness deadlines were introduced.
-pub async fn task_stamp_missing_running_deadline_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    id: &str,
-    now: i64,
-    running_deadline_ms: i64,
-) -> Result<u64> {
-    let res = sqlx::query(
-        r#"UPDATE tasks
-           SET running_deadline_ms = ?1,
-               updated_at_ms = ?2
-           WHERE id = ?3
-             AND kind IN ('codex', 'claude')
-             AND status = 'running'
-             AND running_deadline_ms IS NULL"#,
-    )
     .bind(running_deadline_ms)
     .bind(now)
     .bind(id)

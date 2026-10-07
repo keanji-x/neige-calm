@@ -703,6 +703,7 @@ impl AppState {
             self.dispatcher.scheduler().planner_recovery_locks.clone(),
             Arc::new(tokio::sync::Semaphore::new(8)),
             TaskVerifyAdapter::default_gate_logs_dir(),
+            crate::scheduler::WorkerLiveness::DEFAULT,
             crate::scheduler::WorkerIdleWake::new(
                 self.shared_codex_appserver.clone(),
                 crate::scheduler::WORKER_IDLE_TURN_GRACE,
@@ -928,6 +929,7 @@ impl AppState {
                 planner_recovery_locks.clone(),
                 Dispatcher::permits_from_env(8),
                 TaskVerifyAdapter::default_gate_logs_dir(),
+                crate::scheduler::WorkerLiveness::DEFAULT,
             ),
         );
         let worker_flow = WorkerFlowDriver::from_state_parts(
@@ -1382,6 +1384,7 @@ impl AppState {
                 planner_recovery_locks.clone(),
                 crate::dispatcher::Dispatcher::permits_from_env(8),
                 gate_logs_dir.clone(),
+                cfg.worker_liveness(),
             ),
         );
         // The MCP tools' late-bound scheduler trigger (a running-task cancel reaps its worker):

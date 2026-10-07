@@ -670,6 +670,7 @@ impl Dispatcher {
             crate::per_card_lock::new_per_card_locks(),
             permits,
             crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
+            crate::scheduler::WorkerLiveness::DEFAULT,
         )
     }
 
@@ -702,6 +703,7 @@ impl Dispatcher {
             crate::per_card_lock::new_per_card_locks(),
             permits,
             crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
+            crate::scheduler::WorkerLiveness::DEFAULT,
         )
     }
 
@@ -750,6 +752,7 @@ impl Dispatcher {
             crate::per_card_lock::new_per_card_locks(),
             permits,
             crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
+            crate::scheduler::WorkerLiveness::DEFAULT,
         )
     }
 
@@ -771,6 +774,7 @@ impl Dispatcher {
         planner_recovery_locks: crate::per_card_lock::PerCardLocks,
         permits: usize,
         gate_logs_dir: PathBuf,
+        worker_liveness: crate::scheduler::WorkerLiveness,
     ) -> Self {
         let permits = if permits == 0 {
             DEFAULT_PERMITS
@@ -786,6 +790,7 @@ impl Dispatcher {
             planner_recovery_locks,
             Arc::clone(&semaphore),
             gate_logs_dir,
+            worker_liveness,
             crate::scheduler::WorkerIdleWake::new(
                 shared_codex_appserver.clone(),
                 crate::scheduler::WORKER_IDLE_TURN_GRACE,
