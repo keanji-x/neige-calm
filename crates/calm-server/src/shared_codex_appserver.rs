@@ -18,7 +18,6 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
-use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
@@ -51,101 +50,17 @@ use crate::session_projection_lookup::{
 use crate::session_projection_repo::AgentProvider;
 use crate::shared_codex_home::{EXPECTED_MCP_SERVERS, SharedCodexHome};
 use crate::thread_seals::ThreadSeals;
+pub use provider::codex::shared::{
+    BackoffState, DaemonReadiness, FailureClass, HEAL_SLOW_RETRY_CEILING, LaunchedSharedDaemon,
+    ReplaceOutcome, ReplacePrecondition, SharedDaemonRuntime, SharedDaemonState,
+    SharedDaemonStatus, SupervisorCore, SupervisorState, SupervisorWatcher, WatcherKind,
+    bounded_exponential_backoff,
+};
+use provider::codex::shared::{classify_spawn_failure, heal_jitter, liveness_facts_from_read};
 
 pub type TurnId = String;
 
-/// Ambient env keys forwarded verbatim into the spawned shared codex app-server; everything
-/// else in the parent env is dropped by `env_clear()`, computed keys (including `PATH`) are set in
-/// `apply_spawn_env`.
-pub const SPAWN_ENV_PASSTHROUGH: &[&str] = &[
-    // default-home fallback + `~` expansion in config paths; forwarded to MCP children
-    "HOME",
-    // codex's own child allow-lists forward these
-    "USER",
-    "LOGNAME",
-    "SHELL",
-    "LANG",
-    "LANGUAGE",
-    "LC_ALL",
-    "LC_CTYPE",
-    "TERM",
-    "TZ",
-    "TMPDIR",
-    "TEMP",
-    "TMP",
-    // reqwest env-proxy autodetect honors these for API traffic
-    "NO_PROXY",
-    "no_proxy",
-    "ALL_PROXY",
-    "all_proxy",
-    // TLS custom CA (SSL_CERT_DIR unused)
-    "CODEX_CA_CERTIFICATE",
-    "SSL_CERT_FILE",
-    // diagnostics
-    "RUST_LOG",
-    "LOG_FORMAT",
-    "RUST_BACKTRACE",
-    // API-key-mode auth fallbacks; prod uses auth.json, kept so an API-key deployment
-    // doesn't silently break. Still an allow-list.
-    "OPENAI_API_KEY",
-    "CODEX_API_KEY",
-    "CODEX_ACCESS_TOKEN",
-    "OPENAI_ORGANIZATION",
-    "OPENAI_PROJECT",
-];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SharedDaemonState {
-    Idle,
-    Starting,
-    Running,
-    Restarting,
-    Failed,
-}
-
-impl SharedDaemonState {
-    pub fn as_db_str(self) -> &'static str {
-        match self {
-            SharedDaemonState::Idle => "idle",
-            SharedDaemonState::Starting => "starting",
-            SharedDaemonState::Running => "running",
-            SharedDaemonState::Restarting => "restarting",
-            SharedDaemonState::Failed => "failed",
-        }
-    }
-
-    pub fn from_db_str(s: &str) -> Self {
-        match s {
-            "starting" => SharedDaemonState::Starting,
-            "running" => SharedDaemonState::Running,
-            "restarting" => SharedDaemonState::Restarting,
-            "failed" => SharedDaemonState::Failed,
-            _ => SharedDaemonState::Idle,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct SharedDaemonRuntime {
-    pub pid: i32,
-    pub pgid: i32,
-    pub boot_id: String,
-    pub process_start_time: u64,
-    pub started_at: i64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct SharedDaemonStatus {
-    pub state: SharedDaemonState,
-    pub sock: String,
-    pub codex_home: String,
-    pub runtime: Option<SharedDaemonRuntime>,
-    pub cached_threads: usize,
-    pub pending_count: usize,
-    pub restart_count: u64,
-    pub last_error: Option<String>,
-}
+pub use provider::codex::shared::SPAWN_ENV_PASSTHROUGH;
 
 // A cold load must distinguish an explicitly suspended harness from legacy
 // threads that have no runtime. Never load a failed harness without its token.
@@ -159,57 +74,6 @@ enum ColdResumeAuthorization {
 enum ResumeMode {
     ColdRespawn,
     HotTakeover,
-}
-
-/// Slow-lane retry ceiling for the self-heal loop. A code invariant, not a knob.
-pub const HEAL_SLOW_RETRY_CEILING: Duration = Duration::from_secs(300);
-
-/// ±20% uniform jitter applied to every heal delay.
-const HEAL_JITTER_FRACTION: f64 = 0.2;
-
-/// Classified failure lanes for the self-heal loop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FailureClass {
-    /// Fast lane — the existing `BackoffState` knobs. Child exited,
-    /// handshake/cold-start deadline, socket errors.
-    Transient,
-    /// Slow lane — spawn exec error, settings/config read error, guard
-    /// refusal that is safe to retry (floor `restart_max_delay_ms`, ceiling
-    /// [`HEAL_SLOW_RETRY_CEILING`]).
-    Persistent,
-    /// Slow lane, reconciliation-only rounds: a possible surviving daemon we could not prove
-    /// gone. The spawn path is unreachable until a round proves absence.
-    Unreconciled,
-}
-
-/// Precondition validated under the core lock before any destructive work; the transition
-/// serial is never released before the terminal Running/Failed write.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReplacePrecondition {
-    /// Settings respawn: replace whatever is installed.
-    Always,
-    /// Crash watcher: proceed only if the Running generation it observed
-    /// dying is still the installed one (equality only, never ordering).
-    GenerationIs(u64),
-    /// Heal loop: proceed only when nothing is Running — the loop can never
-    /// stomp a Running daemon a concurrent transition won.
-    NotRunning,
-}
-
-/// Readiness snapshot published on every installed Running / terminal Failed and on every
-/// transition entry, so `running: true` holds only while a Running incarnation is installed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DaemonReadiness {
-    pub generation: u64,
-    pub running: bool,
-}
-
-/// Outcome of [`SharedCodexAppServer::transition_replace`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReplaceOutcome {
-    Replaced,
-    /// The precondition failed: no reap, no spawn, nothing touched.
-    PreconditionFailed,
 }
 
 /// How the shared start body established the Running daemon.
@@ -330,20 +194,6 @@ impl Drop for HealActiveGuard {
     }
 }
 
-/// Failure classification for the heal lanes: the Transient messages are exactly the
-/// cold-start poll failures plus the crash-watcher exit shape; everything else is slow-lane.
-fn classify_spawn_failure(err: &CalmError) -> FailureClass {
-    let msg = err.to_string();
-    if msg.contains("exited before initialize")
-        || msg.contains("not initialized after")
-        || msg.contains("app-server exited")
-    {
-        FailureClass::Transient
-    } else {
-        FailureClass::Persistent
-    }
-}
-
 /// Marker for the ONE error whose transition outcome was never observed; callers must not
 /// claim "terminalized + heal armed" for it.
 const DETACHED_SPAWN_RESULT_LOST: &str =
@@ -351,17 +201,6 @@ const DETACHED_SPAWN_RESULT_LOST: &str =
 
 fn detached_spawn_result_lost(err: &CalmError) -> bool {
     err.to_string().contains(DETACHED_SPAWN_RESULT_LOST)
-}
-
-/// ±20% uniform jitter; clock-derived entropy suffices because the heal loop only needs
-/// desynchronization.
-fn heal_jitter(delay: Duration) -> Duration {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0) as u64;
-    let unit = (nanos % 1_000_001) as f64 / 1_000_000.0;
-    delay.mul_f64(1.0 - HEAL_JITTER_FRACTION + 2.0 * HEAL_JITTER_FRACTION * unit)
 }
 
 /// `/proc/<pid>/stat` state == `Z`. A zombie means "dead" only for post-reap verification
@@ -579,89 +418,6 @@ impl std::fmt::Debug for SharedThreadStartParams {
     }
 }
 
-#[derive(Debug)]
-pub struct BackoffState {
-    initial: Duration,
-    max: Duration,
-    stable_window: Duration,
-    attempts: std::sync::atomic::AtomicU64,
-    last_relaunch_at: std::sync::Mutex<Option<Instant>>,
-}
-
-impl BackoffState {
-    pub fn new(initial: Duration, max: Duration) -> Self {
-        let initial = initial.max(Duration::from_millis(1));
-        let max = max.max(initial);
-        Self {
-            initial,
-            max,
-            stable_window: Duration::from_secs(60),
-            attempts: std::sync::atomic::AtomicU64::new(0),
-            last_relaunch_at: std::sync::Mutex::new(None),
-        }
-    }
-
-    pub fn reset(&self) {
-        self.attempts.store(0, Ordering::SeqCst);
-        *self
-            .last_relaunch_at
-            .lock()
-            .expect("backoff relaunch timestamp mutex poisoned") = None;
-    }
-
-    pub fn note_relaunch_now(&self) {
-        *self
-            .last_relaunch_at
-            .lock()
-            .expect("backoff relaunch timestamp mutex poisoned") = Some(Instant::now());
-    }
-
-    pub fn next_delay(&self) -> Duration {
-        self.reset_if_stable();
-        let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
-        bounded_exponential_backoff(self.initial, self.max, attempt)
-    }
-
-    /// Slow heal lane: same attempts counter as [`Self::next_delay`], floor = this state's
-    /// max, caller-supplied ceiling.
-    pub fn next_slow_delay(&self, ceiling: Duration) -> Duration {
-        self.reset_if_stable();
-        let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
-        bounded_exponential_backoff(self.max, ceiling.max(self.max), attempt)
-    }
-
-    fn reset_if_stable(&self) {
-        let Some(last_relaunch_at) = *self
-            .last_relaunch_at
-            .lock()
-            .expect("backoff relaunch timestamp mutex poisoned")
-        else {
-            return;
-        };
-        if last_relaunch_at.elapsed() >= self.stable_window {
-            self.reset();
-        }
-    }
-
-    #[cfg(any(test, feature = "fixtures"))]
-    pub fn simulate_stable_run_for(&self, duration: Duration) {
-        *self
-            .last_relaunch_at
-            .lock()
-            .expect("backoff relaunch timestamp mutex poisoned") = Some(
-            Instant::now()
-                .checked_sub(duration)
-                .unwrap_or_else(Instant::now),
-        );
-    }
-}
-
-pub fn bounded_exponential_backoff(initial: Duration, max: Duration, attempt: u64) -> Duration {
-    let shift = attempt.min(31);
-    let factor = 1_u32 << shift;
-    initial.saturating_mul(factor).min(max)
-}
-
 /// Pagination guard for [`SharedCodexAppServer::model_list`]. Codex answers
 /// the whole catalog in one page today; this only bounds a peer that never
 /// clears `nextCursor`.
@@ -868,86 +624,10 @@ impl FakeSharedCodexAppServer {
     }
 }
 
-/// Typestate companion to `SharedDaemonState`. `Child` MUST stay private; only transition
-/// APIs may kill/replace. Sibling attribution (thread_cache, active_turns, pending) survives
-/// process restarts and is NOT part of typestate.
-pub enum SupervisorState {
-    Idle,
-    Starting {
-        backoff_until: Option<Instant>,
-        socket_path: PathBuf,
-    },
-    Running {
-        child: Option<Child>,
-        client: Arc<CodexAppServer>,
-        runtime: SharedDaemonRuntime,
-        watcher: SupervisorWatcher,
-    },
-    Restarting {
-        prev_pid: Option<i32>,
-        reason: String,
-        attempts: u32,
-    },
-    Failed {
-        last_error: String,
-        /// Heal-lane classification for this failure.
-        class: FailureClass,
-        since: Instant,
-    },
-}
-
-pub enum WatcherKind {
-    SpawnedChild,
-    TakenOverPid { pid: i32 },
-}
-
-pub struct SupervisorWatcher {
-    pub kind: WatcherKind,
-    pub handle: JoinHandle<()>,
-}
-
-pub struct SupervisorCore {
-    pub state: SupervisorState,
-    pub attempts: u32,
-    /// Bumped (`wrapping_add`) each time a Running state is installed. Consumers compare by
-    /// equality only, never ordering.
-    pub generation: u64,
-}
-
-pub struct LaunchedSharedDaemon {
-    pub child: Option<Child>,
-    pub client: Arc<CodexAppServer>,
-    pub runtime: SharedDaemonRuntime,
-    pub watcher: SupervisorWatcher,
-}
-
 pub(crate) struct RunningProcessParts {
     child: Option<Child>,
     runtime: SharedDaemonRuntime,
     watcher: SupervisorWatcher,
-}
-
-impl SupervisorState {
-    /// Return last_error string when present (Restarting.reason, Failed.last_error).
-    /// None for Idle/Starting/Running.
-    pub fn last_error(&self) -> Option<&str> {
-        match self {
-            SupervisorState::Restarting { reason, .. } => Some(reason.as_str()),
-            SupervisorState::Failed { last_error, .. } => Some(last_error.as_str()),
-            _ => None,
-        }
-    }
-
-    /// DB string mapping for persistence + status_snapshot.
-    pub fn as_shared_daemon_state(&self) -> SharedDaemonState {
-        match self {
-            SupervisorState::Idle => SharedDaemonState::Idle,
-            SupervisorState::Starting { .. } => SharedDaemonState::Starting,
-            SupervisorState::Running { .. } => SharedDaemonState::Running,
-            SupervisorState::Restarting { .. } => SharedDaemonState::Restarting,
-            SupervisorState::Failed { .. } => SharedDaemonState::Failed,
-        }
-    }
 }
 
 impl SharedCodexAppServer {
@@ -2129,39 +1809,24 @@ impl SharedCodexAppServer {
     /// The child env is a pure function of typed config: `env_clear()` plus exactly
     /// [`SPAWN_ENV_PASSTHROUGH`], the computed keys, and (fixture builds only) the fake-codex channel.
     fn apply_spawn_env(&self, cmd: &mut Command, snapshot: &SpawnEnvSnapshot) {
-        cmd.env_clear();
-        for key in SPAWN_ENV_PASSTHROUGH {
-            // var_os: a non-UTF8 value must pass through, not be silently dropped
-            if let Some(value) = std::env::var_os(key) {
-                cmd.env(key, value);
-            }
+        provider::codex::shared::SpawnEnvironment {
+            path: &snapshot.kernel_path.path,
+            home: self.home.path(),
+            http_proxy: snapshot.http_proxy.as_deref(),
+            https_proxy: snapshot.https_proxy.as_deref(),
+            application_env: &[("NEIGE_CALM_BASE_URL", self.ingest_url.as_str())],
         }
+        .apply(cmd);
 
-        // Fixture channel (test-only passthrough). Compiled out of production builds — these
-        // names must NEVER join the prod `SPAWN_ENV_PASSTHROUGH` const.
+        // Fixture-only channels are owned by the kernel's fake-codex harness.
         #[cfg(feature = "fixtures")]
         for (key, value) in std::env::vars_os() {
             let fixture_key = key
                 .to_str()
                 .is_some_and(|k| k.starts_with("FAKE_CODEX_") || k == "NEIGE_OSC_TRACE_PATH");
             if fixture_key {
-                cmd.env(&key, value);
+                cmd.env(key, value);
             }
-        }
-
-        // Planner and Worker exec-shells inherit this PATH; MCP child commands are NOT
-        // which-resolved on unix, so they resolve through it too.
-        cmd.env("PATH", &snapshot.kernel_path.path)
-            .env("CODEX_HOME", self.home.path())
-            .env("NEIGE_CALM_BASE_URL", &self.ingest_url);
-
-        // The snapshot values are already resolved; the lookup here is inert.
-        for (upper, lower, value) in crate::proxy_env::resolved_proxy_env_pairs(
-            snapshot.http_proxy.as_deref(),
-            snapshot.https_proxy.as_deref(),
-            |_| None,
-        ) {
-            cmd.env(upper, &value).env(lower, value);
         }
     }
 }
@@ -4854,45 +4519,6 @@ impl provider::worker::CodexDaemonProbe for SharedCodexAppServer {
 
 /// Map the wire `thread/read` response (+ `loaded` flag) into [`CodexLivenessFacts`]; the
 /// "last turn" is the MOST RECENT element of `turns`.
-fn liveness_facts_from_read(
-    read: crate::codex_appserver::ThreadReadResponse,
-    loaded: bool,
-) -> provider::worker::CodexLivenessFacts {
-    use crate::codex_appserver::{ThreadActiveFlag, ThreadStatus, TurnStatus};
-    use provider::worker::{CodexLivenessFacts, LastTurnFacts, ThreadStatusLite, TurnStatusLite};
-
-    let status = match read.thread.status {
-        ThreadStatus::NotLoaded => ThreadStatusLite::NotLoaded,
-        ThreadStatus::Idle => ThreadStatusLite::Idle,
-        ThreadStatus::SystemError => ThreadStatusLite::SystemError,
-        ThreadStatus::Active { active_flags } => ThreadStatusLite::Active {
-            waiting_on_user_input: active_flags.contains(&ThreadActiveFlag::WaitingOnUserInput),
-            waiting_on_approval: active_flags.contains(&ThreadActiveFlag::WaitingOnApproval),
-        },
-    };
-    // `last_turn`: None = no turns present (None or empty list).
-    let last_turn = read
-        .thread
-        .turns
-        .as_deref()
-        .and_then(|turns| turns.last())
-        .map(|turn| LastTurnFacts {
-            completed_at: turn.completed_at,
-            status: match turn.status {
-                TurnStatus::Completed => TurnStatusLite::Completed,
-                TurnStatus::Interrupted => TurnStatusLite::Interrupted,
-                TurnStatus::Failed => TurnStatusLite::Failed,
-                TurnStatus::InProgress => TurnStatusLite::InProgress,
-                TurnStatus::Unknown => TurnStatusLite::Unknown,
-            },
-        });
-    CodexLivenessFacts {
-        loaded,
-        status,
-        last_turn,
-    }
-}
-
 async fn connect_initialized(
     sock: &Path,
 ) -> Result<(CodexAppServer, crate::codex_appserver::NotificationStream)> {
