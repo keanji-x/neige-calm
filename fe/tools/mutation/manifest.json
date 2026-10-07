@@ -1818,13 +1818,14 @@
     "expected_red": [
       "a keyed card create keeps the key when Create is pressed again on the same draft, and mints a new one for a changed draft",
       "a keyed card create resends the held key and body when the same fieldless kind is picked again",
-      "AppShell Area editor flow retries a lost create confirmation with the same identity and payload after reopening"
+      "AppShell Area editor flow retries a lost create confirmation with the same identity and payload after reopening",
+      "AppShell Area editor flow keeps the original create identity after an unknown attempt followed by 413"
     ],
     "selection_paths": [
       "web/src/app/router/new-card.test.tsx",
       "web/src/app/shell/area-editor-flow.test.tsx"
     ],
-    "why_more_than_one": "useKeyedIntent is the one keyed-create lifecycle for card and Area create, so minting on every press reddens the three cases that press again on an unknown outcome through it: the card form's second Create of the same draft, a second pick of the same fieldless kind, and Area's Try again after reopening. Card Try again resends the held request directly and stays green, as do the cases whose next press is meant to mint."
+    "why_more_than_one": "useKeyedIntent is the one keyed-create lifecycle for card and Area create, so minting on every press reddens the four cases that press again on an unknown outcome through it: the card form's second Create of the same draft, a second pick of the same fieldless kind, Area's Try again after reopening, and Area's retry after an unknown attempt followed by 413, which must keep the original create identity. Card Try again resends the held request directly and stays green, as do the cases whose next press is meant to mint."
   },
   {
     "mutation_id": "s2131-plugin-install-retry-conflict-refused",
