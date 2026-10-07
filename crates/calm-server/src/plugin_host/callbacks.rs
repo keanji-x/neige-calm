@@ -868,6 +868,7 @@ mod tests {
             k_r,
             k_w,
             InitializeMeta {
+                kernel_version: env!("CARGO_PKG_VERSION"),
                 expected_echo: None,
                 config: None,
             },

@@ -3,8 +3,8 @@
 
 use serde::Deserialize;
 
-use super::glob::glob_matches;
 use crate::event::Event;
+use plugin_runtime::glob::glob_matches;
 
 /// The filter clause the plugin sends. All fields optional; missing == match.
 #[derive(Debug, Clone, Default, Deserialize)]

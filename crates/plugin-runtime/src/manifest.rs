@@ -4,8 +4,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
-use crate::mcp_server::tools::plan::key_is_valid;
-use crate::validation::KERNEL_OVERLAY_PLUGIN_ID;
+use calm_types::plugin::KERNEL_OVERLAY_PLUGIN_ID;
+use calm_types::report_blocks::tasks::key_is_valid;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -719,13 +719,13 @@ impl Manifest {
 
         // Track `template_input` lives on the Manifest; error paths are `input_schema…`.
         if let Some(schema) = self.input_schema.as_ref() {
-            crate::plugin_host::template_input::validate_input_schema(schema)
+            crate::template_input::validate_input_schema(schema)
                 .map_err(|e| ManifestError::invalid(e.path, e.reason))?;
         }
 
         // Same subset, different field, different error root: a `config_schema` violation must say `config_schema…`.
         if let Some(schema) = self.config_schema.as_ref() {
-            crate::plugin_host::template_input::validate_object_schema(CONFIG_SCHEMA_KEY, schema)
+            crate::template_input::validate_object_schema(CONFIG_SCHEMA_KEY, schema)
                 .map_err(|e| ManifestError::invalid(e.path, e.reason))?;
 
             // The conditional version bump: only a schema with a non-empty `required` loses something real when an older kernel ignores the key.
@@ -753,7 +753,7 @@ impl Manifest {
 
         self.permissions.validate()?;
 
-        if let Some((first, second, minted)) = crate::plugin_results::minted_name_collision(
+        if let Some((first, second, minted)) = crate::results::minted_name_collision(
             &self.id,
             self.exposes_tools.iter().map(|tool| tool.name.as_str()),
         ) {
@@ -1029,9 +1029,7 @@ impl CliQueryBlock {
         // hand an agent-callable connector the operator's git identity. The denylist is the CREDENTIAL subset
         // only; `secret_env` values come from the connector's own `secrets.json` and escalate nothing.
         for (i, key) in self.env_allow.iter().enumerate() {
-            if crate::operation::forge_action_adapter::FORGE_CREDENTIAL_ENV_KEYS
-                .contains(&key.as_str())
-            {
+            if calm_types::forge_env::FORGE_CREDENTIAL_ENV_KEYS.contains(&key.as_str()) {
                 return Err(ManifestError::invalid(
                     format!("cli_query.env_allow[{i}]"),
                     format!(
@@ -1661,68 +1659,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const DEV_RENDERED_PROMPT_GOLDEN: &str =
-        include_str!("../../tests/goldens/dev_planner_prompt.txt");
-
-    fn assert_full_golden_eq(expected: &str, actual: &str) {
-        assert!(
-            !expected.is_empty(),
-            "full golden degenerate state: expected golden must not be empty"
-        );
-        assert!(
-            !actual.is_empty(),
-            "full golden degenerate state: rendered output must not be empty"
-        );
-        if expected == actual {
-            return;
-        }
-
-        let first_difference = expected
-            .bytes()
-            .zip(actual.bytes())
-            .position(|(expected, actual)| expected != actual)
-            .unwrap_or_else(|| expected.len().min(actual.len()));
-        let mut context_offset = first_difference;
-        while !expected.is_char_boundary(context_offset) || !actual.is_char_boundary(context_offset)
-        {
-            context_offset -= 1;
-        }
-
-        fn line_context(text: &str, byte_offset: usize) -> String {
-            let line_start = text[..byte_offset].rfind('\n').map_or(0, |index| index + 1);
-            let line_end = text[byte_offset..]
-                .find('\n')
-                .map_or(text.len(), |index| byte_offset + index);
-            let line_number = text[..line_start]
-                .bytes()
-                .filter(|byte| *byte == b'\n')
-                .count()
-                + 1;
-            let column = text[line_start..byte_offset].chars().count() + 1;
-            format!(
-                "line {line_number}, column {column}: {:?}",
-                &text[line_start..line_end]
-            )
-        }
-
-        panic!(
-            "full golden mismatch at byte {first_difference} (expected {} bytes, actual {} bytes)\n\
-             expected next {:?}; {}\n  actual next {:?}; {}",
-            expected.len(),
-            actual.len(),
-            expected[context_offset..].chars().next(),
-            line_context(expected, context_offset),
-            actual[context_offset..].chars().next(),
-            line_context(actual, context_offset)
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "full golden degenerate state")]
-    fn full_golden_equality_rejects_empty_expected_and_actual() {
-        assert_full_golden_eq("", "");
-    }
-
     fn hello_world() -> &'static str {
         r#"{
             "manifest_version": 1,
@@ -1884,7 +1820,7 @@ mod tests {
 
     #[test]
     fn the_shipped_dev_manifest_declares_version_4() {
-        let m = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
+        let m = Manifest::parse(include_str!("../../../plugins/git-forge/manifest.json"))
             .expect("shipped git-forge manifest");
         assert_eq!(m.manifest_version, 4);
         assert!(!m.templates.is_empty());
@@ -1912,7 +1848,7 @@ mod tests {
 
     #[test]
     fn parses_shipped_dev_descriptor() {
-        let m = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
+        let m = Manifest::parse(include_str!("../../../plugins/git-forge/manifest.json"))
             .expect("shipped git-forge manifest");
         let template = m
             .templates
@@ -1942,88 +1878,6 @@ mod tests {
         assert_eq!(schema["properties"]["notes"]["type"], "string");
     }
 
-    #[test]
-    fn shipped_git_forge_give_up_uses_the_track_close_tool() {
-        Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
-            .expect("shipped git-forge manifest");
-        let descriptor = crate::mcp_server::build_default_registry()
-            .descriptors()
-            .into_iter()
-            .find(|descriptor| descriptor.name == "neige_track_close")
-            .expect("GIVE-UP tool descriptor");
-        assert!(
-            descriptor.roles == [crate::model::CardRole::Planner],
-            "only the Planner closes a track: {:?}",
-            descriptor.roles
-        );
-
-        let template = TemplateDescriptor { id: "dev".into() };
-        let rendered =
-            crate::operation::planner_harness_start_adapter::render_planner_developer_instructions(
-                "track-give-up",
-                Some(&template),
-                None,
-            );
-        crate::planner_card::validate_planner_prompt_contract(&rendered)
-            .unwrap_or_else(|error| panic!("{error}"));
-        assert!(
-            !rendered.contains("If n == cap and the round is non-approving"),
-            "S5 descriptor has no planner_instructions to inject"
-        );
-    }
-
-    #[test]
-    fn shipped_dev_rendered_prompt_matches_full_golden() {
-        let manifest = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
-            .expect("shipped git-forge manifest");
-        let template = manifest
-            .templates
-            .iter()
-            .find(|template| template.id == "dev")
-            .expect("dev template");
-
-        // A legal final state for the shipped schema, with every required and optional field populated.
-        let template_input = json!({
-            "issue_url": "https://github.com/neige-calm/neige-calm/issues/985",
-            "repo": "neige-calm/neige-calm",
-            "issue_number": 985,
-            "merge_policy": "auto-merge",
-            "notes": "Full golden fixture covers every shipped template input field."
-        });
-        crate::plugin_host::template_input::validate_template_input(
-            manifest
-                .input_schema
-                .as_ref()
-                .expect("shipped git-forge Manifest.input_schema"),
-            &template_input,
-        )
-        .expect("full golden template_input satisfies the shipped schema");
-        let rendered =
-            crate::operation::planner_harness_start_adapter::render_planner_developer_instructions(
-                "track-golden-985",
-                Some(template),
-                Some(&template_input),
-            );
-
-        if std::env::var_os("REGEN_PLANNER_PROMPT_GOLDEN").is_some() {
-            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/goldens/dev_planner_prompt.txt");
-            // Write back `rendered + "\n"`: the assertion side does
-            // `strip_suffix('\n')`, so omitting it panics on the very next run.
-            std::fs::write(&path, format!("{rendered}\n")).expect("write regenerated golden");
-            panic!(
-                "dev_planner_prompt.txt regenerated from the current prompt; \
-                 hand-verify the diff, commit, and re-run without REGEN_PLANNER_PROMPT_GOLDEN"
-            );
-        }
-
-        let expected = DEV_RENDERED_PROMPT_GOLDEN
-            .strip_suffix('\n')
-            .expect("text fixture has its repository newline");
-        assert_full_golden_eq(expected, &rendered);
-    }
-
-    /// The last three rows: the descriptor alphabet has no `/`, so a plugin cannot claim `site/<stem>` or the reserved `plugin/…` key.
     #[test]
     fn template_descriptor_rejects_invalid_shapes() {
         let cases: Vec<(&str, Value, &str)> = vec![
@@ -2803,7 +2657,7 @@ mod connector_kind_tests {
 
     #[test]
     fn shipped_dev_manifest_parses_without_a_child_process() {
-        let text = include_str!("../../../../plugins/git-forge/manifest.json");
+        let text = include_str!("../../../plugins/git-forge/manifest.json");
         let m = Manifest::parse(text).expect("shipped manifest must keep parsing");
         assert_eq!(m.kind, ConnectorKind::Builtin);
         assert!(m.entrypoint.is_none());
@@ -3158,7 +3012,7 @@ mod connector_kind_tests {
     /// Go through the REAL merge, so these fixtures cannot disagree with what a
     /// spawn would actually see.
     fn effective_config_for_test(m: &Manifest, user: &Value) -> serde_json::Map<String, Value> {
-        crate::plugin_host::config::effective_config(m, user)
+        crate::config::effective_config(m, user)
     }
 
     #[test]

@@ -1,25 +1,24 @@
 //! Plugin host — the kernel's side of the plugin protocol.
 
-pub mod auth;
+pub use plugin_runtime::auth;
 mod builtin;
 pub mod callbacks;
 pub mod child_process;
-pub mod cli_query;
-pub mod config;
+pub use plugin_runtime::cli_query;
+pub use plugin_runtime::config;
 pub mod connector;
-pub mod error;
+pub use plugin_runtime::error;
 pub mod events;
-pub mod forge_caller;
-mod glob;
-pub mod http_headers;
-pub mod http_mcp;
+pub use plugin_runtime::forge_caller;
+pub use plugin_runtime::http_headers;
+pub use plugin_runtime::http_mcp;
 pub mod lifecycle;
 pub mod managed;
-pub mod manifest;
-pub mod mcp;
+pub use plugin_runtime::manifest;
+pub use plugin_runtime::mcp;
 pub mod mcp_setup;
-pub mod perms;
-pub mod process;
+pub use plugin_runtime::perms;
+pub use plugin_runtime::process;
 pub mod registry;
 pub mod resources;
 pub mod template_input;
@@ -419,7 +418,7 @@ async fn connect_mcp_http(
         Arc::new(HttpMcpClient::new(id, url, block, api_key.as_ref()).with_headers(headers));
 
     // Best-effort: an `initialize` failure is informational; it shares the caller's budget.
-    if let Err(e) = client.initialize().await {
+    if let Err(e) = client.initialize(env!("CARGO_PKG_VERSION")).await {
         tracing::info!(
             plugin_id = %id,
             target = %client.log_target(),
@@ -1221,6 +1220,7 @@ impl PluginHost {
             stdout,
             stdin,
             InitializeMeta {
+                kernel_version: env!("CARGO_PKG_VERSION"),
                 expected_echo: Some(token.as_str()),
                 // `Some` even when empty: 'configuration delivered, none set' and 'kernel predates configuration delivery' are different facts.
                 config: Some(&effective),
@@ -2636,3 +2636,6 @@ mod minted_name_conflict_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod manifest_tests;

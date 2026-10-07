@@ -12,7 +12,7 @@ use super::super::child_process::{
 use super::super::connector;
 use super::super::manifest::{ArgvSlot, CliQueryBlock, argv_slot};
 use super::{CliQueryRuntime, PROBE_MAX_STDOUT_BYTES, VERSION_PROBE_BUDGET, config_scalar};
-use crate::operation::forge_action_adapter::FORGE_CREDENTIAL_ENV_KEYS;
+use calm_types::forge_env::FORGE_CREDENTIAL_ENV_KEYS;
 use serde_json::{Map, Value};
 
 /// Is `key` a forge credential passthrough key — one this connector may never receive from the service environment? The non-credential half (`GH_HOST`, `NO_PROXY`) is deliberately not denied.

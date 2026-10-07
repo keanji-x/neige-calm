@@ -332,9 +332,7 @@ impl ToolDescriptor {
     }
 }
 
-pub fn read_only_annotations() -> Value {
-    json!({ "readOnlyHint": true })
-}
+pub use calm_types::plugin::read_only_annotations;
 
 /// Annotations telling codex not to insert a second approval prompt. Use ONLY for tools whose
 /// declared `roles` the registry gates — the kernel's role gate is the actual authorization

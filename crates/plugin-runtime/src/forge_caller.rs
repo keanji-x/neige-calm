@@ -30,7 +30,7 @@ impl ForgeCallerScope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugin_host::mcp::{
+    use crate::mcp::{
         InitializeMeta, KERNEL_PROTOCOL_VERSION, McpClient, TRACK_META_KEY, TrackMeta,
     };
     use serde_json::{Value, json};
@@ -79,6 +79,7 @@ mod tests {
             kernel_read,
             kernel_write,
             InitializeMeta {
+                kernel_version: "9.8.7",
                 expected_echo: None,
                 config: None,
             },

@@ -79,7 +79,7 @@ pub const OVERLAY_NOW_SCHEMA_VERSION: u32 = 1;
 pub const OVERLAY_LAYOUT_SCHEMA_VERSION: u32 = 1;
 /// The reserved `plugin_id` namespace for overlay rows the kernel authors itself; nothing outside
 /// the process may write it.
-pub const KERNEL_OVERLAY_PLUGIN_ID: &str = "kernel";
+pub use calm_types::plugin::KERNEL_OVERLAY_PLUGIN_ID;
 /// `schemaVersion` for `Overlay.payload` when `kind == "file-viewer-nav"`.
 pub const OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Overlay.payload` when `kind == "activity"`.

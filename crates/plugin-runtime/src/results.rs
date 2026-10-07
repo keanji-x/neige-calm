@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::plugin_host::mcp::CallToolResult;
+use crate::mcp::CallToolResult;
 
 pub const MAX_ENTRIES_PER_TRACK: usize = 64;
 pub const MAX_TOTAL_BYTES: usize = 128 * 1024 * 1024;
@@ -231,7 +231,7 @@ impl Default for PluginResults {
 
 impl PluginResults {
     pub fn new() -> Self {
-        Self::with_clock(Arc::new(crate::model::now_ms))
+        Self::with_clock(Arc::new(|| chrono::Utc::now().timestamp_millis()))
     }
 
     /// Test seam: an injectable clock for the TTL rules.
@@ -485,7 +485,7 @@ impl Inner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugin_host::mcp::ContentBlock;
+    use crate::mcp::ContentBlock;
     use serde_json::json;
     use std::sync::atomic::{AtomicI64, Ordering};
 

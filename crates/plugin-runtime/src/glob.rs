@@ -1,7 +1,7 @@
 //! Tiny in-house glob matcher shared by the plugin host: `"*"`, a dot-anchored `"<prefix>.*"` (any number of following segments), or literal equality.
 //! No glob crate on purpose: filter input arrives from plugin processes the kernel does not audit.
 
-pub(super) fn glob_matches(pattern: &str, name: &str) -> bool {
+pub fn glob_matches(pattern: &str, name: &str) -> bool {
     if pattern == "*" || pattern == name {
         return true;
     }

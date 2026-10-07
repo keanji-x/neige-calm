@@ -1,0 +1,812 @@
+//! Hand-rolled JSON-Schema **subset** for `Manifest.input_schema` / `config_schema` and the matching instance validator.
+//! The subset is enforced at manifest-validation time so the instance validator never silently ignores a constraint it does not understand.
+
+use serde_json::{Map, Value};
+
+/// Byte cap for both the serialized schema and the serialized instance; bound input is injected into the planner prompt.
+pub const TEMPLATE_INPUT_MAX_BYTES: usize = 8192;
+
+const ROOT_KEYWORDS: [&str; 5] = [
+    "type",
+    "properties",
+    "required",
+    "additionalProperties",
+    "description",
+];
+const PROPERTY_KEYWORDS: [&str; 4] = ["type", "enum", "default", "description"];
+const PROPERTY_TYPES: [&str; 4] = ["string", "integer", "number", "boolean"];
+
+/// A schema-subset violation: `path` is rooted at the Manifest field.
+#[derive(Debug)]
+pub struct SchemaError {
+    pub path: String,
+    pub reason: String,
+}
+
+impl SchemaError {
+    fn new(path: impl Into<String>, reason: impl Into<String>) -> Self {
+        SchemaError {
+            path: path.into(),
+            reason: reason.into(),
+        }
+    }
+}
+
+/// Validate that `schema` stays inside the supported subset, reporting violations under `root_path`.
+pub fn validate_object_schema(root_path: &str, schema: &Value) -> Result<(), SchemaError> {
+    let path = |s: &str| format!("{root_path}{s}");
+
+    if serde_json::to_string(schema)
+        .map(|s| s.len())
+        .unwrap_or(usize::MAX)
+        > TEMPLATE_INPUT_MAX_BYTES
+    {
+        return Err(SchemaError::new(
+            path(""),
+            format!("must serialize to at most {TEMPLATE_INPUT_MAX_BYTES} bytes"),
+        ));
+    }
+
+    let root = schema
+        .as_object()
+        .ok_or_else(|| SchemaError::new(path(""), "must be a JSON object"))?;
+
+    for key in root.keys() {
+        if !ROOT_KEYWORDS.contains(&key.as_str()) {
+            return Err(SchemaError::new(
+                path(&format!(".{key}")),
+                format!("unsupported keyword `{key}`; supported root keywords: {ROOT_KEYWORDS:?}"),
+            ));
+        }
+    }
+
+    if root.get("type").and_then(Value::as_str) != Some("object") {
+        return Err(SchemaError::new(
+            path(".type"),
+            "must be exactly \"object\"",
+        ));
+    }
+
+    if let Some(description) = root.get("description")
+        && !description.is_string()
+    {
+        return Err(SchemaError::new(path(".description"), "must be a string"));
+    }
+
+    // `additionalProperties: false` must be explicit — absence would smuggle in JSON Schema's open-world default.
+    match root.get("additionalProperties") {
+        Some(Value::Bool(false)) => {}
+        Some(_) => {
+            return Err(SchemaError::new(
+                path(".additionalProperties"),
+                "must be exactly false (open-world schemas are not supported)",
+            ));
+        }
+        None => {
+            return Err(SchemaError::new(
+                path(".additionalProperties"),
+                "must be present and false (open-world schemas are not supported)",
+            ));
+        }
+    }
+
+    let empty = Map::new();
+    let properties = match root.get("properties") {
+        Some(Value::Object(map)) => map,
+        Some(_) => {
+            return Err(SchemaError::new(
+                path(".properties"),
+                "must be a JSON object",
+            ));
+        }
+        None => &empty,
+    };
+
+    for (name, property_schema) in properties {
+        validate_property(name, property_schema).map_err(|e| SchemaError {
+            path: path(&format!(".properties.{name}{}", e.path)),
+            reason: e.reason,
+        })?;
+    }
+
+    if let Some(required) = root.get("required") {
+        let items = required
+            .as_array()
+            .ok_or_else(|| SchemaError::new(path(".required"), "must be an array of strings"))?;
+        let mut seen = Vec::with_capacity(items.len());
+        for (i, item) in items.iter().enumerate() {
+            let key = item.as_str().ok_or_else(|| {
+                SchemaError::new(path(&format!(".required[{i}]")), "must be a string")
+            })?;
+            if !properties.contains_key(key) {
+                return Err(SchemaError::new(
+                    path(&format!(".required[{i}]")),
+                    format!("`{key}` is not declared in properties"),
+                ));
+            }
+            if seen.contains(&key) {
+                return Err(SchemaError::new(
+                    path(&format!(".required[{i}]")),
+                    format!("duplicate required key `{key}`"),
+                ));
+            }
+            seen.push(key);
+        }
+    }
+
+    Ok(())
+}
+
+pub fn validate_input_schema(schema: &Value) -> Result<(), SchemaError> {
+    validate_object_schema("input_schema", schema)
+}
+
+/// Error paths are relative to the property (empty string = the property object itself).
+fn validate_property(_name: &str, schema: &Value) -> Result<(), SchemaError> {
+    let schema = schema
+        .as_object()
+        .ok_or_else(|| SchemaError::new("", "must be a JSON object"))?;
+
+    for key in schema.keys() {
+        if !PROPERTY_KEYWORDS.contains(&key.as_str()) {
+            return Err(SchemaError::new(
+                format!(".{key}"),
+                format!(
+                    "unsupported keyword `{key}`; supported property keywords: {PROPERTY_KEYWORDS:?}"
+                ),
+            ));
+        }
+    }
+
+    if let Some(description) = schema.get("description")
+        && !description.is_string()
+    {
+        return Err(SchemaError::new(".description", "must be a string"));
+    }
+
+    let ty = schema
+        .get("type")
+        .ok_or_else(|| SchemaError::new(".type", "is required"))?
+        .as_str()
+        .ok_or_else(|| SchemaError::new(".type", "must be a string"))?;
+    if !PROPERTY_TYPES.contains(&ty) {
+        return Err(SchemaError::new(
+            ".type",
+            format!("unsupported type `{ty}`; supported: {PROPERTY_TYPES:?}"),
+        ));
+    }
+
+    if let Some(members) = schema.get("enum") {
+        // String enums only — an enum next to `type: "integer"` is declarable-but-unsatisfiable.
+        if ty != "string" {
+            return Err(SchemaError::new(
+                ".enum",
+                format!("enum is only supported with type \"string\" (got type `{ty}`)"),
+            ));
+        }
+        let members = members
+            .as_array()
+            .ok_or_else(|| SchemaError::new(".enum", "must be a non-empty array of strings"))?;
+        if members.is_empty() {
+            return Err(SchemaError::new(
+                ".enum",
+                "must be a non-empty array of strings",
+            ));
+        }
+        if let Some(i) = members.iter().position(|m| !m.is_string()) {
+            return Err(SchemaError::new(format!(".enum[{i}]"), "must be a string"));
+        }
+    }
+
+    if let Some(default) = schema.get("default")
+        && let Err(reason) = check_value(default, schema)
+    {
+        return Err(SchemaError::new(
+            ".default",
+            format!("default does not satisfy the property's own constraints: {reason}"),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Why an instance does not satisfy its schema, or a `template_input` its binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstanceViolation {
+    /// The instance as a whole (not an object, over the byte cap) or its binding; a whole sentence.
+    Whole(String),
+    /// One key of the instance: `field` is its path rooted at the caller's root
+    /// (`config.retries`, `template_input.issue_url`), `reason` what is wrong with it.
+    Field { field: String, reason: String },
+}
+
+impl InstanceViolation {
+    fn field(root_path: &str, key: &str, reason: impl Into<String>) -> Self {
+        InstanceViolation::Field {
+            field: format!("{root_path}.{key}"),
+            reason: reason.into(),
+        }
+    }
+}
+
+/// The text a reader without the structure gets (a persisted contract failure, a log): `<field>: <reason>`.
+impl std::fmt::Display for InstanceViolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InstanceViolation::Whole(sentence) => f.write_str(sentence),
+            InstanceViolation::Field { field, reason } => write!(f, "{field}: {reason}"),
+        }
+    }
+}
+
+/// Validate an instance against an already subset-validated schema. A violation of one key names
+/// it as a field rooted at `root_path`, so the route answers it as that field's refusal.
+pub fn validate_instance(
+    root_path: &str,
+    schema: &Value,
+    input: &Value,
+) -> Result<(), InstanceViolation> {
+    if serde_json::to_string(input)
+        .map(|s| s.len())
+        .unwrap_or(usize::MAX)
+        > TEMPLATE_INPUT_MAX_BYTES
+    {
+        return Err(InstanceViolation::Whole(format!(
+            "{root_path}: must serialize to at most {TEMPLATE_INPUT_MAX_BYTES} bytes"
+        )));
+    }
+
+    let object = input
+        .as_object()
+        .ok_or_else(|| InstanceViolation::Whole(format!("{root_path}: expected a JSON object")))?;
+
+    let empty = Map::new();
+    let properties = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .unwrap_or(&empty);
+
+    if let Some(required) = schema.get("required").and_then(Value::as_array) {
+        for key in required.iter().filter_map(Value::as_str) {
+            if !object.contains_key(key) {
+                return Err(InstanceViolation::field(
+                    root_path,
+                    key,
+                    "required field is missing",
+                ));
+            }
+        }
+    }
+
+    reject_undeclared_keys(root_path, schema, object.keys().map(String::as_str))?;
+
+    for (key, value) in object {
+        // Unreachable-by-construction after the sweep above; a `?` rather than `unwrap` so a regression fails closed.
+        let schema = properties
+            .get(key)
+            .ok_or_else(|| undeclared_key_violation(root_path, key))?;
+        check_value(value, schema.as_object().unwrap_or(&empty))
+            .map_err(|reason| InstanceViolation::field(root_path, key, reason))?;
+    }
+
+    Ok(())
+}
+
+fn undeclared_key_violation(root_path: &str, key: &str) -> InstanceViolation {
+    InstanceViolation::field(
+        root_path,
+        key,
+        "unknown field (schema declares additionalProperties: false)",
+    )
+}
+
+/// Reject any key `schema.properties` does not declare — the same rule `validate_instance` applies, exposed for the config PATCH, which must judge key names before a `null` (= delete) vanishes from the merged map.
+pub fn reject_undeclared_keys<'a>(
+    root_path: &str,
+    schema: &Value,
+    keys: impl Iterator<Item = &'a str>,
+) -> Result<(), InstanceViolation> {
+    for key in keys {
+        if !declares_key(schema, key) {
+            return Err(undeclared_key_violation(root_path, key));
+        }
+    }
+    Ok(())
+}
+
+/// Does `schema` declare `key`? A `bool` rather than `reject_undeclared_keys(..).is_ok()`, which would reclassify any future second failure mode as 'not declared'.
+pub fn declares_key(schema: &Value, key: &str) -> bool {
+    schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .is_some_and(|properties| properties.contains_key(key))
+}
+
+pub fn validate_template_input(schema: &Value, input: &Value) -> Result<(), InstanceViolation> {
+    validate_instance("template_input", schema, input)
+}
+
+/// Why a `template_input` has no owning plugin Manifest to be checked against — or the Manifest itself.
+pub enum TemplateInputOwner<'a> {
+    /// No `template_id` was given at all, so there is no plugin to bind to.
+    NoTemplateId,
+    /// The roster admits the `template_id`, but no running ∧ trusted plugin declares it right now.
+    NoBoundPlugin,
+    /// The owning plugin's current Manifest.
+    Plugin(&'a crate::manifest::Manifest),
+}
+
+/// The **whole** `(owner, template_input)` matrix, fail-closed: input is only accepted when a bound Manifest declares an `input_schema`, and required fields make input mandatory. Schema `default`s are never applied.
+/// Both the create route and the run-time re-check in `track_binding` enter this function; the error carries no route vocabulary.
+pub fn validate_template_input_binding(
+    owner: TemplateInputOwner<'_>,
+    input: Option<&Value>,
+) -> Result<(), InstanceViolation> {
+    let plugin = match owner {
+        TemplateInputOwner::Plugin(plugin) => plugin,
+        TemplateInputOwner::NoTemplateId => {
+            if input.is_some() {
+                return Err(InstanceViolation::Whole(
+                    "`template_input` requires `template_id`".into(),
+                ));
+            }
+            return Ok(());
+        }
+        TemplateInputOwner::NoBoundPlugin => {
+            if input.is_some() {
+                return Err(InstanceViolation::Whole(
+                    "`template_input` requires a `template_id` whose owning plugin is \
+                     currently running and trusted; no running and trusted plugin declares \
+                     this template right now, so there is no input_schema to validate against"
+                        .into(),
+                ));
+            }
+            return Ok(());
+        }
+    };
+    let plugin_id = &plugin.id;
+    match (plugin.input_schema.as_ref(), input) {
+        (None, None) => Ok(()),
+        (None, Some(_)) => Err(InstanceViolation::Whole(format!(
+            "plugin `{plugin_id}` does not declare an input_schema; \
+             `template_input` is not accepted"
+        ))),
+        (Some(schema), None) => {
+            let required: Vec<&str> = schema
+                .get("required")
+                .and_then(Value::as_array)
+                .map(|keys| keys.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            if required.is_empty() {
+                Ok(())
+            } else {
+                Err(InstanceViolation::Whole(format!(
+                    "plugin `{plugin_id}` requires `template_input` \
+                     (required: {required:?})"
+                )))
+            }
+        }
+        (Some(schema), Some(input)) => validate_template_input(schema, input),
+    }
+}
+
+/// Check a single value against a property schema's `type` + `enum`.
+fn check_value(value: &Value, schema: &Map<String, Value>) -> Result<(), String> {
+    let ty = schema
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("string");
+    let ok = match ty {
+        "string" => value.is_string(),
+        // Deliberate deviation from JSON Schema: only integer-*encoded* numbers are accepted, so `1.0` is rejected. Re-deriving integrality from an f64 hits precision edge cases.
+        "integer" => value.is_i64() || value.is_u64(),
+        "number" => value.is_number(),
+        "boolean" => value.is_boolean(),
+        _ => false,
+    };
+    if !ok {
+        if ty == "integer" {
+            return Err("expected type `integer` (an integer-encoded JSON number; \
+                 float-encoded values such as `1.0` are rejected)"
+                .to_string());
+        }
+        return Err(format!("expected type `{ty}`"));
+    }
+    if let Some(members) = schema.get("enum").and_then(Value::as_array)
+        && !members.contains(value)
+    {
+        let allowed: Vec<&str> = members.iter().filter_map(Value::as_str).collect();
+        return Err(format!("expected one of {allowed:?}"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "issue_url": { "type": "string", "description": "Canonical issue URL" },
+                "issue_number": { "type": "integer" },
+                "merge_policy": {
+                    "type": "string",
+                    "enum": ["ask", "auto-merge"],
+                    "default": "ask"
+                },
+                "dry_run": { "type": "boolean" },
+                "weight": { "type": "number" }
+            },
+            "required": ["issue_url", "issue_number"],
+            "additionalProperties": false
+        })
+    }
+
+    #[test]
+    fn accepts_v1_shaped_schema() {
+        validate_input_schema(&schema()).expect("subset schema accepted");
+    }
+
+    #[test]
+    fn accepts_schema_without_properties_or_required() {
+        validate_input_schema(&json!({
+            "type": "object",
+            "additionalProperties": false
+        }))
+        .expect("minimal closed schema accepted");
+    }
+
+    #[test]
+    fn rejects_non_object_root_and_wrong_type() {
+        let err = validate_input_schema(&json!("nope")).unwrap_err();
+        assert_eq!(err.path, "input_schema");
+
+        let err = validate_input_schema(&json!({
+            "type": "array",
+            "additionalProperties": false
+        }))
+        .unwrap_err();
+        assert_eq!(err.path, "input_schema.type");
+    }
+
+    #[test]
+    fn rejects_hostile_root_keywords() {
+        for keyword in ["$ref", "oneOf", "allOf", "patternProperties", "$defs"] {
+            let mut v = schema();
+            v[keyword] = json!({});
+            let err = validate_input_schema(&v).unwrap_err();
+            assert_eq!(err.path, format!("input_schema.{keyword}"), "{keyword}");
+        }
+    }
+
+    #[test]
+    fn rejects_hostile_property_keywords() {
+        for keyword in ["format", "pattern", "$ref", "minLength", "items"] {
+            let mut v = schema();
+            v["properties"]["issue_url"][keyword] = json!("x");
+            let err = validate_input_schema(&v).unwrap_err();
+            assert_eq!(
+                err.path,
+                format!("input_schema.properties.issue_url.{keyword}"),
+                "{keyword}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_nested_object_and_array_property_types() {
+        for ty in ["object", "array", "null"] {
+            let mut v = schema();
+            v["properties"]["issue_url"] = json!({ "type": ty });
+            let err = validate_input_schema(&v).unwrap_err();
+            assert_eq!(err.path, "input_schema.properties.issue_url.type", "{ty}");
+        }
+    }
+
+    #[test]
+    fn rejects_missing_or_non_false_additional_properties() {
+        let mut v = schema();
+        v.as_object_mut().unwrap().remove("additionalProperties");
+        let err = validate_input_schema(&v).unwrap_err();
+        assert_eq!(err.path, "input_schema.additionalProperties");
+
+        let mut v = schema();
+        v["additionalProperties"] = json!(true);
+        let err = validate_input_schema(&v).unwrap_err();
+        assert_eq!(err.path, "input_schema.additionalProperties");
+    }
+
+    #[test]
+    fn rejects_required_key_not_in_properties() {
+        let mut v = schema();
+        v["required"] = json!(["issue_url", "ghost"]);
+        let err = validate_input_schema(&v).unwrap_err();
+        assert_eq!(err.path, "input_schema.required[1]");
+        assert!(err.reason.contains("ghost"));
+    }
+
+    #[test]
+    fn rejects_enum_on_non_string_type() {
+        let mut v = schema();
+        v["properties"]["issue_number"] = json!({ "type": "integer", "enum": [1, 2] });
+        let err = validate_input_schema(&v).unwrap_err();
+        assert_eq!(err.path, "input_schema.properties.issue_number.enum");
+    }
+
+    #[test]
+    fn rejects_empty_or_non_string_enum_members() {
+        let mut v = schema();
+        v["properties"]["merge_policy"]["enum"] = json!([]);
+        let err = validate_input_schema(&v).unwrap_err();
+        assert_eq!(err.path, "input_schema.properties.merge_policy.enum");
+
+        let mut v = schema();
+        v["properties"]["merge_policy"]["enum"] = json!(["ok", 3]);
+        let err = validate_input_schema(&v).unwrap_err();
+        assert_eq!(err.path, "input_schema.properties.merge_policy.enum[1]");
+    }
+
+    #[test]
+    fn rejects_non_string_root_description() {
+        let mut v = schema();
+        v["description"] = json!(false);
+        let err = validate_input_schema(&v).unwrap_err();
+        assert_eq!(err.path, "input_schema.description");
+
+        let mut v = schema();
+        v["description"] = json!({ "oneOf": [] });
+        let err = validate_input_schema(&v).unwrap_err();
+        assert_eq!(err.path, "input_schema.description");
+    }
+
+    #[test]
+    fn rejects_non_string_property_description() {
+        let mut v = schema();
+        v["properties"]["issue_url"]["description"] = json!(false);
+        let err = validate_input_schema(&v).unwrap_err();
+        assert_eq!(err.path, "input_schema.properties.issue_url.description");
+
+        let mut v = schema();
+        v["properties"]["issue_url"]["description"] = json!({ "oneOf": [] });
+        let err = validate_input_schema(&v).unwrap_err();
+        assert_eq!(err.path, "input_schema.properties.issue_url.description");
+    }
+
+    #[test]
+    fn rejects_default_that_violates_own_constraints() {
+        let mut v = schema();
+        v["properties"]["merge_policy"]["default"] = json!("yolo-merge");
+        let err = validate_input_schema(&v).unwrap_err();
+        assert_eq!(err.path, "input_schema.properties.merge_policy.default");
+
+        let mut v = schema();
+        v["properties"]["issue_number"] = json!({ "type": "integer", "default": "42" });
+        let err = validate_input_schema(&v).unwrap_err();
+        assert_eq!(err.path, "input_schema.properties.issue_number.default");
+    }
+
+    #[test]
+    fn rejects_oversized_schema() {
+        let mut v = schema();
+        v["description"] = json!("x".repeat(TEMPLATE_INPUT_MAX_BYTES));
+        let err = validate_input_schema(&v).unwrap_err();
+        assert_eq!(err.path, "input_schema");
+        assert!(err.reason.contains("8192"));
+    }
+
+    #[test]
+    fn accepts_conforming_input() {
+        validate_template_input(
+            &schema(),
+            &json!({
+                "issue_url": "https://github.com/o/r/issues/1",
+                "issue_number": 1,
+                "merge_policy": "auto-merge",
+                "dry_run": true,
+                "weight": 0.5
+            }),
+        )
+        .expect("conforming input accepted");
+    }
+
+    /// The `(field, reason)` of a one-key violation; panics on a whole-instance one.
+    fn field_of(violation: InstanceViolation) -> (String, String) {
+        match violation {
+            InstanceViolation::Field { field, reason } => (field, reason),
+            InstanceViolation::Whole(sentence) => panic!("expected a field violation: {sentence}"),
+        }
+    }
+
+    /// The sentence of a whole-instance violation; panics on a one-key one.
+    fn whole_of(violation: InstanceViolation) -> String {
+        match violation {
+            InstanceViolation::Whole(sentence) => sentence,
+            InstanceViolation::Field { field, reason } => {
+                panic!("expected a whole-instance violation: {field}: {reason}")
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_missing_required_field() {
+        let err = validate_template_input(&schema(), &json!({ "issue_url": "u" })).unwrap_err();
+        assert_eq!(
+            err,
+            InstanceViolation::Field {
+                field: "template_input.issue_number".into(),
+                reason: "required field is missing".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_type_mismatches() {
+        let (field, reason) = field_of(
+            validate_template_input(&schema(), &json!({ "issue_url": "u", "issue_number": "1" }))
+                .unwrap_err(),
+        );
+        assert_eq!(field, "template_input.issue_number");
+        assert!(reason.contains("integer"), "{reason}");
+
+        let (field, _) = field_of(
+            validate_template_input(&schema(), &json!({ "issue_url": "u", "issue_number": 1.5 }))
+                .unwrap_err(),
+        );
+        assert_eq!(field, "template_input.issue_number");
+    }
+
+    #[test]
+    fn integer_accepts_integer_encoded_value() {
+        validate_template_input(&schema(), &json!({ "issue_url": "u", "issue_number": 1 }))
+            .expect("integer-encoded 1 accepted");
+    }
+
+    #[test]
+    fn integer_rejects_float_encoded_value_even_when_whole() {
+        let (field, reason) = field_of(
+            validate_template_input(&schema(), &json!({ "issue_url": "u", "issue_number": 1.0 }))
+                .unwrap_err(),
+        );
+        assert_eq!(field, "template_input.issue_number");
+        assert!(reason.contains("float-encoded"), "{reason}");
+    }
+
+    #[test]
+    fn rejects_enum_violation_naming_field_and_members() {
+        let (field, reason) = field_of(
+            validate_template_input(
+                &schema(),
+                &json!({ "issue_url": "u", "issue_number": 1, "merge_policy": "yolo" }),
+            )
+            .unwrap_err(),
+        );
+        assert_eq!(field, "template_input.merge_policy");
+        assert!(reason.contains("\"ask\""), "{reason}");
+        assert!(reason.contains("auto-merge"), "{reason}");
+    }
+
+    #[test]
+    fn rejects_undeclared_key() {
+        let (field, _) = field_of(
+            validate_template_input(
+                &schema(),
+                &json!({ "issue_url": "u", "issue_number": 1, "ghost": true }),
+            )
+            .unwrap_err(),
+        );
+        assert_eq!(field, "template_input.ghost");
+    }
+
+    #[test]
+    fn rejects_non_object_input() {
+        let sentence = whole_of(
+            validate_template_input(&schema(), &json!(["not", "an", "object"])).unwrap_err(),
+        );
+        assert_eq!(sentence, "template_input: expected a JSON object");
+    }
+
+    #[test]
+    fn schema_violations_report_under_the_callers_root_path() {
+        let mut v = schema();
+        v["properties"]["merge_policy"]["default"] = json!("yolo-merge");
+
+        assert_eq!(
+            validate_input_schema(&v).unwrap_err().path,
+            "input_schema.properties.merge_policy.default"
+        );
+        assert_eq!(
+            validate_object_schema("config_schema", &v)
+                .unwrap_err()
+                .path,
+            "config_schema.properties.merge_policy.default"
+        );
+    }
+
+    #[test]
+    fn instance_violations_report_under_the_callers_root_path() {
+        let bad = json!({ "issue_url": "u", "issue_number": "1" });
+
+        assert_eq!(
+            field_of(validate_template_input(&schema(), &bad).unwrap_err()).0,
+            "template_input.issue_number"
+        );
+        assert_eq!(
+            field_of(validate_instance("config", &schema(), &bad).unwrap_err()).0,
+            "config.issue_number"
+        );
+
+        // The non-object and byte-cap arms are two separate `format!`s, so both are asserted;
+        // neither names a key, so neither is a field violation.
+        assert!(
+            whole_of(validate_instance("config", &schema(), &json!([])).unwrap_err())
+                .starts_with("config: ")
+        );
+        let oversized = json!({
+            "issue_url": "x".repeat(TEMPLATE_INPUT_MAX_BYTES),
+            "issue_number": 1
+        });
+        let sentence = whole_of(validate_instance("config", &schema(), &oversized).unwrap_err());
+        assert!(sentence.starts_with("config: "), "{sentence}");
+        assert!(sentence.contains("8192"), "{sentence}");
+    }
+
+    /// Both entry points are asserted against the shipped literal, not against each other (`f(x) == f(x)` cannot fail).
+    #[test]
+    fn an_undeclared_key_reports_the_same_shipped_violation_at_both_entry_points() {
+        let shipped = InstanceViolation::Field {
+            field: "config.ghost".into(),
+            reason: "unknown field (schema declares additionalProperties: false)".into(),
+        };
+        let inline = validate_instance(
+            "config",
+            &schema(),
+            &json!({ "issue_url": "u", "issue_number": 1, "ghost": true }),
+        )
+        .unwrap_err();
+        assert_eq!(inline, shipped);
+        let extracted =
+            reject_undeclared_keys("config", &schema(), ["issue_url", "ghost"].into_iter())
+                .unwrap_err();
+        assert_eq!(extracted, shipped);
+        assert_eq!(
+            extracted.to_string(),
+            "config.ghost: unknown field (schema declares additionalProperties: false)"
+        );
+
+        reject_undeclared_keys("config", &schema(), ["issue_url", "dry_run"].into_iter())
+            .expect("declared keys pass");
+    }
+
+    /// A schema with no `properties` declares nothing, so every key is undeclared.
+    #[test]
+    fn reject_undeclared_keys_refuses_everything_when_properties_is_absent() {
+        let closed = json!({ "type": "object", "additionalProperties": false });
+        assert!(reject_undeclared_keys("config", &closed, ["x"].into_iter()).is_err());
+        reject_undeclared_keys("config", &closed, std::iter::empty()).expect("no keys, no verdict");
+        assert!(!declares_key(&closed, "x"));
+    }
+
+    #[test]
+    fn declares_key_answers_the_membership_question_directly() {
+        assert!(declares_key(&schema(), "issue_url"));
+        assert!(!declares_key(&schema(), "ghost"));
+    }
+
+    #[test]
+    fn rejects_oversized_input() {
+        let sentence = whole_of(
+            validate_template_input(
+                &schema(),
+                &json!({
+                    "issue_url": "x".repeat(TEMPLATE_INPUT_MAX_BYTES),
+                    "issue_number": 1
+                }),
+            )
+            .unwrap_err(),
+        );
+        assert!(sentence.contains("8192"), "{sentence}");
+    }
+}

@@ -236,7 +236,7 @@ pub struct TrackMeta {
 }
 
 impl TrackMeta {
-    pub fn from_track(track: &crate::model::Track) -> Self {
+    pub fn from_track(track: &calm_types::model::Track) -> Self {
         Self {
             id: track.id.to_string(),
             creator_track_id: track.creator_track_id.clone(),
@@ -252,7 +252,7 @@ pub const CALLER_META_KEY: &str = "dev.neige/caller";
 /// The agent identity the kernel resolved for an MCP `tools/call`; absent for kernel-initiated calls.
 #[derive(Clone, Copy, serde::Serialize)]
 pub struct AgentCaller<'a> {
-    pub role: crate::model::CardRole,
+    pub role: calm_types::model::CardRole,
     pub card_id: &'a str,
     pub session_id: &'a str,
 }
@@ -261,10 +261,12 @@ pub struct AgentCaller<'a> {
 /// `initialize` response counts as "capability declared".
 pub const KERNEL_CALLBACKS_CAPABILITY_VERSION: u32 = 1;
 
-/// Everything the kernel hands a plugin inside `initialize.params._meta`. Deliberately no `Default`:
+/// Host version and metadata supplied for a plugin initialize handshake. Deliberately no `Default`:
 /// every field is mandatory at every call site so a handshake that delivers no config is written on purpose.
 #[derive(Clone, Copy)]
 pub struct InitializeMeta<'a> {
+    /// Version of the composing kernel, independent of this runtime package version.
+    pub kernel_version: &'a str,
     /// The raw per-process token the plugin must mirror back at `result._meta["dev.neige/auth"].echoed_token`;
     /// `None` skips the check (unit tests only).
     pub expected_echo: Option<&'a str>,
@@ -341,6 +343,7 @@ impl McpClient {
     /// wrapper lets the kernel add sibling fields without colliding with a configuration key. Config is not echoed back.
     async fn initialize(self: &Arc<Self>, meta: InitializeMeta<'_>) -> Result<(), McpError> {
         let InitializeMeta {
+            kernel_version,
             expected_echo,
             config,
         } = meta;
@@ -353,7 +356,7 @@ impl McpClient {
             },
             "clientInfo": {
                 "name": "neige-calm-server",
-                "version": env!("CARGO_PKG_VERSION"),
+                "version": kernel_version,
             }
         });
         {
@@ -837,7 +840,7 @@ pub(crate) fn build_notification_frame(method: &str, params: &Value) -> Vec<u8> 
     s.into_bytes()
 }
 
-pub(crate) fn build_ok_response_frame(id: &RequestId, result: &Value) -> Vec<u8> {
+pub fn build_ok_response_frame(id: &RequestId, result: &Value) -> Vec<u8> {
     let mut s = serde_json::to_string(&json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -848,7 +851,7 @@ pub(crate) fn build_ok_response_frame(id: &RequestId, result: &Value) -> Vec<u8>
     s.into_bytes()
 }
 
-pub(crate) fn build_error_response_frame(id: &RequestId, err: &RpcError) -> Vec<u8> {
+pub fn build_error_response_frame(id: &RequestId, err: &RpcError) -> Vec<u8> {
     let mut s = serde_json::to_string(&json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -862,6 +865,55 @@ pub(crate) fn build_error_response_frame(id: &RequestId, err: &RpcError) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn initialize_advertises_the_supplied_host_version() {
+        let host_version = "9.8.7";
+        assert_ne!(host_version, env!("CARGO_PKG_VERSION"));
+        let (kernel, plugin) = tokio::io::duplex(8 * 1024);
+        let (read, write) = tokio::io::split(kernel);
+        let (peer_read, mut peer_write) = tokio::io::split(plugin);
+        let (request_tx, request_rx) = oneshot::channel();
+        let peer = tokio::spawn(async move {
+            let mut line = String::new();
+            BufReader::new(peer_read)
+                .read_line(&mut line)
+                .await
+                .unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            let response = json!({
+                "jsonrpc": "2.0", "id": request["id"],
+                "result": {"protocolVersion": KERNEL_PROTOCOL_VERSION, "capabilities": {}}
+            });
+            request_tx.send(request).unwrap();
+            peer_write
+                .write_all(format!("{response}\n").as_bytes())
+                .await
+                .unwrap();
+            std::future::pending::<()>().await;
+        });
+        let client = McpClient::connect_with_auth(
+            read,
+            write,
+            InitializeMeta {
+                kernel_version: host_version,
+                expected_echo: None,
+                config: None,
+            },
+        )
+        .await
+        .unwrap();
+        let request = request_rx.await.unwrap();
+        assert_eq!(request["method"], "initialize");
+        assert_eq!(
+            request["params"]["clientInfo"],
+            json!({
+                "name": "neige-calm-server", "version": host_version,
+            })
+        );
+        drop(client);
+        peer.abort();
+    }
 
     #[test]
     fn parse_request_frame_round_trip() {
@@ -991,6 +1043,7 @@ mod tests {
             k_r,
             k_w,
             InitializeMeta {
+                kernel_version: "9.8.7",
                 expected_echo: None,
                 config: None,
             },
@@ -1063,6 +1116,7 @@ mod tests {
             k_r,
             k_w,
             InitializeMeta {
+                kernel_version: "9.8.7",
                 expected_echo: None,
                 config: None,
             },
@@ -1160,6 +1214,7 @@ mod tests {
             k_r,
             k_w,
             InitializeMeta {
+                kernel_version: "9.8.7",
                 expected_echo: None,
                 config: None,
             },
@@ -1247,6 +1302,7 @@ mod tests {
             k_r,
             k_w,
             InitializeMeta {
+                kernel_version: "9.8.7",
                 expected_echo: None,
                 config: None,
             },
@@ -1326,6 +1382,7 @@ mod tests {
             k_r,
             k_w,
             InitializeMeta {
+                kernel_version: "9.8.7",
                 expected_echo: None,
                 config: None,
             },
@@ -1348,6 +1405,7 @@ mod tests {
             k_r,
             k_w,
             InitializeMeta {
+                kernel_version: "9.8.7",
                 expected_echo: None,
                 config: None,
             },
@@ -1379,6 +1437,7 @@ mod tests {
             k_r,
             k_w,
             InitializeMeta {
+                kernel_version: "9.8.7",
                 expected_echo: None,
                 config: None,
             },
@@ -1405,6 +1464,7 @@ mod tests {
             k_r,
             k_w,
             InitializeMeta {
+                kernel_version: "9.8.7",
                 expected_echo: None,
                 config: None,
             },
@@ -1431,6 +1491,7 @@ mod tests {
             k_r,
             k_w,
             InitializeMeta {
+                kernel_version: "9.8.7",
                 expected_echo: None,
                 config: None,
             },
@@ -1453,6 +1514,7 @@ mod tests {
             k_r,
             k_w,
             InitializeMeta {
+                kernel_version: "9.8.7",
                 expected_echo: None,
                 config: None,
             },

@@ -34,6 +34,7 @@ export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}"
 # contract suite's test names share no pattern.
 filters=(
   'test(/golden|invariant|covers_(every|exactly|all)_|cover_exactly_|fits_its_byte_budget/)'
+  'package(plugin-runtime) & test(/^(manifest|template_input|config|perms|glob)::/)'
   'test(/every_root_test_file_is_in_this_suite/)'
   'test(/^(mcp_server::tools::tests|codex_appserver::tool_names_kernel_tests)::/)'
   'test(/^mcp_server::wiring::tests::terminal_policy_/)'
@@ -51,6 +52,7 @@ filterset="${filterset:3}"
 # Build only the binaries that hold the selected tests. `--lib`/`--test` apply to every
 # listed package, so packages that need different targets are separate groups.
 groups=(
+  'plugin runtime:-p plugin-runtime --lib'
   'calm-server+calm-types:-p calm-server -p calm-types --lib --test replay_event_suite --test kernel_process_suite --test mcp_core_suite --test planner_harness_suite --test migration_suite --test runtime_dispatch_suite --test worker_flow_claude_suite --test worker_flow_codex_suite --test domain_api_suite'
   'integration suites:-p calm-truth -p calm-exec -p calm-codex-bridge -p calm-session -p calm-proc-supervisor --test integration_suite --test no_wildcard_wait_in_the_supervisor_host'
 )

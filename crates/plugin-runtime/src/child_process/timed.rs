@@ -4,7 +4,7 @@ use std::future::Future;
 
 /// Why [`finish_within`] did not produce a reap result.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum ChildFinishError<E> {
+pub enum ChildFinishError<E> {
     Drain(E),
     TimedOut,
 }
@@ -12,19 +12,19 @@ pub(crate) enum ChildFinishError<E> {
 #[cfg(test)]
 tokio::task_local! {
     /// Test-only phase boundaries; the deadline payload lets tests freeze Tokio time only after the relevant phase has been reached.
-    pub(crate) static TEST_DRAIN_STARTED: TestPhaseObserver;
-    pub(crate) static TEST_REAP_STARTED: TestPhaseObserver;
+    pub static TEST_DRAIN_STARTED: TestPhaseObserver;
+    pub static TEST_REAP_STARTED: TestPhaseObserver;
 }
 
 #[cfg(test)]
-pub(crate) struct TestPhaseObserver {
+pub struct TestPhaseObserver {
     tx: tokio::sync::mpsc::UnboundedSender<tokio::time::Instant>,
     freeze_clock: bool,
 }
 
 #[cfg(test)]
 impl TestPhaseObserver {
-    pub(crate) fn new(
+    pub fn new(
         tx: tokio::sync::mpsc::UnboundedSender<tokio::time::Instant>,
         freeze_clock: bool,
     ) -> Self {
@@ -50,7 +50,7 @@ fn observe_phase(
 }
 
 /// Drain both output streams, then reap the leader, under one absolute bound: time spent draining is time the reap no longer owns.
-pub(crate) async fn finish_within<D, E, R, T>(
+pub async fn finish_within<D, E, R, T>(
     deadline: tokio::time::Instant,
     drain: D,
     reap: R,

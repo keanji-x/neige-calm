@@ -23,7 +23,7 @@ pub async fn check(connector: ConnectorInstall) -> Result<McpCheckResult, (bool,
     let discovery = async {
         // Same best-effort initialize policy as enable, followed by the actual
         // tools/list request. A successful Check never claims business calls.
-        let _ = client.initialize().await;
+        let _ = client.initialize(env!("CARGO_PKG_VERSION")).await;
         client.tools_list().await
     };
     let upstream = tokio::time::timeout(super::connector_bringup_budget(&manifest), discovery)

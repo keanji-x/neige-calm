@@ -68,7 +68,7 @@ pub fn missing_required_reason(missing: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugin_host::manifest::Manifest;
+    use crate::manifest::Manifest;
     use serde_json::json;
 
     /// Drive the real parser, not a hand-built `Manifest`: the schema has to survive `Manifest::validate` for these merges to mean anything.

@@ -482,6 +482,7 @@ dependencies = [
  "libc",
  "nix 0.29.0",
  "nucleo-matcher",
+ "plugin-runtime",
  "proc-macro2",
  "provider",
  "pulldown-cmark",
@@ -2181,6 +2182,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51bae2ac328883f7acdfea3d66a7c35751187f870bc81f94563733a154d7a670"
 dependencies = [
  "plotters-backend",
+]
+
+[[package]]
+name = "plugin-runtime"
+version = "0.1.0"
+dependencies = [
+ "calm-test-sockets",
+ "calm-types",
+ "chrono",
+ "futures-util",
+ "hex",
+ "libc",
+ "nix 0.29.0",
+ "rand 0.8.6",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "subtle",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "ureq",
+ "url",
+ "utoipa",
 ]
 
 [[package]]

@@ -2,10 +2,10 @@
 
 use super::bringup::*;
 use super::*;
-use crate::operation::forge_action_adapter::{
+use crate::manifest::CliQueryBlock;
+use calm_types::forge_env::{
     FORGE_CREDENTIAL_ENV_KEYS, FORGE_NONCREDENTIAL_ENV_KEYS, forge_passthrough_env_keys,
 };
-use crate::plugin_host::manifest::CliQueryBlock;
 use serde_json::{Map, json};
 
 #[cfg(unix)]

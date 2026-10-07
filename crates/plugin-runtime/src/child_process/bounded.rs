@@ -12,7 +12,7 @@ use super::{
 
 /// Why a bounded run produced no output.
 #[derive(Debug)]
-pub(crate) enum BoundedRunError {
+pub enum BoundedRunError {
     /// The command could not be spawned.
     Spawn(std::io::Error),
     /// The deadline passed (before the spawn finished, while draining, or while reaping).
@@ -29,7 +29,7 @@ pub(crate) enum BoundedRunError {
 
 /// Run `command` to completion before `deadline`, capturing at most `cap` bytes of each stream.
 /// Past the deadline the child is dropped (`kill_on_drop` + the group sweep).
-pub(crate) async fn run_bounded(
+pub async fn run_bounded(
     mut command: tokio::process::Command,
     deadline: tokio::time::Instant,
     cap: usize,

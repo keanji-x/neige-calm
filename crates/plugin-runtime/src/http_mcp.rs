@@ -299,11 +299,11 @@ impl HttpMcpClient {
     }
 
     /// Minimal `initialize`. Best-effort: a server that does not implement it must not block the connector, so the caller treats an error as informational.
-    pub async fn initialize(&self) -> Result<Value, RpcError> {
+    pub async fn initialize(&self, kernel_version: &str) -> Result<Value, RpcError> {
         let params = json!({
             "protocolVersion": super::mcp::KERNEL_PROTOCOL_VERSION,
             "capabilities": {},
-            "clientInfo": { "name": "neige-kernel", "version": env!("CARGO_PKG_VERSION") },
+            "clientInfo": { "name": "neige-kernel", "version": kernel_version },
         });
         let result = self.request(Phase::Bringup, "initialize", params).await?;
         // Both are upstream-authored: scrubbed and bounded before they reach the operator's log.
@@ -1581,6 +1581,56 @@ mod tests {
                 "`{placement}`: {client:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn initialize_advertises_the_supplied_host_version() {
+        use std::io::{BufRead, Read, Write};
+        let host_version = "9.8.7";
+        assert_ne!(host_version, env!("CARGO_PKG_VERSION"));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(socket.try_clone().unwrap());
+            let mut line = String::new();
+            let mut length = None;
+            loop {
+                line.clear();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.eq_ignore_ascii_case("content-length")
+                {
+                    length = Some(value.trim().parse::<usize>().unwrap());
+                }
+            }
+            let mut body = vec![0; length.expect("JSON body has content-length")];
+            reader.read_exact(&mut body).unwrap();
+            let request: Value = serde_json::from_slice(&body).unwrap();
+            let response = json!({"jsonrpc":"2.0", "id":request["id"], "result":{}}).to_string();
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+            request
+        });
+        let block: McpHttpBlock = serde_json::from_value(json!({
+            "url": format!("http://{address}/mcp"),
+        }))
+        .unwrap();
+        let client = HttpMcpClient::new("host-version", &resolved(&block), &block, None);
+        client.initialize(host_version).await.unwrap();
+        let request = peer.join().unwrap();
+        assert_eq!(request["method"], "initialize");
+        assert_eq!(
+            request["params"]["clientInfo"],
+            json!({
+                "name":"neige-kernel", "version":host_version,
+            })
+        );
     }
 
     #[test]
