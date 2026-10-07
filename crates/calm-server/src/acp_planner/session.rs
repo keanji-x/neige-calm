@@ -220,7 +220,8 @@ impl AcpPlannerSession {
             let mcp = [protocol::McpServer::Stdio {
                 name: crate::mcp_server::wiring::MCP_SERVER_KEY.into(),
                 command: params.host.mcp_shim.to_string_lossy().into_owned(),
-                args: vec![],
+                // Native MCP consumers may build model output from content alone.
+                args: vec!["--structured-content-as-text".into()],
                 env: crate::mcp_server::wiring::card_mcp_env(&params.host.mcp_socket, &token)
                     .into_iter()
                     .map(|(name, value)| protocol::EnvVariable {

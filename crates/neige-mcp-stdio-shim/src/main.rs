@@ -5,6 +5,7 @@
 //! rejected a (replayed) `initialize`; 5 an outage outlived its budget.
 
 mod budget;
+mod content;
 mod frames;
 mod pump;
 
@@ -22,6 +23,19 @@ async fn main() -> ExitCode {
         println!("neige-mcp-stdio-shim {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
+
+    let args: Vec<_> = env::args().skip(1).collect();
+    let content = match args.as_slice() {
+        [] => content::ResultContent::AsReceived,
+        [flag] if flag == "--structured-content-as-text" => content::ResultContent::StructuredText,
+        _ => {
+            let _ = writeln!(
+                io::stderr(),
+                "usage: neige-mcp-stdio-shim [--structured-content-as-text | --version]"
+            );
+            return ExitCode::from(2);
+        }
+    };
 
     let socket = match env::var(ENV_SOCKET) {
         Ok(v) if !v.is_empty() => v,
@@ -46,7 +60,7 @@ async fn main() -> ExitCode {
         }
     };
 
-    let code = match pump::run(socket, token).await {
+    let code = match pump::run(socket, token, content).await {
         pump::Exit::Clean => 0,
         pump::Exit::InitialConnectFailed => 3,
         pump::Exit::InitializeRejected => 4,

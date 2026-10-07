@@ -45,7 +45,12 @@ pub fn socket() -> (calm_test_sockets::TempDir, PathBuf) {
 
 /// Spawn the shim against `socket_path` with piped stdio and [`TOKEN`].
 pub fn spawn_shim(socket_path: &Path) -> Child {
+    spawn_shim_with_args(socket_path, &[])
+}
+
+pub fn spawn_shim_with_args(socket_path: &Path, args: &[&str]) -> Child {
     Command::new(SHIM_BIN)
+        .args(args)
         .env("NEIGE_MCP_SOCKET", socket_path)
         .env_remove("NEIGE_MCP_DAEMON_TOKEN")
         .env("NEIGE_MCP_TOKEN", TOKEN)
