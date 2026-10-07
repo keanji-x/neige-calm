@@ -4202,7 +4202,7 @@
             "in": "query",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/ReferenceKind"
+              "$ref": "#/components/schemas/GitHubPreviewKind"
             }
           },
           {
@@ -13710,7 +13710,7 @@
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/PullChanges"
+                "$ref": "#/components/schemas/GitHubPullChanges"
               }
             ]
           },
@@ -13718,7 +13718,7 @@
             "type": "string"
           },
           "kind": {
-            "$ref": "#/components/schemas/ReferenceKind"
+            "$ref": "#/components/schemas/GitHubPreviewKind"
           },
           "labels": {
             "type": "array",
@@ -13732,10 +13732,51 @@
             "minimum": 0
           },
           "state": {
-            "$ref": "#/components/schemas/PreviewState"
+            "$ref": "#/components/schemas/GitHubPreviewState"
           },
           "title": {
             "type": "string"
+          }
+        }
+      },
+      "GitHubPreviewKind": {
+        "type": "string",
+        "enum": [
+          "issue",
+          "pull"
+        ]
+      },
+      "GitHubPreviewState": {
+        "type": "string",
+        "enum": [
+          "open",
+          "closed",
+          "merged",
+          "draft"
+        ]
+      },
+      "GitHubPullChanges": {
+        "type": "object",
+        "required": [
+          "additions",
+          "deletions",
+          "changed_files"
+        ],
+        "properties": {
+          "additions": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "changed_files": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "deletions": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -15285,15 +15326,6 @@
           }
         }
       },
-      "PreviewState": {
-        "type": "string",
-        "enum": [
-          "open",
-          "closed",
-          "merged",
-          "draft"
-        ]
-      },
       "ProviderAvailability": {
         "type": "object",
         "description": "One provider's current availability.",
@@ -15344,31 +15376,6 @@
           "not_configured"
         ]
       },
-      "PullChanges": {
-        "type": "object",
-        "required": [
-          "additions",
-          "deletions",
-          "changed_files"
-        ],
-        "properties": {
-          "additions": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "changed_files": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "deletions": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          }
-        }
-      },
       "ReadFileResponse": {
         "type": "object",
         "required": [
@@ -15414,13 +15421,6 @@
             "description": "A bare string, never a closed enum: codex's `ReasoningEffort` carries a\n`Custom(String)` variant and accepts any non-empty string on the wire."
           }
         }
-      },
-      "ReferenceKind": {
-        "type": "string",
-        "enum": [
-          "issue",
-          "pull"
-        ]
       },
       "ReportBlock": {
         "type": "object",

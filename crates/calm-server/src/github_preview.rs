@@ -3,20 +3,18 @@ use crate::{
     error::{CalmError, Result},
     plugin_host::child_process::{inherited_env, run_bounded},
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::{sync::OnceLock, time::Duration};
 use tokio::{process::Command, sync::Semaphore};
-use utoipa::{IntoParams, ToSchema};
+use utoipa::IntoParams;
 
 const CAP: usize = 256 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(12);
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, ToSchema, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum ReferenceKind {
-    Issue,
-    Pull,
-}
+pub use calm_types::github_preview::{
+    GitHubPreview, GitHubPreviewKind as ReferenceKind, GitHubPreviewState as PreviewState,
+    GitHubPullChanges as PullChanges,
+};
 
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct PreviewQuery {
@@ -24,35 +22,6 @@ pub struct PreviewQuery {
     pub repo: String,
     pub kind: ReferenceKind,
     pub number: u64,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum PreviewState {
-    Open,
-    Closed,
-    Merged,
-    Draft,
-}
-
-#[derive(Debug, Deserialize, Serialize, ToSchema)]
-pub struct PullChanges {
-    pub additions: u64,
-    pub deletions: u64,
-    pub changed_files: u64,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct GitHubPreview {
-    pub kind: ReferenceKind,
-    pub number: u64,
-    pub title: String,
-    pub state: PreviewState,
-    pub author: String,
-    pub labels: Vec<String>,
-    pub excerpt: String,
-    #[schema(required = true)]
-    pub changes: Option<PullChanges>,
 }
 
 impl PreviewQuery {

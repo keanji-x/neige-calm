@@ -3,7 +3,8 @@
 Outcome: desktop readers can inspect GitHub Issue and PR links in chat replies and
 report prose without leaving Neige. Mobile retains its current rendering and navigation.
 
-A single GitHub link system owns lazy reads and hover presentation. The app injects
+The shared Rust wire vocabulary owns the response types and generated frontend
+bindings. A single GitHub link system owns lazy reads and hover presentation. The app injects
 its existing authenticated, recovery-aware API transport. The core model admits only
 HTTPS github.com Issue/PR URLs and constructs structured preview requests. Reports use their existing external-link preview and substitute GitHub summaries
 for iframe content; other external links retain their policy.

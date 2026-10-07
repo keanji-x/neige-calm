@@ -290,6 +290,14 @@ export type ForgeFailedCheck = { name: string, } & ({ url: string, } | { id: str
  */
 export type ForgeMergeSubject = { pr_number: number, };
 
+export type GitHubPreview = { kind: GitHubPreviewKind, number: number, title: string, state: GitHubPreviewState, author: string, labels: Array<string>, excerpt: string, changes: GitHubPullChanges | null, };
+
+export type GitHubPreviewKind = "issue" | "pull";
+
+export type GitHubPreviewState = "open" | "closed" | "merged" | "draft";
+
+export type GitHubPullChanges = { additions: number, deletions: number, changed_files: number, };
+
 /**
  * Why a segment was in the turn: the observation that produced it and the event behind it.
  */

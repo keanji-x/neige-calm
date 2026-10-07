@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import type { ApiAbortSignal, ApiOperation } from '../api/types.js';
 import type { GitHubReference } from './issue-url.js';
+import type { GitHubPreview as GitHubPreviewWire } from '../api/generated/wire.js';
 
-export const githubPreviewSchema = z.object({
+export const githubPreviewSchema: z.ZodType<GitHubPreviewWire> = z.object({
   kind: z.enum(['issue', 'pull']), number: z.number().int().positive(), title: z.string(),
   state: z.enum(['open', 'closed', 'merged', 'draft']), author: z.string(), labels: z.array(z.string()),
   excerpt: z.string(), changes: z.object({
@@ -10,7 +11,7 @@ export const githubPreviewSchema = z.object({
     changed_files: z.number().int().nonnegative(),
   }).nullable(),
 });
-export type GitHubPreview = z.infer<typeof githubPreviewSchema>;
+export type GitHubPreview = GitHubPreviewWire;
 export type GitHubPreviewPort = Readonly<{
   read(target: GitHubReference, signal: ApiAbortSignal): Promise<GitHubPreview>;
 }>;
