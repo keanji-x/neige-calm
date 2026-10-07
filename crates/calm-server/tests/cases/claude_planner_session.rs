@@ -742,7 +742,9 @@ async fn a_hung_proc_scan_fails_later_stops_at_once_until_it_returns() {
         stop_by,
     };
     let dir = tempfile::tempdir().expect("tempdir");
-    let instance = MarkerInstance::for_data_dir(dir.path()).expect("instance");
+    let instance =
+        MarkerInstance::for_data_dir(dir.path(), calm_server::claude_planner::stop::MARKER_KEY)
+            .expect("instance");
     let id = calm_server::model::new_id();
     hold_claude_planner_scans_for_test(true);
     let first = stop_by(

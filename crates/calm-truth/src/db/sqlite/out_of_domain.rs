@@ -3,9 +3,12 @@ use sqlx::Row;
 use sqlx::Sqlite;
 use sqlx::Transaction;
 
+use super::transcript_projection::insert_transcript_row;
 use super::{SqlxRepo, begin_immediate_tx};
 use crate::area_folder_claim::AreaFolderClaim;
-use crate::db::{RepoOutOfDomain, RepoRead, SharedCodexDaemonUpdate, TranscriptRow};
+use crate::db::{
+    RepoOutOfDomain, RepoRead, SharedCodexDaemonUpdate, TranscriptReceiptItem, TranscriptRow,
+};
 use crate::error::{CalmError, Result};
 use crate::model::*;
 
@@ -394,6 +397,19 @@ impl RepoOutOfDomain for SqlxRepo {
     }
 
     #[allow(clippy::too_many_arguments)]
+    async fn transcript_receipt_restore(
+        &self,
+        worker: &str,
+        card: &str,
+        track: &str,
+        thread: &str,
+        turn: &str,
+        items: &[TranscriptReceiptItem],
+    ) -> Result<()> {
+        super::transcript_projection::restore(&self.pool, worker, card, track, thread, turn, items)
+            .await
+    }
+
     async fn harness_item_insert(
         &self,
         worker_session_id: &str,
@@ -407,28 +423,20 @@ impl RepoOutOfDomain for SqlxRepo {
         params: &str,
         input_segments: Option<&str>,
     ) -> Result<i64> {
-        let row = sqlx::query(
-            r#"INSERT INTO harness_items (
-                   worker_session_id, card_id, track_id, thread_id, turn_id,
-                   item_uuid, item_type, method, params, input_segments, created_at_ms
-               )
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-               RETURNING id"#,
+        insert_transcript_row(
+            &self.pool,
+            worker_session_id,
+            card_id,
+            track_id,
+            thread_id,
+            turn_id,
+            item_uuid,
+            item_type,
+            method,
+            params,
+            input_segments,
         )
-        .bind(worker_session_id)
-        .bind(card_id)
-        .bind(track_id)
-        .bind(thread_id)
-        .bind(turn_id)
-        .bind(item_uuid)
-        .bind(item_type)
-        .bind(method)
-        .bind(params)
-        .bind(input_segments)
-        .bind(now_ms())
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(row.get::<i64, _>("id"))
+        .await
     }
 
     async fn transcript_rows_of_thread(

@@ -376,6 +376,10 @@ impl Boot {
                 crate::claude_planner::config::ClaudePlannerHost::unconfigured_scratch()
                     .expect("scratch claude planner host"),
             ),
+            std::sync::Arc::new(
+                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
+                    .expect("ACP host"),
+            ),
         )
     }
 

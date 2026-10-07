@@ -141,6 +141,7 @@ fn agent_actor(agent: &AgentOrigin) -> ActorId {
         CardRole::Assistant | CardRole::Worker | CardRole::ReportCard => match agent.provider {
             AgentProvider::Codex => ActorId::AiCodexSession(session_id),
             AgentProvider::Claude => ActorId::AiClaudeSession(session_id),
+            AgentProvider::OpenCode => ActorId::AiPlannerSession(session_id),
         },
     }
 }

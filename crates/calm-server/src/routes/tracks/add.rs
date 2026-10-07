@@ -115,6 +115,15 @@ impl TrackCreator for RouteTrackCreator {
         } else {
             None
         };
+        let acp_availability = if planner_provider == AgentProvider::OpenCode {
+            Some(
+                s.provider_availability
+                    .acp(crate::agent_providers::Freshness::Cached, &s.acp_planner)
+                    .await,
+            )
+        } else {
+            None
+        };
         let _area_delete_guard =
             crate::per_card_lock::lock_key(&s.area_delete_locks, area_id.as_str()).await;
         let plan = create::plan_keyed_create(
@@ -144,6 +153,11 @@ impl TrackCreator for RouteTrackCreator {
         };
         // A dependency unavailable now, not a bad argument: the same call succeeds once the
         // provider is ready.
+        if let Some(checked) = &acp_availability {
+            checked
+                .require_ready()
+                .map_err(TrackAddRefusal::ProviderUnavailable)?;
+        }
         if let Some(checked) = &claude_availability
             && let Err(refusal) = checked.catalog()
         {

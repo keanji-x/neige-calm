@@ -36,6 +36,10 @@ pub struct Config {
     #[arg(long)]
     pub claude_planner_config: Option<PathBuf>,
 
+    /// Managed ACP agent registrations (JSON AcpPlannerConfig).
+    #[arg(long)]
+    pub acp_planner_config: Option<PathBuf>,
+
     /// Unix socket used to ask calm-proc-supervisor to fork session daemons.
     /// Defaults to `<CALM_DATA_DIR>/proc-supervisor.sock`.
     #[arg(long, env = "CALM_PROC_SUPERVISOR_SOCK")]

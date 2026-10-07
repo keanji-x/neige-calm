@@ -69,6 +69,7 @@ fn assert_provider_list_is_complete(providers: &[AgentProvider]) {
         match provider {
             AgentProvider::Codex => "Codex",
             AgentProvider::Claude => "Claude",
+            AgentProvider::OpenCode => "OpenCode",
         }
     }
     let mut labels: Vec<&'static str> = providers.iter().map(label).collect();

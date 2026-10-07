@@ -252,6 +252,7 @@ pub fn worker_session(seed: &SeededRuntime) -> WorkerSession {
         track_id: seed.card.track_id.clone(),
         provider: match seed.runtime.agent_provider.as_ref() {
             Some(AgentProvider::Claude) => WorkerProviderKind::Claude,
+            Some(AgentProvider::OpenCode) => WorkerProviderKind::OpenCode,
             Some(AgentProvider::Codex) | None => WorkerProviderKind::Codex,
         },
         mode: SessionMode::Resumable,

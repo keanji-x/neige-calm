@@ -30,6 +30,7 @@ pub struct PlannerHarnessShutdownAdapter {
     daemon: Arc<SharedCodexAppServer>,
     repo: Arc<dyn Repo>,
     claude_host: Arc<ClaudePlannerHost>,
+    acp_host: Arc<crate::acp_planner::config::AcpPlannerHost>,
 }
 
 impl PlannerHarnessShutdownAdapter {
@@ -38,12 +39,14 @@ impl PlannerHarnessShutdownAdapter {
         daemon: Arc<SharedCodexAppServer>,
         repo: Arc<dyn Repo>,
         claude_host: Arc<ClaudePlannerHost>,
+        acp_host: Arc<crate::acp_planner::config::AcpPlannerHost>,
     ) -> Self {
         Self {
             harness_registry,
             daemon,
             repo,
             claude_host,
+            acp_host,
         }
     }
 }
@@ -128,9 +131,12 @@ impl ProviderAdapter for PlannerHarnessShutdownAdapter {
     ) -> Result<SpawnOutcome> {
         let worker_session_id = output.output_string("runtime_id", "planner harness")?;
         // A registered harness is shut down first, whatever a row read would say; its backend names its provider.
-        if let Some(harness) = self.harness_registry.remove(&worker_session_id) {
+        if let Some(harness) = self
+            .harness_registry
+            .shutdown_and_remove(&worker_session_id)
+            .await?
+        {
             let claude = harness.provider() == AgentProvider::Claude;
-            harness.shutdown().await?;
             if claude {
                 self.stop_claude_planner(&worker_session_id).await;
             }
@@ -141,6 +147,12 @@ impl ProviderAdapter for PlannerHarnessShutdownAdapter {
             .session_projection_by_id(&worker_session_id)
             .await?
         {
+            if runtime.kind == WorkerSessionKind::SharedPlanner
+                && runtime.agent_provider == Some(AgentProvider::OpenCode)
+            {
+                crate::planner_process::stop(&self.acp_host.instance, &worker_session_id).await?;
+                return Ok(SpawnOutcome::Ready(SpawnHandle::NoOp));
+            }
             if runtime.kind == WorkerSessionKind::SharedPlanner
                 && runtime.agent_provider == Some(AgentProvider::Claude)
             {
@@ -246,6 +258,10 @@ mod tests {
             repo_dyn.clone(),
             Arc::new(
                 crate::claude_planner::config::ClaudePlannerHost::unconfigured_scratch().unwrap(),
+            ),
+            Arc::new(
+                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
+                    .expect("ACP host"),
             ),
         );
         let route_repo: Arc<dyn crate::db::RouteRepo> = repo.clone();

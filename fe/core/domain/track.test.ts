@@ -74,6 +74,7 @@ describe('track wire decode', () => {
 describe('plannerProviderOf', () => {
   it('reads the server-owned key, and Codex for anything else', () => {
     expect(plannerProviderOf({ planner_harness: true, planner_provider: 'claude' })).toBe('claude');
+    expect(plannerProviderOf({ planner_harness: true, planner_provider: 'opencode' })).toBe('opencode');
     expect(plannerProviderOf({ planner_harness: true, planner_provider: 'codex' })).toBe('codex');
     expect(plannerProviderOf({ planner_harness: true })).toBe('codex');
     expect(plannerProviderOf(null)).toBe('codex');

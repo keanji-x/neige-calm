@@ -11963,6 +11963,7 @@
       "AgentProvider": {
         "type": "string",
         "enum": [
+          "opencode",
           "codex",
           "claude"
         ]
@@ -13204,6 +13205,7 @@
           "config_read",
           "config_toml",
           "claude_cli",
+          "acp_session",
           "unknown"
         ]
       },

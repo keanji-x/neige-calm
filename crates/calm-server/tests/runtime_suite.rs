@@ -3,6 +3,8 @@
 
 // Each module retains its former test-target namespace and helper tests.
 use planner_card_suite::{common, support};
+#[path = "acp_planner_provider.rs"]
+mod acp_planner_provider;
 #[path = "codex_runtime_suite.rs"]
 mod codex_runtime_suite;
 #[path = "dispatcher.rs"]

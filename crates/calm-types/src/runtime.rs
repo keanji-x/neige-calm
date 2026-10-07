@@ -25,6 +25,8 @@ pub enum WorkerSessionKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum AgentProvider {
+    #[serde(rename = "opencode")]
+    OpenCode,
     #[serde(rename = "codex")]
     Codex,
     #[serde(rename = "claude")]
@@ -37,6 +39,7 @@ impl AgentProvider {
         match self {
             Self::Codex => "codex",
             Self::Claude => "claude",
+            Self::OpenCode => "opencode",
         }
     }
 }
@@ -70,7 +73,11 @@ mod tests {
 
     #[test]
     fn agent_provider_wire_name_is_its_serde_spelling() {
-        for provider in [AgentProvider::Codex, AgentProvider::Claude] {
+        for provider in [
+            AgentProvider::Codex,
+            AgentProvider::Claude,
+            AgentProvider::OpenCode,
+        ] {
             assert_eq!(
                 serde_json::to_value(&provider).unwrap(),
                 provider.wire_name()

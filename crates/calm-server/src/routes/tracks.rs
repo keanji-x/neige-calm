@@ -785,6 +785,21 @@ pub(crate) async fn create_track(
     } else {
         None
     };
+    let acp_availability = if request.planner_provider == AgentProvider::OpenCode {
+        Some(
+            s.provider_availability
+                .get(
+                    &request.planner_provider,
+                    crate::agent_providers::Freshness::Cached,
+                    &s.claude_planner,
+                    &s.acp_planner,
+                    &codex.shared_codex_appserver,
+                )
+                .await,
+        )
+    } else {
+        None
+    };
     // Common area lifecycle fence for legacy mint, first-message mint, and
     // idempotent replay. Holding it through workspace materialization and
     // operation submission makes area deletion snapshot a closed member set.
@@ -842,6 +857,11 @@ pub(crate) async fn create_track(
         })?),
         None => None,
     };
+    if let Some(checked) = &acp_availability {
+        checked
+            .require_ready()
+            .map_err(|reason| CalmError::BadRequest(format!("track create: {reason}")))?;
+    }
     let allow_cross_area_cwd = request.allow_cross_area_cwd.clone();
     // Resolve mutable catalog advice only for a new mint, never on replay; one advice for both
     // providers (#1822 6′), only the catalog's source differs.
@@ -849,6 +869,9 @@ pub(crate) async fn create_track(
     let reasoning_effort = request.reasoning_effort.take();
     let source = match &claude_catalog {
         Some(catalog) => super::planner_model::CatalogSource::Claude(catalog),
+        None if request.planner_provider == AgentProvider::OpenCode => {
+            super::planner_model::CatalogSource::Acp
+        }
         None => super::planner_model::CatalogSource::Codex(&codex),
     };
     let advice =
@@ -2337,7 +2360,7 @@ async fn repoint_track_workspace(
         let outcome = shutdown_fenced_harness(&harness, &track_id).await;
         match outcome {
             Ok(()) => {
-                let _ = w.harness.remove(runtime_id);
+                w.harness.remove_if_same(runtime_id, &harness);
             }
             Err(error) => tracing::error!(
                 track_id,
@@ -2377,6 +2400,16 @@ async fn repoint_track_workspace(
         ));
     }
 
+    if let Err(error) =
+        crate::acp_planner::config::sweep_track(s.repo.as_ref(), &s.acp_planner, &track_id).await
+    {
+        drop(track_guard.take());
+        drop(operation_guard.take());
+        restart_planner_harness_at(s, actor, track, &fence.old_workspace.path).await;
+        return Err(CalmError::Conflict(format!(
+            "The managed ACP session could not be stopped; the workspace was not moved: {error}"
+        )));
+    }
     let verdict = workspace_pristine(&old_path);
     if let PristineVerdict::Dirty { .. } = &verdict {
         drop(track_guard.take());
@@ -2842,6 +2875,12 @@ async fn teardown_track_deletion(
     crate::claude_planner::lifecycle::sweep_track(
         s.repo.as_ref(),
         &s.claude_planner,
+        plan.track_id.as_str(),
+    )
+    .await?;
+    crate::acp_planner::config::sweep_track(
+        s.repo.as_ref(),
+        &s.acp_planner,
         plan.track_id.as_str(),
     )
     .await?;

@@ -4,6 +4,9 @@ One package for agent provider contracts, Codex and Claude wire protocols, and
 worker liveness/exit implementations. It has no application server, Axum, or
 database dependency, including in unit-test builds.
 
+- `acp` owns reusable ACP v1 stdio transport, capability/configuration decoding and
+  direct Planner event translation. The server owns registration and native request policy.
+
 - Shared `InputItem`, `TurnModelSelection`, and `events::PlannerEvent` preserve
   the existing request and transcript shapes.
 - `codex` owns the WebSocket JSON-RPC client and native error classification.

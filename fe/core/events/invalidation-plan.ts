@@ -165,6 +165,7 @@ function policies(): PolicyMap {
    * outcome row: the kernel writes it before the snapshot commit and emits no `harness.item.added`. */
   'harness.phase.changed': plan((event) => result([
     ['planner-run', event.data.card_id], ['harness-items', event.data.card_id],
+    ...(event.data.new_phase === 'turn_completed' ? [['model-catalog', { kind: 'card', cardId: event.data.card_id }]] : []),
     ...conversationLists(event.data.track_id),
     // Harness observations update runtime activity without a separate worker status event.
     ['track', event.data.track_id],

@@ -702,23 +702,18 @@ mod tests {
         }
     }
 
-    /// The match is exhaustive on purpose: a new `WorkerProviderKind` variant fails to compile at the match, and every listed kind must be named by the prompt.
+    /// Task executor kinds come from the task contract, not every managed conversation provider.
     #[test]
     fn planner_prompt_names_every_worker_provider_kind() {
-        use calm_types::worker::WorkerProviderKind;
+        use crate::model::TaskKind;
 
         let prompt = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, "track-kinds");
-        for kind in [
-            WorkerProviderKind::Codex,
-            WorkerProviderKind::Claude,
-            WorkerProviderKind::Terminal,
-        ] {
+        for kind in [TaskKind::Codex, TaskKind::Claude, TaskKind::Terminal] {
             match kind {
-                WorkerProviderKind::Codex
-                | WorkerProviderKind::Claude
-                | WorkerProviderKind::Terminal => {}
+                TaskKind::Codex | TaskKind::Claude | TaskKind::Terminal => {}
             }
-            let spelled = format!("`{}`", kind.as_db_str());
+            let serialized = serde_json::to_value(kind).unwrap();
+            let spelled = format!("`{}`", serialized.as_str().unwrap());
             assert!(
                 prompt.contains(&spelled),
                 "planner prompt must name task kind {spelled}"

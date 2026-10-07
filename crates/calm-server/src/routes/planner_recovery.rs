@@ -65,7 +65,7 @@ pub(super) async fn recover(
     })?;
     if let Some(old) = s.harness.get(&runtime.id) {
         old.quiesce_system_error_for_recovery().await?;
-        s.harness.remove(&runtime.id);
+        s.harness.remove_if_same(&runtime.id, &old);
     }
     // Quiescence may have waited for a completion to restore dropped steers.
     // Use that settled durable queue, not the earlier candidate's snapshot.

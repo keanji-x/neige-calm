@@ -335,7 +335,8 @@ fn install_failing_planner_start_runtime(boot: &mut Boot) {
                 boot.state.card_role_cache.clone(),
                 boot.state.track_area_cache.clone(),
                 None,
-                boot.state.claude_planner_wiring().host,
+                boot.state.claude_planner_wiring().claude,
+                boot.state.claude_planner_wiring().acp,
             ),
         });
     let completion = OperationCompletionBus::new();

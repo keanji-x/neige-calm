@@ -287,6 +287,7 @@ impl<'a> IssueTurnHandle<'a> {
         input: Vec<InputItem>,
         selection: &TurnModelSelection,
         client_user_message_id: &str,
+        claim: &[QueueEntry],
         pending_rewind: Option<&BackendRewind>,
     ) -> std::result::Result<String, TurnStartFailure> {
         self.backend
@@ -295,6 +296,7 @@ impl<'a> IssueTurnHandle<'a> {
                 input,
                 selection,
                 client_user_message_id,
+                claim,
                 pending_rewind,
             )
             .await
@@ -827,7 +829,7 @@ impl PlannerHarness {
         // the shared daemon cache. If shutdown won first, maybe_issue_turn sees
         // `shutting_down` under this same mutex and never calls the daemon.
         let _issuance_guard = self.inner.issuance.lock().await;
-        self.persist_snapshot().await?;
+        persist_snapshot(&self.inner).await?;
         let interrupt_error = self
             .inner
             .backend
@@ -875,6 +877,9 @@ impl PlannerHarness {
     pub fn provider(&self) -> crate::session_projection_repo::AgentProvider {
         self.inner.backend.provider()
     }
+    pub(crate) fn same_instance(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
 
     /// Fixtures only: the Claude session behind this harness, for its interleaving hooks.
     #[cfg(feature = "fixtures")]
@@ -909,6 +914,7 @@ impl PlannerHarness {
     }
 
     pub async fn persist_snapshot(&self) -> Result<()> {
+        let _issuance_guard = self.inner.issuance.lock().await;
         persist_snapshot(&self.inner).await
     }
 
@@ -3282,6 +3288,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 items,
                 &selection,
                 client_id.as_str(),
+                &drained,
                 pending_rewind.as_ref(),
             )
             .await
@@ -4347,6 +4354,8 @@ mod live_reply;
 mod native_ask;
 mod replace_command;
 
+#[cfg(test)]
+mod checkpoint_tests;
 #[cfg(test)]
 mod completed_commit_tests;
 

@@ -82,20 +82,18 @@ async fn head_pool() -> SqlitePool {
     pool
 }
 
-/// The ratchet: a failure means a migration widened the set of ways a `worker_sessions` row can vanish; re-decide `runtime_is_still_the_live_carrier` before updating the expectation.
+/// Freeze incoming child ownership and prohibit triggers deleting the carrier.
+/// An incoming CASCADE deletes child metadata after carrier deletion; it cannot
+/// delete the carrier. Every allowed child edge still needs an inventory entry.
 #[tokio::test]
 async fn nothing_in_the_schema_deletes_a_worker_sessions_row_behind_its_owner() {
     let pool = head_pool().await;
 
     let references = references_to_worker_sessions(&pool).await;
-    let cascading: Vec<&ReferenceToWorkerSessions> = references
-        .iter()
-        .filter(|r| r.on_delete.eq_ignore_ascii_case("cascade"))
-        .collect();
+    let cascading = unregistered_cascading_children(&references);
     assert!(
         cascading.is_empty(),
-        "a foreign key now cascades deletes onto worker_sessions, so rows can vanish under a \
-         live planner harness with no shutdown involved: {cascading:#?}"
+        "an unregistered child now cascades deletion from worker_sessions: {cascading:#?}"
     );
 
     let triggers = triggers_deleting_from_worker_sessions(&pool).await;
@@ -131,8 +129,12 @@ fn insta_like_assert(references: &[ReferenceToWorkerSessions]) {
     );
 }
 
-/// Every foreign key in the head schema pointing at `worker_sessions`; the `SET NULL` ones fire on a delete of the row, never cause one.
+/// Incoming keys act on children when the worker is deleted, never delete the worker.
+/// ACP ownership and receipts are lifecycle-owned children; deletion removes their
+/// metadata with the worker. Freeze these exact edges, not an open cascade exemption.
 const EXPECTED_REFERENCES: &[(&str, &str, &str)] = &[
+    ("acp_managed_sessions", "worker_session_id", "CASCADE"),
+    ("acp_submissions", "worker_session_id", "CASCADE"),
     ("cards", "session_id", "SET NULL"),
     ("tracks", "root_session_id", "NO ACTION"),
     ("worker_flow_items", "worker_session_id", "SET NULL"),
@@ -140,16 +142,29 @@ const EXPECTED_REFERENCES: &[(&str, &str, &str)] = &[
     ("worker_sessions", "requester_session_id", "NO ACTION"),
 ];
 
+fn unregistered_cascading_children(
+    references: &[ReferenceToWorkerSessions],
+) -> Vec<&ReferenceToWorkerSessions> {
+    references
+        .iter()
+        .filter(|reference| {
+            reference.on_delete.eq_ignore_ascii_case("cascade")
+                && !EXPECTED_REFERENCES.iter().any(|(table, column, action)| {
+                    reference.from_table == *table
+                        && reference.from_column == *column
+                        && reference.on_delete.eq_ignore_ascii_case(action)
+                })
+        })
+        .collect()
+}
+
 /// Counter-fixture: both halves re-checked through the same functions, against a head schema plus one violation each.
 #[tokio::test]
 async fn the_ratchet_sees_a_cascade_and_a_trigger_when_one_exists() {
     let pool = head_pool().await;
     assert!(
-        references_to_worker_sessions(&pool)
-            .await
-            .iter()
-            .all(|r| !r.on_delete.eq_ignore_ascii_case("cascade")),
-        "premise: the real schema has no cascade to begin with"
+        unregistered_cascading_children(&references_to_worker_sessions(&pool).await).is_empty(),
+        "premise: the real schema has no unregistered cascading children"
     );
 
     sqlx::query(
@@ -172,10 +187,7 @@ async fn the_ratchet_sees_a_cascade_and_a_trigger_when_one_exists() {
     .expect("create the violating trigger");
 
     let references = references_to_worker_sessions(&pool).await;
-    let cascading: Vec<&ReferenceToWorkerSessions> = references
-        .iter()
-        .filter(|r| r.on_delete.eq_ignore_ascii_case("cascade"))
-        .collect();
+    let cascading = unregistered_cascading_children(&references);
     assert_eq!(
         cascading.len(),
         1,

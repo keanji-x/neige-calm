@@ -189,6 +189,7 @@ impl<T: Clone> Slot<T> {
 pub struct ProviderAvailabilityCache {
     codex: Slot<Verdict>,
     claude: Slot<ClaudeReadiness>,
+    acp: Slot<Verdict>,
 }
 
 impl ProviderAvailabilityCache {
@@ -199,9 +200,11 @@ impl ProviderAvailabilityCache {
         provider: &AgentProvider,
         freshness: Freshness,
         claude: &ClaudePlannerHost,
+        acp: &crate::acp_planner::config::AcpPlannerHost,
         codex: &SharedCodexAppServer,
     ) -> Checked {
         match provider {
+            AgentProvider::OpenCode => self.acp(freshness, acp).await,
             AgentProvider::Codex => {
                 let stamped = self
                     .codex
@@ -227,6 +230,32 @@ impl ProviderAvailabilityCache {
         }
     }
 
+    pub async fn acp(
+        &self,
+        freshness: Freshness,
+        host: &crate::acp_planner::config::AcpPlannerHost,
+    ) -> Checked {
+        let stamped = self
+            .acp
+            .get(freshness, |_| async {
+                let provider = AgentProvider::OpenCode;
+                if let Err(error) = host.configured(&provider) {
+                    return Verdict::NotConfigured(error.to_string());
+                }
+                match host.check_ready(&provider).await {
+                    Ok(()) => Verdict::Ready,
+                    Err(error) => Verdict::Unavailable(error.to_string()),
+                }
+            })
+            .await;
+        Checked {
+            provider: AgentProvider::OpenCode,
+            verdict: stamped.outcome,
+            checked_at_ms: stamped.checked_at_ms,
+            authentication_notice: None,
+        }
+    }
+
     /// The Claude check with the model list it caches: the cached answer when `freshness` allows
     /// and it is younger than [`TTL`], else a new check (see `claude_planner::availability` for
     /// when that re-fetches the list).
@@ -247,13 +276,15 @@ impl ProviderAvailabilityCache {
         &self,
         freshness: Freshness,
         claude: &ClaudePlannerHost,
+        acp: &crate::acp_planner::config::AcpPlannerHost,
         codex: &SharedCodexAppServer,
     ) -> Vec<Checked> {
-        let (codex_checked, claude_checked) = tokio::join!(
-            self.get(&AgentProvider::Codex, freshness, claude, codex),
-            self.get(&AgentProvider::Claude, freshness, claude, codex),
+        let (codex_checked, claude_checked, acp_checked) = tokio::join!(
+            self.get(&AgentProvider::Codex, freshness, claude, acp, codex),
+            self.get(&AgentProvider::Claude, freshness, claude, acp, codex),
+            self.get(&AgentProvider::OpenCode, freshness, claude, acp, codex),
         );
-        vec![codex_checked, claude_checked]
+        vec![codex_checked, claude_checked, acp_checked]
     }
 
     /// Fixtures only: see [`Slot::age_past_ttl_for_test`].
@@ -261,6 +292,7 @@ impl ProviderAvailabilityCache {
     pub async fn age_past_ttl_for_test(&self) {
         self.codex.age_past_ttl_for_test().await;
         self.claude.age_past_ttl_for_test().await;
+        self.acp.age_past_ttl_for_test().await;
     }
 }
 
@@ -292,7 +324,12 @@ pub fn spawn_boot_check(state: &crate::state::AppState) -> tokio::task::JoinHand
     tokio::spawn(async move {
         for checked in route
             .provider_availability
-            .all(Freshness::Recheck, &route.claude_planner, &codex)
+            .all(
+                Freshness::Recheck,
+                &route.claude_planner,
+                &route.acp_planner,
+                &codex,
+            )
             .await
         {
             if let Verdict::Unavailable(reason) = &checked.verdict {

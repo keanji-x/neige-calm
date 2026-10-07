@@ -23,7 +23,9 @@ struct Scope {
 impl Scope {
     fn new() -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
-        let instance = MarkerInstance::for_data_dir(dir.path()).expect("instance");
+        let instance =
+            MarkerInstance::for_data_dir(dir.path(), crate::claude_planner::stop::MARKER_KEY)
+                .expect("instance");
         Self {
             _dir: dir,
             instance,
@@ -267,7 +269,7 @@ const GOOD_STAT: &str = "4242 (sleep) S 1 4242 4242 0 -1 0 0 0 0 0 0 0 0 0 20 0 
 
 #[test]
 fn a_fake_proc_root_pins_the_per_pid_rules() {
-    let markers = HashSet::from(["inst:ws".to_string()]);
+    let markers = HashSet::from([format!("{MARKER_KEY}=inst:ws")]);
     let marked = "PATH=/bin\0NEIGE_CLAUDE_PLANNER=inst:ws\0";
     let foreign = "PATH=/bin\0NEIGE_CLAUDE_PLANNER=inst:other\0";
 
@@ -311,7 +313,7 @@ fn a_fake_proc_root_pins_the_per_pid_rules() {
 fn a_marked_pid_reaped_before_its_stat_read_is_skipped() {
     let reaped = calm_worker_runtime::test_support::ReapedProcDir::new();
     let pid = reaped.pid;
-    let markers = HashSet::from(["inst:ws".to_string()]);
+    let markers = HashSet::from([format!("{MARKER_KEY}=inst:ws")]);
     let root = fake_proc(pid, None, "PATH=/bin\0NEIGE_CLAUDE_PLANNER=inst:ws\0");
     let stat = root.path().join(pid.to_string()).join("stat");
     std::os::unix::fs::symlink(format!("{}/stat", reaped.path()), &stat).expect("symlink stat");
@@ -336,7 +338,8 @@ fn instances_differ_by_data_dir() {
     assert_ne!(one.instance, two.instance);
     assert_eq!(
         one.instance,
-        MarkerInstance::for_data_dir(one._dir.path()).expect("instance")
+        MarkerInstance::for_data_dir(one._dir.path(), crate::claude_planner::stop::MARKER_KEY)
+            .expect("instance")
     );
 }
 
@@ -351,7 +354,7 @@ async fn a_scan_that_blocks_fails_at_its_deadline() {
     let fifo = dir.join("environ");
     let path = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
     assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0, "mkfifo");
-    let markers = std::sync::Arc::new(HashSet::from(["inst:ws".to_string()]));
+    let markers = std::sync::Arc::new(HashSet::from([format!("{MARKER_KEY}=inst:ws")]));
 
     let started = tokio::time::Instant::now();
     let scanned = tokio::time::timeout(

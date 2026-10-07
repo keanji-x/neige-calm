@@ -25,8 +25,8 @@ fn harness_turn_start_is_gated() {
         .expect("read harness backend");
     assert_eq!(
         backend.matches(".turn_start(").count(),
-        2,
-        "harness/backend.rs should call .turn_start once per arm (Codex, Claude), inside \
+        3,
+        "harness/backend.rs should call .turn_start once per arm (Codex, Claude, ACP), inside \
          PlannerBackend::turn_start; bump when a backend arm is added"
     );
     // The slice ends where the fn body ends, so a call placed after it is not counted as inside.
@@ -37,7 +37,7 @@ fn harness_turn_start_is_gated() {
         .expect("PlannerBackend::turn_start present");
     assert_eq!(
         turn_start_fn.matches(".turn_start(").count(),
-        2,
+        3,
         "every backend .turn_start call should sit inside PlannerBackend::turn_start"
     );
 

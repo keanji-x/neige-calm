@@ -204,6 +204,7 @@ pub(super) fn agent_provider_to_db(provider: &AgentProvider) -> &'static str {
     match provider {
         AgentProvider::Codex => "codex",
         AgentProvider::Claude => "claude",
+        AgentProvider::OpenCode => "opencode",
     }
 }
 
@@ -220,7 +221,7 @@ pub(crate) fn derive_session_identity(
         WorkerSessionKind::ClaudeCard => WorkerProviderKind::Claude,
     };
     let mode = match provider {
-        WorkerProviderKind::Codex => SessionMode::Resumable,
+        WorkerProviderKind::Codex | WorkerProviderKind::OpenCode => SessionMode::Resumable,
         WorkerProviderKind::Claude | WorkerProviderKind::Terminal => SessionMode::Ephemeral,
     };
     let contract = match kind {

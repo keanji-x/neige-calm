@@ -685,6 +685,13 @@ async fn tightening_tree_budget_immediately_deletes_pending_projection_and_emits
 #[tokio::test]
 async fn requiring_gates_reprojects_pending_ungated_tasks_before_scheduler_wakeup() {
     let (state, track_id, repo) = boot().await;
+    // Pin the pending-row premise: a live claim before PATCH becomes immutable history.
+    let _dispatch_guard = state
+        .dispatcher
+        .semaphore()
+        .acquire_many_owned(u32::try_from(state.dispatcher.permits()).unwrap())
+        .await
+        .unwrap();
     let response = patch(
         state.clone(),
         &track_id,
@@ -801,6 +808,13 @@ async fn tightening_root_tree_budget_culls_descendant_pending_before_it_can_be_c
 #[tokio::test]
 async fn deleting_a_tree_leaf_readmits_a_survivor_under_its_larger_share() {
     let (state, root_id, repo) = boot().await;
+    // Observe the re-admitted pending projection before any live worker claim.
+    let _dispatch_guard = state
+        .dispatcher
+        .semaphore()
+        .acquire_many_owned(u32::try_from(state.dispatcher.permits()).unwrap())
+        .await
+        .unwrap();
     let root = repo.track_get(&root_id).await.unwrap().unwrap();
     let victim = repo
         .track_create(NewTrack {

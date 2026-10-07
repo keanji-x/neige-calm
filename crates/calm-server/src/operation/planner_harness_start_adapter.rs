@@ -91,6 +91,7 @@ pub struct PlannerHarnessStartAdapter {
     mcp_socket_path: Option<PathBuf>,
     per_card_mint_locks: PerCardLocks,
     claude_host: Arc<ClaudePlannerHost>,
+    acp_host: Arc<crate::acp_planner::config::AcpPlannerHost>,
 }
 
 impl PlannerHarnessStartAdapter {
@@ -105,6 +106,7 @@ impl PlannerHarnessStartAdapter {
         track_area_cache: TrackAreaCache,
         mcp_socket_path: Option<PathBuf>,
         claude_host: Arc<ClaudePlannerHost>,
+        acp_host: Arc<crate::acp_planner::config::AcpPlannerHost>,
     ) -> Self {
         Self {
             repo,
@@ -117,6 +119,7 @@ impl PlannerHarnessStartAdapter {
             mcp_socket_path,
             per_card_mint_locks: new_per_card_locks(),
             claude_host,
+            acp_host,
         }
     }
 
@@ -127,12 +130,14 @@ impl PlannerHarnessStartAdapter {
             // Message carries the live failure and the background-retry fact; preflights stay non-blocking.
             AgentProvider::Codex => Err(self.daemon.not_running_error()),
             AgentProvider::Claude => self.claude_host.check_ready().await,
+            AgentProvider::OpenCode => self.acp_host.check_ready(provider).await,
         }
     }
 
     fn claude_wiring(&self) -> ClaudePlannerWiring {
         ClaudePlannerWiring {
-            host: Arc::clone(&self.claude_host),
+            claude: Arc::clone(&self.claude_host),
+            acp: Arc::clone(&self.acp_host),
             plugin: Arc::clone(&self.plugin),
         }
     }
@@ -794,7 +799,17 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         let mut inherited_from: Vec<HarvestedFrom> = Vec::new();
         // The failed carrier's own copy of its queue, carrying the ids the journal names.
         let mut failed_carrier_keeps: Option<HarnessSnapshot> = None;
-        if let Some(inherited) = inherited_snapshot {
+        if let Some(mut inherited) = inherited_snapshot {
+            if provider == AgentProvider::OpenCode
+                && let Some(existing) = predecessor
+            {
+                crate::acp_planner::recovery::retire_before_transfer(
+                    tx,
+                    &existing.id,
+                    &mut inherited,
+                )
+                .await?;
+            }
             snapshot.push_watermark = inherited.push_watermark;
             // Inheriting the fused entries (not the raw arrays) is what keeps the queue ids the client has already been shown; the inherit CARRIES the predecessor's message ids, it does not mint over them.
             let mut inherited_entries = inherited.pending_entries();
@@ -855,6 +870,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         };
         // Sentences a human typed, stranded on a runtime that left the active set before its queue drained. Read, carried and stamped in THIS transaction so a second restart takes nothing.
         let worker_session_id = new_id();
+        crate::acp_planner::recovery::retire_card_sources(tx, card.id.as_str()).await?;
         let harvested = harvest_pending_user_messages_tx(
             tx,
             card.id.as_str(),
@@ -1071,8 +1087,12 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             output.output_optional_string("old_runtime_id", "planner harness")?
             && old_worker_session_id != worker_session_id
         {
-            if let Some(old_handle) = self.harness_registry.remove(&old_worker_session_id) {
-                old_handle.shutdown().await?;
+            self.harness_registry
+                .shutdown_and_remove(&old_worker_session_id)
+                .await?;
+            if provider == AgentProvider::OpenCode {
+                crate::planner_process::stop(&self.acp_host.instance, &old_worker_session_id)
+                    .await?;
             }
             // #1791 §5.1: a Claude predecessor is stopped by id, registered or not (a replay repeats it). A failure is
             // logged and left to the boot sweep or the next destructive step's scoped sweep; the superseded row's token
@@ -1105,7 +1125,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         // start, can overlap a second start. Even then this start mints its own thread, prompt, cwd and
         // credential rather than taking a thread a competing operation owns.
         let mut new_mcp_token_hash = None;
-        let thread_id = if provider == AgentProvider::Claude {
+        let thread_id = if provider != AgentProvider::Codex {
             // #1791 §4.4: a fresh UUID names the Claude session, with no RPC; the MCP credential is minted at the first turn.
             uuid::Uuid::new_v4().to_string()
         } else {
@@ -1243,6 +1263,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                             )?;
                             // Supersede FIRST, then harvest: the harvest predicate is `state = 'superseded'` and this row is the one being retired.
                             session_supersede_active_tx(tx, &existing.id, now).await?;
+                            crate::acp_planner::recovery::retire_card_sources(tx, &card_id).await?;
                             let harvested = harvest_pending_user_messages_tx(
                                 tx,
                                 &card_id,
@@ -1306,12 +1327,14 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                         // that already exists (`--session-id`) instead of resuming it.
                         let session_id = match provider_for_tx {
                             AgentProvider::Codex => None,
-                            AgentProvider::Claude => crate::db::sqlite::session_get_tx(
-                                tx,
-                                &calm_types::worker::WorkerSessionId(worker_session_id.clone()),
-                            )
-                            .await?
-                            .and_then(|row| row.agent_session_id),
+                            AgentProvider::Claude | AgentProvider::OpenCode => {
+                                crate::db::sqlite::session_get_tx(
+                                    tx,
+                                    &calm_types::worker::WorkerSessionId(worker_session_id.clone()),
+                                )
+                                .await?
+                                .and_then(|row| row.agent_session_id)
+                            }
                         };
                         session_bind_attribution_tx(
                             tx,
@@ -1382,6 +1405,12 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         )
         .await?;
         let (card, old_worker_session_id, old_runtime_status, cleared_measure, taken_from) = tx_out;
+        if provider == AgentProvider::OpenCode
+            && let Some(displaced) = old_worker_session_id.as_ref()
+        {
+            self.harness_registry.shutdown_and_remove(displaced).await?;
+            crate::planner_process::stop(&self.acp_host.instance, displaced).await?;
+        }
         drop(mint_lock_guard);
         // Merge this transaction's undo journal into the one `prepare_tx` wrote, or a compensation puts back only half of what it took.
         if !taken_from.is_empty() {
@@ -1452,14 +1481,6 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         let track_id = output.output_string("track_id", "planner harness")?;
         let thread_id = output.output_optional_string("codex_thread_id", "planner harness")?;
         let mut snapshot = output_snapshot(output)?;
-        // THE ROW IS THE SINGLE HOME FOR THE QUEUE: `output` is a durable copy frozen at `prepare_tx`, and a re-driven operation started from it would
-        // deliver a sentence another mint has since moved. Re-read from the runtime's own row at the last moment; an unreadable row keeps what `output` carries.
-        overwrite_queue_from_the_runtimes_own_row(
-            self.repo.as_ref(),
-            &worker_session_id,
-            &mut snapshot,
-        )
-        .await?;
         let provider = {
             let card = self
                 .repo
@@ -1471,6 +1492,26 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         #[cfg(feature = "fixtures")]
         if provider == AgentProvider::Claude {
             claude_spawn_failure::fire(&card_id).await?;
+        }
+        let reservation = self
+            .harness_registry
+            .reserve_after_shutdown(worker_session_id.clone())
+            .await?;
+        if provider == AgentProvider::OpenCode {
+            snapshot = crate::acp_planner::recovery::load_quiesced(
+                self.repo.as_ref(),
+                &worker_session_id,
+                &card_id,
+                &track_id,
+            )
+            .await?;
+        } else {
+            overwrite_queue_from_the_runtimes_own_row(
+                self.repo.as_ref(),
+                &worker_session_id,
+                &mut snapshot,
+            )
+            .await?;
         }
         let backend = PlannerBackend::open(
             provider,
@@ -1489,13 +1530,6 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             },
         )
         .await?;
-        // Atomic replace claim: `reserve_replacing` swaps the slot to Reserved in one entry op and hands back the previous Live handle for shutdown outside the map lock.
-        let (reservation, previous_live) = self
-            .harness_registry
-            .reserve_replacing(worker_session_id.clone());
-        if let Some(existing) = previous_live {
-            existing.shutdown().await?;
-        }
         let handle = PlannerHarness::run(PlannerHarnessParams {
             worker_session_id: worker_session_id.clone(),
             track_id: TrackId::from(track_id),
@@ -1621,9 +1655,9 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         match step.op.as_str() {
             "abort_harness_task" => {
                 let worker_session_id = step.arg_string("runtime_id", "planner harness")?;
-                if let Some(handle) = self.harness_registry.remove(&worker_session_id) {
-                    handle.shutdown().await?;
-                }
+                self.harness_registry
+                    .shutdown_and_remove(&worker_session_id)
+                    .await?;
                 Ok(())
             }
             "interrupt_thread" => {
@@ -1632,6 +1666,11 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 // daemon does not run is a no-op. Failures are logged; the compensation goes on (#1791 §4.1 row 13). The
                 // runtime id is always in the output (`plan_compensation` already requires it), so a missing one is an error.
                 let worker_session_id = _output.output_string("runtime_id", "planner harness")?;
+                if let Err(error) =
+                    crate::planner_process::stop(&self.acp_host.instance, &worker_session_id).await
+                {
+                    tracing::warn!(worker_session_id,%error,"ACP compensation cleanup did not confirm");
+                }
                 if let Err(e) = crate::claude_planner::stop::stop(
                     &self.claude_host.instance,
                     &worker_session_id,
@@ -2986,6 +3025,10 @@ mod tests {
             std::sync::Arc::new(
                 crate::claude_planner::config::ClaudePlannerHost::unconfigured_scratch()
                     .expect("scratch claude planner host"),
+            ),
+            std::sync::Arc::new(
+                crate::acp_planner::config::AcpPlannerHost::unconfigured_scratch()
+                    .expect("ACP host"),
             ),
         )
     }

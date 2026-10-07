@@ -20,9 +20,12 @@ pub(crate) mod rewind;
 pub mod run_loop;
 pub mod snapshot;
 pub mod state;
+pub(crate) mod submission_claims;
 pub mod token_usage;
+pub(crate) mod transcript_receipt;
 pub(crate) mod turn_input;
 pub(crate) mod turn_outcome;
+pub mod wiring;
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
@@ -197,7 +200,7 @@ pub async fn spawn_recovered_harness(
     let mut snapshot = HarnessSnapshot::from_value_strict(state_json);
     // Catch-up is a PLANNER-push catch-up: replaying it into a conversation harness would inject
     // a backlog it was never meant to see. Unknown/absent role falls into the no-replay arm (fail-closed).
-    if role == Some(CardRole::Planner) {
+    if role == Some(CardRole::Planner) && provider != AgentProvider::OpenCode {
         let catch_up_watermark = snapshot.push_watermark;
         replay_harness_events_since(
             repo.clone(),
@@ -233,13 +236,7 @@ pub async fn spawn_recovered_harness(
     }
     // The reservation sits after recovery replay, immediately before handle construction/install.
     let reservation = match claim_mode {
-        ClaimMode::Replace => {
-            let (reservation, previous_live) = registry.reserve_replacing(runtime_id.clone());
-            if let Some(existing) = previous_live {
-                existing.shutdown().await?;
-            }
-            reservation
-        }
+        ClaimMode::Replace => registry.reserve_after_shutdown(runtime_id.clone()).await?,
         ClaimMode::SkipIfClaimed {
             expected_generation,
         } => {
@@ -271,6 +268,26 @@ pub async fn spawn_recovered_harness(
     if provider == AgentProvider::Claude {
         record_interrupted_claude_turn(repo.as_ref(), &runtime, card.track_id.as_str(), &snapshot)
             .await?;
+    }
+    if provider == AgentProvider::OpenCode {
+        snapshot = crate::acp_planner::recovery::load_quiesced(
+            repo.as_ref(),
+            &runtime.id,
+            &runtime.card_id,
+            card.track_id.as_str(),
+        )
+        .await?;
+        if role == Some(CardRole::Planner) {
+            let watermark = snapshot.push_watermark;
+            replay_harness_events_since(
+                repo.clone(),
+                &runtime.card_id,
+                &card.track_id,
+                watermark,
+                &mut snapshot,
+            )
+            .await?;
+        }
     }
     let backend = PlannerBackend::open(
         provider,
@@ -443,7 +460,10 @@ pub enum BootRows {
 /// A Claude Planner row: recovered at boot whatever the Codex daemon does, never by the deferred pass.
 fn is_claude_planner_row(runtime: &WorkerSessionProjection) -> bool {
     runtime.kind == WorkerSessionKind::SharedPlanner
-        && runtime.agent_provider == Some(AgentProvider::Claude)
+        && matches!(
+            runtime.agent_provider,
+            Some(AgentProvider::Claude | AgentProvider::OpenCode)
+        )
 }
 
 #[allow(clippy::too_many_arguments)]
