@@ -477,6 +477,13 @@ async fn serve_conn(
                 if let Ok(message) =
                     std::fs::read_to_string(reads.sock.with_extension("turn-start-refusal"))
                 {
+                    while reads
+                        .sock
+                        .with_extension("turn-start-refusal-wait")
+                        .exists()
+                    {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
                     send_error(&mut write, &id, -32000, message.trim()).await?;
                     continue;
                 }

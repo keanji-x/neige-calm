@@ -210,11 +210,7 @@ impl ProviderAvailabilityCache {
                     } else {
                         stamped.outcome
                     },
-                    checked_at_ms: if authentication_failed {
-                        crate::model::now_ms()
-                    } else {
-                        stamped.checked_at_ms
-                    },
+                    checked_at_ms: stamped.checked_at_ms,
                 }
             }
             AgentProvider::Claude => self.claude(freshness, claude).await.checked(),
