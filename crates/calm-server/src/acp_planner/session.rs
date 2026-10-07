@@ -522,7 +522,7 @@ async fn drive(
     mut cancelled: watch::Receiver<bool>,
 ) {
     let params = &shared.params;
-    let mut retained = std::collections::BTreeMap::<String, Value>::new();
+    let mut retained = Vec::<Value>::new();
     let outcome=async {
         let pending=pending.map_err(wire_error)?;
         let response=pending.wait(Duration::from_secs(3600));tokio::pin!(response);
@@ -588,18 +588,10 @@ async fn drive(
         retain_item(&mut retained, event);
     }
     let mut durable = turn.clone();
-    durable["items"] = Value::Array(retained.values().cloned().collect());
+    durable["items"] = Value::Array(retained);
     let settle = async {
-        crate::harness::turn_outcome::record(
-            params.repo.as_ref(),
-            &params.worker_session_id,
-            &params.card_id,
-            &params.track_id,
-            &receipt.thread_id,
-            &receipt.turn_id,
-            &turn,
-        )
-        .await?;
+        // The receipt owns settlement; projections can always be rebuilt from it.
+        // Never publish success before its final frames are durable.
         acp_submission_finish(
             &params
                 .repo
@@ -611,6 +603,16 @@ async fn drive(
                 .then(|| serde_json::to_string(&durable))
                 .transpose()?
                 .as_deref(),
+        )
+        .await?;
+        crate::harness::turn_outcome::record(
+            params.repo.as_ref(),
+            &params.worker_session_id,
+            &params.card_id,
+            &params.track_id,
+            &receipt.thread_id,
+            &receipt.turn_id,
+            &turn,
         )
         .await
     }
@@ -624,14 +626,19 @@ async fn drive(
         let _ = shared.events.send(event);
     }
 }
-fn retain_item(retained: &mut std::collections::BTreeMap<String, Value>, event: &PlannerEvent) {
+fn retain_item(retained: &mut Vec<Value>, event: &PlannerEvent) {
     if let PlannerEventKind::Item { params, phase, .. } = &event.kind
         && let Some(id) = params["item"]["id"].as_str()
     {
-        retained.insert(
-            id.to_owned(),
-            json!({"method":phase.method(),"params":params}),
-        );
+        let frame = json!({"method":phase.method(),"params":params});
+        if let Some(prior) = retained
+            .iter_mut()
+            .find(|frame| frame["params"]["item"]["id"] == id)
+        {
+            *prior = frame;
+        } else {
+            retained.push(frame);
+        }
     }
 }
 

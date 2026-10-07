@@ -302,6 +302,44 @@ fn translator() -> translate::TurnTranslator {
         native_session_id: "native".into(),
     })
 }
+
+#[test]
+fn text_tool_text_have_distinct_identities_and_complete_in_execution_order() {
+    let mut translator = translator();
+    let mut events = Vec::new();
+    for frame in [
+        json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"before"}}),
+        json!({"sessionUpdate":"tool_call","toolCallId":"1","title":"operation","status":"completed"}),
+        json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"after"}}),
+    ] {
+        events.extend(translator.update(&update(frame), 10).unwrap());
+    }
+    events.extend(translator.finish(protocol::StopReason::EndTurn, 20));
+    let items: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            PlannerEventKind::Item {
+                phase: ItemPhase::Completed,
+                params,
+                ..
+            } => Some(&params["item"]),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[0]["text"], "before");
+    assert_eq!(items[1]["type"], "dynamicToolCall");
+    assert_eq!(items[2]["text"], "after");
+    let ids: std::collections::BTreeSet<_> = items
+        .iter()
+        .map(|item| item["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids.len(),
+        3,
+        "native tool ids cannot alias generated text ids"
+    );
+}
 fn update(value: Value) -> Value {
     json!({"sessionId":"native","update":value})
 }

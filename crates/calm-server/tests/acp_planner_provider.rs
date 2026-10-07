@@ -472,6 +472,8 @@ async fn acp_completed_receipt_restores_reply_after_harness_projection_crash() {
         .await
         .unwrap();
     delete_checkpoint_rows(&mut tx, &card, "item/completed").await;
+    delete_checkpoint_rows(&mut tx, &card, "item/started").await;
+    delete_checkpoint_rows(&mut tx, &card, "turn/completed").await;
     sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
         .bind(&runtime.id)
         .bind(serde_json::to_string(&checkpoint).unwrap())
@@ -491,8 +493,64 @@ async fn acp_completed_receipt_restores_reply_after_harness_projection_crash() {
                 && row.item_type.as_deref() == Some("agentMessage")),
         "completed reply must recover from its receipt"
     );
+    let completed: Vec<Value> = rows
+        .iter()
+        .filter(|row| row.method == "item/completed")
+        .map(|row| serde_json::from_str::<Value>(&row.params).unwrap()["item"].clone())
+        .collect();
+    assert_eq!(completed.len(), 3);
+    assert_eq!(completed[0]["text"], "before operation");
+    assert_eq!(completed[1]["type"], "dynamicToolCall");
+    assert!(
+        completed[2]["text"]
+            .as_str()
+            .unwrap()
+            .contains("retain this reply")
+    );
+    assert_eq!(
+        completed
+            .iter()
+            .map(|item| item["id"].as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        3
+    );
     assert_eq!(stack.outcomes(&card).await[0]["id"], outcome["id"]);
     assert_eq!(requests(&root, "session/prompt").len(), 1);
+    stack.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn acp_operation_replay_uses_the_quiesced_full_checkpoint() {
+    let root = Root::new("unused");
+    let stack = boot(&root).await;
+    let (_, card) = create(&stack).await;
+    let pool = stack.repo().sqlite_pool().unwrap();
+    let operation: String = sqlx::query_scalar("SELECT id FROM operations WHERE target_id=?1 AND phase='succeeded' ORDER BY created_at_ms DESC LIMIT 1")
+        .bind(&card).fetch_one(&pool).await.unwrap();
+    std::fs::write(root.path().join("scenario"), "hold").unwrap();
+    let (status, body) = stack.post_input(&card, "already dispatched").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let runtime = stack.runtime(&card).await;
+    stack.wait_phase(&runtime.id, "turn_running").await;
+    let issued = stack
+        .harness(&runtime.id)
+        .snapshot()
+        .await
+        .last_turn_id
+        .unwrap();
+    // Crash replay uses the operation's original Idle snapshot while boot has
+    // independently recovered and dispatched this runtime's current input.
+    sqlx::query("UPDATE operations SET phase='spawn_started',phase_detail_json=NULL,lease_owner=NULL,lease_until_ms=NULL WHERE id=?1")
+        .bind(&operation).execute(&pool).await.unwrap();
+    calm_server::recover_operations_on_boot(&stack.state)
+        .await
+        .unwrap();
+    let restored = stack.harness(&runtime.id).snapshot().await;
+    assert_eq!(restored.last_turn_id.as_deref(), Some(issued.as_str()));
+    assert!(restored.pending_entries().is_empty());
+    assert_eq!(requests(&root, "session/prompt").len(), 1);
+    assert_eq!(stack.wait_outcomes(&card, 1).await[0]["id"], issued);
     stack.shutdown().await;
 }
 

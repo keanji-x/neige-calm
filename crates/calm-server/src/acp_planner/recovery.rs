@@ -64,17 +64,37 @@ pub(crate) async fn retire_card_sources(
         if let Some(receipt) = checkpoint_receipt(&mut **tx, &worker, &snapshot).await?
             && retire(&mut snapshot, &receipt)?
         {
-            sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
-                .bind(worker)
-                .bind(serde_json::to_string(&snapshot)?)
-                .execute(&mut **tx)
-                .await?;
+            crate::db::sqlite::session_set_handle_state_of_any_runtime_tx(
+                tx,
+                &worker,
+                Some(serde_json::to_value(&snapshot)?),
+                crate::model::now_ms(),
+            )
+            .await?;
         }
     }
     Ok(())
 }
 
 /// The caller has claimed recovery and stopped any predecessor before this runs.
+/// Read the complete checkpoint only after quiescence, never merge a live queue
+/// into an old operation snapshot: its dispatch identity must travel with it.
+pub(crate) async fn load_quiesced(
+    repo: &dyn Repo,
+    worker: &str,
+    card: &str,
+    track: &str,
+) -> Result<HarnessSnapshot> {
+    let json = repo
+        .session_projection_handle_state_by_id(worker)
+        .await?
+        .ok_or_else(|| CalmError::Conflict("Managed session checkpoint is missing".into()))?;
+    let mut snapshot = HarnessSnapshot::parse_known(json)
+        .ok_or_else(|| CalmError::Conflict("Managed session checkpoint is unsupported".into()))?;
+    recover(repo, worker, card, track, &mut snapshot).await?;
+    Ok(snapshot)
+}
+
 pub(crate) async fn recover(
     repo: &dyn Repo,
     worker: &str,

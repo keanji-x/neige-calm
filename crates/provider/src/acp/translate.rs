@@ -56,18 +56,25 @@ impl TurnTranslator {
                     .ok_or(Error::Protocol("missing text chunk"))?;
                 let native = update.get("messageId").and_then(Value::as_str);
                 let id = if let Some(id) = native {
-                    format!("acp-{}-{kind}-{id}", self.context.turn_id)
+                    format!("acp-{}-{kind}-native-{id}", self.context.turn_id)
                 } else if let Some((channel, id)) = &self.current {
                     if channel == kind {
                         id.clone()
                     } else {
                         self.sequence += 1;
-                        format!("acp-{}-{}", self.context.turn_id, self.sequence)
+                        format!("acp-{}-{kind}-auto-{}", self.context.turn_id, self.sequence)
                     }
                 } else {
                     self.sequence += 1;
-                    format!("acp-{}-{}", self.context.turn_id, self.sequence)
+                    format!("acp-{}-{kind}-auto-{}", self.context.turn_id, self.sequence)
                 };
+                if self
+                    .current
+                    .as_ref()
+                    .is_some_and(|(_, current)| current != &id)
+                {
+                    self.complete_current(&mut events, at_ms);
+                }
                 self.current = Some((kind.into(), id.clone()));
                 self.text_bytes = self.text_bytes.saturating_add(delta.len());
                 if self.text_bytes > 16 * 1024 * 1024 {
@@ -96,7 +103,7 @@ impl TurnTranslator {
                 }
             }
             "tool_call" | "tool_call_update" => {
-                self.current = None;
+                self.complete_current(&mut events, at_ms);
                 let id = update["toolCallId"]
                     .as_str()
                     .ok_or(Error::Protocol("missing tool call identity"))?;
@@ -135,7 +142,7 @@ impl TurnTranslator {
                     _ => return Err(Error::Protocol("invalid tool call status")),
                 };
                 let content = tool_content(&tool)?;
-                let item = json!({"id":format!("acp-{}-{id}",self.context.turn_id),"type":"dynamicToolCall","tool":tool["title"],"arguments":tool.get("rawInput").cloned().unwrap_or(Value::Null),"status":status,"result":{"content":content,"structuredContent":tool.get("rawOutput").cloned().unwrap_or(Value::Null)},"native":tool});
+                let item = json!({"id":format!("acp-{}-tool-{id}",self.context.turn_id),"type":"dynamicToolCall","tool":tool["title"],"arguments":tool.get("rawInput").cloned().unwrap_or(Value::Null),"status":status,"result":{"content":content,"structuredContent":tool.get("rawOutput").cloned().unwrap_or(Value::Null)},"native":tool});
                 let phase = if matches!(status, "completed" | "failed") {
                     ItemPhase::Completed
                 } else {
@@ -171,13 +178,8 @@ impl TurnTranslator {
     }
     pub fn finish(&self, reason: StopReason, at_ms: i64) -> Vec<PlannerEvent> {
         let mut events = Vec::new();
-        for (id, (kind, text)) in &self.text {
-            let item = if kind == "agent_message_chunk" {
-                json!({"id":id,"type":"agentMessage","text":text})
-            } else {
-                json!({"id":id,"type":"reasoning","summary":[text],"content":[]})
-            };
-            events.push(self.item(item, ItemPhase::Completed, at_ms));
+        if let Some((_, id)) = &self.current {
+            events.push(self.completed_text(id, at_ms));
         }
         let (status, error) = match reason {
             StopReason::Cancelled => ("interrupted", Value::Null),
@@ -190,6 +192,20 @@ impl TurnTranslator {
             turn: json!({"id":self.context.turn_id,"status":status,"error":error}),
         }));
         events
+    }
+    fn complete_current(&mut self, events: &mut Vec<PlannerEvent>, at_ms: i64) {
+        if let Some((_, id)) = self.current.take() {
+            events.push(self.completed_text(&id, at_ms));
+        }
+    }
+    fn completed_text(&self, id: &str, at_ms: i64) -> PlannerEvent {
+        let (kind, text) = &self.text[id];
+        let item = if kind == "agent_message_chunk" {
+            json!({"id":id,"type":"agentMessage","text":text})
+        } else {
+            json!({"id":id,"type":"reasoning","summary":[text],"content":[]})
+        };
+        self.item(item, ItemPhase::Completed, at_ms)
     }
     fn item(&self, item: Value, phase: ItemPhase, at_ms: i64) -> PlannerEvent {
         let mut params =

@@ -1483,14 +1483,6 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         let track_id = output.output_string("track_id", "planner harness")?;
         let thread_id = output.output_optional_string("codex_thread_id", "planner harness")?;
         let mut snapshot = output_snapshot(output)?;
-        // THE ROW IS THE SINGLE HOME FOR THE QUEUE: `output` is a durable copy frozen at `prepare_tx`, and a re-driven operation started from it would
-        // deliver a sentence another mint has since moved. Re-read from the runtime's own row at the last moment; an unreadable row keeps what `output` carries.
-        overwrite_queue_from_the_runtimes_own_row(
-            self.repo.as_ref(),
-            &worker_session_id,
-            &mut snapshot,
-        )
-        .await?;
         let provider = {
             let card = self
                 .repo
@@ -1502,6 +1494,28 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         #[cfg(feature = "fixtures")]
         if provider == AgentProvider::Claude {
             claude_spawn_failure::fire(&card_id).await?;
+        }
+        let (reservation, previous_live) = self
+            .harness_registry
+            .reserve_replacing(worker_session_id.clone());
+        if let Some(existing) = previous_live {
+            existing.shutdown().await?;
+        }
+        if provider == AgentProvider::OpenCode {
+            snapshot = crate::acp_planner::recovery::load_quiesced(
+                self.repo.as_ref(),
+                &worker_session_id,
+                &card_id,
+                &track_id,
+            )
+            .await?;
+        } else {
+            overwrite_queue_from_the_runtimes_own_row(
+                self.repo.as_ref(),
+                &worker_session_id,
+                &mut snapshot,
+            )
+            .await?;
         }
         let backend = PlannerBackend::open(
             provider,
@@ -1520,13 +1534,6 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             },
         )
         .await?;
-        // Atomic replace claim: `reserve_replacing` swaps the slot to Reserved in one entry op and hands back the previous Live handle for shutdown outside the map lock.
-        let (reservation, previous_live) = self
-            .harness_registry
-            .reserve_replacing(worker_session_id.clone());
-        if let Some(existing) = previous_live {
-            existing.shutdown().await?;
-        }
         let handle = PlannerHarness::run(PlannerHarnessParams {
             worker_session_id: worker_session_id.clone(),
             track_id: TrackId::from(track_id),

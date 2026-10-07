@@ -276,14 +276,24 @@ pub async fn spawn_recovered_harness(
             .await?;
     }
     if provider == AgentProvider::OpenCode {
-        crate::acp_planner::recovery::recover(
+        snapshot = crate::acp_planner::recovery::load_quiesced(
             repo.as_ref(),
             &runtime.id,
             &runtime.card_id,
             card.track_id.as_str(),
-            &mut snapshot,
         )
         .await?;
+        if role == Some(CardRole::Planner) {
+            let watermark = snapshot.push_watermark;
+            replay_harness_events_since(
+                repo.clone(),
+                &runtime.card_id,
+                &card.track_id,
+                watermark,
+                &mut snapshot,
+            )
+            .await?;
+        }
     }
     let backend = PlannerBackend::open(
         provider,

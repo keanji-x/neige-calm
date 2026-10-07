@@ -116,8 +116,9 @@ for line in sys.stdin:
         elif scenario == 'hold':
             pending = request
         else:
-            update({'sessionUpdate': 'tool_call', 'toolCallId': 'one', 'title': 'Fixture output', 'status': 'in_progress'})
-            update({'sessionUpdate': 'tool_call_update', 'toolCallId': 'one', 'status': 'completed',
+            update({'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'before operation'}})
+            update({'sessionUpdate': 'tool_call', 'toolCallId': '1', 'title': 'Fixture output', 'status': 'in_progress'})
+            update({'sessionUpdate': 'tool_call_update', 'toolCallId': '1', 'status': 'completed',
                     'content': [{'type': 'content', 'content': {'type': 'text', 'text': 'native tool output'}}]})
             finish(request, 'reply: ' + texts[-1])
     elif method == 'session/cancel' and pending:
