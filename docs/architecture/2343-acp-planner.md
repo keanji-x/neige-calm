@@ -25,6 +25,8 @@ A settled session may load its original native ID after restart. Load/configurat
 
 The durable receipt is the settlement authority: final outcome and ordered item frames are committed before the Harness completion projection. Recovery and operation replay use one checkpoint loader after reserving the runtime and stopping its predecessor. It reads the entire current snapshot, reconciles the receipt's exact queue claims, and retains later input. Generic harvest paths apply that same retirement rule before moving queue ownership. Text and tool identities occupy disjoint namespaces, and replay retains first-seen item order.
 
+External Harness checkpoint persistence takes the same issuance lock as queue drain; shutdown, which already owns that lock, uses the internal writer. Managed ACP sessions own their driver task and join it before recovery or replacement can continue, even when credential/process cleanup fails. Joining borrows the stored handle, so cancellation of a shutdown cannot detach a remaining receipt writer. No timed wait is treated as quiescence evidence.
+
 Process cleanup and boot credential revocation select only sessions registered in `acp_managed_sessions`. The `NEIGE_ACP_PLANNER` namespace and canonical data-dir instance marker exclude independent native clients and other Neige instances. Existing migrations are unchanged; additions are 0155 and 0156 on the initial base.
 
 ## Configuration

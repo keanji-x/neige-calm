@@ -36,7 +36,6 @@ struct Active {
     thread: String,
     turn: String,
     cancel: watch::Sender<bool>,
-    done: watch::Sender<bool>,
 }
 struct State {
     active: Option<Active>,
@@ -47,6 +46,7 @@ struct Shared {
     events: broadcast::Sender<PlannerEvent>,
     state: Mutex<State>,
     issue: tokio::sync::Mutex<()>,
+    driver: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     installed: AtomicBool,
 }
 pub struct AcpPlannerSession {
@@ -64,6 +64,7 @@ impl AcpPlannerSession {
                     closed: false,
                 }),
                 issue: tokio::sync::Mutex::new(()),
+                driver: tokio::sync::Mutex::new(None),
                 installed: AtomicBool::new(false),
             }),
         }
@@ -171,6 +172,7 @@ impl AcpPlannerSession {
                 "Previous ACP outcome is unknown. Reset before sending more input; nothing will be resent.",
             ));
         }
+        join_driver(shared).await?;
         let mut blocks = Vec::new();
         let has_receipts: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM acp_submissions WHERE worker_session_id=?1)",
@@ -329,12 +331,10 @@ impl AcpPlannerSession {
             }
         };
         let (cancel, cancelled) = watch::channel(false);
-        let (done, _) = watch::channel(false);
         shared.state.lock().expect("ACP state").active = Some(Active {
             thread: thread.into(),
             turn: turn.clone(),
             cancel,
-            done: done.clone(),
         });
         let translator = TurnTranslator::new(TurnContext {
             thread_id: thread.into(),
@@ -349,11 +349,20 @@ impl AcpPlannerSession {
             &blocks,
         )
         .await;
-        let shared = Arc::clone(shared);
-        tokio::spawn(async move {
-            drive(shared, process, receipt, translator, pending, cancelled).await;
-            let _ = done.send(true);
+        let mut driver_slot = shared.driver.lock().await;
+        let task_shared = Arc::clone(shared);
+        let driver = tokio::spawn(async move {
+            drive(
+                task_shared,
+                process,
+                receipt,
+                translator,
+                pending,
+                cancelled,
+            )
+            .await;
         });
+        *driver_slot = Some(driver);
         // A durable dispatch attempt always hands ownership to the Harness, even if its pipe failed.
         Ok(turn)
     }
@@ -377,21 +386,37 @@ impl AcpPlannerSession {
         if !self.shared.installed.load(Ordering::SeqCst) {
             return Ok(());
         }
-        let done = {
+        {
             let state = self.shared.state.lock().expect("ACP state");
-            state.active.as_ref().map(|active| {
+            if let Some(active) = state.active.as_ref() {
                 let _ = active.cancel.send(true);
-                active.done.subscribe()
-            })
-        };
-        let params = &self.shared.params;
-        revoke(params).await?;
-        crate::planner_process::stop(&params.host.instance, &params.worker_session_id).await?;
-        if let Some(mut done) = done {
-            let _ = tokio::time::timeout(Duration::from_secs(5), done.wait_for(|done| *done)).await;
+            }
         }
+        let params = &self.shared.params;
+        let revoked = revoke(params).await;
+        let stopped =
+            crate::planner_process::stop(&params.host.instance, &params.worker_session_id).await;
+        // Cleanup errors never detach the writer: recovery waits for all its writes.
+        join_driver(&self.shared).await?;
+        revoked?;
+        stopped?;
         Ok(())
     }
+}
+async fn join_driver(shared: &Shared) -> Result<()> {
+    // Await by reference: cancelling a shutdown must leave task ownership here.
+    let mut slot = shared.driver.lock().await;
+    let result = if let Some(driver) = slot.as_mut() {
+        driver.await.map_err(|error| {
+            CalmError::Conflict(format!(
+                "ACP receipt writer did not finish normally: {error}"
+            ))
+        })
+    } else {
+        Ok(())
+    };
+    slot.take();
+    result
 }
 fn refused(reason: &str) -> TurnStartFailure {
     TurnStartFailure::Refused {
@@ -589,6 +614,8 @@ async fn drive(
     }
     let mut durable = turn.clone();
     durable["items"] = Value::Array(retained);
+    #[cfg(feature = "fixtures")]
+    super::test_seams::wait_at_settlement(&params.worker_session_id).await;
     let settle = async {
         // The receipt owns settlement; projections can always be rebuilt from it.
         // Never publish success before its final frames are durable.

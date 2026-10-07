@@ -829,7 +829,7 @@ impl PlannerHarness {
         // the shared daemon cache. If shutdown won first, maybe_issue_turn sees
         // `shutting_down` under this same mutex and never calls the daemon.
         let _issuance_guard = self.inner.issuance.lock().await;
-        self.persist_snapshot().await?;
+        persist_snapshot(&self.inner).await?;
         let interrupt_error = self
             .inner
             .backend
@@ -911,6 +911,7 @@ impl PlannerHarness {
     }
 
     pub async fn persist_snapshot(&self) -> Result<()> {
+        let _issuance_guard = self.inner.issuance.lock().await;
         persist_snapshot(&self.inner).await
     }
 
@@ -4350,6 +4351,8 @@ mod live_reply;
 mod native_ask;
 mod replace_command;
 
+#[cfg(test)]
+mod checkpoint_tests;
 #[cfg(test)]
 mod completed_commit_tests;
 
