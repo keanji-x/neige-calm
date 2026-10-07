@@ -1,3 +1,4 @@
+import { sidebarTrackGroups } from './sidebar-track-groups.ts';
 // The workspace rail: shared groups with owner-defined membership and actions.
 
 import { useEffect, useRef } from 'react';
@@ -6,7 +7,7 @@ import { DropdownMenu, DropdownMenuItem, DropdownMenuSubMenu } from '@astryxdesi
 import { visibleAreas, type Area } from '../../../../core/domain/area.ts';
 import { DELETE_FAILURES, DELETE_TEXT, writeFailureText } from '../../../../core/domain/failure-class.ts';
 import {
-  TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT, hasFailed, isWorking, needsUserAttention, sortAreaTracksByRecent, userVisibleTracks, type Track,
+  TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT, userVisibleTracks, type Track,
 } from '../../../../core/domain/track.ts';
 import { deleteAreaCopy, DELETE_TRACK_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../ui/dialog/public.tsx';
@@ -84,17 +85,14 @@ export function Sidebar({
 
   const userAreas = visibleAreas(areas);
   const userTracks = userVisibleTracks(tracks, areas);
-  // "Waiting on you" is what the kernel says needs a person: input or repair.
-  const waiting = userTracks.filter((track) => needsUserAttention(track) || hasFailed(track));
-  const pinned = userTracks.filter((track) => track.pinnedAt !== null)
-    .toSorted((left, right) => (right.pinnedAt ?? 0) - (left.pinnedAt ?? 0));
-
   const isUnread = (track: Track) => preferences.isUnread('track', track.id, track.activityAt ?? 0);
+  const memberships = sidebarTrackGroups(userTracks, isUnread);
+  const waiting = memberships.waiting;
   const groups: ReadonlyArray<{ id: SidebarSectionId; title: string; tracks: readonly Track[] }> = [
     { id: 'waiting', title: 'Waiting on you', tracks: waiting },
-    { id: 'pinned', title: 'Pinned', tracks: pinned },
-    { id: 'unread', title: 'Unread', tracks: sortAreaTracksByRecent(userTracks.filter(isUnread)) },
-    { id: 'running', title: 'Running', tracks: sortAreaTracksByRecent(userTracks.filter(isWorking)) },
+    { id: 'pinned', title: 'Pinned', tracks: memberships.pinned },
+    { id: 'unread', title: 'Unread', tracks: memberships.unread },
+    { id: 'running', title: 'Running', tracks: memberships.running },
   ];
 
   const sectionOrder = preferences.sidebarOrder('sections', SIDEBAR_SECTION_IDS);

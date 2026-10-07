@@ -19,25 +19,26 @@ const track: Track = {
 
 describe('MobileTracks', () => {
   it('has one Area header, a More edit action, and grouped actions above the selected Track', async () => {
-    const onEditArea = vi.fn(); const onOpenTrack = vi.fn(); const onBack = vi.fn();
+    const onEditArea = vi.fn(); const onOpenTrack = vi.fn(); const onBack = vi.fn(); const onNewTrack = vi.fn();
     render(<MobileTracks view="tracks" areas={[area]} tracksByArea={new Map([['c1', [track]]])} areaId="c1" currentTrackId="w1"
-      onBack={onBack} onNewTrack={vi.fn()} onOpenSettings={vi.fn()} onCreateArea={vi.fn()} onSelectArea={vi.fn()} onEditArea={onEditArea} onOpenTrack={onOpenTrack}
+      onBack={onBack} onNewTrack={onNewTrack} onOpenSettings={vi.fn()} onCreateArea={vi.fn()} onSelectArea={vi.fn()} onEditArea={onEditArea} onOpenTrack={onOpenTrack}
       isUnread={() => false} readError={null} readLoading={false} onRetryRead={vi.fn()} />);
     const header = screen.getByRole('heading', { name: 'Product' }).closest('header');
 
     expect(screen.getByRole('button', { name: 'Back to Areas' })).toBeTruthy();
+    expect(screen.queryByRole('radio')).toBeNull();
+    expect(screen.queryByRole('radio', { name: 'Areas' })).toBeNull();
     const more = screen.getByRole('button', { name: 'Area actions' });
     await userEvent.click(more);
     const edit = screen.getByRole('menuitem', { name: 'Edit area Product' });
     expect(more.closest('header')).toBe(header);
     expect(more.querySelector('svg')).not.toBeNull();
-    const actions = screen.getByRole('group', { name: 'Workspace actions' });
-    expect([...actions.querySelectorAll('button')].map((button) => button.textContent?.trim())).toEqual(['Settings', 'New track']);
-    expect(actions.querySelectorAll('ul')).toHaveLength(1);
-    expect(actions.querySelectorAll('li svg')).toHaveLength(2);
-    expect(header?.nextElementSibling?.contains(actions)).toBe(true);
+    expect(screen.queryByRole('group', { name: 'Workspace actions' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'New track' }).closest('header')).toBeNull();
     await userEvent.click(edit);
     expect(onEditArea).toHaveBeenCalledWith(area);
+    await userEvent.click(screen.getByRole('button', { name: 'New track' }));
+    expect(onNewTrack).toHaveBeenCalledWith('c1');
     const selected = screen.getByRole('button', { name: 'Responsive mobile UI' });
     expect(selected.getAttribute('aria-current')).toBe('page');
     await userEvent.click(selected);
@@ -56,26 +57,26 @@ describe('MobileTracks', () => {
     expect(screen.queryByRole('button', { name: 'Responsive mobile UI' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'New area' })).toBeNull();
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'New track' }).disabled).toBe(true);
-    await userEvent.click(screen.getByRole('button', { name: 'Area actions' }));
-    expect(screen.getByRole('menuitem', { name: 'Edit area' }).getAttribute('aria-disabled')).toBe('true');
+    expect(screen.queryByRole('button', { name: 'Area actions' })).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'New track' }));
-    await userEvent.click(screen.getByRole('menuitem', { name: 'Edit area' }));
     expect(onNewTrack).not.toHaveBeenCalled();
     expect(onEditArea).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole('button', { name: 'Back to Areas' }));
-    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
     expect(onBack).toHaveBeenCalledOnce();
-    expect(onOpenSettings).toHaveBeenCalledOnce();
+    expect(onOpenSettings).not.toHaveBeenCalled();
   });
 
-  it('offers only Settings and New area on the Areas index, including an empty workspace', async () => {
+  it('offers only the Area list and New area without workspace filters', async () => {
     const onCreateArea = vi.fn();
     render(<MobileTracks view="areas" areas={[]} tracksByArea={new Map()} areaId={undefined} currentTrackId={undefined}
       onBack={vi.fn()} onNewTrack={vi.fn()} onOpenSettings={vi.fn()} onCreateArea={onCreateArea} onSelectArea={vi.fn()} onEditArea={vi.fn()} onOpenTrack={vi.fn()}
       isUnread={() => false} readError={null} readLoading={false} onRetryRead={vi.fn()} />);
-    const actions = screen.getByRole('group', { name: 'Workspace actions' });
-    expect([...actions.querySelectorAll('button')].map((button) => button.textContent?.trim())).toEqual(['Settings', 'New area']);
+    expect(screen.getByRole('button', { name: 'New area' }).closest('header')).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Workspace actions' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'New track' })).toBeNull();
+    expect(screen.queryByRole('radio', { name: 'Areas' })).toBeNull();
+    expect(screen.queryByRole('radio', { name: 'Pinned' })).toBeNull();
+    expect(screen.queryByRole('radio', { name: 'Unread' })).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'New area' }));
     expect(onCreateArea).toHaveBeenCalledOnce();
   });

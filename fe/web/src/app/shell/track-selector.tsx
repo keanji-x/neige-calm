@@ -1,34 +1,20 @@
 import { TrackTitle } from '../../features/track/title/public.tsx';
-import { Button } from '@astryxdesign/core/Button';
-import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
 import { trackDisplayTitle, type Track } from '../../../../core/domain/track.ts';
 import { Icon } from '../../ui/icon/public.tsx';
-import { Menu } from '../../ui/menu/public.tsx';
 import type { EditableTitleProps } from '../../ui/editable-title/public.tsx';
 import styles from './area-selector.module.css';
 
-/** Navigation is app-owned; editing remains owned by the existing title control. */
-export function TrackSelector({ track, tracks, loading, error, onRetry, onSelectTrack, controls }: Readonly<{
+/** The title opens the existing workspace page; title editing stays with its owner. */
+export function TrackSelector({ track, onOpenTracks, controls }: Readonly<{
   track: Track;
-  tracks: readonly Track[];
-  loading: boolean;
-  /** The failed track read's sentence, as the shared read rule says it. */
-  error: string | null;
-  onRetry: () => void;
-  onSelectTrack: (trackId: string) => void;
+  onOpenTracks: () => void;
   controls: Parameters<NonNullable<EditableTitleProps['readView']>>[0];
 }>) {
-  return <div className={styles.trackIdentity}>
-    <Menu wrapClassName={styles.area} menuClassName={styles.menu} itemClassName={styles.item}
-      items={[...tracks.map((choice) => ({ label: `${trackDisplayTitle(choice.title)}${choice.closedAt === null ? '' : ', closed'}`, labelContent: <TrackTitle track={choice} />, current: choice.id === track.id, icon: <Icon name="file" />,
-        onSelect: () => { if (choice.id !== track.id) onSelectTrack(choice.id); } })),
-        ...(error === null ? [] : [{ label: error, disabled: true, onSelect: () => undefined }, { label: 'Retry', onSelect: onRetry }]),
-        ...(tracks.length > 0 || error !== null ? [] : [{ label: loading ? 'Loading tracks…' : 'No tracks in this area yet.', disabled: true, onSelect: () => undefined }]),
-      ]}
-      trigger={(props) => <h1 className={styles.trackHeading}><Button {...props} ref={(node) => { props.ref(node); controls.titleRef(node); }} label={`Switch track, ${trackDisplayTitle(track.title)}`}
-        variant="ghost" size="lg" className={styles.button} data-nc-page-title=""
-        aria-label={`Switch track, ${trackDisplayTitle(track.title)}`}
-        onKeyDown={(event) => { if (event.key === 'F2') { event.preventDefault(); controls.beginEditing(); } }}
-        endContent={<AstryxIcon icon="chevronDown" size="sm" color="inherit" />}><TrackTitle track={track} /></Button></h1>} />
-  </div>;
+  return <div className={styles.trackIdentity}><h1 className={styles.trackHeading}>
+    <button type="button" ref={controls.titleRef} className={styles.trackButton} data-nc-page-title=""
+      aria-label={`Switch track, ${trackDisplayTitle(track.title)}`} onClick={onOpenTracks}
+      onKeyDown={(event) => { if (event.key === 'F2') { event.preventDefault(); controls.beginEditing(); } }}>
+      <span className={styles.trackLabel}><TrackTitle track={track} /></span><Icon name="switch" />
+    </button>
+  </h1></div>;
 }

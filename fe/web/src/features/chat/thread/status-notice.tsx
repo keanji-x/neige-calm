@@ -56,7 +56,9 @@ function elapsedText(ms: number): string {
 }
 
 /** One native metadata row; clocks are evidence, never inferred from transcript gaps. */
-export function ThreadStatusNotice({ heading, children, clock, tone = 'neutral', outcome, copyAction = null, editAction = null, regenerateAction = null }: {
+export function ThreadStatusNotice({ heading, children, clock, tone = 'neutral', outcome, copyAction = null, editAction = null, regenerateAction = null, detailsExpanded, onDetailsExpandedChange }: {
+  detailsExpanded?: boolean;
+  onDetailsExpandedChange?: (expanded: boolean) => void;
   heading: ReactNode;
   children?: ReactNode;
   clock: ConversationMetaClock;
@@ -103,7 +105,7 @@ export function ThreadStatusNotice({ heading, children, clock, tone = 'neutral',
           }
         }}>
         {children === undefined ? <div className={styles.normal}>{title}</div>
-          : <Collapsible defaultIsOpen={false} chevronPosition="start" trigger={title}>{children}</Collapsible>}
+          : <Collapsible defaultIsOpen={false} isOpen={detailsExpanded} onOpenChange={onDetailsExpandedChange} chevronPosition="start" trigger={title}>{children}</Collapsible>}
       </div>
       <div className={styles.actions} role="group" aria-label="Response actions">
         <IconButton label={copyAction === null ? 'Copy response (not available yet)' : feedback === null || feedback.kind === 'pending' ? 'Copy response'

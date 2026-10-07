@@ -1,0 +1,23 @@
+@layer ui {
+  .material,
+  .surface {
+    --nc-float-fill: var(--paper);
+    --nc-float-edge: transparent;
+    --nc-float-shadow: 0 var(--space-px) var(--space-1) rgb(0 0 0 / 4%), 0 var(--space-3) calc(var(--space-8) + var(--space-1)) rgb(0 0 0 / 7%);
+  }
+
+  /* Shared float material; the user prefers shadow without a visible border. */
+  .surface.surface {
+    box-sizing: border-box;
+    border: 1px solid var(--nc-float-edge) !important;
+    border-radius: var(--radius-pill) !important;
+    background-color: var(--nc-float-fill) !important;
+    box-shadow: var(--nc-float-shadow) !important;
+    color: var(--text-2) !important;
+  }
+
+  :where([data-theme='dark']) .material,
+  :where([data-theme='dark']) .surface {
+    --nc-float-shadow: var(--shadow-float);
+  }
+}

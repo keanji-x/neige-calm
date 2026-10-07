@@ -11,6 +11,7 @@ import type { ApiTransportPort, ApiTransportResponse } from '../../../../core/ap
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from './public.tsx';
+import { PANEL_PUSHED_STATE_KEY } from './navigation.ts';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
 const AREA = { id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
@@ -73,11 +74,10 @@ function setup(path: string) {
 const href = (router: ReturnType<typeof setup>) => router.state.location.href;
 const mobilePanel = () => document.querySelector('[data-nc-mobile-page]');
 
-const trackActions = () => screen.getByRole('button', { name: 'Track actions' });
+const reportEntry = () => screen.getByRole('button', { name: /^Switch track,/ });
 
-async function openPanelFromMenu(label: string): Promise<void> {
-  await userEvent.click(await screen.findByRole('button', { name: 'Track actions' }));
-  await userEvent.click(await screen.findByRole('menuitem', { name: label }));
+async function openPanel(router: ReturnType<typeof setup>, panel: 'cards' | 'tasks' | 'outline' | 'conversations'): Promise<void> {
+  await act(() => router.navigate({ to: '/track/w1', search: { panel }, state: { [PANEL_PUSHED_STATE_KEY]: true } }));
 }
 
 /* A `matchMedia` whose answer can change, with real listeners: widening the window is a reachable gesture. */
@@ -85,7 +85,7 @@ function stubViewport(initiallyCompact: boolean) {
   const listeners = new Set<() => void>();
   let compact = initiallyCompact;
   vi.stubGlobal('matchMedia', vi.fn((media: string) => ({
-    get matches() { return media.includes('width') ? compact : false; },
+    get matches() { return media.includes('width') ? compact : media.includes('prefers-reduced-motion'); },
     media,
     onchange: null,
     // Only the width query's subscribers are replayed: `ThemeProvider`'s handler reads the event, which
@@ -107,7 +107,8 @@ function stubViewport(initiallyCompact: boolean) {
 beforeEach(() => {
   // `RAIL_COLLAPSE_QUERY` is the only media query the compact shell asks about.
   vi.stubGlobal('matchMedia', vi.fn((media: string) => ({
-    matches: media.includes('width'), media, onchange: null,
+    // Lifecycle is covered here; real animation trajectories are checked in browser tests.
+    matches: media.includes('width') || media.includes('prefers-reduced-motion'), media, onchange: null,
     addEventListener: vi.fn(), removeEventListener: vi.fn(),
     addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
   })));
@@ -121,7 +122,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 describe('the mobile report panel is the URL (#1191 §2.4)', () => {
   it('opens through ?panel= and puts focus in the panel container', async () => {
     const router = setup('/track/w1');
-    await openPanelFromMenu('Cards');
+    await openPanel(router, 'cards');
 
     await waitFor(() => { expect(href(router)).toBe('/track/w1?panel=cards'); });
     expect(screen.getByRole('heading', { name: 'Cards' })).toBeTruthy();
@@ -129,15 +130,15 @@ describe('the mobile report panel is the URL (#1191 §2.4)', () => {
     await waitFor(() => { expect(document.activeElement).toBe(mobilePanel()); });
   });
 
-  it('closes back to the report and returns focus to the three-dot menu', async () => {
+  it('closes back to the report and returns focus to the report title', async () => {
     const router = setup('/track/w1');
-    await openPanelFromMenu('Cards');
+    await openPanel(router, 'cards');
     await waitFor(() => { expect(href(router)).toBe('/track/w1?panel=cards'); });
 
     await userEvent.click(screen.getByRole('button', { name: 'Back to Report' }));
     await waitFor(() => { expect(href(router)).toBe('/track/w1'); });
     /* The opener, not the body: closing removes the control the click landed on. */
-    await waitFor(() => { expect(document.activeElement).toBe(trackActions()); });
+    await waitFor(() => { expect(document.activeElement).toBe(reportEntry()); });
   });
 
   it('lands focus in the panel on a cold-start deep link', async () => {
@@ -149,21 +150,21 @@ describe('the mobile report panel is the URL (#1191 §2.4)', () => {
 
   it('answers the hardware Back button, focus included', async () => {
     const router = setup('/track/w1');
-    await openPanelFromMenu('Cards');
+    await openPanel(router, 'cards');
     await waitFor(() => { expect(href(router)).toBe('/track/w1?panel=cards'); });
 
     // A POP, not a click: the panel state is nowhere but the URL.
     router.history.back();
     await waitFor(() => { expect(href(router)).toBe('/track/w1'); });
     expect(mobilePanel()?.getAttribute('data-nc-mobile-page')).toBe('closed');
-    await waitFor(() => { expect(document.activeElement).toBe(trackActions()); });
+    await waitFor(() => { expect(document.activeElement).toBe(reportEntry()); });
   });
 
   it('takes the panel away when the reader walks off the report', async () => {
     const router = setup('/track/w1?panel=cards');
     expect(await screen.findByRole('heading', { name: 'Cards' })).toBeTruthy();
 
-    await userEvent.click(await screen.findByRole('button', { name: 'Open areas' }));
+    await userEvent.click(await screen.findByRole('button', { name: /^Switch track,/ }));
     // Leaving the report layer drops the report's panel.
     await waitFor(() => { expect(href(router)).toBe('/track/w1'); });
     expect(screen.getByRole('dialog', { name: 'Tracks and settings' })).toBeTruthy();
@@ -174,17 +175,17 @@ describe('the mobile report panel is the URL (#1191 §2.4)', () => {
    * step, so only `router.history.length` can tell the two behaviours apart. */
   it('does not stack a duplicate report entry each time the reader leaves the panel for a sheet', async () => {
     const router = setup('/track/w1');
-    await screen.findByRole('button', { name: 'Track actions' });
+    await screen.findByRole('button', { name: /^Switch track,/ });
     expect(router.history.length).toBe(1);
 
     for (let cycle = 0; cycle < 3; cycle += 1) {
-      await openPanelFromMenu('Cards');
+      await openPanel(router, 'cards');
       await waitFor(() => { expect(href(router)).toBe('/track/w1?panel=cards'); });
-      await userEvent.click(screen.getByRole('button', { name: 'Open areas' }));
+      await userEvent.click(screen.getByRole('button', { name: /^Switch track,/ }));
       await waitFor(() => { expect(href(router)).toBe('/track/w1'); });
       expect(screen.getByRole('dialog', { name: 'Tracks and settings' })).toBeTruthy();
       fireEvent.keyDown(document, { key: 'Escape' });
-      expect(screen.queryByRole('dialog', { name: 'Tracks and settings' })).toBeNull();
+      await waitFor(() => { expect(screen.queryByRole('dialog', { name: 'Tracks and settings' })).toBeNull(); });
     }
 
     // One report entry and one panel entry, whatever the cycle count.
@@ -212,9 +213,9 @@ describe('the mobile report panel is the URL (#1191 §2.4)', () => {
 describe('workspace header navigation', () => {
   it('opens the current track’s area without a dock', async () => {
     setup('/track/w1?from=area');
-    await userEvent.click(await screen.findByRole('button', { name: 'Open areas' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Open workspace' }));
     expect(screen.getByRole('dialog', { name: 'Tracks and settings' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Areas' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '工作区' })).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Product' }));
     expect(screen.getByRole('heading', { name: 'Product' })).toBeTruthy();
     expect(document.querySelector('nav[aria-label="Primary"]')).toBeNull();
@@ -225,19 +226,20 @@ describe('workspace header navigation', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Switch area, Product' }));
     await userEvent.click(screen.getByRole('menuitem', { name: 'Second' }));
     await waitFor(() => { expect(href(router)).toBe('/area/c2/new'); });
-    await userEvent.click(screen.getByRole('button', { name: 'Open areas' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Open workspace' }));
     await userEvent.click(screen.getByRole('button', { name: 'Second' }));
     expect(screen.getByRole('heading', { name: 'Second' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Back to Areas' })).toBeTruthy();
-    expect(screen.queryByRole('heading', { name: 'Areas' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: '工作区' })).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: /^New track$/ }));
     await waitFor(() => { expect(href(router)).toBe('/area/c2/new'); });
-    expect(screen.getByRole('button', { name: 'Switch area, Second' })).toBeTruthy();
+    await waitFor(() => { expect(screen.queryByRole('dialog', { name: 'Tracks and settings' })).toBeNull(); });
+    expect(await screen.findByRole('button', { name: 'Switch area, Second' })).toBeTruthy();
   });
 
   it('writes ?from= when navigation opens the track', async () => {
     const router = setup('/');
-    await userEvent.click(await screen.findByRole('button', { name: 'Open areas' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Open workspace' }));
     await userEvent.click(screen.getByRole('button', { name: 'Product' }));
     await userEvent.click(await screen.findByRole('button', { name: 'Responsive mobile UI' }));
     await waitFor(() => { expect(href(router)).toBe('/track/w1?from=area'); });

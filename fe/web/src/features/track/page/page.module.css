@@ -539,6 +539,7 @@
 
   .mobilePanelButton,
   .mobileReportChatFab,
+  .mobileReportChatDock,
   .mobileTrackHeader,
   .mobileListSurface {
     display: none;
@@ -1018,6 +1019,7 @@
     }
 
     .mobileTitleReadHost {
+      flex: 1;
       min-inline-size: 0;
     }
 
@@ -1166,6 +1168,21 @@
       font-size: var(--text-xs);
       line-height: var(--leading-snug);
       color: var(--text-3);
+    }
+
+    .page:has(.mobileReportChatDock) .doc {
+      padding-block-end: calc(var(--rail-w-collapsed) + var(--space-12));
+    }
+
+    .mobileChatInput { flex: 1; min-inline-size: 0; }
+    .mobileReportChatDock {
+      position: fixed;
+      inset-inline: calc(var(--space-8) + var(--rail-w-collapsed) + var(--space-2) + var(--space-4)) var(--space-8);
+      inset-block-end: calc(env(safe-area-inset-bottom) + var(--space-8));
+      z-index: var(--z-sticky);
+      display: flex;
+      align-items: center;
+      gap: var(--space-4);
     }
 
     .mobileReportChatFab {

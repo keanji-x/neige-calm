@@ -60,20 +60,20 @@ describe('shared Track title in production hosts', () => {
     expect(decoration(screen.getByRole('button', { name: 'Rename track' }))).toBe('line-through');
   });
 
-  it('uses closed titles in the mobile selector and menu while retaining keyboard selection', async () => {
+  it('keeps closed title decoration and opens the shared Track page', async () => {
     await page.viewport(414, 896);
-    const onSelectTrack = vi.fn();
-    const closed = track({ closedAt: 5 });
-    render(<TrackSelector track={closed} tracks={[closed, track({ id: 'w2', title: 'Beta' })]}
-      loading={false} error={null} onRetry={vi.fn()} onSelectTrack={onSelectTrack}
-      controls={{ beginEditing: vi.fn(), titleRef: vi.fn() }} />);
+    const onOpenTracks = vi.fn();
+    const beginEditing = vi.fn();
+    render(<TrackSelector track={track({ closedAt: 5 })} onOpenTracks={onOpenTracks}
+      controls={{ beginEditing, titleRef: vi.fn() }} />);
     const trigger = screen.getByRole('button', { name: 'Switch track, Alpha' });
     expect(decoration(trigger)).toBe('line-through');
     await userEvent.click(trigger);
-    const item = screen.getByRole('menuitem', { name: 'Alpha, closed' });
-    expect(decoration(item)).toBe('line-through');
-    await userEvent.keyboard('b{Enter}');
-    expect(onSelectTrack).toHaveBeenCalledWith('w2');
+    expect(onOpenTracks).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('menu')).toBeNull();
+    trigger.focus();
+    await userEvent.keyboard('{F2}');
+    expect(beginEditing).toHaveBeenCalledOnce();
   });
 
   it('uses the same closed title in both mobile navigation lists', async () => {
@@ -145,4 +145,23 @@ describe('a failed inline rename', () => {
     await expect.element(input).toHaveValue('Kept draft');
     await expect.element(input).toHaveFocus();
   });
+});
+
+
+it('keeps the mobile creation control reachable after scrolling a long workspace list', async () => {
+  await page.viewport(390, 844);
+  const onCreateArea = vi.fn();
+  render(<div style={{ height: '100dvh' }}><MobileTracks {...navigation} view="areas"
+    areas={Array.from({ length: 24 }, (_, index) => ({ ...area, id: `area-${index}`, name: `Workspace ${index}` }))}
+    areaId={undefined} tracksByArea={new Map()} currentTrackId={undefined} isUnread={() => false}
+    readError={null} readLoading={false} onRetryRead={vi.fn()} onOpenTrack={vi.fn()} onSelectArea={vi.fn()}
+    onCreateArea={onCreateArea} /></div>);
+  const list = document.querySelector<HTMLElement>('[data-nc-workspace-page="areas"]')!;
+  list.scrollTop = list.scrollHeight;
+  expect(list.scrollTop).toBeGreaterThan(0);
+  const button = screen.getByRole('button', { name: 'New area' });
+  await expect.poll(() => button.getBoundingClientRect().bottom).toBe(828);
+  expect(document.elementFromPoint(350, 804)?.closest('button')).toBe(button);
+  await userEvent.click(button);
+  expect(onCreateArea).toHaveBeenCalledOnce();
 });

@@ -40,7 +40,7 @@ test('retains a rejected conversation message and retries it once', async ({ pag
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible();
     await expect.poll(async () => {
-      const box = await page.getByRole('complementary', { name: 'Planner' }).boundingBox();
+      const box = await page.locator('[data-nc-mobile-chat-panel]').boundingBox();
       return box !== null && box.x >= 0 && box.x + box.width <= 390;
     }).toBe(true);
     await page.screenshot({ path: testInfo.outputPath('rejected-mobile.png'), fullPage: true, animations: 'disabled' });

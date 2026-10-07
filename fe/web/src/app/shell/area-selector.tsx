@@ -1,5 +1,5 @@
 import { Button } from '@astryxdesign/core/Button';
-import { Icon } from '@astryxdesign/core/Icon';
+import { Icon } from '../../ui/icon/public.tsx';
 import { visibleAreas, type Area } from '../../../../core/domain/area.ts';
 import { Menu } from '../../ui/menu/public.tsx';
 import styles from './area-selector.module.css';
@@ -22,6 +22,6 @@ export function AreaSelector({ areas, activeArea, onSelectArea, onCreateArea }: 
     trigger={(props) => <Button {...props} label={current?.name ?? 'Choose area'}
       variant="ghost" size="lg" className={styles.button}
       aria-label={`Switch area, ${current?.name ?? 'Choose area'}`}
-      endContent={<Icon icon="chevronDown" size="sm" color="inherit" />} />}
+      endContent={<Icon name="switch" />} />}
   />;
 }

@@ -14,5 +14,5 @@ export function MobileTitleReadView({ controls, host, view, register }: Readonly
     register(controls.beginEditing);
     return () => { register(null); };
   }, [controls.beginEditing, register]);
-  return createPortal(view(controls), host);
+  return <span data-nc-title-read-view="" aria-hidden="true">{createPortal(view(controls), host)}</span>;
 }

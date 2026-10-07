@@ -68,8 +68,9 @@ describe('degraded workspace reads stay usable', () => {
     // Track failures keep a known current Area; Area failures open navigation
     // before one exists, and recovery must attach its newly loaded track list.
     if (resource === 'tracks') await screen.findByRole('button', { name: 'Switch area, One' });
-    await userEvent.click(await screen.findByRole('button', { name: 'Open areas' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Open workspace' }));
     const sheet = screen.getByRole('dialog', { name: 'Tracks and settings' });
+    if (resource === 'tracks') await userEvent.click(await within(sheet).findByRole('button', { name: 'One' }));
     const alert = await within(sheet).findByRole('alert');
     expect(alert.textContent).toContain(resource === 'areas' ? 'Areas are unavailable.' : 'Tracks are unavailable.');
     /* A 500's text is the server's internals: only the fixed sentence shows. */
@@ -77,7 +78,7 @@ describe('degraded workspace reads stay usable', () => {
     expect(within(sheet).queryByText('No tracks in this area yet.')).toBeNull();
     broken = false;
     await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
-    await userEvent.click(await within(sheet).findByRole('button', { name: 'One' }));
+    if (resource === 'areas') await userEvent.click(await within(sheet).findByRole('button', { name: 'One' }));
     await within(sheet).findByRole('heading', { name: 'One' });
     await within(sheet).findByRole('button', { name: /^Reliable/ });
     await waitFor(() => expect(within(sheet).queryByRole('alert')).toBeNull());

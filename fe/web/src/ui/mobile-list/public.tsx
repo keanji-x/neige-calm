@@ -36,15 +36,15 @@ export function MobileListPage({
   );
 }
 
-export function MobileListGroup({ label, children }: Readonly<{ label: string; children: ReactNode }>) {
-  return <div role="group" aria-label={label} className={styles.group}>{children}</div>;
+export function MobileListGroup({ label, children, appearance = 'grouped' }: Readonly<{ label: string; children: ReactNode; appearance?: 'grouped' | 'plain' }>) {
+  return <div role="group" aria-label={label} className={`${styles.group} ${appearance === 'plain' ? styles.plain : ''}`}>{children}</div>;
 }
 
-export function MobileList({ title, children }: Readonly<{ title?: string; children: ReactNode }>) {
+export function MobileList({ title, children, className }: Readonly<{ title?: string; children: ReactNode; className?: string }>) {
   return (
     <section className={styles.section}>
       {title !== undefined && <h3>{title}</h3>}
-      <AstryxList className={styles.list} density="balanced">{children}</AstryxList>
+      <AstryxList className={[styles.list, className].filter(Boolean).join(' ')} density="balanced">{children}</AstryxList>
     </section>
   );
 }

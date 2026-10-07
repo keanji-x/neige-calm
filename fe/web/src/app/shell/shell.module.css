@@ -6,6 +6,10 @@
  * same position as the features they compose.
  */
 @layer features {
+  .workspaceOpener { position: fixed; inset-inline-start: var(--space-8); display: grid; place-items: center; box-sizing: border-box; inline-size: calc(var(--rail-w-collapsed) + var(--space-2)); block-size: calc(var(--rail-w-collapsed) + var(--space-2)); z-index: var(--z-sticky); cursor: pointer; }
+  .workspaceOpener[hidden] { display: none; }
+  .workspaceOpener svg { inline-size: calc(var(--glyph) + var(--space-4)); block-size: calc(var(--glyph) + var(--space-4)); }
+
   /*
    * A used `block-size`, not a minimum alone. A minimum-only shell grows with
    * content and the whole app becomes one scrolling document: the rail scrolls

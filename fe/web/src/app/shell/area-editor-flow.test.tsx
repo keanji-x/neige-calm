@@ -13,6 +13,7 @@ import { ApiError } from '../../../../core/domain/failure-class.ts';
 import { AreaCreatePreflightError } from '../providers/queries.ts';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 
+
 const harness = vi.hoisted(() => ({
   compact: false,
   realMutations: false,
@@ -83,11 +84,13 @@ vi.mock('../router/navigation.ts', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../router/navigation.ts')>()),
   useCurrentPath: () => '/',
   useGo: () => vi.fn(),
+  useNewTrackBack: () => null,
   useTrackPanelNavigation: () => ({ closePanel: vi.fn() }),
   routeParamFromPath: () => undefined,
 }));
 
-vi.mock('../../ui/viewport/public.ts', () => ({
+vi.mock('../../ui/viewport/public.ts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../ui/viewport/public.ts')>()),
   useCompactViewport: () => harness.compact,
 }));
 
@@ -426,7 +429,7 @@ describe('AppShell Area editor flow', () => {
     await userEvent.click(screen.getByRole('menuitem', { name: 'New area' }));
     expect(screen.getByRole('dialog', { name: 'New area' })).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    await userEvent.click(screen.getByRole('button', { name: 'Open areas' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Open workspace' }));
     const navigation = screen.getByRole('dialog', { name: 'Tracks and settings' });
     await userEvent.click(within(navigation).getByRole('button', { name: 'Work' }));
     expect(within(navigation).getByRole('button', { name: 'Back to Areas' })).toBeTruthy();

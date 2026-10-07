@@ -33,12 +33,13 @@ describe('MobileHeader scroll surface', () => {
     expect(getComputedStyle(header).borderRadius).toBe('0px');
     const title = await page.getByRole('heading', { name: 'Report', exact: true }).findElement();
     expect(getComputedStyle(title).fontSize).toBe('14px');
+    expect(Math.round(Number.parseFloat(getComputedStyle(title).lineHeight))).toBe(20);
     const tone = document.createElement('span');
     tone.style.color = 'var(--text)';
     host.appendChild(tone);
     expect(getComputedStyle(title).color).toBe(getComputedStyle(tone).color);
     const back = await page.getByRole('button', { name: 'Back to workspace' }).findElement();
-    expect(getComputedStyle(back).borderRadius).toBe('12px');
+    expect(getComputedStyle(back).borderRadius).toBe('999px');
     expect(back.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
     expect(Math.abs(header.getBoundingClientRect().top - top)).toBeLessThan(1);
   });

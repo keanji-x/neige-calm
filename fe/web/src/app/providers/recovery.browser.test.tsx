@@ -1,7 +1,7 @@
 import { QueryClient } from '@tanstack/react-query';
 import { createMemoryHistory, RouterProvider } from '@tanstack/react-router';
 import { cleanup, render } from '@testing-library/react';
-import { page } from 'vitest/browser';
+import { page, userEvent } from 'vitest/browser';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import '../../styles/entry.css';
@@ -46,16 +46,17 @@ it.each([390, 1280])('keeps preflight recovery compact and navigation usable at 
   expect(rect.width).toBeLessThan(width - 16);
   expect(rect.height).toBeLessThan(70);
   const navigation = width < 960
-    ? page.getByRole('button', { name: 'Open areas' })
+    ? page.getByRole('button', { name: 'Open conversation history' })
     : page.getByRole('navigation', { name: 'Workspace' });
   await expect.element(navigation).toBeVisible();
   if (width < 960) {
     const header = navigation.element().closest('header')!.getBoundingClientRect();
     expect(header.width).toBeLessThanOrEqual(width);
-    expect(header.height).toBeLessThan(70);
+    expect(header.height).toBe(80);
     await navigation.click();
-    await expect.element(page.getByRole('dialog', { name: 'Tracks and settings' })).toBeVisible();
-    await page.getByRole('button', { name: 'Back to workspace' }).click();
+    await expect.element(page.getByRole('dialog', { name: '历史对话' })).toBeVisible();
+    await userEvent.keyboard('{Escape}');
+    await expect.element(page.getByRole('dialog', { name: '历史对话' })).not.toBeInTheDocument();
   }
   await page.screenshot({ path: `../../../../test-results/preflight-recovery-${width}.png` });
   await retry.click();

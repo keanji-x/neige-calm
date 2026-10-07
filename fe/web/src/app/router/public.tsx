@@ -1,3 +1,4 @@
+import { useThreadReadingView } from '../../features/chat/thread/reading-view.tsx';
 import { useConversationDraftRetention, useConversationDraftAdoption, useRequestedConversationOpen, useConversationEscape, useConversationDraftAutoSend } from '../conversations/pane-lifecycle.ts';
 import { createConversationDraftActions } from '../conversations/draft-actions.ts';
 import { useConversationStore } from '../conversations/store.ts';
@@ -87,7 +88,6 @@ import { createDirectoryLister, createTrackWorkspaceFilesPort } from '../provide
 import { useMentionSearch } from '../providers/mentions.ts';
 import { DELETE_CARD_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { OperationFeedback, useDeleteConfirm, useOperationFeedback } from '../../ui/operation-feedback/public.tsx';
-import { Drawer } from '../../ui/drawer/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
 import { PanelAction } from '../../ui/panel-card/public.tsx';
 import { useCommittedCallback } from '../../ui/state/committed-callback.ts';
@@ -102,11 +102,15 @@ import {
 } from '../providers/queries.ts';
 import { NewTrackRoute } from './new-track-route.tsx';
 import { DailyTodayRoute } from './daily-planner.tsx';
+import { ChatDock } from '../../features/chat/dock/public.tsx';
+import mobileChatStyles from './mobile-chat.module.css';
+import { ConversationSurface } from './mobile-conversation-surface.tsx';
+import { plannerConversationRow } from '../conversations/planner-row.ts';
 import { NewTrackDraftProvider } from './new-track-drafts.tsx';
 import { RecipesRoute } from './recipes-route.tsx';
 import { createUiPreferences, UiPreferencesProvider, useConversationViewTarget, useUiPreferences, useReadReceipt, type UiPreferences } from '../providers/ui-preferences.tsx';
 import { TrackSelector } from '../shell/track-selector.tsx';
-import { AppShell, useConversationDrawerResize, useOpenMobileSection, useMobileHeaderActionsHost, useMobileHeaderTitleHost, useMobileTrackChoices } from '../shell/public.tsx';
+import { AppShell, MobileConversationProvider, useMobileConversationOwner, useConversationDrawerResize, useOpenMobileSection, useMobileHeaderActionsHost, useMobileHeaderTitleHost } from '../shell/public.tsx';
 import {
   ConversationProvider, useConversationRegistry,
 } from '../conversations/public.tsx';
@@ -172,7 +176,7 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
   const preferences = deps.uiPreferences ?? createUiPreferences();
   const rootRoute = createRootRoute({ component: () => (
     <UiPreferencesProvider preferences={preferences}>
-      <TrackViewProvider><ShellRoute transport={transport} unauthorized={unauthorized} onSignOut={onSignOut} /></TrackViewProvider>
+      <TrackViewProvider><MobileConversationProvider><ShellRoute transport={transport} unauthorized={unauthorized} onSignOut={onSignOut} /></MobileConversationProvider></TrackViewProvider>
     </UiPreferencesProvider>
   ) });
 
@@ -187,7 +191,7 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
       const go = useGo();
       return <DailyTodayRoute transport={transport} unauthorized={unauthorized} selectedDate={day}
         onOpenTrack={(trackId) => go({ name: 'track', trackId })}
-        renderTrack={(detail, evidence, panelContent) => <TrackRouteBody panelContent={panelContent} reportEvidence={evidence} key={detail.track.id} transport={transport} unauthorized={unauthorized}
+        renderTrack={(detail, evidence, panelContent, intro) => <TrackRouteBody mobileReportIntro={intro} panelContent={panelContent} reportEvidence={evidence} key={detail.track.id} transport={transport} unauthorized={unauthorized}
           track={toTrack(detail.track, trackActivityFrom(detail.track.id, detail.overlays))}
           canReopenTrack={detail.can_reopen} canCloseTrack={detail.can_close}
           cards={detail.cards} overlays={detail.overlays} cardRuntime={cards} recentFiles={recentFiles} />} />;
@@ -297,13 +301,19 @@ function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTran
 /** Two independent cards share the existing creation/recovery path and registry. */
 function useConversationPanel(
   transport: ApiTransportPort, unauthorized: UnauthorizedChannel, source: ConversationPanelSource,
-  options?: { showTrack?: boolean; resizable?: boolean },
+  options?: { showTrack?: boolean; resizable?: boolean; reportComposer?: Readonly<{ ready: boolean; returnLabel: string }> },
 ) {
   const registry = useConversationRegistry();
   const compact = useCompactViewport();
   const [sideError, setSideError] = useState<string | null>(null);
   const mainTarget = useConversationViewTarget(source.scopeId);
   const parentId = mainTarget[0]?.kind === 'row' ? mainTarget[0].id : null;
+  const lastMainRow = useRef<string | null>(null);
+  useEffect(() => { if (parentId !== null) lastMainRow.current = parentId; }, [parentId]);
+  const dockOwnerId = parentId ?? (compact && options?.reportComposer !== undefined
+    ? source.rows.find((row) => row.id === lastMainRow.current)?.id ?? source.planner?.cardId ?? source.rows[0]?.id ?? null
+    : null);
+  const mainReportComposer = options?.reportComposer === undefined ? undefined : { ...options.reportComposer, conversationId: dockOwnerId };
   const capabilities = useQuery({ queryKey: ['server-version'],
     queryFn: () => runOperation(transport, serverVersionOperation(), unauthorized), enabled: parentId !== null && !compact, retry: false });
   const sideSlot = `${source.scopeId}:side:${parentId ?? ''}`;
@@ -313,12 +323,12 @@ function useConversationPanel(
   const child = source.rows.find((row) => row.id === childId);
   const belongsToParent = !compact && parentId !== null && (sideTarget[0]?.kind === 'draft'
     ? sideDraft?.side?.source_card_id === parentId : child?.sourceCardId === parentId);
-  const ownedCardIds = useMemo(() => [parentId, belongsToParent ? childId : null]
-    .filter((id): id is string => id !== null), [parentId, belongsToParent, childId]);
+  const ownedCardIds = useMemo(() => [dockOwnerId, belongsToParent ? childId : null]
+    .filter((id): id is string => id !== null), [dockOwnerId, belongsToParent, childId]);
   const side = useConversationPane(transport, unauthorized, source, sideTarget,
-    { ...options, ownedCardIds, inline: true, slotId: sideSlot, enabled: belongsToParent });
+    { ...options, reportComposer: undefined, ownedCardIds, inline: true, slotId: sideSlot, enabled: belongsToParent });
   const main = useConversationPane(transport, unauthorized, source, mainTarget,
-    { ...options, ownedCardIds, sideError, stacked: true, showSideCommand: !compact, companion: belongsToParent && side.isOpen ? side.drawerFor : undefined,
+    { ...options, reportComposer: mainReportComposer, ownedCardIds, sideError, stacked: true, showSideCommand: !compact, companion: belongsToParent && side.isOpen ? side.drawerFor : undefined,
       onSide: (parent, entries, question) => {
         if (compact) { setSideError('Side conversations are available on desktop.'); return false; }
         if (capabilities.data?.conversationSide !== true) {
@@ -350,7 +360,7 @@ function useConversationPane(
   unauthorized: UnauthorizedChannel,
   source: ConversationPanelSource,
   target: ReturnType<typeof useConversationViewTarget>,
-  options?: { showSideCommand?: boolean; stacked?: boolean; sideError?: string | null; ownedCardIds?: readonly string[]; showTrack?: boolean; resizable?: boolean; inline?: boolean; slotId?: string; enabled?: boolean;
+  options?: { reportComposer?: Readonly<{ ready: boolean; returnLabel: string; conversationId: string | null }>; showSideCommand?: boolean; stacked?: boolean; sideError?: string | null; ownedCardIds?: readonly string[]; showTrack?: boolean; resizable?: boolean; inline?: boolean; slotId?: string; enabled?: boolean;
     companion?: (group: PaneResizeGroup) => React.ReactNode; onSide?: (source: Conversation, entries: readonly TranscriptEntry[], question: string) => void | boolean },
 ) {
   /* Existing conversation selection survives navigation; unfinished drafts
@@ -361,6 +371,10 @@ function useConversationPane(
        dropped when the drawer closes. */
   const [composerFocusFor, setComposerFocusFor] = useState<string | null>(null);
   const openRowId = options?.enabled === false ? null : openTarget?.kind === 'row' ? openTarget.id : null;
+  const compactViewport = useCompactViewport();
+  const compactComposer = options?.reportComposer !== undefined && compactViewport && options?.enabled !== false && options?.inline !== true;
+  const dockRowId = compactComposer ? options?.reportComposer?.conversationId ?? null : null;
+  const composerRowId = openRowId ?? dockRowId;
   /* A track conversation runs on Codex; Claude is a Planner-only backend (#1791). */
   const draftCatalog = useQuery({ ...modelCatalogQueryOptions(transport, { kind: 'provider', provider: 'codex' }, unauthorized),
     enabled: openTarget?.kind === 'draft' });
@@ -369,8 +383,8 @@ function useConversationPane(
     enabled: openTarget?.kind === 'draft', retry: false });
   const supportsDraftModel = draftCapabilities.data?.conversationCreateModel === true;
   useEffect(() => { if (openRowId === null) setComposerFocusFor(null); }, [openRowId]);
-  const scope: PlannerConversationScope | null = openRowId !== null
-    ? source.scopeOf(openRowId)
+  const scope: PlannerConversationScope | null = composerRowId !== null
+    ? source.scopeOf(composerRowId)
     : null;
   // Shared cache with the Track route, also available for Today and side conversations.
   const imageTrackId = scope?.id ?? null;
@@ -461,7 +475,7 @@ function useConversationPane(
 
   useConversationDraftAdoption({ adoptedDraftId, registry, rows, sourceScopeId, setOpenTarget });
 
-  const { start, withDraft, sendDraft, retryDraft, sendAsNewConversation, closeDrawer } = createConversationDraftActions({
+  const { start, startWithMessage, withDraft, sendDraft, retryDraft, sendAsNewConversation, closeDrawer } = createConversationDraftActions({
     registry, draft, creating, source, sourceScopeId, transport, supportsDraftModel,
     supportsSideConversation: draftCapabilities.data?.conversationSide === true,
     openDraft: () => setOpenTarget({ kind: 'draft' }), closeView: () => setOpenTarget(null),
@@ -482,6 +496,7 @@ function useConversationPane(
   useConversationDraftAutoSend({ draftOpen, draft, creating, registry, sendDraft });
 
   const existingId = open?.id ?? null;
+  const threadReadingView = useThreadReadingView(composerId);
   const newConversation = useCommittedCallback(existingId, startAnother);
   const interrupt = useCommittedCallback(existingId, store.interrupt);
   const compact = useCommittedCallback(existingId, store.compact);
@@ -532,7 +547,7 @@ function useConversationPane(
   }), [compact, store.compacting, store.attachmentsSupported, store.contextUsage, deleteQueuedEntry, store.historyReady, interrupt, store.model, store.modelCatalog, store.pendingQueue, store.pendingQueueOverflow, store.queueWriteOut, store.sendBlocked, store.sending, setModel, store.stopping, store.working, canSteer, steerQueuedEntry]);
   const { replacing, bar: editingBar } = edit;
   const composerNode = useMemo(() => existingId === null ? null : (
-            <ChatComposer
+            <ChatComposer layout={compactComposer ? 'mobile' : 'standard'}
               /* Read at mount only, which is what makes it one-shot; the flag is dropped
                                when the drawer closes. */
               focusOnMount={composerFocusFor === existingId}
@@ -565,7 +580,7 @@ function useConversationPane(
                 </>
               )}
               /* Renders nothing until the harness has reported a usage frame. */
-              sendAdornment={<ContextRing usage={composerView.contextUsage} />}
+              sendAdornment={compactComposer ? undefined : <ContextRing usage={composerView.contextUsage} />}
               /* `stopping` keeps Stop shown while the interrupt is in flight; `interrupt()`
                                already refuses a second one. */
               onStop={!composerView.compacting && (composerView.working || composerView.stopping) ? composerView.interrupt : undefined}
@@ -597,12 +612,15 @@ function useConversationPane(
                 </HStack>
               )}
             />
-  ), [existingId, composerFocusFor, composerFocusRequest, composer.text, setComposerText, composerView,
+  ), [existingId, compactComposer, composerFocusFor, composerFocusRequest, composer.text, setComposerText, composerView,
     replacing, editingBar, options?.showSideCommand, options?.inline, hasSideConversation, sideQuestion,
     sendText, composerAttachments, newConversation, mentionTrigger, scopeProvider, plannerAsks, answerAsk]);
 
   const renderDrawer = (resizeGroup: PaneResizeGroup | null = null) => (
-      <Drawer
+      <ConversationSurface
+        mobileSheet={compactComposer}
+        focusInput={draftOpen || (open !== null && composerFocusFor === open.id)}
+        contextTitle={scope?.title}
         resizeGroup={resizeGroup}
         id={open === null ? undefined : `conversation-${open.id}`}
         inline={options?.inline}
@@ -613,7 +631,7 @@ function useConversationPane(
         /* A draft has no name yet, and naming it after the words being typed
            would rename the drawer on every keystroke. */
         title={options?.inline === true ? 'Side conversation · Codex' : open !== null ? conversationName(open) : draftOpen ? 'Untitled' : ''}
-        mobileBackLabel="Conversations"
+        mobileBackLabel={options?.reportComposer?.returnLabel ?? 'Conversations'}
         onClose={closeDrawer}
         resize={options?.resizable === false ? undefined : drawerResize}
         footer={draftOpen ? (
@@ -632,7 +650,7 @@ function useConversationPane(
                 )}
               </ChatFooterNotice>
             )}
-            <ChatComposer disabled={creating} onSend={sendDraft} onNewConversation={options?.inline === true ? undefined : startAnother}
+            <ChatComposer layout={compactComposer ? 'mobile' : 'standard'} disabled={creating} onSend={sendDraft} onNewConversation={options?.inline === true ? undefined : startAnother}
               mentionTrigger={mentionTrigger}
               draft={{ text: newConversationText, onChange: setNewConversationText }}
               /* A track conversation is not a Planner create: no availability gate here (#1817). */
@@ -740,7 +758,7 @@ function useConversationPane(
                           `turnsOf` is the second arm so a reopen whose query was collected still
                           shows the remembered transcript. */}
             {(store.historyReady || store.turnsOf(open.id).length > 0 || store.stalled || store.stopFeedback !== null) && (
-              <ChatThread
+              <ChatThread readingView={threadReadingView}
                 key={open.id}
                 conversation={open}
                 imageFiles={imageFiles}
@@ -765,7 +783,7 @@ function useConversationPane(
             )}
           </>
         )}
-      </Drawer>
+      </ConversationSurface>
   );
 
   const openConversation = useCommittedCallback(sourceScopeId, (conversation: Conversation) => {
@@ -790,10 +808,34 @@ function useConversationPane(
   ), [store.conversations, source.cards, unreadIds, existingId, store.working, store.stalled,
     options?.showTrack, openConversation]);
 
+  const dockViewId = JSON.stringify([sourceScopeId, dockRowId]);
+  const openDockHistory = useCommittedCallback(dockViewId, () => {
+    if (dockRowId !== null) {
+      setComposerFocusFor(dockRowId);
+      setOpenTarget({ kind: 'row', id: dockRowId });
+    } else start();
+  });
+  const setDockText = useCommittedCallback(dockViewId, (text: string) => {
+    if (dockRowId === null) setNewConversationText(text);
+    else setComposerText(text);
+  });
+  const sendFromDock = useCommittedCallback(dockViewId, (text: string) => {
+    if (dockRowId !== null) {
+      if (store.send(dockRowId, text, composer.attachments, true, edit.replacesIn(dockRowId)) !== null) {
+        setOpenTarget({ kind: 'row', id: dockRowId });
+      }
+    } else if (startWithMessage(text)) setNewConversationText('');
+  });
+
   return {
+    dock: compactComposer ? <ChatDock text={dockRowId === null ? newConversationText : composer.text}
+      onChange={setDockText} onSend={sendFromDock} onBeginInput={openDockHistory}
+      disabled={options?.reportComposer?.ready === false || (dockRowId !== null && (store.sendBlocked || !store.historyReady || edit.held !== null))} /> : undefined,
+    selectedConversationId: draftOpen ? null : open?.id ?? dockRowId,
     isOpen: open !== null || draftOpen,
     close: closeDrawer,
     list: listNode,
+    openConversation,
     action: <PanelAction label="New conversation" onClick={start}><Icon name="plus" size="sm" /></PanelAction>,
     startConversation: start,
     drawer: renderDrawer(),
@@ -870,7 +912,7 @@ function trackNotifications(items: TrackActivity['attentionItems']): readonly Tr
 }
 
 function TrackRouteBody({
-  transport, unauthorized, track, canReopenTrack, canCloseTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence, panelContent,
+  transport, unauthorized, track, canReopenTrack, canCloseTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence, panelContent, mobileReportIntro,
 }: {
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
@@ -883,6 +925,7 @@ function TrackRouteBody({
   recentFiles: RecentFileHistory;
   reportEvidence?: ReactNode;
   panelContent?: ReactNode;
+  mobileReportIntro?: ReactNode;
 }) {
   useTrackViewState(track.id);
   // The same key and comparison point the rail uses: the overlay's completion
@@ -895,7 +938,6 @@ function TrackRouteBody({
   const openMobileSection = useOpenMobileSection();
   const mobileHeaderActionsHost = useMobileHeaderActionsHost();
   const mobileHeaderTitleHost = useMobileHeaderTitleHost();
-  const mobileTrackChoices = useMobileTrackChoices();
   const go = useGo();
   const goSameTrack = useGoSameTrack();
   const fileNavigation = useTrackFileNavigation();
@@ -940,17 +982,7 @@ function TrackRouteBody({
   const trackTitle = trackDisplayTitle(track.title);
   // Planner is the one conversation projected from a card; its `state` is the
   // drawer's baseline, not an indicator — the row's dot reads `activity.cards`.
-  const plannerRow = useMemo<Conversation | null>(() => plannerCard === undefined ? null : {
-    id: plannerCard.id,
-    trackId: track.id,
-    trackTitle,
-    title: plannerCard.title,
-    kind: 'shared-spec',
-    state: plannerCard.runtime?.status ?? null,
-    updatedAt: plannerCard.runtime?.updated_at_ms ?? plannerCard.updated_at,
-    // The receipt's comparison point; absent on a legacy snapshot.
-    lastTurnCompletedAt: plannerCard.runtime?.last_turn_completed_ms ?? null,
-  }, [plannerCard, track.id, trackTitle]);
+  const plannerRow = useMemo(() => plannerConversationRow(track.id, trackTitle, plannerCard), [plannerCard, track.id, trackTitle]);
   /* Redeeming the planner-open intent: `armed` is already "this track, this visit",
    * and the planner card's id exists only once the detail has landed. `disarm()`
    * before the open, unconditionally: an intent left armed on this entry would
@@ -1005,8 +1037,10 @@ function TrackRouteBody({
         answerAsk: (askId, answers) => trackMutations.answerAsk(track.id, askId, answers),
       },
     },
-    { showTrack: false },
+    { showTrack: false, reportComposer: { ready: plannerCard !== undefined || conversationsQuery.isSuccess, returnLabel: routePanel === 'conversations' ? 'Conversations' : 'Report' } },
   );
+  useMobileConversationOwner({ track, conversations: rows, onNew: chat.startConversation,
+    selectedConversationId: chat.selectedConversationId, onClose: chat.close, onOpen: chat.openConversation, conversationOpen: chat.isOpen });
   /* The fallback clear: a request for a card this track has, while the list that
    * would open it could not be read. Not "the read failed", which would also
    * throw away an openable planner row. */
@@ -1250,12 +1284,12 @@ function TrackRouteBody({
     <TrackStage>
     <TrackPage
       panelContent={panelContent}
+      mobileReportIntro={mobileReportIntro}
       mobilePanelObscured={chat.isOpen || sourceOpen}
       mobileHeaderActionsHost={mobileHeaderActionsHost}
       mobileHeaderTitleHost={mobileHeaderTitleHost}
-      mobileTitleReadView={mobileTrackChoices === null ? undefined : (controls) => <TrackSelector
-        track={track} {...mobileTrackChoices(track.areaId)} controls={controls}
-        onSelectTrack={(trackId) => go({ name: 'track', trackId, from: 'area' })} />}
+      mobileTitleReadView={(controls) => <TrackSelector track={track} controls={controls}
+        onOpenTracks={() => openMobileSection({ kind: 'tracks', areaId: track.areaId, returnTo: 'report' })} />}
       track={track}
       canReopenTrack={canReopenTrack}
       canCloseTrack={canCloseTrack}
@@ -1359,6 +1393,7 @@ function TrackRouteBody({
           />
         )
         : undefined}
+      mobileChatComposer={chat.dock}
       conversationList={chat.list}
       conversationAction={chat.action}
       onStartConversation={chat.startConversation}
@@ -1417,7 +1452,7 @@ function TrackRouteBody({
             underneath and so is `inert` for the duration. The wrapper is a static block
             so the drawer's absolute box still resolves against `.main`. */}
     <div data-nc-conversation-drawer-host="" inert={sourceOpen}>
-      {chat.drawer}
+      <div className={mobileChatStyles.history}>{chat.drawer}</div>
     </div>
     <ReportSourceDrawer
       transport={transport}

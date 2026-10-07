@@ -57,7 +57,7 @@ describe('the quiet-sync fold in a real engine', () => {
     expect(folded.checkVisibility()).toBe(false);
     const bubbles = [...document.querySelectorAll<HTMLElement>('[data-nc-turn="agent"]')];
     const spoken = bubbles.find((bubble) => bubble.closest('[data-nc-turn="quiet-sync"]') === null)!;
-    expect(spoken.textContent).toBe('You changed the block I was writing.');
+    expect(spoken.firstElementChild?.textContent).toBe('You changed the block I was writing.');
     expect(spoken.getBoundingClientRect().height).toBeGreaterThan(0);
     expect(summary.getBoundingClientRect().bottom).toBeLessThanOrEqual(spoken.getBoundingClientRect().top);
 

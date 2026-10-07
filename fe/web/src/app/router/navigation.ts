@@ -14,6 +14,8 @@ export type { MobilePanel, TrackSource, TrackSearch } from './track-search.ts';
 declare module '@tanstack/history' {
   interface HistoryState {
     ncPanelPushed?: boolean;
+    /** New-track Back restores the report that opened the draft; cold links stay in the app. */
+    ncNewTrackPushed?: boolean;
     /** A plain Track selection resumes its saved viewport; explicit targets reveal themselves. */
     ncResumeTrackView?: boolean;
     ncFilePushed?: boolean;
@@ -98,14 +100,35 @@ export function useGo(): (target: NavTarget, options?: GoOptions) => void {
     const state = target.name === 'track' && target.openPlanner === true
       ? { [PLANNER_OPEN_STATE_KEY]: true }
       : undefined;
+    const switchingDraft = target.name === 'new-track' && isNewTrackPath(router.state.location.pathname);
+    const draftState = target.name === 'new-track'
+      ? { ncNewTrackPushed: switchingDraft ? router.state.location.state.ncNewTrackPushed === true : options?.replace !== true }
+      : undefined;
     void navigate({
       to: pathFor(target),
       hash,
       search,
-      replace: options?.replace,
+      replace: switchingDraft || options?.replace,
+      ...(draftState === undefined ? {} : { state: draftState }),
       ...(target.name === 'track' ? { state: { ...state, ncResumeTrackView: resumeTrack } } : {}),
     });
   }, [navigate, router, views]);
+}
+
+function isNewTrackPath(path: string): boolean {
+  return routeParamFromPath(path, '/area/') !== undefined && path.endsWith('/new');
+}
+
+/** An explicit entry marker prevents cold draft links from navigating outside the app. */
+export function useNewTrackBack(): (() => void) | null {
+  const history = useRouter().history as RouterHistory;
+  const location = useRouterState({ select: (state) => state.location });
+  const go = useGo();
+  const back = useCallback(() => {
+    if (location.state.ncNewTrackPushed === true && history.canGoBack()) history.back();
+    else go({ name: 'today' }, { replace: true });
+  }, [go, history, location.state.ncNewTrackPushed]);
+  return isNewTrackPath(location.pathname) ? back : null;
 }
 
 /**

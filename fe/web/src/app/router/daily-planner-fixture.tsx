@@ -1,3 +1,4 @@
+import { Profiler } from 'react';
 // Test-only transport for the complete daily homepage composition; no model or live API.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
@@ -7,17 +8,15 @@ import { trackReportLinkUrl } from '../../../../core/domain/report.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
+import type { UiPreferences } from '../providers/ui-preferences.tsx';
 import { ThemeProvider } from '../theme/public.tsx';
 
-export function renderDailyFixture({ initial = '/', failChanges = false, reply }: Readonly<{
-  initial?: string; failChanges?: boolean;
-  reply?: (request: ApiRequest) => ApiTransportResponse | undefined | Promise<ApiTransportResponse | undefined>;
-}> = {}) {
+export function renderDailyFixture({ initial = '/', failChanges = false, emptyWorkspace = false, projectTitle = 'Project evidence', reply, onCommit, uiPreferences }: Readonly<{ uiPreferences?: UiPreferences; initial?: string; failChanges?: boolean; emptyWorkspace?: boolean; projectTitle?: string; reply?: (request: ApiRequest) => ApiTransportResponse | undefined | Promise<ApiTransportResponse | undefined>; onCommit?: () => void }> = {}) {
   const requests: ApiRequest[] = [];
   const area = { id: 'daily-area', name: 'system', color: '#6574cd', sort: 0, kind: 'system', created_at: 1, updated_at: 1 };
   const projectArea = { ...area, id: 'project-area', name: 'Project', kind: 'user' };
   const track = { id: 'daily', area_id: area.id, title: 'Renamed daily Track', sort: 0, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
-  const project = { ...track, id: 'project', area_id: projectArea.id, title: 'Project evidence' };
+  const project = { ...track, id: 'project', area_id: projectArea.id, title: projectTitle };
   const card = { id: 'daily-planner', track_id: track.id, kind: 'codex', title: 'Daily Planner conversation', sort: 1, payload: { planner_harness: true }, deletable: false, created_at: 1, updated_at: 2 };
   const report = { id: 'daily-report', track_id: track.id, kind: 'track-report', title: null, sort: -1,
     payload: { schemaVersion: 3, docRev: 0, summary: '', body: `# 今日计划\n\nPrioritize the release. Read [Project evidence](${trackReportLinkUrl(project.id)}).\n` }, deletable: false, created_at: 1, updated_at: 2 };
@@ -27,7 +26,7 @@ export function renderDailyFixture({ initial = '/', failChanges = false, reply }
     requests.push(request);
     const response = await reply?.(request);
     if (response !== undefined) return response;
-    if (request.path === '/api/areas') return ok([projectArea]);
+    if (request.path === '/api/areas') return ok(emptyWorkspace ? [] : [projectArea]);
     if (request.path === '/api/areas/daily-area/tracks') return ok([track]);
     if (request.path === '/api/areas/project-area/tracks') return ok([project]);
     if (request.path.startsWith('/api/today/daily')) {
@@ -48,11 +47,11 @@ export function renderDailyFixture({ initial = '/', failChanges = false, reply }
   } };
   const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
+  const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), uiPreferences, onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: [initial] }) });
   const container = document.createElement('div');
   container.id = 'root';
   document.body.appendChild(container);
-  render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}><RouterProvider router={router} /></ThemeProvider></QueryClientProvider>, { container });
+  render(<Profiler id="daily-fixture" onRender={onCommit ?? (() => undefined)}><QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}><RouterProvider router={router} /></ThemeProvider></QueryClientProvider></Profiler>, { container });
   return { router, requests, client };
 }

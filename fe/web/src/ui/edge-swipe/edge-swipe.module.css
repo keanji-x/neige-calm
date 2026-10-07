@@ -1,0 +1,11 @@
+@layer ui {
+  .edge {
+    position: fixed;
+    inset-inline-start: 0;
+    inset-block: var(--header-primary-h) 0;
+    inline-size: var(--space-8);
+    z-index: var(--z-raised);
+    touch-action: pan-y;
+  }
+  .edge[hidden] { display: none; }
+}

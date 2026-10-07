@@ -7,16 +7,22 @@
   }
 
   .trackHeading {
+    inline-size: 100%;
     min-inline-size: 0;
     margin: 0;
     font: inherit;
   }
+
+  .trackButton { display: flex; align-items: center; gap: var(--space-4); min-inline-size: 0; max-inline-size: 100%; inline-size: fit-content; margin-inline-start: auto; min-block-size: calc(var(--rail-w-collapsed) + var(--space-2)); padding-inline: var(--space-4); border: 0; border-radius: var(--radius-md); background: transparent; font: inherit; cursor: pointer; }
+  .trackButton svg { flex: none; inline-size: calc(var(--glyph) + var(--space-4)); block-size: calc(var(--glyph) + var(--space-4)); }
+  .trackLabel { min-inline-size: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: var(--weight-medium); }
 
   .area {
     position: relative;
     min-inline-size: 0;
     justify-self: center;
     max-inline-size: 100%;
+    inline-size: 100%;
   }
 
   .trackIdentity .area {
@@ -63,8 +69,8 @@
 
   .item svg {
     flex: none;
-    inline-size: calc(var(--glyph) + var(--space-2));
-    block-size: calc(var(--glyph) + var(--space-2));
+    inline-size: calc(var(--glyph) + var(--space-4));
+    block-size: calc(var(--glyph) + var(--space-4));
     color: var(--text-3);
   }
 

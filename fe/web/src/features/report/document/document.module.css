@@ -42,6 +42,8 @@
    * its own text — it has two margins — so it overrides that here and hands the
    * measure to the block column instead.
    */
+  .mobileEmpty { display: none; }
+
   .doc {
     position: relative;
     display: grid;
@@ -642,6 +644,10 @@
   /* Mobile owns one reading column. The desktop outline/measure/sidenote grid
      must not keep its fixed document measure and widen the viewport. */
   @media (width < 60rem) {
+    .outlineOnly > .row { display: none; }
+    .mobileEmpty { display: block; grid-column: 1; padding-block-start: var(--space-12); max-inline-size: 21rem; }
+    .mobileEmpty h2 { font-family: var(--font-sans); font-size: calc(var(--text-xl) + var(--space-2)); font-weight: var(--weight-semibold); line-height: 1.3077; }
+    .mobileEmpty p { font-family: var(--font-sans); font-size: max(var(--text-md), 1rem); line-height: 1.625; color: var(--text-3); margin-block-start: var(--space-6); }
     .doc {
       grid-template-columns: minmax(0, min(100%, var(--document-measure, 40rem)));
       justify-content: center;
@@ -671,5 +677,27 @@
     .tableWrap {
       max-inline-size: 100%;
     }
+  }
+  /* Compact reading uses type and spacing; the desktop section rail remains unchanged. */
+  @media (width < 60rem) {
+    .outlineOnly > .row { display: none; }
+    .mobileEmpty { display: block; grid-column: 1; padding-block-start: var(--space-12); max-inline-size: 21rem; }
+    .mobileEmpty h2 { font-family: var(--font-sans); font-size: calc(var(--text-xl) + var(--space-2)); font-weight: var(--weight-semibold); line-height: 1.3077; }
+    .mobileEmpty p { font-family: var(--font-sans); font-size: max(var(--text-md), 1rem); line-height: 1.625; color: var(--text-3); margin-block-start: var(--space-6); }
+    .doc { font-family: var(--font-sans); font-size: max(var(--text-md), 1rem); line-height: 1.625; row-gap: var(--space-10); }
+    .h1, .h2, .referenceHead { font-family: var(--font-sans); font-weight: var(--weight-semibold); }
+    .h1, .referenceHead { font-size: max(var(--text-lg), 1.125rem); margin-block-start: var(--space-10); margin-block-end: var(--space-4); line-height: 1.4445; }
+    .list:has(> .item > .check) { padding-inline-start: 0; }
+    .item:has(> .check) { min-block-size: var(--rail-w-collapsed); display: flex; align-items: center; gap: var(--space-6); }
+    .item:has(> .check) + .item { margin-block-start: var(--space-4); }
+    .check { appearance: none; flex: none; inline-size: calc(var(--glyph) + var(--space-2)); block-size: calc(var(--glyph) + var(--space-2)); margin: 0; border: 1px solid var(--hairline-strong); border-radius: var(--radius-sm); background: var(--paper); opacity: 1; position: relative; }
+    .check:checked { background: var(--accent); border-color: var(--accent); }
+    .check:checked::after { content: ''; position: absolute; inset-inline-start: var(--space-3); inset-block-start: var(--space-1); inline-size: var(--space-3); block-size: var(--space-6); border: solid var(--paper); border-width: 0 var(--space-px) var(--space-px) 0; transform: rotate(45deg); }
+    .item:has(> .check:checked) { text-decoration: line-through; color: var(--text-3); }
+    .appendix .referenceHead { font-size: var(--text-md); font-weight: var(--weight-medium); line-height: 1.4667; align-items: center; gap: var(--space-4); min-block-size: var(--rail-w-collapsed); }
+    .appendix .referenceMarker { inline-size: var(--space-10); block-size: var(--space-10); margin-inline: 0; }
+    .appendix .referenceMarker svg { inline-size: var(--space-10); block-size: var(--space-10); }
+    .h2 { font-size: max(var(--text-md), 1rem); }
+    .h1::after, .referenceHead::after { display: none; }
   }
 }

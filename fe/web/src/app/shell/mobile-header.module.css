@@ -1,4 +1,27 @@
 @layer features {
+  .rootHeader {
+    grid-template-columns: calc(var(--rail-w-collapsed) + var(--space-2)) minmax(0, 1fr);
+    gap: var(--space-4);
+    padding: calc(env(safe-area-inset-top) + var(--space-8)) var(--space-8) var(--space-8);
+  }
+
+  .rootHeader .titleContent button:is([aria-haspopup='menu'], [data-nc-page-title]) {
+    display: flex;
+    margin-inline-start: auto;
+    inline-size: fit-content;
+    justify-content: flex-start;
+    font-size: calc(var(--text-md) + var(--space-px));
+    font-weight: var(--weight-medium);
+    line-height: 1.4118;
+    border: 0 !important;
+    border-radius: var(--radius-md) !important;
+    background-color: transparent !important;
+    box-shadow: none;
+    color: var(--text);
+    min-block-size: calc(var(--rail-w-collapsed) + var(--space-2));
+    padding-inline: var(--space-4);
+  }
+
   .titleContent {
     min-inline-size: 0;
     inline-size: 100%;
@@ -11,6 +34,7 @@
   }
 
   .trackTitleHost {
+    --header-primary-h: calc(var(--rail-w-collapsed) + var(--space-2));
     min-inline-size: 0;
     inline-size: 100%;
   }
@@ -24,8 +48,9 @@
   .iconButton {
     display: grid;
     place-items: center;
-    inline-size: var(--rail-w-collapsed);
-    min-block-size: var(--rail-w-collapsed);
+    inline-size: calc(var(--rail-w-collapsed) + var(--space-2));
+    block-size: calc(var(--rail-w-collapsed) + var(--space-2));
+    min-block-size: calc(var(--rail-w-collapsed) + var(--space-2));
     border-radius: var(--radius-md);
     color: var(--text-2);
     cursor: pointer;
@@ -41,7 +66,7 @@
     overflow: auto;
     padding: var(--space-2);
     background: var(--paper);
-    border: 1px solid var(--hairline);
+    border: 1px solid transparent;
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-float);
   }

@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, type KeyboardEventHandler, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from '../icon/public.tsx';
+import { useVisibleViewport } from '../viewport/public.ts';
 import { useState } from '../state/public.ts';
 import { useSpringPresence } from '../motion/presence.ts';
 
@@ -41,6 +42,7 @@ function isVisibleWithin(element: HTMLElement, panel: HTMLElement): boolean {
 }
 
 export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children, wide, initialFocusRef }: DialogProps) {
+  const viewport = useVisibleViewport(open);
   const [views, setViews] = useState<readonly (DialogChildView & { id: number })[]>([]);
   const nextViewId = useRef(0);
   const viewOpenersRef = useRef(new Map<number, HTMLElement>());
@@ -182,9 +184,11 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
   };
   return createPortal(<DialogViewContext.Provider value={controller}><div
     className={showingView || wide ? 'dialog-overlay dialog-overlay-wide' : 'dialog-overlay'} role="presentation"
+    style={{ insetBlockStart: viewport.bottomEdge - viewport.height, insetBlockEnd: viewport.bottomInset }}
     onMouseDown={(event) => { if (!showingView && event.target === event.currentTarget) onClose(); }}>
     {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the dialog panel owns its required focus trap and click-through guard. */}
     <div ref={panelRef} className={showingView || wide ? 'dialog-panel dialog-panel-wide' : 'dialog-panel'} data-nc-escape-layer=""
+      style={{ maxBlockSize: `calc(${viewport.height}px - var(--space-12))` }}
       role="dialog" aria-modal="true" aria-label={typeof headerTitle === 'string' ? headerTitle : undefined}
       aria-labelledby={headerTitle && typeof headerTitle !== 'string' ? titleId : undefined}
       tabIndex={-1} onMouseDown={(event) => event.stopPropagation()} onKeyDown={onPanelKeyDown}>

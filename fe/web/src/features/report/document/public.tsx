@@ -1,3 +1,4 @@
+import { useCompactViewport } from '../../../ui/viewport/public.ts';
 // The report document — the main column on a track and an area: a sequence of typed blocks.
 
 import { useEffect, type ReactNode } from 'react';
@@ -75,6 +76,7 @@ export function ReportDocument({
   resolveOverlay, resolveSeries, resolvePreview, previewViewports,
   arrivalAnchorId, taskVerdicts, taskRows, renderTaskExecution,
 }: ReportDocumentProps) {
+  const compactViewport = useCompactViewport();
   useEffect(() => {
     if (arrivalAnchorId === null || arrivalAnchorId === undefined) return;
     revealReportAnchor(arrivalAnchorId);
@@ -82,8 +84,16 @@ export function ReportDocument({
 
   if (report === null) return <>{empty}</>;
 
+  const prose = report.blocks === null ? [report.body || report.summary]
+    : report.blocks.every((block) => block.kind === 'prose') ? report.blocks.map((block) => block.payload.markdown) : null;
+  const outlineOnly = compactViewport && prose !== null && prose.every((markdown) => {
+    const parsed = parse(markdown);
+    return parsed.status === 'ready' && sanitizeAstPolicy(parsed.value, { rawHtml: 'drop' }).children.every((block) => block.type === 'heading');
+  });
+
   return (
-    <article className={`calm-prose ${styles.doc}`} data-nc-report="" tabIndex={-1}>
+    <article className={`calm-prose ${styles.doc} ${outlineOnly ? styles.outlineOnly : ''}`} data-nc-report="" tabIndex={-1}>
+      {outlineOnly && <div className={styles.mobileEmpty}><h2>从一个想法开始</h2><p>计划、进展与重要结论会整理在这里。</p></div>}
       {rail}
       {byline !== undefined && <div className={styles.byline}>{byline}</div>}
       {report.blocks === null

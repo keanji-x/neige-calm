@@ -58,6 +58,7 @@ describe('responsive shell layout', () => {
   it('gives the workspace navigation the full viewport without reserving a dock', async () => {
     render(<MobileNavigationProbe />);
     await page.viewport(390, 844);
+    await Promise.all(document.querySelector('[data-testid="mobile-panel"]')!.getAnimations().map((animation) => animation.finished));
     const list = document.querySelector('[data-testid="areas-list"]')!.getBoundingClientRect();
     const panel = document.querySelector('[data-testid="mobile-panel"]')!.getBoundingClientRect();
     expect(panel.left).toBe(0);

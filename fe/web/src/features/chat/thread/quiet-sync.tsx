@@ -30,6 +30,8 @@ export const OUTCOME_LINE: Readonly<Record<QuietSyncOutcome, string>> = Object.f
 } satisfies Record<QuietSyncOutcome, string>);
 
 export type QuietSyncFoldProps = Readonly<{
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
   group: QuietSyncGroup;
   /** `HH:MM` of the wake, from the thread's own clock formatter. */
   time: string;
@@ -39,11 +41,11 @@ export type QuietSyncFoldProps = Readonly<{
   children: ReactNode;
 }>;
 
-export function QuietSyncFold({ group, time, live, children }: QuietSyncFoldProps) {
+export function QuietSyncFold({ group, time, live, children, expanded, onExpandedChange }: QuietSyncFoldProps) {
   const line = quietSyncLine(group.author);
   const verdict = group.outcome === null ? '' : ` · ${OUTCOME_LINE[group.outcome]}`;
   return (
-    <details
+    <details open={expanded} onToggle={(event) => onExpandedChange?.(event.currentTarget.open)}
       className={styles.fold}
       data-nc-turn="quiet-sync"
       data-nc-quiet-sync-author={group.author ?? 'unknown'}

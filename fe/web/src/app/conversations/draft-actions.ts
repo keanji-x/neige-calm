@@ -54,12 +54,12 @@ export function createConversationDraftActions({ registry, draft, creating, sour
 
   /* The `+` opens a draft scoped to one concrete Track; Today materialises the
        launchpad before calling this, so the scope id is never empty. */
-  const start = () => {
+  const begin = (text: string | null): boolean => {
     /* A draft that was sent and failed is still open business: reopened with the
            same key, so the next attempt is a retry and not a second conversation. */
     if (draft !== null && draft.sentText !== null) {
       openDraft();
-      return;
+      return false;
     }
     /* The key is minted once, for the draft, not per send: a different key on the
            retry is a different derived card. */
@@ -67,10 +67,13 @@ export function createConversationDraftActions({ registry, draft, creating, sour
       scopeId: sourceScopeId,
       model: FOLLOW_INSTALLATION_DEFAULT,
       key: mintIdempotencyKey(),
-      text: null, sentText: null, creating: false, error: null, remedy: null,
+      text, autoSend: text !== null, sentText: null, creating: false, error: null, remedy: null,
     });
     openDraft();
+    return true;
   };
+  const start = () => { begin(null); };
+  const startWithMessage = (text: string) => begin(text);
 
   /* `from` is not decoration: this runs after an `await`, and the reducer records
        the row only if `from` is still held. */
@@ -275,5 +278,5 @@ export function createConversationDraftActions({ registry, draft, creating, sour
     if (draft !== null && draft.sentText === null) registry.discardDraft(draft);
   };
 
-  return { start, withDraft, sendDraft, retryDraft, sendAsNewConversation, closeDrawer };
+  return { start, startWithMessage, withDraft, sendDraft, retryDraft, sendAsNewConversation, closeDrawer };
 }

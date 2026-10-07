@@ -3,7 +3,7 @@ import styles from './icon.module.css';
 export type IconName =
   | 'chevron-left' | 'chevron-right' | 'arrow-left' | 'arrow-up'
   | 'plus' | 'close' | 'more' | 'chat' | 'notification' | 'folder' | 'file'
-  | 'paperclip' | 'fullscreen' | 'compact';
+  | 'paperclip' | 'fullscreen' | 'compact' | 'menu' | 'switch';
 
 const paths: Readonly<Record<IconName, readonly string[]>> = Object.freeze({
   'chevron-right': Object.freeze(['M6 3.5 10.5 8 6 12.5']),
@@ -11,6 +11,8 @@ const paths: Readonly<Record<IconName, readonly string[]>> = Object.freeze({
   'arrow-left': Object.freeze(['M13 8H3.5', 'M7 3.5 2.5 8 7 12.5']),
   'arrow-up': Object.freeze(['M8 12.5V3.5', 'M4 7.5 8 3.5l4 4']),
   compact: Object.freeze(['M8 2v4', 'M5.5 3.5 8 6l2.5-2.5', 'M8 14v-4', 'M5.5 12.5 8 10l2.5 2.5']),
+  switch: Object.freeze(['M3 5h10', 'M10 2l3 3-3 3', 'M13 11H3', 'M6 8l-3 3 3 3']),
+  menu: Object.freeze(['M3 4h10', 'M3 8h10', 'M3 12h10']),
   plus: Object.freeze(['M8 3.5v9', 'M3.5 8h9']),
   close: Object.freeze(['M4 4l8 8', 'M12 4l-8 8']),
   more: Object.freeze(['M3.25 8h.01', 'M8 8h.01', 'M12.75 8h.01']),

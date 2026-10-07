@@ -1,0 +1,37 @@
+@layer features {
+  .composer.composer { padding-inline-start: calc(var(--space-8) + var(--rail-w-collapsed) + var(--space-6)); padding-inline-end: var(--space-8); --color-accent: var(--accent); padding-block-end: calc(env(safe-area-inset-bottom) + var(--space-8)); --color-background-popover: var(--paper); --color-background-muted: var(--paper); --color-background-surface: var(--paper); }
+  /* Astryx owns editing and submission. Its documented input/footer slots share one row here. */
+  .vendorComposer > div:has(.input) { --nc-mobile-input-row: 1; display: grid; position: relative; grid-template-columns: minmax(0, 1fr) var(--rail-w-collapsed); align-items: center; gap: var(--space-2); padding: var(--space-px); min-block-size: calc(var(--rail-w-collapsed) + var(--space-2)); border-radius: calc(var(--rail-w-collapsed) / 2 + var(--space-1)); background: var(--nc-float-fill); border: 1px solid var(--nc-float-edge); box-shadow: var(--nc-float-shadow); box-sizing: border-box; overflow: visible; }
+  .vendorComposer > div:has([data-nc-edit-bar]) { --nc-mobile-input-row: 2; }
+  .vendorComposer > div:has([data-nc-edit-bar]) > div:has([data-nc-edit-bar]) { grid-column: 1 / -1; grid-row: 1; }
+  .vendorComposer > div:has(.input) > div:has(.input) { grid-column: 1; grid-row: var(--nc-mobile-input-row); min-inline-size: 0; }
+  .vendorComposer > div:has(.input) > div:has(.options),
+  .vendorComposer > div:has(.input) > div:has(.options) > div:first-child { display: contents; }
+  .vendorComposer > div:has(.input) > div:has(.options) > div:last-child { grid-column: 2; grid-row: var(--nc-mobile-input-row); }
+  .vendorComposer > div:has(.input) > div:has(.options) > div:last-child button { inline-size: var(--rail-w-collapsed); block-size: var(--rail-w-collapsed); box-sizing: border-box; padding: var(--space-1); background-clip: content-box; border-radius: var(--radius-pill); }
+  .vendorComposer > div:has(.input) > div:has(.options) > div:last-child button:disabled { opacity: 1 !important; background-color: var(--surface-chip) !important; color: var(--text-2) !important; }
+  .vendorComposer > div:has(.input) > div:has(.options) > div:last-child button span:has(> svg) { inline-size: var(--space-10) !important; block-size: var(--space-10) !important; }
+  .input { min-inline-size: 0; padding-inline: var(--space-6); }
+  .input [contenteditable] { min-block-size: var(--space-10); max-block-size: calc(var(--space-12) * 4); padding: 0; overflow: auto; font-size: max(var(--text-md), 1rem); line-height: 1.625; }
+  .options { position: absolute; inset-inline-start: calc(-1 * (var(--rail-w-collapsed) + var(--space-6) + var(--space-px))); inset-block-end: calc(-1 * var(--space-px)); }
+  .options summary { display: grid; place-items: center; inline-size: calc(var(--rail-w-collapsed) + var(--space-2)); block-size: calc(var(--rail-w-collapsed) + var(--space-2)); list-style: none; border-radius: var(--radius-pill); cursor: pointer; }
+  .options summary::-webkit-details-marker { display: none; }
+  .options summary svg { inline-size: calc(var(--glyph) + var(--space-4)); block-size: calc(var(--glyph) + var(--space-4)); }
+  .vendorComposer > div:has(.input) > div:has(.options) > div:last-child button svg { inline-size: var(--space-10) !important; block-size: var(--space-10) !important; flex: none; }
+  .optionsPanel { position: absolute; inset-block-end: calc(100% + var(--space-4)); inset-inline-start: 0; inline-size: min(18rem, calc(100vw - var(--space-12))); padding: var(--space-6); border: 1px solid transparent; border-radius: var(--radius-lg); background: var(--paper); box-shadow: var(--shadow-float); z-index: var(--z-overlay); }
+  @media (width < 60rem) {
+    .said.said { min-inline-size: min(14rem, 72%); min-block-size: calc(var(--space-12) + var(--space-10) - var(--space-2)); padding: var(--space-6); border-radius: var(--space-6); font-family: var(--font-sans); font-size: max(var(--text-md), 1rem); line-height: 1.625; }
+    .userTurn { min-block-size: calc(var(--space-12) * 2); }
+    .transcript > .userTurn + [data-nc-entry] { margin-block-start: var(--space-10); }
+    .reply.reply { --font-family-body: var(--font-sans); --font-family-heading: var(--font-sans); --text-body-size: max(var(--text-md), 1rem); --text-body-leading: 1.625; font-family: var(--font-sans); font-size: max(var(--text-md), 1rem); line-height: 1.625; }
+    .reply.reply :is(p, li, [role='paragraph']) { font-family: inherit; font-size: inherit !important; line-height: inherit !important; }
+    .reply.reply div:has(> :is(ul, ol)) { margin-inline: 0 !important; }
+    .reply.reply :is(ul, ol) { gap: 0 !important; margin-inline: 0 !important; padding-inline: 0 !important; }
+    .reply.reply > div > [role='paragraph'], .reply.reply > div > div:has(> :is(ul, ol)) { margin-block: var(--space-6) 0 !important; }
+    .reply.reply > div > :first-child { margin-block-start: 0 !important; }
+    .reply.reply li { font-weight: var(--weight-normal) !important; padding: 0 !important; min-block-size: 0 !important; }
+    .reply.reply ol > li { gap: var(--space-2) !important; }
+    .reply.reply li > span { font-weight: inherit !important; font-size: inherit !important; line-height: inherit !important; }
+    .timestamp { display: block; margin-block-start: var(--space-6); font-size: var(--text-base); line-height: 1.4615; color: var(--text-3); }
+  }
+}

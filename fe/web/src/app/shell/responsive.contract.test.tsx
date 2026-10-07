@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as renderDom, screen, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AppShell } from './public.tsx';
@@ -24,6 +26,12 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
     useRouterState: ({ select }: { select: (state: typeof router.state) => unknown }) => select(router.state),
   };
 });
+function render(node: ReactNode) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return renderDom(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
+}
+
+
 const AREA: Area = {
   id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user',
   defaultTemplateId: null, defaultCwd: null, createdAt: 0, updatedAt: 0,
@@ -80,22 +88,22 @@ function memoryStorage() {
 }
 
 describe('compact navigation interaction contracts', () => {
-  it('opens the workspace as a modal side page and Escape returns to content', () => {
+  it('opens the workspace as a modal side page and Escape returns to content', async () => {
     compactViewport();
     const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
     render(<AppShell transport={{} as never} unauthorized={unauthorized} onOpenSettings={vi.fn()} onOpenPlugins={vi.fn()} onSignOut={vi.fn()} />);
     expect(screen.queryByRole('navigation', { name: 'Primary' })).toBeNull();
-    const opener = screen.getByRole('button', { name: 'Open areas' });
+    const opener = screen.getByRole('button', { name: 'Open workspace' });
     fireEvent.click(opener);
     expect(screen.getByRole('dialog', { name: 'Tracks and settings' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Settings' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Areas' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Settings' })).toBeNull();
+    expect(screen.getByRole('heading', { name: '工作区' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^Responsive mobile UI/ })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Product' }));
     expect(screen.getByRole('button', { name: /^Responsive mobile UI/ })).toBeTruthy();
     expect(document.querySelector('main')?.hasAttribute('inert')).toBe(true);
     fireEvent.keyDown(document, { key: 'Escape' });
-    expect(screen.queryByRole('dialog', { name: 'Tracks and settings' })).toBeNull();
+    await waitFor(() => { expect(screen.queryByRole('dialog', { name: 'Tracks and settings' })).toBeNull(); });
     const area = screen.getByRole('button', { name: 'Switch area, Product' });
     fireEvent.click(area);
     expect(screen.getByRole('menuitem', { name: 'Product' })).toBeTruthy();
@@ -113,7 +121,7 @@ describe('compact navigation interaction contracts', () => {
     render(<UiPreferencesProvider preferences={preferences}>
       <AppShell transport={{} as never} unauthorized={unauthorized} onOpenSettings={vi.fn()} onOpenPlugins={vi.fn()} onSignOut={vi.fn()} />
     </UiPreferencesProvider>);
-    fireEvent.click(screen.getByRole('button', { name: 'Open areas' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open workspace' }));
     fireEvent.click(screen.getByRole('button', { name: 'Product' }));
     const marker = () => screen.getByRole('button', { name: /^Responsive mobile UI/ })
       .querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity') ?? null;
