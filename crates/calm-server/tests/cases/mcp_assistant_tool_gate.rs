@@ -41,6 +41,8 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "neige_track_status",
     "neige_task_accept",
     "neige_task_reject",
+    // Re-running a failed gate is a Planner decision (#2405).
+    "neige_task_regate",
     // Naming the track is a planner judgement.
     "neige_track_rename",
     // Publishing the track's verified commit is a Planner action.

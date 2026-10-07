@@ -97,6 +97,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0157_acp_submission_journal.sql",
     "0158_ask_delivery_and_tagged_answers.sql",
     "0159_task_running_started_at.sql",
+    "0160_task_regate_requested_event_version.sql",
 ];
 
 #[test]

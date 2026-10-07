@@ -9,4 +9,4 @@ A gate is the machine check the kernel runs after a codex or claude task reports
 - Check files in the checkout, e.g. `python3 -m unittest discover` or `test -s artifacts/result.json` (this proves only that the file exists). For other artifacts, name the paths and semantic checks in the worker's goal, and have the worker report the paths.
 - A codex or claude task not expected to change the checkout declares `access: "read_only"` and no gate; it may run beside other read-only tasks. Writing only ignored files, such as build output, still counts as read-only. On a track with `require_task_gates`, any other codex or claude task with neither a gate nor a `no_gate_reason` is written but not scheduled; the read shows a `gate_required` diagnostic.
 
-When a gate fails, `neige_task_ls`'s `verification` says whether the code was judged. If it was not, fix the gate command or its environment cause before the next round.
+If a gate fails, `neige_task_ls`'s `verification` says whether the code was judged. If not, fix its environment then `neige_task_regate`, or fix its command in a new task.

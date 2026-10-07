@@ -921,6 +921,21 @@ export const taskGateResultSchema = z.object({
   }),
 });
 
+/**
+ * The Planner re-ran a failed gate on the same candidate (#2405): the attempt is `verifying` again;
+ * `reserved_gate_attempt` is held without running, so the re-run is the attempt after it.
+ */
+export const taskRegateRequestedSchema = z.object({
+  ev: z.literal('task.regate_requested'),
+  data: z.object({
+    attempt_id: z.string(),
+    key: z.string(),
+    previous_gate_attempt: z.number(),
+    reserved_gate_attempt: z.number(),
+    agent_message: z.string(),
+  }),
+});
+
 /** The event's home scope in the area → track → card hierarchy; `System` is the catch-all. */
 export const eventScopeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('System') }),
@@ -995,6 +1010,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   worktreeCommittedSchema,
   worktreeRemovedSchema,
   taskGateResultSchema,
+  taskRegateRequestedSchema,
 ]);
 
 export type Area = z.infer<typeof areaSchema>;
@@ -1060,6 +1076,7 @@ export type WorktreeProvisionedEvent = z.infer<typeof worktreeProvisionedSchema>
 export type WorktreeCommittedEvent = z.infer<typeof worktreeCommittedSchema>;
 export type WorktreeRemovedEvent = z.infer<typeof worktreeRemovedSchema>;
 export type TaskGateResultEvent = z.infer<typeof taskGateResultSchema>;
+export type TaskRegateRequestedEvent = z.infer<typeof taskRegateRequestedSchema>;
 export type TaskGitDeliverySettledEvent = z.infer<typeof taskGitDeliverySettledSchema>;
 
 export type WireEvent = z.infer<typeof wireEventSchema>;

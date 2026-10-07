@@ -424,6 +424,10 @@ pub async fn task_report_success_from_worker_tx(
 
 /// Exactly one `task-verify` op may prepare attempt `N`, and only while the
 /// row is still `verifying`; 0 rows = the caller fails the op benignly.
+///
+/// `gate_attempt` is the highest gate attempt number this row has reserved. Normally that is the
+/// last attempt prepared; after a re-run (`task_regate_tx`, #2405) it is a number no op ever runs,
+/// so the next op is one above it and the visible run numbers skip one.
 pub async fn task_gate_attempt_bump_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,

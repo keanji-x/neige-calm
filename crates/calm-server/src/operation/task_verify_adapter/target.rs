@@ -38,8 +38,9 @@ use crate::proc_identity::{group_members_with_env_marker, read_boot_id, sigkill_
 /// `status_detail` of a verdict whose target check failed (the fourth value; isolated never
 /// produces it).
 pub const GATE_TARGET_MISMATCH: &str = "gate-target-mismatch";
-const GATE_INFRA: &str = "gate-infra";
-const GATE_TIMEOUT: &str = "gate-timeout";
+pub(crate) const GATE_RED: &str = "gate-red";
+pub(crate) const GATE_INFRA: &str = "gate-infra";
+pub(crate) const GATE_TIMEOUT: &str = "gate-timeout";
 
 /// The `sh -c` text of one provenance observation: the shared function, then one call with the
 /// two positional parameters (`canonical_path`, `git_common_dir`).

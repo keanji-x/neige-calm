@@ -1,5 +1,6 @@
 //! Track-state tools: `neige_track_status` (Planner or Worker snapshot read, no event emission),
-//! `neige_task_accept` / `neige_task_reject` (Planner-only verdicts, lowered to `TaskCompleted` / `TaskFailed`, scoped to the caller's track)
+//! `neige_task_accept` / `neige_task_reject` (Planner-only verdicts, lowered to `TaskCompleted` / `TaskFailed`, scoped to the caller's track),
+//! `neige_task_regate` (Planner-only re-run of a failed gate on the same candidate, #2405)
 //! and `neige_track_close` (Planner-only close of the caller's track).
 
 use crate::decision_sink::{CardDecisionSink, CardDecisionSinkRecorderShadowProbe};
@@ -21,6 +22,7 @@ pub const TOOL_TRACK_STATUS: &str = "neige_track_status";
 pub const TOOL_TASK_ACCEPT: &str = "neige_task_accept";
 pub const TOOL_TASK_REJECT: &str = "neige_task_reject";
 pub const TOOL_TRACK_CLOSE: &str = "neige_track_close";
+pub const TOOL_TASK_REGATE: &str = "neige_task_regate";
 
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(track_state_descriptor(), wrap(track_state));
@@ -30,6 +32,7 @@ pub fn register_into(registry: &mut ToolRegistry) {
             wrap(move |ctx, identity, args| task_verdict(ctx, identity, args, verdict)),
         );
     }
+    registry.register(task_regate_descriptor(), wrap(task_regate));
     registry.register(track_close_descriptor(), wrap(track_close));
 }
 
@@ -262,6 +265,70 @@ async fn task_verdict(
         Ok(_) => Ok(json!({ "ok": true })),
         Err(e) => Err(crate::mcp_server::framing::calm_error(e)),
     }
+}
+
+fn task_regate_descriptor() -> ToolDescriptor {
+    ToolDescriptor {
+        name: TOOL_TASK_REGATE.into(),
+        description: include_str!("../../../prompts/tools/neige_task_regate.md")
+            .trim_end()
+            .to_string(),
+        input_schema: json!({
+            "type": "object",
+            "required": ["attempt_id", "message"],
+            "additionalProperties": false,
+            "properties": {
+                "attempt_id": { "type": "string", "minLength": 1 },
+                "message": message_schema()
+            }
+        }),
+        annotations: Some(role_gated_write_annotations()),
+        roles: &[CardRole::Planner],
+        listed_for: &[CardRole::Planner],
+    }
+}
+
+/// Parses and resolves the caller's Track; admission and the transition belong to the task-verify
+/// module (`regate_in_tx`), in this one transaction with the event.
+async fn task_regate(
+    ctx: Arc<AppContext>,
+    identity: ToolCallIdentity,
+    args: Value,
+) -> Result<Value, RpcError> {
+    let message = parse_write_args(&args, TOOL_TASK_REGATE)?;
+    let attempt_id = crate::mcp_server::tools::emit::required_attempt_id(&args, TOOL_TASK_REGATE)?;
+    let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
+    let scope = EventScope::Track {
+        track: track.id.clone(),
+        area: track.area_id.clone(),
+    };
+    let (regated, _) = crate::db::write_with_events_typed(
+        ctx.repo.as_ref(),
+        identity.to_actor_id(),
+        None,
+        &ctx.events,
+        &ctx.write,
+        move |tx| {
+            Box::pin(async move {
+                let (regated, event) = crate::operation::task_verify_adapter::regate::regate_in_tx(
+                    tx,
+                    &track.id,
+                    &attempt_id,
+                    message,
+                )
+                .await?;
+                Ok((regated, vec![(scope, event)]))
+            })
+        },
+    )
+    .await
+    .map_err(crate::mcp_server::framing::calm_error)?;
+    Ok(json!({
+        "status": "verifying",
+        "key": regated.key,
+        "previous_gate_run": regated.previous_gate_attempt,
+        "next_gate_run": regated.next_gate_attempt(),
+    }))
 }
 
 fn track_close_descriptor() -> ToolDescriptor {

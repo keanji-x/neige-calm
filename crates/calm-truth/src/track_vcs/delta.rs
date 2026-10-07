@@ -483,6 +483,7 @@ pub(super) fn paths_changed_by_event(event: &Event, track_id: &TrackId) -> PathD
         // `runs/<key>` does not consume gate verdicts today; add a run-key dirty arm
         // here when it starts consuming `task.gate_result`.
         Event::TaskGateResult { .. }
+        | Event::TaskRegateRequested { .. }
         | Event::TaskContextFrozen { .. }
         | Event::TaskContextAdvanced { .. } => {}
         // #1727 S4: a Git delivery settlement is read back through `neige_task_ls`; no track-fs path.

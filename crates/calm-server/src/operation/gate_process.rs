@@ -196,9 +196,9 @@ pub(crate) fn verdict_from_exit_code(
     // No started step means no step ever ran (e.g. the handshake `read` hit EOF → exit 75) → infra, not red.
     let failing_step = evidence.started_step();
     let status_detail = if failing_step.is_some() {
-        "gate-red"
+        super::task_verify_adapter::target::GATE_RED
     } else {
-        "gate-infra"
+        super::task_verify_adapter::target::GATE_INFRA
     };
     GateVerdict {
         passed: false,

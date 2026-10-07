@@ -386,8 +386,24 @@ impl Observation {
                 );
                 // The tail is rendered with runs of identical consecutive lines folded; the stored observation keeps every line.
                 let log_tail = collapse_repeated_lines(log_tail);
+                // #2405: only a candidate-bound verdict that sampled its checkout can be re-run on
+                // its candidate. An unsampled one (a stuck prepare, or a gate whose processes were
+                // not proven stopped) may be refused by the re-run's admission, so it gets no hint.
+                let regate = if !*passed
+                    && matches!(
+                        target.as_deref(),
+                        Some(VerifyTarget::Candidate {
+                            evidence: VerifyTargetEvidence::Verified { .. }
+                                | VerifyTargetEvidence::Refused { .. },
+                            ..
+                        })
+                    ) {
+                    REGATE_HINT
+                } else {
+                    ""
+                };
                 format!(
-                    "{head} Log tail:\n{log_tail}\nRead the full log at runs/{idempotency_key}/gates/{attempt}.log; read the worker output at runs/{idempotency_key}.md."
+                    "{head} Log tail:\n{log_tail}\nRead the full log at runs/{idempotency_key}/gates/{attempt}.log; read the worker output at runs/{idempotency_key}.md.{regate}"
                 )
             }
             Observation::TaskGitDeliverySettled {
@@ -522,6 +538,9 @@ impl Observation {
         }
     }
 }
+
+/// Appended to a failed candidate-bound gate wake whose checkout was sampled (#2405).
+const REGATE_HINT: &str = " If an environment cause failed this gate, fix it, then re-run it on the same candidate with neige_task_regate.";
 
 /// The head sentence of a gate-result wake (everything before ` Log tail:`), #1727 S4 D3.
 /// A refused, discarded or no-candidate target names the target instead of the step verdict;

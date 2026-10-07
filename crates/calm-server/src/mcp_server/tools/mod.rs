@@ -184,7 +184,10 @@ mod tests {
         // #2209: `neige_user_ask` (995 bytes: description 697, schema 298) replaced the ratify
         // and notify tools (1,285) and the mail hand-off line lost 3, so the measured 30,413 fell
         // to 30,120 and the cap follows it down.
-        const SURFACE_MAX_BYTES: usize = 30_120;
+        // #2405: `neige_task_regate` (789 bytes: description 562, schema 227) has no tool to
+        // replace; on top of the measured 30,095 (#2427 trimmed `neige_user_ask`) the cap is the
+        // measured 30,884.
+        const SURFACE_MAX_BYTES: usize = 30_884;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);
@@ -556,8 +559,8 @@ mod tests {
         const VERBS: &[&str] = &[
             "ls", "cat", "show", "status", "log", "diff", "find", "describe", "read", "write",
             "commit", "tag", "rename", "add", "set", "rm", "capture", "ask", "send", "input",
-            "control", "open", "close", "cancel", "publish", "accept", "reject", "done", "fail",
-            "gc", "vacuum",
+            "control", "open", "close", "cancel", "publish", "accept", "reject", "regate", "done",
+            "fail", "gc", "vacuum",
         ];
         let word = regex::Regex::new(r"^[a-z0-9]+$").expect("word regex");
         let outside: Vec<String> = kernel_tool_names()

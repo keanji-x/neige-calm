@@ -120,6 +120,19 @@ describe('invalidation plan contract', () => {
     expectTypeOf<typeof TRACK_FILES_DERIVED_KINDS[number]>().toEqualTypeOf<TrackFilesDerivedKind>();
   });
 
+  it('refreshes task verdicts when the Planner re-runs a failed gate (#2405)', () => {
+    const event = wireEventSchema.parse({
+      ev: 'task.regate_requested',
+      data: {
+        attempt_id: 'track-7:impl', key: 'impl', previous_gate_attempt: 1,
+        reserved_gate_attempt: 2, agent_message: 'the runner disk is free again',
+      },
+    });
+    expect(event.ev).toBe('task.regate_requested');
+    expect(invalidationPlanFor(event).invalidate).toContainEqual(['track-report']);
+    expect(TRACK_FILES_DERIVED_KINDS).toContain('task.regate_requested');
+  });
+
   /* A hook fires roughly twice per tool call per running worker and writes no `tasks` row. */
   it.each(['codex.hook', 'claude.hook'] as const)(
     'invalidates the workspace but never the task verdicts for %s',

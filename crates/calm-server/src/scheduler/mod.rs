@@ -1897,7 +1897,8 @@ impl Scheduler {
 
     /// If the current attempt's op exists, `wait()` it and copy the outcome iff the row is
     /// still `verifying` at that attempt; otherwise submit `#g{gate_attempt + 1}`. Racing
-    /// submitters compute the same key and dedupe on the operations unique index.
+    /// submitters compute the same key and dedupe on the operations unique index. A re-run
+    /// (#2405) leaves `gate_attempt` on a reserved number with no op, so it takes the submit arm.
     async fn drive_gate_inner(
         self: &Arc<Self>,
         runtime: &Arc<OperationRuntime>,

@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::model::TaskStatus;
 use crate::operation::task_verify_adapter::TaskGateResult;
-use crate::operation::task_verify_adapter::target::GATE_TARGET_MISMATCH;
+use crate::operation::task_verify_adapter::target::{GATE_RED, GATE_TARGET_MISMATCH};
 
 /// `integrity.mismatches` entry of a gated `done` row without a verdict.
 pub(crate) const MISMATCH_GATE_RESULT_MISSING: &str = "gate_result_missing";
@@ -96,7 +96,7 @@ pub(crate) fn verification_state(
                 } else {
                     match result.verdict.status_detail.as_deref() {
                         None => VerificationState::Passed,
-                        Some("gate-red") => VerificationState::Red,
+                        Some(GATE_RED) => VerificationState::Red,
                         Some("gate-timeout") => VerificationState::Timeout,
                         Some(GATE_TARGET_MISMATCH) => VerificationState::TargetMismatch,
                         // `gate-infra`, and any class this build does not know: the code was not judged.

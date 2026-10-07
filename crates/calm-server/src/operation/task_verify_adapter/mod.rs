@@ -2,6 +2,7 @@
 //! handshake until its pid triple is recorded, the verdict comes from the WAIT STATUS (the exit file is only a dead-work recovery hint), and gate red / timeout / infra all land `failed`.
 
 mod display;
+pub(crate) mod regate;
 pub(crate) mod target;
 
 use super::gate_process::*;
@@ -288,7 +289,8 @@ pub(crate) fn parse_attempt_key(idempotency_key: &str) -> Option<(&str, i64)> {
     (attempt >= 1 && !task_id.is_empty()).then_some((task_id, attempt))
 }
 
-/// Compose the per-attempt idempotency key.
+/// Compose the per-attempt idempotency key. A row's `gate_attempt` is the highest number it has
+/// reserved: a re-run (`regate`, #2405) reserves one that no op runs, so attempts can skip one.
 pub fn gate_attempt_key(task_id: &str, attempt: i64) -> String {
     format!("{task_id}#g{attempt}")
 }
@@ -606,6 +608,9 @@ impl ProviderAdapter for TaskVerifyAdapter {
         let pool = ctx.operation_repo.sqlite_pool();
 
         // Kill prior: this op's own artifacts (same-op re-drive), the previous attempt's, and the tasks-row pid triple.
+        // After a re-run (`regate`) `attempt - 1` is the reserved number with no op, so this finds
+        // nothing; no backup is lost: the regate admitted the re-run only after proving every earlier
+        // attempt's group stopped, and a terminal op never spawns again.
         if let Some(artifacts) = &op.spawn_artifacts {
             kill_artifacts_group(artifacts);
         }
@@ -1029,7 +1034,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
                     .args
                     .get("reason")
                     .and_then(Value::as_str)
-                    .unwrap_or("gate-infra");
+                    .unwrap_or(target::GATE_INFRA);
                 let rctx = GateResultCtx {
                     task_id: task_id.to_string(),
                     track_id: TrackId::from(track_id.to_string()),
@@ -1047,7 +1052,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
                 let verdict = TaskGateResult {
                     verdict: GateVerdict {
                         passed: false,
-                        status_detail: Some("gate-infra".into()),
+                        status_detail: Some(target::GATE_INFRA.into()),
                         failing_step: None,
                         exit_code: None,
                         log_tail: reason.to_string(),
