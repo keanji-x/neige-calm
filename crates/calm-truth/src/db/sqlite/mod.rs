@@ -158,8 +158,8 @@ pub use track::{
     AttachedInheritedPath, TrackCreateBinding, TrackCreateBindingClaim,
     TrackCreateRequestFingerprint, TrackRecipeOrigin, TrackWorkspacePlan,
     track_create_idempotency_claim_tx, track_create_idempotency_get_pool, track_create_tx,
-    track_delete_tx, track_find_tx, track_get_tx, track_require_leaf_tx, track_update_tx,
-    track_worktree_path_for,
+    track_delete_tx, track_find_tx, track_get_tx, track_require_leaf_tx,
+    track_require_reopenable_tx, track_update_tx, track_worktree_path_for,
 };
 pub use track_occupancy::{
     CheckoutOccupancy, CheckoutWait, checkout_admission, checkout_occupancy,

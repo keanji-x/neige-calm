@@ -173,6 +173,7 @@ use calm_types::git_candidate::{DeliveryFailureCode, DeliverySettlement, Deliver
 
 fn ask_requested(track: &TrackId) -> Event {
     Event::AskRequested {
+        action: None,
         track_id: track.clone(),
         questions: vec![
             AskQuestion {
@@ -242,6 +243,7 @@ async fn seed_ask_with(
                 source_item_id,
                 ..
             } => Event::AskRequested {
+                action: None,
                 track_id,
                 questions,
                 delivery,

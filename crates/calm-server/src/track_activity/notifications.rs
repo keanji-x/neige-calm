@@ -45,6 +45,8 @@ pub enum ActivityItem {
         ask_id: i64,
         questions: Vec<AskQuestion>,
         delivery: AskDelivery,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<crate::event::AskAction>,
     },
     PlannerDown {
         key: String,
@@ -83,6 +85,7 @@ impl ActivityItem {
 /// N1 — one open `ask.requested` of the track.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenAsk {
+    pub action: Option<crate::event::AskAction>,
     pub ask_id: i64,
     pub at_ms: i64,
     pub questions: Vec<AskQuestion>,
@@ -112,7 +115,7 @@ pub struct NotificationRows {
 
 /// The open items, newest first then by key. An ask is open while its row is (the rows hold only
 /// open asks). A `wake` ask also closes when the user messages the Planner after it (`at_ms > U`)
-/// or dismisses it; those close the notification only, they do not answer. A `hold` ask closes
+/// or dismisses it; those close the notification only, they do not answer. Lifecycle and `hold` asks close
 /// on neither: its turn stays paused until an option is chosen or the request goes away. Planner down is
 /// open while the newest non-interrupted turn is `failed` and its key is not dismissed. No closed
 /// filter: a closed track keeps what is still addressed to the user.
@@ -122,7 +125,10 @@ pub fn notifications(track_id: &str, rows: &NotificationRows) -> Vec<ActivityIte
     for ask in &rows.asks {
         let key = format!("{ASK_KEY}{}", ask.ask_id);
         let replied = rows.user_sent_at.is_some_and(|at| at >= ask.at_ms);
-        if ask.delivery == AskDelivery::Wake && (replied || rows.dismissed.contains(&key)) {
+        if ask.delivery == AskDelivery::Wake
+            && ask.action.is_none()
+            && (replied || rows.dismissed.contains(&key))
+        {
             continue;
         }
         items.push(ActivityItem::Ask {
@@ -137,6 +143,7 @@ pub fn notifications(track_id: &str, rows: &NotificationRows) -> Vec<ActivityIte
             ask_id: ask.ask_id,
             questions: ask.questions.clone(),
             delivery: ask.delivery,
+            action: ask.action,
         });
     }
     if let Some(turn) = &rows.last_turn
@@ -173,6 +180,7 @@ mod tests {
     fn open_with(at_ms: i64, delivery: AskDelivery) -> NotificationRows {
         NotificationRows {
             asks: vec![OpenAsk {
+                action: None,
                 ask_id: 7,
                 at_ms,
                 delivery,
@@ -197,6 +205,7 @@ mod tests {
         assert_eq!(
             notifications("t", &rows),
             vec![ActivityItem::Ask {
+                action: None,
                 key: "ask:7".into(),
                 text: "Merge PR #7? / Which branch?".into(),
                 at_ms: 100,

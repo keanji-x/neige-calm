@@ -134,3 +134,12 @@ describe('PlannerAskDrawer', () => {
     await screen.findByRole('heading', { name: 'Which branch?' });
   });
 });
+
+it('offers only the two explicit choices for a lifecycle question, with no ambiguous own-answer input', () => {
+  const ask = { ...SINGLE, action: { kind: 'reopen_track' as const, closed_at: 42 },
+    questions: [{ title: 'Continue this closed track?', options: ['Reopen and continue', 'Keep closed'] }] };
+  setup([ask]);
+  expect(screen.queryByRole('textbox', { name: 'Continue this closed track?' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Reopen and continue' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Keep closed' })).toBeTruthy();
+});

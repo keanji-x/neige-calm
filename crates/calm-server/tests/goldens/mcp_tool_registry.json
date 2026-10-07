@@ -1562,10 +1562,16 @@
   },
   {
     "name": "neige_user_ask",
-    "description_sha256": "7e2706064c805770baed08b9da82268ebaeaa2c845fce5de33c8fe8be80cd5e3",
+    "description_sha256": "bce6425bc5d9e53ccb01578a3bf4207b4a540b70860df8df4e49794d4354e8d2",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
+        "action": {
+          "enum": [
+            "reopen_track"
+          ],
+          "type": "string"
+        },
         "questions": {
           "items": {
             "additionalProperties": false,

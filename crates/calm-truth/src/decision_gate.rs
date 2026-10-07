@@ -1411,6 +1411,7 @@ mod tests {
             (
                 "ask.requested",
                 Event::AskRequested {
+                    action: None,
                     track_id: TrackId::from("w"),
                     questions: vec![calm_types::event::AskQuestion {
                         title: "Merge?".into(),

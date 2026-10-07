@@ -216,6 +216,7 @@ async fn open_ask_is_one_item_with_its_questions() {
     assert_eq!(
         a.items,
         vec![ActivityItem::Ask {
+            action: None,
             key: format!("ask:{id}"),
             text: "Merge PR #1811 now? / Which region?".into(),
             at_ms: at,

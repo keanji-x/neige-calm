@@ -51,6 +51,7 @@ export type TrackInputNotification = Readonly<{
   /** The kernel's words, shown verbatim: the Planner's questions, or the reason it stopped. */
   text: string;
   atMs: number;
+  action?: import('../../../../../core/api/generated/wire.ts').AskAction;
 }>;
 
 /** A row's meta line: what kind of thing is waiting, in plain words; only its dot carries colour. */
@@ -633,7 +634,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
                     <div className={`${styles.noticeBody} ${notification.kind === 'planner-down' ? styles.noticeBodyClamped : ''}`}>
                       <Markdown density="compact" headingLevelStart={3}>{notification.text}</Markdown>
                     </div>
-                    {onDismiss !== undefined && (
+                    {onDismiss !== undefined && notification.action === undefined && (
                       <button
                         type="button"
                         className={styles.noticeDismiss}

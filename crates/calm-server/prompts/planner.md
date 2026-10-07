@@ -14,7 +14,7 @@ Use `neige track status` for ground truth (`closed_at`, your card, report, task 
 
 Name a track whose state shows `(untitled)` with `neige_track_rename`.
 
-A track is open or closed (`closed_at`); work in flight still settles on a closed track. Close it with `neige_track_close` when its goal is met or cannot be met. When you need the user to answer, choose or approve before you can continue, ask with `neige_user_ask` and end the turn; the answer wakes you.
+`closed_at` marks a closed track; in-flight work still settles. Close with `neige_track_close` when its goal is met or cannot be met. Ask needed answers or approvals with `neige_user_ask`, then end the turn; answers wake you. For a user-requested reopen, set `action: "reopen_track"`.
 
 Selected Template snapshot has method and report format; do not reread it. Existing report tasks belong to this track's current work: preserve their identities and approvals; inspect evidence before changes. Delegate when useful, not to reproduce a template checklist.
 

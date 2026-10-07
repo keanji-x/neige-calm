@@ -2,7 +2,7 @@
 // kernel's activity overlay; the one write is `POST /api/tracks/{id}/asks/{ask_id}/answer`.
 
 import { z } from 'zod';
-import type { AskAnswer } from '../api/generated/wire.js';
+import type { AskAction, AskAnswer } from '../api/generated/wire.js';
 import type { ApiOperation } from '../api/types.js';
 import type { ActivityItem, AskDelivery, AskQuestion } from './activity.js';
 import type { FailureTable, WriteClass, WriteText } from './failure-class.js';
@@ -11,7 +11,7 @@ import type { FailureTable, WriteClass, WriteText } from './failure-class.js';
  * One open ask as the questions drawer shows it: the answer route's id, its questions in order, and
  * where the answer goes.
  */
-export type OpenAsk = Readonly<{ askId: number; questions: readonly AskQuestion[]; delivery: AskDelivery }>;
+export type OpenAsk = Readonly<{ askId: number; questions: readonly AskQuestion[]; delivery: AskDelivery; action?: AskAction }>;
 
 /**
  * The track's open asks, oldest first. The overlay lists items newest first; an ask's id is its
@@ -20,7 +20,9 @@ export type OpenAsk = Readonly<{ askId: number; questions: readonly AskQuestion[
 export function openAsksOf(items: readonly ActivityItem[]): readonly OpenAsk[] {
   const asks: OpenAsk[] = [];
   for (const item of items) {
-    if (item.source === 'ask') asks.push({ askId: item.askId, questions: item.questions, delivery: item.delivery });
+    if (item.source === 'ask') asks.push({ askId: item.askId, questions: item.questions, delivery: item.delivery,
+      ...(item.action === undefined ? {} : { action: item.action }),
+    });
   }
   return asks.sort((left, right) => left.askId - right.askId);
 }

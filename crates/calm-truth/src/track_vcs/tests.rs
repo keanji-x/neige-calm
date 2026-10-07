@@ -300,6 +300,7 @@ async fn ask_batch_does_not_advance_head() {
 
     let events = vec![
         Event::AskRequested {
+            action: None,
             track_id: track.id.clone(),
             questions: vec![calm_types::event::AskQuestion {
                 title: "Merge PR #1?".into(),

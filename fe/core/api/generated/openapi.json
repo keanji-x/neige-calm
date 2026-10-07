@@ -9364,7 +9364,7 @@
             "description": "Answered"
           },
           "400": {
-            "description": "Wrong number of answers, an option the question does not have, an empty or over-long text, or text for a paused request",
+            "description": "Invalid answers, text for a paused request, or an expired/ineligible lifecycle action",
             "content": {
               "application/json": {
                 "schema": {

@@ -909,6 +909,7 @@ function trackNotifications(items: TrackActivity['attentionItems']): readonly Tr
     kind: item.source === 'ask' ? 'ask' : 'planner-down',
     text: item.text,
     atMs: item.atMs,
+    ...(item.source !== 'ask' || item.action === undefined ? {} : { action: item.action }),
   }));
 }
 

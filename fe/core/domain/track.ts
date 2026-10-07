@@ -150,6 +150,7 @@ const activityItemWireSchema = z.discriminatedUnion('source', [
     ask_id: z.number(),
     questions: z.array(z.object({ title: z.string(), options: z.array(z.string()) })),
     delivery: z.enum(['wake', 'hold']),
+    action: z.object({ kind: z.literal('reopen_track'), closed_at: z.number() }).optional(),
   }),
   z.object({
     source: z.literal('planner_down'),
@@ -185,6 +186,7 @@ function activityOverlayFields(payload: unknown): Partial<TrackActivity> | null 
     attentionItems.push(item.data.source === 'ask'
       ? {
         ...base, source: 'ask', askId: item.data.ask_id, questions: item.data.questions, delivery: item.data.delivery,
+        ...(item.data.action === undefined ? {} : { action: item.data.action }),
       }
       : { ...base, source: 'planner_down' });
   }

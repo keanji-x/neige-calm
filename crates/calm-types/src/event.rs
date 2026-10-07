@@ -308,6 +308,14 @@ pub enum AskAnswer {
     Text(String),
 }
 
+/// An explicit user choice with a lifecycle effect; absent on ordinary/native asks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub enum AskAction {
+    ReopenTrack { closed_at: i64 },
+}
+
 /// The full set of WS event envelopes the kernel emits on `/api/events`. ts-rs requires every
 /// payload type referenced here to also derive `TS`.
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
@@ -676,6 +684,9 @@ pub enum Event {
         track_id: TrackId,
         questions: Vec<AskQuestion>,
         delivery: AskDelivery,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        action: Option<AskAction>,
         /// The provider item the question was translated from; absent for a `neige_user_ask` call.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
@@ -1688,6 +1699,7 @@ mod scope_tests {
         assert_eq!(forge_pr_merged.kind_tag(), "forge.pr.merged");
 
         let ask_requested = Event::AskRequested {
+            action: None,
             track_id: TrackId::from("track-1"),
             questions: vec![AskQuestion {
                 title: "Merge PR #1?".into(),
@@ -2738,6 +2750,7 @@ mod scope_tests {
                 merge_sha: "merge-sha".into(),
             },
             Event::AskRequested {
+                action: None,
                 track_id: TrackId::from("track-1"),
                 questions: vec![AskQuestion {
                     title: "Which branch?".into(),
