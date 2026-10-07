@@ -1,35 +1,26 @@
 import { expect, test } from '@playwright/test';
 
-test('keeps Today usable without claiming zero activity when Areas is unavailable', async ({ page }) => {
-  // The flag lives in Node so the route handler decides synchronously and flipping it before the click lands before the request.
+test('keeps the unified Today report and calendar usable when Areas is unavailable', async ({ page }) => {
   let recovered = false;
   let served = 0;
   await page.route('**/api/areas', async (route) => {
     if (!recovered && route.request().method() === 'GET') {
-      await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'Areas temporarily unavailable' }) });
       served += 1;
+      await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'Areas temporarily unavailable' }) });
     } else await route.continue();
   });
-  await page.goto('/next/today/legacy');
-  const main = page.getByRole('main');
-  /* A 503's text is the server's internals: the Today notice is the fixed sentence alone. */
-  const failure = main.getByRole('alert').filter({ hasText: 'Areas are unavailable.' });
-  // Wait for the stub's answer first so a slow load reports as "stub never asked", not "failure state never rendered".
-  await expect.poll(() => served, { timeout: 15_000 }).toBeGreaterThan(0);
-  await expect(failure).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText('Areas temporarily unavailable')).toHaveCount(0);
-  const header = main.locator('header[data-nc-header-rows]').first();
-  // Existence first: `not.toContainText` alone passes for a header that never rendered.
-  await expect(header).toBeVisible();
-  await expect(header).not.toContainText(/\d\s*(waiting|working)/);
-  await expect(main.getByText('Nothing scheduled.')).toHaveCount(0);
-  await expect(page.getByRole('navigation', { name: 'Workspace' })).toBeVisible();
-  await page.screenshot({ path: 'test-results/today-unavailable-desktop.png' });
-  const retry = failure.getByRole('button', { name: 'Retry' });
+  await page.goto('/next/');
+  await expect.poll(() => served).toBeGreaterThan(0);
+  await expect(page.getByRole('region', { name: 'Calendar tasks' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Rename track' })).toBeVisible();
+  const indicator = page.getByRole('button', { name: '连接状态：连接异常' });
+  await indicator.click();
+  const details = page.getByRole('dialog', { name: '连接详情' });
+  await expect(details).toContainText('Areas');
+  await expect(details).not.toContainText('Areas temporarily unavailable');
   recovered = true;
-  await retry.click();
-  await expect(failure).toHaveCount(0);
-  await expect(header).toContainText(/\d\s*working/);
+  await details.getByRole('button', { name: '重试读取' }).click();
+  await expect(indicator).toHaveCount(0);
 });
 
 test('retains the original Track request after a lost acknowledgement and navigation', async ({ page, request, context }) => {

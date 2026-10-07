@@ -303,7 +303,7 @@ describe('Track mobile presentation', () => {
     await page.getByRole('button', { name: 'Back to Settings' }).click();
     await expect.poll(() => router.state.location.pathname).toBe('/settings');
     await page.getByRole('button', { name: 'Back to workspace' }).click();
-    await expect.poll(() => router.state.location.pathname).toBe('/area/c1/new');
+    await expect.poll(() => router.state.location.pathname).toBe('/');
   });
 
   it('keeps Area selection and settings navigation clear at the narrow phone width', async () => {

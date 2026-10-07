@@ -70,7 +70,6 @@
 # colocated behavior/contract tests, render components, and *.module.css files.
 - { path: fe/web/src/features/track, type: directory, owner: features/track, readonly: false, basis: "architecture §2/§4; INV-DUP-009" }
 - { path: fe/web/src/features/area, type: directory, owner: features/area, readonly: false, basis: "architecture §2/§4; INV-DUP-006" }
-- { path: fe/web/src/features/today, type: directory, owner: features/today, readonly: false, basis: "architecture §2/§4" }
 - { path: fe/web/src/features/report, type: directory, owner: features/report, readonly: false, basis: "architecture §4.8/§4.9" }
 - { path: fe/web/src/features/planner, type: directory, owner: features/planner, readonly: false, basis: "architecture §4 layer graph (authoritative over §5 abbreviated tree)" }
 - { path: fe/web/src/features/settings, type: directory, owner: features/settings, readonly: false, basis: "architecture §2/§4" }

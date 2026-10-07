@@ -798,7 +798,6 @@
     "target": "web/src/app/events/query-invalidation-adapter.ts",
     "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\nindex 14d4de9..e1da359 100644\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -33,7 +33,7 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {\n   const [head, first, second] = key;\n   if (head === 'areas' && key.length === 1) return queryKeys.areas();\n   if (head === 'tracks' && first === 'area' && typeof second === 'string') return queryKeys.tracksInArea(second);\n-  if (head === 'track' && typeof first === 'string' && key.length === 2) return queryKeys.trackDetail(first);\n+  if (head === 'track' && typeof first === 'string' && key.length === 2) return null;\n   if (head === 'overlays' && (first === 'track' || first === 'card')) return queryKeys.overlaysByKind(first);\n   if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);\n   if (head === 'planner-run' && typeof first === 'string' && key.length === 2) return queryKeys.plannerRun(first);\n",
     "expected_red": [
-      "#1253 §6 the report-edit refresh chain redraws a report that was already written when it is rewritten",
       "EventBridge contracts resolves a runtime card through cached track detail before invalidating",
       "event composition T-B2 carries a real socket card event through the bridge into track invalidation",
       "query invalidation adapter drives the conversation-list keys all the way onto the query client",
@@ -1247,7 +1246,6 @@
     "target": "core/domain/track.ts",
     "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -577,7 +577,7 @@\n \n /** The one indicator state for a track on every surface; `unread` is the reader's receipt, the rest is the overlay's. */\n export function trackActivityState(track: Track, unread: boolean): ActivityState {\n-  return activityStateOf({ working: isWorking(track), attention: track.attention, unread });\n+  return activityStateOf({ working: !isClosed(track), attention: track.attention, unread });\n }\n \n /** A closed track schedules no new work; only the user reopens it. */\n",
     "expected_red": [
-      "Today rows carry the track read receipt",
       "TrackPage header paints one activity indicator beside the title, from the overlay rather than the open/closed state",
       "activity predicates read only the kernel activity overlay (INV-APP-118) does not derive working from an open track",
       "activity predicates read only the kernel activity overlay (INV-APP-118) reads attention and failure from the overlay verdict",
@@ -1255,11 +1253,10 @@
     ],
     "selection_paths": [
       "core/domain/track.test.ts",
-      "web/src/app/router/today-activity.test.tsx",
       "web/src/features/track/page/public.test.tsx",
       "web/src/features/track/row/public.test.tsx"
     ],
-    "why_more_than_one": "The predicate is shared: the rail row, the page head, the router-level Today row and the core predicate suite each pin one surface of the same open-state-instead-of-overlay drift (an open track with an idle planner reads quiet; a closed track with work in flight reads working). The core verdict case reddens too, because its quiet-but-unread fixture is an open track and now folds to working."
+    "why_more_than_one": "Kernel predicate tests, navigation markers and the shared TrackPage header independently reject deriving activity from the open/closed state."
   },
   {
     "mutation_id": "s2a-activity-overlay-plugin-gate-dropped",
@@ -1302,17 +1299,15 @@
     "target": "core/domain/track.ts",
     "patch": "diff --git a/core/domain/track.ts b/core/domain/track.ts\n--- a/core/domain/track.ts\n+++ b/core/domain/track.ts\n@@ -567,7 +567,7 @@\n \n /** The kernel says a person has to give input somewhere on this track. */\n export function needsUserAttention(track: Track): boolean {\n-  return track.attention === 'input';\n+  return isClosed(track) || track.attention === 'input';\n }\n \n /** The kernel says something on this track is broken and needs repair. */\n",
     "expected_red": [
-      "Today clock counts waiting on you and working by the kernel verdict, and groups Open by the open state",
       "collapse toggle shows the waiting count as the strip's only figure, with no dot beside it",
       "activity predicates read only the kernel activity overlay (INV-APP-118) does not derive attention or failure from the open/closed state",
       "activity predicates read only the kernel activity overlay (INV-APP-118) reads attention and failure from the overlay verdict"
     ],
     "selection_paths": [
       "core/domain/track.test.ts",
-      "web/src/app/shell/sidebar.test.tsx",
-      "web/src/features/today/public.test.tsx"
+      "web/src/app/shell/sidebar.test.tsx"
     ],
-    "why_more_than_one": "A closed-state OR inside needsUserAttention leaks into every consumer of the predicate: the core cases, the rail strip count and the Today waiting count each pick up a closed track the kernel said nothing about."
+    "why_more_than_one": "Kernel attention predicates and the sidebar waiting strip independently reject deriving attention from the open/closed state."
   },
   {
     "mutation_id": "s2a-activity-precedence-working-first",
@@ -1351,15 +1346,13 @@
       "local read receipts null_scope_is_never_unread",
       "receipts_survive_a_recovery_scope_change_on_the_same_database",
       "receipts_are_isolated_per_user",
-      "Today rows carry the track read receipt",
       "reads the track receipt against the activity high-water mark, not updatedAt"
     ],
     "selection_paths": [
       "web/src/app/providers/ui-preferences.test.tsx",
-      "web/src/app/router/today-activity.test.tsx",
       "web/src/app/shell/sidebar.test.tsx"
     ],
-    "why_more_than_one": "Without the baseline, first entry into a scope no longer marks older activity read: the receipt unit cases, the rail receipt case and the router-level Today receipt case all rely on it. The two receipt-namespace cases (recovery-scope change on the same database, per-user isolation) also count the baseline key under the stable namespace and find none."
+    "why_more_than_one": "Scope/baseline fixtures and the shared Track-route receipt assertion exercise the same persistent receipt owner."
   },
   {
     "mutation_id": "s2a-receipt-scope-from-instance-id",
@@ -1421,29 +1414,6 @@
     "why_more_than_one": "The hue-distance test runs once per theme, and the failed dot falling back to the warn family collapses the distance in both."
   },
   {
-    "mutation_id": "s2a-today-groups-by-working",
-    "defends": [
-      "oracle:INV-APP-118"
-    ],
-    "target": "web/src/features/today/public.tsx",
-    "patch": "diff --git a/web/src/features/today/public.tsx b/web/src/features/today/public.tsx\n--- a/web/src/features/today/public.tsx\n+++ b/web/src/features/today/public.tsx\n@@ -147,5 +147,5 @@\n   const working = tracks.filter(isWorking);\n   const isVisible = (track: Track) => (showClosed || !isClosed(track)) && (showRead || isTrackUnread?.(track) === true);\n-  const activityTracks = tracks.filter(isVisible);\n+  const activityTracks = tracks.filter((track) => isVisible(track) && isWorking(track));\n   const panel = (\n     <aside className={styles.panelColumn}>\n",
-    "expected_red": [
-      "Today rows carry the track read receipt",
-      "Today clock counts waiting on you and working by the kernel verdict, and groups Open by the open state",
-      "Today agenda orders activity by latest row or overlay update and reorders after an update without mutating inputs",
-      "Today agenda hands each agenda track to the injected renderer in the compact variant with update time",
-      "Today agenda resolves each agenda track area name for the renderer",
-      "Today agenda falls back to \"Unknown area\" when the track points at an area we cannot see",
-      "Today agenda re-scopes the agenda when another day is selected",
-      "filters read tracks using the injected receipt state and keeps unread tracks"
-    ],
-    "selection_paths": [
-      "web/src/app/router/today-activity.test.tsx",
-      "web/src/features/today/public.test.tsx"
-    ],
-    "why_more_than_one": "Restricting visible Activity rows to working tracks removes eligible idle rows. Router receipt, row rendering, recency ordering, area attribution, date selection and read-filter fixtures all exercise those rows; the working header count itself is unchanged."
-  },
-  {
     "mutation_id": "s2b-conversation-row-from-session-state",
     "defends": [
       "oracle:INV-APP-118"
@@ -1451,7 +1421,6 @@
     "target": "web/src/features/chat/list/public.tsx",
     "patch": "diff --git a/web/src/features/chat/list/public.tsx b/web/src/features/chat/list/public.tsx\nindex e30833b..3bc4c0a 100644\n--- a/web/src/features/chat/list/public.tsx\n+++ b/web/src/features/chat/list/public.tsx\n@@ -45,7 +45,9 @@ export function ChatList({\n         const echo = local !== null && local.id === conversation.id ? local : null;\n         const unread = unreadIds?.has(conversation.id) ?? false;\n         const activity = activityStateOf({\n-          working: verdict === 'working' || (echo?.working ?? false),\n+          working: verdict === 'working' || (echo?.working ?? false)\n+            // MUT-1722-S2B-1: the row spins on the server's session reading again\n+            || conversation.state === 'starting' || conversation.state === 'running' || conversation.state === 'turn_pending',\n           attention: echo?.stalled ? 'failed' : attentionOfCard(verdict),\n           unread,\n         });\n",
     "expected_red": [
-      "#1341 Today lists the launchpad track’s conversations the launchpad summary row reads the launchpad activity overlay",
       "conversation rows read activity.cards, not session state",
       "conversation rows read activity.cards, not session state keeps only the open row’s declared local echoes: the sender’s send and the drawer’s wedge",
       "conversation rows read activity.cards, not session state reads another card’s verdict as nothing about this row",
@@ -1460,11 +1429,10 @@
       "the injected planner row reads activity.cards and last_turn_completed_ms"
     ],
     "selection_paths": [
-      "web/src/app/router/today-conversation.test.tsx",
       "web/src/app/router/track-conversation.test.tsx",
       "web/src/features/chat/list/public.test.tsx"
     ],
-    "why_more_than_one": "The row's fold is one function of the verdict, the receipt and the local echo, so a session-state OR reddens every list case that expects a turn_pending row to stay quiet: the chat/list unit cases, the router-level server-row and injected-planner-row cases, and Today's launchpad row (its summary writer is turn_pending while it writes)."
+    "why_more_than_one": "Shared ChatList tests and the Track-route Planner row reject session-state activity inference; the unified Today uses that same Track composition."
   },
   {
     "mutation_id": "s2b-planner-row-from-runtime-status",
@@ -1719,21 +1687,6 @@
     "why_more_than_one": "Only the Dismiss case clicks Dismiss through the route; the other aside cases read the rows or click Reply, and the page suite renders rows without the route's wiring."
   },
   {
-    "mutation_id": "s2b-today-launchpad-cards-empty",
-    "defends": [
-      "oracle:INV-APP-118"
-    ],
-    "target": "web/src/app/router/public.tsx",
-    "patch": "diff --git a/web/src/app/router/public.tsx b/web/src/app/router/public.tsx\nindex 1c6677f..e4e939f 100644\n--- a/web/src/app/router/public.tsx\n+++ b/web/src/app/router/public.tsx\n@@ -1541,7 +1541,8 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort;\n     {\n       scopeId: conversationTrackId,\n       rows: launchpadRows,\n-      cards: launchpadActivity.cards,\n+      // MUT-1722-S2B-10: Today hands the panel no verdicts at all\n+      cards: {},\n       /* The launchpad is a real track and these rows are its own; the store checks\n              every row against this. */\n       rememberOn: conversationTrackId,\n",
-    "expected_red": [
-      "#1341 Today lists the launchpad track’s conversations the launchpad summary row reads the launchpad activity overlay"
-    ],
-    "selection_paths": [
-      "web/src/app/router/today-conversation.test.tsx"
-    ],
-    "why_more_than_one": "Only Today's launchpad list is fed `{}`; the track route keeps its own verdicts, so exactly the launchpad summary-row case reddens."
-  },
-  {
     "mutation_id": "s2b-mobile-painter-no-indicator",
     "defends": [
       "oracle:INV-APP-118"
@@ -1771,27 +1724,6 @@
       "web/src/app/shell/unified-mobile-header.browser.test.tsx"
     ],
     "why_more_than_one": "The phone row's dot and its name bit come from one value, so an open-state-driven state changes both: the row case sees a spinner on an idle open track and no spinner on a closed track with work in flight, the shell case sees `working` where the receipt says `unread`, and every case that finds an open row by its exact name — the MobileTracks header case, the router's `?from=` case and the two unified-header browser cases, all of which mount an open track with no overlay — misses it because the name now ends in `, working`."
-  },
-  {
-    "mutation_id": "s4-today-second-count-from-open",
-    "defends": [
-      "oracle:INV-APP-118"
-    ],
-    "target": "web/src/features/today/public.tsx",
-    "patch": "diff --git a/web/src/features/today/public.tsx b/web/src/features/today/public.tsx\n--- a/web/src/features/today/public.tsx\n+++ b/web/src/features/today/public.tsx\n@@ -145,5 +145,5 @@\n   const needsPerson = (track: Track) => needsUserAttention(track) || hasFailed(track);\n   const waiting = tracks.filter(needsPerson);\n-  const working = tracks.filter(isWorking);\n+  const working = tracks.filter((track) => !isClosed(track));\n   const isVisible = (track: Track) => (showClosed || !isClosed(track)) && (showRead || isTrackUnread?.(track) === true);\n   const activityTracks = tracks.filter(isVisible);\n",
-    "expected_red": [
-      "Today clock counts waiting on you and working by the kernel verdict, and groups Open by the open state",
-      "Today's second number counts the kernel's working verdict, not the open tracks",
-      "degraded workspace reads stay usable does not claim empty activity while the activity read is unavailable",
-      "degraded workspace reads stay usable does not claim empty activity while the areas read is unavailable",
-      "degraded workspace reads stay usable does not claim empty activity while the tracks read is unavailable"
-    ],
-    "selection_paths": [
-      "web/src/app/router/read-fallbacks.contract.test.tsx",
-      "web/src/app/router/today-activity.test.tsx",
-      "web/src/features/today/public.test.tsx"
-    ],
-    "why_more_than_one": "Counting the open tracks instead of the kernel's working verdict moves every fixture whose open state and verdict disagree: the Today unit case (four open tracks, none working), the router-level count case (three open tracks, one working) and the three degraded-read cases (one open track with no overlay, so 0 becomes 1)."
   },
   {
     "mutation_id": "ownership-squash-skip-source-path-binding",

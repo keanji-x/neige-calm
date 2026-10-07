@@ -5,6 +5,9 @@ import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { TrackDetailWire } from '../../../../core/domain/track.ts';
 import { dailyTrackOperation, reportChangesOperation, reportEditsOperation, shiftDailyDate, type ReportChange } from '../../../../core/domain/daily-planner.ts';
+import { useGo } from './navigation.ts';
+import { TodayCalendarTasks } from './calendar.tsx';
+import { PanelCard } from '../../ui/panel-card/public.tsx';
 import { ReportDetails } from '../../features/report/document/details.tsx';
 import { ReportChangeDetails, ReportEditDetails } from '../../features/report/changes/public.tsx';
 import { readErrorText } from '../../../../core/domain/read-failure.ts';
@@ -15,7 +18,7 @@ import { runOperation, trackDetailQueryOptions } from '../providers/queries.ts';
 export function DailyTodayRoute({ transport, unauthorized, selectedDate, onOpenTrack, renderTrack }: Readonly<{
   transport: ApiTransportPort; unauthorized: UnauthorizedChannel; selectedDate?: string;
   onOpenTrack: (trackId: string) => void;
-  renderTrack: (detail: TrackDetailWire, evidence: ReactNode) => ReactNode;
+  renderTrack: (detail: TrackDetailWire, evidence: ReactNode, sidebarHeader: ReactNode) => ReactNode;
 }>) {
   const daily = useQuery({ queryKey: ['daily-planner', selectedDate ?? 'today'],
     queryFn: () => runOperation(transport, dailyTrackOperation(selectedDate), unauthorized), refetchInterval: 30_000 });
@@ -29,7 +32,18 @@ export function DailyTodayRoute({ transport, unauthorized, selectedDate, onOpenT
   const date = daily.data.date;
   return renderTrack({ ...detail.data, track: { ...detail.data.track, title: date } },
     <DailyReportChanges key={date} date={shiftDailyDate(date, -1)}
-      transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />);
+      transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />,
+    <DailyCalendar key={date} date={date} transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />);
+}
+
+function DailyCalendar({ date, transport, unauthorized, onOpenTrack }: Readonly<{
+  date: string; transport: ApiTransportPort; unauthorized: UnauthorizedChannel; onOpenTrack(id: string): void;
+}>) {
+  const [selected, setSelected] = useState(date);
+  const go = useGo();
+  return <PanelCard fill><TodayCalendarTasks date={selected} onDateChange={setSelected} transport={transport}
+    unauthorized={unauthorized} onSettings={() => go({ name: 'settings-plugins' })}
+    onOpenTrack={onOpenTrack} /></PanelCard>;
 }
 
 function DailyReportChanges({ date, transport, unauthorized, onOpenTrack }: Readonly<{

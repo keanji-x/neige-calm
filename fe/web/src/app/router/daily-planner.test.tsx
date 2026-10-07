@@ -53,3 +53,13 @@ it('keeps historical daily links readable without a second date toolbar', async 
   renderDailyFixture({ initial: '/?day=2026-10-03' });
   await screen.findByText('No daily Track was created for this date.');
 });
+
+
+it.each(['/today/legacy', '/today/legacy?day=2026-10-04'])('redirects %s to the sole Today renderer without singleton requests', async (initial) => {
+  const { router, requests } = renderDailyFixture({ initial });
+  await screen.findByText('Prioritize the release.', { exact: false });
+  expect(router.state.location.pathname).toBe('/');
+  await screen.findByRole('region', { name: 'Calendar tasks' });
+  expect(requests.some((request) => request.path.includes('/today/launchpad'))).toBe(false);
+  if (initial.includes('?')) expect(router.state.location.search).toEqual({ day: '2026-10-04' });
+});

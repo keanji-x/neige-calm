@@ -14,7 +14,7 @@ import { bootTestCardRuntime } from './test-card-runtime.ts';
 afterEach(cleanup);
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 
-it('requires the shared confirmation before deleting a Today panel track', async () => {
+it('requires the shared confirmation before deleting a sidebar track', async () => {
   const requests: ApiRequest[] = [];
   let deleted = false;
   const track = {
@@ -32,19 +32,19 @@ it('requires the shared confirmation before deleting a Today panel track', async
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
-  router.update({ history: createMemoryHistory({ initialEntries: ['/today/legacy'] }) });
+  router.update({ history: createMemoryHistory({ initialEntries: ['/'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
 
-  await screen.findByRole('complementary');
-  await userEvent.click(await within(screen.getByRole('complementary')).findByRole('button', { name: 'Delete Risky' }));
+  const rail = await screen.findByRole('navigation', { name: 'Workspace' });
+  await userEvent.click(await within(rail).findByRole('button', { name: 'Delete Risky' }));
   expect(screen.getByRole('dialog', { name: 'Delete this track?' })).toBeTruthy();
   expect(requests.filter((request) => request.method === 'DELETE')).toHaveLength(0);
   await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
   expect(requests.filter((request) => request.method === 'DELETE')).toHaveLength(1);
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Delete Risky' })).toBeNull());
-  expect(document.activeElement).toBe(document.querySelector('[data-nc-page-title]'));
+  expect(within(rail).queryByRole('button', { name: /Track Risky/ })).toBeNull();
 });
 
 it('does not navigate on a delete success that arrives after cancellation', async () => {
@@ -91,7 +91,7 @@ it('does not navigate on an area delete success that arrives after cancellation'
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
-  router.update({ history: createMemoryHistory({ initialEntries: ['/today/legacy'] }) });
+  router.update({ history: createMemoryHistory({ initialEntries: ['/'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
@@ -103,7 +103,7 @@ it('does not navigate on an area delete success that arrives after cancellation'
   await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   resolveDelete({ status: 204, statusText: 'No Content', body: undefined });
   await new Promise((done) => { setTimeout(done, 10); });
-  expect(router.state.location.pathname).toBe('/today/legacy');
+  expect(router.state.location.pathname).toBe('/');
 });
 
 it('round-trips an encoded track id through useGo, TanStack history, and useRouteParam', async () => {
@@ -124,7 +124,7 @@ it('round-trips an encoded track id through useGo, TanStack history, and useRout
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
-  router.update({ history: createMemoryHistory({ initialEntries: ['/today/legacy'] }) });
+  router.update({ history: createMemoryHistory({ initialEntries: ['/'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);

@@ -1,6 +1,6 @@
 # Daily Planner Tracks (#2008)
 
-Replace the desktop homepage's singleton summary assistant with an ordinary Track for each Asia/Shanghai calendar day. Daily Tracks live in the existing hidden System Area and never appear in the sidebar. The homepage reuses the Track report reader, evidence links, file viewer and Planner conversation. The earlier launchpad remains reachable at `/today/legacy`.
+Replace the desktop homepage's singleton summary assistant with an ordinary Track for each Asia/Shanghai calendar day. Daily Tracks live in the existing hidden System Area and never appear in the sidebar. The homepage reuses the Track report reader, evidence links, file viewer and Planner conversation. The frontend now has one Today composition; `/today/legacy` redirects to the homepage. The earlier singleton API and its persisted report remain unchanged.
 
 ## Ownership and lifecycle
 

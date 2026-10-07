@@ -1,0 +1,9 @@
+# Unified Today
+
+The homepage resolves the daily Planner Track and composes the existing Track report, cards, tasks and conversations with the existing calendar. There is one Today route implementation. `/today/legacy` redirects to the homepage, preserving a supplied historical `day`; it does not read or mutate the earlier singleton launchpad. Backend launchpad APIs and persisted reports remain untouched.
+
+Calendar date selection is local to the agenda, as it was on the earlier Today: it does not switch the daily report. A historical homepage seeds its agenda from that report date. Calendar plugin failures retain date navigation and explain unavailable task data. The app injects calendar content through a generic leading sidebar slot; Track owns layout and conversation placement, and Calendar owns scheduling. An open desktop conversation occupies the lower sidebar while calendar navigation remains visible; ordinary Tracks keep their current drawer behavior. Compact pages retain their existing report and conversation surfaces and show the injected calendar before the report.
+
+Acceptance: navigate through the real homepage router, see the calendar, select dates and Week/Month, open/close and compose in the daily Planner without hiding the calendar, preserve report evidence and source navigation, retain calendar failure feedback, and verify the legacy URL redirects to the same implementation without singleton API calls. Retire the earlier Today renderer and its obsolete launchpad UI tests/mutations; retain shared Track, Calendar and API coverage.
+
+Review tier L2 because retiring an entire obsolete frontend implementation produces a large diff. No backend, authorization, persistence, migration or deployment changes. Review must check owner boundaries, duplicate logic, generic slots rather than Daily identity checks, and production-router browser coverage.

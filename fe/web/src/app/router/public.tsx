@@ -15,7 +15,7 @@ import { DELETE_FAILURES, DELETE_TEXT, NotSentError, writeFailureText } from '..
 // transport and QueryClient; also the composition point for route-owned surfaces.
 
 import {
-  createRootRoute, createRoute, createRouter, useLocation, useRouterState, type AnyRoute,
+  createRootRoute, createRoute, createRouter, redirect, useLocation, useRouterState, type AnyRoute,
 } from '@tanstack/react-router';
 import { useCallback, useEffect, useMemo, useRef, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { TrackViewProvider, useTrackViewState } from './track-view-state.tsx';
@@ -42,11 +42,6 @@ import {
 } from '../../systems/cards/public.js';
 import { mintIdempotencyKey, useKeyedIntent, type KeyedRequest } from '../providers/idempotency-key.ts';
 import footerStyles from './composer-footer.module.css';
-import { TodayCalendarTasks } from './calendar.tsx';
-import { TodayPage } from '../../features/today/public.tsx';
-import { LAUNCHPAD_ENSURE_FAILURES, LAUNCHPAD_ENSURE_TEXT, REPORT_RESET_FAILURES, REPORT_RESET_TEXT, nameTodaySummaryConversation } from '../../../../core/domain/today.ts';
-import { TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT } from '../../../../core/domain/track.ts';
-import { TrackRow } from '../../features/track/row/public.tsx';
 import { TrackPage, type TrackInputNotification } from '../../features/track/page/public.tsx';
 import { CardGridOverlay, TrackStage } from '../../features/track/grid/public.tsx';
 import { AddCardMenu, NewCardForm, type NewCardValues } from '../../features/track/new-card/public.tsx';
@@ -90,23 +85,21 @@ import {
 import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
 import { createDirectoryLister, createTrackWorkspaceFilesPort } from '../providers/directory.ts';
 import { useMentionSearch } from '../providers/mentions.ts';
-import { DELETE_CARD_COPY, DELETE_TRACK_COPY, RESET_TODAY_REPORT_COPY } from '../../ui/confirm-dialog/copy.ts';
+import { DELETE_CARD_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { OperationFeedback, useDeleteConfirm, useOperationFeedback } from '../../ui/operation-feedback/public.tsx';
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
-import { PanelAction, PanelEmpty } from '../../ui/panel-card/public.tsx';
+import { PanelAction } from '../../ui/panel-card/public.tsx';
 import { useCommittedCallback } from '../../ui/state/committed-callback.ts';
 import { useState } from '../../ui/state/public.ts';
 import {
   modelCatalogQueryOptions, serverVersionOperation, runOperation,
-  prefetchAreaList, todayLaunchpadQueryOptions,
-  useTodayLaunchpadEnsureMutation, useTodayReportResetMutation,
+  prefetchAreaList,
+
   useTrackConversationMutations, useTrackMutations,
-  useWorkspace,
   trackBacklinksQueryOptions, trackConversationsQueryOptions, trackDetailQueryOptions,
-  trackOverlaysQueryOptions, trackTaskVerdictsQueryOptions,
+  trackTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
-import { workspaceActivityErrorText, workspaceReadErrorText } from '../providers/query-read-feedback.ts';
 import { NewTrackRoute } from './new-track-route.tsx';
 import { DailyTodayRoute } from './daily-planner.tsx';
 import { NewTrackDraftProvider } from './new-track-drafts.tsx';
@@ -194,7 +187,7 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
       const go = useGo();
       return <DailyTodayRoute transport={transport} unauthorized={unauthorized} selectedDate={day}
         onOpenTrack={(trackId) => go({ name: 'track', trackId })}
-        renderTrack={(detail, evidence) => <TrackRouteBody reportEvidence={evidence} key={detail.track.id} transport={transport} unauthorized={unauthorized}
+        renderTrack={(detail, evidence, sidebarHeader) => <TrackRouteBody sidebarHeader={sidebarHeader} reportEvidence={evidence} key={detail.track.id} transport={transport} unauthorized={unauthorized}
           track={toTrack(detail.track, trackActivityFrom(detail.track.id, detail.overlays))}
           canReopenTrack={detail.can_reopen} canCloseTrack={detail.can_close}
           cards={detail.cards} overlays={detail.overlays} cardRuntime={cards} recentFiles={recentFiles} />} />;
@@ -265,7 +258,8 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
   });
 
   const legacyTodayRoute = createRoute({ getParentRoute: () => rootRoute, path: '/today/legacy',
-    component: () => <TodayRoute transport={transport} unauthorized={unauthorized} /> });
+    validateSearch: (search: Record<string, unknown>) => ({ day: typeof search.day === 'string' ? search.day : undefined }),
+    beforeLoad: ({ search }) => redirect({ to: '/', search, replace: true }) });
   return rootRoute.addChildren([
     indexRoute, legacyTodayRoute, newTrackRoute, trackRoute, recipesRoute, settingsRoute,
     networkRoute, pluginsRoute, plannersRoute, appearanceRoute, aboutRoute,
@@ -807,283 +801,6 @@ function useConversationPane(
   };
 }
 
-function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
-  const compact = useCompactViewport();
-  const workspace = useWorkspace(transport, unauthorized);
-  const go = useGo();
-  const preferences = useUiPreferences();
-  const pinFeedback = useOperationFeedback();
-  const trackMutations = useTrackMutations(transport, unauthorized);
-  const deletion = useDeleteConfirm((trackId, signal) => {
-    const track = workspace.tracks.find((candidate) => candidate.id === trackId);
-    if (track === undefined) return Promise.resolve(); /* Gone from the workspace: already deleted, the intent holds. */
-    return trackMutations.remove(track.id, track.areaId, signal);
-  }, writeFailureText(DELETE_FAILURES, DELETE_TEXT));
-  /* The launchpad resolve is a READ. `POST /api/today/launchpad/ensure` submits a
-       harness start and waits on it, so it is never on the page-load path; `null`
-       is the empty state, and every failure is rendered as one. */
-  const launchpadQuery = useQuery(todayLaunchpadQueryOptions(transport, unauthorized));
-  const launchpad = launchpadQuery.data;
-  const launchpadTrackId = launchpad?.track_id ?? '';
-  const [preparedLaunchpadTrackId, setPreparedLaunchpadTrackId] = useState<string | null>(null);
-  const [conversationStartRequested, setConversationStartRequested] = useState(false);
-  const conversationTrackId = launchpadTrackId || preparedLaunchpadTrackId || '';
-  const launchpadEnsure = useTodayLaunchpadEnsureMutation(transport, unauthorized);
-  /* Reset, `POST /api/today/launchpad/report/reset`; destructive, so it goes
-       through `useDeleteConfirm`, keyed by the launchpad track id. */
-  const reportReset = useTodayReportResetMutation(transport, unauthorized);
-  const resetConfirm = useDeleteConfirm(() => reportReset.reset(), writeFailureText(REPORT_RESET_FAILURES, REPORT_RESET_TEXT));
-  const ensureFeedback = useOperationFeedback();
-  /* The launchpad track's own conversations, by the same rule the track route uses. */
-  const launchpadConversationsQuery = useQuery({
-    ...trackConversationsQueryOptions(transport, conversationTrackId, unauthorized),
-    /* No launchpad, no request: an ungated read would ask about a track named `''`. */
-    enabled: conversationTrackId !== '',
-  });
-  const launchpadConversationMutations = useTrackConversationMutations(
-    transport, conversationTrackId, unauthorized,
-  );
-  const launchpadRows = useMemo(
-    () => (launchpadConversationsQuery.data ?? [])
-      .map((row) => nameTodaySummaryConversation(conversationTrackId, row)),
-    [conversationTrackId, launchpadConversationsQuery.data],
-  );
-  /* The launchpad is in the system area, which `GET /api/areas` filters out, so its
-       overlays are read from the workspace-wide query directly (same key as
-       `useWorkspace`, so the cache is shared). */
-  const launchpadOverlaysQuery = useQuery({
-    ...trackOverlaysQueryOptions(transport, unauthorized),
-    enabled: conversationTrackId !== '',
-  });
-  const launchpadActivity = useMemo<TrackActivity>(
-    () => trackActivityFrom(conversationTrackId, launchpadOverlaysQuery.data ?? []),
-    [conversationTrackId, launchpadOverlaysQuery.data],
-  );
-  const chat = useConversationPanel(
-    transport,
-    unauthorized,
-    {
-      scopeId: conversationTrackId,
-      rows: launchpadRows,
-      cards: launchpadActivity.cards,
-      /* The launchpad is a real track and these rows are its own; the store checks
-             every row against this. */
-      rememberOn: conversationTrackId,
-      workspaceRoot: null,
-      derivedCardId: (idempotencyKey) => trackConversationCardId(conversationTrackId, idempotencyKey),
-      scopeOf: (conversationId) => {
-        const row = launchpadRows.find((candidate) => candidate.id === conversationId);
-        /* `id: row.trackId`, never `launchpadTrackId`: otherwise the `rememberOn`
-                   comparison compares a value with itself. */
-        /* Launchpad rows are assistant conversations, which run on Codex. */
-        return row === undefined ? null : {
-          id: row.trackId, provider: 'codex', title: row.trackTitle, cardId: row.id, cardTitle: row.title,
-          updatedAt: row.updatedAt, kind: row.kind, state: row.state,
-        };
-      },
-      create: launchpadConversationMutations.create,
-      refresh: launchpadConversationMutations.refresh,
-      /* Every launchpad row is an assistant conversation. */
-      planner: null,
-    },
-    /* Every row is on the launchpad, which is what this page is. */
-    { showTrack: false, resizable: false },
-  );
-
-  const startTodayConversation = () => {
-    if (launchpadEnsure.pending) return;
-    if (conversationTrackId !== '') {
-      /* `ensure` can materialise the launchpad and still fail its harness start; a
-               retry then must not ask `ensure` to create it again. */
-      ensureFeedback.clear();
-      chat.startConversation();
-      return;
-    }
-    void ensureFeedback.run(launchpadEnsure.ensure().then((prepared) => {
-      /* The ensure response owns the track id, so the draft can be scoped
-         without inventing one while the read-only resolve catches up. */
-      setPreparedLaunchpadTrackId(prepared.track_id);
-      setConversationStartRequested(true);
-    }), writeFailureText(LAUNCHPAD_ENSURE_FAILURES, LAUNCHPAD_ENSURE_TEXT));
-  };
-
-  useEffect(() => {
-    if (!conversationStartRequested || conversationTrackId === '') return;
-    chat.startConversation();
-    setConversationStartRequested(false);
-  }, [chat, conversationStartRequested, conversationTrackId]);
-
-  const conversationList = launchpadQuery.isPending || launchpadQuery.isError
-    /* The outer resolve is unknown or failed; neither means an empty list. */
-    ? null
-    : launchpadEnsure.pending
-      ? <PanelEmpty>Preparing Today assistant…</PanelEmpty>
-      : ensureFeedback.error !== null
-        ? <ErrorBox
-            message={ensureFeedback.error}
-            onRetry={startTodayConversation}
-          />
-        : conversationTrackId === ''
-          ? <PanelEmpty>Start a conversation with Today.</PanelEmpty>
-    : launchpadConversationsQuery.isPending
-      /* Unknown is not empty: do not flash a false empty state while the first
-         read is still on the wire. */
-      ? null
-      : launchpadConversationsQuery.isError
-        ? <ErrorBox
-            message={readErrorText(launchpadConversationsQuery.error, 'Conversations are unavailable.')}
-            onRetry={() => { void launchpadConversationsQuery.refetch(); }}
-          />
-        : chat.list;
-  /* Gated on the server's own answer: when `report_has_noninitial_content` is
-       false there is nothing to draw, so the page load stays at one request. */
-  const launchpadHasContent = launchpad?.report_has_noninitial_content === true;
-  const launchpadDetailQuery = useQuery({
-    ...trackDetailQueryOptions(transport, launchpadTrackId, unauthorized),
-    enabled: launchpadTrackId !== '' && launchpadHasContent,
-  });
-  const launchpadReport = useMemo(
-    () => readTrackReport(launchpadDetailQuery.data?.cards ?? []),
-    [launchpadDetailQuery.data],
-  );
-  /* Three states, not collapsed: `readTrackReport(...) === null` is true while in
-       flight, on a failed read, and on an undecodable payload. */
-  const launchpadDocument = launchpadDetailQuery.isError
-    ? (
-      <ErrorBox
-        message={readErrorText(launchpadDetailQuery.error, 'Today\'s progress is unavailable.')}
-        onRetry={() => { void launchpadDetailQuery.refetch(); }}
-      />
-    )
-    : launchpadDetailQuery.data === undefined
-      // In flight. Nothing, not a placeholder: a skeleton that flashes on every load
-      // is more motion than information.
-      ? null
-      : (
-        <ReportDocument
-          report={launchpadReport}
-          /* The detail has arrived and the server says the report has content, so what
-                       remains is a payload this build could not decode. */
-          empty={<ReportEmpty
-            lead="Today's report could not be read."
-            hints={[
-              'The server says it has been written, so this is a decoding problem, not an empty day.',
-              'The report\'s payload is probably newer than this build.',
-            ]}
-          />}
-        />
-      );
-  const workspaceError = workspaceReadErrorText(workspace);
-  const activityError = workspaceActivityErrorText(workspace);
-  if (workspace.areasLoading
-    || (workspace.tracks.length === 0 && [...workspace.tracksLoadingByArea.values()].some(Boolean))) return null;
-  return (
-    <>
-    {workspaceError !== null && <ErrorBox
-      message={workspaceError}
-      onRetry={() => {
-        workspace.retryAreas(); workspace.retryOverlays();
-        for (const area of workspace.areas) workspace.retryTracks(area.id);
-      }}
-    />}
-    {activityError !== null && <ErrorBox message={activityError} onRetry={workspace.retryOverlays} />}
-    <OperationFeedback feedback={deletion.feedback} />
-    <OperationFeedback feedback={resetConfirm.feedback} />
-    <OperationFeedback feedback={pinFeedback} />
-    <TodayPage
-      conversationPanel={compact ? undefined : chat.drawer}
-      isTrackUnread={(track) => preferences.isUnread('track', track.id, track.activityAt ?? 0)}
-      renderCalendarTasks={(date, onDateChange, trackCountOn) => <TodayCalendarTasks trackCountOn={trackCountOn} date={date} onDateChange={onDateChange} transport={transport} unauthorized={unauthorized} onSettings={() => go({ name: 'settings-plugins' })} onOpenTrack={(trackId) => go({ name: 'track', trackId })} />}
-      activityAvailable={workspaceError === null && workspace.overlaysError === null
-        && !workspace.areasLoading && !workspace.overlaysLoading
-        && ![...workspace.tracksLoadingByArea.values()].some(Boolean)}
-      tracks={workspace.tracks}
-      areas={workspace.areas}
-      // The row belongs to features/track and Today may not import a sibling domain,
-      // so the composition layer injects it.
-      renderTrackRow={(track, options) => (
-        <TrackRow
-          track={track}
-          variant={options.variant}
-          hourLabel={options.hourLabel}
-          areaName={options.areaName}
-          /* The same receipt key and comparison point as the rail, so a track reads as
-                       unread on Today exactly when it does there. */
-          unread={preferences.isUnread('track', track.id, track.activityAt ?? 0)}
-          onOpen={(trackId) => go({ name: 'track', trackId })}
-          onDelete={deletion.request}
-          actions={{
-            areaPinned: preferences.areaTrackPinned(track.areaId, track.id),
-            onSetPinned: (id, next) => { void pinFeedback.run(trackMutations.setPinned(id, track.areaId, next, Date.now()), writeFailureText(TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT.pin)); },
-            onSetAreaPinned: (id, next) => preferences.setAreaTrackPinned(track.areaId, id, next),
-            onMarkUnread: (id) => preferences.markUnread('track', id),
-          }}
-        />
-      )}
-      conversationList={conversationList}
-      /* With no launchpad yet the slot stays visible; its press calls `ensure`
-             explicitly, so the page load remains a pure read. */
-      conversationAction={launchpadQuery.isPending || launchpadQuery.isError
-        ? undefined
-        : launchpadEnsure.pending
-          ? undefined
-          : conversationTrackId === '' || ensureFeedback.error !== null
-            ? <PanelAction
-                label="Start a conversation with Today"
-                onClick={startTodayConversation}
-              ><Icon name="plus" size="sm" /></PanelAction>
-            : chat.action}
-      /* Undefined while the resolve is in flight, `null` when the server says there
-               is no launchpad yet. */
-      launchpad={launchpadQuery.isError ? undefined : launchpad}
-      launchpadDocument={launchpadDocument}
-      launchpadError={launchpadQuery.isError
-        ? <ErrorBox
-          message={readErrorText(launchpadQuery.error, 'Today\'s progress is unavailable.')}
-          onRetry={() => { void launchpadQuery.refetch(); }}
-        />
-        : undefined}
-      /* `TodayPage` decides whether to render it, on the same
-               `report_has_noninitial_content` branch as the empty state. */
-      documentAction={launchpadTrackId === '' ? undefined : (
-        <button
-          type="button"
-          data-nc-action="destructive"
-          disabled={resetConfirm.pending}
-          aria-busy={resetConfirm.pending}
-          onClick={() => resetConfirm.request(launchpadTrackId)}
-        >
-          {RESET_TODAY_REPORT_COPY.trigger}
-        </button>
-      )}
-    />
-    <ConfirmDialog
-      open={deletion.open}
-      title={DELETE_TRACK_COPY.title}
-      description={DELETE_TRACK_COPY.description}
-      confirmLabel={DELETE_TRACK_COPY.confirmLabel}
-      confirmBusyLabel="Deleting…"
-      confirmState={deletion.pending ? 'busy' : 'ready'}
-      onConfirm={deletion.confirm}
-      onCancel={deletion.cancel}
-    />
-    <ConfirmDialog
-      open={resetConfirm.open}
-      title={RESET_TODAY_REPORT_COPY.title}
-      description={RESET_TODAY_REPORT_COPY.description}
-      confirmLabel={RESET_TODAY_REPORT_COPY.confirmLabel}
-      confirmBusyLabel="Resetting…"
-      confirmState={resetConfirm.pending ? 'busy' : 'ready'}
-      onConfirm={resetConfirm.confirm}
-      onCancel={resetConfirm.cancel}
-    />
-    {compact && chat.drawer}
-    </>
-  );
-}
-
-/* Split in two: the hooks below need the track, which is only known after the
- * detail query resolves and three early returns have run. */
 function TrackRoute({ transport, unauthorized, cardRuntime, recentFiles }: {
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
@@ -1153,7 +870,7 @@ function trackNotifications(items: TrackActivity['attentionItems']): readonly Tr
 }
 
 function TrackRouteBody({
-  transport, unauthorized, track, canReopenTrack, canCloseTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence,
+  transport, unauthorized, track, canReopenTrack, canCloseTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence, sidebarHeader,
 }: {
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
@@ -1165,7 +882,9 @@ function TrackRouteBody({
   cardRuntime: CardRuntime;
   recentFiles: RecentFileHistory;
   reportEvidence?: ReactNode;
+  sidebarHeader?: ReactNode;
 }) {
+  const compact = useCompactViewport();
   useTrackViewState(track.id);
   // The same key and comparison point the rail uses: the overlay's completion
   // high-water mark, never the row's `updatedAt`.
@@ -1287,7 +1006,7 @@ function TrackRouteBody({
         answerAsk: (askId, answers) => trackMutations.answerAsk(track.id, askId, answers),
       },
     },
-    { showTrack: false },
+    { showTrack: false, resizable: sidebarHeader === undefined },
   );
   /* The fallback clear: a request for a card this track has, while the list that
    * would open it could not be read. Not "the read failed", which would also
@@ -1531,6 +1250,8 @@ function TrackRouteBody({
     <>
     <TrackStage>
     <TrackPage
+      sidebarHeader={sidebarHeader}
+      sidebarConversation={sidebarHeader === undefined || compact ? undefined : <div data-nc-conversation-drawer-host="" inert={sourceOpen}>{chat.drawer}</div>}
       mobilePanelObscured={chat.isOpen || sourceOpen}
       mobileHeaderActionsHost={mobileHeaderActionsHost}
       mobileHeaderTitleHost={mobileHeaderTitleHost}
@@ -1698,7 +1419,7 @@ function TrackRouteBody({
             underneath and so is `inert` for the duration. The wrapper is a static block
             so the drawer's absolute box still resolves against `.main`. */}
     <div data-nc-conversation-drawer-host="" inert={sourceOpen}>
-      {chat.drawer}
+      {(sidebarHeader === undefined || compact) && chat.drawer}
     </div>
     <ReportSourceDrawer
       transport={transport}

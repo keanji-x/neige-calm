@@ -37,13 +37,13 @@ function renderApp(path: string, write: (request: ApiRequest, world: World) => P
     if (request.method !== 'GET') { writes.push(request); return write(request, world); }
     reads.push(request.path);
     const track = { ...openTrack, closed_at: world.closed ? 2 : null };
+    if (request.path.startsWith('/api/today/daily')) return Promise.resolve(ok(null));
     if (request.path === '/api/areas') return Promise.resolve(ok([area]));
     if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok(world.gone ? [] : [track]));
     if (request.path === '/api/tracks/w1' && world.stale) return new Promise<ApiTransportResponse>(() => undefined);
     if (request.path === '/api/tracks/w1') return Promise.resolve(world.gone ? notFound : ok({
       track, can_reopen: world.closed, can_close: !world.closed, cards: [card], overlays: [],
     }));
-    if (request.path === '/api/today/launchpad') return Promise.resolve(ok(null));
     if (request.path === '/api/settings') return Promise.resolve(ok({}));
     if (request.path === '/api/version') return Promise.resolve(ok({ areaCreateIdempotency: true }));
     return Promise.resolve(ok([]));
@@ -78,7 +78,7 @@ afterEach(cleanup);
 describe('a lost answer shows the write’s fixed state, never transport text', () => {
   /* Name, route, press, the fixed state shown; the track starts closed only where the press is Reopen. */
   const surfaces: ReadonlyArray<readonly [string, string, () => Promise<void>, string]> = [
-    ['sidebar pin', '/today/legacy', async () => {
+    ['sidebar pin', '/', async () => {
       await userEvent.click(await within(await rail()).findByRole('button', { name: 'Pin Reliable' }));
     }, 'The pin change is unconfirmed.'],
     ['rename', '/track/w1', async () => {
@@ -88,8 +88,8 @@ describe('a lost answer shows the write’s fixed state, never transport text', 
     }, 'The rename is unconfirmed.'],
     ['close', '/track/w1', () => trackMenu('Close'), 'Closing the track is unconfirmed.'],
     ['reopen', '/track/w1', () => trackMenu('Reopen'), 'Reopening the track is unconfirmed.'],
-    ['track delete', '/today/legacy', deleteFromRail, 'The delete is unconfirmed.'],
-    ['area delete', '/today/legacy', async () => {
+    ['track delete', '/', deleteFromRail, 'The delete is unconfirmed.'],
+    ['area delete', '/', async () => {
       await areaMenu('Delete area');
       await userEvent.type(screen.getByRole('textbox', { name: 'Type One to confirm.' }), 'One');
       await userEvent.click(screen.getByRole('button', { name: 'Delete area' }));
@@ -98,26 +98,23 @@ describe('a lost answer shows the write’s fixed state, never transport text', 
       await userEvent.click(await screen.findByRole('button', { name: 'Delete card Build log' }));
       await userEvent.click(screen.getByRole('button', { name: 'Delete card' }));
     }, 'The delete is unconfirmed.'],
-    ['area edit', '/today/legacy', async () => {
+    ['area edit', '/', async () => {
       await areaMenu('Edit area');
       await userEvent.clear(screen.getByRole('textbox', { name: /^Name/ }));
       await userEvent.type(screen.getByRole('textbox', { name: /^Name/ }), 'Renamed');
       await userEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     }, 'The area update is unconfirmed.'],
     /* The creates keep S0's key handling; a lost answer is their fixed unconfirmed state. */
-    ['track create', '/today/legacy', async () => {
+    ['track create', '/', async () => {
       await userEvent.click(await screen.findByRole('button', { name: 'New track in One' }));
       await userEvent.type(await screen.findByLabelText('What this track should do'), 'Ship it');
       await userEvent.click(screen.getByRole('button', { name: 'Create track' }));
     }, 'The track creation is unconfirmed. Try again to check the same track.'],
-    ['area create', '/today/legacy', async () => {
+    ['area create', '/', async () => {
       await userEvent.click(await screen.findByRole('button', { name: 'New area' }));
       await userEvent.type(screen.getByRole('textbox', { name: /^Name/ }), 'Two');
       await userEvent.click(screen.getByRole('button', { name: 'Create area' }));
     }, 'Creation could not be confirmed. Try again to safely check the same area.'],
-    ['Today ensure', '/today/legacy', async () => {
-      await userEvent.click(await screen.findByRole('button', { name: 'Start a conversation with Today' }));
-    }, 'Starting Today assistant is unconfirmed.'],
   ];
 
   it.each(surfaces)('%s', async (name, path, press, fixed) => {
@@ -142,7 +139,7 @@ it('reads the track again after a patch whose answer was lost: it may have been 
 describe('a DELETE retried after a lost answer and answered 404 is done', () => {
   it('drops the track from the rail with no error', async () => {
     let attempt = 0;
-    const { writes } = renderApp('/today/legacy', (_request, world) => {
+    const { writes } = renderApp('/', (_request, world) => {
       /* The first delete landed but its answer was lost, and reads have not caught up yet; the retry meets the 404. */
       attempt += 1;
       if (attempt === 1) return lost();
@@ -150,7 +147,7 @@ describe('a DELETE retried after a lost answer and answered 404 is done', () => 
       return Promise.resolve(notFound);
     });
     await deleteFromRail();
-    expect(within(await screen.findByRole('alert')).getByText('The delete is unconfirmed.')).toBeTruthy();
+    expect(await screen.findByText('The delete is unconfirmed.')).toBeTruthy();
     await deleteFromRail();
     await waitFor(() => expect(within(screen.getByRole('navigation', { name: 'Workspace' })).queryByText('Reliable')).toBeNull());
     expect(screen.queryAllByRole('alert').map((alert) => alert.textContent)).toEqual([]);
@@ -171,7 +168,7 @@ describe('a DELETE retried after a lost answer and answered 404 is done', () => 
       await userEvent.click(screen.getByRole('button', { name: 'Delete card' }));
     };
     await deleteCard();
-    expect(within(await screen.findByRole('alert')).getByText('The delete is unconfirmed.')).toBeTruthy();
+    expect(await screen.findByText('The delete is unconfirmed.')).toBeTruthy();
     await deleteCard();
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Delete card Build log' })).toBeNull());
     expect(screen.queryAllByRole('alert').map((alert) => alert.textContent)).toEqual([]);

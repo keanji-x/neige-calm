@@ -26,3 +26,42 @@ it('reads a daily plan and yesterday’s report evidence in a real browser', asy
   expect(requests.every((request) => request.method === 'GET')).toBe(true);
   await page.screenshot({ path: './__screenshots__/daily-planner-desktop.png' });
 });
+
+
+it.each([1000, 768])('keeps the homepage calendar usable with the daily Planner open at height %s', async (height) => {
+  await page.viewport(1440, height);
+  const { requests } = renderDailyFixture();
+  await page.getByText('Prioritize the release.', { exact: false }).findElement();
+  const calendar = page.getByRole('region', { name: 'Calendar tasks' });
+  await expect.element(calendar).toBeVisible();
+  await page.getByRole('button', { name: 'Planner', exact: true }).click();
+  const drawer = page.getByRole('complementary', { name: 'Daily Planner conversation' });
+  await expect.element(drawer).toBeVisible();
+  await expect.element(calendar).toBeVisible();
+  expect(calendar.element().getBoundingClientRect().bottom).toBeLessThanOrEqual(drawer.element().getBoundingClientRect().top);
+  await calendar.getByRole('link', { name: /October 3, 2026/ }).click();
+  await expect.element(page.getByRole('heading', { name: 'Sat, Oct 3' })).toBeVisible();
+  await page.getByRole('radio', { name: 'Month', exact: true }).click();
+  await expect.element(calendar).toBeVisible();
+  expect(calendar.element().getBoundingClientRect().bottom).toBeLessThanOrEqual(drawer.element().getBoundingClientRect().top);
+  expect(page.getByRole('combobox', { name: 'Message', exact: true }).element().getBoundingClientRect().bottom).toBeLessThanOrEqual(height);
+  expect(drawer.element().getBoundingClientRect().bottom).toBeLessThanOrEqual(height);
+  expect(page.getByRole('button', { name: 'Send', exact: true }).element().getBoundingClientRect().bottom).toBeLessThanOrEqual(height);
+  await page.getByRole('combobox', { name: 'Message', exact: true }).fill('Plan my day');
+  await expect.element(page.getByRole('combobox', { name: 'Message', exact: true })).toHaveTextContent('Plan my day');
+  await page.screenshot({ path: `../../../../test-results/unified-today-${height}.png` });
+  await page.getByRole('button', { name: 'Close conversation' }).click();
+  await expect.element(calendar).toBeVisible();
+  expect(requests.some((request) => request.path.includes('/today/launchpad'))).toBe(false);
+});
+
+
+it('keeps one calendar and the daily report usable at phone width', async () => {
+  await page.viewport(390, 844);
+  renderDailyFixture();
+  await page.getByText('Prioritize the release.', { exact: false }).findElement();
+  const calendar = page.getByRole('region', { name: 'Calendar tasks' });
+  await expect.element(calendar).toBeVisible();
+  expect(calendar.all()).toHaveLength(1);
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
+});

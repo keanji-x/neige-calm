@@ -47,28 +47,10 @@ function renderRoute(path: string, reply: (request: ApiRequest) => ApiTransportR
 afterEach(() => { cleanup(); onlineManager.setOnline(true); vi.restoreAllMocks(); });
 
 describe('degraded workspace reads stay usable', () => {
-  it.each(['areas', 'tracks', 'activity'] as const)('does not claim empty activity while the %s read is unavailable', async (resource) => {
-    let broken = true;
-    renderRoute('/today/legacy', (request) => {
-      if (request.path === '/api/areas') return broken && resource === 'areas' ? fail('Areas temporarily unavailable') : ok(areas.slice(0, 1));
-      if (request.path === '/api/areas/c1/tracks') return broken && resource === 'tracks' ? fail('Tracks temporarily unavailable') : ok([track]);
-      if (request.path.startsWith('/api/overlays?')) return broken && resource === 'activity' ? fail('Activity temporarily unavailable') : ok([]);
-      return ok([]);
-    });
-    const main = await screen.findByRole('main');
-    await within(main).findByRole('alert');
-    expect(within(main).getByRole('banner').textContent).not.toMatch(/\d(?:waiting|working)/);
-    expect(within(main).queryByText('No track activity.')).toBeNull();
-    if (resource === 'activity') expect(within(main).getAllByText('Reliable').length).toBeGreaterThan(0);
-    broken = false;
-    await userEvent.click(within(main).getByRole('button', { name: 'Retry' }));
-    /* A `working`-phase track with no overlay is open but not working: the second number is the kernel's verdict. */
-    await waitFor(() => expect(within(main).getByRole('banner').textContent).toContain('0working'));
-  });
 
   it('mounts navigation while an offline startup Areas query is paused', async () => {
     onlineManager.setOnline(false);
-    renderRoute('/today/legacy', () => ok([]));
+    renderRoute('/', () => ok([]));
     const rail = await screen.findByRole('navigation', { name: 'Workspace' });
     expect(within(rail).getByRole('button', { name: 'Go to Today' })).toBeTruthy();
     expect(within(rail).queryByRole('button', { name: 'Create your first area' })).toBeNull();
@@ -78,7 +60,7 @@ describe('degraded workspace reads stay usable', () => {
     const media = window.matchMedia('');
     vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({ ...media, matches: query.includes('width'), media: query }));
     let broken = true;
-    renderRoute('/today/legacy', (request) => {
+    renderRoute('/', (request) => {
       if (request.path === '/api/areas') return broken && resource === 'areas' ? fail('Area storage unavailable') : ok(areas);
       if (request.path === '/api/areas/c1/tracks') return broken && resource === 'tracks' ? fail('Tracks temporarily unavailable') : ok([track]);
       return ok([]);
@@ -103,7 +85,7 @@ describe('degraded workspace reads stay usable', () => {
 
   it.each(['unavailable', 'malformed'] as const)('keeps navigation and retries an %s Areas startup read', async (failure) => {
     let broken = true;
-    renderRoute('/today/legacy', (request) => {
+    renderRoute('/', (request) => {
       if (request.path === '/api/areas') return broken
         ? failure === 'unavailable' ? fail('Area storage temporarily unavailable') : ok({})
         : ok(areas);
@@ -126,7 +108,7 @@ describe('degraded workspace reads stay usable', () => {
 
   /* A refusal is the server's answer to this read: its reason follows the fixed sentence in the indicator. */
   it('says a refused Areas read with its reason behind the indicator', async () => {
-    renderRoute('/today/legacy', (request) => {
+    renderRoute('/', (request) => {
       if (request.path === '/api/areas') return { status: 403, statusText: 'Forbidden', body: { error: 'owner login required', code: 'forbidden' } };
       return ok([]);
     });
@@ -137,7 +119,7 @@ describe('degraded workspace reads stay usable', () => {
 
   it('keeps cached Areas while a refresh fails and recovers locally', async () => {
     let broken = false;
-    const { client } = renderRoute('/today/legacy', (request) => {
+    const { client } = renderRoute('/', (request) => {
       if (request.path === '/api/areas') return broken ? fail('Area refresh unavailable') : ok(areas);
       return ok([]);
     });
@@ -160,7 +142,7 @@ describe('degraded workspace reads stay usable', () => {
 
   it('lets an offline Area draft be cancelled without creating it on reconnect', async () => {
     const creates: ApiRequest[] = [];
-    const { client } = renderRoute('/today/legacy', (request) => {
+    const { client } = renderRoute('/', (request) => {
       if (request.path === '/api/areas') {
         if (request.method === 'POST') { creates.push(request); return ok(areas[0]); }
         return ok(areas);
@@ -182,7 +164,7 @@ describe('degraded workspace reads stay usable', () => {
 
   it('keeps an offline Area draft editable and creates it once after an explicit online retry', async () => {
     const creates: ApiRequest[] = [];
-    const { client } = renderRoute('/today/legacy', (request) => {
+    const { client } = renderRoute('/', (request) => {
       if (request.path === '/api/version') return ok({ areaCreateIdempotency: true });
       if (request.path === '/api/areas') {
         if (request.method === 'POST') { creates.push(request); return ok(areas[0]); }
@@ -205,19 +187,6 @@ describe('degraded workspace reads stay usable', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New area' })).toBeNull());
     expect(creates).toHaveLength(1);
     expect(creates[0]?.body).toMatchObject({ name: 'Revised draft' });
-  });
-
-  it('warns on Today when activity is unavailable', async () => {
-    renderRoute('/today/legacy', (request) => {
-      if (request.path === '/api/areas') return ok(areas.slice(0, 1));
-      if (request.path === '/api/areas/c1/tracks') return ok([track]);
-      if (request.path.startsWith('/api/overlays?')) return fail('overlays down');
-      return ok([]);
-    });
-    const main = await screen.findByRole('main');
-    const alerts = await within(main).findAllByRole('alert');
-    expect(alerts.some((node) => node.textContent?.includes('Track activity is unavailable.'))).toBe(true);
-    expect(alerts.some((node) => node.textContent?.includes('overlays down'))).toBe(false);
   });
 
   it('finishes an offline conversation submission without waiting for delivery reconciliation', async () => {
@@ -346,20 +315,6 @@ describe('degraded workspace reads stay usable', () => {
     expect(creates).toHaveLength(0);
   });
 
-  it('keeps Today content when one area track read fails', async () => {
-    renderRoute('/today/legacy', (request) => {
-      if (request.path === '/api/areas') return ok(areas);
-      if (request.path === '/api/areas/c1/tracks') return ok([track]);
-      if (request.path === '/api/areas/c2/tracks') return fail('area two down');
-      return ok([]);
-    });
-    await waitFor(() => expect(screen.getAllByText('Reliable').length).toBeGreaterThan(1));
-    const alerts = within(screen.getByRole('main')).getAllByRole('alert');
-    expect(alerts.some((node) => node.textContent?.includes('Tracks are unavailable.'))).toBe(true);
-    expect(alerts.some((node) => node.textContent?.includes('area two down'))).toBe(false);
-    expect(within(screen.getByRole('main')).getByRole('heading', { level: 1 })).toBeTruthy();
-  });
-
   it('prefers track-detail overlays to the neutral workspace fallback', async () => {
     let resolveDetail: (response: ApiTransportResponse) => void = () => undefined;
     const detail = new Promise<ApiTransportResponse>((resolve) => { resolveDetail = resolve; });
@@ -403,22 +358,4 @@ describe('degraded workspace reads stay usable', () => {
     await screen.findByRole('button', { name: 'Rename track' });
     expect(screen.queryByRole('region', { name: 'Notifications' })).toBeNull();
   });
-});
-
-it('puts a dismissible delete failure before Today content', async () => {
-  renderRoute('/today/legacy', (request) => {
-    if (request.path === '/api/areas') return ok(areas.slice(0, 1));
-    if (request.path === '/api/areas/c1/tracks') return ok([track]);
-    if (request.path.startsWith('/api/overlays?')) return ok([]);
-    if (request.method === 'DELETE') return fail('track changed elsewhere');
-    return ok([]);
-  });
-  const rail = await screen.findByRole('complementary');
-  await userEvent.click(await within(rail).findByRole('button', { name: 'Delete Reliable' }));
-  await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
-  const alert = await screen.findByRole('alert');
-  const todayContent = within(screen.getByRole('main')).getByRole('heading', { level: 1 });
-  expect(alert.compareDocumentPosition(todayContent) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  await userEvent.click(within(alert).getByRole('button', { name: /^Dismiss/ }));
-  expect(screen.queryByRole('alert')).toBeNull();
 });

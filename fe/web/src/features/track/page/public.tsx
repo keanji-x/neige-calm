@@ -70,6 +70,10 @@ function notificationGist(text: string): string {
 
 export type TrackPageProps = Readonly<{
   track: Track;
+  /** App-composed content preceding the inventory; feature identities stay with the caller. */
+  sidebarHeader?: ReactNode;
+  /** Conversation hosted below the leading content on desktop; compact drawers stay with app. */
+  sidebarConversation?: ReactNode;
   cards: readonly CardWire[];
   /** The track's tasks, joined by `app/router` from the report's `task` blocks and the kernel's verdicts. */
   tasks: readonly ReportTaskRow[];
@@ -148,7 +152,7 @@ function taskInventorySummary(tasks: readonly ReportTaskRow[]): string | null {
 }
 
 export function TrackPage({
-  track, cards, tasks, openableCards, outlineItems = [], report, backlinks, conversationList, conversationAction,
+  sidebarHeader, sidebarConversation, track, cards, tasks, openableCards, outlineItems = [], report, backlinks, conversationList, conversationAction,
   onStartConversation, conversationOpen = false, mobilePanelObscured, inputNotifications = [], onReply, onDismiss, nowMs,
   cardsAction, recentFiles, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
@@ -446,7 +450,11 @@ export function TrackPage({
         aria-hidden={boardOpen ? true : undefined}
         inert={boardOpen}
       >
-        <div className={styles.doc}>{report}</div>
+        <div className={styles.doc}>{compactViewport && sidebarHeader}{report}</div>
+
+        <div className={sidebarHeader !== undefined && !compactViewport ? styles.sidebar : styles.sidebarAbsent}>
+          {!compactViewport && sidebarHeader !== undefined && <div className={styles.sidebarHeader}>{sidebarHeader}</div>}
+          <div className={sidebarHeader !== undefined && !compactViewport ? styles.sidebarContext : styles.sidebarAbsent}>
 
         {/* `data-nc-panel` is how `app/shell` hides this while the conversation
             drawer is open. */}
@@ -529,6 +537,9 @@ export function TrackPage({
           </PanelCard>
           </div>
         </aside>
+          {sidebarConversation && <div className={styles.sidebarConversation}>{sidebarConversation}</div>}
+          </div>
+        </div>
       </div>
       {board}
       </div>

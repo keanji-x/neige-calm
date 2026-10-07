@@ -2,39 +2,15 @@ import { render, cleanup } from '@testing-library/react';
 import { page, userEvent } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
 import '../../styles/entry.css';
-import shell from '../shell/shell.module.css';
-import { Drawer } from '../../ui/drawer/public.tsx';
-import { ChatComposer } from '../../features/chat/thread/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import { CalendarTasks, type CalendarEntriesView } from '../../features/calendar/public.tsx';
-import { TodayPage } from '../../features/today/public.tsx';
-import type { CalendarEdit, CalendarEntry, CalendarListedEntry } from '../../../../core/domain/calendar.ts';
+import type { CalendarEntry, CalendarListedEntry } from '../../../../core/domain/calendar.ts';
 
 afterEach(async () => {
   cleanup();
   await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 });
 const ready = (entries: CalendarListedEntry[]): CalendarEntriesView => ({ entries, loading: false, error: null });
-
-it('creates a task for the date selected inside the integrated sidebar week', async () => {
-  await page.viewport(1440, 1000);
-  const writes: CalendarEdit[] = [];
-  render(<TodayPage tracks={[]} areas={[]} activityAvailable renderTrackRow={() => null} nowMs={Date.parse('2026-10-02T09:00:00+08:00')}
-    renderCalendarTasks={(date, onDateChange) => <CalendarTasks date={date} onDateChange={onDateChange} onWindowChange={() => undefined}
-      timezone="Asia/Shanghai" month={ready([])} day={ready([])} enabled pending={false}
-      onRetry={() => undefined} onSettings={() => undefined} onOpenTrack={() => undefined} onSave={(write) => { writes.push(write); return Promise.resolve(); }} />} />);
-  await expect.element(page.getByRole('region', { name: 'Today calendar' }).getByRole('region', { name: 'Calendar tasks' })).toBeVisible();
-  await expect.element(page.getByRole('button', { name: 'Previous week' })).toBeVisible();
-  await page.getByRole('link', { name: /October 3, 2026/ }).click();
-  await page.getByRole('button', { name: 'New task', exact: true }).click();
-  await page.getByRole('textbox', { name: 'Task title' }).fill('Research options');
-  await page.getByRole('switch', { name: 'All day' }).click();
-  await page.getByRole('textbox', { name: 'Start', exact: true }).fill('14:00');
-  await page.getByRole('textbox', { name: 'End', exact: true }).fill('16:00');
-  await page.getByRole('button', { name: 'Create task', exact: true }).click();
-  await expect.poll(() => writes.length).toBe(1);
-  expect(writes[0].task.schedule).toEqual({ kind: 'timed', start: '2026-10-03T14:00:00+08:00', end: '2026-10-03T16:00:00+08:00', timezone: 'Asia/Shanghai' });
-});
 
 it('queries the visible month and selected day separately through the real adapter', async () => {
   await page.viewport(1440, 1000);
@@ -62,9 +38,11 @@ it('queries the visible month and selected day separately through the real adapt
     },
   };
   const unauthorized = createUnauthorizedChannel({ enqueue: (work) => work() });
-  render(<QueryClientProvider client={client}><TodayPage tracks={[]} areas={[]} activityAvailable renderTrackRow={() => null}
-    nowMs={Date.parse('2026-10-02T09:00:00+08:00')}
-    renderCalendarTasks={(date, onDateChange) => <TodayCalendarTasks date={date} onDateChange={onDateChange} transport={transport} unauthorized={unauthorized} onSettings={() => undefined} onOpenTrack={() => undefined} />} /></QueryClientProvider>);
+  function Example() {
+    const [date, setDate] = useState("2026-10-02");
+    return <TodayCalendarTasks date={date} onDateChange={setDate} transport={transport} unauthorized={unauthorized} onSettings={() => undefined} onOpenTrack={() => undefined} />;
+  }
+  render(<QueryClientProvider client={client}><Example /></QueryClientProvider>);
   await expect.poll(() => requests.some((request) => request.path.includes('from=2026-09-28&until=2026-10-05'))).toBe(true);
   await page.getByRole('radio', { name: 'Month', exact: true }).click();
   await page.getByRole('button', { name: 'Next month' }).click();
@@ -87,13 +65,6 @@ it('queries the visible month and selected day separately through the real adapt
   client.clear();
 });
 
-it('does not mount the calendar on compact viewports', async () => {
-  await page.viewport(390, 844);
-  render(<TodayPage tracks={[]} areas={[]} activityAvailable renderTrackRow={() => null}
-    renderCalendarTasks={() => <section aria-label="Calendar tasks">Desktop calendar</section>} />);
-  await expect.element(page.getByRole('region', { name: 'Calendar tasks' })).not.toBeInTheDocument();
-});
-
 it('shows counts in both views and keeps task titles and times in the list', async () => {
   await page.viewport(1440, 1000);
   const span = { start: '2026-10-02T14:00:00+08:00', end: '2026-10-02T15:00:00+08:00' };
@@ -114,29 +85,6 @@ it('shows counts in both views and keeps task titles and times in the list', asy
   await task.click();
   await expect.element(page.getByRole('textbox', { name: 'Task title' })).toHaveValue('Review approach');
 });
-it('selects the whole date badge and keeps Week compact while switching dates', async () => {
-  await page.viewport(1440, 1000);
-  render(<TodayPage tracks={[]} areas={[]} activityAvailable renderTrackRow={() => null} nowMs={Date.parse('2026-10-02T09:00:00+08:00')}
-    renderCalendarTasks={(date, onDateChange) => <CalendarTasks date={date} onDateChange={onDateChange} trackCountOn={() => 2}
-      timezone="Asia/Shanghai" month={ready([])} day={ready([])} enabled pending={false} onWindowChange={() => undefined}
-      onRetry={() => undefined} onSettings={() => undefined} onOpenTrack={() => undefined} onSave={() => Promise.resolve()} />} />);
-  const selected = page.getByRole('link', { name: /October 2, 2026, selected/ });
-  const badge = selected.element().querySelector('[class*="dateBadge"]')!;
-  expect(getComputedStyle(badge).backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
-  const calendar = page.getByRole('region', { name: 'Calendar tasks' }).element();
-  const grid = calendar.querySelector('[role="grid"]')!;
-  expect(grid.getBoundingClientRect().height).toBeLessThan(75);
-  await page.viewport(1024, 1000);
-  const narrowBadge = selected.element().querySelector('[class*="dateBadge"]')!.getBoundingClientRect();
-  expect(narrowBadge.width).toBeLessThanOrEqual(selected.element().closest('[role="columnheader"]')!.getBoundingClientRect().width);
-  await page.getByRole('radio', { name: 'Month', exact: true }).click();
-  const next = page.getByRole('link', { name: /October 3, 2026/ });
-  expect(getComputedStyle(next.element()).borderRadius).toBe('4px');
-  await next.click();
-  await expect.element(page.getByRole('link', { name: /October 3, 2026, selected/ })).toBeVisible();
-  await page.getByRole('radio', { name: 'Week', exact: true }).click();
-  await expect.element(page.getByRole('link', { name: /October 3, 2026, selected/ })).toBeVisible();
-});
 it('counts a task ending just after midnight on the next day', async () => {
   await page.viewport(1440, 1000);
   const span = { start: '2026-10-02T23:00:00+08:00', end: '2026-10-03T00:00:00.000001+08:00' };
@@ -150,36 +98,6 @@ it('counts a task ending just after midnight on the next day', async () => {
   const exact: CalendarListedEntry = { ...entry, task: { ...entry.task, schedule: { kind: 'timed', ...exactSpan, timezone: 'Asia/Shanghai' } }, occurrences: [exactSpan] };
   view.rerender(<CalendarTasks {...props} month={ready([exact])} day={ready([exact])} />);
   await expect.element(page.getByRole('link', { name: /October 3, 2026, 0 tasks/ })).toBeVisible();
-});
-it('bounds a six-week Today calendar without shrinking the separate Activity card', async () => {
-  await page.viewport(1440, 768);
-  const entries: CalendarListedEntry[] = Array.from({ length: 20 }, (_, index) => ({ id: `height-${index}`, version: 1, cancelled: false,
-    source_track_id: null, created_by: 'user', created_at: 1, updated_at: 1, occurrences: [],
-    task: { title: `Task ${index}`, description: '', schedule: { kind: 'all_day', date: '2026-08-31' } } }));
-  const { NEUTRAL_ACTIVITY } = await import('../../../../core/domain/track.ts');
-  const tracks = Array.from({ length: 20 }, (_, index) => ({ ...NEUTRAL_ACTIVITY, id: `height-track-${index}`, areaId: 'height-area', title: `Track ${index}`,
-    sort: index, cwd: '/tmp', agentCwd: '/tmp', pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1 }));
-  render(<div style={{ height: 'calc(100dvh - 56px)', display: 'flex' }}><TodayPage tracks={tracks} areas={[]} activityAvailable
-    renderTrackRow={(track) => <button type="button">{track.title}</button>} nowMs={Date.parse('2026-08-31T09:00:00+08:00')}
-    conversationList={<p>No conversations yet.</p>}
-    renderCalendarTasks={(date, onDateChange) => <CalendarTasks date={date} onDateChange={onDateChange}
-      timezone="Asia/Shanghai" month={ready(entries)} day={ready(entries)} enabled pending={false} onWindowChange={() => undefined}
-      onRetry={() => undefined} onSettings={() => undefined} onOpenTrack={() => undefined} onSave={() => Promise.resolve()} />} /></div>);
-  const taskList = page.getByRole('region', { name: 'Task list' });
-  const activity = page.getByRole('region', { name: 'Activity list' });
-  const weekHeight = taskList.element().getBoundingClientRect().height;
-  const activityHeight = activity.element().getBoundingClientRect().height;
-  await page.getByRole('radio', { name: 'Month', exact: true }).click();
-  const panel = page.getByRole('complementary').element();
-  expect(panel.getBoundingClientRect().bottom).toBeLessThanOrEqual(768);
-  expect(taskList.element().getBoundingClientRect().height).toBeLessThan(weekHeight);
-  expect(activity.element().getBoundingClientRect().height).toBe(activityHeight);
-  expect(activityHeight).toBeLessThanOrEqual(192);
-  expect(page.getByRole('region', { name: 'Today calendar' }).element().getBoundingClientRect().bottom).toBeLessThan(768);
-  for (const list of [taskList.element(), activity.element()]) {
-    expect(list.clientHeight).toBeGreaterThan(0);
-    expect(list.scrollHeight).toBeGreaterThan(list.clientHeight);
-  }
 });
 it('counts a weekly entry on each projected occurrence in Week and Month and shows it read-only', async () => {
   await page.viewport(1440, 1000);
@@ -204,112 +122,4 @@ it('counts a weekly entry on each projected occurrence in Week and Month and sho
   await expect.element(page.getByRole('dialog', { name: 'Weekly task' }).getByText('Repeats weekly — edit it through the Track.')).toBeVisible();
   await expect.element(page.getByRole('textbox', { name: 'Task title' })).not.toBeInTheDocument();
   await page.screenshot({ path: '../../../../test-results/calendar-weekly-details.png' });
-});
-
-for (const [taskCount, trackCount] of [[0, 0], [0, 20], [20, 0], [20, 20], [1, 1]]) {
-  it(`sizes Today lists to their content with ${taskCount} tasks and ${trackCount} tracks`, async () => {
-    await page.viewport(1440, 768);
-    const { NEUTRAL_ACTIVITY } = await import('../../../../core/domain/track.ts');
-    const entries: CalendarListedEntry[] = Array.from({ length: taskCount }, (_, index) => ({
-      id: `compact-task-${index}`, version: 1, cancelled: false, source_track_id: null,
-      created_by: 'user', created_at: 1, updated_at: 1, occurrences: [],
-      task: { title: `Task ${index}`, description: '', schedule: { kind: 'all_day', date: '2026-10-04' } },
-    }));
-    const tracks = Array.from({ length: trackCount }, (_, index) => ({ ...NEUTRAL_ACTIVITY,
-      id: `compact-track-${index}`, areaId: 'area', title: `Track ${index}`, sort: index,
-      cwd: '/tmp', agentCwd: '/tmp', pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1,
-    }));
-    render(<div style={{ height: 'calc(100dvh - 56px)', display: 'flex' }}>
-      <TodayPage tracks={tracks} areas={[]} activityAvailable nowMs={Date.parse('2026-10-04T09:00:00+08:00')}
-        renderTrackRow={(track) => <div style={{ height: 28 }}>{track.title}</div>}
-        conversationList={<p>No conversations yet.</p>}
-        renderCalendarTasks={(date, onDateChange) => <CalendarTasks date={date} onDateChange={onDateChange}
-          timezone="Asia/Shanghai" month={ready(entries)} day={ready(entries)} enabled pending={false}
-          onWindowChange={() => undefined} onRetry={() => undefined} onSettings={() => undefined}
-          onOpenTrack={() => undefined} onSave={() => Promise.resolve()} />} />
-    </div>);
-    for (const [name, count] of [['Task list', taskCount], ['Activity list', trackCount]] as const) {
-      const list = page.getByRole('region', { name }).element();
-      if (count <= 1) expect(list.getBoundingClientRect().height).toBeLessThan(60);
-      else {
-        expect(list.clientHeight).toBeGreaterThan(0);
-        expect(list.scrollHeight).toBeGreaterThan(list.clientHeight);
-      }
-    }
-    const conversations = page.getByRole('heading', { name: 'Conversations', exact: true }).element();
-    expect(conversations.getBoundingClientRect().bottom).toBeLessThan(768);
-    if (taskCount === 0 && trackCount === 0) {
-      const card = conversations.closest('aside')!.firstElementChild!;
-      expect(card.getBoundingClientRect().height).toBeLessThan(400);
-    }
-  });
-}
-
-it('shows recently updated Activity first in the integrated calendar sidebar', async () => {
-  await page.viewport(1440, 1000);
-  const { NEUTRAL_ACTIVITY } = await import('../../../../core/domain/track.ts');
-  const { TrackRow } = await import('../../features/track/row/public.tsx');
-  const now = Date.parse('2026-10-02T09:00:00+08:00');
-  const base = { ...NEUTRAL_ACTIVITY, areaId: 'work', sort: 1, cwd: '/tmp', agentCwd: '/tmp', pinnedAt: null, closedAt: null };
-  const tracks = [
-    { ...base, id: 'newer-created', title: 'Older update', createdAt: now - 1_000, updatedAt: now - 1_000 },
-    { ...base, id: 'older-created', title: 'Recent update', createdAt: now - 86_400_000, updatedAt: now },
-  ];
-  render(<TodayPage tracks={tracks} areas={[]} activityAvailable nowMs={now}
-    renderTrackRow={(track, options) => <TrackRow track={track} {...options} nowMs={now} onOpen={() => undefined} />}
-    renderCalendarTasks={(date, onDateChange) => <CalendarTasks date={date} onDateChange={onDateChange} onWindowChange={() => undefined}
-      timezone="Asia/Shanghai" month={ready([])} day={ready([])} enabled pending={false}
-      onRetry={() => undefined} onSettings={() => undefined} onOpenTrack={() => undefined} onSave={() => Promise.resolve()} />} />);
-  const activity = page.getByRole('region', { name: 'Activity list' });
-  await expect.element(activity.getByRole('button', { name: /^Track Recent update/ })).toBeVisible();
-  const titles = [...activity.element().querySelectorAll('button')].map((row) => row.getAttribute('aria-label'));
-  expect(titles).toEqual([expect.stringMatching(/^Track Recent update/), expect.stringMatching(/^Track Older update/)]);
-});
-
-
-it.each([1000, 768])('keeps the sidebar calendar and conversation usable at height %s', async (height) => {
-  await page.viewport(1440, height);
-  const sent: string[] = [];
-  function Example() {
-    const [open, setOpen] = useState(true);
-    return (<main className={shell.main} style={{ height: '100dvh' }}>
-    <TodayPage tracks={[]} areas={[]} activityAvailable renderTrackRow={() => null}
-      nowMs={Date.parse('2026-10-02T09:00:00+08:00')}
-      launchpad={{ track_id: 'today', report_has_noninitial_content: true }}
-      launchpadDocument={<p>Today report</p>}
-      conversationList={<p>Today conversations</p>}
-      conversationPanel={<Drawer stacked open={open} title="Today conversation" onClose={() => setOpen(false)}
-        footer={<ChatComposer onSend={(text) => { sent.push(text); }} />}><p>Conversation transcript</p></Drawer>}
-      renderCalendarTasks={(date, onDateChange) => <CalendarTasks date={date} onDateChange={onDateChange}
-        onWindowChange={() => undefined} timezone="Asia/Shanghai" month={ready([])} day={ready([])}
-        enabled pending={false} onRetry={() => undefined} onSettings={() => undefined}
-        onOpenTrack={() => undefined} onSave={() => Promise.resolve()} />} />
-  </main>);
-  }
-  render(<Example />);
-  const calendar = page.getByRole('region', { name: 'Calendar tasks' });
-  await expect.element(page.getByRole('complementary', { name: 'Today conversation' })).toBeVisible();
-  await expect.element(calendar).toBeVisible();
-  await calendar.getByRole('link', { name: /October 3, 2026/ }).click();
-  await expect.element(page.getByRole('heading', { name: 'Sat, Oct 3' })).toBeVisible();
-  const calendarBox = calendar.element().getBoundingClientRect();
-  const drawerBox = page.getByRole('complementary', { name: 'Today conversation' }).element().getBoundingClientRect();
-  expect(calendar.element().closest('aside')).not.toBeNull();
-  expect(calendarBox.bottom).toBeLessThanOrEqual(drawerBox.top);
-  await page.screenshot({ path: `../../../../test-results/today-calendar-conversation-${height}.png` });
-  await page.getByRole('radio', { name: 'Month', exact: true }).click();
-  await expect.element(calendar).toBeVisible();
-  await page.getByRole('textbox', { name: 'Message' }).fill('Plan my day');
-  await page.getByRole('button', { name: 'Send', exact: true }).click();
-  expect(sent).toEqual(['Plan my day']);
-  expect(calendar.element().getBoundingClientRect().bottom).toBeLessThanOrEqual(
-    page.getByRole('complementary', { name: 'Today conversation' }).element().getBoundingClientRect().top,
-  );
-  expect(page.getByRole('button', { name: 'Send', exact: true }).element().getBoundingClientRect().bottom).toBeLessThanOrEqual(height);
-  await page.screenshot({ path: `../../../../test-results/today-calendar-month-conversation-${height}.png` });
-  await page.getByRole('button', { name: 'Close conversation' }).click();
-  await expect.element(page.getByRole('complementary', { name: 'Today conversation' })).not.toBeInTheDocument();
-  await expect.element(page.getByRole('heading', { name: 'Conversations', exact: true })).toBeVisible();
-  await expect.element(calendar).toBeVisible();
-  await page.screenshot({ path: `../../../../test-results/today-calendar-sidebar-${height}.png` });
 });

@@ -612,6 +612,29 @@
     overflow: auto;
   }
 
+  .sidebarAbsent { display: contents; }
+
+  .sidebar {
+    position: sticky;
+    inset-block-start: calc(var(--header-band) + var(--header-h) + var(--space-8));
+    align-self: start;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    min-inline-size: 0;
+    block-size: calc(100dvh - var(--header-band) - var(--header-h) - var(--space-8) * 2);
+    min-block-size: 0;
+  }
+
+  .sidebarHeader { display: flex; flex-direction: column; flex: 0 1 auto; min-block-size: 0; max-block-size: 60%; }
+  .sidebarHeader > div { flex: 1 1 auto; block-size: auto; min-block-size: 0; }
+  .sidebarContext { position: relative; flex: 0 1 auto; min-block-size: 0; overflow: auto; }
+  .sidebarContext:has([data-nc-drawer]) { flex: 1 1 auto; min-block-size: calc(var(--row-h) * 6); overflow: hidden; }
+  .sidebarContext > .panel { position: static; max-block-size: 100%; }
+  .sidebarConversation { position: absolute; inset: 0; }
+  .sidebarConversation:not(:has([data-nc-drawer])) { display: none; }
+  .sidebar .sidebarConversation [data-nc-drawer-stack] { position: relative; inset: auto; inline-size: 100%; max-inline-size: none; block-size: 100%; }
+
   /* Uppercase plus tracking standing in for a size the panel cannot spend. */
   .sectionLabel {
     margin-block-start: var(--space-8);

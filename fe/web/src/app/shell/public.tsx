@@ -146,12 +146,6 @@ export function AppShell({
   const areas = visibleAreas(workspace.areas);
   const activeAreaId = routeAreaId ?? workspace.tracks.find((track) => track.id === routeTrackId)?.areaId;
   const activeArea = areas.find((area) => area.id === activeAreaId) ?? areas[0];
-  const homeAreaId = areas[0]?.id;
-  useEffect(() => {
-    if (narrowRail && currentPath === '/' && homeAreaId !== undefined) {
-      go({ name: 'new-track', areaId: homeAreaId }, { replace: true });
-    }
-  }, [narrowRail, currentPath, homeAreaId, go]);
   const mobileNavigationRef = useRef<HTMLDivElement | null>(null);
   const railCollapsed = manualRailCollapsed ?? narrowRail;
 
