@@ -170,17 +170,7 @@ impl PlannerBackend {
                     .turn_start(thread_id, items, selection, Some(client_id))
                     .await
                     // Codex answering with a refusal is the one failure known to be its answer.
-                    .map_err(|error| match error {
-                        CalmError::CodexRefused(_) => TurnStartFailure::Refused {
-                            error,
-                            reader: "codex refused to start a turn for this conversation, so \
-                                     your message has not been sent. If you changed the model \
-                                     recently, it may not be one this account can run — try \
-                                     another."
-                                .into(),
-                        },
-                        error => TurnStartFailure::Transient(error),
-                    })
+                    .map_err(codex_turn_start_failure)
             }
             Arm::Claude(session) => {
                 let truncation = match rewind {
@@ -393,6 +383,33 @@ impl PlannerEvents {
 
 /// A rewind recorded for the other provider: the runtime's provider never changes, so this is a
 /// corrupt snapshot that no retry clears.
+
+fn codex_turn_start_failure(error: CalmError) -> TurnStartFailure {
+    match error {
+        CalmError::CodexRefused(message) => {
+            if let Some(failure) = provider::codex::AuthenticationFailure::from_message(&message) {
+                TurnStartFailure::Refused {
+                    error: CalmError::CodexRefused(failure.code().into()),
+                    reader: format!(
+                        "{} Your message is still queued.",
+                        crate::codex_authentication::SIGN_IN_REQUIRED
+                    ),
+                }
+            } else {
+                TurnStartFailure::Refused {
+                    error: CalmError::CodexRefused(message),
+                    reader: "codex refused to start a turn for this conversation, so \
+                             your message has not been sent. If you changed the model \
+                             recently, it may not be one this account can run — try \
+                             another."
+                        .into(),
+                }
+            }
+        }
+        error => TurnStartFailure::Transient(error),
+    }
+}
+
 fn mismatched_rewind() -> TurnStartFailure {
     TurnStartFailure::Refused {
         error: CalmError::Internal("a pending rewind names another provider".into()),

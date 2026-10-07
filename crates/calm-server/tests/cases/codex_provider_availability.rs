@@ -139,3 +139,164 @@ async fn an_undecodable_account_read_is_unavailable_never_a_guess() {
         "{codex}"
     );
 }
+
+/// An account is still present after its refresh credential stops working (#2314).
+#[tokio::test]
+async fn a_refresh_token_reuse_refusal_overrides_cached_account_presence() {
+    let boot = boot(true, |sock| {
+        std::fs::write(
+            sock.with_extension("account-read"),
+            json!({
+                "account": {"type":"chatgpt"}, "requiresOpenaiAuth":true
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            sock.with_extension("turn-start-refusal"),
+            "Your access token could not be refreshed because your refresh token was already used. \
+             Sign in again. fixture-private-value",
+        )
+        .unwrap();
+    })
+    .await;
+    assert_eq!(codex_entry(&boot).await["status"], "ready");
+    let failure = boot
+        .state
+        .shared_codex_appserver
+        .turn_start(
+            "auth-regression-thread",
+            vec![calm_server::codex_appserver::InputItem::text(
+                "auth regression",
+            )],
+            &calm_server::planner_model::TurnModelSelection::inherit(),
+            None,
+        )
+        .await;
+    assert!(
+        failure.is_err(),
+        "positive control: the native provider refused the request"
+    );
+    assert!(
+        boot.methods_seen()
+            .iter()
+            .any(|method| method == "turn/start")
+    );
+    let status = codex_entry(&boot).await;
+    assert_eq!(
+        status["status"], "unavailable",
+        "cached account presence must not hide a known authentication failure"
+    );
+    let reason = status["reason"].as_str().expect("an actionable reason");
+    assert!(reason.to_lowercase().contains("sign in"), "{reason}");
+    assert!(
+        !reason.contains("fixture-private-value"),
+        "native sensitive detail must not reach the owner"
+    );
+    assert_eq!(
+        boot.methods_seen()
+            .iter()
+            .filter(|method| method.as_str() == "turn/start")
+            .count(),
+        1,
+        "status reads do not replay model work"
+    );
+}
+
+#[tokio::test]
+async fn authentication_failure_survives_recheck_and_clears_only_on_confirmed_login() {
+    let boot =
+        boot_with_account(json!({"account":{"type":"chatgpt"},"requiresOpenaiAuth":true})).await;
+    assert_eq!(codex_entry(&boot).await["status"], "ready");
+    let daemon = &boot.state.shared_codex_appserver;
+    daemon.emit_notification_for_test(calm_server::codex_appserver::Notification::Other {
+        method:"error".into(), params:json!({"error":{"message":"Your access token could not be refreshed because your refresh token has expired. private-fixture-detail"}}),
+    });
+    assert_eq!(codex_entry(&boot).await["status"], "unavailable");
+    for params in [
+        json!({"success":false,"error":"failed"}),
+        json!({"success":true}),
+        json!({"success":"true","error":null}),
+    ] {
+        daemon.emit_notification_for_test(calm_server::codex_appserver::Notification::Other {
+            method: "account/login/completed".into(),
+            params,
+        });
+        assert_eq!(codex_entry(&boot).await["status"], "unavailable");
+    }
+    daemon.emit_notification_for_test(calm_server::codex_appserver::Notification::Other {
+        method: "account/updated".into(),
+        params: json!({"authMode":"chatgpt"}),
+    });
+    let request = Request::builder()
+        .uri("/api/agent-providers?refresh=true")
+        .header("x-calm-actor", "user")
+        .body(Body::empty())
+        .unwrap();
+    let response = boot.app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap();
+    let codex = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["provider"] == "codex")
+        .unwrap();
+    assert_eq!(
+        codex["status"], "unavailable",
+        "account presence and ordinary rechecks are not repair proof"
+    );
+    assert!(
+        !codex["reason"]
+            .as_str()
+            .unwrap()
+            .contains("private-fixture-detail")
+    );
+    daemon.emit_notification_for_test(calm_server::codex_appserver::Notification::Other {
+        method: "account/login/completed".into(),
+        params: json!({"loginId":"fixture-login","success":true,"error":null}),
+    });
+    assert_eq!(codex_entry(&boot).await["status"], "ready");
+    daemon.emit_notification_for_test(calm_server::codex_appserver::Notification::TurnCompleted {
+        thread_id:"fixture-thread".into(),turn:json!({"id":"fixture-turn","status":"failed","error":{"message":"Your access token could not be refreshed because your refresh token was revoked."}}),
+    });
+    assert_eq!(
+        codex_entry(&boot).await["status"],
+        "unavailable",
+        "a later episode must remain visible"
+    );
+}
+
+#[tokio::test]
+async fn authentication_refusal_explains_sign_in_instead_of_changing_the_model() {
+    let boot = boot(true, |sock| {
+        std::fs::write(
+            sock.with_extension("turn-start-refusal"),
+            "Your access token could not be refreshed because your refresh token was revoked. private-fixture-detail",
+        )
+        .unwrap();
+    })
+    .await;
+    let backend: calm_server::harness::backend::PlannerBackend =
+        boot.state.shared_codex_appserver.clone().into();
+    let failure = backend
+        .turn_start(
+            "auth-reader-thread",
+            vec![calm_server::codex_appserver::InputItem::text(
+                "auth regression",
+            )],
+            &calm_server::planner_model::TurnModelSelection::inherit(),
+            "fixture-client-id",
+            None,
+        )
+        .await
+        .expect_err("a native authentication refusal");
+    let calm_server::harness::backend::TurnStartFailure::Refused { error, reader } = failure else {
+        panic!("a definitive authentication refusal must not be transient");
+    };
+    assert!(reader.to_lowercase().contains("sign in"));
+    assert!(!reader.contains("try another") && !reader.contains("private-fixture-detail"));
+    assert!(reader.contains("Your message is still queued"));
+    assert!(!error.to_string().contains("private-fixture-detail"));
+}

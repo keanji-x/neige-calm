@@ -1007,3 +1007,5 @@ mod boot_reconcile_retry_tests {
 
 /// Git candidate binding (#1727 S4): delivery rows, candidate rows and the read-surface derivations.
 pub(crate) mod git_candidate;
+
+mod codex_authentication;

@@ -6,7 +6,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
 
+mod authentication;
 pub mod error;
+pub use authentication::AuthenticationFailure;
 mod types;
 pub use types::*;
 mod client_transport;

@@ -688,6 +688,7 @@ pub struct SharedCodexAppServer {
     /// cleanup. A cooperative daemon pays its actual exit time, never the full grace.
     stop_grace: Duration,
     notifications: NotificationFanout,
+    authentication: Arc<crate::codex_authentication::CodexAuthentication>,
     pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
     kernel_initiated_threads: Arc<Mutex<HashSet<String>>>,
     /// Bounded tombstones for threads a committed delete forgot; see [`ForgottenThreads`].
@@ -987,6 +988,7 @@ impl SharedCodexAppServer {
             restart_backoff: BackoffState::new(Duration::from_millis(250), Duration::from_secs(10)),
             start_timeout: Duration::from_secs(120),
             stop_grace: Duration::from_secs(60),
+            authentication: Arc::new(crate::codex_authentication::CodexAuthentication::default()),
             notifications: tx,
             pending_codex_threads_handle,
             kernel_initiated_threads: Arc::new(Mutex::new(HashSet::new())),
@@ -1049,6 +1051,7 @@ impl SharedCodexAppServer {
             ),
             start_timeout: Duration::from_secs(cfg.shared_codex_appserver_start_timeout_secs),
             stop_grace: Duration::from_secs(cfg.shared_codex_appserver_stop_grace_secs),
+            authentication: Arc::new(crate::codex_authentication::CodexAuthentication::default()),
             notifications: tx,
             pending_codex_threads_handle,
             kernel_initiated_threads: Arc::new(Mutex::new(HashSet::new())),
@@ -1402,7 +1405,13 @@ impl SharedCodexAppServer {
         let client = self.connected_client().await?;
         let turn = client
             .turn_start_with_client_id(thread_id, items, selection, client_user_message_id)
-            .await?;
+            .await
+            .map_err(|error| {
+                if let provider::codex::error::Error::Refused(message) = &error {
+                    self.authentication.record(message);
+                }
+                error
+            })?;
         let turn_id = turn
             .turn_id()
             .map(ToOwned::to_owned)
@@ -1815,6 +1824,10 @@ impl SharedCodexAppServer {
             return Ok(());
         };
         self.interrupt_active_turn(&thread_id).await
+    }
+
+    pub fn authentication_failure(&self) -> Option<provider::codex::AuthenticationFailure> {
+        self.authentication.problem()
     }
 
     pub fn subscribe_notifications(&self) -> broadcast::Receiver<Notification> {
@@ -3380,6 +3393,7 @@ impl SharedCodexAppServer {
         self.daemon_connected_at_ms
             .store(now_ms(), Ordering::SeqCst);
         let tx = self.notifications.clone();
+        let authentication = self.authentication.clone();
         // The notification task must not keep its own client alive: a strong Arc here leaves the
         // old connection open forever. Upgrade only for the late-turn interrupt that needs an RPC.
         let client = Arc::downgrade(&client);
@@ -3393,6 +3407,7 @@ impl SharedCodexAppServer {
         let kernel_thread_start_serial = self.kernel_thread_start_serial.clone();
         tokio::spawn(async move {
             while let Some(notification) = notifications.recv().await {
+                authentication.observe(&notification);
                 if let Some(thread_id) = thread_started_id(&notification) {
                     match handle_thread_started_notification(
                         pending.as_ref(),
@@ -3929,6 +3944,7 @@ impl SharedCodexAppServer {
 
     #[cfg(feature = "fixtures")]
     pub fn emit_notification_for_test(&self, notification: Notification) {
+        self.authentication.observe(&notification);
         let _ = self.notifications.send(notification);
     }
 

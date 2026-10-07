@@ -202,10 +202,19 @@ impl ProviderAvailabilityCache {
                     .codex
                     .get(freshness, |_previous| check_codex(codex))
                     .await;
+                let authentication_failed = codex.authentication_failure().is_some();
                 Checked {
                     provider: AgentProvider::Codex,
-                    verdict: stamped.outcome,
-                    checked_at_ms: stamped.checked_at_ms,
+                    verdict: if authentication_failed {
+                        Verdict::Unavailable(crate::codex_authentication::SIGN_IN_REQUIRED.into())
+                    } else {
+                        stamped.outcome
+                    },
+                    checked_at_ms: if authentication_failed {
+                        crate::model::now_ms()
+                    } else {
+                        stamped.checked_at_ms
+                    },
                 }
             }
             AgentProvider::Claude => self.claude(freshness, claude).await.checked(),

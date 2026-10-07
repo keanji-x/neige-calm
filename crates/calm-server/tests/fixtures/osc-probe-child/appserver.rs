@@ -473,6 +473,13 @@ async fn serve_conn(
                 .await?;
             }
             "turn/start" => {
+                // Script a native refusal verbatim; no failure policy lives in this fixture.
+                if let Ok(message) =
+                    std::fs::read_to_string(reads.sock.with_extension("turn-start-refusal"))
+                {
+                    send_error(&mut write, &id, -32000, message.trim()).await?;
+                    continue;
+                }
                 if env_flag("FAKE_CODEX_FAIL_TURN_START") {
                     send_error(&mut write, &id, -32000, "forced turn/start failure").await?;
                     continue;
