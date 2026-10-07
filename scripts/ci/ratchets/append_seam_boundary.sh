@@ -43,6 +43,8 @@ EXPECTED_TX_CENSUS="4 authorize_with_caches|tx
 
 # S1 baseline: `<path>:<count-of-MATCHING-LINES>` (`grep -c` counts lines), sorted by path. Occurrences outside `events.rs` are prose or `#[cfg(test)]`, checked by hand when pinned.
 # A new line or a changed count is a claim that somebody writes the events table outside the seam; adding one has to be argued in the same PR by editing this list.
+# Retired ratify fixtures seed raw historical rows because the current Event contract rejects them.
+# ws_replay adds one insert site; events_since_bound adds historical and current-ask insert sites.
 EXPECTED_INSERTS="${APPEND_SEAM_INSERT_BASELINE-crates/calm-server/src/activity_window.rs:1
 crates/calm-server/src/task_context.rs:1
 crates/calm-server/tests/cases/briefing_in_mint_tx.rs:1
@@ -50,12 +52,12 @@ crates/calm-server/tests/cases/events_pruner.rs:4
 crates/calm-server/tests/cases/mcp_track_report.rs:1
 crates/calm-server/tests/cases/migration_0094_worker_session_id.rs:1
 crates/calm-server/tests/cases/sync_engine.rs:3
-crates/calm-server/tests/cases/ws_replay.rs:1
+crates/calm-server/tests/cases/ws_replay.rs:2
 crates/calm-truth/src/db/sqlite/events.rs:1
 crates/calm-truth/src/db/sqlite/proposal_withdraw_upgrade_tests.rs:1
 crates/calm-truth/src/db/sqlite/track_closed_at_migration_tests.rs:1
 crates/calm-truth/src/events_prune.rs:1
-crates/calm-truth/tests/events_since_bound.rs:6
+crates/calm-truth/tests/events_since_bound.rs:8
 crates/calm-truth/tests/file_delivery_migration.rs:1}"
 
 failures=0
