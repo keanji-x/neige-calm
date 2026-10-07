@@ -1,6 +1,6 @@
 //! Owned-process identity helpers shared by app-server supervision paths.
 
-pub use plugin_runtime::proc_identity::{
+pub use plugin::proc_identity::{
     ProcStatFields, parse_proc_stat_fields, parse_starttime_from_stat, read_proc_start_time,
 };
 
@@ -39,7 +39,7 @@ pub fn verify_owned_pid(pid: i32, expected_start_time: u64, expected_boot_id: &s
 }
 
 #[cfg(unix)]
-pub use plugin_runtime::child_process::signal_process_group;
+pub use plugin::child_process::signal_process_group;
 
 /// One member of process group `pgid` with the identity stamp captured AT scan time. No `boot_id`: scan and signal happen within one live process, so `(pid, start_time)` is a complete same-boot identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

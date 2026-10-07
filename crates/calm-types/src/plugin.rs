@@ -7,3 +7,8 @@ pub const KERNEL_OVERLAY_PLUGIN_ID: &str = "kernel";
 pub fn read_only_annotations() -> serde_json::Value {
     serde_json::json!({ "readOnlyHint": true })
 }
+
+/// Write tools whose declared roles are enforced by the kernel registry.
+pub fn role_gated_write_annotations() -> serde_json::Value {
+    serde_json::json!({"readOnlyHint":false,"destructiveHint":false,"openWorldHint":false})
+}

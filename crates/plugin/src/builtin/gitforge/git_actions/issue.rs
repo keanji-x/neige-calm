@@ -1,6 +1,6 @@
 //! Issue discussion writes and reads, lowered into kernel-owned operations.
 use super::{forge_payload, optional_attempt, required_string, required_u64};
-use crate::plugin_host::forge_caller::ForgeCallerScope;
+use crate::forge_caller::ForgeCallerScope;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 

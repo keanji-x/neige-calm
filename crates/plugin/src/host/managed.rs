@@ -9,7 +9,6 @@ use serde_json::{Map, Value, json};
 use utoipa::ToSchema;
 
 use super::connector::SECRETS_FILENAME;
-use super::version::KERNEL_VERSION;
 
 /// Stamped into every kernel-written plugin tree.
 pub const MARKER_FILENAME: &str = ".neige-managed.json";
@@ -91,13 +90,16 @@ impl ConnectorInstall {
     }
 
     /// Same validation for unsaved Check and durable installation.
-    pub fn prepare(&self) -> Result<(super::Manifest, BTreeMap<String, String>), String> {
+    pub fn prepare(
+        &self,
+        kernel_version: &semver::Version,
+    ) -> Result<(super::Manifest, BTreeMap<String, String>), String> {
         super::http_headers::HttpHeaders::parse(self.headers.clone())?;
         if let Some(key) = self.credential() {
             super::HttpCredential::parse(key)?;
         }
-        let manifest =
-            super::Manifest::parse(&self.manifest_json().to_string()).map_err(|e| e.to_string())?;
+        let manifest = super::Manifest::parse(&self.manifest_json(kernel_version).to_string())
+            .map_err(|e| e.to_string())?;
         let mut secrets = BTreeMap::new();
         if let Some(key) = self.credential() {
             secrets.insert(API_KEY_SECRET_NAME.to_string(), key.to_string());
@@ -109,7 +111,7 @@ impl ConnectorInstall {
     }
 
     /// The manifest document this connector describes; validated by `Manifest::parse` on the way back in.
-    pub fn manifest_json(&self) -> Value {
+    pub fn manifest_json(&self, kernel_version: &semver::Version) -> Value {
         let mut mcp_http = Map::new();
         mcp_http.insert("url".into(), json!(self.url));
         if !self.headers.is_empty() {
@@ -147,7 +149,7 @@ impl ConnectorInstall {
         // An older kernel would drop `kind: "mcp-http"` from the registry on boot; stamping the running version makes that a stated refusal.
         doc.insert(
             "min_kernel_version".into(),
-            json!(KERNEL_VERSION.to_string()),
+            json!(kernel_version.to_string()),
         );
         doc.insert("display_name".into(), json!(self.display_name));
         if let Some(desc) = &self.description {
@@ -192,6 +194,7 @@ pub fn write_connector_tree(
     dir: &Path,
     manifest_text: &str,
     secrets: &BTreeMap<String, String>,
+    kernel_version: &semver::Version,
 ) -> Result<(), WriteError> {
     if dir.exists() {
         if !is_managed_tree(dir) {
@@ -202,7 +205,7 @@ pub fn write_connector_tree(
             .map_err(|e| WriteError::Io(format!("removing {}: {e}", dir.display())))?;
     }
     // The marker is written last, so a half-written tree is not `is_managed_tree`; remove it here or its `secrets.json` is stranded.
-    let built = build_tree(dir, manifest_text, secrets);
+    let built = build_tree(dir, manifest_text, secrets, kernel_version);
     if built.is_err() {
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -213,6 +216,7 @@ fn build_tree(
     dir: &Path,
     manifest_text: &str,
     secrets: &BTreeMap<String, String>,
+    kernel_version: &semver::Version,
 ) -> Result<(), WriteError> {
     std::fs::create_dir_all(dir)
         .map_err(|e| WriteError::Io(format!("creating {}: {e}", dir.display())))?;
@@ -230,7 +234,7 @@ fn build_tree(
     let marker = json!({
         "managed_by": "neige-kernel",
         "kind": "mcp-http",
-        "kernel_version": KERNEL_VERSION.to_string(),
+        "kernel_version": kernel_version.to_string(),
     });
     let body = serde_json::to_vec_pretty(&marker)
         .map_err(|e| WriteError::Io(format!("serializing {MARKER_FILENAME}: {e}")))?;
@@ -288,7 +292,9 @@ mod tests {
 
     #[test]
     fn a_synthesized_manifest_never_carries_the_credential() {
-        let doc = connector(Some("sk-credential")).manifest_json().to_string();
+        let doc = connector(Some("sk-credential"))
+            .manifest_json(&semver::Version::new(9, 8, 7))
+            .to_string();
         assert!(
             !doc.contains("sk-credential"),
             "manifest must not hold the key: {doc}"
@@ -299,7 +305,7 @@ mod tests {
 
     #[test]
     fn a_keyless_connector_claims_no_secret_and_no_placement() {
-        let doc = connector(None).manifest_json();
+        let doc = connector(None).manifest_json(&semver::Version::new(9, 8, 7));
         let block = &doc["mcp_http"];
         assert!(block.get("api_key_secret").is_none(), "{doc}");
         assert!(block.get("api_key_in").is_none(), "{doc}");
@@ -319,6 +325,7 @@ mod tests {
             &dir,
             "{}",
             &BTreeMap::from([(API_KEY_SECRET_NAME.to_string(), "sk-credential".to_string())]),
+            &semver::Version::new(9, 8, 7),
         )
         .unwrap();
 
@@ -349,6 +356,7 @@ mod tests {
             &dir,
             "{}",
             &BTreeMap::from([(API_KEY_SECRET_NAME.to_string(), "sk-credential".to_string())]),
+            &semver::Version::new(9, 8, 7),
         )
         .unwrap_err();
         assert!(matches!(err, WriteError::Occupied(_)), "{err}");
@@ -366,9 +374,10 @@ mod tests {
             &dir,
             "{}",
             &BTreeMap::from([(API_KEY_SECRET_NAME.to_string(), "sk-credential".to_string())]),
+            &semver::Version::new(9, 8, 7),
         )
         .unwrap();
-        write_connector_tree(&dir, "{}", &BTreeMap::new()).unwrap();
+        write_connector_tree(&dir, "{}", &BTreeMap::new(), &semver::Version::new(9, 8, 7)).unwrap();
         assert!(!dir.join(SECRETS_FILENAME).exists());
         assert!(is_managed_tree(&dir), "and it is still ours");
     }

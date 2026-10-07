@@ -10,7 +10,7 @@ members = [
     "crates/calm-truth-test-harness",
     "crates/provider",
     "crates/calm-server",
-    "crates/plugin-runtime",
+    "crates/plugin",
     "crates/calm-proc-supervisor",
     "crates/calm-terminal-runtime",
     "crates/calm-terminal-view",

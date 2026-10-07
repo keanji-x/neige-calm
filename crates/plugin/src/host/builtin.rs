@@ -7,26 +7,26 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
 
-impl PluginHost {
+impl<E: crate::ports::ErrorFactory> PluginHost<E> {
     /// Reconcile only compiled declarations; preserve installed enable/configuration state.
-    pub async fn reconcile_builtins(&self) -> Result<(), crate::error::CalmError> {
-        if let Some(component) = crate::builtin_plugins::catalog().iter().find(|component| {
+    pub async fn reconcile_builtins(&self) -> Result<(), E> {
+        if let Some(component) = crate::builtin::catalog().iter().find(|component| {
             !component.can_disable() && self.plugins_disabled.contains(&component.manifest().id)
         }) {
-            return Err(crate::error::CalmError::BadRequest(format!(
+            return Err(E::bad_request(format!(
                 "always-enabled component `{}` cannot be listed in plugins_disabled",
                 component.manifest().id
             )));
         }
-        for component in crate::builtin_plugins::catalog() {
+        for component in crate::builtin::catalog() {
             let manifest = component.manifest();
             let _guard = self
                 .try_lock_lifecycle(&manifest.id)
-                .map_err(lifecycle::spawn_error_to_calm)?;
+                .map_err(lifecycle::spawn_error_to_calm::<E>)?;
             let prior = self.repo.plugin_get_by_id(&manifest.id).await?;
             self.repo.plugin_token_delete(&manifest.id).await?;
             self.repo
-                .plugin_install(crate::model::NewPlugin {
+                .plugin_install(super::ports::NewPlugin {
                     id: manifest.id.clone(),
                     version: manifest.version.clone(),
                     install_path: format!("builtin:{}", manifest.id),
@@ -43,10 +43,12 @@ impl PluginHost {
         self: &Arc<Self>,
         lifecycle: &LifecycleGuard,
         manifest: &Manifest,
-        guard: AdmissionGuard,
+        guard: AdmissionGuard<E>,
     ) -> Result<(), HostError> {
         let id = lifecycle.id();
-        let component = crate::builtin_plugins::get(id)
+        let component = self
+            .backends
+            .get(id)
             .ok_or_else(|| HostError::BadState("unknown compiled component".into()))?;
         if manifest.to_json() != component.manifest().to_json() {
             return Err(HostError::BadState("compiled manifest was replaced".into()));

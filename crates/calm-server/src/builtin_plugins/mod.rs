@@ -13,15 +13,8 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::sync::{Arc, LazyLock};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum LifecyclePolicy {
-    Optional,
-    Always,
-}
-
 pub struct BuiltinPlugin {
-    lifecycle: LifecyclePolicy,
-    manifest: Manifest,
+    definition: &'static plugin::builtin::Definition,
     /// The compiled tools under their minted names (`plugin_<id>_<tool>`).
     native: ToolRegistry,
     lower: fn(&str, &Value) -> Result<Value, String>,
@@ -35,17 +28,16 @@ pub struct BuiltinPlugin {
 impl BuiltinPlugin {
     /// `local` holds the compiled tools under their local names (`publish`).
     fn new(
-        manifest: &str,
+        definition: &'static plugin::builtin::Definition,
         local: ToolRegistry,
         lower: fn(&str, &Value) -> Result<Value, String>,
         forge_lower: fn(&str, &Value, &ForgeCallerScope) -> Result<Value, String>,
         instructions: &'static str,
     ) -> Self {
-        let manifest = Manifest::parse(manifest).expect("compiled manifest");
+        let manifest = definition.manifest();
         let native = minted(&manifest.id, &local);
         Self {
-            lifecycle: LifecyclePolicy::Optional,
-            manifest,
+            definition,
             native,
             lower,
             forge_lower,
@@ -54,15 +46,11 @@ impl BuiltinPlugin {
             background: None,
         }
     }
-    pub(super) fn always_enabled(mut self) -> Self {
-        self.lifecycle = LifecyclePolicy::Always;
-        self
-    }
     pub fn can_disable(&self) -> bool {
-        self.lifecycle == LifecyclePolicy::Optional
+        self.definition.can_disable()
     }
     pub fn manifest(&self) -> &Manifest {
-        &self.manifest
+        self.definition.manifest()
     }
     pub fn instructions(&self) -> &'static str {
         self.instructions
@@ -108,9 +96,9 @@ fn manifest_tool_names() -> BTreeSet<String> {
     catalog()
         .iter()
         .flat_map(|plugin| {
-            let id = &plugin.manifest.id;
+            let id = &plugin.manifest().id;
             plugin
-                .manifest
+                .manifest()
                 .exposes_tools
                 .iter()
                 .map(move |tool| registry_name(id, &tool.name))
@@ -118,13 +106,20 @@ fn manifest_tool_names() -> BTreeSet<String> {
         .collect()
 }
 
-static CATALOG: LazyLock<Vec<BuiltinPlugin>> =
-    LazyLock::new(|| vec![dev::component(), calendar::component()]);
+static CATALOG: LazyLock<Vec<BuiltinPlugin>> = LazyLock::new(|| {
+    plugin::builtin::catalog()
+        .iter()
+        .map(|definition| match definition.binding {
+            plugin::builtin::Binding::Calendar => calendar::component(definition),
+            plugin::builtin::Binding::Gitforge => dev::component(definition),
+        })
+        .collect()
+});
 pub fn catalog() -> &'static [BuiltinPlugin] {
     &CATALOG
 }
 pub fn get(id: &str) -> Option<&'static BuiltinPlugin> {
-    catalog().iter().find(|p| p.manifest.id == id)
+    catalog().iter().find(|p| p.manifest().id == id)
 }
 pub fn is_reserved(id: &str) -> bool {
     get(id).is_some()
@@ -164,7 +159,7 @@ pub fn register_native_tools(registry: &mut ToolRegistry) {
     let manifest_tools = manifest_tool_names();
     for plugin in catalog() {
         for descriptor in plugin.native.descriptors() {
-            let id = plugin.manifest.id.clone();
+            let id = plugin.manifest().id.clone();
             let name = descriptor.name.clone();
             let handler = plugin.native.unguarded(&name).expect("compiled handler");
             assert!(
@@ -190,8 +185,8 @@ mod tests;
 pub(crate) fn required_owner(template_id: &str) -> Option<&'static str> {
     catalog()
         .iter()
-        .find(|p| p.manifest.templates.iter().any(|t| t.id == template_id))
-        .map(|p| p.manifest.id.as_str())
+        .find(|p| p.manifest().templates.iter().any(|t| t.id == template_id))
+        .map(|p| p.manifest().id.as_str())
 }
 
 /// Start every compiled component's background task once at boot.
@@ -207,4 +202,17 @@ pub fn router() -> axum::Router<crate::state::AppState> {
         .fold(axum::Router::new(), |router, plugin| {
             router.merge((plugin.router)())
         })
+}
+
+pub(super) fn descriptor(
+    declaration: plugin::builtin::tools::NativeToolSpec,
+) -> crate::mcp_server::registry::ToolDescriptor {
+    crate::mcp_server::registry::ToolDescriptor {
+        name: declaration.name,
+        description: declaration.description,
+        input_schema: declaration.input_schema,
+        annotations: declaration.annotations,
+        roles: declaration.roles,
+        listed_for: declaration.listed_for,
+    }
 }

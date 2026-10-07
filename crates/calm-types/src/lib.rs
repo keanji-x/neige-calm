@@ -7,6 +7,7 @@ pub mod compatibility;
 pub mod enrollment;
 pub mod error;
 pub mod event;
+pub mod forge_action;
 pub mod forge_env;
 pub mod forge_git;
 pub mod git_candidate;

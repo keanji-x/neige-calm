@@ -116,7 +116,7 @@ pub fn read_ui_resource(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugin_host::manifest::{CspBlock, Manifest, UiPermissions};
+    use crate::host::manifest::{CspBlock, Manifest, UiPermissions};
     use std::path::Path;
 
     /// One plugin installed at a tempdir, optionally with a `views/<view_id>.html`; the guard keeps the tempdir alive.

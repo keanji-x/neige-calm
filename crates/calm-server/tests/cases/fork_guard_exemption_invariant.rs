@@ -546,7 +546,7 @@ fn the_release_belt_stays_next_to_the_normalization_it_belts() {
 /// `TemplateDescriptor` is an id handle: no public descriptor body and no sibling public template types.
 #[test]
 fn template_descriptor_surface_is_id_only() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../plugin-runtime/src/manifest.rs");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../plugin/src/manifest.rs");
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
     let syntax = syn::parse_file(&source)

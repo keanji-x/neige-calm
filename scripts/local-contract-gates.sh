@@ -34,8 +34,9 @@ export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}"
 # contract suite's test names share no pattern.
 filters=(
   'test(/golden|invariant|covers_(every|exactly|all)_|cover_exactly_|fits_its_byte_budget/)'
-  'package(plugin-runtime) & test(/^(manifest|template_input|config|perms|glob)::/)'
+  'package(plugin) & test(/^(manifest|template_input|config|perms|glob|host::registry|host::resources)::/)'
   'test(/every_root_test_file_is_in_this_suite/)'
+  'test(/^mcp_server::transport::tests::semantic_forge_payload_hash_ignores_volatile_argv$/)'
   'test(/^(mcp_server::tools::tests|codex_appserver::tool_names_kernel_tests)::/)'
   'test(/^mcp_server::wiring::tests::terminal_policy_/)'
   'test(/^mcp_server::cli::commands::tests::(every_|help_documents_|prompt_|task_report_surfaces_)/)'
@@ -55,7 +56,7 @@ filterset="($filterset) & (not binary(api_suite) | test(/^domain_api_suite::/)) 
 # Build only the binaries that hold the selected tests. `--lib`/`--test` apply to every
 # listed package, so packages that need different targets are separate groups.
 groups=(
-  'plugin runtime:-p plugin-runtime --lib'
+  'plugin contracts:-p plugin --lib'
   'calm-server+calm-types:-p calm-server -p calm-types --lib --test replay_event_suite --test runtime_suite --test mcp_core_suite --test planner_harness_suite --test api_suite'
   'integration suites:-p calm-truth -p calm-exec -p calm-codex-bridge -p calm-session -p calm-proc-supervisor --test integration_suite'
 )
