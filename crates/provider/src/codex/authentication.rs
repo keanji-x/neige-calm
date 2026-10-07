@@ -54,10 +54,10 @@ impl AuthenticationFailure {
         let message = ["codex_core::auth: ", "codex_login::auth::manager: "]
             .iter()
             .find_map(|module| body.strip_prefix(module))?;
-        if let Some(message) = message.strip_prefix("Failed to refresh token: ") {
-            if let Some(failure) = Self::from_message(message) {
-                return Some(failure);
-            }
+        if let Some(message) = message.strip_prefix("Failed to refresh token: ")
+            && let Some(failure) = Self::from_message(message)
+        {
+            return Some(failure);
         }
         if !message.starts_with("Token refresh failed: ")
             && !message.starts_with("Failed to refresh token")
