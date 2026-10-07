@@ -1,5 +1,5 @@
 //! Actual MCP and PTY; readback is presentation, never another physical action.
-use crate::terminal_support::Harness;
+use super::terminal_support::Harness;
 use serde_json::{Value, json};
 use std::time::Duration;
 

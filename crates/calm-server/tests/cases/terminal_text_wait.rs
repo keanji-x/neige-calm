@@ -1,6 +1,6 @@
 //! `wait_for=text`: wait until the live viewport shows a target. Exact timing is covered by paused-clock
 //! unit tests; here the budget is an upper bound and the settle window a lower bound.
-use crate::terminal_support::Harness;
+use super::terminal_support::Harness;
 use serde_json::{Value, json};
 use std::time::Duration;
 

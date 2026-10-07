@@ -1,5 +1,5 @@
 //! Actual MCP and PTY paths with task/session metadata built by production helpers.
-use crate::terminal_support::{Harness, assert_text_observation};
+use super::terminal_support::{Harness, assert_text_observation};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{

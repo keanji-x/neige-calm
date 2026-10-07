@@ -1,5 +1,5 @@
 //! Production MCP/operation/renderer integration; the driver shares setup only.
-use crate::terminal_support::{Harness, assert_text_observation};
+use super::terminal_support::{Harness, assert_text_observation};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::card_with_codex_create_tx;

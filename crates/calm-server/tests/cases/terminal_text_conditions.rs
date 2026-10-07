@@ -1,6 +1,6 @@
 //! Text conditions: `wait_text_absent` (and `wait_text`) gate the settle of a signal wait and
 //! generalise the text wait. The fake Claude posts `Stop` while the busy hint is still painted and paints the answer only later.
-use crate::terminal_support::Harness;
+use super::terminal_support::Harness;
 use serde_json::{Value, json};
 
 /// Fake claude, echo off. Per stdin line: paints a busy row, posts Stop, waits 800 ms, replaces the busy

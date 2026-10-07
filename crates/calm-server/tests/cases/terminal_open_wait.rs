@@ -1,6 +1,6 @@
 //! `neige_terminal_open` waits like a readback: the observe wait arguments run as the open's final
 //! observation, after the claim when there is one.
-use crate::terminal_support::{Harness, human_takeover};
+use super::terminal_support::{Harness, human_takeover};
 use calm_server::db::prelude::*;
 use serde_json::{Value, json};
 use std::time::Duration;

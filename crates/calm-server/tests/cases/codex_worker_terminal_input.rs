@@ -1,8 +1,8 @@
 //! #1784: typing into a codex task Worker's remote TUI interrupts its turn without starting
 //! a replacement one (#1782), so the Planner's terminal input and claim on that card are
 //! refused before a byte reaches the PTY. A Claude task Worker keeps accepting input.
-use crate::task_terminal::{snapshot, stop, worker_running};
-use crate::terminal_support::Harness;
+use super::task_terminal::{snapshot, stop, worker_running};
+use super::terminal_support::Harness;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::time::{Duration, Instant};

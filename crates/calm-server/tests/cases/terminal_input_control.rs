@@ -1,5 +1,5 @@
 //! `input claim:true` / `release:true`: control per scenario through the real MCP tools, renderer and PTY.
-use crate::terminal_support::{Harness, human_takeover};
+use super::terminal_support::{Harness, human_takeover};
 use serde_json::{Value, json};
 use std::time::Duration;
 

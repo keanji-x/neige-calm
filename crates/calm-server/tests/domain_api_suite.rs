@@ -1,5 +1,5 @@
-mod common;
-mod support;
+pub(crate) mod common;
+pub(crate) mod support;
 
 #[path = "cases/actor.rs"]
 mod actor;

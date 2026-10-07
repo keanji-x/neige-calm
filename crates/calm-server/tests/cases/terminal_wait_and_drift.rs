@@ -1,6 +1,6 @@
 //! Change waiting, drift-tolerant input, implicit observation, receipt wording, structured stale
 //! refusals, baseline transparency and release readback economy. Actual MCP server, renderer and PTY.
-use crate::terminal_support::Harness;
+use super::terminal_support::Harness;
 use serde_json::{Value, json};
 use std::time::Duration;
 

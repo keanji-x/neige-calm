@@ -41,20 +41,23 @@ filters=(
   'test(/^mcp_server::cli::commands::tests::(every_|help_documents_|prompt_|task_report_surfaces_)/)'
   'test(/^templates::tests::builtin_directory_and_roster_are_the_same_set$/)'
   'test(/^routes::codex::tests::every_codex_worker_hook_is_registered/)'
-  'test(/^(no_retired_tool_names|handle_state_writers|planner_attachments_guarded_surface|openapi|track_write_point_registry|head_schema_fixture)::/)'
-  'test(/^events_pruner::no_other_suite_seeds_/)'
-  'test(/^bounded_track_tree_sql::every_recursive_parent_track_cte_/)'
-  'test(/^no_wildcard_wait_in_the_supervisor_host$/)'
+  'test(/^(?:(?:kernel_process_suite|migration_suite|domain_api_suite|worker_flow_codex_suite)::)?(no_retired_tool_names|handle_state_writers|planner_attachments_guarded_surface|openapi|track_write_point_registry|head_schema_fixture)::/)'
+  'test(/^(?:runtime_dispatch_suite::)?events_pruner::no_other_suite_seeds_/)'
+  'test(/^(?:domain_api_suite::)?bounded_track_tree_sql::every_recursive_parent_track_cte_/)'
+  'test(/^no_wildcard_wait_in_the_supervisor_host::no_wildcard_wait_in_the_supervisor_host$/)'
 )
 filterset="$(printf ' | %s' "${filters[@]}")"
 filterset="${filterset:3}"
+# Keep the former contract-target scope after their binaries are shared with
+# integration tests; similarly named connector/network tests are not contracts.
+filterset="($filterset) & (not binary(api_suite) | test(/^domain_api_suite::/)) & (not binary(runtime_suite) | test(/^(kernel_process_suite|migration_suite|runtime_dispatch_suite|worker_flow_claude_suite|worker_flow_codex_suite|suite_registry)::/))"
 
 # Build only the binaries that hold the selected tests. `--lib`/`--test` apply to every
 # listed package, so packages that need different targets are separate groups.
 groups=(
   'plugin runtime:-p plugin-runtime --lib'
-  'calm-server+calm-types:-p calm-server -p calm-types --lib --test replay_event_suite --test kernel_process_suite --test mcp_core_suite --test planner_harness_suite --test migration_suite --test runtime_dispatch_suite --test worker_flow_claude_suite --test worker_flow_codex_suite --test domain_api_suite'
-  'integration suites:-p calm-truth -p calm-exec -p calm-codex-bridge -p calm-session -p calm-proc-supervisor --test integration_suite --test no_wildcard_wait_in_the_supervisor_host'
+  'calm-server+calm-types:-p calm-server -p calm-types --lib --test replay_event_suite --test runtime_suite --test mcp_core_suite --test planner_harness_suite --test api_suite'
+  'integration suites:-p calm-truth -p calm-exec -p calm-codex-bridge -p calm-session -p calm-proc-supervisor --test integration_suite'
 )
 
 declare -A result=()

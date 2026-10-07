@@ -1,5 +1,5 @@
 //! `submit` through the real MCP tools, renderer, supervisor and PTY.
-use crate::terminal_support::Harness;
+use super::terminal_support::Harness;
 use serde_json::{Value, json};
 use std::time::Duration;
 

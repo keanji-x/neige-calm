@@ -2,6 +2,7 @@
 name = "calm-server"
 version = "0.1.0"
 edition = "2024"
+autotests = false
 default-run = "calm-server"
 
 [lib]
@@ -390,3 +391,94 @@ pulldown-cmark.workspace = true
 [[bench]]
 name = "event_append"
 harness = false
+
+# Shared binaries preserve each former target as a module. Targets that change
+# process-wide state or require real Codex remain independent.
+
+[[test]]
+name = "api_suite"
+path = "tests/api_suite.rs"
+
+[[test]]
+name = "runtime_suite"
+path = "tests/runtime_suite.rs"
+
+[[test]]
+name = "codex_e2e_planner_card"
+path = "tests/codex_e2e_planner_card.rs"
+
+[[test]]
+name = "codex_e2e_suite"
+path = "tests/codex_e2e_suite.rs"
+
+[[test]]
+name = "codex_forge_e2e"
+path = "tests/codex_forge_e2e.rs"
+
+[[test]]
+name = "codex_user_prompt_shared_daemon"
+path = "tests/codex_user_prompt_shared_daemon.rs"
+
+[[test]]
+name = "codex_worker_shared_daemon"
+path = "tests/codex_worker_shared_daemon.rs"
+
+[[test]]
+name = "forge_action_adapter"
+path = "tests/forge_action_adapter.rs"
+
+[[test]]
+name = "forge_suite"
+path = "tests/forge_suite.rs"
+
+[[test]]
+name = "forge_template_e2e"
+path = "tests/forge_template_e2e.rs"
+
+[[test]]
+name = "mcp_core_suite"
+path = "tests/mcp_core_suite.rs"
+
+[[test]]
+name = "mcp_git_forge_plugin"
+path = "tests/mcp_git_forge_plugin.rs"
+
+[[test]]
+name = "mcp_integration_suite"
+path = "tests/mcp_integration_suite.rs"
+
+[[test]]
+name = "mcp_plugin_forge_action"
+path = "tests/mcp_plugin_forge_action.rs"
+
+[[test]]
+name = "planner_card_reset"
+path = "tests/planner_card_reset.rs"
+
+[[test]]
+name = "planner_harness_adapters"
+path = "tests/planner_harness_adapters.rs"
+
+[[test]]
+name = "planner_harness_suite"
+path = "tests/planner_harness_suite.rs"
+
+[[test]]
+name = "plugin_template_uniqueness"
+path = "tests/plugin_template_uniqueness.rs"
+
+[[test]]
+name = "replay_event_suite"
+path = "tests/replay_event_suite.rs"
+
+[[test]]
+name = "shared_codex_appserver"
+path = "tests/shared_codex_appserver.rs"
+
+[[test]]
+name = "track_suite"
+path = "tests/track_suite.rs"
+
+[[test]]
+name = "worker_exec_shell_env"
+path = "tests/worker_exec_shell_env.rs"
