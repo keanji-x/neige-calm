@@ -14,7 +14,15 @@ pub struct AgentCapabilities {
     pub load_session: bool,
     #[serde(default)]
     pub prompt_capabilities: PromptCapabilities,
+    #[serde(default)]
+    pub session_capabilities: SessionCapabilities,
 }
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct SessionCapabilities {
+    pub close: Option<SessionCloseCapability>,
+}
+#[derive(Clone, Debug, Deserialize)]
+pub struct SessionCloseCapability {}
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptCapabilities {

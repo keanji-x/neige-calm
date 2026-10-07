@@ -88,6 +88,7 @@ pub struct AcpPlannerHost {
     pub mcp_shim: PathBuf,
     pub mcp_socket: PathBuf,
     readiness: tokio::sync::Mutex<()>,
+    pub(super) discovery: super::catalog::DiscoveryCache,
     catalogs: std::sync::Mutex<
         std::collections::HashMap<String, (provider::acp::configuration::Configuration, i64)>,
     >,
@@ -109,6 +110,7 @@ impl AcpPlannerHost {
             mcp_shim,
             mcp_socket,
             readiness: tokio::sync::Mutex::new(()),
+            discovery: Default::default(),
             catalogs: std::sync::Mutex::new(std::collections::HashMap::new()),
             _scratch: None,
         })
@@ -180,7 +182,8 @@ impl AcpPlannerHost {
 /// Only sessions explicitly registered by this ACP backend are cleanup candidates.
 pub async fn boot(repo: &dyn crate::db::RepoEventWrite, host: &AcpPlannerHost) -> Result<()> {
     let ids = revoke_owned(repo, None).await?;
-    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let mut ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+    ids.push(super::catalog::WORKER);
     crate::planner_process::sweep(
         &host.instance,
         &ids,

@@ -214,11 +214,23 @@ pub(crate) async fn list_models(
             .as_ref()
             .is_some_and(|card| card.provider == AgentProvider::OpenCode)
     {
-        return Ok(Json(acp_catalog(
-            q.card_id
-                .as_deref()
-                .and_then(|id| s.acp_planner.configuration(id)),
-        )));
+        let cached = q
+            .card_id
+            .as_deref()
+            .and_then(|id| s.acp_planner.configuration(id));
+        let configuration = match cached {
+            Some(configuration) => Some(configuration),
+            None => {
+                s.acp_planner
+                    .discover_configuration(
+                        &AgentProvider::OpenCode,
+                        card.as_ref()
+                            .map(|card| std::path::Path::new(&card.workspace)),
+                    )
+                    .await
+            }
+        };
+        return Ok(Json(acp_catalog(configuration)));
     }
     // #1822: a Claude Planner's catalog is the CLI's own list, cached by its availability
     // check, and Codex is not asked. A Claude that is not ready has no list to offer.

@@ -74,6 +74,14 @@ impl GroupChild {
         self.child.stdout.take()
     }
 
+    pub fn stdin(&mut self) -> Option<tokio::process::ChildStdin> {
+        self.child.stdin.take()
+    }
+
+    pub fn start_kill(&mut self) -> std::io::Result<()> {
+        self.child.start_kill()
+    }
+
     pub fn stderr(&mut self) -> Option<tokio::process::ChildStderr> {
         self.child.stderr.take()
     }

@@ -12,6 +12,7 @@ root = pathlib.Path(os.environ['ACP_FIXTURE_ROOT'])
 with (root / 'environment.jsonl').open('a') as output:
     presence = {name: name in os.environ for name in [
         'NEIGE_MCP_DAEMON_TOKEN', 'NEIGE_MCP_TOKEN', 'NEIGE_MCP_SOCKET', 'ACP_AMBIENT_SENTINEL']}
+    presence['catalog'] = os.environ['NEIGE_ACP_PLANNER'].endswith(':catalog')
     presence['readiness'] = os.environ['NEIGE_ACP_PLANNER'].endswith(':readiness')
     presence['opencode_permission'] = os.environ.get('OPENCODE_PERMISSION')
     output.write(json.dumps(presence) + '\n')
@@ -23,6 +24,13 @@ def emit(value):
 
 def result(request, value):
     emit({'jsonrpc': '2.0', 'id': request['id'], 'result': value})
+
+def hold_catalog():
+    helper = subprocess.Popen(['/bin/sleep', '300'], stdin=subprocess.DEVNULL,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    (root / 'catalog-helper').write_text(str(helper.pid))
+    while True:
+        time.sleep(0.01)
 
 def config():
     return {'configOptions': [
@@ -91,6 +99,7 @@ def check_mcp(servers):
 for line in sys.stdin:
     request = json.loads(line)
     logged = json.loads(json.dumps(request))
+    logged['_pid'] = os.getpid()
     for server in logged.get('params', {}).get('mcpServers', []):
         for variable in server.get('env', []):
             variable['value'] = '[redacted]'
@@ -105,17 +114,30 @@ for line in sys.stdin:
             (root / 'wrong-identity.json').write_text(json.dumps({
                 'token_present': 'NEIGE_MCP_TOKEN' in os.environ,
                 'socket_present': 'NEIGE_MCP_SOCKET' in os.environ}))
-        result(request, {'protocolVersion': 1, 'agentCapabilities': {'loadSession': True},
+        if (root / 'scenario').read_text().strip() == 'catalog_cancel_initialize':
+            hold_catalog()
+        capabilities = {'loadSession': True}
+        if (root / 'scenario').read_text().strip() != 'catalog_no_close':
+            capabilities['sessionCapabilities'] = {'close': {}}
+        result(request, {'protocolVersion': 1, 'agentCapabilities': capabilities,
                          'agentInfo': {'name': 'Fixture ACP', 'version': 'wrong' if wrong else '1'}})
         if (root / 'scenario').read_text().strip() == 'checkpoint' and not os.environ['NEIGE_ACP_PLANNER'].endswith(':readiness'):
             (root / 'setup-checkpoint').touch()
             while not (root / 'release-setup').exists():
                 time.sleep(0.01)
     elif method == 'session/new':
+        if (root / 'scenario').read_text().strip() == 'catalog_cancel':
+            hold_catalog()
+        if (root / 'scenario').read_text().strip() == 'catalog_error':
+            emit({'jsonrpc': '2.0', 'id': request['id'], 'error': {'code': -32603, 'message': 'catalog setup failed'}})
+            continue
         current = 'native_' + uuid.uuid4().hex
         native_path().write_text(json.dumps({'inputs': [], 'cwd': params['cwd'], 'model': model, 'effort': effort}))
         check_mcp(params['mcpServers'])
         result(request, {'sessionId': current, **config()})
+    elif method == 'session/close':
+        assert params['sessionId'] == current
+        result(request, {})
     elif method == 'session/load':
         current = params['sessionId']
         state = json.loads(native_path().read_text())

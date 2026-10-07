@@ -69,7 +69,7 @@ check, not cryptographic authentication of the executable. CLI commands still
 use the authoritative kernel parser and role checks; native permission requests
 follow the card's permission mode.
 
-Model configuration ids and opaque values come from declared ACP `configOptions`, using standardized `model` and `thought_level` categories. Model queries never ask Codex for an ACP card. The catalog is populated by the managed session's setup; before that it is explicitly unavailable and the registered agent's own settings are inherited. A null choice keeps current native session settings. Unknown choices are judged during fresh setup before prompt dispatch, without silently substituting another model or effort.
+Model configuration ids and opaque values come from declared ACP `configOptions`, using standardized `model` and `thought_level` categories. Model queries never ask Codex for an ACP card. Before managed setup, a catalog query discovers the registered agent's settings through an empty session. Managed session configuration takes precedence once available. A null choice keeps current native session settings. Unknown choices are judged during fresh setup before prompt dispatch, without silently substituting another model or effort.
 
 Native MCP consumers can build model-visible output from `content` alone (#2401).
 ACP sessions therefore launch the stdio shim with the explicit
@@ -107,6 +107,25 @@ fetches unsandboxed without asking, as before. OpenCode's own `always` answer ap
 prefix for the rest of the process, which is one turn here; it is not written to disk.
 
 ## Acceptance
+
+### Model discovery before the first input
+
+Review tier: **L2**, because discovery extends the managed ACP process lifecycle.
+The model endpoint discovers a registered agent's catalog through an empty ACP
+session before a card or first input exists. It uses the existing explicit process
+environment and identity checks, supplies no MCP servers, issues no prompt, and
+never binds the discovery session to a Neige card or durable submission. The ACP
+owner serializes discovery and caches one workspace's result for 30 seconds,
+including failures; existing real-session configuration remains authoritative.
+The process is stopped on success and failure, with `session/close` first when
+advertised. ACP processes use the existing owned process-group guard, which
+sweeps inherited descendants if setup or cleanup is cancelled, without scanning
+`/proc` on a runtime worker. Boot also sweeps the probe marker. Descendants that
+deliberately leave the process group rely on the existing exact-marker sweeps.
+ACP does not standardize deleting native session metadata: the agent
+may retain an empty discovery session. Real setup validates all selections again.
+Acceptance covers provider and pre-input card queries, cache reuse, workspace
+separation, failure cleanup, and a selected model on the first production turn.
 
 Use deterministic stdio peers through the production transport and real boot/REST/Harness entry points. Check negotiation, bounded/malformed frames, correlated requests, cancellation, two turns, text/tool output, MCP authentication, never permissions without Ask creation, held permission answers, cancel and exit withdrawal, exact-key recovery, unknown-outcome fencing, same-session restart, lifecycle cleanup and unsupported-control refusal. Tests must wait for actual production decisions, not merely sleep before asserting zero writes.
 

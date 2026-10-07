@@ -1,4 +1,5 @@
 //! Managed agents using ACP. Protocol code lives in `provider::acp`.
+mod catalog;
 pub mod config;
 mod process;
 pub(crate) mod recovery;
