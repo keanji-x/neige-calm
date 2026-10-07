@@ -17,14 +17,13 @@ import {
 } from '../../../../../core/domain/report-file.ts';
 import type { SeriesResolution } from '../../../../../core/domain/report-series.ts';
 import { parseReportSourceLink, type ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
-import { ReportLinkPreview, externalPreviewUrl, type ReportLinkPreviewResources, type PreviewDestination } from '../link-preview/public.tsx';
+import { ReportLinkPreview, ReportSourceLinkPreview, externalPreviewUrl, type ReportLinkPreviewResources, type PreviewDestination } from '../link-preview/public.tsx';
 import { ReportDetails } from './details.tsx';
 import { revealReportAnchor } from '../anchor/public.ts';
 import { ReportAppBlock } from '../app/public.tsx';
 import { ReportCandlesBlock } from '../candles/public.tsx';
 import { ReportPreviewBlock, type PreviewViewportStore } from '../preview/public.tsx';
 import { ReportSeriesBlock } from '../series/public.tsx';
-import { ReportSourceCitation } from '../source/public.tsx';
 import { ReportTableBlock } from '../table/public.tsx';
 import { NativeReportView } from '../native/public.tsx';
 import { ReportTaskBlock } from '../task/public.tsx';
@@ -214,7 +213,7 @@ function BlockSlot({
               fileBasePath={fileBasePath}
               linkPreview={linkPreview}
             />
-          : <BlockBody block={block} onOpenSourceLink={onOpenSourceLink}
+          : <BlockBody block={block} onOpenSourceLink={onOpenSourceLink} linkPreview={linkPreview}
               resolveOverlay={resolveOverlay} resolveSeries={resolveSeries} resolvePreview={resolvePreview}
               previewViewports={previewViewports} />}
       </div>
@@ -229,11 +228,12 @@ function BlockSlot({
 
 /** One bad block may not cost the page: an unknown kind or an unparsable payload degrades to one line. */
 function BlockBody({
-  block, task, renderTaskExecution, onOpenSourceLink, resolveOverlay, resolveSeries, resolvePreview, previewViewports,
+  block, task, renderTaskExecution, onOpenSourceLink, linkPreview, resolveOverlay, resolveSeries, resolvePreview, previewViewports,
 }: {
   block: ReportBlock; task?: ReportTaskRow; renderTaskExecution?: ReportDocumentProps['renderTaskExecution'];
   /** A table cell that is one source citation is the same control the prose paints. */
   onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
+  linkPreview?: ReportLinkPreviewResources;
   resolveOverlay?: ReportDocumentProps['resolveOverlay'];
   resolveSeries?: ReportDocumentProps['resolveSeries'];
   resolvePreview?: ReportDocumentProps['resolvePreview'];
@@ -241,8 +241,8 @@ function BlockBody({
 }): ReactNode {
   switch (block.kind) {
     case 'table':
-      return <ReportTableBlock payload={block.payload} resolveLive={resolveOverlay} onOpenSourceLink={onOpenSourceLink} />;
-    case 'view': return <NativeReportView payload={block.payload} resolveOverlay={resolveOverlay} onOpenSourceLink={onOpenSourceLink} />;
+      return <ReportTableBlock payload={block.payload} resolveLive={resolveOverlay} onOpenSourceLink={onOpenSourceLink} linkPreview={linkPreview} />;
+    case 'view': return <NativeReportView payload={block.payload} resolveOverlay={resolveOverlay} onOpenSourceLink={onOpenSourceLink} linkPreview={linkPreview} />;
     case 'chart.candles': return <ReportCandlesBlock payload={block.payload} />;
     case 'chart.series':
       return <ReportSeriesBlock payload={block.payload} blockId={block.id} rev={block.rev} resolve={resolveSeries} />;
@@ -425,7 +425,7 @@ function Inline({ node, ...context }: { node: SafeInline } & BlockContext): Reac
       if (context.inLink) return body;
       const renderMarkdown = (text: string, basePath?: string) => <ProseBlock
         markdown={text} blockId={null} {...context} fileBasePath={basePath ?? fileBasePath} />;
-      const wrap = (destination: PreviewDestination, trigger: (activate: () => void) => ReactNode, onOpen?: () => void) => (
+      const wrap = (destination: PreviewDestination, trigger: (activate: () => void, dismiss: () => void) => ReactNode, onOpen?: () => void) => (
         <ReportLinkPreview destination={destination} resources={linkPreview} label={label}
           trigger={trigger} onOpen={onOpen} renderMarkdown={renderMarkdown} />
       );
@@ -433,13 +433,12 @@ function Inline({ node, ...context }: { node: SafeInline } & BlockContext): Reac
       if (target !== null && (onOpenLink !== undefined || linkPreview !== undefined)) {
         const open = onOpenLink === undefined ? undefined : () => onOpenLink(target);
         return wrap({ kind: 'reference', destination: node.destination, target },
-          (activate) => <button type="button" className={styles.link} onClick={open ?? activate}>{body}</button>, open);
+          (activate, dismiss) => <button type="button" className={styles.link} onClick={open === undefined ? activate : () => { dismiss(); open(); }}>{body}</button>, open);
       }
       const sourceTarget = image ? null : parseReportSourceLink(node.destination);
       if (sourceTarget !== null) {
-        return wrap({ kind: 'reference', destination: node.destination },
-          () => <ReportSourceCitation target={sourceTarget} onOpen={onOpenSourceLink}>{body}</ReportSourceCitation>,
-          onOpenSourceLink === undefined ? undefined : () => onOpenSourceLink(sourceTarget));
+        return <ReportSourceLinkPreview target={sourceTarget} label={label} resources={linkPreview}
+          onOpen={onOpenSourceLink}>{body}</ReportSourceLinkPreview>;
       }
       const fileTarget = parseReportFileLink(node.destination);
       const path = fileTarget !== null && fileRoot !== undefined
@@ -447,7 +446,7 @@ function Inline({ node, ...context }: { node: SafeInline } & BlockContext): Reac
       if (path !== null && (onOpenFileLink !== undefined || linkPreview !== undefined)) {
         const open = onOpenFileLink === undefined ? undefined : () => onOpenFileLink({ path });
         return wrap({ kind: 'file', path },
-          (activate) => <button type="button" className={styles.link} title={path} onClick={open ?? activate}>{body}</button>, open);
+          (activate, dismiss) => <button type="button" className={styles.link} title={path} onClick={open === undefined ? activate : () => { dismiss(); open(); }}>{body}</button>, open);
       }
       const url = externalPreviewUrl(node.destination);
       if (url !== null) {
