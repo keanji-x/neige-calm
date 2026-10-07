@@ -16,10 +16,12 @@ struct Supervisor {
 impl Supervisor {
     async fn start(root: &Path) -> anyhow::Result<Self> {
         let socket = calm_test_sockets::socket_path(root, "supervisor.sock");
+        let home = root.join("home");
+        std::fs::create_dir(&home)?;
         let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_calm-proc-supervisor"))
             .args(["--control-sock", socket.to_str().unwrap()])
             .current_dir(root)
-            .env("HOME", root)
+            .env("HOME", home)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -191,7 +193,11 @@ async fn accepts_cwd(relative: bool, empty: bool) -> anyhow::Result<()> {
         supervisor.ensure(cwd, &marker).await?,
         ControlReply::Spawned { .. }
     ));
-    let expected = if empty { root.path() } else { &directory };
+    let expected = if empty {
+        root.path().join("home")
+    } else {
+        directory
+    };
     assert_eq!(
         std::fs::read_to_string(marker)?.trim(),
         expected.canonicalize()?.to_str().unwrap()

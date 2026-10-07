@@ -34,8 +34,24 @@ struct Boot {
     state: AppState,
     repo: Arc<SqlxRepo>,
     track_id: String,
+    cwd: PathBuf,
     codex_homes_dir: PathBuf,
+    _supervisor: Option<calm_proc_supervisor::test_support::InProcessProcSupervisor>,
+    _path: RestorePath,
     _tmp: TempDir,
+}
+
+struct RestorePath(Option<std::ffi::OsString>);
+
+impl Drop for RestorePath {
+    fn drop(&mut self) {
+        unsafe {
+            match self.0.take() {
+                Some(path) => std::env::set_var("PATH", path),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+    }
 }
 
 fn fake_codex_bin() -> &'static str {
@@ -65,6 +81,20 @@ async fn boot() -> Boot {
 
 async fn boot_with_shared_daemon(start_appserver: bool) -> Boot {
     let tmp = TempDir::new().expect("tempdir");
+    let cwd = tmp.path().join("workspace");
+    std::fs::create_dir(&cwd).expect("create workspace");
+    // The app-server is fake; pin the PTY viewer too, rather than resolve a host Codex CLI.
+    let viewer_bin = tmp.path().join("viewer-bin");
+    std::fs::create_dir(&viewer_bin).unwrap();
+    std::os::unix::fs::symlink("/bin/true", viewer_bin.join("codex")).unwrap();
+    let saved_path = RestorePath(std::env::var_os("PATH"));
+    let mut paths = vec![viewer_bin];
+    if let Some(path) = &saved_path.0 {
+        paths.extend(std::env::split_paths(path));
+    }
+    unsafe {
+        std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+    }
     let repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
             .await
@@ -84,7 +114,7 @@ async fn boot_with_shared_daemon(start_appserver: bool) -> Boot {
             area_id: area.id,
             title: "prompt-shared".into(),
             sort: None,
-            cwd: "/workspace".into(),
+            cwd: cwd.to_str().unwrap().into(),
             template_id: None,
             plugin_scope: None,
             attach_folder: false,
@@ -93,9 +123,23 @@ async fn boot_with_shared_daemon(start_appserver: bool) -> Boot {
         .await
         .unwrap();
 
+    let requested_sock = std::env::var_os("CALM_TEST_PROC_SUPERVISOR_SOCK").map(PathBuf::from);
+    let supervisor = if requested_sock.is_none() {
+        Some(
+            calm_proc_supervisor::test_support::InProcessProcSupervisor::start()
+                .await
+                .unwrap(),
+        )
+    } else {
+        None
+    };
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().join("terminals"),
-        proc_supervisor_sock: std::env::var_os("CALM_TEST_PROC_SUPERVISOR_SOCK").map(PathBuf::from),
+        proc_supervisor_sock: requested_sock.or_else(|| {
+            supervisor
+                .as_ref()
+                .map(|supervisor| supervisor.sock().into())
+        }),
     });
     let events = EventBus::new();
     let codex = Arc::new(CodexClient::new_stub());
@@ -154,7 +198,11 @@ async fn boot_with_shared_daemon(start_appserver: bool) -> Boot {
         state,
         repo,
         track_id: track.id.to_string(),
+        cwd,
         codex_homes_dir,
+        // Drop the owned supervisor (and its PTY children) before the PATH guard and workspace.
+        _supervisor: supervisor,
+        _path: saved_path,
         _tmp: tmp,
     }
 }
@@ -234,7 +282,7 @@ async fn create_prompt_card_calls_shared_daemon_thread_start() {
     let (status, card) = post(
         boot.app.clone(),
         &boot.track_id,
-        json!({ "cwd": "/workspace", "prompt": "explain this", "theme": theme() }),
+        json!({ "cwd": boot.cwd, "prompt": "explain this", "theme": theme() }),
     )
     .await;
     unsafe {
@@ -245,7 +293,8 @@ async fn create_prompt_card_calls_shared_daemon_thread_start() {
     let rows = wait_for_requests(&capture_file, 3).await;
     let thread = request(&rows, "thread/start");
     assert_eq!(
-        thread["params"]["cwd"], "/workspace",
+        thread["params"]["cwd"],
+        boot.cwd.to_str().unwrap(),
         "thread/start cwd: {thread}"
     );
     assert_eq!(thread["params"]["approvalPolicy"], "never");
@@ -267,7 +316,7 @@ async fn create_prompt_card_writes_runtime_and_projects_thread_id() {
     let (status, card) = post(
         boot.app.clone(),
         &boot.track_id,
-        json!({ "cwd": "/workspace", "prompt": "persist me", "theme": theme() }),
+        json!({ "cwd": boot.cwd, "prompt": "persist me", "theme": theme() }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={card:?}");
@@ -292,7 +341,7 @@ async fn create_prompt_card_spawns_remote_resume_tui() {
     let (status, card) = post(
         boot.app.clone(),
         &boot.track_id,
-        json!({ "cwd": "/workspace", "prompt": "attach me", "theme": theme() }),
+        json!({ "cwd": boot.cwd, "prompt": "attach me", "theme": theme() }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={card:?}");
@@ -316,7 +365,7 @@ async fn create_prompt_card_skips_per_card_codex_home_seeding() {
     let (status, card) = post(
         boot.app.clone(),
         &boot.track_id,
-        json!({ "cwd": "/workspace", "prompt": "no seed", "theme": theme() }),
+        json!({ "cwd": boot.cwd, "prompt": "no seed", "theme": theme() }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={card:?}");
@@ -334,7 +383,7 @@ async fn empty_path_errors_when_shared_daemon_not_running() {
     let (status, body) = post(
         boot.app.clone(),
         &boot.track_id,
-        json!({ "cwd": "/workspace", "theme": theme() }),
+        json!({ "cwd": boot.cwd, "theme": theme() }),
     )
     .await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "body={body:?}");
@@ -354,7 +403,7 @@ async fn create_empty_card_with_empty_cards_flag_enabled_uses_shared_daemon_pend
     let (status, card) = post(
         boot.app.clone(),
         &boot.track_id,
-        json!({ "cwd": "/workspace", "theme": theme() }),
+        json!({ "cwd": boot.cwd, "theme": theme() }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={card:?}");
@@ -409,7 +458,7 @@ async fn empty_user_card_respawns_daemon_when_proxy_changed() {
     let (status, card) = post(
         boot.app.clone(),
         &boot.track_id,
-        json!({ "cwd": "/workspace", "theme": theme() }),
+        json!({ "cwd": boot.cwd, "theme": theme() }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={card:?}");
@@ -442,7 +491,7 @@ async fn empty_user_card_respawn_failure_does_not_leave_card_stuck_pending() {
     let (status, body) = post(
         boot.app.clone(),
         &boot.track_id,
-        json!({ "cwd": "/workspace", "theme": theme() }),
+        json!({ "cwd": boot.cwd, "theme": theme() }),
     )
     .await;
     unsafe {
@@ -474,7 +523,7 @@ async fn prompt_card_thread_start_respawn_failure_marks_runtime_failed() {
     let (status, body) = post(
         boot.app.clone(),
         &boot.track_id,
-        json!({ "cwd": "/workspace", "prompt": "respawn then fail", "theme": theme() }),
+        json!({ "cwd": boot.cwd, "prompt": "respawn then fail", "theme": theme() }),
     )
     .await;
     unsafe {
@@ -501,7 +550,7 @@ async fn prompt_card_turn_start_failure_marks_runtime_failed() {
     let (status, body) = post(
         boot.app.clone(),
         &boot.track_id,
-        json!({ "cwd": "/workspace", "prompt": "turn should fail", "theme": theme() }),
+        json!({ "cwd": boot.cwd, "prompt": "turn should fail", "theme": theme() }),
     )
     .await;
     unsafe {
@@ -531,11 +580,12 @@ async fn prompt_card_lifecycle_wait_failure_interrupts_and_rolls_back() {
 
     let app = boot.app.clone();
     let track_id = boot.track_id.clone();
+    let cwd = boot.cwd.clone();
     let post_task = tokio::spawn(async move {
         post(
             app,
             &track_id,
-            json!({ "cwd": "/workspace", "prompt": "lifecycle should fail", "theme": theme() }),
+            json!({ "cwd": cwd, "prompt": "lifecycle should fail", "theme": theme() }),
         )
         .await
     });
@@ -685,7 +735,7 @@ async fn create_prompt_card_errors_when_shared_daemon_not_running() {
     let (status, body) = post(
         boot.app.clone(),
         &boot.track_id,
-        json!({ "cwd": "/workspace", "prompt": "legacy degraded", "theme": theme() }),
+        json!({ "cwd": boot.cwd, "prompt": "legacy degraded", "theme": theme() }),
     )
     .await;
 
