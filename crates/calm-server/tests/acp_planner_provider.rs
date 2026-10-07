@@ -144,6 +144,15 @@ async fn acp_runs_two_turns_and_loads_the_same_native_session_after_restart() {
             .iter()
             .all(|request| request["params"]["sessionId"] == native)
     );
+    for method in ["session/new", "session/load"] {
+        for request in requests(&root, method) {
+            assert_eq!(
+                request["params"]["mcpServers"][0]["args"],
+                json!(["--structured-content-as-text"]),
+                "every native MCP setup must expose the complete tool result"
+            );
+        }
+    }
     let (status, body) = stack
         .send("DELETE", &format!("/api/tracks/{track}"), None)
         .await;
