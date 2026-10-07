@@ -24,7 +24,7 @@ Initial browser inspection found a shared header offset leaking into the embedde
 
 The earlier focused browser selection passed 76 tests; final validation is recorded in the pull request. The real Playwright Areas-read recovery case passes against the native backend. Docker Tier 1 setup was attempted but could not allocate a network from the host's exhausted default IPv4 pools; the native run exercises the same Tier 1 case, not a successful Docker run. No real Codex E2E was run, and the native test backend is loopback-only with independent temporary data and `/bin/false` as its Codex binary.
 
-A final compact-menu audit reproduced two Track menus on the homepage. Reused the existing slot-driven header correction already present in the primary checkout, preserving that unrelated checkout without editing it; added a real homepage regression that opens Conversations from the one usable menu.
+The compact header publishes title/actions slots and follows their populated content instead of inferring page identity from a URL. Its real homepage regression opens Conversations through the one usable menu.
 
 ## Independent L2 review and composer repair
 
@@ -32,4 +32,11 @@ Two independent full-diff reviews of `a19ff5a9a` found a P1 introduced defect: a
 
 The final approach deletes the special embedded conversation layout. Calendar is injected through a generic leading-content slot before the report, and conversation rendering returns to the existing full-height drawer. The shared ChatComposer limits visible editor growth to three rows and scrolls longer drafts, preserving both inputs and recovery/actions space without app identity checks or a new height observer. The fixture mounts the real `#root` height chain rather than an auto-height testing container.
 
-The expanded twelve-case real-homepage browser file is green for populated history, long drafts, companion panes and wedged recovery strips at 600px/768px/1000px. Calendar month navigation is exercised after both drafts expand. Both channels must freshly review this complete final approach before merge.
+The expanded twelve-case real-homepage browser file is green for populated history, long drafts, companion panes and wedged recovery strips at 600px/768px/1000px. Calendar month navigation is exercised after both drafts expand. Both independent channels freshly reviewed the complete candidate `37e8fca99` and approved it without unresolved introduced blockers.
+
+- Channel A: nine independent browser probes plus 22 repository browser tests; populated history, companion panes, two expanded drafts, clickable calendar controls, source inert behavior and a thirty-line real-keyboard draft all passed. The exact complete draft reached the send request, with caret edits preserved and every clipping ancestor checked.
+- Channel B: 28 browser tests, three additional exact-send/calendar-navigation cases at 960px/1024px/1280px, and 307 DOM tests passed. All three architecture priorities were explicitly rechecked.
+
+Multiline send probes use real Shift+Enter keyboard entry. A discarded scratch probe used synthetic multiline `fill` markup; the unchanged vendor serializer does not preserve its block separators, so it was not used as evidence of application text loss.
+
+Later documentation-only updates do not change this reviewed implementation.
