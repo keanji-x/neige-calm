@@ -201,16 +201,22 @@ async fn a_payload_replacement_keeps_the_stored_mode_even_a_corrupt_one() {
 async fn the_body_is_one_mode_and_nothing_else() {
     let boot = boot_with(idle_snapshot(vec![])).await;
     let before = payload(&boot).await;
-    // A null mode fails serde's parse before its shape check, so it is the 400 of an unparseable body.
     for (body, expected) in [
         (json!({}), StatusCode::UNPROCESSABLE_ENTITY),
-        (json!({"permission_mode": null}), StatusCode::BAD_REQUEST),
+        (
+            json!({"permission_mode": null}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
         (
             json!({"permission_mode": "full"}),
             StatusCode::UNPROCESSABLE_ENTITY,
         ),
         (
             json!({"permission_mode": "Ask"}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            json!({"permission_mode": {"ask": null}}),
             StatusCode::UNPROCESSABLE_ENTITY,
         ),
         (

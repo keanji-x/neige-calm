@@ -102,6 +102,8 @@ mod tests {
             json!(null),
             json!(true),
             json!({}),
+            json!({"ask": null}),
+            json!({"never": null}),
         ] {
             assert_eq!(
                 read(&json!({"permission_mode": corrupt.clone()})),
