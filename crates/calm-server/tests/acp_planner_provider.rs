@@ -651,8 +651,8 @@ async fn acp_recovery_retires_dispatch_before_folding_later_report_edits() {
         .execute(&mut *tx)
         .await
         .unwrap();
-    let area: String = sqlx::query_scalar("SELECT area_id FROM cards WHERE id=?1")
-        .bind(&card)
+    let area: String = sqlx::query_scalar("SELECT area_id FROM tracks WHERE id=?1")
+        .bind(&track)
         .fetch_one(&mut *tx)
         .await
         .unwrap();
