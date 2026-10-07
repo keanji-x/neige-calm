@@ -76,3 +76,86 @@ async fn reading_an_unknown_task_answers_404_and_an_agent_is_refused() {
     let (status, _) = get(&app, &created.id, "user").await;
     assert_eq!(status, 503);
 }
+
+#[tokio::test]
+async fn calendar_list_hides_closed_and_missing_tracks_and_restores_reopened_entries() {
+    let fx = Fixture::new().await;
+    let app = fx.http_app();
+    let owner = fx.identity(CardRole::Planner).await;
+    let other = fx.identity(CardRole::Planner).await;
+    let task = json!({"title":"Weekly review","description":"","schedule":{
+        "kind":"weekly","weekdays":["fri"],"start":"09:00","end":"10:00",
+        "timezone":"Asia/Shanghai","from":"2026-10-02"
+    }});
+    let owned = super::wake::create(&fx, &owner, "owned", task.clone()).await;
+    let orphan = super::wake::create(&fx, &other, "orphan", task.clone()).await;
+    let cancelled = super::wake::create(&fx, &owner, "cancelled", task).await;
+    super::wake::rm(&fx, &owner, &cancelled).await;
+    let human_entry = store::create(&fx.ctx, human(), request()).await.unwrap();
+    fx.repo
+        .track_delete(other.track_id.as_deref().unwrap())
+        .await
+        .unwrap();
+
+    for closed in [false, true, false] {
+        sqlx::query("UPDATE tracks SET closed_at = ? WHERE id = ?")
+            .bind(closed.then_some(1_i64))
+            .bind(owner.track_id.as_deref().unwrap())
+            .execute(fx.repo.pool())
+            .await
+            .unwrap();
+        let response = app.clone().oneshot(
+            Request::builder()
+                .uri("/api/calendar/tasks?from=2026-10-02&until=2026-10-03&timezone=Asia%2FShanghai")
+                .header("x-calm-actor", "user")
+                .body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(response.status(), 200);
+        let listed: Vec<serde_json::Value> =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        let mut ids: Vec<_> = listed
+            .iter()
+            .map(|row| row["id"].as_str().unwrap().to_owned())
+            .collect();
+        ids.sort();
+        let mut expected = vec![human_entry.id.clone()];
+        if !closed {
+            expected.push(owned.id.clone());
+        }
+        expected.sort();
+        assert_eq!(ids, expected, "REST list with closed={closed}");
+
+        let registry = crate::mcp_server::build_default_registry();
+        let list = registry.lookup("plugin_calendar_ls").unwrap();
+        let result = list(
+            fx.ctx.clone(),
+            owner.clone(),
+            json!({
+                "from":"2026-10-02","to":"2026-10-03","timezone":"Asia/Shanghai"
+            }),
+        )
+        .await
+        .unwrap();
+        let result = serde_json::to_value(result).unwrap();
+        let entries = result["structuredContent"]["entries"].as_array().unwrap();
+        assert_eq!(
+            entries.len(),
+            usize::from(!closed),
+            "tool list with closed={closed}"
+        );
+        if !closed {
+            assert_eq!(entries[0]["entry_id"], owned.id);
+        }
+
+        for entry in [&owned, &orphan, &human_entry] {
+            let (status, read) = get(&app, &entry.id, "user").await;
+            assert_eq!(status, 200);
+            assert_eq!(
+                read,
+                serde_json::to_value(entry).unwrap(),
+                "listing must not mutate entries"
+            );
+        }
+    }
+}
