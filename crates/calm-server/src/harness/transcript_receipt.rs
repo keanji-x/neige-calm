@@ -13,7 +13,7 @@ pub(crate) async fn restore(
     turn: &str,
     items: &[Value],
 ) -> Result<()> {
-    let rows = repo.transcript_rows_of_thread(card, thread).await?;
+    let mut frames = Vec::new();
     for frame in items {
         let params = &frame["params"];
         let method = frame["method"]
@@ -26,28 +26,24 @@ pub(crate) async fn restore(
         let kind = params["item"]["type"]
             .as_str()
             .ok_or_else(|| CalmError::Conflict("Receipt item has no type".into()))?;
-        let json = serde_json::to_string(params)?;
-        if rows.iter().any(|row| {
-            row.turn_id.as_deref() == Some(turn)
-                && row.item_uuid.as_deref() == Some(id)
-                && row.method == method
-                && row.params == json
-        }) {
-            continue;
+        if params["threadId"].as_str() != Some(thread)
+            || params["turnId"].as_str() != Some(turn)
+            || frames
+                .iter()
+                .any(|item: &calm_truth::db::TranscriptReceiptItem| item.item_uuid == id)
+        {
+            return Err(CalmError::Conflict(
+                "Receipt item ownership or identity changed".into(),
+            ));
         }
-        repo.harness_item_insert(
-            worker,
-            card,
-            track,
-            thread,
-            Some(turn),
-            Some(id),
-            Some(kind),
-            method,
-            &json,
-            None,
-        )
-        .await?;
+        frames.push(calm_truth::db::TranscriptReceiptItem {
+            item_uuid: id.into(),
+            item_type: kind.into(),
+            method: method.into(),
+            params: serde_json::to_string(params)?,
+        });
     }
-    Ok(())
+    Ok(repo
+        .transcript_receipt_restore(worker, card, track, thread, turn, &frames)
+        .await?)
 }

@@ -3,8 +3,8 @@
 # committed baseline tsv. Both directions fail: a rise is new retiring vocabulary,
 # a fall means tighten the ratchet (`--update-baseline`, commit the tsv).
 # A baseline is only valid for the tree it was generated on — regenerate after every merge of upstream.
-# #2343 bounded exception: harness_item/crates 274 -> 276 is one test-only DELETE of the frozen
-# transcript table and one call to its existing writer for receipt recovery; no new domain name.
+# #2343 bounded exception: harness_item/crates 274 -> 278 covers two test-only deletes plus
+# the storage owner's receipt projection read/rebuild of the frozen table; no new domain name.
 # #1913 bounded exception: spec/fe 59 -> 63 comes solely from the pinned
 # temporal-spec transitive dependency in fe/package-lock.json (dependency key,
 # package path and two archive URL tokens). No retired application concept is added.

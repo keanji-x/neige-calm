@@ -3,6 +3,8 @@
 mod acp_planner_authentication;
 #[path = "cases/acp_planner_lifecycle.rs"]
 mod acp_planner_lifecycle;
+#[path = "cases/acp_planner_transcript.rs"]
+mod acp_planner_transcript;
 #[allow(dead_code)]
 #[path = "cases/claude_planner_session_fixture.rs"]
 mod claude_planner_session_fixture;

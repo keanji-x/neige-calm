@@ -117,6 +117,15 @@ pub struct TranscriptRow {
     pub input_segments: Option<String>,
 }
 
+/// Final item projection retained by a provider-owned durable receipt.
+#[derive(Debug, Clone)]
+pub struct TranscriptReceiptItem {
+    pub item_uuid: String,
+    pub item_type: String,
+    pub method: String,
+    pub params: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceLease {
     pub lease_id: String,
@@ -496,6 +505,18 @@ pub trait RepoOutOfDomain: RepoRead {
         params: &str,
         input_segments: Option<&str>,
     ) -> Result<i64>;
+
+    /// Atomically reconcile only receipt-owned item identities in their declared order.
+    #[allow(clippy::too_many_arguments)]
+    async fn transcript_receipt_restore(
+        &self,
+        worker: &str,
+        card: &str,
+        track: &str,
+        thread: &str,
+        turn: &str,
+        items: &[TranscriptReceiptItem],
+    ) -> Result<()>;
 
     /// Every row of one conversation thread on `card_id`, oldest first and unfiltered by method.
     async fn transcript_rows_of_thread(

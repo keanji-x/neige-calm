@@ -110,15 +110,15 @@ impl HarnessRegistry {
     /// Complete predecessor shutdown before transferring its discoverable slot.
     pub async fn reserve_after_shutdown(
         &self,
-        runtime_id: String,
+        worker_session_id: String,
     ) -> crate::error::Result<HarnessReservation> {
         loop {
-            let previous = self.get(&runtime_id);
+            let previous = self.get(&worker_session_id);
             if let Some(previous) = previous.as_ref() {
                 previous.shutdown().await?;
             }
             let id = self.next_reservation_id();
-            match self.0.map.entry(runtime_id.clone()) {
+            match self.0.map.entry(worker_session_id.clone()) {
                 Entry::Occupied(mut occupied) => {
                     if let Slot::Live(current) = occupied.get()
                         && !previous
@@ -135,7 +135,7 @@ impl HarnessRegistry {
             }
             return Ok(HarnessReservation {
                 registry: self.clone(),
-                worker_session_id: runtime_id,
+                worker_session_id,
                 id,
                 done: false,
             });
@@ -145,15 +145,15 @@ impl HarnessRegistry {
     /// Retain a discoverable owner throughout shutdown, including caller cancellation.
     pub async fn shutdown_and_remove(
         &self,
-        runtime_id: &str,
+        worker_session_id: &str,
     ) -> crate::error::Result<Option<PlannerHarness>> {
         let mut stopped = None;
         loop {
-            let Some(handle) = self.get(&runtime_id.to_owned()) else {
+            let Some(handle) = self.get(&worker_session_id.to_owned()) else {
                 return Ok(stopped);
             };
             handle.shutdown().await?;
-            let removed = self.remove_if_same(runtime_id, &handle);
+            let removed = self.remove_if_same(worker_session_id, &handle);
             stopped = Some(handle);
             if removed {
                 return Ok(stopped);
@@ -162,8 +162,12 @@ impl HarnessRegistry {
     }
 
     /// Remove only the predecessor whose shutdown the caller confirmed.
-    pub(crate) fn remove_if_same(&self, runtime_id: &str, expected: &PlannerHarness) -> bool {
-        if let Entry::Occupied(occupied) = self.0.map.entry(runtime_id.to_owned())
+    pub(crate) fn remove_if_same(
+        &self,
+        worker_session_id: &str,
+        expected: &PlannerHarness,
+    ) -> bool {
+        if let Entry::Occupied(occupied) = self.0.map.entry(worker_session_id.to_owned())
             && matches!(occupied.get(), Slot::Live(current) if current.same_instance(expected))
         {
             occupied.remove();

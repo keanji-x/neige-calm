@@ -29,6 +29,8 @@ External Harness checkpoint persistence takes the same issuance lock as queue dr
 
 The kernel registry retains the predecessor's discoverable live slot throughout shutdown. Replacement reserves only after that shutdown completes and atomically checks instance identity; removal uses the same identity check. Cancellation therefore leaves a predecessor available for the next recovery attempt to join. Removing before shutdown and immediate replacement are restricted to fixture seams.
 
+Receipt projection is reconciled by the storage owner in one transaction. If native item rows are missing or out of order, it replaces only the receipt-owned identities in their declared order, retaining user input and other turns. The ordinary append path shares the same insertion primitive. An exact, ordered projection is left untouched, preserving row identity on repeated recovery.
+
 Process cleanup and boot credential revocation select only sessions registered in `acp_managed_sessions`. The `NEIGE_ACP_PLANNER` namespace and canonical data-dir instance marker exclude independent native clients and other Neige instances. Existing migrations are unchanged; additions are 0155 and 0156 on the initial base.
 
 ## Configuration
