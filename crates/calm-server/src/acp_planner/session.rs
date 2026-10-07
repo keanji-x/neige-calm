@@ -565,7 +565,7 @@ async fn drive(
         tracing::error!(%error,"ACP credential revocation failed");
     }
     let stopped = process.stop(&params.host, &params.worker_session_id).await;
-    let (events, known) = match outcome {
+    let (mut events, known) = match outcome {
         Ok(events) if stopped.is_ok() && revoked.is_ok() => (events, true),
         _ => (
             vec![PlannerEvent {
@@ -577,7 +577,7 @@ async fn drive(
             false,
         ),
     };
-    let turn = events
+    let mut turn = events
         .iter()
         .find_map(|event| match &event.kind {
             PlannerEventKind::TurnCompleted { turn } => Some(turn.clone()),
@@ -604,21 +604,29 @@ async fn drive(
                 .transpose()?
                 .as_deref(),
         )
-        .await?;
-        crate::harness::turn_outcome::record(
-            params.repo.as_ref(),
-            &params.worker_session_id,
-            &params.card_id,
-            &params.track_id,
-            &receipt.thread_id,
-            &receipt.turn_id,
-            &turn,
-        )
         .await
     }
     .await;
     if let Err(error) = settle {
         tracing::error!(%error,"ACP settlement failed; durable submission remains fenced");
+        turn = unknown_outcome(&receipt.turn_id);
+        events = vec![PlannerEvent {
+            thread_id: Some(receipt.thread_id.clone()),
+            kind: PlannerEventKind::TurnCompleted { turn: turn.clone() },
+        }];
+    }
+    if let Err(error) = crate::harness::turn_outcome::record(
+        params.repo.as_ref(),
+        &params.worker_session_id,
+        &params.card_id,
+        &params.track_id,
+        &receipt.thread_id,
+        &receipt.turn_id,
+        &turn,
+    )
+    .await
+    {
+        tracing::error!(%error,"ACP terminal projection failed; receipt remains authoritative");
     }
     let mut state = shared.state.lock().expect("ACP state");
     state.active = None;

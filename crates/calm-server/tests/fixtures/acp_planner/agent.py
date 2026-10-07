@@ -106,6 +106,10 @@ for line in sys.stdin:
         state['inputs'].extend(texts)
         native_path().write_text(json.dumps(state))
         scenario = (root / 'scenario').read_text().strip()
+        if scenario == 'settlement':
+            (root / 'before-settlement').touch()
+            while not (root / 'release-settlement').exists():
+                time.sleep(0.01)
         if scenario in ['lost', 'checkpoint']:
             os._exit(0)
         if scenario == 'permission':

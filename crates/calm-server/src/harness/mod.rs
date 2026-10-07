@@ -200,7 +200,7 @@ pub async fn spawn_recovered_harness(
     let mut snapshot = HarnessSnapshot::from_value_strict(state_json);
     // Catch-up is a PLANNER-push catch-up: replaying it into a conversation harness would inject
     // a backlog it was never meant to see. Unknown/absent role falls into the no-replay arm (fail-closed).
-    if role == Some(CardRole::Planner) {
+    if role == Some(CardRole::Planner) && provider != AgentProvider::OpenCode {
         let catch_up_watermark = snapshot.push_watermark;
         replay_harness_events_since(
             repo.clone(),

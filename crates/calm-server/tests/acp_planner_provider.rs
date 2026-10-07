@@ -555,6 +555,137 @@ async fn acp_operation_replay_uses_the_quiesced_full_checkpoint() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn acp_receipt_write_failure_cannot_publish_success() {
+    let root = Root::new("unused");
+    let stack = boot(&root).await;
+    let (_, card) = create(&stack).await;
+    std::fs::write(root.path().join("scenario"), "settlement").unwrap();
+    let (status, body) = stack.post_input(&card, "settle once").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    wait_file(&root, "before-settlement").await;
+    let pool = stack.repo().sqlite_pool().unwrap();
+    sqlx::query("CREATE TRIGGER refuse_acp_settlement BEFORE UPDATE ON acp_submissions WHEN NEW.state='completed' BEGIN SELECT RAISE(ABORT,'fixture receipt write failure'); END")
+        .execute(&pool).await.unwrap();
+    std::fs::write(root.path().join("release-settlement"), "").unwrap();
+    let outcome = stack.wait_outcomes(&card, 1).await;
+    assert_eq!(
+        outcome[0]["status"], "failed",
+        "undurable success cannot be published"
+    );
+    assert!(
+        outcome[0]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown")
+    );
+    let runtime = stack.runtime(&card).await;
+    assert!(
+        calm_server::db::sqlite::acp_submission_unresolved(&pool, &runtime.id)
+            .await
+            .unwrap()
+    );
+    sqlx::query("DROP TRIGGER refuse_acp_settlement")
+        .execute(&pool)
+        .await
+        .unwrap();
+    stack.shutdown().await;
+    let stack = boot(&root).await;
+    assert_eq!(stack.outcomes(&card).await[0]["status"], "failed");
+    assert_eq!(requests(&root, "session/prompt").len(), 1);
+    stack.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn acp_recovery_retires_dispatch_before_folding_later_report_edits() {
+    use calm_server::event::{EditAuthor, Event, EventScope};
+    use calm_server::harness::Observation;
+    use calm_server::ids::{ActorId, CardId, TrackId};
+    let root = Root::new("unused");
+    let stack = boot(&root).await;
+    let (track, card) = create(&stack).await;
+    let runtime = stack.runtime(&card).await;
+    std::fs::write(root.path().join("scenario"), "checkpoint").unwrap();
+    stack
+        .harness(&runtime.id)
+        .observe(Observation::ReportEdited {
+            track_id: TrackId::from(track.clone()),
+            body_sha256: "original".into(),
+            body: "original report".into(),
+            author: Some(EditAuthor::User),
+            body_before: None,
+            doc_rev_after: None,
+            blocks_after: None,
+        })
+        .unwrap();
+    wait_file(&root, "setup-checkpoint").await;
+    let checkpoint = stack.harness(&runtime.id).snapshot().await;
+    assert_eq!(
+        checkpoint.phase,
+        calm_server::harness::HarnessPhaseTag::IssuingTurn
+    );
+    assert!(matches!(
+        checkpoint.pending_entries()[0].observation(),
+        Observation::ReportEdited { .. }
+    ));
+    std::fs::write(root.path().join("release-setup"), "").unwrap();
+    stack.wait_outcomes(&card, 1).await;
+    let pool = stack.repo().sqlite_pool().unwrap();
+    stack.shutdown().await;
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
+        .bind(&runtime.id)
+        .bind(serde_json::to_string(&checkpoint).unwrap())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let area: String = sqlx::query_scalar("SELECT area_id FROM cards WHERE id=?1")
+        .bind(&card)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    let later = calm_server::db::sqlite::append_decision_event_in_tx(
+        &mut tx,
+        &ActorId::User,
+        &EventScope::Track {
+            area: area.into(),
+            track: TrackId::from(track.clone()),
+        },
+        None,
+        &Event::TrackReportEdited {
+            track_id: track.clone().into(),
+            card_id: CardId::from(card.clone()),
+            author: EditAuthor::User,
+            author_plugin_id: None,
+            edit_id: "later-edit".into(),
+            summary_before: String::new(),
+            summary_after: String::new(),
+            body_before: "original report".into(),
+            body_after: "later report".into(),
+            agent_message: None,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let stack = boot(&root).await;
+    let recovered = stack.harness(&runtime.id).snapshot().await;
+    let entries = recovered.pending_entries();
+    assert_eq!(
+        entries.len(),
+        1,
+        "only the undispatched report edit remains"
+    );
+    assert_eq!(entries[0].envelope_id(), Some(later));
+    assert!(
+        matches!(entries[0].observation(), Observation::ReportEdited { body, .. } if body == "later report")
+    );
+    assert_eq!(requests(&root, "session/prompt").len(), 1);
+    stack.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn acp_reset_does_not_mirror_the_predecessors_revoked_hash() {
     let root = Root::new("unused");
     let stack = boot(&root).await;
