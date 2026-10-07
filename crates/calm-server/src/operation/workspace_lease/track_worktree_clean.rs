@@ -50,9 +50,9 @@ pub(crate) fn spawn(pool: SqlitePool) {
 }
 
 /// One pass: `git clean -fdX` in each closed track's worktree that nothing occupies and that is not
-/// yet in `cleaned`. `cleaned`
-/// holds `(track_id, closed_at)`, so a reopened and closed-again track is cleaned again. Returns
-/// how many worktrees it cleaned. A worktree that fails is logged and retried next pass.
+/// yet in `cleaned`. `cleaned` holds `(track_id, closed_at)`, so a reopened and closed-again track
+/// is cleaned again. Returns how many worktrees it cleaned. A worktree that fails is logged and
+/// retried next pass.
 pub(crate) async fn clean_idle_closed_track_worktrees(
     pool: &SqlitePool,
     cleaned: &mut HashSet<(String, i64)>,
