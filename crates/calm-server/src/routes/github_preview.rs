@@ -1,7 +1,7 @@
 //! Protected, read-only GitHub citations. Policy and the credential boundary live in github_preview.
+use crate::extract::{Json, Query};
 use crate::{
     error::{ErrorBody, Result},
-    extract::{Json, Query},
     github_preview::{GitHubPreview, PreviewQuery},
     state::AppState,
 };
