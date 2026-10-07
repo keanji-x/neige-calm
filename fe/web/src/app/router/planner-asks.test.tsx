@@ -81,8 +81,8 @@ it('answers the open ask from the Planner composer and hides it before the overl
   const { requests } = setup();
   const drawer = await open('Planner chat');
   const ask = await within(drawer).findByRole('group', { name: 'The Planner asks' });
-  fireEvent.click(within(ask).getByRole('radio', { name: 'release' }));
-  fireEvent.change(within(ask).getByRole('textbox', { name: 'Notes?' }), { target: { value: 'Tag it 2.0' } });
+  fireEvent.click(within(ask).getByRole('button', { name: 'release' }));
+  fireEvent.change(await within(ask).findByRole('textbox', { name: 'Notes?' }), { target: { value: 'Tag it 2.0' } });
   fireEvent.click(within(ask).getByRole('button', { name: 'Answer' }));
   await waitFor(() => expect(requests.filter((request) => request.path.endsWith('/answer'))).toHaveLength(1));
   const answer = requests.find((request) => request.path.endsWith('/answer'));

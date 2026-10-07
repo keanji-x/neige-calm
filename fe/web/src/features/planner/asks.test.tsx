@@ -1,142 +1,136 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
 import type { OpenAsk } from '../../../../core/domain/ask.ts';
 import { ApiError } from '../../../../core/domain/failure-class.ts';
 import { PlannerAskDrawer, type AnswerAsk } from './asks.tsx';
 
 afterEach(cleanup);
-
-const TWO_QUESTIONS: OpenAsk = {
-  askId: 7,
-  questions: [
-    { title: 'Which branch should I release from?', options: ['main', 'release/2.0'] },
-    { title: 'Anything to tell the reviewers?', options: [] },
-  ],
-};
-const LATER: OpenAsk = { askId: 9, questions: [{ title: 'Merge PR #12?', options: ['Merge', 'Hold'] }] };
-
-function http(status: number, message: string): ApiError {
-  return new ApiError({ kind: 'http', status, code: 'error', message });
-}
-
-function renderDrawer(asks: readonly OpenAsk[], onAnswer: AnswerAsk) {
-  return render(<PlannerAskDrawer asks={asks} onAnswer={onAnswer} />);
-}
-
-/** Astryx keeps a tooltipped disabled button focusable: `aria-disabled`, not `disabled`. */
-function isDisabled(button: HTMLElement): boolean {
-  return button.hasAttribute('disabled') || button.getAttribute('aria-disabled') === 'true';
-}
-
-function answerButton(): HTMLElement {
-  return screen.getByRole('button', { name: 'Answer' });
+const TWO: OpenAsk = { askId: 7, questions: [
+  { title: 'Which branch?', options: ['main', 'release'] }, { title: 'Notes?', options: [] },
+] };
+const SINGLE: OpenAsk = { askId: 9, questions: [{ title: 'Merge PR #12?', options: ['Merge', 'Hold'] }] };
+const http = (status: number, message: string) => new ApiError({ kind: 'http', status, code: 'error', message });
+function setup(asks: readonly OpenAsk[], onAnswer: AnswerAsk = vi.fn(() => Promise.resolve())) {
+  const view = render(<PlannerAskDrawer asks={asks} onAnswer={onAnswer} />);
+  return { ...view, onAnswer };
 }
 
 describe('PlannerAskDrawer', () => {
-  it('renders nothing when the track asks nothing', () => {
-    const { container } = renderDrawer([], vi.fn<AnswerAsk>());
-    expect(container.innerHTML).toBe('');
+  it('renders nothing without open questions', () => {
+    expect(setup([]).container.innerHTML).toBe('');
   });
-
-  it('shows each question in the Planner’s words, the first option picked and marked recommended', () => {
-    renderDrawer([TWO_QUESTIONS], vi.fn<AnswerAsk>());
-    const branch = screen.getByRole('radiogroup', { name: 'Which branch should I release from?' });
-    expect(within(branch).getByRole<HTMLInputElement>('radio', { name: /main/ }).checked).toBe(true);
-    expect(within(branch).getByRole<HTMLInputElement>('radio', { name: 'release/2.0' }).checked).toBe(false);
-    expect(within(branch).getByText('Recommended')).toBeTruthy();
-    expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Anything to tell the reviewers?' }).value).toBe('');
-    /* The collapse toggle names the questions, not the images beside them. */
-    expect(screen.getByRole('button', { name: /Questions/ }).getAttribute('aria-expanded')).toBe('true');
+  it('uses Astryx’s questions drawer and its collapse disclosure', async () => {
+    const { container } = setup([TWO]);
+    expect(container.firstElementChild?.className).toContain('astryx-chat-composer-drawer');
+    const toggle = screen.getByRole('button', { name: 'Collapse Questions' });
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    await userEvent.click(toggle);
+    expect(screen.getByRole('button', { name: 'Expand Questions' }).getAttribute('aria-expanded')).toBe('false');
   });
-
-  it('waits for an answer to every question before it can be sent', async () => {
-    const onAnswer = vi.fn<AnswerAsk>(() => Promise.resolve());
-    renderDrawer([TWO_QUESTIONS], onAnswer);
-    expect(isDisabled(answerButton())).toBe(true);
-    await userEvent.type(screen.getByRole('textbox', { name: 'Anything to tell the reviewers?' }), '   ');
-    expect(isDisabled(answerButton())).toBe(true);
+  it('answers a single choice directly from the conversation card', async () => {
+    const { onAnswer } = setup([SINGLE]);
+    await userEvent.click(screen.getByRole('button', { name: 'Hold' }));
+    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(9, ['Hold']));
+    expect(screen.queryByRole('group', { name: 'The Planner asks' })).toBeNull();
   });
-
-  it('sends the picked option and the free answer, in question order, then hides the ask', async () => {
-    const onAnswer = vi.fn<AnswerAsk>(() => Promise.resolve());
-    renderDrawer([TWO_QUESTIONS], onAnswer);
-    await userEvent.click(screen.getByRole('radio', { name: 'release/2.0' }));
-    await userEvent.type(screen.getByRole('textbox', { name: 'Anything to tell the reviewers?' }), ' Ship it ');
-    await userEvent.click(answerButton());
-    await waitFor(() => expect(onAnswer).toHaveBeenCalledOnce());
-    expect(onAnswer).toHaveBeenCalledWith(7, ['release/2.0', 'Ship it']);
-    await waitFor(() => expect(screen.queryByRole('group', { name: 'The Planner asks' })).toBeNull());
+  it('commits all answers in order only at the last question', async () => {
+    const { onAnswer } = setup([TWO]);
+    expect(screen.getByRole('heading', { name: 'Which branch?' })).toBeTruthy();
+    expect(screen.queryByRole('textbox', { name: 'Notes?' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'release' }));
+    expect(onAnswer).not.toHaveBeenCalled();
+    await userEvent.type(screen.getByRole('textbox', { name: 'Notes?' }), ' Ship it ');
+    await userEvent.click(screen.getByRole('button', { name: 'Answer' }));
+    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(7, ['release', 'Ship it']));
   });
-
-  it('sends the reader’s own words instead of the picked option once they write some', async () => {
-    const onAnswer = vi.fn<AnswerAsk>(() => Promise.resolve());
-    renderDrawer([LATER], onAnswer);
-    await userEvent.type(screen.getByRole('textbox', { name: 'Your own answer: Merge PR #12?' }), 'Wait for CI');
-    await userEvent.click(answerButton());
+  it('marks the chosen option when returning, and clears it for a custom answer', async () => {
+    setup([TWO]);
+    await userEvent.click(screen.getByRole('button', { name: 'release' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Previous question' }));
+    expect(screen.getByRole('button', { name: 'release' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: 'main' }).getAttribute('aria-pressed')).toBe('false');
+    await userEvent.type(screen.getByRole('textbox', { name: 'Which branch?' }), 'custom branch');
+    expect(screen.getByRole('button', { name: 'release' }).getAttribute('aria-pressed')).toBe('false');
+  });
+  it('preserves drafts on return to an earlier question', async () => {
+    const { onAnswer } = setup([TWO]);
+    await userEvent.click(screen.getByRole('button', { name: 'release' }));
+    await userEvent.type(screen.getByRole('textbox', { name: 'Notes?' }), 'Keep these notes');
+    await userEvent.click(screen.getByRole('button', { name: 'Previous question' }));
+    await userEvent.click(screen.getByRole('button', { name: 'main' }));
+    expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Notes?' }).value).toBe('Keep these notes');
+    await userEvent.click(screen.getByRole('button', { name: 'Answer' }));
+    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(7, ['main', 'Keep these notes']));
+  });
+  it('accepts the reader’s own words for an option question', async () => {
+    const { onAnswer } = setup([SINGLE]);
+    await userEvent.type(screen.getByRole('textbox', { name: 'Merge PR #12?' }), 'Wait for CI');
+    await userEvent.click(screen.getByRole('button', { name: 'Answer' }));
     await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(9, ['Wait for CI']));
   });
-
-  it('shows the oldest ask first, and the next once it is answered', async () => {
-    const onAnswer = vi.fn<AnswerAsk>(() => Promise.resolve());
-    renderDrawer([LATER, TWO_QUESTIONS].sort((a, b) => a.askId - b.askId), onAnswer);
-    expect(screen.getByText('1 more ask waits after this one.')).toBeTruthy();
-    expect(screen.queryByRole('radiogroup', { name: 'Merge PR #12?' })).toBeNull();
-    await userEvent.type(screen.getByRole('textbox', { name: 'Anything to tell the reviewers?' }), 'No');
-    await userEvent.click(answerButton());
-    await screen.findByRole('radiogroup', { name: 'Merge PR #12?' });
-    expect(screen.queryByText(/more ask/)).toBeNull();
+  it('rejects blank free answers and clamps the server’s character limit', () => {
+    setup([SINGLE]);
+    const input = screen.getByRole<HTMLInputElement>('textbox', { name: 'Merge PR #12?' });
+    fireEvent.change(input, { target: { value: '   ' } });
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Answer' }).disabled).toBe(true);
+    fireEvent.change(input, { target: { value: 'x'.repeat(2001) } });
+    expect(input.value).toHaveLength(2000);
   });
-
-  it('counts the questions of the ask it shows, not of the asks waiting after it', () => {
-    renderDrawer([TWO_QUESTIONS, LATER], vi.fn<AnswerAsk>());
-    /* The collapsed summary's badge: the shown ask has 2 questions; the 1 waiting is the line below. */
-    expect(screen.getByRole('button', { name: /Questions/ }).textContent).toBe('2Questions');
-    expect(screen.getByText('1 more ask waits after this one.')).toBeTruthy();
+  it('preserves the earlier group’s draft and position across group switches', async () => {
+    setup([TWO, SINGLE]);
+    await userEvent.click(screen.getByRole('button', { name: 'release' }));
+    await userEvent.type(screen.getByRole('textbox', { name: 'Notes?' }), 'Draft');
+    await userEvent.click(screen.getByRole('button', { name: '1 more ask' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Merge PR #12?' }));
+    expect(screen.getByRole('heading', { name: 'Merge PR #12?' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: '1 more ask' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Which branch?' }));
+    expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Notes?' }).value).toBe('Draft');
   });
-
-  it('keeps an answer to the server’s 2000 characters', () => {
-    renderDrawer([TWO_QUESTIONS], vi.fn<AnswerAsk>());
-    const own = screen.getByRole<HTMLInputElement>('textbox', { name: 'Your own answer: Which branch should I release from?' });
-    fireEvent.change(own, { target: { value: 'x'.repeat(2001) } });
-    expect(own.value).toHaveLength(2000);
-    const free = screen.getByRole<HTMLInputElement>('textbox', { name: 'Anything to tell the reviewers?' });
-    fireEvent.change(free, { target: { value: 'y'.repeat(2500) } });
-    expect(free.value).toHaveLength(2000);
+  it('settles a confirmed ask before a stale overlay catches up', async () => {
+    const { rerender, onAnswer } = setup([SINGLE, TWO]);
+    await userEvent.click(screen.getByRole('button', { name: 'Hold' }));
+    await screen.findByRole('heading', { name: 'Which branch?' });
+    rerender(<PlannerAskDrawer asks={[SINGLE, TWO]} onAnswer={onAnswer} />);
+    expect(screen.queryByRole('heading', { name: 'Merge PR #12?' })).toBeNull();
   });
-
-  it('drops an ask already answered elsewhere (409) without a word', async () => {
-    const onAnswer = vi.fn<AnswerAsk>(() => Promise.reject(http(409, 'ask 9 is already answered')));
-    renderDrawer([LATER], onAnswer);
-    await userEvent.click(answerButton());
+  it('settles a 409 without inventing a local answer receipt', async () => {
+    setup([SINGLE], () => Promise.reject(http(409, 'already answered')));
+    await userEvent.click(screen.getByRole('button', { name: 'Hold' }));
     await waitFor(() => expect(screen.queryByRole('group', { name: 'The Planner asks' })).toBeNull());
+    expect(screen.queryByRole('status', { name: 'Submitted Planner answers' })).toBeNull();
     expect(screen.queryByRole('alert')).toBeNull();
-    expect(screen.queryByText(/already answered/)).toBeNull();
   });
-
-  it.each([
-    [400, 'answers[0] must not be empty'],
-    [404, 'ask 9 on track w1'],
-  ])('keeps the ask and says why when the answer is refused (%i)', async (status, reason) => {
-    const onAnswer = vi.fn<AnswerAsk>(() => Promise.reject(http(status, reason)));
-    renderDrawer([LATER], onAnswer);
-    await userEvent.click(answerButton());
-    expect(await screen.findByText(reason)).toBeTruthy();
-    expect(screen.getByRole('group', { name: 'The Planner asks' })).toBeTruthy();
-    expect(screen.getByRole<HTMLInputElement>('radio', { name: /Merge/ }).checked).toBe(true);
+  it.each([400, 404])('keeps the question after a refusal (%i)', async status => {
+    setup([SINGLE], () => Promise.reject(http(status, 'Not permitted')));
+    await userEvent.click(screen.getByRole('button', { name: 'Hold' }));
+    expect(await screen.findByText('Not permitted')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Merge PR #12?' })).toBeTruthy();
+    expect(screen.queryByRole('status', { name: 'Submitted Planner answers' })).toBeNull();
   });
-
-  it('keeps the ask when the outcome is unknown, so Answer can be pressed again', async () => {
-    const onAnswer = vi.fn<AnswerAsk>()
-      .mockRejectedValueOnce(new ApiError({ kind: 'transport', message: 'dropped' }))
-      .mockRejectedValueOnce(http(409, 'ask 9 is already answered'));
-    renderDrawer([LATER], onAnswer);
-    await userEvent.click(answerButton());
+  it('keeps uncertain writes retryable and settles a 409 retry', async () => {
+    const onAnswer = vi.fn<AnswerAsk>().mockRejectedValueOnce(new ApiError({ kind: 'transport', message: 'dropped' }))
+      .mockRejectedValueOnce(http(409, 'already answered'));
+    setup([SINGLE], onAnswer);
+    await userEvent.click(screen.getByRole('button', { name: 'Hold' }));
     expect(await screen.findByText('Sending your answer is unconfirmed.')).toBeTruthy();
-    await userEvent.click(answerButton());
+    await userEvent.click(screen.getByRole('button', { name: 'Hold' }));
     await waitFor(() => expect(screen.queryByRole('group', { name: 'The Planner asks' })).toBeNull());
     expect(onAnswer).toHaveBeenCalledTimes(2);
+  });
+  it('locks every choice and group switch during a write', async () => {
+    let finish!: () => void;
+    const onAnswer = vi.fn<AnswerAsk>(() => new Promise<void>(resolve => { finish = resolve; }));
+    setup([SINGLE, TWO], onAnswer);
+    const hold = screen.getByRole('button', { name: 'Hold' });
+    fireEvent.click(hold); fireEvent.click(hold);
+    fireEvent.click(screen.getByRole('button', { name: 'Merge' }));
+    expect(onAnswer).toHaveBeenCalledOnce();
+    const switcher = screen.getByRole<HTMLButtonElement>('button', { name: '1 more ask' });
+    expect(switcher.disabled || switcher.getAttribute('aria-disabled') === 'true').toBe(true);
+    finish();
+    await screen.findByRole('heading', { name: 'Which branch?' });
   });
 });

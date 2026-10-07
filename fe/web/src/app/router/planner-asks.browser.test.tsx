@@ -1,3 +1,4 @@
+import '../../styles/entry.css';
 // #2209 U3 in a real browser: a two-question ask above the Planner composer, answered and gone.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, RouterProvider } from '@tanstack/react-router';
@@ -9,7 +10,6 @@ import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts'
 import { APP_BASEPATH, createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 import { ThemeProvider } from '../theme/public.tsx';
-import '../../styles/entry.css';
 
 afterEach(async () => {
   cleanup(); document.getElementById('root')?.remove(); delete document.documentElement.dataset.theme;
@@ -84,33 +84,36 @@ function setup(theme: 'light' | 'dark', ask: typeof ASK = ASK) {
 
 it.each([
   ['light', 1280], ['dark', 1280], ['light', 390], ['dark', 390],
-] as const)('answers a two-question ask from the real Planner composer in %s at %ipx', async (theme, width) => {
+] as const)('answers sequential questions inside the real Planner conversation in %s at %ipx', async (theme, width) => {
   await page.viewport(width, width < 600 ? 844 : 800);
   const { requests } = setup(theme);
   await page.getByRole('button', { name: /Conversation Planner/ }).click();
   const ask = page.getByRole('group', { name: 'The Planner asks' });
   await expect.element(ask).toBeVisible();
-  /* Above the field it answers beside, inside the same composer. */
-  const field = page.getByRole('combobox', { name: 'Message' });
-  expect((await ask.findElement()).getBoundingClientRect().bottom)
-    .toBeLessThanOrEqual((await field.findElement()).getBoundingClientRect().top);
-  await expect.element(ask.getByRole('radio', { name: /main/ })).toBeChecked();
-  await ask.getByText('release/2.0').click();
-  await expect.element(ask.getByRole('radio', { name: 'release/2.0' })).toBeChecked();
-  await ask.getByRole('textbox', { name: 'Anything to tell the reviewers?' }).fill('Tag it after the docs land.');
+  expect((await ask.findElement()).closest('[data-nc-composer]')).not.toBeNull();
+  const questionElement = await ask.findElement();
+  const answerLine = await ask.getByRole('group', { name: 'Your answer' }).findElement();
+  expect(getComputedStyle(answerLine).borderBottomWidth).toBe('1px');
+  expect(getComputedStyle(questionElement.querySelector('h3')!).fontSize).toBe('15px');
+  expect(getComputedStyle(await ask.getByRole('button', { name: 'release/2.0' }).findElement()).fontSize).toBe('13px');
+
+  await ask.getByRole('button', { name: 'release/2.0' }).click();
+  expect(requests.filter(request => request.path.endsWith('/answer'))).toHaveLength(0);
+  const own = ask.getByRole('textbox', { name: 'Anything to tell the reviewers?' });
+  await expect.element(own).toHaveFocus();
+  await own.fill('Tag it after the docs land.');
   expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
-  await page.screenshot({ path: `__screenshots__/planner-asks-${theme}-${width}.png` });
   await ask.getByRole('button', { name: 'Answer' }).click();
-  await expect.poll(() => requests.filter((request) => request.path.endsWith('/answer')).length).toBe(1);
-  const answer = requests.find((request) => request.path.endsWith('/answer'));
+  await expect.poll(() => requests.filter(request => request.path.endsWith('/answer')).length).toBe(1);
+  const answer = requests.find(request => request.path.endsWith('/answer'));
   expect(answer?.method).toBe('POST');
   expect(answer?.path).toBe(`/api/tracks/${TRACK.id}/asks/7/answer`);
   expect(answer?.body).toEqual({ answers: ['release/2.0', 'Tag it after the docs land.'] });
   await expect.element(ask).not.toBeInTheDocument();
-  await expect.element(field).toBeVisible();
+  await expect.element(page.getByRole('combobox', { name: 'Message' })).toBeVisible();
 });
 
-it('keeps the questions and the images in two drawers, each its own disclosure, the images next to the field', async () => {
+it('keeps attachments in the composer with questions in their own Astryx drawer', async () => {
   await page.viewport(1280, 800);
   setup('light');
   await page.getByRole('button', { name: /Conversation Planner/ }).click();
@@ -119,42 +122,30 @@ it('keeps the questions and the images in two drawers, each its own disclosure, 
   const picker = document.querySelector<HTMLInputElement>('[data-nc-attach] input[type="file"]')!;
   await userEvent.upload(picker, new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'shot.png', { type: 'image/png' }));
   await expect.poll(() => document.querySelectorAll('[data-nc-attachments] img').length).toBe(1);
-  const toggles = [...document.querySelectorAll<HTMLElement>('[aria-controls][aria-expanded]')]
-    .map((toggle) => toggle.getAttribute('aria-label') ?? '');
-  expect(toggles.filter((name) => /Questions/.test(name))).toHaveLength(1);
-  expect(toggles.filter((name) => /Images/.test(name))).toHaveLength(1);
-  const field = (await page.getByRole('combobox', { name: 'Message' }).findElement()).getBoundingClientRect();
-  const strip = document.querySelector<HTMLElement>('[data-nc-attachments]')!.getBoundingClientRect();
-  expect((await ask.findElement()).getBoundingClientRect().bottom).toBeLessThanOrEqual(strip.top);
-  expect(strip.bottom).toBeLessThanOrEqual(field.top);
-  await page.screenshot({ path: '__screenshots__/planner-asks-with-images-light-1280.png' });
+  const strip = document.querySelector<HTMLElement>('[data-nc-attachments]')!;
+  expect(strip.closest('[data-nc-composer]')).not.toBeNull();
+  expect((await ask.findElement()).closest('[data-nc-composer]')).not.toBeNull();
 });
 
-/* #2209 U3 review: the drawer and the pane around it clip rather than scroll, so a long ask must bound itself. Read
-   before any click on the ask: a locator's click scrolls even a clipped box into view, which no wheel or touch can. */
 it.each([
-  ['4×4', 4, false, 1280, 720], ['4×4', 4, false, 390, 844],
-  ['8×8 long-option', 8, true, 1280, 720], ['8×8 long-option', 8, true, 390, 844],
-] as const)('keeps Answer and the field in view for a %s ask (%i questions, long options %s) at %ipx×%ipx, the questions scrolling', async (_name, count, long, width, height) => {
+  [4, false, 1280, 720], [4, false, 390, 844],
+  [8, true, 1280, 720], [8, true, 390, 844], [8, true, 844, 390],
+] as const)('keeps the composer in view while answering %i questions (long=%s) at %i×%i', async (count, long, width, height) => {
   await page.viewport(width, height);
-  setup('light', largeAsk(count, long));
+  const { requests } = setup('light', largeAsk(count, long));
   await page.getByRole('button', { name: /Conversation Planner/ }).click();
   const ask = page.getByRole('group', { name: 'The Planner asks' });
   await expect.element(ask).toBeVisible();
-  const answer = (await ask.getByRole('button', { name: 'Answer' }).findElement()).getBoundingClientRect();
   const field = (await page.getByRole('combobox', { name: 'Message' }).findElement()).getBoundingClientRect();
-  expect(answer.top).toBeGreaterThanOrEqual(0);
-  expect(answer.bottom).toBeLessThanOrEqual(window.innerHeight);
   expect(field.bottom).toBeLessThanOrEqual(window.innerHeight);
-  expect(answer.bottom).toBeLessThanOrEqual(field.top);
-  const list = document.querySelector<HTMLElement>('[data-nc-ask-questions]')!;
-  expect(['auto', 'scroll']).toContain(getComputedStyle(list).overflowY);
-  expect(list.scrollHeight).toBeGreaterThan(list.clientHeight);
-  if (long && width < 600) await page.screenshot({ path: `__screenshots__/planner-asks-${count}x${count}-long-${width}.png` });
-  /* What a wheel or a swipe does: the box scrolls to its last question, which is then inside it. */
-  list.scrollTop = list.scrollHeight;
-  const last = page.getByRole('radiogroup', { name: new RegExp(`^Question ${count}:`) });
-  const box = list.getBoundingClientRect();
-  await expect.poll(async () => (await last.findElement()).getBoundingClientRect().bottom).toBeLessThanOrEqual(box.bottom + 1);
   expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
+  expect((await ask.findElement()).closest('[data-nc-composer]')).not.toBeNull();
+  for (let index = 0; index < count; index++) {
+    await expect.element(ask.getByRole('heading', { name: new RegExp(`^Question ${index + 1}:`) })).toBeVisible();
+    await ask.getByRole('button', { name: new RegExp(`^Plan ${index + 1}\\.1(?: |$)`) }).click();
+  }
+  await expect.poll(() => requests.filter(request => request.path.endsWith('/answer')).length).toBe(1);
+  const answer = requests.find(request => request.path.endsWith('/answer'));
+  expect(answer?.body).toEqual({ answers: largeAsk(count, long).questions.map(question => question.options[0]) });
+  await expect.element(ask).not.toBeInTheDocument();
 });
