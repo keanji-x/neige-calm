@@ -294,7 +294,7 @@ pub fn gate_attempt_key(task_id: &str, attempt: i64) -> String {
 }
 
 pub struct TaskVerifyAdapter {
-    /// `<data_dir>/gate-logs` — wrapper scripts, logs, exit files.
+    /// `<data_dir>/gate-logs` — wrapper scripts, logs, exit files, step files.
     gate_logs_dir: PathBuf,
     #[cfg(test)]
     pub(crate) before_release:
@@ -759,7 +759,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
         let observer_pool = pool.clone();
         let observer_evidence = GateEvidence {
             log_path: log_path.clone(),
-            step_path: step_path.clone(),
+            step_path: Some(step_path.clone()),
             steps: frozen.gate.steps.clone(),
         };
         let observer_frozen = frozen.clone();
@@ -831,8 +831,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
             .unwrap_or_else(|| self.exit_path(&frozen.task_id, frozen.attempt));
         let evidence = GateEvidence {
             log_path: log_path_from_artifacts(artifacts),
-            step_path: step_path_from_artifacts(artifacts)
-                .unwrap_or_else(|| self.step_path(&frozen.task_id, frozen.attempt)),
+            step_path: step_path_from_artifacts(artifacts),
             steps: frozen.gate.steps.clone(),
         };
         if !alive {

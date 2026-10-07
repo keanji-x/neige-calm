@@ -140,16 +140,18 @@ pub(crate) fn read_log_tail(log_path: &Path) -> String {
 #[derive(Clone, Debug)]
 pub(crate) struct GateEvidence {
     pub log_path: PathBuf,
-    pub step_path: PathBuf,
+    /// `None` for a gate whose spawn recorded no step file (spawned before the wrapper wrote one).
+    pub step_path: Option<PathBuf>,
     pub steps: Vec<GateStep>,
 }
 
 impl GateEvidence {
     /// The step the wrapper last started, from the step file. `None` when no step started (the
     /// file is absent, e.g. the handshake failed) or the record does not name a declared step.
-    /// Like the exit file, a same-user step could overwrite it; it names a step, never a verdict.
+    /// Like the exit file, a same-user step could overwrite it: it names the step and decides red
+    /// versus infra, never passed versus failed.
     fn started_step(&self) -> Option<String> {
-        let number: usize = std::fs::read_to_string(&self.step_path)
+        let number: usize = std::fs::read_to_string(self.step_path.as_ref()?)
             .ok()?
             .trim()
             .parse()

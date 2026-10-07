@@ -17,7 +17,7 @@ fn scratch(name: &str) -> PathBuf {
 fn evidence(dir: &Path, steps: &[(&str, &str)]) -> GateEvidence {
     GateEvidence {
         log_path: dir.join("wrapper.log"),
-        step_path: dir.join("wrapper.step"),
+        step_path: Some(dir.join("wrapper.step")),
         steps: steps
             .iter()
             .map(|(name, cmd)| GateStep {
@@ -26,6 +26,10 @@ fn evidence(dir: &Path, steps: &[(&str, &str)]) -> GateEvidence {
             })
             .collect(),
     }
+}
+
+fn step_path(evidence: &GateEvidence) -> &Path {
+    evidence.step_path.as_deref().expect("a step file")
 }
 
 /// Run the real wrapper under `/bin/sh` the way `spawn_held` does: log on stdout and stderr, both
@@ -41,7 +45,7 @@ async fn run_wrapper(dir: &Path, evidence: &GateEvidence) -> i32 {
         .stdout(std::process::Stdio::from(log_file.try_clone().unwrap()))
         .stderr(std::process::Stdio::from(log_file))
         .env("NEIGE_GATE_EXIT_PATH", dir.join("wrapper.exit"))
-        .env("NEIGE_GATE_STEP_PATH", &evidence.step_path)
+        .env("NEIGE_GATE_STEP_PATH", step_path(&evidence))
         .spawn()
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
@@ -60,7 +64,7 @@ fn verdict_classification() {
     let evidence = evidence(&dir, &[("fmt", "true"), ("test", "false")]);
     std::fs::write(&evidence.log_path, "ok\n").unwrap();
 
-    std::fs::write(&evidence.step_path, "2\n").unwrap();
+    std::fs::write(step_path(&evidence), "2\n").unwrap();
     let v = verdict_from_exit_code(0, &evidence, 1);
     assert!(v.passed);
     assert_eq!(v.status_detail, None);
@@ -79,13 +83,22 @@ fn verdict_classification() {
 
     // A record that names no declared step attributes nothing.
     for record in ["3\n", "0\n", "two\n", ""] {
-        std::fs::write(&evidence.step_path, record).unwrap();
+        std::fs::write(step_path(&evidence), record).unwrap();
         let v = verdict_from_exit_code(1, &evidence, 1);
         assert_eq!(v.status_detail.as_deref(), Some("gate-infra"), "{record:?}");
         assert_eq!(v.failing_step, None, "{record:?}");
     }
 
-    std::fs::remove_file(&evidence.step_path).unwrap();
+    // A gate spawned before the wrapper wrote a step file recorded none: it names no step.
+    let unrecorded = GateEvidence {
+        step_path: None,
+        ..evidence.clone()
+    };
+    let v = verdict_from_exit_code(1, &unrecorded, 1);
+    assert_eq!(v.status_detail.as_deref(), Some("gate-infra"));
+    assert_eq!(v.failing_step, None);
+
+    std::fs::remove_file(step_path(&evidence)).unwrap();
     std::fs::write(&evidence.log_path, "").unwrap();
     let v = verdict_from_exit_code(75, &evidence, 1);
     assert_eq!(v.status_detail.as_deref(), Some("gate-infra"));
@@ -236,7 +249,7 @@ async fn wrapper_handshake_eof_exits_75_having_run_nothing() {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .env("NEIGE_GATE_EXIT_PATH", &exit_path)
-        .env("NEIGE_GATE_STEP_PATH", &evidence.step_path)
+        .env("NEIGE_GATE_STEP_PATH", step_path(&evidence))
         .spawn()
         .unwrap();
     // Kernel-death stand-in: drop the held stdin WITHOUT writing the go-token.
@@ -251,7 +264,7 @@ async fn wrapper_handshake_eof_exits_75_having_run_nothing() {
         !exit_path.exists(),
         "the handshake exit path bypasses neige_gate_finish"
     );
-    assert!(!evidence.step_path.exists(), "no step started");
+    assert!(!step_path(&evidence).exists(), "no step started");
 
     let verdict = verdict_from_exit_code(75, &evidence, 1);
     assert_eq!(verdict.status_detail.as_deref(), Some("gate-infra"));
