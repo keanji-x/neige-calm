@@ -80,7 +80,7 @@ pub async fn read(
     let access = access(&s, &actor).await?;
     Ok(Json(store::read(&s.mcp_context, &access, &id).await?))
 }
-#[utoipa::path(post, path="/api/calendar/tasks", tag="calendar", request_body=Create, responses(
+#[utoipa::path(post, path="/api/calendar/tasks", tag="calendar", operation_id="create_calendar_task", request_body=Create, responses(
     (status=200, body=Entry, description="Created, or the entry an earlier create under the same `idempotency_key` made"),
     (status=400, body=ErrorBody, description="`bad_request`: a time or timezone is not valid, or `idempotency_key` is not 1 to 200 bytes"),
     (status=403, body=ErrorBody, description=FORBIDDEN),

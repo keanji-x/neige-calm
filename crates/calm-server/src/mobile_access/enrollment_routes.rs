@@ -28,6 +28,7 @@ pub fn management_router() -> Router<AuthState> {
 
 #[utoipa::path(
     get, path="/api/mobile/enrollments", tag="mobile",
+    operation_id = "get_mobile_enrollment_status",
     responses(
         (status=200, body=EnrollmentCleanup),
         (status=400, body=ErrorBody, description="`bad_request`: private Tailnet enrollment is not configured, or its control call failed"),
@@ -90,6 +91,7 @@ impl Drop for Reservation {
 
 #[utoipa::path(
     post, path="/api/mobile/enrollments", tag="mobile", request_body=MobileAction,
+    operation_id = "create_mobile_enrollment",
     responses(
         (status=200, body=EnrollmentCreated, description="A new scan invitation; it replaces and cancels the previous slot"),
         (status=400, body=ErrorBody, description="`bad_request`: a create is already in progress, a limit is reached, or the issuer failed"),
@@ -238,6 +240,7 @@ pub async fn cancel(
 
 #[utoipa::path(
     post, path="/api/mobile/enrollments/claim", tag="mobile", request_body=EnrollmentClaim, security(()),
+    operation_id = "claim_mobile_enrollment",
     responses(
         (status=200, body=EnrollmentClaimed),
         (status=400, body=ErrorBody, description="`bad_request`: the scan request limit is reached, or the device name is not 1-80 printable bytes"),
@@ -257,6 +260,7 @@ pub async fn claim(
 
 #[utoipa::path(
     post, path="/api/mobile/enrollments/redeem", tag="mobile", request_body=EnrollmentRedeem, security(()),
+    operation_id = "redeem_mobile_enrollment",
     responses(
         (status=200, body=EnrollmentRedeemed),
         (status=400, body=ErrorBody, description="`bad_request`: the scan request limit or the device limit is reached"),

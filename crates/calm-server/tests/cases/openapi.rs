@@ -5,6 +5,40 @@ use calm_server::openapi::ApiDoc;
 use utoipa::OpenApi;
 
 #[test]
+fn document_operation_ids_are_unique() {
+    let doc = ApiDoc::openapi();
+    let mut by_id = std::collections::BTreeMap::<&str, Vec<String>>::new();
+    let mut missing = Vec::new();
+    for (path, item) in &doc.paths.paths {
+        for (method, operation) in [
+            ("GET", &item.get),
+            ("PUT", &item.put),
+            ("POST", &item.post),
+            ("DELETE", &item.delete),
+            ("OPTIONS", &item.options),
+            ("HEAD", &item.head),
+            ("PATCH", &item.patch),
+            ("TRACE", &item.trace),
+        ] {
+            let Some(operation) = operation else { continue };
+            let location = format!("{method} {path}");
+            match operation.operation_id.as_deref() {
+                Some(id) if !id.trim().is_empty() => by_id.entry(id).or_default().push(location),
+                _ => missing.push(location),
+            }
+        }
+    }
+    let duplicates: Vec<_> = by_id
+        .into_iter()
+        .filter(|(_, locations)| locations.len() > 1)
+        .collect();
+    assert!(
+        missing.is_empty() && duplicates.is_empty(),
+        "OpenAPI operation IDs must be nonempty and globally unique; missing: {missing:#?}; duplicates: {duplicates:#?}"
+    );
+}
+
+#[test]
 fn document_contains_every_annotated_path() {
     let doc = ApiDoc::openapi();
     let expected_paths = [
