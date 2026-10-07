@@ -19,6 +19,9 @@ use std::process::Stdio;
 use tokio::process::Command;
 use utoipa::ToSchema;
 
+mod track_workspace;
+use track_workspace::open_track_workspace_file;
+
 const MAX_READFILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_READFILE_RAW_BYTES: u64 = 100 * 1024 * 1024;
 
@@ -291,12 +294,7 @@ pub(crate) async fn read_track_workspace_file(
         .track_get(&track_id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
-    let opened = open_workspace_regular_file(
-        Path::new(track.workspace.agent_cwd()),
-        &q.path,
-        WorkspaceSymlinks::FollowedInsideRoot,
-    )
-    .await?;
+    let opened = open_track_workspace_file(Path::new(track.workspace.agent_cwd()), &q.path).await?;
     Ok(Json(read_workspace_file_response(opened).await?))
 }
 
@@ -326,12 +324,7 @@ pub(crate) async fn read_track_workspace_file_raw(
         .track_get(&track_id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
-    let opened = open_workspace_regular_file(
-        Path::new(track.workspace.agent_cwd()),
-        &q.path,
-        WorkspaceSymlinks::FollowedInsideRoot,
-    )
-    .await?;
+    let opened = open_track_workspace_file(Path::new(track.workspace.agent_cwd()), &q.path).await?;
     read_workspace_file_raw_response(opened).await
 }
 
@@ -667,6 +660,7 @@ fn map_workspace_open_err(
 #[cfg(not(target_os = "linux"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WorkspaceSymlinks {
+    #[cfg(any(not(target_os = "macos"), test))]
     FollowedInsideRoot,
     Refused,
 }
@@ -1154,37 +1148,40 @@ fn map_io_err(path: &std::path::Path, e: std::io::Error) -> CalmError {
     }
 }
 
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod workspace_read_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     use crate::card_role_cache::CardRoleCache;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     use crate::db::prelude::*;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     use crate::db::sqlite::SqlxRepo;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     use crate::event::EventBus;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     use crate::model::{NewArea, NewTrack};
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     use crate::plugin_host::{PluginHost, PluginRegistry};
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     use crate::routes::theme::RequestTheme;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     use crate::state::{AppState, CodexClient, DaemonClient, WriteContext};
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     use crate::track_area_cache::TrackAreaCache;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     use axum::extract::FromRef;
     use axum::http::StatusCode;
     use http_body_util::BodyExt;
     use std::process::Command as StdCommand;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::sync::Arc;
 
-    #[cfg(target_os = "linux")]
-    async fn route_state_with_workspace_tracks(
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(super) async fn route_state_with_workspace_tracks(
         workspace_a: &Path,
         workspace_b: &Path,
     ) -> (RouteState, String, String) {
@@ -1327,7 +1324,7 @@ mod tests {
     /// Malformed is not missing, on every route that takes a path: a NUL byte or an over-long name answers 400
     /// `bad_request`, while an absent file and a file under a regular file (`NotADirectory`) answer 404
     /// `path_not_found`. Absolute and Track workspace routes alike, so neither mapper decides it alone.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn a_malformed_path_is_a_bad_request_and_a_missing_one_is_path_not_found() {
         let workspace = tempfile::tempdir().unwrap();
@@ -1588,7 +1585,7 @@ mod tests {
         assert_eq!(image.as_ref(), b"inside image");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn workspace_fifo_is_rejected_without_blocking_a_runtime_worker() {
         use nix::sys::stat::Mode;
@@ -1599,10 +1596,8 @@ mod tests {
         let fifo = workspace.path().join("pipe.txt");
         mkfifo(&fifo, Mode::S_IRUSR | Mode::S_IWUSR).unwrap();
         let root = workspace.path().to_path_buf();
-        let mut opening = tokio::spawn(async move {
-            open_workspace_regular_file(&root, "pipe.txt", WorkspaceSymlinks::FollowedInsideRoot)
-                .await
-        });
+        let mut opening =
+            tokio::spawn(async move { open_track_workspace_file(&root, "pipe.txt").await });
 
         match tokio::time::timeout(Duration::from_millis(250), &mut opening).await {
             Ok(result) => {
@@ -1635,7 +1630,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn workspace_file_handlers_use_the_requested_tracks_persisted_root() {
         let workspace_a = tempfile::tempdir().unwrap();
@@ -1647,28 +1642,36 @@ mod tests {
         let (state, track_a, track_b) =
             route_state_with_workspace_tracks(workspace_a.path(), workspace_b.path()).await;
 
-        let Json(text) = read_track_workspace_file(
-            State(state.clone()),
-            RoutePath(track_a.clone()),
-            Query(WorkspacePathQuery {
-                path: "same.txt".into(),
-            }),
-        )
-        .await
-        .unwrap();
-        assert_eq!(text.text, "from A\n");
-
-        let raw = read_track_workspace_file_raw(
-            State(state.clone()),
-            RoutePath(track_b),
-            Query(WorkspacePathQuery {
-                path: "same.png".into(),
-            }),
-        )
-        .await
-        .unwrap();
-        let bytes = raw.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(bytes.as_ref(), b"B image");
+        for (track, expected_text, expected_image) in [
+            (&track_a, "from A\n", b"A image"),
+            (&track_b, "from B\n", b"B image"),
+        ] {
+            let Json(text) = read_track_workspace_file(
+                State(state.clone()),
+                RoutePath(track.clone()),
+                Query(WorkspacePathQuery {
+                    path: "same.txt".into(),
+                }),
+            )
+            .await
+            .unwrap();
+            assert_eq!(text.text, expected_text);
+            let raw = read_track_workspace_file_raw(
+                State(state.clone()),
+                RoutePath(track.clone()),
+                Query(WorkspacePathQuery {
+                    path: "same.png".into(),
+                }),
+            )
+            .await
+            .unwrap();
+            assert_eq!(raw.headers()[header::CONTENT_TYPE], "image/png");
+            assert_eq!(raw.headers()[header::CACHE_CONTROL], "no-store");
+            assert_eq!(raw.headers()[header::CONTENT_SECURITY_POLICY], "sandbox");
+            assert_eq!(raw.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+            let bytes = raw.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(bytes.as_ref(), expected_image);
+        }
 
         let unknown = read_track_workspace_file(
             State(state.clone()),
@@ -1694,7 +1697,7 @@ mod tests {
     }
 
     /// The status and code an HTTP answer carries for `error`, as `IntoResponse` writes them.
-    async fn answered(error: CalmError) -> (StatusCode, String) {
+    pub(super) async fn answered(error: CalmError) -> (StatusCode, String) {
         let response = error.into_response();
         let status = response.status();
         let body = response.into_body().collect().await.unwrap().to_bytes();
@@ -1704,7 +1707,7 @@ mod tests {
 
     /// A missing path answers 404 with its own code, so a reader can say "not found" by status and code; a gone Track
     /// answers 404 `not_found`, which restoring a path cannot fix.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
     async fn a_missing_path_answers_404_path_not_found_apart_from_a_gone_track() {
         let workspace_a = tempfile::tempdir().unwrap();

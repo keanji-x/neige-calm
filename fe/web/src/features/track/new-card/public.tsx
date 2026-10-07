@@ -32,6 +32,7 @@ export function AddCardMenu({ entries, onSelect }: AddCardMenuProps) {
   return (
     <DropdownMenu
       placement="below"
+      alignment="end"
       button={{
         label: 'Add card',
         icon: <Icon name="plus" />,

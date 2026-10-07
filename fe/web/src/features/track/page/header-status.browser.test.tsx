@@ -42,6 +42,80 @@ const plannerNotification = [{
   key: 'ask:1', kind: 'ask' as const, text: 'Merge PR #1811 now, or hold it?', atMs: 1,
 }];
 
+describe('Track actions menu text geometry', () => {
+  function expectContained(inner: DOMRect, outer: DOMRect, context: string) {
+    // Fractional font/anchor geometry may differ by a subpixel; clipping a glyph must fail.
+    expect.soft(inner.left, `${context}: left`).toBeGreaterThanOrEqual(outer.left - 0.5);
+    expect.soft(inner.right, `${context}: right`).toBeLessThanOrEqual(outer.right + 0.5);
+    expect.soft(inner.top, `${context}: top`).toBeGreaterThanOrEqual(outer.top - 0.5);
+    expect.soft(inner.bottom, `${context}: bottom`).toBeLessThanOrEqual(outer.bottom + 0.5);
+  }
+
+  function expectReadableLabel(menu: HTMLElement, text: string) {
+    const item = browserPage.getByRole('menuitem', { name: text, exact: true }).element();
+    expect(menu.contains(item)).toBe(true);
+    // Locate the element containing the actual text node, not the item's accessible name
+    // or its wider wrapper. Astryx can expose the full name even when its label is ellipsized.
+    const walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    while (node !== null && node.textContent !== text) node = walker.nextNode();
+    if (node?.parentElement === null || node === null) throw new Error(`Missing label text: ${text}`);
+    const label = node.parentElement;
+    const labelBox = label.getBoundingClientRect();
+    const range = document.createRange();
+    range.selectNode(node);
+    const textBox = range.getBoundingClientRect();
+    const style = getComputedStyle(label);
+
+    expect.soft(labelBox.width, `${text}: label width`).toBeGreaterThan(0);
+    expect.soft(textBox.width, `${text}: text width`).toBeGreaterThan(0);
+    expect.soft(textBox.height, `${text}: text height`).toBeGreaterThan(0);
+    expect.soft(style.visibility, `${text}: visibility`).toBe('visible');
+    expect.soft(Number(style.opacity), `${text}: opacity`).toBeGreaterThan(0);
+    // text-overflow: ellipsis is allowed only when it is inactive: all text must fit.
+    expect.soft(label.scrollWidth, `${text}: no overflow/ellipsis (${style.textOverflow})`)
+      .toBeLessThanOrEqual(label.clientWidth);
+    expectContained(textBox, labelBox, `${text}: Range inside label`);
+    expectContained(textBox, item.getBoundingClientRect(), `${text}: Range inside item`);
+    expectContained(textBox, menu.getBoundingClientRect(), `${text}: Range inside menu`);
+  }
+
+  for (const width of [1200, 1000, 390]) {
+    for (const closed of [false, true]) {
+      it(`shows complete ${closed ? 'Reopen' : 'Close'}/Delete labels at the right edge at ${width}px with a long title`, async () => {
+        await browserPage.viewport(width, 844);
+        renderPage({
+          track: track({ title: 'A deliberately long track title '.repeat(12), closedAt: closed ? 5 : null }),
+          canReopenTrack: closed,
+          canCloseTrack: !closed,
+        });
+        // 390px exercises TrackPage's production MobileHeader / MoreMenu path.
+        const actions = browserPage.getByRole('button', {
+          name: width === 390 ? 'Track actions' : /^Track actions for /,
+          exact: true,
+        });
+        await expect.element(actions).toBeVisible();
+        const actionBox = actions.element().getBoundingClientRect();
+        expect(window.innerWidth - actionBox.right).toBeGreaterThanOrEqual(0);
+        expect(window.innerWidth - actionBox.right).toBeLessThanOrEqual(64);
+        await userEvent.click(actions);
+        const menuLocator = browserPage.getByRole('menu');
+        await expect.element(menuLocator).toBeVisible();
+        await document.fonts.ready;
+        await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+        const menu = menuLocator.element() as HTMLElement;
+        expect.soft(menu.getBoundingClientRect().width).toBeGreaterThan(0);
+        expect.soft(menu.getBoundingClientRect().height).toBeGreaterThan(0);
+        expectContained(menu.getBoundingClientRect(), new DOMRect(0, 0, window.innerWidth, window.innerHeight), 'menu inside viewport');
+        expect(browserPage.getByRole('menuitem', { name: closed ? 'Close' : 'Reopen', exact: true }).query()).toBeNull();
+        if (width !== 390) expect(menu.querySelectorAll('[role="menuitem"]')).toHaveLength(2);
+        expectReadableLabel(menu, closed ? 'Reopen' : 'Close');
+        expectReadableLabel(menu, 'Delete track');
+      });
+    }
+  }
+});
+
 describe('the track closed status in the page header', () => {
   it('sits directly beside the title as quiet text', async () => {
     await browserPage.viewport(1200, 800);

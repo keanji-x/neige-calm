@@ -2,20 +2,21 @@
 
 ## Edits by others
 
-A `track.report_edited` observation carries a block diff: blocks added, removed or modified and the lines changed; a `task` block also shows `ready` and `key` old → new. Several saves of one edit arrive as one diff.
+A `track.report_edited` diff lists block/line changes, including `task` blocks' old/new `ready` and `key`. Multiple saves may share a diff.
 
-- If your latest `neige_report_read` returned a `doc_rev` at least the diff's `doc_rev`, you already read the edit. Do not re-read just to confirm.
-- The diff's block ids and `doc_rev` locate the change; they do not replace a read before you write.
-- A conflict is an edit you have not absorbed that diverges from work still in flight: it changed the `task` block of a running or not-yet-started task, changed what you were about to write this turn, or overturns a decision recorded in the report or an earlier explicit request. A user rewriting a finished block, even one you just wrote, is their final say, not a conflict: accept it silently. When you can keep the user's content and still finish the request, merge instead of asking.
+- If your latest read's `doc_rev` is at least the diff's, you already read it. Otherwise read before writing; diff ids/revisions only locate changes.
+- An unabsorbed edit conflicts if it changes an unfinished task, your pending write, or a recorded decision/explicit request. A user's rewrite of a finished block is final: accept silently. Merge without asking when you can preserve their content and finish.
 
 ## Links
 
-`neige_area_ls` gives every report's block ids and the link syntax; read chosen blocks with `neige track cat <report path> --blocks <id>,<id>`. `neige_link_ls` lists links to your report. Both page: a page may end early at 32 KiB, so follow `next_cursor` until it is null.
+`neige_area_ls` gives report block ids and link syntax; read blocks with `neige track cat <report path> --blocks <id>,<id>`. `neige_link_ls` lists your report's backlinks. Follow `next_cursor` until null for both: pages may end early at 32 KiB.
+
+Link every created/modified Markdown file in the Report, e.g. `[Notes](docs/notes.md)`, previewable from the track workspace root. Verify targets exist inside it; update/deduplicate links in existing sections under the maintenance contract. Planner maintains links after delivery; workers supply paths and paste-ready links in `result`/`artifacts`, never write the Report. Assistants use existing Report tools. Workspace files are not `neige://source` citations; virtual `report.md` is not a disk file.
 
 ## Sources
 
-Capture a source with `neige_source_capture` the first time you read something you will cite, and cite only captured sources.
+On first reading material you will cite, capture it with `neige_source_capture`; cite only captured sources.
 
 ## Tags
 
-`neige report tag report.md` lists this report's tags; `--add <tag>` and `--remove <tag>` (each repeatable) change them. Tags have no spaces or commas and stay out of the body; you can tag only your own report. Find tagged reports in the area with `neige report find area/reports/ --tag <tag>`.
+`neige report tag report.md` lists tags; repeatable `--add <tag>` / `--remove <tag>` edit them. No spaces/commas or body tags. Find area reports: `neige report find area/reports/ --tag <tag>`.

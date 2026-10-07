@@ -326,6 +326,7 @@ export function TrackPage({
     <span className={styles.mobilePanelButton} ref={mobileActionsRef}>
       <AstryxMoreMenu
         label="Track actions"
+        alignment="end"
         variant="ghost"
         size="lg"
         items={[
@@ -388,6 +389,7 @@ export function TrackPage({
             )}
             <span className={styles.trackActions}>
               <AstryxDropdownMenu
+                alignment="end"
                 button={{
                   ref: desktopActionsRef,
                   label: `Track actions for ${trackDisplayTitle(track.title)}`,

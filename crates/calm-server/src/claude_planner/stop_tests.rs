@@ -306,6 +306,7 @@ fn a_fake_proc_root_pins_the_per_pid_rules() {
 /// ESRCH, not ENOENT (#1793): it is gone, so the scan skips it instead of reporting a marked member
 /// whose `stat` is unreadable. The pid directory's `stat` resolves, through `/proc/self/fd`, into
 /// the held `/proc/<pid>` directory of a reaped child; its `environ` still shows the marker.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_marked_pid_reaped_before_its_stat_read_is_skipped() {
     let reaped = calm_worker_runtime::test_support::ReapedProcDir::new();

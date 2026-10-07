@@ -50,6 +50,7 @@ extern "C" fn on_sigterm(_: libc::c_int) {
 /// when the spawning thread exits (per-test cleanup; tests that model
 /// launcher-death survival opt out explicitly).
 fn install_signal_fixture() {
+    #[cfg(target_os = "linux")]
     if !env_flag("FAKE_CODEX_NO_PDEATHSIG") {
         // SAFETY: prctl(PR_SET_PDEATHSIG) only affects this process.
         unsafe {

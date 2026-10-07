@@ -13,6 +13,10 @@ const setupFiles = [
   './tools/vitest/jsdom-resize-observer.ts',
 ];
 
+// Use the real repository documents in route regressions. Vite checks both the
+// plain filename and its ?raw module ID; leave all other filesystem rules intact.
+const readmeFixtureFiles = Object.freeze(['.', '../docs/README.md', '../docs/README.md?raw', '../README.md', '../README.md?raw']);
+
 export default defineConfig({
   resolve: {
     dedupe: ['react', 'react-dom'],
@@ -32,6 +36,7 @@ export default defineConfig({
         },
       },
       {
+        server: { fs: { allow: [...readmeFixtureFiles] } },
         test: {
           name: 'web-dom',
           environment: 'jsdom',
@@ -41,6 +46,7 @@ export default defineConfig({
         },
       },
       {
+        server: { fs: { allow: [...readmeFixtureFiles] } },
         optimizeDeps: {
           // Browser projects are isolated Vite configs and do not inherit the
           // root list, so use the complete roster rather than a partial copy.
@@ -72,8 +78,8 @@ export default defineConfig({
                 await mkdir('test-results/chat-performance', { recursive: true });
                 await writeFile(`test-results/chat-performance/${count}.json`, report);
               },
-              wheelScroll: async ({ page, iframe }, selector: string, deltaY: number) => {
-                await iframe.locator(selector).hover();
+              wheelScroll: async ({ page, iframe }, selector: string, deltaY: number, position?: { x: number; y: number }) => {
+                await iframe.locator(selector).hover({ position });
                 await page.mouse.wheel(0, deltaY);
               },
               emulateReducedMotion: async ({ page }, reduce: boolean) => {

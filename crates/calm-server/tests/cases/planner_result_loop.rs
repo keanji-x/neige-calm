@@ -294,11 +294,10 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
     );
 }
 
-/// The Planner's advertised read route, from just after the `Read` that opens it
-/// (`` `runs/<attempt_id>.json` and the exact `runs/<attempt_id>/gates/<N>.log` ``).
+/// The Planner's advertised result and gate-log routes, independent of prose casing.
 fn read_route(prompt: &str) -> &str {
     let start = prompt
-        .find("Read `runs/")
+        .find("`runs/<attempt_id>.json` and the exact `runs/")
         .expect("gate guidance includes the Planner read route");
-    &prompt[start + "Read".len()..]
+    &prompt[start..]
 }
