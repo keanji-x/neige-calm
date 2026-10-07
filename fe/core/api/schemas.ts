@@ -611,15 +611,22 @@ export const askQuestionSchema = z.object({
   options: z.array(z.string()),
 });
 
-/** The Planner asked the user; the event id is the ask's id. */
+/** The Planner asked the user; the event id is the ask's id. `hold` answers go to a paused request. */
 export const askRequestedSchema = z.object({
   ev: z.literal('ask.requested'),
   data: z.object({
     track_id: z.string(),
     questions: z.array(askQuestionSchema),
+    delivery: z.enum(['wake', 'hold']),
     source_item_id: z.string().optional(),
   }),
 });
+
+/** One answer: the index of a chosen option, or typed text. */
+export const askAnswerSchema = z.union([
+  z.object({ option: z.number() }).strict(),
+  z.object({ text: z.string() }).strict(),
+]);
 
 /** The user answered every question of the ask `ask_id`, in order. */
 export const askAnsweredSchema = z.object({
@@ -627,7 +634,16 @@ export const askAnsweredSchema = z.object({
   data: z.object({
     ask_id: z.number(),
     track_id: z.string(),
-    answers: z.array(z.string()),
+    answers: z.array(askAnswerSchema),
+  }),
+});
+
+/** The `hold` ask `ask_id` stopped waiting unanswered: its paused request went away. */
+export const askWithdrawnSchema = z.object({
+  ev: z.literal('ask.withdrawn'),
+  data: z.object({
+    ask_id: z.number(),
+    track_id: z.string(),
   }),
 });
 
@@ -953,6 +969,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   forgePrMergedSchema,
   askRequestedSchema,
   askAnsweredSchema,
+  askWithdrawnSchema,
   proposalSubmittedSchema,
   proposalResolvedSchema,
   forgeScanCompletedSchema,

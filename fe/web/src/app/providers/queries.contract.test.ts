@@ -93,7 +93,7 @@ describe('writes never queue an offline submission, in either build', () => {
     ['area delete', ({ area }) => area.remove('c1')],
     ['recipe delete', ({ recipe }) => recipe.remove('recipe-1')],
     ['notification dismiss', ({ track }) => track.dismissActivityItem('w1', 'ask:1')],
-    ['ask answer', ({ track }) => track.answerAsk('w1', 1, ['Yes'])],
+    ['ask answer', ({ track }) => track.answerAsk('w1', 1, [{ option: 0 }])],
     ['Today reset', ({ reset }) => reset.reset()],
   ];
   it.each(cases)('rejects %s before dispatch and does not replay it on reconnect', async (_name, submit) => {
@@ -212,7 +212,7 @@ describe('track list', () => {
     const second = { ...baseTrackWire, id: 'second', area_id: 'c2', sort: 1, updated_at: 30 };
     const activityOverlay = {
       id: 'activity-recent', plugin_id: 'kernel', entity_kind: 'track', entity_id: 'recent',
-      kind: 'activity', payload: { schemaVersion: 3 }, updated_at: 100,
+      kind: 'activity', payload: { schemaVersion: 4 }, updated_at: 100,
     };
     const { transport } = recordingTransport((request) => {
       if (request.path === '/api/areas') return ok([userArea, secondArea]);

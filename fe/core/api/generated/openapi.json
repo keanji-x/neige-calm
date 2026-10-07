@@ -9326,7 +9326,7 @@
         "tags": [
           "tracks"
         ],
-        "summary": "Answer every question of one ask. The ask must belong to this track and be unanswered; the\ncheck and the write share one immediate transaction.",
+        "summary": "Answer every question of one ask. The ask must belong to this track and still be open; the\ncheck and the write share one immediate transaction. The work runs on its own task, so a\ncancelled request never stores an answer without handing it to the paused provider request.",
         "operationId": "answer_ask",
         "parameters": [
           {
@@ -9364,7 +9364,7 @@
             "description": "Answered"
           },
           "400": {
-            "description": "Wrong number of answers, or an empty or over-long one",
+            "description": "Wrong number of answers, an option the question does not have, an empty or over-long text, or text for a paused request",
             "content": {
               "application/json": {
                 "schema": {
@@ -9404,7 +9404,7 @@
             }
           },
           "409": {
-            "description": "The ask is already answered",
+            "description": "The ask is no longer open: it is answered, or its paused request is gone",
             "content": {
               "application/json": {
                 "schema": {
@@ -11977,9 +11977,9 @@
           "answers": {
             "type": "array",
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/AskAnswer"
             },
-            "description": "One answer per question of the ask, in its order. An answer need not be one of the options."
+            "description": "One answer per question of the ask, in its order: `{\"option\": i}` for the question's\n`i`-th option, or `{\"text\": ..}` for typed text. A paused request takes options only."
           }
         },
         "additionalProperties": false
@@ -12129,6 +12129,34 @@
             "type": "string"
           }
         }
+      },
+      "AskAnswer": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "option"
+            ],
+            "properties": {
+              "option": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "text"
+            ],
+            "properties": {
+              "text": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "One answer of an `ask.answered` (#2348): the index of a clicked option, or typed text. Clicking\nan option and typing the same words are different answers."
       },
       "AttachmentId": {
         "type": "string",

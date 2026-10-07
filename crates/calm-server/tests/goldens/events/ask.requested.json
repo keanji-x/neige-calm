@@ -1,5 +1,5 @@
 {
-  "description": "ask.requested carries the track routing id and the Planner's questions; the first option is the recommended one and no options means a free answer",
+  "description": "ask.requested carries the track routing id, the Planner's questions and where the answer goes; the first option is the recommended one and no options means a free answer",
   "wire": {
     "ev": "ask.requested",
     "data": {
@@ -7,7 +7,8 @@
       "questions": [
         { "title": "Merge PR #7 (head abc)?", "options": ["Merge", "Hold"] },
         { "title": "Which region?", "options": [] }
-      ]
+      ],
+      "delivery": "wake"
     }
   }
 }

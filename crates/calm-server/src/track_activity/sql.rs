@@ -26,15 +26,15 @@ pub const N3_PLANNER_TRANSCRIPT_SQL: &str = "SELECT id, created_at_ms, \
         AND COALESCE(json_extract(params, '$.status'), '') <> 'interrupted' \
       ORDER BY created_at_ms DESC, id DESC LIMIT 1";
 
-/// N1 — every `ask.requested` of the track that no `ask.answered` names by `ask_id`; one answer
-/// answers all of an ask's questions. The two later close rules (a user message, a dismissal) are
-/// the fold's.
-pub const N1_UNANSWERED_ASKS_SQL: &str = "SELECT r.id, r.at, r.payload FROM events r \
-      WHERE r.scope_track = ?1 AND r.kind = 'ask.requested' \
-        AND NOT EXISTS (SELECT 1 FROM events a \
-                         WHERE a.scope_track = ?1 AND a.kind = 'ask.answered' \
-                           AND json_extract(a.payload, '$.ask_id') = r.id) \
-      ORDER BY r.id";
+/// N1 — every open `ask.requested` of the track by [`crate::ask::ASK_OPEN_SQL`]; one answer
+/// answers all of an ask's questions. The two later close rules of a `wake` ask (a user message,
+/// a dismissal) are the fold's.
+pub const N1_OPEN_ASKS_SQL: &str = concat!(
+    "SELECT r.id, r.at, r.payload FROM events r \
+      WHERE r.scope_track = ?1 AND r.kind = 'ask.requested' AND ",
+    crate::ask::ask_open_sql!(),
+    " ORDER BY r.id"
+);
 
 /// `tracks` row slice the fold needs.
 #[derive(Debug, Clone)]
@@ -238,7 +238,7 @@ pub(crate) async fn notification_rows(
     track_id: &str,
 ) -> Result<NotificationRows> {
     let mut asks = Vec::new();
-    for r in sqlx::query(N1_UNANSWERED_ASKS_SQL)
+    for r in sqlx::query(N1_OPEN_ASKS_SQL)
         .bind(track_id)
         .fetch_all(pool)
         .await?
@@ -248,10 +248,15 @@ pub(crate) async fn notification_rows(
             .ok()
             .and_then(|payload| Event::from_kind_and_payload("ask.requested", payload).ok());
         match decoded {
-            Some(Event::AskRequested { questions, .. }) => asks.push(OpenAsk {
+            Some(Event::AskRequested {
+                questions,
+                delivery,
+                ..
+            }) => asks.push(OpenAsk {
                 ask_id,
                 at_ms: r.get("at"),
                 questions,
+                delivery,
             }),
             _ => tracing::warn!(
                 track_id = %track_id,

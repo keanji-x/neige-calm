@@ -128,21 +128,21 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(
         v["apiVersion"].as_str().unwrap(),
-        "25",
-        "#2343: managed ACP adds OpenCode identity and native session configuration"
+        "26",
+        "#2348: an ask answer is a tagged option or text"
     );
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),
         SYNC_EVENT_VERSION as u64
     );
     // `scripts/gate-sync-event-version-lockstep.sh` binds the constant to this literal, so bumping the constant alone cannot make this file agree with itself.
-    assert_eq!(v["syncEventVersion"].as_u64().unwrap(), 26);
+    assert_eq!(v["syncEventVersion"].as_u64().unwrap(), 27);
 
     assert_eq!(
         v["webCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 45);
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 46);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,

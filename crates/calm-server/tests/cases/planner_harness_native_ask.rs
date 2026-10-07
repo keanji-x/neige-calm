@@ -370,7 +370,8 @@ async fn a_planner_native_question_becomes_one_open_ask() {
     let asks = rig.asks().await;
     assert!(
         matches!(asks.as_slice(), [(ActorId::AiPlannerSession(session), Event::AskRequested {
-                track_id, questions, source_item_id: Some(source) })]
+                track_id, questions, delivery: calm_server::event::AskDelivery::Wake,
+                source_item_id: Some(source) })]
             if session.as_str() == rig.session_id && track_id == &rig.track
                 && questions == &captured_questions() && source == ITEM_ID),
         "{asks:?}"
@@ -388,6 +389,7 @@ async fn a_planner_native_question_becomes_one_open_ask() {
             at_ms: items[0].at_ms(),
             ask_id,
             questions: captured_questions(),
+            delivery: calm_server::event::AskDelivery::Wake,
         }]
     );
     rig.harness.shutdown().await.unwrap();

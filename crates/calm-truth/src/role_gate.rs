@@ -90,6 +90,9 @@ pub enum RoleViolation {
     #[error("only User may emit ask.answered (actor={actor})")]
     NotUserForAskAnswered { actor: String },
 
+    #[error("only planner cards may emit ask.withdrawn (actor={actor})")]
+    NotPlannerForAskWithdrawn { actor: String },
+
     #[error(
         "only the submitting plugin may emit proposal.submitted (actor={actor}, payload plugin_id={payload_plugin})"
     )]
@@ -376,6 +379,18 @@ pub fn enforce_role(
         return Err(RoleViolation::NotUserForAskAnswered {
             actor: actor.to_string(),
         });
+    }
+
+    // (2.14) `ask.withdrawn` is the Planner's own (#2348): its harness withdraws a `hold` ask whose
+    // provider request is gone. No Kernel exception; that the writer is the ask's own live session
+    // is checked by the writing transaction.
+    if matches!(event, Event::AskWithdrawn { .. }) {
+        let is_planner = matches!(actor, ActorId::AiPlanner(card_id) if cache.get(card_id) == Some(CardRole::Planner));
+        if !is_planner {
+            return Err(RoleViolation::NotPlannerForAskWithdrawn {
+                actor: actor.to_string(),
+            });
+        }
     }
 
     // (2.10) `proposal.submitted`: only a plugin, and only for itself — the
@@ -1197,6 +1212,7 @@ mod tests {
                 title: "Merge PR #1?".into(),
                 options: vec!["Merge".into(), "Hold".into()],
             }],
+            delivery: calm_types::event::AskDelivery::Wake,
             source_item_id: None,
         }
     }
@@ -1205,7 +1221,7 @@ mod tests {
         Event::AskAnswered {
             ask_id: 1,
             track_id: TrackId::from("w"),
-            answers: vec!["Merge".into()],
+            answers: vec![calm_types::event::AskAnswer::Option(0)],
         }
     }
 
@@ -1661,6 +1677,56 @@ mod tests {
             assert!(
                 matches!(err, RoleViolation::NotPlannerForAsk { .. }),
                 "{label}: expected NotPlannerForAsk, got {err:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn ask_withdrawn_is_planner_only_with_no_kernel_exception_2348() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let planner = CardId::from("planner-1");
+        let assistant = CardId::from("assistant-1");
+        let worker = CardId::from("worker-1");
+        cache.insert(planner.clone(), CardRole::Planner, TrackId::from("w"));
+        cache.insert(assistant.clone(), CardRole::Assistant, TrackId::from("w"));
+        cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
+        let event = Event::AskWithdrawn {
+            ask_id: 1,
+            track_id: TrackId::from("w"),
+        };
+
+        let res = enforce_role(
+            &ActorId::AiPlanner(planner.clone()),
+            &event,
+            &track_scope("w", "c"),
+            &cache,
+            &wcc,
+        );
+        assert!(res.is_ok(), "the Planner withdraws: {res:?}");
+
+        for (actor, label) in [
+            (ActorId::Kernel, "Kernel"),
+            (ActorId::KernelDispatcher, "KernelDispatcher"),
+            (ActorId::User, "User"),
+            (ActorId::Plugin("p".into()), "Plugin(p)"),
+            (
+                ActorId::AiPlanner(assistant.clone()),
+                "AiPlanner(assistant)",
+            ),
+            (ActorId::AiPlanner(worker.clone()), "AiPlanner(worker)"),
+            (ActorId::AiCodex(worker.clone()), "AiCodex(worker)"),
+            (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
+            (
+                ActorId::AiPlannerSession(WorkerSessionId::from("sess-unresolved")),
+                "AiPlannerSession(unresolved)",
+            ),
+        ] {
+            let err = enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc)
+                .expect_err(&format!("{label} must be refused ask.withdrawn"));
+            assert!(
+                matches!(err, RoleViolation::NotPlannerForAskWithdrawn { .. }),
+                "{label}: expected NotPlannerForAskWithdrawn, got {err:?}",
             );
         }
     }

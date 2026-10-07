@@ -1,5 +1,7 @@
-//! `POST /api/tracks/{id}/asks/{ask_id}/answer` (#2209): the user answers one `neige_user_ask`.
-//! The answer is `ask.answered`, the only record that a question was answered; it wakes the Planner.
+//! `POST /api/tracks/{id}/asks/{ask_id}/answer` (#2209, #2348): the user answers one ask. The
+//! answer is `ask.answered`, the only record that a question was answered. A `wake` ask's answer
+//! wakes the Planner; a `hold` ask's answer goes to the provider request its Planner's running
+//! turn is paused on, through the harness's held-request table.
 
 use axum::{Router, extract::State, http::StatusCode, routing::post};
 use serde::Deserialize;
@@ -7,7 +9,8 @@ use utoipa::ToSchema;
 
 use crate::actor::Actor;
 use crate::db::write_with_actor_events_typed;
-use crate::error::{ErrorBody, Result};
+use crate::error::{CalmError, ErrorBody, Result};
+use crate::event::{AskAnswer, AskDelivery};
 use crate::extract::{JsonBody, Path};
 use crate::ids::{ActorId, TrackId};
 use crate::state::{AppState, RouteState};
@@ -19,12 +22,14 @@ pub fn router() -> Router<AppState> {
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AnswerAskRequest {
-    /// One answer per question of the ask, in its order. An answer need not be one of the options.
-    pub answers: Vec<String>,
+    /// One answer per question of the ask, in its order: `{"option": i}` for the question's
+    /// `i`-th option, or `{"text": ..}` for typed text. A paused request takes options only.
+    pub answers: Vec<AskAnswer>,
 }
 
-/// Answer every question of one ask. The ask must belong to this track and be unanswered; the
-/// check and the write share one immediate transaction.
+/// Answer every question of one ask. The ask must belong to this track and still be open; the
+/// check and the write share one immediate transaction. The work runs on its own task, so a
+/// cancelled request never stores an answer without handing it to the paused provider request.
 #[utoipa::path(
     post,
     path = "/api/tracks/{id}/asks/{ask_id}/answer",
@@ -36,10 +41,10 @@ pub struct AnswerAskRequest {
     request_body = AnswerAskRequest,
     responses(
         (status = 204, description = "Answered"),
-        (status = 400, description = "Wrong number of answers, or an empty or over-long one", body = ErrorBody),
+        (status = 400, description = "Wrong number of answers, an option the question does not have, an empty or over-long text, or text for a paused request", body = ErrorBody),
         (status = 403, description = "The actor is not the authenticated user", body = ErrorBody),
         (status = 404, description = "No such ask on this track, or no such track", body = ErrorBody),
-        (status = 409, description = "The ask is already answered", body = ErrorBody),
+        (status = 409, description = "The ask is no longer open: it is answered, or its paused request is gone", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -55,8 +60,42 @@ pub(crate) async fn answer_ask(
         "Only the user answers a question.",
     )?;
     let track = TrackId::from(id);
-    let answers = body.answers;
+    tokio::spawn(answer(s, track, ask_id, body.answers))
+        .await
+        .map_err(|error| CalmError::Internal(format!("ask answer task failed: {error}")))??;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Store the answer and, for a `hold` ask, hand it to the paused request. The harness's table
+/// must hold the request before anything is stored (409 otherwise); after the commit the entry is
+/// taken out of the table and answered at once. Whoever takes an entry answers it: when the
+/// request went away between the two steps, the stored answer has no effect.
+async fn answer(s: RouteState, track: TrackId, ask_id: i64, answers: Vec<AskAnswer>) -> Result<()> {
+    let ask = crate::ask::stored_ask(s.repo.as_ref(), &track, ask_id).await?;
+    let answers = crate::ask::validate_answers(ask_id, &ask.questions, ask.delivery, answers)?;
+    let holder = match ask.delivery {
+        AskDelivery::Wake => None,
+        AskDelivery::Hold => {
+            // A hold ask has one question, answered by one option (`validate_answers`).
+            let [AskAnswer::Option(option)] = answers.as_slice() else {
+                return Err(CalmError::BadRequest(format!(
+                    "ask {ask_id} waits on a paused request; answer its one question with an option"
+                )));
+            };
+            let harness = ask
+                .holding_session()
+                .and_then(|session| s.harness.get(&session.as_str().to_string()))
+                .filter(|harness| harness.held_requests().contains(ask_id))
+                .ok_or_else(|| {
+                    CalmError::Conflict(format!(
+                        "ask {ask_id} is no longer open: its paused request is gone"
+                    ))
+                })?;
+            Some((harness, *option))
+        }
+    };
     write_with_actor_events_typed::<(), _>(s.repo.as_ref(), None, &s.events, &s.write, {
+        let track = track.clone();
         move |tx| {
             Box::pin(async move {
                 let (scope, event) =
@@ -66,5 +105,15 @@ pub(crate) async fn answer_ask(
         }
     })
     .await?;
-    Ok(StatusCode::NO_CONTENT)
+    if let Some((harness, option)) = holder {
+        match harness.held_requests().take(ask_id) {
+            Some(responder) => responder.respond(option),
+            None => tracing::info!(
+                %track,
+                ask_id,
+                "the paused request went away after the answer was stored; it has no effect"
+            ),
+        }
+    }
+    Ok(())
 }

@@ -34,7 +34,9 @@ pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 /// #2160 bumps 40 -> 41: a segment `presentation` may be `system_mail`, which older bundles reject.
 /// #2209 bumps 42 -> 43: an activity overlay is `schemaVersion: 3` (an `ask` item carries
 /// `ask_id` and `questions`), which older bundles reject, dropping the whole activity.
-pub const WEB_COMPAT_VERSION: u32 = 45;
+/// #2348 bumps 45 -> 46: an activity overlay is `schemaVersion: 4` (an `ask` item carries
+/// `delivery`), and an ask answer is tagged.
+pub const WEB_COMPAT_VERSION: u32 = 46;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

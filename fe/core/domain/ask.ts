@@ -2,12 +2,16 @@
 // kernel's activity overlay; the one write is `POST /api/tracks/{id}/asks/{ask_id}/answer`.
 
 import { z } from 'zod';
+import type { AskAnswer } from '../api/generated/wire.js';
 import type { ApiOperation } from '../api/types.js';
-import type { ActivityItem, AskQuestion } from './activity.js';
+import type { ActivityItem, AskDelivery, AskQuestion } from './activity.js';
 import type { FailureTable, WriteClass, WriteText } from './failure-class.js';
 
-/** One open ask as the questions drawer shows it: the answer route's id and its questions, in order. */
-export type OpenAsk = Readonly<{ askId: number; questions: readonly AskQuestion[] }>;
+/**
+ * One open ask as the questions drawer shows it: the answer route's id, its questions in order, and
+ * where the answer goes.
+ */
+export type OpenAsk = Readonly<{ askId: number; questions: readonly AskQuestion[]; delivery: AskDelivery }>;
 
 /**
  * The track's open asks, oldest first. The overlay lists items newest first; an ask's id is its
@@ -16,7 +20,7 @@ export type OpenAsk = Readonly<{ askId: number; questions: readonly AskQuestion[
 export function openAsksOf(items: readonly ActivityItem[]): readonly OpenAsk[] {
   const asks: OpenAsk[] = [];
   for (const item of items) {
-    if (item.source === 'ask') asks.push({ askId: item.askId, questions: item.questions });
+    if (item.source === 'ask') asks.push({ askId: item.askId, questions: item.questions, delivery: item.delivery });
   }
   return asks.sort((left, right) => left.askId - right.askId);
 }
@@ -31,19 +35,19 @@ export function askDraftsFor(questions: readonly AskQuestion[]): readonly AskDra
 
 /**
  * The `answers` body, one per question in order, or `null` while a question has none. Words of the
- * reader's own, once they are more than whitespace, win over the picked option. Trimmed, as the
- * server stores them.
+ * reader's own, once they are more than whitespace, win over the picked option and go as text,
+ * trimmed as the server stores them; a picked option goes as its index, so clicking an option and
+ * typing its label are different answers.
  */
-export function askAnswers(questions: readonly AskQuestion[], drafts: readonly AskDraft[]): readonly string[] | null {
+export function askAnswers(questions: readonly AskQuestion[], drafts: readonly AskDraft[]): readonly AskAnswer[] | null {
   if (drafts.length !== questions.length) return null;
-  const answers: string[] = [];
+  const answers: AskAnswer[] = [];
   for (const [index, question] of questions.entries()) {
     const draft = drafts[index];
     const own = draft.own.trim();
-    const picked = draft.choice === null ? undefined : question.options[draft.choice];
-    const answer = own !== '' ? own : picked;
-    if (answer === undefined) return null;
-    answers.push(answer);
+    if (own !== '') answers.push({ text: own });
+    else if (draft.choice !== null && draft.choice < question.options.length) answers.push({ option: draft.choice });
+    else return null;
   }
   return answers;
 }
@@ -64,7 +68,7 @@ export function clampAskAnswer(text: string): string {
  * Answer every question of one ask. `204` is the answer; the row leaves the overlay when the
  * projector's `overlay.set` lands. Its failures read through {@link ANSWER_ASK_FAILURES}.
  */
-export function answerAskOperation(trackId: string, askId: number, answers: readonly string[]): ApiOperation<undefined> {
+export function answerAskOperation(trackId: string, askId: number, answers: readonly AskAnswer[]): ApiOperation<undefined> {
   return {
     method: 'POST',
     path: `/api/tracks/${encodeURIComponent(trackId)}/asks/${askId}/answer`,
@@ -74,10 +78,11 @@ export function answerAskOperation(trackId: string, askId: number, answers: read
 }
 
 /**
- * What a failed answer says. A 409 is an ask already answered (another tab, or an earlier attempt
- * whose answer was lost): it is no longer the reader's to answer, so it is `done`. 400 (a count or
- * an empty or over-long answer), 403, 404 (no such ask on this track) and the extractor's 413, 415
- * and 422 store nothing; anything else may have stored it.
+ * What a failed answer says. A 409 is an ask no longer open (answered in another tab, an earlier
+ * attempt whose answer was lost, or a paused request that went away): it is no longer the reader's
+ * to answer, so it is `done`. 400 (a count, an option the question lacks, an empty or over-long
+ * answer, or text for a paused request), 403, 404 (no such ask on this track) and the extractor's
+ * 413, 415 and 422 store nothing; anything else may have stored it.
  */
 export const ANSWER_ASK_FAILURES: FailureTable<WriteClass> = Object.freeze({
   rules: Object.freeze([

@@ -22,7 +22,7 @@ for (const options of [["合并", "暂不合并"], []]) {
     await page.viewport(800, 600);
     render(
       <PlannerAskDrawer
-        asks={[{ askId: 1, questions: [{ title: TITLE, options }] }]}
+        asks={[{ askId: 1, questions: [{ title: TITLE, options }], delivery: 'wake' }]}
         onAnswer={vi.fn<AnswerAsk>()}
       />,
     );

@@ -1113,12 +1113,12 @@ async fn merge_hold_ask_pauses_then_merges_on_the_answer() {
         "merge must be absent while the hold awaits the answer"
     );
 
-    let (status, body) = post_answer(&fx, request.id, "Merge").await;
+    let (status, body) = post_answer(&fx, request.id, 0).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
     let answered = wait_for_event_matching(&fx.repo, "ask.answered", |row| {
         row.scope_track.as_deref() == Some(&fx.track_id)
             && row.payload["ask_id"] == json!(request.id)
-            && row.payload["answers"] == json!(["Merge"])
+            && row.payload["answers"] == json!([{ "option": 0 }])
     })
     .await;
     assert!(request.id < answered.id);
@@ -1146,7 +1146,7 @@ async fn ask_answer_recovers_into_pending_queue() {
 
     let fx = boot_fixture().await;
     let request = request_merge_ask(&fx, "Merge PR #760 (head head-sha-recovery)?").await;
-    let (status, body) = post_answer(&fx, request.id, "Merge").await;
+    let (status, body) = post_answer(&fx, request.id, 0).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
     wait_for_event_matching(&fx.repo, "ask.answered", |row| {
         row.scope_track.as_deref() == Some(&fx.track_id)
@@ -1948,8 +1948,10 @@ async fn request_merge_ask(fx: &Fixture, title: &str) -> EventRow {
     row
 }
 
-async fn post_answer(fx: &Fixture, ask_id: i64, answer: &str) -> (StatusCode, Value) {
-    let body = serde_json::to_vec(&json!({ "answers": [answer] })).expect("answer body json");
+/// Answer the ask by clicking its `option`-th option (`0` is "Merge").
+async fn post_answer(fx: &Fixture, ask_id: i64, option: usize) -> (StatusCode, Value) {
+    let body = serde_json::to_vec(&json!({ "answers": [{ "option": option }] }))
+        .expect("answer body json");
     let resp = app_router_for_fixture(fx)
         .oneshot(
             Request::builder()

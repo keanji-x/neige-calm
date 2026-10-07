@@ -1,0 +1,10 @@
+{
+  "description": "ask.withdrawn names the hold ask whose paused provider request went away unanswered",
+  "wire": {
+    "ev": "ask.withdrawn",
+    "data": {
+      "ask_id": 28478,
+      "track_id": "track-01"
+    }
+  }
+}

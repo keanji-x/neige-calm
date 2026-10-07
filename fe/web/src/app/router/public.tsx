@@ -23,7 +23,7 @@ import { HStack } from '@astryxdesign/core/HStack';
 import { useQuery, type QueryClient } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
-import type { AgentProvider } from '../../../../core/api/generated/wire.ts';
+import type { AgentProvider, AskAnswer } from '../../../../core/api/generated/wire.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import {
   ATTACHED_WORKSPACE_REASON, PlannerAttachButton, PlannerAttachmentDrawer,
@@ -147,7 +147,7 @@ type ConversationPanelSource = ConversationCreationSource & Readonly<{
      * `asks` are the track's open asks, shown above that row's composer, and `answerAsk` answers one. */
     planner: Readonly<{
       cardId: string; areaId: string; asks: readonly OpenAsk[];
-      answerAsk: (askId: number, answers: readonly string[]) => Promise<void>;
+      answerAsk: (askId: number, answers: readonly AskAnswer[]) => Promise<void>;
     }> | null;
   }>;
 
@@ -500,7 +500,7 @@ function useConversationPane(
   });
   const plannerAsks = plannerRow?.asks ?? NO_ASKS;
   /* Without a Planner row the drawer lists no ask, so nothing can be answered from here: nothing is sent. */
-  const answerAsk = useCommittedCallback(existingId, (askId: number, answers: readonly string[]) => plannerRow === null
+  const answerAsk = useCommittedCallback(existingId, (askId: number, answers: readonly AskAnswer[]) => plannerRow === null
     ? Promise.reject(new NotSentError()) : plannerRow.answerAsk(askId, answers));
   const attach = useCommittedCallback(existingId, attachments.attach);
   const removeAttachment = useCommittedCallback(existingId, attachments.remove);

@@ -26,6 +26,7 @@ const ASK = {
     { title: 'Which branch should I release from?', options: ['main', 'release/2.0', 'A new branch from the last tag'] },
     { title: 'Anything to tell the reviewers?', options: [] },
   ],
+  delivery: 'wake',
 };
 
 /* A 1×1 PNG, so the attached image's thumbnail draws without a server behind it. */
@@ -57,7 +58,7 @@ function setup(theme: 'light' | 'dark', ask: typeof ASK = ASK) {
     if (request.path === '/api/settings') body = {};
     if (request.path === `/api/tracks/${TRACK.id}`) body = { track: TRACK, can_reopen: false, can_close: true, cards: [PLANNER],
       overlays: [{ id: 'activity', plugin_id: 'kernel', entity_kind: 'track', entity_id: TRACK.id, kind: 'activity', updated_at: 5,
-        payload: { schemaVersion: 3, working: false, attention: 'input', activity_at_ms: 5, items: [ask], cards: [] } }] };
+        payload: { schemaVersion: 4, working: false, attention: 'input', activity_at_ms: 5, items: [ask], cards: [] } }] };
     if (request.path.endsWith('/planner/run')) body = { card_id: PLANNER.id, worker_session_id: 'session', phase: 'idle',
       model: null, reasoning_effort: null, blocked_reason: null, running_turn: null, attachments_supported: true };
     if (request.path.endsWith('/harness/live')) body = { turn_id: null, items: [] };
@@ -108,7 +109,7 @@ it.each([
   const answer = requests.find(request => request.path.endsWith('/answer'));
   expect(answer?.method).toBe('POST');
   expect(answer?.path).toBe(`/api/tracks/${TRACK.id}/asks/7/answer`);
-  expect(answer?.body).toEqual({ answers: ['release/2.0', 'Tag it after the docs land.'] });
+  expect(answer?.body).toEqual({ answers: [{ option: 1 }, { text: 'Tag it after the docs land.' }] });
   await expect.element(ask).not.toBeInTheDocument();
   await expect.element(page.getByRole('combobox', { name: 'Message' })).toBeVisible();
 });

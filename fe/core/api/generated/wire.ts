@@ -44,6 +44,18 @@ export type AreaResolve = { area_id: AreaId, folder_id: number, folder_path: str
 export type ArtifactRef = string;
 
 /**
+ * One answer of an `ask.answered` (#2348): the index of a clicked option, or typed text. Clicking
+ * an option and typing the same words are different answers.
+ */
+export type AskAnswer = { "option": number } | { "text": string };
+
+/**
+ * Where the answer to an `ask.requested` goes (#2348). `wake` answers wake a new Planner turn;
+ * `hold` answers go to the provider request the running turn is paused on and wake nothing.
+ */
+export type AskDelivery = "wake" | "hold";
+
+/**
  * One question of an `ask.requested`: what the user is asked, and the answers offered. The first
  * option is the recommended one; no options means a free-text answer.
  */
@@ -202,11 +214,11 @@ hook_idempotency_key: string,
 /**
  * Original Claude hook JSON, verbatim.
  */
-payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, agent_message?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, agent_message?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, agent_message?: string, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, details?: unknown, agent_message?: string, } } | { "ev": "task.git_delivery_settled", "data": { task_id: string, idempotency_key: string, track_id: TrackId, card_id: CardId, delivery_id: string, ordinal: number, result: DeliverySettlement, wake_reason: DeliveryWakeReason, } } | { "ev": "plan.updated", "data": { track_id: TrackId, changed_keys: Array<string>, agent_message?: string, } } | { "ev": "task.dispatched", "data": { idempotency_key: string, kind: string, agent_message?: string, } } | { "ev": "task.context_frozen", "data": { track_id: TrackId, task_key: string, idempotency_key: string, task_id: string, refs: Array<TaskContextRef>, doc_revs: { [key in string]: number }, truncated: boolean, } } | { "ev": "task.context_advanced", "data": { track_id: TrackId, task_key: string, task_id: string, changed_refs: Array<TaskContextChangedRef>, verdict: string, rationale: string, } } | { "ev": "workspace.leased", "data": { track_id: TrackId, card_id: CardId, lease_id: string, path: string, } } | { "ev": "workspace.released", "data": { track_id: TrackId, card_id: CardId, lease_id: string, } } | { "ev": "forge.pr.merged", "data": { track_id: TrackId, subject: ForgeMergeSubject, head_sha: string, merge_sha: string, } } | { "ev": "ask.requested", "data": { track_id: TrackId, questions: Array<AskQuestion>, 
+payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, agent_message?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, agent_message?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, agent_message?: string, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, details?: unknown, agent_message?: string, } } | { "ev": "task.git_delivery_settled", "data": { task_id: string, idempotency_key: string, track_id: TrackId, card_id: CardId, delivery_id: string, ordinal: number, result: DeliverySettlement, wake_reason: DeliveryWakeReason, } } | { "ev": "plan.updated", "data": { track_id: TrackId, changed_keys: Array<string>, agent_message?: string, } } | { "ev": "task.dispatched", "data": { idempotency_key: string, kind: string, agent_message?: string, } } | { "ev": "task.context_frozen", "data": { track_id: TrackId, task_key: string, idempotency_key: string, task_id: string, refs: Array<TaskContextRef>, doc_revs: { [key in string]: number }, truncated: boolean, } } | { "ev": "task.context_advanced", "data": { track_id: TrackId, task_key: string, task_id: string, changed_refs: Array<TaskContextChangedRef>, verdict: string, rationale: string, } } | { "ev": "workspace.leased", "data": { track_id: TrackId, card_id: CardId, lease_id: string, path: string, } } | { "ev": "workspace.released", "data": { track_id: TrackId, card_id: CardId, lease_id: string, } } | { "ev": "forge.pr.merged", "data": { track_id: TrackId, subject: ForgeMergeSubject, head_sha: string, merge_sha: string, } } | { "ev": "ask.requested", "data": { track_id: TrackId, questions: Array<AskQuestion>, delivery: AskDelivery, 
 /**
  * The provider item the question was translated from; absent for a `neige_user_ask` call.
  */
-source_item_id?: string, } } | { "ev": "ask.answered", "data": { ask_id: number, track_id: TrackId, answers: Array<string>, } } | { "ev": "proposal.submitted", "data": { track_id: TrackId, proposal_id: string, 
+source_item_id?: string, } } | { "ev": "ask.answered", "data": { ask_id: number, track_id: TrackId, answers: Array<AskAnswer>, } } | { "ev": "ask.withdrawn", "data": { ask_id: number, track_id: TrackId, } } | { "ev": "proposal.submitted", "data": { track_id: TrackId, proposal_id: string, 
 /**
  * Submitting plugin, injected kernel-side from the callback connection (never trusted from plugin input).
  */

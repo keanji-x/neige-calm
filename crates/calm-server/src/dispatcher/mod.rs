@@ -135,10 +135,14 @@ pub(crate) fn event_warrants_planner_push_with_role(
         | Event::ForgePrChecks { .. }
         | Event::ForgeIssueClosed { .. } => true,
         // User-only at the role gate: the user's answer is the wake the question waits for.
+        // A `hold` ask's answer resolves to no observation (`ask_answered::observation`), so the
+        // turn it paused is not woken twice; live push and boot catch-up share that reading.
         Event::AskAnswered { .. } => true,
         // These tools wait for their result: the caller already has the receipt. Keep the
         // events for the timeline/notifications, but do not schedule another Planner turn.
         Event::AskRequested { .. } | Event::ForgePrPublished { .. } => false,
+        // The harness that withdrew the ask is the one it would wake.
+        Event::AskWithdrawn { .. } => false,
         // Workspace / worktree lifecycle notices are read back on demand (`neige_task_ls`);
         Event::WorkspaceLeased { .. }
         | Event::WorkspaceReleased { .. }
@@ -1150,6 +1154,7 @@ impl Inner {
             | Event::ForgeIssueCreated { .. }
             | Event::ForgeIssueSearched { .. }
             | Event::AskRequested { .. }
+            | Event::AskWithdrawn { .. }
             // Proposal lifecycle events reach the planner via the plugin-authored
             // `track.report_edited` landed in the same tx.
             | Event::ProposalSubmitted { .. }
@@ -1641,7 +1646,7 @@ pub(crate) fn harness_observation_from_event(
         Event::CodexHook { .. } | Event::ClaudeHook { .. } => None,
         // Requires the persisted question titles read in `resolve_harness_observation`.
         Event::AskAnswered { .. } => None,
-        Event::AskRequested { .. } => None,
+        Event::AskRequested { .. } | Event::AskWithdrawn { .. } => None,
         Event::AreaUpdated(_)
         | Event::AreaDeleted { .. }
         | Event::TrackUpdated(_)

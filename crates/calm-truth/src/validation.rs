@@ -89,7 +89,7 @@ pub use calm_types::plugin::KERNEL_OVERLAY_PLUGIN_ID;
 /// `schemaVersion` for `Overlay.payload` when `kind == "file-viewer-nav"`.
 pub const OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Overlay.payload` when `kind == "activity"`.
-pub const OVERLAY_ACTIVITY_SCHEMA_VERSION: u32 = 3;
+pub const OVERLAY_ACTIVITY_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Clone, Copy)]
 pub struct OverlayKindEntry {
@@ -232,7 +232,15 @@ fn validate_activity_overlay_payload(payload: &Value) -> Result<()> {
         options: Vec<String>,
     }
 
-    /// Tagged by `source`: only an `ask` item carries the ask's id and questions.
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    #[serde(rename_all = "snake_case")]
+    enum Delivery {
+        Wake,
+        Hold,
+    }
+
+    /// Tagged by `source`: only an `ask` item carries the ask's id, questions and delivery.
     #[derive(Deserialize)]
     #[allow(dead_code)]
     #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
@@ -243,6 +251,7 @@ fn validate_activity_overlay_payload(payload: &Value) -> Result<()> {
             at_ms: i64,
             ask_id: i64,
             questions: Vec<Question>,
+            delivery: Delivery,
         },
         PlannerDown {
             key: String,
@@ -846,7 +855,8 @@ mod tests {
                   "questions": [
                       { "title": "Merge PR #7?", "options": ["Merge", "Hold"] },
                       { "title": "Which branch?", "options": [] }
-                  ] },
+                  ],
+                  "delivery": "wake" },
                 { "source": "planner_down", "key": "planner_down:22825",
                   "text": "unexpected status 403 Forbidden", "at_ms": 1789460960000_i64 }
             ],
@@ -911,6 +921,22 @@ mod tests {
                 p["items"][0].as_object_mut().unwrap().remove("questions");
                 p
             },
+            // a v3 ask item (no `delivery`) is not a v4 one, and delivery is a closed set
+            {
+                let mut p = activity_payload_fixture();
+                p["items"][0].as_object_mut().unwrap().remove("delivery");
+                p
+            },
+            {
+                let mut p = activity_payload_fixture();
+                p["items"][0]["delivery"] = json!("later");
+                p
+            },
+            {
+                let mut p = activity_payload_fixture();
+                p["items"][1]["delivery"] = json!("wake");
+                p
+            },
             {
                 let mut p = activity_payload_fixture();
                 p["items"][0]["questions"][1]
@@ -930,7 +956,7 @@ mod tests {
                 p["items"][1]["questions"] = json!([]);
                 p
             },
-            // a v1 or v2 payload is below the registry's version
+            // a v1, v2 or v3 payload is below the registry's version
             {
                 let mut p = activity_payload_fixture();
                 p["schemaVersion"] = json!(1);
@@ -939,6 +965,11 @@ mod tests {
             {
                 let mut p = activity_payload_fixture();
                 p["schemaVersion"] = json!(2);
+                p
+            },
+            {
+                let mut p = activity_payload_fixture();
+                p["schemaVersion"] = json!(3);
                 p
             },
             // unknown top-level field

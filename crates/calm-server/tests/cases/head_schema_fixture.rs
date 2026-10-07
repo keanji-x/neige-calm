@@ -95,6 +95,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0155_planner_permission_mode.sql",
     "0156_acp_planner_sessions.sql",
     "0157_acp_submission_journal.sql",
+    "0158_ask_delivery_and_tagged_answers.sql",
 ];
 
 #[test]

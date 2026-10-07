@@ -192,13 +192,13 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
     payload, updated_at: 1, ...over,
   });
   const payload = {
-    schemaVersion: 3, working: true, attention: 'failed', activity_at_ms: 1_789_460_968_837,
+    schemaVersion: 4, working: true, attention: 'failed', activity_at_ms: 1_789_460_968_837,
     items: [
       { source: 'planner_down', key: 'planner_down:22825', text: 'unexpected status 403 Forbidden', at_ms: 20 },
       { source: 'ask', key: 'ask:22801', text: 'Which branch?', at_ms: 10, ask_id: 22801,
-        questions: [{ title: 'Which branch?', options: [] }] },
-      { source: 'ask', key: 'ask:28475', text: 'Merge PR #7? / Why?', at_ms: 5, ask_id: 28475,
-        questions: [{ title: 'Merge PR #7?', options: ['Merge', 'Hold'] }, { title: 'Why?', options: [] }] },
+        questions: [{ title: 'Which branch?', options: [] }], delivery: 'wake' },
+      { source: 'ask', key: 'ask:28475', text: 'Run `cargo test`?', at_ms: 5, ask_id: 28475,
+        questions: [{ title: 'Run `cargo test`?', options: ['Allow', 'Deny'] }], delivery: 'hold' },
     ],
     cards: [{ card_id: 'worker-1', state: 'failed' }, { card_id: 'planner', state: 'input' }, { card_id: 'w2', state: 'working' }],
   };
@@ -212,9 +212,9 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
     expect(activity.attentionItems).toEqual([
       { source: 'planner_down', key: 'planner_down:22825', text: 'unexpected status 403 Forbidden', atMs: 20 },
       { source: 'ask', key: 'ask:22801', text: 'Which branch?', atMs: 10, askId: 22801,
-        questions: [{ title: 'Which branch?', options: [] }] },
-      { source: 'ask', key: 'ask:28475', text: 'Merge PR #7? / Why?', atMs: 5, askId: 28475,
-        questions: [{ title: 'Merge PR #7?', options: ['Merge', 'Hold'] }, { title: 'Why?', options: [] }] },
+        questions: [{ title: 'Which branch?', options: [] }], delivery: 'wake' },
+      { source: 'ask', key: 'ask:28475', text: 'Run `cargo test`?', atMs: 5, askId: 28475,
+        questions: [{ title: 'Run `cargo test`?', options: ['Allow', 'Deny'] }], delivery: 'hold' },
     ]);
     expect(activity.cards).toEqual({ 'worker-1': 'failed', planner: 'input', w2: 'working' });
     expect(activity.progress).toBe(0);
@@ -232,6 +232,10 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
       items: [
         { source: 'ask', key: 'ask:1' },
         { source: 'ask', key: 'ask:2', text: 'An ask without its questions?', at_ms: 1, ask_id: 2 },
+        { source: 'ask', key: 'ask:3', text: 'An ask without its delivery?', at_ms: 1, ask_id: 3,
+          questions: [{ title: 'An ask without its delivery?', options: [] }] },
+        { source: 'ask', key: 'ask:4', text: 'An ask of no known delivery?', at_ms: 1, ask_id: 4,
+          questions: [{ title: 'An ask of no known delivery?', options: [] }], delivery: 'later' },
         ...payload.items,
       ],
       cards: [{ card_id: 'w9', state: 'sleeping' }, { card_id: 'w2', state: 'working' }],
@@ -241,8 +245,8 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
     expect(activity.working).toBe(true);
   });
 
-  it('ignores a payload that is not the v3 shape at all', () => {
-    for (const junk of [null, 'working', { schemaVersion: 3, working: true }, { working: 'yes' }]) {
+  it('ignores a payload that is not the v4 shape at all', () => {
+    for (const junk of [null, 'working', { schemaVersion: 4, working: true }, { working: 'yes' }]) {
       expect(trackActivityFrom('t1', [overlay(junk)])).toEqual({ ...NEUTRAL_ACTIVITY, recentAt: 1 });
     }
   });
@@ -267,9 +271,15 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
     expect(trackActivityFrom('t1', [overlay(v2)])).toEqual({ ...NEUTRAL_ACTIVITY, recentAt: 1 });
   });
 
+  /* #2348: a v3 row's asks carry no delivery; the kernel rewrites it on its next pass. */
+  it('v3 activity overlay is ignored', () => {
+    const v3 = { ...payload, schemaVersion: 3 };
+    expect(trackActivityFrom('t1', [overlay(v3)])).toEqual({ ...NEUTRAL_ACTIVITY, recentAt: 1 });
+  });
+
   it('uses every matching row time and valid activity time without trusting input order', () => {
     const olderPayload = overlay({ ...payload, activity_at_ms: 40 }, { id: 'older', updated_at: 50 });
-    const newerRow = overlay({ schemaVersion: 3 }, { id: 'newer', updated_at: 90 });
+    const newerRow = overlay({ schemaVersion: 4 }, { id: 'newer', updated_at: 90 });
     const nonFinite = overlay({ ...payload, activity_at_ms: Number.POSITIVE_INFINITY }, {
       id: 'non-finite', updated_at: Number.NaN,
     });

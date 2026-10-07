@@ -1326,7 +1326,7 @@ mod tests {
 
     // Pin each fixture dimension once; fixed arrays make missing rows a compile error.
     const MATRIX_ACTOR_COUNT: usize = 21;
-    const MATRIX_EVENT_COUNT: usize = 8;
+    const MATRIX_EVENT_COUNT: usize = 9;
     const MATRIX_SCOPE_COUNT: usize = 13;
 
     fn matrix_actors() -> [ActorId; MATRIX_ACTOR_COUNT] {
@@ -1416,6 +1416,7 @@ mod tests {
                         title: "Merge?".into(),
                         options: Vec::new(),
                     }],
+                    delivery: calm_types::event::AskDelivery::Wake,
                     source_item_id: None,
                 },
             ),
@@ -1424,7 +1425,14 @@ mod tests {
                 Event::AskAnswered {
                     ask_id: 1,
                     track_id: TrackId::from("w"),
-                    answers: vec!["yes".into()],
+                    answers: vec![calm_types::event::AskAnswer::Text("yes".into())],
+                },
+            ),
+            (
+                "ask.withdrawn",
+                Event::AskWithdrawn {
+                    ask_id: 1,
+                    track_id: TrackId::from("w"),
                 },
             ),
             (
