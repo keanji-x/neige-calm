@@ -89,15 +89,22 @@ turn (#2348); `provider::acp::approvals` owns the mapping. Under `never` every r
 `cancelled` where it is read. Under `ask` each request is a `hold` ask: one question whose title is
 the tool call's kind, title and files, and whose options are the agent's option names in its order.
 The chosen option is answered `selected` with that option's id; a request withdrawn or never asked
-is answered `cancelled`. The process is the held-request connection, so its requests end when the
-turn's driver has read its last frame. A stop sends `session/cancel` and then `cancelled` for every
-pending request under the lock every answer takes: OpenCode 1.18.35 still runs a command whose
-`selected` answer arrives after its turn was cancelled. Requests during session setup are always
-answered `cancelled`.
+is answered `cancelled`. The process is the held-request connection. The turn ends its requests by
+a fence, under the lock every answer takes: a stop sends `session/cancel` and then `cancelled` for
+every pending request, and the end of the driver's read (the prompt settled, the process exited, a
+protocol error) answers every pending request `cancelled` before any teardown and before the harness
+is told the connection is lost. After the fence an answer writes `cancelled` or nothing: OpenCode
+1.18.35 still runs a command whose `selected` answer arrives after its turn ended. Requests during
+session setup are always answered `cancelled`.
 
-Which actions ask is the operator profile's OpenCode `permission` configuration; Neige does not
-change it per mode. OpenCode's own `always` answer approves a command prefix for the rest of the
-process, which is one turn here; it is not written to disk.
+Under `ask` each turn's OpenCode process is launched with
+`OPENCODE_PERMISSION={"bash":"ask","edit":"ask","webfetch":"ask"}`, set explicitly by the launch
+(`AcpAgentConfig::permission_env`), never inherited. OpenCode merges it over every config file, so
+bash, edits (also write and patch) and fetches ask; reads outside the workspace ask as before. It
+has no flag or ACP method for this. Under `never` nothing is added: OpenCode runs with the operator
+profile's own `permission` configuration, which with OpenCode's defaults runs bash, edits and
+fetches unsandboxed without asking, as before. OpenCode's own `always` answer approves a command
+prefix for the rest of the process, which is one turn here; it is not written to disk.
 
 ## Acceptance
 

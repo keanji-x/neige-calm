@@ -21,21 +21,36 @@ impl Drop for SettlementPause {
     }
 }
 pub fn pause_settlement(worker: &str) -> SettlementPause {
+    pause_at(&SETTLEMENT, worker)
+}
+fn pause_at(hooks: &Mutex<HashMap<String, Hook>>, worker: &str) -> SettlementPause {
     let hook = Hook {
         entered: Arc::new(Notify::new()),
         release: Arc::new(Notify::new()),
     };
-    SETTLEMENT
-        .lock()
-        .unwrap()
-        .insert(worker.into(), hook.clone());
+    hooks.lock().unwrap().insert(worker.into(), hook.clone());
     SettlementPause {
         entered: hook.entered,
         release: hook.release,
     }
 }
 pub(crate) async fn wait_at_settlement(worker: &str) {
-    let hook = SETTLEMENT.lock().unwrap().remove(worker);
+    wait_at(&SETTLEMENT, worker).await;
+}
+
+static FENCED: LazyLock<Mutex<HashMap<String, Hook>>> = LazyLock::new(Mutex::default);
+
+/// Pause `worker`'s next turn right after its approvals were fenced, before its requests are
+/// reported gone and before any teardown: the agent process still runs.
+pub fn pause_after_fence(worker: &str) -> SettlementPause {
+    pause_at(&FENCED, worker)
+}
+pub(crate) async fn wait_after_fence(worker: &str) {
+    wait_at(&FENCED, worker).await;
+}
+
+async fn wait_at(hooks: &Mutex<HashMap<String, Hook>>, worker: &str) {
+    let hook = hooks.lock().unwrap().remove(worker);
     if let Some(hook) = hook {
         hook.entered.notify_one();
         hook.release.notified().await;

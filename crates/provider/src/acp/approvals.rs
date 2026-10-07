@@ -8,10 +8,12 @@
 //! process per turn, so the process is the connection: the [`HeldPermissions`] the turn's reader
 //! owns pushes `ConnectionLost` when it is dropped, after the reader's last frame.
 //!
-//! A cancel answers every request still pending `cancelled` right after `session/cancel`, and
-//! pushes `Gone` for each. OpenCode 1.18.35 still acts on a `selected` answer that arrives after
-//! its turn was cancelled, so one lock orders every answer with the cancel: an answer either
-//! reaches the agent before `session/cancel`, or the request was already answered `cancelled`.
+//! The turn ends its requests by a fence: a cancel (`session/cancel` first), and the end of the
+//! turn's read whatever ended it ([`Approvals::close`]), each answer every request still pending
+//! `cancelled` and refuse every later answer. OpenCode 1.18.35 still acts on a `selected` answer
+//! that arrives after its turn was cancelled or settled, so one lock orders every answer with the
+//! fence: an answer either reaches the agent before it, or writes `cancelled`, or nothing when the
+//! fence already answered its request. A cancel then pushes `Gone` for each request it answered.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -30,8 +32,9 @@ use crate::held_requests::{
 /// How one turn answers the agent's requests to the client, fixed by the permission mode read
 /// when the turn started.
 pub enum Approvals {
-    /// `never`: a permission request is answered `cancelled` where it is read.
-    Refused,
+    /// `never`: a permission request is answered `cancelled` where it is read, on the turn's
+    /// agent process.
+    Refused(Client),
     /// `ask`: a permission request is put to the person through the harness.
     Held(HeldPermissions),
 }
@@ -46,7 +49,7 @@ impl Approvals {
         client: &Client,
     ) -> Self {
         match mode {
-            PlannerPermissionMode::Never => Self::Refused,
+            PlannerPermissionMode::Never => Self::Refused(client.clone()),
             PlannerPermissionMode::Ask => Self::Held(HeldPermissions {
                 sender: held.clone(),
                 connection: ConnectionId(turn.to_string()),
@@ -57,24 +60,28 @@ impl Approvals {
     }
 
     /// A request the agent sent during the turn.
-    pub async fn request(
-        &self,
-        client: &Client,
-        id: Value,
-        method: &str,
-        params: Value,
-    ) -> Result<(), Error> {
+    pub async fn request(&self, id: Value, method: &str, params: Value) -> Result<(), Error> {
         match self {
             Self::Held(held) if method == permission::METHOD => held.open(id, params).await,
-            _ => refuse(client, id, method).await,
+            Self::Held(held) => refuse(&held.client, id, method).await,
+            Self::Refused(client) => refuse(client, id, method).await,
         }
     }
 
     /// Send `session/cancel` for the native session `native`, and answer what is still pending.
-    pub async fn cancel(&self, client: &Client, native: &str) -> Result<(), Error> {
+    pub async fn cancel(&self, native: &str) -> Result<(), Error> {
         match self {
-            Self::Refused => super::protocol::cancel(client, native).await,
+            Self::Refused(client) => super::protocol::cancel(client, native).await,
             Self::Held(held) => held.cancel(native).await,
+        }
+    }
+
+    /// The turn read its last frame from the agent: answer every request still pending
+    /// `cancelled`, and refuse every later answer. Call it before anything else of the turn's
+    /// teardown; nothing the person chooses reaches the agent after it.
+    pub async fn close(&self) {
+        if let Self::Held(held) = self {
+            held.close().await;
         }
     }
 }
@@ -92,8 +99,9 @@ pub async fn refuse(client: &Client, id: Value, method: &str) -> Result<(), Erro
 /// The requests of one agent process that no one has answered yet.
 #[derive(Default)]
 struct Requests {
-    /// Set once `session/cancel` was sent; a request after it is answered `cancelled` at once.
-    cancelled: bool,
+    /// Set by the fence (a cancel, or the end of the turn's read): every answer after it is
+    /// `cancelled`, and a request after it is answered `cancelled` without asking.
+    fenced: bool,
     /// The JSON-RPC id of each request still waiting, by its key.
     pending: HashMap<RequestKey, Value>,
 }
@@ -109,7 +117,7 @@ pub struct HeldPermissions {
 
 impl HeldPermissions {
     /// Put the request `id` to the person; the turn keeps reading while it waits. A malformed
-    /// request, or one after the cancel, is answered `cancelled` at once. A harness that is gone
+    /// request, or one after the fence, is answered `cancelled` at once. A harness that is gone
     /// drops the message, and with it the responder, which answers `cancelled`.
     async fn open(&self, id: Value, params: Value) -> Result<(), Error> {
         let request = match PermissionRequest::decode(params) {
@@ -122,7 +130,7 @@ impl HeldPermissions {
         let request_key = RequestKey(format!("{}/{id}", self.connection.0));
         {
             let mut requests = self.requests.lock().await;
-            if requests.cancelled {
+            if requests.fenced {
                 drop(requests);
                 return self.answer_now(id).await;
             }
@@ -159,7 +167,7 @@ impl HeldPermissions {
     /// answer takes; then `Gone` for each, so the harness withdraws their asks.
     async fn cancel(&self, native: &str) -> Result<(), Error> {
         let mut requests = self.requests.lock().await;
-        requests.cancelled = true;
+        requests.fenced = true;
         super::protocol::cancel(&self.client, native).await?;
         let pending = std::mem::take(&mut requests.pending);
         for id in pending.values() {
@@ -173,10 +181,33 @@ impl HeldPermissions {
         }
         Ok(())
     }
+
+    /// The fence at the end of the turn's read: `cancelled` for every request still pending, under
+    /// the lock every answer takes. A write that fails is not retried: the process is ending.
+    async fn close(&self) {
+        let mut requests = self.requests.lock().await;
+        requests.fenced = true;
+        for (_, id) in requests.pending.drain() {
+            if let Err(error) = self.client.respond(id, permission::cancelled()).await {
+                tracing::debug!(%error, "ACP: closing answer not written");
+            }
+        }
+    }
 }
 
 impl Drop for HeldPermissions {
+    /// The fence again, for a turn whose teardown did not reach [`Approvals::close`]: a later
+    /// answer writes `cancelled`. Then `ConnectionLost`.
     fn drop(&mut self) {
+        match self.requests.try_lock() {
+            Ok(mut requests) => requests.fenced = true,
+            Err(_) => {
+                let requests = Arc::clone(&self.requests);
+                if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                    runtime.spawn(async move { requests.lock().await.fenced = true });
+                }
+            }
+        }
         let _ = self.sender.send(HeldRequestMessage::ConnectionLost {
             connection: self.connection.clone(),
         });
@@ -254,7 +285,11 @@ impl Pending {
             if requests.pending.remove(&request_key).is_none() {
                 return;
             }
-            let result = match option.and_then(|option| option_ids.get(option)) {
+            // A cancel cut short by its caller's timeout fenced without answering its requests.
+            let chosen = option
+                .filter(|_| !requests.fenced)
+                .and_then(|option| option_ids.get(option));
+            let result = match chosen {
                 Some(option_id) => permission::selected(option_id),
                 None => permission::cancelled(),
             };

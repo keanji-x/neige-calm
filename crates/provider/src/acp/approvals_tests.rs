@@ -5,6 +5,7 @@ use super::*;
 use crate::acp::Connection;
 use calm_types::event::ASK_MAX_TEXT_CHARS;
 use serde_json::json;
+use std::future::Future;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader, DuplexStream, ReadHalf, WriteHalf};
 use tokio::sync::mpsc;
@@ -48,12 +49,7 @@ impl Peer {
 
     async fn request(&self, id: i64, params: Value) {
         self.approvals
-            .request(
-                &self.connection.client,
-                json!(id),
-                permission::METHOD,
-                params,
-            )
+            .request(json!(id), permission::METHOD, params)
             .await
             .expect("request handled");
     }
@@ -156,10 +152,7 @@ async fn a_cancel_answers_pending_requests_cancelled_and_reports_them_gone() {
     let mut peer = peer(PlannerPermissionMode::Ask);
     peer.request(7, bash()).await;
     let responder = expect_open(peer.next_held().await, 7);
-    peer.approvals
-        .cancel(&peer.connection.client, "native")
-        .await
-        .unwrap();
+    peer.approvals.cancel("native").await.unwrap();
     assert_eq!(
         peer.read().await,
         json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "native"}})
@@ -187,10 +180,63 @@ async fn a_cancel_answers_pending_requests_cancelled_and_reports_them_gone() {
     );
 }
 
+/// The turn's read ended (the prompt settled, the process exited, a protocol error) while a request
+/// waited: the close answers it `cancelled`. The person's answer after that writes nothing, and a
+/// request after it is answered `cancelled` without asking.
+#[tokio::test]
+async fn an_answer_after_the_turn_closed_writes_nothing() {
+    let mut peer = peer(PlannerPermissionMode::Ask);
+    peer.request(9, bash()).await;
+    let responder = expect_open(peer.next_held().await, 9);
+    peer.approvals.close().await;
+    assert_eq!(
+        peer.read().await,
+        answer(9, json!({"outcome": {"outcome": "cancelled"}}))
+    );
+    responder.respond(0);
+    peer.request(10, bash()).await;
+    assert_eq!(
+        peer.read().await,
+        answer(10, json!({"outcome": {"outcome": "cancelled"}}))
+    );
+    peer.wrote_nothing_more().await;
+    assert!(
+        peer.held.try_recv().is_err(),
+        "nothing asked after the close"
+    );
+}
+
+/// A cancel its caller's timeout cut short fenced the requests before answering them: an answer
+/// after it is `cancelled`, never the chosen option.
+#[tokio::test]
+async fn an_answer_after_a_cut_short_cancel_is_cancelled() {
+    let mut peer = peer(PlannerPermissionMode::Ask);
+    peer.request(11, bash()).await;
+    let responder = expect_open(peer.next_held().await, 11);
+    // Poll the cancel once, to where it waits on its `session/cancel` write, and drop it there,
+    // as the driver's timeout would.
+    let mut cancel = Box::pin(peer.approvals.cancel("native"));
+    let first = std::future::poll_fn(|cx| std::task::Poll::Ready(cancel.as_mut().poll(cx))).await;
+    assert!(
+        first.is_pending(),
+        "the cancel was cut short before its answers"
+    );
+    // The transport skips a write whose writer is gone, so not even `session/cancel` went out.
+    drop(cancel);
+    responder.respond(0);
+    assert_eq!(
+        peer.read().await,
+        answer(11, json!({"outcome": {"outcome": "cancelled"}}))
+    );
+}
+
 #[tokio::test]
 async fn dropping_an_ask_turns_approvals_loses_its_connection() {
     let mut peer = peer(PlannerPermissionMode::Ask);
-    drop(std::mem::replace(&mut peer.approvals, Approvals::Refused));
+    drop(std::mem::replace(
+        &mut peer.approvals,
+        Approvals::Refused(peer.connection.client.clone()),
+    ));
     match peer.next_held().await {
         HeldRequestMessage::ConnectionLost { connection } => {
             assert_eq!(connection, ConnectionId("turn-1".into()))
@@ -209,12 +255,12 @@ async fn a_never_turn_answers_cancelled_itself() {
         peer.read().await,
         answer(0, json!({"outcome": {"outcome": "cancelled"}}))
     );
-    peer.approvals
-        .cancel(&peer.connection.client, "native")
-        .await
-        .unwrap();
+    peer.approvals.cancel("native").await.unwrap();
     assert_eq!(peer.read().await["method"], "session/cancel");
-    drop(std::mem::replace(&mut peer.approvals, Approvals::Refused));
+    drop(std::mem::replace(
+        &mut peer.approvals,
+        Approvals::Refused(peer.connection.client.clone()),
+    ));
     peer.wrote_nothing_more().await;
     assert!(peer.held.try_recv().is_err());
 }
@@ -232,7 +278,6 @@ async fn a_malformed_request_or_another_method_is_refused_without_asking() {
     );
     peer.approvals
         .request(
-            &peer.connection.client,
             json!(5),
             "fs/write_text_file",
             json!({"path": "/ws/e.txt", "content": "ho\n"}),

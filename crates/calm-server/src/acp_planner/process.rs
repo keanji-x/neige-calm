@@ -1,5 +1,6 @@
 use super::config::{AcpAgentConfig, AcpPlannerHost, MARKER_KEY};
 use crate::error::{CalmError, Result};
+use crate::planner_permission_mode::PlannerPermissionMode;
 use provider::acp::{Connection, protocol};
 use std::time::Duration;
 use tokio::process::{Child, Command};
@@ -12,7 +13,11 @@ pub(super) struct Process {
 /// Only a registered operational process gets its active card's CLI authority.
 pub(super) enum LaunchContext<'a> {
     Readiness,
-    Planner { mcp_token: &'a str },
+    /// One Planner turn, under the permission mode the harness resolved for it.
+    Planner {
+        mcp_token: &'a str,
+        permission: PlannerPermissionMode,
+    },
 }
 impl Process {
     pub async fn spawn(
@@ -35,11 +40,16 @@ impl Process {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
-        if let LaunchContext::Planner { mcp_token } = context {
+        if let LaunchContext::Planner {
+            mcp_token,
+            permission,
+        } = context
+        {
             command.envs(crate::mcp_server::wiring::card_mcp_env(
                 &host.mcp_socket,
                 mcp_token,
             ));
+            command.envs(config.permission_env(permission));
         }
         let mut child = command.spawn()?;
         let connection = Connection::new(

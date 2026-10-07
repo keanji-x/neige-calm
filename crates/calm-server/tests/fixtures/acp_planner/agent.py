@@ -13,6 +13,7 @@ with (root / 'environment.jsonl').open('a') as output:
     presence = {name: name in os.environ for name in [
         'NEIGE_MCP_DAEMON_TOKEN', 'NEIGE_MCP_TOKEN', 'NEIGE_MCP_SOCKET', 'ACP_AMBIENT_SENTINEL']}
     presence['readiness'] = os.environ['NEIGE_ACP_PLANNER'].endswith(':readiness')
+    presence['opencode_permission'] = os.environ.get('OPENCODE_PERMISSION')
     output.write(json.dumps(presence) + '\n')
 current, pending, permission, cancel_seen = None, None, None, False
 model, effort = 'fixture/model-a', 'normal'
@@ -154,12 +155,17 @@ for line in sys.stdin:
             emit({'jsonrpc': '2.0', 'id': permission, 'method': 'session/request_permission', 'params': {
                 'sessionId': current, 'toolCall': {'toolCallId': 'one', 'title': 'Fixture operation'},
                 'options': [{'optionId': 'yes', 'name': 'Allow', 'kind': 'allow_once'}]}})
-        elif scenario in ['ask', 'ask-cancel', 'ask-exit']:
+        elif scenario in ['ask', 'ask-cancel', 'ask-exit', 'ask-settle']:
             pending, permission, cancel_seen = request, 0, False
             ask_permission(permission)
             if scenario == 'ask-exit':
                 time.sleep(0.3)
                 os._exit(0)
+            if scenario == 'ask-settle':
+                # The turn settles on its own while the request still waits; later answers are logged.
+                time.sleep(0.3)
+                finish(pending, 'settled')
+                pending = None
         elif scenario == 'hold':
             pending = request
         else:
@@ -183,6 +189,8 @@ for line in sys.stdin:
     elif method is None and permission is not None and request.get('id') == permission:
         outcome = request['result']['outcome']
         permission_log({'event': 'reply', 'outcome': outcome})
+        if pending is None:
+            continue
         if cancel_seen:
             finish(pending, 'cancelled', 'cancelled')
         else:

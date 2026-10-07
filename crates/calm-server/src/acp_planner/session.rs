@@ -226,7 +226,10 @@ impl AcpPlannerSession {
             config,
             &params.worker_session_id,
             &params.cwd,
-            super::process::LaunchContext::Planner { mcp_token: &token },
+            super::process::LaunchContext::Planner {
+                mcp_token: &token,
+                permission,
+            },
         )
         .await
         {
@@ -585,7 +588,7 @@ async fn drive(
                 if changed.is_err() || *cancelled.borrow() {
                     stop_at=Some(tokio::time::Instant::now()+Duration::from_secs(5));
                     tokio::time::timeout(Duration::from_secs(3),async {
-                        approvals.cancel(&process.connection.client,&receipt.native_session_id).await.map_err(wire_error)
+                        approvals.cancel(&receipt.native_session_id).await.map_err(wire_error)
                     }).await.map_err(|_|CalmError::Conflict("ACP cancellation writes timed out".into()))??;
                 }
             },
@@ -594,13 +597,17 @@ async fn drive(
                 Some(Incoming::Notification{method,params}) if method=="session/update"=>{
                     for event in translator.update(&params,crate::model::now_ms()).map_err(wire_error)? {retain_item(&mut retained,&event);let _=shared.events.send(event);}
                 },
-                Some(Incoming::Request{id,method,params})=>approvals.request(&process.connection.client,id,&method,params).await.map_err(wire_error)?,
+                Some(Incoming::Request{id,method,params})=>approvals.request(id,&method,params).await.map_err(wire_error)?,
                 Some(Incoming::Notification{..})=>{},
                 None=>return Err(CalmError::Conflict("ACP prompt connection closed".into())),
             }
         }}
     }.await;
-    // Every frame of this process that will ever be read has been: its requests end here.
+    // Every frame of this process that will ever be read has been: its requests end here, before
+    // any teardown await, so no answer reaches the agent after its turn.
+    approvals.close().await;
+    #[cfg(feature = "fixtures")]
+    super::test_seams::wait_after_fence(&params.worker_session_id).await;
     drop(approvals);
     let revoked = revoke(params).await;
     if let Err(error) = &revoked {

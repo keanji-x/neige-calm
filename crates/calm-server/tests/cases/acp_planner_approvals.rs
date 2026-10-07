@@ -2,7 +2,7 @@
 //! production boot, routes and harness. The fake agent sends OpenCode's request shape; the test
 //! taps the held-request messages the turn pushes, in order, without changing them.
 use super::*;
-use calm_server::acp_planner::test_seams::{HeldNote, observe_held};
+use calm_server::acp_planner::test_seams::{HeldNote, observe_held, pause_after_fence};
 use calm_server::event::{AskDelivery, AskQuestion, Event};
 
 fn permission_log(root: &Root) -> Vec<Value> {
@@ -11,6 +11,31 @@ fn permission_log(root: &Root) -> Vec<Value> {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
+}
+
+/// The `OPENCODE_PERMISSION` each Planner (not readiness) launch of the agent carried.
+pub(super) fn launch_permissions(root: &Root) -> Vec<Value> {
+    std::fs::read_to_string(root.path().join("environment.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|launch| launch["readiness"] == false)
+        .map(|launch| launch["opencode_permission"].clone())
+        .collect()
+}
+
+async fn wait_log(root: &Root, n: usize) -> Vec<Value> {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let log = permission_log(root);
+            if log.len() >= n {
+                return log;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("the agent logged its permission replies")
 }
 
 async fn rows(stack: &Stack, track: &str, kind: &str) -> Vec<(i64, Event)> {
@@ -129,6 +154,53 @@ async fn acp_ask_mode_holds_each_request_and_answers_the_chosen_option_id() {
             .await;
     }
     assert!(rows(&stack, &track, "ask.withdrawn").await.is_empty());
+    assert_eq!(
+        launch_permissions(&root),
+        vec![json!(r#"{"bash":"ask","edit":"ask","webfetch":"ask"}"#); 3],
+        "every ask turn's agent asks before bash, edits and fetches"
+    );
+    stack.shutdown().await;
+}
+
+/// The turn settles on its own while its request still waits. Its read's end answers the request
+/// `cancelled` before anything else: an answer the person sends through the route afterwards,
+/// while the agent process still runs, never reaches the agent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn acp_an_answer_after_the_turn_settled_never_reaches_the_agent() {
+    let root = Root::new("unused");
+    let (stack, track, card, _notes) = ask_track(&root, "ask-settle").await;
+    let pause = pause_after_fence(&stack.runtime(&card).await.id);
+    let (status, body) = stack.post_input(&card, "use a tool").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let asked = wait_rows(&stack, &track, "ask.requested", 1).await;
+    let ask_id = hold_ask(&asked[0]);
+    tokio::time::timeout(Duration::from_secs(20), pause.entered.notified())
+        .await
+        .expect("the turn's read ended");
+    assert_eq!(
+        wait_log(&root, 1).await,
+        [json!({"event": "reply", "outcome": {"outcome": "cancelled"}})]
+    );
+    let (status, body) = stack
+        .send(
+            "POST",
+            &format!("/api/tracks/{track}/asks/{ask_id}/answer"),
+            Some(json!({"answers": [{"option": 0}]})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    // Room for a late write to land while the agent still reads; the fence means none comes.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    drop(pause);
+    assert_eq!(
+        stack.wait_outcomes(&card, 1).await[0]["status"],
+        "completed"
+    );
+    assert_eq!(
+        permission_log(&root),
+        [json!({"event": "reply", "outcome": {"outcome": "cancelled"}})],
+        "no answer after the fence"
+    );
     stack.shutdown().await;
 }
 

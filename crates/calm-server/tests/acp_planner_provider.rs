@@ -180,6 +180,11 @@ async fn acp_permission_requests_use_never_without_creating_asks() {
         held.try_recv().is_err(),
         "a never turn reports nothing to the held-request channel"
     );
+    assert_eq!(
+        acp_planner_approvals::launch_permissions(&root),
+        vec![Value::Null],
+        "a never turn launches the agent with its own permission config"
+    );
     wait_file(&root, "permission-reply.json").await;
     let reply: Value = serde_json::from_str(
         &std::fs::read_to_string(root.path().join("permission-reply.json")).unwrap(),
