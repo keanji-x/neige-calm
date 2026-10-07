@@ -32,6 +32,10 @@ function invalidateMappedQuery(client: QueryCachePort, queryKey: readonly unknow
 /** Translates one planned key onto a `queryKeys` key, or `null` when the built surface has no query for it. */
 export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {
   const [head, first, second] = key;
+  if (head === 'model-catalog' && key.length === 2 && typeof first === 'object' && first !== null
+    && 'kind' in first && first.kind === 'card' && 'cardId' in first && typeof first.cardId === 'string') {
+    return queryKeys.modelCatalog({ kind: 'card', cardId: first.cardId });
+  }
   if (head === 'areas' && key.length === 1) return queryKeys.areas();
   if (head === 'tracks' && first === 'area' && typeof second === 'string') return queryKeys.tracksInArea(second);
   if (head === 'track' && typeof first === 'string' && key.length === 2) return queryKeys.trackDetail(first);

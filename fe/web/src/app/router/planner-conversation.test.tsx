@@ -10,6 +10,9 @@ import type { HarnessPhaseTag } from '../../../../core/api/generated/wire.js';
 import { HARNESS_ITEMS_PAGE_LIMIT as TRANSCRIPT_PAGE_LIMIT } from '../../../../core/domain/conversation.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { queryKeys } from '../providers/queries.ts';
+import { applyEventEffects } from '../events/query-invalidation-adapter.ts';
+import { invalidationPlanFor } from '../../../../core/events/invalidation-plan.ts';
+import { wireEventSchema } from '../../../../core/api/schemas.ts';
 import { APP_BASEPATH, createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
@@ -102,6 +105,26 @@ async function openConversation() {
   fireEvent.click(await screen.findByRole('button', { name: /Conversation Planner chat/ }));
   await screen.findByRole('complementary', { name: 'Planner chat' });
 }
+
+it('refreshes a mounted agent catalog when its first turn settles', async () => {
+  let configured = false;
+  const { client } = setup((request) => {
+    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_close: true, cards: [{ ...CARD, payload: { planner_harness: true, planner_provider: 'opencode' } }], overlays: [] });
+    if (request.path.includes('/models')) return ok({
+      models: configured ? [{ id: 'declared', model: 'declared', resolved_model: null, display_name: 'Declared model', description: '', is_default: true, supported_reasoning_efforts: [], default_reasoning_effort: null }] : [],
+      default: { model: configured ? 'declared' : null, reasoning_effort: null, supported_reasoning_efforts: null },
+      default_source: configured ? 'acp_session' : 'unknown', source: configured ? 'live' : 'unavailable', fetched_at_ms: configured ? 1 : null,
+    });
+    return undefined;
+  });
+  await openConversation();
+  await waitFor(() => expect(within(drawerElement()).getByRole('button', { name: /^Model:/ })).toBeDisabled());
+  configured = true;
+  const event = wireEventSchema.parse({ ev: 'harness.phase.changed', data: { worker_session_id: 'runtime', card_id: CARD.id, track_id: TRACK.id, old_phase: 'turn_running', new_phase: 'turn_completed' } });
+  await act(async () => applyEventEffects(client, [{ type: 'invalidate', keys: invalidationPlanFor(event).invalidate }]));
+  await waitFor(() => expect(within(drawerElement()).getByRole('button', { name: /^Model:/ })).not.toBeDisabled());
+  expect(client.getQueryData(queryKeys.modelCatalog({ kind: 'card', cardId: CARD.id }))).toMatchObject({ source: 'live' });
+});
 
 /** The open drawer, as a root for what is and is not inside it. */
 function drawerElement(): HTMLElement {

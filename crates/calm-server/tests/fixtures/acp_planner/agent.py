@@ -5,6 +5,7 @@ import pathlib
 import subprocess
 import sys
 import uuid
+import time
 
 root = pathlib.Path(os.environ['ACP_FIXTURE_ROOT'])
 with (root / 'environment.jsonl').open('a') as output:
@@ -68,6 +69,10 @@ for line in sys.stdin:
     if method == 'initialize':
         result(request, {'protocolVersion': 1, 'agentCapabilities': {'loadSession': True},
                          'agentInfo': {'name': 'Fixture ACP', 'version': '1'}})
+        if (root / 'scenario').read_text().strip() == 'checkpoint' and not os.environ['NEIGE_ACP_PLANNER'].endswith(':readiness'):
+            (root / 'setup-checkpoint').touch()
+            while not (root / 'release-setup').exists():
+                time.sleep(0.01)
     elif method == 'session/new':
         current = 'native_' + uuid.uuid4().hex
         native_path().write_text(json.dumps({'inputs': [], 'cwd': params['cwd'], 'model': model, 'effort': effort}))
@@ -101,7 +106,7 @@ for line in sys.stdin:
         state['inputs'].extend(texts)
         native_path().write_text(json.dumps(state))
         scenario = (root / 'scenario').read_text().strip()
-        if scenario == 'lost':
+        if scenario in ['lost', 'checkpoint']:
             os._exit(0)
         if scenario == 'permission':
             pending, permission = request, 'native-permission'

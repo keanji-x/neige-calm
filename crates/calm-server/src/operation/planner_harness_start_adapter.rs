@@ -799,7 +799,17 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         let mut inherited_from: Vec<HarvestedFrom> = Vec::new();
         // The failed carrier's own copy of its queue, carrying the ids the journal names.
         let mut failed_carrier_keeps: Option<HarnessSnapshot> = None;
-        if let Some(inherited) = inherited_snapshot {
+        if let Some(mut inherited) = inherited_snapshot {
+            if provider == AgentProvider::OpenCode
+                && let Some(existing) = predecessor
+            {
+                crate::acp_planner::recovery::retire_before_transfer(
+                    tx,
+                    &existing.id,
+                    &mut inherited,
+                )
+                .await?;
+            }
             snapshot.push_watermark = inherited.push_watermark;
             // Inheriting the fused entries (not the raw arrays) is what keeps the queue ids the client has already been shown; the inherit CARRIES the predecessor's message ids, it does not mint over them.
             let mut inherited_entries = inherited.pending_entries();

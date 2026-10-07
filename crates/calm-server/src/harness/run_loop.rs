@@ -287,6 +287,7 @@ impl<'a> IssueTurnHandle<'a> {
         input: Vec<InputItem>,
         selection: &TurnModelSelection,
         client_user_message_id: &str,
+        claim: &[QueueEntry],
         pending_rewind: Option<&BackendRewind>,
     ) -> std::result::Result<String, TurnStartFailure> {
         self.backend
@@ -295,6 +296,7 @@ impl<'a> IssueTurnHandle<'a> {
                 input,
                 selection,
                 client_user_message_id,
+                claim,
                 pending_rewind,
             )
             .await
@@ -3282,6 +3284,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 items,
                 &selection,
                 client_id.as_str(),
+                &drained,
                 pending_rewind.as_ref(),
             )
             .await

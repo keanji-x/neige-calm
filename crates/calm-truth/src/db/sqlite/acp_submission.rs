@@ -29,7 +29,7 @@ pub async fn acp_registration_claim(
     digest: &str,
     native_bound: bool,
 ) -> Result<()> {
-    let mut tx = pool.begin().await?;
+    let mut tx = super::begin_immediate_tx(pool).await?;
     let prior: Option<String> = sqlx::query_scalar(
         "SELECT registration_digest FROM acp_managed_sessions WHERE worker_session_id=?1",
     )

@@ -387,7 +387,7 @@ async fn a_live_harness_whose_row_was_revoked_re_mints_before_its_next_spawn() {
     let (track_id, card_id) = stack.create_claude_track().await;
     let (_, token) = stack.run_turn(&root, &card_id, "exit", "hello").await;
     let runtime = stack.runtime(&card_id).await;
-    let host = stack.state.claude_planner_wiring().host;
+    let host = stack.state.claude_planner_wiring().claude;
     calm_server::claude_planner::lifecycle::sweep_track(stack.repo(), &host, &track_id)
         .await
         .expect("revoke then sweep");

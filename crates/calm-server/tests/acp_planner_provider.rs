@@ -250,3 +250,200 @@ async fn acp_uses_declared_configuration_keys_and_authenticates_mcp() {
     }
     stack.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn acp_registry_miss_recovers_without_codex_readiness() {
+    let root = Root::new("unused");
+    let stack = boot(&root).await;
+    let (_, card) = create(&stack).await;
+    assert_eq!(
+        turn(&stack, &card, "before registry miss", 1).await["status"],
+        "completed"
+    );
+    let runtime = stack.runtime(&card).await;
+    let handle = stack.state.harness.remove(&runtime.id).expect("registered");
+    handle.shutdown().await.unwrap();
+    assert_eq!(
+        turn(&stack, &card, "after registry miss", 2).await["status"],
+        "completed"
+    );
+    assert_eq!(requests(&root, "session/prompt").len(), 2);
+    stack.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn acp_recovery_records_unknown_for_a_dispatched_turn_with_no_pending_queue() {
+    let root = Root::new("unused");
+    let stack = boot(&root).await;
+    let (_, card) = create(&stack).await;
+    let outcome = turn(&stack, &card, "dispatched checkpoint", 1).await;
+    let runtime = stack.runtime(&card).await;
+    let pool = stack.repo().sqlite_pool().unwrap();
+    let mut snapshot = stack.harness(&runtime.id).snapshot().await;
+    stack.shutdown().await;
+    // Restore the durable state at the real post-dispatch/pre-settlement crash checkpoint.
+    snapshot.phase = calm_server::harness::HarnessPhaseTag::TurnRunning;
+    assert!(snapshot.pending_entries().is_empty());
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE acp_submissions SET state='sending',outcome_json=NULL WHERE worker_session_id=?1",
+    )
+    .bind(&runtime.id)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM harness_items WHERE card_id=?1 AND method='turn/completed'")
+        .bind(&card)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE worker_sessions SET handle_state_json=?2,active_turn_id=?3 WHERE id=?1")
+        .bind(&runtime.id)
+        .bind(serde_json::to_string(&snapshot).unwrap())
+        .bind(outcome["id"].as_str().unwrap())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let stack = boot(&root).await;
+    let outcomes = stack.wait_outcomes(&card, 1).await;
+    assert_eq!(outcomes[0]["id"], outcome["id"]);
+    assert_eq!(outcomes[0]["status"], "failed");
+    assert!(
+        outcomes[0]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown")
+    );
+    assert_eq!(
+        requests(&root, "session/prompt").len(),
+        1,
+        "recovery cannot resend"
+    );
+    assert!(
+        calm_server::db::sqlite::acp_submission_unresolved(&pool, &runtime.id)
+            .await
+            .unwrap()
+    );
+    stack.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn acp_reset_after_dispatch_checkpoint_transfers_only_later_input() {
+    let root = Root::new("unused");
+    let stack = boot(&root).await;
+    let (track, card) = create(&stack).await;
+    std::fs::write(root.path().join("scenario"), "checkpoint").unwrap();
+    let (status, body) = stack.post_input(&card, "original operational input").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    wait_file(&root, "setup-checkpoint").await;
+    let runtime = stack.runtime(&card).await;
+    let mut checkpoint = calm_server::harness::HarnessSnapshot::from_value_strict(
+        runtime.handle_state_json.clone().unwrap(),
+    );
+    assert_eq!(
+        checkpoint.phase,
+        calm_server::harness::HarnessPhaseTag::IssuingTurn
+    );
+    assert!(!checkpoint.pending_entries().is_empty());
+    std::fs::write(root.path().join("release-setup"), "").unwrap();
+    stack.wait_outcomes(&card, 1).await;
+    let pool = stack.repo().sqlite_pool().unwrap();
+    stack.shutdown().await;
+    let mut entries = checkpoint.pending_entries();
+    entries.push(calm_server::harness::QueueEntry::user_message(
+        "later input".into(),
+        None,
+        Vec::new(),
+    ));
+    checkpoint.set_pending_entries(entries);
+    sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
+        .bind(&runtime.id)
+        .bind(serde_json::to_string(&checkpoint).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    std::fs::write(root.path().join("scenario"), "reply").unwrap();
+    let stack = boot(&root).await;
+    let queued = stack
+        .harness(&runtime.id)
+        .snapshot()
+        .await
+        .pending_entries();
+    assert!(queued.iter().all(|entry|!matches!(entry.observation(),calm_server::harness::Observation::UserMessage{text} if text=="original operational input")));
+    assert!(queued.iter().any(|entry|matches!(entry.observation(),calm_server::harness::Observation::UserMessage{text} if text=="later input")));
+    let (status, body) = stack
+        .send(
+            "POST",
+            &format!("/api/cards/{card}/planner/reset"),
+            Some(json!({})),
+        )
+        .await;
+    assert!(status.is_success(), "{status}: {body}");
+    stack.wait_outcomes(&card, 1).await;
+    let prompts = requests(&root, "session/prompt");
+    assert_eq!(prompts.len(), 2);
+    let last = prompts.last().unwrap()["params"]["prompt"]
+        .as_array()
+        .unwrap();
+    assert!(last.iter().any(|part| {
+        part["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("later input"))
+    }));
+    assert!(last.iter().all(|part| {
+        part["text"]
+            .as_str()
+            .is_none_or(|text| !text.contains("original operational input"))
+    }));
+    assert!(stack.repo().track_get(&track).await.unwrap().is_some());
+    stack.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn acp_failed_cleanup_revokes_the_live_mcp_credential() {
+    let root = Root::new("unused");
+    let stack = boot(&root).await;
+    let (_, card) = create(&stack).await;
+    std::fs::write(root.path().join("scenario"), "hold").unwrap();
+    let (status, body) = stack.post_input(&card, "hold").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let runtime = stack.runtime(&card).await;
+    stack.wait_phase(&runtime.id, "turn_running").await;
+    let pool = stack.repo().sqlite_pool().unwrap();
+    let before: Option<String> =
+        sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?1")
+            .bind(&runtime.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        before.is_some(),
+        "exercise a minted credential, not an unconfigured path"
+    );
+    calm_server::planner_process::fail_claude_planner_stop_for_test(&runtime.id);
+    let (status, body) = stack
+        .send(
+            "POST",
+            &format!("/api/cards/{card}/planner/interrupt"),
+            Some(json!({})),
+        )
+        .await;
+    assert!(status.is_success(), "{status}: {body}");
+    let outcomes = stack.wait_outcomes(&card, 1).await;
+    calm_server::planner_process::clear_claude_planner_stop_failure_for_test(&runtime.id);
+    assert_eq!(outcomes[0]["status"], "failed");
+    let after: Option<String> =
+        sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?1")
+            .bind(&runtime.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        after.is_none(),
+        "failed process cleanup must not retain MCP authority"
+    );
+    stack.shutdown().await;
+}

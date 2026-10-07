@@ -12,7 +12,7 @@ use crate::operation::planner_harness_start_adapter::profile_mints_its_own_card;
 use crate::operation::planner_start_fence::CardStartFence;
 use crate::routes::planner_cards::{HarnessCardStart, start_harness_card};
 use crate::session_projection_repo::{
-    AgentProvider, CardConversation, WorkerSessionKind, WorkerSessionProjection, WorkerSessionState,
+    AgentProvider, CardConversation, WorkerSessionProjection, WorkerSessionState,
 };
 use crate::state::{CodexShellState, RouteState, WorkerState};
 
@@ -124,13 +124,7 @@ pub(crate) async fn ensure_planner_session(
         return Err(dormant());
     }
     // A recovered harness can't issue turns without its backend; surface that instead of spawning a silently-wedged task.
-    let provider = if runtime.kind == WorkerSessionKind::SharedPlanner
-        && runtime.agent_provider == Some(AgentProvider::Claude)
-    {
-        AgentProvider::Claude
-    } else {
-        AgentProvider::Codex
-    };
+    let provider = runtime.agent_provider.clone().ok_or_else(dormant)?;
     require_backend(s, cs, provider).await?;
     let runtime_id = runtime.id.clone();
     let harness = install_preserved_session(s, w, cs, runtime.clone()).await?;

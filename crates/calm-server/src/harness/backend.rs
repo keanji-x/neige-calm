@@ -183,6 +183,7 @@ impl PlannerBackend {
         items: Vec<InputItem>,
         selection: &TurnModelSelection,
         client_id: &str,
+        claim: &[crate::harness::QueueEntry],
         rewind: Option<&BackendRewind>,
     ) -> std::result::Result<TurnId, TurnStartFailure> {
         if let Some(reader) = self.issuance_hold() {
@@ -198,7 +199,7 @@ impl PlannerBackend {
                     return Err(mismatched_rewind());
                 }
                 session
-                    .turn_start(thread_id, items, selection, client_id)
+                    .turn_start(thread_id, items, selection, client_id, claim)
                     .await
             }
             Arm::Codex(daemon) => {

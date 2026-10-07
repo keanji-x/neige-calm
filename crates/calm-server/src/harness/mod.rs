@@ -20,6 +20,7 @@ pub(crate) mod rewind;
 pub mod run_loop;
 pub mod snapshot;
 pub mod state;
+pub(crate) mod submission_claims;
 pub mod token_usage;
 pub(crate) mod turn_input;
 pub(crate) mod turn_outcome;
@@ -272,6 +273,16 @@ pub async fn spawn_recovered_harness(
     if provider == AgentProvider::Claude {
         record_interrupted_claude_turn(repo.as_ref(), &runtime, card.track_id.as_str(), &snapshot)
             .await?;
+    }
+    if provider == AgentProvider::OpenCode {
+        crate::acp_planner::recovery::recover(
+            repo.as_ref(),
+            &runtime.id,
+            &runtime.card_id,
+            card.track_id.as_str(),
+            &mut snapshot,
+        )
+        .await?;
     }
     let backend = PlannerBackend::open(
         provider,

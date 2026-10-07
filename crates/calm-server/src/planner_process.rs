@@ -13,8 +13,6 @@ use crate::error::{CalmError, Result};
 use crate::proc_identity::{parse_proc_stat_fields, read_proc_start_time};
 use calm_worker_runtime::proc_entry_vanished;
 
-/// The environ key every managed Planner process carries.
-
 const TERM_GRACE: Duration = Duration::from_secs(5);
 const KILL_WAIT: Duration = Duration::from_secs(10);
 /// A stop given no tighter deadline gives up this long after it starts.

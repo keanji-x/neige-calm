@@ -99,6 +99,7 @@ impl AcpPlannerSession {
         items: Vec<InputItem>,
         selection: &TurnModelSelection,
         client: &str,
+        claim: &[crate::harness::QueueEntry],
     ) -> std::result::Result<String, TurnStartFailure> {
         let shared = &self.shared;
         let params = &shared.params;
@@ -136,7 +137,7 @@ impl AcpPlannerSession {
                 serde_json::from_str(&receipt.input_json).map_err(CalmError::from)?;
             if receipt.thread_id != thread
                 || row.agent_session_id.as_deref() != Some(&receipt.native_session_id)
-                || issued.get("input") != Some(&input)
+                || issued.get("queue") != Some(&crate::harness::submission_claims::freeze(claim))
             {
                 return Err(refused("ACP receipt ownership or original input changed"));
             }
@@ -306,7 +307,7 @@ impl AcpPlannerSession {
                 turn_id: turn.clone(),
                 thread_id: thread.into(),
                 native_session_id: native.clone(),
-                input_json: serde_json::to_string(&json!({"input":input,"prompt":blocks}))
+                input_json: serde_json::to_string(&json!({"input":input,"prompt":blocks,"queue":crate::harness::submission_claims::freeze(claim)}))
                     .map_err(CalmError::from)?,
                 state: crate::db::sqlite::AcpSubmissionState::Sending,
                 outcome_json: None,
@@ -320,10 +321,10 @@ impl AcpPlannerSession {
         let (native, turn, receipt) = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
-                process
-                    .stop(&params.host, &params.worker_session_id)
-                    .await?;
-                revoke(params).await?;
+                let revoked = revoke(params).await;
+                let stopped = process.stop(&params.host, &params.worker_session_id).await;
+                revoked?;
+                stopped?;
                 return Err(error);
             }
         };
@@ -401,7 +402,7 @@ fn refused(reason: &str) -> TurnStartFailure {
 fn wire_error(error: provider::acp::Error) -> CalmError {
     CalmError::Conflict(error.to_string())
 }
-fn unknown_outcome(turn: &str) -> Value {
+pub(super) fn unknown_outcome(turn: &str) -> Value {
     json!({"id":turn,"status":"failed","error":{"message":"ACP execution outcome is unknown. The submission will not be resent; reset the conversation to continue."}})
 }
 async fn setup_request(process: &mut Process, method: &str, params: Value) -> Result<Value> {
@@ -601,9 +602,13 @@ async fn drive(
             }
         }}
     }.await;
+    let revoked = revoke(params).await;
+    if let Err(error) = &revoked {
+        tracing::error!(%error,"ACP credential revocation failed");
+    }
     let stopped = process.stop(&params.host, &params.worker_session_id).await;
     let (events, known) = match outcome {
-        Ok(events) if stopped.is_ok() => (events, true),
+        Ok(events) if stopped.is_ok() && revoked.is_ok() => (events, true),
         _ => (
             vec![PlannerEvent {
                 thread_id: Some(receipt.thread_id.clone()),

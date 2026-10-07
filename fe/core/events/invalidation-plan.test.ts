@@ -191,6 +191,8 @@ describe('invalidation plan behavior', () => {
       ['planner-run', 'card-1'], ['harness-items', 'card-1'], ['track-conversations', 'track-1'],
       ['track', 'track-1'],
     ]);
+    expect(invalidationPlanFor(event({ ev: 'harness.phase.changed', data: { card_id: 'card-1', track_id: 'track-1', new_phase: 'turn_completed' } })).invalidate)
+      .toContainEqual(['model-catalog', { kind: 'card', cardId: 'card-1' }]);
     expect(planned('harness.transcript.cleared')).toEqual([
       ['harness-items', 'card-1'], ['planner-run', 'card-1'],
     ]);
