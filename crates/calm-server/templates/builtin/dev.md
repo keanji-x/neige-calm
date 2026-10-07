@@ -109,10 +109,11 @@ repository policy places a check elsewhere, each check runs in one place:
     tests; it reports the exact commands and does not run broad suites or repeat
     the gate's checks.
   · The task's gate runs the repository's required local gates for the changed
-    surface and replays those focused tests. A replay step fails when it selects
-    no test.
+    surface and replays those focused tests; write the replay step so it fails
+    when it selects no test. The replay is the one intended repeat.
   · CI, where the repository has it, runs the broad suites; read it with
-    plugin_gitforge_gh_pr_checks. Without CI they run in the gate.
+    plugin_gitforge_gh_pr_checks. Without CI they run in the gate, with a
+    gate.timeout_secs that fits them.
   · Review channels get the implementing attempt's gate result and, once
     available, CI as evidence. They run a check only to settle a review hypothesis
     or when repository policy assigns it to them.
