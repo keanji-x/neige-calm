@@ -4,7 +4,7 @@ import { Badge } from '@astryxdesign/core/Badge';
 import type { ConversationTurn } from '../../../../../core/domain/conversation.ts';
 import { sentMentionParts } from '../../../../../core/domain/mentions.ts';
 import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
-import { Reply, type ReplyImageFiles } from './reply.tsx';
+import { Reply, type ReplyImageFiles, type ReplyLinkRenderer } from './reply.tsx';
 import styles from './thread.module.css';
 
 /** Only the declared visual inputs of one ordinary message. Transcript grouping,
@@ -25,10 +25,11 @@ type MessageEntryProps = Readonly<{
   replacement: boolean;
   working: boolean;
   imageFiles: ReplyImageFiles | null;
+  renderLink?: ReplyLinkRenderer;
 }>;
 
 export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, text, attachments,
-  opens, gapLabel, queued, edited, replacement, working, imageFiles, mobile, atMs,
+  opens, gapLabel, queued, edited, replacement, working, imageFiles, renderLink, mobile, atMs,
 }: MessageEntryProps) {
   return (
     <div
@@ -75,7 +76,7 @@ export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, t
         </>
       ) : (
         <div className={`${styles.reply} ${mobile ? mobileStyles.reply : ''}`} data-nc-turn="agent">
-          <Reply text={text} imageFiles={imageFiles} />
+          <Reply text={text} imageFiles={imageFiles} renderLink={renderLink} />
           {mobile && <time className={mobileStyles.timestamp} dateTime={new Date(atMs).toISOString()}>{new Date(atMs).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })}</time>}
           {working && <ActivityIndicator state="working" motion="thinking" />}
         </div>

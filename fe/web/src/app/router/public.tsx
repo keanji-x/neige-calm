@@ -1,3 +1,4 @@
+import { useConversationLinks } from './conversation-links.tsx';
 import { useThreadReadingView } from '../../features/chat/thread/reading-view.tsx';
 import { useConversationDraftRetention, useConversationDraftAdoption, useRequestedConversationOpen, useConversationEscape, useConversationDraftAutoSend } from '../conversations/pane-lifecycle.ts';
 import { createConversationDraftActions } from '../conversations/draft-actions.ts';
@@ -395,10 +396,11 @@ function useConversationPane(
   });
   const imageRoot = source.workspaceRoot
     ?? (imageTrack.data === undefined ? null : toTrack(imageTrack.data.track).agentCwd);
-  const imageFiles = useMemo(() => imageRoot === null || imageTrackId === null ? null : ({
-    root: imageRoot,
-    files: createTrackWorkspaceFilesPort(transport, unauthorized, imageTrackId),
-  }), [imageRoot, imageTrackId, transport, unauthorized]);
+  const conversationFiles = useMemo(() => imageTrackId === null ? null
+    : createTrackWorkspaceFilesPort(transport, unauthorized, imageTrackId), [imageTrackId, transport, unauthorized]);
+  const imageFiles = useMemo(() => imageRoot === null || conversationFiles === null ? null : ({
+    root: imageRoot, files: conversationFiles,
+  }), [imageRoot, conversationFiles]);
   const routeIntent: ConversationRouteIntent = {
     rows: source.rows, rememberOn: source.rememberOn, ownedCardIds: options?.ownedCardIds,
   };
@@ -448,6 +450,15 @@ function useConversationPane(
   /* A conversation's provider is fixed for its life; its model picker offers that provider's group alone. */
   const scopeProvider: AgentProvider = scope === null ? 'codex' : scope.provider;
   const go = useGo();
+  const { openFile: openChatWorkspaceFile } = useTrackFileNavigation();
+  const openChatLink = useCallback((target: ReportLinkTarget) => {
+    go({ name: 'track', trackId: target.trackId, blockId: target.blockId ?? undefined });
+  }, [go]);
+  const openChatFile = useCallback((owner: string, target: ReportFileLinkTarget) => {
+    openChatWorkspaceFile(owner, target.path);
+  }, [openChatWorkspaceFile]);
+  const chatLinks = useConversationLinks({ transport, unauthorized, trackId: imageTrackId,
+    root: imageRoot, files: conversationFiles, onOpenLink: openChatLink, onOpenFile: openChatFile });
   const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
   /* While an Edit is held nothing else acts on the conversation; its replace, once sent, blocks as any send does. */
   const respondable = canContinue && edit.held === null;
@@ -763,6 +774,7 @@ function useConversationPane(
                 key={open.id}
                 conversation={open}
                 imageFiles={imageFiles}
+                renderLink={chatLinks.renderLink}
                 turns={store.turnsOf(open.id)} editing={edit.marked}
                 replacement={store.failedSend?.replaces == null ? null : store.failedSend.echo.id}
                 pending={store.pending.has(open.id)}
@@ -784,6 +796,7 @@ function useConversationPane(
             )}
           </>
         )}
+        {chatLinks.sourceDrawer}
       </ConversationSurface>
   );
 

@@ -506,3 +506,10 @@ describe('ReportDocument', () => {
     });
   });
 });
+
+it('keeps contact and fragment links navigable through the shared Markdown link renderer', () => {
+  render(<ReportDocument report={flat('[Email](mailto:reader@example.com) [Call](tel:+123) [Section](#part)')} empty={EMPTY} />);
+  expect(screen.getByRole('link', { name: 'Email' }).getAttribute('href')).toBe('mailto:reader@example.com');
+  expect(screen.getByRole('link', { name: 'Call' }).getAttribute('href')).toBe('tel:+123');
+  expect(screen.getByRole('link', { name: 'Section' }).getAttribute('href')).toBe('#part');
+});
