@@ -1,4 +1,7 @@
-use super::{config::AcpPlannerHost, process::Process};
+use super::{
+    config::AcpPlannerHost,
+    process::{Process, setup_request},
+};
 use crate::db::sqlite::{
     AcpSubmission, acp_submission_finish, acp_submission_get, acp_submission_prepare,
     acp_submission_unresolved,
@@ -13,7 +16,7 @@ use calm_types::runtime::AgentProvider;
 use calm_types::worker::{WorkerContract, WorkerProviderKind, WorkerSessionId};
 use provider::acp::{
     Incoming,
-    approvals::{Approvals, refuse},
+    approvals::Approvals,
     protocol,
     translate::{TurnContext, TurnTranslator},
 };
@@ -458,40 +461,7 @@ fn wire_error(error: provider::acp::Error) -> CalmError {
 pub(super) fn unknown_outcome(turn: &str) -> Value {
     json!({"id":turn,"status":"failed","error":{"message":"ACP execution outcome is unknown. The submission will not be resent; reset the conversation to continue."}})
 }
-async fn setup_request(process: &mut Process, method: &str, params: Value) -> Result<Value> {
-    let response = process
-        .connection
-        .client
-        .submit(method, params)
-        .await
-        .map_err(wire_error)?;
-    let response = response.wait(Duration::from_secs(10));
-    tokio::pin!(response);
-    loop {
-        tokio::select! {
-            result=&mut response=>return finish_setup(&process.connection.client,&mut process.connection.incoming,result).await,
-            incoming=process.connection.incoming.recv()=>match incoming {
-                Some(Incoming::Request{id,method,..})=>refuse(&process.connection.client,id,&method).await.map_err(wire_error)?,
-                Some(Incoming::Notification{..})=>{}, // Loaded replay never represents a fresh native prompt.
-                None=>return Err(CalmError::Conflict("ACP setup connection closed".into())),
-            }
-        }
-    }
-}
-async fn finish_setup(
-    client: &provider::acp::Client,
-    incoming: &mut tokio::sync::mpsc::Receiver<Incoming>,
-    result: std::result::Result<Value, provider::acp::Error>,
-) -> Result<Value> {
-    // The transport delivered these frames before the response. Drain replay at this boundary,
-    // even when select chooses the ready response before the incoming branch.
-    while let Ok(frame) = incoming.try_recv() {
-        if let Incoming::Request { id, method, .. } = frame {
-            refuse(client, id, &method).await.map_err(wire_error)?;
-        }
-    }
-    result.map_err(wire_error)
-}
+
 async fn bind_native(params: &SessionParams, thread: &str, native: &str) -> Result<()> {
     let worker = params.worker_session_id.clone();
     let thread = thread.to_owned();
@@ -698,49 +668,5 @@ fn retain_item(retained: &mut Vec<Value>, event: &PlannerEvent) {
         } else {
             retained.push(frame);
         }
-    }
-}
-
-#[cfg(test)]
-mod setup_tests {
-    use super::*;
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    #[tokio::test]
-    async fn ready_setup_response_drains_prior_history_before_live_turn_installation() {
-        let (kernel, peer) = tokio::io::duplex(4096);
-        let (read, write) = tokio::io::split(kernel);
-        let mut connection = provider::acp::Connection::new(read, write);
-        let pending = connection
-            .client
-            .submit("session/load", json!({"sessionId":"native"}))
-            .await
-            .unwrap();
-        let (read, mut write) = tokio::io::split(peer);
-        let mut read = BufReader::new(read);
-        let mut line = String::new();
-        read.read_line(&mut line).await.unwrap();
-        let request: Value = serde_json::from_str(&line).unwrap();
-        let history = json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"historic reply"}}}});
-        let response = json!({"jsonrpc":"2.0","id":request["id"],"result":{}});
-        write
-            .write_all(format!("{history}\n{response}\n").as_bytes())
-            .await
-            .unwrap();
-        let result = pending.wait(Duration::from_secs(2)).await;
-        assert_eq!(
-            connection.incoming.len(),
-            1,
-            "history precedes its load response on the real transport"
-        );
-        finish_setup(&connection.client, &mut connection.incoming, result)
-            .await
-            .unwrap();
-        assert!(
-            matches!(
-                connection.incoming.try_recv(),
-                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-            ),
-            "load history must not leak into the next live translator"
-        );
     }
 }
