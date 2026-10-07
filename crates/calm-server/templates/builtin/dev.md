@@ -57,6 +57,12 @@ Goal and inputs
 - The bound `template_input` JSON supplies optional issue context and merge policy.
   When input.repo and input.issue_number are present, read plugin_gitforge_gh_issue_view and
   plugin_gitforge_gh_issue_comments and incorporate the issue's requirements and constraints.
+  View returns JSON number/url/state/title/body/labels; read the body field as requirements.
+  Use plugin_gitforge_gh_issue_search (repo/query, optional state/limit/attempt) for
+  related issues. When creation is authorized, plugin_gitforge_gh_issue_create
+  takes repo/title/body/idem and returns result.event.issue_number/issue_url.
+  Reuse identical arguments and idem from the same card to retrieve completion;
+  never blindly use a new idem after an Unknown outcome.
   Use a new attempt when refreshing either read. With no issue, do not read,
   comment on, or close an issue, and do not create one unless the user or repository
   policy requires it.

@@ -2,6 +2,9 @@
 
 mod support;
 
+#[path = "cases/forge_issue_creation.rs"]
+mod issue_creation;
+
 #[path = "cases/forge_issue_comment_recovery.rs"]
 mod issue_comment_recovery;
 #[path = "cases/forge_pr_checks.rs"]
@@ -492,8 +495,17 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
     wait_for_operation_phase(&fx.repo, &issue_view_op_id, "succeeded").await;
     let issue_body = "# Issue 810\n\nFake issue body for dev ingestion.\n";
     assert_eq!(
-        issue_view_resp["result"]["structuredContent"]["result"]["stdout"], issue_body,
-        "gh_issue_view must return the issue body inline"
+        serde_json::from_str::<Value>(
+            issue_view_resp["result"]["structuredContent"]["result"]["stdout"]
+                .as_str()
+                .unwrap()
+        )
+        .unwrap()["body"]
+            .as_str()
+            .unwrap()
+            .trim(),
+        issue_body.trim(),
+        "gh_issue_view must return the issue body in JSON"
     );
     let issue_read_rows = wait_for_event_count(&fx.repo, "forge.issue.read", 1).await;
     let issue_read = issue_read_rows[0].clone();
@@ -510,8 +522,12 @@ async fn git_forge_happy_path_persists_ordered_template_events() {
     let issue_artifact =
         std::fs::read_to_string(&issue_artifact_path).expect("read issue body artifact");
     assert_eq!(
-        issue_artifact, issue_body,
-        "issue read artifact must contain the shim issue body"
+        serde_json::from_str::<Value>(&issue_artifact).unwrap()["body"]
+            .as_str()
+            .unwrap()
+            .trim(),
+        issue_body.trim(),
+        "issue read artifact must contain the shim issue JSON"
     );
 
     let scan_resp = call_tool(

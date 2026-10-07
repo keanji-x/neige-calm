@@ -179,6 +179,8 @@ pub(crate) fn event_warrants_planner_push_with_role(
         | Event::TaskContextAdvanced { .. }
         | Event::ForgePrDiffRead { .. }
         | Event::ForgeIssueRead { .. }
+        | Event::ForgeIssueCreated { .. }
+        | Event::ForgeIssueSearched { .. }
         | Event::ProposalSubmitted { .. }
         | Event::ProposalResolved { .. }
         | Event::WorktreeRemoved { .. } => false,
@@ -1138,6 +1140,8 @@ impl Inner {
             | Event::ForgePrPublished { .. }
             | Event::ForgePrDiffRead { .. }
             | Event::ForgeIssueRead { .. }
+            | Event::ForgeIssueCreated { .. }
+            | Event::ForgeIssueSearched { .. }
             | Event::AskRequested { .. }
             // Proposal lifecycle events reach the planner via the plugin-authored
             // `track.report_edited` landed in the same tx.
@@ -1662,6 +1666,8 @@ pub(crate) fn harness_observation_from_event(
         | Event::ForgePrPublished { .. }
         | Event::ForgePrDiffRead { .. }
         | Event::ForgeIssueRead { .. }
+        | Event::ForgeIssueCreated { .. }
+        | Event::ForgeIssueSearched { .. }
         | Event::ProposalSubmitted { .. }
         | Event::ProposalResolved { .. }
         | Event::WorktreeRemoved { .. } => None,

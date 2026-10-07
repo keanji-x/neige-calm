@@ -765,6 +765,16 @@ export const forgeIssueClosedSchema = z.object({
   }),
 });
 
+export const forgeIssueCreatedSchema = z.object({
+  ev: z.literal('forge.issue.created'),
+  data: z.object({ track_id: z.string(), issue_number: z.number(), issue_url: z.string() }),
+});
+
+export const forgeIssueSearchedSchema = z.object({
+  ev: z.literal('forge.issue.searched'),
+  data: z.object({ track_id: z.string(), artifact_path: z.string() }),
+});
+
 export const worktreeProvisionedSchema = z.object({
   ev: z.literal('worktree.provisioned'),
   data: z.object({
@@ -951,6 +961,8 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   forgePrDiffReadSchema,
   forgePrChecksSchema,
   forgeIssueReadSchema,
+  forgeIssueCreatedSchema,
+  forgeIssueSearchedSchema,
   forgeIssueClosedSchema,
   worktreeProvisionedSchema,
   worktreeCommittedSchema,
@@ -1014,6 +1026,8 @@ export type ForgePrPublishedEvent = z.infer<typeof forgePrPublishedSchema>;
 export type ForgePrDiffReadEvent = z.infer<typeof forgePrDiffReadSchema>;
 export type ForgePrChecksEvent = z.infer<typeof forgePrChecksSchema>;
 export type ForgeIssueReadEvent = z.infer<typeof forgeIssueReadSchema>;
+export type ForgeIssueCreatedEvent = z.infer<typeof forgeIssueCreatedSchema>;
+export type ForgeIssueSearchedEvent = z.infer<typeof forgeIssueSearchedSchema>;
 export type ForgeIssueClosedEvent = z.infer<typeof forgeIssueClosedSchema>;
 export type WorktreeProvisionedEvent = z.infer<typeof worktreeProvisionedSchema>;
 export type WorktreeCommittedEvent = z.infer<typeof worktreeCommittedSchema>;

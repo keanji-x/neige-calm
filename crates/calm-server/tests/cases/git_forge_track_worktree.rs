@@ -100,6 +100,11 @@ async fn planner_caller(fx: &Fixture, track_id: &str) -> (String, String) {
     (token.into_inner(), thread_id)
 }
 
+pub(super) async fn issue_planner(fx: &Fixture) -> (String, String) {
+    let track = token_track(fx).await;
+    planner_caller(fx, &track.track_id).await
+}
+
 #[tokio::test]
 async fn planner_git_commit_lands_on_the_track_branch() {
     let _env_lock = FORGE_ENV_LOCK

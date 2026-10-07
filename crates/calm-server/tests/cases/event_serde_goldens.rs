@@ -1119,6 +1119,25 @@ golden_test!(
 );
 
 golden_test!(
+    forge_issue_created,
+    "forge_issue_created.json",
+    Event::ForgeIssueCreated {
+        track_id: TrackId::from("track-01"),
+        issue_number: 731,
+        issue_url: "https://github.com/owner/repo/issues/731".into(),
+    }
+);
+
+golden_test!(
+    forge_issue_searched,
+    "forge_issue_searched.json",
+    Event::ForgeIssueSearched {
+        track_id: TrackId::from("track-01"),
+        artifact_path: "/tmp/neige/issues.json".into(),
+    }
+);
+
+golden_test!(
     worktree_provisioned,
     "worktree_provisioned.json",
     Event::WorktreeProvisioned {
@@ -1283,7 +1302,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 }
 
 /// Every `Event` variant's kind tag, in declaration order.
-const ALL_KIND_TAGS: [&str; 53] = [
+const ALL_KIND_TAGS: [&str; 55] = [
     "area.updated",
     "area.deleted",
     "track.updated",
@@ -1332,6 +1351,8 @@ const ALL_KIND_TAGS: [&str; 53] = [
     "forge.pr.diff.read",
     "forge.pr.checks",
     "forge.issue.read",
+    "forge.issue.created",
+    "forge.issue.searched",
     "forge.issue.closed",
     "worktree.provisioned",
     "worktree.committed",
@@ -1368,7 +1389,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 84,
+        files, 86,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -1433,6 +1454,8 @@ fn kind_tag_list_matches_enum() {
             Event::ForgePrDiffRead { .. } => "forge.pr.diff.read",
             Event::ForgePrChecks { .. } => "forge.pr.checks",
             Event::ForgeIssueRead { .. } => "forge.issue.read",
+            Event::ForgeIssueCreated { .. } => "forge.issue.created",
+            Event::ForgeIssueSearched { .. } => "forge.issue.searched",
             Event::ForgeIssueClosed { .. } => "forge.issue.closed",
             Event::WorktreeProvisioned { .. } => "worktree.provisioned",
             Event::WorktreeCommitted { .. } => "worktree.committed",
@@ -1446,7 +1469,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        53,
+        55,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }

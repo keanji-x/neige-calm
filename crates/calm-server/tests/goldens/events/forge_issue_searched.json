@@ -1,0 +1,10 @@
+{
+  "description": "forge.issue.searched carries the bounded search JSON artifact",
+  "wire": {
+    "ev": "forge.issue.searched",
+    "data": {
+      "track_id": "track-01",
+      "artifact_path": "/tmp/neige/issues.json"
+    }
+  }
+}

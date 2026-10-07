@@ -187,7 +187,12 @@ async fn planner_issue_comments_are_recorded_deduplicated_and_refreshable() {
     )
     .await;
     assert_eq!(
-        fresh_body["result"]["structuredContent"]["result"]["stdout"],
+        serde_json::from_str::<Value>(
+            fresh_body["result"]["structuredContent"]["result"]["stdout"]
+                .as_str()
+                .unwrap()
+        )
+        .unwrap()["body"],
         "New requirements"
     );
 

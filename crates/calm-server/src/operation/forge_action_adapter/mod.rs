@@ -398,6 +398,8 @@ fn new_kind_required_fields(event_kind: &str) -> &'static [(&'static str, ForgeF
             ("artifact_path", Str),
         ],
         "forge.issue.read" => &[("issue_number", U64), ("artifact_path", Str)],
+        "forge.issue.created" => &[("issue_number", U64), ("issue_url", Str)],
+        "forge.issue.searched" => &[("artifact_path", Str)],
         "forge.pr.checks" => &[("pr_number", U64), ("conclusion", Str)],
         "forge.issue.closed" => &[("issue_number", U64)],
         "worktree.provisioned" | "worktree.removed" => &[("path", Str)],
@@ -410,7 +412,9 @@ fn new_kind_required_fields(event_kind: &str) -> &'static [(&'static str, ForgeF
 fn kernel_injected_fields(event_kind: &str) -> &'static [&'static str] {
     match event_kind {
         "forge.pr.merged" => &["track_id", "subject"],
-        "forge.pr.diff.read" | "forge.issue.read" => &["track_id", "artifact_path"],
+        "forge.pr.diff.read" | "forge.issue.read" | "forge.issue.searched" => {
+            &["track_id", "artifact_path"]
+        }
         "worktree.provisioned" | "worktree.committed" | "worktree.removed" => {
             &["track_id", "card_id"]
         }
@@ -704,12 +708,10 @@ fn build_forge_event(
         })?;
     let mut result = Map::new();
     result.insert("exit_code".into(), json!(exit_code));
-    result.insert(
-        "event_kind".into(),
-        Value::String(event_spec.event_kind.clone()),
-    );
+    let event_kind = event_spec.event_kind.as_str();
+    result.insert("event_kind".into(), Value::String(event_kind.to_owned()));
     result.insert("event".into(), payload_value);
-    if event_spec.event_kind == "forge.issue.read" {
+    if matches!(event_kind, "forge.issue.read" | "forge.issue.searched") {
         result.insert("stdout".into(), Value::String(stdout.to_owned()));
     }
     Ok((Some(event), Value::Object(result)))
@@ -744,7 +746,10 @@ pub(crate) async fn read_result_file(result_path: &Path) -> Result<ForgeActionRe
 }
 
 fn is_artifact_bearing_forge_event_kind(event_kind: &str) -> bool {
-    matches!(event_kind, "forge.pr.diff.read" | "forge.issue.read")
+    matches!(
+        event_kind,
+        "forge.pr.diff.read" | "forge.issue.read" | "forge.issue.searched"
+    )
 }
 
 fn is_artifact_bearing_forge_event(frozen: &FrozenForge) -> bool {

@@ -10,6 +10,7 @@ use crate::forge_caller::ForgeCallerScope;
 
 mod checks_compat;
 mod issue;
+mod issue_creation;
 
 pub fn lower(tool: &str, args: &Value) -> Result<Value, String> {
     match tool {
@@ -23,6 +24,8 @@ pub fn lower(tool: &str, args: &Value) -> Result<Value, String> {
         "gh_issue_close" => lower_gh_issue_close(args),
         "gh_issue_comment" => Err("issue comments require trusted forge caller metadata".into()),
         "gh_issue_comments" => issue::comments(args),
+        "gh_issue_create" => Err("issue creation requires trusted forge caller metadata".into()),
+        "gh_issue_search" => issue_creation::search(args),
         _ => Err(format!("unknown {} tool `{tool}`", super::PLUGIN_ID)),
     }
 }
@@ -42,6 +45,7 @@ pub fn lower_for_caller(
     }
     match tool {
         "gh_issue_comment" => issue::comment(args, caller),
+        "gh_issue_create" => issue_creation::create(args, caller),
         _ => lower(tool, args),
     }
 }
@@ -486,14 +490,10 @@ fn lower_gh_issue_view(args: &Value) -> Result<Value, String> {
     // Idempotent read: intentionally probe-free.
     let repo = required_string(args, "repo")?;
     let issue = required_u64(args, "issue")?;
-    let idem_key = match optional_attempt(args)? {
-        Some(attempt) => format!(
-            "gh.issue.view:v3:{}",
-            serde_json::to_string(&json!([repo, issue, attempt]))
-                .map_err(|e| format!("encode issue read identity: {e}"))?
-        ),
-        None => format!("gh.issue.view:v2:{repo}:{issue}"),
-    };
+    let idem_key = format!(
+        "gh.issue.view:v4:{}",
+        json!([repo, issue, optional_attempt(args)?])
+    );
     issue::read_payload(
         vec![
             "gh".into(),
@@ -503,9 +503,7 @@ fn lower_gh_issue_view(args: &Value) -> Result<Value, String> {
             "--repo".into(),
             repo.clone(),
             "--json".into(),
-            "body".into(),
-            "--jq".into(),
-            ".body".into(),
+            "number,url,state,title,body,labels".into(),
         ],
         idem_key,
         issue,

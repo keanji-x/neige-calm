@@ -1,0 +1,11 @@
+{
+  "description": "forge.issue.created exposes the real external issue number and URL",
+  "wire": {
+    "ev": "forge.issue.created",
+    "data": {
+      "track_id": "track-01",
+      "issue_number": 731,
+      "issue_url": "https://github.com/owner/repo/issues/731"
+    }
+  }
+}

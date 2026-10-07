@@ -17,6 +17,9 @@ pub mod gh_shim;
 pub mod git_helpers;
 #[cfg(unix)]
 #[allow(dead_code)]
+pub mod issue_api;
+#[cfg(unix)]
+#[allow(dead_code)]
 pub mod kernel_proc;
 #[macro_use]
 #[allow(unused_macros)]

@@ -745,6 +745,17 @@ pub enum Event {
         issue_number: u64,
         artifact_path: String,
     },
+    #[serde(rename = "forge.issue.created")]
+    ForgeIssueCreated {
+        track_id: TrackId,
+        issue_number: u64,
+        issue_url: String,
+    },
+    #[serde(rename = "forge.issue.searched")]
+    ForgeIssueSearched {
+        track_id: TrackId,
+        artifact_path: String,
+    },
     #[serde(rename = "forge.issue.closed")]
     ForgeIssueClosed {
         track_id: TrackId,
@@ -1064,6 +1075,8 @@ impl Event {
             | Event::ForgePrDiffRead { track_id, .. }
             | Event::ForgePrChecks { track_id, .. }
             | Event::ForgeIssueRead { track_id, .. }
+            | Event::ForgeIssueCreated { track_id, .. }
+            | Event::ForgeIssueSearched { track_id, .. }
             | Event::ForgeIssueClosed { track_id, .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
@@ -1153,6 +1166,8 @@ impl Event {
             Event::ForgePrDiffRead { .. } => "forge.pr.diff.read",
             Event::ForgePrChecks { .. } => "forge.pr.checks",
             Event::ForgeIssueRead { .. } => "forge.issue.read",
+            Event::ForgeIssueCreated { .. } => "forge.issue.created",
+            Event::ForgeIssueSearched { .. } => "forge.issue.searched",
             Event::ForgeIssueClosed { .. } => "forge.issue.closed",
             Event::WorktreeProvisioned { .. } => "worktree.provisioned",
             Event::WorktreeCommitted { .. } => "worktree.committed",
@@ -1311,6 +1326,8 @@ pub fn topics(ev: &Event) -> Vec<String> {
         | Event::ForgePrDiffRead { track_id, .. }
         | Event::ForgePrChecks { track_id, .. }
         | Event::ForgeIssueRead { track_id, .. }
+        | Event::ForgeIssueCreated { track_id, .. }
+        | Event::ForgeIssueSearched { track_id, .. }
         | Event::ForgeIssueClosed { track_id, .. } => {
             vec![format!("track:{}", track_id), "*".into()]
         }
@@ -2731,6 +2748,15 @@ mod scope_tests {
             Event::ForgeIssueClosed {
                 track_id: TrackId::from("track-1"),
                 issue_number: 1,
+            },
+            Event::ForgeIssueCreated {
+                track_id: TrackId::from("track-1"),
+                issue_number: 731,
+                issue_url: "https://github.com/owner/repo/issues/731".into(),
+            },
+            Event::ForgeIssueSearched {
+                track_id: TrackId::from("track-1"),
+                artifact_path: "/tmp/neige/issues.json".into(),
             },
             Event::WorktreeProvisioned {
                 track_id: TrackId::from("track-1"),

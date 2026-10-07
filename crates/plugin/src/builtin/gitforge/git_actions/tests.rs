@@ -631,11 +631,9 @@ fn lowers_gh_issue_view() {
                 "--repo",
                 "owner/repo",
                 "--json",
-                "body",
-                "--jq",
-                ".body"
+                "number,url,state,title,body,labels"
             ],
-            "idem_key": "gh.issue.view:v2:owner/repo:808",
+            "idem_key": "gh.issue.view:v4:[\"owner/repo\",808,null]",
             "event_spec": {
                 "event_kind": "forge.issue.read",
                 "fields": {}

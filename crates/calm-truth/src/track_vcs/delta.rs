@@ -500,6 +500,8 @@ pub(super) fn paths_changed_by_event(event: &Event, track_id: &TrackId) -> PathD
         | Event::ForgePrDiffRead { .. }
         | Event::ForgePrChecks { .. }
         | Event::ForgeIssueRead { .. }
+        | Event::ForgeIssueCreated { .. }
+        | Event::ForgeIssueSearched { .. }
         | Event::ForgeIssueClosed { .. }
         | Event::WorktreeProvisioned { .. }
         | Event::WorktreeCommitted { .. }
