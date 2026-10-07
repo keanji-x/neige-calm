@@ -338,6 +338,7 @@ async fn a_stale_harness_tick_after_shutdown_never_mints_over_the_replacer() {
                 text: "stale".into(),
             }],
             &TurnModelSelection::inherit(),
+            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
             &uuid::Uuid::new_v4().simple().to_string(),
             None,
         )

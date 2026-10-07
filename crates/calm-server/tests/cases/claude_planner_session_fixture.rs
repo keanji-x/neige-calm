@@ -19,13 +19,12 @@ use calm_server::claude_planner::translate::ToolNames;
 use calm_server::codex_appserver::InputItem;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_create_with_id_tx, planner_permission_mode_set_tx,
-    session_set_harness_observation_runtime_tx, session_start_runtime_tx,
+    SqlxRepo, card_create_with_id_tx, session_set_harness_observation_runtime_tx,
+    session_start_runtime_tx,
 };
 use calm_server::harness::held_requests::{HeldRequestMessage, HeldRequestSender};
 use calm_server::harness::planner_event::{PlannerEvent, PlannerEventKind};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id};
-use calm_server::planner_permission_mode::PlannerPermissionMode;
 use calm_server::proc_identity::read_proc_start_time;
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -140,15 +139,6 @@ impl Rig {
     /// Whether the held-request channel has nothing waiting right now.
     pub async fn held_is_empty(&self) -> bool {
         self.held_rx.lock().await.is_empty()
-    }
-
-    /// Store the card's permission mode through its production writer.
-    pub async fn set_permission_mode(&self, mode: PlannerPermissionMode) {
-        let mut tx = self.repo.pool().begin().await.expect("tx");
-        planner_permission_mode_set_tx(&mut tx, &self.card_id, mode, |_| Ok(()))
-            .await
-            .expect("permission mode");
-        tx.commit().await.expect("commit");
     }
 
     /// A fresh session the registry never installed.

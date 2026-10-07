@@ -210,9 +210,9 @@ impl PlannerBackend {
     /// The Claude arm passes the stored model and effort as `--model=` and `--effort=` (#1810,
     /// #1822 6′); no catalog is consulted here, and the CLI judges the model. `rewind` is applied
     /// first: Codex reverts the thread before `turn/start`, Claude cuts the session in the spawn.
-    /// `permission` is the conversation's permission mode as the card holds it now (#2348): Codex
-    /// sends its approval settings with every turn; the Claude session reads the card's mode
-    /// itself when it spawns.
+    /// `permission` is the conversation's permission mode as the card holds it now (#2348), read
+    /// once by the run loop for every arm: Codex sends its approval settings with every turn, and
+    /// the Claude spawn runs under it.
     #[allow(clippy::too_many_arguments)]
     pub async fn turn_start(
         &self,
@@ -275,7 +275,14 @@ impl PlannerBackend {
                     Some(RewindArm::Codex { .. }) => return Err(mismatched_rewind()),
                 };
                 session
-                    .turn_start(thread_id, items, selection, client_id, truncation.as_ref())
+                    .turn_start(
+                        thread_id,
+                        items,
+                        selection,
+                        permission,
+                        client_id,
+                        truncation.as_ref(),
+                    )
                     .await
             }
         }

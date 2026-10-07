@@ -26,14 +26,16 @@ fn question() -> AskQuestion {
     }
 }
 
-/// Start one turn of `rig` under `scenario`; returns its turn id, the spawn's connection.
-async fn start(rig: &Rig, scenario: &str) -> String {
+/// Start one turn of `rig` under `scenario` and the permission mode the harness read for it;
+/// returns its turn id, the spawn's connection.
+async fn start(rig: &Rig, scenario: &str, mode: PlannerPermissionMode) -> String {
     std::fs::write(rig.bin("scenario"), scenario).expect("scenario");
     rig.session()
         .turn_start(
             &rig.thread,
             rig.text("approve me"),
             &TurnModelSelection::inherit(),
+            mode,
             &client_id(),
             None,
         )
@@ -96,7 +98,6 @@ fn expect_connection_lost(message: HeldRequestMessage, turn: &str) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_ask_spawn_holds_each_can_use_tool_and_writes_the_answer_on_stdin() {
     let rig = Rig::new("ask").await;
-    rig.set_permission_mode(PlannerPermissionMode::Ask).await;
     let mut rx = rig.session().subscribe_events();
     let not_answered = r#"{"type":"control_response","response":{"subtype":"success","request_id":"perm-1","response":{"behavior":"deny","message":"This tool use was not approved: nobody answered the request for it."}}}"#;
     for (answer, line) in [
@@ -104,7 +105,7 @@ async fn an_ask_spawn_holds_each_can_use_tool_and_writes_the_answer_on_stdin() {
         (Some(1), DENY_LINE),
         (None, not_answered),
     ] {
-        let turn = start(&rig, "ask").await;
+        let turn = start(&rig, "ask", PlannerPermissionMode::Ask).await;
         let responder = expect_open(rig.next_held().await, &turn);
         match answer {
             Some(option) => responder.respond(option),
@@ -129,7 +130,7 @@ async fn an_ask_spawn_holds_each_can_use_tool_and_writes_the_answer_on_stdin() {
 async fn a_never_spawn_answers_can_use_tool_itself() {
     let rig = Rig::new("ask").await;
     let mut rx = rig.session().subscribe_events();
-    start(&rig, "ask").await;
+    start(&rig, "ask", PlannerPermissionMode::Never).await;
     until_completed(&mut rx).await;
     assert_eq!(
         answers(&rig),
@@ -147,9 +148,8 @@ async fn a_never_spawn_answers_can_use_tool_itself() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cancelled_can_use_tool_is_gone() {
     let rig = Rig::new("ask-cancel").await;
-    rig.set_permission_mode(PlannerPermissionMode::Ask).await;
     let mut rx = rig.session().subscribe_events();
-    let turn = start(&rig, "ask-cancel").await;
+    let turn = start(&rig, "ask-cancel", PlannerPermissionMode::Ask).await;
     let responder = expect_open(rig.next_held().await, &turn);
     match rig.next_held().await {
         HeldRequestMessage::Gone { request_key } => {
@@ -168,9 +168,8 @@ async fn a_cancelled_can_use_tool_is_gone() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_can_use_tool_read_after_the_exit_opens_before_the_connection_is_lost() {
     let rig = Rig::new("ask-exit").await;
-    rig.set_permission_mode(PlannerPermissionMode::Ask).await;
     let mut rx = rig.session().subscribe_events();
-    let turn = start(&rig, "ask-exit").await;
+    let turn = start(&rig, "ask-exit", PlannerPermissionMode::Ask).await;
     let responder = expect_open(rig.next_held().await, &turn);
     until_completed(&mut rx).await;
     expect_connection_lost(rig.next_held().await, &turn);
@@ -178,34 +177,38 @@ async fn a_can_use_tool_read_after_the_exit_opens_before_the_connection_is_lost(
 }
 
 /// A stored mode that cannot be read refuses the turn before anything is spawned, and tells the
-/// reader so; it is never taken for either mode.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+/// reader so; it is never taken for either mode. The harness reads it once for every provider
+/// when it issues the turn (#2348).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_unreadable_permission_mode_refuses_the_turn() {
-    let rig = Rig::new("ask").await;
+    let root = Root::new("ask");
+    let stack = Stack::boot(&root).await;
+    let (_track, card) = stack.create_claude_track().await;
+    let runtime = stack.runtime(&card).await;
+    let pool = stack.repo().sqlite_pool().expect("sqlite");
     sqlx::query(
         "UPDATE cards SET payload = json_set(payload, '$.permission_mode', 'full') WHERE id = ?1",
     )
-    .bind(&rig.card_id)
-    .execute(rig.repo.pool())
+    .bind(&card)
+    .execute(&pool)
     .await
     .expect("corrupt the mode");
-    let refused = rig
-        .session()
-        .turn_start(
-            &rig.thread,
-            rig.text("hello"),
-            &TurnModelSelection::inherit(),
-            &client_id(),
-            None,
-        )
-        .await;
-    match refused {
-        Err(calm_server::harness::backend::TurnStartFailure::Refused { reader, .. }) => {
-            assert!(reader.contains("permission mode"), "{reader}")
+    let spawned = root.read_fake("spawns");
+    let harness = stack.harness(&runtime.id);
+    let (status, body) = stack.post_input(&card, "hello").await;
+    assert_eq!(status, StatusCode::OK, "the message is queued: {body}");
+    let mut block = None;
+    for _ in 0..200 {
+        block = harness.issuance_block().await;
+        if block.is_some() {
+            break;
         }
-        other => panic!("expected a refusal, got {other:?}"),
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(rig.read_bin("spawns").is_none(), "nothing was spawned");
+    let block = block.expect("the reader is told why nothing is sent");
+    assert!(block.contains("permission mode"), "{block}");
+    assert_eq!(root.read_fake("spawns"), spawned, "nothing was spawned");
+    stack.shutdown().await;
 }
 
 async fn ask_rows(stack: &Stack, track: &str, kind: &str) -> Vec<(i64, Event)> {
