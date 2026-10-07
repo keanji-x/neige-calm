@@ -21,8 +21,15 @@ pub enum RolloutItem {
     Compacted(CompactedItem),
     TurnContext(TurnContextItem),
     EventMsg(EventMsg),
-    #[serde(other)]
+    #[serde(other, deserialize_with = "ignore_unknown_rollout_payload")]
     Other,
+}
+
+fn ignore_unknown_rollout_payload<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<(), D::Error> {
+    // Only unknown top-level tags may discard arbitrary payloads.
+    serde::de::IgnoredAny::deserialize(deserializer).map(|_| ())
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -26,5 +26,7 @@ mod worker_flow_codex_torn_line;
 mod worker_flow_codex_turn_end;
 #[path = "cases/worker_flow_codex_unknown_content.rs"]
 mod worker_flow_codex_unknown_content;
+#[path = "cases/worker_flow_codex_unknown_top_level.rs"]
+mod worker_flow_codex_unknown_top_level;
 #[path = "cases/worker_flow_codex_wrong_file.rs"]
 mod worker_flow_codex_wrong_file;
