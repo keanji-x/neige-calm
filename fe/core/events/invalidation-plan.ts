@@ -55,10 +55,12 @@ export type TrackFilesDerivedKind =
   | 'worker_session.started' | 'worker_session.status_changed' | 'worker_session.superseded'
   | 'terminal.deleted' | 'codex.hook' | 'claude.hook'
   | 'codex.worker_requested' | 'terminal.worker_requested'
-  | 'task.completed' | 'task.failed' | 'task.git_delivery_settled' | 'task.dispatched' | 'task.gate_result';
+  | 'task.completed' | 'task.failed' | 'task.git_delivery_settled' | 'task.dispatched' | 'task.gate_result'
+  | 'task.regate_requested';
 
 /** Every kind that can change what a track's workspace looks like. */
 export const TRACK_FILES_DERIVED_KINDS = Object.freeze([
+  'task.regate_requested',
   'worker_session.started', 'worker_session.status_changed', 'worker_session.superseded',
   'terminal.deleted', 'codex.hook', 'claude.hook',
   'codex.worker_requested', 'terminal.worker_requested',
@@ -254,6 +256,7 @@ function policies(): PolicyMap {
   'worktree.committed': noop('Worktree rows have no query consumer.'),
   'worktree.removed': noop('Worktree rows have no query consumer.'),
   'task.gate_result': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
+  'task.regate_requested': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
   });
 }
 

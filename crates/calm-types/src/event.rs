@@ -227,7 +227,7 @@ impl EventScope {
 
 /// Sync-engine event envelope version. Bump together with a migration default whenever clients
 /// must gate on a new persisted wire shape.
-pub const SYNC_EVENT_VERSION: u32 = 27;
+pub const SYNC_EVENT_VERSION: u32 = 28;
 
 mod forge_checks;
 pub use forge_checks::{
@@ -851,6 +851,19 @@ pub enum Event {
         #[ts(optional)]
         target: Option<VerifyTarget>,
     },
+
+    /// The Planner asked the kernel to re-run a failed gate on the same candidate (#2405): the
+    /// attempt's row went `failed → verifying` in this event's transaction. `previous_gate_attempt`
+    /// is the attempt of the verdict being re-run; `reserved_gate_attempt` is the number the row now
+    /// holds without running it, so the re-run is gate attempt `reserved_gate_attempt + 1`.
+    #[serde(rename = "task.regate_requested")]
+    TaskRegateRequested {
+        attempt_id: String,
+        key: String,
+        previous_gate_attempt: i64,
+        reserved_gate_attempt: i64,
+        agent_message: String,
+    },
 }
 
 /// Bounded typed result-extraction contract: only a target event kind + named field reads, not a predicate DSL.
@@ -1140,7 +1153,7 @@ impl Event {
                 entity_kind: Some("card".into()),
                 entity_id: Some(card_id.to_string()),
             },
-            Event::TaskGateResult { .. } => EventMetadata {
+            Event::TaskGateResult { .. } | Event::TaskRegateRequested { .. } => EventMetadata {
                 kind_tag,
                 plugin_id: None,
                 entity_kind: None,
@@ -1208,6 +1221,7 @@ impl Event {
             Event::WorktreeCommitted { .. } => "worktree.committed",
             Event::WorktreeRemoved { .. } => "worktree.removed",
             Event::TaskGateResult { .. } => "task.gate_result",
+            Event::TaskRegateRequested { .. } => "task.regate_requested",
         }
     }
 
@@ -1339,7 +1353,8 @@ pub fn topics(ev: &Event) -> Vec<String> {
         | Event::TaskGitDeliverySettled { .. }
         | Event::TaskContextFrozen { .. }
         | Event::TaskContextAdvanced { .. }
-        | Event::TaskGateResult { .. } => vec!["*".into()],
+        | Event::TaskGateResult { .. }
+        | Event::TaskRegateRequested { .. } => vec!["*".into()],
 
         Event::WorkspaceLeased {
             track_id, card_id, ..

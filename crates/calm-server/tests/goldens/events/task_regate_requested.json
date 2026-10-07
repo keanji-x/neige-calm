@@ -1,0 +1,13 @@
+{
+  "description": "task.regate_requested: the Planner re-runs a failed gate on the same candidate; the row reserves gate attempt 2 and the re-run is attempt 3.",
+  "wire": {
+    "ev": "task.regate_requested",
+    "data": {
+      "attempt_id": "track-01:build-step",
+      "key": "build-step",
+      "previous_gate_attempt": 1,
+      "reserved_gate_attempt": 2,
+      "agent_message": "the runner disk is free again"
+    }
+  }
+}

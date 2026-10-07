@@ -86,6 +86,7 @@ pub(crate) const SCHEDULER_TRIGGER_KINDS: &[&str] = &[
     "track.deleted",
     "area.deleted",
     "workspace.released",
+    "task.regate_requested",
 ];
 
 /// The one kind list the dispatcher's `SubscribeFilter` is built from.
@@ -143,6 +144,9 @@ pub(crate) fn event_warrants_planner_push_with_role(
         Event::AskRequested { .. } | Event::ForgePrPublished { .. } => false,
         // The harness that withdrew the ask is the one it would wake.
         Event::AskWithdrawn { .. } => false,
+        // Planner-only at the role gate: the Planner asked for the re-run, and the gate result
+        // that follows is its wake.
+        Event::TaskRegateRequested { .. } => false,
         // Workspace / worktree lifecycle notices are read back on demand (`neige_task_ls`);
         Event::WorkspaceLeased { .. }
         | Event::WorkspaceReleased { .. }
@@ -1051,6 +1055,12 @@ impl Inner {
             Event::WorkspaceReleased { track_id, .. } => {
                 self.scheduler.poke(track_id.clone());
             }
+            // #2405: the row is `verifying` again; the pass drives its gate.
+            Event::TaskRegateRequested { .. } => {
+                if let Some(track_id) = envelope.scope.track_id().cloned() {
+                    self.scheduler.poke(track_id);
+                }
+            }
             Event::TrackReportEdited {
                 author, track_id, ..
             } => {
@@ -1652,6 +1662,7 @@ pub(crate) fn harness_observation_from_event(
         // Requires the persisted question titles read in `resolve_harness_observation`.
         Event::AskAnswered { .. } => None,
         Event::AskRequested { .. } | Event::AskWithdrawn { .. } => None,
+        Event::TaskRegateRequested { .. } => None,
         Event::AreaUpdated(_)
         | Event::AreaDeleted { .. }
         | Event::TrackUpdated(_)

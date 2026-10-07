@@ -772,6 +772,40 @@
     ]
   },
   {
+    "name": "neige_task_regate",
+    "description_sha256": "0f0cf47701c87968778103579bc336bc21382aadc0154abeec0f4b1fd53670bf",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "message": {
+          "description": "The audit note: why this write.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "attempt_id",
+        "message"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "roles": [
+      "planner"
+    ],
+    "listed_for": [
+      "planner"
+    ]
+  },
+  {
     "name": "neige_task_reject",
     "description_sha256": "d8dc62c052bb6b27a6ce31e231eba5f58534e6dcd94aa48f0b9b67f61eaf59f7",
     "input_schema": {

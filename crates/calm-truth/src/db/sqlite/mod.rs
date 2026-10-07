@@ -64,6 +64,7 @@ mod task_attempt_migration_tests;
 mod task_attempt_tests;
 mod task_liveness;
 mod task_projection;
+mod task_regate;
 mod track;
 mod track_occupancy;
 #[cfg(test)]
@@ -155,6 +156,7 @@ pub use task_projection::{
     mark_context_material_tx, project_tasks_tx, project_tasks_with_tree_term_tx,
     task_delete_pending_tx,
 };
+pub use task_regate::task_regate_tx;
 // The request-fingerprint enum is exported with its binding: route code must
 // construct V1 on write and handle LegacyUnknown explicitly on read.
 pub use track::{

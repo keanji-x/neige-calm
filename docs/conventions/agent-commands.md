@@ -89,6 +89,7 @@ Effect classes: **V** view (no state change, no anchor; access metadata excepted
 | `publish` | LC | push the track branch and open or reuse its PR | `npm publish` |
 | `accept` | LC | record that an attempt meets the task (Planner) | none (plain English) |
 | `reject` | LC | record that an attempt does not meet the task, with a `reason` | none (plain English) |
+| `regate` | LC | re-run an attempt's failed gate on the same candidate (Planner, #2405) | none (domain) |
 | `done` | LC | the Worker's claim that its attempt met the task (was `report_success`, #2053) | `task <id> done` (Taskwarrior) |
 | `fail` | LC | the Worker's claim that its attempt cannot meet the task, with a `reason` (was `report_failure`) | none (plain English) |
 | `gc` | M | prune history and sweep unreferenced objects | `git gc` |
@@ -114,7 +115,7 @@ Decisions, one line each:
 - **CRUD words retire:** `create`/`register` → `add`, `update` → `set`, `unregister` and
   cancel-by-flag → `rm`. `mv` is not used: no tool moves an entry between containers.
 - **Domain verbs with no Unix equivalent stay** (`capture`, `control`, `ask`, `accept`,
-  `reject`, `publish`), each with one meaning.
+  `reject`, `publish`, `regate`), each with one meaning.
 - **`done` / `fail` replace the two Worker compounds** so every action is one word. The Worker
   claims (`task_done`, `task_fail`); the Planner decides (`task_accept`, `task_reject`).
 - **A view may stamp access metadata** (e.g. a last-seen time) and refresh derived projections onto
@@ -359,7 +360,7 @@ Added by the slices (registry-driven, Appendix B):
 - Terminal snapshots are "observations", which is also the Planner's wake-item word.
 - Inside a terminal `input` step, `{type: "key", key: "Enter"}` is a keyboard key, not a task key.
 - `message` is required by `report_commit`, `task_accept`, `task_reject`, `task_cancel`,
-  `track_add` and `track_close`, and optional on `report_write` and `track_rename`. The other
+  `task_regate`, `track_add` and `track_close`, and optional on `report_write` and `track_rename`. The other
   writes take none: their record is the call itself (calendar, preview, mail, terminal,
   `source_capture`, `report_tag`, `user_ask`, `plugin_gitforge_publish`), and `task_fail` records
   a `reason`.

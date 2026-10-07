@@ -1112,6 +1112,11 @@ fn turn_text_names_target_mismatch() {
     let tail = "(gate run 3). Log tail:\nrefused\n\nRead the full log at \
                 runs/track-1:impl-parser/gates/3.log; read the worker output at \
                 runs/track-1:impl-parser.md.";
+    // #2405: a failed candidate-bound verdict also names the re-run; a no-candidate one cannot.
+    let candidate_tail = format!(
+        "{tail} If an environment cause failed this gate, fix it, then re-run it on the same \
+         candidate with neige_task_regate."
+    );
 
     // 1. Refused before any step: every reason, six dirty paths (five shown), provenance line.
     let refused = text(&event(
@@ -1137,7 +1142,7 @@ fn turn_text_names_target_mismatch() {
              expected candidate cand-1 ({}) at /leases/lease-1; found {}; dirty: 6 paths: \
              a.rs, b.rs, c.rs, d.rs, e.rs…; cwd is not the registered lease worktree: \
              realpath=/tmp/external-clone common_dir=/tmp/external-clone/.git registered=0; \
-             no step ran {tail}",
+             no step ran {candidate_tail}",
             "a".repeat(40),
             "b".repeat(40),
         )
@@ -1174,7 +1179,7 @@ fn turn_text_names_target_mismatch() {
             "Task impl-parser gate RESULT DISCARDED — checkout changed during the gate (head, dirty): \
              HEAD {}→{}; dirty after: 1 paths:  M Cargo.lock; a step that rewrites files \
              (e.g. cargo fmt without --check) does this; no step result is trusted; \
-             candidate cand-1 is intact {tail}",
+             candidate cand-1 is intact {candidate_tail}",
             "a".repeat(40),
             "c".repeat(40),
         )
@@ -1282,9 +1287,23 @@ fn turn_text_names_target_mismatch() {
             },
         })),
     ));
+    // #2405: an unsampled verdict (cleanup not proven, or a stuck prepare) is one the re-run
+    // refuses, so its wake names no `neige_task_regate`.
     assert_eq!(
         unsampled,
         format!("Task impl-parser gate FAILED (gate-infra) {tail}")
+    );
+    let prepare_unsampled = text(&event(
+        Some("gate-infra"),
+        Some(candidate(VerifyTargetEvidence::Unsampled {
+            phase: calm_types::verify_target::SamplePhase::Prepare {
+                reason: "provenance observation failed".into(),
+            },
+        })),
+    ));
+    assert!(
+        !prepare_unsampled.contains("neige_task_regate"),
+        "{prepare_unsampled}"
     );
     // A verified target with no reasons is the ordinary verdict; an unbound target too.
     let verified = text(&event(
@@ -1298,7 +1317,7 @@ fn turn_text_names_target_mismatch() {
     ));
     assert_eq!(
         verified,
-        format!("Task impl-parser gate FAILED (gate-infra) {tail}")
+        format!("Task impl-parser gate FAILED (gate-infra) {candidate_tail}")
     );
     let unbound = text(&event(
         None,
@@ -1417,6 +1436,13 @@ fn event_warrants_planner_push_covers_push_allowlist() {
         Event::AskWithdrawn {
             ask_id: 7,
             track_id: track.clone(),
+        },
+        Event::TaskRegateRequested {
+            attempt_id: "w:k".into(),
+            key: "k".into(),
+            previous_gate_attempt: 1,
+            reserved_gate_attempt: 2,
+            agent_message: "re-run".into(),
         },
         Event::ForgePrPublished {
             track_id: track.clone(),
@@ -2359,6 +2385,18 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
             Event::AskWithdrawn {
                 ask_id: 7,
                 track_id: track.clone(),
+            },
+            ActorId::AiPlanner(planner.clone()),
+            false,
+            false,
+        ),
+        row(
+            Event::TaskRegateRequested {
+                attempt_id: "w:k".into(),
+                key: "k".into(),
+                previous_gate_attempt: 1,
+                reserved_gate_attempt: 2,
+                agent_message: "the runner disk is free again".into(),
             },
             ActorId::AiPlanner(planner.clone()),
             false,

@@ -1329,6 +1329,18 @@ golden_test!(
     }
 );
 
+golden_test!(
+    task_regate_requested,
+    "task_regate_requested.json",
+    Event::TaskRegateRequested {
+        attempt_id: "track-01:build-step".into(),
+        key: "build-step".into(),
+        previous_gate_attempt: 1,
+        reserved_gate_attempt: 2,
+        agent_message: "the runner disk is free again".into(),
+    }
+);
+
 /// Old rows persist the pre-rename kind strings (`*.job_requested`); pin the alias through the
 /// replay entry point `Event::from_kind_and_payload`, not just raw envelope JSON.
 #[test]
@@ -1351,7 +1363,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 }
 
 /// Every `Event` variant's kind tag, in declaration order.
-const ALL_KIND_TAGS: [&str; 56] = [
+const ALL_KIND_TAGS: [&str; 57] = [
     "area.updated",
     "area.deleted",
     "track.updated",
@@ -1408,6 +1420,7 @@ const ALL_KIND_TAGS: [&str; 56] = [
     "worktree.committed",
     "worktree.removed",
     "task.gate_result",
+    "task.regate_requested",
 ];
 
 /// Every golden must parse, every canonical `ev` must be a known tag, and every tag must have a golden.
@@ -1439,7 +1452,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 89,
+        files, 90,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -1512,6 +1525,7 @@ fn kind_tag_list_matches_enum() {
             Event::WorktreeCommitted { .. } => "worktree.committed",
             Event::WorktreeRemoved { .. } => "worktree.removed",
             Event::TaskGateResult { .. } => "task.gate_result",
+            Event::TaskRegateRequested { .. } => "task.regate_requested",
         }
     }
     let sample = Event::AreaDeleted {
@@ -1520,7 +1534,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        56,
+        57,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }

@@ -93,6 +93,9 @@ pub enum RoleViolation {
     #[error("only planner cards may emit ask.withdrawn (actor={actor})")]
     NotPlannerForAskWithdrawn { actor: String },
 
+    #[error("only planner cards may emit task.regate_requested (actor={actor})")]
+    NotPlannerForTaskRegate { actor: String },
+
     #[error(
         "only the submitting plugin may emit proposal.submitted (actor={actor}, payload plugin_id={payload_plugin})"
     )]
@@ -388,6 +391,18 @@ pub fn enforce_role(
         let is_planner = matches!(actor, ActorId::AiPlanner(card_id) if cache.get(card_id) == Some(CardRole::Planner));
         if !is_planner {
             return Err(RoleViolation::NotPlannerForAskWithdrawn {
+                actor: actor.to_string(),
+            });
+        }
+    }
+
+    // (2.15) `task.regate_requested` is the Planner's own (#2405): only the Planner decides to re-run
+    // a failed gate. No Kernel exception; that the attempt belongs to the writer's Track is checked
+    // by the writing transaction.
+    if matches!(event, Event::TaskRegateRequested { .. }) {
+        let is_planner = matches!(actor, ActorId::AiPlanner(card_id) if cache.get(card_id) == Some(CardRole::Planner));
+        if !is_planner {
+            return Err(RoleViolation::NotPlannerForTaskRegate {
                 actor: actor.to_string(),
             });
         }
@@ -1728,6 +1743,59 @@ mod tests {
             assert!(
                 matches!(err, RoleViolation::NotPlannerForAskWithdrawn { .. }),
                 "{label}: expected NotPlannerForAskWithdrawn, got {err:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn task_regate_requested_is_planner_only_2405() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let planner = CardId::from("planner-1");
+        let assistant = CardId::from("assistant-1");
+        let worker = CardId::from("worker-1");
+        cache.insert(planner.clone(), CardRole::Planner, TrackId::from("w"));
+        cache.insert(assistant.clone(), CardRole::Assistant, TrackId::from("w"));
+        cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
+        let event = Event::TaskRegateRequested {
+            attempt_id: "w:impl".into(),
+            key: "impl".into(),
+            previous_gate_attempt: 1,
+            reserved_gate_attempt: 2,
+            agent_message: "the runner disk is free again".into(),
+        };
+
+        let res = enforce_role(
+            &ActorId::AiPlanner(planner.clone()),
+            &event,
+            &track_scope("w", "c"),
+            &cache,
+            &wcc,
+        );
+        assert!(res.is_ok(), "the Planner re-runs a gate: {res:?}");
+
+        for (actor, label) in [
+            (ActorId::Kernel, "Kernel"),
+            (ActorId::KernelDispatcher, "KernelDispatcher"),
+            (ActorId::User, "User"),
+            (ActorId::Plugin("p".into()), "Plugin(p)"),
+            (
+                ActorId::AiPlanner(assistant.clone()),
+                "AiPlanner(assistant)",
+            ),
+            (ActorId::AiPlanner(worker.clone()), "AiPlanner(worker)"),
+            (ActorId::AiCodex(worker.clone()), "AiCodex(worker)"),
+            (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
+            (
+                ActorId::AiPlannerSession(WorkerSessionId::from("sess-unresolved")),
+                "AiPlannerSession(unresolved)",
+            ),
+        ] {
+            let err = enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc)
+                .expect_err(&format!("{label} must be refused task.regate_requested"));
+            assert!(
+                matches!(err, RoleViolation::NotPlannerForTaskRegate { .. }),
+                "{label}: expected NotPlannerForTaskRegate, got {err:?}",
             );
         }
     }

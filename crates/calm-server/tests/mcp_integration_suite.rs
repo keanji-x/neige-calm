@@ -67,6 +67,8 @@ mod rest_track_report_series;
 mod task_projection_acceptance;
 #[path = "cases/task_recovery.rs"]
 mod task_recovery;
+#[path = "cases/task_regate.rs"]
+mod task_regate;
 
 #[path = "cases/task_recovery_reads.rs"]
 mod task_recovery_reads;

@@ -25,6 +25,7 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "neige_task_accept",
         "neige_task_cancel",
         "neige_task_ls",
+        "neige_task_regate",
         "neige_task_reject",
         "neige_terminal_control",
         "neige_terminal_input",

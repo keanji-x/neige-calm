@@ -269,7 +269,7 @@ status_detail?: string,
 /**
  * #1727 S4: what the verdict was checked against (D3); absent on pre-slice-4 producers.
  */
-target?: VerifyTarget, } };
+target?: VerifyTarget, } } | { "ev": "task.regate_requested", "data": { attempt_id: string, key: string, previous_gate_attempt: number, reserved_gate_attempt: number, agent_message: string, } };
 
 /**
  * Where an event lives in the area → track → card hierarchy.
