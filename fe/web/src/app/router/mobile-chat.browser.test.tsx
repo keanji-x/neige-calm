@@ -305,3 +305,19 @@ it('interrupts the current working conversation from its portalled mobile editor
   await expect.poll(() => requests.filter(request => request.path === '/api/cards/daily-planner/planner/interrupt')).toHaveLength(1);
   await expect.element(page.getByRole('dialog', { name: 'Daily Planner conversation', exact: true })).toBeVisible();
 });
+
+it('uses the shared dismissal stack for idle portalled editors and leaves IME Escape alone', async () => {
+  await page.viewport(390, 844);
+  renderDailyFixture({ emptyWorkspace: true });
+  await page.getByRole('textbox', { name: 'Chat message', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Daily Planner conversation', exact: true });
+  await expect.element(dialog).toBeVisible();
+  const editor = await page.getByRole('combobox', { name: 'Message', exact: true }).findElement();
+  editor.focus();
+  for (const properties of [{ isComposing: true }, { keyCode: 229 }]) {
+    editor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, ...properties }));
+    await expect.element(dialog).toBeVisible();
+  }
+  await userEvent.keyboard('{Escape}');
+  await expect.poll(() => document.querySelector('[data-nc-mobile-chat-panel]')?.closest('dialog')?.open).toBe(false);
+});

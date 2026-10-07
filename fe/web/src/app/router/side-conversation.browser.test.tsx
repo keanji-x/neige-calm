@@ -189,3 +189,17 @@ it('captures the latest growing reply through a stable side-command consumer', a
   const request = requests.find(request => request.method === 'POST' && request.path.endsWith('/conversations'));
   expect(JSON.stringify(request?.body)).toContain(live.text);
 });
+
+
+it('removes a portalled composer menu when its mobile conversation closes', async () => {
+  await page.viewport(390, 844);
+  setup();
+  await page.getByRole('button', { name: 'Conversation Main discussion' }).click();
+  const field = page.getByRole('combobox', { name: 'Message' });
+  await field.fill('/');
+  await expect.element(field).toHaveAttribute('aria-expanded', 'true');
+  await page.getByRole('button', { name: 'Close conversation' }).click();
+  await expect.poll(() => document.querySelector('[data-nc-mobile-chat-panel]')?.closest('dialog')?.open).toBe(false);
+  await expect.poll(() => document.querySelector('[popover]:popover-open')).toBeNull();
+  await expect.element(field).not.toBeInTheDocument();
+});

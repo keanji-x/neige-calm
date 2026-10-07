@@ -4,23 +4,42 @@ import { useState } from '../../ui/state/public.ts';
 import { mobileFontClassName } from '../../ui/mobile-font/public.ts';
 import { Icon } from '../../ui/icon/public.tsx';
 import { useCallback, useEffect, useLayoutEffect, useRef, type ComponentProps } from 'react';
+import { LayerDepthProvider, useLayerDismissal } from '@astryxdesign/core/Layer';
 import { BottomSheet } from '@astryxdesign/core/BottomSheet';
 import { Drawer } from '../../ui/drawer/public.tsx';
 import styles from './mobile-chat.module.css';
 
 /** One host owns mobile presentation, focus and visible-viewport geometry for the panel and stationary footer. */
 export function ConversationSurface({ mobileSheet, contextTitle, focusInput = false, ...props }: ComponentProps<typeof Drawer> & Readonly<{ mobileSheet: boolean; contextTitle?: string; focusInput?: boolean }>) {
+  const nativeSheet = mobileSheet && props.companion === undefined;
   const [editing, setEditing] = useState(false);
   const previousOpen = useRef(props.open);
   if (previousOpen.current !== props.open) { previousOpen.current = props.open; if (props.open) setEditing(false); }
-  const [footerHost, setFooterHost] = useState<HTMLDivElement | null>(null);
+  // The footer's React owner stays fixed while the presentation host changes.
+  const [footerHost] = useState(() => document.createElement('div'));
+  const [footerAttached, setFooterAttached] = useState(false);
+  const [nativePresented, setNativePresented] = useState(false);
   const [navigationBottom, setNavigationBottom] = useState(0);
   const [footerHeight, setFooterHeight] = useState(0);
-  const visibleViewport = useVisibleViewport(mobileSheet && (props.open || footerHost !== null) && props.companion === undefined);
+  const visibleViewport = useVisibleViewport(mobileSheet && (props.open || footerAttached) && props.companion === undefined);
   const restingViewportHeight = useRef(visibleViewport.height);
-  if (!props.open && footerHost === null) restingViewportHeight.current = visibleViewport.height;
+  if (!props.open && !footerAttached) restingViewportHeight.current = visibleViewport.height;
   const expandedForInput = (focusInput || editing) && visibleViewport.height < restingViewportHeight.current;
-  const footerHostRef = useRef<HTMLDivElement | null>(null);
+  const desktopSlot = useRef<HTMLDivElement | null>(null);
+  const retainedFocus = useRef<Readonly<{ element: HTMLElement; range: Range | null }> | null>(null);
+  const retainFooterFocus = useCallback(() => {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement) || !footerHost.contains(active)) return;
+    const selection = document.getSelection();
+    const range = selection !== null && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+    retainedFocus.current = { element: active, range: range !== null && footerHost.contains(range.commonAncestorContainer) ? range.cloneRange() : null };
+  }, [footerHost]);
+  const previousNativeSheet = useRef(nativeSheet);
+  if (previousNativeSheet.current !== nativeSheet) {
+    // Snapshot the caret before React removes the previous presentation's DOM.
+    retainFooterFocus();
+    previousNativeSheet.current = nativeSheet;
+  }
   const panelRef = useRef<HTMLDivElement | null>(null);
   const finalFocus = useRef<HTMLElement | null>(null);
   const originalFocus = useRef<HTMLElement | null>(null);
@@ -28,18 +47,55 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
   const lastFrame = useRef({ title: props.title, contextTitle, children: props.children, footer: props.footer });
   if (props.open) lastFrame.current = { title: props.title, contextTitle, children: props.children, footer: props.footer };
   const frame = lastFrame.current;
+  const captureDesktop = useCallback((slot: HTMLDivElement | null) => {
+    if (footerHost.parentElement === desktopSlot.current) { retainFooterFocus(); footerHost.remove(); }
+    desktopSlot.current = slot;
+    if (slot !== null) slot.append(footerHost);
+    setFooterAttached(slot !== null);
+  }, [footerHost, retainFooterFocus]);
   const capturePanel = useCallback((panel: HTMLDivElement | null) => {
+    const previousDialog = panelRef.current?.closest('dialog');
+    if (previousDialog !== undefined && footerHost.parentElement === previousDialog) { retainFooterFocus(); footerHost.remove(); }
     panelRef.current = panel;
-    footerHostRef.current?.remove();
-    footerHostRef.current = null;
-    if (panel === null) { setFooterHost(null); return; }
-    const dialog = panel.closest('dialog');
-    if (dialog === null) return;
-    const host = document.createElement('div');
-    dialog.append(host);
-    footerHostRef.current = host;
-    setFooterHost(host);
-  }, []);
+    const dialog = panel?.closest('dialog');
+    if (dialog != null) dialog.append(footerHost);
+    setFooterAttached(dialog != null);
+  }, [footerHost, retainFooterFocus]);
+  useEffect(() => {
+    const dialog = panelRef.current?.closest('dialog');
+    if (!nativeSheet || dialog == null) return;
+    const sync = () => setNativePresented(dialog.open);
+    const observer = new MutationObserver(sync);
+    observer.observe(dialog, { attributes: true, attributeFilter: ['open'] });
+    sync();
+    return () => observer.disconnect();
+  }, [nativeSheet, footerAttached]);
+  useLayerDismissal({ isActive: nativeSheet && props.open, onDismiss: props.onClose,
+    getContainer: () => panelRef.current?.closest('dialog') ?? null,
+    isPresent: () => panelRef.current?.closest('dialog')?.open ?? false });
+  useEffect(() => {
+    if (!props.open || !footerAttached) return;
+    const dialog = panelRef.current?.closest('dialog');
+    const restore = () => {
+      const retained = retainedFocus.current;
+      if (retained === null) return;
+      if (!footerHost.contains(retained.element)) { retainedFocus.current = null; return; }
+      if ((dialog != null && !dialog.open) || retained.element.closest('[inert], [aria-hidden="true"]') !== null) return;
+      retained.element.focus({ preventScroll: true });
+      if (document.activeElement !== retained.element) return;
+      if (retained.range !== null) {
+        const selection = document.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(retained.range);
+      }
+      retainedFocus.current = null;
+    };
+    restore();
+    if (dialog == null) return;
+    const observer = new MutationObserver(restore);
+    observer.observe(dialog, { attributes: true, attributeFilter: ['open'] });
+    return () => observer.disconnect();
+  }, [footerAttached, footerHost, nativeSheet, props.open]);
   useLayoutEffect(() => {
     if (!mobileSheet || !props.open || props.companion !== undefined) return;
     const navigation = document.querySelector<HTMLElement>('[data-nc-workspace-header] [data-nc-mobile-header]');
@@ -54,14 +110,14 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
     return () => { observer.disconnect(); };
   }, [mobileSheet, props.companion, props.open]);
   useLayoutEffect(() => {
-    const footer = footerHost?.firstElementChild;
+    const footer = footerHost.firstElementChild;
     if (footer === null || footer === undefined) return;
     const sync = () => { setFooterHeight(footer.getBoundingClientRect().height); };
     const observer = new ResizeObserver(sync);
     observer.observe(footer);
     sync();
     return () => { observer.disconnect(); };
-  }, [footerHost]);
+  }, [footerHost, footerAttached, mobileSheet]);
   useLayoutEffect(() => {
     if (props.open && !focusWasOpen.current) {
       const active = document.activeElement;
@@ -79,13 +135,13 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
     if (!mobileSheet || props.companion !== undefined || !props.open || !focusInput) return;
     const panel = panelRef.current;
     const dialog = panel?.closest('dialog');
-    if (panel === null || dialog == null || footerHost === null) return;
+    if (panel === null || dialog == null || !footerAttached) return;
     const observer = new MutationObserver(focusEditor);
     function focusEditor() {
       if (!dialog?.open) return;
       const active = document.activeElement;
       if (active !== document.body && active !== panel && active != null && dialog?.contains(active) && !active.matches('[contenteditable="true"], textarea')) { observer.disconnect(); return; }
-      const editor = footerHost?.querySelector<HTMLElement>('[contenteditable="true"], textarea:not([disabled])');
+      const editor = footerHost.querySelector<HTMLElement>('[contenteditable="true"], textarea:not([disabled])');
       if (editor === null || editor === undefined) return;
       editor.focus({ preventScroll: true });
       if (document.activeElement === editor) observer.disconnect();
@@ -94,12 +150,11 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
     observer.observe(dialog, { attributes: true, attributeFilter: ['open'] });
     focusEditor();
     return () => { observer.disconnect(); };
-  }, [focusInput, footerHost, mobileSheet, props.companion, props.open]);
+  }, [focusInput, footerHost, footerAttached, mobileSheet, props.companion, props.open]);
   const requestedHeight = visibleViewport.height * (expandedForInput ? 0.92 : 2 / 3);
   const sheetHeight = Math.min(requestedHeight, Math.max(0, visibleViewport.bottomEdge - navigationBottom));
   // Grouped conversations retain the pane renderer that owns companion switching.
-  if (!mobileSheet || props.companion !== undefined) return <Drawer {...props} />;
-  return <div className={styles.sheet}><BottomSheet ref={capturePanel} className={`${styles.panel} ${mobileFontClassName}`} data-nc-mobile-chat-panel=""
+  const surface = !nativeSheet ? <Drawer {...props} footer={<div ref={captureDesktop} />} /> : <div className={styles.sheet}><BottomSheet ref={capturePanel} className={`${styles.panel} ${mobileFontClassName}`} data-nc-mobile-chat-panel=""
     onKeyDown={(event) => {
       // A composer trigger/edit handler already owns this Escape; native sheet dismissal must stand down.
       if (event.key === 'Escape' && event.defaultPrevented) event.stopPropagation();
@@ -113,7 +168,11 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
         <button type="button" className={styles.close} aria-label={props.closeLabel ?? 'Close conversation'} onClick={props.onClose}><Icon name="close" /></button>
       </header>
       <div className={styles.messages} data-nc-drawer-scroll="">{frame.children}</div>
-      {footerHost !== null && createPortal(<div className={styles.footer} data-nc-chat-footer="" data-nc-conversation-region={props.id} style={{ bottom: visibleViewport.bottomInset }} onFocusCapture={(event) => { if (event.target instanceof HTMLElement && event.target.matches('[contenteditable="true"], textarea')) setEditing(true); }}>{frame.footer}</div>, footerHost)}
     </section>
   </BottomSheet></div>;
+  return <>{surface}{createPortal(<LayerDepthProvider><div className={nativeSheet ? styles.footer : undefined}
+    data-nc-chat-footer={nativeSheet ? '' : undefined} data-nc-conversation-region={props.id}
+    style={nativeSheet ? { bottom: visibleViewport.bottomInset } : undefined}
+    onFocusCapture={(event) => { if (event.target instanceof HTMLElement && event.target.matches('[contenteditable="true"], textarea')) setEditing(true); }}
+  >{props.open || (nativeSheet ? nativePresented : footerAttached) ? frame.footer : null}</div></LayerDepthProvider>, footerHost)}</>;
 }

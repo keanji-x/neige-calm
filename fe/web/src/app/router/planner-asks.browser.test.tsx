@@ -150,3 +150,27 @@ it.each([
   expect(answer?.body).toEqual({ answers: largeAsk(count, long).questions.map(() => ({ option: 0 })) });
   await expect.element(ask).not.toBeInTheDocument();
 });
+
+
+it('retains an unanswered ask and its question across responsive surfaces', async () => {
+  await page.viewport(1280, 800);
+  const { requests } = setup('light');
+  await page.getByRole('button', { name: /Conversation Planner/ }).click();
+  const ask = page.getByRole('group', { name: 'The Planner asks' });
+  await ask.getByRole('button', { name: 'release/2.0' }).click();
+  const own = ask.getByRole('textbox', { name: 'Anything to tell the reviewers?' });
+  await own.fill('Keep the selected branch and this note.');
+  const originalInput = await own.findElement();
+  for (const width of [390, 1280]) {
+    await page.viewport(width, 844);
+    await expect.element(own).toHaveValue('Keep the selected branch and this note.');
+    expect(await own.findElement()).toBe(originalInput);
+    await expect.element(own).toHaveFocus();
+    expect(requests.filter(request => request.path.endsWith('/answer'))).toHaveLength(0);
+  }
+  await ask.getByRole('button', { name: 'Answer' }).click();
+  await expect.poll(() => requests.filter(request => request.path.endsWith('/answer')).length).toBe(1);
+  expect(requests.find(request => request.path.endsWith('/answer'))?.body).toEqual({
+    answers: [{ option: 1 }, { text: 'Keep the selected branch and this note.' }],
+  });
+});
