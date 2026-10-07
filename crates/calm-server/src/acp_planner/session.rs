@@ -6,18 +6,21 @@ use crate::db::sqlite::{
 use crate::db::{Repo, write_in_tx_typed};
 use crate::error::{CalmError, Result};
 use crate::harness::backend::TurnStartFailure;
+use crate::harness::held_requests::HeldRequestSender;
+use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::thread_seals::ThreadSeals;
 use calm_types::runtime::AgentProvider;
 use calm_types::worker::{WorkerContract, WorkerProviderKind, WorkerSessionId};
 use provider::acp::{
-    Incoming, protocol,
+    Incoming,
+    approvals::{Approvals, refuse},
+    protocol,
     translate::{TurnContext, TurnTranslator},
 };
 use provider::events::{PlannerEvent, PlannerEventKind};
 use provider::{InputItem, TurnModelSelection};
 use serde_json::{Value, json};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::sync::{broadcast, watch};
 
@@ -47,7 +50,8 @@ struct Shared {
     state: Mutex<State>,
     issue: tokio::sync::Mutex<()>,
     driver: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    installed: AtomicBool,
+    /// Set when the registry installed the harness: the channel the turns' approvals go to.
+    installed: OnceLock<HeldRequestSender>,
 }
 pub struct AcpPlannerSession {
     shared: Arc<Shared>,
@@ -65,7 +69,7 @@ impl AcpPlannerSession {
                 }),
                 issue: tokio::sync::Mutex::new(()),
                 driver: tokio::sync::Mutex::new(None),
-                installed: AtomicBool::new(false),
+                installed: OnceLock::new(),
             }),
         }
     }
@@ -78,8 +82,10 @@ impl AcpPlannerSession {
     pub fn subscribe_events(&self) -> broadcast::Receiver<PlannerEvent> {
         self.shared.events.subscribe()
     }
-    pub fn mark_installed(&self) {
-        self.shared.installed.store(true, Ordering::SeqCst);
+    /// The registry installed the harness holding this session; turns may start from now on, and
+    /// their permission requests go to `held` (#2348). A later call is ignored.
+    pub fn mark_installed(&self, held: HeldRequestSender) {
+        let _ = self.shared.installed.set(held);
     }
     pub fn thread_sealed(&self, thread: &str) -> bool {
         self.shared.params.seals.is_sealed(thread)
@@ -99,15 +105,16 @@ impl AcpPlannerSession {
         thread: &str,
         items: Vec<InputItem>,
         selection: &TurnModelSelection,
+        permission: PlannerPermissionMode,
         client: &str,
         claim: &[crate::harness::QueueEntry],
     ) -> std::result::Result<String, TurnStartFailure> {
         let shared = &self.shared;
         let params = &shared.params;
         let _issue = shared.issue.lock().await;
-        if !shared.installed.load(Ordering::SeqCst) {
+        let Some(held) = shared.installed.get().cloned() else {
             return Err(refused("ACP harness has not been installed"));
-        }
+        };
         if shared.state.lock().expect("ACP state").closed || params.seals.is_sealed(thread) {
             return Err(refused("ACP conversation is closed or sealed"));
         }
@@ -219,7 +226,10 @@ impl AcpPlannerSession {
             config,
             &params.worker_session_id,
             &params.cwd,
-            super::process::LaunchContext::Planner { mcp_token: &token },
+            super::process::LaunchContext::Planner {
+                mcp_token: &token,
+                permission,
+            },
         )
         .await
         {
@@ -344,6 +354,9 @@ impl AcpPlannerSession {
                 return Err(error);
             }
         };
+        #[cfg(feature = "fixtures")]
+        let held = super::test_seams::tap_held(&params.worker_session_id, held);
+        let approvals = Approvals::for_turn(permission, &held, &turn, &process.connection.client);
         let (cancel, cancelled) = watch::channel(false);
         shared.state.lock().expect("ACP state").active = Some(Active {
             thread: thread.into(),
@@ -373,6 +386,7 @@ impl AcpPlannerSession {
                 translator,
                 pending,
                 cancelled,
+                approvals,
             )
             .await;
         });
@@ -397,7 +411,7 @@ impl AcpPlannerSession {
     pub async fn shutdown(&self) -> Result<()> {
         self.shared.state.lock().expect("ACP state").closed = true;
         let _issue = self.shared.issue.lock().await;
-        if !self.shared.installed.load(Ordering::SeqCst) {
+        if self.shared.installed.get().is_none() {
             return Ok(());
         }
         {
@@ -457,7 +471,7 @@ async fn setup_request(process: &mut Process, method: &str, params: Value) -> Re
         tokio::select! {
             result=&mut response=>return finish_setup(&process.connection.client,&mut process.connection.incoming,result).await,
             incoming=process.connection.incoming.recv()=>match incoming {
-                Some(Incoming::Request{id,method,..})=>answer(&process.connection.client,id,&method).await?,
+                Some(Incoming::Request{id,method,..})=>refuse(&process.connection.client,id,&method).await.map_err(wire_error)?,
                 Some(Incoming::Notification{..})=>{}, // Loaded replay never represents a fresh native prompt.
                 None=>return Err(CalmError::Conflict("ACP setup connection closed".into())),
             }
@@ -473,22 +487,11 @@ async fn finish_setup(
     // even when select chooses the ready response before the incoming branch.
     while let Ok(frame) = incoming.try_recv() {
         if let Incoming::Request { id, method, .. } = frame {
-            answer(client, id, &method).await?;
+            refuse(client, id, &method).await.map_err(wire_error)?;
         }
     }
     result.map_err(wire_error)
 }
-async fn answer(client: &provider::acp::Client, id: Value, method: &str) -> Result<()> {
-    if method == "session/request_permission" {
-        client
-            .respond(id, json!({"outcome":{"outcome":"cancelled"}}))
-            .await
-            .map_err(wire_error)
-    } else {
-        client.reject_method(id).await.map_err(wire_error)
-    }
-}
-
 async fn bind_native(params: &SessionParams, thread: &str, native: &str) -> Result<()> {
     let worker = params.worker_session_id.clone();
     let thread = thread.to_owned();
@@ -559,6 +562,7 @@ async fn drive(
     mut translator: TurnTranslator,
     pending: std::result::Result<provider::acp::PendingResponse, provider::acp::Error>,
     mut cancelled: watch::Receiver<bool>,
+    approvals: Approvals,
 ) {
     let params = &shared.params;
     let mut retained = Vec::<Value>::new();
@@ -584,7 +588,7 @@ async fn drive(
                 if changed.is_err() || *cancelled.borrow() {
                     stop_at=Some(tokio::time::Instant::now()+Duration::from_secs(5));
                     tokio::time::timeout(Duration::from_secs(3),async {
-                        protocol::cancel(&process.connection.client,&receipt.native_session_id).await.map_err(wire_error)
+                        approvals.cancel(&receipt.native_session_id).await.map_err(wire_error)
                     }).await.map_err(|_|CalmError::Conflict("ACP cancellation writes timed out".into()))??;
                 }
             },
@@ -593,12 +597,18 @@ async fn drive(
                 Some(Incoming::Notification{method,params}) if method=="session/update"=>{
                     for event in translator.update(&params,crate::model::now_ms()).map_err(wire_error)? {retain_item(&mut retained,&event);let _=shared.events.send(event);}
                 },
-                Some(Incoming::Request{id,method,..})=>answer(&process.connection.client,id,&method).await?,
+                Some(Incoming::Request{id,method,params})=>approvals.request(id,&method,params).await.map_err(wire_error)?,
                 Some(Incoming::Notification{..})=>{},
                 None=>return Err(CalmError::Conflict("ACP prompt connection closed".into())),
             }
         }}
     }.await;
+    // Every frame of this process that will ever be read has been: its requests end here, before
+    // any teardown await, so no answer reaches the agent after its turn.
+    approvals.close().await;
+    #[cfg(feature = "fixtures")]
+    super::test_seams::wait_after_fence(&params.worker_session_id).await;
+    drop(approvals);
     let revoked = revoke(params).await;
     if let Err(error) = &revoked {
         tracing::error!(%error,"ACP credential revocation failed");

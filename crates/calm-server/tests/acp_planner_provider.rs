@@ -1,4 +1,6 @@
 //! Managed ACP acceptance through the production boot, REST routes and Harness.
+#[path = "cases/acp_planner_approvals.rs"]
+mod acp_planner_approvals;
 #[path = "cases/acp_planner_authentication.rs"]
 mod acp_planner_authentication;
 #[path = "cases/acp_planner_cli.rs"]
@@ -168,9 +170,20 @@ async fn acp_permission_requests_use_never_without_creating_asks() {
     let stack = boot(&root).await;
     let (track, card) = create(&stack).await;
     std::fs::write(root.path().join("scenario"), "permission").unwrap();
+    let mut held =
+        calm_server::acp_planner::test_seams::observe_held(&stack.runtime(&card).await.id);
     assert_eq!(
         turn(&stack, &card, "request permission", 1).await["status"],
         "interrupted"
+    );
+    assert!(
+        held.try_recv().is_err(),
+        "a never turn reports nothing to the held-request channel"
+    );
+    assert_eq!(
+        acp_planner_approvals::launch_permissions(&root),
+        vec![Value::Null],
+        "a never turn launches the agent with its own permission config"
     );
     wait_file(&root, "permission-reply.json").await;
     let reply: Value = serde_json::from_str(

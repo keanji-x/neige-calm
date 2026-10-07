@@ -13,8 +13,9 @@ with (root / 'environment.jsonl').open('a') as output:
     presence = {name: name in os.environ for name in [
         'NEIGE_MCP_DAEMON_TOKEN', 'NEIGE_MCP_TOKEN', 'NEIGE_MCP_SOCKET', 'ACP_AMBIENT_SENTINEL']}
     presence['readiness'] = os.environ['NEIGE_ACP_PLANNER'].endswith(':readiness')
+    presence['opencode_permission'] = os.environ.get('OPENCODE_PERMISSION')
     output.write(json.dumps(presence) + '\n')
-current, pending, permission = None, None, None
+current, pending, permission, cancel_seen = None, None, None, False
 model, effort = 'fixture/model-a', 'normal'
 
 def emit(value):
@@ -37,6 +38,20 @@ def update(value):
 def finish(request, text, reason='end_turn'):
     update({'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': text}})
     result(request, {'stopReason': reason})
+
+def permission_log(entry):
+    with (root / 'permission-log.jsonl').open('a') as output:
+        output.write(json.dumps(entry) + '\n')
+
+def ask_permission(request_id):
+    # The shape OpenCode 1.18.35 sends for a bash call under `permission.bash = "ask"`.
+    emit({'jsonrpc': '2.0', 'id': request_id, 'method': 'session/request_permission', 'params': {
+        'sessionId': current,
+        'toolCall': {'toolCallId': 'call_1', 'title': 'echo one > one.txt', 'kind': 'execute',
+                     'status': 'pending', 'locations': [], 'rawInput': {'command': 'echo one > one.txt'}},
+        'options': [{'optionId': 'once', 'kind': 'allow_once', 'name': 'Allow once'},
+                    {'optionId': 'always', 'kind': 'allow_always', 'name': 'Always allow'},
+                    {'optionId': 'reject', 'kind': 'reject_once', 'name': 'Reject'}]}})
 
 def native_path():
     return root / (current + '.json')
@@ -140,6 +155,17 @@ for line in sys.stdin:
             emit({'jsonrpc': '2.0', 'id': permission, 'method': 'session/request_permission', 'params': {
                 'sessionId': current, 'toolCall': {'toolCallId': 'one', 'title': 'Fixture operation'},
                 'options': [{'optionId': 'yes', 'name': 'Allow', 'kind': 'allow_once'}]}})
+        elif scenario in ['ask', 'ask-cancel', 'ask-exit', 'ask-settle']:
+            pending, permission, cancel_seen = request, 0, False
+            ask_permission(permission)
+            if scenario == 'ask-exit':
+                time.sleep(0.3)
+                os._exit(0)
+            if scenario == 'ask-settle':
+                # The turn settles on its own while the request still waits; later answers are logged.
+                time.sleep(0.3)
+                finish(pending, 'settled')
+                pending = None
         elif scenario == 'hold':
             pending = request
         else:
@@ -148,13 +174,27 @@ for line in sys.stdin:
             update({'sessionUpdate': 'tool_call_update', 'toolCallId': '1', 'status': 'completed',
                     'content': [{'type': 'content', 'content': {'type': 'text', 'text': 'native tool output'}}]})
             finish(request, 'reply: ' + texts[-1])
+    elif method == 'session/cancel' and pending and permission is not None:
+        # ACP: the client answers the pending permission request `cancelled` after the cancel.
+        permission_log({'event': 'cancel'})
+        cancel_seen = True
     elif method == 'session/cancel' and pending:
         finish(pending, 'cancelled', 'cancelled')
         pending = None
-    elif method is None and permission and request.get('id') == permission:
+    elif method is None and permission == 'native-permission' and request.get('id') == permission:
         (root / 'permission-reply.json').write_text(json.dumps(request))
         assert request['result']['outcome'] == {'outcome': 'cancelled'}, 'permission policy is never'
         finish(pending, 'permission declined', 'cancelled')
+        pending = permission = None
+    elif method is None and permission is not None and request.get('id') == permission:
+        outcome = request['result']['outcome']
+        permission_log({'event': 'reply', 'outcome': outcome})
+        if pending is None:
+            continue
+        if cancel_seen:
+            finish(pending, 'cancelled', 'cancelled')
+        else:
+            finish(pending, 'permission: ' + outcome.get('optionId', outcome['outcome']))
         pending = permission = None
     elif 'id' in request:
         emit({'jsonrpc': '2.0', 'id': request['id'], 'error': {'code': -32601, 'message': 'unknown method'}})

@@ -1,4 +1,5 @@
 use crate::error::{CalmError, Result};
+use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::planner_process::MarkerInstance;
 use calm_types::runtime::AgentProvider;
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,15 @@ pub struct AcpAgentConfig {
     pub expected_agent_name: String,
     pub expected_agent_version: String,
 }
+/// What OpenCode's own `permission` configuration is overridden with under `ask` (#2348): the
+/// tools that act without asking under its defaults ask instead. OpenCode 1.18.35 merges this
+/// variable over every config file, and has no flag or ACP method for it. `edit` covers its
+/// write and patch tools too.
+const OPENCODE_ASK_PERMISSION: (&str, &str) = (
+    "OPENCODE_PERMISSION",
+    r#"{"bash":"ask","edit":"ask","webfetch":"ask"}"#,
+);
+
 impl AcpPlannerConfig {
     pub fn read(path: &Path) -> Result<Self> {
         let config: Self = serde_json::from_slice(&std::fs::read(path)?)?;
@@ -56,6 +66,21 @@ impl AcpPlannerConfig {
         Ok(())
     }
 }
+impl AcpAgentConfig {
+    /// The environment one Planner turn's process adds under `mode`, set explicitly, never
+    /// inherited. `never` adds nothing: the agent's own configuration stands, as before.
+    pub fn permission_env(&self, mode: PlannerPermissionMode) -> Vec<(&'static str, &'static str)> {
+        match (mode, &self.provider) {
+            (PlannerPermissionMode::Never, _) => Vec::new(),
+            (PlannerPermissionMode::Ask, AgentProvider::OpenCode) => vec![OPENCODE_ASK_PERMISSION],
+            // Not ACP agents: a registration naming them is refused.
+            (PlannerPermissionMode::Ask, AgentProvider::Codex | AgentProvider::Claude) => {
+                Vec::new()
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct AcpPlannerHost {
     config: Option<AcpPlannerConfig>,
@@ -188,4 +213,37 @@ async fn revoke_owned(
         sqlx::query(concat!("UPDATE worker_sessions SET mcp_token_hash=NULL WHERE id IN (SELECT worker_session_id FROM ","acp_managed_sessions) AND (?1 IS NULL OR track_id=?1)")).bind(track).execute(&mut **tx).await?;
         Ok(ids)
     })).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn opencode() -> AcpAgentConfig {
+        AcpAgentConfig {
+            provider: AgentProvider::OpenCode,
+            command: "/opt/opencode".into(),
+            args: vec!["acp".into()],
+            env: BTreeMap::new(),
+            expected_agent_name: "OpenCode".into(),
+            expected_agent_version: "1.18.35".into(),
+        }
+    }
+
+    /// `ask` makes OpenCode ask before bash, edits and fetches; `never` adds nothing, so its launch
+    /// is today's.
+    #[test]
+    fn only_ask_overrides_opencodes_permission_config() {
+        assert_eq!(
+            opencode().permission_env(PlannerPermissionMode::Ask),
+            vec![(
+                "OPENCODE_PERMISSION",
+                r#"{"bash":"ask","edit":"ask","webfetch":"ask"}"#
+            )]
+        );
+        assert_eq!(
+            opencode().permission_env(PlannerPermissionMode::Never),
+            Vec::<(&str, &str)>::new()
+        );
+    }
 }
