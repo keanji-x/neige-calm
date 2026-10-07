@@ -107,6 +107,43 @@ async fn daily_identity_replay_is_atomic_and_does_not_start_a_model() {
 }
 
 #[tokio::test]
+async fn daily_planner_startup_injects_workspace_report_working_method() {
+    let (_tmp, repo, state) = fixture().await;
+    let route = RouteState::from_ref(&state);
+    let track = reconcile(&route, at("2026-10-04T01:00:00Z")).await.unwrap();
+    let card = route
+        .repo
+        .cards_by_track(track.id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "codex")
+        .unwrap();
+    let instructions = crate::operation::planner_harness_start_adapter::planner_instructions(
+        repo.as_ref(),
+        &state.plugin,
+        track.id.as_str(),
+        card.id.as_str(),
+    )
+    .await
+    .unwrap();
+    for required in [
+        "neige_workspace_ls",
+        "neige_workspace_cat",
+        "neige_workspace_diff",
+        "neige_workspace_log",
+        "all user-visible Areas",
+        "next_cursor is null",
+        "no write authority over other Tracks",
+    ] {
+        assert!(
+            instructions.contains(required),
+            "missing startup instruction: {required}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn daily_midnight_and_restart_close_prior_days_without_empty_backfill() {
     let (_tmp, repo, state) = fixture().await;
     let route = RouteState::from_ref(&state);
