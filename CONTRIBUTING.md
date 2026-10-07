@@ -74,8 +74,11 @@ Run only the smallest relevant checks while iterating and before requesting
 review. The commands, and when each one applies, are listed under
 [Verification in AGENTS.md](AGENTS.md#verification); run
 `scripts/local-ratchet-gates.sh` for every change, including docs-only ones.
-Workspace-wide Rust tests run in CI and are not a routine local step. Use the
-default stack end-to-end tier (`./e2e/run.sh`) when an integrated flow changes.
+Workspace-wide Rust tests run in CI and are not a routine local step. When an
+integrated flow changes, run `./e2e/run.sh`. Without flags it selects tier 1
+only, which needs no Codex credentials and spends no tokens, so it may run on
+the shared host. Tier 2 (`--tier 2` or `--all`) is real Codex E2E and runs only
+on a dedicated host.
 
 When an API schema or generated binding changes, run the relevant generation
 command and commit every generated artifact it updates. Tests for a defect or

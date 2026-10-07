@@ -176,9 +176,11 @@ scripts/local-rust-gates.sh --quick
 - Run the real generator after schema or generated-code changes and include every
   updated artifact.
 - Preview visible UI changes in a real browser and run the relevant E2E for
-  integrated paths. Never run real Codex E2E on the shared production host; use
-  a dedicated host for Tier 2 stack E2E. `make e2e-codex-isolated` safely runs the
-  separate `codex_forge_e2e` suite but does not replace Tier 2 stack coverage.
+  integrated paths. `./e2e/run.sh` without flags runs tier 1 only, which needs
+  no Codex credentials and may run on the shared host. Never run real Codex E2E
+  on the shared production host; use a dedicated host for Tier 2 stack E2E
+  (`--tier 2` or `--all`). `make e2e-codex-isolated` safely runs the separate
+  `codex_forge_e2e` suite but does not replace Tier 2 stack coverage.
 - For frontend previews in Neige development tracks, follow
   [the repository preview workflow](docs/development-preview.md).
 - Finally inspect `git diff`, `git status`, and actual test output. Report only
