@@ -59,8 +59,8 @@ async fn boot_full() -> (std::net::SocketAddr, axum::Router, String, TempDir) {
             area_id: area.id,
             title: "e2e".into(),
             sort: None,
-            // The terminal card's cwd defaults to the track's workspace; an empty workspace path is refused.
-            cwd: "/neige-fixture-workspace".into(),
+            // The terminal defaults to this real directory, retained by the caller through WS teardown.
+            cwd: tmp.path().to_str().expect("UTF-8 fixture cwd").into(),
             template_id: None,
             plugin_scope: None,
             attach_folder: false,
