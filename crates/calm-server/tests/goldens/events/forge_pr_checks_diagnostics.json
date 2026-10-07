@@ -1,0 +1,16 @@
+{
+  "description": "#2363: diagnostics and explicit incomplete collection survive event replay; historical goldens keep their original shape",
+  "wire": {
+    "ev": "forge.pr.checks",
+    "data": {
+      "track_id": "track-01",
+      "pr_number": 1,
+      "conclusion": "failure",
+      "snapshot": {"head_sha": "exact-head", "mergeable": "mergeable", "all_checks_completed": false},
+      "failed_checks": [
+        {"name": "shard-1", "id": "C1", "diagnostics": {"status": "available", "failed_tests": [], "failed_steps": ["test"], "error_summary": "assertion failed", "log_url": "https://github.com/o/r/actions/runs/1/job/2", "truncated": true}},
+        {"name": "shard-2", "id": "C2", "diagnostics": {"status": "unavailable", "reason": "no Actions permission"}}
+      ]
+    }
+  }
+}

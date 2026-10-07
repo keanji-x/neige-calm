@@ -1,0 +1,64 @@
+{
+  "argv": [
+    "/bin/true"
+  ],
+  "idem_key": "gh.pr.checks:owner/repo:42:upgrade",
+  "event_spec": {
+    "event_kind": "forge.pr.checks",
+    "fields": {
+      "conclusion": {
+        "json_field": {
+          "path": "/conclusion"
+        }
+      },
+      "mergeable": {
+        "json_field": {
+          "path": "/mergeable"
+        }
+      },
+      "head_sha": {
+        "json_field": {
+          "path": "/head_sha"
+        }
+      },
+      "snapshot": {
+        "json_field": {
+          "path": "/snapshot"
+        }
+      },
+      "failed_checks": {
+        "json_field": {
+          "path": "/failed_checks"
+        }
+      }
+    }
+  },
+  "subject": null,
+  "context": {
+    "pr_number": 42
+  },
+  "probe": {
+    "probe_argv": [
+      "gh",
+      "pr",
+      "view",
+      "42",
+      "--repo",
+      "owner/repo",
+      "--json",
+      "state"
+    ],
+    "output_probe_argv": [
+      "sh",
+      "-c",
+      "identity=$(gh repo view \"$2\" --json nameWithOwner,url --jq '(.url | split(\"/\")[2]), .nameWithOwner') || exit 1\nhost=${identity%%\n*}\nrepo=${identity#*\n}\npages=$(gh api graphql --hostname \"$host\" --paginate --slurp -F owner=\"${repo%/*}\" -F name=\"${repo##*/}\" -F pr=\"$1\" -f query=\"$4\") || exit 1\nout=$(printf '%s\\n' \"$pages\" | jq -rc \"$5$3)\") || exit 1\nhead=${out%%\n*}\ncurrent=$(gh pr view \"$1\" --repo \"$2\" --json headRefOid --jq .headRefOid) || exit 1\n[ \"$head\" = \"$current\" ] || exit 1\nprintf '%s\\n' \"${out#*\n}\"\n",
+      "sh",
+      "42",
+      "owner/repo",
+      "[(.statusCheckRollup // [])[] | . as $check | if .__typename == \"CheckRun\" then (if .status != \"COMPLETED\" then \"pending\" elif .conclusion == \"SUCCESS\" or .conclusion == \"NEUTRAL\" or .conclusion == \"SKIPPED\" then \"success\" else \"failure\" end) elif .state == \"SUCCESS\" then \"success\" elif .state == \"PENDING\" or .state == \"EXPECTED\" then \"pending\" else \"failure\" end | {check: $check, verdict: .}] as $checks | {conclusion: ($checks | map(.verdict) | if any(. == \"failure\") then \"failure\" elif any(. == \"pending\") then \"pending\" elif length == 0 then \"no_checks\" else \"success\" end), mergeable: (.mergeable | ascii_downcase), head_sha: .headRefOid, snapshot: {head_sha: .headRefOid, mergeable: (.mergeable | ascii_downcase)}, failed_checks: [$checks[] | select(.verdict == \"failure\") | .check | {name: (.name // .context)} + ((.detailsUrl // .targetUrl) as $url | if $url != null and $url != \"\" then {url: $url} elif .id != null and .id != \"\" then {id: .id} else error(\"Failed check has no locator\") end)]}",
+      "query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$pr){headRefOid mergeable commits(last:1){nodes{commit{oid statusCheckRollup{contexts(first:100,after:$endCursor){nodes{__typename ... on CheckRun{id name status conclusion detailsUrl} ... on StatusContext{id context state targetUrl}} pageInfo{hasNextPage endCursor}}}}}}}}}",
+      "map(.data.repository.pullRequest) as $pages | $pages[0] as $first | if ($first.headRefOid == null or $first.headRefOid == \"\") or any($pages[]; .headRefOid != $first.headRefOid or .commits.nodes[0].commit.oid != $first.headRefOid) then error(\"PR head moved during checks pagination\") else {headRefOid: $first.headRefOid, mergeable: $first.mergeable, statusCheckRollup: [$pages[].commits.nodes[0].commit.statusCheckRollup.contexts.nodes[]?]} end | .headRefOid, ("
+    ]
+  },
+  "parked": true
+}

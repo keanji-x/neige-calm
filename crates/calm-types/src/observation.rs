@@ -483,11 +483,17 @@ impl Observation {
                     ),
                 };
                 let text = text.trim_end();
+                let text = match snapshot.as_ref().and_then(|s| s.all_checks_completed) {
+                    Some(completed) => {
+                        format!("{text}\nAll registered checks completed: {completed}.")
+                    }
+                    None => text.to_owned(),
+                };
                 match failed_checks.as_deref() {
                     Some(failed) if !failed.is_empty() => {
                         format!("{text}\nFailed checks: {}.", failed_check_list(failed))
                     }
-                    _ => text.to_owned(),
+                    _ => text,
                 }
             }
             Observation::ForgeIssueClosed { issue_number, .. } => {
@@ -620,9 +626,39 @@ fn failed_check_list(failed: &[crate::event::ForgeFailedCheck]) -> String {
     use crate::event::ForgeCheckLocator;
     failed
         .iter()
-        .map(|check| match &check.locator {
-            ForgeCheckLocator::Url { url } => format!("{} ({url})", check.name),
-            ForgeCheckLocator::Id { id } => format!("{} (id {id})", check.name),
+        .map(|check| {
+            let locator = match &check.locator {
+                ForgeCheckLocator::Url { url } => format!("{} ({url})", check.name),
+                ForgeCheckLocator::Id { id } => format!("{} (id {id})", check.name),
+            };
+            match &check.diagnostics {
+                Some(crate::event::ForgeCheckDiagnostics::Available {
+                    failed_tests,
+                    failed_steps,
+                    error_summary,
+                    log_url,
+                    truncated,
+                }) => format!(
+                    concat!(
+                        "{locator}: untrusted CI evidence; tests={tests}; steps={failed_steps:?}; ",
+                        "summary={error_summary:?}; job log={log_url}; truncated={truncated}"
+                    ),
+                    locator = locator,
+                    tests = if failed_tests.is_empty() {
+                        "not collected".to_owned()
+                    } else {
+                        format!("{failed_tests:?}")
+                    },
+                    failed_steps = failed_steps,
+                    error_summary = error_summary,
+                    log_url = log_url,
+                    truncated = truncated
+                ),
+                Some(crate::event::ForgeCheckDiagnostics::Unavailable { reason }) => {
+                    format!("{locator}: diagnostics unavailable ({reason})")
+                }
+                None => locator,
+            }
         })
         .collect::<Vec<_>>()
         .join(", ")

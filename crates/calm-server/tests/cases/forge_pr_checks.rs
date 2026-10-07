@@ -68,6 +68,38 @@ fn failed_while_running_rollup() -> Value {
     ])
 }
 
+#[path = "forge_pr_checks_diagnostics.rs"]
+mod diagnostics;
+
+#[tokio::test]
+async fn gh_pr_checks_deadline_marks_partial_failures_and_unavailable_diagnostics() {
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let cx = ChecksFixture::boot("partial-diagnostics").await;
+    seed_shim_pr_checks(&cx.fx.origin_repo, cx.pr, &failed_while_running_rollup());
+    let payload =
+        lower("gh_pr_checks", &json!({"repo": cx.repo_arg, "pr": cx.pr})).expect("checks payload");
+    let read: Vec<String> = serde_json::from_value(payload["probe"]["output_probe_argv"].clone())
+        .expect("output probe");
+    let output = run_checks_read(&cx._env._path_dir.path().join("gh"), &read);
+    assert!(output.status.success(), "{output:?}");
+    let result: Value = serde_json::from_slice(&output.stdout).expect("checks JSON");
+    assert_eq!(result["snapshot"]["all_checks_completed"], false);
+    assert_eq!(result["failed_checks"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        result["failed_checks"][0]["diagnostics"]["status"],
+        "unavailable"
+    );
+    assert!(
+        !result["failed_checks"][0]["diagnostics"]["reason"]
+            .as_str()
+            .unwrap()
+            .is_empty()
+    );
+}
+
 #[test]
 fn gh_pr_checks_reports_no_checks_and_mergeability() {
     let bin = short_tempdir("p").expect("gh shim PATH tempdir");
@@ -234,11 +266,12 @@ fn gh_pr_checks_reports_no_checks_and_mergeability() {
         seed_shim_pr_checks(&repo, pr_number, rollup);
         seed_shim_pr_mergeable(&repo, pr_number, mergeable);
         let output = run_checks_read(&gh, &read);
-        let want = json!({
+        let mut want = json!({
             "conclusion": conclusion,
             "mergeable": folded_mergeable,
             "head_sha": head_sha,
-            "snapshot": { "head_sha": head_sha, "mergeable": folded_mergeable },
+            "snapshot": { "head_sha": head_sha, "mergeable": folded_mergeable,
+                "all_checks_completed": !matches!(*case, "in-progress-run" | "queued-run" | "pending-status" | "failed-run" | "empty-rollup" | "null-rollup" | "conflicting-no-checks" | "unknown-no-checks") },
             "failed_checks": match *case {
                 "failed-run" | "cancelled-run" | "startup-failure-run" => json!([
                     {"name": "test", "url": "https://github.invalid/shim/checks/1"}
@@ -254,6 +287,9 @@ fn gh_pr_checks_reports_no_checks_and_mergeability() {
                 _ => json!([]),
             }
         });
+        for check in want["failed_checks"].as_array_mut().unwrap() {
+            check["diagnostics"] = json!({"status":"unavailable","reason":"not an Actions check"});
+        }
         match serde_json::from_slice::<Value>(&output.stdout) {
             Ok(got) if output.status.success() && got == want => {}
             got => mismatches.push(format!("{case}: expected {want}, got {got:?} ({output:?})")),
@@ -273,8 +309,8 @@ fn gh_pr_checks_reports_no_checks_and_mergeability() {
     assert_eq!(
         got["failed_checks"],
         json!([
-            {"name":"last-run", "id":"CheckRun-100"},
-            {"name":"last-status", "id":"StatusContext-101"}
+            {"name":"last-run", "id":"CheckRun-100", "diagnostics":{"status":"unavailable","reason":"not an Actions check"}},
+            {"name":"last-status", "id":"StatusContext-101", "diagnostics":{"status":"unavailable","reason":"not an Actions check"}}
         ])
     );
 
@@ -305,6 +341,21 @@ fn gh_pr_checks_reports_no_checks_and_mergeability() {
             "must not emit mixed evidence: {output:?}"
         );
     }
+    // Even valid first-page evidence must be rejected when gh reports a later API failure.
+    std::fs::write(&pages_path, json!([page(&head_sha, &head_sha)]).to_string()).unwrap();
+    std::fs::write(
+        shim_state_dir(&repo)
+            .join("checks")
+            .join(format!("{pr_number}.exit_status")),
+        "1",
+    )
+    .unwrap();
+    let output = run_checks_read(&gh, &read);
+    assert!(
+        !output.status.success(),
+        "incomplete pagination: {output:?}"
+    );
+    assert!(output.stdout.is_empty());
 }
 
 #[tokio::test]
@@ -367,10 +418,10 @@ async fn a_checks_wait_parks_until_ci_fails() {
     assert_eq!(
         event.payload,
         json!({ "track_id": cx.fx.track_id, "pr_number": cx.pr, "conclusion": "failure",
-            "snapshot": { "head_sha": cx.head_sha(), "mergeable": "mergeable" },
+            "snapshot": { "head_sha": cx.head_sha(), "mergeable": "mergeable", "all_checks_completed": false },
             "failed_checks": [
-                { "name": "test", "url": "https://github.invalid/shim/checks/1" },
-                { "name": "ci/legacy", "url": "https://github.invalid/shim/status/1" }
+                { "name": "test", "url": "https://github.invalid/shim/checks/1", "diagnostics":{"status":"unavailable","reason":"not an Actions check"} },
+                { "name": "ci/legacy", "url": "https://github.invalid/shim/status/1", "diagnostics":{"status":"unavailable","reason":"not an Actions check"} }
             ] })
     );
     assert_track_event(&event, &cx.fx.track_id);
@@ -379,8 +430,8 @@ async fn a_checks_wait_parks_until_ci_fails() {
     assert_eq!(
         repeated["result"]["structuredContent"]["result"]["event"]["failed_checks"],
         json!([
-            { "name": "test", "url": "https://github.invalid/shim/checks/1" },
-            { "name": "ci/legacy", "url": "https://github.invalid/shim/status/1" }
+            { "name": "test", "url": "https://github.invalid/shim/checks/1", "diagnostics":{"status":"unavailable","reason":"not an Actions check"} },
+            { "name": "ci/legacy", "url": "https://github.invalid/shim/status/1", "diagnostics":{"status":"unavailable","reason":"not an Actions check"} }
         ])
     );
     assert_eq!(
@@ -390,8 +441,8 @@ async fn a_checks_wait_parks_until_ci_fails() {
             "mergeable",
             &cx.head_sha(),
             json!([
-                { "name": "test", "url": "https://github.invalid/shim/checks/1" },
-                { "name": "ci/legacy", "url": "https://github.invalid/shim/status/1" }
+                { "name": "test", "url": "https://github.invalid/shim/checks/1", "diagnostics":{"status":"unavailable","reason":"not an Actions check"} },
+                { "name": "ci/legacy", "url": "https://github.invalid/shim/status/1", "diagnostics":{"status":"unavailable","reason":"not an Actions check"} }
             ])
         ),
         "{repeated}"
@@ -631,7 +682,7 @@ impl ChecksFixture {
             "conclusion": conclusion,
             "mergeable": mergeable,
             "head_sha": head_sha,
-            "snapshot": { "head_sha": head_sha, "mergeable": mergeable },
+            "snapshot": { "head_sha": head_sha, "mergeable": mergeable, "all_checks_completed": conclusion == "success" },
             "failed_checks": failed_checks
         })
     }

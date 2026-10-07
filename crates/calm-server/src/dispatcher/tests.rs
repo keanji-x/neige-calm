@@ -29,6 +29,7 @@ fn failed_lint_check() -> calm_types::event::ForgeFailedCheck {
         locator: calm_types::event::ForgeCheckLocator::Url {
             url: "https://ci.example/lint".into(),
         },
+        diagnostics: None,
     }
 }
 
@@ -71,6 +72,32 @@ fn checks_wake_names_failed_checks_from_the_persisted_event() {
         .unwrap()
         .to_turn_text();
     assert!(!text.contains("Failed checks"), "{text}");
+}
+
+#[test]
+fn checks_wake_includes_diagnostics_and_collection_completeness() {
+    let track = TrackId::from("checks-track");
+    let event = Event::from_kind_and_payload("forge.pr.checks", serde_json::json!({
+        "track_id":track,"pr_number":42,"conclusion":"failure",
+        "snapshot":{"head_sha":"exact-head","mergeable":"mergeable","all_checks_completed":false},
+        "failed_checks":[
+            {"name":"shard-1","id":"C1","diagnostics":{"status":"available", "failed_tests":["case_one"],"failed_steps":["test"],"error_summary":"assertion failed","log_url":"https://github.com/o/r/actions/runs/1/job/2","truncated":false}},
+            {"name":"shard-2","id":"C2","diagnostics":{"status":"unavailable","reason":"permission denied"}}
+        ]
+    })).unwrap();
+    let text = harness_observation_from_event(&track, &event, None)
+        .unwrap()
+        .to_turn_text();
+    for evidence in [
+        "All registered checks completed: false",
+        "case_one",
+        "steps=[\"test\"]",
+        "assertion failed",
+        "https://github.com/o/r/actions/runs/1/job/2",
+        "permission denied",
+    ] {
+        assert!(text.contains(evidence), "{text}");
+    }
 }
 
 #[test]

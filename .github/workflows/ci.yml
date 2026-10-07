@@ -102,6 +102,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: nextest public annotation protocol selftest
+        run: python3 scripts/ci/nextest-failure-annotations-selftest.py
+
       - name: preview build preflight regression
         run: python3 scripts/tests/test_preview_preflight.py
 
@@ -591,10 +594,15 @@ jobs:
           exit "$(cat "$status")"
 
       - name: cargo nextest run --archive-file
+        id: rust_nextest
         # nextest runs no doctests and this repo has none (every doc fence carries a non-rust tag); add a `cargo test --doc` step if that changes.
         run: |
           scripts/run-ci-rust-nextest.sh \
             github-hosted --archive-file nextest-archive.tar.zst --partition "count:${{ matrix.shard }}/8"
+
+      - name: annotate failed nextest tests
+        if: ${{ failure() && steps.rust_nextest.outcome == 'failure' }}
+        run: python3 scripts/ci/nextest-failure-annotations.py
 
       - name: restore hosted isolated provider namespace policy
         if: always()
@@ -659,9 +667,14 @@ jobs:
             --bin calm-worker-boundary --bin neige-mcp-stdio-shim
 
       - name: cargo nextest run --workspace --locked
+        id: rust_nextest
         run: |
           scripts/run-ci-rust-nextest.sh \
             github-hosted
+
+      - name: annotate failed nextest tests
+        if: ${{ failure() && steps.rust_nextest.outcome == 'failure' }}
+        run: python3 scripts/ci/nextest-failure-annotations.py
 
       - name: restore hosted isolated provider namespace policy
         if: always()

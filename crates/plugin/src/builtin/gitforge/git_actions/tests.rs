@@ -356,7 +356,10 @@ fn lowers_gh_pr_checks() {
                 PR_CHECKS_WAIT_JQ,
                 PR_CHECKS_READ_SCRIPT,
                 PR_CHECKS_QUERY,
-                PR_CHECKS_PAGES_JQ
+                PR_CHECKS_PAGES_JQ,
+                include_str!("checks_enrich.sh"),
+                checks::checks_sanitizer(),
+                "false"
             ],
             "idem_key": idem_key,
             "event_spec": {
@@ -391,7 +394,10 @@ fn lowers_gh_pr_checks() {
                     "owner/repo",
                     PR_CHECKS_JQ,
                     PR_CHECKS_QUERY,
-                    PR_CHECKS_PAGES_JQ
+                    PR_CHECKS_PAGES_JQ,
+                    include_str!("checks_enrich.sh"),
+                    checks::checks_sanitizer(),
+                    "false"
                 ]
             },
             "parked": true
@@ -402,7 +408,7 @@ fn lowers_gh_pr_checks() {
     for value in [&mut payload, &mut attempt_payload] {
         assert_eq!(
             value["compatible_payload_hashes"].as_array().unwrap().len(),
-            1
+            2
         );
         value
             .as_object_mut()

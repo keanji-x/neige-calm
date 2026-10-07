@@ -229,31 +229,10 @@ impl EventScope {
 /// must gate on a new persisted wire shape.
 pub const SYNC_EVENT_VERSION: u32 = 27;
 
-/// Evidence captured by the checks read, never reconstructed from a later PR head.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-pub struct ForgeChecksSnapshot {
-    pub head_sha: String,
-    pub mergeable: String,
-}
-
-/// One check the checks read classified as failed, and where to read it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-pub struct ForgeFailedCheck {
-    pub name: String,
-    #[serde(flatten)]
-    pub locator: ForgeCheckLocator,
-}
-
-/// A failed check's details URL, or the forge's own id for it when it has none.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(untagged)]
-#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-pub enum ForgeCheckLocator {
-    Url { url: String },
-    Id { id: String },
-}
+mod forge_checks;
+pub use forge_checks::{
+    ForgeCheckDiagnostics, ForgeCheckLocator, ForgeChecksSnapshot, ForgeFailedCheck,
+};
 
 /// What happened to one entry in the harness pending queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
