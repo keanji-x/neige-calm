@@ -1,7 +1,24 @@
 @layer features {
+  .titleContent {
+    min-inline-size: 0;
+    inline-size: 100%;
+  }
+
+  .areaTitle {
+    display: flex;
+    justify-content: center;
+    min-inline-size: 0;
+  }
+
   .trackTitleHost {
     min-inline-size: 0;
     inline-size: 100%;
+  }
+
+  /* The declared title slot wins whenever a page fills it, independent of its URL. */
+  .trackTitleHost:empty,
+  .titleContent:has(.trackTitleHost:not(:empty)) .areaTitle {
+    display: none;
   }
 
   .iconButton {

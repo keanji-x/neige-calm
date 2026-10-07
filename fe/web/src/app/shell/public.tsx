@@ -307,7 +307,6 @@ export function AppShell({
         onCreateArea={requestCreateArea}
         actionsHostRef={setMobileHeaderActionsHost}
         titleHostRef={setMobileHeaderTitleHost}
-        hasTrack={routeTrackId !== undefined}
       />}
       <div
         ref={mobileNavigationRef}

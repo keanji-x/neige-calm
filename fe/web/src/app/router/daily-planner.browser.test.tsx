@@ -63,5 +63,11 @@ it('keeps one calendar and the daily report usable at phone width', async () => 
   const calendar = page.getByRole('region', { name: 'Calendar tasks' });
   await expect.element(calendar).toBeVisible();
   expect(calendar.all()).toHaveLength(1);
+  expect(page.getByRole('button', { name: 'Track actions', exact: true }).all()).toHaveLength(1);
+  const headers = [...document.querySelectorAll('[data-nc-mobile-header]')].filter((header) => header.getBoundingClientRect().width > 0);
+  expect(headers).toHaveLength(1);
+  await page.getByRole('button', { name: 'Track actions', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Conversations', exact: true }).click();
+  await expect.element(page.getByRole('heading', { name: 'Conversations', exact: true })).toBeVisible();
   expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
 });

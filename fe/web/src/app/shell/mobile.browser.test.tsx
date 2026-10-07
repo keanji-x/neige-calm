@@ -486,16 +486,13 @@ describe('Track mobile presentation', () => {
     expect(document.activeElement).toBe(opener);
   });
 
-  it('uses short Cards and Conversations labels while keeping unavailable actions disabled', async () => {
+  it('omits unavailable Track actions before a Track exists', async () => {
     await page.viewport(390, 844);
     const router = setup('/area/c1/new');
-    await page.getByRole('button', { name: 'Track actions' }).click();
-    for (const label of ['Cards', 'Conversations']) {
-      const item = await page.getByRole('menuitem', { name: label, exact: true }).findElement();
-      expect(item.textContent).toBe(label);
-      expect(item.getAttribute('aria-disabled')).toBe('true');
-    }
-    await userEvent.keyboard('{Enter}{ArrowDown}{Enter}');
+    await page.getByRole('button', { name: 'Switch area, Product', exact: true }).findElement();
+    expect(page.getByRole('button', { name: 'Track actions', exact: true }).query()).toBeNull();
+    expect(page.getByRole('menuitem', { name: 'Cards', exact: true }).query()).toBeNull();
+    expect(page.getByRole('menuitem', { name: 'Conversations', exact: true }).query()).toBeNull();
     expect(router.state.location.pathname).toBe('/area/c1/new');
     expect(document.querySelector('[data-nc-mobile-page]')).toBeNull();
     await page.screenshot({ path: '../../../../test-results/mobile-short-track-actions.png' });

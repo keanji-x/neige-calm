@@ -18,10 +18,12 @@ Used production-router browser tests, source/ownership/dependency gates, a singl
 
 - Abstraction boundaries: frontend dependency/ownership gates pass; the native instance uses the existing daily/calendar/report APIs, with no singleton request introduced by the unified entry. The original Tier 1 daily read case passes against the isolated native instance.
 - Duplicate logic: both legacy URL tests resolve to the sole homepage and reject singleton API calls. Removing the homepage's calendar injection fails exactly the two predicted browser regressions; restoring the exact production bytes returns both to green.
-- Hardcoded application assumptions: ordinary Track board geometry and sticky panels pass alongside daily-page tests. Compact home remains Today; starting an Area composer requires an explicit selection. Session recovery uses the shared production drawer on the homepage and retains its transcript/draft.
+- Hardcoded application assumptions: ordinary Track board geometry and sticky panels pass alongside daily-page tests. Compact home remains Today; starting an Area composer requires an explicit selection. The mobile header always publishes its declared title/actions slots and follows their populated content, avoiding a URL-derived second menu on the homepage. Session recovery uses the shared production drawer on the homepage and retains its transcript/draft.
 
 Browser inspection found and fixed the shared header offset leaking into the sidebar conversation host. The final native page and browser geometry tests retain Calendar above the conversation and keep the Send button in the viewport at 768px and 1000px heights. Calendar plugin unavailability continues to use the existing adapter's feedback and date surface.
 
 The final focused browser selection passes 76 tests. The real Playwright Areas-read recovery case passes against the native backend. Docker Tier 1 setup was attempted but could not allocate a network from the host's exhausted default IPv4 pools; the native run exercises the same Tier 1 case, not a successful Docker run. No real Codex E2E was run, and the native test backend is loopback-only with independent temporary data and `/bin/false` as its Codex binary.
+
+A final compact-menu audit reproduced two Track menus on the homepage. Reused the existing slot-driven header correction already present in the primary checkout, preserving that unrelated checkout without editing it; added a real homepage regression that opens Conversations from the one usable menu.
 
 No unresolved blocking finding remains in these source and executable audit channels.
