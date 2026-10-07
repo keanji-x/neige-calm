@@ -1,0 +1,8 @@
+@layer features {
+  .reportIntro { display: none; }
+  @media (width < 60rem) {
+    .reportIntro { display: block; margin-block: 0 var(--space-11); }
+    .reportIntro h2 { font-family: var(--font-sans); font-size: calc(var(--text-xl) + var(--space-2)); font-weight: var(--weight-semibold); line-height: 1.3077; }
+    .reportIntro p { margin-block-start: var(--space-3); font-size: max(var(--text-md), 1rem); color: var(--text-3); line-height: 1.625; }
+  }
+}

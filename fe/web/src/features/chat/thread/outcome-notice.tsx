@@ -15,7 +15,9 @@ const FAILURE_HINTS: Readonly<Record<string, string>> = Object.freeze({
 });
 
 /** One stable row across live, request, pause and terminal transitions. */
-export function CurrentStatusNotice({ outcome, canContinue, live, statusUnconfirmed, statusLoading, stalled, stalledReason, feedback, copyAction, editAction, regenerateAction, runningAnchor }: {
+export function CurrentStatusNotice({ outcome, canContinue, live, statusUnconfirmed, statusLoading, stalled, stalledReason, feedback, copyAction, editAction, regenerateAction, runningAnchor, detailsExpanded, onDetailsExpandedChange }: {
+  detailsExpanded?: boolean;
+  onDetailsExpandedChange?: (expanded: boolean) => void;
   outcome: ConversationTurnOutcome | null;
   canContinue: boolean;
   live: boolean;
@@ -69,7 +71,7 @@ export function CurrentStatusNotice({ outcome, canContinue, live, statusUnconfir
     clock = { elapsedMs: outcome.elapsedMs, timestamp: { kind: 'finished', atMs: outcome.atMs } };
     if (terminal !== 'completed') details = <OutcomeDetails outcome={outcome} canContinue={canContinue} />;
   } else return null;
-  return <ThreadStatusNotice heading={heading} tone={tone} clock={clock} outcome={terminal} copyAction={copyAction} editAction={editAction} regenerateAction={regenerateAction}>{details}</ThreadStatusNotice>;
+  return <ThreadStatusNotice detailsExpanded={detailsExpanded} onDetailsExpandedChange={onDetailsExpandedChange} heading={heading} tone={tone} clock={clock} outcome={terminal} copyAction={copyAction} editAction={editAction} regenerateAction={regenerateAction}>{details}</ThreadStatusNotice>;
 }
 
 /** Request feedback is evidence about Stop, independent of whether the current run can be read. */

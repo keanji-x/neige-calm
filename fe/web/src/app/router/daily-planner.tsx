@@ -1,3 +1,5 @@
+import { useCompactViewport } from '../../ui/viewport/public.ts';
+import styles from './daily-planner.module.css';
 // Reuse the Track route body; this composition only resolves dates and report evidence.
 import type { ReactNode } from 'react';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
@@ -17,7 +19,7 @@ import { runOperation, trackDetailQueryOptions } from '../providers/queries.ts';
 export function DailyTodayRoute({ transport, unauthorized, selectedDate, onOpenTrack, renderTrack }: Readonly<{
   transport: ApiTransportPort; unauthorized: UnauthorizedChannel; selectedDate?: string;
   onOpenTrack: (trackId: string) => void;
-  renderTrack: (detail: TrackDetailWire, evidence: ReactNode, panelContent: ReactNode) => ReactNode;
+  renderTrack: (detail: TrackDetailWire, evidence: ReactNode, panelContent: ReactNode, intro: ReactNode) => ReactNode;
 }>) {
   const daily = useQuery({ queryKey: ['daily-planner', selectedDate ?? 'today'],
     queryFn: () => runOperation(transport, dailyTrackOperation(selectedDate), unauthorized), refetchInterval: 30_000 });
@@ -30,9 +32,10 @@ export function DailyTodayRoute({ transport, unauthorized, selectedDate, onOpenT
   if (detail.data === undefined || detail.data.track.id !== trackId) return <p role="status">Loading daily Track…</p>;
   const date = daily.data.date;
   return renderTrack({ ...detail.data, track: { ...detail.data.track, title: date } },
-    <DailyReportChanges key={date} date={shiftDailyDate(date, -1)}
+    <DailyReportChanges key={date} isToday={selectedDate === undefined} date={shiftDailyDate(date, -1)}
       transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />,
-    <DailyCalendar key={date} date={date} transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />);
+    <DailyCalendar key={date} date={date} transport={transport} unauthorized={unauthorized} onOpenTrack={onOpenTrack} />,
+    <header className={styles.reportIntro}><h2>{selectedDate === undefined ? '今天的重点' : '当天的重点'}</h2><p>让工作更轻松，也更有条理。</p></header>);
 }
 
 function DailyCalendar({ date, transport, unauthorized, onOpenTrack }: Readonly<{
@@ -45,16 +48,17 @@ function DailyCalendar({ date, transport, unauthorized, onOpenTrack }: Readonly<
     onOpenTrack={onOpenTrack} />;
 }
 
-function DailyReportChanges({ date, transport, unauthorized, onOpenTrack }: Readonly<{
-  date: string; transport: ApiTransportPort; unauthorized: UnauthorizedChannel; onOpenTrack: (trackId: string) => void;
+function DailyReportChanges({ date, isToday, transport, unauthorized, onOpenTrack }: Readonly<{
+  date: string; isToday: boolean; transport: ApiTransportPort; unauthorized: UnauthorizedChannel; onOpenTrack: (trackId: string) => void;
 }>) {
+  const compactViewport = useCompactViewport();
   const [open, setOpen] = useState(false);
   const changes = useInfiniteQuery({ queryKey: ['daily-report-changes', date], enabled: open,
     initialPageParam: undefined as Readonly<{ cursor: string; through: number }> | undefined,
     queryFn: ({ pageParam }) => runOperation(transport, reportChangesOperation(date, pageParam), unauthorized),
     getNextPageParam: (last) => last.next_cursor === null ? undefined : { cursor: last.next_cursor, through: last.through_event_id },
   });
-  return <ReportDetails title="Report changes" meta={date} layout="appendix" onToggle={setOpen}>
+  return <ReportDetails title={compactViewport ? (isToday ? '昨天的更新' : '前一天的更新') : 'Report changes'} meta={date} layout="appendix" onToggle={setOpen}>
     {changes.isPending && open && <p role="status">Loading report changes…</p>}
     {changes.isError && <ErrorBox message={readErrorText(changes.error, 'Report changes could not be loaded.')} onRetry={() => { void changes.refetch(); }} />}
     {!changes.isError && changes.data?.pages[0]?.changes.length === 0 && <p>No report changes recorded for visible Tracks on this day.</p>}

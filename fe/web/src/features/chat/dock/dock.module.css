@@ -1,0 +1,52 @@
+@layer features {
+  .bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    box-sizing: border-box;
+    block-size: calc(var(--rail-w-collapsed) + var(--space-2));
+    padding: var(--space-px);
+    background: var(--paper);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-pill);
+    box-shadow: var(--shadow-float);
+  }
+
+  .send {
+    background: var(--accent);
+    color: var(--text-on-accent);
+    display: grid;
+    place-items: center;
+    flex: none;
+    inline-size: var(--rail-w-collapsed);
+    block-size: var(--rail-w-collapsed);
+    border-radius: var(--radius-pill);
+    box-sizing: border-box;
+    padding: var(--space-1);
+    background-clip: content-box;
+    cursor: pointer;
+  }
+
+  .send svg {
+    inline-size: calc(var(--glyph) + var(--space-4));
+    block-size: calc(var(--glyph) + var(--space-4));
+  }
+
+  .send:disabled { background-color: var(--surface-chip); color: var(--text-2); cursor: default; }
+
+  .input {
+    flex: 1;
+    min-inline-size: 0;
+    block-size: var(--rail-w-collapsed);
+    padding: var(--space-5) var(--space-6);
+    border: 0;
+    box-shadow: none;
+    resize: none;
+    background: transparent;
+    font-size: max(var(--text-md), 1rem);
+    line-height: 1.625;
+    color: var(--text);
+  }
+
+  .input::placeholder { color: var(--text-3); }
+}

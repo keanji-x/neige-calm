@@ -231,14 +231,15 @@ it('keeps the wide Conversation layout and foreground Escape when the document b
   expectHit(chat.getByRole('combobox', { name: 'Message' }).element());
   await page.screenshot({ path: './__screenshots__/report-readme-conversation-1920.png' });
   await page.viewport(390, 844);
-  await expect.element(chat.getByRole('combobox', { name: 'Message' })).toBeVisible();
-  await expect.element(chat.getByRole('combobox', { name: 'Message' })).toHaveTextContent('Compact draft');
-  expectHit(chat.getByRole('combobox', { name: 'Message' }).element());
+  const mobileChat = page.getByRole('dialog', { name: 'Existing conversation', exact: true });
+  await expect.element(mobileChat.getByRole('combobox', { name: 'Message' })).toBeVisible();
+  await expect.element(mobileChat.getByRole('combobox', { name: 'Message' })).toHaveTextContent('Compact draft');
+  expectHit(mobileChat.getByRole('combobox', { name: 'Message' }).element());
   expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390);
   await page.screenshot({ path: './__screenshots__/report-readme-conversation-compact.png' });
   // Foreground Escape closes the Conversation first; the file route survives.
   await userEvent.keyboard('{Escape}');
-  await expect.element(chat).not.toBeInTheDocument();
+  await expect.poll(() => document.querySelector('dialog[open]')).toBeNull();
   expect(fileLayer()).toBe(layer);
   expect(router.history.location.href).toBe(README_FILE_URL);
   await visibleReadme();

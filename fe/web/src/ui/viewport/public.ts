@@ -1,3 +1,4 @@
+export { useVisibleViewport, type VisibleViewport } from './visible.ts';
 /** The one place the application asks "is this a compact viewport?"; `architecture/single-viewport-source` makes calling `matchMedia` with a static width query elsewhere a lint error. */
 
 import { useEffect } from 'react';

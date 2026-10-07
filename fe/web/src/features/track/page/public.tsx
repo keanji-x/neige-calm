@@ -82,11 +82,14 @@ export type TrackPageProps = Readonly<{
   /** The panel card's second module, composed by `app/router` (features/chat). */
   /** The report document, composed by `app/router` (features/report). */
   report?: ReactNode;
+  /** A compact reading introduction supplied by the page owner. */
+  mobileReportIntro?: ReactNode;
   /** `REFERENCED BY` — omitted entirely when nothing cites this track. */
   backlinks?: ReactNode;
   conversationList?: ReactNode;
   /** The conversation module head's `+`, composed by `app/router`. */
   conversationAction?: ReactNode;
+  mobileChatComposer?: ReactNode;
   /** Everything the kernel says is addressed to the user on this track, projected by
    *  the route from the activity overlay's items (`attentionItems`). */
   inputNotifications?: readonly TrackInputNotification[];
@@ -149,7 +152,7 @@ function taskInventorySummary(tasks: readonly ReportTaskRow[]): string | null {
   return tasks.length === 0 ? null : String(tasks.length);
 }
 
-export function TrackPage({
+export function TrackPage({ mobileReportIntro, mobileChatComposer,
   panelContent, track, cards, tasks, openableCards, outlineItems = [], report, backlinks, conversationList, conversationAction,
   onStartConversation, conversationOpen = false, mobilePanelObscured, inputNotifications = [], onReply, onDismiss, nowMs,
   cardsAction, recentFiles, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
@@ -302,8 +305,10 @@ export function TrackPage({
       return;
     }
     if (previous === null) return;
-    mobileActionsRef.current?.querySelector('button')?.focus({ preventScroll: true });
-  }, [panel]);
+    const trigger = mobileHeaderTitleHost?.querySelector<HTMLElement>('[data-nc-page-title]')
+      ?? mobileActionsRef.current?.querySelector('button');
+    trigger?.focus({ preventScroll: true });
+  }, [panel, mobileHeaderTitleHost]);
 
   /** Panel changes are immediate; the route remains their navigation owner. */
   const openMobilePanel = (kind: MobilePanelKind) => {
@@ -451,6 +456,7 @@ export function TrackPage({
         inert={boardOpen}
       >
         <div className={styles.doc}>
+          {compactViewport && mobileReportIntro}
           {compactViewport && panelContent !== undefined && <div className={styles.compactPanelContent}><PanelCard>{panelContent}</PanelCard></div>}
           {report}
         </div>
@@ -542,7 +548,10 @@ export function TrackPage({
       </div>
 
       {compactViewport && !conversationOpen && !mobilePanelObscured
-        && !boardOpen && !mobilePanelOpen && onStartConversation !== undefined && (
+        && !boardOpen && !mobilePanelOpen && (mobileChatComposer !== undefined || onStartConversation !== undefined) && (
+        mobileChatComposer !== undefined ? <div className={styles.mobileReportChatDock} data-nc-mobile-report-chat="">
+          <div className={styles.mobileChatInput}>{mobileChatComposer}</div>
+        </div> : (
         <AstryxButton
           className={styles.mobileReportChatFab}
           data-nc-mobile-report-chat=""
@@ -552,7 +561,7 @@ export function TrackPage({
           icon={<Icon name="chat" />}
           onClick={onStartConversation}
         />
-      )}
+      ))}
 
       <VisuallyHidden
         role="status"

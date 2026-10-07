@@ -27,7 +27,7 @@ function focusTook(element: HTMLElement): boolean {
   return document.activeElement === element;
 }
 
-export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conversation', onClose, children, footer, resize, companion, inline = false, id, stacked = false, resizeGroup: suppliedResizeGroup = null }: {
+export function Drawer({ open, title, mobileBackLabel, mobileHeader, closeLabel = 'Close conversation', onClose, children, footer, resize, companion, inline = false, id, stacked = false, resizeGroup: suppliedResizeGroup = null }: {
   open: boolean;
   id?: string;
   /** An independent second card displayed below this one, or switched on compact screens. */
@@ -42,6 +42,8 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
   title: string;
   /** Accessible destination announced by the compact header's back control. */
   mobileBackLabel?: string;
+  /** Optional compact header supplied by the host for a modal presentation. */
+  mobileHeader?: ReactNode;
   /** The desktop close control's accessible name; a drawer holding something other than the conversation says what it closes. */
   closeLabel?: string;
   onClose: () => void;
@@ -174,11 +176,11 @@ export function Drawer({ open, title, mobileBackLabel, closeLabel = 'Close conve
       {/* The header is before the scroller in the DOM, so the first Tab out of the container lands on its controls. */}
       {compact && !inline ? (
         <div className={styles.mobileHeader}>
-          <MobileHeader
+          {mobileHeader ?? <MobileHeader
             title={frame.title}
             backLabel={frame.mobileBackLabel}
             onBack={onClose}
-          />
+          />}
         </div>
       ) : (
         <header className={styles.header}>

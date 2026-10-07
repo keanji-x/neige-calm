@@ -10,6 +10,8 @@
     box-shadow: none;
   }
 
+  .plain { padding: 0; border-radius: 0; background: transparent; }
+
   .page {
     display: flex;
     flex: 1 1 auto;

@@ -26,6 +26,8 @@ export const OPTIMIZED_DEPENDENCIES = Object.freeze([
   '@astryxdesign/core/VStack',
   '@astryxdesign/core/utils',
   '@astryxdesign/core/Badge',
+  '@astryxdesign/core/BottomSheet',
+  '@astryxdesign/core/MobileNav',
   '@astryxdesign/core/Button',
   '@astryxdesign/core/Banner',
   '@astryxdesign/core/DateInput',

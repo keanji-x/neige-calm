@@ -101,3 +101,14 @@ describe('a contract block takes no room', () => {
     expect(withContract).toBe(topInFrame(document.querySelector('#b_2')!));
   });
 });
+
+it('shows a mobile empty state for outline-only prose and restores the report when content arrives', async () => {
+  await browserPage.viewport(390, 844);
+  const view = render(<ReportDocument report={{ summary: '', body: '', blocks: [prose('summary', '# 概要'), prose('plan', '# 计划')] }} empty={null} />);
+  await expect.element(browserPage.getByText('从一个想法开始', { exact: true })).toBeVisible();
+  await expect.poll(() => document.getElementById('summary')!.getBoundingClientRect().height).toBe(0);
+  view.rerender(<ReportDocument report={{ summary: '', body: '', blocks: [prose('summary', '# 概要\n\n第一步已经完成。')] }} empty={null} />);
+  await expect.element(browserPage.getByText('第一步已经完成。', { exact: true })).toBeVisible();
+  expect(browserPage.getByText('从一个想法开始', { exact: true }).query()).toBeNull();
+  await browserPage.viewport(1280, 800);
+});

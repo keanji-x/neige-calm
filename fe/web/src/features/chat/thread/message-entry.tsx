@@ -1,3 +1,4 @@
+import mobileStyles from './mobile-composer.module.css';
 import { memo } from 'react';
 import { Badge } from '@astryxdesign/core/Badge';
 import type { ConversationTurn } from '../../../../../core/domain/conversation.ts';
@@ -11,6 +12,8 @@ import styles from './thread.module.css';
  * rather than assuming a caller preserves a message object's identity. */
 type MessageEntryProps = Readonly<{
   id: string;
+  mobile: boolean;
+  atMs: number;
   entryKey: string;
   author: ConversationTurn['author'];
   text: string;
@@ -25,11 +28,11 @@ type MessageEntryProps = Readonly<{
 }>;
 
 export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, text, attachments,
-  opens, gapLabel, queued, edited, replacement, working, imageFiles,
+  opens, gapLabel, queued, edited, replacement, working, imageFiles, mobile, atMs,
 }: MessageEntryProps) {
   return (
     <div
-      className={opens ? styles.exchange : undefined}
+      className={[opens ? styles.exchange : '', mobile && author === 'you' ? mobileStyles.userTurn : ''].filter(Boolean).join(' ') || undefined}
       data-nc-entry={entryKey}
       {...(opens ? { 'data-nc-exchange': id } : {})}
     >
@@ -41,7 +44,7 @@ export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, t
         <>
           {/* The caption is outside the message; persisted references recover their display pills. */}
           <p
-            className={styles.said}
+            className={`${styles.said} ${mobile ? mobileStyles.said : ''}`}
             data-nc-turn="you"
             {...(queued ? { 'data-nc-queued': '' } : {})}
             {...(edited ? { 'data-nc-editing': '' } : {})}
@@ -71,8 +74,9 @@ export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, t
           {replacement && <p className={styles.queuedNote}>Replaces the marked message above</p>}
         </>
       ) : (
-        <div className={styles.reply} data-nc-turn="agent">
+        <div className={`${styles.reply} ${mobile ? mobileStyles.reply : ''}`} data-nc-turn="agent">
           <Reply text={text} imageFiles={imageFiles} />
+          {mobile && <time className={mobileStyles.timestamp} dateTime={new Date(atMs).toISOString()}>{new Date(atMs).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })}</time>}
           {working && <ActivityIndicator state="working" motion="thinking" />}
         </div>
       )}

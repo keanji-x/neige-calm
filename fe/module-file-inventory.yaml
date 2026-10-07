@@ -113,6 +113,9 @@
 - { path: fe/web/src/ui/data-visualization, type: directory, owner: ui/data-visualization, readonly: false, basis: "#1769 domain-free metric and chart primitives; no core/domain or network dependencies" }
 - { path: fe/web/src/ui/operation-feedback, type: directory, owner: ui/operation-feedback, readonly: false, basis: "shared asynchronous mutation feedback surface" }
 - { path: fe/web/src/ui/page-header, type: directory, owner: ui/page-header, readonly: false, basis: "design §6.4/§6.14" }
+- { path: fe/web/src/ui/edge-swipe, type: directory, owner: ui/edge-swipe, readonly: false, basis: "generic touch edge gesture with a visible keyboard-accessible counterpart" }
+- { path: fe/web/src/ui/floating-control, type: directory, owner: ui/floating-control, readonly: false, basis: "shared presentation for floating navigation and input surfaces" }
+- { path: fe/web/src/ui/mobile-font, type: directory, owner: ui/mobile-font, readonly: false, basis: "scoped self-hosted mobile typeface from the approved Figma design" }
 - { path: fe/web/src/ui/mobile-header, type: directory, owner: ui/mobile-header, readonly: false, basis: "shared compact/mobile page header with source-aware back navigation" }
 - { path: fe/web/src/ui/mobile-list, type: directory, owner: ui/mobile-list, readonly: false, basis: "shared compact/mobile list and list-detail navigation surface" }
 - { path: fe/web/src/ui/typed-confirm, type: directory, owner: ui/typed-confirm, readonly: false, basis: "design §6.13" }

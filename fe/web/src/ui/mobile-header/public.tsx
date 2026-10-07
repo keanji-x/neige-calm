@@ -1,5 +1,6 @@
+import { floatingControlClassName } from '../floating-control/public.ts';
 import { Heading as AstryxHeading } from '@astryxdesign/core/Heading';
-import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
+import { Icon } from '../icon/public.tsx';
 import { IconButton as AstryxIconButton } from '@astryxdesign/core/IconButton';
 import type { ReactNode } from 'react';
 
@@ -13,30 +14,33 @@ type MobileHeaderTitle =
   | Readonly<{ titleContent: ReactNode; titleFieldMarker?: never; titleText?: never }>;
 
 export function MobileHeader({
-  title, meta, level = 2, backLabel, onBack, actions, titleFieldMarker, titleContent, titleText, leading,
+  title, meta, level = 2, backLabel, onBack, actions, actionsHidden = false, titleFieldMarker, titleContent, titleText, leading, className,
 }: Readonly<{
   title: string;
+  className?: string;
   meta?: ReactNode;
   level?: 1 | 2;
   backLabel?: string;
   onBack?: () => void;
   actions?: ReactNode;
+  /** Keeps a declared action host mounted without reserving a visible column. */
+  actionsHidden?: boolean;
   /** Replaces the standard Back control only at a root navigation entry. */
   leading?: ReactNode;
 }> & MobileHeaderTitle) {
   return (
     <header
-      className={styles.header}
+      className={[styles.header, className].filter(Boolean).join(' ')}
       data-nc-mobile-header=""
     >
       <span className={styles.leading}>
         {leading ?? (onBack !== undefined && (
           <AstryxIconButton
-            className={styles.back}
+            className={`${styles.back} ${floatingControlClassName}`}
             label={`Back to ${backLabel ?? 'previous page'}`}
             variant="ghost"
             size="lg"
-            icon={<AstryxIcon icon="chevronLeft" size="md" color="inherit" />}
+            icon={<Icon name="chevron-left" />}
             onClick={onBack}
           />
         ))}
@@ -53,7 +57,7 @@ export function MobileHeader({
         </AstryxHeading>}
         {meta}
       </div>
-      <span className={styles.trailing}>{actions}</span>
+      <span className={styles.trailing} hidden={actionsHidden}>{actions}</span>
     </header>
   );
 }
