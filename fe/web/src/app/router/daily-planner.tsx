@@ -18,7 +18,7 @@ import { runOperation, trackDetailQueryOptions } from '../providers/queries.ts';
 export function DailyTodayRoute({ transport, unauthorized, selectedDate, onOpenTrack, renderTrack }: Readonly<{
   transport: ApiTransportPort; unauthorized: UnauthorizedChannel; selectedDate?: string;
   onOpenTrack: (trackId: string) => void;
-  renderTrack: (detail: TrackDetailWire, evidence: ReactNode, sidebarHeader: ReactNode) => ReactNode;
+  renderTrack: (detail: TrackDetailWire, evidence: ReactNode, leadingContent: ReactNode) => ReactNode;
 }>) {
   const daily = useQuery({ queryKey: ['daily-planner', selectedDate ?? 'today'],
     queryFn: () => runOperation(transport, dailyTrackOperation(selectedDate), unauthorized), refetchInterval: 30_000 });
@@ -41,7 +41,7 @@ function DailyCalendar({ date, transport, unauthorized, onOpenTrack }: Readonly<
 }>) {
   const [selected, setSelected] = useState(date);
   const go = useGo();
-  return <PanelCard fill><TodayCalendarTasks date={selected} onDateChange={setSelected} transport={transport}
+  return <PanelCard><TodayCalendarTasks date={selected} onDateChange={setSelected} transport={transport}
     unauthorized={unauthorized} onSettings={() => go({ name: 'settings-plugins' })}
     onOpenTrack={onOpenTrack} /></PanelCard>;
 }

@@ -50,6 +50,9 @@ export function renderDailyFixture({ initial = '/', failChanges = false, reply }
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: [initial] }) });
-  render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}><RouterProvider router={router} /></ThemeProvider></QueryClientProvider>);
+  const container = document.createElement('div');
+  container.id = 'root';
+  document.body.appendChild(container);
+  render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}><RouterProvider router={router} /></ThemeProvider></QueryClientProvider>, { container });
   return { router, requests, client };
 }

@@ -187,7 +187,7 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
       const go = useGo();
       return <DailyTodayRoute transport={transport} unauthorized={unauthorized} selectedDate={day}
         onOpenTrack={(trackId) => go({ name: 'track', trackId })}
-        renderTrack={(detail, evidence, sidebarHeader) => <TrackRouteBody sidebarHeader={sidebarHeader} reportEvidence={evidence} key={detail.track.id} transport={transport} unauthorized={unauthorized}
+        renderTrack={(detail, evidence, leadingContent) => <TrackRouteBody leadingContent={leadingContent} reportEvidence={evidence} key={detail.track.id} transport={transport} unauthorized={unauthorized}
           track={toTrack(detail.track, trackActivityFrom(detail.track.id, detail.overlays))}
           canReopenTrack={detail.can_reopen} canCloseTrack={detail.can_close}
           cards={detail.cards} overlays={detail.overlays} cardRuntime={cards} recentFiles={recentFiles} />} />;
@@ -870,7 +870,7 @@ function trackNotifications(items: TrackActivity['attentionItems']): readonly Tr
 }
 
 function TrackRouteBody({
-  transport, unauthorized, track, canReopenTrack, canCloseTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence, sidebarHeader,
+  transport, unauthorized, track, canReopenTrack, canCloseTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence, leadingContent,
 }: {
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
@@ -882,9 +882,8 @@ function TrackRouteBody({
   cardRuntime: CardRuntime;
   recentFiles: RecentFileHistory;
   reportEvidence?: ReactNode;
-  sidebarHeader?: ReactNode;
+  leadingContent?: ReactNode;
 }) {
-  const compact = useCompactViewport();
   useTrackViewState(track.id);
   // The same key and comparison point the rail uses: the overlay's completion
   // high-water mark, never the row's `updatedAt`.
@@ -1006,7 +1005,7 @@ function TrackRouteBody({
         answerAsk: (askId, answers) => trackMutations.answerAsk(track.id, askId, answers),
       },
     },
-    { showTrack: false, resizable: sidebarHeader === undefined },
+    { showTrack: false },
   );
   /* The fallback clear: a request for a card this track has, while the list that
    * would open it could not be read. Not "the read failed", which would also
@@ -1250,8 +1249,7 @@ function TrackRouteBody({
     <>
     <TrackStage>
     <TrackPage
-      sidebarHeader={sidebarHeader}
-      sidebarConversation={sidebarHeader === undefined || compact ? undefined : { content: chat.drawer, inert: sourceOpen }}
+      leadingContent={leadingContent}
       mobilePanelObscured={chat.isOpen || sourceOpen}
       mobileHeaderActionsHost={mobileHeaderActionsHost}
       mobileHeaderTitleHost={mobileHeaderTitleHost}
@@ -1419,7 +1417,7 @@ function TrackRouteBody({
             underneath and so is `inert` for the duration. The wrapper is a static block
             so the drawer's absolute box still resolves against `.main`. */}
     <div data-nc-conversation-drawer-host="" inert={sourceOpen}>
-      {(sidebarHeader === undefined || compact) && chat.drawer}
+      {chat.drawer}
     </div>
     <ReportSourceDrawer
       transport={transport}

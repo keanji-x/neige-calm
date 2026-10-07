@@ -696,6 +696,8 @@ export function ChatComposer({
           )}
           input={(
             <ChatComposerInput
+              /* Longer drafts scroll inside the editor, leaving room for a shared pane's recovery strip and Send. */
+              maxRows={3}
               label="Message"
               placeholder="Say something"
               /* No triggers where there is neither a command nor a mention: otherwise the field becomes an `aria-expanded="false"` combobox that can never expand. */
