@@ -10,6 +10,7 @@ use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
 use crate::budget::{INITIAL_CONNECT_BUDGET, RECONNECT_BUDGET, ReconnectBudget};
+use crate::content::ResultContent;
 use crate::frames::{self, Frame, RPC_INTERNAL_ERROR, classify, lost_error_frame};
 
 /// How the pump ended; `main` maps these to exit codes.
@@ -62,12 +63,17 @@ struct PendingWrite {
 enum WriteKind {
     /// A request from codex: its id joins `outstanding` on completion;
     /// on failure the frame becomes `held`.
-    Request(serde_json::Value),
+    Request(Request),
     /// The held request being re-sent after a handshake.
-    Held(serde_json::Value),
+    Held(Request),
     Initialize,
     /// A notification, response or unclassifiable line: forwarded once, never re-sent.
     Passthrough,
+}
+
+struct Request {
+    id: serde_json::Value,
+    tool_call: bool,
 }
 
 impl PendingWrite {
@@ -96,6 +102,7 @@ enum Replay {
 struct Pump {
     socket_path: String,
     token: String,
+    content: ResultContent,
     stdin: BufReader<Stdin>,
     /// Partial line carried across cancelled `next_line` steps.
     stdin_acc: Vec<u8>,
@@ -103,10 +110,10 @@ struct Pump {
     stdout: Stdout,
     init: Option<CachedInitialize>,
     /// ids of requests written to the kernel and not yet answered, in send order.
-    outstanding: Vec<serde_json::Value>,
+    outstanding: Vec<Request>,
     /// A request whose socket write failed or was cut short when the connection ended,
     /// re-sent after the next handshake; the kernel's `read_line` never dispatched it.
-    held: Option<(serde_json::Value, Vec<u8>)>,
+    held: Option<(Request, Vec<u8>)>,
     /// Set from connection loss until a new handshake is accepted; one budget covers
     /// the whole outage.
     reconnecting: bool,
@@ -118,10 +125,11 @@ struct Pump {
 }
 
 /// Run the shim against `socket_path` until one of the [`Exit`] shapes.
-pub(crate) async fn run(socket_path: String, token: String) -> Exit {
+pub(crate) async fn run(socket_path: String, token: String, content: ResultContent) -> Exit {
     let mut pump = Pump {
         socket_path,
         token,
+        content,
         stdin: BufReader::new(tokio::io::stdin()),
         stdin_acc: Vec::new(),
         stdin_eof: false,
@@ -414,6 +422,7 @@ impl Pump {
     }
 
     async fn on_socket_line(&mut self, line: Vec<u8>, frame: Frame) -> Option<Ended> {
+        let mut line = line;
         if let Frame::Response { id, error_code } = frame {
             if let Some(init) = self.init.as_mut()
                 && !init.acked
@@ -433,8 +442,11 @@ impl Pump {
                         return Some(Ended::Rejected);
                     }
                 }
-            } else if let Some(pos) = self.outstanding.iter().position(|o| *o == id) {
-                self.outstanding.remove(pos);
+            } else if let Some(pos) = self.outstanding.iter().position(|o| o.id == id) {
+                let request = self.outstanding.remove(pos);
+                if request.tool_call {
+                    line = self.content.tool_reply(line);
+                }
             }
         }
         self.write_stdout(&line).await;
@@ -456,7 +468,13 @@ impl Pump {
                 });
                 (WriteKind::Initialize, injected.into_bytes())
             }
-            Frame::Request { id, .. } => (WriteKind::Request(id), line),
+            Frame::Request { id, method } => (
+                WriteKind::Request(Request {
+                    id,
+                    tool_call: method == "tools/call",
+                }),
+                line,
+            ),
             // Notifications are dropped by the kernel and anything
             // unclassifiable has no id to answer: neither is re-sent.
             Frame::Notification | Frame::Response { .. } | Frame::Other => {
@@ -469,8 +487,9 @@ impl Pump {
     /// Every request the kernel owed an answer to gets the synthesized error now; the
     /// kernel may or may not have run it.
     async fn fail_outstanding(&mut self) {
-        for id in std::mem::take(&mut self.outstanding) {
-            self.write_stdout(lost_error_frame(&id).as_bytes()).await;
+        for request in std::mem::take(&mut self.outstanding) {
+            self.write_stdout(lost_error_frame(&request.id).as_bytes())
+                .await;
         }
     }
 
@@ -485,8 +504,9 @@ impl Pump {
             let frame = lost_error_frame(&init.id);
             self.write_stdout(frame.as_bytes()).await;
         }
-        if let Some((id, _)) = self.held.take() {
-            self.write_stdout(lost_error_frame(&id).as_bytes()).await;
+        if let Some((request, _)) = self.held.take() {
+            self.write_stdout(lost_error_frame(&request.id).as_bytes())
+                .await;
         }
     }
 

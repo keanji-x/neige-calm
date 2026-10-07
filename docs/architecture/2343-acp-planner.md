@@ -59,6 +59,17 @@ Use an operator-owned private profile and authenticate through the native CLI ou
 
 Model configuration ids and opaque values come from declared ACP `configOptions`, using standardized `model` and `thought_level` categories. Model queries never ask Codex for an ACP card. The catalog is populated by the managed session's setup; before that it is explicitly unavailable and the registered agent's own settings are inherited. A null choice keeps current native session settings. Unknown choices are judged during fresh setup before prompt dispatch, without silently substituting another model or effort.
 
+Native MCP consumers can build model-visible output from `content` alone (#2401).
+ACP sessions therefore launch the stdio shim with the explicit
+`--structured-content-as-text` presentation mode. For a successful, correlated
+`tools/call` reply, it adds a JSON text block containing `structuredContent` when
+that exact data is not already present as text. Original summaries, warnings,
+images and the structured result remain intact. Other responses, tool errors,
+unsolicited frames and default shim clients retain their existing wire format.
+The adaptation belongs to the MCP transport; report and terminal handlers keep
+their authoritative result contract. Authentication and native permissions are
+unchanged.
+
 ## Acceptance
 
 Use deterministic stdio peers through the production transport and real boot/REST/Harness entry points. Check negotiation, bounded/malformed frames, correlated requests, cancellation, two turns, text/tool output, MCP authentication, never permissions without Ask creation, exact-key recovery, unknown-outcome fencing, same-session restart, lifecycle cleanup and unsupported-control refusal. Tests must wait for actual production decisions, not merely sleep before asserting zero writes.
