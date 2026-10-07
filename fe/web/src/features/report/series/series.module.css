@@ -193,7 +193,7 @@
 
   .legendValue {
     color: var(--text);
-    font-weight: 600;
+    font-weight: var(--weight-semibold);
     font-variant-numeric: tabular-nums;
   }
 

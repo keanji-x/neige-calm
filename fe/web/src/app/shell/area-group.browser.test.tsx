@@ -31,7 +31,7 @@ it('puts Show N more on the Track row rhythm, in the Track title column', async 
   const lastRow = element(document.querySelector<HTMLElement>('[aria-label^="Track Row 5"]'));
   const lastTitle = element(document.querySelector<HTMLElement>('[title="Row 5"]'));
   expect(more.getBoundingClientRect().height).toBeCloseTo(lastRow.getBoundingClientRect().height, 0);
-  expect(more.getBoundingClientRect().top - lastRow.getBoundingClientRect().top).toBeCloseTo(28, 0);
+  expect(more.getBoundingClientRect().top - lastRow.getBoundingClientRect().top).toBeCloseTo(32, 0);
   const range = document.createRange();
   range.selectNodeContents(more);
   expect(range.getBoundingClientRect().left).toBeCloseTo(lastTitle.getBoundingClientRect().left, 0);

@@ -59,22 +59,28 @@ it.each(['light', 'dark'])('uses the same named type hierarchy in both %s side p
   const name = element(document.querySelector<HTMLElement>('[title="Left first"]'));
   const primary = [element(document.querySelector<HTMLElement>('[data-nc-module="cards"] [data-nc-field="title"]')),
     element(document.querySelector<HTMLElement>('[data-nc-module="tasks"] [data-nc-field="title"]'))];
-  expect(getComputedStyle(name).fontSize).toBe('13px');
-  expect(Number.parseFloat(getComputedStyle(name).lineHeight)).toBeCloseTo(16.9, 1);
-  for (const node of primary) expect(typography(node)).toEqual(typography(name));
+  expect(getComputedStyle(name).fontSize).toBe('14px');
+  expect(Number.parseFloat(getComputedStyle(name).lineHeight)).toBeCloseTo(20, 1);
+  expect(getComputedStyle(name).fontWeight).toBe('500');
+  for (const node of primary) {
+    expect(getComputedStyle(node).fontSize).toBe('14px');
+    expect(getComputedStyle(node).fontWeight).toBe('400');
+    expect(getComputedStyle(node).lineHeight).toBe('20px');
+  }
   const group = element(document.querySelector<HTMLElement>('[title="Work"]'));
-  expect(getComputedStyle(group).fontWeight).toBe('500');
-  expect(getComputedStyle(group).fontSize).toBe('13px');
+  expect(getComputedStyle(group).fontWeight).toBe('400');
+  expect(getComputedStyle(group).fontSize).toBe('14px');
   expect(typography(element(document.querySelector<HTMLElement>('[data-nc-inventory-group] summary > span:first-child')))).toEqual(typography(group));
   expect(typography(element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat first"] > span > span')))).toEqual(typography(group));
-  expect(typography(element(document.querySelector<HTMLElement>('[data-nc-module] h2')))).toEqual(typography(element(document.querySelector<HTMLElement>('nav[aria-label="Workspace"] h2'))));
+  expect(getComputedStyle(element(document.querySelector<HTMLElement>('[data-nc-module] h2'))).fontSize).toBe('12px');
+  expect(getComputedStyle(element(document.querySelector<HTMLElement>('nav[aria-label="Workspace"] h2'))).fontSize).toBe('14px');
   const panelTitles = [...document.querySelectorAll<HTMLElement>('h2')].filter(node => ['Cards', 'Tasks', 'Conversations'].includes(node.textContent ?? ''));
   expect(panelTitles).toHaveLength(3);
   for (const title of panelTitles) expect(typography(title)).toEqual(typography(panelTitles[0]));
 
 });
 
-it('uses a 28px row rhythm, an aligned group edge and matching section spacing', async () => {
+it('uses configured sidebar density without changing the panel row rhythm', async () => {
   await page.viewport(1400, 900); draw();
   const area = element(document.querySelector<HTMLElement>('[aria-label="Collapse area Work"]'));
   const rows = [
@@ -84,10 +90,10 @@ it('uses a 28px row rhythm, an aligned group edge and matching section spacing',
     element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat first"]')),
     element(document.querySelector<HTMLElement>('[data-nc-inventory-group] summary')),
   ];
-  for (const row of rows) expect(row.getBoundingClientRect().height).toBeCloseTo(28, 0);
-  expect(area.getBoundingClientRect().height).toBeCloseTo(28, 0);
+  for (const [index, row] of rows.entries()) expect(row.getBoundingClientRect().height).toBeCloseTo(index === 0 ? 32 : 28, 0);
+  expect(area.getBoundingClientRect().height).toBeCloseTo(32, 0);
   const sidebarHeader = element(document.querySelector<HTMLElement>('nav[aria-label="Workspace"] h2')).parentElement!;
-  expect(area.getBoundingClientRect().top - sidebarHeader.getBoundingClientRect().bottom).toBeCloseTo(4, 0);
+  expect(area.getBoundingClientRect().top - sidebarHeader.getBoundingClientRect().bottom).toBeCloseTo(0, 0);
   const panelHeader = element(document.querySelector<HTMLElement>('[data-nc-module="cards"] h2')).parentElement!;
   expect(element(document.querySelector<HTMLElement>('[data-nc-module="cards"] [data-nc-inventory-group]')).getBoundingClientRect().top
     - panelHeader.getBoundingClientRect().bottom).toBeCloseTo(4, 0);
@@ -99,6 +105,6 @@ it('uses a 28px row rhythm, an aligned group edge and matching section spacing',
     [element(document.querySelector<HTMLElement>('[data-nc-row="task-0"]')), element(document.querySelector<HTMLElement>('[data-nc-row="task-1"]'))],
     [element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat first"]')), element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat second"]'))],
   ];
-  for (const [first, second] of pairs) expect(second.getBoundingClientRect().top - first.getBoundingClientRect().top).toBeCloseTo(28, 0);
+  for (const [index, [first, second]] of pairs.entries()) expect(second.getBoundingClientRect().top - first.getBoundingClientRect().top).toBeCloseTo(index === 0 ? 32 : 28, 0);
 
 });

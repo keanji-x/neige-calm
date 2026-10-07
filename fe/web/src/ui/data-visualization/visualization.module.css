@@ -5,8 +5,8 @@
   .metric, .primaryMetric { min-inline-size: 0; }
   .primaryMetric { grid-column: 1 / -1; }
   .metrics dt { color: var(--text-2); font-size: var(--text-xs); }
-  .metrics dd { margin: var(--space-2) 0 0; font-size: 20px; line-height: 1.35; font-weight: var(--weight-medium); font-variant-numeric: tabular-nums; }
-  .primaryMetric dd { font-size: 36px; line-height: 1.2; margin-block-start: var(--space-3); }
+  .metrics dd { margin: var(--space-2) 0 0; font: var(--type-metric); font-variant-numeric: tabular-nums; }
+  .primaryMetric dd { font: var(--type-metric-primary); margin-block-start: var(--space-3); }
   .detail, .metrics .detail { font-size: var(--text-xs); color: var(--text-3); font-weight: var(--weight-normal); margin-block: var(--space-2); }
   .positive { color: var(--success-text); } .negative { color: var(--error-text); } .warning { color: var(--warn-text); } .neutral { color: var(--text); }
   .series1 { color: var(--area-1); } .series2 { color: var(--area-2); } .series3 { color: var(--area-3); }
@@ -49,7 +49,7 @@
   .plotFrame:hover .tooltip, .plotFrame:focus-within .tooltip { display: block; }
   .plotFrame:hover .cursor, .plotFrame:focus-within .cursor { opacity: 1; }
   .toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-3); min-block-size: var(--control-h); margin-block-end: var(--space-4); }
-  .toolbar h4 { margin: 0; font-size: 13px; font-weight: var(--weight-medium); color: var(--text-2); }
+  .toolbar h4 { margin: 0; font-size: var(--text-base); font-weight: var(--weight-medium); color: var(--text-2); }
   .toolbarControls { display: flex; gap: var(--space-3); align-items: center; min-inline-size: 0; max-inline-size: 100%; }
   .unit { font-size: var(--text-xs); color: var(--text-3); overflow-wrap: anywhere; }
   .toolbar select { border: 1px solid var(--hairline); background: var(--surface-card); color: var(--text-2); border-radius: var(--radius-sm); min-block-size: var(--control-h); max-inline-size: 100%; min-inline-size: 0; padding-inline: var(--space-3); font: inherit; font-size: var(--text-xs); }
@@ -58,7 +58,7 @@
   .tabs button[aria-pressed="true"] { background: var(--text); color: var(--bg); }
   .empty { color: var(--text-3); font-size: var(--text-base); padding-block: var(--space-5); }
   .chart { font-family: var(--font-sans); min-inline-size: 0; margin: 0; overflow-wrap: anywhere; }
-  .chartTitle { margin-block-end: var(--space-4); font-size: 13px; font-weight: var(--weight-medium); color: var(--text-2); }
+  .chartTitle { margin-block-end: var(--space-4); font-size: var(--text-base); font-weight: var(--weight-medium); color: var(--text-2); }
   .bars { min-block-size: 4rem; max-block-size: 18rem; overflow-y: auto; }
   .barRow { margin-block-end: var(--space-4); }
   .barLabels, .meterLabels { display: flex; justify-content: space-between; gap: var(--space-3); font-size: var(--text-xs); color: var(--text-2); }

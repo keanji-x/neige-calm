@@ -53,7 +53,7 @@ describe('the track closed status in the page header', () => {
 
     expect(gap).toBeGreaterThanOrEqual(4);
     expect(gap).toBeLessThanOrEqual(12);
-    expect(getComputedStyle(status).fontSize).toBe('11px');
+    expect(getComputedStyle(status).fontSize).toBe('12px');
     expect(title.scrollWidth).toBeLessThanOrEqual(title.clientWidth);
   });
 
@@ -183,7 +183,10 @@ describe('the track closed status in the page header', () => {
     const row = notice.querySelector<HTMLElement>('[data-nc-notification-state]')!;
     const size = (el: Element) => getComputedStyle(el).fontSize;
     const tokens = getComputedStyle(document.documentElement);
-    const token = (name: string) => tokens.getPropertyValue(name).trim();
+    const token = (name: string) => {
+      const value = tokens.getPropertyValue(name).trim();
+      return value.endsWith('rem') ? `${parseFloat(value) * parseFloat(tokens.fontSize)}px` : value;
+    };
     expect(size([...notice.querySelectorAll('strong')].find((el) => el.textContent === 'Waiting on you')!)).toBe(token('--text-md'));
     expect(size(row.querySelector('h3')!)).toBe(token('--text-base'));
     expect(getComputedStyle(row.querySelector('h3')!).fontWeight).toBe(token('--weight-semibold'));

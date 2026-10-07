@@ -2,7 +2,7 @@
   .page { max-inline-size: 64rem; margin-inline: auto; padding: var(--space-12) var(--space-10); }
   .header { display: flex; align-items: start; justify-content: space-between; gap: var(--space-10); margin-block-end: var(--space-12); }
   .header h1 { margin-block: var(--space-8); font-size: var(--text-xl); line-height: var(--leading-tight); }
-  .eyebrow { color: var(--text-3); font-size: var(--text-xs); letter-spacing: 0.12em; }
+  .eyebrow { color: var(--text-3); font-size: var(--text-xs); letter-spacing: var(--tracking-label); }
   .subtitle { color: var(--text-2); }
   .theme { flex-shrink: 0; padding: var(--space-6) var(--space-8); border-radius: var(--radius-pill); background: var(--surface-code); color: var(--text); }
   .document { padding: var(--space-10); border-radius: var(--radius-lg); background: var(--surface-card); --document-start: 0px; --document-measure: min(100%, var(--measure-prose)); }

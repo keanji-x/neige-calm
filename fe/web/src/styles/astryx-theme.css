@@ -94,6 +94,19 @@
     --radius-chat: var(--radius-lg);
     --radius-full: var(--radius-pill);
 
+    /* Typography follows the same source as native components. */
+    --text-body-size: var(--text-base);
+    --text-body-leading: var(--line-ui);
+    --text-large-size: var(--text-md);
+    --text-supporting-size: var(--text-xs);
+    --text-label-size: var(--text-xs);
+    --text-code-size: var(--text-xs);
+    --text-code-leading: var(--line-ui);
+    --font-size-xs: var(--text-xs);
+    --font-size-sm: var(--text-base);
+    --font-size-base: var(--text-base);
+    --font-size-lg: var(--text-md);
+    --font-size-xl: var(--text-xl);
     /* Type families */
     --font-family-body: var(--font-sans);
     --font-family-heading: var(--font-display);

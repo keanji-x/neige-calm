@@ -271,6 +271,7 @@ export function Sidebar({
         </>
       ) : (
         <>
+          <div className={styles.sidebarSections}>
           {shownSections.map((id) => {
             if (id !== 'areas') {
               const group = groups.find((group) => group.id === id)!;
@@ -324,6 +325,7 @@ export function Sidebar({
             )}
           </SidebarGroup>;
           })}
+          </div>
 
         </>
       )}

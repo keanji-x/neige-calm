@@ -48,6 +48,7 @@ const TOKEN_INVENTORY = [
   '--shadow-float',
   '--area-1', '--area-2', '--area-3', '--area-4',
   '--area-5', '--area-6', '--area-7', '--area-8',
+  '--surface-navigation', '--tracking-label', '--weight-bold', '--type-ui', '--type-action', '--type-detail', '--type-page-title', '--type-navigation-label', '--type-reading', '--type-chapter', '--type-table', '--type-label', '--type-metadata', '--type-code', '--type-content', '--type-metric', '--type-metric-primary', '--type-heading', '--type-subheading', '--type-subheading-small', '--navigation-rail-width', '--navigation-row-height', '--navigation-header-height', '--navigation-module-row-height', '--navigation-group-gap', '--navigation-section-gap', '--navigation-label-inset', '--chip-success', '--chip-on-success', '--chip-error', '--chip-on-error', '--chip-warning', '--chip-on-warning', '--chip-accent', '--chip-on-accent', '--chip-neutral', '--chip-text-primary', '--line-caption', '--line-ui', '--line-reading', '--line-heading', '--line-metric',
 ] as const;
 
 describe('styles/tokens public type contract', () => {

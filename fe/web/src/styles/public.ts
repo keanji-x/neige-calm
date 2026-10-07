@@ -5,7 +5,7 @@ export type PositionalColorToken =
 
 export type SurfaceToken =
   | '--surface-rail' | '--surface-card' | '--surface-chip'
-  | '--surface-terminal' | '--surface-code';
+  | '--surface-terminal' | '--surface-code' | '--surface-navigation';
 
 export type OverlayToken =
   | '--overlay-hover-faint' | '--overlay-hover' | '--overlay-hover-strong' | '--overlay-active';
@@ -22,18 +22,19 @@ export type AreaIdentityToken =
   | '--area-5' | '--area-6' | '--area-7' | '--area-8';
 
 export type ColorToken =
-  | PositionalColorToken | SurfaceToken | OverlayToken | SemanticColorToken | AreaIdentityToken;
+  | PositionalColorToken | SurfaceToken | OverlayToken | SemanticColorToken | AreaIdentityToken | ChipColorToken;
 
 export type TypeScaleToken =
   | '--text-xs' | '--text-meta' | '--text-base' | '--text-md'
   | '--text-lg' | '--text-xl';
 
 export type LeadingToken =
-  | '--leading-none' | '--leading-tight' | '--leading-snug' | '--leading-base' | '--leading-loose';
+  | '--leading-none' | '--leading-tight' | '--leading-snug' | '--leading-base' | '--leading-loose'
+  | '--line-caption' | '--line-ui' | '--line-reading' | '--line-heading' | '--line-metric';
 
 export type TrackingToken =
   | '--tracking-tighter' | '--tracking-tight' | '--tracking-normal'
-  | '--tracking-wide' | '--tracking-wider' | '--tracking-widest';
+  | '--tracking-wide' | '--tracking-wider' | '--tracking-widest' | '--tracking-label';
 
 export type SpacingToken =
   | '--space-0' | '--space-px' | '--space-1' | '--space-2' | '--space-3' | '--space-4'
@@ -50,7 +51,7 @@ export type MotionToken =
 export type EasingToken = '--ease-enter' | '--ease-exit' | '--ease-layout' | '--ease-feedback' | '--ease-emphasis';
 
 export type WeightToken =
-  | '--weight-normal' | '--weight-medium' | '--weight-semibold';
+  | '--weight-normal' | '--weight-medium' | '--weight-semibold' | '--weight-bold';
 
 export type ScalarToken =
   | TypeScaleToken | LeadingToken | TrackingToken | RadiusToken | SpacingToken | MotionToken
@@ -79,4 +80,16 @@ export type ZIndexToken =
   | '--z-base' | '--z-raised' | '--z-sticky' | '--z-overlay' | '--z-modal' | '--z-toast';
 
 export type StyleToken =
-  | ColorToken | ScalarToken | EasingToken | FontToken | ZIndexToken | BoxScaleToken | ShadowToken;
+  | ColorToken | ScalarToken | EasingToken | FontToken | ZIndexToken | BoxScaleToken | ShadowToken
+  | TypographyToken | NavigationToken;
+
+/** Composite font roles; colors remain component/state-owned. */
+export type TypographyToken =
+  '--type-ui' | '--type-action' | '--type-detail' | '--type-page-title' | '--type-navigation-label' | '--type-reading' | '--type-chapter' | '--type-table' | '--type-label' | '--type-metadata' | '--type-code' | '--type-content' | '--type-metric' | '--type-metric-primary' | '--type-heading' | '--type-subheading' | '--type-subheading-small';
+
+export type NavigationToken =
+  '--navigation-rail-width' | '--navigation-row-height' | '--navigation-header-height' | '--navigation-module-row-height' | '--navigation-group-gap' | '--navigation-section-gap' | '--navigation-label-inset';
+
+/** Filled status-chip pairs, independently calibrated in both modes. */
+export type ChipColorToken =
+  '--chip-success' | '--chip-on-success' | '--chip-error' | '--chip-on-error' | '--chip-warning' | '--chip-on-warning' | '--chip-accent' | '--chip-on-accent' | '--chip-neutral' | '--chip-text-primary';

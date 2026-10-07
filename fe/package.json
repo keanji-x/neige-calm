@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "npm run theme:check && tsc -b && vite build",
     "typecheck": "tsc -b",
     "test": "vitest run --project platform-independent --project web-dom",
     "gen:api": "cargo test --quiet --manifest-path ../Cargo.toml -p calm-types export_bindings_ && out=core/api/generated/openapi.json && if cargo run --quiet --manifest-path ../Cargo.toml --bin emit-openapi > \"$out.tmp\" && test -s \"$out.tmp\"; then mv \"$out.tmp\" \"$out\"; else rm -f \"$out.tmp\"; echo \"gen:api: emit-openapi failed or wrote nothing; $out left unchanged\" >&2; exit 1; fi",
@@ -19,9 +19,11 @@
     "test:mutation:plan": "node tools/mutation/run.mjs --plan",
     "lint": "npm run lint:js && npm run lint:css && npm run lint:depcruise",
     "lint:js": "eslint . --max-warnings=0 && node tools/architecture/check-eslint-hygiene.mjs && node tools/architecture/check-tracked-fixtures.mjs && node tools/architecture/check-breakpoint-literals.mjs && node tools/ownership/check-readonly-change-requests.mjs && node tools/test-tier/check-test-tier.mjs",
-    "lint:css": "stylelint 'web/**/*.css' '!web/dist/**' && node tools/styles/check-contrast.mjs",
+    "lint:css": "npm run theme:check && stylelint 'web/**/*.css' '!web/dist/**' && node tools/styles/check-contrast.mjs",
     "lint:depcruise": "depcruise core web/src --config .dependency-cruiser.cjs && node tools/architecture/check-top-level.mjs . && node tools/architecture/check-core-no-jsx.mjs core && node tools/architecture/directory-picker-hosts.mjs web/src",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "theme:generate": "node tools/styles/generate-theme.mjs",
+    "theme:check": "node tools/styles/generate-theme.mjs --check"
   },
   "dependencies": {
     "@astryxdesign/core": "0.6.3",

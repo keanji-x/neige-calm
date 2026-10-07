@@ -28,8 +28,7 @@
     max-inline-size: 100%;
     min-block-size: var(--rail-w-collapsed);
     padding-inline: var(--space-3);
-    font-size: calc(var(--text-md) + 1px);
-    font-weight: var(--weight-medium);
+      font: var(--type-page-title);
   }
 
   .menu {

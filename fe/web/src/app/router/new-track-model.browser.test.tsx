@@ -102,8 +102,8 @@ it('gives the phone composer a compact input and one aligned preference row with
       expect(model.right).toBeLessThanOrEqual(send.left);
       expect(model.bottom).toBeLessThanOrEqual(height);
       expect(input.getBoundingClientRect().height).toBeLessThan(66);
-      expect(parseFloat(getComputedStyle(input).fontSize)).toBeGreaterThanOrEqual(18);
-      expect(parseFloat(getComputedStyle(heading).fontSize)).toBeGreaterThanOrEqual(22);
+      expect(parseFloat(getComputedStyle(input).fontSize)).toBe(16);
+      expect(parseFloat(getComputedStyle(heading).fontSize)).toBe(20);
       expect(document.documentElement.scrollWidth).toBe(width);
       expect(getComputedStyle(heading).fontFamily).toBe(getComputedStyle(screen.getByRole('button', { name: 'Create track' })).fontFamily);
     }
@@ -356,7 +356,7 @@ it('keeps the selected template and required inputs readable on a narrow screen'
     const preview = screen.getByRole('region', { name: 'Selected template' });
     expect(preview.getBoundingClientRect().width).toBeLessThanOrEqual(320);
     expect(preview.scrollWidth).toBeLessThanOrEqual(preview.clientWidth);
-    expect(getComputedStyle(screen.getByText('Working method')).fontSize).toBe('13px');
+    expect(getComputedStyle(screen.getByText('Working method')).fontSize).toBe('14px');
     const request = screen.getByLabelText('What this track should do');
     await userEvent.click(request);
     await userEvent.type(request, 'Implement the requested change');

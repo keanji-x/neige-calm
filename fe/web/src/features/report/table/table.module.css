@@ -12,9 +12,7 @@
   .table {
     inline-size: 100%;
     border-collapse: collapse;
-    font-family: var(--font-sans);
-    font-size: var(--text-base);
-    line-height: var(--leading-snug);
+    font: var(--type-table);
   }
 
   /* Dense tables retain a reading measure; their wrapper owns horizontal
@@ -25,9 +23,9 @@
 
   .caption {
     margin-block-end: var(--space-4);
-    font-size: var(--text-xs);
     color: var(--text-3);
     text-align: start;
+    font: var(--type-metadata);
   }
 
   /* The editorial header: small, uppercase, tracked. It is a label, so it takes
@@ -36,14 +34,12 @@
     padding-block: var(--space-2) var(--space-3);
     padding-inline: var(--space-4) var(--space-6);
     border-block-end: 1px solid var(--hairline-strong);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-semibold);
-    line-height: var(--leading-none);
     color: var(--text-3);
-    letter-spacing: var(--tracking-wider);
+    letter-spacing: var(--tracking-label);
     text-align: start;
     text-transform: uppercase;
     white-space: nowrap;
+    font: var(--type-label);
   }
 
   .cell {

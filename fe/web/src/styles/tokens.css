@@ -1,371 +1,20 @@
+/* Generated from theme.config.json. Run npm run theme:generate; do not edit. */
 @layer tokens {
   :root {
-    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-    --font-serif: "New York", "Iowan Old Style", "Charter", "Georgia", serif;
-    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
     --font-display: var(--font-sans);
     --font-numeric: var(--font-sans);
     --font-code: var(--font-mono);
-
-    /*
-     * THE ELEVATION LADDER.
-     *
-     * Surfaces are not picked per component. Each one declares how many ranks
-     * it sits from the ground, and the *direction of every rank is the same in
-     * both themes*: recessed is darker than the ground, raised is lighter.
-     *
-     *   -2  recessed   rail                the chrome floor
-     *   -1  control     chip               a control fill, on any surface
-     *    0  ground     --bg
-     *   +1  raised     card, terminal      an object on the page
-     *   +2  floating   paper               menus, dialogs, drawer
-     *
-     * **`--surface-chip` is not the rail.** It used to be the same pixel in
-     * both themes, and `shell.module.css`'s `.avatar` draws a chip *inside* the
-     * rail with no border — so that control was invisible, in both themes, from
-     * two tokens agreeing. A chip is not an elevation rank at all: it is a
-     * control fill that has to read on every surface it can land on, which is
-     * the ground, a card, and the rail. It therefore sits between the rail and
-     * the ground rather than on top of either.
-     *
-     * **+2 spends no lightness.** `--paper` equals `--surface-card`, and what
-     * separates it is `--shadow-float` — which §6.5 already grants to exactly
-     * those four surfaces and to nothing else, so the signal was there and a
-     * fourth lightness rank was paying for it twice. That matters because the
-     * ladder is bounded: every rank spent on elevation is contrast taken away
-     * from the text standing on it, and the top rank was the one making
-     * `--text-3` fail AA.
-     *
-     * **The ladder is spaced in delta-L, asserted against a WCAG floor — not
-     * in contrast ratio.** The two rungs below the ground (rail → chip →
-     * ground) are ~3.5 L in *both* themes; that is the step this file is built
-     * on. The `+1` ground → card rung is the one exception: 3.4 in light but
-     * 6.9 in dark, because the dark ground had already been lifted off the rail
-     * wall to 24.5% while the card stayed at the shipped 31.4%, and this pass
-     * moved neither value. So the *unit* is constant, not every rung. This
-     * reverses the previous rule, and the reason is that the previous rule used
-     * the wrong metric at one end of the scale.
-     *
-     * WCAG 2.x contrast carries a +0.05 flare term. Near black that term
-     * dominates the numerator and the denominator alike, so a *ratio* buys
-     * enormously more lightness there than it does near white. Measured on
-     * what shipped: the same 1.25 ratio bought 7.1 L in light (85.1 → 92.2)
-     * and 12.5 L in dark (12 → 24.5). The dark rail — the largest single
-     * region on screen — therefore sat perceptually **twice** as far from the
-     * ground as the light rail did, from a rule whose entire purpose was to
-     * make the two themes match. The old note's own counter-example is right
-     * about the failure and wrong about which direction it points: a flat
-     * delta-L does give uneven *ratios*, but ratios are not what the eye
-     * integrates. OKLCH L is perceptually uniform by construction; that is the
-     * reason this file is written in oklch at all.
-     *
-     * So the ladder is spaced in L, and WCAG is kept where it belongs — as a
-     * floor that foregrounds must clear, not as the spacing unit. The shipped
-     * rungs measure 3.5 / 3.5 / 3.4 L in light and 3.5 / 3.5 / 6.9 in dark.
-     * Light is the tight one: its whole ladder lives in the 10.4 L between the
-     * rail at 89.0 and its anchor at 99.4, which is the price of a bright
-     * ground (see the paper note below).
-     *
-     * The 3.0 L figure in fe-design.md §6.5 — below which a boundary needs a
-     * hairline as well as a surface change — is the reason the rungs are ~3.5
-     * and not smaller. **Light's 3.4 card rung is the thinnest in the system**,
-     * and nothing softens it: `panel-card` deliberately draws no outline, so
-     * that boundary rests on the surface step alone with no second channel to
-     * fall back on. (The +2 rank is the exception — it spends no lightness at
-     * all and is carried entirely by `--shadow-float`.)
-     *
-     * **Which gate checks what.** `tools/styles/check-contrast.mjs` is a point
-     * check over eight explicitly listed semantic fill recipes; it parses CSS
-     * text and cannot infer inherited foregrounds or ancestor backgrounds. The
-     * AA floor across the whole surface x foreground matrix, the 3.0 L rungs,
-     * and the ground/card chroma bound are checked in a real browser by
-     * `contrast-matrix.browser.test.ts`, which reads back painted pixels and so
-     * also sees gamut mapping. Neither replaces the other.
-     *
-     * Each theme is anchored at its outer end and walked inward — light from
-     * `--paper` at 99.4, dark from `--surface-rail` at 17.5 — because that is
-     * the end with no room to give. Light's anchor is 99.4 and not the 99.9
-     * ceiling for the gamut reason set out below.
-     *
-     * What this replaced was not a looser version of the same thing — it had no
-     * direction at all. `--surface-card` sat 3.8 L *below* the ground in light
-     * and 5.0 L *above* it in dark, so a card was carved into the page in one
-     * theme and floating over it in the other. `--surface-chip` and
-     * `--surface-card` collapsed onto the same value in light while sitting 3 L
-     * apart in dark. And the light ground was 98.8 out of 100, leaving 1.2 of
-     * headroom, so nothing in light *could* be raised — which is why everything
-     * had been pushed down instead.
-     *
-     * Dark had the mirror image of that bug and it survived the first fix: the
-     * recessed rank had almost no room below the ground, so the ground was
-     * moved off its wall to 24.5%. That move was right and stands; what was
-     * wrong was spending the resulting room by *ratio*, which pushed the rail
-     * all the way down to 12% (rgb 4,6,8 — effectively black beside a mid-grey
-     * page). Spending it by L puts the rail at 17.5% and leaves the ground and
-     * card exactly where they were.
-     *
-     * Elevation is absolute; **state is relative** — see `--accent-soft`.
-     *
-     * ── The two themes do not share a hue ─────────────────────────────────
-     *
-     * The ladder is shared; the colour is not. Light is paper and dark is
-     * night, and those are not the same material seen under two lamps.
-     *
-     *   light   surfaces hue ~90 at 0.004–0.005; ink hue ~248 at 0.004–0.005
-     *   dark    surfaces hue ~250 at 0.013–0.016; ink hue ~258 at 0.003
-     *
-     * **Chroma is the axis that matters, not hue.** At 0.003 no hue is
-     * visible at all: swinging `--bg` from 240 to 85 moves it by 3/0/-4 out
-     * of 255. That is why the old file read as cool despite nobody choosing a
-     * cool colour — a grey is the only thing that can show a cast, and the
-     * ladder had made the ground a grey.
-     *
-     * ── Light: the ground's chroma is what licenses a near-white card ─────
-     *
-     * Measured across eight established light palettes, the chroma gap
-     * between the page ground and the surface raised off it is **never more
-     * than 0.005**:
-     *
-     *   Tailwind stone 0.000 · Solarized 0.000 · Rose Pine 0.001 ·
-     *   Gruvbox 0.001 · Nord 0.003 · Catppuccin 0.003 · GitHub 0.003 ·
-     *   Astryx 0.005
-     *
-     * An earlier pass here ran **0.022** — four times the loosest of them —
-     * by putting a strongly tinted ground (Solarized's, 96.5/0.022) under a
-     * pure white card. It read as jarring, and the number says why: not the
-     * white, the cliff. That combination appears in none of the eight,
-     * because the field splits in two and it belongs to neither:
-     *
-     *   white-card    low-chroma ground (0.001–0.011), near-white card
-     *                 Astryx #F1F4F7→#FFFFFF, GitHub #f6f8fa→#ffffff, Tailwind
-     *   tinted-paper  high-chroma ground (0.011–0.055), card at the SAME
-     *                 chroma and never white
-     *                 Solarized #fdf6e3→#eee8d5, Gruvbox, Rose Pine
-     *
-     * This file is the first family — which is also the family its own
-     * vendored component library belongs to, so the app and the Astryx
-     * components embedded in it are made of the same material.
-     *
-     * `--paper` and `--surface-card` therefore sit at 99.4 and not at the
-     * 99.9 ceiling. Both numbers are the sRGB gamut boundary, quoted with two
-     * different quantifiers — say which one you mean, because the earlier
-     * version of this file quoted both as if they were one fact:
-     *
-     *   at the surface hue (90)   99.9 admits 0.0013 · 99.4 admits 0.0076
-     *   at the worst hue (~268)   99.9 admits 0.0005 · 99.4 admits 0.0028
-     *
-     * So 99.9 can only ever be pure white — the shipped 0.004 does not fit
-     * there at any hue — while 99.4 carries it with room to spare and keeps
-     * the card in the ground's hue family. That ceiling was never a design
-     * choice; it was a gamut limit being mistaken for one.
-     *
-     * The ground is **bright (96.0) as well as low-chroma**, and both halves
-     * matter: an earlier pass at 92.2/0.005 read *brown* on the identical
-     * hue, because the same warmth on a dimmer field is mud. Bright and
-     * barely-there is the target — a neutral you cannot name.
-     *
-     * **The ink runs faintly cool over it.** Warm paper plus warm ink is a
-     * sepia photograph; warm paper plus cool ink is a printed page (Solarized
-     * makes this move hard — its body text is H=222). What is *not* taken
-     * from Solarized is its contrast: base00 on base3 measures 4.13:1, base0
-     * 2.93:1, base1 2.48:1 — that palette predates and disregards the AA
-     * floor this file is gated on.
-     *
-     * Dark **rises toward black**: 0.016 at the rail down to 0.003 at
-     * `--text`. Night is blue in its depths and colourless in its lights, and
-     * the inverse — flat chroma all the way up, which is what shipped — tints
-     * the *type* blue, which is the single most reliable way to make a dark
-     * theme look cheap. For calibration, GitHub's dark canvas measures
-     * L=17.6 C=0.014 H=258 and Linear's H=246; the rail here is 17.5 / 0.016
-     * / 248, so this sits inside the band those were picked from.
-     *
-     * Hue 250 and not 258, because `--accent` is 267 and a neutral 9 degrees
-     * away from the accent makes the accent read as "the background, but
-     * brighter" instead of as a separate colour event. 250 leaves 17 degrees.
-     * The area ring's claim on 245 does **not** bind here — that rule exists
-     * because the accent and an area dot sit at comparable L and chroma and
-     * could be confused; a near-black ground at C=0.015 cannot be mistaken
-     * for an `oklch(70% 0.1 245)` identity dot.
-     *
-     * **`--paper` and `--surface-card` are not white.** They were, at 99.9 —
-     * a value that admits no chroma at all (see the gamut numbers above), so
-     * the 0.002/0.003 authored there were outside sRGB and every browser
-     * clipped them to pure white regardless of what this file said. That is
-     * the pass this one reverses: the card is a sheet laid on paper, and a
-     * sheet is made of the same stuff as the page under it. 99.4/0.004 keeps
-     * the card in the ground's hue family and is what ships.
-     */
-    --bg: oklch(96% 0.005 90);
-    --paper: oklch(99.4% 0.004 90);
-    --hairline: oklch(84% 0.006 87);
-    --hairline-strong: oklch(74% 0.006 86);
-    --text: oklch(22% 0.004 250);
-    --text-2: oklch(40% 0.005 248);
-    --text-3: oklch(46% 0.005 245);
-    --text-4: oklch(76% 0.006 86);
-
-    /*
-     * Hue 267, not 245. 245 is the default SaaS blue, and it was also exactly
-     * `--area-6` — so an area's identity dot could land on the one colour
-     * reserved for "you are here". The rail's colours belong only to the
-     * indicator vocabulary (`ui/activity-indicator`: warn = waiting on you,
-     * error = broken, accent = unread, grey = in motion) and to the current
-     * location (`--accent-soft`); titles never carry a state colour; area
-     * identity does not enter the rail. 267 is the point farthest from every
-     * hue on the 8-step area ring (22.5 degrees from its two nearest), so
-     * identity and state can never be confused. Chroma drops 0.13 -> 0.10 as
-     * well: the app spends one accent, sparingly, on a page that is otherwise
-     * greyscale.
-     */
-    --accent: oklch(45% 0.10 267);
-
-    /*
-     * State is a *relative* channel: an alpha tint over whatever it sits on,
-     * not a surface of its own. A selected row appears both on the ground and
-     * inside a raised card, and an absolute fill can only be correct against
-     * one of them — at the old value it was 3.8 L below the ground and would
-     * have been 1.7 L *above* a card, i.e. invisible in exactly the place the
-     * panel needs it. The same argument applies to the two other soft fills,
-     * so all three are alpha.
-     */
-    --accent-soft: oklch(49% 0.10 267 / 0.14);
-    /*
-     * Hue 80, not 30 (#1722 decision (b)). At hue 30 `--warn` sat 5° from
-     * `--error` (hue 25) at equal chroma: the two 6px dots the rail paints for
-     * "waiting on you" and "broken" were the same colour to the eye, and
-     * fe-design.md says error and warning must not both collapse into amber
-     * — which this family was not, either. A real amber at hue 80; chroma is
-     * the sRGB ceiling at this lightness (`check-contrast.mjs` reddens on
-     * out-of-gamut values), and the lightness keeps every warn pairing there
-     * green. The dark block re-hues the same family.
-     */
-    --warn: oklch(52% 0.10 80);
-    --warn-soft: oklch(70% 0.14 80 / 0.16);
-
-    --surface-rail: oklch(89% 0.005 88);
-    --surface-card: oklch(99.4% 0.004 90);
-    --surface-chip: oklch(92.5% 0.005 89);
-
-    /* The fill behind your own words in the conversation drawer used to be its
-       own token here (`--surface-said`, a 3% ink tint). It is now `--bg` — the
-       same fill the composer well takes, because what you said and what you are
-       still typing are one material; see `features/chat/thread`. */
-
-    /* `--surface-chip-focus` and `--surface-panel-head` used to live here. Both
-       had zero consumers — `panel-card.module.css` carries a comment saying it
-       deliberately does not tint its head, and nothing ever read the focused
-       well. The chip-focus block also documented itself as non-functional
-       ("the dark value is honest rather than effective … you cannot see it"),
-       which is a token describing its own absence. A surface with no reader is
-       not a spare; it is the next arbitrary pick waiting to happen. */
-    --surface-terminal: oklch(99.4% 0.004 90);
-    --surface-code: oklch(0% 0 0 / 0.04);
-    --overlay-hover-faint: oklch(0% 0 0 / 0.025);
-    --overlay-hover: oklch(0% 0 0 / 0.04);
-    --overlay-hover-strong: oklch(0% 0 0 / 0.055);
-    --overlay-active: oklch(0% 0 0 / 0.05);
-
-    /*
-     * ── The type scale ────────────────────────────────────────────────────
-     *
-     * Every other block in this file carries its reasoning; this one carried
-     * none, and it showed. Eight ranks were declared, six were used, and the
-     * two most-used sat 0.5px apart:
-     *
-     *   xs 11 · sm 12.5 · base 13 · md 15 · lg 18 · xl 22 · 26 · 36
-     *            └─ 34 uses ─┴─ 32 ─┘└ 6 ┘   4     4     5    0    0
-     *
-     * 12.5 → 13 is a 4% step. A step you cannot see is not a step: it is two
-     * names for one rank, and with nothing written down to say which to reach
-     * for, "which small size does this take" was answered by whichever file was
-     * copied. That is the whole of the inconsistency, and it is arithmetic, not
-     * taste.
-     *
-     * So: 12.5 is gone (its 32 uses grew 0.5px, which is nothing), and the two
-     * display ranks nobody ever called are gone with it. Six ranks remain,
-     * every one of them in use, each with one job:
-     *
-     *   --text-xs    11    label      a word you read once — eyebrows, crumbs,
-     *                                 counts, units. Never a sentence.
-     *   --text-meta  12    metadata   current-response status and its time;
-     *                                 matches the metadata glyph step.
-     *   --text-base  13    interface  everything you operate: rows, buttons,
-     *                                 fields, chips, menus. The default.
-     *   --text-md    15    section    a title over a group, and prose in a
-     *                                 column too narrow to carry 18.
-     *   --text-lg    18    prose      running text meant to be read, at the
-     *                                 measure `--measure-prose` is paired to.
-     *   --text-xl    22    page       the one title a route gets. §3.3 allows
-     *                                 exactly one P0 per surface; this is it.
-     *
-     * Metadata is the intentional intermediate telemetry step. The existing
-     * interface, section, prose and page ranks keep their established ratios.
-     * A new rank needs a job no rank above has, not a size between two.
-     */
-    /* Compact layouts retain their baseline; desktop chrome shares one primary band. */
     --header-baseline: 42px;
     --header-primary-h: 56px;
-
-    --text-xs: 11px;
-    --text-meta: 12px;
-    --text-base: 13px;
-    --text-md: 15px;
-    --text-lg: 18px;
-    --text-xl: 22px;
     --leading-none: 1;
     --leading-tight: 1.15;
     --leading-snug: 1.3;
     --leading-base: 1.5;
     --leading-loose: 1.65;
-    --tracking-tighter: -0.02em;
-    --tracking-tight: -0.01em;
-    --tracking-normal: 0;
-    --tracking-wide: 0.02em;
-    --tracking-wider: 0.06em;
-    --tracking-widest: 0.08em;
-
-    /*
-     * Three steps and a pill, chosen by **what the corner belongs to**, not by
-     * how big the thing is:
-     *
-     *   sm  — something *inside* something: rows, chips, buttons, inputs,
-     *         menu items, day cells.
-     *   md  — an object that owns its own boundary on the page: the panel
-     *         card, the settings error box, a placeholder slot.
-     *   lg  — something floating *over* the page: dialog, drawer, menu.
-     *   pill — a status dot or a badge, where the shape *is* the meaning.
-     *
-     * The ladder is therefore also a nesting rule, and the rule is geometric
-     * rather than aesthetic: **inner = outer − gap**. Two rounded rectangles
-     * look right in each other only when their arcs share a centre, and the
-     * distance between those centres is exactly the gap between the shapes.
-     *
-     * It is a *corner* rule, not a padding rule. It binds only where an inner
-     * element actually sits in the outer one's corner — a panel row does, at 4
-     * from the card's edge, so the card is 4 + 4 = 8. The calendar's day cells
-     * sit mid-card and are bound by nothing.
-     *
-     * Every step is a multiple of 4, which is why 6 is gone. It was both off
-     * the grid and wrong by the rule above: a 6px card around 4px rows inset by
-     * 4 put the two arc centres 2px apart, and the corner read as pinched.
-     *
-     * Note what the rule *costs*: a card's corner is bounded by how close its
-     * rows sit to the edge. At an 8px inset with a 4px bleed the gap was 4, so
-     * the card could be no rounder than 8 — and 8 on a 308px card barely reads
-     * as rounded at all. The fix is not a bigger number here, it is a wider
-     * inset there: the card's inset is 12, the bleed is still 4, so the gap is
-     * 8 and the card is 12. The corner follows the layout, never the other way
-     * round.
-     *
-     * There is no `xs` and no `xl`. Both existed and neither was ever used;
-     * an unused step is not a spare, it is the next arbitrary pick waiting to
-     * happen. Add one back only together with the rank it names.
-     */
     --radius-sm: 4px;
     --radius-md: 12px;
     --radius-lg: 16px;
     --radius-pill: 999px;
-
     --space-0: 0;
     --space-px: 1px;
     --space-1: 2px;
@@ -391,23 +40,6 @@
     --ease-layout: cubic-bezier(0.22, 1, 0.36, 1);
     --ease-feedback: cubic-bezier(0.2, 0, 0, 1);
     --ease-emphasis: cubic-bezier(0.4, 0, 0.2, 1);
-
-    --success: oklch(54% 0.14 145);
-    --error: oklch(51% 0.14 25);
-    /* Warm-brown, not navy. The old rgba(20,30,55) measured C=0.050 / H=266 —
-       ten times the chroma of any surface token in this file, and the single
-       largest cool cast in the light theme. Kept as rgba() deliberately; see
-       the contract test. */
-    --overlay-scrim: rgba(28, 29, 33, 0.32);
-    --error-text: oklch(42% 0.17 25);
-    --warn-border: oklch(85% 0.06 80);
-
-    /* Weights: three steps only (§2.2). 300/700/bold are forbidden. */
-    --weight-normal: 400;
-    --weight-medium: 500;
-    --weight-semibold: 600;
-
-    /* Box scale: declared densities, never padding+line-height accidents (§2.5). */
     --row-h-sm: 24px;
     --row-h: 28px;
     --row-h-lg: 48px;
@@ -416,31 +48,8 @@
     --control-h-lg: 32px;
     --rail-w: 200px;
     --rail-w-collapsed: 44px;
-
-    /*
-     * 280, not 308. The panel is a *sidecar*: it holds a week of seven columns
-     * and a list of one-line rows, neither of which wanted the extra 28px —
-     * the calendar spent it on wider day cells nobody clicks by pixel, and the
-     * rows spent it on titles that already fitted. What did want it is the
-     * document beside it, which is the thing you came to read.
-     */
     --panel-w: 280px;
     --drawer-w: 396px;
-
-    /*
-     * Sized for `--text-lg`, the rank `.calm-prose` reads at, so a line lands
-     * in the middle of the 65–75 character band.
-     *
-     * Measured, not estimated. The average advance of English prose in this
-     * face at 18px is 7.22px — taken from a canvas measurement of a real
-     * sentence, because letter *frequency* sets the average, not the alphabet.
-     * That puts the old 616 at 85 characters a line, and the 13px it was
-     * originally paired with at 118. 504 runs 70.
-     *
-     * A measure is only ever correct for one size. Changing either without the
-     * other is how a document becomes unreadable while every individual token
-     * still looks reasonable — which is exactly what happened here.
-     */
     --measure-prose: 504px;
     --measure-form: 544px;
     --measure-page: 1180px;
@@ -456,19 +65,94 @@
     --glyph: 16px;
     --menu-w-min: 180px;
     --menu-w-max: 320px;
-
-    /* Text-carrying semantic colours: --warn/--error/--success are fills, never type. */
+    --z-base: 0;
+    --z-raised: 2;
+    --z-sticky: 4;
+    --z-overlay: 10;
+    --z-modal: 100;
+    --z-toast: 1000;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    --font-serif: "New York", "Iowan Old Style", Charter, Georgia, "Songti SC", SimSun, "Noto Serif CJK SC", serif;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --text-xs: 0.75rem;
+    --text-meta: 0.75rem;
+    --text-base: 0.875rem;
+    --text-md: 1rem;
+    --text-lg: 1rem;
+    --text-xl: 1.25rem;
+    --weight-normal: 400;
+    --weight-medium: 500;
+    --weight-semibold: 600;
+    --weight-bold: 700;
+    --tracking-normal: 0;
+    --tracking-label: 0.04125rem;
+    --tracking-tighter: var(--tracking-normal);
+    --tracking-tight: var(--tracking-normal);
+    --tracking-wide: var(--tracking-normal);
+    --tracking-wider: var(--tracking-label);
+    --tracking-widest: var(--tracking-label);
+    --line-caption: 1rem;
+    --line-ui: 1.25rem;
+    --line-reading: 1.65rem;
+    --line-heading: 1.5rem;
+    --line-metric: 2.7rem;
+    --type-ui: 400 0.875rem/var(--line-ui) var(--font-sans);
+    --type-action: 500 0.875rem/var(--line-ui) var(--font-sans);
+    --type-detail: 400 1rem/var(--line-reading) var(--font-sans);
+    --type-page-title: 600 0.875rem/var(--line-ui) var(--font-sans);
+    --type-navigation-label: 400 0.875rem/var(--line-ui) var(--font-sans);
+    --type-reading: 400 1rem/var(--line-reading) var(--font-serif);
+    --type-chapter: 700 1.25rem/var(--line-heading) var(--font-serif);
+    --type-table: 400 0.875rem/var(--line-ui) var(--font-sans);
+    --type-label: 600 0.75rem/var(--line-caption) var(--font-sans);
+    --type-metadata: 400 0.75rem/var(--line-caption) var(--font-sans);
+    --type-code: 400 0.75rem/var(--line-ui) var(--font-mono);
+    --type-content: 400 0.875rem/var(--line-ui) var(--font-sans);
+    --type-metric: 500 1.25rem/var(--line-heading) var(--font-sans);
+    --type-metric-primary: 500 2.25rem/var(--line-metric) var(--font-sans);
+    --type-heading: 500 1.25rem/var(--line-heading) var(--font-sans);
+    --type-subheading: 600 1rem/var(--line-ui) var(--font-serif);
+    --type-subheading-small: 600 0.875rem/var(--line-ui) var(--font-serif);
+    --navigation-rail-width: 15rem;
+    --navigation-row-height: 2rem;
+    --navigation-header-height: 2.5rem;
+    --navigation-module-row-height: 1.75rem;
+    --navigation-group-gap: 0.5rem;
+    --navigation-section-gap: 1rem;
+    --navigation-label-inset: 0.25rem;
+    --surface-navigation: color-mix(in srgb, var(--surface-rail) 28%, var(--bg));
+    --bg: oklch(96% 0.005 90);
+    --paper: oklch(99.4% 0.004 90);
+    --hairline: oklch(84% 0.006 87);
+    --hairline-strong: oklch(74% 0.006 86);
+    --text: oklch(22% 0.004 250);
+    --text-2: oklch(40% 0.005 248);
+    --text-3: oklch(46% 0.005 245);
+    --text-4: oklch(76% 0.006 86);
+    --accent: oklch(45% 0.10 267);
+    --accent-soft: oklch(49% 0.10 267 / 0.14);
+    --warn: oklch(52% 0.10 80);
+    --warn-soft: oklch(70% 0.14 80 / 0.16);
+    --surface-rail: oklch(89% 0.005 88);
+    --surface-card: oklch(99.4% 0.004 90);
+    --surface-chip: oklch(92.5% 0.005 89);
+    --surface-terminal: oklch(99.4% 0.004 90);
+    --surface-code: oklch(0% 0 0 / 0.04);
+    --overlay-hover-faint: oklch(0% 0 0 / 0.025);
+    --overlay-hover: oklch(0% 0 0 / 0.04);
+    --overlay-hover-strong: oklch(0% 0 0 / 0.055);
+    --overlay-active: oklch(0% 0 0 / 0.05);
+    --success: oklch(54% 0.14 145);
+    --error: oklch(51% 0.14 25);
+    --overlay-scrim: rgba(28, 29, 33, 0.32);
+    --error-text: oklch(42% 0.17 25);
+    --warn-border: oklch(85% 0.06 80);
     --warn-text: oklch(44% 0.09 80);
-    /* Chroma 0.132, not 0.14: 0.14 at this L and hue is outside sRGB. Same
-       reasoning as dark `--accent`; the rendered pixel does not move. */
     --success-text: oklch(42% 0.132 145);
     --error-soft: oklch(52% 0.15 25 / 0.12);
     --error-border: oklch(85% 0.05 25);
     --text-on-accent: var(--bg);
-
     --shadow-float: 0 1px 2px oklch(0% 0 0 / 0.05), 0 12px 32px oklch(0% 0 0 / 0.08);
-
-    /* Area identity slots: id hash mod 8. Never a free-form hex (§6.2). */
     --area-1: oklch(62% 0.09 20);
     --area-2: oklch(62% 0.09 60);
     --area-3: oklch(62% 0.09 110);
@@ -477,47 +161,27 @@
     --area-6: oklch(62% 0.09 245);
     --area-7: oklch(62% 0.09 290);
     --area-8: oklch(62% 0.09 330);
-
-    --z-base: 0;
-    --z-raised: 2;
-    --z-sticky: 4;
-    --z-overlay: 10;
-    --z-modal: 100;
-    --z-toast: 1000;
+    --chip-success: oklch(45% 0.13 145);
+    --chip-on-success: oklch(100% 0 0);
+    --chip-error: oklch(45% 0.16 25);
+    --chip-on-error: oklch(100% 0 0);
+    --chip-warning: oklch(46% 0.09 70);
+    --chip-on-warning: oklch(100% 0 0);
+    --chip-accent: oklch(45% 0.10 267);
+    --chip-on-accent: oklch(100% 0 0);
+    --chip-neutral: oklch(44% 0.02 250);
+    --chip-text-primary: oklch(100% 0 0);
   }
 
   [data-theme="dark"] {
-    /* Same ladder, same directions, spaced in delta-L rather than in contrast
-       ratio. The unit is constant, not every rung: rail → chip → ground is the
-       ~3.5 L step both themes share, and the `+1` ground → card rung is the
-       exception at 6.9 here against light's 3.4 — the dark ground was already
-       lifted to 24.5% while the card stayed at the shipped 31.4%, and this pass
-       moved neither. See the note on `:root` for both. */
     --bg: oklch(24.5% 0.015 250);
     --paper: oklch(31.4% 0.013 251);
     --hairline: oklch(42% 0.01 253);
     --hairline-strong: oklch(50% 0.008 254);
-
-    /* 90, not 96. 96% on this ground measures 14.4:1 and *blooms* — the glyph
-       edges throw light into the surrounding dark and the text reads soft.
-       WCAG 2.x cannot see halation; it scores the 96% version higher, which is
-       precisely why chasing that number in dark produces harsh interfaces.
-       APCA does model it. 90% still measures 12.1:1 against the ground. This
-       is the only place in the file where a WCAG number is deliberately left
-       on the table. */
     --text: oklch(90% 0.003 258);
     --text-2: oklch(84% 0.004 257);
     --text-3: oklch(78% 0.005 256);
-
-    /* 46, not 50: at 50 this was byte-identical to `--hairline-strong`, so a
-       disabled label and a control border were the same colour. */
     --text-4: oklch(46% 0.009 253);
-
-    /* Chroma 0.10, not 0.11: 0.11 at this L and hue is outside sRGB, and
-       out-of-gamut oklch is mapped differently by different browsers — the
-       hazard fe-design.md §10-7 warns about. Every browser was already
-       clipping it to this value; now they agree on purpose. Hue 267 is
-       unchanged and still the point farthest from the area ring. */
     --accent: oklch(80% 0.10 267);
     --accent-soft: oklch(74% 0.11 267 / 0.18);
     --warn: oklch(79% 0.155 80);
@@ -525,9 +189,6 @@
     --surface-rail: oklch(17.5% 0.016 248);
     --surface-card: oklch(31.4% 0.013 251);
     --surface-chip: oklch(21% 0.016 249);
-
-    /* See the light block: the direction is the same (further from the page),
-       the room is not. This is the floor. */
     --surface-terminal: oklch(31.4% 0.013 251);
     --surface-code: oklch(100% 0 0 / 0.06);
     --overlay-hover-faint: oklch(100% 0 0 / 0.035);
@@ -539,16 +200,12 @@
     --overlay-scrim: rgba(0, 0, 0, 0.55);
     --error-text: oklch(85% 0.07 25);
     --warn-border: oklch(40% 0.05 80);
-
     --warn-text: oklch(88% 0.11 80);
     --success-text: oklch(82% 0.13 145);
     --error-soft: oklch(76% 0.13 25 / 0.18);
     --error-border: oklch(40% 0.05 25);
     --text-on-accent: var(--bg);
-
-    /* Dark shadows are heavier: the surface behind them has less contrast to lose. */
     --shadow-float: 0 1px 2px oklch(0% 0 0 / 0.3), 0 12px 32px oklch(0% 0 0 / 0.45);
-
     --area-1: oklch(70% 0.1 20);
     --area-2: oklch(70% 0.1 60);
     --area-3: oklch(70% 0.1 110);
@@ -557,5 +214,15 @@
     --area-6: oklch(70% 0.1 245);
     --area-7: oklch(70% 0.1 290);
     --area-8: oklch(70% 0.1 330);
+    --chip-success: oklch(50% 0.13 145);
+    --chip-on-success: oklch(100% 0 0);
+    --chip-error: oklch(50% 0.15 25);
+    --chip-on-error: oklch(100% 0 0);
+    --chip-warning: oklch(50% 0.10 70);
+    --chip-on-warning: oklch(100% 0 0);
+    --chip-accent: oklch(50% 0.11 267);
+    --chip-on-accent: oklch(100% 0 0);
+    --chip-neutral: oklch(48% 0.02 250);
+    --chip-text-primary: oklch(100% 0 0);
   }
 }

@@ -14,7 +14,7 @@
    * the rail and the page — and <body> is never one of them.
    */
   .shell {
-    --desktop-rail-w: calc(var(--rail-w) + var(--space-10) + var(--space-4) * 2);
+    --desktop-rail-w: var(--navigation-rail-width);
     display: grid;
     grid-template-columns: var(--desktop-rail-w) minmax(0, 1fr);
     /* One flex-sized row so `.main` has a definite height. An implicit `auto`
@@ -159,9 +159,15 @@
   }
 
   .rail {
+    --row-h: var(--navigation-row-height);
+    --list-primary-font: var(--type-action);
+    --list-group-font: var(--type-ui);
+    --list-section-font: var(--type-navigation-label);
+    --list-section-tracking: var(--tracking-normal);
+    --list-section-transform: none;
     display: flex;
     flex-direction: column;
-    gap: var(--space-8);
+    gap: 0;
     min-block-size: 0;
 
     /* Compact fallback retains its baseline inset; desktop uses the shared primary band. */
@@ -269,7 +275,7 @@
     display: flex;
     align-items: center;
     gap: var(--space-2);
-    block-size: var(--control-h);
+    block-size: var(--navigation-header-height);
   }
 
   .brand {
@@ -277,12 +283,10 @@
     align-items: center;
     gap: var(--space-2);
     min-inline-size: 0;
-    font-size: var(--text-base);
-    font-weight: var(--weight-semibold);
     /* A full line box keeps clipped labels' ascenders and descenders visible. */
-    line-height: var(--leading-tight);
     color: var(--text-2);
     cursor: pointer;
+      font: var(--type-page-title);
   }
 
   /*
@@ -374,10 +378,16 @@
    * verified by measuring one container) and "同一个组件不能在同一轴上既写 gap
    * 又给子元素写 margin".
    */
+  .sidebarSections {
+    display: flex;
+    flex-direction: column;
+    gap: var(--navigation-section-gap);
+  }
+
   .section {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
+    gap: 0;
   }
 
   .areaGroup {
@@ -395,7 +405,7 @@
   .areaGroups {
     display: flex;
     flex-direction: column;
-    gap: 0;
+    gap: var(--navigation-group-gap);
   }
 
   .areaRowWrap {
@@ -479,9 +489,10 @@
 
   /* Section labels retain the rail edge; only Area rows reserve a leading disclosure gutter. */
   .groupHeading .areaRow {
+    min-block-size: var(--navigation-module-row-height);
     display: flex;
     gap: var(--space-2);
-    padding-inline: 0 var(--control-h);
+    padding-inline: var(--navigation-label-inset) var(--control-h);
   }
 
   .groupHeading .groupWithoutActions {
@@ -780,12 +791,12 @@
     .rail,
     .userRow,
     .brandRow {
-      background: color-mix(in srgb, var(--surface-rail) 55%, var(--bg));
+      background: var(--surface-navigation);
     }
 
     .rail {
       padding-block-start: 0;
-      scroll-padding-block-start: var(--header-primary-h);
+      scroll-padding-block-start: var(--navigation-header-height);
     }
 
     .brandRow {
@@ -793,7 +804,7 @@
       inset-block-start: 0;
       z-index: var(--z-sticky);
       flex-shrink: 0;
-      block-size: var(--header-primary-h);
+      block-size: var(--navigation-header-height);
       margin-inline: calc(var(--space-6) * -1);
       padding-inline: var(--space-6);
       border-block-end: 1px solid transparent;
@@ -820,9 +831,8 @@
 
     .brand {
       gap: var(--space-3);
-      font-size: var(--text-md);
-      font-weight: var(--weight-semibold);
-      letter-spacing: var(--tracking-tight);
+      font: var(--type-page-title);
+      letter-spacing: var(--tracking-normal);
       color: var(--text);
     }
 

@@ -221,7 +221,7 @@ describe('Track mobile presentation', () => {
     expect(document.querySelector('nav[aria-label="Primary"]')).toBeNull();
     expect(page.getByRole('heading', { name: 'Cards' })).toBeTruthy();
     const cardsHeader = await page.getByRole('heading', { name: 'Cards', exact: true }).findElement();
-    expect(getComputedStyle(cardsHeader).fontSize).toBe('16px');
+    expect(getComputedStyle(cardsHeader).fontSize).toBe('14px');
     expect(getComputedStyle(cardsHeader.closest('header')!).backdropFilter).toBe('none');
     expect(getComputedStyle(cardsHeader.closest('header')!).borderRadius).toBe('0px');
     expect((await page.getByRole('button', { name: 'Back to Report' }).findElement()).getBoundingClientRect().height)
@@ -469,7 +469,7 @@ describe('Track mobile presentation', () => {
     expect(controls[2].closest('li')?.querySelector('svg')).not.toBeNull();
     expect(controls[3].closest('li')?.querySelector('svg')).not.toBeNull();
     expect(controls[2].closest('ul')).toBe(controls[3].closest('ul'));
-    expect(getComputedStyle(heading).fontSize).toBe('16px');
+    expect(getComputedStyle(heading).fontSize).toBe('14px');
     for (const control of controls.slice(0, 2)) {
       const glyph = control.querySelector('svg')!;
       expect(glyph.getBoundingClientRect().width).toBe(20);
@@ -619,7 +619,7 @@ describe('Track mobile presentation', () => {
     expect(planner.closest('[aria-hidden="true"]')).not.toBeNull();
     await Promise.all(drawer.getAnimations().map((animation) => animation.finished));
     const heading = await page.getByRole('heading', { name: 'Design review', exact: true }).findElement();
-    expect(getComputedStyle(heading).fontSize).toBe('16px');
+    expect(getComputedStyle(heading).fontSize).toBe('14px');
     await page.getByRole('button', { name: 'Back to Conversations' }).click();
     expect(drawer.isConnected).toBe(false);
     for (let frame = 0; frame < 4; frame += 1) {

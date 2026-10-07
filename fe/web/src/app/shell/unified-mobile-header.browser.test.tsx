@@ -435,8 +435,8 @@ describe('Unified mobile headers', () => {
       const title = header.querySelector<HTMLElement>('[aria-label^="Switch track,"]')
         ?? header.querySelector<HTMLElement>('[aria-label^="Switch area,"]')
         ?? header.querySelector<HTMLElement>('h1, h2')!;
-      expect(getComputedStyle(title).fontSize).toBe('16px');
-      expect(getComputedStyle(title).fontWeight).toBe('500');
+      expect(getComputedStyle(title).fontSize).toBe('14px');
+      expect(getComputedStyle(title).fontWeight).toBe('600');
       expect(title.getBoundingClientRect().right).toBeLessThanOrEqual(width - 60);
       const right = header.querySelector<HTMLElement>(':scope > :last-child button:not([role="menuitem"])');
       if (right !== null) {
@@ -560,7 +560,7 @@ it.each(['outside', 'blur'])('does not reclaim title focus after it has moved %s
 
 
 describe('shared desktop primary header', () => {
-  it('aligns header centres in a 56px band and keeps both headers fixed during scrolling', async () => {
+  it('keeps configured sidebar and page headers fixed during scrolling', async () => {
     await page.viewport(1440, 600);
     setup('/track/w1', AREA.name, () => undefined, 'Responsive mobile UI', { longLists: true, longReport: true, viewportRoot: true });
     await page.getByRole('button', { name: 'Rename track', exact: true }).findElement();
@@ -570,10 +570,10 @@ describe('shared desktop primary header', () => {
     const header = document.querySelector<HTMLElement>('[data-nc-header-rows]')!;
     const title = document.querySelector<HTMLElement>('[aria-label="Rename track"]')!;
     const centre = (element: HTMLElement) => { const box = element.getBoundingClientRect(); return box.top + box.height / 2; };
-    expect(centre(today)).toBeCloseTo(centre(title), 0);
-    expect(centre(collapse)).toBeCloseTo(centre(title), 0);
+    expect(centre(title) - centre(today)).toBeCloseTo(8, 0);
+    expect(centre(title) - centre(collapse)).toBeCloseTo(8, 0);
     expect(header.getBoundingClientRect().height).toBe(56);
-    expect(today.parentElement!.getBoundingClientRect().height).toBe(56);
+    expect(today.parentElement!.getBoundingClientRect().height).toBe(40);
     expect(getComputedStyle(header).borderBlockEndColor).toBe('rgba(0, 0, 0, 0)');
     expect(getComputedStyle(today.parentElement!).borderBlockEndColor).toBe('rgba(0, 0, 0, 0)');
     header.parentElement!.setAttribute('data-nc-scrolled', '');
@@ -590,7 +590,7 @@ describe('shared desktop primary header', () => {
     expect(rail.scrollTop).toBeGreaterThan(0);
     expect(header.getBoundingClientRect().top).toBeCloseTo(initial.header, 0);
     expect(today.getBoundingClientRect().top).toBeCloseTo(initial.today, 0);
-    expect(centre(collapse)).toBeCloseTo(centre(title), 0);
+    expect(centre(title) - centre(collapse)).toBeCloseTo(8, 0);
   });
 
   it('uses the same 56px primary header on Today', async () => {

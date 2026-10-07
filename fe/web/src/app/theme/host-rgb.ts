@@ -3,15 +3,8 @@ export type ThemeRgb = Readonly<{
   bg: readonly [number, number, number];
 }>;
 
-export const LIGHT_THEME_RGB: ThemeRgb = Object.freeze({
-  fg: Object.freeze([42, 47, 58] as const),
-  bg: Object.freeze([252, 254, 255] as const),
-});
-
-export const DARK_THEME_RGB: ThemeRgb = Object.freeze({
-  fg: Object.freeze([216, 219, 226] as const),
-  bg: Object.freeze([15, 20, 24] as const),
-});
+export { LIGHT_THEME_RGB, DARK_THEME_RGB } from '../../styles/theme-values.ts';
+import { LIGHT_THEME_RGB, DARK_THEME_RGB } from '../../styles/theme-values.ts';
 
 /** Synchronous escape hatch for card creation paths that must not subscribe to ThemeContext. */
 export function readHostThemeRgb(root: Pick<HTMLElement, 'dataset'> = document.documentElement): ThemeRgb {

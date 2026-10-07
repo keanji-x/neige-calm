@@ -63,11 +63,9 @@
        when the row has abundant room. Spend the matching space at the trailing
        edge; the outer heading still owns truncation for genuinely long names. */
     max-inline-size: calc(100% + var(--space-2));
-    font-size: var(--text-md);
-    font-weight: var(--weight-semibold);
-    line-height: var(--leading-tight);
-    letter-spacing: var(--tracking-tight);
+    letter-spacing: var(--tracking-normal);
     color: var(--text);
+      font: var(--type-page-title);
   }
 
   /* Size the cluster to its content so the closed badge stays attached to
@@ -1018,7 +1016,7 @@
     .mobileHeaderIdentity h1 {
       min-inline-size: 0;
       font-family: var(--font-sans);
-      font-size: calc(var(--text-md) + 1px);
+      font-size: var(--text-md);
       font-weight: var(--weight-medium);
       line-height: var(--leading-snug);
     }
@@ -1031,14 +1029,17 @@
     .title {
       white-space: normal;
       text-overflow: clip;
-    }
+        font: var(--type-page-title);
+      letter-spacing: var(--tracking-normal);
+  }
 
     .mobileHeaderIdentity .title {
       text-align: center;
       white-space: nowrap;
-      font: inherit;
+      font: var(--type-page-title);
       margin: 0;
-    }
+        letter-spacing: var(--tracking-normal);
+  }
 
     .content {
       display: grid;

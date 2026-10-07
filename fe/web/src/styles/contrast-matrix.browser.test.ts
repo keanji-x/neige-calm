@@ -22,7 +22,7 @@ const DERIVED_SURFACES = DECLARED.filter(
 
 /** Surfaces that paint a pixel of their own. Verified against the measurement below. */
 const OPAQUE_CENSUS = [
-  '--bg', '--paper', '--surface-card', '--surface-chip', '--surface-rail', '--surface-terminal',
+  '--bg', '--paper', '--surface-card', '--surface-chip', '--surface-rail', '--surface-terminal', '--surface-navigation',
 ] as const;
 /** Surfaces that are an alpha tint over whatever they land on: measured for being alpha and excluded from the matrix. */
 const ALPHA_CENSUS = ['--surface-code'] as const;

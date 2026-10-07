@@ -342,36 +342,24 @@
    */
   .pluginStateChip {
     /* white on fill: 7.03:1 */
-    --color-success: oklch(45% 0.13 145);
-    --color-on-success: oklch(100% 0 0);
+    --color-success: var(--chip-success);
+    --color-on-success: var(--chip-on-success);
     /* 8.09:1 */
-    --color-error: oklch(45% 0.16 25);
-    --color-on-error: oklch(100% 0 0);
+    --color-error: var(--chip-error);
+    --color-on-error: var(--chip-on-error);
     /* 7.27:1 */
-    --color-warning: oklch(46% 0.09 70);
-    --color-on-warning: oklch(100% 0 0);
+    --color-warning: var(--chip-warning);
+    --color-on-warning: var(--chip-on-warning);
     /* 7.55:1 */
-    --color-accent: oklch(45% 0.10 267);
-    --color-on-accent: oklch(100% 0 0);
+    --color-accent: var(--chip-accent);
+    --color-on-accent: var(--chip-on-accent);
     /* 7.75:1 — `neutral` takes its type from `--color-text-primary`, so that is
        the name this pair has to restate. It is scoped to the chip, and the chip
        has no other text in it. */
-    --color-neutral: oklch(44% 0.02 250);
-    --color-text-primary: oklch(100% 0 0);
+    --color-neutral: var(--chip-neutral);
+    --color-text-primary: var(--chip-text-primary);
   }
 
-  [data-theme="dark"] .pluginStateChip {
-    /* 5.67:1 */
-    --color-success: oklch(50% 0.13 145);
-    /* 6.48:1 */
-    --color-error: oklch(50% 0.15 25);
-    /* 6.13:1 */
-    --color-warning: oklch(50% 0.10 70);
-    /* 6.10:1 */
-    --color-accent: oklch(50% 0.11 267);
-    /* 6.52:1 */
-    --color-neutral: oklch(48% 0.02 250);
-  }
 
   /*
    * Saved, but not in force — and not broken either.

@@ -94,8 +94,8 @@ it.each([
   const questionElement = await ask.findElement();
   const answerLine = await ask.getByRole('group', { name: 'Your answer' }).findElement();
   expect(getComputedStyle(answerLine).borderBottomWidth).toBe('1px');
-  expect(getComputedStyle(questionElement.querySelector('h3')!).fontSize).toBe('15px');
-  expect(getComputedStyle(await ask.getByRole('button', { name: 'release/2.0' }).findElement()).fontSize).toBe('13px');
+  expect(getComputedStyle(questionElement.querySelector('h3')!).fontSize).toBe('16px');
+  expect(getComputedStyle(await ask.getByRole('button', { name: 'release/2.0' }).findElement()).fontSize).toBe('14px');
 
   await ask.getByRole('button', { name: 'release/2.0' }).click();
   expect(requests.filter(request => request.path.endsWith('/answer'))).toHaveLength(0);

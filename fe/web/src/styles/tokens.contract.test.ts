@@ -83,7 +83,7 @@ const BOX_SCALE = [
   '--slot-h', '--rule-h', '--dot-sm', '--dot-md',
   '--glyph-meta', '--glyph-sm', '--glyph', '--menu-w-min', '--menu-w-max',
 ] as const;
-const WEIGHTS = ['--weight-normal', '--weight-medium', '--weight-semibold'] as const;
+const WEIGHTS = ['--weight-normal', '--weight-medium', '--weight-semibold', '--weight-bold'] as const;
 const AREA_IDENTITY = [
   '--area-1', '--area-2', '--area-3', '--area-4',
   '--area-5', '--area-6', '--area-7', '--area-8',
@@ -96,6 +96,7 @@ const INVENTORY = [
   ...TYPE_SCALE, ...LEADING, ...TRACKING, ...RADIUS, ...SPACING, ...MOTION, ...EASING, ...STATUS, ...FONT_ALIASES,
   ...MISC, ...Z_INDEX,
   ...BOX_SCALE, ...WEIGHTS, ...AREA_IDENTITY, ...SHADOW, ...THEMED_ALIASES,
+  '--surface-navigation', '--tracking-label', '--type-ui', '--type-action', '--type-detail', '--type-page-title', '--type-navigation-label', '--type-reading', '--type-chapter', '--type-table', '--type-label', '--type-metadata', '--type-code', '--type-content', '--type-metric', '--type-metric-primary', '--type-heading', '--type-subheading', '--type-subheading-small', '--navigation-rail-width', '--navigation-row-height', '--navigation-header-height', '--navigation-module-row-height', '--navigation-group-gap', '--navigation-section-gap', '--navigation-label-inset', '--chip-success', '--chip-on-success', '--chip-error', '--chip-on-error', '--chip-warning', '--chip-on-warning', '--chip-accent', '--chip-on-accent', '--chip-neutral', '--chip-text-primary', '--line-caption', '--line-ui', '--line-reading', '--line-heading', '--line-metric',
 ] as const;
 
 describe('styles/tokens inventory contract', () => {
@@ -200,8 +201,8 @@ describe('styles/tokens themed color contracts', () => {
 });
 
 describe('styles/tokens single-mode scalar contracts', () => {
-  it.each(TYPE_SCALE)('%s is px and has no dark override', (name) => {
-    expect(root.get(name)).toMatch(/^\d+(?:\.\d+)?px$/);
+  it.each(TYPE_SCALE)('%s is rem and has no dark override', (name) => {
+    expect(root.get(name)).toMatch(/^\d+(?:\.\d+)?rem$/);
     expect(dark.has(name)).toBe(false);
   });
 
@@ -211,9 +212,9 @@ describe('styles/tokens single-mode scalar contracts', () => {
   });
 
   it.each(TRACKING.filter((name) => name !== '--tracking-normal'))(
-    '%s is em and has no dark override',
+    '%s delegates to the normal or label tracking token',
     (name) => {
-    expect(root.get(name)).toMatch(/^(?:0|-?0\.\d+em)$/);
+    expect(root.get(name)).toMatch(/^var\(--tracking-(?:normal|label)\)$/);
     expect(dark.has(name)).toBe(false);
     },
   );
@@ -253,8 +254,8 @@ describe('styles/tokens single-mode scalar contracts', () => {
     expect(dark.has(name)).toBe(false);
   });
 
-  it('locks the weight ladder to exactly three steps', () => {
-    expect(WEIGHTS.map((name) => Number(root.get(name)))).toEqual([400, 500, 600]);
+  it('locks the weight ladder including chapter emphasis', () => {
+    expect(WEIGHTS.map((name) => Number(root.get(name)))).toEqual([400, 500, 600, 700]);
   });
 });
 

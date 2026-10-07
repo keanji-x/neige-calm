@@ -50,13 +50,11 @@
   .title {
     min-inline-size: 0;
     overflow: hidden;
-    font-size: calc(var(--text-md) + 1px);
-    font-weight: var(--weight-medium);
-    line-height: var(--leading-snug);
     color: var(--text);
     white-space: nowrap;
     text-align: center;
     text-overflow: ellipsis;
+      font: var(--type-page-title);
   }
 
   .back {

@@ -51,10 +51,8 @@ function declarationsInRule(url, selector) {
 
 const chipModule = new URL('../../web/src/features/settings/settings.module.css', import.meta.url);
 const chipLight = declarationsInRule(chipModule, '\n  .pluginStateChip {');
-const chipDark = new Map([
-  ...chipLight,
-  ...declarationsInRule(chipModule, '\n  [data-theme="dark"] .pluginStateChip {'),
-]);
+const chipDark = new Map([...dark, ...chipLight]);
+const themedChipLight = new Map([...light, ...chipLight]);
 /** The chip's fill and the type painted on it, named as astryx names them. */
 const chipPairs = [
   { label: 'running chip', foreground: '--color-on-success', background: '--color-success' },
@@ -103,7 +101,7 @@ let failed = false;
 /** @type {Array<[string, Map<string, string>]>} */
 const themes = [['light', light], ['dark', dark]];
 /** @type {Array<[string, Map<string, string>]>} */
-const chipThemes = [['light', chipLight], ['dark', chipDark]];
+const chipThemes = [['light', themedChipLight], ['dark', chipDark]];
 
 for (const [theme, vars] of chipThemes) {
   for (const { label, foreground, background } of chipPairs) {

@@ -71,9 +71,9 @@ it('scales the reading ceiling with the root font size without overflowing the c
   renderReport();
   const paragraph = prose();
   expect(paragraph.getBoundingClientRect().width).toBeCloseTo(800, 0);
-  expect(Number.parseFloat(getComputedStyle(paragraph).fontSize)).toBe(22.5);
+  expect(Number.parseFloat(getComputedStyle(paragraph).fontSize)).toBe(20);
   const heading = document.querySelector<HTMLElement>('[data-nc-report] h2')!;
-  expect(Number.parseFloat(getComputedStyle(heading).fontSize)).toBe(27.5);
+  expect(Number.parseFloat(getComputedStyle(heading).fontSize)).toBe(25);
   expect(paragraph.getBoundingClientRect().right).toBeLessThanOrEqual(paragraph.closest('[data-nc-report]')!.getBoundingClientRect().right);
 });
 

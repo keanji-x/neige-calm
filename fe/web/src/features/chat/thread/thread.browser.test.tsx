@@ -1834,7 +1834,7 @@ describe('Mobile conversation contours', () => {
     expect(getComputedStyle(composer).backgroundColor).not.toBe(getComputedStyle(drawer).backgroundColor);
     expect(getComputedStyle(drawer).getPropertyValue('--radius-chat').trim()).toBe('16px');
     const heading = await page.getByRole('heading', { name: /^A very long conversation/ }).findElement();
-    expect(getComputedStyle(heading).fontSize).toBe('16px');
+    expect(getComputedStyle(heading).fontSize).toBe('14px');
     expect(heading.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth);
     expect(drawer.getBoundingClientRect().height).toBe(window.innerHeight);
   });

@@ -18,7 +18,8 @@ type Props = Readonly<{
 function fullButtonWidth(button: HTMLButtonElement): number {
   const label = [...button.querySelectorAll('span')]
     .find((node) => getComputedStyle(node).textOverflow === 'ellipsis');
-  return button.getBoundingClientRect().width
+  // Popover opening transforms must not change the intrinsic layout budget.
+  return button.offsetWidth
     + (label === undefined ? 0 : Math.max(0, label.scrollWidth - label.clientWidth));
 }
 

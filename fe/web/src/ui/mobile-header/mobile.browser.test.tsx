@@ -32,7 +32,7 @@ describe('MobileHeader scroll surface', () => {
     expect(getComputedStyle(header).backdropFilter).toBe('none');
     expect(getComputedStyle(header).borderRadius).toBe('0px');
     const title = await page.getByRole('heading', { name: 'Report', exact: true }).findElement();
-    expect(getComputedStyle(title).fontSize).toBe('16px');
+    expect(getComputedStyle(title).fontSize).toBe('14px');
     const tone = document.createElement('span');
     tone.style.color = 'var(--text)';
     host.appendChild(tone);

@@ -23,10 +23,9 @@
   body {
     background: var(--bg);
     color: var(--text);
-    font-family: var(--font-sans);
-    font-size: var(--text-base);
-    line-height: var(--leading-base);
     -webkit-font-smoothing: antialiased;
+      font: var(--type-ui);
+    letter-spacing: var(--tracking-normal);
   }
 
   /* Weight is a hierarchy channel; UA defaults wire heading weight to
@@ -38,8 +37,7 @@
   }
 
   code, kbd, samp, pre {
-    font-family: var(--font-mono);
-    font-size: 1em;
+      font: var(--type-code);
   }
 
   /* One focus recipe for the whole app. A component may restyle it, but it
@@ -150,11 +148,9 @@
    */
   .calm-prose {
     max-inline-size: var(--measure-prose);
-    font-family: var(--font-serif);
-    font-size: var(--text-lg);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-loose);
     color: var(--text-2);
+    font: var(--type-reading);
+    letter-spacing: var(--tracking-normal);
   }
 
   .calm-prose > * + * {
@@ -162,34 +158,27 @@
   }
 
   .calm-prose h1 {
-    font-family: var(--font-serif);
-    font-size: var(--text-xl);
-    font-weight: var(--weight-medium);
-    line-height: var(--leading-snug);
-    letter-spacing: var(--tracking-tight);
+    letter-spacing: var(--tracking-normal);
     color: var(--text);
+    font: var(--type-chapter);
   }
 
   .calm-prose h2 {
-    font-family: var(--font-serif);
-    font-size: var(--text-md);
-    font-weight: var(--weight-semibold);
-    line-height: var(--leading-snug);
     color: var(--text);
+    font: var(--type-subheading);
+    letter-spacing: var(--tracking-normal);
   }
 
   .calm-prose h3 {
-    font-family: var(--font-serif);
-    font-size: var(--text-base);
-    font-weight: var(--weight-semibold);
-    line-height: var(--leading-snug);
     color: var(--text-2);
+    font: var(--type-subheading-small);
+    letter-spacing: var(--tracking-normal);
   }
 
   .calm-prose code {
-    font-family: var(--font-code);
-    font-size: var(--text-base);
     color: var(--text-2);
+    font: var(--type-code);
+    letter-spacing: var(--tracking-normal);
   }
 
   /*

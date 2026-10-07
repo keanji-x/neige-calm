@@ -1,6 +1,6 @@
 // Terminal protocol, rendering and connection lifecycle. Reconnect replaces only the WebSocket.
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
-import { Terminal, type ITheme } from '@xterm/xterm';
+import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { useState } from '../../ui/state/public.ts';
 import type { RecoveryAccess } from '../../../../core/domain/recovery/access.ts';
@@ -24,39 +24,8 @@ import type {
   Role,
 } from './generated-terminal.ts';
 import { LIGHT_THEME_RGB, DARK_THEME_RGB } from './theme-rgb.ts';
+import { LIGHT_TERMINAL_THEME as LIGHT_THEME, DARK_TERMINAL_THEME as DARK_THEME, TERMINAL_FONT_SIZE } from '../../styles/theme-values.ts';
 
-// Cool-neutral light xterm theme matching Calm's palette.
-const LIGHT_THEME: ITheme = {
-  background: '#ffffff00',
-  foreground: '#2a2f3a',
-  cursor: '#2a2f3a',
-  cursorAccent: '#ffffff',
-  selectionBackground: 'rgba(60, 100, 200, 0.22)',
-  black: '#1a1d22',
-  red: '#c43b3b',
-  green: '#2f8c3c',
-  yellow: '#a07a14',
-  blue: '#3464c2',
-  magenta: '#8b3b9a',
-  cyan: '#2a8a8a',
-  white: '#d9dbe0',
-  brightBlack: '#5b626d',
-  brightRed: '#e0625b',
-  brightGreen: '#4faa5e',
-  brightYellow: '#c89a30',
-  brightBlue: '#5c87d8',
-  brightMagenta: '#aa5cb8',
-  brightCyan: '#4cb0b0',
-  brightWhite: '#f6f7f9',
-};
-
-const DARK_THEME: ITheme = {
-  ...LIGHT_THEME,
-  background: '#ffffff00',
-  foreground: '#d8dbe2',
-  cursor: '#d8dbe2',
-  selectionBackground: 'rgba(140, 180, 255, 0.22)',
-};
 
 /** Child exit info from the daemon; `exit_code` and `signal_killed` are mutually exclusive at the source. `null` clears a prior badge. */
 export interface ExitChange {
@@ -210,7 +179,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     }
     const rgb = theme === 'dark' ? DARK_THEME_RGB : LIGHT_THEME_RGB;
     const msg: ClientMsg = {
-      TerminalThemeUpdate: { fg: rgb.fg, bg: rgb.bg },
+      TerminalThemeUpdate: { fg: [...rgb.fg], bg: [...rgb.bg] },
     };
     if (sendRef.current) {
       sendRef.current(msg);
@@ -272,7 +241,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       theme:
         latestThemeRef.current === 'dark' ? DARK_THEME : LIGHT_THEME,
       fontFamily: MONO_STACK,
-      fontSize: 12.5,
+      fontSize: TERMINAL_FONT_SIZE,
       // Mirrors `SCROLLBACK_MAX_LINES` in `crates/calm-server/src/terminal_renderer/mod.rs`; keep in lockstep.
       scrollback: 2000,
       convertEol: true,

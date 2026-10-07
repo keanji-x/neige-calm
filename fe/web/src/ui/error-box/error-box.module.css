@@ -18,7 +18,7 @@
     font-family: var(--font-sans);
     font-size: var(--text-base);
   }
-  .reason { display: block; font-weight: 500; }
+  .reason { display: block; font-weight: var(--weight-medium); }
   .description { margin: var(--space-3) 0; color: var(--text-2); }
   .details { margin-block-start: var(--space-4); color: var(--text-3); font-size: var(--text-sm); }
   .details summary { cursor: pointer; }
