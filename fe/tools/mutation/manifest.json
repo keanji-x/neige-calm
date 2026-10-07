@@ -1732,6 +1732,9 @@
     "expected_red": [
       "MobileTracks has one Area header, a More edit action, and grouped actions above the selected Track",
       "MobileTracks track rows carry the activity indicator and name bit from the overlay, never the open/closed state",
+      "Unified mobile headers measures the same header frame across the composed mobile pages at 320px",
+      "Unified mobile headers measures the same header frame across the composed mobile pages at 390px",
+      "Unified mobile headers switches Tracks from the title and reserves renaming for the independent Edit button",
       "Unified mobile headers switches complete Area pages directly and gives Tracks matching file icons",
       "Unified mobile headers uses clean Area rows and a separate Tracks page with the same actions",
       "compact navigation interaction contracts hands the Track list the rail’s read receipt, so a newer completion is unread until it is read",
@@ -1743,7 +1746,7 @@
       "web/src/app/shell/responsive.contract.test.tsx",
       "web/src/app/shell/unified-mobile-header.browser.test.tsx"
     ],
-    "why_more_than_one": "The phone row's dot and its name bit come from one value, so an open-state-driven state changes both: the row case sees a spinner on an idle open track and no spinner on a closed track with work in flight, the shell case sees `working` where the receipt says `unread`, and every case that finds an open row by its exact name — the MobileTracks header case, the router's `?from=` case and the two unified-header browser cases, all of which mount an open track with no overlay — misses it because the name now ends in `, working`."
+    "why_more_than_one": "The phone row's dot and its name bit come from one value, so an open-state-driven state changes both: the row case sees a spinner on an idle open track and no spinner on a closed track with work in flight, the shell case sees `working` where the receipt says `unread`, and every case that finds an open row by its exact name — the MobileTracks header case, the router's `?from=` case and the two unified-header browser cases, all of which mount an open track with no overlay — misses it because the name now ends in `, working`. The Track title switch now reuses this same navigation page: its exact-name row selection and both composed-header geometry cases also lose the idle open row when its name becomes ', working'. These three callers therefore join the complete red set; the mutation does not alter header geometry or renaming policy."
   },
   {
     "mutation_id": "ownership-squash-skip-source-path-binding",
