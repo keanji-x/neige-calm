@@ -4,12 +4,14 @@ import {
   inlineTableBlockPayloadSchema, isLiveTablePayload, type TableBlockPayload,
 } from '../../../../../core/domain/report.ts';
 import { LivePlaceholder } from '../live/placeholder.tsx';
+import type { ReportLinkPreviewResources } from '../link-preview/public.tsx';
 import { InlineTable } from './inline.tsx';
 
-export function ReportTableBlock({ payload, resolveLive, onOpenSourceLink }: {
+export function ReportTableBlock({ payload, resolveLive, onOpenSourceLink, linkPreview }: {
   payload: TableBlockPayload;
   resolveLive?: (source: string) => unknown;
   onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
+  linkPreview?: ReportLinkPreviewResources;
 }) {
   if (isLiveTablePayload(payload)) {
     if (resolveLive === undefined) {
@@ -24,7 +26,7 @@ export function ReportTableBlock({ payload, resolveLive, onOpenSourceLink }: {
       return <LivePlaceholder state="unavailable" source={payload.source} reason="this build cannot read it as a table"
         caption={payload.caption} />;
     }
-    return <InlineTable payload={decoded.data} fallbackCaption={payload.caption} onOpenSourceLink={onOpenSourceLink} />;
+    return <InlineTable payload={decoded.data} fallbackCaption={payload.caption} onOpenSourceLink={onOpenSourceLink} linkPreview={linkPreview} />;
   }
-  return <InlineTable payload={payload} onOpenSourceLink={onOpenSourceLink} />;
+  return <InlineTable payload={payload} onOpenSourceLink={onOpenSourceLink} linkPreview={linkPreview} />;
 }

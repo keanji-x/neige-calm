@@ -11,6 +11,7 @@ import { ApiError } from '../../../../core/domain/failure-class.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from './public.tsx';
 import { sourceResolutionOf } from './report-source.tsx';
+import { trackReportLinkUrl } from '../../../../core/domain/report.ts';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
 const BOOM: ApiFailure = Object.freeze({ kind: 'http', status: 500, code: 'internal', message: 'boom' });
@@ -42,7 +43,7 @@ function ok(body: unknown): ApiTransportResponse {
   return { status: 200, statusText: 'OK', body };
 }
 
-type Reply = (request: ApiRequest) => ApiTransportResponse | undefined;
+type Reply = (request: ApiRequest) => ApiTransportResponse | undefined | Promise<ApiTransportResponse | undefined>;
 
 function setup(reply?: Reply) {
   const requests: ApiRequest[] = [];
@@ -52,8 +53,8 @@ function setup(reply?: Reply) {
       return Promise.resolve(answer(request));
     },
   };
-  function answer(request: ApiRequest): ApiTransportResponse {
-    const scripted = reply?.(request);
+  async function answer(request: ApiRequest): Promise<ApiTransportResponse> {
+    const scripted = await reply?.(request);
     if (scripted) return scripted;
     if (request.path === '/api/areas') return ok([AREA]);
     if (request.path === '/api/areas/c1/tracks') return ok([TRACK]);
@@ -110,6 +111,206 @@ function stubCompactViewport() {
 }
 
 describe('the source panel on the track page', () => {
+  it('retries an unreadable referenced report inside the hover card', async () => {
+    let reads = 0;
+    setup(request => {
+      if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_close: true,
+        cards: [{ ...REPORT_CARD, payload: { ...REPORT_CARD.payload, blocks: [{ id: 'b_1', kind: 'prose', rev: 1,
+          payload: { markdown: `[Report](${trackReportLinkUrl('w2')})` } }] } }], overlays: [] });
+      if (request.path !== '/api/tracks/w2') return undefined;
+      reads++;
+      return reads === 1 ? { status: 500, statusText: 'Error', body: { error: 'Report read failed' } }
+        : ok({ track: { ...TRACK, id: 'w2' }, can_reopen: false, can_close: true, cards: [REPORT_CARD], overlays: [] });
+    });
+    const link = await screen.findByRole('button', { name: 'Report' });
+    fireEvent.pointerEnter(link.parentElement!);
+    const preview = await screen.findByRole('dialog', { name: 'Preview: Report' });
+    await within(preview).findByRole('alert');
+    fireEvent.click(within(preview).getByRole('button', { name: 'Retry' }));
+    await within(preview).findByRole('button', { name: 'Mikko 日志' });
+    expect(reads).toBe(2);
+  });
+
+  it('previews and opens another track file using its declared worktree root', async () => {
+    const { requests } = setup(request => {
+      if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_close: true,
+        cards: [{ ...REPORT_CARD, payload: { ...REPORT_CARD.payload, blocks: [{ id: 'b_1', kind: 'prose', rev: 1,
+          payload: { markdown: `[Other report](${trackReportLinkUrl('w2')})` } }] } }], overlays: [] });
+      if (request.path === '/api/tracks/w2') return ok({ track: { ...TRACK, id: 'w2', cwd: '/base', workspace: { worktree: '/owned-worktree' } },
+        can_reopen: false, can_close: true, cards: [{ ...REPORT_CARD, track_id: 'w2', payload: { ...REPORT_CARD.payload, blocks: [{
+          id: 'b_1', kind: 'prose', rev: 1, payload: { markdown: '[Scoped notes](/owned-worktree/docs/notes.md)' },
+        }] } }], overlays: [] });
+      if (request.path === '/api/tracks/w2/workspace/readfile?path=docs%2Fnotes.md') return ok({
+        path: 'docs/notes.md', size: 22, truncated: false, text: '# Other workspace file',
+      });
+    });
+    const link = await screen.findByRole('button', { name: 'Other report' });
+    fireEvent.pointerEnter(link.parentElement!);
+    const report = await screen.findByRole('dialog', { name: 'Preview: Other report' });
+    const fileLink = await within(report).findByRole('button', { name: 'Scoped notes' });
+    fireEvent.pointerEnter(fileLink.parentElement!);
+    const file = await screen.findByRole('dialog', { name: 'Preview: Scoped notes' });
+    await within(file).findByRole('heading', { name: 'Other workspace file' });
+    fireEvent.click(within(file).getByRole('button', { name: 'Open in workspace' }));
+    const viewer = await screen.findByRole('region', { name: 'File docs/notes.md' });
+    await within(viewer).findByRole('heading', { name: 'Other workspace file' });
+    expect(requests.some(request => request.path.includes('/api/tracks/w1/workspace/'))).toBe(false);
+  });
+
+  it('previews and opens evidence linked from a workspace Markdown file', async () => {
+    const { requests } = setup(request => {
+      if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_close: true,
+        cards: [{ ...REPORT_CARD, payload: { ...REPORT_CARD.payload, blocks: [{ id: 'b_1', kind: 'prose', rev: 1,
+          payload: { markdown: '[Notes](./notes.md)' } }] } }], overlays: [] });
+      if (request.path === '/api/tracks/w1/workspace/readfile?path=notes.md') return ok({ path: 'notes.md', size: 60, truncated: false,
+        text: '[File evidence](neige://source/src_2c9e0a1b#q1)' });
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Notes' }));
+    const file = await screen.findByRole('region', { name: 'File notes.md' });
+    const link = await within(file).findByRole('button', { name: 'File evidence' });
+    fireEvent.pointerEnter(link.parentElement!);
+    const preview = await screen.findByRole('dialog', { name: 'Preview: File evidence' });
+    await within(preview).findByText('智堡摘要，非机构原文');
+    fireEvent.click(within(preview).getByRole('button', { name: 'Open in workspace' }));
+    const drawer = await screen.findByRole('complementary', { name: SOURCE_ROW.title });
+    expect(drawer.querySelector('mark')?.textContent).toBe('9月加息概率接近九成');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Preview: File evidence' })).toBeNull());
+    expect(requests.every(request => request.method === 'GET')).toBe(true);
+  });
+
+  it.each(['empty', 'missing block', 'table block'])('renders the %s state of a report reference', async mode => {
+    const { requests } = setup(request => {
+      if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_close: true,
+        cards: [{ ...REPORT_CARD, payload: { ...REPORT_CARD.payload, blocks: [{ id: 'b_1', kind: 'prose', rev: 1,
+          payload: { markdown: `[Report](${trackReportLinkUrl('w2')}${mode === 'empty' ? '' : '#b_table'})` } }] } }], overlays: [] });
+      if (request.path === '/api/tracks/w2') return ok({ track: { ...TRACK, id: 'w2' }, can_reopen: false, can_close: true,
+        cards: mode === 'empty' ? [] : [{ ...REPORT_CARD, track_id: 'w2', payload: { ...REPORT_CARD.payload, blocks: [{
+          id: mode === 'table block' ? 'b_table' : 'other', kind: 'table', rev: 1,
+          payload: { columns: [{ key: 'result', label: 'Result' }], rows: [{ result: 'Actual table contents' }] },
+        }] } }], overlays: [] });
+    });
+    const link = await screen.findByRole('button', { name: 'Report' });
+    expect(requests.some(request => request.path === '/api/tracks/w2')).toBe(false);
+    fireEvent.pointerEnter(link.parentElement!);
+    const preview = await screen.findByRole('dialog', { name: 'Preview: Report' });
+    await within(preview).findByText(mode === 'empty' ? '这份报告暂无内容。'
+      : mode === 'missing block' ? '报告中没有这条引用指向的内容。' : 'Actual table contents');
+  });
+
+  it.each(['inline table', 'live table', 'native table', 'live native table'])('previews evidence in a %s through the full route', async surface => {
+    const table = { columns: [{ key: 'source', label: 'Source' }], rows: [{ source: '[Table evidence](neige://source/src_2c9e0a1b#q1)' }] };
+    const snapshot = { id: 's1', observedAt: 1, producedAt: 2 };
+    const cell = { kind: 'table', id: 'table', title: '', table };
+    const source = 'neige://plugin/research/evidence';
+    const live = surface.startsWith('live');
+    const native = surface.includes('native');
+    const block = { id: 'b_table', kind: native ? 'view' : 'table', rev: 1, payload: native
+      ? { version: 1, title: '', description: '', snapshot: live ? null : snapshot,
+        rows: [{ id: 'row', title: '', layout: 'one', cells: [live ? { kind: 'live', id: 'table', source, expects: 'table' } : cell] }] }
+      : live ? { source } : table };
+    const { requests } = setup(request => request.path === '/api/tracks/w1' ? ok({
+      track: TRACK, can_reopen: false, can_close: true,
+      cards: [{ ...REPORT_CARD, payload: { ...REPORT_CARD.payload, blocks: [block] } }],
+      overlays: live ? [{ id: 'evidence', updated_at: 1, entity_kind: 'track', entity_id: 'w1', plugin_id: 'research', kind: 'evidence',
+        payload: native ? { snapshot, cell } : table }] : [],
+    }) : undefined);
+    const link = await screen.findByRole('button', { name: 'Table evidence' });
+    expect(requests.filter(request => request.path.includes('/sources/'))).toHaveLength(0);
+    fireEvent.pointerEnter(link.parentElement!);
+    const preview = await screen.findByRole('dialog', { name: 'Preview: Table evidence' });
+    await within(preview).findByText('智堡摘要，非机构原文');
+    expect(preview.querySelector('mark')?.textContent).toBe('9月加息概率接近九成');
+  });
+
+  it.each(['旧引用', '未追加的锚点'])('explains unresolved evidence on hover for %s', async label => {
+    const { requests } = setup();
+    const link = await screen.findByRole('button', { name: label });
+    fireEvent.pointerEnter(link.parentElement!);
+    const preview = await screen.findByRole('dialog', { name: `Preview: ${label}` });
+    await within(preview).findByRole('heading', { name: label === '旧引用' ? SOURCE_PANEL_COPY.missingTitle : SOURCE_PANEL_COPY.anchorMissingTitle });
+    if (label !== '旧引用') expect(preview.querySelector('[data-nc-report-source-body]')?.textContent).toBe(SOURCE_ROW.body);
+    expect(requests.filter(request => request.path.includes('/sources/'))).toHaveLength(1);
+  });
+
+  it('explains a malformed citation on hover without making a source request', async () => {
+    const { requests } = setup(request => request.path === '/api/tracks/w1' ? ok({ track: TRACK, can_reopen: false, can_close: true,
+      cards: [{ ...REPORT_CARD, payload: { ...REPORT_CARD.payload, blocks: [{ id: 'b_1', kind: 'prose', rev: 1,
+        payload: { markdown: '[Invalid](neige://source/src_bad#q0)' } }] } }], overlays: [],
+    }) : undefined);
+    const link = await screen.findByRole('button', { name: 'Invalid' });
+    fireEvent.pointerEnter(link.parentElement!);
+    const preview = await screen.findByRole('dialog', { name: 'Preview: Invalid' });
+    expect(within(preview).getByText(SOURCE_PANEL_COPY.missingMalformed)).toBeTruthy();
+    expect(requests.filter(request => request.path.includes('/sources/'))).toHaveLength(0);
+  });
+
+  it('shows loading, failure and retry inside the preview while keeping source text inert', async () => {
+    let finish: (response: ApiTransportResponse) => void = () => { throw new Error('No source read'); };
+    let reads = 0;
+    const unsafe = '<img src="https://example.com/tracker"> [link](https://example.com)';
+    setup(request => {
+      if (request.path !== '/api/tracks/w1/sources/src_2c9e0a1b') return undefined;
+      reads++;
+      return reads === 1 ? new Promise(resolve => { finish = resolve; }) : ok({ ...SOURCE_ROW, body: unsafe, quotes: [] });
+    });
+    const link = await screen.findByRole('button', { name: 'Mikko 日志' });
+    fireEvent.pointerEnter(link.parentElement!);
+    const preview = await screen.findByRole('dialog', { name: 'Preview: Mikko 日志' });
+    await within(preview).findByText(SOURCE_PANEL_COPY.loading);
+    finish({ status: 500, statusText: 'Error', body: { error: 'Source read failed' } });
+    await within(preview).findByRole('alert');
+    fireEvent.click(within(preview).getByRole('button', { name: 'Retry' }));
+    await within(preview).findByText(unsafe);
+    expect(reads).toBe(2);
+    expect(preview.querySelectorAll('img, iframe, a, script')).toHaveLength(0);
+  });
+
+  it('previews a different track report and reads its nested evidence in that track', async () => {
+    const otherReport = { ...REPORT_CARD, track_id: 'w2', payload: { ...REPORT_CARD.payload, blocks: [{
+      id: 'b_1', kind: 'prose', rev: 1, payload: { markdown: '[Other evidence](neige://source/src_2c9e0a1b#q1)' },
+    }] } };
+    const { requests } = setup(request => {
+      if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_close: true,
+        cards: [{ ...REPORT_CARD, payload: { ...REPORT_CARD.payload, blocks: [{
+          id: 'b_1', kind: 'prose', rev: 1, payload: { markdown: `[Other report](${trackReportLinkUrl('w2')})` },
+        }] } }], overlays: [] });
+      if (request.path === '/api/tracks/w2') return ok({ track: { ...TRACK, id: 'w2' }, can_reopen: false, can_close: true, cards: [otherReport], overlays: [] });
+      if (request.path === '/api/tracks/w2/sources/src_2c9e0a1b') return ok({ ...SOURCE_ROW, body: 'Other track evidence.' });
+    });
+    const link = await screen.findByRole('button', { name: 'Other report' });
+    expect(requests.some(request => request.path === '/api/tracks/w2')).toBe(false);
+    fireEvent.pointerEnter(link.parentElement!);
+    const preview = await screen.findByRole('dialog', { name: 'Preview: Other report' });
+    const evidence = await within(preview).findByRole('button', { name: 'Other evidence' });
+    fireEvent.pointerEnter(evidence.parentElement!);
+    const nested = await screen.findByRole('dialog', { name: 'Preview: Other evidence' });
+    await within(nested).findByText('Other track evidence.');
+    fireEvent.click(within(nested).getByRole('button', { name: 'Open in workspace' }));
+    const drawer = await screen.findByRole('complementary', { name: SOURCE_ROW.title });
+    await within(drawer).findByText('Other track evidence.');
+    expect(screen.queryByRole('dialog', { name: 'Preview: Other evidence' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Preview: Other report' })).toBeNull();
+    expect(requests.some(request => request.path === '/api/tracks/w1/sources/src_2c9e0a1b')).toBe(false);
+    expect(requests.every(request => request.method === 'GET')).toBe(true);
+  });
+
+  it('reads captured evidence only after hover, with provenance and quote, without scrolling the report', async () => {
+    const { requests } = setup();
+    const link = await screen.findByRole('button', { name: 'Mikko 日志' });
+    expect(requests.filter(request => request.path.includes('/sources/'))).toHaveLength(0);
+    fireEvent.pointerEnter(link.parentElement!);
+    const preview = await screen.findByRole('dialog', { name: 'Preview: Mikko 日志' });
+    await within(preview).findByText('智堡摘要，非机构原文');
+    expect(preview.querySelector('mark')?.textContent).toBe('9月加息概率接近九成');
+    expect(preview.querySelector('[data-nc-report-source-body]')?.textContent).toBe(SOURCE_ROW.body);
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    expect(requests.filter(request => request.path.includes('/sources/'))).toHaveLength(1);
+    fireEvent.click(within(preview).getByRole('button', { name: 'Open in workspace' }));
+    const drawer = await screen.findByRole('complementary', { name: SOURCE_ROW.title });
+    expect(drawer.querySelector('mark')?.textContent).toBe('9月加息概率接近九成');
+    expect(requests.filter(request => request.method !== 'GET')).toHaveLength(0);
+  });
+
   it('opens a cited source on a phone and returns to the report without writing data', async () => {
     stubCompactViewport();
     try {

@@ -7,5 +7,6 @@
   .theme { flex-shrink: 0; padding: var(--space-6) var(--space-8); border-radius: var(--radius-pill); background: var(--surface-code); color: var(--text); }
   .document { padding: var(--space-10); border-radius: var(--radius-lg); background: var(--surface-card); --document-start: 0px; --document-measure: min(100%, var(--measure-prose)); }
   .document > article { max-inline-size: var(--measure-prose); }
+  .document + .document { margin-block-start: var(--space-12); }
   .notice { margin-block-start: var(--space-10); color: var(--text-3); font-size: var(--text-base); }
 }

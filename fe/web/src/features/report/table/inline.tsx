@@ -2,28 +2,31 @@ import type { ReactNode } from 'react';
 
 import { parseSourceCitationCell, type ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
 import type { InlineTableBlockPayload } from '../../../../../core/domain/report.ts';
-import { ReportSourceCitation } from '../source/public.tsx';
+import { ReportSourceLinkPreview, type ReportLinkPreviewResources } from '../link-preview/public.tsx';
 import styles from './table.module.css';
 
 function cellText(value: string | number | null | undefined): string {
   return value === null || value === undefined ? '' : String(value);
 }
 
-function Cell({ value, onOpenSourceLink }: {
+function Cell({ value, onOpenSourceLink, linkPreview }: {
   value: string | number | null | undefined;
   onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
+  linkPreview?: ReportLinkPreviewResources;
 }): ReactNode {
   const text = cellText(value);
   const citation = parseSourceCitationCell(text);
   return citation === null ? text : (
-    <ReportSourceCitation target={citation.target} onOpen={onOpenSourceLink}>{citation.label}</ReportSourceCitation>
+    <ReportSourceLinkPreview target={citation.target} label={citation.label} resources={linkPreview}
+      onOpen={onOpenSourceLink}>{citation.label}</ReportSourceLinkPreview>
   );
 }
 
-export function InlineTable({ payload, fallbackCaption, onOpenSourceLink }: {
+export function InlineTable({ payload, fallbackCaption, onOpenSourceLink, linkPreview }: {
   payload: InlineTableBlockPayload;
   fallbackCaption?: string | null;
   onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
+  linkPreview?: ReportLinkPreviewResources;
 }) {
   const { columns, rows, highlight } = payload;
   const caption = payload.caption ?? fallbackCaption;
@@ -44,7 +47,7 @@ export function InlineTable({ payload, fallbackCaption, onOpenSourceLink }: {
             <tr key={index} className={highlighted ? styles.highlighted : undefined}>
               {columns.map((column) => (
                 <td key={column.key} className={column.align === 'right' ? `${styles.cell} ${styles.right}` : styles.cell}>
-                  <Cell value={row[column.key]} onOpenSourceLink={onOpenSourceLink} />
+                  <Cell value={row[column.key]} onOpenSourceLink={onOpenSourceLink} linkPreview={linkPreview} />
                 </td>
               ))}
             </tr>

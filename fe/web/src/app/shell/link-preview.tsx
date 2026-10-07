@@ -1,9 +1,15 @@
 import { createRoot } from 'react-dom/client';
 import { useEffect, useMemo } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import type { WorkspaceFilePort } from '../../../../core/domain/fs.ts';
 import { trackReportLinkUrl, type TrackReport } from '../../../../core/domain/report.ts';
+import type { ReportSourceLinkTarget } from '../../../../core/domain/report-source.ts';
+import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { ReportDocument } from '../../features/report/document/public.tsx';
+import { ReportSourceDrawer, ReportSourcePreview } from '../router/report-source.tsx';
+import { ReportReferencePreview } from '../router/report-reference.tsx';
+import { createEvidencePreviewTransport, evidenceExamples } from './link-preview-data.ts';
 import { useState } from '../../ui/state/public.ts';
 import styles from './link-preview.module.css';
 
@@ -30,20 +36,38 @@ function exampleReport(): TrackReport { return Object.freeze({ summary: '', body
 
 function Preview() {
   const report = useMemo(exampleReport, []);
-  const [theme, setTheme] = useState<'light' | 'dark'>('light');
+  const evidence = useMemo(evidenceExamples, []);
+  const transport = useMemo(createEvidencePreviewTransport, []);
+  const client = useMemo(() => new QueryClient({ defaultOptions: { queries: { retry: false } } }), []);
+  const unauthorized = useMemo(() => createUnauthorizedChannel({ enqueue: task => task() }), []);
+  const [sourceSelection, setSourceSelection] = useState<{ trackId: string; target: ReportSourceLinkTarget } | null>(null);
+  const [theme, setTheme] = useState<'light' | 'dark'>('dark');
   const [notice, setNotice] = useState('');
   useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
-  return <main className={styles.page}>
+  const openSource = (trackId: string, target: ReportSourceLinkTarget) => { setSourceSelection({ trackId, target }); };
+  return <QueryClientProvider client={client}><main className={styles.page}>
     <header className={styles.header}>
       <div><p className={styles.eyebrow}>NEIGE · 链接预览</p><h1>悬停，停留，继续阅读。</h1><p className={styles.subtitle}>卡片优先放在正文旁边 · 沿路径移入交互 · 移到别处自动收起</p></div>
       <button type="button" className={styles.theme} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? '深色模式' : '浅色模式'}</button>
     </header>
     <div className={styles.document}>
+      <ReportDocument report={evidence} empty={null} fileRoot="/preview" onOpenSourceLink={target => openSource('link-preview', target)}
+        onOpenLink={() => setNotice('这是另一份报告的示例；可以在预览里继续查看其来源。')}
+        linkPreview={{ files, trackId: 'link-preview', report: evidence,
+          renderSource: target => <ReportSourcePreview transport={transport} unauthorized={unauthorized} trackId="link-preview" target={target} />,
+          renderReference: target => <ReportReferencePreview transport={transport} unauthorized={unauthorized} target={target}
+            onOpenSource={openSource} onOpenLink={() => setNotice('此页面使用示例报告。')}
+            onOpenFile={(_trackId, file) => setNotice(`已点击示例文件：${file.path}`)} />,
+        }} />
+    </div>
+    <div className={styles.document}>
       <ReportDocument report={report} empty={null} fileRoot="/preview" linkPreview={{ files, trackId: 'link-preview', report }}
         onOpenFileLink={({ path }) => setNotice(`已点击打开文件：${path}。此预览页使用示例文件，正式页面会在工作区中打开。`)}
         onOpenLink={() => { document.getElementById('guide')?.scrollIntoView({ behavior: 'smooth' }); }} />
     </div>
+    <ReportSourceDrawer transport={transport} unauthorized={unauthorized} trackId={sourceSelection?.trackId ?? 'link-preview'}
+      target={sourceSelection?.target ?? null} onClose={() => setSourceSelection(null)} />
     <p role="status" className={styles.notice}>{notice || '这是生产组件组成的独立交互预览，使用示例文件。'}</p>
-  </main>;
+  </main></QueryClientProvider>;
 }
 createRoot(document.getElementById('root')!).render(<Preview />);

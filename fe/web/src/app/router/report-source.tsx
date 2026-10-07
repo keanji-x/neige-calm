@@ -23,6 +23,27 @@ export function sourceResolutionOf(result: Pick<UseQueryResult<SourceRead>, 'dat
   return { status: 'loading' };
 }
 
+/** Shared query for the hover preview and the drawer; never read an invalid id. */
+function useSource(transport: ApiTransportPort, trackId: string, target: ReportSourceLinkTarget | null, unauthorized: UnauthorizedChannel) {
+  const sourceId = target?.sourceId ?? null;
+  return useQuery({
+    ...trackSourceQueryOptions(transport, trackId, sourceId ?? '', unauthorized),
+    enabled: sourceId !== null,
+  });
+}
+
+/** Mounted by HoverPreview only while visible, so rendering citations performs no reads. */
+export function ReportSourcePreview({ transport, trackId, target, unauthorized }: {
+  transport: ApiTransportPort;
+  trackId: string;
+  target: ReportSourceLinkTarget;
+  unauthorized: UnauthorizedChannel;
+}) {
+  const query = useSource(transport, trackId, target, unauthorized);
+  return <ReportSourcePanel target={target} resolution={sourceResolutionOf(query)} scrollToQuote={false}
+    onRetry={() => { void query.refetch(); }} />;
+}
+
 export function ReportSourceDrawer({ transport, trackId, target, unauthorized, onClose }: {
   transport: ApiTransportPort;
   trackId: string;
@@ -31,13 +52,7 @@ export function ReportSourceDrawer({ transport, trackId, target, unauthorized, o
   unauthorized: UnauthorizedChannel;
   onClose: () => void;
 }) {
-  /* Disabled when the link names no source; hooks must run unconditionally, so the
-     disabled query still exists under a placeholder key it never fetches. */
-  const sourceId = target?.sourceId ?? null;
-  const query = useQuery({
-    ...trackSourceQueryOptions(transport, trackId, sourceId ?? '', unauthorized),
-    enabled: sourceId !== null,
-  });
+  const query = useSource(transport, trackId, target, unauthorized);
   const resolution = sourceResolutionOf(query);
   return (
     <Drawer

@@ -3,6 +3,8 @@ import { GitHubPreviewContent } from '../../../systems/github-links/public.tsx';
 
 import type { WorkspaceFilePort } from '../../../../../core/domain/fs.ts';
 import type { ReportLinkTarget, TrackReport } from '../../../../../core/domain/report.ts';
+import type { ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
+import { ReportSourceCitation } from '../source/public.tsx';
 import { FileReadError, useReportFileResource } from '../../../systems/fs-viewers/public.tsx';
 import { HoverPreview } from '../../../ui/hover-preview/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
@@ -12,12 +14,16 @@ export type ReportLinkPreviewResources = Readonly<{
   files: WorkspaceFilePort;
   trackId: string;
   report: TrackReport | null;
+  /** The app owns the authenticated, track-scoped source query and its cache. */
+  renderSource?: (target: ReportSourceLinkTarget) => ReactNode;
+  renderReference?: (target: ReportLinkTarget) => ReactNode;
 }>;
 
 export type PreviewDestination =
   | Readonly<{ kind: 'file'; path: string }>
   | Readonly<{ kind: 'web'; url: string; image: boolean }>
-  | Readonly<{ kind: 'reference'; destination: string; target?: ReportLinkTarget }>;
+  | Readonly<{ kind: 'source'; destination: string; target: ReportSourceLinkTarget }>
+  | Readonly<{ kind: 'reference'; destination: string; target: ReportLinkTarget }>;
 
 /** External resources are opt-in and HTTP(S) only. Never admit credentials or
  * resolve a protocol-relative/relative URL against the authenticated app origin. */
@@ -34,19 +40,40 @@ export function ReportLinkPreview({ destination, resources, label, trigger, rend
   destination: PreviewDestination;
   resources?: ReportLinkPreviewResources;
   label: string;
-  trigger: (activate: () => void) => ReactNode;
+  trigger: (activate: () => void, dismissForNavigation: () => void) => ReactNode;
   renderMarkdown: (text: string, basePath?: string) => ReactNode;
   onOpen?: () => void;
 }>) {
   const identity = destination.kind === 'file' ? destination.path : destination.kind === 'web' ? destination.url : destination.destination;
   return <HoverPreview key={`${resources?.trackId ?? ''}:${identity}`} title={label} trigger={trigger} getReadingSurface={readingSurface} getAvoidSurfaces={() => readingAreas()}>
+    {dismiss => <>
     {destination.kind === 'file' && (resources === undefined
       ? <p>Open this file to read its contents.</p>
       : <FileContent path={destination.path} files={resources.files} renderMarkdown={renderMarkdown} />)}
     {destination.kind === 'web' && <ExternalContent key={destination.url} url={destination.url} image={destination.image} label={label} />}
     {destination.kind === 'reference' && <ReferenceContent destination={destination} resources={resources} renderMarkdown={renderMarkdown} />}
-    {onOpen !== undefined && <button type="button" className={styles.action} onClick={onOpen}>Open in workspace</button>}
+    {destination.kind === 'source' && (resources?.renderSource !== undefined
+      ? resources.renderSource(destination.target)
+      : <div className={styles.content}><p className={styles.destination}>{destination.destination}</p><p>此页面未提供来源预览，请打开来源详情。</p></div>)}
+    {onOpen !== undefined && <button type="button" className={styles.action} onClick={() => { dismiss(); onOpen(); }}>Open in workspace</button>}
+    </>}
   </HoverPreview>;
+}
+
+/** One source trigger for prose, inline/live tables and native views. */
+export function ReportSourceLinkPreview({ target, label, children, resources, onOpen }: Readonly<{
+  target: ReportSourceLinkTarget;
+  label: string;
+  children: ReactNode;
+  resources?: ReportLinkPreviewResources;
+  onOpen?: (target: ReportSourceLinkTarget) => void;
+}>) {
+  return <ReportLinkPreview destination={{ kind: 'source', destination: target.destination, target }}
+    resources={resources} label={label} renderMarkdown={() => null}
+    trigger={(activate, dismiss) => <ReportSourceCitation target={target}
+      onOpen={onOpen === undefined ? (resources?.renderSource === undefined ? undefined : activate)
+        : () => { dismiss(); onOpen(target); }}>{children}</ReportSourceCitation>}
+    onOpen={onOpen === undefined ? undefined : () => onOpen(target)} />;
 }
 
 function readingSurface(trigger: HTMLElement): HTMLElement | null {
@@ -54,8 +81,10 @@ function readingSurface(trigger: HTMLElement): HTMLElement | null {
 }
 
 function readingAreas(): readonly HTMLElement[] {
+  // Rendered reports inside a preview belong to that card, not the underlying
+  // reading column. Treating them as avoidance areas makes a card chase itself.
   return Array.from(document.querySelectorAll<HTMLElement>('[data-nc-report-reading]'))
-    .filter((element) => element.getClientRects().length > 0);
+    .filter((element) => element.getClientRects().length > 0 && element.closest('[data-nc-link-preview]') === null);
 }
 
 function FileContent({ path, files, renderMarkdown }: Readonly<{
@@ -85,7 +114,8 @@ function ReferenceContent({ destination, resources, renderMarkdown }: Readonly<{
   renderMarkdown: (text: string, basePath?: string) => ReactNode;
 }>) {
   const target = destination.target;
-  const report = target !== undefined && target.trackId === resources?.trackId ? resources.report : null;
+  if (resources?.renderReference !== undefined) return <div className={styles.content}>{resources.renderReference(target)}</div>;
+  const report = target.trackId === resources?.trackId ? resources.report : null;
   const block = report?.blocks?.find((candidate) => candidate.id === target?.blockId);
   const text = block?.kind === 'prose' ? block.payload.markdown
     : report !== null && target?.blockId === null ? report.body || report.summary : null;

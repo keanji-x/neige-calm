@@ -48,6 +48,8 @@ export type ReportSourcePanelProps = Readonly<{
   resolution: SourceResolution;
   /** Repeats the read after a transport failure — a read, never a write. */
   onRetry: () => void;
+  /** Hover previews must not scroll the underlying report. */
+  scrollToQuote?: boolean;
 }>;
 
 /** The drawer's accessible name for this state: the row's title once known, the generic word until then. */
@@ -55,7 +57,7 @@ export function reportSourcePanelTitle(resolution: SourceResolution): string {
   return resolution.status === 'ok' ? resolution.source.title : SOURCE_PANEL_COPY.panelTitle;
 }
 
-export function ReportSourcePanel({ target, resolution, onRetry }: ReportSourcePanelProps) {
+export function ReportSourcePanel({ target, resolution, onRetry, scrollToQuote = true }: ReportSourcePanelProps) {
   return (
     <div className={styles.panel} data-nc-report-source="">
       {target.sourceId === null
@@ -66,7 +68,7 @@ export function ReportSourcePanel({ target, resolution, onRetry }: ReportSourceP
             ? <p className={styles.state} role="status">{SOURCE_PANEL_COPY.loading}</p>
             : resolution.status === 'error'
               ? <ErrorBox message={readFailureText(resolution.failure, '无法读取来源。')} onRetry={onRetry} />
-              : <Source source={resolution.source} target={target} />}
+              : <Source source={resolution.source} target={target} scrollToQuote={scrollToQuote} />}
     </div>
   );
 }
@@ -102,7 +104,7 @@ function Missing({ target, reason }: { target: ReportSourceLinkTarget; reason: '
   );
 }
 
-function Source({ source, target }: { source: TrackSourceDetail; target: ReportSourceLinkTarget }) {
+function Source({ source, target, scrollToQuote }: { source: TrackSourceDetail; target: ReportSourceLinkTarget; scrollToQuote: boolean }) {
   const { quoteId } = target;
   const highlight = quoteId === null ? null : sourceHighlight(source, quoteId);
   const anchorMissed = quoteId !== null && highlight === null;
@@ -110,9 +112,9 @@ function Source({ source, target }: { source: TrackSourceDetail; target: ReportS
 
   const placed = highlight !== null;
   useEffect(() => {
-    if (!placed) return;
+    if (!placed || !scrollToQuote) return;
     markRef.current?.scrollIntoView({ block: 'center' });
-  }, [placed, quoteId, source.source_id]);
+  }, [placed, quoteId, source.source_id, scrollToQuote]);
 
   return (
     <article className={styles.source}>

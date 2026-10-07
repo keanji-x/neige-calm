@@ -10,6 +10,7 @@ type Phase = 'closed' | 'waiting' | 'open';
 const HOVER_DELAY = 300;
 const LEAVE_DELAY = 180;
 const TRAVEL_DELAY = 800;
+const NAVIGATION_DISMISS = 'nc-preview-navigation';
 
 /** Transient, non-modal preview. The host owns destination admission and content.
  * Timers, portal and listeners live only as long as this trigger.
@@ -18,8 +19,9 @@ const TRAVEL_DELAY = 800;
  */
 export function HoverPreview({ title, trigger, children, getReadingSurface, getAvoidSurfaces }: Readonly<{
   title: string;
-  trigger: (activate: () => void) => ReactNode;
-  children: ReactNode;
+  trigger: (activate: () => void, dismissForNavigation: () => void) => ReactNode;
+  /** Navigation dismisses this preview and its ancestors; ordinary close/Escape stays local. */
+  children: ReactNode | ((dismissForNavigation: () => void) => ReactNode);
   /** Host-owned reading area. The primitive never infers document/application layout. */
   getReadingSurface?: (trigger: HTMLElement) => HTMLElement | null;
   getAvoidSurfaces?: (trigger: HTMLElement) => readonly HTMLElement[];
@@ -50,6 +52,21 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
     cancelLeave();
     setPhase('closed');
   }, [cancelLeave, setPhase]);
+  const dismissForNavigation = useCallback(() => {
+    close();
+    // Hand the destination a connected opener before it captures return focus.
+    // Ancestors repeat this handoff, leaving focus on the root trigger.
+    focusTrigger();
+    // A nested portal's trigger lives inside its parent card. Propagate through
+    // that trigger so navigation dismisses ancestors without closing unrelated previews.
+    anchor.current?.dispatchEvent(new Event(NAVIGATION_DISMISS, { bubbles: true }));
+  }, [close, focusTrigger]);
+  useEffect(() => {
+    const element = card.current;
+    if (!visible || element === null) return;
+    element.addEventListener(NAVIGATION_DISMISS, dismissForNavigation);
+    return () => { element.removeEventListener(NAVIGATION_DISMISS, dismissForNavigation); };
+  }, [visible, dismissForNavigation]);
   const activate = () => { cancelLeave(); setPhase('open'); };
   const focusContent = useCallback(() => {
     body.current?.focus({ preventScroll: true });
@@ -188,7 +205,7 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
       }
       if (event.key === 'Escape' && phase === 'waiting') { event.preventDefault(); close(); }
     }}>
-    {trigger(activate)}
+    {trigger(activate, dismissForNavigation)}
     {visible && createPortal(<div ref={card} className={`${styles.card} ${placement.maxHeight < PREVIEW_MIN_HEIGHT ? styles.compact : ''}`} role="dialog"
       aria-label={`Preview: ${title}`} id={id} data-nc-link-preview=""
       data-nc-escape-layer=""
@@ -201,7 +218,9 @@ export function HoverPreview({ title, trigger, children, getReadingSurface, getA
       <div className={styles.header}>
         <span className={styles.title}>{title}</span>
       </div>
-      <div ref={body} className={styles.body} tabIndex={-1} role="region" aria-label={`Preview content: ${title}`}>{children}</div>
+      <div ref={body} className={styles.body} tabIndex={-1} role="region" aria-label={`Preview content: ${title}`}>
+        {typeof children === 'function' ? children(dismissForNavigation) : children}
+      </div>
     </div>, document.body)}
   </span>;
 }

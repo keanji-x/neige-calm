@@ -62,7 +62,8 @@ import { ReportDocument } from '../../features/report/document/public.tsx';
 import { TaskRecovery, useCurrentTaskRows } from './task-recovery.tsx';
 import { useReportPreviewResolver, useReportPreviewViewports } from './report-preview.ts';
 import { useReportSeriesResolver } from './report-series.ts';
-import { ReportSourceDrawer } from './report-source.tsx';
+import { ReportReferencePreview } from './report-reference.tsx';
+import { ReportSourceDrawer, ReportSourcePreview } from './report-source.tsx';
 import { ReportEmpty } from '../../features/report/empty/public.tsx';
 import { ReportFileViewer } from '../../features/report/file-viewer/public.tsx';
 import { ReportOutline } from '../../features/report/outline/public.tsx';
@@ -1259,10 +1260,19 @@ function TrackRouteBody({
   /* A `neige://source/…` citation opens the source panel: route-local state, not
    * the URL, keyed to this body so leaving the track drops it. Phone and desktop
    * share the target. */
-  const [sourceTarget, setSourceTarget] = useState<ReportSourceLinkTarget | null>(null);
-  const sourceOpen = sourceTarget !== null;
-  const openReportSource = (target: ReportSourceLinkTarget) => { setSourceTarget(target); };
-  const closeReportSource = () => { setSourceTarget(null); };
+  const [sourceSelection, setSourceSelection] = useState<{ trackId: string; target: ReportSourceLinkTarget } | null>(null);
+  const sourceOpen = sourceSelection !== null;
+  const openSource = (trackId: string, target: ReportSourceLinkTarget) => {
+    setSourceSelection({ trackId, target });
+  };
+  const openReportSource = (target: ReportSourceLinkTarget) => { openSource(track.id, target); };
+  const linkPreview = { files: reportFiles, trackId: track.id, report,
+    renderSource: (target: ReportSourceLinkTarget) => <ReportSourcePreview transport={transport} trackId={track.id} target={target} unauthorized={unauthorized} />,
+    renderReference: (target: ReportLinkTarget) => <ReportReferencePreview transport={transport} unauthorized={unauthorized} target={target}
+      onOpenLink={openReportLink} onOpenSource={openSource}
+      onOpenFile={(owner, file) => { if (owner === track.id) openReportFile(file); else fileNavigation.openFile(owner, file.path); }} />,
+  };
+  const closeReportSource = () => { setSourceSelection(null); };
 
   const closeBoard = () => {
     if (requestedFilePath !== null) {
@@ -1324,12 +1334,13 @@ function TrackRouteBody({
             key={requestedFilePath}
             path={requestedFilePath}
             files={reportFiles}
-            linkPreview={{ files: reportFiles, trackId: track.id, report }}
+            linkPreview={linkPreview}
             fileRoot={track.agentCwd}
             wide={gridItems.length === 0}
             onClose={closeBoard}
             onFileOpened={(path) => { rememberReportFile({ path }); }}
             onOpenFileLink={openReportFile}
+            onOpenSourceLink={openReportSource}
           />
         )}
       </>}
@@ -1370,7 +1381,7 @@ function TrackRouteBody({
         onOpenFileLink={openReportFile}
         onOpenSourceLink={openReportSource}
         fileRoot={track.agentCwd}
-        linkPreview={{ files: reportFiles, trackId: track.id, report }}
+        linkPreview={linkPreview}
         arrivalAnchorId={arrivalAnchorId}
         empty={<ReportEmpty
           lead="This track has not taken shape yet."
@@ -1456,8 +1467,8 @@ function TrackRouteBody({
     </div>
     <ReportSourceDrawer
       transport={transport}
-      trackId={track.id}
-      target={sourceOpen ? sourceTarget : null}
+      trackId={sourceSelection?.trackId ?? track.id}
+      target={sourceSelection?.target ?? null}
       unauthorized={unauthorized}
       onClose={closeReportSource}
     />
