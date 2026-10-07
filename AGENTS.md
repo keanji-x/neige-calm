@@ -149,8 +149,8 @@ env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
   cargo nextest run --locked \
   -p <package> <test-name-filter> --test-threads 8
 
-# When the Rust change also needs the compile, lint, and OpenAPI preflight
-scripts/local-rust-gates.sh --quick
+# Rust compile/lint preflight; OpenAPI is selected by the shared CI classifier
+scripts/local-rust-gates.sh --quick --base origin/main
 
 # Next-generation frontend only
 (cd fe && npm ci && npm run lint && npm run build && npm test)
@@ -167,6 +167,17 @@ scripts/local-rust-gates.sh --quick
   the affected test requires that feature. Narrow further with `--lib` or
   `--test <test-target>` when useful. Keep `NEIGE_CODEX_BIN` unset and cap local
   concurrency on the shared production host.
+- Quick runs fmt and clippy with `calm-server/codex-e2e`; default-feature lib
+  check and release builds belong to CI. OpenAPI runs only when the shared CI
+  classifier selects changed paths (committed since the merge-base, staged,
+  unstaged and untracked). Use `--base REF` for a different target branch;
+  missing comparison refs and empty diffs conservatively run OpenAPI.
+- When a kernel gate owns verification, declare the verification plan once:
+  the worker runs focused tests and formatter/lint fixes; the gate runs quick,
+  required text/contract checks and one focused-test replay that rejects empty
+  selection. CI owns broad suites. Give each check one place, except that
+  intended replay. Re-run invalidated checks when the final tree changes;
+  worker results do not replace verification of the gate's frozen target.
 - Do not run the full `scripts/local-rust-gates.sh` as routine local
   verification. Run it only when explicitly requested or when changing the
   gate/nextest configuration itself. It uses `scripts/run-rust-nextest.sh` for

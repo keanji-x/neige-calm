@@ -14,6 +14,9 @@ cat >"$stub_bin/cargo" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [ -n "${RUST_GATE_COMMANDS:-}" ]; then
+  printf '%s\n' "$*" >> "$RUST_GATE_COMMANDS"
+fi
 if [ "${1:-}" = run ]; then
   cat "$LOCAL_RUST_GATES_SPEC"
 elif [ "${1:-}" = nextest ]; then
@@ -47,6 +50,77 @@ PATH="$stub_bin:$PATH" \
   scripts/local-rust-gates.sh >/dev/null
 assert_argv "$local_capture" nextest run --workspace --locked --features \
   calm-server/codex-e2e --profile ci --test-threads 8
+
+# Exercise quick against a real git history and worktree, including untracked
+# paths. The cargo stub records commands; the production classifier is unchanged.
+fixture="$temp_root/quick"
+mkdir -p "$fixture/scripts/ci" "$fixture/fe/core/api/generated" "$fixture/docs" \
+  "$fixture/crates/calm-server/src" "$fixture/crates/calm-server/tests"
+cp scripts/local-rust-gates.sh "$fixture/scripts/"
+cp scripts/ci/classify-code-changes.sh "$fixture/scripts/ci/"
+cp fe/core/api/generated/openapi.json "$fixture/fe/core/api/generated/"
+git -C "$fixture" init -q
+git -C "$fixture" config user.name 'Gate test'
+git -C "$fixture" config user.email 'gate@example.invalid'
+printf 'baseline\n' > "$fixture/docs/change.md"
+printf 'baseline\n' > "$fixture/crates/calm-server/src/routes.rs"
+git -C "$fixture" add .
+git -C "$fixture" commit -qm baseline
+fixture_base="$(git -C "$fixture" rev-parse HEAD)"
+git -C "$fixture" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+git -C "$fixture" update-ref refs/remotes/origin/main "$fixture_base"
+
+assert_quick() {
+  local name="$1" openapi="$2"
+  shift 2
+  local commands="$temp_root/$name.commands"
+  local expected="$temp_root/$name.expected"
+  : > "$commands"
+  PATH="$stub_bin:$PATH" \
+    RUST_GATE_COMMANDS="$commands" \
+    LOCAL_RUST_GATES_SPEC="$fixture/fe/core/api/generated/openapi.json" \
+    "$fixture/scripts/local-rust-gates.sh" --quick "$@" > "$temp_root/$name.output"
+  cat > "$expected" <<'EOF'
+fmt --all --check
+clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings
+EOF
+  if [ "$openapi" = true ]; then
+    echo 'run --quiet --manifest-path Cargo.toml --bin emit-openapi' >> "$expected"
+  fi
+  if ! cmp -s "$expected" "$commands"; then
+    echo "quick command selection mismatch: $name" >&2
+    diff -u "$expected" "$commands" >&2
+    exit 1
+  fi
+}
+
+assert_quick empty true
+printf 'docs\n' >> "$fixture/docs/change.md"
+assert_quick unstaged-docs false
+printf 'test\n' > "$fixture/crates/calm-server/tests/new.rs"
+assert_quick untracked-test false
+printf 'schema\n' > "$fixture/crates/calm-server/src/new schema.rs"
+assert_quick untracked-schema true
+rm "$fixture/crates/calm-server/src/new schema.rs"
+printf 'route\n' >> "$fixture/crates/calm-server/src/routes.rs"
+git -C "$fixture" add crates/calm-server/src/routes.rs
+assert_quick staged-route true
+git -C "$fixture" commit -qm route
+assert_quick committed-route true
+assert_quick explicit-base false --base HEAD
+assert_quick missing-base true --base refs/heads/nonexistent
+# A rename out of a schema path must retain the deleted source path.
+git -C "$fixture" mv crates/calm-server/src/routes.rs docs/old-route.md
+assert_quick renamed-route true --base HEAD
+# Failure and invalid arguments must not be mistaken for a green skipped gate.
+if PATH="$stub_bin:$PATH" "$fixture/scripts/local-rust-gates.sh" --base >/dev/null 2>&1; then
+  echo 'quick accepted a missing base argument' >&2
+  exit 1
+fi
+if PATH="$stub_bin:$PATH" "$fixture/scripts/local-rust-gates.sh" --typo >/dev/null 2>&1; then
+  echo 'quick accepted an unknown argument' >&2
+  exit 1
+fi
 
 hosted_capture="$temp_root/hosted.args"
 PATH="$stub_bin:$PATH" \
