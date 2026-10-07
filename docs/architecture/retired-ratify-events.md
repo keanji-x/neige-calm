@@ -31,6 +31,6 @@ Acceptance checks:
 Frontend contract change: the user explicitly authorized deleting these retired
 contracts. The core/api and core/events owners remove their obsolete definitions;
 consumers use the remaining authoritative ask contract. Ownership trailers name
-these two frozen directories. The sync envelope and REST version stay unchanged:
+each changed frozen file. The sync envelope and REST version stay unchanged:
 no new shape or endpoint is introduced, and old clients accept the ask events
 already emitted by this kernel.

@@ -1283,7 +1283,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 }
 
 /// Every `Event` variant's kind tag, in declaration order.
-const ALL_KIND_TAGS: [&str; 55] = [
+const ALL_KIND_TAGS: [&str; 53] = [
     "area.updated",
     "area.deleted",
     "track.updated",
@@ -1368,7 +1368,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 87,
+        files, 84,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -1446,7 +1446,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        55,
+        53,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }
