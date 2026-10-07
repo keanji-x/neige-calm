@@ -176,10 +176,9 @@ impl CodexAuthentication {
             }
             if stamp.generation == state.saved.generation
                 && stamp.connection_epoch == state.connection_epoch
+                && Self::confirm(&mut state, problem)
             {
-                if Self::confirm(&mut state, problem) {
-                    self.commit(&mut state);
-                }
+                self.commit(&mut state);
             }
         }
     }
