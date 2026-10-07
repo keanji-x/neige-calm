@@ -94,7 +94,10 @@ pub(crate) async fn declared_gate_steps_tx(
     tx: &mut super::Tx<'_>,
     task_id: &str,
 ) -> Result<Option<Vec<GateStep>>> {
-    let Some(gate_json) = task_get_tx(tx, task_id).await?.and_then(|task| task.gate_json) else {
+    let Some(gate_json) = task_get_tx(tx, task_id)
+        .await?
+        .and_then(|task| task.gate_json)
+    else {
         return Ok(None);
     };
     Ok(Some(GateSpec::parse(task_id, &gate_json)?.steps))

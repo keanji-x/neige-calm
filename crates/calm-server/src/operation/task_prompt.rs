@@ -184,7 +184,10 @@ mod tests {
             .expect(&out);
         let attempt = out.find("\n\nTask attempt_id: t:build").expect(&out);
         assert!(fmt < test && test < attempt, "{out}");
-        assert!(out.contains("report done only when no step fails that way"), "{out}");
+        assert!(
+            out.contains("report done only when no step fails that way"),
+            "{out}"
+        );
         assert!(
             out.contains("When a step cannot run here") && out.contains("still report done"),
             "{out}"
