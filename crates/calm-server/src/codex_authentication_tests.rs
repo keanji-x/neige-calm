@@ -372,3 +372,42 @@ fn replacing_lost_checkpoint_after_verified_login_uses_a_new_revision_scope() {
     assert!(fresh.request_retry(&revision).is_err());
     assert!(fresh.hold().is_some());
 }
+
+#[test]
+fn an_unknown_generation_report_is_committed_when_valid_clear_storage_returns() {
+    let tmp = tempfile::tempdir().unwrap();
+    let original = observer(tmp.path());
+    login(&original);
+    let before = std::fs::read(tmp.path().join("checkpoint.json")).unwrap();
+    std::fs::write(tmp.path().join("checkpoint.json"), "unavailable").unwrap();
+    let auth = observer(tmp.path());
+    auth.record(0, ERROR);
+    std::fs::write(tmp.path().join("checkpoint.json"), before).unwrap();
+    auth.poll(None);
+    assert_eq!(
+        auth.notice().unwrap().kind,
+        AuthenticationNoticeKind::RefreshErrorReported
+    );
+    assert_eq!(
+        observer(tmp.path()).notice().unwrap().kind,
+        AuthenticationNoticeKind::RefreshErrorReported
+    );
+}
+
+#[test]
+fn neutral_log_cursor_is_committed_and_survives_observer_recreation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let auth = observer(tmp.path());
+    login(&auth);
+    append(tmp.path(), "neutral log record\n");
+    auth.poll(None);
+    let saved = std::fs::read(tmp.path().join("checkpoint.json")).unwrap();
+    let checkpoint: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+    assert!(checkpoint["cursor"]["offset"].as_u64().unwrap() > 0);
+    let restored = observer(tmp.path());
+    restored.poll(None);
+    assert_eq!(
+        std::fs::read(tmp.path().join("checkpoint.json")).unwrap(),
+        saved
+    );
+}

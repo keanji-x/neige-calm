@@ -47,7 +47,7 @@ struct State {
     saved: Checkpoint,
     turns: HashMap<(String, String), u64>,
     loaded: bool,
-    dirty: bool,
+    persisted: Option<Checkpoint>,
     persistence_error: bool,
     stderr_source: Option<std::fs::File>,
     connection_key: Option<usize>,
@@ -77,12 +77,13 @@ impl CodexAuthentication {
                 (store.as_ref().expect("store supplied").empty(), false, true)
             }
         };
+        let persisted = loaded.then(|| saved.clone());
         Self {
             state: Mutex::new(State {
                 saved,
                 turns: HashMap::new(),
                 loaded,
-                dirty: false,
+                persisted,
                 persistence_error,
                 stderr_source: None,
                 connection_key: None,
@@ -177,7 +178,6 @@ impl CodexAuthentication {
                 && stamp.connection_epoch == state.connection_epoch
             {
                 if Self::confirm(&mut state, problem) {
-                    state.dirty = true;
                     self.commit(&mut state);
                 }
             }
@@ -220,7 +220,6 @@ impl CodexAuthentication {
             failure,
             failed_generation,
         };
-        state.dirty = true;
         self.commit(&mut state);
         if state.persistence_error {
             return Err(CalmError::ServiceUnavailable(STATE_UNAVAILABLE.into()));
@@ -309,7 +308,6 @@ impl CodexAuthentication {
             _ => {}
         }
         if state.saved != before {
-            state.dirty = true;
             self.commit(&mut state);
         }
     }
@@ -357,6 +355,7 @@ impl CodexAuthentication {
         state.stderr_source = source;
         if !state.loaded {
             if let Ok(mut saved) = store.load() {
+                state.persisted = Some(saved.clone());
                 state.turns.clear();
                 saved.reported |= state.saved.reported;
                 state.saved = saved;
@@ -366,7 +365,6 @@ impl CodexAuthentication {
                 return;
             }
         }
-        let before = state.saved.clone();
         let source = state
             .stderr_source
             .as_ref()
@@ -376,21 +374,21 @@ impl CodexAuthentication {
             Ok(false) => {}
             Err(e) => tracing::warn!(error=%e,"could not read Codex authentication log evidence"),
         }
-        if state.saved.reported != before.reported {
-            state.dirty = true;
-        }
-        if state.dirty {
-            self.commit(&mut state);
-        }
+        // The persisted snapshot changes only after an atomic commit. Compare all fields,
+        // including storage-restoration merges and neutral-log read positions.
+        self.commit(&mut state);
     }
     fn commit(&self, state: &mut State) {
         if !state.loaded {
             return;
         }
+        if state.persisted.as_ref() == Some(&state.saved) && !state.persistence_error {
+            return;
+        }
         if let Some(store) = &self.store {
             match store.save(&state.saved) {
                 Ok(()) => {
-                    state.dirty = false;
+                    state.persisted = Some(state.saved.clone());
                     state.persistence_error = false;
                 }
                 Err(e) => {
@@ -401,7 +399,7 @@ impl CodexAuthentication {
                 }
             }
         } else {
-            state.dirty = false;
+            state.persisted = Some(state.saved.clone());
         }
     }
 }
