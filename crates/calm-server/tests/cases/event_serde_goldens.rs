@@ -1419,7 +1419,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 86,
+        files, 88,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
