@@ -763,3 +763,5 @@ mod thread_start_wire_tests;
 mod mcp_server_reload_wire_tests;
 #[cfg(test)]
 mod thread_compact_wire_tests;
+
+pub mod shared;
