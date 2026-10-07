@@ -14,10 +14,10 @@ const HISTORY = [{
 }];
 
 /** The production drawer with a session that cannot be resumed (`dormant`) or is paused (`wedged`) until a restart. */
-function renderRecovery(state: 'dormant' | 'paused') {
+function renderRecovery(state: 'dormant' | 'paused', initial = '/track/daily?panel=conversations') {
   let restarted = false;
   const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
-  return renderDailyFixture({ initial: '/track/daily?panel=conversations', reply: (request) => {
+  return renderDailyFixture({ initial, reply: (request) => {
     if (request.path.endsWith('/planner/restart')) {
       restarted = true;
       return ok({ card_id: 'daily-planner', terminal_id: '', new_thread_id: 'thread-2' });
@@ -35,10 +35,10 @@ function renderRecovery(state: 'dormant' | 'paused') {
   } });
 }
 
-it.each([[390, 'dormant'], [1280, 'dormant'], [390, 'paused'], [1280, 'paused']] as const)(
-  'offers a fresh session above the composer in the production drawer (%ipx, %s)', async (width, state) => {
+it.each([[390, 'dormant', '/track/daily?panel=conversations'], [1280, 'dormant', '/track/daily?panel=conversations'], [390, 'paused', '/track/daily?panel=conversations'], [1280, 'paused', '/track/daily?panel=conversations'], [1280, 'dormant', '/']] as const)(
+  'offers a fresh session above the composer in the production drawer (%ipx, %s, %s)', async (width, state, initial) => {
     await page.viewport(width, 844);
-    const fixture = renderRecovery(state);
+    const fixture = renderRecovery(state, initial);
     await page.getByRole('button', { name: /Conversation Daily Planner conversation/ }).click();
     await expect.element(page.getByText('Earlier reply that stays.', { exact: true })).toBeVisible();
     const field = page.getByRole('combobox', { name: 'Message' });
@@ -65,9 +65,16 @@ it.each([[390, 'dormant'], [1280, 'dormant'], [390, 'paused'], [1280, 'paused']]
     await expect.element(page.getByText('Earlier reply that stays.', { exact: true })).toBeVisible();
     await expect.element(field).toHaveAttribute('contenteditable', 'true');
     if (state === 'dormant') await expect.element(field).toHaveTextContent('Keep this draft.');
+    if (initial === '/') await expect.element(page.getByRole('region', { name: 'Calendar tasks' })).toBeVisible();
     await page.screenshot({ path: `./__screenshots__/conversation-restart-${state}-started-${width}.png` });
     const posts = (suffix: string) => fixture.requests.filter((request) => request.method === 'POST' && request.path.endsWith(suffix));
     expect(posts('/planner/restart')).toHaveLength(1);
     expect(posts('/planner/reset')).toHaveLength(0);
     expect(posts('/planner/input')).toHaveLength(state === 'dormant' ? 1 : 0);
+    if (initial === '/') {
+      await field.click();
+      await userEvent.keyboard('{Enter}');
+      await expect.poll(() => posts('/planner/input').length).toBe(2);
+      await expect.element(field).toHaveTextContent('');
+    }
   });
