@@ -1625,10 +1625,12 @@
       "readOnlyHint": true
     },
     "roles": [
-      "planner"
+      "planner",
+      "assistant"
     ],
     "listed_for": [
-      "planner"
+      "planner",
+      "assistant"
     ]
   },
   {
@@ -1657,10 +1659,12 @@
       "readOnlyHint": true
     },
     "roles": [
-      "planner"
+      "planner",
+      "assistant"
     ],
     "listed_for": [
-      "planner"
+      "planner",
+      "assistant"
     ]
   },
   {
@@ -1694,10 +1698,12 @@
       "readOnlyHint": true
     },
     "roles": [
-      "planner"
+      "planner",
+      "assistant"
     ],
     "listed_for": [
-      "planner"
+      "planner",
+      "assistant"
     ]
   },
   {
@@ -1716,10 +1722,12 @@
       "readOnlyHint": true
     },
     "roles": [
-      "planner"
+      "planner",
+      "assistant"
     ],
     "listed_for": [
-      "planner"
+      "planner",
+      "assistant"
     ]
   },
   {

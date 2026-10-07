@@ -1,5 +1,6 @@
 //! Trusted creation metadata. Display names and templates never grant report access.
 
+use crate::db::{Repo, RouteRepo};
 use crate::error::{CalmError, Result};
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
@@ -98,6 +99,53 @@ pub(crate) async fn bind_tx(
     Ok(())
 }
 
+/// Eligible roles still need the Track's live kernel-issued workspace grant.
+pub(crate) const WORKSPACE_REPORT_ROLES: &[CardRole] = &[CardRole::Planner, CardRole::Assistant];
+
+/// Shared by authorization and capability teaching. Neither a title nor a template grants access.
+async fn workspace_report_zone(
+    repo: &dyn RouteRepo,
+    pool: Option<sqlx::SqlitePool>,
+    card_id: &str,
+    track_id: &str,
+) -> Result<Option<Tz>> {
+    let Some(card) = repo.card_get(card_id).await? else {
+        return Ok(None);
+    };
+    if card.track_id.as_str() != track_id
+        || !repo
+            .card_role_get(card_id)
+            .await?
+            .is_some_and(|role| WORKSPACE_REPORT_ROLES.contains(&role))
+    {
+        return Ok(None);
+    }
+    let Some(pool) = pool else {
+        return Ok(None);
+    };
+    let zone: Option<String> = sqlx::query_scalar(
+        "SELECT report_time_zone FROM managed_track_identities WHERE track_id=?1 AND report_read_scope='workspace'"
+    ).bind(track_id).fetch_optional(&pool).await?;
+    zone.map(|zone| {
+        zone.parse()
+            .map_err(|e| CalmError::Internal(format!("report time zone: {e}")))
+    })
+    .transpose()
+}
+
+/// Refresh on each turn, including resumed conversations whose startup template is immutable.
+pub(crate) async fn workspace_report_instructions(
+    repo: &dyn Repo,
+    card_id: &str,
+    track_id: &str,
+) -> Result<Option<&'static str>> {
+    Ok(
+        workspace_report_zone(repo, repo.sqlite_pool(), card_id, track_id)
+            .await?
+            .map(|_| include_str!("../prompts/workspace-reports.md")),
+    )
+}
+
 /// Check the live bound card and its declared read grant on every call. No write ledger entry.
 pub(crate) async fn require_workspace_reports(
     ctx: &AppContext,
@@ -116,7 +164,8 @@ pub(crate) async fn require_workspace_reports(
             .card_role_get(&identity.card_id)
             .await
             .map_err(|e| RpcError::internal(e.to_string()))?
-            != Some(CardRole::Planner)
+            != Some(identity.role)
+        || !WORKSPACE_REPORT_ROLES.contains(&identity.role)
     {
         return Err(denied());
     }
@@ -129,16 +178,15 @@ pub(crate) async fn require_workspace_reports(
     if track.area_id.as_str() != identity.area_id {
         return Err(denied());
     }
-    let pool = ctx
-        .sqlite_pool
-        .as_ref()
-        .ok_or_else(|| RpcError::internal("workspace reports require sqlite"))?;
-    let zone: Option<String> = sqlx::query_scalar("SELECT report_time_zone FROM managed_track_identities WHERE track_id=?1 AND report_read_scope='workspace'")
-        .bind(card.track_id.as_str()).fetch_optional(pool).await
-        .map_err(|e| RpcError::internal(e.to_string()))?;
-    zone.ok_or_else(denied)?
-        .parse()
-        .map_err(|e| RpcError::internal(format!("report time zone: {e}")))
+    workspace_report_zone(
+        ctx.repo.as_ref(),
+        ctx.sqlite_pool.clone(),
+        &identity.card_id,
+        card.track_id.as_str(),
+    )
+    .await
+    .map_err(crate::mcp_server::framing::calm_error)?
+    .ok_or_else(denied)
 }
 
 /// The one read of whether a Track has a kernel-owned creation identity.

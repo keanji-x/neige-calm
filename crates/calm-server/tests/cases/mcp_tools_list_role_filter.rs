@@ -230,7 +230,7 @@ async fn tools_list_for_worker_role_returns_completion_tools() {
 /// The read every report write is anchored by is listed beside the writes (#2289).
 /// #1883: the single-op block writers are gone; the assistant writes through `commit`.
 #[tokio::test]
-async fn tools_list_for_assistant_role_returns_the_report_surface_only() {
+async fn tools_list_for_assistant_role_returns_reports_and_conditional_workspace_reads() {
     let names = tools_list_names_for_role(CardRole::Assistant).await;
     assert_eq!(
         names,
@@ -239,8 +239,12 @@ async fn tools_list_for_assistant_role_returns_the_report_surface_only() {
             "neige_report_describe",
             "neige_report_read",
             "neige_report_write",
+            "neige_workspace_cat",
+            "neige_workspace_diff",
+            "neige_workspace_log",
+            "neige_workspace_ls",
         ],
-        "assistant tools/list must be exactly the report read and write surface",
+        "assistant tools/list includes workspace reads that require a kernel-issued grant",
     );
 }
 
