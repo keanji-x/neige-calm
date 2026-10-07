@@ -627,7 +627,9 @@ async fn acp_recovery_retires_dispatch_before_folding_later_report_edits() {
         })
         .unwrap();
     wait_file_within(&root, "setup-checkpoint", Duration::from_secs(50)).await;
-    let checkpoint = stack.harness(&runtime.id).snapshot().await;
+    let checkpoint = calm_server::harness::HarnessSnapshot::from_value_strict(
+        stack.runtime(&card).await.handle_state_json.unwrap(),
+    );
     assert_eq!(
         checkpoint.phase,
         calm_server::harness::HarnessPhaseTag::IssuingTurn
