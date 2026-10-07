@@ -381,9 +381,6 @@ impl PlannerEvents {
     }
 }
 
-/// A rewind recorded for the other provider: the runtime's provider never changes, so this is a
-/// corrupt snapshot that no retry clears.
-
 fn codex_turn_start_failure(error: CalmError) -> TurnStartFailure {
     match error {
         CalmError::CodexRefused(message) => {
@@ -410,6 +407,8 @@ fn codex_turn_start_failure(error: CalmError) -> TurnStartFailure {
     }
 }
 
+/// A rewind recorded for the other provider: the runtime's provider never changes, so this is a
+/// corrupt snapshot that no retry clears.
 fn mismatched_rewind() -> TurnStartFailure {
     TurnStartFailure::Refused {
         error: CalmError::Internal("a pending rewind names another provider".into()),

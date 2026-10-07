@@ -77,7 +77,7 @@ impl CodexAuthentication {
             Notification::Other { method, params } if method == "turn/aborted" => {
                 if let Some((thread, id)) = notification
                     .thread_id()
-                    .zip(crate::shared_codex_appserver::other_turn_id(params).as_deref())
+                    .zip(crate::shared_codex_appserver::other_turn_id(params))
                 {
                     state.turns.remove(&(thread.into(), id.into()));
                 }

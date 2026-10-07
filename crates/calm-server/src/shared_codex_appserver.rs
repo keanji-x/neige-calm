@@ -1407,12 +1407,11 @@ impl SharedCodexAppServer {
         let turn = client
             .turn_start_with_client_id(thread_id, items, selection, client_user_message_id)
             .await
-            .map_err(|error| {
-                if let provider::codex::error::Error::Refused(message) = &error {
+            .inspect_err(|error| {
+                if let provider::codex::error::Error::Refused(message) = error {
                     self.authentication
                         .record(authentication_generation, message);
                 }
-                error
             })?;
         let turn_id = turn
             .turn_id()
