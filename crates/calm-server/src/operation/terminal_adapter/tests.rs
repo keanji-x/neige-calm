@@ -359,3 +359,6 @@ mod launch_cleanup_tests;
 
 #[cfg(test)]
 mod disposal_tests;
+
+#[cfg(test)]
+mod pty_cwd_tests;

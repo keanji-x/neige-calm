@@ -1248,6 +1248,14 @@ async fn try_spawn_pty(
     cols: u16,
     rows: u16,
 ) -> Result<Spawned, EnsureProcFailure> {
+    // portable-pty silently falls back to HOME when cwd is not a directory.
+    // Preserve its empty-cwd default, but never substitute a requested workspace.
+    if !request.cwd.is_empty() && !std::path::Path::new(&request.cwd).is_dir() {
+        return Err(EnsureProcFailure {
+            error: format!("pty cwd {:?} is not a directory", request.cwd),
+            child_already_reaped: false,
+        });
+    }
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtPtySize {
