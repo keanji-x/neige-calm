@@ -26,14 +26,18 @@ pub const PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY: &str = "template_context";
 pub const PLANNER_PROVIDER_PAYLOAD_KEY: &str = "planner_provider";
 /// Creation-owned origin of an assistant discussion branch.
 pub const SIDE_SOURCE_CARD_PAYLOAD_KEY: &str = "side_source_card_id";
+/// A Planner card's `PlannerPermissionMode` (#2348): minted `"never"` at creation and changed only
+/// by its own writer, `planner_permission_mode_set_tx`, which the User-only route calls.
+pub const PLANNER_PERMISSION_MODE_PAYLOAD_KEY: &str = "permission_mode";
 
 /// Kernel-owned card fields, refused at client boundaries and preserved by
 /// `card_update_tx` even when a replacement payload omits them.
-pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 4] = [
+pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 5] = [
     TERMINAL_SIGNALS_PAYLOAD_KEY,
     PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY,
     PLANNER_PROVIDER_PAYLOAD_KEY,
     SIDE_SOURCE_CARD_PAYLOAD_KEY,
+    PLANNER_PERMISSION_MODE_PAYLOAD_KEY,
 ];
 
 /// Whether a stored value of a server-owned key is the shape the kernel mints (and so is kept
@@ -45,6 +49,8 @@ pub fn server_owned_value_is_sticky(key: &str, value: &Value) -> bool {
         PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY => true,
         // Creation-owned identity stays immutable, including a corrupt stored value.
         PLANNER_PROVIDER_PAYLOAD_KEY | SIDE_SOURCE_CARD_PAYLOAD_KEY => true,
+        // Only its own writer changes it; a replacement can neither drop nor "repair" a stored value.
+        PLANNER_PERMISSION_MODE_PAYLOAD_KEY => true,
         TERMINAL_SIGNALS_PAYLOAD_KEY => value.as_bool() == Some(true),
         _ => false,
     }

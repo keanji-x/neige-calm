@@ -181,7 +181,13 @@ async fn boot_inner(
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex"}),
+            // Every Planner card is created with `permission_mode: "never"` (#2348).
+            payload: json!({
+                "schemaVersion": 1,
+                "planner_harness": true,
+                "planner_provider": "codex",
+                "permission_mode": "never",
+            }),
         },
         CardRole::Planner,
         false,

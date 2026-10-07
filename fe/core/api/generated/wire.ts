@@ -426,6 +426,13 @@ contentType: string, size: number,
 url: string, };
 
 /**
+ * Whether a Planner card's provider may ask the person before it acts outside its sandbox
+ * (#2348). Stored on the card as the server-owned payload key `permission_mode`; every Planner
+ * card is created `never`, and only `PUT /api/cards/{id}/planner/permission-mode` changes it.
+ */
+export type PlannerPermissionMode = "never" | "ask";
+
+/**
  * Position anchor for proposed block creation / moves, expressed against stable block ids, never
  * numeric indexes.
  */
@@ -473,6 +480,15 @@ export type Sample = { head: string, dirty: Array<string>, provenance: Provenanc
  * three phases carry the frozen cwd.
  */
 export type SamplePhase = { "kind": "prepare", reason: string, } | { "kind": "finalize", cwd: string, reason: string, } | { "kind": "compensation", cwd: string, reason: string, } | { "kind": "reconciliation", cwd: string, last_error: string, };
+
+/**
+ * `PUT /api/cards/{id}/planner/permission-mode`'s answer: the mode now stored on the card.
+ */
+export type SetPlannerPermissionModeResponse = { card_id: CardId, 
+/**
+ * The stored mode, echoed rather than assumed.
+ */
+permission_mode: PlannerPermissionMode, };
 
 /**
  * Where a body came from. Stored verbatim as the row's `origin` column.

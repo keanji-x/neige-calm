@@ -57,6 +57,8 @@ mod openapi;
 mod openapi_statuses;
 #[path = "cases/payload_validation.rs"]
 mod payload_validation;
+#[path = "cases/planner_permission_mode_creation.rs"]
+mod planner_permission_mode_creation;
 #[path = "cases/plugin_names_migration.rs"]
 mod plugin_names_migration;
 #[path = "cases/preview_gateway.rs"]

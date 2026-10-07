@@ -31,6 +31,7 @@ pub mod planner_compact;
 pub mod planner_input;
 pub mod planner_input_send;
 pub mod planner_model;
+pub mod planner_permission_mode;
 pub mod plugins;
 pub mod settings;
 pub mod task_recovery;

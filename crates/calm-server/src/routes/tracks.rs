@@ -2046,6 +2046,7 @@ pub fn planner_harness_card_payload(
     if let Some(goal) = goal.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         card_payload.insert("prompt".into(), serde_json::Value::String(goal.to_string()));
     }
+    crate::planner_permission_mode::mint_at_creation(&mut card_payload);
     serde_json::Value::Object(card_payload)
 }
 

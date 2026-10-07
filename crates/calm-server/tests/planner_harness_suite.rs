@@ -74,6 +74,8 @@ mod planner_input_idempotency;
 mod planner_model_selection;
 #[path = "cases/planner_pending_queue.rs"]
 mod planner_pending_queue;
+#[path = "cases/planner_permission_mode.rs"]
+mod planner_permission_mode;
 #[path = "cases/planner_queue_mutations.rs"]
 mod planner_queue_mutations;
 #[path = "cases/planner_replace.rs"]

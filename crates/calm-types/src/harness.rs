@@ -87,3 +87,40 @@ pub struct HarnessLiveReply {
     pub item_id: String,
     pub text: String,
 }
+
+/// Whether a Planner card's provider may ask the person before it acts outside its sandbox
+/// (#2348). Stored on the card as the server-owned payload key `permission_mode`; every Planner
+/// card is created `never`, and only `PUT /api/cards/{id}/planner/permission-mode` changes it.
+// Only the bare strings `"never"` and `"ask"` deserialize: serde's derived enum also accepts the
+// object form `{"ask": null}`, which would read a corrupt stored value as permission to ask.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[serde(rename_all = "snake_case", try_from = "String")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub enum PlannerPermissionMode {
+    /// The provider never asks: an action outside the sandbox fails.
+    Never,
+    /// The provider asks the person and waits for the answer.
+    Ask,
+}
+
+impl TryFrom<String> for PlannerPermissionMode {
+    type Error = String;
+
+    fn try_from(name: String) -> Result<Self, Self::Error> {
+        match name.as_str() {
+            "never" => Ok(Self::Never),
+            "ask" => Ok(Self::Ask),
+            _ => Err(format!("unknown permission mode `{name}`")),
+        }
+    }
+}
+
+/// `PUT /api/cards/{id}/planner/permission-mode`'s answer: the mode now stored on the card.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct SetPlannerPermissionModeResponse {
+    #[schema(value_type = String)]
+    pub card_id: crate::ids::CardId,
+    /// The stored mode, echoed rather than assumed.
+    pub permission_mode: PlannerPermissionMode,
+}

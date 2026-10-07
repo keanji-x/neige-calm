@@ -35,6 +35,17 @@ async fn patch_card(b: &Boot, card_id: &str, payload: Value) -> (StatusCode, Val
     )
 }
 
+/// A client echo of the payload: every server-owned key is refused on its own, so a replacement
+/// omits them all.
+fn without_server_owned_keys(payload: &Value) -> Value {
+    let mut replacement = payload.clone();
+    let map = replacement.as_object_mut().unwrap();
+    for key in calm_server::validation::SERVER_OWNED_CARD_PAYLOAD_KEYS {
+        map.remove(key);
+    }
+    replacement
+}
+
 async fn stored_provider(b: &Boot, card_id: &str) -> Value {
     let payload: String = sqlx::query_scalar("SELECT payload FROM cards WHERE id = ?1")
         .bind(card_id)
@@ -136,11 +147,7 @@ async fn the_planner_provider_is_server_owned_and_survives_omission() {
         let (status, response) = patch_card(&b, card_id, forged).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
     }
-    let mut replacement = planner["payload"].clone();
-    replacement
-        .as_object_mut()
-        .unwrap()
-        .remove("planner_provider");
+    let replacement = without_server_owned_keys(&planner["payload"]);
     let (status, patched) = patch_card(&b, card_id, replacement).await;
     assert_eq!(status, StatusCode::OK, "{patched}");
     assert_eq!(patched["payload"]["planner_provider"], "codex", "{patched}");
@@ -161,11 +168,7 @@ async fn a_corrupt_planner_provider_survives_and_the_card_is_not_a_harness() {
     .execute(b.repo.pool())
     .await
     .unwrap();
-    let mut replacement = planner["payload"].clone();
-    replacement
-        .as_object_mut()
-        .unwrap()
-        .remove("planner_provider");
+    let replacement = without_server_owned_keys(&planner["payload"]);
     let (status, patched) = patch_card(&b, card_id, replacement).await;
     assert_eq!(status, StatusCode::OK, "{patched}");
     assert_eq!(
