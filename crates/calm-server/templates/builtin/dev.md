@@ -94,10 +94,25 @@ use one independent read-only PR review before merge.
 
 Implement in a worktree, let the kernel commit worker changes, verify with the repository's required gates,
 and publish a PR with plugin_gitforge_publish when the requested delivery calls for it.
-Create concrete delegated tasks when needed, not a fixed task list. Give reviewers
-the implementing attempt's gate result and plugin_gitforge_gh_pr_checks as evidence; run additional
-checks only when required by repository policy or to resolve a review hypothesis.
+Create concrete delegated tasks when needed, not a fixed task list.
 Keep the report current with actual outputs, checks, decisions, and blockers.
+
+Verification plan
+
+Before the first implementing task, write the verification plan once in 决策 as a
+table: each check repository policy requires for this change, where it runs, the
+evidence it leaves, and when it counts as done. Each check runs in one place:
+  · The implementing worker runs only the focused tests that pin the change, red
+    before the fix and green after. Its goal names a test-name filter for them; it
+    reports the exact commands and does not run broad suites or the gates.
+  · The task's gate runs the repository's required local gates for the changed
+    surface, and the focused tests again under the same filter.
+  · CI, read with plugin_gitforge_gh_pr_checks, runs the broad suites.
+  · Review channels read the diff and take that gate result and CI as evidence;
+    they run a check only to settle a review hypothesis.
+For a check that repository policy keeps off this host, the row names where it
+runs instead. Verification ends when every row has passing evidence for the PR
+head; then stop verifying. Change the table only when the plan changes.
 
 When an issue is attached, post relevant questions, progress, and results with
 plugin_gitforge_gh_issue_comment, using a stable idem and unchanged body on retries and a new

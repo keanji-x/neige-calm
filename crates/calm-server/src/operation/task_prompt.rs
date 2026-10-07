@@ -50,7 +50,8 @@ fn render_catch_up(facts: &CatchUpFacts) -> String {
 
 fn render_reader_facts(reader: &ReaderFacts) -> String {
     let mut out = "\n\nThis task is read-only: do not modify the checkout (no edits, commits or \
-                   generated files). Other read-only tasks may be reading it at the same time."
+                   new untracked files). Ignored build output may be written. Other read-only \
+                   tasks may be reading or building in it at the same time."
         .to_string();
     match &reader.repo {
         Ok(url) => out.push_str(&format!("\nrepo: {url}")),
