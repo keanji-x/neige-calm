@@ -53,6 +53,11 @@ a launchpad assistant has the same restriction, not implicit global power.
 Human-created entries have no source Track. Request arguments cannot forge source
 or creator. Worker roles and forge lowering cannot call the Calendar capability.
 
+Lists exclude cancelled entries and entries whose source Track is closed or
+missing. This read-side policy lives in Calendar's shared store; it leaves stored
+entries unchanged, so reopening a Track restores its entries in lists. Reading an
+entry by id still returns it regardless of its source Track's lifecycle.
+
 Time contracts distinguish an all-day civil date from an RFC3339 instant range
 with an explicit IANA timezone. Create/update also accept local YYYY-MM-DDTHH:mm
 start/end; Calendar resolves unambiguous wall times before storage and returns

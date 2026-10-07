@@ -55,6 +55,15 @@ pub async fn list<S: Storage>(
         let entry: Entry = serde_json::from_value(value)
             .map_err(|e| S::Error::internal(format!("calendar record: {e}")))?;
         if access.permits(&entry) && !entry.cancelled && window.contains(&entry.task.schedule)? {
+            // Keep attribution durable; reopening a Track restores its schedule in lists.
+            if let Some(track_id) = &entry.source_track_id
+                && ctx
+                    .track(track_id)
+                    .await?
+                    .is_none_or(|track| track.closed_at.is_some())
+            {
+                continue;
+            }
             let occurrences = window.occurrences(&entry.task.schedule)?;
             entries.push(Listed {
                 entry,
