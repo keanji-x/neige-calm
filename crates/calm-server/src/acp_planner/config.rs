@@ -140,9 +140,14 @@ impl AcpPlannerHost {
     pub async fn check_ready(&self, provider: &AgentProvider) -> Result<()> {
         let _probe = self.readiness.lock().await;
         let config = self.configured(provider)?;
-        let process =
-            super::process::Process::spawn(self, config, "readiness", &std::env::temp_dir())
-                .await?;
+        let process = super::process::Process::spawn(
+            self,
+            config,
+            "readiness",
+            &std::env::temp_dir(),
+            super::process::LaunchContext::Readiness,
+        )
+        .await?;
         process.stop(self, "readiness").await
     }
 }

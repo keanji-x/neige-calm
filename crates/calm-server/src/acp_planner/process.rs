@@ -9,12 +9,18 @@ pub(super) struct Process {
     pub connection: Connection,
     pub capabilities: protocol::AgentCapabilities,
 }
+/// Only a registered operational process gets its active card's CLI authority.
+pub(super) enum LaunchContext<'a> {
+    Readiness,
+    Planner { mcp_token: &'a str },
+}
 impl Process {
     pub async fn spawn(
         host: &AcpPlannerHost,
         config: &AcpAgentConfig,
         worker: &str,
         cwd: &std::path::Path,
+        context: LaunchContext<'_>,
     ) -> Result<Self> {
         crate::planner_process::stop(&host.instance, worker).await?;
         let mut command = Command::new(&config.command);
@@ -29,6 +35,12 @@ impl Process {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
+        if let LaunchContext::Planner { mcp_token } = context {
+            command.envs(crate::mcp_server::wiring::card_mcp_env(
+                &host.mcp_socket,
+                mcp_token,
+            ));
+        }
         let mut child = command.spawn()?;
         let connection = Connection::new(
             child

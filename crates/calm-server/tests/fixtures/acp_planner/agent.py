@@ -6,11 +6,14 @@ import subprocess
 import sys
 import uuid
 import time
+import hashlib
 
 root = pathlib.Path(os.environ['ACP_FIXTURE_ROOT'])
 with (root / 'environment.jsonl').open('a') as output:
-    output.write(json.dumps({name: name in os.environ for name in [
-        'NEIGE_MCP_DAEMON_TOKEN', 'NEIGE_MCP_TOKEN', 'ACP_AMBIENT_SENTINEL']}) + '\n')
+    presence = {name: name in os.environ for name in [
+        'NEIGE_MCP_DAEMON_TOKEN', 'NEIGE_MCP_TOKEN', 'NEIGE_MCP_SOCKET', 'ACP_AMBIENT_SENTINEL']}
+    presence['readiness'] = os.environ['NEIGE_ACP_PLANNER'].endswith(':readiness')
+    output.write(json.dumps(presence) + '\n')
 current, pending, permission = None, None, None
 model, effort = 'fixture/model-a', 'normal'
 
@@ -39,6 +42,21 @@ def native_path():
     return root / (current + '.json')
 
 def check_mcp(servers):
+    if servers and (root / 'scenario').read_text().strip() == 'cli':
+        cli = pathlib.Path(servers[0]['command']).with_name('neige')
+        help_result = subprocess.run([str(cli), '--help'], capture_output=True, text=True, timeout=10)
+        status = subprocess.run([str(cli), 'track', 'status', '--json'], capture_output=True, text=True, timeout=10)
+        expected = {entry['name']: entry['value'] for entry in servers[0]['env']}
+        fingerprint = hashlib.sha256(os.environ.get('NEIGE_MCP_TOKEN', '').encode()).hexdigest()
+        previous = root / 'cli-token-fingerprint'
+        rotated = previous.exists() and previous.read_text() != fingerprint
+        previous.write_text(fingerprint)
+        record = {'help_exit': help_result.returncode, 'status_exit': status.returncode,
+                  'status': json.loads(status.stdout) if status.returncode == 0 else None,
+                  'matches_mcp_context': all(os.environ.get(key) == value for key, value in expected.items()),
+                  'token_rotated': rotated}
+        with (root / 'cli-results.jsonl').open('a') as output:
+            output.write(json.dumps(record) + '\n')
     if not servers or (root / 'scenario').read_text().strip() != 'mcp':
         return
     server = servers[0]
@@ -67,8 +85,13 @@ for line in sys.stdin:
         output.write(json.dumps(logged) + '\n')
     method, params = request.get('method'), request.get('params', {})
     if method == 'initialize':
+        wrong = (root / 'scenario').read_text().strip() == 'wrong-identity' and not os.environ['NEIGE_ACP_PLANNER'].endswith(':readiness')
+        if wrong:
+            (root / 'wrong-identity.json').write_text(json.dumps({
+                'token_present': 'NEIGE_MCP_TOKEN' in os.environ,
+                'socket_present': 'NEIGE_MCP_SOCKET' in os.environ}))
         result(request, {'protocolVersion': 1, 'agentCapabilities': {'loadSession': True},
-                         'agentInfo': {'name': 'Fixture ACP', 'version': '1'}})
+                         'agentInfo': {'name': 'Fixture ACP', 'version': 'wrong' if wrong else '1'}})
         if (root / 'scenario').read_text().strip() == 'checkpoint' and not os.environ['NEIGE_ACP_PLANNER'].endswith(':readiness'):
             (root / 'setup-checkpoint').touch()
             while not (root / 'release-setup').exists():
