@@ -1224,7 +1224,17 @@ fn turn_text_names_target_mismatch() {
         (None, Some(75), None, "FAILED (exit 75)"),
     ] {
         let plain = text(&attributed(step, code, detail));
-        assert_eq!(plain, format!("Task impl-parser gate {verdict} {tail}"));
+        // A red step is the first failing one: the steps before it passed (#2387).
+        let order = if step.is_some() && !detail.is_some_and(|d| d != "gate-red") {
+            " Earlier steps passed; later steps did not run."
+        } else {
+            ""
+        };
+        let (head, rest) = tail.split_once(").").expect("tail starts with the gate run");
+        assert_eq!(
+            plain,
+            format!("Task impl-parser gate {verdict} {head}).{order}{rest}")
+        );
     }
     // An unsampled target keeps the verdict; `status_detail` alone says what happened.
     let unsampled = text(&event(

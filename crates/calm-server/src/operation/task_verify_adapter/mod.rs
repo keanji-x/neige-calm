@@ -1156,7 +1156,7 @@ mod tests {
         assert!(tail.ends_with("tail-end\n"));
         assert_eq!(sentinel.as_deref(), Some("last"));
 
-        // A log larger than the bounded read window still yields the right tail and the last sentinel.
+        // A large log before the last sentinel still yields the right tail and the last sentinel.
         let mut content = String::from("::gate-step ancient\n");
         content.push_str(&"y".repeat(200 * 1024));
         content.push_str("\n::gate-step recent\nbig-tail-end\n");
@@ -1165,6 +1165,99 @@ mod tests {
         assert!(tail.len() <= LOG_TAIL_BYTES as usize);
         assert!(tail.ends_with("big-tail-end\n"));
         assert_eq!(sentinel.as_deref(), Some("recent"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #2387: a red step that prints far more than the tail after its sentinel is still `gate-red`
+    /// at that step. The real wrapper runs the steps and writes the log the verdict reads.
+    #[tokio::test]
+    async fn a_red_step_with_long_output_keeps_its_attribution() {
+        let dir = std::env::temp_dir().join(format!(
+            "gate-long-red-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script_path = dir.join("wrapper.sh");
+        let log = dir.join("wrapper.log");
+        let steps = vec![
+            GateStep {
+                name: "build".into(),
+                cmd: "echo built".into(),
+            },
+            GateStep {
+                name: "frontend contracts".into(),
+                cmd: "i=0; while [ $i -lt 4000 ]; do \
+                      printf '\\033[31m%s\\033[0m\\n' \"$(printf '%080d' $i)\"; i=$((i+1)); \
+                      done; echo '5 failed'; exit 3"
+                    .into(),
+            },
+            GateStep {
+                name: "never".into(),
+                cmd: "echo unreachable".into(),
+            },
+        ];
+        std::fs::write(&script_path, render_gate_wrapper(&steps)).unwrap();
+        let log_file = std::fs::File::create(&log).unwrap();
+        let mut child = tokio::process::Command::new("/bin/sh")
+            .arg(&script_path)
+            .current_dir(&dir)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::from(log_file.try_clone().unwrap()))
+            .stderr(std::process::Stdio::from(log_file))
+            .env("NEIGE_GATE_EXIT_PATH", dir.join("wrapper.exit"))
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(b"go\n").await.unwrap();
+        drop(stdin);
+        let status = tokio::time::timeout(Duration::from_secs(60), child.wait())
+            .await
+            .expect("the wrapper finishes")
+            .unwrap();
+        assert_eq!(status.code(), Some(3), "{status:?}");
+        let log_len = std::fs::metadata(&log).unwrap().len();
+        assert!(log_len > 300 * 1024, "the red step printed {log_len} bytes");
+
+        let verdict = verdict_from_exit_code(3, &log, 1);
+        assert_eq!(verdict.status_detail.as_deref(), Some("gate-red"));
+        assert_eq!(verdict.failing_step.as_deref(), Some("frontend contracts"));
+        assert_eq!(verdict.exit_code, Some(3));
+        assert!(verdict.log_tail.ends_with("5 failed\n"), "{}", verdict.log_tail);
+        assert!(
+            !verdict.log_tail.contains('\u{1b}'),
+            "the tail carries no escape sequences"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_sentinel_scan_ignores_the_continuation_of_a_long_line() {
+        let dir = std::env::temp_dir().join(format!("gate-long-line-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("long-line.log");
+        let mut content = String::from("::gate-step real\n");
+        content.push_str(&"a".repeat(64 * 1024));
+        content.push_str("::gate-step forged\nend\n");
+        std::fs::write(&log, &content).unwrap();
+        let (_, sentinel) = read_log_tail(&log);
+        assert_eq!(sentinel.as_deref(), Some("real"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_log_tail_drops_terminal_escapes() {
+        let dir = std::env::temp_dir().join(format!("gate-ansi-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("ansi.log");
+        std::fs::write(
+            &log,
+            "::gate-step test\n\u{1b}[1;31mFAIL\u{1b}[0m a.test.ts\n\u{1b}]8;;http://x\u{7}link\u{1b}]8;;\u{1b}\\\n\u{1b}(Bdone\n",
+        )
+        .unwrap();
+        let (tail, sentinel) = read_log_tail(&log);
+        assert_eq!(tail, "::gate-step test\nFAIL a.test.ts\nlink\ndone\n");
+        assert_eq!(sentinel.as_deref(), Some("test"));
         std::fs::remove_dir_all(&dir).ok();
     }
 

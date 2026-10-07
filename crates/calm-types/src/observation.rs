@@ -610,7 +610,13 @@ fn gate_result_text(
                     (Some(class), None, None) => format!("FAILED ({class})"),
                 }
             };
-            format!("Task {key} gate {verdict} (gate run {attempt}).")
+            // Steps run in order and the first failing step ends the gate.
+            let order = if !passed && class.is_none() && failing_step.is_some() {
+                " Earlier steps passed; later steps did not run."
+            } else {
+                ""
+            };
+            format!("Task {key} gate {verdict} (gate run {attempt}).{order}")
         }
     }
 }
@@ -806,7 +812,7 @@ mod tests {
         );
         assert!(
             decoded.to_turn_text().starts_with(
-                "Task k gate FAILED at step test (exit 101) (gate run 2). Log tail:\nboom\n"
+                "Task k gate FAILED at step test (exit 101) (gate run 2). Earlier steps passed; later steps did not run. Log tail:\nboom\n"
             ),
             "{}",
             decoded.to_turn_text()

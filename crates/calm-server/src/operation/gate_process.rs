@@ -4,8 +4,9 @@ use crate::error::{CalmError, Result};
 use serde_json::Value;
 use std::path::Path;
 const LOG_TAIL_BYTES: u64 = 8 * 1024;
-/// Extra margin beyond the tail for the `::gate-step` sentinel scan; a step that alone prints >64KiB after its sentinel loses attribution (`failing_step: None`), acceptable for an advisory field.
-const LOG_SENTINEL_MARGIN_BYTES: u64 = 64 * 1024;
+const GATE_STEP_SENTINEL: &[u8] = b"::gate-step ";
+/// Lines longer than this are skipped by the sentinel scan; the wrapper's own sentinel lines are far shorter.
+const SENTINEL_LINE_MAX_BYTES: u64 = 4 * 1024;
 /// POSIX single-quote escaping: `'` → `'\''`.
 fn sh_single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
@@ -45,13 +46,66 @@ pub(crate) fn render_gate_wrapper(steps: &[GateStep]) -> String {
     script
 }
 
-/// Last `::gate-step <name>` sentinel in the log, if any.
-fn last_gate_step_sentinel(log_text: &str) -> Option<String> {
-    log_text
-        .lines()
-        .filter_map(|line| line.strip_prefix("::gate-step "))
-        .next_back()
-        .map(|s| s.trim().to_string())
+/// Last `::gate-step <name>` sentinel in the whole log. The sentinel decides gate-red versus
+/// gate-infra, so it is never searched for in a bounded window: a step may print any amount after
+/// its sentinel (#2387).
+fn last_gate_step_sentinel(log: impl std::io::BufRead) -> std::io::Result<Option<String>> {
+    use std::io::BufRead as _;
+    let mut log = log;
+    let mut sentinel = None;
+    let mut line = Vec::new();
+    let mut continues_long_line = false;
+    loop {
+        line.clear();
+        let read =
+            std::io::Read::take(&mut log, SENTINEL_LINE_MAX_BYTES).read_until(b'\n', &mut line)?;
+        if read == 0 {
+            return Ok(sentinel);
+        }
+        if !continues_long_line && let Some(name) = line.strip_prefix(GATE_STEP_SENTINEL) {
+            sentinel = Some(String::from_utf8_lossy(name).trim().to_string());
+        }
+        continues_long_line = line.last() != Some(&b'\n');
+    }
+}
+
+/// Terminal escape sequences (CSI, OSC and two-byte escapes) removed, so a tail read by the Planner
+/// carries the text rather than colour codes.
+fn strip_terminal_escapes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                while let Some(c) = chars.next() {
+                    if c == '\u{7}' || (c == '\u{1b}' && chars.next_if_eq(&'\\').is_some()) {
+                        break;
+                    }
+                }
+            }
+            // nF escapes such as `ESC ( B`: intermediates, then one final byte.
+            Some(c) if ('\u{20}'..='\u{2f}').contains(&c) => {
+                for c in chars.by_ref() {
+                    if ('\u{30}'..='\u{7e}').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 pub(crate) fn read_log_tail(log_path: &Path) -> (String, Option<String>) {
@@ -59,19 +113,21 @@ pub(crate) fn read_log_tail(log_path: &Path) -> (String, Option<String>) {
     let Ok(mut file) = std::fs::File::open(log_path) else {
         return (String::new(), None);
     };
-    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let window_start = len.saturating_sub(LOG_TAIL_BYTES + LOG_SENTINEL_MARGIN_BYTES);
-    if file.seek(SeekFrom::Start(window_start)).is_err() {
+    let Ok(sentinel) = last_gate_step_sentinel(std::io::BufReader::new(&mut file)) else {
         return (String::new(), None);
+    };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    if file
+        .seek(SeekFrom::Start(len.saturating_sub(LOG_TAIL_BYTES)))
+        .is_err()
+    {
+        return (String::new(), sentinel);
     }
     let mut bytes = Vec::new();
     if file.read_to_end(&mut bytes).is_err() {
-        return (String::new(), None);
+        return (String::new(), sentinel);
     }
-    let text = String::from_utf8_lossy(&bytes);
-    let sentinel = last_gate_step_sentinel(&text);
-    let tail_start = bytes.len().saturating_sub(LOG_TAIL_BYTES as usize);
-    let tail = String::from_utf8_lossy(&bytes[tail_start..]).to_string();
+    let tail = strip_terminal_escapes(&String::from_utf8_lossy(&bytes));
     (tail, sentinel)
 }
 
