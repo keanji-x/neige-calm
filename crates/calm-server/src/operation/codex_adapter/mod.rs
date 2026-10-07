@@ -787,6 +787,9 @@ impl ProviderAdapter for CodexWorkerAdapter {
         .await?;
         let cwd = plan.path.to_string_lossy().to_string();
         let env = build_codex_env(self.repo.as_ref(), self.codex.as_ref(), &card_id).await?;
+        let gate_steps =
+            super::task_verify_adapter::declared_gate_steps_tx(tx, &payload.idempotency_key)
+                .await?;
         let rendered_prompt = render_task_worker_prompt(
             &payload.idempotency_key,
             &payload.goal,
@@ -794,6 +797,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
             payload.acceptance_criteria.as_deref(),
             plan.reader.as_ref(),
             plan.catch_up.as_ref(),
+            gate_steps.as_deref(),
         );
         let scope = card_scope(
             self.repo.as_ref(),

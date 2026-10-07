@@ -88,6 +88,20 @@ pub struct GateStep {
     pub cmd: String,
 }
 
+/// The gate steps a codex or claude task declares, in run order, for its worker's prompt (#2404).
+/// `None` when the task declares no gate or has no row.
+pub(crate) async fn declared_gate_steps_tx(
+    tx: &mut super::Tx<'_>,
+    task_id: &str,
+) -> Result<Option<Vec<GateStep>>> {
+    let Some(gate_json) = task_get_tx(tx, task_id).await?.and_then(|task| task.gate_json) else {
+        return Ok(None);
+    };
+    let gate: GateSpec = serde_json::from_str(&gate_json)
+        .map_err(|e| CalmError::Internal(format!("task {task_id} gate_json: {e}")))?;
+    Ok(Some(gate.steps))
+}
+
 impl GateSpec {
     pub fn timeout_secs_clamped(&self) -> i64 {
         self.timeout_secs

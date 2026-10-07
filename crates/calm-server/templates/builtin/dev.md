@@ -108,15 +108,18 @@ Verification plan
 Before the first implementing task, record the decided verification plan once in
 决策 as a `table` block: each check repository policy requires for this change,
 where it runs, the evidence it leaves, and when it counts as done. Unless
-repository policy places a check elsewhere, each check runs in one place:
+repository policy places a check elsewhere, each check has one run that counts as
+its evidence:
   · The implementing worker runs the focused tests that pin the change (red
-    before the fix and green after, when there is behavior to pin) and quick
-    formatter or lint fixes. Its goal names the filter or paths that select those
-    tests; it reports the exact commands and does not run broad suites or repeat
-    the gate's checks.
+    before the fix and green after, when there is behavior to pin) and fixes
+    formatter and lint findings. Its goal names the filter or paths that select
+    those tests; it reports the exact commands and does not run broad suites.
+    The kernel shows a gated worker its gate steps, and the worker runs them
+    before it reports; do not copy them into its goal.
   · The task's gate runs the repository's required local gates for the changed
     surface and replays those focused tests; write the replay step so it fails
-    when it selects no test. The replay is the one intended repeat.
+    when it selects no test. The gate's run is the evidence; the worker's run of
+    the same steps is its precheck.
   · CI, where the repository has it, runs the broad suites; read it with
     plugin_gitforge_gh_pr_checks. Without CI they run in the gate, with a
     gate.timeout_secs that fits them.

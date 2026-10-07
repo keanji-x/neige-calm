@@ -2,11 +2,13 @@
 
 use serde_json::Value;
 
+use super::task_verify_adapter::GateStep;
 use super::workspace_lease::worker::{CatchUpFacts, ReaderFacts};
 
 /// The task prompt both worker adapters render. A read-only task (#1917) is told it shares the
 /// checkout, which nothing enforces, and is given its repo, checkout, head and base (#1933). A
-/// catch-up (#2058 D7) is told where it starts and what to replay.
+/// catch-up (#2058 D7) is told where it starts and what to replay. A gated task is shown its gate
+/// steps to run before it reports (#2404).
 pub(crate) fn render_task_worker_prompt(
     attempt_id: &str,
     goal: &str,
@@ -14,13 +16,36 @@ pub(crate) fn render_task_worker_prompt(
     acceptance: Option<&str>,
     reader: Option<&ReaderFacts>,
     catch_up: Option<&CatchUpFacts>,
+    gate: Option<&[GateStep]>,
 ) -> String {
     let prompt = render_worker_prompt(goal, context, acceptance);
     let reader = reader.map(render_reader_facts).unwrap_or_default();
     let catch_up = catch_up.map(render_catch_up).unwrap_or_default();
+    let gate = gate.map(render_gate_precheck).unwrap_or_default();
     format!(
-        "{prompt}{reader}{catch_up}\n\nTask attempt_id: {attempt_id}\nEcho this exact attempt_id when reporting completion or failure."
+        "{prompt}{reader}{catch_up}{gate}\n\nTask attempt_id: {attempt_id}\nEcho this exact attempt_id when reporting completion or failure."
     )
+}
+
+/// The worker runs the declared steps as its precheck; the kernel's run after the report stays
+/// the verdict.
+fn render_gate_precheck(steps: &[GateStep]) -> String {
+    let mut out = String::from(
+        "\n\nThis task has a gate. After you report done, the kernel runs these steps in order \
+         from the checkout root, each under /bin/sh, and the first failing step fails the task. \
+         Before neige_task_done, run every step yourself, in order, from the checkout root, and \
+         fix what fails; report done only when all of them pass. If a step fails for a reason your \
+         change does not cause, report the failure with the step name and its output instead.",
+    );
+    for (index, step) in steps.iter().enumerate() {
+        out.push_str(&format!(
+            "\nGate step {} `{}`:\n```sh\n{}\n```",
+            index + 1,
+            step.name,
+            step.cmd
+        ));
+    }
+    out
 }
 
 /// #2058 D7: the worker cannot write git metadata (a codex worker's gitdir is read-only), so the
@@ -101,12 +126,37 @@ mod tests {
 
     #[test]
     fn task_worker_turn_input_names_the_execution_id_attempt_id() {
-        let out = render_task_worker_prompt("t:build", "g", &Value::Null, None, None, None);
+        let out = render_task_worker_prompt("t:build", "g", &Value::Null, None, None, None, None);
         assert!(out.ends_with("\n\nTask attempt_id: t:build\nEcho this exact attempt_id when reporting completion or failure."), "{out}");
         assert!(
             !out.contains("idempotency") && !out.contains("task_id"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn a_gated_task_prompt_lists_its_steps_before_the_attempt_id() {
+        let steps = [
+            GateStep {
+                name: "fmt".into(),
+                cmd: "cargo fmt --check".into(),
+            },
+            GateStep {
+                name: "test".into(),
+                cmd: "cargo test -p x".into(),
+            },
+        ];
+        let out =
+            render_task_worker_prompt("t:build", "g", &Value::Null, None, None, None, Some(&steps));
+        let fmt = out
+            .find("\nGate step 1 `fmt`:\n```sh\ncargo fmt --check\n```")
+            .expect(&out);
+        let test = out
+            .find("\nGate step 2 `test`:\n```sh\ncargo test -p x\n```")
+            .expect(&out);
+        let attempt = out.find("\n\nTask attempt_id: t:build").expect(&out);
+        assert!(fmt < test && test < attempt, "{out}");
+        assert!(out.contains("report done only when all of them pass"), "{out}");
     }
 
     #[test]

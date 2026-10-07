@@ -780,6 +780,9 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             .join(&card_id)
             .join("settings.json");
         let settings_dir = settings_path_parent(&settings_path)?;
+        let gate_steps =
+            super::task_verify_adapter::declared_gate_steps_tx(tx, &payload.idempotency_key)
+                .await?;
         let rendered_prompt = render_task_worker_prompt(
             &payload.idempotency_key,
             &payload.goal,
@@ -787,6 +790,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             payload.acceptance_criteria.as_deref(),
             plan.reader.as_ref(),
             plan.catch_up.as_ref(),
+            gate_steps.as_deref(),
         );
         let command_line = build_claude_worker_command_line(
             &self.codex.claude_bin,
