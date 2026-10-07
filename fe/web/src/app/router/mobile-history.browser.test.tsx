@@ -125,9 +125,9 @@ it.each([320, 390])('switches four sidebar views using current history and real 
   const failed = { ...current, id: 'failed', area_id: 'other-area', title: 'Failed report' };
   const working = { ...current, id: 'working', title: 'Working report' };
   const overlays = [
-    { id: 'input', plugin_id: 'kernel', entity_kind: 'track', entity_id: current.id, kind: 'activity', payload: { schemaVersion: 3, working: false, attention: 'input', activity_at_ms: null, items: [], cards: [] }, updated_at: 3 },
-    { id: 'failure', plugin_id: 'kernel', entity_kind: 'track', entity_id: failed.id, kind: 'activity', payload: { schemaVersion: 3, working: false, attention: 'failed', activity_at_ms: null, items: [], cards: [] }, updated_at: 3 },
-    { id: 'running', plugin_id: 'kernel', entity_kind: 'track', entity_id: working.id, kind: 'activity', payload: { schemaVersion: 3, working: true, attention: 'none', activity_at_ms: null, items: [], cards: [] }, updated_at: 3 },
+    { id: 'input', plugin_id: 'kernel', entity_kind: 'track', entity_id: current.id, kind: 'activity', payload: { schemaVersion: 4, working: false, attention: 'input', activity_at_ms: null, items: [], cards: [] }, updated_at: 3 },
+    { id: 'failure', plugin_id: 'kernel', entity_kind: 'track', entity_id: failed.id, kind: 'activity', payload: { schemaVersion: 4, working: false, attention: 'failed', activity_at_ms: null, items: [], cards: [] }, updated_at: 3 },
+    { id: 'running', plugin_id: 'kernel', entity_kind: 'track', entity_id: working.id, kind: 'activity', payload: { schemaVersion: 4, working: true, attention: 'none', activity_at_ms: null, items: [], cards: [] }, updated_at: 3 },
   ];
   const { router, requests } = renderDailyFixture({ initial: '/track/project', uiPreferences: preferences, reply: (request) => {
     if (request.path === '/api/areas') return ok([
