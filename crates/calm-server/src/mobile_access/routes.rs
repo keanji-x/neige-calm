@@ -69,6 +69,7 @@ pub(super) fn no_store(value: impl IntoResponse) -> Response {
 
 #[utoipa::path(
     get, path = "/api/mobile/access", tag = "mobile",
+    operation_id = "get_mobile_access_status",
     responses((status = 200, body = MobileStatus), (status = 400, body = ErrorBody),
         (status = 401, body = ErrorBody), (status = 403, body = ErrorBody),
         (status = 500, body = ErrorBody))
@@ -112,6 +113,7 @@ pub async fn disable(
 
 #[utoipa::path(
     post, path = "/api/mobile/pairings", tag = "mobile", request_body = MobileAction,
+    operation_id = "create_mobile_pairing",
     responses(
         (status = 200, body = PairingCreated, description = "A new invitation; it replaces the earlier ones no phone has claimed, so a retry leaves one live ticket"),
         (status = 400, body = ErrorBody, description = "`bad_request`: the pairing limit is reached"),
@@ -188,6 +190,7 @@ pub async fn revoke(
 
 #[utoipa::path(
     post, path = "/api/mobile/pairings/claim", tag = "mobile", request_body = PairingClaim, security(()),
+    operation_id = "claim_mobile_pairing",
     responses((status = 200, body = PairingClaimed),
         (status = 400, body = ErrorBody, description = "`bad_request`: the device name is not 1–80 printable bytes"),
         (status = 401, body = ErrorBody), (status = 500, body = ErrorBody))
@@ -204,6 +207,7 @@ pub async fn claim(
 
 #[utoipa::path(
     post, path = "/api/mobile/pairings/redeem", tag = "mobile", request_body = PairingRedeem, security(()),
+    operation_id = "redeem_mobile_pairing",
     responses((status = 204), (status = 202),
         (status = 400, body = ErrorBody, description = "`bad_request`: the device limit is reached"),
         (status = 401, body = ErrorBody), (status = 500, body = ErrorBody))

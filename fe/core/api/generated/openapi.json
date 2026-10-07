@@ -1342,7 +1342,7 @@
         "tags": [
           "calendar"
         ],
-        "operationId": "create",
+        "operationId": "create_calendar_task",
         "requestBody": {
           "content": {
             "application/json": {
@@ -4058,7 +4058,7 @@
         "tags": [
           "mobile"
         ],
-        "operationId": "status",
+        "operationId": "get_mobile_access_status",
         "responses": {
           "200": {
             "description": "",
@@ -4427,7 +4427,7 @@
         "tags": [
           "mobile"
         ],
-        "operationId": "status",
+        "operationId": "get_mobile_enrollment_status",
         "responses": {
           "200": {
             "description": "",
@@ -4485,7 +4485,7 @@
         "tags": [
           "mobile"
         ],
-        "operationId": "create",
+        "operationId": "create_mobile_enrollment",
         "requestBody": {
           "content": {
             "application/json": {
@@ -4595,7 +4595,7 @@
         "tags": [
           "mobile"
         ],
-        "operationId": "claim",
+        "operationId": "claim_mobile_enrollment",
         "requestBody": {
           "content": {
             "application/json": {
@@ -4688,7 +4688,7 @@
         "tags": [
           "mobile"
         ],
-        "operationId": "redeem",
+        "operationId": "redeem_mobile_enrollment",
         "requestBody": {
           "content": {
             "application/json": {
@@ -4891,7 +4891,7 @@
         "tags": [
           "mobile"
         ],
-        "operationId": "create",
+        "operationId": "create_mobile_pairing",
         "requestBody": {
           "content": {
             "application/json": {
@@ -5001,7 +5001,7 @@
         "tags": [
           "mobile"
         ],
-        "operationId": "claim",
+        "operationId": "claim_mobile_pairing",
         "requestBody": {
           "content": {
             "application/json": {
@@ -5094,7 +5094,7 @@
         "tags": [
           "mobile"
         ],
-        "operationId": "redeem",
+        "operationId": "redeem_mobile_pairing",
         "requestBody": {
           "content": {
             "application/json": {
