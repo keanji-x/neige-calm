@@ -121,7 +121,7 @@ impl PlannerBackend {
     pub(crate) fn issuance_hold(&self) -> Option<String> {
         match &self.0 {
             Arm::Codex(daemon) => daemon.authentication_hold(),
-            Arm::Claude(_) => None,
+            Arm::Claude(_) | Arm::Acp(_) => None,
         }
     }
 

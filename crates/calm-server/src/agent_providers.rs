@@ -252,6 +252,7 @@ impl ProviderAvailabilityCache {
             provider: AgentProvider::OpenCode,
             verdict: stamped.outcome,
             checked_at_ms: stamped.checked_at_ms,
+            authentication_notice: None,
         }
     }
 

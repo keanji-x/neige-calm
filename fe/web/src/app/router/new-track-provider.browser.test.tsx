@@ -68,7 +68,7 @@ function mount(claude: unknown, opencode = false) {
     if (request.path === '/api/models?provider=claude') return Promise.resolve(ok(claude));
     if (request.path === '/api/models?provider=opencode') return Promise.resolve(ok(NO_CLAUDE));
     if (request.path === '/api/agent-providers') return Promise.resolve(ok([...availability(claude === NO_CLAUDE ? 'not_configured' : 'ready'),
-      { provider: 'opencode', status: opencode ? 'ready' : 'not_configured', reason: opencode ? null : 'Configure the agent', checked_at_ms: 1 }]));
+      { provider: 'opencode', status: opencode ? 'ready' : 'not_configured', reason: opencode ? null : 'Configure the agent', checked_at_ms: 1, authentication_notice: null }]));
     if (request.path === '/api/settings') return Promise.resolve(ok({}));
     return Promise.resolve(ok([]));
   } };

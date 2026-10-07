@@ -1,4 +1,6 @@
 //! Managed ACP acceptance through the production boot, REST routes and Harness.
+#[path = "cases/acp_planner_authentication.rs"]
+mod acp_planner_authentication;
 #[allow(dead_code)]
 #[path = "cases/claude_planner_session_fixture.rs"]
 mod claude_planner_session_fixture;
