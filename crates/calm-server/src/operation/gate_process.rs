@@ -2,18 +2,16 @@
 use super::task_verify_adapter::{GateStep, GateVerdict};
 use crate::error::{CalmError, Result};
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 const LOG_TAIL_BYTES: u64 = 8 * 1024;
-const GATE_STEP_SENTINEL: &[u8] = b"::gate-step ";
-/// Lines longer than this are skipped by the sentinel scan; the wrapper's own sentinel lines are far shorter.
-const SENTINEL_LINE_MAX_BYTES: u64 = 4 * 1024;
 /// POSIX single-quote escaping: `'` → `'\''`.
 fn sh_single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// First action is the release handshake (kernel death before release EOFs the pipe and the held child exits 75 having executed nothing);
-/// the exit code is written via tmp + `rename(2)` last, the exit path is `unset` before any step runs, and each step runs in a subshell so a top-level `exit`/`exec`/`set -e` ends the STEP, never bypasses the finish handler.
+/// the exit code is written via tmp + `rename(2)` last, the exit and step paths are `unset` before any step runs, and each step runs in a subshell so a top-level `exit`/`exec`/`set -e` ends the STEP, never bypasses the finish handler.
+/// Before each step the wrapper records its 1-based number in the step file, which names the step a failure belongs to (#2387); the `::gate-step` line in the log is for readers only.
 pub(crate) fn render_gate_wrapper(steps: &[GateStep]) -> String {
     let mut script = String::new();
     script.push_str("#!/bin/sh\n");
@@ -21,6 +19,8 @@ pub(crate) fn render_gate_wrapper(steps: &[GateStep]) -> String {
     script.push_str("read -r _go || exit 75\n");
     script.push_str("neige_gate_exit_path=$NEIGE_GATE_EXIT_PATH\n");
     script.push_str("unset NEIGE_GATE_EXIT_PATH\n");
+    script.push_str("neige_gate_step_path=$NEIGE_GATE_STEP_PATH\n");
+    script.push_str("unset NEIGE_GATE_STEP_PATH\n");
     script.push_str("neige_gate_finish() {\n");
     script.push_str(
         "  printf '%s\\n' \"$1\" > \"$neige_gate_exit_path.tmp\" && \
@@ -28,7 +28,11 @@ pub(crate) fn render_gate_wrapper(steps: &[GateStep]) -> String {
     );
     script.push_str("  exit \"$1\"\n");
     script.push_str("}\n");
-    for step in steps {
+    for (index, step) in steps.iter().enumerate() {
+        script.push_str(&format!(
+            "printf '%s\\n' {} > \"$neige_gate_step_path\"\n",
+            index + 1
+        ));
         script.push_str(&format!(
             "printf '%s\\n' {}\n",
             sh_single_quote(&format!("::gate-step {}", step.name))
@@ -46,31 +50,9 @@ pub(crate) fn render_gate_wrapper(steps: &[GateStep]) -> String {
     script
 }
 
-/// Last `::gate-step <name>` sentinel in the whole log. The sentinel decides gate-red versus
-/// gate-infra, so it is never searched for in a bounded window: a step may print any amount after
-/// its sentinel (#2387).
-fn last_gate_step_sentinel(log: impl std::io::BufRead) -> std::io::Result<Option<String>> {
-    use std::io::BufRead as _;
-    let mut log = log;
-    let mut sentinel = None;
-    let mut line = Vec::new();
-    let mut continues_long_line = false;
-    loop {
-        line.clear();
-        let read =
-            std::io::Read::take(&mut log, SENTINEL_LINE_MAX_BYTES).read_until(b'\n', &mut line)?;
-        if read == 0 {
-            return Ok(sentinel);
-        }
-        if !continues_long_line && let Some(name) = line.strip_prefix(GATE_STEP_SENTINEL) {
-            sentinel = Some(String::from_utf8_lossy(name).trim().to_string());
-        }
-        continues_long_line = line.last() != Some(&b'\n');
-    }
-}
-
-/// Terminal escape sequences (CSI, OSC and two-byte escapes) removed, so a tail read by the Planner
-/// carries the text rather than colour codes.
+/// Terminal escape sequences removed, so a tail read by the Planner carries the text rather than
+/// colour codes. A malformed or unterminated sequence ends at the line, so it never hides the lines
+/// after it.
 fn strip_terminal_escapes(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
@@ -79,28 +61,54 @@ fn strip_terminal_escapes(text: &str) -> String {
             out.push(c);
             continue;
         }
-        match chars.next() {
+        match chars.peek().copied() {
+            // CSI: parameter and intermediate bytes, then one final byte.
             Some('[') => {
-                for c in chars.by_ref() {
+                chars.next();
+                while let Some(&c) = chars.peek() {
+                    if ('\u{20}'..='\u{3f}').contains(&c) {
+                        chars.next();
+                        continue;
+                    }
                     if ('\u{40}'..='\u{7e}').contains(&c) {
-                        break;
+                        chars.next();
                     }
+                    break;
                 }
             }
+            // OSC: ends at BEL or `ESC \`.
             Some(']') => {
-                while let Some(c) = chars.next() {
-                    if c == '\u{7}' || (c == '\u{1b}' && chars.next_if_eq(&'\\').is_some()) {
+                chars.next();
+                while let Some(&c) = chars.peek() {
+                    if c == '\n' {
+                        break;
+                    }
+                    chars.next();
+                    if c == '\u{7}' {
+                        break;
+                    }
+                    if c == '\u{1b}' {
+                        chars.next_if_eq(&'\\');
                         break;
                     }
                 }
             }
-            // nF escapes such as `ESC ( B`: intermediates, then one final byte.
+            // nF escapes such as `ESC ( B`: intermediate bytes, then one final byte.
             Some(c) if ('\u{20}'..='\u{2f}').contains(&c) => {
-                for c in chars.by_ref() {
-                    if ('\u{30}'..='\u{7e}').contains(&c) {
-                        break;
+                while let Some(&c) = chars.peek() {
+                    if ('\u{20}'..='\u{2f}').contains(&c) {
+                        chars.next();
+                        continue;
                     }
+                    if ('\u{30}'..='\u{7e}').contains(&c) {
+                        chars.next();
+                    }
+                    break;
                 }
+            }
+            // Two-byte escapes such as `ESC =` or `ESC M`.
+            Some(c) if ('\u{30}'..='\u{7e}').contains(&c) => {
+                chars.next();
             }
             _ => {}
         }
@@ -108,27 +116,51 @@ fn strip_terminal_escapes(text: &str) -> String {
     out
 }
 
-pub(crate) fn read_log_tail(log_path: &Path) -> (String, Option<String>) {
+/// The last 8 KiB of the log, terminal escapes removed.
+pub(crate) fn read_log_tail(log_path: &Path) -> String {
     use std::io::{Read, Seek, SeekFrom};
     let Ok(mut file) = std::fs::File::open(log_path) else {
-        return (String::new(), None);
-    };
-    let Ok(sentinel) = last_gate_step_sentinel(std::io::BufReader::new(&mut file)) else {
-        return (String::new(), None);
+        return String::new();
     };
     let len = file.metadata().map(|m| m.len()).unwrap_or(0);
     if file
         .seek(SeekFrom::Start(len.saturating_sub(LOG_TAIL_BYTES)))
         .is_err()
     {
-        return (String::new(), sentinel);
+        return String::new();
     }
     let mut bytes = Vec::new();
     if file.read_to_end(&mut bytes).is_err() {
-        return (String::new(), sentinel);
+        return String::new();
     }
-    let tail = strip_terminal_escapes(&String::from_utf8_lossy(&bytes));
-    (tail, sentinel)
+    strip_terminal_escapes(&String::from_utf8_lossy(&bytes))
+}
+
+/// One gate attempt's evidence: its log, the step file its wrapper writes, and the steps it runs.
+#[derive(Clone, Debug)]
+pub(crate) struct GateEvidence {
+    pub log_path: PathBuf,
+    pub step_path: PathBuf,
+    pub steps: Vec<GateStep>,
+}
+
+impl GateEvidence {
+    /// The step the wrapper last started, from the step file. `None` when no step started (the
+    /// file is absent, e.g. the handshake failed) or the record does not name a declared step.
+    /// Like the exit file, a same-user step could overwrite it; it names a step, never a verdict.
+    fn started_step(&self) -> Option<String> {
+        let number: usize = std::fs::read_to_string(&self.step_path)
+            .ok()?
+            .trim()
+            .parse()
+            .ok()?;
+        let step = self.steps.get(number.checked_sub(1)?)?;
+        Some(step.name.clone())
+    }
+
+    fn log_path_text(&self) -> String {
+        self.log_path.display().to_string()
+    }
 }
 
 /// The wrapper-written exit file is consulted ONLY for dead work (a same-user worker can forge it); `Err(())` = present but unparseable, a foreign artifact, fail loudly.
@@ -142,8 +174,12 @@ pub(crate) fn read_exit_file(exit_path: &Path) -> std::result::Result<Option<i32
 }
 
 /// From the live wait status, or — for dead recovered work only — the exit file's value.
-pub(crate) fn verdict_from_exit_code(exit_code: i32, log_path: &Path, attempt: i64) -> GateVerdict {
-    let (log_tail, sentinel) = read_log_tail(log_path);
+pub(crate) fn verdict_from_exit_code(
+    exit_code: i32,
+    evidence: &GateEvidence,
+    attempt: i64,
+) -> GateVerdict {
+    let log_tail = read_log_tail(&evidence.log_path);
     if exit_code == 0 {
         return GateVerdict {
             passed: true,
@@ -151,12 +187,13 @@ pub(crate) fn verdict_from_exit_code(exit_code: i32, log_path: &Path, attempt: i
             failing_step: None,
             exit_code: Some(0),
             log_tail,
-            log_path: log_path.display().to_string(),
+            log_path: evidence.log_path_text(),
             attempt,
         };
     }
-    // No `::gate-step` sentinel means no step ever ran (e.g. the handshake `read` hit EOF → exit 75) → infra, not red.
-    let status_detail = if sentinel.is_some() {
+    // No started step means no step ever ran (e.g. the handshake `read` hit EOF → exit 75) → infra, not red.
+    let failing_step = evidence.started_step();
+    let status_detail = if failing_step.is_some() {
         "gate-red"
     } else {
         "gate-infra"
@@ -164,42 +201,46 @@ pub(crate) fn verdict_from_exit_code(exit_code: i32, log_path: &Path, attempt: i
     GateVerdict {
         passed: false,
         status_detail: Some(status_detail.into()),
-        failing_step: sentinel,
+        failing_step,
         exit_code: Some(exit_code),
         log_tail,
-        log_path: log_path.display().to_string(),
+        log_path: evidence.log_path_text(),
         attempt,
     }
 }
 
-pub(crate) fn infra_verdict(reason: &str, log_path: &Path, attempt: i64) -> GateVerdict {
-    let (mut log_tail, sentinel) = read_log_tail(log_path);
+pub(crate) fn infra_verdict(reason: &str, evidence: &GateEvidence, attempt: i64) -> GateVerdict {
+    let mut log_tail = read_log_tail(&evidence.log_path);
     if log_tail.is_empty() {
         log_tail = reason.to_string();
     }
     GateVerdict {
         passed: false,
         status_detail: Some("gate-infra".into()),
-        failing_step: sentinel,
+        failing_step: evidence.started_step(),
         exit_code: None,
         log_tail,
-        log_path: log_path.display().to_string(),
+        log_path: evidence.log_path_text(),
         attempt,
     }
 }
 
-pub(crate) fn timeout_verdict(log_path: &Path, attempt: i64, timeout_secs: i64) -> GateVerdict {
-    let (mut log_tail, sentinel) = read_log_tail(log_path);
+pub(crate) fn timeout_verdict(
+    evidence: &GateEvidence,
+    attempt: i64,
+    timeout_secs: i64,
+) -> GateVerdict {
+    let mut log_tail = read_log_tail(&evidence.log_path);
     if log_tail.is_empty() {
         log_tail = format!("gate timed out after {timeout_secs}s");
     }
     GateVerdict {
         passed: false,
         status_detail: Some("gate-timeout".into()),
-        failing_step: sentinel,
+        failing_step: evidence.started_step(),
         exit_code: None,
         log_tail,
-        log_path: log_path.display().to_string(),
+        log_path: evidence.log_path_text(),
         attempt,
     }
 }
@@ -211,6 +252,7 @@ pub(crate) async fn spawn_held(
     script_path: &Path,
     log_path: &Path,
     exit_path: &Path,
+    step_path: &Path,
     op_marker: &str,
 ) -> Result<tokio::process::Child> {
     if !cwd.is_dir() {
@@ -231,6 +273,7 @@ pub(crate) async fn spawn_held(
         // Start from an EMPTY environment: no `NEIGE_MCP_SOCKET`/`NEIGE_MCP_TOKEN` (the gate cannot write kernel state) and no incidental kernel secrets.
         .env_clear()
         .env("NEIGE_GATE_EXIT_PATH", exit_path)
+        .env("NEIGE_GATE_STEP_PATH", step_path)
         // Authenticates this gate's descendants to the recovery group sweep. UNLIKE `NEIGE_GATE_EXIT_PATH`
         // the wrapper does NOT `unset` it, so every descendant inherits it; a process that later recycles
         // the numeric pgid does not carry it. See `stop_group` / `group_members_with_env_marker`.
@@ -284,7 +327,7 @@ impl GateObservation {
 pub(crate) async fn observe_verdict(
     child: tokio::process::Child,
     artifacts: super::SpawnArtifacts,
-    log: std::path::PathBuf,
+    evidence: GateEvidence,
     attempt: i64,
     timeout_secs: i64,
 ) -> GateObservation {
@@ -334,12 +377,14 @@ pub(crate) async fn observe_verdict(
         tracing::warn!(%error, "gate group cleanup remains unresolved; preserving actual wait evidence");
     }
     let verdict = match wait {
-        Err(_) => timeout_verdict(&log, attempt, timeout_secs),
-        Ok(Err(error)) => {
-            infra_verdict(&format!("gate wrapper wait failed: {error}"), &log, attempt)
-        }
-        Ok(Ok(Some(code))) => verdict_from_exit_code(code, &log, attempt),
-        Ok(Ok(None)) => infra_verdict("gate wrapper killed by signal", &log, attempt),
+        Err(_) => timeout_verdict(&evidence, attempt, timeout_secs),
+        Ok(Err(error)) => infra_verdict(
+            &format!("gate wrapper wait failed: {error}"),
+            &evidence,
+            attempt,
+        ),
+        Ok(Ok(Some(code))) => verdict_from_exit_code(code, &evidence, attempt),
+        Ok(Ok(None)) => infra_verdict("gate wrapper killed by signal", &evidence, attempt),
     };
     GateObservation { child, verdict }
 }
