@@ -871,3 +871,57 @@ mod read;
 mod verbs;
 mod wake;
 mod weekly;
+
+#[tokio::test]
+async fn created_entry_keeps_kernel_id_shape_in_receipt_and_wake() {
+    let fx = Fixture::new().await;
+    let identity = fx.identity(CardRole::Planner).await;
+    let entry = wake::create(
+        &fx,
+        &identity,
+        "id-contract",
+        json!({"title":"ID contract","description":"Preserve persisted identity", "schedule":{"kind":"timed","start":"2026-10-02T09:00","end":"2026-10-02T10:00","timezone":"Asia/Shanghai"}}),
+    )
+    .await;
+    assert_eq!(
+        entry.id.len(),
+        32,
+        "Calendar keeps the kernel's published compact ID format"
+    );
+    assert!(
+        entry
+            .id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    );
+    let stored = fx
+        .repo
+        .plugin_kv_get(PLUGIN_ID, &format!("entry:{}", entry.id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored["id"], entry.id);
+    let receipt_key = format!(
+        "receipt:{}",
+        serde_json::to_string(&(format!("card:{}", identity.card_id), "id-contract")).unwrap()
+    );
+    let receipt = fx
+        .repo
+        .plugin_kv_get(PLUGIN_ID, &receipt_key)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt["entry_id"], entry.id);
+    assert_eq!(
+        crate::builtin_plugins::calendar::wake::scan(
+            &fx.ctx,
+            wake::at("2026-10-02T09:00:10+08:00")
+        )
+        .await
+        .unwrap(),
+        1
+    );
+    assert!(
+        matches!(wake::wake_events(&fx).await.as_slice(), [crate::event::Event::TrackWakeRequested {key,..}] if key == &entry.id)
+    );
+}

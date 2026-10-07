@@ -1,6 +1,6 @@
 //! Server composition of concrete plugin transports and compiled backends.
-use super::{CliQueryRuntime, HttpMcpClient, McpClient};
-pub use plugin_runtime::connector::*;
+pub use crate::connector::*;
+use crate::{cli_query::CliQueryRuntime, http_mcp::HttpMcpClient, mcp::McpClient};
 use std::sync::Arc;
 
 /// What a running plugin/connector talks to; `Clone` is cheap by construction (every payload is behind an `Arc`).
@@ -9,7 +9,7 @@ pub enum ConnectorClient {
     /// `kind: app` — the stdio child process.
     Stdio(Arc<McpClient>),
     /// Trusted compiled implementation; no process or IPC.
-    Builtin(&'static crate::builtin_plugins::BuiltinPlugin),
+    Builtin(&'static dyn super::ports::BuiltinBackend),
     /// `kind: mcp-http` — remote streamable-HTTP MCP server.
     Http(Arc<HttpMcpClient>),
     /// `kind: cli-query` — a pinned local query binary; no child is supervised, each `tools/call` forks a fresh short-lived process.

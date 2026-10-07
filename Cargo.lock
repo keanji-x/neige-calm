@@ -482,7 +482,7 @@ dependencies = [
  "libc",
  "nix 0.29.0",
  "nucleo-matcher",
- "plugin-runtime",
+ "plugin",
  "proc-macro2",
  "provider",
  "pulldown-cmark",
@@ -2185,12 +2185,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "plugin-runtime"
+name = "plugin"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "calm-test-sockets",
  "calm-types",
  "chrono",
+ "chrono-tz",
  "futures-util",
  "hex",
  "libc",

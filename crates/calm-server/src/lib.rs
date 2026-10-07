@@ -569,7 +569,7 @@ pub mod planner_card;
 pub mod planner_model;
 pub mod planner_permission_mode;
 pub mod plugin_host;
-pub use plugin_runtime::results as plugin_results;
+pub use plugin::results as plugin_results;
 pub mod preview;
 pub mod proc_identity;
 pub(crate) mod proc_supervisor;

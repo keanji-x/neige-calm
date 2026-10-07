@@ -11,7 +11,9 @@ use crate::session_projection_repo::AgentProvider;
 use crate::state::WriteContext;
 use calm_truth::track_vcs_repo::{SqlxTrackVcsRepo, TrackVcsRepo};
 use calm_types::worker::{Principal, WorkerSessionId};
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -337,13 +339,7 @@ pub use calm_types::plugin::read_only_annotations;
 /// Annotations telling codex not to insert a second approval prompt. Use ONLY for tools whose
 /// declared `roles` the registry gates — the kernel's role gate is the actual authorization
 /// boundary; a tool that writes outside the caller's track/area must keep approval ON.
-pub fn role_gated_write_annotations() -> Value {
-    json!({
-        "readOnlyHint": false,
-        "destructiveHint": false,
-        "openWorldHint": false,
-    })
-}
+pub use calm_types::plugin::role_gated_write_annotations;
 
 /// A visibility fence a tool runs before its closed input: a built-in plugin's native tool is
 /// unknown (`-32601`) to a caller whose Track does not bind the running plugin.

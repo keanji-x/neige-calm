@@ -1,6 +1,6 @@
 //! Byte-frozen pre-2129 descriptor, used for identity only, never execution.
 use super::*;
-use crate::mcp_server::transport::{PluginForgePayload, semantic_payload_hash};
+use calm_types::forge_action::{PluginForgePayload, semantic_payload_hash};
 
 // Preserve these bytes: they were included in the released semantic hash.
 const PRE_2129_FOLD: &str = "{conclusion: ([(.statusCheckRollup // [])[] | if .__typename == \"CheckRun\" then (if .status != \"COMPLETED\" then \"pending\" elif .conclusion == \"SUCCESS\" or .conclusion == \"NEUTRAL\" or .conclusion == \"SKIPPED\" then \"success\" else \"failure\" end) elif .state == \"SUCCESS\" then \"success\" elif .state == \"PENDING\" or .state == \"EXPECTED\" then \"pending\" else \"failure\" end] | if any(. == \"failure\") then \"failure\" elif any(. == \"pending\") then \"pending\" elif length == 0 then \"no_checks\" else \"success\" end), mergeable: (.mergeable | ascii_downcase), head_sha: .headRefOid}";

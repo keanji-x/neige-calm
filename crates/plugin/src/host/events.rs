@@ -3,8 +3,8 @@
 
 use serde::Deserialize;
 
-use crate::event::Event;
-use plugin_runtime::glob::glob_matches;
+use crate::glob::glob_matches;
+use calm_types::event::Event;
 
 /// The filter clause the plugin sends. All fields optional; missing == match.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -63,7 +63,7 @@ fn event_name(ev: &Event) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Area, AreaKind, Card, Overlay, Track};
+    use calm_types::model::{Area, AreaKind, Card, Overlay, Track};
     use serde_json::json;
 
     fn area(id: &str) -> Area {
@@ -170,7 +170,7 @@ mod tests {
             track_id: "w".into(),
         }));
         assert!(!f.matches(&Event::TrackUpdated(
-            crate::event::TrackUpdatedPayload::new(track("w", "c"), None),
+            calm_types::event::TrackUpdatedPayload::new(track("w", "c"), None),
         )));
     }
 

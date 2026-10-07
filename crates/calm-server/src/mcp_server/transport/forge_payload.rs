@@ -1,44 +1,8 @@
-use calm_types::event::{ForgeEventSpec, ForgeMergeSubject};
-use serde::Deserialize;
-use serde_json::{Map, Value};
-
-use crate::operation::forge_action_adapter::ProbeSpec;
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct PluginForgePayload {
-    pub(crate) argv: Vec<String>,
-    pub(crate) idem_key: String,
-    #[serde(default)]
-    pub(crate) event_spec: Option<ForgeEventSpec>,
-    #[serde(default)]
-    pub(crate) subject: Option<ForgeMergeSubject>,
-    #[serde(default)]
-    pub(crate) context: serde_json::Map<String, Value>,
-    #[serde(default)]
-    pub(crate) probe: Option<ProbeSpec>,
-    #[serde(default)]
-    pub(crate) parked: bool,
-    /// Plugin-authorized predecessor identities for this exact logical request.
-    /// Used only to retrieve an existing operation in the authenticated scope.
-    #[serde(default)]
-    pub(crate) compatible_payload_hashes: Vec<String>,
-}
-
-/// Construct a forge action with event extraction and recovery probes.
-pub(crate) fn forge_action_payload(
-    idem_key: String,
-    argv: Vec<String>,
-    table: ForgeEventSpec,
-    probes: ProbeSpec,
-) -> PluginForgePayload {
-    PluginForgePayload {
-        argv,
-        idem_key,
-        event_spec: Some(table),
-        subject: None,
-        context: Map::new(),
-        probe: Some(probes),
-        parked: false,
-        compatible_payload_hashes: Vec::new(),
-    }
+//! The shared action contract; kernel submission/execution remain in the transport adapter.
+pub(crate) use calm_types::forge_action::{PluginForgePayload, forge_action_payload};
+pub(crate) fn semantic_payload_hash(
+    payload: &PluginForgePayload,
+) -> Result<String, crate::plugin_host::RpcError> {
+    calm_types::forge_action::semantic_payload_hash(payload)
+        .map_err(crate::plugin_host::RpcError::internal)
 }

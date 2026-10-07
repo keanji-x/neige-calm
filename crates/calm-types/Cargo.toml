@@ -26,6 +26,9 @@ serde = { version = "1", features = ["derive"] }
 # fence render differently (spurious rev bumps / stomp-guard rejections).
 serde_json = { version = "1", features = ["float_roundtrip"] }
 
+# Pure forge-action semantic identity (already locked in the workspace).
+sha2 = "0.10"
+
 # Errors
 thiserror = "1"
 
@@ -42,6 +45,3 @@ utoipa = "5"
 
 [dev-dependencies]
 proptest = "1"
-# #1635 S2a — sha256 pin of `report/legacy_initial_v4.md` in the tests only.
-# Pure hashing, dev-only; none of sqlx/axum/tokio comes with it.
-sha2 = "0.10"

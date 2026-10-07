@@ -9,7 +9,7 @@ pub static KERNEL_VERSION: LazyLock<Version> = LazyLock::new(|| {
     Version::parse(env!("CARGO_PKG_VERSION")).expect("CARGO_PKG_VERSION is valid semver")
 });
 
-pub use plugin_runtime::version::{KernelTooOld, check_min_kernel_version};
+pub use plugin::version::{KernelTooOld, check_min_kernel_version};
 
 #[cfg(test)]
 mod tests {

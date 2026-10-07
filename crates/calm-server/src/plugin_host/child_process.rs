@@ -1,5 +1,5 @@
 //! Shared process primitives; the server retains its integration observations.
-pub use plugin_runtime::child_process::*;
+pub use plugin::child_process::*;
 
 #[cfg(test)]
 mod tests {

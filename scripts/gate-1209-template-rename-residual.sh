@@ -23,7 +23,7 @@ read -r -d '' ALLOWLIST <<'EOF' || true
 11  crates/calm-truth/src/db/sqlite/track_plugin_scope_migration_tests.rs
 4   crates/calm-truth/src/db/sqlite/track_template_rename_migration_tests.rs
 # --- 4. `Manifest::parse` refuses the retired `workflows` key by name; the check, its tests, and the field doc must spell it.
-9  crates/plugin-runtime/src/manifest.rs
+9  crates/plugin/src/manifest.rs
 # --- 5. The deserialize-only `#[serde(alias)]` that lets historical `track.updated` rows replay; deleting it is the fail-open this gate prevents.
 2   crates/calm-types/src/model.rs
 # --- 6. Goldens pinning that alias: their `wire` half is the OLD spelling on purpose, proving the alias is one-way.

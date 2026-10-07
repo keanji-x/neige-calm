@@ -1,9 +1,11 @@
 //! UDS listener + per-connection JSON-RPC pump for the kernel-as-MCP-server.
 //! One socket under `<data_dir>/mcp/kernel.sock` (mode 0600); a connection must `initialize` before any `tools/*` request.
 
+use sha2::{Digest, Sha256};
+
 mod call;
 mod forge_payload;
-pub(crate) use forge_payload::{PluginForgePayload, forge_action_payload};
+pub(crate) use forge_payload::{PluginForgePayload, forge_action_payload, semantic_payload_hash};
 mod catalog;
 pub(crate) use catalog::{
     PluginOwner, SessionCatalog, card_bound_catalog, tool_descriptors_for_connection, tool_owner,
@@ -27,18 +29,16 @@ use crate::mcp_server::tool_visibility::{
 use crate::model::CardRole;
 use crate::model::{new_id, now_ms};
 use crate::operation::forge_action_adapter::{
-    FORGE_ACTION_KIND, ForgeActionPayload, ProbeSpec, SUPPORTED_FORGE_EVENT_KINDS,
+    FORGE_ACTION_KIND, ForgeActionPayload, SUPPORTED_FORGE_EVENT_KINDS,
 };
 use crate::operation::{OperationKey, OperationOutcome, OperationResult, OperationRuntime};
 use crate::plugin_host::ConnectorClient;
 use crate::plugin_host::manifest::{ConnectorKind, ToolKind};
 use crate::session_projection_repo::AgentProvider;
 use crate::state::WriteContext;
-use calm_types::event::{ForgeEventSpec, ForgeMergeSubject};
 use calm_types::worker::WorkerSessionId;
-use serde::Serialize;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
+
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -776,15 +776,6 @@ pub(crate) fn plugin_tool_entry(
 
 /// Semantic subset used for idempotency payload comparison. `argv` is excluded so a retry with edited volatile argv dedups instead of conflicting;
 /// changing this field set needs a boot-time recompute migration for stored forge-action `payload_hash` values.
-#[derive(Serialize)]
-struct SemanticForgePayload<'a> {
-    idem_key: &'a str,
-    event_spec: Option<&'a ForgeEventSpec>,
-    subject: Option<&'a ForgeMergeSubject>,
-    context: &'a serde_json::Map<String, Value>,
-    probe: Option<&'a ProbeSpec>,
-}
-
 pub(crate) struct ForgeActionSubmission {
     pub(crate) op_id: String,
     pub(crate) parked: bool,
@@ -1083,21 +1074,6 @@ async fn resolve_forge_cwd(
             "forge action requires a planner or worker caller",
         )),
     }
-}
-
-pub(crate) fn semantic_payload_hash(payload: &PluginForgePayload) -> Result<String, RpcError> {
-    let semantic = SemanticForgePayload {
-        idem_key: &payload.idem_key,
-        event_spec: payload.event_spec.as_ref(),
-        subject: payload.subject.as_ref(),
-        context: &payload.context,
-        probe: payload.probe.as_ref(),
-    };
-    let bytes = serde_json::to_vec(&semantic)
-        .map_err(|e| RpcError::internal(format!("forge-action hash serialization: {e}")))?;
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn forge_result_path(gate_logs_dir: &Path, idem_key: &str) -> Result<PathBuf, RpcError> {

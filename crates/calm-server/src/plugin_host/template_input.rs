@@ -1,14 +1,14 @@
 //! Plugin validation contracts and server HTTP error mapping.
-pub use plugin_runtime::template_input::*;
+pub use plugin::template_input::*;
 
 /// A field violation answers 400 with its `field`; a whole-instance one is a plain `bad_request`.
-impl From<plugin_runtime::template_input::InstanceViolation> for crate::error::CalmError {
-    fn from(violation: plugin_runtime::template_input::InstanceViolation) -> Self {
+impl From<plugin::template_input::InstanceViolation> for crate::error::CalmError {
+    fn from(violation: plugin::template_input::InstanceViolation) -> Self {
         match violation {
-            plugin_runtime::template_input::InstanceViolation::Whole(sentence) => {
+            plugin::template_input::InstanceViolation::Whole(sentence) => {
                 crate::error::CalmError::BadRequest(sentence)
             }
-            plugin_runtime::template_input::InstanceViolation::Field { field, reason } => {
+            plugin::template_input::InstanceViolation::Field { field, reason } => {
                 crate::error::CalmError::InvalidField { field, reason }
             }
         }

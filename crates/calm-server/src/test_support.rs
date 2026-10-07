@@ -3,7 +3,7 @@ use calm_truth::model::Task;
 use sqlx::{Sqlite, Transaction};
 
 #[cfg(unix)]
-pub(crate) use plugin_runtime::test_support::assert_pid_dead;
+pub(crate) use plugin::test_support::assert_pid_dead;
 
 pub(crate) async fn insert_task_tx(tx: &mut Transaction<'_, Sqlite>, task: &Task) -> Result<()> {
     sqlx::query(

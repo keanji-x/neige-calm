@@ -622,3 +622,59 @@ mod truth_error_bridge_tests {
         }
     }
 }
+
+impl From<plugin::ports::DomainError> for CalmError {
+    fn from(value: plugin::ports::DomainError) -> Self {
+        match value {
+            plugin::ports::DomainError::BadRequest(reason) => Self::BadRequest(reason),
+            plugin::ports::DomainError::Conflict(reason) => Self::Conflict(reason),
+            plugin::ports::DomainError::NotFound(reason) => Self::NotFound(reason),
+            plugin::ports::DomainError::Internal(reason) => Self::Internal(reason),
+        }
+    }
+}
+
+impl plugin::ports::ErrorFactory for CalmError {
+    fn not_found(reason: String) -> Self {
+        Self::NotFound(reason)
+    }
+    fn conflict(reason: String) -> Self {
+        Self::Conflict(reason)
+    }
+    fn bad_request(reason: String) -> Self {
+        Self::BadRequest(reason)
+    }
+    fn internal(reason: String) -> Self {
+        Self::Internal(reason)
+    }
+    fn service_unavailable(reason: String) -> Self {
+        Self::ServiceUnavailable(reason)
+    }
+    fn plugin_install(reason: String) -> Self {
+        Self::PluginInstall(reason)
+    }
+    fn plugin_conflict(reason: String) -> Self {
+        Self::PluginConflict(reason)
+    }
+    fn plugin_dir_occupied(reason: String) -> Self {
+        Self::PluginDirOccupied(reason)
+    }
+    fn plugin_busy(reason: String) -> Self {
+        Self::PluginBusy(reason)
+    }
+    fn plugin_kernel_too_old(reason: String) -> Self {
+        Self::PluginKernelTooOld(reason)
+    }
+    fn is_client_refusal(&self) -> bool {
+        self.status().is_client_error()
+    }
+    fn reason(&self) -> String {
+        self.reason()
+    }
+    fn to_rpc(self) -> plugin::mcp::RpcError {
+        crate::mcp_server::framing::calm_error(self)
+    }
+    fn is_conflict(&self, reason: &str) -> bool {
+        matches!(self, Self::Conflict(message) if message == reason)
+    }
+}

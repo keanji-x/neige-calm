@@ -1,5 +1,5 @@
 use super::*;
-use crate::builtin_plugins::dev::git_actions::lower_for_caller;
+use crate::builtin::gitforge::git_actions::lower_for_caller;
 
 fn caller() -> ForgeCallerScope {
     ForgeCallerScope {
@@ -149,7 +149,7 @@ fn issue_comment_recovery_identity_binds_each_caller() {
         assert_ne!(original["argv"][7], changed["argv"][7]);
         assert_ne!(original["probe"], changed["probe"]);
     }
-    assert!(crate::builtin_plugins::dev::git_actions::lower("gh_issue_comment", &args()).is_err());
+    assert!(crate::builtin::gitforge::git_actions::lower("gh_issue_comment", &args()).is_err());
     let mut invalid = caller();
     invalid.card_id.clear();
     assert!(lower_for_caller("gh_issue_comment", &args(), &invalid).is_err());

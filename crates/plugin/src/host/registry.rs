@@ -60,7 +60,7 @@ impl PluginRegistry {
     /// Add only compiled components before a host takes ownership of this registry.
     pub fn with_builtins(self) -> Self {
         let mut inner = self.inner.write().unwrap();
-        for component in crate::builtin_plugins::catalog() {
+        for component in crate::builtin::catalog() {
             let manifest = component.manifest().clone();
             inner.install_paths.remove(&manifest.id);
             inner.manifests.insert(manifest.id.clone(), manifest);
@@ -170,7 +170,7 @@ impl PluginRegistry {
             }
             match load_one(&manifest_path) {
                 Ok(manifest) => {
-                    if crate::builtin_plugins::is_reserved(&manifest.id)
+                    if crate::builtin::is_reserved(&manifest.id)
                         || manifest.kind == super::ConnectorKind::Builtin
                     {
                         report
@@ -247,9 +247,9 @@ impl PluginRegistry {
         self.inner.read().unwrap().install_paths.get(id).cloned()
     }
 
-    /// Install or overwrite a manifest. `pub(in crate::plugin_host)` and guard-taking on purpose: only `PluginHost` can hold a guard, so every runtime write is behind the lifecycle lock. Do NOT re-widen or add an unlocked escape hatch.
+    /// Install or overwrite a manifest. `pub(in crate::host)` and guard-taking on purpose: only `PluginHost` can hold a guard, so every runtime write is behind the lifecycle lock. Do NOT re-widen or add an unlocked escape hatch.
     /// The key is read off the guard; the `assert_eq!` keeps the key and the stored manifest from disagreeing.
-    pub(in crate::plugin_host) fn insert(
+    pub(in crate::host) fn insert(
         &self,
         guard: &LifecycleGuard,
         manifest: Manifest,
@@ -271,7 +271,7 @@ impl PluginRegistry {
 
     /// Replace ONLY the `exposes_tools` field, under a single write lock. Not a `get` → mutate → `insert`: that would race a concurrent `/reload` and roll the whole manifest back.
     /// No-op (returns `false`) when `id` is absent, so a spawn tail cannot resurrect an uninstalled manifest.
-    pub(in crate::plugin_host) fn set_exposes_tools(
+    pub(in crate::host) fn set_exposes_tools(
         &self,
         guard: &LifecycleGuard,
         tools: Vec<super::manifest::ExposedTool>,
@@ -288,7 +288,7 @@ impl PluginRegistry {
     }
 
     /// Remove a manifest. Returns the previous entry, if any.
-    pub(in crate::plugin_host) fn remove(&self, guard: &LifecycleGuard) -> Option<Manifest> {
+    pub(in crate::host) fn remove(&self, guard: &LifecycleGuard) -> Option<Manifest> {
         let id = guard.id();
         let mut inner = self.inner.write().unwrap();
         inner.install_paths.remove(id);

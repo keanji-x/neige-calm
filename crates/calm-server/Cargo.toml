@@ -268,7 +268,7 @@ tempfile = "3"
 automerge = "0.9"
 
 # Local crates
-plugin-runtime = { path = "../plugin-runtime" }
+plugin = { path = "../plugin" }
 # #679 PR1 — vocabulary + execution-contract layers. calm-server re-exports
 # the moved types (`pub use calm_types::…`) so external paths are unchanged.
 calm-types = { path = "../calm-types" }
@@ -317,7 +317,7 @@ libc = "0.2"
 
 [dev-dependencies]
 url = "2"
-plugin-runtime = { path = "../plugin-runtime", features = ["test-support"] }
+plugin = { path = "../plugin", features = ["test-support"] }
 calm-test-sockets = { path = "../calm-test-sockets" }
 # `test_support::{ChildGuard, ReapedProcDir}` for the /proc-scan unit tests (#1793).
 calm-worker-runtime = { path = "../calm-worker-runtime", features = ["test-support"] }

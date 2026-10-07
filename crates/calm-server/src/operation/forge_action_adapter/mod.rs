@@ -33,19 +33,7 @@ use super::{
 pub const FORGE_ACTION_KIND: &str = "forge-action";
 
 /// validate_payload rejects any other event_kind BEFORE the irreversible action can run, so a typo'd kind can never execute the side effect and then fail to record its event.
-pub const SUPPORTED_FORGE_EVENT_KINDS: &[&str] = &[
-    "forge.pr.merged",
-    "forge.scan.completed",
-    "forge.pr.opened",
-    "forge.pr.published",
-    "forge.pr.diff.read",
-    "forge.issue.read",
-    "forge.pr.checks",
-    "forge.issue.closed",
-    "worktree.provisioned",
-    "worktree.committed",
-    "worktree.removed",
-];
+pub use calm_types::forge_action::SUPPORTED_FORGE_EVENT_KINDS;
 
 const RELEASE_TIMEOUT: Duration = Duration::from_secs(60);
 const REATTACH_POLL: Duration = Duration::from_secs(2);
@@ -84,12 +72,7 @@ pub struct ForgeActionPayload {
     pub deadline_ms: i64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ProbeSpec {
-    pub probe_argv: Vec<String>,
-    #[serde(default)]
-    pub output_probe_argv: Option<Vec<String>>,
-}
+pub use calm_types::forge_action::ProbeSpec;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct FrozenForge {

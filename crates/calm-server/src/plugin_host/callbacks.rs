@@ -7,7 +7,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
 
 use crate::card_kind::validate_card_kind_global;
 #[cfg(test)]
@@ -92,11 +91,7 @@ async fn card_scope_for_callback(repo: &dyn RepoRead, card: CardId, track_id: &s
     }
 }
 
-/// One live subscription; held so the bridge task can be aborted on plugin stop.
-pub struct SubscriptionRecord {
-    pub plugin_id: String,
-    pub task: JoinHandle<()>,
-}
+pub use plugin::host::ports::SubscriptionRecord;
 
 /// What a successful `tools/call` response yields when the plugin declared the tool card-creating via `_meta.ui.resourceUri`; `structured_content` is opaque to the kernel and persisted verbatim in `Card.payload`.
 #[derive(Debug, Clone)]

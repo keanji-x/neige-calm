@@ -1,5 +1,5 @@
 use super::*;
-use crate::operation::forge_action_adapter::SUPPORTED_FORGE_EVENT_KINDS;
+use calm_types::forge_action::SUPPORTED_FORGE_EVENT_KINDS;
 
 pub(super) fn assert_no_reserved_context(payload: &Value, reserved: &[&str]) {
     let context = payload["context"].as_object().expect("context object");

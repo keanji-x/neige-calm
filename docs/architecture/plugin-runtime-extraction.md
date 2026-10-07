@@ -2,7 +2,7 @@
 
 ## Outcome and scope
 
-Extract the protocol and execution machinery into `crates/plugin-runtime` without
+Extract the protocol and execution machinery into `crates/plugin` without
 changing plugin manifests, wire messages, REST/OpenAPI, database migrations,
 authorization, or persisted events. `calm-server` remains the composition root.
 The runtime must not depend on `calm-server`, `calm-truth`, SQLite, or Axum.
