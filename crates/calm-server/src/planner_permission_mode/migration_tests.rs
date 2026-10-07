@@ -12,7 +12,7 @@ use crate::harness::profile::{HarnessProfile, PlannerBinding};
 use crate::model::CardRole;
 
 /// The backfill's version. Migration numbers are assigned at merge; this is the one place to move.
-const BACKFILL: i64 = 156;
+const BACKFILL: i64 = 155;
 
 fn migrator(keep: impl Fn(i64) -> bool) -> sqlx::migrate::Migrator {
     sqlx::migrate::Migrator {
