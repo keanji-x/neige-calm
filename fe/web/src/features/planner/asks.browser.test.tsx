@@ -16,7 +16,7 @@ const TITLE = [
   "- 可合并：mergeable",
 ].join("\n");
 
-// One case per way the composer draws a question: options as radios, none as a free-text field.
+// Both option questions and free-text questions show the Planner’s title as a heading.
 for (const options of [["合并", "暂不合并"], []]) {
   it(`shows a multi-line question one line per line, as the Planner wrote it (${options.length} options)`, async () => {
     await page.viewport(800, 600);
@@ -26,10 +26,7 @@ for (const options of [["合并", "暂不合并"], []]) {
         onAnswer={vi.fn<AnswerAsk>()}
       />,
     );
-    const label = screen.getByText(
-      (_, element) =>
-        element?.textContent === TITLE && element.children.length === 0,
-    );
+    const label = screen.getByRole("heading", { name: /^合并 PR #12/ });
     // innerText follows the rendered layout: collapsed whitespace would join the lines with spaces.
     expect(label.innerText).toBe(TITLE);
   });
