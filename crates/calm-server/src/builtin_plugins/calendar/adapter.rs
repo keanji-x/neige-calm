@@ -34,6 +34,12 @@ struct Tx<'a, 't> {
 }
 #[async_trait]
 impl Transaction<CalmError> for Tx<'_, '_> {
+    fn new_id(&self) -> String {
+        crate::model::new_id()
+    }
+    fn now_ms(&self) -> i64 {
+        crate::model::now_ms()
+    }
     async fn read(&mut self, key: &str) -> Result<Option<String>> {
         Ok(
             sqlx::query_scalar("SELECT value FROM plugin_kv WHERE plugin_id=? AND key=?")

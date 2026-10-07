@@ -11,6 +11,7 @@ pub enum Binding {
 }
 pub struct Definition {
     pub binding: Binding,
+    pub tool_prompt_directory: &'static str,
     manifest: Manifest,
     optional: bool,
     tools: Vec<tools::NativeToolSpec>,
@@ -30,12 +31,20 @@ static CATALOG: LazyLock<Vec<Definition>> = LazyLock::new(|| {
     vec![
         Definition {
             binding: Binding::Gitforge,
+            tool_prompt_directory: concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/builtin/gitforge/prompts"
+            ),
             manifest: Manifest::parse(gitforge::MANIFEST).expect("compiled manifest"),
             optional: true,
             tools: vec![gitforge::publish::descriptor()],
         },
         Definition {
             binding: Binding::Calendar,
+            tool_prompt_directory: concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/builtin/calendar/prompts"
+            ),
             manifest: Manifest::parse(calendar::MANIFEST).expect("compiled manifest"),
             optional: false,
             tools: calendar::tools::descriptors(),

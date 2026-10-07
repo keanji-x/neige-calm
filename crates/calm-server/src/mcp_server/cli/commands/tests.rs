@@ -888,17 +888,33 @@ fn task_report_surfaces_name_the_execution_id_attempt_id() {
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     markdown_files(&crate_dir.join("prompts"), &mut files);
-    markdown_files(&crate_dir.join("../plugin/src/builtin"), &mut files);
+    for definition in plugin::builtin::catalog() {
+        markdown_files(Path::new(definition.tool_prompt_directory), &mut files);
+    }
+    let files: Vec<PathBuf> = files
+        .into_iter()
+        .map(|path| path.canonicalize().expect("prompt exists"))
+        .collect();
+    let mut files = files;
     for allowed in CALLER_DEDUPE_KEY_PROMPTS {
         assert!(
-            files.contains(&crate_dir.join(allowed)),
+            files.contains(
+                &crate_dir
+                    .join(allowed)
+                    .canonicalize()
+                    .expect("allowed prompt exists")
+            ),
             "allow-list names a missing prompt: {allowed}"
         );
     }
     files.retain(|file| {
-        !CALLER_DEDUPE_KEY_PROMPTS
-            .iter()
-            .any(|allowed| *file == crate_dir.join(allowed))
+        !CALLER_DEDUPE_KEY_PROMPTS.iter().any(|allowed| {
+            *file
+                == crate_dir
+                    .join(allowed)
+                    .canonicalize()
+                    .expect("allowed prompt exists")
+        })
     });
     files.push(crate_dir.join("src/mcp_server/cli/help.rs"));
     assert!(files.len() >= 40, "scan is vacuous: {} files", files.len());

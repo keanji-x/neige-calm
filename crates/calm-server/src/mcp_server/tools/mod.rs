@@ -257,7 +257,14 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("prompts/tools");
         let mut stems = BTreeSet::new();
         let mut contents = std::collections::BTreeMap::new();
-        for entry in std::fs::read_dir(&dir).expect("read prompts/tools") {
+        let directories = std::iter::once(dir).chain(
+            plugin::builtin::catalog()
+                .iter()
+                .map(|definition| Path::new(definition.tool_prompt_directory).to_path_buf()),
+        );
+        for entry in directories.flat_map(|directory| {
+            std::fs::read_dir(directory).expect("read declared tool prompt directory")
+        }) {
             let path = entry.expect("directory entry").path();
             let file_name = path
                 .file_name()
@@ -287,7 +294,10 @@ mod tests {
                 "{file_name}: trailing whitespace before the final newline"
             );
             assert!(!body.is_empty(), "{file_name}: newline only");
-            stems.insert(stem.to_string());
+            assert!(
+                stems.insert(stem.to_string()),
+                "duplicate tool prompt: {stem}"
+            );
             contents.insert(stem.to_string(), body.to_string());
         }
 

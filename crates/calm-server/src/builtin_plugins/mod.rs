@@ -183,10 +183,7 @@ pub fn register_native_tools(registry: &mut ToolRegistry) {
 mod tests;
 
 pub(crate) fn required_owner(template_id: &str) -> Option<&'static str> {
-    catalog()
-        .iter()
-        .find(|p| p.manifest().templates.iter().any(|t| t.id == template_id))
-        .map(|p| p.manifest().id.as_str())
+    plugin::builtin::required_owner(template_id)
 }
 
 /// Start every compiled component's background task once at boot.

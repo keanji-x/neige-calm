@@ -12,7 +12,6 @@ calm-types = { path = "../calm-types" }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 async-trait = "0.1"
-uuid = { version = "1", features = ["v4"] }
 hex = "0.4"
 rand = "0.8"
 ureq = { version = "2", default-features = false, features = ["tls"] }

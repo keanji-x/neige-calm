@@ -18,6 +18,8 @@ pub enum CommitMode {
 }
 #[async_trait]
 pub trait Transaction<E: ErrorFactory>: Send {
+    fn new_id(&self) -> String;
+    fn now_ms(&self) -> i64;
     async fn read(&mut self, key: &str) -> Result<Option<String>, E>;
     async fn put(&mut self, key: &str, value: &str) -> Result<(), E>;
     async fn track_is_open(&mut self, track: &str) -> Result<bool, E>;

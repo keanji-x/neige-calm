@@ -7,12 +7,6 @@ use calm_types::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-fn new_id() -> String {
-    uuid::Uuid::new_v4().to_string()
-}
-fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
-}
 pub struct Access {
     pub track: Option<String>,
     pub actor: ActorId,
@@ -114,9 +108,9 @@ pub async fn create<S: Storage>(
                             "calendar creation receipt exists".into(),
                         ));
                     }
-                    let now = now_ms();
+                    let now = tx.now_ms();
                     let entry = Entry {
-                        id: new_id(),
+                        id: tx.new_id(),
                         task: request.task,
                         version: 1,
                         cancelled: false,
@@ -221,7 +215,7 @@ pub async fn update<S: Storage>(
                         Change::Remove => entry.cancelled = true,
                     }
                     entry.version += 1;
-                    entry.updated_at = now_ms();
+                    entry.updated_at = tx.now_ms();
                     put(tx, &key, &entry).await?;
                     Ok((
                         json!(entry),
