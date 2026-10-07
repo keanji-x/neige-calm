@@ -754,10 +754,19 @@ export const forgePrChecksSchema = z.object({
     track_id: z.string(),
     pr_number: z.number(),
     conclusion: z.string(),
-    snapshot: z.object({ head_sha: z.string(), mergeable: z.string() }).optional(),
+    snapshot: z.object({ head_sha: z.string(), mergeable: z.string(), all_checks_completed: z.boolean().optional() }).optional(),
     failed_checks: z
       .array(z.intersection(
-        z.object({ name: z.string() }),
+        z.object({
+          name: z.string(),
+          diagnostics: z.discriminatedUnion('status', [
+            z.object({
+              status: z.literal('available'), failed_tests: z.array(z.string()), failed_steps: z.array(z.string()),
+              error_summary: z.string().refine((value) => value.trim().length > 0), log_url: z.string().refine((value) => value.trim().length > 0), truncated: z.boolean(),
+            }).refine((value) => [...value.failed_tests, ...value.failed_steps].some((name) => name.trim().length > 0)),
+            z.object({ status: z.literal('unavailable'), reason: z.string().refine((value) => value.trim().length > 0) }),
+          ]).optional(),
+        }),
         z.union([z.object({ url: z.string() }), z.object({ id: z.string() })]),
       ))
       .optional(),

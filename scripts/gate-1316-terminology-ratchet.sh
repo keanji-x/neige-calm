@@ -40,6 +40,12 @@
 # #2235 bounded exception: harness_item/fe 95 -> 97 comes solely from imports of the
 # existing wire row type and pagination limit in the production-route benchmark;
 # local names use TranscriptRow and PAGE_LIMIT. No new protocol vocabulary is defined.
+# #2129 upgrade compatibility: two existing event_spec protocol field references
+# in the frozen descriptor and predecessor reconstruction; no new domain term.
+# #2363 bounded exception: spec/crates 501 -> 505 comes solely from the existing
+# `event_spec` protocol: checks_pre2363.rs has one field assignment, one constructor
+# call and one test field reference; checks-pre-2363.json has one frozen payload key.
+# These four occurrences freeze the complete pre-2363 replay descriptor; no new vocabulary.
 # Patterns are boundary-anchored per case; the two words' uppercase branches are deliberately
 # asymmetric (`COVE[A-Z]+` is English, `WAVE[A-Z]+` is oracle ids) and `.spec.ts` is excluded by lookahead.
 

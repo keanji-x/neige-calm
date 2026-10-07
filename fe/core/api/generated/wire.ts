@@ -282,6 +282,11 @@ export type FolderConflict = { folder_id: number, area_id: AreaId, conflict_path
 export type FolderConflictKind = "equal" | "ancestor" | "descendant";
 
 /**
+ * Structured evidence from the exact Actions job, or an explicit collection failure.
+ */
+export type ForgeCheckDiagnostics = { "status": "available", failed_tests: Array<string>, failed_steps: Array<string>, error_summary: string, log_url: string, truncated: boolean, } | { "status": "unavailable", reason: string, };
+
+/**
  * A failed check's details URL, or the forge's own id for it when it has none.
  */
 export type ForgeCheckLocator = { url: string, } | { id: string, };
@@ -289,12 +294,20 @@ export type ForgeCheckLocator = { url: string, } | { id: string, };
 /**
  * Evidence captured by the checks read, never reconstructed from a later PR head.
  */
-export type ForgeChecksSnapshot = { head_sha: string, mergeable: string, };
+export type ForgeChecksSnapshot = { head_sha: string, mergeable: string, 
+/**
+ * Absent only on historical snapshots, never inferred from their conclusion.
+ */
+all_checks_completed?: boolean, };
 
 /**
  * One check the checks read classified as failed, and where to read it.
  */
-export type ForgeFailedCheck = { name: string, } & ({ url: string, } | { id: string, });
+export type ForgeFailedCheck = { name: string, 
+/**
+ * Absent only on historical failures recorded before diagnostic capture.
+ */
+diagnostics?: ForgeCheckDiagnostics, } & ({ url: string, } | { id: string, });
 
 /**
  * The PR a `forge.pr.merged` event merged. Rows written before #2016 also carry `phase` and

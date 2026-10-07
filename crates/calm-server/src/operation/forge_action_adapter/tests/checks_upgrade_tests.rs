@@ -8,8 +8,22 @@ fn historical_payload(fx: &ForgeRuntimeFixture) -> PluginForgePayload {
     let mut payload: PluginForgePayload =
         serde_json::from_str(include_str!("../checks-pre-2129.json")).unwrap();
     payload.argv = vec!["sh".into(), "-c".into(),
-        "while [ ! -f \"$1\" ]; do sleep 0.05; done; printf '%s\\n' '{\"conclusion\":\"success\",\"mergeable\":\"mergeable\",\"head_sha\":\"historical-head\"}'".into(),
+        "while [ ! -f \"$1\" ]; do [ -d \"${1%/*}\" ] || exit 1; sleep 0.05; done; printf '%s\\n' '{\"conclusion\":\"success\",\"mergeable\":\"mergeable\",\"head_sha\":\"historical-head\"}'".into(),
         "sh".into(), fx.cwd.path().join("release").display().to_string()];
+    payload
+}
+
+fn pre2363_payload(fx: &ForgeRuntimeFixture) -> PluginForgePayload {
+    let mut payload: PluginForgePayload = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../plugin/src/builtin/gitforge/git_actions/checks-pre-2363.json"
+    )))
+    .unwrap();
+    payload.argv = historical_payload(fx).argv;
+    payload.argv[2] = payload.argv[2].replace(
+        "\"head_sha\":\"historical-head\"}",
+        "\"head_sha\":\"historical-head\",\"snapshot\":{\"head_sha\":\"historical-head\",\"mergeable\":\"mergeable\"},\"failed_checks\":[]}",
+    );
     payload
 }
 
@@ -43,9 +57,14 @@ async fn submit(fx: &ForgeRuntimeFixture, payload: PluginForgePayload) -> String
     .op_id
 }
 
-async fn upgraded_checks(completed: bool) {
+async fn upgraded_checks(completed: bool, pre2363: bool) {
     let fx = forge_runtime_fixture().await;
-    let op_id = submit(&fx, historical_payload(&fx)).await;
+    let old = if pre2363 {
+        pre2363_payload(&fx)
+    } else {
+        historical_payload(&fx)
+    };
+    let op_id = submit(&fx, old).await;
     let before = fx
         .runtime
         .find_by_kind_and_idempotency(
@@ -98,7 +117,12 @@ async fn upgraded_checks(completed: bool) {
                 OperationOutcome::Succeeded { result: original },
             ) => {
                 assert_eq!(repeated, original);
-                assert!(original["event"].get("snapshot").is_none());
+                assert_eq!(original["event"].get("snapshot").is_some(), pre2363);
+                assert!(
+                    original["event"]["snapshot"]
+                        .get("all_checks_completed")
+                        .is_none()
+                );
             }
             other => panic!("historical result must remain successful: {other:?}"),
         }
@@ -119,7 +143,10 @@ async fn upgraded_checks(completed: bool) {
     }
     let events = event_payloads(&fx.repo, "forge.pr.checks").await;
     assert_eq!(events.len(), 1);
-    assert!(events[0].get("snapshot").is_none_or(Value::is_null));
+    assert_eq!(
+        events[0].get("snapshot").is_some_and(|v| !v.is_null()),
+        pre2363
+    );
     assert_eq!(
         operation_count_for_idem(
             &fx.repo,
@@ -135,12 +162,45 @@ async fn upgraded_checks(completed: bool) {
 
 #[tokio::test]
 async fn checks_upgrade_pending_reuses_frozen_receipt() {
-    upgraded_checks(false).await;
+    upgraded_checks(false, false).await;
 }
 
 #[tokio::test]
 async fn checks_upgrade_completed_reuses_frozen_result() {
-    upgraded_checks(true).await;
+    upgraded_checks(true, false).await;
+}
+
+#[tokio::test]
+async fn checks_upgrade_pre2363_pending_reuses_frozen_receipt() {
+    upgraded_checks(false, true).await;
+}
+
+#[tokio::test]
+async fn checks_upgrade_pre2363_completed_reuses_frozen_result() {
+    upgraded_checks(true, true).await;
+}
+
+#[tokio::test]
+async fn checks_upgrade_all_mode_cannot_reuse_frozen_default_result() {
+    let fx = forge_runtime_fixture().await;
+    let old = submit(&fx, pre2363_payload(&fx)).await;
+    std::fs::write(fx.cwd.path().join("release"), "").unwrap();
+    fx.runtime.wait(&old).await.unwrap();
+    let mut all: PluginForgePayload = serde_json::from_value(
+        lower(
+            "gh_pr_checks",
+            &json!({
+                "repo":"owner/repo", "pr":42, "attempt":"upgrade", "wait_for_all":true
+            }),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(all.compatible_payload_hashes.is_empty());
+    all.argv = vec!["/bin/false".into()];
+    let new = submit(&fx, all).await;
+    assert_ne!(new, old);
+    fx.runtime.wait(&new).await.unwrap();
 }
 
 #[tokio::test]

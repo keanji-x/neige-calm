@@ -1095,6 +1095,7 @@ golden_test!(
         snapshot: Some(calm_types::event::ForgeChecksSnapshot {
             head_sha: "exact-head".into(),
             mergeable: "mergeable".into(),
+            all_checks_completed: None,
         }),
         failed_checks: None,
     }
@@ -1110,16 +1111,19 @@ golden_test!(
         snapshot: Some(calm_types::event::ForgeChecksSnapshot {
             head_sha: "exact-head".into(),
             mergeable: "mergeable".into(),
+            all_checks_completed: None,
         }),
         failed_checks: Some(vec![
             calm_types::event::ForgeFailedCheck {
                 name: "lint".into(),
+                diagnostics: None,
                 locator: calm_types::event::ForgeCheckLocator::Url {
                     url: "https://ci.example/lint".into(),
                 },
             },
             calm_types::event::ForgeFailedCheck {
                 name: "legacy status".into(),
+                diagnostics: None,
                 locator: calm_types::event::ForgeCheckLocator::Id {
                     id: "SC_kw1".into(),
                 },
@@ -1136,6 +1140,19 @@ golden_test!(
         issue_number: 1,
         artifact_path: "/tmp/neige/issue-body.md".into(),
     }
+);
+
+golden_test!(
+    forge_pr_checks_diagnostics,
+    "forge_pr_checks_diagnostics.json",
+    Event::from_kind_and_payload("forge.pr.checks", json!({
+        "track_id":"track-01","pr_number":1,"conclusion":"failure",
+        "snapshot":{"head_sha":"exact-head","mergeable":"mergeable","all_checks_completed":false},
+        "failed_checks":[
+            {"name":"shard-1","id":"C1","diagnostics":{"status":"available","failed_tests":[],"failed_steps":["test"],"error_summary":"assertion failed","log_url":"https://github.com/o/r/actions/runs/1/job/2","truncated":true}},
+            {"name":"shard-2","id":"C2","diagnostics":{"status":"unavailable","reason":"no Actions permission"}}
+        ]
+    })).unwrap()
 );
 
 golden_test!(
@@ -1419,7 +1436,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 88,
+        files, 89,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {

@@ -50,3 +50,37 @@ fn forge_pr_checks_failed_checks_round_trip_and_need_a_locator() {
         );
     }
 }
+
+#[test]
+fn forge_pr_checks_diagnostics_and_completeness_round_trip() {
+    let value = json!({
+        "track_id":"track-01", "pr_number":1,"conclusion":"failure",
+        "snapshot":{"head_sha":"head","mergeable":"mergeable","all_checks_completed":false},
+        "failed_checks":[
+            {"name":"shard-1","id":"C1","diagnostics":{"status":"available", "failed_tests":["case_one"],"failed_steps":[],"error_summary":"assertion failed", "log_url":"https://github.com/o/r/actions/runs/1/job/2", "truncated":false}},
+            {"name":"shard-2","id":"C2","diagnostics":{"status":"unavailable","reason":"no log permission"}}
+        ]
+    });
+    let event = Event::from_kind_and_payload("forge.pr.checks", value.clone()).unwrap();
+    assert_eq!(event.payload_value(), value);
+    for field in [
+        "failed_tests",
+        "failed_steps",
+        "error_summary",
+        "log_url",
+        "truncated",
+    ] {
+        let mut invalid = value.clone();
+        invalid["failed_checks"][0]["diagnostics"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(
+            Event::from_kind_and_payload("forge.pr.checks", invalid).is_err(),
+            "{field}"
+        );
+    }
+    let mut empty = value;
+    empty["failed_checks"][0]["diagnostics"]["failed_tests"] = json!([]);
+    assert!(Event::from_kind_and_payload("forge.pr.checks", empty).is_err());
+}

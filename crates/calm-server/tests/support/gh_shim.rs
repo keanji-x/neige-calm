@@ -208,7 +208,7 @@ case "$area:$verb" in
     head_sha=$(live_head_sha "$pr_dir" "$repo")
     query=$(get_arg -f "$@") || exit 2
     case "$query" in
-      *'CheckRun{id name status conclusion detailsUrl}'*'StatusContext{id context state targetUrl}'*'pageInfo{hasNextPage endCursor}'*) ;;
+      *'CheckRun{id name status conclusion detailsUrl databaseId checkSuite{databaseId workflowRun{databaseId}}}'*'StatusContext{id context state targetUrl}'*'pageInfo{hasNextPage endCursor}'*) ;;
       *) echo 'missing GraphQL locator/pagination fields' >&2; exit 2 ;;
     esac
     mergeable=MERGEABLE
@@ -231,6 +231,32 @@ case "$area:$verb" in
             }}}}]}}}}}]
       '
     fi
+    if [ -f "$state/checks/$number.exit_status" ]; then exit "$(cat "$state/checks/$number.exit_status")"; fi
+    ;;
+  api:*)
+    endpoint=
+    for arg in "$verb" "$@"; do
+      case "$arg" in repos/*) endpoint=$arg ;; esac
+    done
+    case "$endpoint" in
+      */actions/*) repo=${endpoint#repos/}; repo=${repo%/actions/*} ;;
+      */check-runs/*) repo=${endpoint#repos/}; repo=${repo%/check-runs/*} ;;
+      *) exit 2 ;;
+    esac
+    state=$(ensure_state "$repo")
+    printf 'api %s\n' "$endpoint" >> "$state/gh.log"
+    printf 'api.args %s %s\n' "$verb" "$*" >> "$state/gh.log"
+    block_if_requested "$state" api
+    fixture=$(printf '%s' "$endpoint" | tr '/' '_')
+    [ -f "$state/actions/$fixture" ] || exit 1
+    filter=$(get_arg --jq "$@") || exit 2
+    case "$*" in
+      *--paginate*) jq -c "$filter" "$state/actions/$fixture" ;;
+      *) jq -s '.[0]' "$state/actions/$fixture" | jq -c "$filter" ;;
+    esac
+    status=$?
+    if [ -f "$state/actions/$fixture.exit_status" ]; then status=$(cat "$state/actions/$fixture.exit_status"); fi
+    exit "$status"
     ;;
   pr:list)
     repo=$(get_arg --repo "$@") || exit 2

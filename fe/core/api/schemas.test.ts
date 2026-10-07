@@ -3,6 +3,27 @@ import { describe, expect, it } from 'vitest';
 import { decodeWireEvent } from './schemas.js';
 
 describe('core/api wire decode behavior', () => {
+  it('forge_pr_checks preserves diagnostics and independent collection completeness', () => {
+    const data = {
+      track_id: 'track-01', pr_number: 1, conclusion: 'failure',
+      snapshot: { head_sha: 'exact-head', mergeable: 'mergeable', all_checks_completed: false },
+      failed_checks: [
+        { name: 'shard-1', id: 'C1', diagnostics: {
+          status: 'available', failed_tests: ['case_one'], failed_steps: [], error_summary: 'assertion failed',
+          log_url: 'https://github.com/o/r/actions/runs/1/job/2', truncated: false,
+        } },
+        { name: 'shard-2', id: 'C2', diagnostics: { status: 'unavailable', reason: 'no log permission' } },
+      ],
+    };
+    const decoded = decodeWireEvent({ ev: 'forge.pr.checks', data });
+    expect(decoded.status).toBe('ready');
+    if (decoded.status === 'ready') expect(decoded.value).toEqual({ ev: 'forge.pr.checks', data });
+    for (const diagnostics of [{ status: 'available' }, { status: 'unavailable' }, { status: 'unknown' }]) {
+      expect(decodeWireEvent({ ev: 'forge.pr.checks', data: {
+        ...data, failed_checks: [{ name: 'shard', id: 'C1', diagnostics }],
+      } }).status).toBe('failed');
+    }
+  });
   it('accepts historical checks and complete snapshots but rejects incomplete evidence', () => {
     const data = { track_id: 'track-01', pr_number: 1, conclusion: 'success' };
     expect(decodeWireEvent({ ev: 'forge.pr.checks', data }).status).toBe('ready');
