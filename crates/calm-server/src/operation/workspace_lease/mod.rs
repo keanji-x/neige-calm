@@ -23,6 +23,7 @@ mod metadata_lock;
 pub(crate) mod release;
 mod teardown;
 pub(crate) mod track_worktree;
+pub(crate) mod track_worktree_clean;
 pub(crate) mod upstream;
 pub(crate) mod upstream_fetch;
 #[cfg(test)]

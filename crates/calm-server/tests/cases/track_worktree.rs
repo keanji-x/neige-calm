@@ -604,3 +604,121 @@ async fn track_delete_removes_the_track_worktree_and_branch() {
     assert_eq!(head(&up.clone), clone_head);
     assert_eq!(porcelain(&up.clone), clone_status);
 }
+
+/// #2356 S2: a closed track's worktree drops its ignored files (build output) once nothing runs in
+/// it, and keeps tracked files, untracked work and an ignored nested repository. An open track and
+/// a closed track with a running worker session are left alone.
+#[tokio::test]
+async fn a_closed_idle_track_worktree_drops_its_ignored_files() {
+    use calm_server::db::sqlite::session_start_runtime_tx;
+    use calm_server::model::{NewCard, NewTerminal, new_id, now_ms};
+    use calm_server::session_projection_repo::{
+        WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+    };
+    use calm_server::test_seams::clean_idle_closed_track_worktrees_for_test as clean;
+
+    let b = boot().await;
+    let up = upstream(b.tmp.path());
+    std::fs::write(up.seed.join(".gitignore"), "target/\nscratch/\n").unwrap();
+    run_git(&up.seed, ["add", ".gitignore"]);
+    run_git(&up.seed, ["commit", "-q", "-m", "ignore build output"]);
+    run_git(&up.seed, ["push", "-q", "origin", "main"]);
+    let (status, body) = b.create_at(&up.clone, None, None).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let track_id = body["id"].as_str().unwrap().to_string();
+    let worktree = expected_worktree(&up.clone, &track_id);
+    assert!(worktree.join(".gitignore").is_file(), "premise: on the tip");
+    std::fs::create_dir_all(worktree.join("target/debug")).unwrap();
+    std::fs::write(worktree.join("target/debug/app"), "binary\n").unwrap();
+    std::fs::write(worktree.join("untracked.txt"), "work\n").unwrap();
+    let nested = worktree.join("scratch/nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    run_git(&nested, ["init", "-q"]);
+    b.shutdown_harnesses().await;
+    let pool = b.repo.pool();
+
+    assert_eq!(
+        clean(pool).await.unwrap(),
+        0,
+        "an open track is not cleaned"
+    );
+    assert!(worktree.join("target/debug/app").is_file());
+
+    let (status, body) = b
+        .as_user(
+            "PATCH",
+            &format!("/api/tracks/{track_id}"),
+            json!({"closed": true}),
+        )
+        .await;
+    assert!(status.is_success(), "{status} {body}");
+    let card = b
+        .repo
+        .card_create(NewCard {
+            track_id: track_id.clone().into(),
+            title: None,
+            kind: "terminal".into(),
+            sort: None,
+            payload: json!({}),
+        })
+        .await
+        .unwrap();
+    let terminal = b
+        .state
+        .repo
+        .terminal_create(NewTerminal {
+            card_id: card.id.clone(),
+            program: "/bin/true".into(),
+            cwd: worktree.to_string_lossy().into_owned(),
+            env: json!({}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let session_id = new_id();
+    let mut tx = pool.begin().await.unwrap();
+    session_start_runtime_tx(
+        &mut tx,
+        WorkerSessionInit {
+            id: session_id.clone(),
+            card_id: card.id.to_string(),
+            kind: WorkerSessionKind::Terminal,
+            agent_provider: None,
+            status: WorkerSessionState::Running,
+            terminal_run_id: Some(terminal.id.clone()),
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            spawn_op_id: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        clean(pool).await.unwrap(),
+        0,
+        "a running worker session defers the clean"
+    );
+    assert!(worktree.join("target/debug/app").is_file());
+
+    sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE id = ?1")
+        .bind(&session_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(clean(pool).await.unwrap(), 1);
+    assert!(!worktree.join("target").exists(), "build output is gone");
+    assert!(worktree.join(".gitignore").is_file(), "tracked files stay");
+    assert!(
+        worktree.join("untracked.txt").is_file(),
+        "untracked work stays"
+    );
+    assert!(
+        nested.join(".git").is_dir(),
+        "an ignored nested repository stays"
+    );
+    assert_eq!(porcelain(&worktree), "?? untracked.txt");
+}

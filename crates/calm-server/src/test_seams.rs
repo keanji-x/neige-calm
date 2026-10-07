@@ -108,6 +108,19 @@ pub async fn prepare_worker_lease_for_test(
     .map(|plan| plan.path)
 }
 
+/// One pass of the #2356 closed-track worktree clean with nothing cleaned before it. Returns how
+/// many worktrees it cleaned.
+#[cfg(any(test, feature = "fixtures"))]
+pub async fn clean_idle_closed_track_worktrees_for_test(
+    pool: &sqlx::SqlitePool,
+) -> crate::error::Result<usize> {
+    crate::operation::workspace_lease::track_worktree_clean::clean_idle_closed_track_worktrees(
+        pool,
+        &mut std::collections::HashSet::new(),
+    )
+    .await
+}
+
 /// Give an attached track its #1830 track worktree the way the create route does: the path
 /// `track_worktree_path_for(checkout, id)` on the row (the create transaction's write), then the
 /// production `ensure_track_worktree` (the route's post-commit step: fetch the upstream, start
