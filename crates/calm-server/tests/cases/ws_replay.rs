@@ -976,6 +976,70 @@ async fn unknown_kind_row_in_under_cap_window_skips_only_that_row() {
     );
 }
 
+// Raw historical rows intentionally bypass the current event contract.
+async fn seed_retired_ratify_rows(repo: &SqlxRepo) -> Vec<i64> {
+    let mut ids = Vec::new();
+    for (kind, payload) in [
+        (
+            "ratify.requested",
+            r#"{"track_id":"track","reason":"Merge?"}"#,
+        ),
+        (
+            "ratify.resolved",
+            r#"{"track_id":"track","decision":"grant"}"#,
+        ),
+        (
+            "ratify.resolved",
+            r#"{"track_id":"track","decision":"deny","message":"Hold"}"#,
+        ),
+    ] {
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO events(kind,payload,actor,at,event_version) VALUES(?,?,'user',0,1) RETURNING id",
+        ).bind(kind).bind(payload).fetch_one(repo.pool()).await.unwrap();
+        ids.push(id);
+    }
+    ids
+}
+
+#[tokio::test]
+async fn retired_ratify_rows_skip_only_history_and_advance_to_raw_tip() {
+    let (addr, repo, bus) = boot_with_cap(Some(8)).await;
+    let head = seed_n_area_updates(&repo, &bus, 1).await;
+    let retired = seed_retired_ratify_rows(&repo).await;
+    let tail = seed_n_area_updates(&repo, &bus, 1).await;
+    let trailing = seed_retired_ratify_rows(&repo).await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/api/events"))
+        .await
+        .unwrap();
+    ws.send(TMessage::Text(r#"{"sub":["*"],"since":0}"#.into()))
+        .await
+        .unwrap();
+    for id in [head[0], tail[0]] {
+        let frame = recv_json(&mut ws).await;
+        assert_eq!(frame["ev"], "area.updated");
+        assert_eq!(frame["_id"], id);
+    }
+    let done = recv_json(&mut ws).await;
+    assert_eq!(done["ev"], "_replay_complete");
+    assert_eq!(done["_id"], *trailing.last().unwrap());
+    assert!(retired[0] > head[0] && *retired.last().unwrap() < tail[0]);
+}
+
+#[tokio::test]
+async fn retired_ratify_only_window_advances_cursor() {
+    let (addr, repo, _bus) = boot_with_cap(Some(3)).await;
+    let retired = seed_retired_ratify_rows(&repo).await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/api/events"))
+        .await
+        .unwrap();
+    ws.send(TMessage::Text(r#"{"sub":["*"],"since":0}"#.into()))
+        .await
+        .unwrap();
+    let done = recv_json(&mut ws).await;
+    assert_eq!(done["ev"], "_replay_complete");
+    assert_eq!(done["_id"], *retired.last().unwrap());
+}
+
 // Structural events are permanent, so `MIN(id)` never advances past the first structural row; the durable retention watermark is what sees interior holes.
 
 #[tokio::test]

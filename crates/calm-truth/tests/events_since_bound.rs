@@ -274,9 +274,9 @@ async fn retired_review_rows_are_preserved_but_do_not_block_typed_readers() {
     .unwrap();
     let live: i64 = sqlx::query_scalar(
         "INSERT INTO events(kind,payload,actor,at,scope_kind,scope_track) \
-         VALUES('ratify.requested',?,?,0,'track','retired-track') RETURNING id",
+         VALUES('ask.requested',?,?,0,'track','retired-track') RETURNING id",
     )
-    .bind(r#"{"track_id":"retired-track","reason":"continue"}"#)
+    .bind(r#"{"track_id":"retired-track","questions":[{"title":"Continue?","options":[]}]}"#)
     .bind(&actor)
     .fetch_one(repo.pool())
     .await
@@ -294,7 +294,7 @@ async fn retired_review_rows_are_preserved_but_do_not_block_typed_readers() {
         .collect();
     assert_eq!(ids, vec![live]);
     let rows = repo
-        .events_for_track("retired-track", &["review.round", "ratify.requested"], None)
+        .events_for_track("retired-track", &["review.round", "ask.requested"], None)
         .await
         .unwrap();
     assert_eq!(rows.len(), 1);
@@ -313,4 +313,103 @@ async fn retired_review_rows_are_preserved_but_do_not_block_typed_readers() {
         .await
         .unwrap();
     assert_eq!(stored, payload);
+}
+
+#[tokio::test]
+async fn retired_ratify_rows_preserve_history_and_do_not_hide_current_asks() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let actor = serde_json::to_string(&ActorId::User).unwrap();
+    let mut historical = Vec::new();
+    for (kind, payload) in [
+        (
+            "ratify.requested",
+            r#"{"track_id":"track","reason":"Merge?"}"#,
+        ),
+        (
+            "ratify.resolved",
+            r#"{"track_id":"track","decision":"grant"}"#,
+        ),
+        (
+            "ratify.resolved",
+            r#"{"track_id":"track","decision":"deny","message":"Hold"}"#,
+        ),
+    ] {
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO events(kind,payload,actor,at,scope_kind,scope_track) \
+             VALUES(?,?,?,0,'track','track') RETURNING id",
+        )
+        .bind(kind)
+        .bind(payload)
+        .bind(&actor)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+        historical.push((id, kind, payload));
+    }
+    let request = Event::AskRequested {
+        track_id: "track".into(),
+        questions: vec![calm_types::event::AskQuestion {
+            title: "Continue?".into(),
+            options: Vec::new(),
+        }],
+        source_item_id: None,
+    };
+    let live: i64 = sqlx::query_scalar(
+        "INSERT INTO events(kind,payload,actor,at,scope_kind,scope_track) \
+         VALUES(?,?,?,0,'track','track') RETURNING id",
+    )
+    .bind(request.kind_tag())
+    .bind(request.payload_value().to_string())
+    .bind(&actor)
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+
+    assert!(repo.events_since(0, 3).await.unwrap().is_empty());
+    let events = repo.events_since(0, 4).await.unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].0, live);
+    assert_eq!(events[0].3.payload_value(), request.payload_value());
+    let rows = repo
+        .events_for_track(
+            "track",
+            &["ratify.requested", "ratify.resolved", "ask.requested"],
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, live);
+    assert_eq!(rows[0].event.payload_value(), request.payload_value());
+    assert!(
+        repo.events_for_track(
+            "track",
+            &["ratify.requested", "ratify.resolved"],
+            Some(historical[0].0),
+        )
+        .await
+        .unwrap()
+        .is_empty()
+    );
+
+    let mut cursor = 0;
+    for (id, kind, payload) in historical {
+        assert_eq!(
+            repo.events_raw_window_since(cursor, 1).await.unwrap(),
+            (1, Some(id))
+        );
+        assert!(repo.events_since(cursor, 1).await.unwrap().is_empty());
+        let stored: (String, String) = sqlx::query_as("SELECT kind,payload FROM events WHERE id=?")
+            .bind(id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+        assert_eq!(stored, (kind.to_owned(), payload.to_owned()));
+        cursor = id;
+    }
+    assert_eq!(repo.events_since(cursor, 1).await.unwrap()[0].0, live);
+    assert_eq!(
+        repo.events_raw_window_since(live, 1).await.unwrap(),
+        (0, None)
+    );
 }

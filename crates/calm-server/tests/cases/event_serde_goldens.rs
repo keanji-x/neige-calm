@@ -11,7 +11,7 @@ use calm_server::model::{
     Area, AreaKind, Card, CardRuntimeView, Overlay, Track, TrackWorkspace, TrackWorkspaceKind,
 };
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
-use calm_types::event::{AskQuestion, RatifyDecision, TaskContextRef};
+use calm_types::event::{AskQuestion, TaskContextRef};
 use calm_types::git_candidate::{DeliveryFailureCode, DeliverySettlement, DeliveryWakeReason};
 use calm_types::proposal::{ProposalAnchor, ProposalDecision, ProposalOp};
 use calm_types::verify_target::{
@@ -879,15 +879,6 @@ golden_test!(
 );
 
 golden_test!(
-    ratify_requested,
-    "ratify.requested.json",
-    Event::RatifyRequested {
-        track_id: TrackId::from("track-01"),
-        reason: "cap_exhausted".into(),
-    }
-);
-
-golden_test!(
     ask_requested,
     "ask.requested.json",
     Event::AskRequested {
@@ -926,26 +917,6 @@ golden_test!(
         ask_id: 28477,
         track_id: TrackId::from("track-01"),
         answers: vec!["Merge".into(), "eu-west".into()],
-    }
-);
-
-golden_test!(
-    ratify_resolved,
-    "ratify.resolved.json",
-    Event::RatifyResolved {
-        track_id: TrackId::from("track-01"),
-        decision: RatifyDecision::Grant,
-        message: None,
-    }
-);
-
-golden_test!(
-    ratify_resolved_with_message,
-    "ratify.resolved.message.json",
-    Event::RatifyResolved {
-        track_id: TrackId::from("track-01"),
-        decision: RatifyDecision::Deny,
-        message: Some("Hold: CI is red.\nRe-run the checks first.".into()),
     }
 );
 
@@ -1351,8 +1322,6 @@ const ALL_KIND_TAGS: [&str; 55] = [
     "workspace.leased",
     "workspace.released",
     "forge.pr.merged",
-    "ratify.requested",
-    "ratify.resolved",
     "ask.requested",
     "ask.answered",
     "proposal.submitted",
@@ -1454,8 +1423,6 @@ fn kind_tag_list_matches_enum() {
             Event::WorkspaceLeased { .. } => "workspace.leased",
             Event::WorkspaceReleased { .. } => "workspace.released",
             Event::ForgePrMerged { .. } => "forge.pr.merged",
-            Event::RatifyRequested { .. } => "ratify.requested",
-            Event::RatifyResolved { .. } => "ratify.resolved",
             Event::AskRequested { .. } => "ask.requested",
             Event::AskAnswered { .. } => "ask.answered",
             Event::ProposalSubmitted { .. } => "proposal.submitted",

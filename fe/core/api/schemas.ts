@@ -594,8 +594,6 @@ export const forgeMergeSubjectSchema = z.object({
   pr_number: z.number(),
 });
 
-export const ratifyDecisionSchema = z.enum(['grant', 'deny']);
-
 /** The forge action adapter observed a PR merge and completed the parked operation. */
 export const forgePrMergedSchema = z.object({
   ev: z.literal('forge.pr.merged'),
@@ -604,23 +602,6 @@ export const forgePrMergedSchema = z.object({
     subject: forgeMergeSubjectSchema,
     head_sha: z.string(),
     merge_sha: z.string(),
-  }),
-});
-
-export const ratifyRequestedSchema = z.object({
-  ev: z.literal('ratify.requested'),
-  data: z.object({
-    track_id: z.string(),
-    reason: z.string(),
-  }),
-});
-
-export const ratifyResolvedSchema = z.object({
-  ev: z.literal('ratify.resolved'),
-  data: z.object({
-    track_id: z.string(),
-    decision: ratifyDecisionSchema,
-    message: z.string().optional(),
   }),
 });
 
@@ -960,8 +941,6 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   workspaceLeasedSchema,
   workspaceReleasedSchema,
   forgePrMergedSchema,
-  ratifyRequestedSchema,
-  ratifyResolvedSchema,
   askRequestedSchema,
   askAnsweredSchema,
   proposalSubmittedSchema,
@@ -1025,8 +1004,6 @@ export type TaskContextAdvancedEvent = z.infer<typeof taskContextAdvancedSchema>
 export type WorkspaceLeasedEvent = z.infer<typeof workspaceLeasedSchema>;
 export type WorkspaceReleasedEvent = z.infer<typeof workspaceReleasedSchema>;
 export type ForgePrMergedEvent = z.infer<typeof forgePrMergedSchema>;
-export type RatifyRequestedEvent = z.infer<typeof ratifyRequestedSchema>;
-export type RatifyResolvedEvent = z.infer<typeof ratifyResolvedSchema>;
 export type AskRequestedEvent = z.infer<typeof askRequestedSchema>;
 export type AskAnsweredEvent = z.infer<typeof askAnsweredSchema>;
 export type ProposalSubmittedEvent = z.infer<typeof proposalSubmittedSchema>;

@@ -139,8 +139,6 @@ pub(crate) fn event_warrants_planner_push_with_role(
         // These tools wait for their result: the caller already has the receipt. Keep the
         // events for the timeline/notifications, but do not schedule another Planner turn.
         Event::AskRequested { .. } | Event::ForgePrPublished { .. } => false,
-        // #2209: historical rows only; nothing writes them and they wake nobody.
-        Event::RatifyRequested { .. } | Event::RatifyResolved { .. } => false,
         // Workspace / worktree lifecycle notices are read back on demand (`neige_task_ls`);
         Event::WorkspaceLeased { .. }
         | Event::WorkspaceReleased { .. }
@@ -1140,8 +1138,6 @@ impl Inner {
             | Event::ForgePrPublished { .. }
             | Event::ForgePrDiffRead { .. }
             | Event::ForgeIssueRead { .. }
-            | Event::RatifyRequested { .. }
-            | Event::RatifyResolved { .. }
             | Event::AskRequested { .. }
             // Proposal lifecycle events reach the planner via the plugin-authored
             // `track.report_edited` landed in the same tx.
@@ -1634,9 +1630,7 @@ pub(crate) fn harness_observation_from_event(
         Event::CodexHook { .. } | Event::ClaudeHook { .. } => None,
         // Requires the persisted question titles read in `resolve_harness_observation`.
         Event::AskAnswered { .. } => None,
-        Event::RatifyRequested { .. }
-        | Event::RatifyResolved { .. }
-        | Event::AskRequested { .. } => None,
+        Event::AskRequested { .. } => None,
         Event::AreaUpdated(_)
         | Event::AreaDeleted { .. }
         | Event::TrackUpdated(_)

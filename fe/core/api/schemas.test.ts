@@ -40,3 +40,16 @@ describe('synchronous publication receipts', () => {
     expect(decodeWireEvent({ ev: 'forge.pr.published', data: { track_id: 'track' } }).status).toBe('failed');
   });
 });
+
+
+describe('retired ratify events', () => {
+  it('rejects requests and both historical decisions', () => {
+    for (const frame of [
+      { ev: 'ratify.requested', data: { track_id: 'track', reason: 'Merge?' } },
+      { ev: 'ratify.resolved', data: { track_id: 'track', decision: 'grant' } },
+      { ev: 'ratify.resolved', data: { track_id: 'track', decision: 'deny', message: 'Hold' } },
+    ]) {
+      expect(decodeWireEvent(frame).status).toBe('failed');
+    }
+  });
+});

@@ -1404,14 +1404,6 @@ mod tests {
                 },
             ),
             (
-                "ratify.resolved",
-                Event::RatifyResolved {
-                    track_id: TrackId::from("w"),
-                    decision: crate::event::RatifyDecision::Grant,
-                    message: None,
-                },
-            ),
-            (
                 "ask.requested",
                 Event::AskRequested {
                     track_id: TrackId::from("w"),

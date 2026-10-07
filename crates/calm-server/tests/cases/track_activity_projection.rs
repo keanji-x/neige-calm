@@ -1453,26 +1453,6 @@ async fn wakeup_table_resolves_every_row_of_the_design() {
             },
             Some(t.as_str()),
         ),
-        // #2209: historical rows; nothing reads them for a notification.
-        (
-            "ratify.requested".into(),
-            EventScope::System,
-            Event::RatifyRequested {
-                track_id: tid.clone(),
-                reason: "merge?".into(),
-            },
-            None,
-        ),
-        (
-            "ratify.resolved".into(),
-            EventScope::System,
-            Event::RatifyResolved {
-                track_id: tid.clone(),
-                decision: calm_types::event::RatifyDecision::Grant,
-                message: None,
-            },
-            None,
-        ),
         (
             "ask.requested".into(),
             EventScope::System,

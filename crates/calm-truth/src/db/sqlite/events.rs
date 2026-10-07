@@ -20,6 +20,9 @@ use crate::model::*;
 use crate::track_area_cache::TrackAreaCache;
 use crate::track_vcs;
 
+// Retired protocol kinds stay in raw history but have no current event contract.
+const RETIRED_EVENT_KINDS: &[&str] = &["review.round", "ratify.requested", "ratify.resolved"];
+
 /// The gate seam: `event_append_in_tx` takes an [`Authorized`](gated::Authorized) capability whose fields are private
 /// to `gated`, so in safe code no path reaches the appender without a gate decision on the very triple it inserts and
 /// no earned capability can be retargeted. It does not bind the transaction: mint and append must share one `tx` by
@@ -698,8 +701,8 @@ impl RepoEventWrite for SqlxRepo {
 
         let mut out = Vec::with_capacity(rows.len());
         for (id, kind, payload_text, event_version, sk, sc, sw, scard) in rows {
-            // Retired review rows remain in raw history but have no current event contract.
-            if kind == "review.round" {
+            // Retired rows remain in raw history and are skipped before decoding.
+            if RETIRED_EVENT_KINDS.contains(&kind.as_str()) {
                 continue;
             }
             let payload: serde_json::Value = match serde_json::from_str(&payload_text) {
@@ -793,8 +796,8 @@ impl RepoEventWrite for SqlxRepo {
 
         let mut out = Vec::with_capacity(rows.len());
         for (id, kind, payload_text, actor_text, at, sk, sc, sw, scard) in rows {
-            // Retired review rows remain in raw history but have no current event contract.
-            if kind == "review.round" {
+            // Retired rows remain in raw history and are skipped before decoding.
+            if RETIRED_EVENT_KINDS.contains(&kind.as_str()) {
                 continue;
             }
             let payload: serde_json::Value = match serde_json::from_str(&payload_text) {

@@ -282,14 +282,6 @@ pub struct ForgeMergeSubject {
     pub pr_number: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "lowercase")]
-#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
-pub enum RatifyDecision {
-    Grant,
-    Deny,
-}
-
 /// One question of an `ask.requested`: what the user is asked, and the answers offered. The first
 /// option is the recommended one; no options means a free-text answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -660,17 +652,6 @@ pub enum Event {
         subject: ForgeMergeSubject,
         head_sha: String,
         merge_sha: String,
-    },
-    #[serde(rename = "ratify.requested")]
-    RatifyRequested { track_id: TrackId, reason: String },
-    #[serde(rename = "ratify.resolved")]
-    RatifyResolved {
-        track_id: TrackId,
-        decision: RatifyDecision,
-        /// The user's text with the decision, trimmed; absent when they sent none.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        message: Option<String>,
     },
     /// The Planner asks the user one or more questions (#2209). Its event id is the ask's id.
     #[serde(rename = "ask.requested")]
@@ -1075,8 +1056,6 @@ impl Event {
                 }
             }
             Event::ForgePrMerged { track_id, .. }
-            | Event::RatifyRequested { track_id, .. }
-            | Event::RatifyResolved { track_id, .. }
             | Event::AskRequested { track_id, .. }
             | Event::AskAnswered { track_id, .. }
             | Event::ForgeScanCompleted { track_id, .. }
@@ -1164,8 +1143,6 @@ impl Event {
             Event::WorkspaceLeased { .. } => "workspace.leased",
             Event::WorkspaceReleased { .. } => "workspace.released",
             Event::ForgePrMerged { .. } => "forge.pr.merged",
-            Event::RatifyRequested { .. } => "ratify.requested",
-            Event::RatifyResolved { .. } => "ratify.resolved",
             Event::AskRequested { .. } => "ask.requested",
             Event::AskAnswered { .. } => "ask.answered",
             Event::ProposalSubmitted { .. } => "proposal.submitted",
@@ -1326,8 +1303,6 @@ pub fn topics(ev: &Event) -> Vec<String> {
         ],
 
         Event::ForgePrMerged { track_id, .. }
-        | Event::RatifyRequested { track_id, .. }
-        | Event::RatifyResolved { track_id, .. }
         | Event::AskRequested { track_id, .. }
         | Event::AskAnswered { track_id, .. }
         | Event::ForgeScanCompleted { track_id, .. }
@@ -1378,6 +1353,29 @@ pub fn topics(ev: &Event) -> Vec<String> {
 #[cfg(test)]
 mod scope_tests {
     use super::*;
+
+    #[test]
+    fn retired_ratify_events_no_longer_decode() {
+        for (kind, payload) in [
+            (
+                "ratify.requested",
+                serde_json::json!({"track_id": "track", "reason": "Merge?"}),
+            ),
+            (
+                "ratify.resolved",
+                serde_json::json!({"track_id": "track", "decision": "grant"}),
+            ),
+            (
+                "ratify.resolved",
+                serde_json::json!({"track_id": "track", "decision": "deny", "message": "Hold"}),
+            ),
+        ] {
+            assert!(
+                Event::from_kind_and_payload(kind, payload).is_err(),
+                "{kind} is retired"
+            );
+        }
+    }
 
     #[test]
     fn task_context_ref_from_3a_defaults_missing_root_marker_with_nonempty_refs() {
@@ -1621,19 +1619,6 @@ mod scope_tests {
             merge_sha: "merge-sha".into(),
         };
         assert_eq!(forge_pr_merged.kind_tag(), "forge.pr.merged");
-
-        let ratify_requested = Event::RatifyRequested {
-            track_id: TrackId::from("track-1"),
-            reason: "cap_exhausted".into(),
-        };
-        assert_eq!(ratify_requested.kind_tag(), "ratify.requested");
-
-        let ratify_resolved = Event::RatifyResolved {
-            track_id: TrackId::from("track-1"),
-            decision: RatifyDecision::Grant,
-            message: None,
-        };
-        assert_eq!(ratify_resolved.kind_tag(), "ratify.resolved");
 
         let ask_requested = Event::AskRequested {
             track_id: TrackId::from("track-1"),
@@ -2678,15 +2663,6 @@ mod scope_tests {
                 head_sha: "head-sha".into(),
                 merge_sha: "merge-sha".into(),
             },
-            Event::RatifyRequested {
-                track_id: TrackId::from("track-1"),
-                reason: "cap_exhausted".into(),
-            },
-            Event::RatifyResolved {
-                track_id: TrackId::from("track-1"),
-                decision: RatifyDecision::Grant,
-                message: None,
-            },
             Event::AskRequested {
                 track_id: TrackId::from("track-1"),
                 questions: vec![AskQuestion {
@@ -2952,22 +2928,6 @@ mod scope_tests {
                     "subject": { "pr_number": 760 },
                     "head_sha": "head-sha",
                     "merge_sha": "merge-sha",
-                }),
-            ),
-            (
-                "ratify.requested",
-                "ratify.requested",
-                serde_json::json!({
-                    "track_id": "track-1",
-                    "reason": "cap_exhausted",
-                }),
-            ),
-            (
-                "ratify.resolved",
-                "ratify.resolved",
-                serde_json::json!({
-                    "track_id": "track-1",
-                    "decision": "grant",
                 }),
             ),
             (

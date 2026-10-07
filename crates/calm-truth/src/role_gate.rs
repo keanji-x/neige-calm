@@ -84,12 +84,6 @@ pub enum RoleViolation {
     )]
     NotKernelForTaskGateResult { actor: String },
 
-    #[error("only planner cards may emit ratify request events (actor={actor})")]
-    NotPlannerForRatify { actor: String },
-
-    #[error("only User may emit ratify.resolved (actor={actor})")]
-    NotUserForRatifyResolved { actor: String },
-
     #[error("only planner cards may emit ask.requested (actor={actor})")]
     NotPlannerForAsk { actor: String },
 
@@ -361,36 +355,6 @@ pub fn enforce_role(
             | ActorId::AiClaudeSession(session) => {
                 return Err(RoleViolation::SessionActorUnresolved {
                     session: session.clone(),
-                });
-            }
-        }
-    }
-
-    // (2.8) Only the planner may author `ratify.requested`; User/Kernel/Plugin do NOT pass.
-    if matches!(event, Event::RatifyRequested { .. }) {
-        match actor {
-            ActorId::AiPlanner(card_id) => {
-                if cache.get(card_id) != Some(CardRole::Planner) {
-                    return Err(RoleViolation::NotPlannerForRatify {
-                        actor: actor.to_string(),
-                    });
-                }
-            }
-            _ => {
-                return Err(RoleViolation::NotPlannerForRatify {
-                    actor: actor.to_string(),
-                });
-            }
-        }
-    }
-
-    // (2.9) `ratify.resolved` is User-only: the human half of the ratify gate.
-    if matches!(event, Event::RatifyResolved { .. }) {
-        match actor {
-            ActorId::User => {}
-            _ => {
-                return Err(RoleViolation::NotUserForRatifyResolved {
-                    actor: actor.to_string(),
                 });
             }
         }
@@ -1226,21 +1190,6 @@ mod tests {
         }
     }
 
-    fn ratify_requested() -> Event {
-        Event::RatifyRequested {
-            track_id: TrackId::from("w"),
-            reason: "cap_exhausted".into(),
-        }
-    }
-
-    fn ratify_resolved_grant() -> Event {
-        Event::RatifyResolved {
-            track_id: TrackId::from("w"),
-            decision: crate::event::RatifyDecision::Grant,
-            message: None,
-        }
-    }
-
     fn ask_requested() -> Event {
         Event::AskRequested {
             track_id: TrackId::from("w"),
@@ -1667,85 +1616,6 @@ mod tests {
             err,
             RoleViolation::NotKernelForTaskContextAdvanced { .. }
         ));
-    }
-
-    #[test]
-    fn ratify_requested_is_planner_only_760() {
-        let cache = CardRoleCache::new();
-        let wcc = seeded_wcc();
-        let planner = CardId::from("planner-1");
-        let worker = CardId::from("worker-1");
-        cache.insert(planner.clone(), CardRole::Planner, TrackId::from("w"));
-        cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
-
-        for event in [ratify_requested()] {
-            let res = enforce_role(
-                &ActorId::AiPlanner(planner.clone()),
-                &event,
-                &track_scope("w", "c"),
-                &cache,
-                &wcc,
-            );
-            assert!(
-                res.is_ok(),
-                "planner should emit {}: {res:?}",
-                event.kind_tag()
-            );
-
-            for (actor, label) in [
-                (ActorId::Plugin("p".into()), "Plugin(p)"),
-                (ActorId::AiCodex(worker.clone()), "AiCodex(worker)"),
-                (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
-                (ActorId::User, "User"),
-                (ActorId::Kernel, "Kernel"),
-                (ActorId::KernelDispatcher, "KernelDispatcher"),
-                (
-                    ActorId::AiPlannerSession(WorkerSessionId::from("sess-unresolved")),
-                    "AiPlannerSession(unresolved)",
-                ),
-            ] {
-                let err = enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc)
-                    .expect_err(&format!("{label} must be refused {}", event.kind_tag()));
-                assert!(
-                    matches!(err, RoleViolation::NotPlannerForRatify { .. }),
-                    "{label}: expected NotPlannerForRatify, got {err:?}",
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn ratify_resolved_is_user_only_760() {
-        let cache = CardRoleCache::new();
-        let wcc = seeded_wcc();
-        let planner = CardId::from("planner-1");
-        let worker = CardId::from("worker-1");
-        cache.insert(planner.clone(), CardRole::Planner, TrackId::from("w"));
-        cache.insert(worker.clone(), CardRole::Worker, TrackId::from("w"));
-        let event = ratify_resolved_grant();
-
-        let res = enforce_role(&ActorId::User, &event, &track_scope("w", "c"), &cache, &wcc);
-        assert!(res.is_ok(), "User should emit ratify.resolved: {res:?}");
-
-        for (actor, label) in [
-            (ActorId::AiPlanner(planner.clone()), "AiPlanner(planner)"),
-            (ActorId::AiCodex(worker.clone()), "AiCodex(worker)"),
-            (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
-            (ActorId::Plugin("p".into()), "Plugin(p)"),
-            (ActorId::Kernel, "Kernel"),
-            (ActorId::KernelDispatcher, "KernelDispatcher"),
-            (
-                ActorId::AiPlannerSession(WorkerSessionId::from("sess-planner")),
-                "AiPlannerSession(unresolved)",
-            ),
-        ] {
-            let err = enforce_role(&actor, &event, &track_scope("w", "c"), &cache, &wcc)
-                .expect_err(&format!("{label} must be refused ratify.resolved"));
-            assert!(
-                matches!(err, RoleViolation::NotUserForRatifyResolved { .. }),
-                "{label}: expected NotUserForRatifyResolved, got {err:?}",
-            );
-        }
     }
 
     #[test]

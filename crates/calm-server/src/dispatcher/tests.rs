@@ -141,7 +141,7 @@ fn permits_from_env_fallback_paths() {
 use crate::card_role_cache::CardRoleCache;
 use crate::event::{ArtifactRef, BroadcastEnvelope, EventScope};
 use crate::ids::AreaId;
-use calm_types::event::{AskQuestion, RatifyDecision};
+use calm_types::event::AskQuestion;
 use calm_types::git_candidate::{DeliveryFailureCode, DeliverySettlement, DeliveryWakeReason};
 
 fn ask_requested(track: &TrackId) -> Event {
@@ -370,15 +370,6 @@ fn dispatcher_filter_matches_push_kinds() {
         subject: crate::event::ForgeMergeSubject { pr_number: 1 },
         head_sha: "head-sha".into(),
         merge_sha: "merge-sha".into(),
-    })));
-    assert!(!filter.matches(&env(Event::RatifyRequested {
-        track_id: track.clone(),
-        reason: "cap_exhausted".into(),
-    })));
-    assert!(!filter.matches(&env(Event::RatifyResolved {
-        track_id: track.clone(),
-        decision: RatifyDecision::Grant,
-        message: None,
     })));
     assert!(!filter.matches(&env(ask_requested(&track))));
     assert!(filter.matches(&env(ask_answered(&track, 7))));
@@ -1351,16 +1342,6 @@ fn event_warrants_planner_push_covers_push_allowlist() {
     ));
 
     for quiet_event in [
-        Event::RatifyRequested {
-            track_id: track.clone(),
-            reason: "cap_exhausted".into(),
-        },
-        // #2209: historical rows; nothing writes them any more.
-        Event::RatifyResolved {
-            track_id: track.clone(),
-            decision: RatifyDecision::Grant,
-            message: None,
-        },
         ask_requested(&track),
         Event::ForgePrPublished {
             track_id: track.clone(),
@@ -1739,30 +1720,6 @@ fn harness_observation_from_event_mapping_pin() {
             track_id: track.clone(),
             pr_number: 760,
         })
-    );
-    assert_eq!(
-        harness_observation_from_event(
-            &track,
-            &Event::RatifyRequested {
-                track_id: TrackId::from("payload-track-ignored"),
-                reason: "cap_exhausted".into(),
-            },
-            Some("impl-parser")
-        ),
-        None
-    );
-    assert_eq!(
-        harness_observation_from_event(
-            &track,
-            &Event::RatifyResolved {
-                track_id: TrackId::from("payload-track-ignored"),
-                decision: RatifyDecision::Deny,
-                message: None,
-            },
-            Some("impl-parser")
-        ),
-        None,
-        "#2209: a historical resolution wakes nobody"
     );
     assert_eq!(
         harness_observation_from_event(&track, &ask_requested(&track), Some("impl-parser")),
@@ -2250,25 +2207,6 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
             ActorId::KernelDispatcher,
             true,
             true,
-        ),
-        row(
-            Event::RatifyRequested {
-                track_id: track.clone(),
-                reason: "cap_exhausted".into(),
-            },
-            ActorId::AiPlanner(planner.clone()),
-            false,
-            false,
-        ),
-        row(
-            Event::RatifyResolved {
-                track_id: track.clone(),
-                decision: RatifyDecision::Grant,
-                message: None,
-            },
-            ActorId::User,
-            false,
-            false,
         ),
         row(
             ask_requested(&track),
@@ -4086,10 +4024,6 @@ async fn track_updated_with_closed_at_reconciles_the_child() {
 #[test]
 fn confirmation_receipts_do_not_wake_the_planner_live_or_on_replay() {
     for event in [
-        Event::RatifyRequested {
-            track_id: TrackId::from("w"),
-            reason: "Which repository?".into(),
-        },
         ask_requested(&TrackId::from("w")),
         Event::ForgePrPublished {
             track_id: TrackId::from("w"),

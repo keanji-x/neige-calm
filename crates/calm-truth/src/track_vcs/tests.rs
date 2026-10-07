@@ -12,7 +12,6 @@ use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
 use crate::event::{Event, ForgeMergeSubject};
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{NewArea, NewTrack, RequestTheme};
-use calm_types::event::RatifyDecision;
 use sqlx::Row;
 use std::time::Duration;
 
@@ -271,7 +270,7 @@ async fn worktree_committed_only_batch_does_not_advance_head() {
 }
 
 #[tokio::test]
-async fn ratify_and_ask_batch_does_not_advance_head() {
+async fn ask_batch_does_not_advance_head() {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open sqlite repo");
@@ -300,15 +299,6 @@ async fn ratify_and_ask_batch_does_not_advance_head() {
     let before = head(repo.pool(), &track.id).await.expect("head before");
 
     let events = vec![
-        Event::RatifyRequested {
-            track_id: track.id.clone(),
-            reason: "cap_exhausted".into(),
-        },
-        Event::RatifyResolved {
-            track_id: track.id.clone(),
-            decision: RatifyDecision::Grant,
-            message: None,
-        },
         Event::AskRequested {
             track_id: track.id.clone(),
             questions: vec![calm_types::event::AskQuestion {
@@ -335,7 +325,7 @@ async fn ratify_and_ask_batch_does_not_advance_head() {
         MANIFEST_SCHEMA_VERSION,
     )
     .await
-    .expect("commit ratify/ask batch");
+    .expect("commit ask batch");
     tx.commit().await.expect("commit transaction");
 
     let after = head(repo.pool(), &track.id).await.expect("head after");
