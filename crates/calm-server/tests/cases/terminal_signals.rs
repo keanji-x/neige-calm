@@ -1,6 +1,6 @@
 //! Hook signals and bounded composite actions through the real MCP tools, operation runtime, PTY and
 //! ingest route; a fake `claude` reads the generated `--settings` file and runs the registered hook command.
-use crate::terminal_support::{Harness, human_takeover};
+use super::terminal_support::{Harness, human_takeover};
 use calm_server::db::prelude::*;
 use calm_server::event::Event;
 use calm_server::model::{CardRole, new_id};

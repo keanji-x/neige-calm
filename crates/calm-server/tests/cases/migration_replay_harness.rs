@@ -81,7 +81,7 @@ async fn synthetic_fixture_replays_from_every_supported_version() {
     }
 }
 
-/// Usage: `NEIGE_SNAPSHOT_DB=/path/to/snapshot.sqlite cargo test -p calm-server --test migration_suite
+/// Usage: `NEIGE_SNAPSHOT_DB=/path/to/snapshot.sqlite cargo test -p calm-server --test runtime_suite
 /// migration_replay_harness::`. Works on a private copy; the original file is never written.
 #[tokio::test]
 async fn external_snapshot_replays_to_head() {

@@ -1,6 +1,6 @@
 //! `summary` on input and control receipts: a flat digest of the facts the receipt carries, and
 //! the one-line text block saying the same in words.
-use crate::terminal_support::{Harness, human_takeover};
+use super::terminal_support::{Harness, human_takeover};
 use serde_json::{Value, json};
 use std::time::Duration;
 

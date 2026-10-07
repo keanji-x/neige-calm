@@ -10,7 +10,7 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
 
-use crate::today_launchpad::{Boot, boot, count, ensure, post, resolve};
+use super::today_launchpad::{Boot, boot, count, ensure, post, resolve};
 
 /// The canonical report's text before its first section heading: the contract header and the prose
 /// contract, which Reset writes back as prose blocks.

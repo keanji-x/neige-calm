@@ -2,6 +2,7 @@
 name = "calm-proc-supervisor"
 version = "0.1.0"
 edition = "2024"
+autotests = false
 
 [lib]
 path = "src/lib.rs"
@@ -54,3 +55,11 @@ tempfile = "3"
 
 [dev-dependencies]
 tempfile = "3"
+
+[[test]]
+name = "integration_suite"
+path = "tests/integration_suite.rs"
+
+[[test]]
+name = "pin_lost_on_autoreap"
+path = "tests/pin_lost_on_autoreap.rs"

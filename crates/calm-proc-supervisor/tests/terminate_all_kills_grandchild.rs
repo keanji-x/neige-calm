@@ -8,8 +8,7 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::net::UnixStream;
 
-mod proc_probe;
-use proc_probe::{alive, await_death};
+use crate::proc_probe::{alive, await_death};
 
 #[tokio::test]
 async fn terminate_all_kills_grandchild_of_live_leader() {

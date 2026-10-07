@@ -1,5 +1,5 @@
 //! `sequence`: a bounded edit in one ordered write request (one barrier, one acknowledgement, one receipt).
-use crate::terminal_support::Harness;
+use super::terminal_support::Harness;
 use serde_json::{Value, json};
 use std::time::Duration;
 

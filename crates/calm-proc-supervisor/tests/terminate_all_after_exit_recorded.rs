@@ -8,8 +8,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 use tokio::net::UnixStream;
 
-mod proc_probe;
-use proc_probe::{alive, await_death, process_group_of};
+use crate::proc_probe::{alive, await_death, process_group_of};
 
 /// Long enough that the entry is nowhere near the sweeper, short enough that a wedged run still ends; the real guard is `eof_reached` staying false.
 const LONG_RECLAIM_GRACE: Duration = Duration::from_secs(60);

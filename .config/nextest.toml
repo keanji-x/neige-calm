@@ -67,7 +67,7 @@ path = "junit.xml"
 proc-supervisor = { max-threads = 1 }
 
 [[profile.ci.overrides]]
-filter = 'package(calm-proc-supervisor) | test(/^(in_process_renderer_e2e|reconcile_supervisor_on_boot)::/)'
+filter = 'package(calm-proc-supervisor) | test(/^(domain_api_suite::in_process_renderer_e2e|kernel_process_suite::reconcile_supervisor_on_boot)::/)'
 test-group = 'proc-supervisor'
 threads-required = 4
 
@@ -76,7 +76,7 @@ threads-required = 4
 # four-core hosted runner with three other database-heavy tests. Reserve the
 # runner while it executes: coverage remains exhaustive, and the remaining
 # partition resumes normal four-way parallelism as soon as it finishes.
-filter = 'test(/^migration_replay_harness::synthetic_fixture_replays_from_every_version$/)'
+filter = 'test(/^migration_suite::migration_replay_harness::synthetic_fixture_replays_from_every_version$/)'
 threads-required = 4
 
 [profile.ci.archive]

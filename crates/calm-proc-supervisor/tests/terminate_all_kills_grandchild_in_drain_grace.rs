@@ -8,8 +8,7 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::net::UnixStream;
 
-mod proc_probe;
-use proc_probe::{alive, await_death, process_group_of};
+use crate::proc_probe::{alive, await_death, process_group_of};
 
 /// The fixture: a subshell ignores HUP, announces readiness, then `exec sleep 300`; the leader waits for the readiness file before exiting.
 fn grandchild_script(ready: &Path) -> String {

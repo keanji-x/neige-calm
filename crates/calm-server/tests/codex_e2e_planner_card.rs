@@ -2,6 +2,7 @@
 
 #![cfg(all(unix, feature = "codex-e2e"))]
 
+#[macro_use]
 mod support;
 
 use std::path::{Path, PathBuf};

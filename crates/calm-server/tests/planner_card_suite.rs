@@ -1,5 +1,5 @@
-mod common;
-mod support;
+pub(crate) mod common;
+pub(crate) mod support;
 
 #[path = "cases/e2e_user_edit_planner_reaction.rs"]
 mod e2e_user_edit_planner_reaction;
