@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { GitHubPreviewContent } from '../../../systems/github-links/public.tsx';
 
 import type { WorkspaceFilePort } from '../../../../../core/domain/fs.ts';
 import type { ReportLinkTarget, TrackReport } from '../../../../../core/domain/report.ts';
@@ -94,7 +95,12 @@ function ReferenceContent({ destination, resources, renderMarkdown }: Readonly<{
   </div>;
 }
 
-function ExternalContent({ url, image, label }: Readonly<{ url: string; image: boolean; label: string }>) {
+function ExternalContent(props: Readonly<{ url: string; image: boolean; label: string }>) {
+  return props.image ? <WebContent {...props} />
+    : <GitHubPreviewContent href={props.url} fallback={<WebContent {...props} />} />;
+}
+
+function WebContent({ url, image, label }: Readonly<{ url: string; image: boolean; label: string }>) {
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
   const [ready, setReady] = useState(false);
