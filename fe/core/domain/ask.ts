@@ -14,7 +14,8 @@ import { writeClassOf, writeFailureText, type FailureTable, type WriteClass, typ
 export type OpenAsk = Readonly<{ askId: number; questions: readonly AskQuestion[]; delivery: AskDelivery; action?: AskAction }>;
 
 /**
- * The track's open asks, oldest first. The overlay lists items newest first; an ask's id is its
+ * The track's open asks: every `hold` ask first, since each one blocks the running turn (#2348), then the
+ * `wake` asks; oldest first within each. The overlay lists items newest first; an ask's id is its
  * `ask.requested` event id, so ascending ids are the order the Planner asked in.
  */
 export function openAsksOf(items: readonly ActivityItem[]): readonly OpenAsk[] {
@@ -24,7 +25,8 @@ export function openAsksOf(items: readonly ActivityItem[]): readonly OpenAsk[] {
       ...(item.action === undefined ? {} : { action: item.action }),
     });
   }
-  return asks.sort((left, right) => left.askId - right.askId);
+  const blocking = (ask: OpenAsk) => (ask.delivery === 'hold' ? 0 : 1);
+  return asks.sort((left, right) => blocking(left) - blocking(right) || left.askId - right.askId);
 }
 
 /**

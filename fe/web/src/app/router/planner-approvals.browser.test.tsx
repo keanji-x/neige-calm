@@ -202,3 +202,15 @@ it('says a request that went away is no longer pending', async () => {
   expect(page.getByText(/its paused request is gone/).query()).toBeNull();
   await expect.element(ask.getByRole('heading', { name: HOLD_TITLE })).toBeVisible();
 });
+
+it('shows a paused turn\'s request ahead of an older question, since the turn is blocked on it', async () => {
+  await page.viewport(1280, 800);
+  const wake = { source: 'ask', key: 'ask:7', text: 'Which branch?', at_ms: 4, ask_id: 7,
+    questions: [{ title: 'Which branch?', options: ['main', 'release'] }], delivery: 'wake' };
+  setup({ mode: 'ask', asks: [HOLD, wake] });
+  await page.getByRole('button', { name: /Conversation Planner/ }).click();
+  const ask = page.getByRole('group', { name: 'The Planner asks' });
+  await expect.element(ask.getByText('Turn paused, waiting for your approval')).toBeVisible();
+  await expect.element(ask.getByRole('heading', { name: HOLD_TITLE })).toBeVisible();
+  await expect.element(page.getByRole('button', { name: '1 more ask' })).toBeVisible();
+});

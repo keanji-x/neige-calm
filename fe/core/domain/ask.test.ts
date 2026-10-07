@@ -22,6 +22,14 @@ describe('openAsksOf', () => {
       { askId: 30, questions: [WHY], delivery: 'wake' },
     ]);
   });
+
+  it('puts every paused request before the wake asks, oldest first within each (#2348)', () => {
+    const ask = (askId: number, delivery: 'wake' | 'hold'): ActivityItem => ({
+      source: 'ask', key: `ask:${askId}`, text: 'Why?', atMs: askId, askId, questions: [WHY], delivery,
+    });
+    expect(openAsksOf([ask(40, 'hold'), ask(30, 'wake'), ask(20, 'hold'), ask(10, 'wake')]).map((open) => open.askId))
+      .toEqual([20, 40, 10, 30]);
+  });
 });
 
 describe('askAnswers', () => {
