@@ -1,3 +1,5 @@
+mod proc_probe;
+
 // pin_lost_on_autoreap changes SIGCHLD for the entire process; keep it separate.
 #[path = "attach_race_no_byte_loss.rs"]
 mod attach_race_no_byte_loss;

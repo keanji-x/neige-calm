@@ -2,7 +2,7 @@
 //! child that answers `model/list` / `config/read` from sidecar files next to its listen socket.
 //! The same rig drives the Codex entry of `GET /api/agent-providers` (#1817).
 
-mod common;
+use crate::common;
 
 #[path = "cases/codex_authentication_retry.rs"]
 mod codex_authentication_retry;

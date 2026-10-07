@@ -1,3 +1,6 @@
+// Preserve each former target's helper-local test identities in the inventory.
+#![allow(clippy::duplicate_mod)]
+
 // Each module retains its former test-target namespace and helper tests.
 use planner_card_suite::{common, support};
 #[path = "codex_runtime_suite.rs"]
