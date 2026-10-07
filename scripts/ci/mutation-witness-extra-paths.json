@@ -29,8 +29,7 @@
   ],
   "app-adapter-drop-track-invalidation": [
     "web/src/app/events/event-bridge.contract.test.tsx",
-    "web/src/app/events/query-invalidation-adapter.test.ts",
-    "web/src/app/router/today-document.test.tsx"
+    "web/src/app/events/query-invalidation-adapter.test.ts"
   ],
   "events-driver-drop-all-epoch-protection": [
     "tools/oracle/oracle.test.ts"

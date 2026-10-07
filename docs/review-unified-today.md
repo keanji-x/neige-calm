@@ -10,7 +10,7 @@ Reviewed the full diff and the actual homepage → daily Track resolution → Tr
 - Duplicate logic: removed the old Today route and feature, including the parallel report, conversation, activity and compact implementations. Kept the existing Calendar adapter, Track report reader, conversation lifecycle, and report evidence components as the authoritative owners.
 - Hardcoded application assumptions: the shared Track page consumes optional composition slots rather than inspecting Track ids, titles or templates. The app owns which route supplies those slots. Retired directory ownership is an orchestrator-approved change recorded in the commit trailer.
 
-Retired only tests and mutations for the removed singleton UI. Shared scheduling, Track, read/write failure, navigation, receipts, activity and conversation tests remain. The latest session-recovery coverage was moved to the real daily homepage. The shared router remains above the preferred source-file size, but this change removes its obsolete route instead of adding an unrelated split.
+Retired only tests and mutations for the removed singleton UI. The separate CI extra-witness catalog also drops its retired Today-document path; the existing EventBridge and query-invalidation witnesses remain. Shared scheduling, Track, read/write failure, navigation, receipts, activity and conversation tests remain. The latest session-recovery coverage was moved to the real daily homepage. The shared router remains above the preferred source-file size, but this change removes its obsolete route instead of adding an unrelated split.
 
 ## Independent functional and contract audit
 
