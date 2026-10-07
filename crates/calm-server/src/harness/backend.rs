@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::claude_planner::session::ClaudePlannerSession;
 use crate::claude_planner::spawn::ResumeTruncation;
 use crate::claude_planner::wiring::{ClaudePlannerRow, ClaudePlannerWiring};
-use crate::codex_appserver::InputItem;
+use crate::codex_appserver::{ApprovalRoute, InputItem, TurnApprovals};
 use crate::db::Repo;
 use crate::db::TranscriptRow;
 use crate::error::{CalmError, Result};
@@ -27,6 +27,7 @@ use crate::harness::held_requests::HeldRequestSender;
 use crate::harness::issuance::{IssuanceRefusal, SelectionSource};
 use crate::harness::planner_event::PlannerEvent;
 use crate::planner_model::TurnModelSelection;
+use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::session_projection_repo::AgentProvider;
 use crate::shared_codex_appserver::{SharedCodexAppServer, TurnId};
 use crate::thread_seals::ThreadSeals;
@@ -78,14 +79,45 @@ pub struct PlannerBackend(Arm);
 #[derive(Clone)]
 enum Arm {
     Acp(Arc<crate::acp_planner::session::AcpPlannerSession>),
-    Codex(Arc<SharedCodexAppServer>),
+    Codex(Arc<SharedCodexAppServer>, Arc<CodexApprovals>),
     /// One Claude Planner session (design #1791 §5).
     Claude(Arc<ClaudePlannerSession>),
 }
 
 impl From<Arc<SharedCodexAppServer>> for PlannerBackend {
     fn from(daemon: Arc<SharedCodexAppServer>) -> Self {
-        Self(Arm::Codex(daemon))
+        Self(Arm::Codex(daemon, Arc::default()))
+    }
+}
+
+/// What the Codex arm keeps for its one harness (#2348): the channel its thread's approval
+/// requests go to, handed over at install, and its claim on the thread its turns run on.
+#[derive(Default)]
+struct CodexApprovals {
+    held: std::sync::OnceLock<HeldRequestSender>,
+    route: std::sync::Mutex<Option<ApprovalRoute>>,
+}
+
+impl CodexApprovals {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<ApprovalRoute>> {
+        self.route
+            .lock()
+            .expect("codex planner approval route mutex poisoned")
+    }
+
+    /// Claim `thread_id`'s approval requests anew for a turn, so a claim another harness took over
+    /// in between is taken back. The earlier claim is given up after, which removes no later one.
+    /// Before install there is nowhere to send them: they stay refused.
+    fn route(&self, daemon: &SharedCodexAppServer, thread_id: &str) {
+        let Some(held) = self.held.get() else {
+            return;
+        };
+        let route = daemon.approval_routes().route(thread_id, held.clone());
+        drop(self.lock().replace(route));
+    }
+
+    fn release(&self) {
+        drop(self.lock().take());
     }
 }
 
@@ -121,7 +153,7 @@ impl PlannerBackend {
     /// Provider-owned suspension; the generic harness does not infer authentication policy.
     pub(crate) fn issuance_hold(&self) -> Option<String> {
         match &self.0 {
-            Arm::Codex(daemon) => daemon.authentication_hold(),
+            Arm::Codex(daemon, _) => daemon.authentication_hold(),
             Arm::Claude(_) | Arm::Acp(_) => None,
         }
     }
@@ -129,7 +161,7 @@ impl PlannerBackend {
     pub fn subscribe_events(&self) -> PlannerEvents {
         PlannerEvents(match &self.0 {
             Arm::Acp(session) => EventSource::Acp(session.subscribe_events()),
-            Arm::Codex(daemon) => EventSource::Codex(CodexEvents::subscribe(daemon)),
+            Arm::Codex(daemon, _) => EventSource::Codex(CodexEvents::subscribe(daemon)),
             Arm::Claude(session) => EventSource::Claude(session.subscribe_events()),
         })
     }
@@ -149,7 +181,7 @@ impl PlannerBackend {
             Arm::Acp(_) => Err(CalmError::Conflict(
                 "ACP history replacement is unsupported".into(),
             )),
-            Arm::Codex(_) => Ok(BackendRewind(RewindArm::Codex {
+            Arm::Codex(..) => Ok(BackendRewind(RewindArm::Codex {
                 before_turn_id: target.turn_id.to_string(),
             })),
             Arm::Claude(session) => {
@@ -170,7 +202,7 @@ impl PlannerBackend {
     pub fn thread_sealed(&self, thread_id: &str) -> bool {
         match &self.0 {
             Arm::Acp(session) => session.thread_sealed(thread_id),
-            Arm::Codex(daemon) => daemon.thread_seals().is_sealed(thread_id),
+            Arm::Codex(daemon, _) => daemon.thread_seals().is_sealed(thread_id),
             Arm::Claude(session) => session.thread_sealed(thread_id),
         }
     }
@@ -178,11 +210,16 @@ impl PlannerBackend {
     /// The Claude arm passes the stored model and effort as `--model=` and `--effort=` (#1810,
     /// #1822 6′); no catalog is consulted here, and the CLI judges the model. `rewind` is applied
     /// first: Codex reverts the thread before `turn/start`, Claude cuts the session in the spawn.
+    /// `permission` is the conversation's permission mode as the card holds it now (#2348), read
+    /// once by the run loop for every arm: Codex sends its approval settings with every turn, and
+    /// the Claude spawn runs under it.
+    #[allow(clippy::too_many_arguments)]
     pub async fn turn_start(
         &self,
         thread_id: &str,
         items: Vec<InputItem>,
         selection: &TurnModelSelection,
+        permission: PlannerPermissionMode,
         client_id: &str,
         claim: &[crate::harness::QueueEntry],
         rewind: Option<&BackendRewind>,
@@ -203,7 +240,7 @@ impl PlannerBackend {
                     .turn_start(thread_id, items, selection, client_id, claim)
                     .await
             }
-            Arm::Codex(daemon) => {
+            Arm::Codex(daemon, approvals) => {
                 match rewind {
                     None => {}
                     Some(RewindArm::Codex { before_turn_id }) => {
@@ -211,8 +248,16 @@ impl PlannerBackend {
                     }
                     Some(RewindArm::Claude { .. }) => return Err(mismatched_rewind()),
                 }
+                // Before `turn/start`, so the turn's first approval already has somewhere to go.
+                approvals.route(daemon, thread_id);
                 daemon
-                    .turn_start(thread_id, items, selection, Some(client_id))
+                    .turn_start(
+                        thread_id,
+                        items,
+                        selection,
+                        TurnApprovals::Explicit(permission),
+                        Some(client_id),
+                    )
                     .await
                     // Codex answering with a refusal is the one failure known to be its answer.
                     .map_err(codex_turn_start_failure)
@@ -230,7 +275,14 @@ impl PlannerBackend {
                     Some(RewindArm::Codex { .. }) => return Err(mismatched_rewind()),
                 };
                 session
-                    .turn_start(thread_id, items, selection, client_id, truncation.as_ref())
+                    .turn_start(
+                        thread_id,
+                        items,
+                        selection,
+                        permission,
+                        client_id,
+                        truncation.as_ref(),
+                    )
                     .await
             }
         }
@@ -240,7 +292,7 @@ impl PlannerBackend {
     /// it takes the entry out of the queue.
     pub fn supports_steer(&self) -> bool {
         match &self.0 {
-            Arm::Codex(_) => true,
+            Arm::Codex(..) => true,
             Arm::Claude(_) | Arm::Acp(_) => false,
         }
     }
@@ -253,7 +305,7 @@ impl PlannerBackend {
         client_id: &str,
     ) -> Result<TurnId> {
         match &self.0 {
-            Arm::Codex(daemon) => {
+            Arm::Codex(daemon, _) => {
                 daemon
                     .turn_steer(thread_id, expected_turn_id, items, Some(client_id))
                     .await
@@ -266,7 +318,7 @@ impl PlannerBackend {
 
     pub async fn compact_start(&self, thread_id: &str) -> Result<()> {
         match &self.0 {
-            Arm::Codex(daemon) => daemon.thread_compact_start(thread_id).await,
+            Arm::Codex(daemon, _) => daemon.thread_compact_start(thread_id).await,
             Arm::Claude(_) | Arm::Acp(_) => Err(CalmError::BadRequest(
                 "Manual context compaction is available for Codex conversations.".into(),
             )),
@@ -276,7 +328,7 @@ impl PlannerBackend {
     pub async fn turn_interrupt(&self, thread_id: &str, turn_id: &str) -> Result<()> {
         match &self.0 {
             Arm::Acp(session) => session.turn_interrupt(thread_id, turn_id).await,
-            Arm::Codex(daemon) => daemon.turn_interrupt(thread_id, turn_id).await,
+            Arm::Codex(daemon, _) => daemon.turn_interrupt(thread_id, turn_id).await,
             Arm::Claude(session) => session.turn_interrupt(thread_id, turn_id).await,
         }
     }
@@ -284,7 +336,7 @@ impl PlannerBackend {
     pub fn active_turn_id_for_thread(&self, thread_id: &str) -> Option<TurnId> {
         match &self.0 {
             Arm::Acp(session) => session.active_turn_id_for_thread(thread_id),
-            Arm::Codex(daemon) => daemon.active_turn_id_for_thread(thread_id),
+            Arm::Codex(daemon, _) => daemon.active_turn_id_for_thread(thread_id),
             Arm::Claude(session) => session.active_turn_id_for_thread(thread_id),
         }
     }
@@ -292,7 +344,7 @@ impl PlannerBackend {
     pub fn provider(&self) -> AgentProvider {
         match &self.0 {
             Arm::Acp(session) => session.provider(),
-            Arm::Codex(_) => AgentProvider::Codex,
+            Arm::Codex(..) => AgentProvider::Codex,
             Arm::Claude(_) => AgentProvider::Claude,
         }
     }
@@ -317,7 +369,7 @@ impl PlannerBackend {
                     effort: selected.reasoning_effort,
                 })
             }
-            Arm::Codex(daemon) => {
+            Arm::Codex(daemon, _) => {
                 let payload = source.card_payload().await?;
                 codex_selection::resolve(daemon, source, &payload).await
             }
@@ -364,7 +416,9 @@ impl PlannerBackend {
                     interrupt_error = Some(e);
                 }
             }
-            Arm::Codex(daemon) => {
+            Arm::Codex(daemon, approvals) => {
+                // The thread's approvals have nowhere to go once this harness stops.
+                approvals.release();
                 if let Some(thread_id) = thread_id {
                     let last_turn_id = last_turn_id.lock().await.clone();
                     interrupt_codex_thread(
@@ -398,11 +452,14 @@ impl PlannerBackend {
         }
     }
 
-    /// The registry installed the harness: a Claude session may start turns from now on, and
-    /// reports the requests its turns pause on to `held`, the harness's channel (#2348).
+    /// The registry installed the harness: a Claude session may start turns from now on, and the
+    /// requests a Claude or Codex Planner's turns pause on go to `held`, the harness's channel
+    /// (#2348).
     pub fn mark_installed(&self, held: &HeldRequestSender) {
         match &self.0 {
-            Arm::Codex(_) => {}
+            Arm::Codex(_, approvals) => {
+                let _ = approvals.held.set(held.clone());
+            }
             Arm::Acp(session) => session.mark_installed(),
             Arm::Claude(session) => session.mark_installed(held.clone()),
         }
@@ -419,7 +476,7 @@ impl PlannerBackend {
     pub fn claude_session_for_test(&self) -> Option<Arc<ClaudePlannerSession>> {
         match &self.0 {
             Arm::Claude(session) => Some(Arc::clone(session)),
-            Arm::Codex(_) | Arm::Acp(_) => None,
+            Arm::Codex(..) | Arm::Acp(_) => None,
         }
     }
 }

@@ -67,6 +67,7 @@ async fn exit_path_records_the_outcome_before_turn_completed() {
             &rig.thread,
             rig.text("hello"),
             &TurnModelSelection::inherit(),
+            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
             &client_id(),
             None,
         )
@@ -149,6 +150,7 @@ async fn exit_path_records_the_outcome_before_turn_completed() {
             &rig.thread,
             rig.text("again"),
             &TurnModelSelection::inherit(),
+            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
             &client_id(),
             None,
         )
@@ -234,6 +236,7 @@ async fn a_surviving_setsid_child_of_a_successful_exit_is_gone_before_turn_compl
             &rig.thread,
             rig.text("hello"),
             &TurnModelSelection::inherit(),
+            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
             &client_id(),
             None,
         )
@@ -268,6 +271,7 @@ async fn a_killed_cli_settles_failed_with_its_exit_status() {
             &rig.thread,
             rig.text("hello"),
             &TurnModelSelection::inherit(),
+            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
             &client_id(),
             None,
         )
@@ -333,6 +337,7 @@ async fn a_cli_lingering_after_its_result_is_stopped_and_the_turn_completes() {
             &rig.thread,
             rig.text("hello"),
             &TurnModelSelection::inherit(),
+            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
             &client_id(),
             None,
         )
@@ -357,6 +362,7 @@ async fn an_undecodable_line_fails_the_turn_as_protocol() {
             &rig.thread,
             rig.text("hello"),
             &TurnModelSelection::inherit(),
+            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
             &client_id(),
             None,
         )
@@ -396,6 +402,7 @@ async fn assert_refused_before_ok(rig: &Rig, input: Vec<InputItem>) -> String {
             &rig.thread,
             input,
             &TurnModelSelection::inherit(),
+            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
             &client_id(),
             None,
         )
@@ -509,6 +516,7 @@ async fn a_recorded_interrupt_then_an_is_error_result_is_interrupted() {
             &rig.thread,
             rig.text("hello"),
             &TurnModelSelection::inherit(),
+            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
             &client_id(),
             None,
         )
@@ -539,6 +547,7 @@ async fn the_private_instructions_never_reach_a_cmdline() {
             &rig.thread,
             rig.text("hello"),
             &TurnModelSelection::inherit(),
+            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
             &client_id(),
             None,
         )
@@ -599,6 +608,7 @@ async fn the_stop_seam_fails_without_signalling_until_cleared() {
             &rig.thread,
             rig.text("hello"),
             &TurnModelSelection::inherit(),
+            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
             &client_id(),
             None,
         )
@@ -656,6 +666,7 @@ async fn shutdown_interrupts_the_running_turn_and_refuses_the_next() {
             &rig.thread,
             rig.text("hello"),
             &TurnModelSelection::inherit(),
+            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
             &client_id(),
             None,
         )
@@ -675,6 +686,7 @@ async fn shutdown_interrupts_the_running_turn_and_refuses_the_next() {
                 &rig.thread,
                 rig.text("later"),
                 &TurnModelSelection::inherit(),
+                calm_server::planner_permission_mode::PlannerPermissionMode::Never,
                 &client_id(),
                 None
             )
@@ -700,6 +712,7 @@ async fn an_image_goes_out_as_base64_and_is_stored_as_its_placeholder() {
                 InputItem::LocalImage { path: path.clone() },
             ],
             &TurnModelSelection::inherit(),
+            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
             &client_id(),
             None,
         )

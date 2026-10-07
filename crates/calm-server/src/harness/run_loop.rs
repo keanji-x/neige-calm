@@ -40,6 +40,7 @@ use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::HarnessInputSegment;
 use crate::planner_attachments::bind::BoundAttachment;
 use crate::planner_model::{FailureKind, TurnModelSelection};
+use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::thread_seals::{DeletionThreadSeals, ThreadSeals};
 use crate::track_area_cache::TrackAreaCache;
 use crate::track_vcs;
@@ -286,13 +287,16 @@ impl<'a> IssueTurnHandle<'a> {
         }
     }
 
-    /// `selection` is required: a default would silently answer which model runs this turn.
-    /// `client_user_message_id` is the projection row's key; codex hands it back as `item.clientId`.
+    /// `selection` and `permission` are required: a default would silently answer which model
+    /// runs this turn, or what it may do without asking. `client_user_message_id` is the
+    /// projection row's key; codex hands it back as `item.clientId`.
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn issue(
         &self,
         thread_id: &str,
         input: Vec<InputItem>,
         selection: &TurnModelSelection,
+        permission: PlannerPermissionMode,
         client_user_message_id: &str,
         claim: &[QueueEntry],
         pending_rewind: Option<&BackendRewind>,
@@ -302,6 +306,7 @@ impl<'a> IssueTurnHandle<'a> {
                 thread_id,
                 input,
                 selection,
+                permission,
                 client_user_message_id,
                 claim,
                 pending_rewind,
@@ -2035,7 +2040,7 @@ async fn on_notification(
         PlannerEventKind::Approval { method } => {
             tracing::warn!(
                 method,
-                "planner harness ignoring approval-shaped notification under approval_policy=never"
+                "planner harness ignoring an approval-shaped notification; approvals arrive as server requests"
             );
             return Ok(());
         }
@@ -3295,11 +3300,17 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         "calling backend.turn_start"
     );
 
-    // The model is resolved HERE, as late as possible: the transcript refresh and diff above can
-    // be tens of seconds, and a person who changed the model inside that window would otherwise
-    // watch the turn run under the model they just replaced.
-    let selection = match inner.backend.resolve_selection(inner.as_ref()).await {
-        Ok(selection) => selection,
+    // The model and the permission mode are resolved HERE, as late as possible: the transcript
+    // refresh and diff above can be tens of seconds, and a person who changed either inside that
+    // window would otherwise watch the turn run under the one they just replaced.
+    let resolved = async {
+        let selection = inner.backend.resolve_selection(inner.as_ref()).await?;
+        let permission = turn_permission::resolve(inner).await?;
+        Ok::<_, IssuanceRefusal>((selection, permission))
+    }
+    .await;
+    let (selection, permission) = match resolved {
+        Ok(resolved) => resolved,
         Err(failure) => {
             // Not a wedge: `HarnessState::Wedged` has no exit in this tree, and wedging on a codex restart
             // ended the conversation permanently. But not every failure here clears itself, so the kinds
@@ -3310,7 +3321,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 card_id = %inner.card_id,
                 reason = %failure.log,
                 kind = ?failure.kind,
-                "not issuing this turn: the model to run it under is undetermined; will retry"
+                "not issuing this turn: the model or permission mode to run it under is undetermined; will retry"
             );
             // The two arms differ in what waiting is worth, so they differ in how long we wait and in
             // whether the reader is told.
@@ -3356,6 +3367,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 &thread_id,
                 items,
                 &selection,
+                permission,
                 client_id.as_str(),
                 &drained,
                 pending_rewind.as_ref(),
@@ -4424,6 +4436,7 @@ mod held;
 mod live_reply;
 mod native_ask;
 mod replace_command;
+mod turn_permission;
 
 #[cfg(test)]
 mod checkpoint_tests;

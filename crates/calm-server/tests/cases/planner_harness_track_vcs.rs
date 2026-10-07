@@ -79,7 +79,7 @@ async fn boot() -> Boot {
         &area.id,
         "codex",
         CardRole::Planner,
-        json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex"}),
+        json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex", "permission_mode": "never"}),
     )
     .await;
     let runtime_id = new_id();
@@ -1750,7 +1750,7 @@ async fn planner_card_own_payload_path_is_suppressed_from_turn_observation() {
     update_card_payload_with_event(
         &boot,
         &planner,
-        json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex", "private": "noise"}),
+        json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex", "permission_mode": "never", "private": "noise"}),
     )
     .await;
 

@@ -271,6 +271,7 @@ contract, report task completion exactly once now, then stop."
             &thread_id,
             vec![InputItem::text(&prompt)],
             &TurnModelSelection::inherit(),
+            calm_server::codex_appserver::TurnApprovals::Unchanged,
             None,
         )
         .await

@@ -32,6 +32,7 @@ async fn harness() -> Harness {
         notif_tx,
         sink.clone(),
         transport.clone(),
+        Arc::new(ApprovalRoutes::default()),
     ));
 
     let client = CodexAppServer {

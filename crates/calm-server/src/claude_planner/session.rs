@@ -2,9 +2,8 @@
 //! #1791 §5.1, §5.2, §5.6, §6.2).
 //!
 //! Submission contract ([`ClaudePlannerSession::turn_start`]): refuse until the harness is
-//! installed, mint the turn id, check the seal, run `--version` (before any user input), read the
-//! card's permission mode (#2348), on the harness's first turn mint its MCP credential (§5.1 item
-//! 2), `stop` whatever still carries this session's marker, write the instructions file under a
+//! installed, mint the turn id, check the seal, run `--version` (before any user input), on the
+//! harness's first turn mint its MCP credential (§5.1 item 2), `stop` whatever still carries this session's marker, write the instructions file under a
 //! per-spawn guard, spawn, re-check the seal, write the one `user` line (bounded), and return
 //! `Ok(turn_id)`. Every exit before `Ok` stops the marker, removes the file and returns `Err`; no
 //! outcome is recorded, because no turn id was handed out.
@@ -37,6 +36,7 @@ use crate::error::{CalmError, Result};
 use crate::harness::held_requests::HeldRequestSender;
 use crate::harness::planner_event::PlannerEvent;
 use crate::planner_model::TurnModelSelection;
+use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::thread_seals::ThreadSeals;
 use calm_types::worker::WorkerSessionId;
 
@@ -401,13 +401,15 @@ impl ClaudePlannerSession {
     }
 
     /// See the module docs for the submission contract. `selection` is the card's stored choice,
-    /// read at issue and passed as it is; the CLI judges the model (#1822 6′). `truncation` is a
-    /// rewind's pending cut, applied by this spawn.
+    /// read at issue and passed as it is; the CLI judges the model (#1822 6′). `mode` is the card's
+    /// permission mode, read at issue by the harness (#2348) and fixed for this spawn. `truncation`
+    /// is a rewind's pending cut, applied by this spawn.
     pub async fn turn_start(
         &self,
         thread: &str,
         items: Vec<InputItem>,
         selection: &TurnModelSelection,
+        mode: PlannerPermissionMode,
         client_id: &str,
         truncation: Option<&ResumeTruncation>,
     ) -> Result<String, crate::harness::backend::TurnStartFailure> {
@@ -462,7 +464,6 @@ impl ClaudePlannerSession {
         if params.seals.is_sealed(thread) {
             return Err(sealed(thread).into());
         }
-        let mode = super::approvals::mode_at_spawn(params.repo.as_ref(), &params.card_id).await?;
         // A revocation under a live harness (e.g. one an aborted deletion's recovery could not
         // replace, §5.1 item 4) nulls the row's hash; the next spawn must not carry a credential that
         // no longer authenticates.

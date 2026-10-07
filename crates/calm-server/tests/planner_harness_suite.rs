@@ -40,6 +40,8 @@ mod planner_attachments_rest;
 mod planner_authentication_recovery;
 #[path = "cases/planner_child_bootstrap_fence.rs"]
 mod planner_child_bootstrap_fence;
+#[path = "cases/planner_codex_approvals.rs"]
+mod planner_codex_approvals;
 #[path = "cases/planner_first_start.rs"]
 mod planner_first_start;
 #[path = "cases/planner_first_start_owner.rs"]

@@ -2598,6 +2598,7 @@ async fn turn_start_seeds_active_turns_synchronously() {
             &thread_id,
             vec![InputItem::text("seed active turn")],
             &TurnModelSelection::inherit(),
+            calm_server::codex_appserver::TurnApprovals::Unchanged,
             None,
         )
         .await
@@ -2654,6 +2655,7 @@ async fn turn_start_forwards_the_selection_onto_the_wire() {
                 model: Some("gpt-5-codex".into()),
                 effort: Some("high".into()),
             },
+            calm_server::codex_appserver::TurnApprovals::Unchanged,
             None,
         )
         .await
@@ -2730,6 +2732,7 @@ async fn interrupt_active_turn_immediately_after_turn_start_succeeds() {
             &thread_id,
             vec![InputItem::text("interrupt active turn")],
             &TurnModelSelection::inherit(),
+            calm_server::codex_appserver::TurnApprovals::Unchanged,
             None,
         )
         .await
@@ -2776,6 +2779,7 @@ async fn active_turns_map_tracks_turn_started_and_completed() {
             &thread_id,
             vec![InputItem::text("track active turn")],
             &TurnModelSelection::inherit(),
+            calm_server::codex_appserver::TurnApprovals::Unchanged,
             None,
         )
         .await

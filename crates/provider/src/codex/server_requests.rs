@@ -1,8 +1,10 @@
-//! Server-initiated requests. Neige offers Codex no dynamic tool and serves no server request:
-//! each one is refused with an explicit JSON-RPC error, so a thread that still carries a
-//! since-deleted dynamic tool gets an answer when it calls it.
-//! A saturated reply queue closes the socket: a peer that cannot receive an error must not cause
-//! unbounded tasks or memory.
+//! Server-initiated requests. Neige offers Codex no dynamic tool and serves no server request but
+//! one kind: an approval on a thread a Planner harness routes ([`ApprovalRoutes`], #2348) goes to
+//! that harness, which answers it later. Every other request is refused with an explicit JSON-RPC
+//! error, so a thread that still carries a since-deleted dynamic tool gets an answer when it calls
+//! it. A saturated reply queue closes the socket: a peer that cannot receive an answer must not
+//! cause unbounded tasks or memory.
+use super::approvals::{ApprovalRequest, ApprovalResponder, ApprovalRoutes, HandedRequests};
 use super::*;
 use tokio::task::JoinSet;
 
@@ -18,22 +20,51 @@ enum ServerRequestId {
     Unsigned(u64),
 }
 
-/// Owned by the reader. Dropping it cancels the writer.
+/// The connection's reply queue. Queuing never waits: a full queue closes the socket.
+#[derive(Clone)]
+struct Replies {
+    queue: mpsc::Sender<Value>,
+    transport: Arc<TransportAbort>,
+}
+
+impl Replies {
+    fn send(&self, reply: Value) -> bool {
+        if self.queue.try_send(reply).is_err() {
+            self.transport.poison();
+            return false;
+        }
+        true
+    }
+}
+
+impl approvals::ReplyPort for Replies {
+    fn reply(&self, frame: Value) {
+        self.send(frame);
+    }
+}
+
+/// Owned by the reader. Dropping it cancels the writer and tells every harness it handed a
+/// request that the connection is gone.
 pub(super) struct Dispatch {
     pub(super) tasks: JoinSet<bool>,
-    replies: mpsc::Sender<Value>,
-    transport: Arc<TransportAbort>,
+    replies: Replies,
+    routes: Arc<ApprovalRoutes>,
+    handed: HandedRequests,
 }
 
 impl Drop for Dispatch {
     fn drop(&mut self) {
-        self.transport.poison();
+        self.replies.transport.poison();
     }
 }
 
 impl Dispatch {
-    pub(super) fn new(sink: WsSink, transport: Arc<TransportAbort>) -> Self {
-        let (replies, mut rx) = mpsc::channel::<Value>(REPLY_LIMIT);
+    pub(super) fn new(
+        sink: WsSink,
+        transport: Arc<TransportAbort>,
+        routes: Arc<ApprovalRoutes>,
+    ) -> Self {
+        let (queue, mut rx) = mpsc::channel::<Value>(REPLY_LIMIT);
         let mut tasks = JoinSet::new();
         let writer_transport = transport.clone();
         tasks.spawn(async move {
@@ -60,24 +91,37 @@ impl Dispatch {
         });
         Self {
             tasks,
-            replies,
-            transport,
+            replies: Replies { queue, transport },
+            routes,
+            handed: HandedRequests::new(),
         }
     }
 
     /// Synchronous admission only: socket flushing never blocks the reader's RPC response and
-    /// notification routing.
+    /// notification routing, and handing an approval to its harness never waits.
     pub(super) fn accept(&mut self, frame: &Value) -> bool {
-        let (id, code, message) =
-            match serde_json::from_value::<ServerRequestId>(frame["id"].clone()) {
-                Ok(id) => (json!(id), -32601, "unsupported server request"),
-                Err(_) => (Value::Null, -32600, "invalid server request ID"),
-            };
-        let reply = json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}});
-        if self.replies.try_send(reply).is_err() {
-            self.transport.poison();
-            return false;
+        if serde_json::from_value::<ServerRequestId>(frame["id"].clone()).is_err() {
+            return self.refuse(Value::Null, -32600, "invalid server request ID");
         }
-        true
+        let id = &frame["id"];
+        let method = frame["method"].as_str().unwrap_or_default();
+        if let Some(request) = ApprovalRequest::parse(method, &frame["params"])
+            && let Some(sender) = self.routes.sender(&request.thread_id)
+        {
+            let responder = ApprovalResponder::new(self.replies.clone(), id.clone(), request.kind);
+            self.handed.open(sender, id, &request, Box::new(responder));
+            return true;
+        }
+        self.refuse(id.clone(), -32601, "unsupported server request")
+    }
+
+    /// `serverRequest/resolved`: codex settled one of its requests.
+    pub(super) fn resolved(&mut self, params: &Value) {
+        self.handed.resolved(params);
+    }
+
+    fn refuse(&self, id: Value, code: i64, message: &str) -> bool {
+        self.replies
+            .send(json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}}))
     }
 }

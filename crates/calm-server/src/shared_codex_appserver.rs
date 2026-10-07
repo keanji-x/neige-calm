@@ -27,8 +27,8 @@ use tokio::task::JoinHandle;
 pub use provider::codex::{other_thread_id, thread_id_from_started};
 
 use crate::codex_appserver::{
-    AccountRead, ClientInfo, CodexAppServer, CodexConfig, CodexModel, InputItem, Notification,
-    ThreadStartParams, redact_thread_start_config,
+    AccountRead, ApprovalRoutes, ClientInfo, CodexAppServer, CodexConfig, CodexModel, InputItem,
+    Notification, ThreadStartParams, TurnApprovals, redact_thread_start_config,
 };
 use crate::config::Config;
 use crate::db::sqlite::session_projection_active_for_card_tx;
@@ -456,6 +456,9 @@ pub struct SharedCodexAppServer {
     /// Bounded tombstones for threads a committed delete forgot; see [`ForgottenThreads`].
     forgotten_threads: Arc<Mutex<ForgottenThreads>>,
     kernel_thread_start_serial: Arc<Mutex<()>>,
+    /// The Planner threads whose approval requests a harness holds (#2348). Every connection this
+    /// supervisor opens hands their requests over, so a route survives a heal or a replace.
+    approval_routes: Arc<ApprovalRoutes>,
     /// Fences the resume replay against a committed delete's cache cleanup. Not
     /// `kernel_thread_start_serial`: the respawn's resume loop runs inside that one and tokio
     /// mutexes are not reentrant. Lock order: `kernel_thread_start_serial` → `resume_replay_serial`.
@@ -546,6 +549,7 @@ pub struct FakeSharedCodexAppServer {
     started_turn_selections: std::sync::Mutex<Vec<(String, TurnModelSelection)>>,
     /// The `clientUserMessageId` each `turn/start` carried, in the same order as `started_turns`.
     started_turn_client_ids: std::sync::Mutex<Vec<Option<String>>>,
+    started_turn_approvals: std::sync::Mutex<Vec<TurnApprovals>>,
     interrupted_turns: std::sync::Mutex<Vec<(String, String)>>,
     compacted_threads: std::sync::Mutex<Vec<String>>,
     turn_start_return_hook: std::sync::Mutex<Option<TurnStartReturnHook>>,
@@ -608,6 +612,7 @@ impl FakeSharedCodexAppServer {
             started_turns: std::sync::Mutex::new(Vec::new()),
             started_turn_selections: std::sync::Mutex::new(Vec::new()),
             started_turn_client_ids: std::sync::Mutex::new(Vec::new()),
+            started_turn_approvals: std::sync::Mutex::new(Vec::new()),
             interrupted_turns: std::sync::Mutex::new(Vec::new()),
             compacted_threads: std::sync::Mutex::new(Vec::new()),
             turn_start_return_hook: std::sync::Mutex::new(None),
@@ -681,6 +686,7 @@ impl SharedCodexAppServer {
             kernel_initiated_threads: Arc::new(Mutex::new(HashSet::new())),
             forgotten_threads: Arc::new(Mutex::new(ForgottenThreads::default())),
             kernel_thread_start_serial: Arc::new(Mutex::new(())),
+            approval_routes: Arc::new(ApprovalRoutes::default()),
             resume_replay_serial: Arc::new(Mutex::new(())),
             codex_bin: "codex".into(),
             log_dir: root.join("logs/shared-codex-appserver"),
@@ -751,6 +757,7 @@ impl SharedCodexAppServer {
             kernel_initiated_threads: Arc::new(Mutex::new(HashSet::new())),
             forgotten_threads: Arc::new(Mutex::new(ForgottenThreads::default())),
             kernel_thread_start_serial: Arc::new(Mutex::new(())),
+            approval_routes: Arc::new(ApprovalRoutes::default()),
             resume_replay_serial: Arc::new(Mutex::new(())),
             codex_bin: cfg.codex_bin.clone(),
             log_dir: cfg.shared_codex_appserver_log_dir_resolved(),
@@ -1024,12 +1031,14 @@ impl SharedCodexAppServer {
 
     /// Planner-harness reconciliation turn issuance goes through `IssueTurnHandle`; direct
     /// callers here are non-harness boot/operation paths or tests. `client_user_message_id`
-    /// comes back as `item.clientId` on the echoed `userMessage`.
+    /// comes back as `item.clientId` on the echoed `userMessage`; `approvals` is what the turn
+    /// tells codex about approvals.
     pub async fn turn_start(
         &self,
         thread_id: &str,
         items: Vec<InputItem>,
         selection: &TurnModelSelection,
+        approvals: TurnApprovals,
         client_user_message_id: Option<&str>,
     ) -> Result<TurnId> {
         self.require_authentication()?;
@@ -1070,6 +1079,10 @@ impl SharedCodexAppServer {
                 .lock()
                 .expect("fake shared codex turn client ids mutex poisoned")
                 .push(client_user_message_id.map(ToOwned::to_owned));
+            fake.started_turn_approvals
+                .lock()
+                .expect("fake shared codex turn approvals mutex poisoned")
+                .push(approvals);
             // Counted after the records above, so `turn_start_count_for_test` never runs ahead of them.
             let n = fake.next_turn.fetch_add(1, Ordering::SeqCst);
             let turn_id = format!("fake-turn-{n:04}");
@@ -1106,6 +1119,7 @@ impl SharedCodexAppServer {
                     thread_id,
                     items,
                     selection,
+                    approvals,
                     client_user_message_id,
                 ),
             )
@@ -1309,6 +1323,11 @@ impl SharedCodexAppServer {
             .iter()
             .map(|entry| (entry.key().clone(), entry.value().clone()))
             .collect()
+    }
+
+    /// Where a Planner harness routes its thread's approval requests (#2348).
+    pub fn approval_routes(&self) -> &Arc<ApprovalRoutes> {
+        &self.approval_routes
     }
 
     /// The server's deletion-seal registry. Boot wiring (the app state and the dispatcher's own
@@ -1954,7 +1973,7 @@ impl SharedCodexAppServer {
         } else {
             // The deadline for this arm lives at the transport (`CodexAppServer::connect`'s
             // `CONNECT_TIMEOUT`); a silent peer lands in `HandshakeFailed`, which reaps and relaunches.
-            match connect_initialized(&sock).await {
+            match connect_initialized(&sock, &self.approval_routes).await {
                 Ok(pair) => AdoptProbe::Connected(pair),
                 Err(e) => AdoptProbe::HandshakeFailed(e.to_string()),
             }
@@ -2734,15 +2753,19 @@ impl SharedCodexAppServer {
         loop {
             // The deadline caps the TOTAL wait, including an in-flight attempt, so a child that accepts
             // the socket but never answers cannot stretch it by the 10s per-attempt request timeout.
-            let (deadline_hit_in_flight, attempt_err) =
-                match tokio::time::timeout_at(deadline, connect_initialized(&self.sock)).await {
-                    Ok(Ok(pair)) => return Ok(pair),
-                    Ok(Err(e)) => (false, e.to_string()),
-                    Err(_) => (
-                        true,
-                        "initialize attempt still in flight at the cold-start deadline".to_string(),
-                    ),
-                };
+            let (deadline_hit_in_flight, attempt_err) = match tokio::time::timeout_at(
+                deadline,
+                connect_initialized(&self.sock, &self.approval_routes),
+            )
+            .await
+            {
+                Ok(Ok(pair)) => return Ok(pair),
+                Ok(Err(e)) => (false, e.to_string()),
+                Err(_) => (
+                    true,
+                    "initialize attempt still in flight at the cold-start deadline".to_string(),
+                ),
+            };
             // Probe liveness AFTER the (possibly long) attempt so the error describes the child's
             // state at emission time.
             if let Some(status) = spawn_guard.try_wait_exit() {
@@ -2786,16 +2809,20 @@ impl SharedCodexAppServer {
         let started = tokio::time::Instant::now();
         let deadline = started + window;
         loop {
-            let (deadline_hit_in_flight, attempt_err) =
-                match tokio::time::timeout_at(deadline, connect_initialized(sock)).await {
-                    Ok(Ok(pair)) => return AdoptProbe::Connected(pair),
-                    Ok(Err(e)) => (false, e.to_string()),
-                    Err(_) => (
-                        true,
-                        "initialize attempt still in flight at the readiness-window deadline"
-                            .to_string(),
-                    ),
-                };
+            let (deadline_hit_in_flight, attempt_err) = match tokio::time::timeout_at(
+                deadline,
+                connect_initialized(sock, &self.approval_routes),
+            )
+            .await
+            {
+                Ok(Ok(pair)) => return AdoptProbe::Connected(pair),
+                Ok(Err(e)) => (false, e.to_string()),
+                Err(_) => (
+                    true,
+                    "initialize attempt still in flight at the readiness-window deadline"
+                        .to_string(),
+                ),
+            };
             // Liveness AFTER the (possibly long) attempt. Zombie = dead: an exited-but-unreaped child
             // can never bind the socket. This arm sends no signals, so members of a zombie leader's
             // group can leak past the fresh spawn.
@@ -3519,6 +3546,21 @@ impl SharedCodexAppServer {
                 fake.started_turn_selections
                     .lock()
                     .expect("fake shared codex turn selections mutex poisoned")
+                    .clone()
+            })
+            .unwrap_or_default()
+    }
+
+    /// What each `turn/start` told codex about approvals; pairs index-for-index with
+    /// `started_turns_for_test`.
+    #[cfg(feature = "fixtures")]
+    pub fn started_turn_approvals_for_test(&self) -> Vec<TurnApprovals> {
+        self.fake
+            .as_ref()
+            .map(|fake| {
+                fake.started_turn_approvals
+                    .lock()
+                    .expect("fake shared codex turn approvals mutex poisoned")
                     .clone()
             })
             .unwrap_or_default()
@@ -4521,8 +4563,10 @@ impl provider::worker::CodexDaemonProbe for SharedCodexAppServer {
 /// "last turn" is the MOST RECENT element of `turns`.
 async fn connect_initialized(
     sock: &Path,
+    approval_routes: &Arc<ApprovalRoutes>,
 ) -> Result<(CodexAppServer, crate::codex_appserver::NotificationStream)> {
-    let (client, notifications) = CodexAppServer::connect(sock).await?;
+    let (client, notifications) =
+        CodexAppServer::connect_routed(sock, Arc::clone(approval_routes)).await?;
     let client = client.with_request_timeout(Duration::from_secs(10));
     client
         .initialize(ClientInfo {

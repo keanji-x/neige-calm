@@ -1,8 +1,8 @@
 //! A Claude Planner's tool approvals (#2348): the adapter between the CLI's `can_use_tool` and the
 //! harness's held-request channel.
 //!
-//! The card's permission mode is read at every spawn. Under `ask` the spawn runs with
-//! `--permission-prompt-tool stdio`; each `can_use_tool` becomes an `Open` whose
+//! Every spawn runs under the permission mode the harness read for its turn. Under `ask` it runs
+//! with `--permission-prompt-tool stdio`; each `can_use_tool` becomes an `Open` whose
 //! [`ClaudeResponder`] writes the decision on the child's stdin, and each
 //! `control_cancel_request` becomes a `Gone`. The spawn is the connection: the
 //! [`SpawnConnection`] its read task holds pushes `ConnectionLost` when that task ends, after the
@@ -15,10 +15,7 @@ use serde_json::{Map, Value};
 
 use super::protocol::ControlResponseOut;
 use super::session::TurnSlot;
-use crate::db::Repo;
-use crate::error::CalmError;
 use crate::event::AskQuestion;
-use crate::harness::backend::TurnStartFailure;
 use crate::harness::held_requests::{
     ConnectionId, HeldRequestMessage, HeldRequestSender, HeldResponder, RequestKey,
 };
@@ -35,29 +32,6 @@ pub(crate) const NOT_ANSWERED: &str =
     "This tool use was not approved: nobody answered the request for it.";
 /// What a `never` spawn answers a `can_use_tool` it should not have been sent.
 pub(crate) const NO_APPROVAL_SURFACE: &str = "this Planner has no approval surface";
-
-/// The card's permission mode as it stands at this spawn, read only through
-/// [`crate::planner_permission_mode::read`]. A stored value that cannot be read refuses the turn
-/// the way an unreadable model selection does: the reader is told and the message stays queued. It
-/// is never taken for either mode.
-pub(crate) async fn mode_at_spawn(
-    repo: &dyn Repo,
-    card_id: &str,
-) -> Result<PlannerPermissionMode, TurnStartFailure> {
-    let card = repo
-        .card_get(card_id)
-        .await
-        .map_err(CalmError::from)?
-        .ok_or_else(|| CalmError::NotFound(format!("planner card {card_id}")))?;
-    crate::planner_permission_mode::read(&card.payload).map_err(|malformed| {
-        TurnStartFailure::Refused {
-            error: CalmError::Conflict(malformed.to_string()),
-            reader: "This conversation's saved permission mode cannot be read. Choose a \
-                     permission mode to replace it. Your message is still queued."
-                .into(),
-        }
-    })
-}
 
 /// How one spawn answers `can_use_tool`, fixed by the permission mode read at the spawn.
 pub(crate) enum Approvals {

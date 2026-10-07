@@ -1,13 +1,15 @@
 //! Programmatic client for a card's `codex app-server` connection: JSON-RPC 2.0 over WebSocket over a unix socket.
 //! `permessage-deflate` MUST NOT be offered or the server rejects the handshake; raw JSON without the WS upgrade is silently dropped. All methods used are `[experimental]`, so `initialize` sends `experimentalApi = true`.
-//! A reader task demultiplexes responses (per-id oneshot), server requests, and notifications (unbounded mpsc); only the params/results we use are typed, and unknown fields are tolerated.
+//! A reader task demultiplexes responses (per-id oneshot), server requests (approvals of a thread [`ApprovalRoutes`] routes go to its Planner harness, #2348), and notifications (unbounded mpsc); only the params/results we use are typed, and unknown fields are tolerated.
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
 
+mod approvals;
 mod authentication;
 pub mod error;
+pub use approvals::{ApprovalRoute, ApprovalRoutes, TurnApprovals};
 pub use authentication::AuthenticationFailure;
 mod types;
 pub use types::*;
@@ -145,12 +147,13 @@ async fn connect_timeout_diagnostic(sock_path: &Path, awaited: &str, peer_state:
 }
 
 /// Build the `turn/start` params frame, split out so the frame can be asserted on without a daemon.
-/// A `None` in `selection` omits the key entirely, never `null`: codex's overrides are sticky, and an omitted key means "leave the thread's current override alone".
+/// A `None` in `selection` omits the key entirely, never `null`: codex's overrides are sticky, and an omitted key means "leave the thread's current override alone". `approvals` adds the three approval settings or none of them.
 /// `effort` is spelled `effort` (not `reasoningEffort`); `clientUserMessageId` is echoed back by codex as `item.clientId` on the `userMessage` item, the kernel's only key for matching that echo.
 fn turn_start_params(
     thread_id: &str,
     input: &[InputItem],
     selection: &TurnModelSelection,
+    approvals: TurnApprovals,
     client_user_message_id: Option<&str>,
 ) -> Value {
     let mut params = json!({ "threadId": thread_id, "input": input });
@@ -163,6 +166,7 @@ fn turn_start_params(
     if let Some(effort) = selection.effort.as_deref() {
         map.insert("effort".into(), Value::String(effort.to_string()));
     }
+    approvals.insert_into(map);
     if let Some(client_id) = client_user_message_id {
         map.insert(
             "clientUserMessageId".into(),
@@ -201,6 +205,14 @@ impl CodexAppServer {
     #[cfg(test)]
     pub(crate) async fn connect_pair_for_test()
     -> (Self, NotificationStream, WebSocketStream<UnixStream>) {
+        Self::connect_pair_routed_for_test(Arc::new(ApprovalRoutes::default())).await
+    }
+
+    /// Test-only: [`Self::connect_pair_for_test`] handing the approvals `routes` routes over.
+    #[cfg(test)]
+    pub(crate) async fn connect_pair_routed_for_test(
+        routes: Arc<ApprovalRoutes>,
+    ) -> (Self, NotificationStream, WebSocketStream<UnixStream>) {
         let (client_io, server_io) = UnixStream::pair().expect("unix socket pair");
         let req = WS_URI.into_client_request().unwrap();
         let client_fut = tokio_tungstenite::client_async(req, client_io);
@@ -221,6 +233,7 @@ impl CodexAppServer {
             notif_tx,
             sink.clone(),
             transport.clone(),
+            routes,
         ));
         let client = Self {
             sink,
@@ -233,8 +246,16 @@ impl CodexAppServer {
         (client, NotificationStream { rx: notif_rx }, server)
     }
 
-    /// Connect to a `codex app-server` on `sock_path`, spawn the reader, return the client and its [`NotificationStream`]. Does NOT send `initialize`.
+    /// Connect to a `codex app-server` on `sock_path`, spawn the reader, return the client and its [`NotificationStream`]. Does NOT send `initialize`. Every server request is refused.
     pub async fn connect(sock_path: impl AsRef<Path>) -> Result<(Self, NotificationStream)> {
+        Self::connect_routed(sock_path, Arc::new(ApprovalRoutes::default())).await
+    }
+
+    /// [`Self::connect`], handing the approval requests of every thread `routes` routes to its harness.
+    pub async fn connect_routed(
+        sock_path: impl AsRef<Path>,
+        routes: Arc<ApprovalRoutes>,
+    ) -> Result<(Self, NotificationStream)> {
         let sock_path = sock_path.as_ref();
         let stream =
             match tokio::time::timeout(CONNECT_TIMEOUT, UnixStream::connect(sock_path)).await {
@@ -306,6 +327,7 @@ impl CodexAppServer {
             notif_tx,
             sink.clone(),
             transport.clone(),
+            routes,
         ));
 
         tracing::debug!(sock = %sock_path.display(), "codex app-server: connected");
@@ -439,21 +461,28 @@ impl CodexAppServer {
         input: Vec<InputItem>,
         selection: &TurnModelSelection,
     ) -> Result<TurnStartResult> {
-        self.turn_start_with_client_id(thread_id, input, selection, None)
+        self.turn_start_with_client_id(thread_id, input, selection, TurnApprovals::Unchanged, None)
             .await
     }
 
-    /// `turn/start` carrying `clientUserMessageId`; the planner drain is the one caller with an id to send.
+    /// `turn/start` carrying the approval settings and `clientUserMessageId`; the planner drain is the one caller with an id to send.
     pub async fn turn_start_with_client_id(
         &self,
         thread_id: &str,
         input: Vec<InputItem>,
         selection: &TurnModelSelection,
+        approvals: TurnApprovals,
         client_user_message_id: Option<&str>,
     ) -> Result<TurnStartResult> {
         self.request(
             "turn/start",
-            turn_start_params(thread_id, &input, selection, client_user_message_id),
+            turn_start_params(
+                thread_id,
+                &input,
+                selection,
+                approvals,
+                client_user_message_id,
+            ),
         )
         .await
     }
@@ -652,8 +681,9 @@ async fn reader_loop(
     notif_tx: mpsc::UnboundedSender<Notification>,
     sink: WsSink,
     transport: Arc<TransportAbort>,
+    routes: Arc<ApprovalRoutes>,
 ) {
-    let mut requests = server_requests::Dispatch::new(sink, transport);
+    let mut requests = server_requests::Dispatch::new(sink, transport, routes);
     loop {
         let frame = tokio::select! {
             finished = requests.tasks.join_next() => {
@@ -722,6 +752,9 @@ async fn reader_loop(
 
         if let Some(method) = obj.get("method").and_then(Value::as_str) {
             let params = obj.get("params").cloned().unwrap_or(Value::Null);
+            if method == "serverRequest/resolved" {
+                requests.resolved(&params);
+            }
             let notif = Notification::parse(method.to_string(), params);
             // `unbounded_send` never awaits capacity, so a slow consumer can never block response routing; the only failure is a dropped receiver.
             if notif_tx.send(notif).is_err() {
