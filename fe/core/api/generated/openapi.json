@@ -64,6 +64,117 @@
         }
       }
     },
+    "/api/agent-providers/codex/retry": {
+      "post": {
+        "tags": [
+          "agent_providers"
+        ],
+        "summary": "After signing in for the server, explicitly authorize queued messages to retry. No login,\ncredential refresh/copy or daemon restart is performed. A stale revision never rearms.",
+        "operationId": "retry_codex_authentication",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthenticationRetryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Retry authorization committed; read provider and conversation status for its outcome",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthenticationRetryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Owner login required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only the owner acting as a user may authorize this retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The observation changed or there is no confirmed failure to retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`: the body is over the request size limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`: the request does not say `Content-Type: application/json`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_body`: the JSON is not the body's shape (a field missing or of the wrong type).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Retry status cannot be safely saved or recovery checked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/areas": {
       "get": {
         "tags": [
@@ -11815,6 +11926,77 @@
         "type": "string",
         "description": "`<uuid-v4>.<ext>` — an attachment's id *and* its file name. The only constructor is\n[`AttachmentId::parse`] and `Deserialize` goes through the same gate."
       },
+      "AuthenticationNotice": {
+        "type": "object",
+        "required": [
+          "kind",
+          "text",
+          "revision"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/AuthenticationNoticeKind"
+          },
+          "revision": {
+            "type": "string",
+            "description": "Opaque durable observation revision; only the owner retry command consumes it."
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "AuthenticationNoticeKind": {
+        "type": "string",
+        "enum": [
+          "sign_in_required",
+          "refresh_error_reported",
+          "state_unavailable",
+          "retry_requested"
+        ]
+      },
+      "AuthenticationRetryRequest": {
+        "type": "object",
+        "required": [
+          "expected_revision"
+        ],
+        "properties": {
+          "expected_revision": {
+            "type": "string",
+            "description": "The exact revision of the confirmed failure the owner read."
+          }
+        },
+        "additionalProperties": false
+      },
+      "AuthenticationRetryResponse": {
+        "type": "object",
+        "required": [
+          "status",
+          "requested_revision",
+          "recovery_notices"
+        ],
+        "properties": {
+          "recovery_notices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConversationRecoveryNotice"
+            }
+          },
+          "requested_revision": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AuthenticationRetryStatus",
+            "description": "Owner authorization was saved; this is not a credential-verification result."
+          }
+        }
+      },
+      "AuthenticationRetryStatus": {
+        "type": "string",
+        "enum": [
+          "retry_requested"
+        ]
+      },
       "BacklinkQuote": {
         "type": "object",
         "required": [
@@ -12518,6 +12700,29 @@
           "url": {
             "type": "string",
             "description": "Absolute `http://` / `https://` endpoint."
+          }
+        }
+      },
+      "ConversationRecoveryNotice": {
+        "type": "object",
+        "required": [
+          "card_id",
+          "track_id",
+          "title",
+          "text"
+        ],
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "track_id": {
+            "type": "string"
           }
         }
       },
@@ -14809,9 +15014,21 @@
           "provider",
           "status",
           "reason",
-          "checked_at_ms"
+          "checked_at_ms",
+          "authentication_notice"
         ],
         "properties": {
+          "authentication_notice": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AuthenticationNotice",
+                "description": "Native confirmed failure, unconfirmed log evidence, or diagnostic-storage failure."
+              }
+            ]
+          },
           "checked_at_ms": {
             "type": "integer",
             "format": "int64",
