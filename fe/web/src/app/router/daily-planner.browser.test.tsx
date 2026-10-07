@@ -62,14 +62,21 @@ it.each([1000, 768, 600])('shares one right sidebar card between calendar and in
 
 it.each([1024, 1280])('fits the calendar date badges inside the sidebar at width %s', async (width) => {
   await page.viewport(width, 768);
-  renderDailyFixture();
+  const entries = Array.from({ length: 20 }, (_, index) => ({ id: `sidebar-${index}`, version: 1, cancelled: false,
+    source_track_id: null, created_by: 'user', created_at: 1, updated_at: 1, occurrences: [],
+    task: { title: `Commitment ${index}`, description: '', schedule: { kind: 'all_day', date: '2026-09-28' } } }));
+  renderDailyFixture({ reply: (request) => request.path.startsWith('/api/calendar/tasks?')
+    ? { status: 200, statusText: 'OK', body: request.path.includes('until=2026-10-05') ? entries : [] } : undefined });
   const calendar = page.getByRole('region', { name: 'Calendar tasks' });
   await expect.element(calendar).toBeVisible();
+  await expect.element(page.getByLabelText('20 tasks', { exact: true })).toBeVisible();
   const panel = calendar.element().closest('[data-nc-panel]')!;
   expect(panel.scrollWidth).toBeLessThanOrEqual(panel.clientWidth);
   for (const header of calendar.element().querySelectorAll('[role="columnheader"]')) {
     const link = header.querySelector('[role="link"]')!;
     expect(link.getBoundingClientRect().right).toBeLessThanOrEqual(header.getBoundingClientRect().right);
+    const badge = link.querySelector<HTMLElement>('[class*="dateBadge"]')!;
+    expect(badge.scrollWidth).toBeLessThanOrEqual(badge.clientWidth);
   }
   await page.getByRole('radio', { name: 'Month', exact: true }).click();
   expect(panel.scrollWidth).toBeLessThanOrEqual(panel.clientWidth);
