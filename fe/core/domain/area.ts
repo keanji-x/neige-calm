@@ -115,7 +115,7 @@ export const AREA_CREATE_FAILURES: FailureTable<AreaCreateFailure> = Object.free
     Object.freeze({ code: 'idempotency_key_invalid', is: 'key-spent' as const }),
     Object.freeze({ code: 'idempotency_key_reused', is: 'key-spent' as const }),
     Object.freeze({ code: 'idempotency_key_exhausted', is: 'key-spent' as const }),
-    Object.freeze({ status: Object.freeze([400, 403, 404, 422, 429]), is: 'rejected' as const }),
+    Object.freeze({ status: Object.freeze([400, 403, 404, 413, 422, 429]), is: 'rejected' as const }),
   ]),
   unauthorized: 'rejected',
   otherwise: 'unconfirmed',

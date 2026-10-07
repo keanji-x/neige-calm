@@ -2,6 +2,7 @@
 
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
@@ -10,9 +11,11 @@ import { ThemeProvider } from '../theme/public.tsx';
 import { AppShell } from './public.tsx';
 import { ApiError } from '../../../../core/domain/failure-class.ts';
 import { AreaCreatePreflightError } from '../providers/queries.ts';
+import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 
 const harness = vi.hoisted(() => ({
   compact: false,
+  realMutations: false,
   area: {
     id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user' as const,
     defaultTemplateId: null as string | null,
@@ -37,38 +40,44 @@ vi.mock('@tanstack/react-router', () => ({
   useRouterState: () => undefined,
 }));
 
-vi.mock('../providers/queries.ts', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../providers/queries.ts')>()),
-  useWorkspace: () => ({
-    areas: [harness.area],
-    tracks: [],
-    tracksByArea: new Map([['c1', []]]),
-    areasLoading: false,
-    overlaysLoading: false,
-    areasError: null,
-    overlaysError: null,
-    trackErrorsByArea: new Map(),
-    tracksLoadingByArea: new Map(),
-    retryAreas: vi.fn(),
-    retryOverlays: vi.fn(),
-    retryTracks: vi.fn(),
-  }),
-  useAreaMutations: () => ({
-    create: harness.create,
-    update: harness.update,
-    remove: harness.remove,
-  }),
-  useTrackMutations: () => ({
-    create: vi.fn(), patch: vi.fn(), setPinned: vi.fn(), createTerminal: vi.fn(),
-    createCodex: vi.fn(), createCard: vi.fn(), removeCard: vi.fn(), remove: vi.fn(),
-  }),
-  useTrackTemplates: () => ({
-    templates: harness.templates,
-    loaded: harness.templatesLoaded,
-    error: harness.templatesError,
-    refetch: vi.fn(),
-  }),
-}));
+vi.mock('../providers/queries.ts', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../providers/queries.ts')>();
+  return {
+    ...original,
+    useWorkspace: () => ({
+      areas: [harness.area],
+      tracks: [],
+      tracksByArea: new Map([['c1', []]]),
+      areasLoading: false,
+      overlaysLoading: false,
+      areasError: null,
+      overlaysError: null,
+      trackErrorsByArea: new Map(),
+      tracksLoadingByArea: new Map(),
+      retryAreas: vi.fn(),
+      retryOverlays: vi.fn(),
+      retryTracks: vi.fn(),
+    }),
+    useAreaMutations: (...args: Parameters<typeof original.useAreaMutations>) => {
+      const mutations = original.useAreaMutations(...args);
+      return harness.realMutations ? mutations : {
+        create: harness.create,
+        update: harness.update,
+        remove: harness.remove,
+      };
+    },
+    useTrackMutations: () => ({
+      create: vi.fn(), patch: vi.fn(), setPinned: vi.fn(), createTerminal: vi.fn(),
+      createCodex: vi.fn(), createCard: vi.fn(), removeCard: vi.fn(), remove: vi.fn(),
+    }),
+    useTrackTemplates: () => ({
+      templates: harness.templates,
+      loaded: harness.templatesLoaded,
+      error: harness.templatesError,
+      refetch: vi.fn(),
+    }),
+  };
+});
 
 vi.mock('../router/navigation.ts', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../router/navigation.ts')>()),
@@ -97,18 +106,20 @@ function memoryStorage() {
   };
 }
 
-function renderShell(compact = false) {
+function renderShell(compact = false, transport: ApiTransportPort = { send: vi.fn() }) {
   harness.compact = compact;
   return render(
-    <ThemeProvider storage={memoryStorage()}>
-      <AppShell
-        transport={{ send: vi.fn() }}
-        unauthorized={unauthorized}
-        onOpenSettings={vi.fn()}
-        onOpenPlugins={vi.fn()}
-        onSignOut={vi.fn()}
-      />
-    </ThemeProvider>,
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { mutations: { retry: false } } })}>
+      <ThemeProvider storage={memoryStorage()}>
+        <AppShell
+          transport={transport}
+          unauthorized={unauthorized}
+          onOpenSettings={vi.fn()}
+          onOpenPlugins={vi.fn()}
+          onSignOut={vi.fn()}
+        />
+      </ThemeProvider>
+    </QueryClientProvider>,
   );
 }
 
@@ -124,6 +135,7 @@ afterEach(() => {
 
 beforeEach(() => {
   harness.compact = false;
+  harness.realMutations = false;
   harness.area = {
     ...harness.area,
     name: 'Work',
@@ -144,6 +156,83 @@ beforeEach(() => {
 });
 
 describe('AppShell Area editor flow', () => {
+  function areaTransport(replies: (() => ApiTransportResponse)[]) {
+    const writes: ApiRequest[] = [];
+    const transport: ApiTransportPort = { send: (request) => {
+      if (request.path === '/api/version') {
+        return Promise.resolve({ status: 200, statusText: 'OK', body: { areaCreateIdempotency: true } });
+      }
+      writes.push(request);
+      const reply = replies.shift();
+      if (reply === undefined) throw new Error('Unexpected Area write');
+      return Promise.resolve(reply());
+    } };
+    harness.realMutations = true;
+    renderShell(false, transport);
+    return writes;
+  }
+
+  const tooLarge = () => ({ status: 413, statusText: 'Payload Too Large', body: 'request too large' });
+  const success = () => ({ status: 201, statusText: 'Created', body: {
+    id: 'new', name: 'Corrected', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1,
+  } });
+
+  it('releases a first create 413 and submits the corrected body under a new key', async () => {
+    const writes = areaTransport([tooLarge, success]);
+    await userEvent.click(screen.getByRole('button', { name: 'New area' }));
+    const input = screen.getByRole<HTMLInputElement>('textbox', { name: /^Name/ });
+    await userEvent.type(input, 'Too large');
+    await userEvent.click(screen.getByRole('button', { name: 'Create area' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Payload Too Large');
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(input.disabled).toBe(false);
+    await userEvent.clear(input);
+    await userEvent.type(input, 'Corrected');
+    await userEvent.click(screen.getByRole('button', { name: 'Create area' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New area' })).toBeNull());
+    expect(writes).toHaveLength(2);
+    expect(writes[0]?.headers?.['Idempotency-Key']).toEqual(expect.any(String));
+    expect(writes[1]?.headers?.['Idempotency-Key']).not.toBe(writes[0]?.headers?.['Idempotency-Key']);
+    expect(writes.map((request) => request.body)).toEqual([
+      expect.objectContaining({ name: 'Too large' }), expect.objectContaining({ name: 'Corrected' }),
+    ]);
+  });
+
+  it('keeps the original create identity after an unknown attempt followed by 413', async () => {
+    const writes = areaTransport([() => { throw new Error('Response lost'); }, tooLarge, success]);
+    await userEvent.click(screen.getByRole('button', { name: 'New area' }));
+    const input = screen.getByRole<HTMLInputElement>('textbox', { name: /^Name/ });
+    await userEvent.type(input, 'Keep original');
+    await userEvent.click(screen.getByRole('button', { name: 'Create area' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Creation could not be confirmed');
+    expect(input.disabled).toBe(true);
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Payload Too Large'));
+    expect(screen.getByRole('alert').textContent).toContain('Creation could not be confirmed');
+    expect(input.disabled).toBe(true);
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New area' })).toBeNull());
+    expect(writes).toHaveLength(3);
+    expect(writes[0]?.headers?.['Idempotency-Key']).toEqual(expect.any(String));
+    expect(writes[1]).toEqual(writes[0]);
+    expect(writes[2]).toEqual(writes[0]);
+  });
+
+  it.each([
+    [413, 'Payload Too Large'], [499, 'The area update is unconfirmed.'],
+  ])('keeps PATCH %i semantics through the transport', async (status, text) => {
+    const writes = areaTransport([() => ({ status, statusText: 'Payload Too Large', body: '' })]);
+    await openDesktopEditor();
+    const input = screen.getByRole<HTMLInputElement>('textbox', { name: /^Name/ });
+    await userEvent.clear(input);
+    await userEvent.type(input, 'Changed');
+    await userEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect((await screen.findByRole('alert')).textContent).toContain(text);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ method: 'PATCH', path: '/api/areas/c1', body: { name: 'Changed' } });
+    expect(input.disabled).toBe(false);
+  });
+
   it('creates from the shared Dialog with the two pill values', async () => {
     renderShell();
     await userEvent.click(screen.getByRole('button', { name: 'New area' }));
