@@ -1,12 +1,12 @@
 //! Protected, read-only GitHub citations. Policy and the credential boundary live in github_preview.
 use crate::{
     error::{ErrorBody, Result},
+    extract::{Json, Query},
     github_preview::{GitHubPreview, PreviewQuery},
     state::AppState,
 };
 use axum::{
-    Json, Router,
-    extract::Query,
+    Router,
     http::header,
     response::{IntoResponse, Response},
     routing::get,

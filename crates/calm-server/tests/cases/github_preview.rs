@@ -29,6 +29,16 @@ async fn github_preview_requires_session_and_rejects_invalid_references() {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "application/json",
+            "{uri}"
+        );
+        let value: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert!(value["error"].is_string(), "{uri}");
+        assert!(value["code"].is_string(), "{uri}");
     }
 }
 
