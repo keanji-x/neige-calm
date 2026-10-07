@@ -1465,6 +1465,7 @@ async fn wakeup_table_resolves_every_row_of_the_design() {
             "ask.requested".into(),
             EventScope::System,
             Event::AskRequested {
+                action: None,
                 track_id: tid.clone(),
                 questions: vec![calm_server::event::AskQuestion {
                     title: "Merge?".into(),

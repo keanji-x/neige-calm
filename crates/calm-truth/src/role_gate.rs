@@ -1207,6 +1207,7 @@ mod tests {
 
     fn ask_requested() -> Event {
         Event::AskRequested {
+            action: None,
             track_id: TrackId::from("w"),
             questions: vec![calm_types::event::AskQuestion {
                 title: "Merge PR #1?".into(),

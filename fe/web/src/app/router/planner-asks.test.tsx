@@ -31,20 +31,27 @@ function ok(body: unknown, status = 200): ApiTransportResponse {
   return { status, statusText: status === 204 ? 'No Content' : 'OK', body };
 }
 
-function setup() {
+function setup({ reopen = false, refusal = false } = {}) {
+  let currentTrack = reopen ? { ...TRACK, closed_at: 42 } : TRACK;
+  const currentAsk = reopen ? { ...ASK, action: { kind: 'reopen_track', closed_at: 42 },
+    questions: [{ title: 'Continue this closed track?', options: ['Reopen and continue', 'Keep closed'] }] } : ASK;
   const requests: ApiRequest[] = [];
   const transport: ApiTransportPort = {
     async send(request) {
       requests.push(request);
       await Promise.resolve();
       if (request.path === '/api/areas') return ok([AREA]);
-      if (request.path === '/api/areas/c1/tracks') return ok([TRACK]);
+      if (request.path === '/api/areas/c1/tracks') return ok([currentTrack]);
       /* The overlay still lists the ask after the answer: the projector's `overlay.set` has not landed yet. */
       if (request.path === '/api/tracks/w1') return ok({
-        track: TRACK, can_reopen: false, can_close: true, cards: [PLANNER], overlays: [activity([ASK])],
+        track: currentTrack, can_reopen: currentTrack.closed_at !== null, can_close: currentTrack.closed_at === null, cards: [PLANNER], overlays: [activity([currentAsk])],
       });
       if (request.path === '/api/tracks/w1/conversations') return ok([ASSISTANT]);
-      if (request.path === '/api/tracks/w1/asks/41/answer') return ok(undefined, 204);
+      if (request.path === '/api/tracks/w1/asks/41/answer') {
+        if (refusal) return { status: 400, statusText: 'Bad Request', body: { code: 'bad_request', error: 'The closure changed.' } };
+        if (reopen && (request.body as { answers: { option: number }[] }).answers[0].option === 0) currentTrack = { ...currentTrack, closed_at: null };
+        return ok(undefined, 204);
+      }
       if (request.path.includes('/harness/items')) return ok([]);
       if (request.path.endsWith('/planner/run')) return ok({
         card_id: request.path.split('/')[3], worker_session_id: 'runtime', phase: 'idle', model: null,
@@ -100,4 +107,26 @@ it('asks nothing in a conversation that is not the Planner’s', async () => {
   const drawer = await open('Side chat');
   await within(drawer).findByRole('combobox', { name: 'Message' });
   expect(within(drawer).queryByRole('group', { name: 'The Planner asks' })).toBeNull();
+});
+
+
+it('reopens by clicking the canonical choice in the existing Planner drawer and refreshes authoritative lifecycle detail', async () => {
+  const { requests } = setup({ reopen: true });
+  const drawer = await open('Planner chat');
+  const ask = await within(drawer).findByRole('group', { name: 'The Planner asks' });
+  expect(screen.queryByRole('button', { name: /^Dismiss:/ })).toBeNull();
+  expect(within(ask).queryByRole('textbox', { name: 'Continue this closed track?' })).toBeNull();
+  fireEvent.click(within(ask).getByRole('button', { name: 'Reopen and continue' }));
+  await waitFor(() => expect(requests.find(request => request.path.endsWith('/answer'))?.body).toEqual({ answers: [{ option: 0 }] }));
+  await waitFor(() => expect(screen.queryAllByRole('status', { name: 'Track closed' })).toHaveLength(0));
+  expect(requests.filter(request => request.path === '/api/tracks/w1' && request.method === 'GET').length).toBeGreaterThan(1);
+});
+
+it('keeps the canonical choices after a stale lifecycle refusal instead of locally settling the ask', async () => {
+  setup({ reopen: true, refusal: true });
+  const drawer = await open('Planner chat');
+  const ask = await within(drawer).findByRole('group', { name: 'The Planner asks' });
+  fireEvent.click(within(ask).getByRole('button', { name: 'Reopen and continue' }));
+  expect((await within(drawer).findByRole('alert')).textContent).toContain('closure changed');
+  expect(within(drawer).getByRole('button', { name: 'Keep closed' })).toBeTruthy();
 });

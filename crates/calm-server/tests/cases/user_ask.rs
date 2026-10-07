@@ -391,6 +391,7 @@ async fn user_ask_writes_one_planner_ask_and_lights_one_item() {
     let asked = rows(&boot, "ask.requested").await;
     assert!(
         matches!(asked.as_slice(), [(actor, Event::AskRequested {
+            action: None,
                 track_id, questions: q, delivery: AskDelivery::Wake, source_item_id: None })]
             if actor == "AiPlannerSession" && track_id == &boot.track_id && q == &questions),
         "the tool raises a wake ask: {asked:?}"
@@ -399,6 +400,7 @@ async fn user_ask_writes_one_planner_ask_and_lights_one_item() {
     assert_eq!(
         items,
         vec![calm_server::track_activity::ActivityItem::Ask {
+            action: None,
             key: format!("ask:{ask_id}"),
             text: "Merge PR #7 (head abc)? / Which region?".into(),
             at_ms: items[0].at_ms(),
@@ -473,7 +475,7 @@ async fn user_ask_refuses_malformed_questions_without_an_event() {
         ),
         (
             json!({ "text": "Merge?" }), // the retired ratify argument
-            "unknown argument `text`; valid: questions",
+            "unknown argument `text`; valid: action, questions",
         ),
     ] {
         let err = call_tool(&boot, TOOL_USER_ASK, args.clone())
@@ -651,3 +653,6 @@ async fn the_ratify_route_is_gone() {
         resp.status()
     );
 }
+
+#[path = "user_ask/reopen.rs"]
+mod reopen;

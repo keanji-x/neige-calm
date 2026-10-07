@@ -251,8 +251,10 @@ pub(crate) async fn notification_rows(
             Some(Event::AskRequested {
                 questions,
                 delivery,
+                action,
                 ..
             }) => asks.push(OpenAsk {
+                action,
                 ask_id,
                 at_ms: r.get("at"),
                 questions,

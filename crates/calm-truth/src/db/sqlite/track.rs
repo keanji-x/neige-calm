@@ -234,6 +234,30 @@ pub async fn track_get_tx(tx: &mut Transaction<'_, Sqlite>, track_id: &TrackId) 
         .ok_or_else(|| CalmError::NotFound(format!("track {}", track_id.as_str())))
 }
 
+/// Shared eligibility for a reopen question and the actual lifecycle transition.
+pub async fn track_require_reopenable_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    track: &Track,
+) -> Result<()> {
+    if track.purpose.as_deref() == Some(calm_types::model::AREA_CHAT_PURPOSE) {
+        return Err(CalmError::Forbidden(
+            "an area chat track cannot be closed or reopened".into(),
+        ));
+    }
+    let id = track.id.as_str();
+    let parent: Option<(String, String)> =
+        sqlx::query_as("SELECT track_id, key FROM tasks WHERE child_track_id = ?1 LIMIT 1")
+            .bind(id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    if let Some((parent_track_id, parent_key)) = parent {
+        return Err(CalmError::Conflict(format!(
+            "track {id} is child of task {parent_track_id}:{parent_key} and cannot be reopened"
+        )));
+    }
+    Ok(())
+}
+
 pub async fn track_update_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
@@ -266,16 +290,7 @@ pub async fn track_update_tx(
         if closed {
             w.closed_at.get_or_insert_with(now_ms);
         } else if w.closed_at.is_some() {
-            let parent: Option<(String, String)> =
-                sqlx::query_as("SELECT track_id, key FROM tasks WHERE child_track_id = ?1 LIMIT 1")
-                    .bind(id)
-                    .fetch_optional(&mut **tx)
-                    .await?;
-            if let Some((parent_track_id, parent_key)) = parent {
-                return Err(CalmError::Conflict(format!(
-                    "track {id} is child of task {parent_track_id}:{parent_key} and cannot be reopened"
-                )));
-            }
+            track_require_reopenable_tx(tx, &w).await?;
             w.closed_at = None;
         }
     }

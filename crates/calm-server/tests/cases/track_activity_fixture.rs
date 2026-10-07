@@ -713,9 +713,15 @@ impl Fx {
             &self.write,
             move |tx| {
                 Box::pin(async move {
-                    let (scope, event) =
+                    let (scope, events) =
                         calm_server::ask::ask_answered_tx(tx, &track, ask_id, answers).await?;
-                    Ok(((), vec![(ActorId::User, scope, event)]))
+                    Ok((
+                        (),
+                        events
+                            .into_iter()
+                            .map(|event| (ActorId::User, scope.clone(), event))
+                            .collect(),
+                    ))
                 })
             },
         )

@@ -124,7 +124,7 @@ function AskForm({ ask, state, onChange, onAnswer, onBusy, onSettled }: {
           {draft.choice === index && draft.own.trim() === '' && <AstryxIcon icon="check" size="sm" color="accent" />}
         </span>
       </Button>)}
-      <div className={styles.own} role="group" aria-label="Your answer">
+      {ask.action === undefined && (<div className={styles.own} role="group" aria-label="Your answer">
         <TextInput ref={ownInput} label={question.title} isLabelHidden
           className={styles.answerInput} placeholder={question.options.length > 0 ? 'Or your own answer…' : 'Your answer…'} size="sm"
           value={draft.own} isDisabled={busy}
@@ -133,7 +133,7 @@ function AskForm({ ask, state, onChange, onAnswer, onBusy, onSettled }: {
         <Button label={ask.questions.length > 1 && page < ask.questions.length - 1 ? 'Next question' : 'Answer'}
           icon={<Icon name="arrow-up" size="sm" />} isIconOnly variant="secondary" size="sm" className={styles.answerButton}
           isDisabled={busy || draft.own.trim() === ''} onClick={() => { void ownAnswer(); }} />
-      </div>
+      </div>)}
     </div>
     {busy && <span className={styles.meta} role="status">Sending answer…</span>}
     <OperationFeedback feedback={feedback} />

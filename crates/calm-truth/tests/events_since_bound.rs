@@ -347,6 +347,7 @@ async fn retired_ratify_rows_preserve_history_and_do_not_hide_current_asks() {
         historical.push((id, kind, payload));
     }
     let request = Event::AskRequested {
+        action: None,
         track_id: "track".into(),
         questions: vec![calm_types::event::AskQuestion {
             title: "Continue?".into(),

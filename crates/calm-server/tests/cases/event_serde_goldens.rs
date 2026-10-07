@@ -882,6 +882,7 @@ golden_test!(
     ask_requested,
     "ask.requested.json",
     Event::AskRequested {
+        action: None,
         track_id: TrackId::from("track-01"),
         questions: vec![
             AskQuestion {
@@ -902,6 +903,7 @@ golden_test!(
     ask_requested_hold,
     "ask.requested.hold.json",
     Event::AskRequested {
+        action: None,
         track_id: TrackId::from("track-01"),
         questions: vec![AskQuestion {
             title: "Run `cargo test` (cwd /work)?".into(),
@@ -920,6 +922,7 @@ golden_test!(
     ask_requested_native,
     "ask.requested.native.json",
     Event::AskRequested {
+        action: None,
         track_id: TrackId::from("track-01"),
         questions: vec![AskQuestion {
             title: "Which region?".into(),

@@ -41,7 +41,7 @@ pub struct AnswerAskRequest {
     request_body = AnswerAskRequest,
     responses(
         (status = 204, description = "Answered"),
-        (status = 400, description = "Wrong number of answers, an option the question does not have, an empty or over-long text, or text for a paused request", body = ErrorBody),
+        (status = 400, description = "Invalid answers, text for a paused request, or an expired/ineligible lifecycle action", body = ErrorBody),
         (status = 403, description = "The actor is not the authenticated user", body = ErrorBody),
         (status = 404, description = "No such ask on this track, or no such track", body = ErrorBody),
         (status = 409, description = "The ask is no longer open: it is answered, or its paused request is gone", body = ErrorBody),
@@ -98,9 +98,15 @@ async fn answer(s: RouteState, track: TrackId, ask_id: i64, answers: Vec<AskAnsw
         let track = track.clone();
         move |tx| {
             Box::pin(async move {
-                let (scope, event) =
+                let (scope, events) =
                     crate::ask::ask_answered_tx(tx, &track, ask_id, answers).await?;
-                Ok(((), vec![(ActorId::User, scope, event)]))
+                Ok((
+                    (),
+                    events
+                        .into_iter()
+                        .map(|event| (ActorId::User, scope.clone(), event))
+                        .collect(),
+                ))
             })
         }
     })

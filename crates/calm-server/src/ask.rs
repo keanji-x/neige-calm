@@ -10,10 +10,13 @@
 
 use std::collections::HashSet;
 
+mod reopen;
+pub use reopen::ask_reopen_requested_tx;
+
 use sqlx::{Row, Sqlite, Transaction};
 
 use crate::error::{CalmError, Result};
-use crate::event::{AskAnswer, AskDelivery, AskQuestion, Event, EventScope};
+use crate::event::{AskAction, AskAnswer, AskDelivery, AskQuestion, Event, EventScope};
 use crate::ids::{ActorId, CardId, TrackId};
 use calm_types::worker::WorkerSessionId;
 
@@ -160,7 +163,7 @@ pub async fn ask_requested_tx(
     planner_card: &CardId,
     questions: Vec<AskQuestion>,
 ) -> Result<(EventScope, Event)> {
-    requested_tx(tx, planner_card, questions, AskDelivery::Wake, None).await
+    requested_tx(tx, planner_card, questions, AskDelivery::Wake, None, None).await
 }
 
 /// The `hold` ask the harness raises for one provider request its running turn is paused on
@@ -179,7 +182,7 @@ pub(crate) async fn hold_ask_requested_tx(
             ));
         }
     }
-    requested_tx(tx, planner_card, questions, AskDelivery::Hold, None).await
+    requested_tx(tx, planner_card, questions, AskDelivery::Hold, None, None).await
 }
 
 /// The track is the card's own, read in `tx`; it is never taken from the caller. A closed track
@@ -191,6 +194,7 @@ async fn requested_tx(
     questions: Vec<AskQuestion>,
     delivery: AskDelivery,
     source_item_id: Option<String>,
+    action: Option<AskAction>,
 ) -> Result<(EventScope, Event)> {
     let questions = validate_questions(questions)?;
     let track_id = card_track_tx(tx, planner_card).await?;
@@ -201,6 +205,7 @@ async fn requested_tx(
             area: track.area_id,
         },
         Event::AskRequested {
+            action,
             track_id: track.id,
             questions,
             delivery,
@@ -237,6 +242,7 @@ pub async fn provider_ask_requested_tx(
         questions,
         AskDelivery::Wake,
         Some(source_item_id),
+        None,
     )
     .await
     .map(Some)
@@ -255,6 +261,7 @@ async fn card_track_tx(tx: &mut Transaction<'_, Sqlite>, card: &CardId) -> Resul
 /// One persisted `ask.requested`, as the answer path reads it.
 #[derive(Debug, Clone)]
 pub struct StoredAsk {
+    pub action: Option<AskAction>,
     pub questions: Vec<AskQuestion>,
     pub delivery: AskDelivery,
     /// Who raised it; a `hold` ask's is its harness's Planner session.
@@ -278,6 +285,7 @@ fn stored_ask_from_row(ask_id: i64, row: &sqlx::sqlite::SqliteRow) -> Result<Sto
     let Event::AskRequested {
         questions,
         delivery,
+        action,
         ..
     } = Event::from_kind_and_payload("ask.requested", payload)?
     else {
@@ -286,6 +294,7 @@ fn stored_ask_from_row(ask_id: i64, row: &sqlx::sqlite::SqliteRow) -> Result<Sto
         )));
     };
     Ok(StoredAsk {
+        action,
         questions,
         delivery,
         actor,
@@ -328,8 +337,10 @@ pub async fn stored_ask(
         Event::AskRequested {
             questions,
             delivery,
+            action,
             ..
         } => Ok(StoredAsk {
+            action,
             questions,
             delivery,
             actor: row.actor,
@@ -362,7 +373,7 @@ pub async fn ask_answered_tx(
     track: &TrackId,
     ask_id: i64,
     answers: Vec<AskAnswer>,
-) -> Result<(EventScope, Event)> {
+) -> Result<(EventScope, Vec<Event>)> {
     let track_row = crate::db::sqlite::track_get_tx(tx, track).await?;
     let ask = stored_ask_tx(tx, track, ask_id).await?;
     let answers = validate_answers(ask_id, &ask.questions, ask.delivery, answers)?;
@@ -371,16 +382,18 @@ pub async fn ask_answered_tx(
             "ask {ask_id} is no longer open: it is answered, or its paused request is gone"
         )));
     }
+    let mut events = reopen::answer_events_tx(tx, ask_id, &track_row, &ask, &answers).await?;
+    events.push(Event::AskAnswered {
+        ask_id,
+        track_id: track_row.id.clone(),
+        answers,
+    });
     Ok((
         EventScope::Track {
             track: track_row.id.clone(),
             area: track_row.area_id,
         },
-        Event::AskAnswered {
-            ask_id,
-            track_id: track_row.id,
-            answers,
-        },
+        events,
     ))
 }
 

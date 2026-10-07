@@ -45,6 +45,7 @@ fn user_ask_descriptor() -> ToolDescriptor {
             "required": ["questions"],
             "additionalProperties": false,
             "properties": {
+                "action": { "type": "string", "enum": ["reopen_track"] },
                 "questions": {
                     "type": "array",
                     "minItems": 1,
@@ -113,6 +114,11 @@ async fn user_ask(
     args: Value,
 ) -> Result<Value, RpcError> {
     let questions = parse_questions(&args)?;
+    let reopen = match args.get("action") {
+        None => false,
+        Some(Value::String(action)) if action == "reopen_track" => true,
+        Some(_) => return Err(RpcError::invalid_params("action must be reopen_track")),
+    };
     let planner_card = CardId::from(identity.card_id.clone());
     let actor = identity.to_actor_id();
 
@@ -120,8 +126,11 @@ async fn user_ask(
         write_with_actor_events_typed::<(), _>(ctx.repo.as_ref(), None, &ctx.events, &ctx.write, {
             move |tx| {
                 Box::pin(async move {
-                    let (scope, event) =
-                        crate::ask::ask_requested_tx(tx, &planner_card, questions).await?;
+                    let (scope, event) = if reopen {
+                        crate::ask::ask_reopen_requested_tx(tx, &planner_card, questions).await?
+                    } else {
+                        crate::ask::ask_requested_tx(tx, &planner_card, questions).await?
+                    };
                     Ok(((), vec![(actor, scope, event)]))
                 })
             }
@@ -153,13 +162,16 @@ mod tests {
         );
     }
 
-    /// The tool cannot raise a `hold` ask (#2348): its only argument is the questions, and the
-    /// registry refuses any other top-level key, so a delivery never reaches the shared entry.
+    /// The tool cannot raise a `hold` ask (#2348): delivery is never a tool argument.
+    /// Lifecycle actions also use the Wake factory; only the harness owns Hold asks.
     #[test]
     fn no_delivery_argument_is_declared() {
         let d = user_ask_descriptor();
         let properties = d.input_schema["properties"].as_object().unwrap();
-        assert_eq!(properties.keys().collect::<Vec<_>>(), vec!["questions"]);
+        assert_eq!(
+            properties.keys().collect::<Vec<_>>(),
+            vec!["action", "questions"]
+        );
         assert_eq!(d.input_schema["additionalProperties"], json!(false));
     }
 }

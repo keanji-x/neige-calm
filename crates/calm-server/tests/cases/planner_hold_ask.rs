@@ -623,14 +623,20 @@ async fn answer_in_tx(rig: &Rig, ask_id: i64) -> calm_server::error::Result<()> 
         &WriteContext::new(rig.role_cache.clone(), rig.area_cache.clone()),
         move |tx| {
             Box::pin(async move {
-                let (scope, event) = calm_server::ask::ask_answered_tx(
+                let (scope, events) = calm_server::ask::ask_answered_tx(
                     tx,
                     &track,
                     ask_id,
                     vec![AskAnswer::Option(0)],
                 )
                 .await?;
-                Ok(((), vec![(ActorId::User, scope, event)]))
+                Ok((
+                    (),
+                    events
+                        .into_iter()
+                        .map(|event| (ActorId::User, scope.clone(), event))
+                        .collect(),
+                ))
             })
         },
     )

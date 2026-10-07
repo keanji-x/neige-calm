@@ -370,6 +370,7 @@ async fn a_planner_native_question_becomes_one_open_ask() {
     let asks = rig.asks().await;
     assert!(
         matches!(asks.as_slice(), [(ActorId::AiPlannerSession(session), Event::AskRequested {
+            action: None,
                 track_id, questions, delivery: calm_server::event::AskDelivery::Wake,
                 source_item_id: Some(source) })]
             if session.as_str() == rig.session_id && track_id == &rig.track
@@ -384,6 +385,7 @@ async fn a_planner_native_question_becomes_one_open_ask() {
     assert_eq!(
         items,
         vec![ActivityItem::Ask {
+            action: None,
             key: format!("ask:{ask_id}"),
             text: captured_questions()[0].title.clone(),
             at_ms: items[0].at_ms(),

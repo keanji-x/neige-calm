@@ -46,19 +46,20 @@ function largeAsk(count: number, long: boolean) {
   return { ...ASK, key: 'ask:7', text: `${count} questions`, questions };
 }
 
-function setup(theme: 'light' | 'dark', ask: typeof ASK = ASK) {
+function setup(theme: 'light' | 'dark', ask: typeof ASK = ASK, reopen = false) {
   const requests: ApiRequest[] = [];
+  let currentTrack = reopen ? { ...TRACK, closed_at: 42 } : TRACK;
   const transport: ApiTransportPort = { async send(request) {
     await Promise.resolve();
     requests.push(request);
     let body: unknown = [];
     let status = 200;
     if (request.path === '/api/areas') body = [{ id: 'area', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 }];
-    if (request.path === '/api/areas/area/tracks') body = [TRACK];
+    if (request.path === '/api/areas/area/tracks') body = [currentTrack];
     if (request.path === '/api/settings') body = {};
-    if (request.path === `/api/tracks/${TRACK.id}`) body = { track: TRACK, can_reopen: false, can_close: true, cards: [PLANNER],
+    if (request.path === `/api/tracks/${TRACK.id}`) body = { track: currentTrack, can_reopen: currentTrack.closed_at !== null, can_close: currentTrack.closed_at === null, cards: [PLANNER],
       overlays: [{ id: 'activity', plugin_id: 'kernel', entity_kind: 'track', entity_id: TRACK.id, kind: 'activity', updated_at: 5,
-        payload: { schemaVersion: 4, working: false, attention: 'input', activity_at_ms: 5, items: [ask], cards: [] } }] };
+        payload: { schemaVersion: 4, working: false, attention: 'input', activity_at_ms: 5, items: [reopen ? { ...ask, action: { kind: 'reopen_track', closed_at: 42 }, questions: [{ title: 'Continue this closed track?', options: ['Reopen and continue', 'Keep closed'] }] } : ask], cards: [] } }] };
     if (request.path.endsWith('/planner/run')) body = { card_id: PLANNER.id, worker_session_id: 'session', phase: 'idle',
       model: null, reasoning_effort: null, blocked_reason: null, running_turn: null, attachments_supported: true };
     if (request.path.endsWith('/harness/live')) body = { turn_id: null, items: [] };
@@ -66,7 +67,7 @@ function setup(theme: 'light' | 'dark', ask: typeof ASK = ASK) {
       track_id: TRACK.id, thread_id: 'thread', turn_id: null, turn_error_text: null, item_uuid: null, item_type: 'agentMessage',
       method: 'item/completed', created_at_ms: 1,
       params: JSON.stringify({ item: { id: 'reply', type: 'agentMessage', text: 'The release checklist is green. Two things before I tag it.' } }) }];
-    if (request.path === `/api/tracks/${TRACK.id}/asks/7/answer`) { body = undefined; status = 204; }
+    if (request.path === `/api/tracks/${TRACK.id}/asks/7/answer`) { body = undefined; status = 204; if (reopen) currentTrack = { ...currentTrack, closed_at: null }; }
     if (request.path === `/api/cards/${PLANNER.id}/planner/attachments`) {
       body = { attachmentId: 'image-1.png', contentType: 'image/png', size: 68, url: PIXEL }; status = 201;
     }
@@ -173,4 +174,17 @@ it('retains an unanswered ask and its question across responsive surfaces', asyn
   expect(requests.find(request => request.path.endsWith('/answer'))?.body).toEqual({
     answers: [{ option: 1 }, { text: 'Keep the selected branch and this note.' }],
   });
+});
+
+it.each([1280, 390])('restores a closed track by clicking its existing AI question at %ipx', async (width) => {
+  await page.viewport(width, 844);
+  const { requests } = setup('light', ASK, true);
+  await page.getByRole('button', { name: /Conversation Planner/ }).click();
+  const option = page.getByRole('button', { name: 'Reopen and continue' });
+  await expect.element(option).toBeVisible();
+  await expect.element(page.getByRole('textbox', { name: 'Continue this closed track?' })).not.toBeInTheDocument();
+  await page.screenshot({ path: `../../../../test-results/reopen-current-${width}.png` });
+  await option.click();
+  await expect.poll(() => requests.find(request => request.path.endsWith('/answer'))?.body).toEqual({ answers: [{ option: 0 }] });
+  await expect.element(page.getByRole('status', { name: 'Track closed' })).not.toBeInTheDocument();
 });

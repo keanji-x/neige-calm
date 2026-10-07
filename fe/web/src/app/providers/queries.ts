@@ -105,6 +105,7 @@ export const queryKeys = Object.freeze({
   serverVersion: () => ['server-version'] as const,
   areas: () => ['areas'] as const,
   areaFolders: (areaId: string) => ['area-folders', areaId] as const,
+  trackLists: () => ['tracks'] as const,
   tracksInArea: (areaId: string) => ['tracks', areaId] as const,
   trackDetail: (trackId: string) => ['track', trackId] as const,
   trackBacklinks: (trackId: string) => ['track-backlinks', trackId] as const,
@@ -913,10 +914,15 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
     mutationFn: ({ trackId, key }: { trackId: string; key: string }, transport: ApiTransportPort) =>
       runOperation(transport, dismissActivityItemOperation(trackId, key), unauthorized),
   });
-  /* No cache write and no invalidation, for the dismissal's reason: the projector's `overlay.set` drops the ask. */
+  /* An answer may apply a lifecycle action; refresh detail/lists even after an uncertain response.
+   * The projector's overlay remains authoritative for removing the question itself. */
   const answerAsk = useRecoveryMutation(transport, {
     mutationFn: ({ trackId, askId, answers }: { trackId: string; askId: number; answers: readonly AskAnswer[] }, transport: ApiTransportPort) =>
       runOperation(transport, answerAskOperation(trackId, askId, answers), unauthorized),
+    onSettled: (_answer, _error, { trackId }) => {
+      void client.invalidateQueries({ queryKey: queryKeys.trackDetail(trackId) });
+      void client.invalidateQueries({ queryKey: queryKeys.trackLists() });
+    },
   });
   const patchTrack = async (trackId: string, areaId: string, body: TrackPatchBody) =>
     toTrack(await patch.mutateAsync({ trackId, areaId, body }));

@@ -619,6 +619,7 @@ export const askRequestedSchema = z.object({
     questions: z.array(askQuestionSchema),
     delivery: z.enum(['wake', 'hold']),
     source_item_id: z.string().optional(),
+    action: z.object({ kind: z.literal('reopen_track'), closed_at: z.number() }).optional(),
   }),
 });
 
