@@ -2895,3 +2895,5 @@ async fn planner_reset_seeds_no_track_goal() {
 
 #[path = "cases/planner_preserving_recovery.rs"]
 mod planner_preserving_recovery;
+#[path = "cases/planner_provider_auth_retry_recovery.rs"]
+mod planner_provider_auth_retry_recovery;

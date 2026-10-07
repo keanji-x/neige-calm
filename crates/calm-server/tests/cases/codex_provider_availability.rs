@@ -10,7 +10,7 @@ use tower::ServiceExt;
 
 use super::{Boot, boot};
 
-async fn codex_entry(boot: &Boot) -> Value {
+pub(super) async fn codex_entry(boot: &Boot) -> Value {
     let request = Request::builder()
         .uri("/api/agent-providers")
         .header("x-calm-actor", "user")
@@ -28,7 +28,7 @@ async fn codex_entry(boot: &Boot) -> Value {
         .unwrap_or_else(|| panic!("no codex entry: {body}"))
 }
 
-async fn boot_with_account(account: Value) -> Boot {
+pub(super) async fn boot_with_account(account: Value) -> Boot {
     boot(true, |sock| {
         std::fs::write(sock.with_extension("account-read"), account.to_string()).unwrap();
     })
@@ -296,7 +296,9 @@ async fn authentication_refusal_explains_sign_in_instead_of_changing_the_model()
         )
         .await
         .expect_err("a native authentication refusal");
-    let calm_server::harness::backend::TurnStartFailure::Refused { error, reader } = failure else {
+    let calm_server::harness::backend::TurnStartFailure::AwaitingRecovery { error, reader } =
+        failure
+    else {
         panic!("a definitive authentication refusal must not be transient");
     };
     assert!(reader.to_lowercase().contains("sign in"));
@@ -405,4 +407,106 @@ async fn a_pre_login_turn_error_cannot_overwrite_a_verified_login() {
         params: json!({"threadId":"old-thread","turnId":"new-turn","error":error}),
     });
     assert_eq!(codex_entry(&boot).await["status"], "unavailable");
+}
+
+#[tokio::test]
+async fn stderr_refresh_failure_is_visible_without_claiming_current_login_failed() {
+    use std::io::Write;
+    let boot =
+        boot_with_account(json!({"account":{"type":"apiKey"},"requiresOpenaiAuth":true})).await;
+    assert_eq!(codex_entry(&boot).await["status"], "ready");
+    let log = boot
+        ._tmp
+        .path()
+        .join("logs/shared-codex-appserver/stderr.log");
+    let mut file = std::fs::OpenOptions::new().append(true).open(log).unwrap();
+    writeln!(file, "2026-10-07T01:00:00Z ERROR codex_core::auth: Failed to refresh token: \
+    Your access token could not be refreshed because your refresh token was already used. private-fixture-detail").unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let entry = codex_entry(&boot).await;
+        if entry["authentication_notice"]["kind"] == "refresh_error_reported" {
+            assert_eq!(
+                entry["status"], "ready",
+                "an unattributed log is not a current login verdict"
+            );
+            assert!(!entry.to_string().contains("private-fixture-detail"));
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "stderr auth failure was silent: {entry}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn confirmed_authentication_failure_survives_server_reconstruction() {
+    let boot = boot(true, |sock| {
+        std::fs::write(
+            sock.with_extension("turn-start-refusal"),
+            "Your access token could not be refreshed because your refresh token was already used.",
+        )
+        .unwrap();
+    })
+    .await;
+    let _ = boot
+        .state
+        .shared_codex_appserver
+        .turn_start(
+            "fixture-thread",
+            vec![calm_server::codex_appserver::InputItem::text("queued")],
+            &calm_server::planner_model::TurnModelSelection::inherit(),
+            None,
+        )
+        .await;
+    assert!(
+        boot.state
+            .shared_codex_appserver
+            .authentication_failure()
+            .is_some()
+    );
+    let recovered = calm_server::shared_codex_appserver::SharedCodexAppServer::new(
+        &super::cfg(&boot._tmp),
+        boot.home.clone(),
+        boot.repo.clone(),
+    );
+    assert!(
+        recovered.authentication_failure().is_some(),
+        "a server restart lost the confirmed authentication failure"
+    );
+}
+
+#[tokio::test]
+async fn rotated_stderr_still_observes_the_daemons_open_log_file() {
+    use std::io::Write;
+    let boot =
+        boot_with_account(json!({"account":{"type":"apiKey"},"requiresOpenaiAuth":true})).await;
+    let log = boot
+        ._tmp
+        .path()
+        .join("logs/shared-codex-appserver/stderr.log");
+    // Like the daemon's inherited stderr descriptor, this remains attached to the original inode.
+    let mut producer = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+    std::fs::rename(&log, log.with_extension("old")).unwrap();
+    std::fs::write(&log, "").unwrap();
+    writeln!(
+        producer,
+        "2026-10-07T00:00:00Z ERROR codex_core::auth: Failed to refresh token: \
+    Your access token could not be refreshed because your refresh token was already used."
+    )
+    .unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let entry = codex_entry(&boot).await;
+        if entry["authentication_notice"]["kind"] == "refresh_error_reported" {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "rotation hid the daemon's stderr: {entry}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
 }

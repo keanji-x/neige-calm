@@ -1,0 +1,9 @@
+@layer features {
+  .notices {
+    flex: none;
+    max-block-size: 40dvh;
+    overflow: auto;
+    border-block-end: 1px solid var(--hairline);
+    background: var(--paper);
+  }
+}

@@ -46,6 +46,9 @@ pub struct ProviderAvailability {
     pub reason: Option<String>,
     /// Wall-clock ms at which the check that produced this answer started.
     pub checked_at_ms: i64,
+    /// Native confirmed failure, unconfirmed log evidence, or diagnostic-storage failure.
+    #[schema(required = true)]
+    pub authentication_notice: Option<crate::codex_authentication::AuthenticationNotice>,
 }
 
 /// A check's outcome; every non-ready outcome carries its reason.
@@ -63,6 +66,7 @@ pub struct Checked {
     pub verdict: Verdict,
     /// Wall-clock ms at which the check started.
     pub checked_at_ms: i64,
+    pub authentication_notice: Option<crate::codex_authentication::AuthenticationNotice>,
 }
 
 impl Checked {
@@ -90,6 +94,7 @@ impl From<Checked> for ProviderAvailability {
             status,
             reason,
             checked_at_ms: checked.checked_at_ms,
+            authentication_notice: checked.authentication_notice,
         }
     }
 }
@@ -202,15 +207,20 @@ impl ProviderAvailabilityCache {
                     .codex
                     .get(freshness, |_previous| check_codex(codex))
                     .await;
-                let authentication_failed = codex.authentication_failure().is_some();
+                let authentication_notice = codex.authentication_notice();
+                let hold = authentication_notice
+                    .as_ref()
+                    .filter(|notice| notice.kind.holds_issuance())
+                    .map(|notice| notice.text.clone());
                 Checked {
                     provider: AgentProvider::Codex,
-                    verdict: if authentication_failed {
-                        Verdict::Unavailable(crate::codex_authentication::SIGN_IN_REQUIRED.into())
+                    verdict: if let Some(reason) = hold {
+                        Verdict::Unavailable(reason)
                     } else {
                         stamped.outcome
                     },
                     checked_at_ms: stamped.checked_at_ms,
+                    authentication_notice,
                 }
             }
             AgentProvider::Claude => self.claude(freshness, claude).await.checked(),

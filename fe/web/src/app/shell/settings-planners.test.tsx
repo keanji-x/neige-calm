@@ -34,8 +34,8 @@ afterEach(() => {
 
 function answer(claude: Readonly<{ status: string; reason: string | null }>) {
   return [
-    { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1_760_000_000_000 },
-    { provider: 'claude', ...claude, checked_at_ms: 1_760_000_000_000 },
+    { provider: 'codex', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1_760_000_000_000 },
+    { provider: 'claude', ...claude, authentication_notice: null, checked_at_ms: 1_760_000_000_000 },
   ];
 }
 

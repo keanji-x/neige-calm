@@ -37,6 +37,7 @@ impl Stamped<ClaudeReadiness> {
             provider: AgentProvider::Claude,
             verdict,
             checked_at_ms: self.checked_at_ms,
+            authentication_notice: None,
         }
     }
 

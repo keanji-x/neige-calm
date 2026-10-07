@@ -4,6 +4,8 @@
 
 mod common;
 
+#[path = "cases/codex_authentication_retry.rs"]
+mod codex_authentication_retry;
 #[path = "cases/codex_provider_availability.rs"]
 mod codex_provider_availability;
 

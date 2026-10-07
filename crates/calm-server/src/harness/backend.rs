@@ -40,6 +40,9 @@ pub enum TurnStartFailure {
     /// Repeating it unchanged reproduces it until someone changes something; `reader` says so now.
     #[error("{error}")]
     Refused { error: CalmError, reader: String },
+    /// The provider declared a hold; recovery is an explicit provider observation, not a timer.
+    #[error("{error}")]
+    AwaitingRecovery { error: CalmError, reader: String },
 }
 
 /// A rewind the provider applies when the conversation's next turn starts (#1923). Its arms are
@@ -104,6 +107,14 @@ impl PlannerBackend {
         })
     }
 
+    /// Provider-owned suspension; the generic harness does not infer authentication policy.
+    pub(crate) fn issuance_hold(&self) -> Option<String> {
+        match &self.0 {
+            Arm::Codex(daemon) => daemon.authentication_hold(),
+            Arm::Claude(_) => None,
+        }
+    }
+
     pub fn subscribe_events(&self) -> PlannerEvents {
         PlannerEvents(match &self.0 {
             Arm::Codex(daemon) => EventSource::Codex(CodexEvents::subscribe(daemon)),
@@ -119,6 +130,9 @@ impl PlannerBackend {
         thread_id: &str,
         target: RewindTarget<'_>,
     ) -> Result<BackendRewind> {
+        if let Some(reader) = self.issuance_hold() {
+            return Err(CalmError::Conflict(reader));
+        }
         match &self.0 {
             Arm::Codex(_) => Ok(BackendRewind(RewindArm::Codex {
                 before_turn_id: target.turn_id.to_string(),
@@ -156,6 +170,12 @@ impl PlannerBackend {
         client_id: &str,
         rewind: Option<&BackendRewind>,
     ) -> std::result::Result<TurnId, TurnStartFailure> {
+        if let Some(reader) = self.issuance_hold() {
+            return Err(TurnStartFailure::AwaitingRecovery {
+                error: CalmError::ServiceUnavailable(reader.clone()),
+                reader,
+            });
+        }
         let rewind = rewind.map(|rewind| &rewind.0);
         match &self.0 {
             Arm::Codex(daemon) => {
@@ -384,8 +404,10 @@ impl PlannerEvents {
 fn codex_turn_start_failure(error: CalmError) -> TurnStartFailure {
     match error {
         CalmError::CodexRefused(message) => {
-            if let Some(failure) = provider::codex::AuthenticationFailure::from_message(&message) {
-                TurnStartFailure::Refused {
+            if let Some(failure) = provider::codex::AuthenticationFailure::from_message(&message)
+                .or_else(|| provider::codex::AuthenticationFailure::from_code(&message))
+            {
+                TurnStartFailure::AwaitingRecovery {
                     error: CalmError::CodexRefused(failure.code().into()),
                     reader: format!(
                         "{} Your message is still queued.",

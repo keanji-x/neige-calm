@@ -28,6 +28,7 @@ import {
   usePluginInstall, usePluginMutations, useSettingsMutation,
 } from '../providers/queries.ts';
 import { agentProvidersQueryOptions, useAgentProvidersRecheck } from '../providers/agent-providers.ts';
+import { useCodexAuthenticationRetry } from '../providers/codex-authentication-retry.ts';
 import { useCurrentPath, useGo, type NavTarget } from '../router/navigation.ts';
 import { useTheme } from '../theme/public.tsx';
 import { MobileAccessHost } from './mobile-access-host.tsx';
@@ -156,8 +157,13 @@ function SectionPane({ section, transport, unauthorized }: SettingsOverlayProps 
 function PlannersPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
   const providers = useQuery(agentProvidersQueryOptions(transport, unauthorized));
   const recheck = useAgentProvidersRecheck(transport, unauthorized);
+  const recovery = useCodexAuthenticationRetry(transport, unauthorized);
+  const go = useGo();
   return (
     <PlannersPane
+      authenticationRecovery={{ provider: 'codex', pending: recovery.pending, error: recovery.error,
+        notices: recovery.notices, onRetry: recovery.retry,
+        onOpenConversation: (notice) => go({ name: 'track', trackId: notice.track_id, cardId: notice.card_id, openPlanner: true }) }}
       providers={providers.data}
       loadError={providers.error === null ? null : readErrorText(providers.error, 'Planners are unavailable.')}
       onRetryLoad={() => { void providers.refetch(); }}

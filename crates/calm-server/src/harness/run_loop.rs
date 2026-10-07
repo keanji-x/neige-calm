@@ -243,6 +243,8 @@ pub(super) struct Inner {
     issuance: Mutex<()>,
     /// Issuance kill-switch for dev-forced harnesses; only `pause_issuance_for_dev` sets it.
     issuance_paused: AtomicBool,
+    provider_held: AtomicBool,
+    provider_hold_owns_block: AtomicBool,
     /// Queue entries the load-time truncation discarded whose `dropped` row does not exist yet.
     /// A `tokio::Mutex` held across the event inserts so two racing flushers cannot take the same id;
     /// `persist_snapshot_inner` drains this first and refuses to write if it cannot.
@@ -885,6 +887,12 @@ impl PlannerHarness {
     /// Why this conversation's queue is not draining, or `None`. `None` does NOT mean waiting is
     /// the right answer.
     pub async fn issuance_block(&self) -> Option<String> {
+        if let Some(reader) = self.inner.backend.issuance_hold() {
+            return Some(reader);
+        }
+        if self.inner.provider_hold_owns_block.load(Ordering::SeqCst) {
+            return None;
+        }
         self.inner.issuance_block.lock().await.clone()
     }
 
@@ -1166,6 +1174,8 @@ fn inner_from_params(
         observations_closed: StdMutex::new(false),
         durable_observation: Mutex::new(()),
         issuance: Mutex::new(()),
+        provider_held: AtomicBool::new(false),
+        provider_hold_owns_block: AtomicBool::new(false),
         issuance_paused: AtomicBool::new(false),
         unannounced_drops: Mutex::new(dropped_on_load),
         steered_into_running_turn: Mutex::new(Vec::new()),
@@ -1436,6 +1446,9 @@ async fn handle_steer(
     // `select!`; a Stop landing after codex accepted is what `SteeredEntry` exists for.
     let running = inner.state.lock().await.clone();
     let phase = HarnessPhaseTag::from(&running);
+    if let Some(message) = inner.backend.issuance_hold() {
+        return Ok(Err(SteerRefused::NotTaken { message, phase }));
+    }
     // #1791 §5.9: decided before the entry is taken, so its id and rev stay as they are and it
     // runs as the next turn.
     if !inner.backend.supports_steer() {
@@ -2827,6 +2840,25 @@ fn append_report_edit_batch_channel_line(
     last.text.push_str(REPORT_EDIT_BATCH_CHANNEL_LINE);
 }
 
+/// A hold never drains or revises the queue. Recovery removes only the auth pacing it installed.
+async fn provider_holds_issuance(inner: &Inner) -> bool {
+    if inner.backend.issuance_hold().is_some() {
+        inner.provider_held.store(true, Ordering::SeqCst);
+        *inner.issuance_retry_after.lock().await = None;
+        // The accessor exposes this provider-owned reader. Do not overwrite a
+        // model-choice refusal: it may still be true when this hold clears.
+        return true;
+    }
+    if inner.provider_held.swap(false, Ordering::SeqCst) {
+        *inner.issuance_retry_after.lock().await = None;
+        if inner.provider_hold_owns_block.swap(false, Ordering::SeqCst) {
+            *inner.issuance_block.lock().await = None;
+            *inner.refusing_since.lock().await = None;
+        }
+    }
+    false
+}
+
 async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // Dev-forced harnesses run against the replay binary's stub app-server.
     if inner.issuance_paused.load(Ordering::SeqCst) {
@@ -2843,6 +2875,9 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         )
     };
     if queue_len == 0 {
+        return Ok(());
+    }
+    if provider_holds_issuance(inner).await {
         return Ok(());
     }
     // Checked before any of the work below, because the point is to skip that work.
@@ -3029,6 +3064,9 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     wait_at_planner_harness_drain_race_hook(&inner.worker_session_id).await;
     let _issuance_guard = inner.issuance.lock().await;
     if inner.shutting_down.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+    if provider_holds_issuance(inner).await {
         return Ok(());
     }
     // Asked a SECOND time, immediately before the drain: a fence landing during the refresh and
@@ -3282,6 +3320,13 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                     let stage = "turn/start failed";
                     let refusal = IssuanceRefusal::retryable(format!("{stage}: {e}"));
                     (e, stage, refusal)
+                }
+                IssueFailure::TurnStart(TurnStartFailure::AwaitingRecovery { error, reader }) => {
+                    inner.provider_held.store(true, Ordering::SeqCst);
+                    inner.provider_hold_owns_block.store(true, Ordering::SeqCst);
+                    let stage = "provider awaits recovery";
+                    let refusal = IssuanceRefusal::rejected(format!("{stage}: {error}"), reader);
+                    (error, stage, refusal)
                 }
                 IssueFailure::TurnStart(TurnStartFailure::Refused { error, reader }) => {
                     let stage = "turn/start failed";

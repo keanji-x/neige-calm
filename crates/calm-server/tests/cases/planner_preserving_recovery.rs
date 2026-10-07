@@ -1,7 +1,7 @@
 use super::*;
 use calm_server::harness::{HarnessState, QueueEntry};
 
-async fn failed_conversation(boot: &Boot) -> (Card, String, String, QueueEntry) {
+pub(super) async fn failed_conversation(boot: &Boot) -> (Card, String, String, QueueEntry) {
     let card = seed_codex_card_with_role(boot, CardRole::Planner).await;
     sqlx::query("UPDATE cards SET role = 'planner' WHERE id = ?")
         .bind(card.id.as_str())

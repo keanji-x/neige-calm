@@ -47,10 +47,10 @@ const NO_CLAUDE = {
 /** What `routes/agent_providers.rs` answers alongside each catalog (#1817). */
 function availability(claude: 'ready' | 'not_configured') {
   return [
-    { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1 },
+    { provider: 'codex', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1 },
     claude === 'ready'
-      ? { provider: 'claude', status: 'ready', reason: null, checked_at_ms: 1 }
-      : { provider: 'claude', status: 'not_configured', reason: 'calm-server was started without --claude-planner-config', checked_at_ms: 1 },
+      ? { provider: 'claude', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1 }
+      : { provider: 'claude', status: 'not_configured', reason: 'calm-server was started without --claude-planner-config', authentication_notice: null, checked_at_ms: 1 },
   ];
 }
 

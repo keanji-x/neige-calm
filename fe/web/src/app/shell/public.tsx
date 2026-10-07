@@ -36,6 +36,7 @@ import { SettingsOverlay, settingsSectionForPath } from './settings-overlay.tsx'
 import { useDrawerWidthHost } from './drawer-width.tsx';
 import type { DrawerResize } from '../../ui/drawer/public.tsx';
 import { Sidebar } from './sidebar.tsx';
+import { ProviderAuthenticationNotice } from './provider-authentication.tsx';
 import styles from './shell.module.css';
 
 export type AppShellProps = Readonly<{
@@ -412,6 +413,8 @@ export function AppShell({
         {/* One flex item. Routes compose ErrorBox + page + Drawer as siblings;
             `:first-child` on `.main` would flex the banner, not the page. */}
         <div key={currentPath} className={styles.stage} hidden={narrowRail && settingsOpen}>
+          <ProviderAuthenticationNotice transport={transport} unauthorized={unauthorized}
+            onOpenPlanners={() => { closeMobileSection(); go({ name: 'settings-planners' }); }} />
           <MobileSectionContext.Provider value={openMobileSection}>
             <MobileHeaderActionsContext.Provider value={narrowRail ? mobileHeaderActionsHost : null}>
               <MobileHeaderTitleContext.Provider value={narrowRail ? mobileHeaderTitleHost : null}>

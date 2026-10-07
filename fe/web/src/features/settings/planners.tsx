@@ -7,7 +7,7 @@ import { Text as AstryxText } from '@astryxdesign/core/Text';
 
 import type { AgentProvider } from '../../../../core/api/schemas.ts';
 import {
-  CREATE_REFUSED_WHEN_UNAVAILABLE, STILL_CREATES_NOTE, type ProviderAvailability,
+  CREATE_REFUSED_WHEN_UNAVAILABLE, STILL_CREATES_NOTE, type ProviderAvailability, type AuthenticationRetryResponse,
 } from '../../../../core/domain/agent-providers.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { SettingRow, SettingsList, SettingsPane } from './public.tsx';
@@ -23,6 +23,15 @@ export type PlannersPaneProps = Readonly<{
   rechecking: boolean;
   /** Why the last Recheck failed; the previous answer stays on screen. */
   recheckError: string | null;
+  /** An app-injected capability; the pane never infers a provider's recovery policy. */
+  authenticationRecovery: Readonly<{
+    provider: AgentProvider;
+    pending: boolean;
+    error: string | null;
+    notices: AuthenticationRetryResponse['recovery_notices'];
+    onRetry: (revision: string) => void;
+    onOpenConversation: (notice: AuthenticationRetryResponse['recovery_notices'][number]) => void;
+  }> | null;
 }>;
 
 const PROVIDER_LABELS: Readonly<Record<AgentProvider, string>> = Object.freeze({ codex: 'Codex', claude: 'Claude' });
@@ -40,6 +49,7 @@ const READY_DESCRIPTION = 'Passed every check; new tracks can use it.';
 
 /** The server's reason, and for a provider create still accepts (Codex), that it still does (#1817). */
 function describe(entry: ProviderAvailability): string {
+  if (entry.authentication_notice !== null) return entry.authentication_notice.text;
   if (entry.reason === null) return READY_DESCRIPTION;
   return entry.status === 'unavailable' && !CREATE_REFUSED_WHEN_UNAVAILABLE[entry.provider]
     ? `${entry.reason} ${STILL_CREATES_NOTE}`
@@ -53,7 +63,7 @@ function oldestCheck(providers: readonly ProviderAvailability[]): number | null 
 }
 
 export function PlannersPane({
-  providers, loadError, onRetryLoad, onRecheck, rechecking, recheckError,
+  providers, loadError, onRetryLoad, onRecheck, rechecking, recheckError, authenticationRecovery,
 }: PlannersPaneProps) {
   const checkedAt = providers === undefined ? null : oldestCheck(providers);
   return (
@@ -73,8 +83,15 @@ export function PlannersPane({
                 title={PROVIDER_LABELS[entry.provider]}
                 /* A node, not a string: a string description is cut to one line, and a reason is a fix to read whole. */
                 description={<span className={styles.plannerReason}>{describe(entry)}</span>}
-                control={<AstryxBadge className={styles.pluginStateChip}
-                  variant={STATUS_BADGES[entry.status].variant} label={STATUS_BADGES[entry.status].label} />}
+                control={<>
+                  <AstryxBadge className={styles.pluginStateChip}
+                    variant={STATUS_BADGES[entry.status].variant} label={STATUS_BADGES[entry.status].label} />
+                  {authenticationRecovery?.provider === entry.provider && entry.authentication_notice?.kind === 'sign_in_required'
+                    && <AstryxButton label="Retry queued messages after server sign-in" variant="secondary"
+                      isLoading={authenticationRecovery.pending} onClick={() => authenticationRecovery.onRetry(entry.authentication_notice!.revision)}>
+                      Retry after server sign-in
+                    </AstryxButton>}
+                </>}
               />
             ))}
             <SettingRow
@@ -87,6 +104,11 @@ export function PlannersPane({
             />
           </SettingsList>
         )}
+      {authenticationRecovery?.error !== null && authenticationRecovery?.error !== undefined
+        && <p className={styles.error} role="alert">{authenticationRecovery.error}</p>}
+      {authenticationRecovery?.notices.map((notice) => <ErrorBox key={notice.card_id}
+        message={`${notice.title}: ${notice.text}`} actionLabel="Open conversation"
+        onRetry={() => authenticationRecovery.onOpenConversation(notice)} />)}
       {recheckError !== null && <p className={styles.error} role="alert">{recheckError}</p>}
     </SettingsPane>
   );

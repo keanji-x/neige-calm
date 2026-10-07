@@ -17,4 +17,5 @@
 // `POST /api/tracks/{id}/asks/{ask_id}/answer` is new; a bundle of this revision would get 404 from
 // an older kernel when it answers a question.
 // Revision 23 (#2301): manual context compaction and the compacting harness phase.
-pub const REST_API_VERSION: &str = "23";
+// Revision 24 (#2314): provider availability carries a required typed authentication_notice.
+pub const REST_API_VERSION: &str = "24";

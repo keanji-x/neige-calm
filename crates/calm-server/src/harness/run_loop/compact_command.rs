@@ -3,6 +3,9 @@ use super::*;
 
 pub(super) async fn handle_compact(inner: &Arc<Inner>) -> Result<()> {
     let _issuance = inner.issuance.lock().await;
+    if let Some(reader) = inner.backend.issuance_hold() {
+        return Err(CalmError::Conflict(reader));
+    }
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Err(CalmError::Conflict(
             "the conversation is shutting down".into(),

@@ -75,15 +75,15 @@ const RESOLVED_ROWS = ['Opus (1M context)claude-opus-5-5[1m]', 'Fableclaude-fabl
 
 /** What `GET /api/agent-providers` answers for a provider (#1817). */
 function ready(provider: AgentProvider): ProviderAvailability {
-  return { provider, status: 'ready', reason: null, checked_at_ms: 1 };
+  return { provider, status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1 };
 }
 
 function unavailable(provider: AgentProvider, reason: string): ProviderAvailability {
-  return { provider, status: 'unavailable', reason, checked_at_ms: 1 };
+  return { provider, status: 'unavailable', reason, authentication_notice: null, checked_at_ms: 1 };
 }
 
 function notConfigured(provider: AgentProvider): ProviderAvailability {
-  return { provider, status: 'not_configured', reason: 'calm-server was started without --claude-planner-config', checked_at_ms: 1 };
+  return { provider, status: 'not_configured', reason: 'calm-server was started without --claude-planner-config', authentication_notice: null, checked_at_ms: 1 };
 }
 
 const CLAUDE_LOGGED_OUT = 'not logged in — run `claude /login` with CLAUDE_CONFIG_DIR=/srv/claude';

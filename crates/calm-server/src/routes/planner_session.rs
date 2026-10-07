@@ -99,11 +99,10 @@ pub(crate) async fn ensure_planner_session(
         }
         return start_fresh(s, cs, card_id, actor, fence).await;
     };
-    let runtime = if runtime.status == WorkerSessionState::Failed {
-        planner_recovery::recover(s, w, cs, runtime).await?
-    } else {
-        runtime
-    };
+    if runtime.status == WorkerSessionState::Failed {
+        let (runtime, harness) = restore_failed_session(s, w, cs, runtime).await?;
+        return Ok((runtime, harness, Some(fence)));
+    }
     if let Some(harness) = s.harness.get(&runtime.id) {
         return Ok((runtime, harness, Some(fence)));
     }
@@ -133,22 +132,7 @@ pub(crate) async fn ensure_planner_session(
     };
     require_backend(s, cs, provider).await?;
     let runtime_id = runtime.id.clone();
-    let harness = crate::harness::spawn_recovered_harness(
-        w.repo.clone(),
-        s.events.clone(),
-        s.write.role_cache().clone(),
-        s.write.area_cache().clone(),
-        cs.shared_codex_appserver.clone(),
-        s.thread_seals.clone(),
-        &s.claude_planner_wiring(),
-        &s.harness,
-        &s.track_delete_locks,
-        runtime.clone(),
-        crate::harness::ClaimMode::Replace,
-    )
-    .await?
-    .installed()
-    .ok_or_else(dormant)?;
+    let harness = install_preserved_session(s, w, cs, runtime.clone()).await?;
     tracing::info!(
         card_id = %card_id,
         runtime_id = %runtime_id,
@@ -246,4 +230,42 @@ async fn start_fresh(
         "planner harness started on a send to a card with no thread to preserve"
     );
     Ok((runtime, harness, Some(fence)))
+}
+
+/// Resume only the original failed thread, under the caller's CardStartFence.
+/// A refusal leaves the conversation eligible for its explicit recovery UI; no mint fallback.
+pub(super) async fn restore_failed_session(
+    s: &RouteState,
+    w: &WorkerState,
+    cs: &CodexShellState,
+    runtime: WorkerSessionProjection,
+) -> Result<(WorkerSessionProjection, PlannerHarness)> {
+    let runtime = planner_recovery::recover(s, w, cs, runtime).await?;
+    let harness = install_preserved_session(s, w, cs, runtime.clone()).await?;
+    Ok((runtime, harness))
+}
+#[allow(deprecated)]
+async fn install_preserved_session(
+    s: &RouteState,
+    w: &WorkerState,
+    cs: &CodexShellState,
+    runtime: WorkerSessionProjection,
+) -> Result<PlannerHarness> {
+    let harness = crate::harness::spawn_recovered_harness(
+        w.repo.clone(),
+        s.events.clone(),
+        s.write.role_cache().clone(),
+        s.write.area_cache().clone(),
+        cs.shared_codex_appserver.clone(),
+        s.thread_seals.clone(),
+        &s.claude_planner_wiring(),
+        &s.harness,
+        &s.track_delete_locks,
+        runtime.clone(),
+        crate::harness::ClaimMode::Replace,
+    )
+    .await?
+    .installed()
+    .ok_or_else(dormant)?;
+    Ok(harness)
 }

@@ -16,8 +16,8 @@ const LOGGED_OUT = 'not logged in — run `claude /login` with '
   + 'CLAUDE_CONFIG_DIR=/home/owner/.local/share/neige-next/claude-planner/config-dir-for-the-dedicated-login';
 
 const PROVIDERS: readonly ProviderAvailability[] = [
-  { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1_760_000_000_000 },
-  { provider: 'claude', status: 'unavailable', reason: LOGGED_OUT, checked_at_ms: 1_760_000_000_000 },
+  { provider: 'codex', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1_760_000_000_000 },
+  { provider: 'claude', status: 'unavailable', reason: LOGGED_OUT, authentication_notice: null, checked_at_ms: 1_760_000_000_000 },
 ];
 
 describe('Settings Planners', () => {
@@ -26,7 +26,7 @@ describe('Settings Planners', () => {
       await page.viewport(width, height);
       render(
         <SettingsSurface presentation={presentation} section="planners" onSelectSection={vi.fn()}>
-          <PlannersPane providers={PROVIDERS} loadError={null} onRetryLoad={vi.fn()} onRecheck={vi.fn()}
+          <PlannersPane authenticationRecovery={null} providers={PROVIDERS} loadError={null} onRetryLoad={vi.fn()} onRecheck={vi.fn()}
             rechecking={false} recheckError={null} />
         </SettingsSurface>,
       );

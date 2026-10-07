@@ -39,6 +39,9 @@ pub(super) async fn handle_replace(
     key: &SendKey,
 ) -> Result<DurableAck> {
     let _issuance = inner.issuance.lock().await;
+    if let Some(reader) = inner.backend.issuance_hold() {
+        return Err(CalmError::Conflict(reader));
+    }
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Err(refused("the conversation is shutting down"));
     }

@@ -128,7 +128,7 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(
         v["apiVersion"].as_str().unwrap(),
-        "23",
+        "24",
         "#2301: manual context compaction adds a route and a harness phase"
     );
     assert_eq!(

@@ -172,9 +172,9 @@ function harness(options: {
             : { status: 'unavailable', reason: options.claudeUnavailable };
         return Promise.resolve({ status: 200, statusText: 'OK', body: [
           options.codexUnavailable === undefined
-            ? { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1 }
-            : { provider: 'codex', status: 'unavailable', reason: options.codexUnavailable, checked_at_ms: 1 },
-          { provider: 'claude', ...claude, checked_at_ms: 1 },
+            ? { provider: 'codex', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1 }
+            : { provider: 'codex', status: 'unavailable', reason: options.codexUnavailable, authentication_notice: null, checked_at_ms: 1 },
+          { provider: 'claude', ...claude, authentication_notice: null, checked_at_ms: 1 },
         ] });
       }
       /* What `routes/models.rs` answers for a Claude Planner (#1822): the Claude CLI's list on a server

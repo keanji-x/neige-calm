@@ -23,8 +23,8 @@ function catalog(models: readonly [string, string][], provider: 'codex' | 'claud
   };
 }
 
-const ready: ProviderAvailability = { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1 };
-const claudeUnavailable: ProviderAvailability = { provider: 'claude', status: 'unavailable', reason: REASON, checked_at_ms: 1 };
+const ready: ProviderAvailability = { provider: 'codex', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1 };
+const claudeUnavailable: ProviderAvailability = { provider: 'claude', status: 'unavailable', reason: REASON, authentication_notice: null, checked_at_ms: 1 };
 
 it('shows why Claude cannot run, inside the viewport, and picks nothing from its group', async () => {
   await page.viewport(390, 844);

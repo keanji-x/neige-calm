@@ -34,6 +34,8 @@ mod planner_attachments_bind;
 mod planner_attachments_guarded_surface;
 #[path = "cases/planner_attachments_rest.rs"]
 mod planner_attachments_rest;
+#[path = "cases/planner_authentication_recovery.rs"]
+mod planner_authentication_recovery;
 #[path = "cases/planner_child_bootstrap_fence.rs"]
 mod planner_child_bootstrap_fence;
 #[path = "cases/planner_first_start.rs"]

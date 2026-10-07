@@ -153,3 +153,84 @@ fn failed_wedged_snapshot(runtime: &WorkerSessionProjection) -> Option<HarnessSn
     let snapshot = HarnessSnapshot::parse_known(runtime.handle_state_json.clone()?)?;
     (snapshot.phase == HarnessPhaseTag::Wedged).then_some(snapshot)
 }
+
+/// Owner retries already-queued conversations, using the same recovery owner as human Send.
+/// Normal live queues resume on their own. Paused carriers are attempted only on their original
+/// thread and report a retained-history notice when the existing contract refuses recovery.
+#[allow(deprecated)]
+pub(super) async fn retry_provider_conversations(
+    s: &RouteState,
+    w: &WorkerState,
+    cs: &CodexShellState,
+) -> Result<Vec<super::agent_providers::ConversationRecoveryNotice>> {
+    use crate::operation::planner_start_fence::CardStartFence;
+    use crate::session_projection_repo::AgentProvider;
+    let mut notices = Vec::new();
+    for area in s.repo.areas_list().await? {
+        for track in s.repo.tracks_by_area(area.id.as_str()).await? {
+            if track.closed_at.is_some() {
+                continue;
+            }
+            let cards = s.repo.cards_by_track(track.id.as_str()).await?;
+            let ids = cards
+                .iter()
+                .map(|card| card.id.to_string())
+                .collect::<Vec<_>>();
+            let runtimes = s
+                .repo
+                .session_projection_projectable_for_cards(&ids)
+                .await?;
+            for card in cards {
+                let Some(runtime) = runtimes.get(card.id.as_str()) else {
+                    continue;
+                };
+                if runtime.agent_provider != Some(AgentProvider::Codex)
+                    || runtime.status != WorkerSessionState::Failed
+                {
+                    continue;
+                }
+                let Some(snapshot) = failed_wedged_snapshot(runtime) else {
+                    continue;
+                };
+                if snapshot.pending_entries().is_empty() {
+                    continue;
+                }
+                let _fence = CardStartFence::lock(
+                    &s.planner_recovery_locks,
+                    &s.repo,
+                    &s.operation_runtime,
+                    &card.id,
+                )
+                .await;
+                // The row found by the sweep is never permission to replace a newer carrier.
+                let current = s
+                    .repo
+                    .session_projection_projectable_for_card(&card.id.to_string())
+                    .await?;
+                let Some(current) = current.filter(|current| {
+                    current.id == runtime.id && current.status == WorkerSessionState::Failed
+                }) else {
+                    continue;
+                };
+                let resumable = recoverable_snapshot(s, &current).await?.is_some();
+                let restored =
+                    if resumable && cs.shared_codex_appserver.authentication_hold().is_none() {
+                        super::planner_session::restore_failed_session(s, w, cs, current)
+                            .await
+                            .is_ok()
+                    } else {
+                        false
+                    };
+                if !restored {
+                    notices.push(super::agent_providers::ConversationRecoveryNotice {
+                        card_id:card.id.to_string(),
+                        track_id:track.id.to_string(),
+                        title:card.title.unwrap_or_else(||"Conversation".into()),
+                        text:"This conversation still needs its recovery action. Its history and queued messages are retained.".into(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(notices)
+}

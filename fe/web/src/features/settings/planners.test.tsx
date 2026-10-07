@@ -1,3 +1,4 @@
+import userEvent from '@testing-library/user-event';
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -8,15 +9,15 @@ import { PlannersPane, type PlannersPaneProps } from './planners.tsx';
 afterEach(cleanup);
 
 const PROVIDERS: readonly ProviderAvailability[] = [
-  { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1_760_000_000_000 },
+  { provider: 'codex', status: 'ready', reason: null, authentication_notice: null, checked_at_ms: 1_760_000_000_000 },
   { provider: 'claude', status: 'not_configured', reason: 'calm-server was started without --claude-planner-config',
-    checked_at_ms: 1_760_000_000_000 },
+    authentication_notice: null, checked_at_ms: 1_760_000_000_000 },
 ];
 
 function pane(overrides: Partial<PlannersPaneProps> = {}) {
   const props: PlannersPaneProps = {
     providers: PROVIDERS, loadError: null, onRetryLoad: vi.fn(), onRecheck: vi.fn(), rechecking: false,
-    recheckError: null, ...overrides,
+    recheckError: null, authenticationRecovery: null, ...overrides,
   };
   render(<PlannersPane {...props} />);
   return props;
@@ -46,8 +47,8 @@ describe('PlannersPane', () => {
 
   it('says a Codex outage still lets tracks be created, and says nothing like it for Claude (#1817)', () => {
     pane({ providers: [
-      { provider: 'codex', status: 'unavailable', reason: 'shared codex app-server is not running', checked_at_ms: 1 },
-      { provider: 'claude', status: 'unavailable', reason: 'not logged in', checked_at_ms: 1 },
+      { provider: 'codex', status: 'unavailable', reason: 'shared codex app-server is not running', authentication_notice: null, checked_at_ms: 1 },
+      { provider: 'claude', status: 'unavailable', reason: 'not logged in', authentication_notice: null, checked_at_ms: 1 },
     ] });
     expect(within(row('Codex')).getByText(
       'shared codex app-server is not running A track can still be created, but a first message is only sent once Codex is back.',
@@ -67,4 +68,15 @@ describe('PlannersPane', () => {
     fireEvent.click(screen.getByRole('button', { name: /retry/i }));
     expect(props.onRetryLoad).toHaveBeenCalledTimes(1);
   });
+});
+
+it('offers an injected owner retry only for a confirmed failure and passes its exact revision', async () => {
+  const onRetry = vi.fn();
+  pane({
+    providers: [{ provider: 'codex', status: 'unavailable', reason: 'Sign in for the server.', checked_at_ms: 1,
+      authentication_notice: { kind: 'sign_in_required', text: 'Sign in for the server.', revision: '7' } }],
+    authenticationRecovery: { provider: 'codex', pending: false, error: null, notices: [], onRetry, onOpenConversation: vi.fn() },
+  });
+  await userEvent.click(screen.getByRole('button', { name: 'Retry queued messages after server sign-in' }));
+  expect(onRetry).toHaveBeenCalledWith('7');
 });
