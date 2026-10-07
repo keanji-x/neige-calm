@@ -634,6 +634,18 @@ async fn a_closed_idle_track_worktree_drops_its_ignored_files() {
     let nested = worktree.join("scratch/nested");
     std::fs::create_dir_all(&nested).unwrap();
     run_git(&nested, ["init", "-q"]);
+    let linked = worktree.join("scratch/linked");
+    run_git(
+        &up.clone,
+        [
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            linked.to_str().unwrap(),
+        ],
+    );
+    std::fs::write(linked.join("work.txt"), "nested work\n").unwrap();
     b.shutdown_harnesses().await;
     let pool = b.repo.pool();
 
@@ -720,5 +732,59 @@ async fn a_closed_idle_track_worktree_drops_its_ignored_files() {
         nested.join(".git").is_dir(),
         "an ignored nested repository stays"
     );
+    assert!(
+        linked.join("work.txt").is_file(),
+        "an ignored linked worktree stays with its work"
+    );
     assert_eq!(porcelain(&worktree), "?? untracked.txt");
+}
+
+/// #2356 S2 review: the clean acts only on the track's own registered worktree. A symlink at the
+/// track path into the user's checkout, or a registered worktree whose `.git` is gone (a delete
+/// half done), must not let `git clean` reach the user's checkout and its ignored files.
+#[tokio::test]
+async fn a_closed_track_clean_never_reaches_the_users_checkout() {
+    use calm_server::test_seams::clean_idle_closed_track_worktrees_for_test as clean;
+
+    let b = boot().await;
+    let up = upstream(b.tmp.path());
+    let exclude = up.clone.join(".git/info/exclude");
+    let mut excluded = std::fs::read_to_string(&exclude).unwrap_or_default();
+    excluded.push_str("secret.env\n");
+    std::fs::write(&exclude, excluded).unwrap();
+    std::fs::write(up.clone.join("secret.env"), "SECRET\n").unwrap();
+
+    let mut tracks = Vec::new();
+    for _ in 0..2 {
+        let (status, body) = b.create_at(&up.clone, None, None).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        tracks.push(body["id"].as_str().unwrap().to_string());
+    }
+    b.shutdown_harnesses().await;
+    let linked_away = expected_worktree(&up.clone, &tracks[0]);
+    std::fs::rename(&linked_away, b.tmp.path().join("moved-away")).unwrap();
+    std::os::unix::fs::symlink(&up.clone, &linked_away).unwrap();
+    let no_git = expected_worktree(&up.clone, &tracks[1]);
+    std::fs::remove_file(no_git.join(".git")).unwrap();
+    std::fs::write(no_git.join("README.md.bak"), "kept\n").unwrap();
+    for track_id in &tracks {
+        let (status, body) = b
+            .as_user(
+                "PATCH",
+                &format!("/api/tracks/{track_id}"),
+                json!({"closed": true}),
+            )
+            .await;
+        assert!(status.is_success(), "{status} {body}");
+    }
+
+    assert_eq!(clean(b.repo.pool()).await.unwrap(), 0);
+    assert!(
+        up.clone.join("secret.env").is_file(),
+        "the user's ignored file survives"
+    );
+    assert!(
+        no_git.join("README.md.bak").is_file(),
+        "nothing under the broken worktree is cleaned through the user's checkout"
+    );
 }
