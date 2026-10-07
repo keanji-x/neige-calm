@@ -3,6 +3,7 @@ pub mod acp;
 pub mod claude;
 pub mod codex;
 pub mod events;
+pub mod held_requests;
 mod input;
 pub mod worker;
 pub use calm_exec::{SpawnCtx, SpawnHandle, WorkerProvider};

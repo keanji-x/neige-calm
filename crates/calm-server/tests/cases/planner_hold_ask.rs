@@ -90,29 +90,43 @@ impl Request1 {
     }
 }
 
-struct Rig {
-    repo: Arc<SqlxRepo>,
+/// A Planner harness on its own track and session, with the answer route mounted. `planner_codex_approvals`
+/// (#2348 A2) builds one over a live fake daemon.
+pub(super) struct Rig {
+    pub(super) repo: Arc<SqlxRepo>,
     events: EventBus,
     role_cache: CardRoleCache,
     area_cache: TrackAreaCache,
-    daemon: Arc<SharedCodexAppServer>,
-    harness: PlannerHarness,
+    pub(super) daemon: Arc<SharedCodexAppServer>,
+    pub(super) harness: PlannerHarness,
     registry: HarnessRegistry,
     app: axum::Router,
     session_id: String,
     card: CardId,
     track: TrackId,
+    thread: &'static str,
 }
 
-fn snapshot() -> HarnessSnapshot {
+fn snapshot(thread: &str) -> HarnessSnapshot {
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
-    snapshot.last_thread_id = Some(THREAD.into());
+    snapshot.last_thread_id = Some(thread.into());
     snapshot
 }
 
 async fn rig() -> Rig {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    rig_on(repo, daemon, THREAD, "never").await
+}
+
+/// The rig over `daemon`, the harness on `thread`, its Planner card in `permission_mode`.
+pub(super) async fn rig_on(
+    repo: Arc<SqlxRepo>,
+    daemon: Arc<SharedCodexAppServer>,
+    thread: &'static str,
+    permission_mode: &str,
+) -> Rig {
     let area = repo
         .area_create(NewArea {
             name: "hold-ask".into(),
@@ -147,7 +161,7 @@ async fn rig() -> Rig {
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex"}),
+            payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex", "permission_mode": permission_mode}),
         },
         CardRole::Planner,
         true,
@@ -165,10 +179,10 @@ async fn rig() -> Rig {
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Idle,
             terminal_run_id: None,
-            thread_id: Some(THREAD.into()),
+            thread_id: Some(thread.into()),
             session_id: None,
             active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(snapshot()).unwrap()),
+            handle_state_json: Some(serde_json::to_value(snapshot(thread)).unwrap()),
             spawn_op_id: None,
             now_ms: now_ms(),
         },
@@ -178,7 +192,6 @@ async fn rig() -> Rig {
     tx.commit().await.unwrap();
 
     let events = EventBus::new();
-    let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let host = Arc::new(PluginHost::new_full(
         Arc::new(PluginRegistry::empty()),
@@ -214,6 +227,7 @@ async fn rig() -> Rig {
         &session_id,
         &card.id,
         &track.id,
+        thread,
     )
     .await;
     Rig {
@@ -228,6 +242,7 @@ async fn rig() -> Rig {
         session_id,
         card: card.id,
         track: track.id,
+        thread,
     }
 }
 
@@ -244,6 +259,7 @@ async fn run_harness(
     session_id: &str,
     card: &CardId,
     track: &TrackId,
+    thread: &str,
 ) -> PlannerHarness {
     let listening = daemon.notification_receiver_count_for_test();
     let repo_dyn: Arc<dyn Repo> = repo.clone();
@@ -251,7 +267,7 @@ async fn run_harness(
         worker_session_id: session_id.to_string(),
         track_id: track.clone(),
         card_id: card.clone(),
-        thread_id: Some(THREAD.into()),
+        thread_id: Some(thread.into()),
         repo: repo_dyn,
         events: events.clone(),
         card_role_cache: role_cache.clone(),
@@ -259,7 +275,7 @@ async fn run_harness(
         backend: daemon.clone().into(),
         live_replies: calm_server::harness::LiveReplies::for_test(),
         config: HarnessConfig::default(),
-        snapshot: snapshot(),
+        snapshot: snapshot(thread),
     });
     wait_for("the harness to listen", || async {
         daemon.notification_receiver_count_for_test() > listening
@@ -269,7 +285,7 @@ async fn run_harness(
     harness
 }
 
-async fn wait_for<F, Fut>(what: &str, mut done: F)
+pub(super) async fn wait_for<F, Fut>(what: &str, mut done: F)
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = bool>,
@@ -293,6 +309,7 @@ impl Rig {
             &self.session_id,
             &self.card,
             &self.track,
+            self.thread,
         )
         .await
     }
@@ -336,7 +353,7 @@ impl Rig {
     }
 
     /// `(id, actor, event)` of every `ask.requested`.
-    async fn asks(&self) -> Vec<(i64, ActorId, Event)> {
+    pub(super) async fn asks(&self) -> Vec<(i64, ActorId, Event)> {
         self.rows("ask.requested").await
     }
 
@@ -350,14 +367,14 @@ impl Rig {
             .collect()
     }
 
-    async fn withdrawn(&self, ask_id: i64) -> bool {
+    pub(super) async fn withdrawn(&self, ask_id: i64) -> bool {
         self.rows("ask.withdrawn")
             .await
             .iter()
             .any(|(_, _, event)| matches!(event, Event::AskWithdrawn { ask_id: id, .. } if *id == ask_id))
     }
 
-    async fn answered(&self, ask_id: i64) -> bool {
+    pub(super) async fn answered(&self, ask_id: i64) -> bool {
         self.rows("ask.answered").await.iter().any(
             |(_, _, event)| matches!(event, Event::AskAnswered { ask_id: id, .. } if *id == ask_id),
         )
@@ -405,7 +422,7 @@ impl Rig {
         )
     }
 
-    async fn answer(&self, ask_id: i64, answers: Value) -> (StatusCode, Value) {
+    pub(super) async fn answer(&self, ask_id: i64, answers: Value) -> (StatusCode, Value) {
         self.post(
             format!("/api/tracks/{}/asks/{ask_id}/answer", self.track),
             json!({ "answers": answers }),
@@ -415,10 +432,13 @@ impl Rig {
 
     /// Start a turn the way any input does, and return its id once the harness runs it.
     async fn start_turn(&self) -> String {
+        self.start_turn_with("Read the track goal.").await
+    }
+
+    /// [`Self::start_turn`] with the turn's input text.
+    pub(super) async fn start_turn_with(&self, text: &str) -> String {
         self.harness
-            .observe(Observation::TrackGoal {
-                text: "Read the track goal.".into(),
-            })
+            .observe(Observation::TrackGoal { text: text.into() })
             .unwrap();
         wait_for("the turn to run", || {
             let harness = self.harness.clone();

@@ -170,6 +170,7 @@ async fn a_refresh_token_reuse_refusal_overrides_cached_account_presence() {
                 "auth regression",
             )],
             &calm_server::planner_model::TurnModelSelection::inherit(),
+            calm_server::codex_appserver::TurnApprovals::Unchanged,
             None,
         )
         .await;
@@ -291,6 +292,7 @@ async fn authentication_refusal_explains_sign_in_instead_of_changing_the_model()
                 "auth regression",
             )],
             &calm_server::planner_model::TurnModelSelection::inherit(),
+            calm_server::planner_permission_mode::PlannerPermissionMode::Never,
             "fixture-client-id",
             &[calm_server::harness::QueueEntry::user_message(
                 "auth regression".into(),
@@ -333,6 +335,7 @@ async fn a_pre_login_rpc_refusal_cannot_overwrite_a_verified_login() {
                 "old-auth-request",
                 vec![calm_server::codex_appserver::InputItem::text("auth")],
                 &calm_server::planner_model::TurnModelSelection::inherit(),
+                calm_server::codex_appserver::TurnApprovals::Unchanged,
                 None,
             )
             .await
@@ -463,6 +466,7 @@ async fn confirmed_authentication_failure_survives_server_reconstruction() {
             "fixture-thread",
             vec![calm_server::codex_appserver::InputItem::text("queued")],
             &calm_server::planner_model::TurnModelSelection::inherit(),
+            calm_server::codex_appserver::TurnApprovals::Unchanged,
             None,
         )
         .await;
@@ -531,6 +535,7 @@ async fn a_hold_arriving_during_connection_acquisition_prevents_native_dispatch(
             "must stay queued"
         )],
         &selection,
+        calm_server::codex_appserver::TurnApprovals::Unchanged,
         None
     ));
     std::future::poll_fn(|cx| {

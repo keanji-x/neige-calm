@@ -268,6 +268,7 @@ fn a_chosen_model_and_effort_reach_the_turn_start_frame() {
             model: Some("gpt-5".into()),
             effort: Some("high".into()),
         },
+        TurnApprovals::Unchanged,
         None,
     );
     assert_eq!(frame["threadId"], json!("thread-1"));
@@ -286,6 +287,7 @@ fn the_frame_carries_a_slug_and_never_a_preset_id() {
             model: catalog_entry["model"].as_str().map(ToOwned::to_owned),
             effort: None,
         },
+        TurnApprovals::Unchanged,
         None,
     );
     assert_eq!(frame["model"], json!("gpt-5"));
@@ -295,7 +297,13 @@ fn the_frame_carries_a_slug_and_never_a_preset_id() {
 /// `inherit` sends no `model`, no `effort`, and in particular no explicit `null`.
 #[test]
 fn inherit_sends_neither_key_and_not_a_null_either() {
-    let frame = turn_start_params("thread-1", &[], &TurnModelSelection::inherit(), None);
+    let frame = turn_start_params(
+        "thread-1",
+        &[],
+        &TurnModelSelection::inherit(),
+        TurnApprovals::Unchanged,
+        None,
+    );
     let map = frame.as_object().expect("params is an object");
     assert!(!map.contains_key("model"), "frame was {frame}");
     assert!(!map.contains_key("effort"), "frame was {frame}");
@@ -313,6 +321,7 @@ fn each_key_is_omitted_independently() {
             model: Some("gpt-5".into()),
             effort: None,
         },
+        TurnApprovals::Unchanged,
         None,
     );
     assert_eq!(model_only["model"], json!("gpt-5"));
@@ -325,6 +334,7 @@ fn each_key_is_omitted_independently() {
             model: None,
             effort: Some("low".into()),
         },
+        TurnApprovals::Unchanged,
         None,
     );
     assert_eq!(effort_only["effort"], json!("low"));
@@ -341,6 +351,7 @@ fn an_unrecognised_effort_string_is_not_filtered_out() {
             model: None,
             effort: Some("ludicrous".into()),
         },
+        TurnApprovals::Unchanged,
         None,
     );
     assert_eq!(frame["effort"], json!("ludicrous"));
@@ -349,9 +360,21 @@ fn an_unrecognised_effort_string_is_not_filtered_out() {
 /// The drain's client id reaches the frame under codex's own key, and its absence is an absent key rather than `null`.
 #[test]
 fn a_client_user_message_id_reaches_the_frame_and_is_omitted_otherwise() {
-    let frame = turn_start_params("t", &[], &TurnModelSelection::inherit(), Some("entry-0001"));
+    let frame = turn_start_params(
+        "t",
+        &[],
+        &TurnModelSelection::inherit(),
+        TurnApprovals::Unchanged,
+        Some("entry-0001"),
+    );
     assert_eq!(frame["clientUserMessageId"], json!("entry-0001"));
-    let bare = turn_start_params("t", &[], &TurnModelSelection::inherit(), None);
+    let bare = turn_start_params(
+        "t",
+        &[],
+        &TurnModelSelection::inherit(),
+        TurnApprovals::Unchanged,
+        None,
+    );
     assert!(
         !bare
             .as_object()

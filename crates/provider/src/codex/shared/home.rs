@@ -337,7 +337,12 @@ impl SharedCodexHome {
 
         ensure_top_level_str(&mut doc, "approval_policy", "never");
         ensure_top_level_str(&mut doc, "sandbox_mode", "workspace-write");
-        ensure_table_bool(&mut doc, "sandbox_workspace_write", "network_access", true);
+        ensure_table_bool(
+            &mut doc,
+            "sandbox_workspace_write",
+            "network_access",
+            WORKSPACE_WRITE_NETWORK_ACCESS,
+        );
 
         if let Some(cwd) = cwd {
             let cwd_str = cwd.to_string_lossy().into_owned();
@@ -490,6 +495,10 @@ fn ensure_top_level_str(doc: &mut DocumentMut, key: &str, value: &str) {
         doc[key] = toml_edit::value(value);
     }
 }
+
+/// Whether the workspace-write sandbox of neige's Codex threads reaches the network: seeded into
+/// the shared home's config and repeated by every Planner turn's explicit sandbox policy.
+pub const WORKSPACE_WRITE_NETWORK_ACCESS: bool = true;
 
 fn ensure_table_bool(doc: &mut DocumentMut, table: &str, key: &str, value: bool) {
     let entry = doc[table].or_insert(toml_edit::table());

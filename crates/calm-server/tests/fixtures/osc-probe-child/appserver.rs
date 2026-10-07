@@ -11,6 +11,7 @@
 //!   initialize → thread/start → turn/start → (emit `turn/started`)
 //!
 //! #1923 — a turn can also stream one reply, scripted by its own input (see [`ReplyScript`]).
+//! #2348 — or pause on one approval request (see [`approvals`]).
 //!
 //! It then stays alive (looping on the connection) so the kernel's handle
 //! keeps a live child; the test reaps it via the registry teardown / tempdir
@@ -25,6 +26,9 @@ use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::net::UnixListener;
 use tokio_tungstenite::tungstenite::Message;
+
+mod approvals;
+use approvals::ApprovalScript;
 
 /// #954 — set by the `SIGTERM` handler installed in
 /// [`install_signal_fixture`]; a monitor thread turns it into the marker
@@ -369,6 +373,9 @@ async fn serve_conn(
     let thread_id = "fake-thread-0001";
     let turn_id = "fake-turn-0001";
     let mut replies = 0_u32;
+    let mut approvals = 0_u32;
+    // Requests codex already settled: an answer to one is ignored, as codex ignores it.
+    let mut resolved = std::collections::HashSet::new();
 
     while let Some(msg) = read.next().await {
         let msg = msg.map_err(|e| format!("ws read: {e}"))?;
@@ -393,6 +400,30 @@ async fn serve_conn(
         record_request(&req);
         if let Some(m) = req.get("method").and_then(Value::as_str) {
             reads.record_method(m);
+        } else {
+            // The client's answer to one of our approval requests (#2348): codex settles it, then
+            // the turn it paused ends.
+            if let Some(request_id) = req.get("id").and_then(Value::as_str)
+                && request_id.starts_with("approval-")
+            {
+                reads.record_line("approval-answers", &req.to_string());
+                if !resolved.insert(request_id.to_owned()) {
+                    continue;
+                }
+                send_notification(
+                    &mut write,
+                    "serverRequest/resolved",
+                    json!({ "threadId": thread_id, "requestId": request_id }),
+                )
+                .await?;
+                send_notification(
+                    &mut write,
+                    "turn/completed",
+                    json!({ "threadId": thread_id, "turn": { "id": turn_id, "status": "completed" } }),
+                )
+                .await?;
+            }
+            continue;
         }
         let id = req.get("id").cloned();
         let method = req
@@ -510,7 +541,25 @@ async fn serve_conn(
                     )
                     .await?;
                 }
-                if let Some(script) = ReplyScript::from_turn_start(&req) {
+                if let Some(script) = ApprovalScript::from_turn_start(&req) {
+                    approvals += 1;
+                    let request_id = format!("approval-{approvals:04}");
+                    write
+                        .send(Message::Text(
+                            script.request(&request_id, thread_id, turn_id).to_string(),
+                        ))
+                        .await
+                        .map_err(|e| format!("send approval request: {e}"))?;
+                    if script.resolve_at_once {
+                        resolved.insert(request_id.clone());
+                        send_notification(
+                            &mut write,
+                            "serverRequest/resolved",
+                            json!({ "threadId": thread_id, "requestId": request_id }),
+                        )
+                        .await?;
+                    }
+                } else if let Some(script) = ReplyScript::from_turn_start(&req) {
                     replies += 1;
                     let item_id = format!("fake-reply-{replies:04}");
                     script

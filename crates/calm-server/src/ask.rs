@@ -22,22 +22,14 @@ pub const MAX_QUESTIONS: usize = 8;
 /// At most this many options on one question.
 pub const MAX_OPTIONS: usize = 8;
 /// Upper bound on a title or an answer, in characters (not bytes).
-pub const MAX_TEXT_CHARS: usize = 2000;
+pub const MAX_TEXT_CHARS: usize = calm_types::event::ASK_MAX_TEXT_CHARS;
 /// Upper bound on one option, in characters.
 pub const MAX_OPTION_CHARS: usize = 200;
 
 /// A question title a provider adapter builds from the provider's own fields (#2348), cut to
-/// [`MAX_TEXT_CHARS`] so a long command is shown in part rather than refused for its length.
-pub fn clip_title(text: &str) -> String {
-    let text = text.trim();
-    if text.chars().count() <= MAX_TEXT_CHARS {
-        return text.to_string();
-    }
-    let mut clipped: String = text.chars().take(MAX_TEXT_CHARS - 1).collect();
-    clipped.truncate(clipped.trim_end().len());
-    clipped.push('…');
-    clipped
-}
+/// [`MAX_TEXT_CHARS`] so a long command is shown in part rather than refused for its length. It
+/// lives beside the bound in `calm_types`, where the provider crate's adapters reach it too.
+pub use calm_types::event::clip_ask_title as clip_title;
 
 /// Whether the `ask.requested` row aliased `r` is still open: nothing answered or withdrew it, and
 /// a `hold` ask's Planner session still has live authority. The session clause is a liveness

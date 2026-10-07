@@ -101,7 +101,8 @@ async fn seed_planner_card(repo: &SqlxRepo, card_role_cache: &CardRoleCache) -> 
             payload: json!({
                 "schemaVersion": 1,
                 "codex_source": "shared",
-                "planner_harness": true, "planner_provider": "codex"
+                "planner_harness": true, "planner_provider": "codex",
+                "permission_mode": "never"
             }),
         },
         CardRole::Planner,
@@ -303,6 +304,7 @@ After the second call returns, output the single word OK and stop.";
             &thread_id,
             vec![InputItem::text(prompt)],
             &TurnModelSelection::inherit(),
+            calm_server::codex_appserver::TurnApprovals::Unchanged,
             None,
         )
         .await

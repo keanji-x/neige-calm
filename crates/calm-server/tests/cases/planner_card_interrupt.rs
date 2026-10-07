@@ -157,6 +157,7 @@ async fn seed_codex_card_with_role(boot: &Boot, role: CardRole) -> Card {
     });
     if role == CardRole::Planner {
         payload["planner_provider"] = json!("codex");
+        payload["permission_mode"] = json!("never");
     }
     let card = boot
         .repo

@@ -64,8 +64,9 @@ pub enum PlannerEventKind {
     TokenUsage {
         params: Value,
     },
-    /// An approval request. A Planner runs with `approval_policy=never`: it is logged and dropped,
-    /// without writing the snapshot.
+    /// An `approval/*` notification. Approvals reach a Planner as server requests through its
+    /// held-request channel (#2348), never as a notification: it is logged and dropped, without
+    /// writing the snapshot.
     Approval {
         method: String,
     },

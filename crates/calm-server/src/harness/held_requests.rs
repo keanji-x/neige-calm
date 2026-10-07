@@ -6,53 +6,16 @@
 //! request's [`HeldResponder`] from then on. Whoever takes an entry out answers it: the answer
 //! route with the chosen option, the run loop by dropping it, which the adapter turns into a
 //! refusal. The kernel reads no provider field: a request is an opaque key on an opaque
-//! connection.
+//! connection. The messages and the responder are the provider layer's contract
+//! ([`provider::held_requests`]).
 
 use std::collections::HashMap;
 use std::sync::Mutex as StdMutex;
 
-use tokio::sync::mpsc;
-
-use crate::event::AskQuestion;
-
-/// One provider request, as its adapter names it; unique among the requests the adapter has open.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct RequestKey(pub String);
-
-/// One provider connection (a socket, a process): every request it carried ends when it does.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ConnectionId(pub String);
-
-/// Answers one paused provider request. `respond` hands over the index of the option the user
-/// chose, which the adapter turns into its own wire answer. Dropping a responder without
-/// responding refuses the request; that is the adapter's job, in its `Drop`.
-pub trait HeldResponder: Send + 'static {
-    fn respond(self: Box<Self>, option: usize);
-}
-
-/// What an adapter tells the harness about its paused requests, in the order it learns it.
-pub enum HeldRequestMessage {
-    /// A request the running turn waits on: the user is asked `questions`.
-    Open {
-        request_key: RequestKey,
-        connection: ConnectionId,
-        questions: Vec<AskQuestion>,
-        responder: Box<dyn HeldResponder>,
-    },
-    /// The provider settled or cancelled the request itself.
-    Gone { request_key: RequestKey },
-    /// The connection ended; sent by a guard its reader holds, so an abort sends it too. It says
-    /// nothing about the remote request, which a later connection may ask again.
-    ConnectionLost { connection: ConnectionId },
-}
-
-/// The sending half an adapter holds.
-pub type HeldRequestSender = mpsc::UnboundedSender<HeldRequestMessage>;
-pub(crate) type HeldRequestReceiver = mpsc::UnboundedReceiver<HeldRequestMessage>;
-
-pub(crate) fn channel() -> (HeldRequestSender, HeldRequestReceiver) {
-    mpsc::unbounded_channel()
-}
+pub use provider::held_requests::{
+    ConnectionId, HeldRequestMessage, HeldRequestSender, HeldResponder, RequestKey,
+};
+pub(crate) use provider::held_requests::{HeldRequestReceiver, channel};
 
 struct HeldEntry {
     request_key: RequestKey,

@@ -261,6 +261,24 @@ pub struct ForgeMergeSubject {
     pub pr_number: u64,
 }
 
+/// Upper bound on an ask's title or typed answer, in characters (not bytes). The kernel refuses
+/// longer text; a provider adapter that builds a title from provider data clips it with
+/// [`clip_ask_title`].
+pub const ASK_MAX_TEXT_CHARS: usize = 2000;
+
+/// A question title a provider adapter builds from the provider's own fields (#2348), cut to
+/// [`ASK_MAX_TEXT_CHARS`] so a long command is shown in part rather than refused for its length.
+pub fn clip_ask_title(text: &str) -> String {
+    let text = text.trim();
+    if text.chars().count() <= ASK_MAX_TEXT_CHARS {
+        return text.to_string();
+    }
+    let mut clipped: String = text.chars().take(ASK_MAX_TEXT_CHARS - 1).collect();
+    clipped.truncate(clipped.trim_end().len());
+    clipped.push('…');
+    clipped
+}
+
 /// One question of an `ask.requested`: what the user is asked, and the answers offered. The first
 /// option is the recommended one; no options means a free-text answer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

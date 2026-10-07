@@ -87,7 +87,7 @@ async fn boot() -> Boot {
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: serde_json::json!({"planner_provider": "codex"}),
+            payload: serde_json::json!({"planner_provider": "codex", "permission_mode": "never"}),
         })
         .await
         .unwrap();

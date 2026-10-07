@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::card_role_cache::CardRoleCache;
-use crate::codex_appserver::InputItem;
+use crate::codex_appserver::{InputItem, TurnApprovals};
 use crate::db::sqlite::{
     append_decision_event_in_tx, card_update_tx, card_with_codex_create_tx,
     session_bind_attribution_tx, session_projection_active_for_card_tx,
@@ -473,6 +473,7 @@ impl ProviderAdapter for CodexAdapter {
                         &thread_id,
                         vec![InputItem::text(prompt_text)],
                         &TurnModelSelection::inherit(),
+                        TurnApprovals::Unchanged,
                         None,
                     )
                     .await?;
@@ -1234,7 +1235,13 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
                 .clone()
                 .run_observed(ctx.spawn_ctx.repo.as_ref(), async move {
                     shared
-                        .turn_start(&launch_thread, items, &TurnModelSelection::inherit(), None)
+                        .turn_start(
+                            &launch_thread,
+                            items,
+                            &TurnModelSelection::inherit(),
+                            TurnApprovals::Unchanged,
+                            None,
+                        )
                         .await
                 })
                 .await;

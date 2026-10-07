@@ -1,6 +1,7 @@
 //! A Planner card's permission mode (#2348): which cards carry one, the value every Planner card is
-//! created with, and how a stored value is read. Nothing consumes the mode yet; the provider
-//! adapters will. The only writer of a stored value is `PUT /api/cards/{id}/planner/permission-mode`.
+//! created with, and how a stored value is read. The harness reads it when it issues a turn
+//! (`harness::run_loop::turn_permission`) and the provider adapter turns it into its own settings.
+//! The only writer of a stored value is `PUT /api/cards/{id}/planner/permission-mode`.
 
 use serde_json::{Map, Value};
 
