@@ -19,4 +19,6 @@
 // Revision 23 (#2301): manual context compaction and the compacting harness phase.
 // Revision 24 (#2314): provider availability carries a required typed authentication_notice.
 // Revision 25 (#2343): managed ACP adds OpenCode and the declared ACP session model catalog.
-pub const REST_API_VERSION: &str = "25";
+// Revision 26 (#2348): an ask answer is `{"option": i}` or `{"text": ..}`, not a bare string; an
+// older kernel would refuse every answer this bundle sends.
+pub const REST_API_VERSION: &str = "26";

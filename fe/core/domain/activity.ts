@@ -23,6 +23,12 @@ export type NotificationSource = 'ask' | 'planner_down';
 /** One question of an ask: the first option is the recommended one; none means a free answer. */
 export type AskQuestion = Readonly<{ title: string; options: readonly string[] }>;
 
+/**
+ * Where an ask's answer goes: `wake` starts a new Planner turn; `hold` goes to a provider request
+ * the running turn is paused on, and takes one of its options only.
+ */
+export type AskDelivery = 'wake' | 'hold';
+
 type ActivityItemBase = Readonly<{
   /** The kernel's identity for it; the same source happening again is a new key. */
   key: string;
@@ -33,10 +39,12 @@ type ActivityItemBase = Readonly<{
 
 /**
  * One thing addressed to the user and not yet handled, as the kernel listed it (`items[]`). Only an
- * ask carries its id (the answer route's `ask_id`) and its questions.
+ * ask carries its id (the answer route's `ask_id`), its questions and its delivery.
  */
 export type ActivityItem =
-  | (ActivityItemBase & Readonly<{ source: 'ask'; askId: number; questions: readonly AskQuestion[] }>)
+  | (ActivityItemBase & Readonly<{
+    source: 'ask'; askId: number; questions: readonly AskQuestion[]; delivery: AskDelivery;
+  }>)
   | (ActivityItemBase & Readonly<{ source: 'planner_down' }>);
 
 /**

@@ -13,7 +13,7 @@ use calm_server::db::RepoEventWrite;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_insert_tx, session_mark_track_root_tx};
 use calm_server::error::CalmError;
-use calm_server::event::{AskQuestion, Event, EventBus};
+use calm_server::event::{AskAnswer, AskDelivery, AskQuestion, Event, EventBus};
 use calm_server::ids::{AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::user_ask::TOOL_USER_ASK;
@@ -390,9 +390,10 @@ async fn user_ask_writes_one_planner_ask_and_lights_one_item() {
     ];
     let asked = rows(&boot, "ask.requested").await;
     assert!(
-        matches!(asked.as_slice(), [(actor, Event::AskRequested { track_id, questions: q, source_item_id: None })]
+        matches!(asked.as_slice(), [(actor, Event::AskRequested {
+                track_id, questions: q, delivery: AskDelivery::Wake, source_item_id: None })]
             if actor == "AiPlannerSession" && track_id == &boot.track_id && q == &questions),
-        "{asked:?}"
+        "the tool raises a wake ask: {asked:?}"
     );
     let items = activity_items(&boot).await;
     assert_eq!(
@@ -403,8 +404,32 @@ async fn user_ask_writes_one_planner_ask_and_lights_one_item() {
             at_ms: items[0].at_ms(),
             ask_id,
             questions,
+            delivery: AskDelivery::Wake,
         }]
     );
+}
+
+/// #2348: only the harness raises a `hold` ask. The tool takes no delivery: a call naming one is
+/// refused before anything is written.
+#[tokio::test]
+async fn user_ask_cannot_pass_a_delivery() {
+    let boot = boot().await;
+    for delivery in ["hold", "wake"] {
+        let err = call_tool(
+            &boot,
+            TOOL_USER_ASK,
+            json!({ "questions": [{ "title": "Run it?", "options": ["Allow"] }], "delivery": delivery }),
+        )
+        .await
+        .expect_err("a delivery argument is refused");
+        assert_eq!(err.code, -32602, "{delivery}");
+        assert!(
+            err.message.contains("unknown argument `delivery`"),
+            "{}",
+            err.message
+        );
+    }
+    assert!(rows(&boot, "ask.requested").await.is_empty());
 }
 
 /// Several asks are open at once: there is no one-pending limit.
@@ -475,13 +500,18 @@ async fn the_answer_route_records_the_users_answer_and_closes_the_ask() {
     .expect("ask");
     let ask_id = result["ask_id"].as_i64().unwrap();
 
-    let (status, body) = answer(&boot, ask_id, json!(["  Merge ", "CI is green"])).await;
+    let (status, body) = answer(
+        &boot,
+        ask_id,
+        json!([{ "option": 0 }, { "text": "  CI is green " }]),
+    )
+    .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
     let answered = rows(&boot, "ask.answered").await;
     assert!(
         matches!(answered.as_slice(), [(actor, Event::AskAnswered { ask_id: id, track_id, answers })]
             if actor == "User" && *id == ask_id && track_id == &boot.track_id
-                && answers == &vec!["Merge".to_string(), "CI is green".to_string()]),
+                && answers == &vec![AskAnswer::Option(0), AskAnswer::Text("CI is green".into())]),
         "{answered:?}"
     );
     assert!(
@@ -505,14 +535,19 @@ async fn the_answer_route_refuses_without_an_event() {
             "has 1 questions, got 0 answers",
         ),
         (
-            json!(["eu", "us"]),
+            json!([{ "text": "eu" }, { "text": "us" }]),
             StatusCode::BAD_REQUEST,
             "has 1 questions, got 2 answers",
         ),
         (
-            json!(["  "]),
+            json!([{ "text": "  " }]),
             StatusCode::BAD_REQUEST,
             "answers[0] must not be empty",
+        ),
+        (
+            json!([{ "option": 0 }]),
+            StatusCode::BAD_REQUEST,
+            "option 0 is not one of the question's 0 options",
         ),
     ] {
         let (got, body) = answer(&boot, ask_id, answers.clone()).await;
@@ -522,13 +557,18 @@ async fn the_answer_route_refuses_without_an_event() {
             "{answers}: {body}"
         );
     }
-    let (got, body) = answer(&boot, ask_id + 1000, json!(["eu"])).await;
+    let (got, body) = answer(&boot, ask_id, json!(["eu"])).await;
+    assert!(
+        got.is_client_error(),
+        "an untagged answer is not an answer: {got} {body}"
+    );
+    let (got, body) = answer(&boot, ask_id + 1000, json!([{ "text": "eu" }])).await;
     assert_eq!(got, StatusCode::NOT_FOUND, "an unknown ask: {body}");
     let (got, body) = post_answer(
         &boot,
         "no-such-track",
         ask_id,
-        json!({ "answers": ["eu"] }),
+        json!({ "answers": [{ "text": "eu" }] }),
         None,
     )
     .await;
@@ -538,7 +578,7 @@ async fn the_answer_route_refuses_without_an_event() {
             &boot,
             &track,
             ask_id,
-            json!({ "answers": ["eu"] }),
+            json!({ "answers": [{ "text": "eu" }] }),
             Some(actor),
         )
         .await;
@@ -546,9 +586,9 @@ async fn the_answer_route_refuses_without_an_event() {
     }
     assert!(rows(&boot, "ask.answered").await.is_empty());
 
-    let (got, body) = answer(&boot, ask_id, json!(["eu"])).await;
+    let (got, body) = answer(&boot, ask_id, json!([{ "text": "eu" }])).await;
     assert_eq!(got, StatusCode::NO_CONTENT, "{body}");
-    let (got, body) = answer(&boot, ask_id, json!(["us"])).await;
+    let (got, body) = answer(&boot, ask_id, json!([{ "text": "us" }])).await;
     assert_eq!(got, StatusCode::CONFLICT, "a second answer: {body}");
     assert_eq!(rows(&boot, "ask.answered").await.len(), 1);
 }
@@ -577,7 +617,7 @@ async fn an_ask_is_answered_only_on_its_own_track() {
         &boot,
         other.id.as_str(),
         ask_id,
-        json!({ "answers": ["eu"] }),
+        json!({ "answers": [{ "text": "eu" }] }),
         None,
     )
     .await;

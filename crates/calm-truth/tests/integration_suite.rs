@@ -1,3 +1,5 @@
+#[path = "ask_delivery_migration.rs"]
+mod ask_delivery_migration;
 #[path = "bounded_track_tree_sql.rs"]
 mod bounded_track_tree_sql;
 #[path = "events_since_bound.rs"]

@@ -50,7 +50,7 @@ const WORKER_CARD = { ...PLANNER_CARD, id: 'card-worker', title: 'Worker', paylo
 /* The kernel's `kernel/track/activity` overlay: `items` are what the aside lists,
  * `cards` the per-card verdicts every row and card head reads. */
 type ActivityItemWire =
-  | { source: 'ask'; key: string; text: string; at_ms: number; ask_id: number; questions: { title: string; options: string[] }[] }
+  | { source: 'ask'; key: string; text: string; at_ms: number; ask_id: number; questions: { title: string; options: string[] }[]; delivery: 'wake' | 'hold' }
   | { source: 'planner_down'; key: string; text: string; at_ms: number };
 type ActivityCardWire = { card_id: string; state: 'working' | 'input' | 'failed' };
 const trackActivityOverlay = (payload: Partial<{
@@ -58,12 +58,12 @@ const trackActivityOverlay = (payload: Partial<{
   items: ActivityItemWire[]; cards: ActivityCardWire[];
 }> = {}, trackId = 'w1') => ({
   id: `activity-${trackId}`, plugin_id: 'kernel', entity_kind: 'track', entity_id: trackId, kind: 'activity',
-  payload: { schemaVersion: 3, working: false, attention: 'none', activity_at_ms: null, items: [], cards: [], ...payload },
+  payload: { schemaVersion: 4, working: false, attention: 'none', activity_at_ms: null, items: [], cards: [], ...payload },
   updated_at: 3,
 });
 /** The Planner's ask, in its words, as the projector lists it. */
 const askItem = (text: string, atMs: number): ActivityItemWire =>
-  ({ source: 'ask', key: `ask:${atMs}`, text, at_ms: atMs, ask_id: atMs, questions: [{ title: text, options: [] }] });
+  ({ source: 'ask', key: `ask:${atMs}`, text, at_ms: atMs, ask_id: atMs, questions: [{ title: text, options: [] }], delivery: 'wake' });
 /** The Planner stopped: its failure reason, as the projector lists it. */
 const plannerDownItem = (text: string, atMs: number): ActivityItemWire =>
   ({ source: 'planner_down', key: `planner_down:${atMs}`, text, at_ms: atMs });

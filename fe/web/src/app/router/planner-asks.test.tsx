@@ -18,10 +18,11 @@ const ASSISTANT = { id: 'assistant-1', trackId: 'w1', title: 'Side chat', kind: 
 const ASK = {
   source: 'ask', key: 'ask:41', text: 'Which branch? / Notes?', at_ms: 5, ask_id: 41,
   questions: [{ title: 'Which branch?', options: ['main', 'release'] }, { title: 'Notes?', options: [] }],
+  delivery: 'wake',
 };
 const activity = (items: readonly unknown[]) => ({
   id: 'activity-w1', plugin_id: 'kernel', entity_kind: 'track', entity_id: TRACK.id, kind: 'activity',
-  payload: { schemaVersion: 3, working: false, attention: items.length > 0 ? 'input' : 'none', activity_at_ms: 5, items, cards: [] },
+  payload: { schemaVersion: 4, working: false, attention: items.length > 0 ? 'input' : 'none', activity_at_ms: 5, items, cards: [] },
   updated_at: 5,
 });
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
@@ -88,7 +89,7 @@ it('answers the open ask from the Planner composer and hides it before the overl
   const answer = requests.find((request) => request.path.endsWith('/answer'));
   expect(answer?.method).toBe('POST');
   expect(answer?.path).toBe('/api/tracks/w1/asks/41/answer');
-  expect(answer?.body).toEqual({ answers: ['release', 'Tag it 2.0'] });
+  expect(answer?.body).toEqual({ answers: [{ option: 1 }, { text: 'Tag it 2.0' }] });
   await waitFor(() => expect(within(drawer).queryByRole('group', { name: 'The Planner asks' })).toBeNull());
   /* The composer itself stays. */
   expect(within(drawer).getByRole('combobox', { name: 'Message' })).toBeTruthy();

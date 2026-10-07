@@ -9,13 +9,14 @@ import { TextInput } from '@astryxdesign/core/TextInput';
 import {
   ANSWER_ASK_FAILURES, ANSWER_ASK_TEXT, askAnswers, askDraftsFor, clampAskAnswer, type AskDraft, type OpenAsk,
 } from '../../../../core/domain/ask.ts';
+import type { AskAnswer } from '../../../../core/api/generated/wire.ts';
 import { writeFailureText } from '../../../../core/domain/failure-class.ts';
 import { OperationFeedback, useOperationFeedback } from '../../ui/operation-feedback/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import styles from './asks.module.css';
 
-export type AnswerAsk = (askId: number, answers: readonly string[]) => Promise<void>;
+export type AnswerAsk = (askId: number, answers: readonly AskAnswer[]) => Promise<void>;
 export type PlannerAskDrawerProps = Readonly<{ asks: readonly OpenAsk[]; onAnswer: AnswerAsk }>;
 type DraftState = Readonly<{ drafts: readonly AskDraft[]; page: number }>;
 

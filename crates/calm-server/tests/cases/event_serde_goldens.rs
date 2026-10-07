@@ -11,7 +11,7 @@ use calm_server::model::{
     Area, AreaKind, Card, CardRuntimeView, Overlay, Track, TrackWorkspace, TrackWorkspaceKind,
 };
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
-use calm_types::event::{AskQuestion, TaskContextRef};
+use calm_types::event::{AskAnswer, AskDelivery, AskQuestion, TaskContextRef};
 use calm_types::git_candidate::{DeliveryFailureCode, DeliverySettlement, DeliveryWakeReason};
 use calm_types::proposal::{ProposalAnchor, ProposalDecision, ProposalOp};
 use calm_types::verify_target::{
@@ -893,6 +893,25 @@ golden_test!(
                 options: Vec::new(),
             },
         ],
+        delivery: AskDelivery::Wake,
+        source_item_id: None,
+    }
+);
+
+golden_test!(
+    ask_requested_hold,
+    "ask.requested.hold.json",
+    Event::AskRequested {
+        track_id: TrackId::from("track-01"),
+        questions: vec![AskQuestion {
+            title: "Run `cargo test` (cwd /work)?".into(),
+            options: vec![
+                "Allow".into(),
+                "Allow for this session".into(),
+                "Deny".into()
+            ],
+        }],
+        delivery: AskDelivery::Hold,
         source_item_id: None,
     }
 );
@@ -906,6 +925,7 @@ golden_test!(
             title: "Which region?".into(),
             options: Vec::new(),
         }],
+        delivery: AskDelivery::Wake,
         source_item_id: Some("item-28745".into()),
     }
 );
@@ -916,7 +936,16 @@ golden_test!(
     Event::AskAnswered {
         ask_id: 28477,
         track_id: TrackId::from("track-01"),
-        answers: vec!["Merge".into(), "eu-west".into()],
+        answers: vec![AskAnswer::Option(0), AskAnswer::Text("eu-west".into())],
+    }
+);
+
+golden_test!(
+    ask_withdrawn,
+    "ask.withdrawn.json",
+    Event::AskWithdrawn {
+        ask_id: 28478,
+        track_id: TrackId::from("track-01"),
     }
 );
 
@@ -1302,7 +1331,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 }
 
 /// Every `Event` variant's kind tag, in declaration order.
-const ALL_KIND_TAGS: [&str; 55] = [
+const ALL_KIND_TAGS: [&str; 56] = [
     "area.updated",
     "area.deleted",
     "track.updated",
@@ -1343,6 +1372,7 @@ const ALL_KIND_TAGS: [&str; 55] = [
     "forge.pr.merged",
     "ask.requested",
     "ask.answered",
+    "ask.withdrawn",
     "proposal.submitted",
     "proposal.resolved",
     "forge.scan.completed",
@@ -1389,7 +1419,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 86,
+        files, 88,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -1446,6 +1476,7 @@ fn kind_tag_list_matches_enum() {
             Event::ForgePrMerged { .. } => "forge.pr.merged",
             Event::AskRequested { .. } => "ask.requested",
             Event::AskAnswered { .. } => "ask.answered",
+            Event::AskWithdrawn { .. } => "ask.withdrawn",
             Event::ProposalSubmitted { .. } => "proposal.submitted",
             Event::ProposalResolved { .. } => "proposal.resolved",
             Event::ForgeScanCompleted { .. } => "forge.scan.completed",
@@ -1469,7 +1500,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        55,
+        56,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }

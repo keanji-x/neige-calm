@@ -141,7 +141,7 @@ fn permits_from_env_fallback_paths() {
 use crate::card_role_cache::CardRoleCache;
 use crate::event::{ArtifactRef, BroadcastEnvelope, EventScope};
 use crate::ids::AreaId;
-use calm_types::event::AskQuestion;
+use calm_types::event::{AskAnswer, AskDelivery, AskQuestion};
 use calm_types::git_candidate::{DeliveryFailureCode, DeliverySettlement, DeliveryWakeReason};
 
 fn ask_requested(track: &TrackId) -> Event {
@@ -157,6 +157,7 @@ fn ask_requested(track: &TrackId) -> Event {
                 options: Vec::new(),
             },
         ],
+        delivery: AskDelivery::Wake,
         source_item_id: None,
     }
 }
@@ -165,13 +166,24 @@ fn ask_answered(track: &TrackId, ask_id: i64) -> Event {
     Event::AskAnswered {
         ask_id,
         track_id: track.clone(),
-        answers: vec!["Merge".into(), "eu-west, not us".into()],
+        answers: vec![
+            AskAnswer::Option(0),
+            AskAnswer::Text("eu-west, not us".into()),
+        ],
     }
 }
 
 /// An `ask.requested` row on `track` in `repo`, appended by that track's Planner card through the
 /// gated decision append (the reader is under test, not the writer); returns its id, the ask's id.
 async fn seed_ask(repo: &crate::db::sqlite::SqlxRepo, track: &str) -> i64 {
+    seed_ask_with(repo, track, AskDelivery::Wake).await
+}
+
+async fn seed_ask_with(
+    repo: &crate::db::sqlite::SqlxRepo,
+    track: &str,
+    delivery: AskDelivery,
+) -> i64 {
     let planner = CardId::from(format!("planner-{track}"));
     sqlx::query(
         "INSERT OR IGNORE INTO cards \
@@ -196,7 +208,20 @@ async fn seed_ask(repo: &crate::db::sqlite::SqlxRepo, track: &str) -> i64 {
         &ActorId::AiPlanner(planner),
         &scope,
         None,
-        &ask_requested(&track),
+        &match ask_requested(&track) {
+            Event::AskRequested {
+                track_id,
+                questions,
+                source_item_id,
+                ..
+            } => Event::AskRequested {
+                track_id,
+                questions,
+                delivery,
+                source_item_id,
+            },
+            other => other,
+        },
     )
     .await
     .unwrap();
@@ -1343,6 +1368,10 @@ fn event_warrants_planner_push_covers_push_allowlist() {
 
     for quiet_event in [
         ask_requested(&track),
+        Event::AskWithdrawn {
+            ask_id: 7,
+            track_id: track.clone(),
+        },
         Event::ForgePrPublished {
             track_id: track.clone(),
             pr_number: 1,
@@ -1980,6 +2009,72 @@ async fn ask_answered_wake_quotes_each_persisted_question() {
     }
 }
 
+/// #2348: a `hold` ask's answer went to the paused provider request; it wakes no turn, live or
+/// at boot catch-up, which both resolve it through the same reading.
+#[tokio::test]
+async fn a_hold_answer_does_not_wake_the_planner() {
+    let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        "INSERT INTO areas(id,name,color,sort,created_at,updated_at) VALUES('c','Area','red',0,1,1);
+         INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('w','c','Track',0,1,1);",
+    )
+    .execute(repo.pool())
+    .await
+    .unwrap();
+    let track = TrackId::from("w");
+    let wake = seed_ask_with(&repo, "w", AskDelivery::Wake).await;
+    let hold = seed_ask_with(&repo, "w", AskDelivery::Hold).await;
+    let answered = |ask_id| Event::AskAnswered {
+        ask_id,
+        track_id: track.clone(),
+        answers: vec![AskAnswer::Option(1), AskAnswer::Text("eu".into())],
+    };
+    assert!(
+        resolve_harness_observation(&repo, &track, &answered(wake))
+            .await
+            .unwrap()
+            .is_some(),
+        "a wake answer wakes"
+    );
+    assert_eq!(
+        resolve_harness_observation(&repo, &track, &answered(hold))
+            .await
+            .unwrap(),
+        None,
+        "a hold answer does not wake"
+    );
+
+    let area = AreaId::from("c");
+    for ask_id in [wake, hold] {
+        let mut tx = repo.pool().begin().await.unwrap();
+        crate::db::sqlite::append_decision_event_in_tx(
+            &mut tx,
+            &ActorId::User,
+            &track_scope(&track, &area),
+            None,
+            &answered(ask_id),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+    let replayed = crate::harness::catch_up::observations_since(&repo, &track, 0, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        replayed.len(),
+        1,
+        "only the wake answer replays: {replayed:?}"
+    );
+    assert_eq!(
+        replayed[0].1.to_turn_text(),
+        "The user answered your question \"Merge PR #7 (head abc)?\": Hold\n\
+         The user answered your question \"Which region?\": eu"
+    );
+}
+
 /// `expect_push` and `expect_observation` are separate fields because the invariant is
 /// one-directional — predicate ⇒ mapping.
 struct PlannerPushWiringRow {
@@ -2210,6 +2305,15 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
         ),
         row(
             ask_requested(&track),
+            ActorId::AiPlanner(planner.clone()),
+            false,
+            false,
+        ),
+        row(
+            Event::AskWithdrawn {
+                ask_id: 7,
+                track_id: track.clone(),
+            },
             ActorId::AiPlanner(planner.clone()),
             false,
             false,

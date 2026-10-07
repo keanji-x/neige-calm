@@ -70,7 +70,7 @@ import {
 } from '../../../../core/domain/failure-class.ts';
 import { useState } from '../../ui/state/public.ts';
 import type { ServerVersionInfo } from './public.tsx';
-import type { HarnessItem, UploadAttachmentResponse } from '../../../../core/api/generated/wire.ts';
+import type { AskAnswer, HarnessItem, UploadAttachmentResponse } from '../../../../core/api/generated/wire.ts';
 import { cancelThenInvalidate } from '../events/query-refresh.ts';
 
 /** A failed capability preflight guarantees no Area POST was submitted. */
@@ -816,7 +816,7 @@ export type TrackMutations = Readonly<{
   /** Dismiss one notification item by its kernel key. A `404` rejects too: `DISMISS_FAILURES` reads it as done. */
   dismissActivityItem: (trackId: string, key: string) => Promise<void>;
   /** Answer one ask, one answer per question in order. A `409` rejects too: `ANSWER_ASK_FAILURES` reads it as done. */
-  answerAsk: (trackId: string, askId: number, answers: readonly string[]) => Promise<void>;
+  answerAsk: (trackId: string, askId: number, answers: readonly AskAnswer[]) => Promise<void>;
 }>;
 
 export function useTrackMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): TrackMutations {
@@ -915,7 +915,7 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
   });
   /* No cache write and no invalidation, for the dismissal's reason: the projector's `overlay.set` drops the ask. */
   const answerAsk = useRecoveryMutation(transport, {
-    mutationFn: ({ trackId, askId, answers }: { trackId: string; askId: number; answers: readonly string[] }, transport: ApiTransportPort) =>
+    mutationFn: ({ trackId, askId, answers }: { trackId: string; askId: number; answers: readonly AskAnswer[] }, transport: ApiTransportPort) =>
       runOperation(transport, answerAskOperation(trackId, askId, answers), unauthorized),
   });
   const patchTrack = async (trackId: string, areaId: string, body: TrackPatchBody) =>

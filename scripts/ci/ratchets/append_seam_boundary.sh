@@ -45,6 +45,7 @@ EXPECTED_TX_CENSUS="4 authorize_with_caches|tx
 # A new line or a changed count is a claim that somebody writes the events table outside the seam; adding one has to be argued in the same PR by editing this list.
 # Retired ratify fixtures seed raw historical rows because the current Event contract rejects them.
 # ws_replay adds one insert site; events_since_bound adds historical and current-ask insert sites.
+# ask_delivery_migration (#2348) seeds pre-0158 ask rows, whose shape the current contract rejects.
 EXPECTED_INSERTS="${APPEND_SEAM_INSERT_BASELINE-crates/calm-server/src/activity_window.rs:1
 crates/calm-server/src/task_context.rs:1
 crates/calm-server/tests/cases/briefing_in_mint_tx.rs:1
@@ -57,6 +58,7 @@ crates/calm-truth/src/db/sqlite/events.rs:1
 crates/calm-truth/src/db/sqlite/proposal_withdraw_upgrade_tests.rs:1
 crates/calm-truth/src/db/sqlite/track_closed_at_migration_tests.rs:1
 crates/calm-truth/src/events_prune.rs:1
+crates/calm-truth/tests/ask_delivery_migration.rs:1
 crates/calm-truth/tests/events_since_bound.rs:8
 crates/calm-truth/tests/file_delivery_migration.rs:1}"
 

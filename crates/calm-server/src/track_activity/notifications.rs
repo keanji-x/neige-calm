@@ -1,5 +1,5 @@
-//! The two notification sources of a track (#1829, #2209): an ask (an unanswered
-//! `neige_user_ask`) and planner down (the Planner's newest finished turn failed). A pure function
+//! The two notification sources of a track (#1829, #2209): an ask (an open `ask.requested`) and
+//! planner down (the Planner's newest finished turn failed). A pure function
 //! of the rows `sql::notification_rows` read; nothing else is an item.
 
 use std::collections::BTreeSet;
@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use calm_truth::readable_error_text::readable_error_text;
 use serde::{Deserialize, Serialize};
 
-use crate::event::AskQuestion;
+use crate::event::{AskDelivery, AskQuestion};
 
 /// The two key shapes: a source prefix, then the evidence row's id (the `ask.requested` event id
 /// for an ask, the transcript row id for a failed turn).
@@ -32,7 +32,8 @@ pub enum NotificationSource {
 
 /// One thing addressed to the user and not yet handled, tagged by `source`. `key` carries the
 /// evidence row's id, so the same source happening again is a new key; `text` is the kernel's
-/// words for it, shown verbatim. Only an ask carries its id and questions.
+/// words for it, shown verbatim. Only an ask carries its id, questions and delivery: a `hold` ask
+/// is a paused turn waiting on an option (#2348).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ActivityItem {
@@ -43,6 +44,7 @@ pub enum ActivityItem {
         at_ms: i64,
         ask_id: i64,
         questions: Vec<AskQuestion>,
+        delivery: AskDelivery,
     },
     PlannerDown {
         key: String,
@@ -78,12 +80,13 @@ impl ActivityItem {
     }
 }
 
-/// N1 — one `ask.requested` of the track that no `ask.answered` names.
+/// N1 — one open `ask.requested` of the track.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenAsk {
     pub ask_id: i64,
     pub at_ms: i64,
     pub questions: Vec<AskQuestion>,
+    pub delivery: AskDelivery,
 }
 
 /// N3 — the Planner card's newest `turn/completed` row that is not `interrupted`.
@@ -107,9 +110,10 @@ pub struct NotificationRows {
     pub dismissed: BTreeSet<String>,
 }
 
-/// The open items, newest first then by key. An ask is open until it is answered (the rows hold
-/// only unanswered asks), the user messages the Planner after it (`at_ms > U`), or the user
-/// dismisses it; the last two close the notification only, they do not answer. Planner down is
+/// The open items, newest first then by key. An ask is open while its row is (the rows hold only
+/// open asks). A `wake` ask also closes when the user messages the Planner after it (`at_ms > U`)
+/// or dismisses it; those close the notification only, they do not answer. A `hold` ask closes
+/// on neither: its turn stays paused until an option is chosen or the request goes away. Planner down is
 /// open while the newest non-interrupted turn is `failed` and its key is not dismissed. No closed
 /// filter: a closed track keeps what is still addressed to the user.
 pub fn notifications(track_id: &str, rows: &NotificationRows) -> Vec<ActivityItem> {
@@ -118,7 +122,7 @@ pub fn notifications(track_id: &str, rows: &NotificationRows) -> Vec<ActivityIte
     for ask in &rows.asks {
         let key = format!("{ASK_KEY}{}", ask.ask_id);
         let replied = rows.user_sent_at.is_some_and(|at| at >= ask.at_ms);
-        if replied || rows.dismissed.contains(&key) {
+        if ask.delivery == AskDelivery::Wake && (replied || rows.dismissed.contains(&key)) {
             continue;
         }
         items.push(ActivityItem::Ask {
@@ -132,6 +136,7 @@ pub fn notifications(track_id: &str, rows: &NotificationRows) -> Vec<ActivityIte
             at_ms: ask.at_ms,
             ask_id: ask.ask_id,
             questions: ask.questions.clone(),
+            delivery: ask.delivery,
         });
     }
     if let Some(turn) = &rows.last_turn
@@ -162,10 +167,15 @@ mod tests {
     use super::*;
 
     fn open(at_ms: i64) -> NotificationRows {
+        open_with(at_ms, AskDelivery::Wake)
+    }
+
+    fn open_with(at_ms: i64, delivery: AskDelivery) -> NotificationRows {
         NotificationRows {
             asks: vec![OpenAsk {
                 ask_id: 7,
                 at_ms,
+                delivery,
                 questions: vec![
                     AskQuestion {
                         title: "Merge PR #7?".into(),
@@ -192,6 +202,7 @@ mod tests {
                 at_ms: 100,
                 ask_id: 7,
                 questions: rows.asks[0].questions.clone(),
+                delivery: AskDelivery::Wake,
             }]
         );
         assert!(is_item_key("ask:7"));
@@ -221,6 +232,26 @@ mod tests {
         assert!(notifications("t", &dismissed).is_empty());
     }
 
+    /// A `hold` ask is a paused turn (#2348): a later user message and a dismissal leave it open.
+    #[test]
+    fn a_user_message_or_a_dismissal_does_not_close_a_hold_ask() {
+        let rows = NotificationRows {
+            user_sent_at: Some(101),
+            dismissed: BTreeSet::from(["ask:7".to_string()]),
+            ..open_with(100, AskDelivery::Hold)
+        };
+        let items = notifications("t", &rows);
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert!(matches!(
+            &items[0],
+            ActivityItem::Ask {
+                delivery: AskDelivery::Hold,
+                ask_id: 7,
+                ..
+            }
+        ));
+    }
+
     /// The item is tagged by `source`: a `planner_down` item has no ask fields at all.
     #[test]
     fn items_serialize_tagged_by_source() {
@@ -240,5 +271,6 @@ mod tests {
         assert_eq!(wire["source"], "ask");
         assert_eq!(wire["ask_id"], 7);
         assert_eq!(wire["questions"][0]["options"][1], "Hold");
+        assert_eq!(wire["delivery"], "wake");
     }
 }

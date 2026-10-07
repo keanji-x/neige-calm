@@ -276,7 +276,7 @@ async fn retired_review_rows_are_preserved_but_do_not_block_typed_readers() {
         "INSERT INTO events(kind,payload,actor,at,scope_kind,scope_track) \
          VALUES('ask.requested',?,?,0,'track','retired-track') RETURNING id",
     )
-    .bind(r#"{"track_id":"retired-track","questions":[{"title":"Continue?","options":[]}]}"#)
+    .bind(r#"{"track_id":"retired-track","questions":[{"title":"Continue?","options":[]}],"delivery":"wake"}"#)
     .bind(&actor)
     .fetch_one(repo.pool())
     .await
@@ -352,6 +352,7 @@ async fn retired_ratify_rows_preserve_history_and_do_not_hide_current_asks() {
             title: "Continue?".into(),
             options: Vec::new(),
         }],
+        delivery: calm_types::event::AskDelivery::Wake,
         source_item_id: None,
     };
     let live: i64 = sqlx::query_scalar(

@@ -43,7 +43,7 @@ function ok(body: unknown): ApiTransportResponse {
    is still `working` until the next tick. */
 const trackActivityOverlay = (cards: readonly { card_id: string; state: 'working' | 'input' | 'failed' }[]) => ({
   id: 'activity-w1', plugin_id: 'kernel', entity_kind: 'track', entity_id: TRACK.id, kind: 'activity',
-  payload: { schemaVersion: 3, working: cards.length > 0, attention: 'none', activity_at_ms: null, items: [], cards },
+  payload: { schemaVersion: 4, working: cards.length > 0, attention: 'none', activity_at_ms: null, items: [], cards },
   updated_at: 3,
 });
 

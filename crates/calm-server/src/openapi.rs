@@ -319,6 +319,7 @@ use utoipa::{Modify, OpenApi, ToSchema};
         crate::track_report::TrackReportPayload,
         crate::routes::activity_dismissals::DismissActivityItemRequest,
         crate::routes::track_asks::AnswerAskRequest,
+        crate::event::AskAnswer,
         Overlay,
         NewOverlay,
         Terminal,

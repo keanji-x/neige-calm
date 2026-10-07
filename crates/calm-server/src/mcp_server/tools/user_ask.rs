@@ -121,7 +121,7 @@ async fn user_ask(
             move |tx| {
                 Box::pin(async move {
                     let (scope, event) =
-                        crate::ask::ask_requested_tx(tx, &planner_card, questions, None).await?;
+                        crate::ask::ask_requested_tx(tx, &planner_card, questions).await?;
                     Ok(((), vec![(actor, scope, event)]))
                 })
             }
@@ -151,5 +151,15 @@ mod tests {
             d.input_schema["properties"]["questions"]["items"]["additionalProperties"],
             json!(false)
         );
+    }
+
+    /// The tool cannot raise a `hold` ask (#2348): its only argument is the questions, and the
+    /// registry refuses any other top-level key, so a delivery never reaches the shared entry.
+    #[test]
+    fn no_delivery_argument_is_declared() {
+        let d = user_ask_descriptor();
+        let properties = d.input_schema["properties"].as_object().unwrap();
+        assert_eq!(properties.keys().collect::<Vec<_>>(), vec!["questions"]);
+        assert_eq!(d.input_schema["additionalProperties"], json!(false));
     }
 }

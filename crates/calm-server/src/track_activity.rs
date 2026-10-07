@@ -557,10 +557,10 @@ impl TrackActivityProjector {
             | Event::TaskCompleted { .. }
             | Event::TaskFailed { .. }
             | Event::TaskGateResult { .. } => env.scope.track_id().map(|t| t.as_str().to_string()),
-            // A question opens an ask and its answer closes it.
-            Event::AskRequested { track_id, .. } | Event::AskAnswered { track_id, .. } => {
-                Some(track_id.as_str().to_string())
-            }
+            // A question opens an ask; its answer or its withdrawal closes it.
+            Event::AskRequested { track_id, .. }
+            | Event::AskAnswered { track_id, .. }
+            | Event::AskWithdrawn { track_id, .. } => Some(track_id.as_str().to_string()),
             Event::TrackReportEdited { track_id, .. } => Some(track_id.as_str().to_string()),
             Event::TrackUpdated(payload) => Some(payload.track.id.as_str().to_string()),
             _ => None,

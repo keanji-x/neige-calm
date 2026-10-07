@@ -230,6 +230,7 @@ async fn open_ask_is_one_item_with_its_questions() {
                     options: Vec::new(),
                 },
             ],
+            delivery: calm_server::event::AskDelivery::Wake,
         }]
     );
 }

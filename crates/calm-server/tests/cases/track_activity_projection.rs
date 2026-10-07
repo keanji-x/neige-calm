@@ -1058,7 +1058,7 @@ async fn high_water_mark_survives_an_unparseable_stored_payload() {
     };
     assert_eq!(p.activity_at_ms, Some(big), "{p:?}");
     let stored = f.stored(&t).await.unwrap();
-    assert_eq!(stored.schema_version, 3);
+    assert_eq!(stored.schema_version, 4);
     assert_eq!(stored.activity_at_ms, Some(big));
     assert!(
         !stored.working,
@@ -1253,15 +1253,23 @@ async fn activity_payload_passes_the_overlay_registry() {
     OVERLAY_KIND_REGISTRY
         .validate("activity", &stored.payload)
         .expect("the projector's payload is the registry's shape");
-    assert_eq!(stored.payload["schemaVersion"], json!(3));
-    // Every item key is present, nothing else: only an ask carries its id and questions.
+    assert_eq!(stored.payload["schemaVersion"], json!(4));
+    // Every item key is present, nothing else: only an ask carries its id, questions and delivery.
     for item in stored.payload["items"].as_array().unwrap() {
         let mut keys: Vec<&String> = item.as_object().unwrap().keys().collect();
         keys.sort();
         match item["source"].as_str() {
             Some("ask") => assert_eq!(
                 keys,
-                ["ask_id", "at_ms", "key", "questions", "source", "text"]
+                [
+                    "ask_id",
+                    "at_ms",
+                    "delivery",
+                    "key",
+                    "questions",
+                    "source",
+                    "text"
+                ]
             ),
             _ => assert_eq!(keys, ["at_ms", "key", "source", "text"]),
         }
@@ -1462,6 +1470,7 @@ async fn wakeup_table_resolves_every_row_of_the_design() {
                     title: "Merge?".into(),
                     options: Vec::new(),
                 }],
+                delivery: calm_server::event::AskDelivery::Wake,
                 source_item_id: None,
             },
             Some(t.as_str()),
@@ -1472,7 +1481,16 @@ async fn wakeup_table_resolves_every_row_of_the_design() {
             Event::AskAnswered {
                 ask_id: 1,
                 track_id: tid.clone(),
-                answers: vec!["yes".into()],
+                answers: vec![calm_server::event::AskAnswer::Text("yes".into())],
+            },
+            Some(t.as_str()),
+        ),
+        (
+            "ask.withdrawn".into(),
+            EventScope::System,
+            Event::AskWithdrawn {
+                ask_id: 1,
+                track_id: tid.clone(),
             },
             Some(t.as_str()),
         ),

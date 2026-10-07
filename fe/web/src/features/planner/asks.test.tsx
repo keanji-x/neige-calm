@@ -7,10 +7,10 @@ import { ApiError } from '../../../../core/domain/failure-class.ts';
 import { PlannerAskDrawer, type AnswerAsk } from './asks.tsx';
 
 afterEach(cleanup);
-const TWO: OpenAsk = { askId: 7, questions: [
+const TWO: OpenAsk = { askId: 7, delivery: 'wake', questions: [
   { title: 'Which branch?', options: ['main', 'release'] }, { title: 'Notes?', options: [] },
 ] };
-const SINGLE: OpenAsk = { askId: 9, questions: [{ title: 'Merge PR #12?', options: ['Merge', 'Hold'] }] };
+const SINGLE: OpenAsk = { askId: 9, delivery: 'wake', questions: [{ title: 'Merge PR #12?', options: ['Merge', 'Hold'] }] };
 const http = (status: number, message: string) => new ApiError({ kind: 'http', status, code: 'error', message });
 function setup(asks: readonly OpenAsk[], onAnswer: AnswerAsk = vi.fn(() => Promise.resolve())) {
   const view = render(<PlannerAskDrawer asks={asks} onAnswer={onAnswer} />);
@@ -32,7 +32,7 @@ describe('PlannerAskDrawer', () => {
   it('answers a single choice directly from the conversation card', async () => {
     const { onAnswer } = setup([SINGLE]);
     await userEvent.click(screen.getByRole('button', { name: 'Hold' }));
-    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(9, ['Hold']));
+    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(9, [{ option: 1 }]));
     expect(screen.queryByRole('group', { name: 'The Planner asks' })).toBeNull();
   });
   it('commits all answers in order only at the last question', async () => {
@@ -43,7 +43,7 @@ describe('PlannerAskDrawer', () => {
     expect(onAnswer).not.toHaveBeenCalled();
     await userEvent.type(screen.getByRole('textbox', { name: 'Notes?' }), ' Ship it ');
     await userEvent.click(screen.getByRole('button', { name: 'Answer' }));
-    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(7, ['release', 'Ship it']));
+    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(7, [{ option: 1 }, { text: 'Ship it' }]));
   });
   it('marks the chosen option when returning, and clears it for a custom answer', async () => {
     setup([TWO]);
@@ -62,13 +62,13 @@ describe('PlannerAskDrawer', () => {
     await userEvent.click(screen.getByRole('button', { name: 'main' }));
     expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Notes?' }).value).toBe('Keep these notes');
     await userEvent.click(screen.getByRole('button', { name: 'Answer' }));
-    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(7, ['main', 'Keep these notes']));
+    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(7, [{ option: 0 }, { text: 'Keep these notes' }]));
   });
   it('accepts the reader’s own words for an option question', async () => {
     const { onAnswer } = setup([SINGLE]);
     await userEvent.type(screen.getByRole('textbox', { name: 'Merge PR #12?' }), 'Wait for CI');
     await userEvent.click(screen.getByRole('button', { name: 'Answer' }));
-    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(9, ['Wait for CI']));
+    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(9, [{ text: 'Wait for CI' }]));
   });
   it('rejects blank free answers and clamps the server’s character limit', () => {
     setup([SINGLE]);

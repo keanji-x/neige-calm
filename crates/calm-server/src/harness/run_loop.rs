@@ -23,6 +23,7 @@ use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope, HarnessQueueChange};
 use crate::harness::backend::{BackendRewind, PlannerBackend, PlannerEvents, TurnStartFailure};
 use crate::harness::config::HarnessConfig;
+use crate::harness::held_requests::{self, HeldRequestReceiver, HeldRequestSender, HeldRequests};
 use crate::harness::issuance::{IssuanceRefusal, SelectionSource};
 use crate::harness::live_replies::{LiveReplies, LiveReplyClaim, LiveReplyWriter};
 use crate::harness::observation::Observation;
@@ -252,6 +253,12 @@ pub(super) struct Inner {
     /// Entries codex accepted through `turn/steer` into the running turn, held until that turn
     /// completes. Live-only: a restart loses the turn with it.
     steered_into_running_turn: Mutex<Vec<SteeredEntry>>,
+    /// The provider requests the running turn is paused on (#2348); see `run_loop::held`.
+    held_requests: Arc<HeldRequests>,
+    /// The sending half of the one channel the run loop reads the table's input from.
+    held_request_sender: HeldRequestSender,
+    /// The last watchdog tick that saw the table hold a request; `None` while it holds none.
+    watchdog_held_since: Mutex<Option<Instant>>,
     abort_handle: StdMutex<Option<AbortHandle>>,
     config: HarnessConfig,
 }
@@ -486,13 +493,29 @@ impl PlannerHarness {
         &self.inner.track_id
     }
 
+    /// The provider requests this harness's running turn is paused on (#2348).
+    pub fn held_requests(&self) -> &HeldRequests {
+        &self.inner.held_requests
+    }
+
+    /// Where a provider adapter reports the requests it pauses on; the run loop reads them in
+    /// order (#2348).
+    pub fn held_request_sender(&self) -> HeldRequestSender {
+        self.inner.held_request_sender.clone()
+    }
+
     pub fn run(params: PlannerHarnessParams) -> Self {
         params.snapshot.assert_known_schema();
         let (obs_tx, obs_rx) = mpsc::channel(OBSERVATION_BUFFER);
         let (shutdown_tx, shutdown_rx) = broadcast::channel(4);
         let events = params.backend.subscribe_events();
-        let (inner, announce_dropped_first) =
-            inner_from_params(params, ObservationIngress::Running(obs_tx), shutdown_tx);
+        let (held_tx, held_rx) = held_requests::channel();
+        let (inner, announce_dropped_first) = inner_from_params(
+            params,
+            ObservationIngress::Running(obs_tx),
+            shutdown_tx,
+            held_tx,
+        );
         let live = inner.live_claim.writer();
         let handle = Self {
             inner: Arc::clone(&inner),
@@ -500,6 +523,7 @@ impl PlannerHarness {
         let task = tokio::spawn(run_loop(
             inner,
             obs_rx,
+            held_rx,
             shutdown_rx,
             events,
             live,
@@ -526,9 +550,14 @@ impl PlannerHarness {
         let (obs_tx, obs_rx) = mpsc::channel(observation_buffer);
         let (shutdown_tx, _shutdown_rx) = broadcast::channel(4);
         // No run loop on this path to flush the drop announcements early; the `persist_snapshot_inner`
-        // drain still covers them.
-        let (inner, _announce_dropped_first) =
-            inner_from_params(params, ObservationIngress::Unstarted(obs_tx), shutdown_tx);
+        // drain still covers them. Nothing reads the held-request channel either.
+        let (held_tx, _held_rx) = held_requests::channel();
+        let (inner, _announce_dropped_first) = inner_from_params(
+            params,
+            ObservationIngress::Unstarted(obs_tx),
+            shutdown_tx,
+            held_tx,
+        );
         (Self { inner }, obs_rx)
     }
 
@@ -849,6 +878,7 @@ impl PlannerHarness {
         if let Some(abort) = abort {
             abort.abort();
         }
+        held::release_all(&self.inner);
         if strict_interrupt && let Some(error) = interrupt_error {
             return Err(error);
         }
@@ -1062,6 +1092,25 @@ impl PlannerHarness {
         debounce.last_pending_at = debounce.last_pending_at.map(rewind);
     }
 
+    /// Let `by` pass for the turn watchdog without sleeping: the running turn started, and the
+    /// table has held its requests since, `by` earlier. Same clock as
+    /// [`Self::rewind_debounce_for_test`].
+    #[cfg(feature = "fixtures")]
+    pub async fn rewind_turn_clock_for_test(&self, by: Duration) {
+        let rewind = |at: Instant| at.checked_sub(by).unwrap_or(at);
+        if let HarnessState::TurnRunning { started_at, .. } = &mut *self.inner.state.lock().await {
+            *started_at = rewind(*started_at);
+        }
+        let mut held_since = self.inner.watchdog_held_since.lock().await;
+        *held_since = held_since.map(rewind);
+    }
+
+    /// Whether a watchdog tick has seen the table hold a request since it last saw it empty.
+    #[cfg(feature = "fixtures")]
+    pub async fn watchdog_saw_held_request_for_test(&self) -> bool {
+        self.inner.watchdog_held_since.lock().await.is_some()
+    }
+
     /// How long the current pending window has been open, in milliseconds.
     /// Zero when there is no window.
     #[cfg(feature = "fixtures")]
@@ -1123,6 +1172,7 @@ fn inner_from_params(
     params: PlannerHarnessParams,
     observations: ObservationIngress,
     shutdown: broadcast::Sender<()>,
+    held_request_sender: HeldRequestSender,
 ) -> (Arc<Inner>, bool) {
     let mut snapshot = params.snapshot;
     let dropped_on_load = truncate_snapshot_pending_queue(&mut snapshot);
@@ -1185,6 +1235,9 @@ fn inner_from_params(
         issuance_paused: AtomicBool::new(false),
         unannounced_drops: Mutex::new(dropped_on_load),
         steered_into_running_turn: Mutex::new(Vec::new()),
+        held_requests: Arc::new(HeldRequests::default()),
+        held_request_sender,
+        watchdog_held_since: Mutex::new(None),
         abort_handle: StdMutex::new(None),
         config: params.config,
     });
@@ -1256,6 +1309,7 @@ fn harness_tick() -> tokio::time::Interval {
 async fn run_loop(
     inner: Arc<Inner>,
     mut observations: mpsc::Receiver<HarnessObservationCommand>,
+    mut held_messages: HeldRequestReceiver,
     mut shutdown: broadcast::Receiver<()>,
     mut events: PlannerEvents,
     live: LiveReplyWriter,
@@ -1271,9 +1325,16 @@ async fn run_loop(
              persisted until they land"
         );
     }
+    // A harness built over a session that already has open `hold` asks (a restart, a respawn, a
+    // system-error recovery) holds none of their requests.
+    held::sweep(&inner).await;
     let mut tick = harness_tick();
     loop {
         tokio::select! {
+            // The sender lives on `inner`, so the channel never closes while the loop runs.
+            Some(message) = held_messages.recv() => {
+                held::on_message(&inner, message).await;
+            }
             command = observations.recv() => {
                 let Some(command) = command else { break };
                 match command {
@@ -1355,6 +1416,7 @@ async fn run_loop(
             }
         }
     }
+    held::release_all(&inner);
 }
 
 /// Called only by the run loop (or the unstarted fixture). Ordinary delivery,
@@ -2047,7 +2109,8 @@ async fn on_notification(
                 *inner.state.lock().await = HarnessState::TurnRunning {
                     turn_id,
                     started_at: Instant::now(),
-                }
+                };
+                held::sweep(inner).await;
             }
             *inner.issued_turn_id.lock().await = None;
             *inner.interrupt_deadline.lock().await = None;
@@ -2108,6 +2171,7 @@ async fn on_notification(
                     last_turn_id: target_turn_id,
                 };
                 *inner.interrupt_deadline.lock().await = None;
+                held::end_turn(inner).await;
                 live_reply::settle(inner, live, &turn_id, &turn).await;
                 let _ = persist_turn_outcome(inner, &turn_id, &turn).await;
                 // The Stop path is the one that drops steered input; the sweep runs before the phase persist.
@@ -2123,6 +2187,7 @@ async fn on_notification(
                 && turn.get("id").and_then(Value::as_str) == fallback_turn_id.as_deref()
                 && fallback_turn_id.is_some()
             {
+                held::end_turn(inner).await;
                 live_reply::settle(inner, live, &turn_id, &turn).await;
                 let item = persist_turn_outcome(inner, &turn_id, &turn).await;
                 let restored = restore_steered_entries_codex_dropped(inner, &turn_id).await;
@@ -2158,6 +2223,7 @@ async fn on_notification(
                 last_turn_id: turn_id.clone(),
             };
             *inner.interrupt_deadline.lock().await = None;
+            held::end_turn(inner).await;
             live_reply::settle(inner, live, &turn_id, &turn).await;
             let _ = persist_turn_outcome(inner, &turn_id, &turn).await;
             // A turn can end without a model request after the steer on this branch too; same sweep.
@@ -2201,6 +2267,7 @@ async fn on_notification(
                 last_turn_id: target_turn_id,
             };
             *inner.interrupt_deadline.lock().await = None;
+            held::end_turn(inner).await;
             clear_interruption_intent(inner, &aborted_turn_id).await;
             let restored = restore_steered_entries_codex_dropped(inner, &aborted_turn_id).await;
             persist_snapshot_stamping_issued_head(inner).await?;
@@ -3593,6 +3660,7 @@ async fn rebuffer_head(inner: &Arc<Inner>, drained: Vec<QueueEntry>) {
 }
 
 async fn watchdog_tick(inner: &Arc<Inner>) -> Result<()> {
+    held::pause_watchdog_while_held(inner).await;
     let compact_timed_out = matches!(&*inner.state.lock().await,
         HarnessState::Compacting { since } if since.elapsed() >= inner.config.interrupt_completion_budget)
         || matches!(&*inner.state.lock().await, HarnessState::CompactionRunning { started_at, .. } if started_at.elapsed() >= inner.config.max_turn_duration);
@@ -4350,6 +4418,7 @@ mod tests {
 mod compact_command;
 #[cfg(test)]
 mod compact_tests;
+mod held;
 mod live_reply;
 mod native_ask;
 mod replace_command;

@@ -331,9 +331,9 @@ describe('degraded workspace reads stay usable', () => {
        overlays read being down changes nothing on this page. */
     resolveDetail(ok({ track, can_reopen: false, can_close: true, cards: [plannerCard], overlays: [{
       id: 'o1', plugin_id: 'kernel', entity_kind: 'track', entity_id: 'w1', kind: 'activity', updated_at: 2,
-      payload: { schemaVersion: 3, working: false, attention: 'input', activity_at_ms: 2,
+      payload: { schemaVersion: 4, working: false, attention: 'input', activity_at_ms: 2,
         items: [{ source: 'ask', key: 'ask:2', text: 'Which region?', at_ms: 2, ask_id: 2,
-          questions: [{ title: 'Which region?', options: [] }] }],
+          questions: [{ title: 'Which region?', options: [] }], delivery: 'wake' }],
         cards: [{ card_id: plannerCard.id, state: 'input' }] },
     }] }));
     expect(await screen.findByRole('region', { name: 'Notifications' })).toBeTruthy();
@@ -345,9 +345,9 @@ describe('degraded workspace reads stay usable', () => {
       if (request.path === '/api/areas/c1/tracks') return ok([track]);
       if (request.path.startsWith('/api/overlays?')) return ok([{
         id: 'workspace-activity', plugin_id: 'kernel', entity_kind: 'track', entity_id: 'w1', kind: 'activity', updated_at: 1,
-        payload: { schemaVersion: 3, working: false, attention: 'input', activity_at_ms: 1,
+        payload: { schemaVersion: 4, working: false, attention: 'input', activity_at_ms: 1,
           items: [{ source: 'ask', key: 'ask:1', text: 'Which region?', at_ms: 1, ask_id: 1,
-            questions: [{ title: 'Which region?', options: [] }] }],
+            questions: [{ title: 'Which region?', options: [] }], delivery: 'wake' }],
           cards: [{ card_id: plannerCard.id, state: 'input' }] },
       }]);
       if (request.path === '/api/tracks/w1') return ok({

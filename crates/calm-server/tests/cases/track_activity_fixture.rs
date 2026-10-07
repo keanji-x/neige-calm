@@ -689,7 +689,7 @@ impl Fx {
             move |tx| {
                 Box::pin(async move {
                     let (scope, event) =
-                        calm_server::ask::ask_requested_tx(tx, &card, questions, None).await?;
+                        calm_server::ask::ask_requested_tx(tx, &card, questions).await?;
                     Ok(((), vec![(actor, scope, event)]))
                 })
             },
@@ -702,7 +702,10 @@ impl Fx {
     /// The user answers `ask_id` on `track` through the shared entry the answer route writes with.
     pub(crate) async fn answer(&self, track: &str, ask_id: i64, answers: &[&str]) {
         let track = TrackId::from(track.to_string());
-        let answers: Vec<String> = answers.iter().map(|a| (*a).to_string()).collect();
+        let answers: Vec<calm_server::event::AskAnswer> = answers
+            .iter()
+            .map(|a| calm_server::event::AskAnswer::Text((*a).to_string()))
+            .collect();
         calm_server::db::write_with_actor_events_typed(
             self.repo_dyn.as_ref(),
             None,

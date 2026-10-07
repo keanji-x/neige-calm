@@ -305,12 +305,17 @@ async fn ask_batch_does_not_advance_head() {
                 title: "Merge PR #1?".into(),
                 options: vec!["Merge".into(), "Hold".into()],
             }],
+            delivery: calm_types::event::AskDelivery::Hold,
             source_item_id: None,
         },
         Event::AskAnswered {
             ask_id: 1,
             track_id: track.id.clone(),
-            answers: vec!["Merge".into()],
+            answers: vec![calm_types::event::AskAnswer::Option(0)],
+        },
+        Event::AskWithdrawn {
+            ask_id: 1,
+            track_id: track.id.clone(),
         },
     ];
     let mut tx = begin_immediate_tx(repo.pool())

@@ -149,6 +149,7 @@ const activityItemWireSchema = z.discriminatedUnion('source', [
     at_ms: z.number(),
     ask_id: z.number(),
     questions: z.array(z.object({ title: z.string(), options: z.array(z.string()) })),
+    delivery: z.enum(['wake', 'hold']),
   }),
   z.object({
     source: z.literal('planner_down'),
@@ -165,7 +166,7 @@ const activityCardWireSchema = z.object({
 /** Mirrors `calm_truth::validation::KERNEL_OVERLAY_PLUGIN_ID`. */
 const KERNEL_OVERLAY_PLUGIN_ID = 'kernel';
 const activityOverlayWireSchema = z.object({
-  schemaVersion: z.literal(3),
+  schemaVersion: z.literal(4),
   working: z.boolean(),
   attention: attentionKindSchema,
   activity_at_ms: z.number().nullable(),
@@ -182,7 +183,9 @@ function activityOverlayFields(payload: unknown): Partial<TrackActivity> | null 
     if (!item.success) continue;
     const base = { key: item.data.key, text: item.data.text, atMs: item.data.at_ms };
     attentionItems.push(item.data.source === 'ask'
-      ? { ...base, source: 'ask', askId: item.data.ask_id, questions: item.data.questions }
+      ? {
+        ...base, source: 'ask', askId: item.data.ask_id, questions: item.data.questions, delivery: item.data.delivery,
+      }
       : { ...base, source: 'planner_down' });
   }
   const cards: Record<string, CardActivity> = {};

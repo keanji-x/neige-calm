@@ -11,13 +11,13 @@ const WHY: AskQuestion = { title: 'Why?', options: [] };
 describe('openAsksOf', () => {
   it('keeps only the asks, oldest first, whatever order the overlay listed them in', () => {
     const items: ActivityItem[] = [
-      { source: 'ask', key: 'ask:30', text: 'Why?', atMs: 30, askId: 30, questions: [WHY] },
+      { source: 'ask', key: 'ask:30', text: 'Why?', atMs: 30, askId: 30, questions: [WHY], delivery: 'wake' },
       { source: 'planner_down', key: 'planner_down:1', text: 'The Planner stopped.', atMs: 20 },
-      { source: 'ask', key: 'ask:10', text: 'Which branch?', atMs: 10, askId: 10, questions: [BRANCH] },
+      { source: 'ask', key: 'ask:10', text: 'Which branch?', atMs: 10, askId: 10, questions: [BRANCH], delivery: 'hold' },
     ];
     expect(openAsksOf(items)).toEqual([
-      { askId: 10, questions: [BRANCH] },
-      { askId: 30, questions: [WHY] },
+      { askId: 10, questions: [BRANCH], delivery: 'hold' },
+      { askId: 30, questions: [WHY], delivery: 'wake' },
     ]);
   });
 });
@@ -25,19 +25,23 @@ describe('openAsksOf', () => {
 describe('askAnswers', () => {
   it('starts on the recommended option, and a question without options on nothing', () => {
     expect(askDraftsFor([BRANCH, WHY])).toEqual([{ choice: 0, own: '' }, { choice: null, own: '' }]);
-    expect(askAnswers([BRANCH], askDraftsFor([BRANCH]))).toEqual(['main']);
+    expect(askAnswers([BRANCH], askDraftsFor([BRANCH]))).toEqual([{ option: 0 }]);
   });
 
-  it('sends the picked option verbatim', () => {
-    expect(askAnswers([BRANCH], [{ choice: 1, own: '' }])).toEqual(['release']);
+  it('sends the picked option as its index, not its label', () => {
+    expect(askAnswers([BRANCH], [{ choice: 1, own: '' }])).toEqual([{ option: 1 }]);
+  });
+
+  it('sends typed words as text, even when they spell an option', () => {
+    expect(askAnswers([BRANCH], [{ choice: 0, own: 'release' }])).toEqual([{ text: 'release' }]);
   });
 
   it('lets the reader’s own words win over the picked option, trimmed', () => {
-    expect(askAnswers([BRANCH], [{ choice: 1, own: '  a new branch  ' }])).toEqual(['a new branch']);
+    expect(askAnswers([BRANCH], [{ choice: 1, own: '  a new branch  ' }])).toEqual([{ text: 'a new branch' }]);
   });
 
   it('ignores own words that are only whitespace', () => {
-    expect(askAnswers([BRANCH], [{ choice: 1, own: ' \n ' }])).toEqual(['release']);
+    expect(askAnswers([BRANCH], [{ choice: 1, own: ' \n ' }])).toEqual([{ option: 1 }]);
   });
 
   it('has no answers while a free-text question is blank', () => {
@@ -47,7 +51,7 @@ describe('askAnswers', () => {
 
   it('answers every question in order', () => {
     expect(askAnswers([BRANCH, WHY], [{ choice: 1, own: '' }, { choice: null, own: 'To ship' }]))
-      .toEqual(['release', 'To ship']);
+      .toEqual([{ option: 1 }, { text: 'To ship' }]);
   });
 
   it('has no answers when the drafts do not line up with the questions', () => {
@@ -57,10 +61,10 @@ describe('askAnswers', () => {
 
 describe('answerAskOperation', () => {
   it('posts every answer to the ask under its track', () => {
-    const operation = answerAskOperation('track/1', 42, ['main', 'To ship']);
+    const operation = answerAskOperation('track/1', 42, [{ option: 0 }, { text: 'To ship' }]);
     expect(operation.method).toBe('POST');
     expect(operation.path).toBe('/api/tracks/track%2F1/asks/42/answer');
-    expect(operation.body).toEqual({ answers: ['main', 'To ship'] });
+    expect(operation.body).toEqual({ answers: [{ option: 0 }, { text: 'To ship' }] });
     expect(operation.responseSchema.safeParse(undefined).success).toBe(true);
   });
 });

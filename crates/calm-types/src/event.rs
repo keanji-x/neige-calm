@@ -227,7 +227,7 @@ impl EventScope {
 
 /// Sync-engine event envelope version. Bump together with a migration default whenever clients
 /// must gate on a new persisted wire shape.
-pub const SYNC_EVENT_VERSION: u32 = 26;
+pub const SYNC_EVENT_VERSION: u32 = 27;
 
 /// Evidence captured by the checks read, never reconstructed from a later PR head.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -289,6 +289,26 @@ pub struct ForgeMergeSubject {
 pub struct AskQuestion {
     pub title: String,
     pub options: Vec<String>,
+}
+
+/// Where the answer to an `ask.requested` goes (#2348). `wake` answers wake a new Planner turn;
+/// `hold` answers go to the provider request the running turn is paused on and wake nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub enum AskDelivery {
+    Wake,
+    Hold,
+}
+
+/// One answer of an `ask.answered` (#2348): the index of a clicked option, or typed text. Clicking
+/// an option and typing the same words are different answers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub enum AskAnswer {
+    Option(usize),
+    Text(String),
 }
 
 /// The full set of WS event envelopes the kernel emits on `/api/events`. ts-rs requires every
@@ -658,6 +678,7 @@ pub enum Event {
     AskRequested {
         track_id: TrackId,
         questions: Vec<AskQuestion>,
+        delivery: AskDelivery,
         /// The provider item the question was translated from; absent for a `neige_user_ask` call.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
@@ -669,8 +690,12 @@ pub enum Event {
     AskAnswered {
         ask_id: i64,
         track_id: TrackId,
-        answers: Vec<String>,
+        answers: Vec<AskAnswer>,
     },
+    /// The `hold` ask whose event id is `ask_id` stopped waiting without an answer: its provider
+    /// request is gone. Written only by the ask's own Planner session (#2348).
+    #[serde(rename = "ask.withdrawn")]
+    AskWithdrawn { ask_id: i64, track_id: TrackId },
 
     /// A plugin submitted a report-edit proposal. Append-only record: the full op list + anchors ride
     /// on the payload so the pending set can be rebuilt from the event log alone.
@@ -1069,6 +1094,7 @@ impl Event {
             Event::ForgePrMerged { track_id, .. }
             | Event::AskRequested { track_id, .. }
             | Event::AskAnswered { track_id, .. }
+            | Event::AskWithdrawn { track_id, .. }
             | Event::ForgeScanCompleted { track_id, .. }
             | Event::ForgePrOpened { track_id, .. }
             | Event::ForgePrPublished { track_id, .. }
@@ -1158,6 +1184,7 @@ impl Event {
             Event::ForgePrMerged { .. } => "forge.pr.merged",
             Event::AskRequested { .. } => "ask.requested",
             Event::AskAnswered { .. } => "ask.answered",
+            Event::AskWithdrawn { .. } => "ask.withdrawn",
             Event::ProposalSubmitted { .. } => "proposal.submitted",
             Event::ProposalResolved { .. } => "proposal.resolved",
             Event::ForgeScanCompleted { .. } => "forge.scan.completed",
@@ -1320,6 +1347,7 @@ pub fn topics(ev: &Event) -> Vec<String> {
         Event::ForgePrMerged { track_id, .. }
         | Event::AskRequested { track_id, .. }
         | Event::AskAnswered { track_id, .. }
+        | Event::AskWithdrawn { track_id, .. }
         | Event::ForgeScanCompleted { track_id, .. }
         | Event::ForgePrOpened { track_id, .. }
         | Event::ForgePrPublished { track_id, .. }
@@ -1464,6 +1492,31 @@ mod scope_tests {
 
         let s = EventScope::System;
         assert!(s.card_id().is_none() && s.track_id().is_none() && s.area_id().is_none());
+    }
+
+    /// The answer and delivery wire shapes the frontend and the backfill migration write.
+    #[test]
+    fn ask_answer_and_delivery_wire_shapes() {
+        assert_eq!(
+            serde_json::to_value(AskAnswer::Option(2)).unwrap(),
+            serde_json::json!({"option": 2})
+        );
+        assert_eq!(
+            serde_json::to_value(AskAnswer::Text("main".into())).unwrap(),
+            serde_json::json!({"text": "main"})
+        );
+        assert!(serde_json::from_value::<AskAnswer>(serde_json::json!("main")).is_err());
+        assert_eq!(
+            serde_json::to_value(AskDelivery::Hold).unwrap(),
+            serde_json::json!("hold")
+        );
+        let missing_delivery = serde_json::json!({
+            "track_id": "t", "questions": [{"title": "q", "options": []}],
+        });
+        assert!(
+            Event::from_kind_and_payload("ask.requested", missing_delivery).is_err(),
+            "delivery is required"
+        );
     }
 
     #[test]
@@ -1643,6 +1696,7 @@ mod scope_tests {
                 title: "Merge PR #1?".into(),
                 options: vec!["Merge".into(), "Hold".into()],
             }],
+            delivery: AskDelivery::Wake,
             source_item_id: None,
         };
         assert_eq!(ask_requested.kind_tag(), "ask.requested");
@@ -1650,9 +1704,15 @@ mod scope_tests {
         let ask_answered = Event::AskAnswered {
             ask_id: 7,
             track_id: TrackId::from("track-1"),
-            answers: vec!["Merge".into()],
+            answers: vec![AskAnswer::Option(0)],
         };
         assert_eq!(ask_answered.kind_tag(), "ask.answered");
+
+        let ask_withdrawn = Event::AskWithdrawn {
+            ask_id: 7,
+            track_id: TrackId::from("track-1"),
+        };
+        assert_eq!(ask_withdrawn.kind_tag(), "ask.withdrawn");
 
         let forge_scan_completed = Event::ForgeScanCompleted {
             track_id: TrackId::from("track-1"),
@@ -2686,12 +2746,17 @@ mod scope_tests {
                     title: "Which branch?".into(),
                     options: Vec::new(),
                 }],
+                delivery: AskDelivery::Wake,
                 source_item_id: Some("item-1".into()),
             },
             Event::AskAnswered {
                 ask_id: 7,
                 track_id: TrackId::from("track-1"),
-                answers: vec!["main".into()],
+                answers: vec![AskAnswer::Text("main".into())],
+            },
+            Event::AskWithdrawn {
+                ask_id: 7,
+                track_id: TrackId::from("track-1"),
             },
             Event::ProposalSubmitted {
                 track_id: TrackId::from("track-1"),
@@ -2962,6 +3027,7 @@ mod scope_tests {
                 serde_json::json!({
                     "track_id": "track-1",
                     "questions": [{ "title": "Which branch?", "options": [] }],
+                    "delivery": "wake",
                 }),
             ),
             (
@@ -2970,8 +3036,13 @@ mod scope_tests {
                 serde_json::json!({
                     "ask_id": 7,
                     "track_id": "track-1",
-                    "answers": ["main"],
+                    "answers": [{ "text": "main" }],
                 }),
+            ),
+            (
+                "ask.withdrawn",
+                "ask.withdrawn",
+                serde_json::json!({ "ask_id": 7, "track_id": "track-1" }),
             ),
             (
                 "forge.scan.completed",

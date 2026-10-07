@@ -1,0 +1,13 @@
+{
+  "description": "ask.requested for a provider request the running turn is paused on: one question answered by one of its options, delivered to the request instead of waking a turn",
+  "wire": {
+    "ev": "ask.requested",
+    "data": {
+      "track_id": "track-01",
+      "questions": [
+        { "title": "Run `cargo test` (cwd /work)?", "options": ["Allow", "Allow for this session", "Deny"] }
+      ],
+      "delivery": "hold"
+    }
+  }
+}
