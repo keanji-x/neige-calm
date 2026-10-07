@@ -1,11 +1,10 @@
 import { createContext, useContext, useEffect, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { HoverPreview } from '../../ui/hover-preview/public.tsx';
+import { HoverPreview, PreviewSummary, PreviewTextLink } from '../../ui/hover-preview/public.tsx';
 import { parseGitHubReferenceUrl, type GitHubReference } from '../../../../core/domain/issue-url.ts';
 import type { GitHubPreviewPort } from '../../../../core/domain/github-preview.ts';
 import { useState } from '../../ui/state/public.ts';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
-import { PreviewSummary, PreviewTextLink } from '../../ui/hover-preview/summary.tsx';
 
 const PreviewPort = createContext<GitHubPreviewPort | null>(null);
 

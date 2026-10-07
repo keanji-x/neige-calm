@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import type { ReactNode } from 'react';
 import type { GitHubPreview } from '../../../../core/domain/github-preview.ts';
-import { GitHubPreviewLink, GitHubPreviewProvider } from './public.tsx';
+import { GitHubPreviewLink, GitHubPreviewProvider } from '../../systems/github-links/public.tsx';
 import { Reply } from '../../features/chat/thread/reply.tsx';
 import { ProseBlock } from '../../features/report/document/public.tsx';
 import '../../styles/entry.css';
@@ -16,7 +16,7 @@ function summary(): GitHubPreview {
   return { kind: 'pull', number: 42, title: 'Fix link previews', state: 'merged', author: 'octocat',
     labels: ['bug'], excerpt: '<script>alert(1)</script>', changes: { additions: 12, deletions: 3, changed_files: 2 } };
 }
-function mount(children: ReactNode, read = vi.fn(async () => summary())) {
+function mount(children: ReactNode, read = vi.fn(() => Promise.resolve(summary()))) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><GitHubPreviewProvider port={{ read }}>{children}</GitHubPreviewProvider></QueryClientProvider>);
   return { read, client };
@@ -32,6 +32,7 @@ it('lazily previews production chat links, keeps navigation and reuses the resul
   expect(read).toHaveBeenCalledTimes(1);
   expect(screen.getByText('Pull request · merged · octocat')).toBeTruthy();
   expect(screen.getByText('2 files · +12 / −3')).toBeTruthy();
+  await page.screenshot({ path: 'test-results/github-preview-desktop.png' });
   expect(screen.getByText('<script>alert(1)</script>').querySelector('script')).toBeNull();
   await userEvent.hover(screen.getByRole('link', { name: 'Open in GitHub ↗' }));
   expect(screen.getByRole('dialog')).toBeTruthy();
@@ -58,7 +59,7 @@ it('previews production report citations on keyboard focus while preserving othe
 });
 
 it('renders a failed read safely and retries on deliberate action', async () => {
-  const read = vi.fn(async () => summary()).mockRejectedValueOnce(new Error('secret CLI stderr'));
+  const read = vi.fn(() => Promise.resolve(summary())).mockRejectedValueOnce(new Error('secret CLI stderr'));
   const { client } = mount(<GitHubPreviewLink href="https://github.com/o/r/pull/42">PR</GitHubPreviewLink>, read);
   await userEvent.hover(screen.getByRole('link', { name: 'PR' }));
   await screen.findByRole('button', { name: 'Retry' });
@@ -77,5 +78,18 @@ it('does not fetch unsupported links or compact-view links', async () => {
   await userEvent.hover(screen.getByRole('link', { name: 'PR' }));
   expect(read).not.toHaveBeenCalled();
   expect(screen.queryByRole('dialog')).toBeNull();
+  client.clear();
+});
+
+it('preserves external, mail and relative navigation and keeps unsafe Markdown destinations inert', () => {
+  const { read, client } = mount(<Reply text="[Web](https://example.com/path) [Mail](mailto:a@example.com) [Local](/next/today) [Unsafe](javascript:alert(1))" imageFiles={null} />);
+  expect(screen.getByRole('link', { name: 'Web' }).getAttribute('target')).toBe('_blank');
+  expect(screen.getByRole('link', { name: 'Web' }).getAttribute('rel')).toBe('noopener noreferrer');
+  expect(screen.getByRole('link', { name: 'Mail' }).getAttribute('href')).toBe('mailto:a@example.com');
+  expect(screen.getByRole('link', { name: 'Mail' }).getAttribute('target')).toBeNull();
+  expect(screen.getByRole('link', { name: 'Local' }).getAttribute('href')).toBe('/next/today');
+  expect(screen.getByRole('link', { name: 'Local' }).getAttribute('target')).toBeNull();
+  expect(screen.queryByRole('link', { name: 'Unsafe' })).toBeNull();
+  expect(read).not.toHaveBeenCalled();
   client.clear();
 });
