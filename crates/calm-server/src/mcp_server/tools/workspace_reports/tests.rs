@@ -1,6 +1,7 @@
 use super::*;
 use crate::daily_planner;
 use crate::daily_planner::tests::{at, fixture, foreign_track};
+use crate::model::CardRole;
 use axum::extract::FromRef;
 
 async fn identity(
@@ -104,6 +105,138 @@ async fn granted_planner_reads_foreign_reports_without_write_authority() {
 }
 
 #[tokio::test]
+async fn granted_assistant_reads_all_workspace_tools_without_foreign_write_anchors() {
+    let (_tmp, repo, state) = fixture().await;
+    let route = crate::state::RouteState::from_ref(&state);
+    let foreign = foreign_track(&route).await;
+    let daily = daily_planner::reconcile(&route, at("2026-10-04T01:00:00Z"))
+        .await
+        .unwrap();
+    let mut id = identity(&route, &daily).await;
+    sqlx::query("UPDATE cards SET role=?1 WHERE id=?2")
+        .bind(CardRole::Assistant.as_db_str())
+        .bind(&id.card_id)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    id.role = CardRole::Assistant;
+    let registry = crate::mcp_server::build_default_registry();
+    for (tool, args) in [
+        ("neige_workspace_ls", json!({})),
+        ("neige_workspace_cat", json!({"track_id":foreign.id})),
+        ("neige_workspace_diff", json!({"date":"2026-10-03"})),
+        (
+            "neige_workspace_log",
+            json!({"date":"2026-10-03","track_id":foreign.id,"through_event_id":0}),
+        ),
+    ] {
+        assert!(
+            registry.lookup(tool).unwrap()(route.mcp_context.clone(), id.clone(), args)
+                .await
+                .is_ok(),
+            "{tool}"
+        );
+    }
+    let report = registry.lookup("neige_workspace_cat").unwrap()(
+        route.mcp_context.clone(),
+        id.clone(),
+        json!({"track_id": foreign.id}),
+    )
+    .await
+    .unwrap()
+    .into_structured();
+    assert_eq!(report["track_id"], foreign.id.as_str());
+    assert!(report["body"].as_str().unwrap().contains("概要"));
+    let listed = registry.lookup("neige_workspace_ls").unwrap()(
+        route.mcp_context.clone(),
+        id.clone(),
+        json!({}),
+    )
+    .await
+    .unwrap()
+    .into_structured();
+    assert_eq!(listed["reports"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["reports"][0]["track_id"], foreign.id.as_str());
+    assert_eq!(
+        registry.lookup("neige_workspace_cat").unwrap()(
+            route.mcp_context.clone(),
+            id.clone(),
+            json!({"track_id": daily.id}),
+        )
+        .await
+        .unwrap_err()
+        .code,
+        -32403,
+        "system Area reports stay hidden"
+    );
+    let foreign_report = route
+        .repo
+        .cards_by_track(foreign.id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "track-report")
+        .unwrap();
+    assert!(
+        route
+            .mcp_context
+            .read_ledger
+            .last_read(&id.session_id, foreign_report.id.as_str())
+            .is_none()
+    );
+    let write = registry.lookup("neige_report_write").unwrap();
+    assert_eq!(
+        write(
+            route.mcp_context.clone(),
+            id.clone(),
+            json!({"message":"attempt","body":"foreign"})
+        )
+        .await
+        .unwrap_err()
+        .code,
+        -32602
+    );
+    for forged in [
+        ToolCallIdentity {
+            area_id: foreign.area_id.to_string(),
+            ..id.clone()
+        },
+        ToolCallIdentity {
+            track_id: Some(foreign.id.to_string()),
+            ..id.clone()
+        },
+        ToolCallIdentity {
+            role: CardRole::Planner,
+            ..id.clone()
+        },
+    ] {
+        assert_eq!(
+            registry.lookup("neige_workspace_ls").unwrap()(
+                route.mcp_context.clone(),
+                forged,
+                json!({})
+            )
+            .await
+            .unwrap_err()
+            .code,
+            -32403
+        );
+    }
+    sqlx::query("UPDATE managed_track_identities SET report_read_scope='area' WHERE track_id=?1")
+        .bind(daily.id.as_str())
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        registry.lookup("neige_workspace_ls").unwrap()(route.mcp_context.clone(), id, json!({}))
+            .await
+            .unwrap_err()
+            .code,
+        -32403
+    );
+}
+
+#[tokio::test]
 async fn ungranted_planner_cannot_read_workspace_reports() {
     let (_tmp, repo, state) = fixture().await;
     let route = crate::state::RouteState::from_ref(&state);
@@ -136,7 +269,7 @@ async fn ungranted_planner_cannot_read_workspace_reports() {
 }
 
 #[tokio::test]
-async fn workers_assistants_and_forged_bindings_are_refused() {
+async fn workers_and_forged_role_or_track_bindings_are_refused() {
     let (_tmp, _repo, state) = fixture().await;
     let route = crate::state::RouteState::from_ref(&state);
     let track = daily_planner::reconcile(&route, at("2026-10-04T01:00:00Z"))
@@ -147,7 +280,7 @@ async fn workers_assistants_and_forged_bindings_are_refused() {
     let ls = crate::mcp_server::build_default_registry()
         .lookup("neige_workspace_ls")
         .unwrap();
-    for role in [CardRole::Worker, CardRole::Assistant, CardRole::ReportCard] {
+    for role in [CardRole::Worker, CardRole::ReportCard] {
         let error = ls(
             route.mcp_context.clone(),
             ToolCallIdentity { role, ..id.clone() },
@@ -157,10 +290,25 @@ async fn workers_assistants_and_forged_bindings_are_refused() {
         .unwrap_err();
         assert_eq!(error.code, -32403, "{role:?}");
         assert!(
-            error.message.contains("tool requires role in [Planner]"),
+            error
+                .message
+                .contains("tool requires role in [Planner, Assistant]"),
             "{error:?}"
         );
     }
+    // An Assistant is an eligible role, but this card is a persisted Planner.
+    let forged = ls(
+        route.mcp_context.clone(),
+        ToolCallIdentity {
+            role: CardRole::Assistant,
+            ..id.clone()
+        },
+        json!({}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(forged.code, -32403);
+    assert!(forged.message.contains("kernel-issued grant"));
     assert!(
         dispatch(
             route.mcp_context.clone(),
@@ -501,6 +649,69 @@ async fn workspace_tools_refuse_the_retired_after_with_their_valid_keys() {
         assert_eq!(
             error.message,
             format!("{tool}: unknown argument `after`; {valid}"),
+            "{tool}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn ordinary_assistants_and_persisted_workers_cannot_read_workspace_reports() {
+    let (_tmp, repo, state) = fixture().await;
+    let route = crate::state::RouteState::from_ref(&state);
+    let daily = daily_planner::reconcile(&route, at("2026-10-04T01:00:00Z"))
+        .await
+        .unwrap();
+    let mut id = identity(&route, &daily).await;
+    for (persisted_role, caller_role) in [
+        (CardRole::Worker, CardRole::Assistant),
+        (CardRole::Worker, CardRole::Worker),
+    ] {
+        sqlx::query("UPDATE cards SET role=?1 WHERE id=?2")
+            .bind(persisted_role.as_db_str())
+            .bind(&id.card_id)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+        id.role = caller_role;
+        assert_eq!(
+            crate::mcp_server::build_default_registry()
+                .lookup("neige_workspace_ls")
+                .unwrap()(route.mcp_context.clone(), id.clone(), json!({}))
+            .await
+            .unwrap_err()
+            .code,
+            -32403
+        );
+    }
+    sqlx::query("UPDATE cards SET role=?1 WHERE id=?2")
+        .bind(CardRole::Assistant.as_db_str())
+        .bind(&id.card_id)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    id.role = CardRole::Assistant;
+    sqlx::query("DELETE FROM managed_track_identities WHERE track_id=?1")
+        .bind(daily.id.as_str())
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    for (tool, args) in [
+        ("neige_workspace_ls", json!({})),
+        ("neige_workspace_cat", json!({"track_id":daily.id})),
+        ("neige_workspace_diff", json!({"date":"2026-10-03"})),
+        (
+            "neige_workspace_log",
+            json!({"date":"2026-10-03","track_id":daily.id,"through_event_id":0}),
+        ),
+    ] {
+        assert_eq!(
+            crate::mcp_server::build_default_registry()
+                .lookup(tool)
+                .unwrap()(route.mcp_context.clone(), id.clone(), args)
+            .await
+            .unwrap_err()
+            .code,
+            -32403,
             "{tool}"
         );
     }

@@ -1,11 +1,10 @@
 //! Granted workspace report reads. Foreign reports never enter the caller’s write ledger.
-use crate::managed_track::require_workspace_reports;
+use crate::managed_track::{WORKSPACE_REPORT_ROLES, require_workspace_reports};
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolRegistry, read_only_annotations,
 };
 use crate::mcp_server::result::ToolResult;
-use crate::model::CardRole;
 use crate::workspace_reports::{self, ReportChangesQuery, ReportEditsQuery};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -52,8 +51,8 @@ pub fn register_into(registry: &mut ToolRegistry) {
                 description: description.trim_end().into(),
                 input_schema: schema,
                 annotations: Some(read_only_annotations()),
-                roles: &[CardRole::Planner],
-                listed_for: &[CardRole::Planner],
+                roles: WORKSPACE_REPORT_ROLES,
+                listed_for: WORKSPACE_REPORT_ROLES,
             },
             handler,
         );

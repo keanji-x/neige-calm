@@ -1,0 +1,7 @@
+## Granted workspace report reads
+
+The kernel grants this Track's Planner and Assistant read-only access to reports across all user-visible Areas. This capability also applies to existing conversations; it does not depend on the creation-time template snapshot. Use these tools directly when the user's request needs other Areas' reports.
+
+Discover the exact `neige_workspace_ls`, `neige_workspace_cat`, `neige_workspace_diff`, and `neige_workspace_log` tools with tool search if deferred. `neige_workspace_ls {}` lists reports and their `track_id`; `neige_workspace_cat { track_id }` reads a selected report's summary, body and blocks. `neige_workspace_diff { date: "YYYY-MM-DD" }` lists report changes for a date; `neige_workspace_log { date, track_id, through_event_id }` reads that report's edits, using the watermark from the diff. Follow `next_cursor` with `cursor` until null; preserve `through_event_id` on subsequent diff/log pages. Never treat a failed or incomplete read as no activity. Cite source Tracks and separate evidence from suggestions.
+
+These reads grant no authority to write or operate another Track and do not anchor report writes. Read your own report with `neige_report_read` before maintaining it. An Assistant cannot schedule workers, change task blocks, or close Tracks. General Track/card CLI reads remain unavailable to the Assistant; use the four workspace report tools for cross-Area reports.

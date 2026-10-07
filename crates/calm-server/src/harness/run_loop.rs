@@ -3106,6 +3106,15 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         return Ok(());
     }
 
+    // Resolve capability context before changing issuance state or draining the queue: a failed
+    // grant read must leave the user's message available to retry. Both backends share this path.
+    let workspace_report_instructions = crate::managed_track::workspace_report_instructions(
+        inner.repo.as_ref(),
+        inner.card_id.as_str(),
+        inner.track_id.as_str(),
+    )
+    .await?;
+
     let prior_turn = {
         let mut state = inner.state.lock().await;
         if !state.can_issue_turn() {
@@ -3197,6 +3206,10 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     };
     let drained_count = drained.len();
     let text = prepend_diff_block(diff.block.clone(), joined_observation_text);
+    let text = match workspace_report_instructions {
+        Some(instructions) => format!("{instructions}\n\n{text}"),
+        None => text,
+    };
     tracing::debug!(
         target: "calm_server::planner_harness_issue",
         runtime_id = %inner.worker_session_id,
@@ -4345,3 +4358,6 @@ mod result_receipt_tests;
 
 #[cfg(test)]
 mod turn_origin_tests;
+
+#[cfg(test)]
+mod workspace_report_tests;
