@@ -123,7 +123,7 @@ async fn boot_with_rendezvous(
     }
 }
 
-async fn create_area(b: &Boot, name: &str) -> Value {
+pub(crate) async fn create_area(b: &Boot, name: &str) -> Value {
     let response = b
         .app
         .clone()
@@ -142,7 +142,7 @@ async fn create_area(b: &Boot, name: &str) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
-async fn create_track(b: &Boot, body: Value) -> Value {
+pub(crate) async fn create_track(b: &Boot, body: Value) -> Value {
     let response = b
         .app
         .clone()
@@ -798,7 +798,7 @@ fn shared_attached_paths(rows: &[WorkspaceRow]) -> Vec<(String, Vec<String>)> {
 
 /// Drive the production child-track creation path against this boot's database and workspace root.
 /// The parent task row is seeded directly because the adapter only reads the frozen task fields from it.
-async fn create_child_track(b: &Boot, parent_track_id: &str) -> String {
+pub(crate) async fn create_child_track(b: &Boot, parent_track_id: &str) -> String {
     use calm_server::operation::child_track_adapter::{
         ChildTrackAdapter, ChildTrackOperationPayload,
     };

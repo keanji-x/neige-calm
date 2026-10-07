@@ -3369,6 +3369,127 @@
         }
       }
     },
+    "/api/cards/{id}/planner/permission-mode": {
+      "put": {
+        "tags": [
+          "cards"
+        ],
+        "operationId": "set_planner_permission_mode",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Planner card id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetPlannerPermissionModeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Mode stored; the Planner's next turn runs with it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetPlannerPermissionModeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: the body is not parseable JSON, or a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not `X-Calm-Actor: user`, or the card is not a Planner card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Card not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`: the body is over the request size limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`: the request does not say `Content-Type: application/json`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`permission_mode` is missing or not a mode, or an unknown key is present",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/cards/{id}/planner/reset": {
       "post": {
         "tags": [
@@ -12448,7 +12569,7 @@
               "object",
               "null"
             ],
-            "description": "Replaces the stored payload. A payload carrying a server-owned key is refused with 400:\n`terminal_signals`, `template_context`, `planner_provider`, `side_source_card_id`. Every kernel-minted server-owned value the card already carries is kept."
+            "description": "Replaces the stored payload. A payload carrying a server-owned key is refused with 400:\n`terminal_signals`, `template_context`, `planner_provider`, `side_source_card_id`, `permission_mode`. Every kernel-minted server-owned value the card already carries is kept."
           },
           "sort": {
             "type": [
@@ -13324,6 +13445,7 @@
         "description": "Current planner-harness run snapshot for a card, so a page opened mid-turn can seed its phase. Dormancy is NOT an error: it is the `{worker_session_id: null, phase: null}` answer.",
         "required": [
           "card_id",
+          "permission_mode",
           "pending",
           "pending_overflow",
           "attachments_supported"
@@ -13362,6 +13484,17 @@
             "format": "int32",
             "description": "User-authored entries that exist in the queue but are NOT in `pending`: pre-id entries, plus anything past the page budget.",
             "minimum": 0
+          },
+          "permission_mode": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PlannerPermissionMode",
+                "description": "The Planner's permission mode, read off the card like `model`; set with\n`PUT /api/cards/{id}/planner/permission-mode`. `null` exactly when the card is not a\nPlanner (a PlainChat or Assistant conversation has no permission mode). A stored value that\ncannot be read is reported as `never`."
+              }
+            ]
           },
           "phase": {
             "oneOf": [
@@ -14731,6 +14864,14 @@
           }
         }
       },
+      "PlannerPermissionMode": {
+        "type": "string",
+        "description": "Whether a Planner card's provider may ask the person before it acts outside its sandbox\n(#2348). Stored on the card as the server-owned payload key `permission_mode`; every Planner\ncard is created `never`, and only `PUT /api/cards/{id}/planner/permission-mode` changes it.",
+        "enum": [
+          "never",
+          "ask"
+        ]
+      },
       "PlannerRunTokenUsage": {
         "type": "object",
         "description": "The context-usage half of [`GetPlannerRunResponse`]. `percent` is computed on the server so there is one place to get it wrong, and `total_tokens` is NOT shipped: it is a cumulative sum across the thread, and a meter drawn from it is the most likely UI bug.",
@@ -15691,6 +15832,36 @@
           "unknown_model": {
             "type": "boolean",
             "description": "The slug is not in the catalog the provider currently reports. A hint, not a refusal;\nalways `false` when the catalog could not be read."
+          }
+        }
+      },
+      "SetPlannerPermissionModeBody": {
+        "type": "object",
+        "required": [
+          "permission_mode"
+        ],
+        "properties": {
+          "permission_mode": {
+            "$ref": "#/components/schemas/PlannerPermissionMode",
+            "description": "The mode the Planner's next turns run with."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SetPlannerPermissionModeResponse": {
+        "type": "object",
+        "description": "`PUT /api/cards/{id}/planner/permission-mode`'s answer: the mode now stored on the card.",
+        "required": [
+          "card_id",
+          "permission_mode"
+        ],
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "permission_mode": {
+            "$ref": "#/components/schemas/PlannerPermissionMode",
+            "description": "The stored mode, echoed rather than assumed."
           }
         }
       },

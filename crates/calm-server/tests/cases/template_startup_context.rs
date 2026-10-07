@@ -250,9 +250,11 @@ async fn template_startup_snapshot_is_server_owned_and_sticky() {
     }
     let mut replacement = planner["payload"].clone();
     let replacement_map = replacement.as_object_mut().unwrap();
-    replacement_map.remove("template_context");
-    // Also server-owned (#1791): a client echo of it is refused on its own.
-    replacement_map.remove("planner_provider");
+    // Every server-owned key (`planner_provider` #1791, `permission_mode` #2348 too): a client
+    // echo of any of them is refused on its own.
+    for key in calm_server::validation::SERVER_OWNED_CARD_PAYLOAD_KEYS {
+        replacement_map.remove(key);
+    }
     let (status, patched) = request(
         &b,
         "PATCH",

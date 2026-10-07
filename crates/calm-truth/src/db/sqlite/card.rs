@@ -220,6 +220,36 @@ pub async fn card_update_tx(
     card_update_inner_tx(tx, existing, p).await
 }
 
+/// The one writer of a Planner card's `permission_mode` (#2348). `card_update_tx` keeps the stored
+/// value sticky, so it cannot be the writer; this replaces just that key. `accepts` judges the card
+/// as read in this transaction, so the check and the write cannot see different rows.
+pub async fn planner_permission_mode_set_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    mode: calm_types::harness::PlannerPermissionMode,
+    accepts: impl FnOnce(&Card) -> Result<()>,
+) -> Result<Card> {
+    let mut card = card_for_update_tx(tx, id).await?;
+    accepts(&card)?;
+    let Some(map) = card.payload.as_object_mut() else {
+        return Err(CalmError::Internal(format!(
+            "planner card {id} payload is not a JSON object"
+        )));
+    };
+    map.insert(
+        crate::validation::PLANNER_PERMISSION_MODE_PAYLOAD_KEY.to_owned(),
+        serde_json::to_value(mode)?,
+    );
+    card.updated_at = now_ms();
+    sqlx::query(r#"UPDATE cards SET payload = ?1, updated_at = ?2 WHERE id = ?3"#)
+        .bind(serde_json::to_string(&card.payload)?)
+        .bind(card.updated_at)
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(card)
+}
+
 /// Track-report-only update that rewrites the `payload` JSON AND the opaque `body_crdt` blob in one transaction,
 /// so the JSON cache and the CRDT authoritative bytes never drift. `card_update_tx` never touches `body_crdt`.
 pub async fn card_update_with_crdt_tx(

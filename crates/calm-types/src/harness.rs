@@ -87,3 +87,26 @@ pub struct HarnessLiveReply {
     pub item_id: String,
     pub text: String,
 }
+
+/// Whether a Planner card's provider may ask the person before it acts outside its sandbox
+/// (#2348). Stored on the card as the server-owned payload key `permission_mode`; every Planner
+/// card is created `never`, and only `PUT /api/cards/{id}/planner/permission-mode` changes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub enum PlannerPermissionMode {
+    /// The provider never asks: an action outside the sandbox fails.
+    Never,
+    /// The provider asks the person and waits for the answer.
+    Ask,
+}
+
+/// `PUT /api/cards/{id}/planner/permission-mode`'s answer: the mode now stored on the card.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct SetPlannerPermissionModeResponse {
+    #[schema(value_type = String)]
+    pub card_id: crate::ids::CardId,
+    /// The stored mode, echoed rather than assumed.
+    pub permission_mode: PlannerPermissionMode,
+}

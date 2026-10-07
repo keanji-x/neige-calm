@@ -119,6 +119,10 @@ pub fn router() -> Router<AppState> {
             "/api/cards/{id}/planner/model",
             axum::routing::put(crate::routes::planner_model::set_planner_model),
         )
+        .route(
+            "/api/cards/{id}/planner/permission-mode",
+            axum::routing::put(crate::routes::planner_permission_mode::set_planner_permission_mode),
+        )
         .route("/api/cards/{id}/planner/run", get(get_planner_run))
         .route("/api/cards/{id}/planner/reset", post(reset_planner_card))
         .route(

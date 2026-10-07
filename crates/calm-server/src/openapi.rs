@@ -9,6 +9,7 @@ use crate::model::{
     NewArea, NewAreaFolder, NewCard, NewOverlay, NewTrack, Overlay, Plugin, Terminal, Track,
     TrackConversationSummary, TrackDetail, TrackPatch, TrackWorkspacePatch,
 };
+use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::report_backlinks::BacklinkQuote;
 use crate::routes::area_folders::ResolveQuery;
 use crate::routes::cards::{CreateCardBody, HarnessItemsQuery, ViaToolCall};
@@ -154,6 +155,7 @@ use utoipa::{Modify, OpenApi, ToSchema};
         crate::routes::planner_input::delete_planner_input,
         crate::routes::planner_input::steer_planner_input,
         crate::routes::planner_model::set_planner_model,
+        crate::routes::planner_permission_mode::set_planner_permission_mode,
         crate::routes::cards::delete_card,
         crate::routes::overlays::list_overlays,
         crate::routes::overlays::upsert_overlay,
@@ -346,6 +348,9 @@ use utoipa::{Modify, OpenApi, ToSchema};
         VersionInfo,
         crate::routes::planner_model::SetPlannerModelBody,
         crate::routes::planner_model::SetPlannerModelResponse,
+        crate::routes::planner_permission_mode::SetPlannerPermissionModeBody,
+        crate::routes::planner_permission_mode::SetPlannerPermissionModeResponse,
+        PlannerPermissionMode,
         CatalogModel,
         ReasoningEffortOption,
         ModelDefaults,

@@ -16,6 +16,7 @@ use crate::operation::planner_harness_start_adapter::{
 };
 use crate::operation::planner_start_fence::CardStartFence;
 use crate::operation::{OperationKey, OperationOutcome};
+use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::routes::idempotency_key::{calm_error_from_operation_failure, stable_payload_hash};
 use crate::routes::planner_session::dormant;
 use crate::session_projection_lookup::card_is_shared_planner;
@@ -133,6 +134,12 @@ pub struct GetPlannerRunResponse {
     pub model: Option<String>,
     /// The chosen reasoning effort, or `null` for the default. Same source as `model`.
     pub reasoning_effort: Option<String>,
+    /// The Planner's permission mode, read off the card like `model`; set with
+    /// `PUT /api/cards/{id}/planner/permission-mode`. `null` exactly when the card is not a
+    /// Planner (a PlainChat or Assistant conversation has no permission mode). A stored value that
+    /// cannot be read is reported as `never`.
+    #[schema(required = true, nullable = true)]
+    pub permission_mode: Option<PlannerPermissionMode>,
     /// Why this conversation's queue is not draining, or `null` when there is nothing worth saying: an undeterminable model/effort, a refused turn start, or a long codex outage. A client should render it as a standing notice, not a request error.
     /// A brief outage fills nothing, so `null` is not evidence that anything succeeded.
     pub blocked_reason: Option<String>,
@@ -378,6 +385,8 @@ pub(crate) async fn get_planner_run(
     // Unreadable model keys are reported as 'no selection' by this READ rather than as a 500; the turn-issuing path refuses on the same payload, so the conversation still stops but this surface can show why.
     let selection =
         crate::planner_model::CardModelSelection::from_payload(&card.payload).unwrap_or_default();
+    let permission_mode = crate::planner_permission_mode::card_has_permission_mode(&card, role)
+        .then(|| crate::planner_permission_mode::shown_for_planner(&card));
     // The same predicate the upload endpoint enforces, so the answer cannot drift from the refusal.
     let attachments_supported = match s.repo.track_get(card.track_id.as_str()).await? {
         Some(track) => {
@@ -392,6 +401,7 @@ pub(crate) async fn get_planner_run(
         phase: None,
         model: selection.model.clone(),
         reasoning_effort: selection.reasoning_effort.clone(),
+        permission_mode,
         // A dormant conversation has no harness to be blocked and nothing waiting.
         blocked_reason: None,
         token_usage: None,
@@ -444,6 +454,7 @@ pub(crate) async fn get_planner_run(
         phase: Some(snapshot.phase),
         model: selection.model,
         reasoning_effort: selection.reasoning_effort,
+        permission_mode,
         blocked_reason: harness.issuance_block().await,
         token_usage: snapshot
             .token_usage
