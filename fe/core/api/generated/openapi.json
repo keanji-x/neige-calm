@@ -4174,6 +4174,92 @@
         }
       }
     },
+    "/api/github/preview": {
+      "get": {
+        "tags": [
+          "github"
+        ],
+        "operationId": "read_github_preview",
+        "parameters": [
+          {
+            "name": "owner",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ReferenceKind"
+            }
+          },
+          {
+            "name": "number",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Issue or PR summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubPreview"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid GitHub reference",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`: no valid session cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "GitHub unavailable or inaccessible",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/mobile/access": {
       "get": {
         "tags": [
@@ -13602,6 +13688,57 @@
           }
         }
       },
+      "GitHubPreview": {
+        "type": "object",
+        "required": [
+          "kind",
+          "number",
+          "title",
+          "state",
+          "author",
+          "labels",
+          "excerpt",
+          "changes"
+        ],
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "changes": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PullChanges"
+              }
+            ]
+          },
+          "excerpt": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ReferenceKind"
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "number": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "state": {
+            "$ref": "#/components/schemas/PreviewState"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
       "GitStatusResponse": {
         "type": "object",
         "required": [
@@ -15148,6 +15285,15 @@
           }
         }
       },
+      "PreviewState": {
+        "type": "string",
+        "enum": [
+          "open",
+          "closed",
+          "merged",
+          "draft"
+        ]
+      },
       "ProviderAvailability": {
         "type": "object",
         "description": "One provider's current availability.",
@@ -15198,6 +15344,31 @@
           "not_configured"
         ]
       },
+      "PullChanges": {
+        "type": "object",
+        "required": [
+          "additions",
+          "deletions",
+          "changed_files"
+        ],
+        "properties": {
+          "additions": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "changed_files": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "deletions": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "ReadFileResponse": {
         "type": "object",
         "required": [
@@ -15243,6 +15414,13 @@
             "description": "A bare string, never a closed enum: codex's `ReasoningEffort` carries a\n`Custom(String)` variant and accepts any non-empty string on the wire."
           }
         }
+      },
+      "ReferenceKind": {
+        "type": "string",
+        "enum": [
+          "issue",
+          "pull"
+        ]
       },
       "ReportBlock": {
         "type": "object",

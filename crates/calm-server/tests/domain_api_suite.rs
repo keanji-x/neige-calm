@@ -39,6 +39,8 @@ mod extractor_rejections;
 mod frozen_gate_vectors;
 #[path = "cases/frozen_gate_vectors_transport.rs"]
 mod frozen_gate_vectors_transport;
+#[path = "cases/github_preview.rs"]
+mod github_preview;
 #[path = "cases/head_schema_fixture.rs"]
 mod head_schema_fixture;
 #[path = "cases/in_process_renderer_e2e.rs"]

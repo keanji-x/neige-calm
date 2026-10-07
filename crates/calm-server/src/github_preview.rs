@@ -51,6 +51,7 @@ pub struct GitHubPreview {
     pub author: String,
     pub labels: Vec<String>,
     pub excerpt: String,
+    #[schema(required = true)]
     pub changes: Option<PullChanges>,
 }
 
