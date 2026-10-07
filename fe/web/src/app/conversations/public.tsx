@@ -207,6 +207,12 @@ export type ConversationRegistry = Readonly<{
   queueWriteOutOf: (cardId: string) => boolean;
   /** Run one write to that card's queued entries, counted as out until it settles. */
   holdQueueWrite: <T>(cardId: string, write: () => Promise<T>) => Promise<T>;
+  /** Whether a restart of one card's session is unanswered, held here so a remount or another route sees it still out
+   * (#2192). */
+  restartOutOf: (cardId: string) => boolean;
+  /** Run one restart of that card's session, or `null` while one is out: each restart replaces the session the one
+   * before it started. */
+  holdRestart: (cardId: string, restart: () => Promise<void>) => Promise<void> | null;
   /* Deliberately no "open the planner conversation of track W" slot: the track being left is still
        mounted when a create states it, so that intent travels in the history entry instead. */
 }>;
@@ -360,6 +366,17 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     })();
   }, []);
   const queueWriteOutOf = useCallback((cardId: string) => cardId in queueWrites, [queueWrites]);
+  const restartsRef = useRef<ReadonlySet<string>>(new Set());
+  const [restarts, setRestarts] = useState(restartsRef.current);
+  const holdRestart = useCallback((cardId: string, restart: () => Promise<void>): Promise<void> | null => {
+    if (restartsRef.current.has(cardId)) return null;
+    const write = (next: ReadonlySet<string>) => { restartsRef.current = next; setRestarts(next); };
+    write(new Set([...restartsRef.current, cardId]));
+    return Promise.resolve().then(restart).finally(() => {
+      write(new Set([...restartsRef.current].filter((out) => out !== cardId)));
+    });
+  }, []);
+  const restartOutOf = useCallback((cardId: string) => restarts.has(cardId), [restarts]);
   const noteEdit = useCallback((conversationId: string, notice: EditNotice) => {
     setEditNotices((current) => ({ ...current, [conversationId]: notice }));
   }, []);
@@ -466,10 +483,10 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
       outboxOf, beginSend, editOutbox, retireSends, spentRowsOf, nextRead,
       composerOf, editComposer, refillComposer, newConversationComposerOf, editNewConversationComposer,
       editOf, beginEdit, cancelEdit, leaveEdit, noteRefusedSend, noteRestarted, editNoticeOf, uploadOf, editUpload,
-      queueWriteOutOf, holdQueueWrite,
+      queueWriteOutOf, holdQueueWrite, restartOutOf, holdRestart,
     }),
     [adoptDraft, adoptedDraftIdOf, clearOpenRequest, conversations, discardDraft,
-      composerOf, discardUnsentDraft, draftOf, editComposer, refillComposer, queueWriteOutOf, holdQueueWrite, editDraft, editNewConversationComposer, newConversationComposerOf, editUpload, finishDraftAdoption, editOf, beginEdit, cancelEdit, leaveEdit, noteRefusedSend, noteRestarted, editNoticeOf, uploadOf, outboxOf, beginSend, editOutbox, retireSends, spentRowsOf, nextRead,
+      composerOf, discardUnsentDraft, draftOf, editComposer, refillComposer, queueWriteOutOf, holdQueueWrite, restartOutOf, holdRestart, editDraft, editNewConversationComposer, newConversationComposerOf, editUpload, finishDraftAdoption, editOf, beginEdit, cancelEdit, leaveEdit, noteRefusedSend, noteRestarted, editNoticeOf, uploadOf, outboxOf, beginSend, editOutbox, retireSends, spentRowsOf, nextRead,
       remember, requestOpen,
       requestedOpenFocusesComposer, requestedOpenId, startDraft, turnsOf,
       updateExisting],

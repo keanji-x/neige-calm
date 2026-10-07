@@ -32,9 +32,7 @@ export function useConversationRestart({ cardId, stalled, restart }: {
   /** `POST …/planner/restart` for this card, settled once the run state read after it has landed. */
   restart: () => Promise<unknown>;
 }) {
-  const { editNoticeOf, noteRestarted, composerOf } = useConversationRegistry();
-  const leases = useRef(new Set<string>());
-  const [pendingFor, setPendingFor] = useState<ReadonlySet<string>>(() => new Set());
+  const { editNoticeOf, noteRestarted, composerOf, holdRestart, restartOutOf } = useConversationRegistry();
   const [failure, setFailure] = useState<Readonly<{ cardId: string; message: string }> | null>(null);
   const shownCardId = useRef(cardId);
   shownCardId.current = cardId;
@@ -52,24 +50,15 @@ export function useConversationRestart({ cardId, stalled, restart }: {
 
   const start = () => {
     const startedFor = cardId;
-    if (startedFor === '' || !offered || leases.current.has(startedFor)) return;
-    leases.current.add(startedFor);
-    setPendingFor((current) => new Set([...current, startedFor]));
-    setFailure(null);
-    void Promise.resolve().then(restart).then(() => { noteRestarted(startedFor); }, (cause: unknown) => {
+    if (startedFor === '' || !offered) return;
+    const held = holdRestart(startedFor, () => restart().then(() => { noteRestarted(startedFor); }, (cause: unknown) => {
       if (shownCardId.current === startedFor) setFailure({ cardId: startedFor, message: restartFailureText(writeFailureOf(cause)) });
-    }).finally(() => {
-      leases.current.delete(startedFor);
-      setPendingFor((current) => {
-        const next = new Set(current);
-        next.delete(startedFor);
-        return next;
-      });
-    });
+    }));
+    if (held !== null) setFailure(null);
   };
   return {
     strip,
-    pending: pendingFor.has(cardId),
+    pending: restartOutOf(cardId),
     start,
     /** A send went out: a failed restart's sentence goes, as the notice it was beside does. */
     clearError: () => { setFailure((current) => current?.cardId === cardId ? null : current); },

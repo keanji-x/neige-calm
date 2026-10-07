@@ -146,7 +146,7 @@ export function useLiveReplies({ transport, unauthorized, cardId, enabled, phase
   const rereadAfter = useRef<number | null>(null);
   const reread = useCallback(() => {
     rereadAfter.current = transcriptReads.latest();
-    cancelThenInvalidate(client, transcriptKey);
+    void cancelThenInvalidate(client, transcriptKey);
   }, [client, transcriptKey, transcriptReads]);
   useEffect(() => {
     if (phase === null || !awaitsSettling(visible, phase)) return;

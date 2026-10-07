@@ -628,13 +628,22 @@ describe('track conversations', () => {
       requests.filter((request) => request.method === 'POST' && request.path.endsWith(suffix));
     /** The card is dormant until a restart is answered; `restartAnswer` answers each restart, `wedged` pauses the run. */
     function mountRecovery({ restartAnswer = () => ok({ card_id: ASSISTANT_CARD.id, terminal_id: '', new_thread_id: 't2' }),
-      wedged = false }: { restartAnswer?: () => ApiTransportResponse; wedged?: boolean } = {}) {
+      wedged = false, runAnswer }: {
+      restartAnswer?: () => ApiTransportResponse | Promise<ApiTransportResponse>;
+      wedged?: boolean;
+      /** Answers a run read before the defaults do; `undefined` falls through to them. */
+      runAnswer?: () => Promise<ApiTransportResponse> | undefined;
+    } = {}) {
       let restarted = false;
-      const mounted = setup((request) => {
+      const mounted = setup(async (request) => {
         if (request.path.endsWith('/planner/restart')) {
-          const answer = restartAnswer();
+          const answer = await restartAnswer();
           restarted = answer.status === 200;
           return answer;
+        }
+        if (request.path.endsWith('/planner/run') && request.path.includes(ASSISTANT_CARD.id)) {
+          const held = runAnswer?.();
+          if (held !== undefined) return held;
         }
         if (request.path.endsWith('/planner/run') && wedged && !restarted) {
           return ok({ card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'wedged', model: null, reasoning_effort: null,
@@ -701,6 +710,56 @@ describe('track conversations', () => {
       expect(posts(requests, '/planner/restart')).toHaveLength(1);
       expect(posts(requests, '/planner/input')).toHaveLength(1);
       expect(posts(requests, '/planner/reset')).toHaveLength(0);
+    });
+
+    /* The lease is the registry's: a remount must not offer a second restart while the first is out, since each one
+       replaces the session the one before it started. */
+    it('keeps a restart that is still out busy across a remount, and posts it once', async () => {
+      let answer!: (response: ApiTransportResponse) => void;
+      const held = new Promise<ApiTransportResponse>((resolve) => { answer = resolve; });
+      const { requests, router } = mountRecovery({ wedged: true, restartAnswer: () => held });
+      await openAssistant();
+      await within(drawerElement()).findByText(/session is stuck/);
+      await act(async () => { fireEvent.click(restartButton()); await Promise.resolve(); });
+      await waitFor(() => expect(posts(requests, '/planner/restart')).toHaveLength(1));
+      expect(restartButton().hasAttribute('disabled')).toBe(true);
+
+      /* Another track's route, then back: the conversation's store mounts afresh. */
+      await act(async () => { await router.navigate({ to: '/track/w2' }); });
+      await screen.findByText('No conversations yet.');
+      await act(async () => { await router.navigate({ to: '/track/w1' }); });
+      fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
+      await screen.findByRole('complementary', { name: 'Assistant' });
+      await within(drawerElement()).findByText(/session is stuck/);
+      expect(restartButton().hasAttribute('disabled')).toBe(true);
+      await act(async () => { fireEvent.click(restartButton()); await Promise.resolve(); });
+      expect(posts(requests, '/planner/restart')).toHaveLength(1);
+
+      await act(async () => { answer(ok({ card_id: ASSISTANT_CARD.id, terminal_id: '', new_thread_id: 't2' })); await held; });
+      await within(drawerElement()).findByText(/Fresh session started/);
+      expect(posts(requests, '/planner/restart')).toHaveLength(1);
+    });
+
+    /* TanStack hands an invalidation a read still in flight with no data yet; the restart must stand on a read
+       started after its answer, not on one from before it. */
+    it('settles a restart on a run read started after its answer, not one still out from before', async () => {
+      let first = true;
+      const firstRead = new Promise<ApiTransportResponse>(() => undefined);
+      const { requests } = mountRecovery({ runAnswer: () => {
+        if (!first) return undefined;
+        first = false;
+        return firstRead;
+      } });
+      await openAssistant();
+      await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+      await write('sent while the first read is out');
+      await screen.findByRole('alert');
+      const runReads = () => requests.filter((request) => request.path.endsWith(`/cards/${ASSISTANT_CARD.id}/planner/run`)).length;
+      expect(runReads()).toBe(1);
+
+      await act(async () => { fireEvent.click(restartButton()); await Promise.resolve(); });
+      await within(drawerElement()).findByText(/Fresh session started/);
+      expect(runReads()).toBe(2);
     });
 
     it('offers it while the conversation is paused, and Send works once it started', async () => {

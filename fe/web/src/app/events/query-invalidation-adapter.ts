@@ -26,7 +26,7 @@ function invalidateMappedQuery(client: QueryCachePort, queryKey: readonly unknow
     void client.invalidateQueries({ queryKey });
     return;
   }
-  cancelThenInvalidate(client, queryKey);
+  void cancelThenInvalidate(client, queryKey);
 }
 
 /** Translates one planned key onto a `queryKeys` key, or `null` when the built surface has no query for it. */
@@ -64,7 +64,7 @@ export function applyEventEffects(client: QueryCachePort, effects: readonly Even
     if (effect.type === 'invalidate') {
       // A null key set is the reducer's "everything is suspect" signal after a replay.
       if (effect.keys === null) {
-        cancelThenInvalidate(client, queryKeys.overlaysByKind('track'), null);
+        void cancelThenInvalidate(client, queryKeys.overlaysByKind('track'), null);
         continue;
       }
       for (const key of effect.keys) {

@@ -231,7 +231,7 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
   /* As `refreshAfter`, but each read is cancelled first: the query layer would otherwise hand back a read still in
      flight from before the answer, and only a read started after it can stand for a send answered after an unknown attempt. */
   const refreshAfterSend = <T,>(result: T): T => {
-    for (const queryKey of [transcriptKey, queryKeys.plannerRun(cardId)]) cancelThenInvalidate(client, queryKey);
+    for (const queryKey of [transcriptKey, queryKeys.plannerRun(cardId)]) void cancelThenInvalidate(client, queryKey);
     return result;
   };
   return {
@@ -251,7 +251,7 @@ export function usePlannerMutations(transport: ApiTransportPort, cardId: string,
     restart: () => {
       const reread = () => {
         void refreshTranscript().catch(() => undefined);
-        return client.invalidateQueries({ queryKey: queryKeys.plannerRun(cardId) }).catch(() => undefined);
+        return cancelThenInvalidate(client, queryKeys.plannerRun(cardId));
       };
       return Promise.resolve().then(() => admitTransport(transport))
         .then((admitted) => runOperation(admitted, restartPlannerOperation(cardId), unauthorized))
@@ -859,7 +859,7 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
     // Reconcile both list-derived surfaces even if abort raced a committed DELETE.
     onSettled: (_result, _error, variables) => {
       void client.invalidateQueries({ queryKey: queryKeys.tracksInArea(variables.areaId) });
-      cancelThenInvalidate(client, queryKeys.overlaysByKind('track'));
+      void cancelThenInvalidate(client, queryKeys.overlaysByKind('track'));
     },
   });
   /* The card creates answer with the row the kernel just wrote and the next render needs it: the caller
@@ -904,7 +904,7 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
     onError: (error, variables) => { if (deleteDone(error)) dropCard(undefined, variables); },
     onSettled: (_result, _error, { trackId }) => {
       void client.invalidateQueries({ queryKey: queryKeys.trackDetail(trackId) });
-      cancelThenInvalidate(client, queryKeys.overlaysByKind('track'));
+      void cancelThenInvalidate(client, queryKeys.overlaysByKind('track'));
     },
   });
   /* No cache write and no invalidation: the projector's `overlay.set` is what drops the row, and a
