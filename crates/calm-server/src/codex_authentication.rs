@@ -140,7 +140,7 @@ impl CodexAuthentication {
         Some(AuthenticationNotice {
             kind,
             text: text.into(),
-            revision: state.saved.revision.to_string(),
+            revision: format!("{}:{}", state.saved.revision_scope, state.saved.revision),
         })
     }
     pub(crate) fn hold(&self) -> Option<String> {
@@ -169,6 +169,10 @@ impl CodexAuthentication {
         };
         if let Some(problem) = AuthenticationFailure::from_message(message) {
             let mut state = self.state.lock().expect("authentication mutex");
+            if !state.loaded {
+                state.saved.reported = true;
+                return;
+            }
             if stamp.generation == state.saved.generation
                 && stamp.connection_epoch == state.connection_epoch
             {
@@ -190,14 +194,16 @@ impl CodexAuthentication {
     }
     /// Owner authorizes a retry, not a credential repair claim. Persist the intent before opening issuance.
     pub(crate) fn request_retry(&self, expected: &str) -> Result<String> {
-        let expected = expected
-            .parse::<u64>()
-            .map_err(|_| CalmError::BadRequest("Invalid sign-in state revision".into()))?;
+        if expected.len() > 128 {
+            return Err(CalmError::BadRequest(
+                "Invalid sign-in state revision".into(),
+            ));
+        }
         let mut state = self.state.lock().expect("authentication mutex");
         if !state.loaded || state.persistence_error {
             return Err(CalmError::ServiceUnavailable(STATE_UNAVAILABLE.into()));
         }
-        if state.saved.revision != expected {
+        if format!("{}:{}", state.saved.revision_scope, state.saved.revision) != expected {
             return Err(CalmError::Conflict(
                 "Codex sign-in state changed; read its current status before retrying.".into(),
             ));
@@ -219,7 +225,10 @@ impl CodexAuthentication {
         if state.persistence_error {
             return Err(CalmError::ServiceUnavailable(STATE_UNAVAILABLE.into()));
         }
-        Ok(state.saved.revision.to_string())
+        Ok(format!(
+            "{}:{}",
+            state.saved.revision_scope, state.saved.revision
+        ))
     }
     #[cfg(any(test, feature = "fixtures"))]
     pub(crate) fn observe(&self, notification: &Notification) {
@@ -238,6 +247,9 @@ impl CodexAuthentication {
         let before = state.saved.clone();
         match notification {
             Notification::TurnStarted { thread_id, turn } => {
+                if !state.loaded {
+                    return;
+                }
                 if let Some(id) = turn.get("id").and_then(serde_json::Value::as_str) {
                     let generation = state.saved.generation;
                     state
@@ -317,6 +329,14 @@ impl CodexAuthentication {
         generation: Option<u64>,
         error: Option<&serde_json::Value>,
     ) {
+        if !state.loaded {
+            state.saved.reported |= error
+                .and_then(|e| e.get("message"))
+                .and_then(serde_json::Value::as_str)
+                .and_then(AuthenticationFailure::from_message)
+                .is_some();
+            return;
+        }
         let generation = generation.or((state.saved.generation == 0).then_some(0));
         if generation != Some(state.saved.generation) {
             return;
@@ -337,10 +357,7 @@ impl CodexAuthentication {
         state.stderr_source = source;
         if !state.loaded {
             if let Ok(mut saved) = store.load() {
-                if state.saved.evidence.confirmed().is_some() {
-                    saved.evidence = state.saved.evidence.clone();
-                    state.dirty = true;
-                }
+                state.turns.clear();
                 saved.reported |= state.saved.reported;
                 state.saved = saved;
                 state.loaded = true;

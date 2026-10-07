@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { agentProviderSchema, type AgentProvider } from '../api/schemas.js';
 import type { ApiOperation } from '../api/types.js';
 import type { ProbeText } from './read-failure.js';
+import { NotSentError, writeClassOf, writeFailureOf, type FailureTable, type WriteClass, type WriteText } from './failure-class.js';
 
 const checkedAtSchema = z.number();
 const authenticationNoticeSchema = z.object({
@@ -74,4 +75,19 @@ export type AuthenticationRetryResponse = z.infer<typeof authenticationRetryResp
 export function codexAuthenticationRetryOperation(revision: string): ApiOperation<AuthenticationRetryResponse> {
   return { method: 'POST', path: '/api/agent-providers/codex/retry',
     body: { expected_revision: revision }, responseSchema: authenticationRetryResponseSchema };
+}
+
+/** Definite refusals precede the durable rearm. A 503 may follow its commit, so it is unknown. */
+export const AUTHENTICATION_RETRY_FAILURES: FailureTable<WriteClass> = Object.freeze({
+  rules: Object.freeze([Object.freeze({ status: Object.freeze([400, 403, 409]), is: 'refused' as const })]),
+  unauthorized: 'refused', otherwise: 'unknown',
+});
+export const AUTHENTICATION_RETRY_TEXT: WriteText = Object.freeze({
+  refused: 'The retry was not allowed. Read the current provider status before trying again.',
+  unknown: 'The retry could not be confirmed. Read the current provider status before trying again.',
+});
+export function authenticationRetryFailureText(error: unknown): string {
+  if (writeFailureOf(error) instanceof NotSentError) return 'Not sent. Reconnect before retrying queued messages.';
+  return writeClassOf(error, AUTHENTICATION_RETRY_FAILURES) === 'refused'
+    ? AUTHENTICATION_RETRY_TEXT.refused : AUTHENTICATION_RETRY_TEXT.unknown;
 }

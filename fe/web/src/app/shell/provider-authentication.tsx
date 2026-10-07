@@ -24,7 +24,7 @@ export function ProviderAuthenticationNotice({ transport, unauthorized, onOpenPl
     {notices.map(({ provider, notice }) => <div key={provider} data-nc-auth-notice={notice.kind}>
       <ErrorBox message={notice.text} onRetry={onOpenPlanners} actionLabel="Settings"
         description={notice.kind === 'sign_in_required'
-          ? 'Queued messages are kept. They will continue after the server confirms a successful sign-in.'
+          ? 'Queued messages are kept. After signing in for this server, open Settings to allow them to retry.'
           : notice.kind === 'retry_requested'
             ? 'If the current sign-in still fails, the messages will stay queued.'
           : notice.kind === 'refresh_error_reported'

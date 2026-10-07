@@ -35,6 +35,9 @@ const TRACK: Track = {
 // Read when `useWorkspace` is called, so a case may hand the shell its own rows.
 let workspaceTracks: readonly Track[] = [TRACK];
 
+// Authentication notifications have their own real query and browser coverage; this contract isolates navigation.
+vi.mock('./provider-authentication.tsx', () => ({ ProviderAuthenticationNotice: () => null }));
+
 vi.mock('../providers/queries.ts', () => ({
   useWorkspace: () => ({
     areas: [AREA], tracks: workspaceTracks, tracksByArea: new Map([['c1', workspaceTracks]]), trackErrorsByArea: new Map(), tracksLoadingByArea: new Map(),

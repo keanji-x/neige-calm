@@ -52,6 +52,7 @@ pub(super) struct Checkpoint {
     pub generation: u64,
     pub evidence: Evidence,
     pub revision: u64,
+    pub revision_scope: uuid::Uuid,
     pub reported: bool,
     pub cursor: LogCursor,
 }
@@ -64,6 +65,7 @@ impl Checkpoint {
             generation: 0,
             evidence: Evidence::Clear,
             revision: 0,
+            revision_scope: uuid::Uuid::new_v4(),
             reported: false,
             cursor: LogCursor::default(),
         }

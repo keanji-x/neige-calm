@@ -42,7 +42,7 @@ it('surfaces a report while ready and performs no login or reset', async () => {
 it('keeps queued reassurance and clears on a later server answer', async () => {
   const app = mount(entry('sign_in_required'));
   await screen.findByText(REQUIRED);
-  expect(screen.getByText('Queued messages are kept. They will continue after the server confirms a successful sign-in.')).toBeTruthy();
+  expect(screen.getByText('Queued messages are kept. After signing in for this server, open Settings to allow them to retry.')).toBeTruthy();
   app.update(entry(null));
   await app.client.invalidateQueries({ queryKey: queryKeys.agentProviders() });
   await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());

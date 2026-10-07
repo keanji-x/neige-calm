@@ -327,3 +327,48 @@ fn old_connection_cannot_clear_or_reassert_current_authentication_state() {
     assert_eq!(auth.hold(), None);
     assert_eq!(observer(tmp.path()).hold(), None);
 }
+
+#[test]
+fn unreadable_storage_does_not_assign_unknown_native_errors_a_confirmed_generation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let original = observer(tmp.path());
+    login(&original);
+    login(&original);
+    original.record(original.generation(), ERROR);
+    let before = std::fs::read(tmp.path().join("checkpoint.json")).unwrap();
+    let original_revision = original.notice().unwrap().revision;
+    std::fs::write(tmp.path().join("checkpoint.json"), "unreadable checkpoint").unwrap();
+    let unknown = observer(tmp.path());
+    unknown.record(
+        0,
+        "Your access token could not be refreshed because your refresh token was revoked.",
+    );
+    assert_eq!(
+        unknown.problem(),
+        None,
+        "without a restored generation a native error is only diagnostic evidence"
+    );
+    std::fs::write(tmp.path().join("checkpoint.json"), before).unwrap();
+    unknown.poll(None);
+    assert_eq!(unknown.problem(), Some(AuthenticationFailure::Reused));
+    assert_eq!(unknown.notice().unwrap().revision, original_revision);
+}
+
+#[test]
+fn replacing_lost_checkpoint_after_verified_login_uses_a_new_revision_scope() {
+    let tmp = tempfile::tempdir().unwrap();
+    let old = observer(tmp.path());
+    old.record(0, ERROR);
+    let revision = old.notice().unwrap().revision;
+    std::fs::write(tmp.path().join("checkpoint.json"), "lost checkpoint").unwrap();
+    let fresh = observer(tmp.path());
+    login(&fresh);
+    fresh.record(fresh.generation(), ERROR);
+    assert_ne!(
+        fresh.notice().unwrap().revision,
+        revision,
+        "sequence reuse cannot revive an old owner CAS token"
+    );
+    assert!(fresh.request_retry(&revision).is_err());
+    assert!(fresh.hold().is_some());
+}

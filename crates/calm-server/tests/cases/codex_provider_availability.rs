@@ -510,3 +510,43 @@ async fn rotated_stderr_still_observes_the_daemons_open_log_file() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 }
+
+#[tokio::test]
+async fn a_hold_arriving_during_connection_acquisition_prevents_native_dispatch() {
+    use std::future::Future;
+    use std::task::Poll;
+    let boot =
+        boot_with_account(json!({"account":{"type":"apiKey"},"requiresOpenaiAuth":true})).await;
+    let daemon = &boot.state.shared_codex_appserver;
+    let guard = daemon.hold_connection_read_for_test().await;
+    let selection = calm_server::planner_model::TurnModelSelection::inherit();
+    let mut call = std::pin::pin!(daemon.turn_start(
+        "held-thread",
+        vec![calm_server::codex_appserver::InputItem::text(
+            "must stay queued"
+        )],
+        &selection,
+        None
+    ));
+    std::future::poll_fn(|cx| {
+        assert!(
+            call.as_mut().poll(cx).is_pending(),
+            "the real connection read is held"
+        );
+        Poll::Ready(())
+    })
+    .await;
+    daemon.emit_notification_for_test(calm_server::codex_appserver::Notification::Other {method:"error".into(),params:json!({"error":{"message":"Your access token could not be refreshed because your refresh token was already used."}})});
+    drop(guard);
+    assert!(
+        call.await.is_err(),
+        "a newly held request cannot dispatch after obtaining the client"
+    );
+    assert!(
+        !boot
+            .methods_seen()
+            .iter()
+            .any(|method| method == "turn/start"),
+        "no native request is sent through the admission gap"
+    );
+}

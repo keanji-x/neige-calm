@@ -3,7 +3,7 @@ import { useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { codexAuthenticationRetryOperation, type AuthenticationRetryResponse } from '../../../../core/domain/agent-providers.ts';
+import { codexAuthenticationRetryOperation, authenticationRetryFailureText, type AuthenticationRetryResponse } from '../../../../core/domain/agent-providers.ts';
 import { useState } from '../../ui/state/public.ts';
 import { useRecoveryMutation } from './recovery-mutation.ts';
 import { queryKeys, runOperation } from './queries.ts';
@@ -17,7 +17,7 @@ export function useCodexAuthenticationRetry(transport: ApiTransportPort, unautho
     mutationFn: (revision: string, admitted: ApiTransportPort) => runOperation(admitted, codexAuthenticationRetryOperation(revision), unauthorized),
     onMutate: () => { setState({ error: null, notices: [] }); },
     onSuccess: (answer) => { setState({ error: null, notices: answer.recovery_notices }); },
-    onError: () => { setState({ error: 'The retry could not be confirmed. Read the current provider status before trying again.', notices: [] }); },
+    onError: (error) => { setState({ error: authenticationRetryFailureText(error), notices: [] }); },
     onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.agentProviders() }); },
   });
   return {

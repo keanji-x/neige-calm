@@ -159,6 +159,9 @@ describe('AppShell Area editor flow', () => {
   function areaTransport(replies: (() => ApiTransportResponse)[]) {
     const writes: ApiRequest[] = [];
     const transport: ApiTransportPort = { send: (request) => {
+      if (request.path === '/api/agent-providers') {
+        return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
+      }
       if (request.path === '/api/version') {
         return Promise.resolve({ status: 200, statusText: 'OK', body: { areaCreateIdempotency: true } });
       }

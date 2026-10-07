@@ -669,6 +669,11 @@ const MODEL_LIST_MAX_PAGES: usize = 20;
 
 pub type NotificationFanout = broadcast::Sender<Notification>;
 
+#[cfg(feature = "fixtures")]
+pub struct ConnectionReadGuard<'a> {
+    _guard: tokio::sync::MutexGuard<'a, SupervisorCore>,
+}
+
 pub struct SharedCodexAppServer {
     sock: PathBuf,
     kernel_mcp_socket_path: PathBuf,
@@ -1413,7 +1418,7 @@ impl SharedCodexAppServer {
             }
             return Ok(turn_id);
         }
-        let client = self.connected_client().await?;
+        let client = self.authenticated_client().await?;
         let turn = self
             .authentication_rpc(
                 &client,
@@ -1690,7 +1695,7 @@ impl SharedCodexAppServer {
                 Some(active) => Ok(active),
             };
         }
-        let client = self.connected_client().await?;
+        let client = self.authenticated_client().await?;
         let steered = self
             .authentication_rpc(
                 &client,
@@ -1733,7 +1738,7 @@ impl SharedCodexAppServer {
         match fake_answer {
             Some(answer) => crate::codex_appserver::thread_revert_outcome(answer)?,
             None => {
-                self.connected_client()
+                self.authenticated_client()
                     .await?
                     .thread_revert(thread_id, before_turn_id)
                     .await?
@@ -1759,7 +1764,7 @@ impl SharedCodexAppServer {
                 .push(thread_id.into());
             return Ok(());
         }
-        self.connected_client()
+        self.authenticated_client()
             .await?
             .thread_compact_start(thread_id)
             .await?;
@@ -2186,6 +2191,20 @@ enum AdoptProbe {
 }
 
 impl SharedCodexAppServer {
+    #[cfg(feature = "fixtures")]
+    pub async fn hold_connection_read_for_test(&self) -> ConnectionReadGuard<'_> {
+        ConnectionReadGuard {
+            _guard: self.core.lock().await,
+        }
+    }
+
+    /// Revalidate after the last connection await, immediately before admitting a native write.
+    async fn authenticated_client(&self) -> Result<Arc<CodexAppServer>> {
+        let client = self.connected_client().await?;
+        self.require_authentication()?;
+        Ok(client)
+    }
+
     async fn connected_client(&self) -> Result<Arc<CodexAppServer>> {
         self.running_client()
             .await
