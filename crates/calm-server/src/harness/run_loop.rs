@@ -899,7 +899,9 @@ impl PlannerHarness {
 
     /// Called by the registry when this handle becomes its `Live` slot (#1791 §5.1 item 2).
     pub(crate) fn mark_installed(&self) {
-        self.inner.backend.mark_installed();
+        self.inner
+            .backend
+            .mark_installed(&self.inner.held_request_sender);
         self.inner.live_claim.install();
     }
 

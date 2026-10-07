@@ -204,6 +204,7 @@ fn variant(record: &Record) -> &'static str {
         Record::ResultError(_) => "ResultError",
         Record::ControlResponseIn { .. } => "ControlResponseIn",
         Record::ControlRequestIn { .. } => "ControlRequestIn",
+        Record::ControlCancelRequestIn { .. } => "ControlCancelRequestIn",
         Record::Ignored { .. } => "Ignored",
     }
 }
@@ -519,6 +520,24 @@ fn results_and_control_responses_decode_to_their_recorded_shapes() {
             _ => None,
         });
     assert_eq!(set_model, Some(None));
+}
+
+/// #2348: the line 2.1.280 wrote when an interrupt arrived while a `can_use_tool` waited on its
+/// answer (no fixture records one, so the coverage test above does not list it).
+#[test]
+fn a_control_cancel_request_names_the_request_it_withdraws() {
+    let line =
+        r#"{"type":"control_cancel_request","request_id":"e773cdf6-1b72-4980-a79a-c252b961e373"}"#;
+    assert_eq!(
+        decode(line).unwrap(),
+        Record::ControlCancelRequestIn {
+            request_id: "e773cdf6-1b72-4980-a79a-c252b961e373".into()
+        }
+    );
+    assert!(matches!(
+        decode(r#"{"type":"control_cancel_request"}"#),
+        Err(ProtocolError::Shape { .. })
+    ));
 }
 
 #[test]

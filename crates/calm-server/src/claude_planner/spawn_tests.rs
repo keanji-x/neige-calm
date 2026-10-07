@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::planner_model::TurnModelSelection;
+use crate::planner_permission_mode::PlannerPermissionMode;
 
 use super::spawn::{EnvInputs, SessionStart, argv, base_env, passthrough_keys, settings_json};
 
@@ -16,11 +17,21 @@ fn args(start: SessionStart, cwd: &str) -> Vec<String> {
 }
 
 fn args_with(start: SessionStart, selection: &TurnModelSelection, cwd: &str) -> Vec<String> {
+    args_in(PlannerPermissionMode::Never, start, selection, cwd)
+}
+
+fn args_in(
+    mode: PlannerPermissionMode,
+    start: SessionStart,
+    selection: &TurnModelSelection,
+    cwd: &str,
+) -> Vec<String> {
     argv(
         Uuid::parse_str(THREAD).unwrap(),
         start,
         None,
         selection,
+        mode,
         Path::new(cwd),
         Path::new("/opt/neige/neige-mcp-stdio-shim"),
         Path::new("/data/claude-planner/tmp/ws1-turn1.md"),
@@ -60,7 +71,7 @@ fn argv_is_exactly_the_spawn_contract() {
         "--permission-prompts",
         "none",
         "--allowedTools",
-        "Bash Read ToolSearch WebFetch WebSearch mcp__neige Edit(//ws/track/**) Write(//ws/track/**)",
+        "Bash Read ToolSearch WebFetch WebSearch mcp__neige Edit(//ws/track/**)",
         "--append-system-prompt-file",
         "/data/claude-planner/tmp/ws1-turn1.md",
     ]
@@ -121,7 +132,9 @@ fn a_resumed_session_names_the_thread_with_resume() {
         .expect("--resume");
     assert_eq!(got[at + 1], THREAD);
     assert!(!got.iter().any(|arg| arg == "--session-id"));
-    assert!(got.contains(&"Bash Read ToolSearch WebFetch WebSearch mcp__neige Edit(//ws/track/**) Write(//ws/track/**)".to_string()));
+    assert!(got.contains(
+        &"Bash Read ToolSearch WebFetch WebSearch mcp__neige Edit(//ws/track/**)".to_string()
+    ));
 }
 
 #[test]
@@ -142,19 +155,131 @@ fn the_sandbox_settings_are_exactly_the_owner_decision() {
     );
 }
 
+/// #2348: `ask` asks before a command leaves the sandbox, through the CLI's stdio prompt tool. It
+/// differs from `never` in exactly the prompt flag, the rule list (no Bash rule) and the settings,
+/// and still loads the project setting source.
+#[test]
+fn the_ask_argv_is_exactly_the_spawn_contract() {
+    let never = args(SessionStart::New, "/ws/track");
+    let ask = args_in(
+        PlannerPermissionMode::Ask,
+        SessionStart::New,
+        &TurnModelSelection::inherit(),
+        "/ws/track",
+    );
+    let mut expected = never.clone();
+    let settings = expected.iter().position(|arg| arg == "--settings").unwrap() + 1;
+    expected[settings] = ask[settings].clone();
+    let prompts = expected
+        .iter()
+        .position(|arg| arg == "--permission-prompts")
+        .unwrap();
+    expected.splice(
+        prompts..prompts + 2,
+        ["--permission-prompt-tool", "stdio"].map(String::from),
+    );
+    let rules = expected
+        .iter()
+        .position(|arg| arg == "--allowedTools")
+        .unwrap()
+        + 1;
+    expected[rules] = "Read ToolSearch WebFetch WebSearch mcp__neige Edit(//ws/track/**)".into();
+    assert_eq!(ask, expected);
+    assert_eq!(
+        serde_json::from_str::<Value>(&ask[settings]).unwrap(),
+        json!({
+            "attribution": { "commit": "", "pr": "" },
+            "permissions": {
+                "allow": ["WebFetch(domain:*)"],
+                "deny": [
+                    "Edit(//ws/track/.claude/settings.json)",
+                    "Edit(//ws/track/.claude/settings.local.json)",
+                ],
+            },
+            "sandbox": {
+                "enabled": true,
+                "failIfUnavailable": true,
+                "allowUnsandboxedCommands": true,
+                "autoAllowBashIfSandboxed": true,
+                "network": { "allowAllUnixSockets": true },
+            },
+        })
+    );
+    let sources = ask
+        .iter()
+        .position(|arg| arg == "--setting-sources")
+        .unwrap();
+    assert_eq!(ask[sources + 1], "project");
+}
+
+/// The safety invariant of #2348, over every mode and both session starts: a spawn whose commands
+/// may leave the sandbox has no Bash rule (a bare `Bash` would let them leave unasked), runs
+/// sandboxed commands without asking, and denies editing the workspace's Claude settings, spelled
+/// from the same workspace root its Edit rule is.
+#[test]
+fn a_spawn_that_may_leave_the_sandbox_asks_first_and_cannot_edit_its_settings() {
+    let mut unsandboxed = 0;
+    for mode in [PlannerPermissionMode::Never, PlannerPermissionMode::Ask] {
+        for start in [SessionStart::New, SessionStart::Resume] {
+            for cwd in ["/ws/track", "/ws/track/"] {
+                let got = args_in(mode, start, &TurnModelSelection::inherit(), cwd);
+                let after = |flag: &str| {
+                    let at = got.iter().position(|arg| arg == flag);
+                    at.map(|at| got[at + 1].clone())
+                };
+                let settings: Value =
+                    serde_json::from_str(&after("--settings").expect("--settings")).unwrap();
+                if settings["sandbox"]["allowUnsandboxedCommands"] != json!(true) {
+                    continue;
+                }
+                unsandboxed += 1;
+                let rules = after("--allowedTools").expect("--allowedTools");
+                assert!(
+                    !rules
+                        .split(' ')
+                        .any(|rule| rule == "Bash" || rule.starts_with("Bash(")),
+                    "{mode:?}: {rules}"
+                );
+                assert!(rules.split(' ').any(|rule| rule == "Edit(//ws/track/**)"));
+                assert_eq!(
+                    settings["sandbox"]["autoAllowBashIfSandboxed"],
+                    json!(true),
+                    "{mode:?}"
+                );
+                let deny = settings["permissions"]["deny"]
+                    .as_array()
+                    .expect("deny rules");
+                for file in ["settings.json", "settings.local.json"] {
+                    let rule = json!(format!("Edit(//ws/track/.claude/{file})"));
+                    assert!(deny.contains(&rule), "{mode:?}: {deny:?}");
+                }
+                assert_eq!(after("--permission-prompt-tool").as_deref(), Some("stdio"));
+                assert_eq!(after("--setting-sources").as_deref(), Some("project"));
+            }
+        }
+    }
+    assert_eq!(unsandboxed, 4, "only ask lets a command leave the sandbox");
+}
+
 #[test]
 fn a_workspace_that_would_split_a_rule_is_refused() {
-    for cwd in ["/ws/my track", "/ws/a,b", "/ws/(x)", "relative/ws"] {
+    for (cwd, mode) in ["/ws/my track", "/ws/a,b", "/ws/(x)", "relative/ws"]
+        .into_iter()
+        .flat_map(|cwd| {
+            [PlannerPermissionMode::Never, PlannerPermissionMode::Ask].map(|m| (cwd, m))
+        })
+    {
         let result = argv(
             Uuid::parse_str(THREAD).unwrap(),
             SessionStart::New,
             None,
             &TurnModelSelection::inherit(),
+            mode,
             Path::new(cwd),
             Path::new("/opt/shim"),
             Path::new("/data/x.md"),
         );
-        assert!(result.is_err(), "{cwd}");
+        assert!(result.is_err(), "{cwd} {mode:?}");
     }
 }
 

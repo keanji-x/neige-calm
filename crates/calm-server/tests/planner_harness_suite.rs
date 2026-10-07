@@ -1,5 +1,7 @@
 mod support;
 
+#[path = "cases/claude_planner_approvals.rs"]
+mod claude_planner_approvals;
 #[path = "cases/claude_planner_availability.rs"]
 mod claude_planner_availability;
 #[path = "cases/claude_planner_catalog.rs"]

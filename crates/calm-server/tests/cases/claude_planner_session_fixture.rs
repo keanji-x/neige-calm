@@ -19,11 +19,13 @@ use calm_server::claude_planner::translate::ToolNames;
 use calm_server::codex_appserver::InputItem;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_create_with_id_tx, session_set_harness_observation_runtime_tx,
-    session_start_runtime_tx,
+    SqlxRepo, card_create_with_id_tx, planner_permission_mode_set_tx,
+    session_set_harness_observation_runtime_tx, session_start_runtime_tx,
 };
+use calm_server::harness::held_requests::{HeldRequestMessage, HeldRequestSender};
 use calm_server::harness::planner_event::{PlannerEvent, PlannerEventKind};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id};
+use calm_server::planner_permission_mode::PlannerPermissionMode;
 use calm_server::proc_identity::read_proc_start_time;
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -31,7 +33,7 @@ use calm_server::session_projection_repo::{
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_types::worker::WorkerSessionId;
 use serde_json::{Value, json};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 
 const FAKE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -44,6 +46,9 @@ pub const P_D_FIXTURE: &str = concat!(
 
 pub struct Rig {
     pub dir: tempfile::TempDir,
+    /// The held-request channel every session of this rig is installed with, as a harness's is.
+    held_tx: HeldRequestSender,
+    held_rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<HeldRequestMessage>>,
     session: Option<Arc<ClaudePlannerSession>>,
     pub host: Arc<ClaudePlannerHost>,
     pub repo: Arc<SqlxRepo>,
@@ -91,8 +96,11 @@ impl Rig {
         let daemon = SharedCodexAppServer::new_stub(repo.clone());
         let worker_session_id = new_id();
         worker_session_row(&repo, &worker_session_id, &card_id).await;
+        let (held_tx, held_rx) = mpsc::unbounded_channel();
         let mut rig = Self {
             dir,
+            held_tx,
+            held_rx: tokio::sync::Mutex::new(held_rx),
             session: None,
             host,
             repo,
@@ -113,12 +121,34 @@ impl Rig {
         self.session.as_ref().expect("opened in the constructor")
     }
 
-    /// A fresh session for this rig's worker-session row, installed as the registry would; its
-    /// first turn mints the MCP credential.
+    /// A fresh session for this rig's worker-session row, installed as the registry would (on
+    /// the rig's held-request channel); its first turn mints the MCP credential.
     pub async fn open_session(&self) -> ClaudePlannerSession {
         let session = self.open_session_uninstalled().await;
-        session.mark_installed();
+        session.mark_installed(self.held_tx.clone());
         session
+    }
+
+    /// The next message the sessions pushed to the held-request channel, within 10 s.
+    pub async fn next_held(&self) -> HeldRequestMessage {
+        tokio::time::timeout(Duration::from_secs(10), self.held_rx.lock().await.recv())
+            .await
+            .expect("a held-request message within 10 s")
+            .expect("the rig keeps a sender")
+    }
+
+    /// Whether the held-request channel has nothing waiting right now.
+    pub async fn held_is_empty(&self) -> bool {
+        self.held_rx.lock().await.is_empty()
+    }
+
+    /// Store the card's permission mode through its production writer.
+    pub async fn set_permission_mode(&self, mode: PlannerPermissionMode) {
+        let mut tx = self.repo.pool().begin().await.expect("tx");
+        planner_permission_mode_set_tx(&mut tx, &self.card_id, mode, |_| Ok(()))
+            .await
+            .expect("permission mode");
+        tx.commit().await.expect("commit");
     }
 
     /// A fresh session the registry never installed.
@@ -283,7 +313,8 @@ async fn planner_card(repo: &Arc<SqlxRepo>) -> (String, String) {
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1, "planner_harness": true}),
+            // Every Planner card is created with a permission mode (#2348).
+            payload: json!({"schemaVersion": 1, "planner_harness": true, "permission_mode": "never"}),
         },
         CardRole::Planner,
         false,

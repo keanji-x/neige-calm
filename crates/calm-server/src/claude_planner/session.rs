@@ -2,20 +2,19 @@
 //! #1791 §5.1, §5.2, §5.6, §6.2).
 //!
 //! Submission contract ([`ClaudePlannerSession::turn_start`]): refuse until the harness is
-//! installed, mint the turn id, check the seal, run `--version` (before any user input), on the
-//! harness's first turn mint its MCP credential (§5.1 item 2), `stop` whatever still carries this
-//! session's marker, write the instructions file under a per-spawn guard, spawn, re-check the seal,
-//! write the one `user` line (bounded), and return `Ok(turn_id)`. Every exit before `Ok` stops the
-//! marker, removes the file and returns `Err`; no outcome is recorded, because no turn id was handed
-//! out.
+//! installed, mint the turn id, check the seal, run `--version` (before any user input), read the
+//! card's permission mode (#2348), on the harness's first turn mint its MCP credential (§5.1 item
+//! 2), `stop` whatever still carries this session's marker, write the instructions file under a
+//! per-spawn guard, spawn, re-check the seal, write the one `user` line (bounded), and return
+//! `Ok(turn_id)`. Every exit before `Ok` stops the marker, removes the file and returns `Err`; no
+//! outcome is recorded, because no turn id was handed out.
 //!
 //! Settlement (`driver`): one [`TurnSlot`] per turn holds the first recorded [`TerminalCause`]; the
 //! outcome is recorded durably, stdin is closed, the direct child gets a bounded wait, `stop` runs,
 //! the instructions file goes, and only then is `TurnCompleted` emitted.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -25,6 +24,7 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{broadcast, watch};
 use uuid::Uuid;
 
+use super::approvals::Approvals;
 use super::config::{ClaudePlannerHost, needs_an_operator, unavailable_message};
 use super::driver::{TurnRun, drive};
 use super::protocol::{Base64Image, UserLine, UserLineContent, client_line_uuid};
@@ -34,6 +34,7 @@ use super::translate::{ToolNames, TurnContext, TurnTranslator};
 use crate::codex_appserver::InputItem;
 use crate::db::Repo;
 use crate::error::{CalmError, Result};
+use crate::harness::held_requests::HeldRequestSender;
 use crate::harness::planner_event::PlannerEvent;
 use crate::planner_model::TurnModelSelection;
 use crate::thread_seals::ThreadSeals;
@@ -236,9 +237,10 @@ pub(crate) struct Shared {
     state: Mutex<State>,
     /// Serializes `turn_start` and `shutdown`, so no spawn outlives a shutdown.
     issue: tokio::sync::Mutex<()>,
-    /// Set once the harness holding this session is installed in the registry (§5.1 item 2);
-    /// before that `turn_start` refuses, so an install-race loser never mints or spawns.
-    installed: AtomicBool,
+    /// Set once the harness holding this session is installed in the registry (§5.1 item 2), to
+    /// the channel that harness reads its paused requests from (#2348); before that `turn_start`
+    /// refuses, so an install-race loser never mints or spawns.
+    installed: OnceLock<HeldRequestSender>,
     #[cfg(feature = "fixtures")]
     pub(crate) hooks: Mutex<TestHooks>,
 }
@@ -343,7 +345,7 @@ impl ClaudePlannerSession {
                 events,
                 state: Mutex::new(state),
                 issue: tokio::sync::Mutex::new(()),
-                installed: AtomicBool::new(false),
+                installed: OnceLock::new(),
                 #[cfg(feature = "fixtures")]
                 hooks: Mutex::new(TestHooks::default()),
             }),
@@ -354,9 +356,10 @@ impl ClaudePlannerSession {
         self.shared.events.subscribe()
     }
 
-    /// The registry installed the harness holding this session; turns may start from now on.
-    pub fn mark_installed(&self) {
-        self.shared.installed.store(true, Ordering::SeqCst);
+    /// The registry installed the harness holding this session; turns may start from now on, and
+    /// their tool approvals go to `held`. A session is installed once: a later call is ignored.
+    pub fn mark_installed(&self, held: HeldRequestSender) {
+        let _ = self.shared.installed.set(held);
     }
 
     /// The shared Claude Planner facility (config, marker instance).
@@ -411,11 +414,11 @@ impl ClaudePlannerSession {
         let shared = &self.shared;
         let params = &shared.params;
         let _issue = shared.issue.lock().await;
-        if !shared.installed.load(Ordering::SeqCst) {
+        let Some(held) = shared.installed.get() else {
             return Err(
                 CalmError::Conflict("claude planner harness is not installed yet".into()).into(),
             );
-        }
+        };
         let (start, row_bound, token, prior_total_tokens, settle_after_stop) = {
             let state = shared.state();
             if state.shutting_down {
@@ -459,6 +462,7 @@ impl ClaudePlannerSession {
         if params.seals.is_sealed(thread) {
             return Err(sealed(thread).into());
         }
+        let mode = super::approvals::mode_at_spawn(params.repo.as_ref(), &params.card_id).await?;
         // A revocation under a live harness (e.g. one an aborted deletion's recovery could not
         // replace, §5.1 item 4) nulls the row's hash; the next spawn must not carry a credential that
         // no longer authenticates.
@@ -497,6 +501,7 @@ impl ClaudePlannerSession {
             start,
             truncation,
             selection,
+            mode,
             &params.cwd,
             &host.mcp_shim,
             instructions.path(),
@@ -577,6 +582,7 @@ impl ClaudePlannerSession {
                 thread: thread_uuid,
                 bind: !row_bound,
                 version: config.claude_version.clone(),
+                approvals: Approvals::for_spawn(mode, held, &turn_id),
             },
         ));
         Ok(turn_id)
@@ -670,7 +676,7 @@ impl ClaudePlannerSession {
         let shared = &self.shared;
         shared.state().shutting_down = true;
         let _issue = shared.issue.lock().await;
-        if !shared.installed.load(Ordering::SeqCst) {
+        if shared.installed.get().is_none() {
             return Ok(());
         }
         let slot = shared

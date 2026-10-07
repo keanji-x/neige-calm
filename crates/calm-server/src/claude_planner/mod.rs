@@ -5,8 +5,10 @@
 //! `config` the typed configuration. `availability` is the readiness check (#1817): `auth_status`
 //! is its login step, `catalog_fetch` its model-list step (#1822), and `readiness_command` the
 //! bounded run they and the `--version` check share. `models` is the CLI's model list that check
-//! caches: `GET /api/models` answers it and a write advises a selection against it.
+//! caches: `GET /api/models` answers it and a write advises a selection against it. `approvals`
+//! hands a turn's tool approvals to the harness under the `ask` permission mode (#2348).
 
+mod approvals;
 pub mod auth_status;
 pub mod availability;
 pub mod catalog_fetch;
