@@ -33,7 +33,7 @@ export function CalendarTasks({ date, timezone, trackCountOn, month, day, enable
     {!month.loading && !month.error && !enabled && <p className={styles.empty}>Calendar is temporarily unavailable.<br /><Button label="Open plugin settings" variant="ghost" onClick={onSettings} /></p>}
     <section className={styles.dayDetails} aria-label="Selected day tasks">
       <div className={styles.heading}>
-        <div className={styles.dateHeading}><h2>{dateLabel}</h2><span>{timezone}</span></div>
+        <div className={styles.dateHeading}><ListText as="h2" tone="group">{dateLabel}</ListText><ListText tone="secondary">{timezone}</ListText></div>
         <Button label="New task" isIconOnly icon={<Icon name="plus" size="sm" />} className={styles.iconAction} size="sm" variant="ghost" isDisabled={!enabled || pending} onClick={() => setEditing({ entry: null, date })} />
       </div>
       <div className={styles.taskScroll} role="region" aria-label="Task list">

@@ -7,7 +7,6 @@ import type { TrackDetailWire } from '../../../../core/domain/track.ts';
 import { dailyTrackOperation, reportChangesOperation, reportEditsOperation, shiftDailyDate, type ReportChange } from '../../../../core/domain/daily-planner.ts';
 import { useGo } from './navigation.ts';
 import { TodayCalendarTasks } from './calendar.tsx';
-import { PanelCard } from '../../ui/panel-card/public.tsx';
 import { ReportDetails } from '../../features/report/document/details.tsx';
 import { ReportChangeDetails, ReportEditDetails } from '../../features/report/changes/public.tsx';
 import { readErrorText } from '../../../../core/domain/read-failure.ts';
@@ -18,7 +17,7 @@ import { runOperation, trackDetailQueryOptions } from '../providers/queries.ts';
 export function DailyTodayRoute({ transport, unauthorized, selectedDate, onOpenTrack, renderTrack }: Readonly<{
   transport: ApiTransportPort; unauthorized: UnauthorizedChannel; selectedDate?: string;
   onOpenTrack: (trackId: string) => void;
-  renderTrack: (detail: TrackDetailWire, evidence: ReactNode, leadingContent: ReactNode) => ReactNode;
+  renderTrack: (detail: TrackDetailWire, evidence: ReactNode, panelContent: ReactNode) => ReactNode;
 }>) {
   const daily = useQuery({ queryKey: ['daily-planner', selectedDate ?? 'today'],
     queryFn: () => runOperation(transport, dailyTrackOperation(selectedDate), unauthorized), refetchInterval: 30_000 });
@@ -41,9 +40,9 @@ function DailyCalendar({ date, transport, unauthorized, onOpenTrack }: Readonly<
 }>) {
   const [selected, setSelected] = useState(date);
   const go = useGo();
-  return <PanelCard><TodayCalendarTasks date={selected} onDateChange={setSelected} transport={transport}
+  return <TodayCalendarTasks date={selected} onDateChange={setSelected} transport={transport}
     unauthorized={unauthorized} onSettings={() => go({ name: 'settings-plugins' })}
-    onOpenTrack={onOpenTrack} /></PanelCard>;
+    onOpenTrack={onOpenTrack} />;
 }
 
 function DailyReportChanges({ date, transport, unauthorized, onOpenTrack }: Readonly<{

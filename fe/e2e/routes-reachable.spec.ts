@@ -42,6 +42,15 @@ test('the application routes are reachable through the real kernel', async ({ pa
     await page.goto(route.path);
     await expect(page.locator('nav[aria-label="Workspace"]')).toBeVisible();
     await expect(route.anchor).toBeVisible();
+    if (route.path === '/next/') {
+      const calendar = page.locator('[data-nc-desktop-panel]').getByRole('region', { name: 'Calendar tasks' });
+      await expect(calendar).toBeVisible();
+      await page.getByRole('button', { name: 'Planner', exact: true }).click();
+      await expect(page.locator('[data-nc-drawer]')).toBeVisible();
+      await expect(page.locator('[aria-label="Calendar tasks"]')).toBeHidden();
+      await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
+      await expect(calendar).toBeVisible();
+    }
   }
   expect(errors).toEqual([]);
 });

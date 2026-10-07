@@ -9,8 +9,9 @@ export function PanelCard({ children, fill = false }: { children: ReactNode; fil
   return <div className={[styles.card, fill ? styles.fill : ''].filter(Boolean).join(' ')}>{children}</div>;
 }
 
-export function PanelModule({ title, action, children, grow = false, moduleMarker, titleFieldMarker }: {
+export function PanelModule({ title, action, children, grow = false, className, moduleMarker, titleFieldMarker }: {
   title: string;
+  className?: string;
   action?: ReactNode;
   children: ReactNode;
   /** Allow this module body to shrink and share a bounded card. */
@@ -22,7 +23,7 @@ export function PanelModule({ title, action, children, grow = false, moduleMarke
 }) {
   return (
     <section
-      className={[styles.module, grow ? styles.grow : ''].filter(Boolean).join(' ')}
+      className={[styles.module, grow ? styles.grow : '', className].filter(Boolean).join(' ')}
       {...(moduleMarker === undefined ? {} : { 'data-nc-module': moduleMarker })}
     >
       <div className={styles.head}>

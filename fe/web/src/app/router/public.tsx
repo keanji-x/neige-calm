@@ -187,7 +187,7 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
       const go = useGo();
       return <DailyTodayRoute transport={transport} unauthorized={unauthorized} selectedDate={day}
         onOpenTrack={(trackId) => go({ name: 'track', trackId })}
-        renderTrack={(detail, evidence, leadingContent) => <TrackRouteBody leadingContent={leadingContent} reportEvidence={evidence} key={detail.track.id} transport={transport} unauthorized={unauthorized}
+        renderTrack={(detail, evidence, panelContent) => <TrackRouteBody panelContent={panelContent} reportEvidence={evidence} key={detail.track.id} transport={transport} unauthorized={unauthorized}
           track={toTrack(detail.track, trackActivityFrom(detail.track.id, detail.overlays))}
           canReopenTrack={detail.can_reopen} canCloseTrack={detail.can_close}
           cards={detail.cards} overlays={detail.overlays} cardRuntime={cards} recentFiles={recentFiles} />} />;
@@ -870,7 +870,7 @@ function trackNotifications(items: TrackActivity['attentionItems']): readonly Tr
 }
 
 function TrackRouteBody({
-  transport, unauthorized, track, canReopenTrack, canCloseTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence, leadingContent,
+  transport, unauthorized, track, canReopenTrack, canCloseTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence, panelContent,
 }: {
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
@@ -882,7 +882,7 @@ function TrackRouteBody({
   cardRuntime: CardRuntime;
   recentFiles: RecentFileHistory;
   reportEvidence?: ReactNode;
-  leadingContent?: ReactNode;
+  panelContent?: ReactNode;
 }) {
   useTrackViewState(track.id);
   // The same key and comparison point the rail uses: the overlay's completion
@@ -1249,7 +1249,7 @@ function TrackRouteBody({
     <>
     <TrackStage>
     <TrackPage
-      leadingContent={leadingContent}
+      panelContent={panelContent}
       mobilePanelObscured={chat.isOpen || sourceOpen}
       mobileHeaderActionsHost={mobileHeaderActionsHost}
       mobileHeaderTitleHost={mobileHeaderTitleHost}

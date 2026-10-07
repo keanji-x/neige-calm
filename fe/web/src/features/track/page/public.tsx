@@ -70,8 +70,8 @@ function notificationGist(text: string): string {
 
 export type TrackPageProps = Readonly<{
   track: Track;
-  /** App-composed content before the report; its feature identity and data stay with the caller. */
-  leadingContent?: ReactNode;
+  /** App-composed panel module: shares the desktop card, precedes the report on compact screens. */
+  panelContent?: ReactNode;
   cards: readonly CardWire[];
   /** The track's tasks, joined by `app/router` from the report's `task` blocks and the kernel's verdicts. */
   tasks: readonly ReportTaskRow[];
@@ -150,7 +150,7 @@ function taskInventorySummary(tasks: readonly ReportTaskRow[]): string | null {
 }
 
 export function TrackPage({
-  leadingContent, track, cards, tasks, openableCards, outlineItems = [], report, backlinks, conversationList, conversationAction,
+  panelContent, track, cards, tasks, openableCards, outlineItems = [], report, backlinks, conversationList, conversationAction,
   onStartConversation, conversationOpen = false, mobilePanelObscured, inputNotifications = [], onReply, onDismiss, nowMs,
   cardsAction, recentFiles, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
@@ -449,7 +449,7 @@ export function TrackPage({
         inert={boardOpen}
       >
         <div className={styles.doc}>
-          {leadingContent !== undefined && <div className={styles.leadingContent}>{leadingContent}</div>}
+          {compactViewport && panelContent !== undefined && <div className={styles.compactPanelContent}><PanelCard>{panelContent}</PanelCard></div>}
           {report}
         </div>
 
@@ -525,6 +525,7 @@ export function TrackPage({
             inert={mobilePanelOpen}
           >
           <PanelCard>
+            {!compactViewport && panelContent}
             {paintDesktopPanel(desktopPainter, panelView)}
             {/* `REFERENCED BY` is absent, not empty, when nothing cites this track. */}
             {backlinks !== undefined && (

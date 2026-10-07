@@ -610,7 +610,7 @@
     overflow: auto;
   }
 
-  .leadingContent {
+  .compactPanelContent {
     flex: 0 0 auto;
     min-inline-size: 0;
     max-inline-size: var(--document-measure);

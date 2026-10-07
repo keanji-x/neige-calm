@@ -40,15 +40,16 @@ export function TaskCalendar({ date, timezone, entries, children, trackCountOn, 
       </span>
     </span>;
   };
-  return <PanelModule title="Calendar" grow action={<SegmentedControl label="Calendar view" size="sm" value={mode}
+  return <PanelModule title="Calendar" className={styles.calendarModule} grow action={<span className={styles.viewControl}><SegmentedControl label="Calendar view" size="sm" value={mode}
     onChange={(value) => { setMode(value); calendar.current?.getApi().changeView(value === 'week' ? 'dayGridWeek' : 'dayGridMonth'); }}>
     <SegmentedControlItem value="week" label="Week" />
     <SegmentedControlItem value="month" label="Month" />
-  </SegmentedControl>}><section className={styles.calendar} aria-label="Calendar tasks">
+  </SegmentedControl></span>}><section className={styles.calendar} aria-label="Calendar tasks">
     <FullCalendar ref={calendar} plugins={plugins} initialView="dayGridWeek" initialDate={date}
     className={styles.monthGrid} viewClass={styles.monthView} borderless headerToolbarClass={styles.monthToolbar} headerToolbar={{ start: 'prev', center: 'title', end: 'next' }}
     buttons={{ prev: { iconContent: () => <Icon name="chevron-left" size="sm" /> }, next: { iconContent: () => <Icon name="chevron-right" size="sm" /> } }}
     buttonClass={styles.navigationButton} toolbarTitleClass={styles.monthTitle} titleFormat={{ year: 'numeric', month: 'long' }} firstDay={1} fixedWeekCount={false} height="auto"
+    dayHeaderClass={styles.dayHeaderCell}
     dayHeaderFormat={mode === 'week' ? { weekday: 'short', day: 'numeric' } : { weekday: 'short' }}
     dayHeaderContent={(info) => <span className={styles.dayHeader}>
       <span>{new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: timezone }).format(info.date)}</span>
