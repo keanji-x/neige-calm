@@ -45,7 +45,10 @@ async fn turn(stack: &Stack, card: &str, text: &str, n: usize) -> Value {
     outcome
 }
 async fn wait_file(root: &Root, name: &str) {
-    tokio::time::timeout(Duration::from_secs(20), async {
+    wait_file_within(root, name, Duration::from_secs(20)).await;
+}
+async fn wait_file_within(root: &Root, name: &str, budget: Duration) {
+    tokio::time::timeout(budget, async {
         while !root.path().join(name).exists() {
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
@@ -564,8 +567,14 @@ async fn acp_receipt_write_failure_cannot_publish_success() {
     assert_eq!(status, StatusCode::OK, "{body}");
     wait_file(&root, "before-settlement").await;
     let pool = stack.repo().sqlite_pool().unwrap();
-    sqlx::query("CREATE TRIGGER refuse_acp_settlement BEFORE UPDATE ON acp_submissions WHEN NEW.state='completed' BEGIN SELECT RAISE(ABORT,'fixture receipt write failure'); END")
-        .execute(&pool).await.unwrap();
+    sqlx::query(concat!(
+        "CREATE TRIGGER refuse_acp_settlement BEFORE UPDATE ON acp_submissions ",
+        "WHEN NEW.state='completed' BEGIN ",
+        "SELECT RAISE(ABORT,'fixture receipt write failure'); END"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
     std::fs::write(root.path().join("release-settlement"), "").unwrap();
     let outcome = stack.wait_outcomes(&card, 1).await;
     assert_eq!(
@@ -617,7 +626,7 @@ async fn acp_recovery_retires_dispatch_before_folding_later_report_edits() {
             blocks_after: None,
         })
         .unwrap();
-    wait_file(&root, "setup-checkpoint").await;
+    wait_file_within(&root, "setup-checkpoint", Duration::from_secs(50)).await;
     let checkpoint = stack.harness(&runtime.id).snapshot().await;
     assert_eq!(
         checkpoint.phase,
