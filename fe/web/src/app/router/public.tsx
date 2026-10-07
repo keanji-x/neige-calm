@@ -1251,7 +1251,7 @@ function TrackRouteBody({
     <TrackStage>
     <TrackPage
       sidebarHeader={sidebarHeader}
-      sidebarConversation={sidebarHeader === undefined || compact ? undefined : <div data-nc-conversation-drawer-host="" inert={sourceOpen}>{chat.drawer}</div>}
+      sidebarConversation={sidebarHeader === undefined || compact ? undefined : { content: chat.drawer, inert: sourceOpen }}
       mobilePanelObscured={chat.isOpen || sourceOpen}
       mobileHeaderActionsHost={mobileHeaderActionsHost}
       mobileHeaderTitleHost={mobileHeaderTitleHost}

@@ -12,7 +12,7 @@ Reviewed the full diff and the actual homepage → daily Track resolution → Tr
 
 Retired only tests and mutations for the removed singleton UI. The separate CI extra-witness catalog also drops its retired Today-document path; the existing EventBridge and query-invalidation witnesses remain. Shared scheduling, Track, read/write failure, navigation, receipts, activity and conversation tests remain. The latest session-recovery coverage was moved to the real daily homepage. The shared router remains above the preferred source-file size, but this change removes its obsolete route instead of adding an unrelated split.
 
-## Independent functional and contract audit
+## Pre-review functional and contract audit
 
 Used production-router browser tests, source/ownership/dependency gates, a single-factor production mutation in an exclusive verification checkout, and a separate native backend serving the production bundle. These checks exercise the declared owner contracts without copying production policy into a fixture.
 
@@ -26,4 +26,10 @@ The final focused browser selection passes 76 tests. The real Playwright Areas-r
 
 A final compact-menu audit reproduced two Track menus on the homepage. Reused the existing slot-driven header correction already present in the primary checkout, preserving that unrelated checkout without editing it; added a real homepage regression that opens Conversations from the one usable menu.
 
-No unresolved blocking finding remains in these source and executable audit channels.
+## Independent L2 review and composer repair
+
+Two independent reviewer checkouts assessed the full candidate diff at `a19ff5a9a`. Both reported the same P1 introduced defect: an auto-height conversation wrapper broke the embedded stack's percentage height, allowing transcript contents to grow beyond the sidebar and clip the composer. Each reviewer independently reproduced the side-draft case at 768px; the first also reproduced populated history and multiline drafts at 600px, 768px and 900px. Neither found another introduced authority, persistence, abstraction, duplication or hardcoded-identity blocker.
+
+The repair removes the intermediate wrapper. The generic sidebar slot now carries its content and required inert state directly. Header/footer intrinsic minimums participate in the sidebar's flex allocation; only transcript contents are size-contained so they scroll without demanding their entire height. Inventory remains a separate overlaid card while a conversation is open. This avoids estimating composer capacity with a fixed number of rows.
+
+The production-router reproduction was red before the repair. The expanded 12-test daily browser file now covers long history, multiline drafts, both side-pane composers and growing status strips down to 600px. Both independent channels must freshly review the repaired complete diff before merge.

@@ -72,8 +72,8 @@ export type TrackPageProps = Readonly<{
   track: Track;
   /** App-composed content preceding the inventory; feature identities stay with the caller. */
   sidebarHeader?: ReactNode;
-  /** Conversation hosted below the leading content on desktop; compact drawers stay with app. */
-  sidebarConversation?: ReactNode;
+  /** Desktop pane content and its inert state, rendered directly in the definite-height sidebar host. Compact drawers stay with app. */
+  sidebarConversation?: Readonly<{ content: ReactNode; inert: boolean }>;
   cards: readonly CardWire[];
   /** The track's tasks, joined by `app/router` from the report's `task` blocks and the kernel's verdicts. */
   tasks: readonly ReportTaskRow[];
@@ -537,7 +537,7 @@ export function TrackPage({
           </PanelCard>
           </div>
         </aside>
-          {sidebarConversation && <div className={styles.sidebarConversation}>{sidebarConversation}</div>}
+          {sidebarConversation && <div className={styles.sidebarConversation} inert={sidebarConversation.inert}>{sidebarConversation.content}</div>}
           </div>
         </div>
       </div>

@@ -629,11 +629,16 @@
   .sidebarHeader { display: flex; flex-direction: column; flex: 0 1 auto; min-block-size: 0; max-block-size: 60%; }
   .sidebarHeader > div { flex: 1 1 auto; block-size: auto; min-block-size: 0; }
   .sidebarContext { position: relative; flex: 0 1 auto; min-block-size: 0; overflow: auto; }
-  .sidebarContext:has([data-nc-drawer]) { flex: 1 1 auto; min-block-size: calc(var(--row-h) * 6); overflow: hidden; }
+  /* Header/footer set the intrinsic floor. Transcript contents must scroll,
+     rather than contribute their full height to the embedded pane stack. */
+  .sidebarContext:has([data-nc-drawer]) { display: flex; flex: 1 1 auto; min-block-size: min-content; }
+  .sidebarContext:has([data-nc-drawer]) > .panel { position: absolute; inset: 0; }
   .sidebarContext > .panel { position: static; max-block-size: 100%; }
-  .sidebarConversation { position: absolute; inset: 0; }
+  .sidebarConversation { position: relative; flex: 1 1 auto; min-block-size: min-content; }
   .sidebarConversation:not(:has([data-nc-drawer])) { display: none; }
-  .sidebar .sidebarConversation [data-nc-drawer-stack] { position: relative; inset: auto; inline-size: 100%; max-inline-size: none; block-size: 100%; }
+  .sidebar .sidebarConversation [data-nc-drawer-stack] { position: relative; inset: auto; inline-size: 100%; max-inline-size: none; block-size: 100%; min-block-size: min-content; }
+  .sidebar .sidebarConversation [data-nc-drawer] { min-block-size: min-content; }
+  .sidebar .sidebarConversation [data-nc-drawer-scroll] { contain: size; }
 
   /* Uppercase plus tracking standing in for a size the panel cannot spend. */
   .sectionLabel {
