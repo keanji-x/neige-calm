@@ -1324,8 +1324,13 @@ mod tests {
         }
     }
 
-    fn matrix_actors() -> Vec<ActorId> {
-        vec![
+    // Pin each fixture dimension once; fixed arrays make missing rows a compile error.
+    const MATRIX_ACTOR_COUNT: usize = 21;
+    const MATRIX_EVENT_COUNT: usize = 8;
+    const MATRIX_SCOPE_COUNT: usize = 13;
+
+    fn matrix_actors() -> [ActorId; MATRIX_ACTOR_COUNT] {
+        [
             ActorId::User,
             ActorId::Kernel,
             ActorId::KernelDispatcher,
@@ -1350,8 +1355,8 @@ mod tests {
         ]
     }
 
-    fn matrix_scopes() -> Vec<EventScope> {
-        vec![
+    fn matrix_scopes() -> [EventScope; MATRIX_SCOPE_COUNT] {
+        [
             EventScope::System,
             EventScope::Area {
                 area: AreaId::from("c"),
@@ -1371,8 +1376,8 @@ mod tests {
         ]
     }
 
-    fn matrix_events() -> Vec<(&'static str, Event)> {
-        vec![
+    fn matrix_events() -> [(&'static str, Event); MATRIX_EVENT_COUNT] {
+        [
             ("track.updated", track_updated()),
             ("area.updated", area_updated()),
             (
@@ -1488,7 +1493,11 @@ mod tests {
 
         // Guard against the matrix silently collapsing to nothing (an empty
         // or all-allow matrix would agree trivially and prove nothing).
-        assert_eq!(compared, 21 * 9 * 13, "matrix size changed unexpectedly");
+        assert_eq!(
+            compared,
+            MATRIX_ACTOR_COUNT * MATRIX_EVENT_COUNT * MATRIX_SCOPE_COUNT,
+            "matrix size changed unexpectedly"
+        );
         assert!(
             denials > compared / 4,
             "matrix is too permissive to be evidence: only {denials} of {compared} rows deny"

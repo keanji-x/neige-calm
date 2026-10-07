@@ -25,6 +25,9 @@ Acceptance checks:
   events after retired rows without missing ids.
 - Real wire generation removes obsolete types; focused tests, contract gates,
   text gates, and frontend lint/build/tests pass.
+- Audit pinned fixture counts and run the complete affected event, dispatcher,
+  authorization, VCS, and history test modules. The authorization matrix pins
+  its dimensions once and uses fixed arrays to catch missing rows at compile time.
 - Two independent reviews check persistence and synchronization behavior,
   abstraction boundaries, duplicate logic, and hardcoded assumptions.
 
