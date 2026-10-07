@@ -26,6 +26,19 @@ pub const MAX_TEXT_CHARS: usize = 2000;
 /// Upper bound on one option, in characters.
 pub const MAX_OPTION_CHARS: usize = 200;
 
+/// A question title a provider adapter builds from the provider's own fields (#2348), cut to
+/// [`MAX_TEXT_CHARS`] so a long command is shown in part rather than refused for its length.
+pub fn clip_title(text: &str) -> String {
+    let text = text.trim();
+    if text.chars().count() <= MAX_TEXT_CHARS {
+        return text.to_string();
+    }
+    let mut clipped: String = text.chars().take(MAX_TEXT_CHARS - 1).collect();
+    clipped.truncate(clipped.trim_end().len());
+    clipped.push('…');
+    clipped
+}
+
 /// Whether the `ask.requested` row aliased `r` is still open: nothing answered or withdrew it, and
 /// a `hold` ask's Planner session still has live authority. The session clause is a liveness
 /// filter, not a close: a session that recovers from `failed` shows its asks again until the
@@ -540,5 +553,17 @@ mod tests {
         );
         assert!(validate_questions(vec![q(&"x".repeat(MAX_TEXT_CHARS + 1), &[])]).is_err());
         assert!(validate_questions(vec![q("x", &[&"o".repeat(MAX_OPTION_CHARS + 1)])]).is_err());
+    }
+
+    #[test]
+    fn a_clipped_title_always_fits_the_question_bound() {
+        assert_eq!(clip_title("  run ls  "), "run ls");
+        let at_limit = "é".repeat(MAX_TEXT_CHARS);
+        assert_eq!(clip_title(&at_limit), at_limit);
+        let long = format!("{} tail", "x".repeat(MAX_TEXT_CHARS));
+        let clipped = clip_title(&long);
+        assert_eq!(clipped.chars().count(), MAX_TEXT_CHARS);
+        assert!(clipped.ends_with('…'));
+        assert!(validate_questions(vec![q(&clipped, &["Allow"])]).is_ok());
     }
 }

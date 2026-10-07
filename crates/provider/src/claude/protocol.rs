@@ -67,6 +67,10 @@ pub enum Record {
         request_id: String,
         request: Value,
     },
+    /// The CLI no longer needs the answer to its control request `request_id` (#2348).
+    ControlCancelRequestIn {
+        request_id: String,
+    },
     Ignored {
         kind: String,
     },
@@ -343,6 +347,12 @@ pub fn decode(line: &str) -> Result<Record, ProtocolError> {
                 request: wire.request,
             })
         }
+        ("control_cancel_request", _) => {
+            let wire: WireControlCancelRequest = shape("control_cancel_request", value)?;
+            Ok(Record::ControlCancelRequestIn {
+                request_id: wire.request_id,
+            })
+        }
         _ => Ok(Record::Ignored { kind }),
     }
 }
@@ -515,6 +525,11 @@ struct WireResultError {
 struct WireControlRequest {
     request_id: String,
     request: Value,
+}
+
+#[derive(Deserialize)]
+struct WireControlCancelRequest {
+    request_id: String,
 }
 
 #[derive(Deserialize)]

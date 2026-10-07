@@ -1,16 +1,17 @@
 //! The life of one turn after `turn_start` returned `Ok`: read the CLI's stdout, translate, answer
-//! its control requests, and settle exactly once (design #1791 §5.1 settlement, §6.2).
+//! its control requests or hand its tool approvals to the harness (#2348), and settle exactly once
+//! (design #1791 §5.1 settlement, §6.2).
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde_json::json;
 use tokio::io::{AsyncBufReadExt as _, BufReader, Lines};
 use tokio::process::{Child, ChildStderr, ChildStdout};
 use tokio::sync::watch;
 use tokio::time::Instant;
 use uuid::Uuid;
 
+use super::approvals::{Approvals, NO_APPROVAL_SURFACE, write_response};
 use super::protocol::{ControlResponseOut, ControlResponseOutBody, Record, SystemInit, decode};
 use super::session::{
     FinishedTurn, Shared, TerminalCause, TurnSlot, WRITE_TIMEOUT, deadline_reached,
@@ -23,6 +24,7 @@ use crate::harness::planner_event::{PlannerEvent, PlannerEventKind};
 use crate::mcp_server::wiring::MCP_SERVER_KEY;
 use crate::session_projection_repo::{AgentProvider, ThreadAttribution};
 use calm_types::worker::WorkerSessionId;
+use provider::claude::permission::{CanUseTool, PermissionDecision, permission_response};
 
 /// When a stop fires, stdout lines already written are still read for at most this long.
 const DRAIN_WINDOW: Duration = Duration::from_secs(1);
@@ -49,6 +51,9 @@ pub(crate) struct TurnRun {
     pub(crate) bind: bool,
     /// The pinned `claude_version` this spawn was verified against.
     pub(crate) version: String,
+    /// How this spawn's `can_use_tool` requests are answered. Held for the whole read task: its
+    /// end, not the child's exit, is the end of the spawn's connection.
+    pub(crate) approvals: Approvals,
 }
 
 /// The event that ends a turn (§6.2 columns).
@@ -178,6 +183,7 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) {
         thread,
         bind,
         version,
+        approvals,
     } = run;
     let stderr_tail = Arc::new(Mutex::new(String::new()));
     let stderr_task = tokio::spawn(keep_stderr_tail(stderr, Arc::clone(&stderr_tail)));
@@ -192,6 +198,7 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) {
         thread,
         bind,
         version: &version,
+        approvals: &approvals,
         bound: false,
         row_bound: false,
         total_tokens: None,
@@ -215,7 +222,9 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) {
                 Err(error) => break reading.protocol_failure(&error),
             },
             status = child.wait(), if exited.is_none() => {
-                // Output written just before the exit is still read, for at most the drain bound.
+                // Output written just before the exit is still read, for at most the drain bound: a
+                // `can_use_tool` among it still opens, so the spawn's connection ends with the
+                // read task, never here.
                 match status.ok() {
                     Some(status) => exited = Some((status, Instant::now())),
                     None => break Ending::Exited(None),
@@ -246,12 +255,14 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) {
     )
     .await;
     stderr_task.abort();
+    // Every line this spawn wrote has been read: its held requests can go.
+    drop(approvals);
 }
 
 /// The per-line half of the read loop.
 struct Reading<'a> {
     shared: &'a Shared,
-    slot: &'a TurnSlot,
+    slot: &'a Arc<TurnSlot>,
     /// The slot's stop deadline: a control answer the CLI does not take is abandoned there.
     stop_rx: watch::Receiver<Option<Instant>>,
     /// Off while draining after a stop: stdin closes next, so nothing more is answered.
@@ -261,6 +272,7 @@ struct Reading<'a> {
     /// See [`TurnRun::bind`].
     bind: bool,
     version: &'a str,
+    approvals: &'a Approvals,
     /// A `system/init` named this thread's session.
     bound: bool,
     /// The bind of `agent_session_id` was persisted during this turn.
@@ -306,22 +318,19 @@ impl Reading<'_> {
             Record::ControlRequestIn {
                 request_id,
                 request,
-            } if self.answering => {
-                // A CLI that stopped reading stdin must not hold the turn past its stop.
-                tokio::select! {
-                    biased;
-                    _ = deadline_reached(&mut self.stop_rx, Duration::ZERO) => {
-                        tracing::debug!(request_id, "claude planner: control answer abandoned at the stop");
-                    }
-                    _ = answer_control_request(self.slot, request_id, request) => {}
-                }
-            }
+            } if self.answering => self.on_control_request(request_id, request).await,
             Record::ControlRequestIn { request_id, .. } => {
                 tracing::debug!(
                     request_id,
                     "claude planner: control request not answered while stopping"
                 );
             }
+            Record::ControlCancelRequestIn { request_id } => match self.approvals {
+                Approvals::Held(connection) => connection.gone(request_id),
+                Approvals::Refused => {
+                    tracing::debug!(request_id, "claude planner: control request cancelled");
+                }
+            },
             _ => {}
         }
         for event in self
@@ -340,6 +349,26 @@ impl Reading<'_> {
                 errors: error.errors,
             })),
             _ => None,
+        }
+    }
+
+    /// Under `ask` a well-formed `can_use_tool` goes to the harness and the read goes on; every other
+    /// request is answered here, and a CLI that stopped reading stdin does not hold the turn past
+    /// its stop.
+    async fn on_control_request(&mut self, request_id: &str, request: &serde_json::Value) {
+        let can_use_tool = CanUseTool::from_request(request);
+        if let (Approvals::Held(connection), Ok(Some(can_use_tool))) =
+            (self.approvals, &can_use_tool)
+        {
+            connection.open(self.slot, request_id, can_use_tool);
+            return;
+        }
+        tokio::select! {
+            biased;
+            _ = deadline_reached(&mut self.stop_rx, Duration::ZERO) => {
+                tracing::debug!(request_id, "claude planner: control answer abandoned at the stop");
+            }
+            _ = answer_control_request(self.slot, request_id, can_use_tool.is_ok_and(|request| request.is_none())) => {}
         }
     }
 
@@ -457,28 +486,23 @@ async fn keep_stderr_tail(stderr: ChildStderr, tail: Arc<Mutex<String>>) {
     }
 }
 
-/// `can_use_tool` is not expected with `--permission-prompts none`; it is denied. Anything else
-/// gets an error response.
-async fn answer_control_request(slot: &TurnSlot, request_id: &str, request: &serde_json::Value) {
-    let body = if request.get("subtype").and_then(|s| s.as_str()) == Some("can_use_tool") {
-        ControlResponseOutBody::Success {
-            request_id: request_id.to_string(),
-            response: json!({
-                "behavior": "deny",
-                "message": "this Planner has no approval surface",
-            }),
-        }
-    } else {
-        ControlResponseOutBody::Error {
+/// A `can_use_tool` answered here (one under `never`, where `--permission-prompts none` should not
+/// send it, or one without its recorded shape) is denied. Any other request gets an error response.
+async fn answer_control_request(slot: &TurnSlot, request_id: &str, other_subtype: bool) {
+    let response = if other_subtype {
+        ControlResponseOut::new(ControlResponseOutBody::Error {
             request_id: request_id.to_string(),
             error: "unsupported control request".into(),
-        }
+        })
+    } else {
+        permission_response(
+            request_id,
+            &PermissionDecision::Deny {
+                message: NO_APPROVAL_SURFACE.into(),
+            },
+        )
     };
-    let written = match serde_json::to_string(&ControlResponseOut::new(body)) {
-        Ok(line) => slot.write_line(&line).await,
-        Err(error) => Err(error.into()),
-    };
-    if let Err(error) = written {
+    if let Err(error) = write_response(slot, &response).await {
         tracing::warn!(%error, request_id, "claude planner: control response not written");
     }
 }

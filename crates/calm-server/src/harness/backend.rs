@@ -23,6 +23,7 @@ use crate::db::TranscriptRow;
 use crate::error::{CalmError, Result};
 use crate::harness::codex_events::CodexEvents;
 use crate::harness::codex_selection;
+use crate::harness::held_requests::HeldRequestSender;
 use crate::harness::issuance::{IssuanceRefusal, SelectionSource};
 use crate::harness::planner_event::PlannerEvent;
 use crate::planner_model::TurnModelSelection;
@@ -397,12 +398,13 @@ impl PlannerBackend {
         }
     }
 
-    /// The registry installed the harness: a Claude session may start turns from now on.
-    pub fn mark_installed(&self) {
+    /// The registry installed the harness: a Claude session may start turns from now on, and
+    /// reports the requests its turns pause on to `held`, the harness's channel (#2348).
+    pub fn mark_installed(&self, held: &HeldRequestSender) {
         match &self.0 {
             Arm::Codex(_) => {}
             Arm::Acp(session) => session.mark_installed(),
-            Arm::Claude(session) => session.mark_installed(),
+            Arm::Claude(session) => session.mark_installed(held.clone()),
         }
     }
 

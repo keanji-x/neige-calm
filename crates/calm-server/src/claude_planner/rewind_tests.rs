@@ -238,6 +238,7 @@ fn the_dry_run_and_the_next_spawn_carry_the_cut() {
             start,
             cut,
             &TurnModelSelection::inherit(),
+            crate::planner_permission_mode::PlannerPermissionMode::Never,
             Path::new("/ws"),
             Path::new("/opt/shim"),
             Path::new("/data/x.md"),

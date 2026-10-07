@@ -13,14 +13,20 @@ use super::stop::MARKER_KEY;
 use crate::error::{CalmError, Result};
 use crate::mcp_server::wiring::MCP_SERVER_KEY;
 use crate::planner_model::TurnModelSelection;
+use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::shared_codex_appserver::SPAWN_ENV_PASSTHROUGH;
 
 /// The CLI's own tools a Planner may use; everything else (Task, Skill, …) stays off.
 const TOOLS: &str = "Bash,Read,Edit,Write,ToolSearch,WebFetch,WebSearch";
 
 /// Owner decision (§9.6): the sandbox is always on and fails closed; the network is unrestricted.
-/// Claude's commit and PR attribution is hidden (#1873).
+/// Claude's commit and PR attribution is hidden (#1873). This is the `never` turn's settings and
+/// the readiness exchange's.
 pub(crate) fn settings_json() -> String {
+    owner_settings().to_string()
+}
+
+fn owner_settings() -> serde_json::Value {
     json!({
         "attribution": { "commit": "", "pr": "" },
         "permissions": { "allow": ["WebFetch(domain:*)"] },
@@ -31,7 +37,24 @@ pub(crate) fn settings_json() -> String {
             "network": { "allowAllUnixSockets": true },
         },
     })
-    .to_string()
+}
+
+/// A turn's `--settings` (#2348). `ask` lets a command leave the sandbox, which the CLI then puts
+/// to the person through `can_use_tool`, and keeps sandboxed commands running without asking. It
+/// also denies editing the workspace's own Claude settings: project settings widen the sandbox
+/// without the workspace being trusted, so an approved edit would let the next spawn widen its own
+/// sandbox. Edit rules govern every file-editing tool, Write included.
+pub(crate) fn turn_settings_json(mode: PlannerPermissionMode, root: &PermissionRoot<'_>) -> String {
+    let mut settings = owner_settings();
+    match mode {
+        PlannerPermissionMode::Never => {}
+        PlannerPermissionMode::Ask => {
+            settings["permissions"]["deny"] = json!(root.settings_edit_denials());
+            settings["sandbox"]["allowUnsandboxedCommands"] = json!(true);
+            settings["sandbox"]["autoAllowBashIfSandboxed"] = json!(true);
+        }
+    }
+    settings.to_string()
 }
 
 /// The kernel MCP shim; its secrets reach it through `${VAR}` expansion of the CLI's own environment.
@@ -55,27 +78,55 @@ fn mcp_config_json(shim: &Path) -> Result<String> {
     .to_string())
 }
 
-/// `--allowedTools` rules. Edit and Write are confined to the workspace; the rule list is one
-/// space-separated argument, so a workspace path that would split or unbalance a rule is refused.
-fn allowed_tools(cwd: &Path) -> Result<String> {
-    let cwd = cwd
-        .to_str()
-        .filter(|path| path.starts_with('/'))
-        .filter(|path| {
-            !path
-                .chars()
-                .any(|c| c.is_whitespace() || matches!(c, ',' | '(' | ')'))
-        })
-        .ok_or_else(|| {
-            CalmError::Conflict(format!(
-                "workspace {} cannot be written as a Claude permission rule",
-                cwd.display()
-            ))
-        })?;
-    let root = cwd.trim_end_matches('/');
-    Ok(format!(
-        "Bash Read ToolSearch WebFetch WebSearch mcp__{MCP_SERVER_KEY} Edit(/{root}/**) Write(/{root}/**)"
-    ))
+/// The workspace as the root of Claude permission rules: an absolute path that cannot split or
+/// unbalance a rule, without its trailing `/`. Every rule naming a workspace path is built from it.
+pub(crate) struct PermissionRoot<'a>(&'a str);
+
+impl<'a> PermissionRoot<'a> {
+    /// The rule lists are space-separated arguments, so a workspace path that would split or
+    /// unbalance a rule is refused.
+    pub(crate) fn new(cwd: &'a Path) -> Result<Self> {
+        let cwd = cwd
+            .to_str()
+            .filter(|path| path.starts_with('/'))
+            .filter(|path| {
+                !path
+                    .chars()
+                    .any(|c| c.is_whitespace() || matches!(c, ',' | '(' | ')'))
+            })
+            .ok_or_else(|| {
+                CalmError::Conflict(format!(
+                    "workspace {} cannot be written as a Claude permission rule",
+                    cwd.display()
+                ))
+            })?;
+        Ok(Self(cwd.trim_end_matches('/')))
+    }
+
+    /// `rule` on the workspace path `relative`, in the CLI's `//absolute` spelling.
+    fn rule(&self, tool: &str, relative: &str) -> String {
+        format!("{tool}(/{}/{relative})", self.0)
+    }
+
+    /// The `ask` denials of editing the workspace's Claude settings files.
+    pub(crate) fn settings_edit_denials(&self) -> [String; 2] {
+        [
+            self.rule("Edit", ".claude/settings.json"),
+            self.rule("Edit", ".claude/settings.local.json"),
+        ]
+    }
+}
+
+/// `--allowedTools` rules. Edit is confined to the workspace (an Edit rule governs Write too). A
+/// bare `Bash` would let every command run outside the sandbox once `ask` allows leaving it, so
+/// only `never`, which never leaves it, allows Bash by rule.
+fn allowed_tools(mode: PlannerPermissionMode, root: &PermissionRoot<'_>) -> String {
+    let edit = root.rule("Edit", "**");
+    let common = format!("Read ToolSearch WebFetch WebSearch mcp__{MCP_SERVER_KEY} {edit}");
+    match mode {
+        PlannerPermissionMode::Never => format!("Bash {common}"),
+        PlannerPermissionMode::Ask => common,
+    }
 }
 
 /// Whether the thread's Claude session already exists (bound on its first `system/init`).
@@ -136,16 +187,20 @@ pub(crate) fn truncation_check_argv(thread: Uuid, truncation: &ResumeTruncation)
 /// effort as `--effort=<level>`, one token each so a value can never be read as a flag; the CLI
 /// judges the model and refuses one it cannot run. `None` passes the flag not at all, so the CLI
 /// runs its default. `truncation` rides right after `--resume <thread>`; a new session has nothing
-/// to cut.
+/// to cut. `mode` is the card's permission mode, read at this spawn (#2348); both modes load the
+/// project setting source, which is also where `CLAUDE.md` and `AGENTS.md` come from.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn argv(
     thread: Uuid,
     start: SessionStart,
     truncation: Option<&ResumeTruncation>,
     selection: &TurnModelSelection,
+    mode: PlannerPermissionMode,
     cwd: &Path,
     mcp_shim: &Path,
     instructions: &Path,
 ) -> Result<Vec<OsString>> {
+    let root = PermissionRoot::new(cwd)?;
     let session_flag = match start {
         SessionStart::New => "--session-id",
         SessionStart::Resume => "--resume",
@@ -182,11 +237,19 @@ pub(crate) fn argv(
     args.push("--mcp-config".into());
     args.push(mcp_config_json(mcp_shim)?.into());
     args.push("--settings".into());
-    args.push(settings_json().into());
-    args.push("--permission-prompts".into());
-    args.push("none".into());
+    args.push(turn_settings_json(mode, &root).into());
+    match mode {
+        PlannerPermissionMode::Never => {
+            args.push("--permission-prompts".into());
+            args.push("none".into());
+        }
+        PlannerPermissionMode::Ask => {
+            args.push("--permission-prompt-tool".into());
+            args.push("stdio".into());
+        }
+    }
     args.push("--allowedTools".into());
-    args.push(allowed_tools(cwd)?.into());
+    args.push(allowed_tools(mode, &root).into());
     args.push("--append-system-prompt-file".into());
     args.push(instructions.as_os_str().to_owned());
     Ok(args)

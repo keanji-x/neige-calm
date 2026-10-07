@@ -271,6 +271,36 @@ PY
     if [ "$SCENARIO" = flood ]; then echo "$SUCCESS"; fi
     touch "$D/emitted"
     exec sleep 300 ;;
+  ask|ask-cancel|ask-exit)
+    # #2348: a `can_use_tool` as 2.1.280 sends it for a command that leaves the sandbox (recorded,
+    # paths redacted). `ask` waits for its answer and records it in `stdin`; `ask-cancel` withdraws
+    # it with a `control_cancel_request` and finishes without one; `ask-exit` exits at once and
+    # leaves the request to a background writer, so it reaches stdout after the exit.
+    ASK='{"type":"control_request","request_id":"perm-1","request":{"subtype":"can_use_tool",'
+    ASK+='"tool_name":"Bash","display_name":"Bash","input":{"command":"echo z > /probe/outside/denied.txt",'
+    ASK+='"dangerouslyDisableSandbox":true},"description":"echo z > /probe/outside/denied.txt",'
+    ASK+='"permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"echo z *"}],'
+    ASK+='"behavior":"allow","destination":"localSettings"},{"type":"addDirectories",'
+    ASK+='"directories":["/probe/outside"],"destination":"session"}],'
+    ASK+='"blocked_path":"/probe/outside/denied.txt","tool_use_id":"toolu_perm"}}'
+    case "$SCENARIO" in
+      ask)
+        echo "$ASK"
+        IFS= read -r ANSWER || exit 4
+        printf '%s\n' "$ANSWER" >> "$D/stdin"
+        echo "$TEXT"; echo "$SUCCESS"
+        cat > /dev/null
+        exit 0 ;;
+      ask-cancel)
+        echo "$ASK"
+        echo '{"type":"control_cancel_request","request_id":"perm-1"}'
+        echo "$TEXT"; echo "$SUCCESS"
+        cat > /dev/null
+        exit 0 ;;
+      ask-exit)
+        ( sleep 0.3; echo "$ASK" ) &
+        exit 0 ;;
+    esac ;;
   bad-init)
     exec sleep 300 ;;
   chatty-after-interrupt)

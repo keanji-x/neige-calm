@@ -268,6 +268,7 @@ impl TurnTranslator {
             | Record::UserText { .. }
             | Record::ControlResponseIn { .. }
             | Record::ControlRequestIn { .. }
+            | Record::ControlCancelRequestIn { .. }
             | Record::Ignored { .. } => Vec::new(),
         }
     }

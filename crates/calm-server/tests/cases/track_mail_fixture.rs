@@ -238,7 +238,7 @@ impl World {
                 title: None,
                 kind: "codex".into(),
                 sort: None,
-                payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex"}),
+                payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex", "permission_mode": "never"}),
             })
             .await
             .unwrap();
