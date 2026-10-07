@@ -118,11 +118,11 @@ it('refreshes a mounted agent catalog when its first turn settles', async () => 
     return undefined;
   });
   await openConversation();
-  await waitFor(() => expect(within(drawerElement()).getByRole('button', { name: /^Model:/ })).toBeDisabled());
+  await waitFor(() => expect((within(drawerElement()).getByRole('button', { name: /^Model:/ }) as HTMLButtonElement).disabled).toBe(true));
   configured = true;
   const event = wireEventSchema.parse({ ev: 'harness.phase.changed', data: { worker_session_id: 'runtime', card_id: CARD.id, track_id: TRACK.id, old_phase: 'turn_running', new_phase: 'turn_completed' } });
   await act(async () => applyEventEffects(client, [{ type: 'invalidate', keys: invalidationPlanFor(event).invalidate }]));
-  await waitFor(() => expect(within(drawerElement()).getByRole('button', { name: /^Model:/ })).not.toBeDisabled());
+  await waitFor(() => expect((within(drawerElement()).getByRole('button', { name: /^Model:/ }) as HTMLButtonElement).disabled).toBe(false));
   expect(client.getQueryData(queryKeys.modelCatalog({ kind: 'card', cardId: CARD.id }))).toMatchObject({ source: 'live' });
 });
 

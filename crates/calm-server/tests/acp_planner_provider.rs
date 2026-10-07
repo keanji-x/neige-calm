@@ -294,11 +294,7 @@ async fn acp_recovery_records_unknown_for_a_dispatched_turn_with_no_pending_queu
     .execute(&mut *tx)
     .await
     .unwrap();
-    sqlx::query("DELETE FROM harness_items WHERE card_id=?1 AND method='turn/completed'")
-        .bind(&card)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
+    delete_checkpoint_rows(&mut tx, &card, "turn/completed").await;
     sqlx::query("UPDATE worker_sessions SET handle_state_json=?2,active_turn_id=?3 WHERE id=?1")
         .bind(&runtime.id)
         .bind(serde_json::to_string(&snapshot).unwrap())
@@ -445,5 +441,109 @@ async fn acp_failed_cleanup_revokes_the_live_mcp_credential() {
         after.is_none(),
         "failed process cleanup must not retain MCP authority"
     );
+    stack.shutdown().await;
+}
+
+async fn delete_checkpoint_rows(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    card: &str,
+    method: &str,
+) {
+    sqlx::query("DELETE FROM harness_items WHERE card_id=?1 AND method=?2")
+        .bind(card)
+        .bind(method)
+        .execute(&mut **tx)
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn acp_completed_receipt_restores_reply_after_harness_projection_crash() {
+    let root = Root::new("unused");
+    let stack = boot(&root).await;
+    let (_, card) = create(&stack).await;
+    let outcome = turn(&stack, &card, "retain this reply", 1).await;
+    let runtime = stack.runtime(&card).await;
+    let pool = stack.repo().sqlite_pool().unwrap();
+    let mut checkpoint = stack.harness(&runtime.id).snapshot().await;
+    stack.shutdown().await;
+    checkpoint.phase = calm_server::harness::HarnessPhaseTag::TurnRunning;
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        .await
+        .unwrap();
+    delete_checkpoint_rows(&mut tx, &card, "item/completed").await;
+    sqlx::query("UPDATE worker_sessions SET handle_state_json=?2 WHERE id=?1")
+        .bind(&runtime.id)
+        .bind(serde_json::to_string(&checkpoint).unwrap())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let stack = boot(&root).await;
+    let rows = stack
+        .repo()
+        .transcript_rows_of_thread(&card, runtime.thread_id.as_deref().unwrap())
+        .await
+        .unwrap();
+    assert!(
+        rows.iter()
+            .any(|row| row.params.contains("retain this reply")
+                && row.item_type.as_deref() == Some("agentMessage")),
+        "completed reply must recover from its receipt"
+    );
+    assert_eq!(stack.outcomes(&card).await[0]["id"], outcome["id"]);
+    assert_eq!(requests(&root, "session/prompt").len(), 1);
+    stack.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn acp_reset_does_not_mirror_the_predecessors_revoked_hash() {
+    let root = Root::new("unused");
+    let stack = boot(&root).await;
+    let (_, card) = create(&stack).await;
+    std::fs::write(root.path().join("scenario"), "hold").unwrap();
+    let (status, body) = stack.post_input(&card, "hold").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let runtime = stack.runtime(&card).await;
+    stack.wait_phase(&runtime.id, "turn_running").await;
+    let pool = stack.repo().sqlite_pool().unwrap();
+    let old: Option<String> =
+        sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?1")
+            .bind(&runtime.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(old.is_some());
+    let (status, body) = stack
+        .send(
+            "POST",
+            &format!("/api/cards/{card}/planner/interrupt"),
+            None,
+        )
+        .await;
+    assert!(status.is_success(), "{body}");
+    stack.wait_outcomes(&card, 1).await;
+    let (status, body) = stack
+        .send(
+            "POST",
+            &format!("/api/cards/{card}/planner/reset"),
+            Some(json!({})),
+        )
+        .await;
+    assert!(status.is_success(), "{body}");
+    let current = stack.runtime(&card).await;
+    assert_ne!(current.id, runtime.id);
+    let mirrored: Option<String> =
+        sqlx::query_scalar("SELECT mcp_token_hash FROM worker_sessions WHERE id=?1")
+            .bind(&current.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        mirrored.is_none(),
+        "idle successor cannot inherit an old credential"
+    );
+    let active:i64=sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE mcp_token_hash=?1 AND state IN ('starting','running','idle','turn_pending')").bind(old).fetch_one(&pool).await.unwrap();
+    assert_eq!(active, 0);
     stack.shutdown().await;
 }

@@ -22,6 +22,7 @@ pub mod snapshot;
 pub mod state;
 pub(crate) mod submission_claims;
 pub mod token_usage;
+pub(crate) mod transcript_receipt;
 pub(crate) mod turn_input;
 pub(crate) mod turn_outcome;
 pub mod wiring;

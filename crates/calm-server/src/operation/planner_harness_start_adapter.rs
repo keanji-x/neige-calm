@@ -870,6 +870,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         };
         // Sentences a human typed, stranded on a runtime that left the active set before its queue drained. Read, carried and stamped in THIS transaction so a second restart takes nothing.
         let worker_session_id = new_id();
+        crate::acp_planner::recovery::retire_card_sources(tx, card.id.as_str()).await?;
         let harvested = harvest_pending_user_messages_tx(
             tx,
             card.id.as_str(),
@@ -1262,6 +1263,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                             )?;
                             // Supersede FIRST, then harvest: the harvest predicate is `state = 'superseded'` and this row is the one being retired.
                             session_supersede_active_tx(tx, &existing.id, now).await?;
+                            crate::acp_planner::recovery::retire_card_sources(tx, &card_id).await?;
                             let harvested = harvest_pending_user_messages_tx(
                                 tx,
                                 &card_id,
@@ -1403,6 +1405,14 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         )
         .await?;
         let (card, old_worker_session_id, old_runtime_status, cleared_measure, taken_from) = tx_out;
+        if provider == AgentProvider::OpenCode
+            && let Some(displaced) = old_worker_session_id.as_ref()
+        {
+            if let Some(handle) = self.harness_registry.remove(displaced) {
+                handle.shutdown().await?;
+            }
+            crate::planner_process::stop(&self.acp_host.instance, displaced).await?;
+        }
         drop(mint_lock_guard);
         // Merge this transaction's undo journal into the one `prepare_tx` wrote, or a compensation puts back only half of what it took.
         if !taken_from.is_empty() {

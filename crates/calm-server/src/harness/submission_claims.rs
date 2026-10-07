@@ -11,6 +11,31 @@ pub(crate) fn freeze(entries: &[QueueEntry]) -> Value {
     }).collect())
 }
 
+pub(crate) fn retire(snapshot: &mut HarnessSnapshot, client: &str, claims: &Value) -> Result<bool> {
+    if snapshot.phase != HarnessPhaseTag::IssuingTurn
+        || snapshot.projection_client_id.as_ref().map(|id| id.as_str()) != Some(client)
+    {
+        return Ok(false);
+    }
+    let claims = claims
+        .as_array()
+        .filter(|claims| !claims.is_empty())
+        .ok_or_else(|| {
+            CalmError::Conflict("Dispatched input has no queue ownership proof".into())
+        })?;
+    let entries = snapshot.pending_entries();
+    if entries.len() < claims.len()
+        || freeze(&entries[..claims.len()]) != Value::Array(claims.clone())
+    {
+        return Err(CalmError::Conflict(
+            "Dispatched queue ownership changed; refusing to transfer or discard input".into(),
+        ));
+    }
+    snapshot.set_pending_entries(entries.into_iter().skip(claims.len()).collect());
+    snapshot.projection_client_id = None;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -38,28 +63,4 @@ mod tests {
         assert!(retire(&mut snapshot, client.as_str(), &proof).is_err());
         assert_eq!(snapshot.pending_entries(), vec![current]);
     }
-}
-pub(crate) fn retire(snapshot: &mut HarnessSnapshot, client: &str, claims: &Value) -> Result<bool> {
-    if snapshot.phase != HarnessPhaseTag::IssuingTurn
-        || snapshot.projection_client_id.as_ref().map(|id| id.as_str()) != Some(client)
-    {
-        return Ok(false);
-    }
-    let claims = claims
-        .as_array()
-        .filter(|claims| !claims.is_empty())
-        .ok_or_else(|| {
-            CalmError::Conflict("Dispatched input has no queue ownership proof".into())
-        })?;
-    let entries = snapshot.pending_entries();
-    if entries.len() < claims.len()
-        || freeze(&entries[..claims.len()]) != Value::Array(claims.clone())
-    {
-        return Err(CalmError::Conflict(
-            "Dispatched queue ownership changed; refusing to transfer or discard input".into(),
-        ));
-    }
-    snapshot.set_pending_entries(entries.into_iter().skip(claims.len()).collect());
-    snapshot.projection_client_id = None;
-    Ok(true)
 }

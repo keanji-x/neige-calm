@@ -450,49 +450,6 @@ async fn answer(client: &provider::acp::Client, id: Value, method: &str) -> Resu
     }
 }
 
-#[cfg(test)]
-mod setup_tests {
-    use super::*;
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    #[tokio::test]
-    async fn ready_setup_response_drains_prior_history_before_live_turn_installation() {
-        let (kernel, peer) = tokio::io::duplex(4096);
-        let (read, write) = tokio::io::split(kernel);
-        let mut connection = provider::acp::Connection::new(read, write);
-        let pending = connection
-            .client
-            .submit("session/load", json!({"sessionId":"native"}))
-            .await
-            .unwrap();
-        let (read, mut write) = tokio::io::split(peer);
-        let mut read = BufReader::new(read);
-        let mut line = String::new();
-        read.read_line(&mut line).await.unwrap();
-        let request: Value = serde_json::from_str(&line).unwrap();
-        let history = json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"historic reply"}}}});
-        let response = json!({"jsonrpc":"2.0","id":request["id"],"result":{}});
-        write
-            .write_all(format!("{history}\n{response}\n").as_bytes())
-            .await
-            .unwrap();
-        let result = pending.wait(Duration::from_secs(2)).await;
-        assert_eq!(
-            connection.incoming.len(),
-            1,
-            "history precedes its load response on the real transport"
-        );
-        finish_setup(&connection.client, &mut connection.incoming, result)
-            .await
-            .unwrap();
-        assert!(
-            matches!(
-                connection.incoming.try_recv(),
-                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-            ),
-            "load history must not leak into the next live translator"
-        );
-    }
-}
 async fn bind_native(params: &SessionParams, thread: &str, native: &str) -> Result<()> {
     let worker = params.worker_session_id.clone();
     let thread = thread.to_owned();
@@ -565,6 +522,7 @@ async fn drive(
     mut cancelled: watch::Receiver<bool>,
 ) {
     let params = &shared.params;
+    let mut retained = std::collections::BTreeMap::<String, Value>::new();
     let outcome=async {
         let pending=pending.map_err(wire_error)?;
         let response=pending.wait(Duration::from_secs(3600));tokio::pin!(response);
@@ -574,7 +532,7 @@ async fn drive(
                 while let Ok(incoming)=process.connection.incoming.try_recv() {
                     match incoming {
                         Incoming::Notification{method,params:frame} if method=="session/update"=>{
-                            for event in translator.update(&frame,crate::model::now_ms()).map_err(wire_error)? {let _=shared.events.send(event);}
+                            for event in translator.update(&frame,crate::model::now_ms()).map_err(wire_error)? {retain_item(&mut retained,&event);let _=shared.events.send(event);}
                         },
                         Incoming::Request{..}=>return Err(CalmError::Conflict("ACP completed while a client request was still pending".into())),
                         _=>{},
@@ -594,7 +552,7 @@ async fn drive(
             _=async{match stop_at{Some(at)=>tokio::time::sleep_until(at).await,None=>std::future::pending().await}}=>return Err(CalmError::Conflict("ACP cancellation outcome is unknown".into())),
             incoming=process.connection.incoming.recv()=>match incoming {
                 Some(Incoming::Notification{method,params}) if method=="session/update"=>{
-                    for event in translator.update(&params,crate::model::now_ms()).map_err(wire_error)? {let _=shared.events.send(event);}
+                    for event in translator.update(&params,crate::model::now_ms()).map_err(wire_error)? {retain_item(&mut retained,&event);let _=shared.events.send(event);}
                 },
                 Some(Incoming::Request{id,method,..})=>answer(&process.connection.client,id,&method).await?,
                 Some(Incoming::Notification{..})=>{},
@@ -626,6 +584,11 @@ async fn drive(
             _ => None,
         })
         .expect("ACP terminal event");
+    for event in &events {
+        retain_item(&mut retained, event);
+    }
+    let mut durable = turn.clone();
+    durable["items"] = Value::Array(retained.values().cloned().collect());
     let settle = async {
         crate::harness::turn_outcome::record(
             params.repo.as_ref(),
@@ -645,7 +608,7 @@ async fn drive(
             &receipt.worker_session_id,
             &receipt.client_id,
             known
-                .then(|| serde_json::to_string(&turn))
+                .then(|| serde_json::to_string(&durable))
                 .transpose()?
                 .as_deref(),
         )
@@ -659,5 +622,59 @@ async fn drive(
     state.active = None;
     for event in events {
         let _ = shared.events.send(event);
+    }
+}
+fn retain_item(retained: &mut std::collections::BTreeMap<String, Value>, event: &PlannerEvent) {
+    if let PlannerEventKind::Item { params, phase, .. } = &event.kind
+        && let Some(id) = params["item"]["id"].as_str()
+    {
+        retained.insert(
+            id.to_owned(),
+            json!({"method":phase.method(),"params":params}),
+        );
+    }
+}
+
+#[cfg(test)]
+mod setup_tests {
+    use super::*;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    #[tokio::test]
+    async fn ready_setup_response_drains_prior_history_before_live_turn_installation() {
+        let (kernel, peer) = tokio::io::duplex(4096);
+        let (read, write) = tokio::io::split(kernel);
+        let mut connection = provider::acp::Connection::new(read, write);
+        let pending = connection
+            .client
+            .submit("session/load", json!({"sessionId":"native"}))
+            .await
+            .unwrap();
+        let (read, mut write) = tokio::io::split(peer);
+        let mut read = BufReader::new(read);
+        let mut line = String::new();
+        read.read_line(&mut line).await.unwrap();
+        let request: Value = serde_json::from_str(&line).unwrap();
+        let history = json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"historic reply"}}}});
+        let response = json!({"jsonrpc":"2.0","id":request["id"],"result":{}});
+        write
+            .write_all(format!("{history}\n{response}\n").as_bytes())
+            .await
+            .unwrap();
+        let result = pending.wait(Duration::from_secs(2)).await;
+        assert_eq!(
+            connection.incoming.len(),
+            1,
+            "history precedes its load response on the real transport"
+        );
+        finish_setup(&connection.client, &mut connection.incoming, result)
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                connection.incoming.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "load history must not leak into the next live translator"
+        );
     }
 }

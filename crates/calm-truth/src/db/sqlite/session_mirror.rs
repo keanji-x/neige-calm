@@ -254,9 +254,12 @@ async fn session_mirror_card_mcp_token_tx(
     if !session.state.is_active_authority() || session.mcp_token_hash.is_some() {
         return Ok(());
     }
-    // A Claude Planner row's hash is written only by its first-turn mint (#1791 §5.1 token
+    // A managed Planner row's hash is written only by its first-turn mint (#1791 §5.1 token
     // invariant): the card's hash may be a predecessor's, which must never authenticate it.
-    if session.provider == WorkerProviderKind::Claude && session.contract == WorkerContract::Planner
+    if matches!(
+        session.provider,
+        WorkerProviderKind::Claude | WorkerProviderKind::OpenCode
+    ) && session.contract == WorkerContract::Planner
     {
         return Ok(());
     }
