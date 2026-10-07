@@ -404,5 +404,4 @@ impl CodexAuthentication {
     }
 }
 #[cfg(test)]
-#[path = "codex_authentication_tests.rs"]
 mod tests;
