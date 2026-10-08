@@ -190,11 +190,12 @@ run_scan_case() {
   mkdir -p "$dir/sub"
   printf '%s\n' "$a_body" > "$dir/a.rs"
   printf 'fn b() {\n  q("INSERT INTO events (kind) VALUES (1)");\n  q("insert  into events (kind) VALUES (2)");\n}\n' > "$dir/sub/b.rs"
+  git -C "$dir" init -q
+  git -C "$dir" add -A
+  # The extra file stays untracked: a new file is part of the change before anyone runs `git add`.
   if [ -n "$extra_file" ]; then
     printf '%s\n' "$extra_body" > "$dir/$extra_file"
   fi
-  git -C "$dir" init -q
-  git -C "$dir" add -A
 
   local output rc
   set +e

@@ -22,9 +22,11 @@ body, so these lines become part of the audited commit on main. -->
 
 ## Verification
 
-<!-- List only commands and manual checks that were actually run. -->
+<!-- List only commands and manual checks that were actually run. CI status
+shows in the pull request's checks, so do not edit this body to track it; an
+edit re-runs the body check. -->
 
-- [ ] `command or check`
+- `command or check`
 
 ## Risk and rollback
 

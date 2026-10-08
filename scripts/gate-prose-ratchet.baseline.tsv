@@ -1,6 +1,6 @@
 # #1635 S6 prose ratchet baseline. Regenerate with:
 #   ./scripts/gate-prose-ratchet.sh --update-baseline
-# Counts are OCCURRENCES per (term, scope) in tracked *.rs under crates/. Only-down is enforced.
+# Counts are OCCURRENCES per (term, scope) in non-ignored *.rs under crates/. Only-down is enforced.
 # term	scope	count
 cjk	crates/**/*.rs	211
 long_literal	crates/**/*.rs	149

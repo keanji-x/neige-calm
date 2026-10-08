@@ -71,7 +71,7 @@ cross a boundary. Never lower it mid-review.
 
 ## Architecture review priorities
 
-Every review channel must explicitly check these three points for
+Every review channel must explicitly check these four points for
 implementation changes, using the real call paths and ownership layers:
 
 - **Abstraction boundaries:** keep domain rules in their owning component,
@@ -86,6 +86,13 @@ implementation changes, using the real call paths and ownership layers:
   template, or plugin identities in generic layers. Fixed protocol identifiers
   and intentional closed sets remain valid when defined in their owning layer
   and checked against their contract; do not make them configurable needlessly.
+  A list of things that grow in ordinary work, such as test names, files or
+  plugins, is not a closed set.
+- **Cost of permanence:** for each new check, list or pin, state which files an
+  ordinary later change (adding or renaming a test, file or variant) must edit,
+  and how many times the check runs per CI workflow. Evidence that this change
+  is correct belongs in the pull request; make permanent only the invariant
+  later changes must keep, with the weakest constraint that enforces it.
 
 Record actionable findings with source evidence. Explain intentional exceptions
 in the pull request so reviewers can assess the boundary and maintenance cost.
@@ -161,8 +168,8 @@ scripts/local-rust-gates.sh --quick --base origin/main
 
 - Run `scripts/local-ratchet-gates.sh` for every change, including docs-only
   ones. It runs every `scripts/gate-*.sh` step of the CI lint job, which the
-  commands above do not; it measures tracked files in the working tree, so
-  `git add -N` new files first.
+  commands above do not; it scans tracked and untracked files in the working
+  tree and skips ignored ones.
 - Add `--features calm-server/codex-e2e` to a targeted Rust command only when
   the affected test requires that feature. Narrow further with `--lib` or
   `--test <test-target>` when useful. Keep `NEIGE_CODEX_BIN` unset and cap local
@@ -179,9 +186,10 @@ scripts/local-rust-gates.sh --quick --base origin/main
   intended replay. Re-run invalidated checks when the final tree changes;
   worker results do not replace verification of the gate's frozen target.
 - Do not run the full `scripts/local-rust-gates.sh` as routine local
-  verification. Run it only when explicitly requested or when changing the
-  gate/nextest configuration itself. It uses `scripts/run-rust-nextest.sh` for
-  the broad workspace suite; remote CI remains authoritative for that suite and
+  verification or as a kernel gate step. Run it only when explicitly requested
+  or when changing it or `scripts/run-rust-nextest.sh`. CI runs the broad
+  workspace suite with `.config/nextest.toml`, so a nextest configuration
+  change is verified there; remote CI remains authoritative for that suite and
   runner-specific setup.
 - Never re-enable real Codex E2E on the shared production host.
 - Run the real generator after schema or generated-code changes and include every

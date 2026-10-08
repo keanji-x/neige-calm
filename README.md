@@ -204,9 +204,9 @@ Add `--features calm-server/codex-e2e` only when the affected test requires it.
 Narrow further with `--lib` or `--test <test-target>` when useful. Use
 `scripts/local-rust-gates.sh --quick` when the change also needs the Rust compile,
 lint, and OpenAPI preflight. The full `scripts/local-rust-gates.sh` is not a
-routine development command: CI runs the broad workspace test suite. Run the
-full local gate only when explicitly requested or when maintaining the
-gate/nextest configuration itself.
+routine development command: CI runs the broad workspace test suite, so a
+nextest configuration change is verified there. Run the full local gate only
+when explicitly requested or when changing it or `scripts/run-rust-nextest.sh`.
 
 Run the next-generation frontend gates:
 

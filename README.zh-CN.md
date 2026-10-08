@@ -156,8 +156,9 @@ env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
 仅当受影响测试确实需要时才添加 `--features calm-server/codex-e2e`；需要进一步缩小
 范围时，可添加 `--lib` 或 `--test <test-target>`。如果改动还需要 Rust 编译、lint 和
 OpenAPI 预检，运行 `scripts/local-rust-gates.sh --quick`。完整的
-`scripts/local-rust-gates.sh` 不是日常开发命令：全 workspace 测试由 CI 运行。只有在
-明确要求，或维护 gate/nextest 配置本身时，才在本地运行完整门禁。
+`scripts/local-rust-gates.sh` 不是日常开发命令：全 workspace 测试由 CI 运行，nextest
+配置的改动也由 CI 验证。只有在明确要求，或修改它本身或 `scripts/run-rust-nextest.sh`
+时，才在本地运行完整门禁。
 
 运行新前端门禁：
 
