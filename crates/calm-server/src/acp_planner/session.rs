@@ -551,7 +551,12 @@ async fn drive(
                         _=>{},
                     }
                 }
-                let response:protocol::PromptResponse=protocol::decode(result.map_err(wire_error)?).map_err(wire_error)?;
+                let response=match result {
+                    // The agent answered: the turn is over, so its outcome is known.
+                    Err(provider::acp::Error::Remote{message,..})=>return Ok(translator.fail(&message,crate::model::now_ms())),
+                    result=>result.map_err(wire_error)?,
+                };
+                let response:protocol::PromptResponse=protocol::decode(response).map_err(wire_error)?;
                 return Ok::<_,CalmError>(translator.finish(response.stop_reason,crate::model::now_ms()));
             },
             changed=cancelled.changed(),if stop_at.is_none()=>{

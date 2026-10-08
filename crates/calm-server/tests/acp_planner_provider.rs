@@ -9,6 +9,8 @@ mod acp_planner_catalog;
 mod acp_planner_cli;
 #[path = "cases/acp_planner_lifecycle.rs"]
 mod acp_planner_lifecycle;
+#[path = "cases/acp_planner_prompt_error.rs"]
+mod acp_planner_prompt_error;
 #[path = "cases/acp_planner_transcript.rs"]
 mod acp_planner_transcript;
 #[allow(dead_code)]

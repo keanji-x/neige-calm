@@ -177,10 +177,6 @@ impl TurnTranslator {
         Ok(events)
     }
     pub fn finish(&self, reason: StopReason, at_ms: i64) -> Vec<PlannerEvent> {
-        let mut events = Vec::new();
-        if let Some((_, id)) = &self.current {
-            events.push(self.completed_text(id, at_ms));
-        }
         let (status, error) = match reason {
             StopReason::Cancelled => ("interrupted", Value::Null),
             StopReason::Refusal => ("failed", json!({"message":"ACP agent refused the turn"})),
@@ -188,6 +184,18 @@ impl TurnTranslator {
                 ("completed", Value::Null)
             }
         };
+        self.terminal(status, error, at_ms)
+    }
+    /// The agent answered the prompt with a JSON-RPC error: the turn ended, and failed, with the
+    /// agent's own text. Only a lost or malformed answer leaves the outcome unknown.
+    pub fn fail(&self, message: &str, at_ms: i64) -> Vec<PlannerEvent> {
+        self.terminal("failed", json!({"message":message}), at_ms)
+    }
+    fn terminal(&self, status: &str, error: Value, at_ms: i64) -> Vec<PlannerEvent> {
+        let mut events = Vec::new();
+        if let Some((_, id)) = &self.current {
+            events.push(self.completed_text(id, at_ms));
+        }
         events.push(self.event(PlannerEventKind::TurnCompleted {
             turn: json!({"id":self.context.turn_id,"status":status,"error":error}),
         }));

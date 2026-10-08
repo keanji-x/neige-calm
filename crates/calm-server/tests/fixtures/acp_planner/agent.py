@@ -190,6 +190,13 @@ for line in sys.stdin:
                 pending = None
         elif scenario == 'hold':
             pending = request
+        elif scenario == 'prompt-error':
+            # OpenCode 1.18.35 answers the prompt this way once its model API refuses (HTTP 402, or
+            # 429 after its retries); the process stays up. Some text may already have streamed.
+            update({'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'partial'}})
+            emit({'jsonrpc': '2.0', 'id': request['id'], 'error': {
+                'code': -32603, 'message': 'Internal error: Insufficient balance; top up the account',
+                'data': {'service': 'session', 'errorName': 'APIError'}}})
         else:
             update({'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'before operation'}})
             update({'sessionUpdate': 'tool_call', 'toolCallId': '1', 'title': 'Fixture output', 'status': 'in_progress'})
