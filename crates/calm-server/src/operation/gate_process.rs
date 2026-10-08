@@ -1,11 +1,11 @@
 //! Shared host gate process machinery. Admission and completion belong to adapters.
-use super::task_verify_adapter::{GateStep, GateVerdict};
+use super::gate_lifecycle::{GateStep, GateVerdict};
 use crate::error::{CalmError, Result};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 const LOG_TAIL_BYTES: u64 = 8 * 1024;
 /// POSIX single-quote escaping: `'` → `'\''`.
-fn sh_single_quote(s: &str) -> String {
+pub(crate) fn sh_single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
@@ -151,13 +151,18 @@ impl GateEvidence {
     /// Like the exit file, a same-user step could overwrite it: it names the step and decides red
     /// versus infra, never passed versus failed.
     fn started_step(&self) -> Option<String> {
+        let number = self.started_step_number()?;
+        Some(self.steps[number - 1].name.clone())
+    }
+
+    /// The 1-based number of the step the wrapper last started, when it names a declared step.
+    pub(crate) fn started_step_number(&self) -> Option<usize> {
         let number: usize = std::fs::read_to_string(self.step_path.as_ref()?)
             .ok()?
             .trim()
             .parse()
             .ok()?;
-        let step = self.steps.get(number.checked_sub(1)?)?;
-        Some(step.name.clone())
+        (number >= 1 && number <= self.steps.len()).then_some(number)
     }
 
     fn log_path_text(&self) -> String {
@@ -318,11 +323,24 @@ pub(crate) async fn spawn_held(
     Ok(child)
 }
 
+/// How the live wait for the wrapper ended: the kernel-observed status, never file evidence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum GateWait {
+    Exited(i32),
+    Signaled,
+    WaitFailed(String),
+    TimedOut,
+}
+
 /// A kernel-observed verdict whose unreaped leader still fences recovery.
 /// Keep this value through candidate terminal settlement, then explicitly reap.
 pub(crate) struct GateObservation {
     child: tokio::process::Child,
     pub verdict: GateVerdict,
+    /// What the wait saw, and the step the wrapper last started: the classification inputs a
+    /// caller with its own precedence reads (the gate run's `finalize_run`).
+    pub wait: GateWait,
+    pub started_step: Option<usize>,
 }
 impl GateObservation {
     pub async fn reap(mut self) {
@@ -383,17 +401,28 @@ pub(crate) async fn observe_verdict(
     if let Err(error) = cleanup {
         tracing::warn!(%error, "gate group cleanup remains unresolved; preserving actual wait evidence");
     }
-    let verdict = match wait {
-        Err(_) => timeout_verdict(&evidence, attempt, timeout_secs),
-        Ok(Err(error)) => infra_verdict(
+    let wait = match wait {
+        Err(_) => GateWait::TimedOut,
+        Ok(Err(error)) => GateWait::WaitFailed(error.to_string()),
+        Ok(Ok(Some(code))) => GateWait::Exited(code),
+        Ok(Ok(None)) => GateWait::Signaled,
+    };
+    let verdict = match &wait {
+        GateWait::TimedOut => timeout_verdict(&evidence, attempt, timeout_secs),
+        GateWait::WaitFailed(error) => infra_verdict(
             &format!("gate wrapper wait failed: {error}"),
             &evidence,
             attempt,
         ),
-        Ok(Ok(Some(code))) => verdict_from_exit_code(code, &evidence, attempt),
-        Ok(Ok(None)) => infra_verdict("gate wrapper killed by signal", &evidence, attempt),
+        GateWait::Exited(code) => verdict_from_exit_code(*code, &evidence, attempt),
+        GateWait::Signaled => infra_verdict("gate wrapper killed by signal", &evidence, attempt),
     };
-    GateObservation { child, verdict }
+    GateObservation {
+        child,
+        verdict,
+        wait,
+        started_step: evidence.started_step_number(),
+    }
 }
 
 /// Never infer cleanup from a missing leader or signal an unauthenticated PGID; inability to inspect the group fails closed.

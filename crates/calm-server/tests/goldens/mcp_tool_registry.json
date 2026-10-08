@@ -675,7 +675,7 @@
   },
   {
     "name": "neige_task_done",
-    "description_sha256": "4a89098b9d1bc6cd378b4f9771957201df9dda3f6b6498d37c194ff9483257bc",
+    "description_sha256": "6cfceabeafad08ee7bb4571e69391dae84618b3a888c516643f4d6ce82e5816a",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -710,7 +710,7 @@
   },
   {
     "name": "neige_task_fail",
-    "description_sha256": "c4c54e75b8e898f1b0206e530fd2bd739d0f06b7b9918a92ec3a97c82f787a3d",
+    "description_sha256": "830e01307f18a845002b35e2552c64b78fd521486bfbe8530d9a37f2efd8026b",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -725,6 +725,37 @@
       "required": [
         "attempt_id",
         "reason"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "roles": [
+      "worker"
+    ],
+    "listed_for": [
+      "worker"
+    ]
+  },
+  {
+    "name": "neige_task_gate",
+    "description_sha256": "d88cef8846c0250d199d6b477355e664452e646aa6c81c888ae2429a4ca75764",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "commit_message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "attempt_id"
       ],
       "type": "object"
     },

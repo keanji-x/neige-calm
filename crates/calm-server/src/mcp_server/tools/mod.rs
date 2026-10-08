@@ -13,6 +13,7 @@ pub mod preview;
 pub mod report_links;
 pub mod report_tag;
 pub mod source;
+pub mod task_gate;
 pub mod terminal;
 pub mod track_add;
 pub mod track_file;
@@ -30,6 +31,7 @@ pub(crate) mod write_args;
 pub fn register_default_tools(registry: &mut ToolRegistry) {
     terminal::register_into(registry);
     emit::register_into(registry);
+    task_gate::register_into(registry);
     plan::register_into(registry);
     report_links::register_into(registry);
     report_tag::register_into(registry);
@@ -559,8 +561,8 @@ mod tests {
         const VERBS: &[&str] = &[
             "ls", "cat", "show", "status", "log", "diff", "find", "describe", "read", "write",
             "commit", "tag", "rename", "add", "set", "rm", "capture", "ask", "send", "input",
-            "control", "open", "close", "cancel", "publish", "accept", "reject", "regate", "done",
-            "fail", "gc", "vacuum",
+            "control", "open", "close", "cancel", "publish", "accept", "reject", "regate", "gate",
+            "done", "fail", "gc", "vacuum",
         ];
         let word = regex::Regex::new(r"^[a-z0-9]+$").expect("word regex");
         let outside: Vec<String> = kernel_tool_names()

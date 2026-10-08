@@ -32,6 +32,7 @@ use calm_server::ids::ActorId;
 use calm_server::mcp_server::registry::ToolCallIdentity;
 use calm_server::model::{CardRole, NewCard, Task, TaskStatus, now_ms};
 use calm_server::operation::forge_action_adapter::{FORGE_ACTION_KIND, ForgeActionAdapter};
+use calm_server::operation::task_gate_run::TaskGateRunAdapter;
 use calm_server::operation::task_verify_adapter::{TASK_VERIFY_KIND, TaskVerifyAdapter};
 use calm_server::operation::{
     OperationCompletionBus, OperationRuntime, ProviderAdapter, SpawnCtx, SqlxOperationRepo,
@@ -261,7 +262,9 @@ pub(super) async fn fixture_on_with_runtime(
     let mut adapters = vec![
         Arc::new(ForgeActionAdapter::new()) as Arc<dyn ProviderAdapter>,
         Arc::new(TaskVerifyAdapter::new(gate_logs_dir.clone())) as Arc<dyn ProviderAdapter>,
+        Arc::new(TaskGateRunAdapter::new(gate_logs_dir.clone())) as Arc<dyn ProviderAdapter>,
     ];
+    // A later adapter of the same kind replaces the default (a test's hooked one).
     adapters.extend(extra(&boot, &workspace_root));
     let runtime = Arc::new(OperationRuntime::new_unchecked(
         operation_repo,

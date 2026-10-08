@@ -334,6 +334,7 @@ async fn boot_with_scope(db_url: &str, plugin_scope: Option<&str>) -> Boot {
         read_ledger: Arc::new(calm_server::report_read_ledger::ReadLedger::new()),
         preview: Arc::new(calm_server::preview::PreviewRegistry::disabled()),
         sqlite_pool: repo.sqlite_pool(),
+        gate_run_wait: calm_server::operation::task_gate_run::GateRunWait::DEFAULT,
     });
 
     let mut registry = ToolRegistry::new();

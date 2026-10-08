@@ -21,7 +21,8 @@ use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::McpServer;
 use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
 use crate::model::{Card, CardRole, new_id, now_ms};
-use crate::operation::task_prompt::render_task_worker_prompt_tx;
+use crate::operation::task_gate_run::GateRunWait;
+use crate::operation::task_prompt::{GateRunPrompt, WorkerSurface, render_task_worker_prompt_tx};
 use crate::operation::worker_cleanup::{WorkerCleanupOutcome, compensate_worker_rows};
 use crate::operation::workspace_lease::{
     ReleaseDelivery, acquire_workspace_lease_tx, prepare_worker_lease_tx,
@@ -94,6 +95,8 @@ pub struct CodexWorkerAdapter {
     track_area_cache: TrackAreaCache,
     /// The managed workspace root: taking a lease re-runs materialization for a managed track. Boot-frozen config, threaded rather than read from a global.
     workspace_root: std::path::PathBuf,
+    /// The wait of one gate-run call its prompt states (#2464 D3).
+    gate_run_wait: GateRunWait,
     #[cfg(feature = "fixtures")]
     preparation_hook: Option<Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>,
     #[cfg(test)]
@@ -158,6 +161,12 @@ impl CodexAdapter {
 }
 
 impl CodexWorkerAdapter {
+    /// The configured wait of one gate-run call (`GateRunWait::DEFAULT` until boot sets it).
+    pub fn with_gate_run_wait(mut self, wait: GateRunWait) -> Self {
+        self.gate_run_wait = wait;
+        self
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         repo: Arc<dyn crate::db::RouteRepo>,
@@ -176,6 +185,7 @@ impl CodexWorkerAdapter {
             card_role_cache,
             track_area_cache,
             workspace_root,
+            gate_run_wait: GateRunWait::DEFAULT,
             #[cfg(feature = "fixtures")]
             preparation_hook: None,
             #[cfg(test)]
@@ -795,6 +805,10 @@ impl ProviderAdapter for CodexWorkerAdapter {
             &payload.context,
             payload.acceptance_criteria.as_deref(),
             &plan,
+            GateRunPrompt {
+                surface: WorkerSurface::Mcp,
+                wait: self.gate_run_wait,
+            },
         )
         .await?;
         let scope = card_scope(

@@ -495,7 +495,7 @@ fn refused_verdict(
 
 /// Append the refusal line to this attempt's log file so `log_path` names an existing file
 /// (5.1.7); best effort — the verdict carries the line either way.
-async fn append_log_line(log_path: &Path, line: &str) {
+pub(crate) async fn append_log_line(log_path: &Path, line: &str) {
     if let Some(parent) = log_path.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
     }

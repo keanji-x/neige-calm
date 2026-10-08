@@ -17,12 +17,15 @@ pub mod claude_adapter;
 pub mod claude_restart_adapter;
 pub mod codex_adapter;
 pub mod forge_action_adapter;
+pub(crate) mod gate_lifecycle;
+pub(crate) mod gate_ops;
 pub(crate) mod gate_process;
 pub mod planner_harness_interrupt_adapter;
 pub mod planner_harness_shutdown_adapter;
 pub mod planner_harness_start_adapter;
 pub(crate) mod planner_plugin_instructions;
 pub(crate) mod planner_start_fence;
+pub mod task_gate_run;
 pub(crate) mod task_launch;
 mod task_prompt;
 pub mod task_verify_adapter;
@@ -71,11 +74,12 @@ const OPERATION_LEASE_MS: TimestampMs = 60_000;
 
 /// Authoritative registry of operation adapters whose payload is bound to a
 /// task row and must therefore enforce the stale-context admission fence.
-pub const TASK_BOUND_ADAPTER_KINDS: [&str; 5] = [
+pub const TASK_BOUND_ADAPTER_KINDS: [&str; 6] = [
     "codex-worker",
     "claude-worker",
     "terminal-worker",
     "task-verify",
+    "task-gate-run",
     "child-track",
 ];
 

@@ -1,4 +1,5 @@
-//! Candidate ref cleanup on Track deletion (D9, #1727 S4 slice 3).
+//! Candidate ref cleanup on Track deletion (D9, #1727 S4 slice 3), with the gate runs' refs
+//! (`refs/neige/gate-runs/<track>/…`, #2464).
 //!
 //! `refs/neige/candidates/<track>/…` refs live in the repository's common dir; the Track cwd may
 //! be a linked worktree that has since moved, so the sweep addresses the repository through the
@@ -18,17 +19,23 @@ pub(crate) fn candidate_ref_prefix(track_id: &str) -> String {
     format!("refs/neige/candidates/{track_id}/")
 }
 
-/// Delete every candidate ref of `track_id` in each distinct common dir the Track's lease rows
-/// recorded (`for-each-ref <prefix>` then `update-ref -d` per ref). Rows without a base (leases
-/// claimed before the base columns existed) have no candidates and are not listed.
+/// Delete every candidate and gate-run ref of `track_id` in each distinct common dir the Track's
+/// lease rows recorded (`for-each-ref <prefix>` then `update-ref -d` per ref). Rows without a base
+/// (leases claimed before the base columns existed) have no candidates and are not listed.
 pub(crate) fn delete_candidate_refs_for_track<'a>(
     track_id: &str,
     git_common_dirs: impl IntoIterator<Item = &'a Path>,
 ) {
     let distinct: BTreeSet<PathBuf> = git_common_dirs.into_iter().map(Path::to_path_buf).collect();
-    let prefix = candidate_ref_prefix(track_id);
-    for common_dir in distinct {
-        let refs = match list_refs(&common_dir, &prefix) {
+    let prefixes = [
+        candidate_ref_prefix(track_id),
+        crate::operation::task_gate_run::gate_run_ref_prefix(track_id),
+    ];
+    for (common_dir, prefix) in distinct
+        .iter()
+        .flat_map(|dir| prefixes.iter().map(move |prefix| (dir, prefix)))
+    {
+        let refs = match list_refs(common_dir, prefix) {
             Ok(refs) => refs,
             Err(error) => {
                 tracing::warn!(
@@ -41,7 +48,7 @@ pub(crate) fn delete_candidate_refs_for_track<'a>(
             }
         };
         for ref_name in refs {
-            if let Err(error) = delete_ref(&common_dir, &ref_name) {
+            if let Err(error) = delete_ref(common_dir, &ref_name) {
                 tracing::warn!(
                     track_id,
                     git_common_dir = %common_dir.display(),

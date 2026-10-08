@@ -227,6 +227,7 @@ async fn boot() -> Boot {
         read_ledger: Arc::new(calm_server::report_read_ledger::ReadLedger::new()),
         preview: Arc::new(calm_server::preview::PreviewRegistry::disabled()),
         sqlite_pool: repo.sqlite_pool(),
+        gate_run_wait: calm_server::operation::task_gate_run::GateRunWait::DEFAULT,
     });
     let mut registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut registry);

@@ -22,6 +22,7 @@ use crate::operation::forge_action_adapter::ForgeActionAdapter;
 use crate::operation::planner_harness_interrupt_adapter::PlannerHarnessInterruptAdapter;
 use crate::operation::planner_harness_shutdown_adapter::PlannerHarnessShutdownAdapter;
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartAdapter;
+use crate::operation::task_gate_run::{GateRunWait, TaskGateRunAdapter};
 use crate::operation::task_verify_adapter::TaskVerifyAdapter;
 use crate::operation::terminal_adapter::{SpawnHook, TerminalAdapter, TerminalWorkerAdapter};
 use crate::operation::track_recipe_create_adapter::TrackRecipeCreateAdapter;
@@ -393,6 +394,7 @@ struct OperationAdapterInputs {
     workspace_root: PathBuf,
     claude_planner: Arc<ClaudePlannerHost>,
     acp_planner: Arc<AcpPlannerHost>,
+    gate_run_wait: GateRunWait,
 }
 
 fn terminal_hook_settings(codex: &CodexClient) -> crate::terminal_hooks::TerminalHookSettings {
@@ -450,29 +452,35 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         input.card_role_cache.clone(),
         input.track_area_cache.clone(),
     ));
-    let codex_worker_adapter: Arc<dyn ProviderAdapter> = Arc::new(CodexWorkerAdapter::new(
-        input.route_repo.clone(),
-        input.codex.clone(),
-        input.shared_codex_appserver.clone(),
-        input.mcp_server.clone(),
-        input.card_role_cache.clone(),
-        input.track_area_cache.clone(),
-        input.workspace_root.clone(),
-    ));
+    let codex_worker_adapter: Arc<dyn ProviderAdapter> = Arc::new(
+        CodexWorkerAdapter::new(
+            input.route_repo.clone(),
+            input.codex.clone(),
+            input.shared_codex_appserver.clone(),
+            input.mcp_server.clone(),
+            input.card_role_cache.clone(),
+            input.track_area_cache.clone(),
+            input.workspace_root.clone(),
+        )
+        .with_gate_run_wait(input.gate_run_wait),
+    );
     let claude_adapter: Arc<dyn ProviderAdapter> = Arc::new(ClaudeAdapter::new(
         input.route_repo.clone(),
         input.codex.clone(),
         input.card_role_cache.clone(),
         input.track_area_cache.clone(),
     ));
-    let claude_worker_adapter: Arc<dyn ProviderAdapter> = Arc::new(ClaudeWorkerAdapter::new(
-        input.route_repo.clone(),
-        input.codex.clone(),
-        input.mcp_server.clone(),
-        input.card_role_cache.clone(),
-        input.track_area_cache.clone(),
-        input.workspace_root.clone(),
-    ));
+    let claude_worker_adapter: Arc<dyn ProviderAdapter> = Arc::new(
+        ClaudeWorkerAdapter::new(
+            input.route_repo.clone(),
+            input.codex.clone(),
+            input.mcp_server.clone(),
+            input.card_role_cache.clone(),
+            input.track_area_cache.clone(),
+            input.workspace_root.clone(),
+        )
+        .with_gate_run_wait(input.gate_run_wait),
+    );
     let claude_restart_adapter: Arc<dyn ProviderAdapter> = Arc::new(ClaudeRestartAdapter::new(
         input.route_repo.clone(),
         input.codex.clone(),
@@ -505,6 +513,8 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
             input.claude_planner,
             input.acp_planner,
         ));
+    let task_gate_run_adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(TaskGateRunAdapter::new(input.gate_logs_dir.clone()));
     let task_verify_adapter: Arc<dyn ProviderAdapter> =
         Arc::new(TaskVerifyAdapter::new(input.gate_logs_dir));
     let forge_action_adapter: Arc<dyn ProviderAdapter> = Arc::new(ForgeActionAdapter::new());
@@ -530,6 +540,7 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         planner_harness_interrupt_adapter,
         planner_harness_shutdown_adapter,
         task_verify_adapter,
+        task_gate_run_adapter,
         forge_action_adapter,
         child_track_adapter,
         card_create_adapter,
@@ -881,6 +892,7 @@ impl AppState {
             workspace_root: workspace_root_sandbox.path().to_path_buf(),
             claude_planner: claude_planner.clone(),
             acp_planner: acp_planner.clone(),
+            gate_run_wait: GateRunWait::DEFAULT,
         });
         let completion = OperationCompletionBus::new();
         let operation_runtime = Arc::new(OperationRuntime::new_unchecked(
@@ -1073,6 +1085,7 @@ impl AppState {
             workspace_root: self.route.workspace_root.clone(),
             claude_planner: self.route.claude_planner.clone(),
             acp_planner: self.route.acp_planner.clone(),
+            gate_run_wait: GateRunWait::DEFAULT,
         });
         let completion = OperationCompletionBus::new();
         let runtime = Arc::new(OperationRuntime::new_unchecked(
@@ -1237,7 +1250,8 @@ impl AppState {
             operation_runtime_cell.clone(),
             gate_logs_dir.clone(),
         )
-        .with_preview(preview);
+        .with_preview(preview)
+        .with_gate_run_wait(GateRunWait::for_idle(cfg.worker_liveness().idle));
         // #1791 §5.1 item 1: every Claude Planner credential is revoked and every Claude Planner
         // marker swept BEFORE the listener opens, so no surviving process or old token is served.
         let claude_planner = Arc::new(ClaudePlannerHost::new(
@@ -1344,6 +1358,7 @@ impl AppState {
             workspace_root: workspace_root.clone(),
             claude_planner: claude_planner.clone(),
             acp_planner: acp_planner.clone(),
+            gate_run_wait: GateRunWait::for_idle(cfg.worker_liveness().idle),
         });
         let completion = OperationCompletionBus::new();
         let operation_runtime = Arc::new(

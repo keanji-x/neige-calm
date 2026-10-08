@@ -10,8 +10,8 @@ use crate::area_reports::{self, AreaPath};
 use crate::mail::{TOOL_MAIL_CAT, TOOL_MAIL_LS};
 use crate::mcp_server::registry::ToolRegistry;
 use crate::mcp_server::tools::{
-    admin, area_reports as area_reports_tool, emit, report_tag, track_file, track_history,
-    track_state,
+    admin, area_reports as area_reports_tool, emit, report_tag, task_gate, track_file,
+    track_history, track_state,
 };
 use crate::track_fs_view::normalize_path;
 
@@ -242,6 +242,16 @@ pub(crate) const COMMANDS: &[Command] = &[
             opt("--attempt-id", "attempt_id", OptValue::Text, true),
             opt("--result", "result", OptValue::JsonOrText, false),
             opt("--artifacts", "artifacts", OptValue::TextList, false),
+            opt("--commit-message", "commit_message", OptValue::Text, false),
+        ],
+        confirm: None,
+        render: Render::Raw,
+    },
+    Command {
+        tool: task_gate::TOOL_TASK_GATE,
+        positionals: &[],
+        options: &[
+            opt("--attempt-id", "attempt_id", OptValue::Text, true),
             opt("--commit-message", "commit_message", OptValue::Text, false),
         ],
         confirm: None,

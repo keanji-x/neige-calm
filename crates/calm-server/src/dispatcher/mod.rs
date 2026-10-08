@@ -428,6 +428,9 @@ fn dispatcher_operation_runtime(
             crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
         ),
     );
+    let task_gate_run_adapter = Arc::new(crate::operation::task_gate_run::TaskGateRunAdapter::new(
+        crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
+    ));
     let forge_action_adapter =
         Arc::new(crate::operation::forge_action_adapter::ForgeActionAdapter::new());
     let child_track_adapter = Arc::new(ChildTrackAdapter::new(
@@ -454,6 +457,7 @@ fn dispatcher_operation_runtime(
             planner_harness_interrupt_adapter,
             planner_harness_shutdown_adapter,
             task_verify_adapter,
+            task_gate_run_adapter,
             forge_action_adapter,
             child_track_adapter,
             card_create_adapter,

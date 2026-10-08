@@ -408,6 +408,7 @@ impl Boot {
             read_ledger: Arc::new(crate::report_read_ledger::ReadLedger::new()),
             preview: Arc::new(crate::preview::PreviewRegistry::disabled()),
             sqlite_pool: self.repo.sqlite_pool(),
+            gate_run_wait: crate::operation::task_gate_run::GateRunWait::DEFAULT,
         })
     }
 
