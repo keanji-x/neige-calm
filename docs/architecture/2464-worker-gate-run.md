@@ -427,28 +427,25 @@ fixture database.
 - Reuse across attempts, and reuse for a regate.
 - A global gate concurrency limit.
 
-## 11. 4140 queries for the orchestrator
+## 11. 4140 facts
 
-```sql
--- Q1 gated tasks by kind and access (the read-only prompt variant matters if read_only > 0)
-SELECT kind, access, COUNT(*) FROM tasks WHERE gate_json IS NOT NULL GROUP BY kind, access;
--- Q2 gate durations, to check W = 240 s gives a handful of calls per run
-SELECT COUNT(*), CAST(AVG(updated_at_ms - created_at_ms)/1000 AS INT),
-       MAX(updated_at_ms - created_at_ms)/1000
-  FROM operations WHERE kind = 'task-verify' AND phase = 'succeeded';
--- Q3 gate attempts per attempt row, for the cap of 5
-SELECT gate_attempt, COUNT(*) FROM tasks WHERE gate_json IS NOT NULL GROUP BY gate_attempt;
--- Q4 declared gate timeouts above the default idle window
-SELECT COUNT(*) FROM tasks WHERE json_extract(gate_json, '$.timeout_secs') > 3600;
-```
+Queried read-only by the orchestrator on 2026-10-08 (`sqlite3 -readonly ~/.local/share/neige-next/data/calm.db`):
 
-Also needed: the deployed `CALM_WORKER_IDLE_TIMEOUT_SECS`, if set (deploy config, not the
-database).
+| Query | Result | Consequence |
+|---|---|---|
+| `SELECT kind, access, COUNT(*) FROM tasks WHERE gate_json IS NOT NULL GROUP BY kind, access` | codex/read_write 77, claude/read_write 19, terminal/read_write 4 | No gated read-only task exists; the read-only prompt variant is a code path, not a 4140 shape |
+| `SELECT COUNT(*), CAST(AVG(updated_at_ms - created_at_ms)/1000 AS INT), MAX(updated_at_ms - created_at_ms)/1000 FROM operations WHERE kind = 'task-verify' AND phase = 'succeeded'` | 119 ops, avg 143 s, max 985 s | With `W = 240 s` the typical run answers in one call, the longest in five |
+| `SELECT gate_attempt, COUNT(*) FROM tasks WHERE gate_json IS NOT NULL GROUP BY gate_attempt` | 0: 9, 1: 91 | No regate has run on 4140; reuse's gate-attempt-1 rule covers every row |
+| `SELECT COUNT(*) FROM tasks WHERE json_extract(gate_json, '$.timeout_secs') > 3600` | 34 | A run may outlast the idle window; D3's bounded wait, not the gate timeout, keeps the worker alive |
 
-## 12. Owner questions
+`CALM_WORKER_IDLE_TIMEOUT_SECS` is not set in the 4140 deploy (`deploy/start.sh`), so idle is the
+3600 s default and `W = 240 s`.
 
-- **O1** Run commits stay on the track branch, so an attempt may have up to 5 commits plus the
-  delivery's. The alternative is one commit per attempt: move `HEAD` for the run and move it
-  back, which costs a restore step, its crash recovery, and a tree-plus-parent reuse key.
-  Recommended: keep the commits (squash merge hides them).
-- **O2** The cap of 5 spawned runs per attempt, after which the worker must report done.
+## 12. Decided by the orchestrator
+
+- **O1** Run commits stay on the track branch (D2 as written): an attempt may carry up to 5 run
+  commits plus the delivery's. neige-calm squash-merges, and moving `HEAD` back adds a restore
+  step and its crash recovery for a cosmetic gain. A non-squash repository shows the commits
+  (KNOWN GAP).
+- **O2** The cap is 5 spawned runs per attempt. 4140 has no attempt that needed a second gate
+  verdict (§11), so 5 leaves room for the worker's fix loop without unbounded host load.
