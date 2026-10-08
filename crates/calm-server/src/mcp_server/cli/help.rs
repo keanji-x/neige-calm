@@ -8,7 +8,7 @@ use super::catalog;
 use super::commands::{self, COMMANDS};
 use crate::mail::{TOOL_MAIL_CAT, TOOL_MAIL_LS};
 use crate::mcp_server::tools::{
-    admin, area_reports, emit, report_tag, track_file, track_history, track_state,
+    admin, area_reports, emit, report_tag, task_gate, track_file, track_history, track_state,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -228,6 +228,21 @@ const HELP: &[CommandHelp] = &[
         "      --attempt-id <id>        The task attempt_id handed to you",
         "      --result <value>         Optional result as JSON or plain text",
         "      --artifacts <path>       Attach an artifact path; may be repeated",
+        "      --commit-message <text>  Full message of the commit the kernel makes of your checkout",
+        "      --json                   Emit errors as JSON",
+        "  -h, --help                   Print help",
+    ),
+    command_help!(
+        task_gate::TOOL_TASK_GATE,
+        "Have the kernel commit your changes and run your task's gate on them",
+        "Usage: neige task gate --attempt-id <id> [--commit-message <text>] [--json]",
+        "",
+        "Prints the run's answer: `running` with the step in progress (run it again to wait for the",
+        "same run), or `finished` with `passed` and, on a failure, the failing step and the log tail.",
+        "Do not edit files while a run is in progress. The kernel's gate after you report decides.",
+        "",
+        "Options:",
+        "      --attempt-id <id>        The task attempt_id handed to you",
         "      --commit-message <text>  Full message of the commit the kernel makes of your checkout",
         "      --json                   Emit errors as JSON",
         "  -h, --help                   Print help",

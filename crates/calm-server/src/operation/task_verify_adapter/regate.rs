@@ -18,7 +18,6 @@ use super::target::{
     GATE_INFRA, GATE_RED, GATE_TARGET_MISMATCH, GATE_TIMEOUT, TaskGateResult, VerifyIdentity,
     verify_target_identity,
 };
-use super::{TASK_VERIFY_KIND, gate_attempt_key, parse_attempt_key};
 use crate::db::sqlite::{
     CheckoutOccupancy, checkout_occupancy, status_detail_class, task_attempt_current_tx,
     task_get_tx, task_regate_tx, track_get_tx,
@@ -27,8 +26,10 @@ use crate::error::{CalmError, Result};
 use crate::event::Event;
 use crate::ids::TrackId;
 use crate::model::{TaskStatus, now_ms};
-use crate::operation::gate_process::marked_group_stopped;
-use crate::operation::{PhaseTag, SpawnArtifacts, Tx};
+use crate::operation::gate_ops::{
+    AttemptGateOps, GateOp, GateOpKind, classify_gate_ops, gate_ops_of_attempt_tx,
+};
+use crate::operation::{PhaseTag, Tx};
 
 /// The `status_detail` classes a gate verdict writes on failure; a row failed with any other
 /// class (a worker failure, `delivery-failed`) never ran its gate on a candidate.
@@ -139,49 +140,31 @@ pub(crate) async fn regate_in_tx(
         }
     };
 
-    // Every task-verify op of the task is over, and each op's last recorded process group is proven
-    // stopped, judged within that pgid and by that op's `NEIGE_GATE_OP` marker: a terminal phase
-    // alone does not prove it (a descendant that hid its environ survives a recovered gate whose
-    // cleanup failed). A descendant that left the group or dropped the marker is not seen (#2437).
-    // Keys in [`{task}#g`, `{task}#h`) are exactly the `gate_attempt_key`s of the task;
-    // `parse_attempt_key` re-checks each.
-    let ops: Vec<(String, String, Option<String>)> = sqlx::query_as(
-        "SELECT idempotency_key, phase, spawn_artifacts_json FROM operations \
-         WHERE kind = ?1 AND idempotency_key >= ?2 AND idempotency_key < ?3",
-    )
-    .bind(TASK_VERIFY_KIND)
-    .bind(format!("{}#g", task.id))
-    .bind(format!("{}#h", task.id))
-    .fetch_all(&mut **tx)
-    .await?;
-    let mut highest = task.gate_attempt.max(previous.verdict.attempt);
-    for (key, phase, artifacts) in &ops {
-        let Some((op_task, attempt)) = parse_attempt_key(key) else {
-            continue;
-        };
-        if op_task != task.id {
-            continue;
+    // Every gate op of the attempt (kernel gates and the worker's runs) is over, and each op's last
+    // recorded process group is proven stopped, judged within that pgid and by that op's
+    // `NEIGE_GATE_OP` marker: a terminal phase alone does not prove it (a descendant that hid its
+    // environ survives a recovered gate whose cleanup failed). A descendant that left the group or
+    // dropped the marker is not seen (#2437).
+    let ops = gate_ops_of_attempt_tx(tx, &task.id).await?;
+    match classify_gate_ops(&ops) {
+        AttemptGateOps::Clear => {}
+        AttemptGateOps::Unfinished(op) => return Err(refuse(unfinished(&op))),
+        AttemptGateOps::Unproven(op) if op.phase == PhaseTag::Stuck => {
+            return Err(refuse(unfinished(&op)));
         }
-        if phase != PhaseTag::Succeeded.as_str() && phase != PhaseTag::Failed.as_str() {
+        AttemptGateOps::Unproven(op) => {
             return Err(refuse(format!(
-                "a gate op of this task is unfinished or stuck (attempt {attempt} is {phase}); \
-                 the kernel cannot prove no gate process is running; declare a new task instead"
+                "the previous gate's processes ({}) could not be proven stopped; \
+                 the kernel will not run a second gate beside them; declare a new task instead",
+                op.label()
             )));
         }
-        if let Some(artifacts) = artifacts {
-            let artifacts: SpawnArtifacts = serde_json::from_str(artifacts)?;
-            if !matches!(
-                marked_group_stopped(&artifacts, &gate_attempt_key(&task.id, attempt)),
-                Ok(true)
-            ) {
-                return Err(refuse(format!(
-                    "the previous gate's processes (attempt {attempt}) could not be proven stopped; \
-                     the kernel will not run a second gate beside them; declare a new task instead"
-                )));
-            }
-        }
-        highest = highest.max(attempt);
     }
+    let highest = ops
+        .iter()
+        .filter(|op| op.kind == GateOpKind::Verify)
+        .map(|op| op.number)
+        .fold(task.gate_attempt.max(previous.verdict.attempt), i64::max);
 
     if checkout_occupancy(tx, track_id.as_str(), &task.id).await? != CheckoutOccupancy::Free {
         return Err(refuse(
@@ -229,4 +212,13 @@ pub(crate) async fn regate_in_tx(
         agent_message,
     };
     Ok((regated, event))
+}
+
+fn unfinished(op: &GateOp) -> String {
+    format!(
+        "a gate op of this task is unfinished or stuck ({} is {}); \
+         the kernel cannot prove no gate process is running; declare a new task instead",
+        op.label(),
+        op.phase.as_str()
+    )
 }

@@ -2145,7 +2145,7 @@ async fn provenance_observation_failure_is_not_a_verdict() {
 /// Claim `key`'s pending attempt the way dispatch does — the frozen context closure written
 /// with the claim — then run it on `worker`. A row claimed by a bare status UPDATE has no
 /// closure and the kernel's boot context sweep marks it stale (`refuse_if_context_stale`).
-async fn claim_with_closure(fx: &Fx, key: &str, worker: &str) -> Task {
+pub(super) async fn claim_with_closure(fx: &Fx, key: &str, worker: &str) -> Task {
     let task = current(&fx.boot, key).await;
     assert_eq!(task.status, TaskStatus::Pending);
     let closure = calm_server::task_context::TaskContextMonitor::new(
@@ -2188,14 +2188,14 @@ async fn claim_with_closure(fx: &Fx, key: &str, worker: &str) -> Task {
 /// The world of an out-of-process test, on a file-backed database the kernel binary is launched
 /// against: the in-process kernel stays passive (its live listener stopped, its sweeps
 /// boot-gated) and only seeds rows through the production paths.
-struct FileWorld {
-    fx: Fx,
-    tmp_path: PathBuf,
-    db_path: PathBuf,
+pub(super) struct FileWorld {
+    pub(super) fx: Fx,
+    pub(super) tmp_path: PathBuf,
+    pub(super) db_path: PathBuf,
     _tmp: tempfile::TempDir,
 }
 
-async fn file_world() -> FileWorld {
+pub(super) async fn file_world() -> FileWorld {
     use crate::mcp_track_report::boot_at;
     let tmp = tempfile::tempdir().expect("tempdir");
     let tmp_path = tmp.path().to_path_buf();

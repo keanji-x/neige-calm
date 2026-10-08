@@ -28,6 +28,7 @@ use crate::mcp_server::transport::{
 };
 use crate::model::new_id;
 use crate::operation::forge_action_adapter::{FORGE_ACTION_KIND, ForgeActionResultFile, ProbeSpec};
+use crate::operation::gate_ops::{AttemptGateOps, GateOp};
 use crate::operation::workspace_lease::facts::workspace_lease_by_id_tx;
 use crate::operation::workspace_lease::{DeliveryPolicy, WorkspaceLease, worker_branch_tx};
 use crate::operation::{OperationRuntime, Tx};
@@ -49,7 +50,7 @@ pub(crate) const FAILURE_EVIDENCE_MAX_LINE_BYTES: usize = 1024;
 const COMMIT_FAILED_CLASSES: &[&str] = &["action-failed", "action-not-landed"];
 
 /// The delivery script's exit codes that are provenance mismatches (D2 code table).
-const PROVENANCE_MISMATCH_EXIT_CODES: &[i32] = &[10, 11, 12, 15];
+pub(crate) const PROVENANCE_MISMATCH_EXIT_CODES: &[i32] = &[10, 11, 12, 15];
 
 /// The six settlement columns of one row, decoded as the two shapes the CHECK admits.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -373,16 +374,32 @@ pub(crate) async fn attempt_has_delivery(
     .await?)
 }
 
+/// What [`submit_delivery`] did: submitted the forge action, or declined because a gate operation
+/// of the producer attempt is unfinished (#2464 D8) — the scheduler waits for that op and submits.
+pub(crate) enum DeliverySubmission {
+    Submitted(ForgeActionSubmission),
+    AfterGateOp(GateOp),
+}
+
 /// Submit one delivery's forge action under the row's persisted `operation_key` (the one
 /// submission function, D2): the report handler and the scheduler's re-submission both come
 /// here, so the semantic hash and the key are equal and the runtime dedups the second call.
+/// While a gate run of the producer attempt is unfinished nothing is submitted (#2464 D8): the
+/// commit would take files its steps are still writing. An op that is stuck or not proven stopped
+/// does not hold the delivery, as a kernel gate whose group was not proven stopped does not (#2437).
 pub(crate) async fn submit_delivery(
     runtime: &Arc<OperationRuntime>,
     gate_logs_dir: &Path,
     delivery: &DeliveryRow,
     lease: &WorkspaceLease,
     branch: &str,
-) -> Result<ForgeActionSubmission> {
+) -> Result<DeliverySubmission> {
+    if let AttemptGateOps::Unfinished(op) = runtime
+        .attempt_gate_ops(&delivery.producer_attempt_id)
+        .await?
+    {
+        return Ok(DeliverySubmission::AfterGateOp(op));
+    }
     let payload = forge_payload_for(delivery, lease, branch)?;
     submit_forge_action_with_key(
         runtime,
@@ -397,10 +414,13 @@ pub(crate) async fn submit_delivery(
     .await
     .map_err(|error| CalmError::Internal(format!("delivery {}: {error}", delivery.delivery_id)))?
     .map_err(|error| CalmError::Internal(format!("delivery {}: {error}", delivery.delivery_id)))
+    .map(DeliverySubmission::Submitted)
 }
 
 /// After the report transaction: read the attempt's delivery row back and submit it. `Ok(false)`
-/// when the attempt has no row (no kernel-delivery lease); `Ok(true)` when the row was submitted.
+/// when nothing was submitted now: the attempt has no row (no kernel-delivery lease), or a gate
+/// run of it is unfinished and the scheduler submits after it (#2464 D8); `Ok(true)` when the row
+/// was submitted.
 pub(crate) async fn submit_reported_delivery(
     ctx: &Arc<AppContext>,
     attempt_id: &str,
@@ -424,10 +444,10 @@ pub(crate) async fn submit_reported_delivery(
     let Some(runtime) = ctx.operation_runtime.get().cloned() else {
         return Err("operation runtime not bound".into());
     };
-    submit_delivery(&runtime, &ctx.gate_logs_dir, &delivery, &lease, &branch)
+    let submitted = submit_delivery(&runtime, &ctx.gate_logs_dir, &delivery, &lease, &branch)
         .await
         .map_err(|error| error.to_string())?;
-    Ok(true)
+    Ok(matches!(submitted, DeliverySubmission::Submitted(_)))
 }
 
 /// The lease row a delivery names, in whatever state it is now (the worker has usually released
@@ -762,7 +782,7 @@ static FAILURE_TABLE: LazyLock<Vec<(&'static str, &'static str)>> = LazyLock::ne
 /// The fixed sentence for `key`; `code` fills the `{code}` placeholder of the `git` line. A key
 /// the table does not carry (a defect in this binary; `classify_failure_maps_every_code` pins
 /// every key the mapping uses) falls back to the key itself rather than to nothing.
-pub(super) fn failure_sentence(key: &str, code: Option<i32>) -> String {
+pub(crate) fn failure_sentence(key: &str, code: Option<i32>) -> String {
     let sentence = FAILURE_TABLE
         .iter()
         .find(|(k, _)| *k == key)

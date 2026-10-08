@@ -5,9 +5,14 @@ mod display;
 pub(crate) mod regate;
 pub(crate) mod target;
 
+use super::gate_lifecycle::{
+    GatePaths, RELEASE_TIMEOUT, evidence_from_artifacts, exit_path_from_artifacts,
+    kill_recorded_group, spawn_held_identified,
+};
 use super::gate_process::*;
 use std::path::{Path, PathBuf};
 
+pub use super::gate_lifecycle::{GateSpec, GateStep, GateVerdict};
 use std::time::Duration;
 use target::FrozenTarget;
 pub use target::{SAMPLE_TIMEOUT, TaskGateResult};
@@ -25,9 +30,7 @@ use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, AreaId, TrackId};
 use crate::model::{TaskStatus, now_ms};
-use crate::proc_identity::{
-    read_boot_id, read_proc_start_time, signal_process_group, verify_owned_pid,
-};
+use crate::proc_identity::{signal_process_group, verify_owned_pid};
 
 use super::{
     CompensationStateVersioned, CompensationStep, Operation, OperationCompletionBus, OperationKey,
@@ -37,17 +40,6 @@ use super::{
 
 pub const TASK_VERIFY_KIND: &str = "task-verify";
 
-/// Mirror plan.rs; the adapter re-clamps defensively because the gate ran through `prepare_tx` freezing.
-const GATE_TIMEOUT_DEFAULT_SECS: i64 = 1800;
-const GATE_TIMEOUT_MAX_SECS: i64 = 7200;
-
-/// The record + go-token write must complete within this or the held group is killed and the op fails `gate-infra`.
-const RELEASE_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Live timeout enforcement stays with the observer; the parked deadline is the backstop for a dead observer.
-const PARKED_DEADLINE_SLACK_SECS: i64 = 120;
-
-/// Trailing log bytes copied into `gate_result_json` and the event.
 /// A non-child cannot be `waitpid`ed; polling + exit-file is the only cross-restart observation.
 const REATTACH_POLL: Duration = Duration::from_secs(2);
 
@@ -70,22 +62,6 @@ pub struct TaskVerifyOperationPayload {
     pub attempt: i64,
 }
 
-/// Wire-compatible mirror of plan.rs's validated `gate` shape (stored verbatim in `tasks.gate_json`).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct GateSpec {
-    #[serde(default)]
-    pub cwd: Option<String>,
-    #[serde(default)]
-    pub timeout_secs: Option<i64>,
-    pub steps: Vec<GateStep>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct GateStep {
-    pub name: String,
-    pub cmd: String,
-}
-
 /// The gate steps a codex or claude task declares, in run order, for its worker's prompt (#2404).
 /// `None` when the task declares no gate or has no row.
 pub(crate) async fn declared_gate_steps_tx(
@@ -99,38 +75,6 @@ pub(crate) async fn declared_gate_steps_tx(
         return Ok(None);
     };
     Ok(Some(GateSpec::parse(task_id, &gate_json)?.steps))
-}
-
-impl GateSpec {
-    /// A task row's stored `gate_json`; a row that does not parse is a kernel defect.
-    pub(crate) fn parse(task_id: &str, gate_json: &str) -> Result<Self> {
-        serde_json::from_str(gate_json)
-            .map_err(|e| CalmError::Internal(format!("task {task_id} gate_json: {e}")))
-    }
-
-    pub fn timeout_secs_clamped(&self) -> i64 {
-        self.timeout_secs
-            .unwrap_or(GATE_TIMEOUT_DEFAULT_SECS)
-            .clamp(1, GATE_TIMEOUT_MAX_SECS)
-    }
-}
-
-/// `status_detail` is `None` on green, else `gate-red` / `gate-timeout` / `gate-infra` /
-/// `gate-target-mismatch` (the fourth value is produced only by the task-verify target check,
-/// `target::finalize` and the prepare-time refusal). The task-verify target rides on
-/// [`TaskGateResult`], never here (D10, A32).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct GateVerdict {
-    pub passed: bool,
-    #[serde(default)]
-    pub status_detail: Option<String>,
-    #[serde(default)]
-    pub failing_step: Option<String>,
-    #[serde(default)]
-    pub exit_code: Option<i32>,
-    pub log_tail: String,
-    pub log_path: String,
-    pub attempt: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -342,66 +286,13 @@ impl TaskVerifyAdapter {
         base.join("neige-calm").join("gate-logs")
     }
 
-    fn script_path(&self, task_id: &str, attempt: i64) -> PathBuf {
-        self.gate_logs_dir.join(format!("{task_id}-g{attempt}.sh"))
+    fn paths(&self, task_id: &str, attempt: i64) -> GatePaths {
+        GatePaths::new(&self.gate_logs_dir, &format!("{task_id}-g{attempt}"))
     }
 
     fn log_path(&self, task_id: &str, attempt: i64) -> PathBuf {
-        self.gate_logs_dir.join(format!("{task_id}-g{attempt}.log"))
+        self.paths(task_id, attempt).log
     }
-
-    fn exit_path(&self, task_id: &str, attempt: i64) -> PathBuf {
-        self.gate_logs_dir
-            .join(format!("{task_id}-g{attempt}.exit"))
-    }
-
-    fn step_path(&self, task_id: &str, attempt: i64) -> PathBuf {
-        self.gate_logs_dir
-            .join(format!("{task_id}-g{attempt}.step"))
-    }
-}
-
-/// Kill the recorded gate group iff the identity triple still matches (verify-fail → skip; ESRCH swallowed).
-fn kill_recorded_group(pid: i64, start_time: i64, boot_id: &str, pgid: i64) {
-    let (Ok(pid), Ok(pgid)) = (i32::try_from(pid), i32::try_from(pgid)) else {
-        return;
-    };
-    let Ok(start_time) = u64::try_from(start_time) else {
-        return;
-    };
-    if verify_owned_pid(pid, start_time, boot_id) {
-        signal_process_group(pgid, libc::SIGKILL);
-    }
-}
-
-fn kill_artifacts_group(artifacts: &SpawnArtifacts) {
-    if verify_owned_pid(artifacts.pid, artifacts.start_time, &artifacts.boot_id) {
-        signal_process_group(artifacts.pgid, libc::SIGKILL);
-    }
-}
-
-fn exit_path_from_artifacts(artifacts: &SpawnArtifacts) -> Option<PathBuf> {
-    artifacts
-        .extra
-        .get("exit_path")
-        .and_then(Value::as_str)
-        .map(PathBuf::from)
-}
-
-fn step_path_from_artifacts(artifacts: &SpawnArtifacts) -> Option<PathBuf> {
-    artifacts
-        .extra
-        .get("step_path")
-        .and_then(Value::as_str)
-        .map(PathBuf::from)
-}
-
-fn log_path_from_artifacts(artifacts: &SpawnArtifacts) -> PathBuf {
-    artifacts
-        .log_path
-        .as_deref()
-        .map(PathBuf::from)
-        .unwrap_or_default()
 }
 
 #[async_trait]
@@ -612,7 +503,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
         // nothing; no backup is lost: the regate admitted the re-run only after proving every earlier
         // attempt's group stopped, and a terminal op never spawns again.
         if let Some(artifacts) = &op.spawn_artifacts {
-            kill_artifacts_group(artifacts);
+            kill(artifacts);
         }
         if frozen.attempt > 1
             && let Some(prev) = ctx
@@ -631,7 +522,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
                 .await?
             && let Some(artifacts) = &prev.spawn_artifacts
         {
-            kill_artifacts_group(artifacts);
+            kill(artifacts);
         }
         let triple: Option<(Option<i64>, Option<i64>, Option<String>)> = sqlx::query_as(
             "SELECT gate_pid, gate_pid_starttime, gate_pid_boot_id FROM tasks WHERE id = ?1",
@@ -645,48 +536,19 @@ impl ProviderAdapter for TaskVerifyAdapter {
 
         super::admit_task_side_effect(ctx.repo.as_ref(), &frozen.task_id).await?;
 
-        // Unlink the stale exit and step files strictly after the kills, strictly before the spawn.
-        let exit_path = self.exit_path(&frozen.task_id, frozen.attempt);
-        let step_path = self.step_path(&frozen.task_id, frozen.attempt);
-        let log_path = self.log_path(&frozen.task_id, frozen.attempt);
-        let script_path = self.script_path(&frozen.task_id, frozen.attempt);
-        tokio::fs::create_dir_all(&self.gate_logs_dir).await?;
-        for stale in [
-            &exit_path,
-            &PathBuf::from(format!("{}.tmp", exit_path.display())),
-            &step_path,
-        ] {
-            match tokio::fs::remove_file(stale).await {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
-            }
-        }
-
-        let mut child = super::gate_process::spawn_held(
+        let paths = self.paths(&frozen.task_id, frozen.attempt);
+        paths.unlink_stale(&self.gate_logs_dir).await?;
+        let (mut child, artifacts) = spawn_held_identified(
             ctx.repo.as_ref(),
             Path::new(&frozen.cwd),
             &frozen.gate.steps,
-            super::gate_process::GateFiles {
-                script: &script_path,
-                log: &log_path,
-                exit: &exit_path,
-                step: &step_path,
-            },
+            &paths,
             &gate_attempt_key(&frozen.task_id, frozen.attempt),
         )
         .await?;
-        let pid = child.id().map(|p| p as i32).ok_or_else(|| {
-            CalmError::Internal("gate wrapper exited before pid could be read".into())
-        })?;
-        let pgid = pid;
+        let pgid = artifacts.pgid;
 
         let record_release = async {
-            let start_time = read_proc_start_time(pid).ok_or_else(|| {
-                CalmError::Internal(format!("gate wrapper pid {pid}: starttime unreadable"))
-            })?;
-            let boot_id =
-                read_boot_id().ok_or_else(|| CalmError::Internal("boot_id unreadable".into()))?;
             let rows = sqlx::query(
                 r#"UPDATE tasks
                    SET gate_pid = ?1, gate_pid_starttime = ?2, gate_pid_boot_id = ?3,
@@ -694,8 +556,8 @@ impl ProviderAdapter for TaskVerifyAdapter {
                    WHERE id = ?5 AND status = 'verifying' AND gate_attempt = ?6"#,
             )
             .bind(pgid as i64)
-            .bind(start_time as i64)
-            .bind(&boot_id)
+            .bind(artifacts.start_time as i64)
+            .bind(&artifacts.boot_id)
             .bind(now_ms())
             .bind(&frozen.task_id)
             .bind(frozen.attempt)
@@ -709,18 +571,6 @@ impl ProviderAdapter for TaskVerifyAdapter {
                 )));
             }
             // Both records land BEFORE release, so every gate process that can execute a step is recorded.
-            let artifacts = SpawnArtifacts {
-                pid,
-                pgid,
-                start_time,
-                boot_id,
-                log_path: Some(log_path.display().to_string()),
-                extra: json!({
-                    "exit_path": exit_path.display().to_string(),
-                    "step_path": step_path.display().to_string(),
-                    "script_path": script_path.display().to_string(),
-                }),
-            };
             ctx.record_spawn_artifacts(op, &artifacts).await?;
             #[cfg(test)]
             if let Some(hook) = &self.before_release {
@@ -740,7 +590,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
                     Ok(())
                 })
                 .await?;
-            Ok::<SpawnArtifacts, CalmError>(artifacts)
+            Ok::<SpawnArtifacts, CalmError>(artifacts.clone())
         };
         let artifacts = match tokio::time::timeout(RELEASE_TIMEOUT, record_release).await {
             Ok(Ok(artifacts)) => artifacts,
@@ -765,8 +615,8 @@ impl ProviderAdapter for TaskVerifyAdapter {
         let events = ctx.events.clone();
         let observer_pool = pool.clone();
         let observer_evidence = GateEvidence {
-            log_path: log_path.clone(),
-            step_path: Some(step_path.clone()),
+            log_path: paths.log.clone(),
+            step_path: Some(paths.step.clone()),
             steps: frozen.gate.steps.clone(),
         };
         let observer_frozen = frozen.clone();
@@ -813,7 +663,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
             observation.reap().await;
         });
 
-        let deadline_ms = now_ms() + (timeout_secs + PARKED_DEADLINE_SLACK_SECS) * 1000;
+        let deadline_ms = frozen.gate.parked_deadline_ms(now_ms());
         Ok(SpawnOutcome::Parked {
             deadline_ms,
             observer,
@@ -835,12 +685,8 @@ impl ProviderAdapter for TaskVerifyAdapter {
             .ok_or_else(|| CalmError::Internal("task-verify op missing tx_output".into()))
             .and_then(FrozenVerify::from_output)?;
         let exit_path = exit_path_from_artifacts(artifacts)
-            .unwrap_or_else(|| self.exit_path(&frozen.task_id, frozen.attempt));
-        let evidence = GateEvidence {
-            log_path: log_path_from_artifacts(artifacts),
-            step_path: step_path_from_artifacts(artifacts),
-            steps: frozen.gate.steps.clone(),
-        };
+            .unwrap_or_else(|| self.paths(&frozen.task_id, frozen.attempt).exit);
+        let evidence = evidence_from_artifacts(artifacts, frozen.gate.steps.clone());
         if !alive {
             return Ok(match read_exit_file(&exit_path) {
                 Ok(Some(code)) => {
@@ -988,7 +834,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
             "kill_gate_group" => {
                 if let Some(artifacts) = step.args.get("artifacts").filter(|v| !v.is_null()) {
                     let artifacts: SpawnArtifacts = serde_json::from_value(artifacts.clone())?;
-                    kill_artifacts_group(&artifacts);
+                    kill(&artifacts);
                 }
                 // The tasks-row triple (recorded before release) covers the window where the op-row artifacts never committed.
                 if let Some(task_id) = step.args.get("task_id").and_then(Value::as_str) {
@@ -1143,9 +989,9 @@ mod tests {
             timeout_secs: None,
             steps: vec![],
         };
-        assert_eq!(gate.timeout_secs_clamped(), GATE_TIMEOUT_DEFAULT_SECS);
+        assert_eq!(gate.timeout_secs_clamped(), 1800);
         gate.timeout_secs = Some(999_999);
-        assert_eq!(gate.timeout_secs_clamped(), GATE_TIMEOUT_MAX_SECS);
+        assert_eq!(gate.timeout_secs_clamped(), 7200);
         gate.timeout_secs = Some(0);
         assert_eq!(gate.timeout_secs_clamped(), 1);
     }

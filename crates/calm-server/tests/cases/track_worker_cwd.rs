@@ -435,8 +435,8 @@ async fn a_track_runs_one_worker_at_a_time() {
     assert_an_independent_codex_task_waits(fx).await;
 }
 
-/// #2404: a gated worker is shown its gate steps, in run order, to run before it reports; an
-/// ungated worker is not.
+/// #2404, #2464: a gated worker is shown its gate steps in run order and told to have the kernel
+/// run them (`neige_task_gate`, a Codex worker's tool); an ungated worker is not.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_gated_worker_is_shown_its_gate_steps_in_order() {
     let w = world().await;
@@ -470,9 +470,10 @@ async fn a_gated_worker_is_shown_its_gate_steps_in_order() {
         .unwrap_or_else(|| panic!("{prompt}"));
     assert!(format < focused, "{prompt}");
     assert!(
-        prompt.contains("Before you report done, run every step yourself"),
+        prompt.contains("To run them, call `neige_task_gate` with `commit_message`"),
         "{prompt}"
     );
+    assert!(!prompt.contains("run every step yourself"), "{prompt}");
 }
 
 async fn worker_prompt(fx: &Fx, started: &Started) -> String {

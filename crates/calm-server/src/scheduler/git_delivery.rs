@@ -19,9 +19,9 @@ use crate::db::write_in_tx_typed;
 use crate::event::{BroadcastEnvelope, SYNC_EVENT_VERSION};
 use crate::git_candidate::candidate::{CandidateRow, from_operation_result, resolve_ref_commit};
 use crate::git_candidate::delivery::{
-    DeliveryRow, UnsettledDelivery, classify_failure, delivery_by_id_tx, lease_for_delivery_tx,
-    settle_candidate_tx, settle_failed_tx, submit_delivery, unresolved_failure,
-    unsettled_deliveries_for_track_tx,
+    DeliveryRow, DeliverySubmission, UnsettledDelivery, classify_failure, delivery_by_id_tx,
+    lease_for_delivery_tx, settle_candidate_tx, settle_failed_tx, submit_delivery,
+    unresolved_failure, unsettled_deliveries_for_track_tx,
 };
 use crate::git_candidate::view::{DeliveryState, MISMATCH_DELIVERY_ROW_MISSING, delivery_state};
 use crate::operation::forge_action_adapter::{
@@ -215,15 +215,29 @@ impl Scheduler {
             Some(op_id) => op_id,
             None => {
                 let (lease, branch) = self.lease_and_branch_for(&delivery.row).await?;
-                submit_delivery(
-                    &runtime,
-                    &self.gate_logs_dir,
-                    &delivery.row,
-                    &lease,
-                    &branch,
-                )
-                .await?
-                .op_id
+                loop {
+                    match submit_delivery(
+                        &runtime,
+                        &self.gate_logs_dir,
+                        &delivery.row,
+                        &lease,
+                        &branch,
+                    )
+                    .await?
+                    {
+                        DeliverySubmission::Submitted(submission) => break submission.op_id,
+                        // #2464 D8: a gate run of the attempt is unfinished; this task holds only
+                        // its `git-delivery:<id>` key, never the track lock, while it waits.
+                        DeliverySubmission::AfterGateOp(gate_op) => {
+                            if let Some(op) = runtime
+                                .find_by_kind_and_idempotency(gate_op.op_kind(), &gate_op.key)
+                                .await?
+                            {
+                                runtime.wait(&op.id).await?;
+                            }
+                        }
+                    }
+                }
             }
         };
         runtime.wait(&op_id).await?;

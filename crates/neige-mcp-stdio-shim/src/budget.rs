@@ -7,7 +7,7 @@ pub(crate) const RECONNECT_BACKOFF_INITIAL: Duration = Duration::from_millis(100
 /// Ceiling for the doubling.
 pub(crate) const RECONNECT_BACKOFF_CAP: Duration = Duration::from_secs(5);
 /// Total time one outage may take before the shim gives up (exit 5).
-/// Well below codex's default 120 s `tools/call` timeout.
+/// Well below codex's default 300 s `tools/call` timeout.
 pub(crate) const RECONNECT_BUDGET: Duration = Duration::from_secs(30);
 /// Total time the first connection may take (exit 3). Below codex's default 30 s MCP
 /// startup timeout.

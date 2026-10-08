@@ -283,3 +283,24 @@ pub async fn take_kernel_workspace_lease_for_test(
         git_common_dir: plan.base.git_common_dir,
     })
 }
+
+/// Admit one gate run (#2464) through the production admission transaction, without driving it:
+/// the out-of-process restart tests let the launched kernel's boot recovery drive the op. Returns
+/// the run's key.
+#[cfg(feature = "fixtures")]
+pub async fn admit_gate_run_for_test(
+    pool: &sqlx::SqlitePool,
+    attempt_id: &str,
+    card_id: &str,
+    track_id: &str,
+) -> crate::error::Result<String> {
+    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
+    let admitted =
+        crate::operation::task_gate_run::admit_run_tx(&mut tx, attempt_id, card_id, track_id, None)
+            .await?;
+    tx.commit().await?;
+    match admitted {
+        crate::operation::task_gate_run::Admitted::New { key, .. }
+        | crate::operation::task_gate_run::Admitted::Joined { key, .. } => Ok(key),
+    }
+}

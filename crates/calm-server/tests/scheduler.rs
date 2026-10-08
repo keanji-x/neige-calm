@@ -32,6 +32,7 @@ use calm_server::model::{
 use calm_server::operation::child_track_adapter::ChildTrackAdapter;
 use calm_server::operation::claude_adapter::ClaudeWorkerAdapter;
 use calm_server::operation::codex_adapter::CodexWorkerAdapter;
+use calm_server::operation::task_gate_run::{TaskGateRunAdapter, TaskGateRunPayload};
 use calm_server::operation::task_verify_adapter::{TaskVerifyAdapter, TaskVerifyOperationPayload};
 use calm_server::operation::terminal_adapter::TerminalWorkerAdapter;
 use calm_server::operation::{
@@ -213,6 +214,7 @@ async fn boot() -> Boot {
         read_ledger: Arc::new(calm_server::report_read_ledger::ReadLedger::new()),
         preview: Arc::new(calm_server::preview::PreviewRegistry::disabled()),
         sqlite_pool: repo.sqlite_pool(),
+        gate_run_wait: calm_server::operation::task_gate_run::GateRunWait::DEFAULT,
     });
     let mut registry = ToolRegistry::new();
     calm_server::mcp_server::tools::register_default_tools(&mut registry);
@@ -2643,6 +2645,25 @@ async fn every_registered_task_adapter_refuses_material_context() {
             &format!("{verify_task_id}#g1"),
             verify_payload,
         ),
+    ));
+    // #2464: a worker-requested gate run is bound to its running task row.
+    let mut run_task = plan_task(&boot.track_id, "meta-gate-run", TaskKind::Codex, &[]);
+    run_task.status = TaskStatus::Running;
+    run_task.gate_json = Some(json!({"steps":[{"name":"legal","cmd":"true"}]}).to_string());
+    let run_task_id = run_task.id.clone();
+    seed_task(&boot, run_task).await;
+    mark_context_stale(&boot, &run_task_id).await;
+    let run_payload = serde_json::to_value(TaskGateRunPayload {
+        track_id: boot.track_id.to_string(),
+        task_id: run_task_id.clone(),
+        card_id: boot.worker_card_id.to_string(),
+        run: 1,
+        message: "run 1".into(),
+    })
+    .unwrap();
+    cases.push((
+        Arc::new(TaskGateRunAdapter::new(std::env::temp_dir())) as Arc<dyn ProviderAdapter>,
+        pending_operation("task-gate-run", &format!("{run_task_id}#r1"), run_payload),
     ));
     let mut child_task = plan_task(&boot.track_id, "meta-child", TaskKind::Codex, &[]);
     child_task.status = TaskStatus::Dispatched;

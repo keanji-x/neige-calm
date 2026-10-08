@@ -115,13 +115,12 @@ its evidence:
   · The implementing worker runs the focused tests that pin the change (red
     before the fix and green after, when there is behavior to pin) and fixes
     formatter and lint findings. Its goal names the filter or paths that select
-    those tests; it reports the exact commands and runs no broad suite beyond
-    its gate steps. The kernel shows a gated worker its gate steps, and the
-    worker runs them before it reports; do not copy them into its goal.
+    those tests; it reports the exact commands and runs no broad suite. The
+    kernel shows a gated worker its gate steps; do not copy them into its goal.
   · The task's gate runs the repository's required local gates for the changed
     surface and replays those focused tests; write the replay step so it fails
-    when it selects no test. The gate's run is the evidence; the worker's run of
-    the same steps is its precheck.
+    when it selects no test. The kernel runs the gate when the worker asks and
+    again after it reports; that last run is the evidence.
   · CI, where the repository has it, runs the broad suites; read it with
     plugin_gitforge_gh_pr_checks. Without CI they run in the gate, with a
     gate.timeout_secs that fits them.

@@ -16,7 +16,7 @@ use support::mcp::{
 };
 
 /// The reviewed `COMMANDS` table: tool → command.
-const CLI_COVERED: [(&str, &str); 15] = [
+const CLI_COVERED: [(&str, &str); 16] = [
     ("neige_admin_gc", "neige admin gc"),
     ("neige_admin_vacuum", "neige admin vacuum"),
     ("neige_mail_cat", "neige mail cat"),
@@ -25,6 +25,7 @@ const CLI_COVERED: [(&str, &str); 15] = [
     ("neige_report_tag", "neige report tag"),
     ("neige_task_fail", "neige task fail"),
     ("neige_task_done", "neige task done"),
+    ("neige_task_gate", "neige task gate"),
     ("neige_track_cat", "neige track cat"),
     ("neige_track_close", "neige track close"),
     ("neige_track_diff", "neige track diff"),

@@ -49,6 +49,41 @@ pub const GIT_LEASE_PROVENANCE_SCRIPT: &str = "neige_lease_provenance() {\n\
     return 10\n\
     }";
 
+// The delivery script's text in two pieces, so the gate run's checkpoint is the same text with
+// one line between them (#2464 D2). Their concatenation is byte-identical to the script every
+// persisted delivery payload hashes (`delivery_script_bytes_are_unchanged`).
+macro_rules! git_delivery_script_prefix {
+    () => {
+        "set -e\n\
+    rc=0; neige_lease_provenance \"$5\" \"$6\" || rc=$?\n\
+    case $rc in 0) ;; 10|12) exit $rc;; *) exit 14;; esac\n\
+    u=$(neige_git ls-files -u) || exit 14\n\
+    [ -z \"$u\" ] || { printf '%s\\n' \"$u\"; exit 15; }\n\
+    for h in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD REBASE_HEAD rebase-merge rebase-apply; do\n\
+    p=$(neige_git rev-parse --git-path \"$h\") || exit 14\n\
+    [ -e \"$p\" ] || continue\n\
+    printf '%s\\n' \"$h\"; exit 15\n\
+    done\n\
+    rc=0; ref_out=$(neige_git symbolic-ref -q HEAD) || rc=$?\n\
+    case $rc in 0) ref=$ref_out;; 1) ref='';; *) exit 14;; esac\n\
+    [ \"$ref\" = \"refs/heads/$2\" ] || exit 11\n\
+    neige_git cat-file -e \"$4^{commit}\" || exit 13\n"
+    };
+}
+
+macro_rules! git_delivery_script_tail {
+    () => {
+        "neige_git add -A\n\
+    neige_git diff --cached --quiet || neige_git commit -q -m \"$1\"\n\
+    new=$(neige_git rev-parse --verify HEAD^{commit})\n\
+    rc=0; neige_git merge-base --is-ancestor \"$4\" \"$new\" || rc=$?\n\
+    case $rc in 0) anc=true;; 1) anc=false;; *) exit 13;; esac\n\
+    neige_git update-ref \"$3\" \"$new\"\n\
+    printf '{\"commit\":\"%s\",\"branch\":\"%s\",\"delivery_id\":\"%s\",\"base_is_ancestor\":%s}\\n' \
+    \"$new\" \"$2\" \"${3##*/}\" \"$anc\""
+    };
+}
+
 /// The kernel delivery script (#1727 S4 D2): `$1 message, $2 branch, $3 ref, $4 base_sha,
 /// $5 canonical_path, $6 git_common_dir`; run as
 /// `sh -c "<FORGE_SHELL_PRELUDE>\n<GIT_LEASE_PROVENANCE_SCRIPT>\n<this>"`.
@@ -67,28 +102,18 @@ pub const GIT_LEASE_PROVENANCE_SCRIPT: &str = "neige_lease_provenance() {\n\
 /// rebase paused at `break` and a `git am` whose conflict was `git add`ed but not `--continue`d
 /// leave no pseudo-ref at all — the first detaches HEAD with no `REBASE_HEAD`, the second
 /// leaves HEAD on the branch with a clean index. The evidence printed for a directory is its name.
-pub const GIT_DELIVERY_SCRIPT: &str = "set -e\n\
-    rc=0; neige_lease_provenance \"$5\" \"$6\" || rc=$?\n\
-    case $rc in 0) ;; 10|12) exit $rc;; *) exit 14;; esac\n\
-    u=$(neige_git ls-files -u) || exit 14\n\
-    [ -z \"$u\" ] || { printf '%s\\n' \"$u\"; exit 15; }\n\
-    for h in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD REBASE_HEAD rebase-merge rebase-apply; do\n\
-    p=$(neige_git rev-parse --git-path \"$h\") || exit 14\n\
-    [ -e \"$p\" ] || continue\n\
-    printf '%s\\n' \"$h\"; exit 15\n\
-    done\n\
-    rc=0; ref_out=$(neige_git symbolic-ref -q HEAD) || rc=$?\n\
-    case $rc in 0) ref=$ref_out;; 1) ref='';; *) exit 14;; esac\n\
-    [ \"$ref\" = \"refs/heads/$2\" ] || exit 11\n\
-    neige_git cat-file -e \"$4^{commit}\" || exit 13\n\
-    neige_git add -A\n\
-    neige_git diff --cached --quiet || neige_git commit -q -m \"$1\"\n\
-    new=$(neige_git rev-parse --verify HEAD^{commit})\n\
-    rc=0; neige_git merge-base --is-ancestor \"$4\" \"$new\" || rc=$?\n\
-    case $rc in 0) anc=true;; 1) anc=false;; *) exit 13;; esac\n\
-    neige_git update-ref \"$3\" \"$new\"\n\
-    printf '{\"commit\":\"%s\",\"branch\":\"%s\",\"delivery_id\":\"%s\",\"base_is_ancestor\":%s}\\n' \
-    \"$new\" \"$2\" \"${3##*/}\" \"$anc\"";
+pub const GIT_DELIVERY_SCRIPT: &str =
+    concat!(git_delivery_script_prefix!(), git_delivery_script_tail!());
+
+/// The gate run's checkpoint (#2464 D2): [`GIT_DELIVERY_SCRIPT`] with one line between its
+/// checks and its `add -A`, which moves `HEAD` back to the lease base (`$4`) and keeps the index
+/// and the worktree, so the commit it then makes is the attempt's one commit above the base. The
+/// same positional parameters, the same exit vocabulary; `$3` is the run's ref.
+pub const GIT_RUN_CHECKPOINT_SCRIPT: &str = concat!(
+    git_delivery_script_prefix!(),
+    "neige_git reset -q --soft \"$4\"\n",
+    git_delivery_script_tail!()
+);
 
 /// `$1 ref`: exit 0 = the candidate ref exists (landed), 1 = it does not (not landed), anything
 /// else = unknown. Reads neither HEAD nor the working tree.
@@ -103,3 +128,39 @@ pub const GIT_DELIVERY_OUTPUT_PROBE_SCRIPT: &str = "set -e\n\
     case $rc in 0) anc=true;; 1) anc=false;; *) exit 13;; esac\n\
     printf '{\"commit\":\"%s\",\"branch\":\"%s\",\"delivery_id\":\"%s\",\"base_is_ancestor\":%s}\\n' \
     \"$new\" \"$1\" \"${2##*/}\" \"$anc\"";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    /// The delivery script is part of every persisted delivery payload's hash (#2464 §2.3): its
+    /// split into prefix and tail must leave its bytes exactly as they were.
+    #[test]
+    fn delivery_script_bytes_are_unchanged() {
+        let digest: String = Sha256::digest(GIT_DELIVERY_SCRIPT.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(GIT_DELIVERY_SCRIPT.len(), 994);
+        assert_eq!(
+            digest,
+            "c1a34bfc86b58e8ba35c66ef150888e906dc1de418611b5d046f03f446fe6ae3"
+        );
+    }
+
+    /// The checkpoint is the delivery script plus exactly the reset line, placed after the base
+    /// object check and before `add -A`.
+    #[test]
+    fn the_checkpoint_resets_to_the_base_between_the_checks_and_the_commit() {
+        let reset = "neige_git reset -q --soft \"$4\"\n";
+        let at = GIT_RUN_CHECKPOINT_SCRIPT.find(reset).expect("reset line");
+        let (head, rest) = GIT_RUN_CHECKPOINT_SCRIPT.split_at(at);
+        assert!(head.ends_with("|| exit 13\n"), "{head}");
+        assert!(rest[reset.len()..].starts_with("neige_git add -A\n"));
+        assert_eq!(
+            format!("{head}{}", &rest[reset.len()..]),
+            GIT_DELIVERY_SCRIPT
+        );
+    }
+}

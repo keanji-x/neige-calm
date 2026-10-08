@@ -20,7 +20,8 @@ use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::McpServer;
 use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
 use crate::model::{Card, CardRole, new_id};
-use crate::operation::task_prompt::render_task_worker_prompt_tx;
+use crate::operation::task_gate_run::GateRunWait;
+use crate::operation::task_prompt::{GateRunPrompt, WorkerSurface, render_task_worker_prompt_tx};
 use crate::operation::worker_cleanup::{compensate_worker_rows, worker_spawn_failure_preserved};
 use crate::operation::workspace_lease::{
     ReleaseDelivery, acquire_workspace_lease_tx, prepare_worker_lease_tx,
@@ -79,6 +80,8 @@ pub struct ClaudeWorkerAdapter {
     #[cfg(feature = "fixtures")]
     spawn_hook: Option<SpawnHook>,
     workspace_root: PathBuf,
+    /// The wait of one gate-run call its prompt states (#2464 D3).
+    gate_run_wait: GateRunWait,
     #[cfg(feature = "fixtures")]
     preparation_hook: Option<Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>,
 }
@@ -119,6 +122,12 @@ impl ClaudeAdapter {
 }
 
 impl ClaudeWorkerAdapter {
+    /// The configured wait of one gate-run call (`GateRunWait::DEFAULT` until boot sets it).
+    pub fn with_gate_run_wait(mut self, wait: GateRunWait) -> Self {
+        self.gate_run_wait = wait;
+        self
+    }
+
     pub fn new(
         repo: Arc<dyn crate::db::RouteRepo>,
         codex: Arc<CodexClient>,
@@ -134,6 +143,7 @@ impl ClaudeWorkerAdapter {
             card_role_cache,
             track_area_cache,
             workspace_root,
+            gate_run_wait: GateRunWait::DEFAULT,
             #[cfg(feature = "fixtures")]
             spawn_hook: None,
             #[cfg(feature = "fixtures")]
@@ -158,6 +168,7 @@ impl ClaudeWorkerAdapter {
             card_role_cache,
             track_area_cache,
             workspace_root,
+            gate_run_wait: GateRunWait::DEFAULT,
             spawn_hook: Some(spawn_hook),
             preparation_hook: None,
         }
@@ -787,6 +798,10 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             &payload.context,
             payload.acceptance_criteria.as_deref(),
             &plan,
+            GateRunPrompt {
+                surface: WorkerSurface::Cli,
+                wait: self.gate_run_wait,
+            },
         )
         .await?;
         let command_line = build_claude_worker_command_line(

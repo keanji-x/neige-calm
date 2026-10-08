@@ -240,6 +240,9 @@ pub struct AppContext {
     /// The repo's sqlite pool for **read-only** statements; writes never go through this.
     /// `None` only for repos without sqlite (tests).
     pub sqlite_pool: Option<sqlx::SqlitePool>,
+    /// How long one `neige_task_gate` call waits before it answers `running` (#2464 D3), from the
+    /// configured worker idle window.
+    pub gate_run_wait: crate::operation::task_gate_run::GateRunWait,
 }
 
 impl AppContext {
@@ -279,7 +282,21 @@ impl AppContext {
             read_ledger: Arc::new(crate::report_read_ledger::ReadLedger::new()),
             preview: Arc::new(crate::preview::PreviewRegistry::disabled()),
             sqlite_pool,
+            gate_run_wait: crate::operation::task_gate_run::GateRunWait::DEFAULT,
         })
+    }
+
+    /// Boot's gate-run wait, from the configured worker idle window, set on the context
+    /// [`Self::new`] just returned, before it is shared; every other construction keeps the bound
+    /// of the default window.
+    pub fn with_gate_run_wait(
+        mut self: Arc<Self>,
+        wait: crate::operation::task_gate_run::GateRunWait,
+    ) -> Arc<Self> {
+        Arc::get_mut(&mut self)
+            .expect("with_gate_run_wait runs before the context is shared")
+            .gate_run_wait = wait;
+        self
     }
 
     /// Boot's preview registry, set on the context [`Self::new`] just returned, before it is
