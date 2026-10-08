@@ -212,14 +212,58 @@ fn the_ask_argv_is_exactly_the_spawn_contract() {
     assert_eq!(ask[sources + 1], "project");
 }
 
+/// #2441: `full` bypasses every permission check with the sandbox off, and asks nothing. It
+/// differs from `never` in exactly the bypass flag and the sandbox; its rules are `never`'s.
+#[test]
+fn the_full_argv_is_exactly_the_spawn_contract() {
+    let never = args(SessionStart::New, "/ws/track");
+    let full = args_in(
+        PlannerPermissionMode::Full,
+        SessionStart::New,
+        &TurnModelSelection::inherit(),
+        "/ws/track",
+    );
+    let mut expected = never.clone();
+    let settings = expected.iter().position(|arg| arg == "--settings").unwrap() + 1;
+    expected[settings] = full[settings].clone();
+    let prompts = expected
+        .iter()
+        .position(|arg| arg == "--permission-prompts")
+        .unwrap();
+    expected.splice(
+        prompts..prompts,
+        ["--permission-mode", "bypassPermissions"].map(String::from),
+    );
+    assert_eq!(full, expected);
+    assert_eq!(
+        serde_json::from_str::<Value>(&full[settings]).unwrap(),
+        json!({
+            "attribution": { "commit": "", "pr": "" },
+            "permissions": { "allow": ["WebFetch(domain:*)"] },
+            "sandbox": {
+                "enabled": false,
+                "failIfUnavailable": true,
+                "allowUnsandboxedCommands": false,
+                "network": { "allowAllUnixSockets": true },
+            },
+        })
+    );
+}
+
 /// The safety invariant of #2348, over every mode and both session starts: a spawn whose commands
 /// may leave the sandbox has no Bash rule (a bare `Bash` would let them leave unasked), runs
 /// sandboxed commands without asking, and denies editing the workspace's Claude settings, spelled
-/// from the same workspace root its Edit rule is.
+/// from the same workspace root its Edit rule is. A spawn without a sandbox (#2441) is exactly one
+/// that bypasses every check and asks nothing; every sandboxed spawn keeps the default mode.
 #[test]
 fn a_spawn_that_may_leave_the_sandbox_asks_first_and_cannot_edit_its_settings() {
     let mut unsandboxed = 0;
-    for mode in [PlannerPermissionMode::Never, PlannerPermissionMode::Ask] {
+    let mut without_sandbox = 0;
+    for mode in [
+        PlannerPermissionMode::Never,
+        PlannerPermissionMode::Ask,
+        PlannerPermissionMode::Full,
+    ] {
         for start in [SessionStart::New, SessionStart::Resume] {
             for cwd in ["/ws/track", "/ws/track/"] {
                 let got = args_in(mode, start, &TurnModelSelection::inherit(), cwd);
@@ -229,6 +273,18 @@ fn a_spawn_that_may_leave_the_sandbox_asks_first_and_cannot_edit_its_settings() 
                 };
                 let settings: Value =
                     serde_json::from_str(&after("--settings").expect("--settings")).unwrap();
+                if settings["sandbox"]["enabled"] != json!(true) {
+                    without_sandbox += 1;
+                    assert_eq!(
+                        after("--permission-mode").as_deref(),
+                        Some("bypassPermissions"),
+                        "{mode:?}"
+                    );
+                    assert_eq!(after("--permission-prompts").as_deref(), Some("none"));
+                    assert_eq!(after("--permission-prompt-tool"), None, "{mode:?}");
+                    continue;
+                }
+                assert_eq!(after("--permission-mode"), None, "{mode:?}");
                 if settings["sandbox"]["allowUnsandboxedCommands"] != json!(true) {
                     continue;
                 }
@@ -259,6 +315,7 @@ fn a_spawn_that_may_leave_the_sandbox_asks_first_and_cannot_edit_its_settings() 
         }
     }
     assert_eq!(unsandboxed, 4, "only ask lets a command leave the sandbox");
+    assert_eq!(without_sandbox, 4, "only full runs without the sandbox");
 }
 
 #[test]
@@ -266,7 +323,12 @@ fn a_workspace_that_would_split_a_rule_is_refused() {
     for (cwd, mode) in ["/ws/my track", "/ws/a,b", "/ws/(x)", "relative/ws"]
         .into_iter()
         .flat_map(|cwd| {
-            [PlannerPermissionMode::Never, PlannerPermissionMode::Ask].map(|m| (cwd, m))
+            [
+                PlannerPermissionMode::Never,
+                PlannerPermissionMode::Ask,
+                PlannerPermissionMode::Full,
+            ]
+            .map(|m| (cwd, m))
         })
     {
         let result = argv(

@@ -33,27 +33,34 @@ impl TurnApprovals {
         let Self::Explicit(mode) = self else {
             return;
         };
-        let policy = match mode {
-            PlannerPermissionMode::Never => json!("never"),
+        // The sandbox the shared codex home configures, so `never` and `ask` neither widen nor
+        // narrow it.
+        let workspace_write =
+            json!({ "type": "workspaceWrite", "networkAccess": WORKSPACE_WRITE_NETWORK_ACCESS });
+        let (policy, sandbox) = match mode {
+            PlannerPermissionMode::Never => (json!("never"), workspace_write),
             // Sandbox escapes and exec-policy rules ask; MCP tool approvals arrive as
             // `mcpServer/elicitation/request` whatever `mcp_elicitations` says.
-            PlannerPermissionMode::Ask => json!({ "granular": {
-                "sandbox_approval": true,
-                "rules": true,
-                "request_permissions": false,
-                "mcp_elicitations": false,
-                "skill_approval": false,
-            }}),
+            PlannerPermissionMode::Ask => (
+                json!({ "granular": {
+                    "sandbox_approval": true,
+                    "rules": true,
+                    "request_permissions": false,
+                    "mcp_elicitations": false,
+                    "skill_approval": false,
+                }}),
+                workspace_write,
+            ),
+            // No sandbox, so nothing leaves one to be asked about (#2441).
+            PlannerPermissionMode::Full => (json!("never"), json!({ "type": "dangerFullAccess" })),
         };
         params.insert("approvalPolicy".into(), policy);
         // A codex-home `approvals_reviewer = "guardian_subagent"` would hand every request to a
         // codex subagent that decides alone; the person is the reviewer.
         params.insert("approvalsReviewer".into(), json!("user"));
-        // The sandbox the shared codex home configures, so neither mode widens or narrows it.
-        params.insert(
-            "sandboxPolicy".into(),
-            json!({ "type": "workspaceWrite", "networkAccess": WORKSPACE_WRITE_NETWORK_ACCESS }),
-        );
+        // Sent on every Planner turn: the thread keeps it, so a turn after a `full` one runs
+        // sandboxed again only because it says so.
+        params.insert("sandboxPolicy".into(), sandbox);
     }
 }
 

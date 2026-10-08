@@ -6,7 +6,7 @@
 //! [`ClaudeResponder`] writes the decision on the child's stdin, and each
 //! `control_cancel_request` becomes a `Gone`. The spawn is the connection: the
 //! [`SpawnConnection`] its read task holds pushes `ConnectionLost` when that task ends, after the
-//! last stdout line was read, so no `Open` of the spawn can follow it. Under `never`
+//! last stdout line was read, so no `Open` of the spawn can follow it. Under `never` and `full`
 //! (`--permission-prompts none`) a `can_use_tool` is not expected and is refused where it is read.
 
 use std::sync::Arc;
@@ -30,12 +30,12 @@ pub(crate) const DENIED_BY_USER: &str = "The user denied this tool use.";
 /// What the model reads when nobody answered: the ask could not be raised, or it was withdrawn.
 pub(crate) const NOT_ANSWERED: &str =
     "This tool use was not approved: nobody answered the request for it.";
-/// What a `never` spawn answers a `can_use_tool` it should not have been sent.
+/// What a `never` or `full` spawn answers a `can_use_tool` it should not have been sent.
 pub(crate) const NO_APPROVAL_SURFACE: &str = "this Planner has no approval surface";
 
 /// How one spawn answers `can_use_tool`, fixed by the permission mode read at the spawn.
 pub(crate) enum Approvals {
-    /// `never`: refused where it is read.
+    /// `never` and `full`: refused where it is read.
     Refused,
     /// `ask`: put to the person through the harness that holds this session.
     Held(SpawnConnection),
@@ -49,7 +49,7 @@ impl Approvals {
         spawn_id: &str,
     ) -> Self {
         match mode {
-            PlannerPermissionMode::Never => Self::Refused,
+            PlannerPermissionMode::Never | PlannerPermissionMode::Full => Self::Refused,
             PlannerPermissionMode::Ask => Self::Held(SpawnConnection {
                 sender: held.clone(),
                 connection: ConnectionId(spawn_id.to_string()),

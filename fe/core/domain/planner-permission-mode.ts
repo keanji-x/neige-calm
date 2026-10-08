@@ -1,5 +1,5 @@
-// A Planner card's permission mode (#2348): whether its provider may pause a turn to ask the person
-// before it acts outside its sandbox. `GET /api/cards/{id}/planner/run` reads it; the one write is
+// A Planner card's permission mode (#2348, #2441): whether its provider stays in its sandbox, may
+// pause a turn to ask the person before it acts outside it, or runs with no sandbox at all. `GET /api/cards/{id}/planner/run` reads it; the one write is
 // `PUT /api/cards/{id}/planner/permission-mode`, which only the person may make. A change applies
 // from the Planner's next turn.
 
@@ -9,7 +9,7 @@ import type { ApiOperation } from '../api/types.js';
 import type { FailureTable, WriteFailure, WriteText } from './failure-class.js';
 
 /** The closed set the server stores; `null` on the run read means the card is not a Planner. */
-export const plannerPermissionModeSchema: z.ZodType<PlannerPermissionMode> = z.enum(['never', 'ask']);
+export const plannerPermissionModeSchema: z.ZodType<PlannerPermissionMode> = z.enum(['never', 'ask', 'full']);
 
 /** Store `mode` on the card. The answer echoes the stored mode rather than the one asked for. */
 export function setPlannerPermissionModeOperation(

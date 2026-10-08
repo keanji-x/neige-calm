@@ -23,7 +23,7 @@
     color: var(--text-3);
   }
 
-  /* Its two labels are short and fixed, so it keeps its width rather than truncating. */
+  /* Its three labels are short and fixed, so it keeps its width rather than truncating. */
   .permission {
     border-radius: var(--radius-pill);
     flex: none;

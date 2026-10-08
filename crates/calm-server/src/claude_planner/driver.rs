@@ -486,8 +486,8 @@ async fn keep_stderr_tail(stderr: ChildStderr, tail: Arc<Mutex<String>>) {
     }
 }
 
-/// A `can_use_tool` answered here (one under `never`, where `--permission-prompts none` should not
-/// send it, or one without its recorded shape) is denied. Any other request gets an error response.
+/// A `can_use_tool` answered here (one under `never` or `full`, where `--permission-prompts none`
+/// should not send it, or one without its recorded shape) is denied. Any other request gets an error response.
 async fn answer_control_request(slot: &TurnSlot, request_id: &str, other_subtype: bool) {
     let response = if other_subtype {
         ControlResponseOut::new(ControlResponseOutBody::Error {

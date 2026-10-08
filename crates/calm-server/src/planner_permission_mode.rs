@@ -94,17 +94,23 @@ mod tests {
             Ok(PlannerPermissionMode::Ask)
         );
         assert_eq!(
+            read(&json!({"permission_mode": "full"})),
+            Ok(PlannerPermissionMode::Full)
+        );
+        assert_eq!(
             read(&json!({})),
             Err(MalformedPermissionMode { found: None })
         );
         for corrupt in [
-            json!("full"),
+            json!("yolo"),
             json!("Ask"),
+            json!("Full"),
             json!(null),
             json!(true),
             json!({}),
             json!({"ask": null}),
             json!({"never": null}),
+            json!({"full": null}),
         ] {
             assert_eq!(
                 read(&json!({"permission_mode": corrupt.clone()})),

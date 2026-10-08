@@ -246,23 +246,27 @@ async fn dropping_an_ask_turns_approvals_loses_its_connection() {
 }
 
 /// `never` answers `cancelled` where the request is read and tells the channel nothing, not even
-/// the end of the process; its cancel is `session/cancel` alone.
+/// the end of the process; its cancel is `session/cancel` alone. `full` (#2441) is the same: a
+/// stray request gets no new answering path.
 #[tokio::test]
-async fn a_never_turn_answers_cancelled_itself() {
-    let mut peer = peer(PlannerPermissionMode::Never);
-    peer.request(0, bash()).await;
-    assert_eq!(
-        peer.read().await,
-        answer(0, json!({"outcome": {"outcome": "cancelled"}}))
-    );
-    peer.approvals.cancel("native").await.unwrap();
-    assert_eq!(peer.read().await["method"], "session/cancel");
-    drop(std::mem::replace(
-        &mut peer.approvals,
-        Approvals::Refused(peer.connection.client.clone()),
-    ));
-    peer.wrote_nothing_more().await;
-    assert!(peer.held.try_recv().is_err());
+async fn a_never_or_full_turn_answers_cancelled_itself() {
+    for mode in [PlannerPermissionMode::Never, PlannerPermissionMode::Full] {
+        let mut peer = peer(mode);
+        peer.request(0, bash()).await;
+        assert_eq!(
+            peer.read().await,
+            answer(0, json!({"outcome": {"outcome": "cancelled"}})),
+            "{mode:?}"
+        );
+        peer.approvals.cancel("native").await.unwrap();
+        assert_eq!(peer.read().await["method"], "session/cancel");
+        drop(std::mem::replace(
+            &mut peer.approvals,
+            Approvals::Refused(peer.connection.client.clone()),
+        ));
+        peer.wrote_nothing_more().await;
+        assert!(peer.held.try_recv().is_err(), "{mode:?}");
+    }
 }
 
 /// A malformed permission request is refused without asking; any other client method is not

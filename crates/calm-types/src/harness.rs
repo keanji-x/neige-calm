@@ -88,11 +88,11 @@ pub struct HarnessLiveReply {
     pub text: String,
 }
 
-/// Whether a Planner card's provider may ask the person before it acts outside its sandbox
-/// (#2348). Stored on the card as the server-owned payload key `permission_mode`; every Planner
+/// What a Planner card's provider may do outside its sandbox (#2348, #2441): nothing, what the
+/// person allows when asked, or anything, with no sandbox at all. Stored on the card as the server-owned payload key `permission_mode`; every Planner
 /// card is created `never`, and only `PUT /api/cards/{id}/planner/permission-mode` changes it.
-// Only the bare strings `"never"` and `"ask"` deserialize: serde's derived enum also accepts the
-// object form `{"ask": null}`, which would read a corrupt stored value as permission to ask.
+// Only the bare strings `"never"`, `"ask"` and `"full"` deserialize: serde's derived enum also
+// accepts the object form `{"ask": null}`, which would read a corrupt stored value as permission.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "snake_case", try_from = "String")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
@@ -101,6 +101,9 @@ pub enum PlannerPermissionMode {
     Never,
     /// The provider asks the person and waits for the answer.
     Ask,
+    /// The provider runs without its sandbox and never asks (#2441): the Planner acts with the
+    /// account's own access.
+    Full,
 }
 
 impl TryFrom<String> for PlannerPermissionMode {
@@ -110,6 +113,7 @@ impl TryFrom<String> for PlannerPermissionMode {
         match name.as_str() {
             "never" => Ok(Self::Never),
             "ask" => Ok(Self::Ask),
+            "full" => Ok(Self::Full),
             _ => Err(format!("unknown permission mode `{name}`")),
         }
     }

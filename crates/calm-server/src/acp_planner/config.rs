@@ -32,6 +32,14 @@ const OPENCODE_ASK_PERMISSION: (&str, &str) = (
     r#"{"bash":"ask","edit":"ask","webfetch":"ask"}"#,
 );
 
+/// What OpenCode's `permission` configuration is overridden with under `full` (#2441): every
+/// tool that acts, reads or fetches is allowed without asking, outside the workspace too. No `*`,
+/// so OpenCode keeps denying the tools a Planner has no use for (`question`, `plan_*`).
+const OPENCODE_FULL_PERMISSION: (&str, &str) = (
+    "OPENCODE_PERMISSION",
+    r#"{"bash":"allow","edit":"allow","webfetch":"allow","external_directory":"allow","doom_loop":"allow","read":"allow"}"#,
+);
+
 impl AcpPlannerConfig {
     pub fn read(path: &Path) -> Result<Self> {
         let config: Self = serde_json::from_slice(&std::fs::read(path)?)?;
@@ -73,10 +81,14 @@ impl AcpAgentConfig {
         match (mode, &self.provider) {
             (PlannerPermissionMode::Never, _) => Vec::new(),
             (PlannerPermissionMode::Ask, AgentProvider::OpenCode) => vec![OPENCODE_ASK_PERMISSION],
-            // Not ACP agents: a registration naming them is refused.
-            (PlannerPermissionMode::Ask, AgentProvider::Codex | AgentProvider::Claude) => {
-                Vec::new()
+            (PlannerPermissionMode::Full, AgentProvider::OpenCode) => {
+                vec![OPENCODE_FULL_PERMISSION]
             }
+            // Not ACP agents: a registration naming them is refused.
+            (
+                PlannerPermissionMode::Ask | PlannerPermissionMode::Full,
+                AgentProvider::Codex | AgentProvider::Claude,
+            ) => Vec::new(),
         }
     }
 }
@@ -248,5 +260,29 @@ mod tests {
             opencode().permission_env(PlannerPermissionMode::Never),
             Vec::<(&str, &str)>::new()
         );
+    }
+
+    /// #2441: `full` allows each acting tool by name, outside the workspace too, and never with a
+    /// `*` rule, which would also allow the tools OpenCode denies a Planner.
+    #[test]
+    fn full_allows_each_acting_tool_by_name() {
+        let env = opencode().permission_env(PlannerPermissionMode::Full);
+        let [(key, value)] = env.as_slice() else {
+            panic!("one override: {env:?}");
+        };
+        assert_eq!(*key, "OPENCODE_PERMISSION");
+        let permission: serde_json::Value = serde_json::from_str(value).unwrap();
+        assert_eq!(
+            permission,
+            serde_json::json!({
+                "bash": "allow",
+                "edit": "allow",
+                "webfetch": "allow",
+                "external_directory": "allow",
+                "doom_loop": "allow",
+                "read": "allow",
+            })
+        );
+        assert!(permission.get("*").is_none(), "{permission}");
     }
 }
