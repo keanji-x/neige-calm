@@ -27,7 +27,6 @@ pub const CLAUDE_TRANSCRIPT_SOURCE_KIND: &str = "claude_transcript";
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const DEFAULT_LAZY_RETRY_DELAY: Duration = Duration::from_millis(100);
 const DEFAULT_LAZY_RETRY_ATTEMPTS: usize = 30;
-const DEFAULT_CURSOR_PERSIST_EVERY: u64 = 1;
 
 #[derive(Clone, Debug)]
 pub struct ClaudeTranscriptFlowSourceOptions {
@@ -35,7 +34,6 @@ pub struct ClaudeTranscriptFlowSourceOptions {
     pub poll_interval: Duration,
     pub lazy_retry_delay: Duration,
     pub lazy_retry_attempts: usize,
-    pub cursor_persist_every: u64,
 }
 
 impl Default for ClaudeTranscriptFlowSourceOptions {
@@ -45,7 +43,6 @@ impl Default for ClaudeTranscriptFlowSourceOptions {
             poll_interval: DEFAULT_POLL_INTERVAL,
             lazy_retry_delay: DEFAULT_LAZY_RETRY_DELAY,
             lazy_retry_attempts: DEFAULT_LAZY_RETRY_ATTEMPTS,
-            cursor_persist_every: DEFAULT_CURSOR_PERSIST_EVERY,
         }
     }
 }
@@ -147,13 +144,13 @@ impl ClaudeTranscriptFlowSource {
         path: PathBuf,
     ) -> Result<(), CoreError> {
         let source_path = path.to_string_lossy().to_string();
+        let ctx = row_ctx(session, &self.runtime);
         let stored = cursor::get(
             self.repo.as_ref(),
             &self.runtime.card_id,
             CLAUDE_TRANSCRIPT_SOURCE_KIND,
         )
-        .await?
-        .filter(|c| c.source_path == source_path);
+        .await?;
         let mut writer = CursorWriter::new(
             &self.runtime.card_id,
             CLAUDE_TRANSCRIPT_SOURCE_KIND,
@@ -162,6 +159,7 @@ impl ClaudeTranscriptFlowSource {
             self.stop.clone(),
         );
         let mut cursor = stored
+            .filter(|c| c.source_path == source_path)
             .map(|c| CursorState {
                 record_index: c.record_index.max(0) as u64,
                 byte_offset: c.byte_offset.max(0) as u64,
@@ -189,7 +187,6 @@ impl ClaudeTranscriptFlowSource {
 
         loop {
             if self.stop.is_cancelled() {
-                persist_cursor(&mut writer, &*self.repo, &cursor).await?;
                 return Ok(());
             }
 
@@ -223,7 +220,9 @@ impl ClaudeTranscriptFlowSource {
             let mut lines = read.lines;
             let mut exit_after_batch = false;
             if lines.is_empty() {
-                persist_cursor(&mut writer, &*self.repo, &cursor).await?;
+                if !persist_cursor(&mut writer, sink, &ctx, &cursor, vec![]).await? {
+                    return Ok(());
+                }
                 if !self.runtime_is_alive().await {
                     let final_read = match read_transcript_lines(&path, cursor.byte_offset, true)
                         .await
@@ -260,7 +259,9 @@ impl ClaudeTranscriptFlowSource {
                     lines = final_read.lines;
                     exit_after_batch = true;
                     if lines.is_empty() {
-                        persist_cursor(&mut writer, &*self.repo, &cursor).await?;
+                        if !persist_cursor(&mut writer, sink, &ctx, &cursor, vec![]).await? {
+                            return Ok(());
+                        }
                         tracing::info!(
                             card_id = %self.runtime.card_id,
                             runtime_id = %self.runtime.id,
@@ -276,7 +277,6 @@ impl ClaudeTranscriptFlowSource {
 
             for line in lines {
                 if self.stop.is_cancelled() {
-                    persist_cursor(&mut writer, &*self.repo, &cursor).await?;
                     return Ok(());
                 }
 
@@ -293,6 +293,9 @@ impl ClaudeTranscriptFlowSource {
                         cursor.last_line_hash = Some(hash_line(&line.raw));
                         cursor.record_index = cursor.record_index.saturating_add(1);
                         cursor.byte_offset = line.offset_after;
+                        if !persist_cursor(&mut writer, sink, &ctx, &cursor, vec![]).await? {
+                            return Ok(());
+                        }
                         continue;
                     }
                 };
@@ -331,21 +334,20 @@ impl ClaudeTranscriptFlowSource {
                     raw_ref,
                     &mut state,
                 );
-                for item in items {
-                    record_with_backpressure(sink, &row_ctx(session, &self.runtime), item).await?;
-                    position.seq = position.seq.saturating_add(1);
-                }
+                position.seq = position.seq.saturating_add(items.len() as u64);
 
                 cursor.last_source_uuid = source_uuid(&parsed);
                 cursor.last_line_hash = Some(hash_line(&line.raw));
                 cursor.record_index = cursor.record_index.saturating_add(1);
                 cursor.byte_offset = line.offset_after;
-                if cursor.record_index % self.options.cursor_persist_every.max(1) == 0 {
-                    persist_cursor(&mut writer, &*self.repo, &cursor).await?;
+                if !persist_cursor(&mut writer, sink, &ctx, &cursor, items).await? {
+                    return Ok(());
                 }
             }
 
-            persist_cursor(&mut writer, &*self.repo, &cursor).await?;
+            if !persist_cursor(&mut writer, sink, &ctx, &cursor, vec![]).await? {
+                return Ok(());
+            }
             if exit_after_batch {
                 tracing::info!(
                     card_id = %self.runtime.card_id,
@@ -493,34 +495,18 @@ fn row_ctx(session: &WorkerSession, runtime: &WorkerSessionProjection) -> FlowRo
     }
 }
 
-async fn record_with_backpressure(
-    sink: &dyn WorkerFlowItemSink,
-    ctx: &FlowRowCtx,
-    item: calm_types::worker_flow::WorkerFlowItem,
-) -> Result<(), CoreError> {
-    loop {
-        match sink.record(ctx, item.clone()).await {
-            Ok(()) => return Ok(()),
-            Err(CoreError::ServiceUnavailable(err)) => {
-                tracing::warn!(
-                    error = %err,
-                    "worker-flow sink backpressure; retrying captured item"
-                );
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            Err(err) => return Err(err),
-        }
-    }
-}
-
 async fn persist_cursor(
     writer: &mut CursorWriter,
-    repo: &dyn Repo,
+    sink: &dyn WorkerFlowItemSink,
+    ctx: &FlowRowCtx,
     cursor: &CursorState,
-) -> Result<(), CoreError> {
+    items: Vec<calm_types::worker_flow::WorkerFlowItem>,
+) -> Result<bool, CoreError> {
     writer
         .persist(
-            repo,
+            sink,
+            ctx,
+            items,
             cursor.record_index as i64,
             cursor.byte_offset as i64,
             cursor.last_source_uuid.as_deref(),
@@ -751,7 +737,6 @@ mod tests {
             poll_interval: Duration::from_millis(20),
             lazy_retry_delay: Duration::from_millis(10),
             lazy_retry_attempts: 3,
-            cursor_persist_every: 1,
         };
         let runtime = WorkerSessionProjection {
             id: "rt-lazy-race".into(),

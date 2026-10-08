@@ -546,6 +546,13 @@ impl RepoOutOfDomain for SqlxRepo {
         Ok(done.rows_affected())
     }
 
+    async fn worker_flow_capture_commit(
+        &self,
+        capture: &crate::db::worker_flow_capture::WorkerFlowCapture,
+    ) -> Result<calm_exec::flow::CaptureOutcome> {
+        self.capture_commit(capture).await
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn worker_flow_item_insert(
         &self,
@@ -585,30 +592,22 @@ impl RepoOutOfDomain for SqlxRepo {
         last_line_hash: Option<&str>,
         updated_at_ms: i64,
     ) -> Result<()> {
-        sqlx::query(
-            r#"INSERT INTO worker_flow_cursors (
-                   card_id, source_kind, source_path, record_index,
-                   byte_offset, last_source_uuid, last_line_hash, updated_at_ms
-               )
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-               ON CONFLICT(card_id, source_kind) DO UPDATE SET
-                   source_path = excluded.source_path,
-                   record_index = excluded.record_index,
-                   byte_offset = excluded.byte_offset,
-                   last_source_uuid = excluded.last_source_uuid,
-                   last_line_hash = excluded.last_line_hash,
-                   updated_at_ms = excluded.updated_at_ms"#,
+        let mut tx = begin_immediate_tx(&self.pool).await?;
+        super::worker_flow_capture::worker_flow_cursor_upsert_tx(
+            &mut tx,
+            card_id,
+            source_kind,
+            &calm_exec::flow::CapturePosition {
+                source_path: source_path.into(),
+                record_index,
+                byte_offset,
+                last_source_uuid: last_source_uuid.map(str::to_owned),
+                last_line_hash: last_line_hash.map(str::to_owned),
+            },
+            updated_at_ms,
         )
-        .bind(card_id)
-        .bind(source_kind)
-        .bind(source_path)
-        .bind(record_index)
-        .bind(byte_offset)
-        .bind(last_source_uuid)
-        .bind(last_line_hash)
-        .bind(updated_at_ms)
-        .execute(&self.pool)
         .await?;
+        tx.commit().await?;
         Ok(())
     }
 

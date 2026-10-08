@@ -57,14 +57,12 @@ async fn worker_flow_driver_boot_enumerates_active_codex_and_claude_runtimes() {
             poll_interval: Duration::from_millis(20),
             lazy_retry_delay: Duration::from_millis(10),
             lazy_retry_attempts: 3,
-            cursor_persist_every: 1,
         },
         ClaudeTranscriptFlowSourceOptions {
             path_override: Some(transcript_path),
             poll_interval: Duration::from_millis(20),
             lazy_retry_delay: Duration::from_millis(10),
             lazy_retry_attempts: 3,
-            cursor_persist_every: 1,
         },
     );
     driver.start_on_boot().await.unwrap();
@@ -302,14 +300,12 @@ async fn worker_flow_driver_uses_terminal_row_cwd_for_legacy_claude_card() {
             poll_interval: Duration::from_millis(20),
             lazy_retry_delay: Duration::from_millis(10),
             lazy_retry_attempts: 1,
-            cursor_persist_every: 1,
         },
         ClaudeTranscriptFlowSourceOptions {
             path_override: Some(expected_path.clone()),
             poll_interval: Duration::from_millis(20),
             lazy_retry_delay: Duration::from_millis(10),
             lazy_retry_attempts: 1,
-            cursor_persist_every: 1,
         },
     );
     driver.attach_runtime_for_test(runtime).await.unwrap();

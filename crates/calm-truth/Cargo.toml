@@ -17,6 +17,7 @@ path = "tests/integration_suite.rs"
 [features]
 default = []
 test-helpers = []
+fixtures = []
 
 # #1252 S3′ PR-B — the append-seam escape probe.
 #

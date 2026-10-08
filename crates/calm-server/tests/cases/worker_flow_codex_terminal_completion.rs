@@ -42,7 +42,6 @@ async fn codex_tail_task_exits_after_terminal_completion_without_event() {
             poll_interval,
             lazy_retry_delay: Duration::from_millis(10),
             lazy_retry_attempts: 3,
-            cursor_persist_every: 1,
         },
     );
     driver

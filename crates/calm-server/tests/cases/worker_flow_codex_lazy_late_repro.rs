@@ -38,7 +38,6 @@ async fn codex_rollout_source_ingests_file_created_after_budget_while_alive() {
             poll_interval: Duration::from_millis(20),
             lazy_retry_delay: Duration::from_millis(30),
             lazy_retry_attempts: 3,
-            cursor_persist_every: 1,
         },
     );
     let session = wf::worker_session(&seed);

@@ -1,13 +1,14 @@
 use std::time::Duration;
 
-use calm_truth::TruthError;
+use calm_exec::flow::{
+    CaptureBatch, CaptureCheckpoint, CaptureOutcome, CapturePosition, FlowRowCtx,
+    WorkerFlowItemSink,
+};
+use calm_truth::db::RepoRead;
 use calm_truth::db::rows::WorkerFlowCursor;
-use calm_truth::db::sqlite::is_sqlite_busy;
-use calm_truth::db::{RepoOutOfDomain, RepoRead};
 use calm_types::error::CoreError;
+use calm_types::worker_flow::WorkerFlowItem;
 use tokio_util::sync::CancellationToken;
-
-use crate::model::now_ms;
 
 pub const CODEX_ROLLOUT_SOURCE_KIND: &str = "codex_rollout";
 
@@ -27,31 +28,17 @@ where
         .map_err(|e| CoreError::Internal(format!("worker_flow_cursor_get: {e}")))
 }
 
-/// The fields a source moves; equal values mean the stored row is already current.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Position {
-    record_index: i64,
-    byte_offset: i64,
-    last_source_uuid: Option<String>,
-    last_line_hash: Option<String>,
-}
-
-/// Writes one card's capture cursor for one source file. A source re-reads its file every poll, so
-/// only a cursor that moved is written, and SQLite writer contention is waited out instead of
-/// ending the capture (#1579). Once the source is stopped, a contended write is abandoned and no
-/// further write is attempted: the driver stops a source before attaching its replacement, which
-/// owns the same row.
+/// Shared record/checkpoint writer. A false result ends this source: it must not
+/// continue with a normalizer state built from a stale or cancelled batch.
 pub struct CursorWriter {
     card_id: String,
     source_kind: &'static str,
     source_path: String,
     stop: CancellationToken,
-    stored: Option<Position>,
-    abandoned: bool,
+    stored: CaptureCheckpoint,
 }
 
 impl CursorWriter {
-    /// `stored` is the row `get` returned for this source file, if any.
     pub fn new(
         card_id: &str,
         source_kind: &'static str,
@@ -60,80 +47,80 @@ impl CursorWriter {
         stop: CancellationToken,
     ) -> Self {
         Self {
-            card_id: card_id.to_string(),
+            card_id: card_id.to_owned(),
             source_kind,
-            source_path: source_path.to_string(),
+            source_path: source_path.to_owned(),
             stop,
-            stored: stored.map(|row| Position {
-                record_index: row.record_index,
-                byte_offset: row.byte_offset,
-                last_source_uuid: row.last_source_uuid.clone(),
-                last_line_hash: row.last_line_hash.clone(),
-            }),
-            abandoned: false,
+            stored: stored
+                .map(CaptureCheckpoint::from)
+                .unwrap_or(CaptureCheckpoint::Missing),
         }
     }
 
-    pub async fn persist<R>(
+    #[allow(clippy::too_many_arguments)]
+    pub async fn persist(
         &mut self,
-        repo: &R,
+        sink: &dyn WorkerFlowItemSink,
+        ctx: &FlowRowCtx,
+        items: Vec<WorkerFlowItem>,
         record_index: i64,
         byte_offset: i64,
         last_source_uuid: Option<&str>,
         last_line_hash: Option<&str>,
-    ) -> Result<(), CoreError>
-    where
-        R: RepoOutOfDomain + ?Sized,
-    {
-        let next = Position {
+    ) -> Result<bool, CoreError> {
+        if self.stop.is_cancelled() {
+            return Ok(false);
+        }
+        let next = CapturePosition {
+            source_path: self.source_path.clone(),
             record_index,
             byte_offset,
-            last_source_uuid: last_source_uuid.map(str::to_string),
-            last_line_hash: last_line_hash.map(str::to_string),
+            last_source_uuid: last_source_uuid.map(str::to_owned),
+            last_line_hash: last_line_hash.map(str::to_owned),
         };
-        if self.abandoned || self.stored.as_ref() == Some(&next) {
-            return Ok(());
+        if items.is_empty()
+            && matches!(&self.stored, CaptureCheckpoint::Present { position, .. } if position == &next)
+        {
+            #[cfg(feature = "fixtures")]
+            calm_truth::capture_test_seam::reach(
+                &self.card_id,
+                record_index,
+                calm_truth::capture_test_seam::CapturePoint::Idle,
+            )
+            .await;
+            return Ok(true);
         }
+        let batch = CaptureBatch {
+            card_id: self.card_id.clone(),
+            source_kind: self.source_kind.to_owned(),
+            expected: self.stored.clone(),
+            next,
+            items,
+        };
         loop {
-            match repo
-                .worker_flow_cursor_upsert(
-                    &self.card_id,
-                    self.source_kind,
-                    &self.source_path,
-                    record_index,
-                    byte_offset,
-                    last_source_uuid,
-                    last_line_hash,
-                    now_ms(),
-                )
-                .await
-            {
-                Ok(()) => break,
-                // A single autocommit statement holds nothing when it fails, so retrying it is safe.
-                Err(TruthError::Db(err)) if is_sqlite_busy(&err) => {
-                    tracing::warn!(
-                        card_id = %self.card_id,
-                        source_kind = self.source_kind,
-                        error = %err,
-                        "worker-flow cursor write met SQLite writer contention; retrying"
-                    );
+            let result = tokio::select! {
+                biased;
+                _ = self.stop.cancelled() => return Ok(false),
+                result = sink.capture_batch(ctx, &batch) => result,
+            };
+            match result {
+                Ok(CaptureOutcome::Applied(checkpoint)) => {
+                    self.stored = checkpoint;
+                    return Ok(true);
+                }
+                Ok(CaptureOutcome::Stale) => return Ok(false),
+                Err(CoreError::ServiceUnavailable(err)) => {
+                    tracing::warn!(card_id = %self.card_id, source_kind = self.source_kind,
+                        error = %err, "worker-flow capture writer contention; retrying full batch");
                     tokio::select! {
-                        _ = self.stop.cancelled() => {}
+                        _ = self.stop.cancelled() => return Ok(false),
                         _ = tokio::time::sleep(WRITER_CONTENTION_RETRY_DELAY) => {}
                     }
-                    if self.stop.is_cancelled() {
-                        self.abandoned = true;
-                        return Ok(());
-                    }
                 }
-                Err(err) => {
-                    return Err(CoreError::Internal(format!(
-                        "worker_flow_cursor_upsert: {err}"
-                    )));
-                }
+                // Includes ambiguous COMMIT: end capture; its next attachment reloads
+                // the durable checkpoint and rebuilds sequence/turn/normalizer state.
+                Err(err) => return Err(err),
             }
         }
-        self.stored = Some(next);
-        Ok(())
     }
 }

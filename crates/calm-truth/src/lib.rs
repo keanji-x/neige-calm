@@ -6,6 +6,8 @@ use calm_exec as _;
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 pub mod area_folder_claim;
+#[cfg(feature = "fixtures")]
+pub mod capture_test_seam;
 pub mod card_kind;
 pub mod card_role_cache;
 pub mod db;

@@ -154,6 +154,17 @@ impl WorkerFlowDriver {
             .count()
     }
 
+    #[cfg(feature = "fixtures")]
+    pub async fn stop_and_join_for_test(&self) {
+        let tasks = std::mem::take(&mut *self.tasks.lock().await);
+        for task in tasks.values() {
+            task.stop.cancel();
+        }
+        for (_, task) in tasks {
+            task.join.await.expect("capture task join");
+        }
+    }
+
     #[cfg(any(test, feature = "fixtures"))]
     pub async fn task_stop_tokens_for_test(&self) -> Vec<CancellationToken> {
         let tasks = self.tasks.lock().await;

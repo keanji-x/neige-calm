@@ -41,7 +41,6 @@ async fn codex_rollout_session_meta_mismatch_exits_without_ingesting_wrong_file(
             poll_interval: Duration::from_millis(20),
             lazy_retry_delay: Duration::from_millis(10),
             lazy_retry_attempts: 3,
-            cursor_persist_every: 1,
         },
     );
     driver.start_on_boot().await.unwrap();

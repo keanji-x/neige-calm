@@ -1,17 +1,16 @@
-//! Worker-flow read-model sink: appends captured worker-flow items to `worker_flow_items`.
+//! Worker-flow read-model sink: commits each complete source record and checkpoint.
 //! Writes go through the out-of-domain repo directly — no Event, no decision gate.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use calm_exec::flow::{FlowRowCtx, WorkerFlowItemSink};
+use calm_exec::flow::{CaptureBatch, CaptureOutcome, FlowRowCtx, WorkerFlowItemSink};
 use calm_types::error::CoreError;
-use calm_types::worker_flow::WorkerFlowItem;
 
 use crate::db::RepoOutOfDomain;
-use crate::model::now_ms;
+use crate::db::worker_flow_capture::{CaptureItem, WorkerFlowCapture};
 
-/// Read-model writer that appends captured worker-flow items to `worker_flow_items`.
+/// Serializes whole source records before the repository commits their checkpoint.
 pub struct WorkerFlowSink {
     repo: Arc<dyn RepoOutOfDomain>,
 }
@@ -24,29 +23,51 @@ impl WorkerFlowSink {
 
 #[async_trait]
 impl WorkerFlowItemSink for WorkerFlowSink {
-    async fn record(&self, ctx: &FlowRowCtx, item: WorkerFlowItem) -> Result<(), CoreError> {
-        let value = serde_json::to_value(&item)?;
-        let kind = value
-            .get("type")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown");
-        let payload = serde_json::to_string(&item)?;
-
-        // Same id in both columns: `worker_session_id` is the FK and goes NULL when the session is
-        // deleted, `captured_session_id` is what was observed and survives that.
+    async fn capture_batch(
+        &self,
+        ctx: &FlowRowCtx,
+        batch: &CaptureBatch,
+    ) -> Result<CaptureOutcome, CoreError> {
+        if ctx.card_id.as_deref() != Some(batch.card_id.as_str()) {
+            return Err(CoreError::Internal(
+                "capture batch card differs from row context".into(),
+            ));
+        }
+        // Serialize the whole record before starting a transaction. No partial encoding writes.
+        let items = batch
+            .items
+            .iter()
+            .map(|item| {
+                let value = serde_json::to_value(item)?;
+                let kind = value
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| CoreError::Internal("worker flow item has no type".into()))?
+                    .to_owned();
+                Ok(CaptureItem {
+                    kind,
+                    payload: serde_json::to_string(item)?,
+                })
+            })
+            .collect::<Result<Vec<_>, CoreError>>()?;
+        let capture = WorkerFlowCapture {
+            card_id: batch.card_id.clone(),
+            source_kind: batch.source_kind.clone(),
+            session_id: ctx.session_id.clone(),
+            track_id: ctx.track_id.clone(),
+            expected: batch.expected.clone(),
+            next: batch.next.clone(),
+            items,
+        };
         self.repo
-            .worker_flow_item_insert(
-                ctx.card_id.as_deref(),
-                Some(ctx.session_id.as_str()),
-                ctx.track_id.as_deref(),
-                Some(ctx.session_id.as_str()),
-                kind,
-                &payload,
-                now_ms(),
-            )
+            .worker_flow_capture_commit(&capture)
             .await
-            .map_err(|e| CoreError::Internal(format!("worker_flow_item_insert: {e}")))?;
-        Ok(())
+            .map_err(|e| match e {
+                crate::TruthError::Db(ref db) if crate::db::sqlite::is_sqlite_busy(db) => {
+                    CoreError::ServiceUnavailable(format!("worker_flow_capture_commit: {e}"))
+                }
+                _ => CoreError::Internal(format!("worker_flow_capture_commit: {e}")),
+            })
     }
 }
 
@@ -205,9 +226,23 @@ mod tests {
                 status: PatchStatus::Completed,
             },
         ];
-        for item in &items {
-            sink.record(&ctx, item.clone()).await.unwrap();
-        }
+        let batch = CaptureBatch {
+            card_id: card_id.clone(),
+            source_kind: "test".into(),
+            expected: calm_exec::flow::CaptureCheckpoint::Missing,
+            next: calm_exec::flow::CapturePosition {
+                source_path: "test.jsonl".into(),
+                record_index: 1,
+                byte_offset: 10,
+                last_source_uuid: None,
+                last_line_hash: Some("hash".into()),
+            },
+            items: items.clone(),
+        };
+        assert!(matches!(
+            sink.capture_batch(&ctx, &batch).await.unwrap(),
+            CaptureOutcome::Applied(_)
+        ));
 
         let rows = repo
             .worker_flow_item_list_by_card(&card_id, 0, 100, false)

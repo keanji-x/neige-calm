@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 pub mod rows;
 pub mod sqlite;
+pub mod worker_flow_capture;
 
 /// Closure shape accepted by `Repo::write_with_event`; returns the `Event` to persist + broadcast. Not generic over a
 /// returned row (that would break dyn-compatibility) — `write_with_event_typed` captures the typed row for callers.
@@ -558,6 +559,12 @@ pub trait RepoOutOfDomain: RepoRead {
 
     /// Remove the projection row for `client_id` — its `turn/start` did not go out. Returns 0 or 1.
     async fn transcript_projection_delete(&self, card_id: &str, client_id: &str) -> Result<u64>;
+
+    /// Compare and atomically commit one complete source record and its checkpoint.
+    async fn worker_flow_capture_commit(
+        &self,
+        capture: &worker_flow_capture::WorkerFlowCapture,
+    ) -> Result<calm_exec::flow::CaptureOutcome>;
 
     /// Append one captured worker-flow item, returning the new row id. `card_id` is nullable so the row can outlive
     /// its worker card (`ON DELETE SET NULL`); `worker_session_id` is a required FK.
