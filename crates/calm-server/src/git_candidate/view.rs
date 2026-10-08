@@ -1,6 +1,7 @@
 //! Pure derivations of the Planner read surface (`neige_task_ls.candidate`, D8): the effective
 //! delivery state of one attempt from its rows (D2 derivation table) and the binding of one
-//! task's current attempt (D8 first-match table). Inputs are rows; no Operation is consulted.
+//! task's current attempt (D8 first-match table). Inputs are rows; the only Operations read are the
+//! attempt's gate ops (whether one exists, and the worker's runs, #2464 D6).
 
 use calm_types::git_candidate::DeliveryFailureCode;
 use calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE;
@@ -8,10 +9,12 @@ use serde::Serialize;
 
 use super::candidate::{CandidateRow, candidate_for_attempt_tx};
 use super::delivery::{DeliveryRow, DeliverySettled, delivery_latest_for_attempt_tx};
-use super::verification::{VerificationView, verification_state};
+use super::verification::{VerificationView, gate_runs_view, verification_state};
 use crate::error::{CalmError, Result};
 use crate::model::{Task, TaskAccess, TaskKind, TaskStatus};
 use crate::operation::Tx;
+use crate::operation::gate_ops::{GateOpKind, gate_op_outcome_tx, gate_ops_of_attempt_tx};
+use crate::operation::task_gate_run::finalize::terminal_result;
 use crate::operation::task_verify_adapter::{TASK_VERIFY_KIND, TaskGateResult, gate_attempt_key};
 use crate::operation::workspace_lease::facts::{
     WorkerWorktreeFacts, latest_workspace_lease_for_card_tx,
@@ -354,5 +357,28 @@ async fn verification_view_tx(tx: &mut Tx<'_>, task: &Task) -> Result<Verificati
         task.gate_attempt,
         gate_result.as_ref(),
         gate_op_present,
+        gate_runs_view_tx(tx, &task.id).await?,
     ))
+}
+
+/// D6: how many runs the worker's attempt admitted, and the highest-numbered finished one.
+async fn gate_runs_view_tx(
+    tx: &mut Tx<'_>,
+    task_id: &str,
+) -> Result<Option<super::verification::GateRunsView>> {
+    let mut runs = gate_ops_of_attempt_tx(tx, task_id).await?;
+    runs.retain(|op| op.kind == GateOpKind::Run);
+    let mut last = None;
+    for op in runs.iter().rev() {
+        if let Some(outcome) = gate_op_outcome_tx(tx, op).await? {
+            // The view shows no log path, so none is passed for a run that left no result.
+            last = Some(terminal_result(
+                op.number,
+                std::path::Path::new(""),
+                outcome,
+            ));
+            break;
+        }
+    }
+    Ok(gate_runs_view(runs.len() as i64, last.as_ref()))
 }

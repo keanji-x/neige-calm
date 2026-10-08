@@ -2531,6 +2531,7 @@ fn not_reported() -> BoundFacts {
         verification: VerificationView {
             state: VerificationState::NotStarted,
             gate_attempt: 0,
+            gate_runs: None,
             target: None,
             log_path: None,
             gate_log: None,

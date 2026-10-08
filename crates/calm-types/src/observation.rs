@@ -652,6 +652,14 @@ fn gate_result_text(
                     evidence: VerifyTargetEvidence::Verified { .. },
                     ..
                 }) => format!(" on candidate {candidate_id} ({commit_sha})"),
+                Some(VerifyTarget::Candidate {
+                    candidate_id,
+                    commit_sha,
+                    evidence: VerifyTargetEvidence::Reused { run, .. },
+                    ..
+                }) => format!(
+                    " on candidate {candidate_id} ({commit_sha}), reusing the worker's passing run {run}"
+                ),
                 _ => String::new(),
             };
             format!("Task {key} gate {verdict}{on} (gate run {attempt}).{order}")

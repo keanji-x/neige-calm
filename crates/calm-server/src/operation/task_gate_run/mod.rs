@@ -16,6 +16,7 @@ pub(crate) mod finalize;
 mod tests;
 
 pub(crate) use admission::{Admitted, admit_run_tx};
+pub(crate) use checkpoint::refs_digest;
 pub use finalize::GateRunResult;
 
 use std::path::{Path, PathBuf};
@@ -315,7 +316,11 @@ impl ProviderAdapter for TaskGateRunAdapter {
             stop_group(artifacts, &marker).await?;
         }
         super::admit_task_side_effect(ctx.repo.as_ref(), &frozen.task_id).await?;
-        let refs = checkpoint::refs_digest(Path::new(&frozen.cwd)).await;
+        let refs = checkpoint::refs_digest(
+            Path::new(&frozen.cwd),
+            tokio::time::Instant::now() + super::task_verify_adapter::SAMPLE_TIMEOUT,
+        )
+        .await;
         let paths = self.paths(&frozen.task_id, frozen.run);
         paths.unlink_stale(&self.gate_logs_dir).await?;
         let steps = checkpoint::run_steps(&frozen);

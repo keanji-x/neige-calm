@@ -119,8 +119,8 @@ its evidence:
     kernel shows a gated worker its gate steps; do not copy them into its goal.
   · The task's gate runs the repository's required local gates for the changed
     surface and replays those focused tests; write the replay step so it fails
-    when it selects no test. The kernel runs the gate when the worker asks and
-    again after it reports; that last run is the evidence.
+    when it selects no test. The kernel runs the gate when the worker asks; a
+    passing run on the unchanged commit is the gate's verdict.
   · CI, where the repository has it, runs the broad suites; read it with
     plugin_gitforge_gh_pr_checks. Without CI they run in the gate, with a
     gate.timeout_secs that fits them.

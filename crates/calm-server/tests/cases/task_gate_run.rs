@@ -18,11 +18,12 @@ use calm_server::operation::ProviderAdapter;
 use calm_server::operation::task_gate_run::{
     GateRunResult, GateRunWait, TASK_GATE_RUN_KIND, TaskGateRunAdapter,
 };
+use calm_server::operation::task_verify_adapter::TaskGateResult;
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::AgentProvider;
 use calm_server::test_seams::KernelWorkspaceLease;
 use calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR;
-use calm_types::verify_target::{MismatchReason, VerifyTargetEvidence};
+use calm_types::verify_target::{MismatchReason, VerifyTarget, VerifyTargetEvidence};
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 
@@ -194,7 +195,27 @@ pub(super) async fn wait_step(fx: &Fx, task_id: &str, run: i64, name: &str) {
     .unwrap_or_else(|_| panic!("run {run} never started step {name}"));
 }
 
-fn passed(answer: &Value) -> &str {
+/// The persisted verdict of `key`'s current attempt.
+pub(super) async fn verdict(fx: &Fx, key: &str) -> TaskGateResult {
+    let raw = current(&fx.boot, key)
+        .await
+        .gate_result_json
+        .unwrap_or_else(|| panic!("{key} has no verdict"));
+    serde_json::from_str(&raw).unwrap()
+}
+
+/// The run a verdict reused (#2464 slice 2), or `None` when its gate ran.
+pub(super) fn reused_run(verdict: &TaskGateResult) -> Option<&str> {
+    match &verdict.target {
+        VerifyTarget::Candidate {
+            evidence: VerifyTargetEvidence::Reused { run, .. },
+            ..
+        } => Some(run),
+        _ => None,
+    }
+}
+
+pub(super) fn passed(answer: &Value) -> &str {
     assert_eq!(answer["state"], "finished", "{answer}");
     assert_eq!(answer["passed"], true, "{answer}");
     answer["commit"]
@@ -445,7 +466,7 @@ async fn the_sixth_run_is_refused_with_the_cap() {
 
 // ---------------------------------------------------------------------------
 // R6 (D8, H1): done during a run delivers after the run, whose leader stays unreaped until its
-// completion commits.
+// completion commits; the passing run on the delivered commit is the gate's verdict (slice 2).
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -502,7 +523,13 @@ async fn done_during_a_run_delivers_after_the_run() {
     fx.scheduler().drive_gate_for_test(task).await.unwrap();
     assert_eq!(current(&fx.boot, "r6").await.status, TaskStatus::Done);
     let gates = fx.events_for(GATE_RESULT_KIND, &a.task.id).await;
-    assert_eq!(gates.len(), 1, "#g1 ran: {gates:?}");
+    assert_eq!(gates.len(), 1, "one verdict: {gates:?}");
+    let verdict = verdict(&fx, "r6").await;
+    assert_eq!(
+        reused_run(&verdict),
+        Some(format!("{}#r1", a.task.id).as_str()),
+        "{verdict:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -584,3 +611,5 @@ async fn a_cancel_during_a_run_keeps_the_checkout_busy_until_it_ends() {
 mod more;
 #[path = "task_gate_run/restart.rs"]
 mod restart;
+#[path = "task_gate_run/reuse.rs"]
+mod reuse;

@@ -63,22 +63,29 @@ fn checkpoint_cmd(frozen: &FrozenRun) -> String {
     .join(" ")
 }
 
-/// One bounded git read in `cwd` under the sampling bound, in the forge base environment.
-async fn git_read(cwd: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+/// One git read in `cwd` bounded by `deadline`, in the forge base environment.
+async fn git_read(
+    cwd: &Path,
+    args: &[&str],
+    deadline: tokio::time::Instant,
+) -> Result<std::process::Output, String> {
     let mut cmd = tokio::process::Command::new("git");
     cmd.args(args).current_dir(cwd);
     forge_base_env(&mut cmd);
-    run_bounded(cmd, tokio::time::Instant::now() + SAMPLE_TIMEOUT, READ_CAP)
+    run_bounded(cmd, deadline, READ_CAP)
         .await
         .map_err(|error| format!("git {} in {}: {error:?}", args.join(" "), cwd.display()))
 }
 
-/// SHA-256 of the remote-tracking refs and tags with their symref targets; `None` when it cannot
-/// be taken (then nothing may stand on it).
-pub(crate) async fn refs_digest(cwd: &Path) -> Option<String> {
+/// SHA-256 of the remote-tracking refs and tags with their symref targets, read by `deadline`;
+/// `None` when it cannot be taken (then nothing may stand on it). The run takes it at spawn under
+/// its own sampling bound; reuse takes it inside the gate's prepare under the target sample's
+/// deadline, so the `BEGIN IMMEDIATE` hold stays under one bound (#2464 §4 (4)).
+pub(crate) async fn refs_digest(cwd: &Path, deadline: tokio::time::Instant) -> Option<String> {
     let output = git_read(
         cwd,
         &["for-each-ref", REFS_FORMAT, "refs/remotes", "refs/tags"],
+        deadline,
     )
     .await
     .ok()
@@ -102,6 +109,7 @@ pub(crate) async fn read_run_ref(cwd: &Path, ref_name: &str) -> Result<Option<St
             "-q",
             &format!("{ref_name}^{{commit}}"),
         ],
+        tokio::time::Instant::now() + SAMPLE_TIMEOUT,
     )
     .await?;
     match output.status.code() {

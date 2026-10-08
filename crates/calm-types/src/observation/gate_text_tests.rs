@@ -99,3 +99,25 @@ fn an_unbound_or_absent_target_keeps_the_old_sentence() {
         );
     }
 }
+
+#[test]
+fn a_reused_run_names_the_candidate_and_the_run() {
+    let target = VerifyTarget::Candidate {
+        candidate_id: "cand-1".into(),
+        commit_sha: "a".repeat(40),
+        lease_id: "lease-1".into(),
+        evidence: VerifyTargetEvidence::Reused {
+            run: "w:k#r2".into(),
+            cwd: "/leases/lease-1".into(),
+            before: sample(&"a".repeat(40)),
+        },
+    };
+    assert_eq!(
+        gate_head(true, Some(target)),
+        format!(
+            "Task k gate passed on candidate cand-1 ({}), reusing the worker's passing run w:k#r2 \
+             (gate run 2).",
+            "a".repeat(40)
+        )
+    );
+}

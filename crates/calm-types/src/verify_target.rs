@@ -59,7 +59,8 @@ pub enum NoCandidateReason {
 }
 
 /// How the checkout was compared to the candidate (D3.0): refused before any step ran, verified
-/// before and after the steps, or not sampled at all (a sampling command failed).
+/// before and after the steps, not sampled at all (a sampling command failed), or a passing
+/// worker-requested run reused (#2464).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
@@ -80,6 +81,14 @@ pub enum VerifyTargetEvidence {
     },
     /// A sampling command failed; not a mismatch (unable to check is not a failed check).
     Unsampled { phase: SamplePhase },
+    /// No step ran at this gate: the verdict is the worker-requested run `run` (`<attempt>#r<N>`),
+    /// which passed on this candidate's commit with the remote-tracking refs and tags unchanged
+    /// (#2464 §4); `before` is this gate's own sample, which matched the candidate.
+    Reused {
+        run: String,
+        cwd: String,
+        before: Sample,
+    },
 }
 
 /// Where sampling failed. `cwd` is absent only in `Prepare` (nothing was frozen yet); the other
@@ -316,6 +325,20 @@ mod tests {
                 "before": sample_json(&"a".repeat(40), &[], true),
                 "after": sample_json(&"a".repeat(40), &["?? out.txt"], false),
                 "reasons": ["provenance", "dirty"],
+            })),
+        );
+
+        round_trip(
+            &candidate(VerifyTargetEvidence::Reused {
+                run: "w:impl#r2".into(),
+                cwd: "/leases/l-1".into(),
+                before: sample(&"a".repeat(40), &[], true),
+            }),
+            candidate_json(json!({
+                "kind": "reused",
+                "run": "w:impl#r2",
+                "cwd": "/leases/l-1",
+                "before": sample_json(&"a".repeat(40), &[], true),
             })),
         );
 

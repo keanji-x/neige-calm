@@ -742,7 +742,7 @@
   },
   {
     "name": "neige_task_gate",
-    "description_sha256": "d88cef8846c0250d199d6b477355e664452e646aa6c81c888ae2429a4ca75764",
+    "description_sha256": "ddbf7ba4b7b0f11ce37d9a69697d26b2456d4a5f7c5aab46c187283f5d69b6e2",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

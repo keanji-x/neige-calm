@@ -6,7 +6,7 @@
 use super::gate_process::marked_group_stopped;
 use super::task_gate_run::{TASK_GATE_RUN_KIND, parse_run_key};
 use super::task_verify_adapter::{TASK_VERIFY_KIND, parse_attempt_key};
-use super::{PhaseTag, SpawnArtifacts, Tx};
+use super::{OperationOutcome, PhaseTag, SpawnArtifacts, Tx};
 use crate::error::Result;
 
 /// One gate operation of an attempt: its key (also its processes' `NEIGE_GATE_OP` marker), its
@@ -96,7 +96,8 @@ pub(crate) async fn gate_ops_of_attempt_tx(tx: &mut Tx<'_>, task_id: &str) -> Re
     Ok(ops)
 }
 
-/// Classify `ops`. Every caller reads before its own op row exists, so no op is left out.
+/// Classify `ops`. A caller that reads before its own op row exists (run admission, regate, the
+/// delivery) passes every op; reuse leaves out the op it is preparing ([`attempt_gate_ops`]).
 pub(crate) fn classify_gate_ops(ops: &[GateOp]) -> AttemptGateOps {
     let mut unproven = None;
     for op in ops {
@@ -123,10 +124,33 @@ pub(crate) fn classify_gate_ops(ops: &[GateOp]) -> AttemptGateOps {
     }
 }
 
-/// [`gate_ops_of_attempt_tx`] then [`classify_gate_ops`].
-pub(crate) async fn attempt_gate_ops(tx: &mut Tx<'_>, task_id: &str) -> Result<AttemptGateOps> {
-    let ops = gate_ops_of_attempt_tx(tx, task_id).await?;
+/// [`gate_ops_of_attempt_tx`] then [`classify_gate_ops`], without the op keyed `exclude`: reuse
+/// reads inside the `prepare_tx` of the `#g1` op, which is still `pending` there (J1).
+pub(crate) async fn attempt_gate_ops(
+    tx: &mut Tx<'_>,
+    task_id: &str,
+    exclude: Option<&str>,
+) -> Result<AttemptGateOps> {
+    let mut ops = gate_ops_of_attempt_tx(tx, task_id).await?;
+    ops.retain(|op| Some(op.key.as_str()) != exclude);
     Ok(classify_gate_ops(&ops))
+}
+
+/// The outcome of a finished gate op, read in `tx`; `None` while it has not finished.
+pub(crate) async fn gate_op_outcome_tx(
+    tx: &mut Tx<'_>,
+    op: &GateOp,
+) -> Result<Option<OperationOutcome>> {
+    let row = sqlx::query("SELECT * FROM operations WHERE kind = ?1 AND idempotency_key = ?2")
+        .bind(op.op_kind())
+        .bind(&op.key)
+        .fetch_optional(&mut **tx)
+        .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let op = super::repo_sqlite::operation_from_row(&row)?;
+    Ok(super::operation_result_from(&op)?.map(|result| result.outcome))
 }
 
 impl GateOp {
@@ -145,7 +169,7 @@ impl super::OperationRuntime {
     pub(crate) async fn attempt_gate_ops(&self, task_id: &str) -> Result<AttemptGateOps> {
         let pool = self.repo.sqlite_pool();
         let mut tx = crate::db::sqlite::begin_immediate_tx(&pool).await?;
-        let ops = attempt_gate_ops(&mut tx, task_id).await;
+        let ops = attempt_gate_ops(&mut tx, task_id, None).await;
         tx.rollback().await?;
         ops
     }

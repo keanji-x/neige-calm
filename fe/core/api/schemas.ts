@@ -857,7 +857,7 @@ export const samplePhaseSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('reconciliation'), cwd: z.string(), last_error: z.string() }),
 ]);
 
-/** How the checkout was compared to the candidate: refused before any step, verified before and after, or unsampled. */
+/** How the checkout was compared to the candidate: refused before any step, verified before and after, unsampled, or a passing worker run reused (#2464). */
 export const verifyTargetEvidenceSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('refused'),
@@ -873,6 +873,7 @@ export const verifyTargetEvidenceSchema = z.discriminatedUnion('kind', [
     reasons: z.array(mismatchReasonSchema),
   }),
   z.object({ kind: z.literal('unsampled'), phase: samplePhaseSchema }),
+  z.object({ kind: z.literal('reused'), run: z.string(), cwd: z.string(), before: sampleSchema }),
 ]);
 
 /** The delivery state the gate found instead of a candidate; each variant carries only facts that exist. */

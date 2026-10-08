@@ -17,6 +17,7 @@ REQUIRED_COLUMNS = {
     "tasks": ["track_id", "key", "kind", "goal", "status", "created_at_ms", "id", "status_detail"],
     "harness_items": ["id", "card_id", "turn_id", "item_uuid", "item_type", "method", "params", "created_at_ms", "input_segments"],
     "worker_flow_items": ["track_id", "kind", "payload", "created_at_ms"],
+    "operations": ["kind", "payload_json", "created_at_ms"],
 }
 
 GIT_OPTIONS = r"\bgit(?:\s+-[Cc]\s+\S+|\s+--(?:git-dir|work-tree|namespace)[=\s]\S+|\s+--[\w-]+(?:=\S+)?)*\s+"

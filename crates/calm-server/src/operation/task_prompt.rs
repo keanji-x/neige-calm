@@ -96,10 +96,10 @@ fn render_gate(attempt_id: &str, steps: &[GateStep], run: Option<GateRunPrompt>)
                  trailers). The kernel makes your current changes the one commit of this attempt, \
                  with that message, and runs the gate on it here. It answers within {}; while it \
                  says `running`, call it again. Do not edit files while a run is in progress. Fix \
-                 what a failing step reports and run again. If you change nothing after the last \
-                 run, its commit is what the kernel delivers. After you report done, the kernel \
-                 runs the gate on the delivered commit, and that run decides. You need not run \
-                 these steps yourself.",
+                 what a failing step reports and run again. If the last run passed and you change \
+                 nothing after it, that run is the gate's verdict when you report done, and its \
+                 commit is what the kernel delivers. Otherwise the kernel runs the gate after you \
+                 report. You need not run these steps yourself.",
                 wait.render()
             )
         }
@@ -254,6 +254,13 @@ mod tests {
             );
             assert!(out.contains("It answers within 90 seconds;"), "{out}");
             assert!(out.contains("outside your sandbox"), "{out}");
+            assert!(
+                out.contains(
+                    "If the last run passed and you change nothing after it, that run is the \
+                     gate's verdict when you report done"
+                ),
+                "{out}"
+            );
             assert!(
                 out.contains("You need not run these steps yourself."),
                 "{out}"
