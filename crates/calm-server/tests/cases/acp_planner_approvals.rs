@@ -156,10 +156,7 @@ async fn acp_ask_mode_holds_each_request_and_answers_the_chosen_option_id() {
     assert!(rows(&stack, &track, "ask.withdrawn").await.is_empty());
     assert_eq!(
         launch_permissions(&root),
-        vec![
-            json!(r#"{"bash":"ask","edit":"ask","webfetch":"ask","external_directory":"allow"}"#);
-            3
-        ],
+        vec![json!(r#"{"bash":"ask","edit":"ask","webfetch":"ask"}"#); 3],
         "every ask turn's agent asks before bash, edits and fetches"
     );
     stack.shutdown().await;

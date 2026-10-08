@@ -100,12 +100,16 @@ is told the connection is lost. After the fence an answer writes `cancelled` or 
 session setup are always answered `cancelled`.
 
 Under `ask` each turn's OpenCode process is launched with
-`OPENCODE_PERMISSION={"bash":"ask","edit":"ask","webfetch":"ask","external_directory":"allow"}`, set explicitly by
-the launch (`AcpAgentConfig::permission_env`), never inherited. OpenCode merges it over every config file, so
-bash, edits (also write and patch) and fetches ask, each exactly once. A path outside the workspace asks
-nothing on its own (#2452): an outside read runs without asking, as it does for Codex and Claude, and an
-outside command or edit asks once through its tool rather than once for the directory and again for the
-tool. It has no flag or ACP method for this. Under `never` nothing is added: OpenCode runs with the operator
+`OPENCODE_PERMISSION={"bash":"ask","edit":"ask","webfetch":"ask"}`, set explicitly by the launch
+(`AcpAgentConfig::permission_env`), never inherited. OpenCode merges it over every config file's
+top-level `permission`, so bash, edits (also write and patch) and fetches ask; reads outside the
+workspace ask as before. It has no flag or ACP method for this. An agent-level `permission` in the
+operator profile still wins over it: with `agent.build.permission.edit = "allow"`, OpenCode 1.18.35's
+`edit` tool asks nothing. The default `external_directory: "ask"` is then the only ask before a
+write outside the workspace. The #2455 review reproduced this: one outside write raised one request
+(the directory) under this variable, and none, with the file written, once `external_directory` was
+allowed too. So it stays, and one outside command or edit raises two asks: first for the directory
+(kind `other`), then for the acting tool (#2452). Under `never` nothing is added: OpenCode runs with the operator
 profile's own `permission` configuration, which with OpenCode's defaults runs bash, edits and
 fetches unsandboxed without asking, as before. OpenCode's own `always` answer approves a command
 prefix for the rest of the process, which is one turn here; it is not written to disk.
