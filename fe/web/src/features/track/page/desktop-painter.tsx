@@ -5,7 +5,7 @@ import { ListText } from '../../../ui/list-typography/public.tsx';
 import { Fragment, type ReactNode } from 'react';
 import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 
-import { inventorySections, panelRowGroup, type InventoryGroupKey } from '../../../../../core/view/panel-groups.ts';
+import { inventorySections, inventoryNeedsAttention, panelRowGroup, type InventoryGroupKey } from '../../../../../core/view/panel-groups.ts';
 import { InventoryGroups } from './inventory-groups.tsx';
 import { FIELD, MARKER, paintPanel } from '../../../../../core/view/panel.ts';
 import type {
@@ -14,11 +14,13 @@ import type {
 import { activityLabelOf } from '../../../../../core/domain/activity.ts';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { PanelEmpty, PanelModule } from '../../../ui/panel-card/public.tsx';
+import { InventoryKind } from './inventory-kind.tsx';
 import styles from './page.module.css';
 
 /** A row or an empty line, painted as far as it can be here; `paint` is called from `module()` and nowhere else. */
 type PendingLeaf = Readonly<{
   slot: 'row' | 'empty';
+  needsAttention: (moduleKey: RowModuleView['key']) => boolean;
   group: (moduleKey: RowModuleView['key']) => InventoryGroupKey;
   paint: (moduleKey: RowModuleView['key']) => ReactNode;
 }>;
@@ -81,7 +83,7 @@ function rowMetadata(row: PanelRow, moduleKey: RowModuleView['key']): ReactNode 
       <span data-nc-activity={row.activity} aria-hidden="true" />
       <span>{activityLabelOf(row.activity)}</span>
     </>}
-    {row.status !== null && <span {...mark(MARKER.status, row.status.token)} title={row.status.phrase}
+    {moduleKey === 'tasks' && row.status !== null && <span {...mark(MARKER.status, row.status.token)} title={row.status.phrase}
       {...(moduleKey === 'tasks' ? { 'aria-hidden': true, 'data-nc-task-status-text': '' } : {})}>
       {row.status.token}
     </span>}
@@ -104,11 +106,13 @@ function cardRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
         onClick={open === null ? undefined : () => deps.onOpenCard?.(open.id)}
       >
         <span className={`${styles.cardName} ${remove === null ? '' : styles.cardNameRemovable}`}>
-          <ListText tone="primary" className={styles.cardKind} {...mark(MARKER.field, FIELD.title)}>{row.title}</ListText>
+          <ListText tone="primary" className={styles.cardKind} title={row.title} {...mark(MARKER.field, FIELD.title)}>{row.title}</ListText>
+          {row.status !== null && <ListText tone="secondary" className={styles.toolStatus}
+            {...mark(MARKER.status, row.status.token)} title={row.status.phrase}>{row.status.token}</ListText>}
         </span>
         {row.kind !== null && (
           <ListText tone="secondary" className={styles.cardKindTag} title={row.kind}
-            {...mark(MARKER.field, FIELD.kind)}>{row.kind}</ListText>
+            {...mark(MARKER.field, FIELD.kind)}><InventoryKind kind={row.kind} /></ListText>
         )}
         {rowMetadata(row, 'cards')}
       </button>
@@ -148,7 +152,7 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
       {revealControl}
       {/* `title` describes the destination without touching the accessible name, which stays the visible word (WCAG 2.5.3). */}
       {row.kind !== null && (open === null
-        ? <ListText tone="secondary" className={styles.taskKind} {...mark(MARKER.field, FIELD.kind)}>{row.kind}</ListText>
+        ? <ListText tone="secondary" className={styles.taskKind} title={row.kind} {...mark(MARKER.field, FIELD.kind)}><InventoryKind kind={row.kind} /></ListText>
         : (
           <ListText as="button" tone="secondary"
             className={styles.taskKindButton}
@@ -157,7 +161,7 @@ function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
             {...wording(open)}
             onClick={() => deps.onOpenCard?.(open.id)}
           >
-            {row.kind}
+            <InventoryKind kind={row.kind} />
           </ListText>
         ))}
     </li>
@@ -179,12 +183,14 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
 
     row: (row) => ({
       slot: 'row',
+      needsAttention: key => inventoryNeedsAttention(row, key),
       group: (key) => panelRowGroup(row, key),
       paint: (moduleKey) => (moduleKey === 'cards' ? cardRow(row, deps) : taskRow(row, deps)),
     }),
 
     empty: (text) => ({
       slot: 'empty',
+      needsAttention: () => false,
       group: () => 'other',
       paint: () => <PanelEmpty key="empty" fieldMarker={FIELD.empty}>{text}</PanelEmpty>,
     }),
@@ -196,6 +202,7 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
         <PanelModule
           key={parts.key}
           title={parts.title}
+          icon={parts.key === 'cards' ? 'tools' : 'tasks'}
           action={parts.key === 'cards'
             ? deps.cardsAction
             : deps.taskSummary
@@ -209,7 +216,7 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
             groups={inventorySections(parts.children, leaf => {
               if (leaf.slot === 'module') throw new Error('Nested inventory module');
               return leaf.group(parts.key);
-            })}
+            }, leaf => leaf.slot !== 'module' && leaf.needsAttention(parts.key))}
             noun={parts.key === 'cards' ? 'card' : 'task'}
             renderRows={leaves => parts.key === 'cards'
               ? <ul className={styles.cards}>{leaves.map(leaf => finish(leaf, parts.key))}</ul>

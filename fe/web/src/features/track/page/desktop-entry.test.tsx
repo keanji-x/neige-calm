@@ -58,7 +58,7 @@ const TASKS: readonly ReportTaskRow[] = [
 
 /** Strings only the painted row modules can put on screen; read as substrings of the subtree's `textContent`. */
 const PAINTED_TEXT: readonly string[] = [
-  'Cards', 'Tasks', 'Build log', 'harness', 'alpha-gate', 'beta-gate',
+  'Tools', 'Tasks', 'Build log', 'harness', 'alpha-gate', 'beta-gate',
 ];
 
 /** The desktop panel subtree: the mobile surface is a sibling that is in the DOM at the same time. */
@@ -74,7 +74,7 @@ describe('the page paints its desktop panel through paintDesktopPanel', () => {
 
     expect(calls.length, 'paintDesktopPanel calls').toBe(1);
     expect(calls[0].view).toEqual(deriveTrackPageView({ cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, TASKS) }));
-    expect(calls[0].view.rowModules.map((module) => module.key)).toEqual(['cards', 'tasks']);
+    expect(calls[0].view.rowModules.map((module) => module.key)).toEqual(['tasks', 'cards']);
     expect(calls[0].view.rowModules.map((module) => module.rows.length))
       .toEqual([CARDS.length, TASKS.length]);
   });

@@ -43,7 +43,7 @@ function everyWorkerOf(tasks: readonly ReportTaskRow[]): ReadonlySet<string> {
 }
 
 function cardsModule(cards: readonly CardWire[]) {
-  return deriveTrackPageView({ cards, tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set() }).rowModules[0];
+  return deriveTrackPageView({ cards, tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set() }).rowModules.find(module => module.key === 'cards')!;
 }
 
 function tasksModule(
@@ -51,17 +51,31 @@ function tasksModule(
   activity: TrackPageActivity = NEUTRAL_ACTIVITY,
   openableCards: ReadonlySet<string> = everyWorkerOf(tasks),
 ) {
-  return deriveTrackPageView({ cards: [], tasks, activity, openableCards }).rowModules[1];
+  return deriveTrackPageView({ cards: [], tasks, activity, openableCards }).rowModules.find(module => module.key === 'tasks')!;
 }
 
 describe('deriveTrackPageView modules', () => {
+  it('numbers anonymous terminals independently of status grouping while retaining custom names and actions', () => {
+    const view = deriveTrackPageView({ cards: [
+      card({ id: 'z', kind: 'terminal', title: null, created_at: 2 }),
+      card({ id: 'a', kind: 'terminal', title: 'Preview server', created_at: 1 }),
+      card({ id: 'b', kind: 'terminal', title: null, created_at: 1 }),
+    ], tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set() });
+    const tools = view.rowModules.find(module => module.key === 'cards')!;
+    expect(tools.rows.map(row => [row.id, row.title, row.kind])).toEqual([
+      ['z', 'Terminal 03', 'terminal'], ['a', 'Preview server', 'terminal'], ['b', 'Terminal 02', 'terminal'],
+    ]);
+    expect(tools.rows.every(row => row.actions.some(action => action.kind === 'open-card' && action.cardId === row.id))).toBe(true);
+    expect(tools.rows.find(row => row.id === 'b')?.actions.find(action => action.kind === 'delete-card')?.label)
+      .toBe('Delete card Terminal 02');
+  });
   it('derives the two row modules in the panel’s order, with their empty texts', () => {
     const view = deriveTrackPageView({ cards: [], tasks: [], activity: NEUTRAL_ACTIVITY, openableCards: new Set() });
 
-    expect(view.rowModules.map((module) => module.key)).toEqual(['cards', 'tasks']);
-    expect(view.rowModules.map((module) => module.title)).toEqual(['Cards', 'Tasks']);
+    expect(view.rowModules.map((module) => module.key)).toEqual(['tasks', 'cards']);
+    expect(view.rowModules.map((module) => module.title)).toEqual(['Tasks', 'Tools']);
     expect(view.rowModules.map((module) => module.empty))
-      .toEqual(['No cards yet.', 'No tasks declared yet.']);
+      .toEqual(['No tasks declared yet.', 'No tools yet.']);
     expect(view.rowModules.every((module) => module.rows.length === 0)).toBe(true);
   });
 });
@@ -346,7 +360,7 @@ it('groups a completed task’s card as completed even while its worker process 
     tasks: [task({ status: 'done', kind: 'codex', workerCardId: 'finished-worker' })], activity: NEUTRAL_ACTIVITY,
     openableCards: new Set(),
   });
-  expect(view.rowModules[0].rows[0].status?.token).toBe('done');
+  expect(view.rowModules.find(module => module.key === 'cards')!.rows[0].status?.token).toBe('done');
 });
 
 /* #1946: a worker card the task's current execution no longer names still carries the task key as its title,
@@ -362,7 +376,7 @@ it('labels a superseded worker card’s live status as its session’s, leaving 
     } }],
     activity: NEUTRAL_ACTIVITY,
     openableCards: new Set(),
-  }).rowModules[0].rows;
+  }).rowModules.find(module => module.key === 'cards')!.rows;
 
   expect(stale.id).toBe('old-worker');
   expect(stale.status).toEqual({ token: 'running', phrase: 'session running', detail: null });

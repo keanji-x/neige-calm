@@ -1,7 +1,7 @@
 // The mobile track panel, painted from `core/view`'s panel view model.
 // Mobile does not call `paintPanel`: it drills into one module at a time, so each page calls `paintModule` once through `paintMobileModule`.
 
-import { inventorySections, panelRowGroup, type InventoryGroupKey } from '../../../../../core/view/panel-groups.ts';
+import { inventorySections, inventoryNeedsAttention, panelRowGroup, type InventoryGroupKey } from '../../../../../core/view/panel-groups.ts';
 import { InventoryGroups } from './inventory-groups.tsx';
 import type { ReactNode } from 'react';
 
@@ -14,11 +14,13 @@ import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
 import {
   MobileList, MobileListEmpty, MobileListItem, MobileListPage,
 } from '../../../ui/mobile-list/public.tsx';
+import { InventoryKind } from './inventory-kind.tsx';
 import styles from './page.module.css';
 
 /** A row or an empty line, painted as far as it can be here: only `module()` knows which module it lands in. */
 type PendingLeaf = Readonly<{
   slot: 'row' | 'empty';
+  needsAttention: (moduleKey: RowModuleView['key']) => boolean;
   group: (moduleKey: RowModuleView['key']) => InventoryGroupKey;
   paint: (moduleKey: RowModuleView['key']) => ReactNode;
 }>;
@@ -106,7 +108,7 @@ function taskRow(row: PanelRow, deps: MobilePainterDeps): ReactNode {
     )]),
     ...(row.kind === null
       ? []
-      : [<span key="kind" {...mark(MARKER.field, FIELD.kind)}>{row.kind}</span>]),
+      : [<span key="kind" {...mark(MARKER.field, FIELD.kind)}><InventoryKind kind={row.kind} /></span>]),
   ];
   return (
     <MobileListItem
@@ -131,7 +133,7 @@ function cardRow(row: PanelRow): ReactNode {
   const meta: readonly ReactNode[] = [
     ...(row.kind === null
       ? []
-      : [<span key="kind" {...mark(MARKER.field, FIELD.kind)}>{row.kind}</span>]),
+      : [<span key="kind" {...mark(MARKER.field, FIELD.kind)}><InventoryKind kind={row.kind} /></span>]),
     ...row.badges.map(cardBadge),
     /* Spoken, as on the desktop card row: the status word is a different fact. */
     ...(row.activity === null ? [] : [
@@ -168,6 +170,7 @@ export function makeMobilePainter(deps: MobilePainterDeps): RowPainter<MobileLea
     /* Dispatch on the module, never on the row's shape. A third module key throws rather than falling back to a Cards row. */
     row: (row) => ({
       slot: 'row',
+      needsAttention: key => inventoryNeedsAttention(row, key),
       group: (key) => panelRowGroup(row, key),
       paint: (moduleKey) => {
         if (moduleKey === 'cards') return cardRow(row);
@@ -179,6 +182,7 @@ export function makeMobilePainter(deps: MobilePainterDeps): RowPainter<MobileLea
 
     empty: (text) => ({
       slot: 'empty',
+      needsAttention: () => false,
       group: () => 'other',
       paint: () => <MobileListEmpty key="empty" fieldMarker={FIELD.empty}>{text}</MobileListEmpty>,
     }),
@@ -202,7 +206,7 @@ export function makeMobilePainter(deps: MobilePainterDeps): RowPainter<MobileLea
               groups={inventorySections(leaves, ({ leaf }) => {
                 if (leaf.slot === 'module') throw new Error('Nested inventory module');
                 return leaf.group(parts.key);
-              })}
+              }, ({ leaf }) => leaf.slot !== 'module' && leaf.needsAttention(parts.key))}
               noun={parts.key === 'cards' ? 'card' : 'task'}
               renderRows={rows => <MobileList>{rows.map(row => row.node)}</MobileList>}
             />}

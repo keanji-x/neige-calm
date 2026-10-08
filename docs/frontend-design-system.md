@@ -52,7 +52,7 @@
 | 普通界面、Area、卡片与任务名称 | 14／20／400 | `--type-ui`、`--type-content` |
 | Track、按钮 | 14／20／500 | `--type-action` |
 | Today、顶部报告标题 | 14／20／600 | `--type-page-title` |
-| Unread、Pinned、Areas 分类 | 14／20／400 | `--type-navigation-label` |
+| Unread、Pinned、Areas 和右侧模块标题 | 12／16／500 | `--type-navigation-label` |
 | 报告正文，衬线宋体回退 | 16／26.4／400 | `--type-reading` |
 | 任务目标，无衬线 | 16／26.4／400 | `--type-detail` |
 | 报告章节，衬线 | 20／24／700 | `--type-chapter` |

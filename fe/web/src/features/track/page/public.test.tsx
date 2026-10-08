@@ -26,7 +26,7 @@ it('leaves Escape to a dialog above an open panel', async () => {
 
 async function openCards(): Promise<void> {
   await userEvent.click(screen.getByRole('button', { name: 'Track actions' }));
-  await userEvent.click(screen.getByRole('menuitem', { name: 'Cards' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Tools' }));
 }
 
 async function openDesktopTrackActions(): Promise<void> {
@@ -617,13 +617,13 @@ describe('TrackPage card inventory', () => {
       onOpenTask,
     });
     await userEvent.click(screen.getByRole('button', { name: 'Track actions' }));
-    expect(screen.getByRole('menuitem', { name: 'Cards' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Tools' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Tasks' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Conversations' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Delete track' })).toBeTruthy();
     await userEvent.click(screen.getByRole('menuitem', { name: 'Tasks' }));
     expect(screen.getByRole('heading', { name: 'Tasks' })).toBeTruthy();
-    expect(screen.queryByRole('heading', { name: 'Cards' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Tools' })).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'mobile-layout' }));
     expect(onOpenTask).toHaveBeenCalledWith('task-1');
   });
@@ -733,7 +733,7 @@ describe('TrackPage card inventory', () => {
 
     await openCards();
     expect(panel?.getAttribute('data-nc-mobile-page')).toBe('open');
-    expect(screen.getByRole('heading', { name: 'Cards' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Tools' })).toBeTruthy();
 
     await userEvent.click(screen.getByRole('button', { name: 'Back to Report' }));
     expect(panel?.getAttribute('data-nc-mobile-page')).toBe('closed');
@@ -758,14 +758,14 @@ describe('TrackPage card inventory', () => {
     };
     const { container, rerender } = render(<TrackPage {...props} panel="cards" />);
     expect(container.querySelector('[data-nc-mobile-page]')?.getAttribute('data-nc-mobile-page')).toBe('open');
-    expect(screen.getByRole('heading', { name: 'Cards' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Tools' })).toBeTruthy();
     rerender(<TrackPage {...props} panel={null} />);
     expect(container.querySelector('[data-nc-mobile-page]')?.getAttribute('data-nc-mobile-page')).toBe('closed');
   });
 
   it('says the track has no cards yet when the list is empty', () => {
     renderPage({ cards: [] });
-    expect(screen.getByText('No cards yet.')).toBeTruthy();
+    expect(screen.getByText('No tools yet.')).toBeTruthy();
   });
 
   it('labels a card by its title and keeps the kind beside it', () => {

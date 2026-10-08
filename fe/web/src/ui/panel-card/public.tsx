@@ -1,6 +1,7 @@
 import { ListText } from '../list-typography/public.tsx';
 import type { ReactElement, ReactNode } from 'react';
 
+import { Icon, type IconName } from '../icon/public.tsx';
 import styles from './panel-card.module.css';
 
 /* Each projection marker channel is its own opt-in prop: a rest-prop spread reaches only the outermost element, and unconditional marking would put module markers in trees whose view model has none. The attribute names are literals because `ui/**` may not import `core/view/panel.ts`. */
@@ -9,8 +10,9 @@ export function PanelCard({ children, fill = false }: { children: ReactNode; fil
   return <div className={[styles.card, fill ? styles.fill : ''].filter(Boolean).join(' ')}>{children}</div>;
 }
 
-export function PanelModule({ title, action, children, grow = false, className, moduleMarker, titleFieldMarker }: {
+export function PanelModule({ title, icon, action, children, grow = false, className, moduleMarker, titleFieldMarker }: {
   title: string;
+  icon?: IconName;
   className?: string;
   action?: ReactNode;
   children: ReactNode;
@@ -30,7 +32,7 @@ export function PanelModule({ title, action, children, grow = false, className, 
         <ListText as="h2" tone="section"
           className={styles.title}
           {...(titleFieldMarker === undefined ? {} : { 'data-nc-field': titleFieldMarker })}
-        >{title}</ListText>
+        ><span className={styles.iconSlot}>{icon === undefined ? null : <Icon name={icon} size="sm" />}</span>{title}</ListText>
         {action}
       </div>
       <div className={styles.body}>{children}</div>

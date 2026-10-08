@@ -73,15 +73,18 @@ it.each(['light', 'dark'])('uses the same named type hierarchy in both %s side p
   expect(typography(element(document.querySelector<HTMLElement>('[data-nc-inventory-group] summary > span:first-child')))).toEqual(typography(group));
   expect(typography(element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat first"] > span > span')))).toEqual(typography(group));
   expect(getComputedStyle(element(document.querySelector<HTMLElement>('[data-nc-module] h2'))).fontSize).toBe('12px');
-  expect(getComputedStyle(element(document.querySelector<HTMLElement>('nav[aria-label="Workspace"] h2'))).fontSize).toBe('14px');
-  const panelTitles = [...document.querySelectorAll<HTMLElement>('h2')].filter(node => ['Cards', 'Tasks', 'Conversations'].includes(node.textContent ?? ''));
+  expect(getComputedStyle(element(document.querySelector<HTMLElement>('nav[aria-label="Workspace"] h2'))).fontSize).toBe('12px');
+  const panelTitles = [...document.querySelectorAll<HTMLElement>('h2')].filter(node => ['Tools', 'Tasks', 'Conversations'].includes(node.textContent ?? ''));
   expect(panelTitles).toHaveLength(3);
   for (const title of panelTitles) expect(typography(title)).toEqual(typography(panelTitles[0]));
+  const section = element(document.querySelector<HTMLElement>('[title="Areas"]'));
+  expect(typography(section)).toEqual(typography(panelTitles[0]));
 
 });
 
 it('uses configured sidebar density without changing the panel row rhythm', async () => {
   await page.viewport(1400, 900); draw();
+  document.querySelector<HTMLElement>('[data-nc-inventory-group="terminals"] > summary')!.click();
   const area = element(document.querySelector<HTMLElement>('[aria-label="Collapse area Work"]'));
   const rows = [
     element(document.querySelector<HTMLElement>('[aria-label^="Track Left first"]')),
@@ -96,7 +99,7 @@ it('uses configured sidebar density without changing the panel row rhythm', asyn
   expect(area.getBoundingClientRect().top - sidebarHeader.getBoundingClientRect().bottom).toBeCloseTo(0, 0);
   const panelHeader = element(document.querySelector<HTMLElement>('[data-nc-module="cards"] h2')).parentElement!;
   expect(element(document.querySelector<HTMLElement>('[data-nc-module="cards"] [data-nc-inventory-group]')).getBoundingClientRect().top
-    - panelHeader.getBoundingClientRect().bottom).toBeCloseTo(4, 0);
+    - panelHeader.getBoundingClientRect().bottom).toBeCloseTo(8, 0);
 
   expect(element(document.querySelector<HTMLElement>('[title="Work"]')).getBoundingClientRect().left).toBeCloseTo(element(document.querySelector<HTMLElement>('[title="Left first"]')).getBoundingClientRect().left, 0);
   const pairs = [

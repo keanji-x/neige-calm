@@ -18,7 +18,39 @@ const task = (blockId: string, status: string, kind: NonNullable<ReportTaskRow['
 const derive = (input: { cards: readonly CardWire[]; tasks: readonly ReportTaskRow[] }) =>
   deriveTrackPageView({ ...input, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(input.cards, input.tasks) });
 
-it('keeps full state metadata off the visible inventory row', async () => {
+it('keeps tool types stable and displays each real status after disclosure', async () => {
+  await page.viewport(1200, 900);
+  const onOpenCard = vi.fn();
+  const view = derive({ cards: [
+    card({ id: 'running-terminal', title: 'Preview', runtime: { worker_session_id: 'one', kind: 'terminal', status: 'running' } }),
+    card({ id: 'exited-terminal', title: 'Tests', runtime: { worker_session_id: 'two', kind: 'terminal', status: 'exited' } }),
+    card({ id: 'exited-agent', kind: 'codex', title: 'Review', runtime: { worker_session_id: 'three', kind: 'codex', status: 'exited' } }),
+  ], tasks: [] });
+  render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ onOpenCard }), view)}</PanelCard></div>);
+  const groups = document.querySelectorAll<HTMLDetailsElement>('[data-nc-module="cards"] details');
+  expect([...groups].map(group => group.getAttribute('data-nc-inventory-group'))).toEqual(['terminals', 'agents']);
+  expect([...groups].every(group => !group.open)).toBe(true);
+  for (const group of groups) await userEvent.click(group.querySelector('summary')!);
+  const statuses = [...document.querySelectorAll<HTMLElement>('[data-nc-module="cards"] [data-nc-status]')];
+  expect(statuses.map(status => status.textContent)).toEqual(['running', 'exited', 'exited']);
+  for (const status of statuses) expect(status.getBoundingClientRect().width).toBeGreaterThan(1);
+  await userEvent.click(document.querySelector<HTMLButtonElement>('[data-nc-row="exited-terminal"] [data-nc-row-action="open-card"]')!);
+  expect(onOpenCard).toHaveBeenCalledWith('exited-terminal');
+});
+
+it('expands a tool type containing explicit attention and makes its count visible', async () => {
+  await page.viewport(1200, 900);
+  render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({}), derive({
+    cards: [card({ id: 'failed-terminal', title: 'Build', runtime: { worker_session_id: 'one', kind: 'terminal', status: 'failed' } })], tasks: [],
+  }))}</PanelCard></div>);
+  const group = document.querySelector<HTMLDetailsElement>('[data-nc-inventory-group="terminals"]')!;
+  expect(group.open).toBe(true);
+  expect(group.querySelector('summary')?.textContent).toContain('1 · 1 alert');
+  expect(group.querySelector('summary')?.getAttribute('aria-label')).toBe('Terminals, 1 card, 1 needs attention');
+  expect(group.querySelector<HTMLElement>('[data-nc-status]')?.textContent).toBe('failed');
+});
+
+it('keeps task metadata hidden while tool status remains visible', async () => {
   await page.viewport(1200, 900);
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({}),
     derive({ cards: [card({ id: 'pending-card', title: 'Long card title', kind: 'codex',
@@ -29,7 +61,8 @@ it('keeps full state metadata off the visible inventory row', async () => {
   expect(statuses).toHaveLength(2);
   for (const status of statuses) {
     const metadata = status.closest<HTMLElement>('[data-nc-inventory-metadata]')!;
-    expect(metadata.getBoundingClientRect().width).toBeLessThanOrEqual(1);
+    if (metadata === null) expect(status.getBoundingClientRect().width).toBeGreaterThan(1);
+    else expect(metadata.getBoundingClientRect().width).toBeLessThanOrEqual(1);
     expect(status.title).not.toBe('');
   }
 });
@@ -43,9 +76,13 @@ it('aligns module titles, status groups and row names, with stable secondary col
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ taskSummary: '12' }), view)}</PanelCard></div>);
   for (const module of document.querySelectorAll<HTMLElement>('[data-nc-module]')) {
     const heading = module.querySelector<HTMLElement>('h2')!;
-    const left = heading.getBoundingClientRect().left;
+    const iconLeft = heading.querySelector('svg')!.getBoundingClientRect().left;
+    const range = document.createRange(); range.selectNodeContents(heading.lastChild!);
+    const left = range.getBoundingClientRect().left;
     for (const label of module.querySelectorAll<HTMLElement>('summary > span:first-child')) {
-      expect(label.getBoundingClientRect().left).toBeCloseTo(left, 0);
+      expect(label.querySelector('svg')!.getBoundingClientRect().left).toBeCloseTo(iconLeft, 0);
+      const labelRange = document.createRange(); labelRange.selectNodeContents(label.lastChild!);
+      expect(labelRange.getBoundingClientRect().left).toBeCloseTo(left, 0);
     }
     for (const title of module.querySelectorAll<HTMLElement>('details[open] [data-nc-field="title"]')) {
       expect(title.getBoundingClientRect().left).toBeCloseTo(left, 0);
@@ -135,7 +172,7 @@ it('keeps the heading stationary and uses 4px content spacing with an 8px group 
 });
 
 
-it.each([false, true])('right-aligns only type beside names with deletable=%s', async (deletable) => {
+it.each([false, true])('left-aligns type icons beside names with deletable=%s', async (deletable) => {
   await page.viewport(1200, 900);
   const worker = card({ id: 'worker', title: 'A longer worker title', kind: 'codex', deletable,
     runtime: { worker_session_id: 'session', kind: 'codex', status: 'running' } });
@@ -145,17 +182,19 @@ it.each([false, true])('right-aligns only type beside names with deletable=%s', 
   const onDeleteCard = vi.fn();
   const onOpenCard = vi.fn();
   render(<div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ onDeleteCard, onOpenCard }), view)}</PanelCard></div>);
+  for (const summary of document.querySelectorAll<HTMLElement>('[data-nc-module="cards"] details:not([open]) > summary')) await userEvent.click(summary);
   const cardRow = document.querySelector<HTMLElement>('[data-nc-row="worker"]')!;
   const taskRow = document.querySelector<HTMLElement>('[data-nc-row="work"]')!;
   const cardKind = cardRow.querySelector<HTMLElement>('[data-nc-field="kind"]')!;
   const taskKind = taskRow.querySelector<HTMLElement>('[data-nc-field="kind"]')!;
-  expect(cardKind.getBoundingClientRect().right).toBeCloseTo(taskKind.getBoundingClientRect().right, 0);
-  expect(taskRow.getBoundingClientRect().right - taskKind.getBoundingClientRect().right).toBeCloseTo(4, 0);
-  for (const kind of [cardKind, taskKind]) {
-    const range = document.createRange(); range.selectNodeContents(kind);
-    const style = getComputedStyle(kind);
-    expect(range.getBoundingClientRect().right).toBeCloseTo(kind.getBoundingClientRect().right
-      - parseFloat(style.paddingRight) - parseFloat(style.borderRightWidth), 0);
+  const cardIcon = cardKind.querySelector('svg')!.getBoundingClientRect();
+  const taskIcon = taskKind.querySelector('svg')!.getBoundingClientRect();
+  expect(cardIcon.left).toBeCloseTo(taskIcon.left, 0);
+  for (const [row, kind] of [[cardRow, cardKind], [taskRow, taskKind]]) {
+    const icon = kind.querySelector('svg')!.getBoundingClientRect();
+    const name = row.querySelector<HTMLElement>('[data-nc-field="title"]')!.getBoundingClientRect();
+    expect(icon.width).toBe(14);
+    expect(name.left - icon.right).toBeCloseTo(8, 0);
   }
   for (const row of [cardRow, taskRow]) {
     expect(row.querySelector<HTMLElement>('[data-nc-inventory-metadata]')!.getBoundingClientRect().width).toBeLessThanOrEqual(1);
@@ -164,7 +203,7 @@ it.each([false, true])('right-aligns only type beside names with deletable=%s', 
   if (deletable) {
     await userEvent.hover(cardRow);
     const remove = cardRow.querySelector<HTMLElement>('[data-nc-row-action="delete-card"]')!;
-    expect(remove.getBoundingClientRect().right).toBeLessThanOrEqual(cardKind.getBoundingClientRect().left);
+    expect(remove.getBoundingClientRect().right).toBeCloseTo(cardRow.getBoundingClientRect().right - 4, 0);
     await userEvent.click(remove);
     expect(onDeleteCard).toHaveBeenCalledWith('worker');
     expect(onOpenCard).not.toHaveBeenCalled();
@@ -184,7 +223,9 @@ it('keeps inventory activity metadata nonvisual and free of animation', async ()
   expect(running).toHaveLength(2);
   for (const label of running) {
     expect(label.textContent).toBe('running');
-    expect(label.closest<HTMLElement>('[data-nc-inventory-metadata]')!.getBoundingClientRect().width).toBeLessThanOrEqual(1);
+    const metadata = label.closest<HTMLElement>('[data-nc-inventory-metadata]');
+    if (metadata !== null) expect(metadata.getBoundingClientRect().width).toBeLessThanOrEqual(1);
+    else expect(label.getBoundingClientRect().width).toBeGreaterThan(1);
   }
   expect(document.querySelectorAll('[data-nc-activity="working"]')).toHaveLength(2);
   for (const marker of document.querySelectorAll('[data-nc-activity]')) expect(getComputedStyle(marker).animationName).toBe('none');

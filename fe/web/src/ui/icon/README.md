@@ -1,17 +1,21 @@
-# Stroked icons
+# Icon system
 
-`ui/icon` keeps icon shape separate from the geometry of its control box. Every
-icon shares one line drawing and one 0.85 optical-inset ratio in a 16×16 view
-box. The source `stroke-width` is 1.5; after the inset and viewBox-to-viewport
-mapping it renders as 1.275px at md (16px) and 1.116px at sm (14px).
-`currentColor` supplies the colour and module CSS selects the rendered size.
+`ui/icon` is the single semantic icon registry. Functional shapes come from the
+pinned `lucide-react` 0.468.0 package; Tools uses Wrench, terminal resources use
+SquareTerminal, agents use Bot, and disclosures use ChevronRight. Running and
+waiting use LoaderCircle and Clock3 respectively. Status circles remain distinct
+from plain action controls.
 
-Text glyphs cannot provide that consistency because their visible ink is owned
-by the font. In a real browser at 1440×900, with the same 28px box and 16px font
-size, `‹`/`›` measured 5.3px wide, `↑` 8.0px, and `×`/`+` 9.3px. The widest
-mark was therefore 1.75 times the narrowest even though their declared size was
-identical. Shared stroked paths remove that font-metric variation.
+All graphics use Lucide's 24-unit SVG geometry, 2-unit rounded strokes and the
+same renderer. `--glyph-sm` supplies 14px auxiliary icons and `--glyph` supplies
+16px primary icons. There are no optical-inset groups, runtime geometry rewrites,
+brand-specific stroke overrides or DOM decoration. Controls own their hit areas.
 
-The component is presentation-only and stateless. It may be imported by
-`ui/**`, `features/**`, and `app/**`; callers own the control, accessible name,
-state, and interaction while `Icon` owns only the named shape and glyph size.
+The approved lightweight Claude/Codex artwork is registered as immutable path
+data through the same Lucide renderer. Its coordinates are already normalized
+to the shared grid. The [Codex source](https://github.com/lobehub/lobe-icons)
+is credited in CODEX-LICENSE.txt; its browser contract pins the complete closed outline.
+
+The primitive contains no application policy. Features own kind-to-icon mappings
+and accessible names; core view derivation owns classifications and authoritative
+attention metadata. Unknown kinds preserve their text and actions.

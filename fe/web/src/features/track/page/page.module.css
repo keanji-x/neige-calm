@@ -644,13 +644,12 @@
   /* Shared metadata measures keep both inventories on the same column lines. */
   .cardItem,
   .taskRow {
-    --nc-inventory-kind-w: 7ch;
     font-size: var(--text-xs);
   }
 
   .cardRow {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) var(--nc-inventory-kind-w);
+    grid-template-columns: var(--glyph-sm) minmax(0, 1fr);
     align-items: start;
     gap: var(--space-4);
     inline-size: 100%;
@@ -675,7 +674,7 @@
   .cardRemove {
     position: absolute;
     inset-block-start: calc(var(--row-h) / 2);
-    inset-inline-end: calc(var(--nc-inventory-kind-w) + var(--space-4) + var(--space-2));
+    inset-inline-end: var(--space-2);
     display: grid;
     place-items: center;
     inline-size: var(--control-h-sm);
@@ -714,10 +713,19 @@
   }
 
   .cardName {
-    display: flex;
+    grid-column: 2;
+    grid-row: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--space-4);
     align-items: center;
     min-inline-size: 0;
     min-block-size: var(--row-h);
+  }
+
+  .toolStatus {
+    white-space: nowrap;
+    text-transform: capitalize;
   }
 
   .cardNameRemovable {
@@ -788,7 +796,7 @@
   .taskRow {
     position: relative;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) var(--nc-inventory-kind-w);
+    grid-template-columns: var(--glyph-sm) minmax(0, 1fr);
     align-items: start;
     /*
      * `--space-4`, not `--space-2`, on the *trailing* cluster only.
@@ -832,7 +840,7 @@
    */
   .taskReveal {
     display: grid;
-    grid-column: 1;
+    grid-column: 2;
     grid-row: 1;
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: var(--row-h);
@@ -915,15 +923,15 @@
    */
   .taskKind,
   .taskKindButton {
-    grid-column: 2;
+    grid-column: 1;
     grid-row: 1;
-    inline-size: var(--nc-inventory-kind-w);
+    inline-size: var(--control-h-sm);
     min-block-size: var(--row-h);
     align-self: start;
     display: flex;
     align-items: center;
-    justify-content: flex-end;
-    text-align: end;
+    justify-content: flex-start;
+    text-align: start;
     overflow: hidden;
     white-space: nowrap;
   }
@@ -954,8 +962,8 @@
   .cardKindTag {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
-    grid-column: 2;
+    justify-content: flex-start;
+    grid-column: 1;
     grid-row: 1;
     min-block-size: var(--row-h);
     text-align: end;

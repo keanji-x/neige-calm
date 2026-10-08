@@ -48,7 +48,7 @@ const CARDS: readonly CardWire[] = [
 ];
 
 /** Strings only the painted Cards module can put on this surface; read as substrings of the subtree's `textContent`. */
-const PAINTED_TEXT: readonly string[] = ['Cards', 'Build log', 'harness'];
+const PAINTED_TEXT: readonly string[] = ['Tools', 'Build log', 'harness'];
 
 /** `beta-gate` carries a run, so its row prints a word only the painter can produce here. */
 const TASKS: readonly ReportTaskRow[] = [

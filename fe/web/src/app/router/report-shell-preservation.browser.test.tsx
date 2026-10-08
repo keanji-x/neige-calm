@@ -22,7 +22,7 @@ it('keeps the ordinary Track inventory beside a native report', async () => {
   renderPage({ report: <ReportDocument report={{ summary: '', body: '', blocks: [{ id: 'native', kind: 'view', payload }] }}
     resolveOverlay={source => trackOverlayPayload('example', overlays, source)} empty={<p>Empty</p>} />,
     conversationList: <button type="button">Existing Planner</button> });
-  await expect.element(page.getByRole('heading', { name: 'Cards', exact: true })).toBeVisible();
+  await expect.element(page.getByRole('heading', { name: 'Tools', exact: true })).toBeVisible();
   await expect.element(page.getByText('总资产', { exact: true })).toBeVisible();
   await expect.element(page.getByRole('heading', { name: 'Tasks', exact: true })).toBeVisible();
   await expect.element(page.getByRole('button', { name: 'Existing Planner' })).toBeVisible();

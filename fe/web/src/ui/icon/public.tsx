@@ -1,55 +1,47 @@
+import type { ComponentType } from 'react';
+import { ArrowLeft, ArrowRightLeft, ArrowUp, Bell, Bot, ChevronLeft, ChevronRight, CircleCheck, CircleStop, CircleX, Clock3, Ellipsis, File, Folder, ListChecks, LoaderCircle, Maximize, Menu, MessageSquare, Minimize, Paperclip, Pin, Plus, SquareTerminal, Wrench, X, Icon as LucideIcon, type LucideProps } from 'lucide-react';
+import { PROVIDER_GLYPHS, type GlyphNode } from './provider-glyphs.ts';
 import styles from './icon.module.css';
 
-export type IconName =
-  | 'chevron-left' | 'chevron-right' | 'arrow-left' | 'arrow-up'
-  | 'plus' | 'close' | 'more' | 'chat' | 'notification' | 'folder' | 'file'
-  | 'paperclip' | 'fullscreen' | 'compact' | 'menu' | 'switch';
+function SvgGlyph({ nodes, ...props }: LucideProps & { nodes: readonly GlyphNode[] }) {
+  return <LucideIcon {...props} iconNode={nodes.map(node => [node.tag, { ...node.attributes }])} />;
+}
 
-const paths: Readonly<Record<IconName, readonly string[]>> = Object.freeze({
-  'chevron-right': Object.freeze(['M6 3.5 10.5 8 6 12.5']),
-  'chevron-left': Object.freeze(['M10 3.5 5.5 8 10 12.5']),
-  'arrow-left': Object.freeze(['M13 8H3.5', 'M7 3.5 2.5 8 7 12.5']),
-  'arrow-up': Object.freeze(['M8 12.5V3.5', 'M4 7.5 8 3.5l4 4']),
-  compact: Object.freeze(['M8 2v4', 'M5.5 3.5 8 6l2.5-2.5', 'M8 14v-4', 'M5.5 12.5 8 10l2.5 2.5']),
-  switch: Object.freeze(['M3 5h10', 'M10 2l3 3-3 3', 'M13 11H3', 'M6 8l-3 3 3 3']),
-  menu: Object.freeze(['M3 4h10', 'M3 8h10', 'M3 12h10']),
-  plus: Object.freeze(['M8 3.5v9', 'M3.5 8h9']),
-  close: Object.freeze(['M4 4l8 8', 'M12 4l-8 8']),
-  more: Object.freeze(['M3.25 8h.01', 'M8 8h.01', 'M12.75 8h.01']),
-  chat: Object.freeze(['M3 3.5h10v7H7l-3.5 2v-2H3z']),
-  notification: Object.freeze([
-    'M4 11.5h8l-1.2-1.7V7a2.8 2.8 0 0 0-5.6 0v2.8L4 11.5Z',
-    'M6.5 12.5a1.5 1.5 0 0 0 3 0',
-  ]),
-  /* Closed outlines rather than filled shapes: every other icon here is line work and a filled folder would read as the heaviest mark in the app at its smallest size. */
-  folder: Object.freeze(['M2 12.5V3.5h4.2l1.6 2H14v7z']),
-  file: Object.freeze(['M4 2.5h5l3 3v8H4z', 'M9 2.5v3h3']),
-  /* Four corner brackets: the frame grows to fill the screen. */
-  fullscreen: Object.freeze(['M2.5 6V2.5H6', 'M10 2.5h3.5V6', 'M13.5 10v3.5H10', 'M6 13.5H2.5V10']),
-  /* A paperclip and not a picture frame: a frame at 16px has about 7×5 of interior left after its own 1.5 stroke, and the horizon and sun inside it merged into one dark mass. */
-  paperclip: Object.freeze([
-    'M14.29 7.37l-6.13 6.13a4 4 0 0 1-5.66-5.66l6.13-6.13a2.67 2.67 0 0 1 3.77 3.77l-6.13 6.13a1.33 1.33 0 0 1-1.89-1.89l5.66-5.65',
-  ]),
-});
+const glyphs = Object.freeze({
+  'chevron-left': (props: LucideProps) => <ChevronLeft {...props} />,
+  'chevron-right': (props: LucideProps) => <ChevronRight {...props} />,
+  'arrow-left': (props: LucideProps) => <ArrowLeft {...props} />,
+  'arrow-up': (props: LucideProps) => <ArrowUp {...props} />,
+  'plus': (props: LucideProps) => <Plus {...props} />,
+  'close': (props: LucideProps) => <X {...props} />,
+  'more': (props: LucideProps) => <Ellipsis {...props} />,
+  'chat': (props: LucideProps) => <MessageSquare {...props} />,
+  'notification': (props: LucideProps) => <Bell {...props} />,
+  'folder': (props: LucideProps) => <Folder {...props} />,
+  'file': (props: LucideProps) => <File {...props} />,
+  'agent': (props: LucideProps) => <Bot {...props} />,
+  'terminal': (props: LucideProps) => <SquareTerminal {...props} />,
+  'tools': (props: LucideProps) => <Wrench {...props} />,
+  'tasks': (props: LucideProps) => <ListChecks {...props} />,
+  'pin': (props: LucideProps) => <Pin {...props} />,
+  'status-running': (props: LucideProps) => <LoaderCircle {...props} />,
+  'status-waiting': (props: LucideProps) => <Clock3 {...props} />,
+  'status-failed': (props: LucideProps) => <CircleX {...props} />,
+  'status-done': (props: LucideProps) => <CircleCheck {...props} />,
+  'status-exited': (props: LucideProps) => <CircleStop {...props} />,
+  'paperclip': (props: LucideProps) => <Paperclip {...props} />,
+  'fullscreen': (props: LucideProps) => <Maximize {...props} />,
+  'compact': (props: LucideProps) => <Minimize {...props} />,
+  'menu': (props: LucideProps) => <Menu {...props} />,
+  'switch': (props: LucideProps) => <ArrowRightLeft {...props} />,
+  'claude': (props: LucideProps) => <SvgGlyph {...props} nodes={PROVIDER_GLYPHS.claude} />,
+  'codex': (props: LucideProps) => <SvgGlyph {...props} nodes={PROVIDER_GLYPHS.codex} />,
+} satisfies Readonly<Record<string, ComponentType<LucideProps>>>);
 
+export type IconName = keyof typeof glyphs;
+
+/** Every icon uses the same Lucide SVG renderer, theme size and stroke contract. */
 export function Icon({ name, size = 'md' }: { name: IconName; size?: 'sm' | 'md' }) {
-  return (
-    <svg
-      className={styles[size]}
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      focusable="false"
-    >
-      {/* The token sizes the em-like icon box; the line work keeps a 0.85
-          optical inset inside it, just as a font's ink sits inside its em box. */}
-      <g transform="translate(8 8) scale(0.85) translate(-8 -8)">
-        {paths[name].map((path) => <path key={path} d={path} />)}
-      </g>
-    </svg>
-  );
+  const Glyph = glyphs[name];
+  return <Glyph className={styles[size]} aria-hidden="true" focusable="false" />;
 }

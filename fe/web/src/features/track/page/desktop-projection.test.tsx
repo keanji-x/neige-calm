@@ -104,7 +104,7 @@ describe('fixture shape guard', () => {
   });
 
   it('every module key is exercised both empty and non-empty', () => {
-    for (const key of ['cards', 'tasks'] as const) {
+    for (const key of ['tasks', 'cards'] as const) {
       const mine = ALL_MODULES.filter((module) => module.key === key);
       expect(mine.some((module) => module.rows.length === 0)).toBe(true);
       expect(mine.some((module) => module.rows.length > 0)).toBe(true);
@@ -130,7 +130,7 @@ describe('the rendered desktop panel projects its view model faithfully', () => 
     const view = deriveTrackPageView({ cards: CARDS, tasks: TASKS, activity: NEUTRAL_ACTIVITY, openableCards: openableCardsOf(CARDS, TASKS) });
     const noDelete = makeDesktopPainter({ onOpenCard: vi.fn(), onOpenTask: vi.fn() });
     expect(checkProjectionIn(noDelete, view.rowModules, desktopPanel(container))).toEqual([]);
-    expect(view.rowModules[0].rows.some((row) =>
+    expect(view.rowModules.find(module => module.key === 'cards')!.rows.some((row) =>
       row.actions.some((action) => action.kind === 'delete-card'))).toBe(true);
     expect(screen.queryByRole('button', { name: 'Delete card Build log' })).toBeNull();
   });

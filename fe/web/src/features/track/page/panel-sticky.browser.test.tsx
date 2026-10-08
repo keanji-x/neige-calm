@@ -71,7 +71,7 @@ describe('the panel card, against a scrolling report', () => {
               <div className={styles.doc} />
               <aside className={styles.panel} data-nc-panel="">
                 <InventoryGroups noun="card" groups={[{
-                  key: 'working', label: 'In progress', expanded: true,
+                  key: 'working', label: 'In progress', attentionCount: 0, expanded: true,
                   rows: Array.from({ length: 30 }, (_, index) => index),
                 }]} renderRows={rows => <ul className={styles.cards}>
                   {rows.map(index => <li key={index}><button type="button" className={styles.cardRow}>card {index}</button></li>)}
