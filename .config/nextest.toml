@@ -29,7 +29,7 @@ default-filter = 'not test(/export_bindings_/)'
 # test is a red verdict you can read; a wedged one is no verdict at all.
 #
 # Why 600s is not a flake source: the slowest known CI test is
-# `migration_replay_harness::synthetic_fixture_replays_from_every_version`
+# `migration_replay_harness::synthetic_fixture_replays_from_every_supported_version`
 # at up to 250s when it shares a contended four-core hosted runner. 600s is
 # 2.4x that worst case, so nothing legitimately slow is inside the ceiling.
 # The warn period stays at 60s so the SLOW lines that feed the timing analysis
@@ -76,7 +76,7 @@ threads-required = 4
 # four-core hosted runner with three other database-heavy tests. Reserve the
 # runner while it executes: coverage remains exhaustive, and the remaining
 # partition resumes normal four-way parallelism as soon as it finishes.
-filter = 'test(/^migration_suite::migration_replay_harness::synthetic_fixture_replays_from_every_version$/)'
+filter = 'test(/^migration_suite::migration_replay_harness::synthetic_fixture_replays_from_every_supported_version$/)'
 threads-required = 4
 
 [profile.ci.archive]

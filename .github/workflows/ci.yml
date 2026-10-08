@@ -108,6 +108,9 @@ jobs:
       - name: preview build preflight regression
         run: python3 scripts/tests/test_preview_preflight.py
 
+      - name: nextest override guard selftest
+        run: python3 scripts/ci/check-nextest-overrides-selftest.py
+
       - name: local Rust gate safety selftest
         if: env.RUN_RUST_CHECKS == 'true'
         run: scripts/ci/local-rust-gates-selftest.sh
