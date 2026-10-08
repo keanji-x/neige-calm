@@ -108,6 +108,9 @@ jobs:
       - name: preview build preflight regression
         run: python3 scripts/tests/test_preview_preflight.py
 
+      - name: nextest override guard selftest
+        run: python3 scripts/ci/check-nextest-overrides-selftest.py
+
       - name: local Rust gate safety selftest
         if: env.RUN_RUST_CHECKS == 'true'
         run: scripts/ci/local-rust-gates-selftest.sh
@@ -519,6 +522,9 @@ jobs:
           cargo build --locked -p calm-worker-runtime --bin calm-worker-boundary
           cargo nextest archive --workspace --locked --features calm-server/codex-e2e --profile ci --archive-file nextest-archive.tar.zst
           ls -l nextest-archive.tar.zst
+
+      - name: check nextest override matches
+        run: env -u NEIGE_CODEX_BIN python3 scripts/ci/check-nextest-overrides.py --archive-file nextest-archive.tar.zst
 
       - name: upload nextest archive
         if: github.event_name == 'pull_request'

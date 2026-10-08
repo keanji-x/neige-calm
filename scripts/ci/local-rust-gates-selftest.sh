@@ -24,6 +24,7 @@ elif [ "${1:-}" = nextest ]; then
     echo "Rust gate leaked NEIGE_CODEX_BIN into nextest" >&2
     exit 1
   fi
+  test "${2:-}" = run
   printf '%s\0' "$@" >"$RUST_NEXTEST_CAPTURE"
 fi
 EOF
@@ -158,6 +159,17 @@ assert_argv "$archive_capture" nextest run --archive-file "$archive_file" \
   --workspace-remap . --extract-to . --extract-overwrite --profile ci \
   --partition count:2/6
 
+# The self-hosted archive route shares the inventory but retains its thread cap.
+self_archive_capture="$temp_root/self-archive.args"
+PATH="$stub_bin:$PATH" \
+  NEIGE_CODEX_BIN=/must-not-reach-nextest \
+  RUST_NEXTEST_CAPTURE="$self_archive_capture" \
+  scripts/run-ci-rust-nextest.sh self-hosted --archive-file "$archive_file" \
+  --partition hash:1/2 >/dev/null
+assert_argv "$self_archive_capture" nextest run --archive-file "$archive_file" \
+  --workspace-remap . --extract-to . --extract-overwrite --profile ci \
+  --test-threads 8 --partition hash:1/2
+
 invalid_output=""
 invalid_rc=0
 invalid_output="$(scripts/run-rust-nextest.sh --test-threads 00 2>&1)" || invalid_rc=$?
@@ -203,5 +215,25 @@ if grep -Fq 'migration replay gate (#679 PR0-D)' "$ci_file"; then
   echo "CI must not rerun migration replay outside the full nextest suite" >&2
   exit 1
 fi
+
+# Check the single archive producer invocation, including its step boundaries.
+python3 - <<'PYTEST'
+from pathlib import Path
+workflow = Path('.github/workflows/ci.yml').read_text()
+call = 'run: env -u NEIGE_CODEX_BIN python3 scripts/ci/check-nextest-overrides.py --archive-file nextest-archive.tar.zst'
+assert workflow.count('scripts/ci/check-nextest-overrides.py') == 1
+producer = workflow.split('  rust-build:\n', 1)[1].split('\n  rust-shards:', 1)[0]
+assert producer.count(call) == 1
+build = producer.index('cargo nextest archive --workspace --locked --features calm-server/codex-e2e --profile ci --archive-file nextest-archive.tar.zst')
+check = producer.index('      - name: check nextest override matches\n        ' + call)
+upload = producer.index('      - name: upload nextest archive')
+assert build < check < upload
+step = producer[check:upload]
+assert step.count('      - name:') == 1
+assert 'if:' not in step and 'continue-on-error:' not in step
+assert 'matrix:' not in producer
+for path in ('scripts/run-rust-nextest.sh', 'scripts/run-ci-rust-nextest.sh'):
+    assert 'check-nextest-overrides' not in Path(path).read_text(), path
+PYTEST
 
 echo "local Rust gate safety selftest: passed"
