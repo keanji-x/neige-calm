@@ -4,7 +4,7 @@ import type { RecoveryAccess } from '../../../../core/domain/recovery/access.ts'
 export function useRecoveryState(access: RecoveryAccess) { return useSyncExternalStore(access.subscribe, access.read, access.read); }
 /** Listeners only wake the session owner; none infer authorization. */
 export function observeRecoveryLifecycle(owner: Readonly<{
-  pause(): void; resume(): void; remember(path: string, search: string, scroll: readonly RecoveryScroll[]): void;
+  pause(): void; wake(): void; remember(path: string, search: string, scroll: readonly RecoveryScroll[]): void;
   takePresentation(): RecoveryContext | null;
 }>): () => void {
   const regionNode = (region: RecoveryScroll['region']) => region === 'page'
@@ -36,17 +36,18 @@ export function observeRecoveryLifecycle(owner: Readonly<{
     }
     owner.remember(window.location.pathname, window.location.search, scroll);
   };
-  const visibility = () => { remember(); if (document.hidden) owner.pause(); else owner.resume(); };
-  const online = () => owner.resume();
-  const offline = () => { owner.pause(); owner.resume(); };
+  const visibility = () => { remember(); if (document.hidden) owner.pause(); else owner.wake(); };
+  const online = () => owner.wake();
+  const offline = () => { owner.pause(); owner.wake(); };
+  const pagehide = () => { remember(); owner.pause(); };
   document.addEventListener('visibilitychange', visibility);
   window.addEventListener('online', online); window.addEventListener('offline', offline);
-  window.addEventListener('pagehide', visibility); window.addEventListener('pageshow', online);
+  window.addEventListener('pagehide', pagehide); window.addEventListener('pageshow', online);
   const timer = setInterval(remember, 1000);
   return () => {
     clearInterval(timer); observer.disconnect(); remember(); document.removeEventListener('visibilitychange', visibility);
     window.removeEventListener('online', online); window.removeEventListener('offline', offline);
-    window.removeEventListener('pagehide', visibility); window.removeEventListener('pageshow', online);
+    window.removeEventListener('pagehide', pagehide); window.removeEventListener('pageshow', online);
   };
 }
 
