@@ -20,6 +20,8 @@ impl<E: ErrorFactory> PluginHost<E> {
         mut child: tokio::process::Child,
     ) {
         let exit_result = child.wait().await;
+        #[cfg(feature = "test-support")]
+        let mut handshake = self.take_supervisor_handshake(&id, run_epoch);
 
         // `await_lifecycle`, not `try`: the task was created under the spawn's own guard, so a child that dies in that window collides with it by construction.
         let (attempt, delay_ms) = {
@@ -111,6 +113,15 @@ impl<E: ErrorFactory> PluginHost<E> {
                 )
             };
 
+            #[cfg(feature = "test-support")]
+            if let Some(h) = &mut handshake {
+                h.crashed_under_guard
+                    .take()
+                    .expect("one-shot crash pause")
+                    .wait()
+                    .await;
+            }
+
             self.emit_crashed_under(&guard, &combined_reason).await;
 
             if exceeded {
@@ -147,9 +158,24 @@ impl<E: ErrorFactory> PluginHost<E> {
             (attempt, delay_ms)
         };
 
+        #[cfg(feature = "test-support")]
+        let before_lock = if let Some(h) = handshake {
+            h.guard_released.wait().await;
+            Some(h.before_respawn_lock)
+        } else {
+            None
+        };
+
         // Lock NOT held: a `disable` during a crash loop must not block for the whole backoff.
         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
 
+        // No await between this non-blocking notification and the real lock future.
+        // On a current-thread runtime, the receiver cannot run until that future
+        // returns Pending (or the supervisor finishes when a mutation uses try-lock).
+        #[cfg(feature = "test-support")]
+        if let Some(before_lock) = before_lock {
+            let _ = before_lock.send(());
+        }
         self.respawn_after_backoff(&id, run_epoch, attempt).await;
     }
 

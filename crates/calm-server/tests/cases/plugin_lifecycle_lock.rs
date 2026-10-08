@@ -1113,38 +1113,29 @@ async fn a14a_a_crash_inside_the_spawns_own_guard_is_still_accounted() {
     );
 }
 
-#[tokio::test]
-async fn a14b_a_busy_lock_at_the_end_of_backoff_does_not_strand_the_plugin() {
+#[tokio::test(flavor = "current_thread")]
+async fn a14b_0_crashed_status_does_not_mean_the_guard_is_released() {
     let fx = boot_with(BootOpts {
         stub: CRASH_BIN,
         backoff: Some((vec![800], Duration::from_secs(300), 50)),
         ..Default::default()
     })
     .await;
-
+    let handshake = fx.host.arm_next_run_supervisor(ID);
     fx.host.spawn(ID).await.expect("spawn");
-    wait_for_status(
-        &fx.host,
-        ID,
-        |s| matches!(s, Some(PluginRuntimeStatus::Crashed { .. })),
-        Duration::from_secs(10),
-    )
-    .await;
-
-    // Hold the lock straight across the moment the backoff elapses.
-    let held = fx
-        .host
-        .try_lock_lifecycle(ID)
-        .expect("lock is free mid-backoff");
-    sleep(Duration::from_millis(1_600)).await;
-    let ev = state_events(&fx).await;
-    assert_eq!(
-        ev.iter().filter(|s| *s == "running").count(),
-        1,
-        "nothing may respawn while the lock is held: {ev:?}"
+    supervisor_sync::reached(handshake.crashed_under_guard.reached).await;
+    assert!(matches!(
+        fx.host.status(ID).await.map(|s| s.status),
+        Some(PluginRuntimeStatus::Crashed { .. })
+    ));
+    assert!(
+        matches!(fx.host.try_lock_lifecycle(ID), Err(HostError::LifecycleBusy(id)) if id == ID),
+        "Crashed is visible while the supervisor still holds the real guard"
     );
-    drop(held);
-
+    handshake.crashed_under_guard.resume.send(()).unwrap();
+    supervisor_sync::reached(handshake.guard_released.reached).await;
+    handshake.guard_released.resume.send(()).unwrap();
+    supervisor_sync::reached(handshake.before_respawn_lock).await;
     wait_for_events(
         &fx,
         |ev| ev.iter().filter(|s| *s == "running").count() >= 2,
@@ -1152,6 +1143,51 @@ async fn a14b_a_busy_lock_at_the_end_of_backoff_does_not_strand_the_plugin() {
     )
     .await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a14b_a_busy_lock_at_the_end_of_backoff_does_not_strand_the_plugin() {
+    let fx = boot_with(BootOpts {
+        stub: CRASH_BIN,
+        backoff: Some((vec![800], Duration::from_secs(300), 50)),
+        ..Default::default()
+    })
+    .await;
+    let handshake = fx.host.arm_next_run_supervisor(ID);
+    fx.host.spawn(ID).await.expect("spawn");
+    supervisor_sync::reached(handshake.crashed_under_guard.reached).await;
+    handshake.crashed_under_guard.resume.send(()).unwrap();
+    supervisor_sync::reached(handshake.guard_released.reached).await;
+
+    // The crash guard has dropped; the supervisor is paused before backoff.
+    let held = fx
+        .host
+        .try_lock_lifecycle(ID)
+        .expect("crash guard released");
+    handshake.guard_released.resume.send(()).unwrap();
+    supervisor_sync::reached(handshake.before_respawn_lock).await;
+    // Current-thread scheduling: send() does not yield, and the supervisor has
+    // no intervening await before polling the real lifecycle lock. This task
+    // resumes only after that lock future returned Pending on `held`.
+    assert!(
+        matches!(fx.host.try_lock_lifecycle(ID), Err(HostError::LifecycleBusy(id)) if id == ID)
+    );
+    let ev = state_events(&fx).await;
+    assert_eq!(
+        ev.iter().filter(|s| *s == "running").count(),
+        1,
+        "nothing may respawn while the lock is held: {ev:?}"
+    );
+    drop(held);
+    wait_for_events(
+        &fx,
+        |ev| ev.iter().filter(|s| *s == "running").count() >= 2,
+        Duration::from_secs(15),
+    )
+    .await;
+}
+
+#[path = "plugin_lifecycle_lock/supervisor_sync.rs"]
+mod supervisor_sync;
 
 /// Fake [`LifecycleDb`] with a one-shot read failure and a pause gate that holds the failure
 /// window open until the test closes it.

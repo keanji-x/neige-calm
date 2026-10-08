@@ -37,6 +37,8 @@ impl<E: ErrorFactory> PluginHost<E> {
             lifecycle_db,
             app_autospawn_wall: APP_AUTOSPAWN_WALL,
             backoff: BackoffConfig::default(),
+            #[cfg(feature = "test-support")]
+            supervisor_handshake: std::sync::Mutex::new(None),
         }
     }
     /// Post-construction override of the narrow `LifecycleDb` port; production never calls this.
