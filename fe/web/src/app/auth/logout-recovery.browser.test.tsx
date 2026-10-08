@@ -119,7 +119,8 @@ it.each([false, true])('production event owners retire before compatible protoco
   const stale = original.onmessage;
   act(() => {
     version = { ...version, syncEventVersion: 20, dbInstanceId: newDatabase ? 'second-db' : 'first-db' };
-    window.dispatchEvent(new Event('online'));
+    window.dispatchEvent(new Event('pagehide'));
+    window.dispatchEvent(new Event('pageshow'));
   });
   await waitFor(() => expect(original.closed).toBe(true));
   await waitFor(() => expect(sockets.at(-1)).not.toBe(original));

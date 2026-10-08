@@ -7,7 +7,6 @@
   .status { position: fixed; inset-block-start: calc(env(safe-area-inset-top) + var(--rail-w-collapsed) + var(--space-2) + var(--space-8) * 2 + var(--space-4)); inset-inline-end: var(--space-4); z-index: var(--z-overlay); color: var(--text-2); background: var(--paper); border: 1px solid var(--hairline); border-radius: var(--radius-md); max-inline-size: calc(100vw - var(--space-8)); font-size: var(--text-xs); }
   .status summary { padding: var(--space-3) var(--space-4); cursor: pointer; list-style: none; }
   .status summary::marker { content: ''; }
-  .status[data-nc-recovery-status='connected'] summary { color: var(--text); }
   .details { padding: var(--space-4); max-inline-size: 20rem; }
   .details a { display: block; margin-block: var(--space-3); }
   .workspace { display: contents; }

@@ -1,3 +1,4 @@
+import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import { Icon } from '@astryxdesign/core/Icon';
 import { MobileHeader } from '../../ui/mobile-header/public.tsx';
 import { recoveryPage } from '../../../../core/domain/recovery/context.ts';
@@ -25,15 +26,16 @@ export function recoveryStatusLabel(phase: RecoveryState['phase']): string {
 }
 export function RecoveryStatus({ state, retry }: Readonly<{ state: RecoveryState; retry(): void }>) {
   const label = recoveryStatusLabel(state.phase);
-  return <details className={styles.status} data-nc-recovery-status={state.phase}>
-    <summary><span role="status" aria-live="polite">{label}</span></summary>
+  return <><VisuallyHidden role="status" aria-live="polite" data-nc-recovery-status={state.phase === 'connected' ? 'connected' : undefined}>{label}</VisuallyHidden>
+    {state.phase !== 'connected' && <details className={styles.status} data-nc-recovery-status={state.phase}>
+    <summary><span>{label}</span></summary>
     <div className={styles.details}>
-      {state.phase !== 'connected' && <p>恢复期间只读，已显示的内容可能过时。</p>}
+      <p>恢复期间只读，已显示的内容可能过时。</p>
       {state.detail && <p>{state.detail}</p>}
       {state.failedAt !== null && <p>最近失败：{new Date(state.failedAt).toLocaleTimeString()}</p>}
       {state.retryAt !== null && <p>下次重试：{new Date(state.retryAt).toLocaleTimeString()}</p>}
       {['recovering', 'offline', 'paused'].includes(state.phase) && <button type="button" onClick={retry}>立即重试</button>}
       <a href="http://tauri.localhost/">连接设置</a>
     </div>
-  </details>;
+  </details>}</>;
 }
