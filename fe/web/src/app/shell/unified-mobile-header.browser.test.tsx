@@ -118,7 +118,8 @@ it('uses Escape to close Planner before its Conversations page', async () => {
   const router = setup('/track/w1');
   await router.navigate({ to: '/track/w1', search: { panel: 'conversations' } });
   await page.getByRole('button', { name: /Design review/ }).click();
-  await page.getByRole('heading', { name: '对话', exact: true }).findElement();
+  await page.getByRole('button', { name: 'Close conversation', exact: true }).findElement();
+  await page.elementLocator(document.querySelector('[data-nc-mobile-chat-panel]')!).getByRole('heading', { name: 'Responsive mobile UI', exact: true }).findElement();
   await userEvent.keyboard('{Escape}');
   await settlePaint();
   expect(router.state.location.search).toHaveProperty('panel', 'conversations');
@@ -419,7 +420,7 @@ describe('Unified mobile headers', () => {
         .map((animation) => animation.finished.catch(() => undefined)));
       await settlePaint();
       const box = header.getBoundingClientRect();
-      const button = header.querySelector('button')!;
+      const button = name === 'chat' ? header.querySelector('button[aria-label="Close conversation"]')! : header.querySelector('button')!;
       const hit = button.getBoundingClientRect();
       frames.push({ name, x: box.x, y: box.y, width: box.width, height: box.height, left: hit.x, top: hit.y });
       if (name === 'chat') {
@@ -427,7 +428,7 @@ describe('Unified mobile headers', () => {
         expect(box.y).toBeGreaterThan(80);
         expect(hit.width).toBe(44); expect(hit.height).toBe(44);
         expect(hit.right).toBe(width - 16);
-        expect(getComputedStyle(header.querySelector('h2')!).fontSize).toBe('18px');
+        expect(getComputedStyle(header.querySelector('h2')!).fontSize).toBe('16px');
         await page.screenshot({ path: `../../../../test-results/unified-${width}-${name}.png` });
         return;
       }
@@ -493,7 +494,8 @@ describe('Unified mobile headers', () => {
     await router.navigate({ to: '/track/w1', search: { panel: 'conversations' } });
     await record('conversations', (await page.getByRole('heading', { name: 'Conversations', exact: true }).findElement()).closest('header')!);
     await page.getByRole('button', { name: /Conversation Design review/ }).click();
-    await record('chat', (await page.getByRole('heading', { name: '对话', exact: true }).findElement()).closest('header')!);
+    await page.getByRole('button', { name: 'Close conversation', exact: true }).findElement();
+    await record('chat', (await page.elementLocator(document.querySelector('[data-nc-mobile-chat-panel]')!).getByRole('heading', { name: 'Responsive mobile UI', exact: true }).findElement()).closest('header')!);
     await page.getByRole('button', { name: 'Close conversation' }).click();
     await expect.poll(() => document.querySelector('[data-nc-mobile-chat-panel]')?.closest('dialog')?.open).toBe(false);
     await page.getByRole('button', { name: 'Back to Report' }).click();

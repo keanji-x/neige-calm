@@ -598,8 +598,8 @@ describe('Track mobile presentation', () => {
     expect(planner.closest('[inert]')).not.toBeNull();
     expect(planner.closest('[aria-hidden="true"]')).not.toBeNull();
     await Promise.all(drawer.getAnimations().map((animation) => animation.finished));
-    const heading = await page.getByRole('heading', { name: '对话', exact: true }).findElement();
-    expect(getComputedStyle(heading).fontSize).toBe('18px');
+    const heading = await page.elementLocator(drawer).getByRole('heading', { name: 'Responsive mobile UI', exact: true }).findElement();
+    expect(getComputedStyle(heading).fontSize).toBe('16px');
     await page.getByRole('button', { name: 'Close conversation' }).click();
     await expect.poll(() => drawer.closest('dialog')?.open).toBe(false);
     for (let frame = 0; frame < 4; frame += 1) {
