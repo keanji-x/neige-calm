@@ -417,6 +417,18 @@ fn cancellation_is_not_reported_as_success() {
         matches!(&events[0].kind,PlannerEventKind::TurnCompleted{turn} if turn["status"]=="interrupted")
     );
 }
+#[test]
+fn an_agent_error_fails_the_turn_with_its_text_after_completing_streamed_text() {
+    let mut translator = translator();
+    translator.update(&update(json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"partial"}})),1).unwrap();
+    let events = translator.fail("Internal error: no balance", 2);
+    assert!(
+        matches!(&events[0].kind,PlannerEventKind::Item{phase:ItemPhase::Completed,params,..} if params["item"]["text"]=="partial")
+    );
+    assert!(
+        matches!(&events[1].kind,PlannerEventKind::TurnCompleted{turn} if turn["status"]=="failed" && turn["error"]["message"]=="Internal error: no balance")
+    );
+}
 
 #[tokio::test]
 async fn abandoned_dispatched_response_closes_the_pipe_before_more_requests() {

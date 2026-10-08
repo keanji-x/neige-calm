@@ -19,7 +19,7 @@ Review tier: **L2**. Process authority, durable session identity and submission 
 
 ## Admission and recovery
 
-Before dispatch, persist the original input, native session and kernel correlation under the stable input key. A pipe write is dispatch evidence, not acceptance. A lost/ambiguous response leaves an unresolved durable receipt. A repeated exact key returns the original correlation without sending another prompt; changed input or binding is refused. Fresh input is fenced until explicit reset. An unknown outcome is never reported as success.
+Before dispatch, persist the original input, native session and kernel correlation under the stable input key. A pipe write is dispatch evidence, not acceptance. A lost/ambiguous response leaves an unresolved durable receipt. A JSON-RPC error answer to the prompt is the agent's definite answer: the turn settles as failed with the agent's error text, and later input is not fenced (#2451). OpenCode 1.18.35 answers that way when its model API refuses a call. A repeated exact key returns the original correlation without sending another prompt; changed input or binding is refused. Fresh input is fenced until explicit reset. An unknown outcome is never reported as success.
 
 A settled session may load its original native ID after restart. Load/configuration replay is setup traffic; it must be drained before the fresh turn's translator is installed. Native IDs and current settings belong to the registered agent. The registration/cwd digest prevents silently switching the backing profile, and the backend refuses adopting a pre-existing native binding without managed ownership.
 
