@@ -2,6 +2,7 @@ import '../../styles/entry.css';
 import { cleanup, render } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { commands, page } from 'vitest/browser';
+import { ChatLayout } from '@astryxdesign/core/Chat';
 import { ConversationSurface } from './mobile-conversation-surface.tsx';
 import { ChatThread } from '../../features/chat/thread/public.tsx';
 import type { TranscriptEntry } from '../../../../core/domain/conversation.ts';
@@ -67,7 +68,7 @@ it('anchors the return-to-bottom control to the message viewport and joins the c
   const initial = dock.getBoundingClientRect().bottom;
   await commands.wheelScroll('[data-nc-drawer-scroll]', -350);
   await expect.poll(() => dock.getBoundingClientRect().bottom).toBeCloseTo(initial, 0);
-  const blur = document.querySelector<HTMLElement>('[data-nc-chat-scroll-dock]')!.firstElementChild!;
+  const blur = document.querySelector<HTMLElement>('[data-nc-native-chat-layout]')!.lastElementChild!.children[1];
   const footer = document.querySelector<HTMLElement>('[data-nc-chat-footer]')!;
   expect(blur.getBoundingClientRect().bottom).toBeCloseTo(footer.getBoundingClientRect().top, 0);
   await page.getByRole('button', { name: 'Scroll to bottom' }).click();
@@ -114,7 +115,22 @@ it('keeps the header fixed when scrolling over the header and messages', async (
     expect(ancestor.scrollTop).toBe(0);
   }
   await expect.poll(() => document.querySelector('[data-nc-chat-scroll-dock]')).not.toBeNull();
-  const blur = document.querySelector<HTMLElement>('[data-nc-chat-scroll-dock]')!.firstElementChild!;
-  expect(blur.getBoundingClientRect().height).toBeLessThanOrEqual(48);
+  const blur = document.querySelector<HTMLElement>('[data-nc-native-chat-layout]')!.lastElementChild!.children[1];
+  expect(blur.getBoundingClientRect().height).toBeGreaterThan(0);
   expect(getComputedStyle(blur).maskImage).toContain('linear-gradient');
+});
+
+it('uses the built-in compact ChatLayout blur without repainting its material', async () => {
+  await page.viewport(390, 844);
+  surface();
+  await expect.element(page.getByRole('dialog', { name: 'Current conversation' })).toBeVisible();
+  render(<ChatLayout data-testid="native-material-reference" density="compact" composer={null} scrollButton={<div />}
+    style={{ position: 'absolute', left: 1000, width: 390, height: 200 }}>{null}</ChatLayout>);
+  const layout = document.querySelector<HTMLElement>('[data-nc-native-chat-layout]')!;
+  const reference = page.getByTestId('native-material-reference').element();
+  const actual = getComputedStyle(layout.lastElementChild!.children[1]);
+  const expected = getComputedStyle(reference.lastElementChild!.children[1]);
+  for (const property of ['height', 'backdrop-filter', 'mask-image', '-webkit-mask-image']) {
+    expect(actual.getPropertyValue(property)).toBe(expected.getPropertyValue(property));
+  }
 });

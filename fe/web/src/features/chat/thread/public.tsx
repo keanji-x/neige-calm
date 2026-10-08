@@ -311,7 +311,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
   }
 
   const scrollControls = <div className={styles.scrollDockContent} data-nc-chat-scroll-dock="">
-    <div className={styles.scrollBlur} aria-hidden="true" />
+    {scrollOverlay === null && <div className={styles.scrollBlur} aria-hidden="true" />}
     <ChatLayoutScrollButton isVisible className={styles.scrollButton} onClick={scrollFollower.followToEnd} />
   </div>;
 

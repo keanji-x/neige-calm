@@ -6,6 +6,7 @@ import { Icon } from '../../ui/icon/public.tsx';
 import { useCallback, useEffect, useLayoutEffect, useRef, type ComponentProps } from 'react';
 import { LayerDepthProvider, useLayerDismissal } from '@astryxdesign/core/Layer';
 import { BottomSheet } from '@astryxdesign/core/BottomSheet';
+import { ChatLayout } from '@astryxdesign/core/Chat';
 import { Drawer } from '../../ui/drawer/public.tsx';
 import styles from './mobile-chat.module.css';
 
@@ -42,6 +43,9 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
     previousNativeSheet.current = nativeSheet;
   }
   const panelRef = useRef<HTMLDivElement | null>(null);
+  // The transcript's existing scroll follower is the sole owner of reading
+  // intent. ChatLayout supplies layout/dock material without a second scroller.
+  const layoutScrollRef = useRef<HTMLElement | null>(null);
   const contentRef = useRef<HTMLElement | null>(null);
   // Astryx owns handle drag/settling. Message and header gestures stay local:
   // native touch listeners must stop before its body listener, without cancelling scrolling.
@@ -183,10 +187,11 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
         <button type="button" className={styles.close} aria-label={fullscreen ? 'Collapse conversation' : 'Expand conversation'} aria-pressed={fullscreen} onClick={() => setFullscreen(value => !value)}><Icon name={fullscreen ? 'compact' : 'fullscreen'} /></button>
         <button type="button" className={styles.close} aria-label={props.closeLabel ?? 'Close conversation'} onClick={props.onClose}><Icon name="close" /></button>
       </header>
-      <div className={styles.messageViewport}>
+      <ChatLayout className={styles.messageViewport} data-nc-native-chat-layout="" density="compact"
+        scrollRef={layoutScrollRef} composer={null}
+        scrollButton={<div className={styles.scrollOverlay} data-nc-chat-scroll-overlay="" />}>
         <div className={styles.messages} data-nc-drawer-scroll="">{frame.children}</div>
-        <div className={styles.scrollOverlay} data-nc-chat-scroll-overlay="" />
-      </div>
+      </ChatLayout>
     </section>
   </BottomSheet></div>;
   return <>{surface}{createPortal(<LayerDepthProvider><div className={nativeSheet ? styles.footer : undefined}

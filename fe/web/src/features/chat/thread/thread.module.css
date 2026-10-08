@@ -99,11 +99,6 @@
     pointer-events: none;
   }
 
-  [data-nc-chat-scroll-overlay] .scrollBlur {
-    block-size: calc(var(--space-10) * 2);
-    backdrop-filter: blur(var(--space-3));
-  }
-
   .scrollButton {
     position: relative;
   }
