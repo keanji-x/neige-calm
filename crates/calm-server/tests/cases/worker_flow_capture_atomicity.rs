@@ -9,18 +9,18 @@ use tokio_util::sync::CancellationToken;
 
 use crate::support::worker_flow as wf;
 
-struct Case {
-    dir: tempfile::TempDir,
-    seed: wf::SeededRuntime,
-    path: PathBuf,
-    claude: bool,
-    lines: Vec<Value>,
-    expected: Vec<Value>,
-    interrupted: i64,
+pub(super) struct Case {
+    pub(super) dir: tempfile::TempDir,
+    pub(super) seed: wf::SeededRuntime,
+    pub(super) path: PathBuf,
+    pub(super) claude: bool,
+    pub(super) lines: Vec<Value>,
+    pub(super) expected: Vec<Value>,
+    pub(super) interrupted: i64,
 }
 
 impl Case {
-    async fn new(claude: bool, multi: bool, card: &str) -> (Self, Arc<SqlxRepo>) {
+    pub(super) async fn new(claude: bool, multi: bool, card: &str) -> (Self, Arc<SqlxRepo>) {
         let dir = tempfile::tempdir().unwrap();
         let repo = open(dir.path()).await;
         let seed = if claude {
@@ -120,17 +120,17 @@ impl Case {
         )
     }
 
-    fn kind(&self) -> &'static str {
+    pub(super) fn kind(&self) -> &'static str {
         if self.claude {
             "claude_transcript"
         } else {
             "codex_rollout"
         }
     }
-    fn card(&self) -> &str {
+    pub(super) fn card(&self) -> &str {
         self.seed.card.id.as_str()
     }
-    fn spawn(
+    pub(super) fn spawn(
         &self,
         repo: Arc<SqlxRepo>,
     ) -> (
@@ -148,7 +148,7 @@ impl Case {
             wf::spawn_source_with_path(repo, self.seed.runtime.clone(), &self.seed, &self.path)
         }
     }
-    async fn wait(&self, repo: &SqlxRepo) {
+    pub(super) async fn wait(&self, repo: &SqlxRepo) {
         wf::wait_until(wf::LIVENESS_BUDGET, || async {
             repo.worker_flow_cursor_get(self.card(), self.kind())
                 .await
@@ -157,7 +157,7 @@ impl Case {
         })
         .await;
     }
-    async fn assert_rows(&self, repo: &SqlxRepo) -> Vec<(i64, String)> {
+    pub(super) async fn assert_rows(&self, repo: &SqlxRepo) -> Vec<(i64, String)> {
         let rows = repo
             .worker_flow_item_list_by_card(self.card(), 0, 1000, false)
             .await
@@ -390,6 +390,8 @@ async fn busy_cancel(claude: bool, card: &str) {
         .await
         .unwrap();
     token.cancel();
+    // The in-flight database operation settles before the source joins.
+    busy.release.notify_one();
     tokio::time::timeout(wf::LIVENESS_BUDGET, task)
         .await
         .unwrap()
@@ -679,4 +681,23 @@ async fn capture_atomicity_codex_empty_records_advance_checkpoint_and_idle_is_st
 #[tokio::test]
 async fn capture_atomicity_claude_empty_records_advance_checkpoint_and_idle_is_stable() {
     empty_records(true, "atomic-claude-empty").await;
+}
+
+#[path = "worker_flow_capture_replacement.rs"]
+mod replacement;
+#[tokio::test]
+async fn capture_atomicity_codex_replacement_settles_queued_commit() {
+    replacement::replacement(false, "atomic-codex-replace").await;
+}
+#[tokio::test]
+async fn capture_atomicity_claude_replacement_settles_queued_commit() {
+    replacement::replacement(true, "atomic-claude-replace").await;
+}
+#[tokio::test]
+async fn capture_atomicity_codex_path_change_uses_durable_expected() {
+    replacement::path_change(false, "atomic-codex-path").await;
+}
+#[tokio::test]
+async fn capture_atomicity_claude_path_change_uses_durable_expected() {
+    replacement::path_change(true, "atomic-claude-path").await;
 }

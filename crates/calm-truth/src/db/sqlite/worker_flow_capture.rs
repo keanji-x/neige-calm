@@ -108,6 +108,9 @@ impl SqlxRepo {
             })?;
             return Err(e);
         }
+        #[cfg(feature = "fixtures")]
+        crate::capture_test_seam::arm_commit(&mut tx, &capture.card_id, capture.next.record_index)
+            .await?;
         // A COMMIT error is ambiguous; do not classify it as safe writer contention.
         tx.commit().await.map_err(|e| {
             TruthError::Internal(format!(

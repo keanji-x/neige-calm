@@ -23,9 +23,18 @@ pub async fn get<R>(
 where
     R: RepoRead + ?Sized,
 {
-    repo.worker_flow_cursor_get(card_id, source_kind)
+    let stored = repo
+        .worker_flow_cursor_get(card_id, source_kind)
         .await
-        .map_err(|e| CoreError::Internal(format!("worker_flow_cursor_get: {e}")))
+        .map_err(|e| CoreError::Internal(format!("worker_flow_cursor_get: {e}")))?;
+    #[cfg(feature = "fixtures")]
+    calm_truth::capture_test_seam::reach(
+        card_id,
+        -1,
+        calm_truth::capture_test_seam::CapturePoint::CheckpointLoaded,
+    )
+    .await;
+    Ok(stored)
 }
 
 /// Shared record/checkpoint writer. A false result ends this source: it must not
@@ -98,17 +107,35 @@ impl CursorWriter {
             items,
         };
         loop {
+            if self.stop.is_cancelled() {
+                return Ok(false);
+            }
+            // Cancellation stops subsequent batches, but must settle this one.
+            // Dropping sqlx's future cannot retract an already queued COMMIT.
+            let capture = sink.capture_batch(ctx, &batch);
+            tokio::pin!(capture);
             let result = tokio::select! {
                 biased;
-                _ = self.stop.cancelled() => return Ok(false),
-                result = sink.capture_batch(ctx, &batch) => result,
+                _ = self.stop.cancelled() => {
+                    #[cfg(feature = "fixtures")]
+                    calm_truth::capture_test_seam::reach(&self.card_id, record_index,
+                        calm_truth::capture_test_seam::CapturePoint::CancellationSettling).await;
+                    capture.await
+                },
+                result = &mut capture => result,
             };
             match result {
                 Ok(CaptureOutcome::Applied(checkpoint)) => {
                     self.stored = checkpoint;
                     return Ok(true);
                 }
-                Ok(CaptureOutcome::Stale) => return Ok(false),
+                Ok(CaptureOutcome::Stale) => {
+                    tracing::warn!(card_id = %self.card_id, source_kind = self.source_kind,
+                        source_path = %self.source_path, record_index,
+                        expected = ?self.stored,
+                        "worker-flow capture checkpoint stale; source stopped, fresh attachment required");
+                    return Ok(false);
+                }
                 Err(CoreError::ServiceUnavailable(err)) => {
                     tracing::warn!(card_id = %self.card_id, source_kind = self.source_kind,
                         error = %err, "worker-flow capture writer contention; retrying full batch");
