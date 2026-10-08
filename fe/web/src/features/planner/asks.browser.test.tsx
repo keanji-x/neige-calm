@@ -10,6 +10,8 @@ afterEach(cleanup);
 
 const TITLE = [
   "合并 PR #12（head 0123abc）？",
+  "- 链接：https://github.com/owner/repo/pull/12",
+  "- 风险：解析器报错文字变了；接口和存储不变",
   "- CI：success，失败检查：无",
   "- 门禁：implement-12 第 1 次 gate 通过",
   "- 评审：review-12 → 无阻塞发现；未关闭的阻塞发现：无",

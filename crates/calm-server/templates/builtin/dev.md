@@ -100,6 +100,8 @@ use one independent read-only PR review before merge.
 
 Implement in a worktree, let the kernel commit worker changes, verify with the repository's required gates,
 and publish a PR with plugin_gitforge_publish when the requested delivery calls for it.
+The PR body carries the verification plan and the results of checks actually run; CI status
+shows in the PR's checks, so do not republish the body to track CI.
 Create concrete delegated tasks when needed, not a fixed task list.
 Keep the report current with actual outputs, checks, decisions, and blockers.
 
@@ -152,11 +154,14 @@ Merge and approval
   each value read from a result for that head_sha:
 
       合并 PR #<n>（head <head_sha>）？
+      - 链接：<PR URL>
+      - 风险：<one line from that head's diff: what changes in production behavior and what does not>
       - CI：<plugin_gitforge_gh_pr_checks conclusion>，失败检查：<failed_checks names, or 无>
       - 门禁：<implementing task key> 第 <n> 次 gate <通过 or 未通过>
       - 评审：<each review task key> → <its conclusion>；未关闭的阻塞发现：<无, or each one>
       - 可合并：<mergeable>
 
+  The title carries only these lines; do not add policy or template explanation.
   Do not ask while a line is missing or comes from another head; obtain it first.
   Merge with plugin_gitforge_gh_pr_merge (expected_head_sha = that head_sha) only when the answer is `合并`
   and the head is unchanged. A new head needs the applicable checks and review again before a new ask.

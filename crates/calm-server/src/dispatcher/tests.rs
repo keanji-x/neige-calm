@@ -1305,7 +1305,8 @@ fn turn_text_names_target_mismatch() {
         !prepare_unsampled.contains("neige_task_regate"),
         "{prepare_unsampled}"
     );
-    // A verified target with no reasons is the ordinary verdict; an unbound target too.
+    // A verified target with no reasons is the ordinary verdict naming its candidate (#2459);
+    // an unbound target is the ordinary verdict alone.
     let verified = text(&event(
         Some("gate-infra"),
         Some(candidate(VerifyTargetEvidence::Verified {
@@ -1317,7 +1318,10 @@ fn turn_text_names_target_mismatch() {
     ));
     assert_eq!(
         verified,
-        format!("Task impl-parser gate FAILED (gate-infra) {candidate_tail}")
+        format!(
+            "Task impl-parser gate FAILED (gate-infra) on candidate cand-1 ({}) {candidate_tail}",
+            "a".repeat(40)
+        )
     );
     let unbound = text(&event(
         None,
