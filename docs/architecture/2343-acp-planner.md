@@ -87,7 +87,9 @@ unchanged.
 `session/request_permission` follows the permission mode the harness resolved when it issued the
 turn (#2348); `provider::acp::approvals` owns the mapping. Under `never` and `full` (#2441) every
 request is answered `cancelled` where it is read. Under `ask` each request is a `hold` ask: one question whose title is
-the tool call's kind, title and files, and whose options are the agent's option names in its order.
+the tool call's kind as a plain word (`execute` reads "Run", `edit` "Edit", `fetch` "Fetch"; `other` and an
+unknown kind show no word, never the raw kind), its title and its files, and whose options are the agent's option
+names in its order (#2452).
 The chosen option is answered `selected` with that option's id; a request withdrawn or never asked
 is answered `cancelled`. The process is the held-request connection. The turn ends its requests by
 a fence, under the lock every answer takes: a stop sends `session/cancel` and then `cancelled` for
@@ -99,9 +101,15 @@ session setup are always answered `cancelled`.
 
 Under `ask` each turn's OpenCode process is launched with
 `OPENCODE_PERMISSION={"bash":"ask","edit":"ask","webfetch":"ask"}`, set explicitly by the launch
-(`AcpAgentConfig::permission_env`), never inherited. OpenCode merges it over every config file, so
-bash, edits (also write and patch) and fetches ask; reads outside the workspace ask as before. It
-has no flag or ACP method for this. Under `never` nothing is added: OpenCode runs with the operator
+(`AcpAgentConfig::permission_env`), never inherited. OpenCode merges it over every config file's
+top-level `permission`, so bash, edits (also write and patch) and fetches ask; reads outside the
+workspace ask as before. It has no flag or ACP method for this. An agent-level `permission` in the
+operator profile still wins over it: with `agent.build.permission.edit = "allow"`, OpenCode 1.18.35's
+`edit` tool asks nothing. The default `external_directory: "ask"` is then the only ask before a
+write outside the workspace. The #2455 review reproduced this: one outside write raised one request
+(the directory) under this variable, and none, with the file written, once `external_directory` was
+allowed too. So it stays, and one outside command or edit raises two asks: first for the directory
+(kind `other`), then for the acting tool (#2452). Under `never` nothing is added: OpenCode runs with the operator
 profile's own `permission` configuration, which with OpenCode's defaults runs bash, edits and
 fetches unsandboxed without asking, as before. OpenCode's own `always` answer approves a command
 prefix for the rest of the process, which is one turn here; it is not written to disk.

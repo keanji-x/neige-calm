@@ -89,7 +89,7 @@ fn bash() -> Value {
 
 fn bash_question() -> AskQuestion {
     AskQuestion {
-        title: "execute: echo one > one.txt".into(),
+        title: "Run: echo one > one.txt".into(),
         options: vec!["Allow once".into(), "Always allow".into(), "Reject".into()],
     }
 }
@@ -301,21 +301,44 @@ fn the_question_names_the_call_its_kind_and_its_files() {
         }))
         .unwrap()
     };
-    // OpenCode's request for a read outside the workspace: the title is the directory.
+    // OpenCode's request for a directory outside the workspace: kind `other`, which shows no
+    // word; the title is the directory.
     let outside = question(&request(json!({
         "toolCallId": "call_5", "title": "/probe/outside", "kind": "other",
         "locations": [{"path": "/probe/outside/x.txt"}, {"path": "/probe/outside"}]
     })));
-    assert_eq!(
-        outside.title,
-        "other: /probe/outside\nPath: /probe/outside/x.txt"
-    );
+    assert_eq!(outside.title, "/probe/outside\nPath: /probe/outside/x.txt");
     assert_eq!(outside.options, vec!["Allow once".to_string()]);
+    // OpenCode 1.18.35's edit of a file outside the workspace: the file is the title and its one
+    // location, named once.
     let edit = question(&request(json!({
-        "toolCallId": "call_38", "title": "/ws/e.txt", "kind": "edit",
-        "locations": [{"path": "/ws/e.txt"}]
+        "toolCallId": "call_38", "title": "/probe/outside/e.txt", "kind": "edit",
+        "locations": [{"path": "/probe/outside/e.txt"}]
     })));
-    assert_eq!(edit.title, "edit: /ws/e.txt");
+    assert_eq!(edit.title, "Edit: /probe/outside/e.txt");
+    // Each kind of ACP's closed set reads as a plain word, never the raw kind; a kind this client
+    // does not know shows none.
+    for (kind, title) in [
+        ("read", "Read: x"),
+        ("edit", "Edit: x"),
+        ("delete", "Delete: x"),
+        ("move", "Move: x"),
+        ("search", "Search: x"),
+        ("execute", "Run: x"),
+        ("think", "Think: x"),
+        ("fetch", "Fetch: x"),
+        ("switch_mode", "Switch mode: x"),
+        ("other", "x"),
+        ("teleport", "x"),
+    ] {
+        let asked = question(&request(
+            json!({"toolCallId": "c", "title": "x", "kind": kind}),
+        ));
+        assert_eq!(asked.title, title, "{kind}");
+    }
+    // Without a title the call is named by its id.
+    let untitled = question(&request(json!({"toolCallId": "call_9", "kind": "execute"})));
+    assert_eq!(untitled.title, "Run: call_9");
     let bare = question(&request(json!({"toolCallId": "call_1"})));
     assert_eq!(bare.title, "call_1");
     let long = question(&request(json!({

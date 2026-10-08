@@ -25,8 +25,11 @@ pub struct AcpAgentConfig {
 }
 /// What OpenCode's own `permission` configuration is overridden with under `ask` (#2348): the
 /// tools that act without asking under its defaults ask instead. OpenCode 1.18.35 merges this
-/// variable over every config file, and has no flag or ACP method for it. `edit` covers its
-/// write and patch tools too.
+/// variable over every config file's top-level `permission`, and has no flag or ACP method for it.
+/// `edit` covers its write and patch tools too. An agent-level `permission` in the operator profile
+/// (`agent.build.permission.edit = "allow"`) still wins over it, so `external_directory` keeps its
+/// default `ask`: it is what still asks before a write outside the workspace then (#2452). The
+/// cost is a second ask for one outside command or edit.
 const OPENCODE_ASK_PERMISSION: (&str, &str) = (
     "OPENCODE_PERMISSION",
     r#"{"bash":"ask","edit":"ask","webfetch":"ask"}"#,
