@@ -15,10 +15,7 @@
   /* Only the message viewport scrolls; the vendor body must not carry the header. */
   .panel > :last-child { overflow: hidden !important; }
   .content { display: flex; flex-direction: column; block-size: 100%; min-block-size: 0; background: var(--paper); padding-block-end: calc(var(--rail-w-collapsed) + var(--space-8) * 2 + env(safe-area-inset-bottom)); box-sizing: border-box; }
-  .messageViewport { position: relative; flex: 1; min-block-size: 0; block-size: auto; }
-  /* ChatLayout owns the dock's material. Only adapt its page layout to this panel. */
-  .messageViewport > :first-child { flex: 1 1 0; min-block-size: 0; max-inline-size: none; padding: 0; }
-  .messageViewport > :last-child { position: absolute; }
+  .messageViewport { position: relative; flex: 1; min-block-size: 0; }
   .messages { block-size: 100%; overflow: auto; overscroll-behavior: contain; padding: var(--space-8); box-sizing: border-box; }
   .scrollOverlay { position: absolute; inset-inline: 0; inset-block-end: 0; pointer-events: none; z-index: var(--z-raised); }
 
