@@ -137,7 +137,7 @@ the worker keeps calling; it does not lift the hard run cap (`worker_liveness.rs
       `neige_task_done` message can make today, and it is cheaper to fix: this repository's
       gate runs the audit (K21), so the run is red and the next run replaces the commit.
   - **Every newly created run commit has the lease base as its parent.** A clean index makes
-    no commit (`forge_git.rs:86`), and `HEAD` is then the lease base itself.
+    no commit (`crates/calm-types/src/forge_git.rs:85`), and `HEAD` is then the lease base itself.
     - (a) Catch-up (#2058): the lease base is `U`, the `HEAD` prepare reset to (#2058 D6
       step 5), so the run commit sits on `U`, as the catch-up delivery's does.
     - (b) A Claude worker that committed on its own (K5): its commits are folded into the run
@@ -317,13 +317,17 @@ The reader opens `<attempt>-g1.log` unconditionally (`calm-truth/src/track_fs_vi
 
 - Reuse therefore hard-links the run's log to `<attempt>-g1.log` in the same `gate-logs`
   directory, and the verdict's `log_path` names that link.
-- The link is made under a temporary name and `rename`d over `<attempt>-g1.log`. A re-driven
-  prepare therefore replaces it instead of failing on `EEXIST`.
-- `spawn_held` unlinks the log path before `File::create` (`gate_process.rs:272`), so a gate
-  that runs after a link (a re-driven prepare that no longer reuses) writes a new file. It
-  never truncates the run's log through the shared inode. A refusal line written in prepare is
-  never followed by a spawn, so nothing it wrote is lost. The reader, its path guard and the
-  advertised address do not change.
+- At gate attempt 1, prepare first unlinks any leftover `<attempt>-g1.log`, before any
+  refusal line or link, then makes a plain hard link when it reuses.
+- A leftover can only come from a prepare that did not commit, and no reader can reach it
+  before the attempt bump commits (`gate_logs.rs:77-81`). The unlink therefore loses nothing.
+- Without the unlink, three things would go wrong on a re-driven prepare:
+  - a new link would fail on `EEXIST`;
+  - a refusal line would `O_APPEND` through the stale link into the run's log
+    (`target.rs:498-517`);
+  - a gate's `File::create` (`gate_process.rs:272`) would truncate the run's log through the
+    shared inode.
+- The reader, its path guard and the advertised address do not change.
 - A link that fails means no reuse: the gate runs. Prepare already writes this directory
   (`append_log_line`, `target.rs`).
 
@@ -363,7 +367,7 @@ Rows P10–P14 are also in precedence order (P11, then P13, then P12).
 | P11 | `Parked`, leader gone, any mode (D9) | `gate-infra` |
 | P13 | `Parked`, leader alive, past the deadline, any mode (checked before the boot arm) | `gate-timeout` |
 | P12 | `Parked`, `Boot`, leader alive, before the deadline (D9) | `gate-infra` ("the kernel restarted during the run") |
-| P14 | `prepare_tx` guard fails, record/release fails, compensation, `Stuck` | `gate-infra` (op `failed` or `stuck`; the reader maps) |
+| P14 | `prepare_tx` guard fails, record/release fails (a refused release is P4), compensation, `Stuck` | `gate-infra` (op `failed` or `stuck`; the reader maps) |
 
 | Reader | May conclude |
 |---|---|
@@ -462,7 +466,8 @@ second run.
     spawn the held wrapper with `[neige-checkpoint] ++ declared steps`, and park.
   - The observer releases the wrapper through `TaskLaunch`, as task-verify does
     (`task_verify_adapter/mod.rs:734`). An attempt that is no longer current, or is terminal,
-    is never released (`require_attempt_startable_tx` admits `running` and `verifying`). Its
+    is never released (`require_attempt_startable_tx` admits `dispatched`, `running` and
+    `verifying`, `task_recovery.rs:25-28`). Its
     held wrapper exits at EOF when the observer drops its stdin, and the run is `gate-infra` (P4). The observer then observes,
     runs `stop_group` and `finalize_run` (§5).
   - `recover_parked`: D9. Compensation: kill the group and fail.
@@ -595,22 +600,24 @@ Tests in the same file:
 - **U6** `a_retargeted_origin_head_runs_the_gate`: `origin/HEAD` is retargeted between two refs
   at one commit after the run. `#g1` runs.
 - **U7** `a_reprepared_reuse_neither_fails_nor_truncates_the_run_log`:
-  - The `g1` link is made once, and the prepare is re-driven (fixture). Reuse still holds.
-  - Then the remote ref moves, so a re-driven prepare runs the gate instead. The run's log is
-    unchanged byte for byte, and `<attempt>-g1.log` is the gate's own.
+  - Part 1: a fixture fails the reusing prepare after the link, so the transaction rolls back
+    and leaves a leftover `g1`. The re-driven prepare still reuses, and `<attempt>-g1.log` is
+    the run log's inode.
+  - Part 2: the link is left over again, then the remote ref moves, so the re-driven prepare
+    runs the gate. The run's log is unchanged byte for byte, and `<attempt>-g1.log` is a
+    different inode holding the gate's log.
 - **V1** `gate_runs` shown in `neige_task_ls` (`view` unit).
 
 Predicted red sets:
 
 | Mutation | Red |
 |---|---|
-| MR1 reuse disabled | {U1, R6} (R6's slice 2 reuse assertion) |
-| MR7 reuse without the `g1` log link | {U1} |
-| MR8 `spawn_held` truncates the log path in place | {U7} |
-| MR9 the `g1` link made without the rename (fails on `EEXIST`) | {U7} |
+| MR1 reuse disabled | {U1, R6, U7} (R6's slice 2 reuse assertion; U7 part 1) |
+| MR7 reuse without the `g1` log link | {U1, U7} (U7 part 1 checks the inode) |
+| MR8 the leftover-`g1` unlink dropped | {U7} |
 | MR2 commit equality dropped | {U2} |
 | MR3 any passed run instead of the highest | {U3} |
-| MR4 refs digest not compared | {U4, U5, U6} |
+| MR4 refs digest not compared | {U4, U5, U6, U7} (U7 part 2) |
 | MR5 gate-attempt condition dropped | {U5} |
 | MR6 `%(symref)` dropped from the digest format | {U6} |
 
@@ -730,4 +737,12 @@ No item was rejected.
 | K6 | Accepted. D2 states the parent of each newly created run commit; D6 states `log_path`; §2.1 notes the hard cap |
 
 No item was rejected.
+
+### Revision 3a (both channels confirmed revision 3; non-blocking nits)
+
+| Item | Resolution |
+|---|---|
+| Red sets against U7 | MR1 → {U1, R6, U7}; MR4 → {U4, U5, U6, U7}; MR7 → {U1, U7} (U7 now checks the inode). Re-checked the rest: MR2, MR3, MR5 and MR6 leave U7 green. U7 has one run on one commit, a re-driven prepare stays at gate attempt 1, and part 2 moves an object id, not a symref. No MA set names a U-test |
+| `g1` link | Simplified. Prepare at gate attempt 1 unlinks a leftover `g1` first, then makes a plain hard link. The temporary name, the `rename` and `spawn_held`'s unlink are dropped, and MR9 with them. MR8 is now "the leftover unlink dropped". Verified `target.rs:498-517` (`O_APPEND`) and `gate_logs.rs:77-81` (no reader before the bump) |
+| Wording | `require_attempt_startable_tx` admits `dispatched`, `running` and `verifying` (`task_recovery.rs:25-28`); P14 excludes a refused release, which is P4; the commit line is `crates/calm-types/src/forge_git.rs:85` |
 
