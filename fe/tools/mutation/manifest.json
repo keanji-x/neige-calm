@@ -1246,8 +1246,8 @@
       "headless card filtering [INV-CARD-226] binds originalIndex before filtering, so surviving cards still address the wire array",
       "headless card filtering [INV-CARD-226] filters raw track-report kinds out of the unknown branch defensively",
       "headless card filtering routes cards with a surface into the visible branch with their wire and index",
-      "track route CARDS panel [INV-CARD-226] renders exactly the surviving cards in the kernel wire order",
-      "track route CARDS panel shows a titled card by its name AND its kind, and an untitled one by its kind alone"
+      "track route CARDS panel [INV-CARD-226] preserves every surviving card and its wire order within each tool type",
+      "track route CARDS panel preserves titled tools and gives anonymous terminals a distinct numbered name"
     ],
     "selection_paths": [
       "web/src/systems/cards/builtins/headless-filter.test.ts",
@@ -1256,7 +1256,7 @@
       "web/src/systems/cards/builtins/register.ts",
       "web/src/systems/cards/registry.ts"
     ],
-    "why_more_than_one": "The originalIndex oracles are the only thing standing between a filtered card list and deleting the wrong card. The fifth entry is the panel's #1149 name/kind row, and it is a genuine witness rather than collateral: the router merges the visible and unknown branches and re-sorts on originalIndex (app/router `panelCards`), so renumbering either branch reorders the rendered list — that test reads the whole list in order, and its fixture has cards in both branches, so it sees the reordering. It is listed rather than loosened because asserting the list unordered would give up the wire order INV-CARD-226 is about."
+    "why_more_than_one": "The originalIndex oracles are the only thing standing between a filtered card list and deleting the wrong card. The fifth entry is the panel's #1149 name/kind row, and it is a genuine witness rather than collateral: the router merges the visible and unknown branches and re-sorts on originalIndex (app/router `panelCards`), so renumbering either branch reorders the surviving entries within a tool type — that test reads the complete type-grouped list in order, and its fixture has cards in both branches, so it sees the reordering. It is listed rather than loosened because asserting the list unordered would give up the wire order INV-CARD-226 is about."
   },
   {
     "mutation_id": "s2a-track-activity-state-from-open-state",
@@ -1509,7 +1509,7 @@
       "oracle:INV-APP-118"
     ],
     "target": "core/view/track-page.ts",
-    "patch": "diff --git a/core/view/track-page.ts b/core/view/track-page.ts\nindex 3eb354e..84b3dd4 100644\n--- a/core/view/track-page.ts\n+++ b/core/view/track-page.ts\n@@ -54,7 +54,8 @@ function cardRow(card: CardWire, taskStatus: RowStatus | null, activity: TrackPa\n     kind: title !== null ? card.kind : null,\n     badges,\n     status: taskStatus ?? (sessionStatus === null ? null : { token: sessionStatus, phrase: `session ${sessionStatus}`, detail: null }),\n-    activity: rowActivity(activity, card.id),\n+    // MUT-1722-S2B-4: a card row spins on its runtime status again\n+    activity: rowActivity(activity, card.id) ?? (card.runtime?.status === 'running' ? 'working' : null),\n     actions,\n   };\n }\n",
+    "patch": "diff --git a/core/view/track-page.ts b/core/view/track-page.ts\n--- a/core/view/track-page.ts\n+++ b/core/view/track-page.ts\n@@ -55,7 +55,8 @@\n     kind: title !== null || card.kind === 'terminal' || agentProviderSchema.safeParse(card.kind).success ? card.kind : null,\n     badges,\n     status: taskStatus ?? (sessionStatus === null ? null : { token: sessionStatus, phrase: `session ${sessionStatus}`, detail: null }),\n-    activity: rowActivity(activity, card.id),\n+    // MUT-1722-S2B-4: a card row spins on its runtime status again\n+    activity: rowActivity(activity, card.id) ?? (card.runtime?.status === 'running' ? 'working' : null),\n     actions,\n   };\n }\n",
     "expected_red": [
       "TrackPage task inventory card and task rows paint activity.cards, not runtime status"
     ],
@@ -1712,7 +1712,7 @@
       "oracle:INV-APP-118"
     ],
     "target": "web/src/features/track/page/mobile-painter.tsx",
-    "patch": "diff --git a/web/src/features/track/page/mobile-painter.tsx b/web/src/features/track/page/mobile-painter.tsx\nindex 07c9a77..6d80c4c 100644\n--- a/web/src/features/track/page/mobile-painter.tsx\n+++ b/web/src/features/track/page/mobile-painter.tsx\n@@ -97,9 +97,7 @@ function taskRow(row: PanelRow, deps: MobilePainterDeps): ReactNode {\n   const meta: readonly ReactNode[] = [\n     ...row.badges.map(taskBadge),\n     /* The same indicator the desktop row paints, spoken for the same reason: no control here names the verdict. */\n-    ...(row.activity === null ? [] : [\n-      <ActivityIndicator key=\"activity\" state={row.activity} spoken={activityLabelOf(row.activity)} />,\n-    ]),\n+    // MUT-1722-S2B-11: the mobile task row paints no indicator\n     ...(row.status === null ? [] : [statusWord(\n       row.status,\n       row.status.token !== 'pending' || action === null || action.hint === null,\n@@ -134,9 +132,7 @@ function cardRow(row: PanelRow): ReactNode {\n       : [<span key=\"kind\" {...mark(MARKER.field, FIELD.kind)}>{row.kind}</span>]),\n     ...row.badges.map(cardBadge),\n     /* Spoken, as on the desktop card row: the status word is a different fact. */\n-    ...(row.activity === null ? [] : [\n-      <ActivityIndicator key=\"activity\" state={row.activity} spoken={activityLabelOf(row.activity)} />,\n-    ]),\n+    // MUT-1722-S2B-11: the mobile card row paints no indicator\n     ...(row.status === null ? [] : [statusWord(row.status, true)]),\n   ];\n   return (\n",
+    "patch": "diff --git a/web/src/features/track/page/mobile-painter.tsx b/web/src/features/track/page/mobile-painter.tsx\n--- a/web/src/features/track/page/mobile-painter.tsx\n+++ b/web/src/features/track/page/mobile-painter.tsx\n@@ -99,9 +99,7 @@\n   const meta: readonly ReactNode[] = [\n     ...row.badges.map(taskBadge),\n     /* The same indicator the desktop row paints, spoken for the same reason: no control here names the verdict. */\n-    ...(row.activity === null ? [] : [\n-      <ActivityIndicator key=\"activity\" state={row.activity} spoken={activityLabelOf(row.activity)} />,\n-    ]),\n+    // MUT-1722-S2B-11: the mobile row paints no indicator\n     ...(row.status === null ? [] : [statusWord(\n       row.status,\n       row.status.token !== 'pending' || action === null || action.hint === null,\n@@ -136,9 +134,7 @@\n       : [<span key=\"kind\" {...mark(MARKER.field, FIELD.kind)}><InventoryKind kind={row.kind} /></span>]),\n     ...row.badges.map(cardBadge),\n     /* Spoken, as on the desktop card row: the status word is a different fact. */\n-    ...(row.activity === null ? [] : [\n-      <ActivityIndicator key=\"activity\" state={row.activity} spoken={activityLabelOf(row.activity)} />,\n-    ]),\n+    // MUT-1722-S2B-11: the mobile row paints no indicator\n     ...(row.status === null ? [] : [statusWord(row.status, true)]),\n   ];\n   return (\n",
     "expected_red": [
       "mobile and desktop paint the same data-nc-activity set on the cards module",
       "mobile and desktop paint the same data-nc-activity set on the tasks module"

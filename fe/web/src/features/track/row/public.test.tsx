@@ -78,8 +78,8 @@ describe('INV-SIDEBAR-012 the pin is always reachable, and names its action', ()
     expect(before).toBeTruthy();
     view.rerender(<TrackRow track={track({ pinnedAt: 10 })} onOpen={vi.fn()} onSetPinned={vi.fn()} nowMs={NOW} />);
     const after = screen.getByRole('button', { name: 'Unpin Open track' }).querySelector('svg');
-    expect(before!.matches('svg.lucide-arrow-up')).toBe(true);
-    expect(after!.matches('svg.lucide-arrow-up')).toBe(true);
+    expect(before!.classList.contains('lucide-arrow-up')).toBe(true);
+    expect(after!.classList.contains('lucide-arrow-up')).toBe(true);
   });
 
   it('renders no pin and no delete unless the surface supplies the callback', () => {

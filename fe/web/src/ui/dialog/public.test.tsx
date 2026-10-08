@@ -57,7 +57,7 @@ describe('Dialog behavior', () => {
   it('renders the close control with the shared stroked icon instead of a text glyph', () => {
     render(<Dialog open title="Test" onClose={vi.fn()} />);
     const close = screen.getByRole('button', { name: 'Close' });
-    expect(close.querySelector('svg.lucide-x')).not.toBeNull();
+    expect(close.querySelector('svg')?.classList.contains('lucide-x')).toBe(true);
     expect(close.textContent).not.toContain('×');
   });
 
