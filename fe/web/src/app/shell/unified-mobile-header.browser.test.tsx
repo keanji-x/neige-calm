@@ -236,16 +236,20 @@ describe('Unified mobile headers', () => {
     await commands.emulateReducedMotion(true);
     try {
       await page.viewport(390, 844);
+      expect(window.matchMedia('(prefers-reduced-motion: reduce)').matches).toBe(true);
       setup('/track/w1');
       await page.getByRole('button', { name: 'Open workspace' }).click();
       await page.getByRole('button', { name: 'Product', exact: true }).click();
+      await expect.element(page.getByRole('heading', { name: 'Product', exact: true })).toBeVisible();
       const tracks = document.querySelector<HTMLElement>('[data-nc-workspace-page="tracks"]')!;
       expect(Number.parseFloat(getComputedStyle(tracks).transitionDuration)).toBeLessThanOrEqual(0.00001);
-      await Promise.all(tracks.getAnimations().map((animation) => animation.finished));
+      expect(tracks.getAnimations()).toHaveLength(0);
       expect(tracks.getBoundingClientRect().left).toBe(0);
       await page.getByRole('button', { name: 'Back to Areas' }).click();
+      await expect.element(page.getByRole('heading', { name: 'Areas', exact: true })).toBeVisible();
       const areas = document.querySelector<HTMLElement>('[data-nc-workspace-page="areas"]')!;
       expect(Number.parseFloat(getComputedStyle(areas).transitionDuration)).toBeLessThanOrEqual(0.00001);
+      expect(areas.getAnimations()).toHaveLength(0);
       expect(areas.getBoundingClientRect().left).toBe(0);
     } finally {
       await commands.emulateReducedMotion(false);
