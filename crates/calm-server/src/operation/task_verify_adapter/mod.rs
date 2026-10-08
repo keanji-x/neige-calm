@@ -3,6 +3,7 @@
 
 mod display;
 pub(crate) mod regate;
+mod reuse;
 pub(crate) mod target;
 
 use super::gate_lifecycle::{
@@ -431,16 +432,21 @@ impl ProviderAdapter for TaskVerifyAdapter {
             )));
         }
 
-        // The target check (D3): sampled in this transaction; a refusal is written here too.
-        let prepared = target::prepare_target_tx(
-            tx,
-            &task,
-            &gate,
-            &cwd,
+        // The target check (D3), sampled in this transaction, then reuse (#2464 §4) under the same
+        // sampling deadline; a refusal or a reused run's verdict is written here too.
+        let log_path = self.log_path(&task.id, attempt);
+        let reuse = reuse::Gate {
+            task_id: &task.id,
             attempt,
-            &self.log_path(&task.id, attempt),
-        )
-        .await?;
+            log_path: &log_path,
+            gate_logs_dir: &self.gate_logs_dir,
+            deadline: tokio::time::Instant::now() + SAMPLE_TIMEOUT,
+        };
+        reuse::unlink_leftover_log(&reuse).await?;
+        let mut prepared =
+            target::prepare_target_tx(tx, &task, &gate, &cwd, attempt, &log_path, reuse.deadline)
+                .await?;
+        reuse::reuse_passing_run_tx(tx, &reuse, &mut prepared).await?;
         let frozen = FrozenVerify {
             task_id: task.id.clone(),
             track_id: task.track_id.clone(),
@@ -453,11 +459,11 @@ impl ProviderAdapter for TaskVerifyAdapter {
         };
         let mut output = TxOutput::new("task", Some(task.id.clone()), json!({}));
         output.data = serde_json::to_value(&frozen)?;
-        if let Some(refusal) = &prepared.refusal {
+        if let Some(verdict) = &prepared.verdict {
             output
                 .post_commit_events
-                .extend(apply_gate_result_in_tx(tx, &frozen.result_ctx(), refusal).await?);
-            output.result = serde_json::to_value(refusal)?;
+                .extend(apply_gate_result_in_tx(tx, &frozen.result_ctx(), verdict).await?);
+            output.result = serde_json::to_value(verdict)?;
         }
         if let Some(card_id) = task.worker_card_id.as_deref() {
             output.post_commit_events.extend(

@@ -25,6 +25,8 @@ use crate::operation::{
 
 /// One run's result, the op's result. `commit` is the run's commit (its ref) when the checkpoint
 /// finished; `refs` the digest taken at spawn; `evidence` the after-sample against the commit.
+/// `Verified.before` is a stand-in (the checkpoint's checks, D1), not a sample; reuse (§4) needs no
+/// distinct shape for it because it trusts only `reasons`, computed from the real after-sample.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GateRunResult {
     pub run: i64,

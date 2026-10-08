@@ -136,6 +136,16 @@ pub enum FrozenTarget {
     NoCandidate {
         reason: NoCandidateReason,
     },
+    /// The candidate matched `before` and the worker's passing run `run` stands as the verdict,
+    /// written in the prepare transaction; spawn no-op (#2464 §4, `reuse.rs`).
+    Reused {
+        candidate_id: String,
+        commit_sha: String,
+        lease_id: String,
+        cwd: String,
+        run: String,
+        before: Sample,
+    },
     Unbound {
         reason: FrozenUnbound,
     },
@@ -154,7 +164,9 @@ impl FrozenTarget {
     pub(crate) fn spawn_is_noop(&self) -> bool {
         matches!(
             self,
-            FrozenTarget::Candidate { refused: true, .. } | FrozenTarget::NoCandidate { .. }
+            FrozenTarget::Candidate { refused: true, .. }
+                | FrozenTarget::NoCandidate { .. }
+                | FrozenTarget::Reused { .. }
         )
     }
 }
@@ -364,7 +376,22 @@ pub(crate) async fn sample_within(
     expected: &Expected,
     timeout: Duration,
 ) -> std::result::Result<Sampled, SampleFailure> {
-    let deadline = tokio::time::Instant::now() + timeout;
+    sample_by(
+        cwd,
+        expected,
+        tokio::time::Instant::now() + timeout,
+        timeout,
+    )
+    .await
+}
+
+/// [`sample`] ending by `deadline`; `timeout` is the bound a timeout failure names.
+async fn sample_by(
+    cwd: &Path,
+    expected: &Expected,
+    deadline: tokio::time::Instant,
+    timeout: Duration,
+) -> std::result::Result<Sampled, SampleFailure> {
     let script = format!("{GIT_LEASE_PROVENANCE_SCRIPT}\n{PROVENANCE_SAMPLE_SCRIPT}");
     let provenance = run_sampling_command(
         cwd,
@@ -530,17 +557,18 @@ fn no_candidate_sentence(reason: &NoCandidateReason) -> String {
     format!("refused: no candidate to verify: {found}; gate admitted before settlement")
 }
 
-/// What `prepare_tx` froze and, when the target was refused, the verdict it writes in the same
-/// transaction (P2 / P3).
+/// What `prepare_tx` froze and the verdict it writes in the same transaction, if any: a refusal
+/// (P2 / P3) or a reused run (#2464 §4).
 pub(crate) struct PreparedTarget {
     pub target: FrozenTarget,
-    pub refusal: Option<TaskGateResult>,
+    pub verdict: Option<TaskGateResult>,
 }
 
 /// The prepare-time target check (D3, after the attempt bump): freeze the identity; on a
 /// candidate-bound attempt refuse `gate.cwd` (`Conflict`, P4), refuse a missing candidate in the
 /// transaction (P3), sample the checkout (a sampling failure is `Internal` → op Stuck, P5) and
-/// refuse a mismatch in the transaction (P2); otherwise freeze `refused: false` (P1).
+/// refuse a mismatch in the transaction (P2); otherwise freeze `refused: false` (P1). The sample
+/// ends by `deadline`, the prepare's one [`SAMPLE_TIMEOUT`] bound.
 pub(crate) async fn prepare_target_tx(
     tx: &mut Tx<'_>,
     task: &Task,
@@ -548,12 +576,13 @@ pub(crate) async fn prepare_target_tx(
     cwd: &str,
     attempt: i64,
     log_path: &Path,
+    deadline: tokio::time::Instant,
 ) -> Result<PreparedTarget> {
     let (lease, delivery, candidate) = match verify_target_identity(tx, task).await? {
         VerifyIdentity::Unbound { reason } => {
             return Ok(PreparedTarget {
                 target: FrozenTarget::Unbound { reason },
-                refusal: None,
+                verdict: None,
             });
         }
         VerifyIdentity::Bound {
@@ -584,16 +613,18 @@ pub(crate) async fn prepare_target_tx(
         };
         return Ok(PreparedTarget {
             target: FrozenTarget::NoCandidate { reason },
-            refusal: Some(refusal),
+            verdict: Some(refusal),
         });
     };
     let expected = Expected::for_candidate(&lease, &candidate)?;
-    let sampled = sample(Path::new(cwd), &expected).await.map_err(|failure| {
-        CalmError::Internal(format!(
-            "gate-infra: verification target unsampled: {}",
-            failure.reason
-        ))
-    })?;
+    let sampled = sample_by(Path::new(cwd), &expected, deadline, SAMPLE_TIMEOUT)
+        .await
+        .map_err(|failure| {
+            CalmError::Internal(format!(
+                "gate-infra: verification target unsampled: {}",
+                failure.reason
+            ))
+        })?;
     let reasons = reasons(&sampled, &expected);
     let refused = !reasons.is_empty();
     let refusal = refused.then(|| {
@@ -643,7 +674,7 @@ pub(crate) async fn prepare_target_tx(
             before: sampled.sample,
             refused,
         },
-        refusal,
+        verdict: refusal,
     })
 }
 
@@ -708,8 +739,8 @@ pub(crate) async fn finalize(
                 reason: reason.clone(),
             },
         },
-        // A refused freeze spawned nothing, so no completion path can reach here; a verdict that
-        // does is a foreign completion and is not trusted (fail-closed, `gate-infra`).
+        // A refused or reused freeze spawned nothing, so no completion path can reach here; a
+        // verdict that does is a foreign completion and is not trusted (fail-closed, `gate-infra`).
         FrozenTarget::Candidate {
             candidate_id,
             commit_sha,
@@ -717,8 +748,15 @@ pub(crate) async fn finalize(
             cwd: gate_cwd,
             refused: true,
             ..
+        }
+        | FrozenTarget::Reused {
+            candidate_id,
+            commit_sha,
+            lease_id,
+            cwd: gate_cwd,
+            ..
         } => {
-            let reason = "the target was refused in prepare; no gate process ran".to_string();
+            let reason = "the verdict was written in prepare; no gate process ran".to_string();
             TaskGateResult {
                 verdict: refused_verdict(
                     GATE_INFRA,
@@ -846,6 +884,13 @@ fn frozen_unsampled(
 ) -> VerifyTarget {
     match frozen {
         FrozenTarget::Candidate {
+            candidate_id,
+            commit_sha,
+            lease_id,
+            cwd,
+            ..
+        }
+        | FrozenTarget::Reused {
             candidate_id,
             commit_sha,
             lease_id,

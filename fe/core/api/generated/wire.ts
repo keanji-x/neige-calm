@@ -874,9 +874,10 @@ export type VerifyTarget = { "kind": "candidate", candidate_id: string, commit_s
 
 /**
  * How the checkout was compared to the candidate (D3.0): refused before any step ran, verified
- * before and after the steps, or not sampled at all (a sampling command failed).
+ * before and after the steps, not sampled at all (a sampling command failed), or a passing
+ * worker-requested run reused (#2464).
  */
-export type VerifyTargetEvidence = { "kind": "refused", cwd: string, before: Sample, reasons: Array<MismatchReason>, } | { "kind": "verified", cwd: string, before: Sample, after: Sample, reasons: Array<MismatchReason>, } | { "kind": "unsampled", phase: SamplePhase, };
+export type VerifyTargetEvidence = { "kind": "refused", cwd: string, before: Sample, reasons: Array<MismatchReason>, } | { "kind": "verified", cwd: string, before: Sample, after: Sample, reasons: Array<MismatchReason>, } | { "kind": "unsampled", phase: SamplePhase, } | { "kind": "reused", run: string, cwd: string, before: Sample, };
 
 /**
  * Opaque execution-session identifier.

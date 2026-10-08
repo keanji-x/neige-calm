@@ -13,6 +13,8 @@ Columns:
   failed        task attempts that ended failed
   rejected      task.failed events the Planner wrote (neige_task_reject verdicts)
   gate_red      task.gate_result events with passed=false
+  runs          gate runs the workers asked for (task-gate-run operations, #2464)
+  reused        task.gate_result verdicts that reused a passing worker run (evidence `reused`)
   publish       forge.pr.opened / forge.pr.published events (one per published head)
   ci_red        distinct heads whose forge.pr.checks concluded failure; --detail and --json also
                 name each failed check per head (events before #2170 did not record names)
@@ -106,9 +108,16 @@ def scorecard(db, track_id):
     for kind, _, _ in tasks:
         by_kind[kind] = by_kind.get(kind, 0) + 1
 
-    gate_red = sum(
-        1 for _, p, _, _ in events(db, track_id, ["task.gate_result"], start, end) if not json.loads(p)["passed"]
+    gate_results = [json.loads(p) for _, p, _, _ in events(db, track_id, ["task.gate_result"], start, end)]
+    gate_red = sum(1 for result in gate_results if not result["passed"])
+    reused = sum(
+        1 for result in gate_results if ((result.get("target") or {}).get("evidence") or {}).get("kind") == "reused"
     )
+    runs = db.execute(
+        "SELECT count(*) FROM operations WHERE kind = 'task-gate-run'"
+        " AND json_extract(payload_json, '$.track_id') = ? AND created_at_ms BETWEEN ? AND ?",
+        (track_id, start, end),
+    ).fetchone()[0]
     publish = len(events(db, track_id, ["forge.pr.opened", "forge.pr.published"], start, end))
     # The Planner's first message is the kickoff, whoever sent it. After that only the user's own
     # messages count: an AI-sent message is not an intervention, and side conversations with an
@@ -142,6 +151,8 @@ def scorecard(db, track_id):
         "failed": sum(1 for _, status, _ in tasks if status == "failed"),
         "rejected": rejected,
         "gate_red": gate_red,
+        "runs": runs,
+        "reused": reused,
         "publish": publish,
         "ci_red": len(red_heads),
         "ci_red_heads": [{"head": h, "failed_checks": names} for h, names in red_heads.items()],
@@ -166,6 +177,8 @@ COLUMNS = [
     ("failed", lambda c: c["failed"]),
     ("rejected", lambda c: c["rejected"]),
     ("gate_red", lambda c: c["gate_red"]),
+    ("runs", lambda c: c["runs"]),
+    ("reused", lambda c: c["reused"]),
     ("publish", lambda c: c["publish"]),
     ("ci_red", lambda c: c["ci_red"]),
     ("interventions", lambda c: c["interventions"]),

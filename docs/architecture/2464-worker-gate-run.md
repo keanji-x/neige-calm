@@ -772,3 +772,17 @@ each item was verified against the code.
 | 9 | Test blocking | Tests block steps and the R4b clean filter on flag files rather than fifos (the after-sample may run the filter again) |
 | 10 | Read-only gated rows | Plan validation refuses `read_only` with a gate, so R9 gives such a row its gate by hand; the read-only prompt variant and refusal guard legacy rows only |
 | 11 | Error codes | Not the caller's running attempt, no gate, no kernel commit: `-32602`; the cap and an op not proven stopped: `-32409`; the Planner: the registry role gate, `-32403`. A checkpoint failure (P2/P3) answers `failing_step: "neige-checkpoint"` with its exit code |
+
+### Revision 5 (implementation, slice 2)
+
+Recorded from the slice-2 implementation (`feat(gate): reuse a passing worker gate run at done`);
+each item was verified against the code.
+
+| # | Item | Resolution |
+|---|---|---|
+| 1 | Generated files | `openapi.json` does not carry the verify target, so the real generator leaves it unchanged; only `wire.ts` changes. `fe/core/api/schemas.ts` (frozen) decodes the `reused` variant, since its decoded type must equal the generated `Event` |
+| 2 | `gate_runs` | Under `candidate.verification`, absent when the attempt admitted no run. `last` is the highest-numbered finished run (`null` while the first run is still running). The summary detail does not list it |
+| 3 | Stand-in `Verified.before` | Kept. Reuse reads only the run's `reasons`, which come from the real after-sample; the reused verdict carries the gate's own prepare-time sample as `before` |
+| 4 | U7 part 1 | The prepare that does not commit is the production adapter's `prepare_tx` in a transaction the test rolls back; the next prepare is the scheduler's drive |
+| 5 | Wake text | A reused verdict reads "passed on candidate … reusing the worker's passing run `<attempt>#r<N>`" |
+| 6 | Tool description | `neige_task_gate` states the reuse rule in place of "the result is advisory" |

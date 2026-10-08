@@ -6,6 +6,7 @@ use calm_types::verify_target::VerifyTarget;
 use serde::Serialize;
 
 use crate::model::TaskStatus;
+use crate::operation::task_gate_run::{GATE_RUNS_PER_ATTEMPT, GateRunResult};
 use crate::operation::task_verify_adapter::TaskGateResult;
 use crate::operation::task_verify_adapter::target::{GATE_RED, GATE_TARGET_MISMATCH};
 
@@ -43,13 +44,16 @@ pub(crate) enum VerificationState {
     },
 }
 
-/// The `verification` object: the state, the attempt counter, and — for a recorded verdict —
-/// its target, log path and the runs-view path of the gate log.
+/// The `verification` object: the state, the attempt counter, the worker's gate runs when it
+/// asked for any, and — for a recorded verdict — its target, log path and the runs-view path of
+/// the gate log.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct VerificationView {
     #[serde(flatten)]
     pub state: VerificationState,
     pub gate_attempt: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gate_runs: Option<GateRunsView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<VerifyTarget>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -58,11 +62,50 @@ pub(crate) struct VerificationView {
     pub gate_log: Option<String>,
 }
 
+/// `verification.gate_runs` (#2464 D6): the runs the worker asked for in this attempt (`neige_task_gate`).
+/// Absent when it asked for none. Only the gate's verdict judges the attempt; a passing last run can
+/// become that verdict by reuse.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct GateRunsView {
+    /// Admitted runs (op rows), finished or not.
+    pub used: i64,
+    pub max: i64,
+    /// The highest-numbered finished run; absent while the first run is still running.
+    pub last: Option<LastGateRun>,
+}
+
+/// One finished run as the Planner reads it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct LastGateRun {
+    pub run: i64,
+    /// The run's commit; absent when its checkpoint pinned none.
+    pub commit: Option<String>,
+    pub passed: bool,
+    pub status_detail: Option<String>,
+    pub failing_step: Option<String>,
+}
+
+/// `gate_runs` from the admitted run count and the highest-numbered finished run's result.
+pub(crate) fn gate_runs_view(used: i64, last: Option<&GateRunResult>) -> Option<GateRunsView> {
+    (used > 0).then(|| GateRunsView {
+        used,
+        max: GATE_RUNS_PER_ATTEMPT,
+        last: last.map(|result| LastGateRun {
+            run: result.run,
+            commit: result.commit.clone(),
+            passed: result.verdict.passed,
+            status_detail: result.verdict.status_detail.clone(),
+            failing_step: result.verdict.failing_step.clone(),
+        }),
+    })
+}
+
 /// D8's `verification` table, first match wins. `gate_result` is the row's `gate_result_json`
 /// decoded as [`TaskGateResult`] (`None` when the column is empty — an unreadable value is
 /// treated the same, and is unreachable: every producer since the first gate wrote the four
 /// non-defaulted keys). `gate_op_present` says whether a task-verify Operation exists for an
 /// attempt at or above the row's `gate_attempt`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn verification_state(
     task_id: &str,
     gate_json: Option<&str>,
@@ -71,10 +114,12 @@ pub(crate) fn verification_state(
     gate_attempt: i64,
     gate_result: Option<&TaskGateResult>,
     gate_op_present: bool,
+    gate_runs: Option<GateRunsView>,
 ) -> VerificationView {
     let bare = |state: VerificationState| VerificationView {
         state,
         gate_attempt,
+        gate_runs: gate_runs.clone(),
         target: None,
         log_path: None,
         gate_log: None,
@@ -106,6 +151,7 @@ pub(crate) fn verification_state(
                 VerificationView {
                     state,
                     gate_attempt,
+                    gate_runs,
                     target: Some(result.target.clone()),
                     log_path: Some(result.verdict.log_path.clone()),
                     gate_log: Some(format!(
@@ -183,33 +229,42 @@ mod tests {
         });
 
         // 1. no gate.
-        let v = verification_state("t", None, TaskStatus::Done, None, 0, None, false);
+        let v = verification_state("t", None, TaskStatus::Done, None, 0, None, false, None);
         assert_eq!(v.state, VerificationState::Ungated);
         assert_eq!(state(&v), json!("ungated"));
         // 2. before the report.
         for status in [TaskStatus::Dispatched, TaskStatus::Running] {
-            let v = verification_state("t", gate, status, None, 0, None, false);
+            let v = verification_state("t", gate, status, None, 0, None, false, None);
             assert_eq!(v.state, VerificationState::NotStarted, "{status:?}");
         }
         assert_eq!(
-            verification_state("t", gate, TaskStatus::Pending, None, 0, None, false).state,
+            verification_state("t", gate, TaskStatus::Pending, None, 0, None, false, None).state,
             VerificationState::NotStarted,
             "total over pending/canceled too"
         );
         // 3. verifying, no op.
-        let v = verification_state("t", gate, TaskStatus::Verifying, None, 0, None, false);
+        let v = verification_state("t", gate, TaskStatus::Verifying, None, 0, None, false, None);
         assert_eq!(v.state, VerificationState::NotAdmitted);
         assert_eq!(
             serde_json::to_value(&v).unwrap(),
             json!({"state": "not_admitted", "gate_attempt": 0})
         );
         // 4. verifying, an op exists.
-        let v = verification_state("t", gate, TaskStatus::Verifying, None, 1, None, true);
+        let v = verification_state("t", gate, TaskStatus::Verifying, None, 1, None, true, None);
         assert_eq!(v.state, VerificationState::Running);
         assert_eq!(v.gate_attempt, 1);
         // 5. done / failed with a verdict: the five classes.
         let passed = result(None, verified.clone());
-        let v = verification_state("t", gate, TaskStatus::Done, None, 2, Some(&passed), false);
+        let v = verification_state(
+            "t",
+            gate,
+            TaskStatus::Done,
+            None,
+            2,
+            Some(&passed),
+            false,
+            None,
+        );
         assert_eq!(v.state, VerificationState::Passed);
         assert_eq!(v.target, Some(verified.clone()));
         assert_eq!(v.log_path.as_deref(), Some("/logs/t-g2.log"));
@@ -236,6 +291,7 @@ mod tests {
                 2,
                 Some(&r),
                 false,
+                None,
             );
             assert_eq!(v.state, expected, "{detail}");
             assert_eq!(state(&v), json!(label));
@@ -256,6 +312,7 @@ mod tests {
             1,
             Some(&r),
             false,
+            None,
         );
         assert_eq!(v.state, VerificationState::Infra);
         assert_eq!(
@@ -275,7 +332,7 @@ mod tests {
             } else {
                 TaskStatus::Failed
             };
-            let v = verification_state("t", gate, status, detail, 1, Some(&r), false);
+            let v = verification_state("t", gate, status, detail, 1, Some(&r), false, None);
             assert_eq!(v.state, VerificationState::Unbound, "{reason:?}");
             assert_eq!(state(&v), json!("unbound"));
         }
@@ -288,6 +345,7 @@ mod tests {
             0,
             None,
             false,
+            None,
         );
         assert_eq!(
             v.state,
@@ -300,7 +358,7 @@ mod tests {
             json!({"state": "not_reached", "status_detail": "worker-timeout", "gate_attempt": 0})
         );
         // 7. done, gated, no verdict.
-        let v = verification_state("t", gate, TaskStatus::Done, None, 1, None, false);
+        let v = verification_state("t", gate, TaskStatus::Done, None, 1, None, false, None);
         assert_eq!(
             v.state,
             VerificationState::Inconsistent {
@@ -313,7 +371,69 @@ mod tests {
         );
         // An unknown class is not judged code.
         let r = result(Some("gate-something-new"), verified);
-        let v = verification_state("t", gate, TaskStatus::Failed, None, 1, Some(&r), false);
+        let v = verification_state(
+            "t",
+            gate,
+            TaskStatus::Failed,
+            None,
+            1,
+            Some(&r),
+            false,
+            None,
+        );
         assert_eq!(v.state, VerificationState::Infra);
+    }
+
+    /// #2464 V1: the worker's runs appear beside the verdict, absent when it asked for none.
+    #[test]
+    fn gate_runs_shown_in_the_verification_view() {
+        let gate = Some(r#"{"steps":[{"name":"t","cmd":"true"}]}"#);
+        assert_eq!(gate_runs_view(0, None), None);
+        let red = GateRunResult {
+            run: 2,
+            commit: Some("c".repeat(40)),
+            refs: None,
+            verdict: GateVerdict {
+                passed: false,
+                status_detail: Some("gate-red".into()),
+                failing_step: Some("lint".into()),
+                exit_code: Some(3),
+                log_tail: "tail".into(),
+                log_path: "/logs/t-r2.log".into(),
+                attempt: 2,
+            },
+            evidence: None,
+        };
+        let v = verification_state(
+            "t",
+            gate,
+            TaskStatus::Running,
+            None,
+            0,
+            None,
+            false,
+            gate_runs_view(3, Some(&red)),
+        );
+        assert_eq!(
+            serde_json::to_value(&v).unwrap(),
+            json!({"state": "not_started", "gate_attempt": 0, "gate_runs": {
+                "used": 3, "max": 5, "last": {"run": 2, "commit": "c".repeat(40), "passed": false,
+                "status_detail": "gate-red", "failing_step": "lint"}}})
+        );
+        let running = gate_runs_view(1, None);
+        let v = verification_state(
+            "t",
+            gate,
+            TaskStatus::Running,
+            None,
+            0,
+            None,
+            false,
+            running,
+        );
+        assert_eq!(
+            serde_json::to_value(&v).unwrap()["gate_runs"],
+            json!({"used": 1, "max": 5, "last": null})
+        );
     }
 }

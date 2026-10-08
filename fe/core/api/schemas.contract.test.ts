@@ -605,6 +605,39 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
       },
     });
     expect(unsampled.ev).toBe('task.gate_result');
+    // A first verdict that reuses the worker's passing gate run (#2464).
+    const reused = wireEventSchema.parse({
+      ev: 'task.gate_result',
+      data: {
+        task_id: 'wv-1:impl',
+        idempotency_key: 'wv-1:impl',
+        passed: true,
+        log_tail: '',
+        log_path: '/data/gate-logs/wv-1:impl-g1.log',
+        attempt: 1,
+        target: {
+          kind: 'candidate',
+          candidate_id: 'cand-1',
+          commit_sha: 'a'.repeat(40),
+          lease_id: 'lease-1',
+          evidence: {
+            kind: 'reused',
+            run: 'wv-1:impl#r1',
+            cwd: '/leases/lease-1',
+            before: {
+              head: 'a'.repeat(40),
+              dirty: [],
+              provenance: { realpath: '/leases/lease-1', common_dir: '/repo/.git', registered: true },
+            },
+          },
+        },
+      },
+    });
+    if (reused.ev === 'task.gate_result' && reused.data.target?.kind === 'candidate') {
+      expect(reused.data.target.evidence.kind).toBe('reused');
+    } else {
+      throw new Error('reused gate result did not decode as a candidate target');
+    }
     const unbound = wireEventSchema.safeParse({
       ev: 'task.gate_result',
       data: {
