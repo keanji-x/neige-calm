@@ -36,7 +36,9 @@ pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 /// `ask_id` and `questions`), which older bundles reject, dropping the whole activity.
 /// #2348 bumps 45 -> 46: an activity overlay is `schemaVersion: 4` (an `ask` item carries
 /// `delivery`), and an ask answer is tagged.
-pub const WEB_COMPAT_VERSION: u32 = 46;
+/// #2441 bumps 46 -> 47: a Planner's `permission_mode` may be `full`, which older bundles reject,
+/// dropping the card's whole run state.
+pub const WEB_COMPAT_VERSION: u32 = 47;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

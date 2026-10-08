@@ -28,7 +28,7 @@ const HOLD = {
   delivery: 'hold',
 };
 
-type Mode = 'never' | 'ask' | null;
+type Mode = 'never' | 'ask' | 'full' | null;
 type Options = Readonly<{
   theme?: 'light' | 'dark';
   mode?: Mode;
@@ -132,6 +132,38 @@ it.each([
   await expect.poll(() => modeWrites(requests).length).toBe(1);
   expect(modeWrites(requests)[0]?.body).toEqual({ permission_mode: 'ask' });
   await expect.element(page.getByRole('button', { name: 'Approvals: Ask me' })).toBeVisible();
+  expectNoHorizontalScroll();
+});
+
+it.each([
+  ['light', 1280], ['dark', 1280], ['light', 390], ['dark', 390],
+] as const)('offers Full access as a third mode and writes it (#2441, %s, %ipx)', async (theme, width) => {
+  await page.viewport(width, width < 600 ? 844 : 800);
+  const { requests } = setup({ theme });
+  await page.getByRole('button', { name: /Conversation Planner/ }).click();
+  await expect.element(page.getByRole('combobox', { name: 'Message' })).toBeVisible();
+  if (width < 600) await revealComposerControls();
+  await page.getByRole('button', { name: 'Approvals: Never' }).click();
+  const menu = page.getByRole('menu');
+  await expect.element(menu).toBeVisible();
+  const items = (await Promise.all(menu.getByRole('menuitem').all().map((item) => item.findElement())))
+    .map((item) => item.textContent);
+  expect(items).toEqual([
+    expect.stringMatching(/^Never.*Sandbox only; never asks\./),
+    expect.stringMatching(/^Ask me.*Pauses the turn to ask you\./),
+    expect.stringMatching(/^Full access.*No sandbox; never asks\. Runs with your account's access\./),
+  ]);
+  const bounds = (await menu.findElement()).getBoundingClientRect();
+  expect(bounds.left).toBeGreaterThanOrEqual(0);
+  expect(bounds.right).toBeLessThanOrEqual(window.innerWidth);
+  /* The hint says what Full access risks, so it wraps rather than ending in an ellipsis. */
+  const full = await menu.getByRole('menuitem', { name: /^Full access/ }).findElement();
+  for (const text of full.querySelectorAll('span')) expect(text.scrollWidth).toBeLessThanOrEqual(text.clientWidth);
+  await menu.getByRole('menuitem', { name: /^Full access/ }).click();
+
+  await expect.poll(() => modeWrites(requests).length).toBe(1);
+  expect(modeWrites(requests)[0]?.body).toEqual({ permission_mode: 'full' });
+  await expect.element(page.getByRole('button', { name: 'Approvals: Full access' })).toBeVisible();
   expectNoHorizontalScroll();
 });
 

@@ -464,11 +464,11 @@ contentType: string, size: number,
 url: string, };
 
 /**
- * Whether a Planner card's provider may ask the person before it acts outside its sandbox
- * (#2348). Stored on the card as the server-owned payload key `permission_mode`; every Planner
+ * What a Planner card's provider may do outside its sandbox (#2348, #2441): nothing, what the
+ * person allows when asked, or anything, with no sandbox at all. Stored on the card as the server-owned payload key `permission_mode`; every Planner
  * card is created `never`, and only `PUT /api/cards/{id}/planner/permission-mode` changes it.
  */
-export type PlannerPermissionMode = "never" | "ask";
+export type PlannerPermissionMode = "never" | "ask" | "full";
 
 /**
  * Position anchor for proposed block creation / moves, expressed against stable block ids, never

@@ -13,20 +13,21 @@ function openMenu(name: string): HTMLElement {
 }
 
 describe('PermissionModePill', () => {
-  it.each([['never', 'Approvals: Never'], ['ask', 'Approvals: Ask me']] as const)(
+  it.each([['never', 'Approvals: Never'], ['ask', 'Approvals: Ask me'], ['full', 'Approvals: Full access']] as const)(
     'names the stored mode (%s) on its trigger', (mode, name) => {
       render(<PermissionModePill mode={mode} onChange={vi.fn()} />);
       expect(screen.getByRole('button', { name }).textContent).toBe(name);
     },
   );
 
-  it('offers both modes, marks the stored one, and says when a change applies', () => {
+  it('offers every mode, marks the stored one, and says when a change applies', () => {
     render(<PermissionModePill mode="never" onChange={vi.fn()} />);
     const menu = openMenu('Approvals: Never');
     const rows = within(menu).getAllByRole('menuitem');
     expect(rows.map((row) => row.textContent)).toEqual([
       'NeverSandbox only; never asks.Selected',
       'Ask mePauses the turn to ask you.',
+      'Full accessNo sandbox; never asks. Runs with your account\'s access.',
     ]);
     expect(within(menu).getByRole('note').textContent).toBe('Applies from the next turn.');
   });
@@ -38,6 +39,8 @@ describe('PermissionModePill', () => {
     expect(onChange).not.toHaveBeenCalled();
     fireEvent.click(within(openMenu('Approvals: Never')).getByRole('menuitem', { name: /^Ask me/ }));
     expect(onChange).toHaveBeenCalledExactlyOnceWith('ask');
+    fireEvent.click(within(openMenu('Approvals: Never')).getByRole('menuitem', { name: /^Full access/ }));
+    expect(onChange).toHaveBeenLastCalledWith('full');
   });
 
   it('cannot be opened while disabled', () => {

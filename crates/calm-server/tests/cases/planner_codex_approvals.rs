@@ -263,6 +263,7 @@ async fn a_planner_turn_says_its_cards_mode_and_an_unreadable_mode_issues_nothin
     for (stored, sent) in [
         ("ask", PlannerPermissionMode::Ask),
         ("never", PlannerPermissionMode::Never),
+        ("full", PlannerPermissionMode::Full),
     ] {
         let repo = repo().await;
         let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
@@ -277,7 +278,7 @@ async fn a_planner_turn_says_its_cards_mode_and_an_unreadable_mode_issues_nothin
 
     let repo = repo().await;
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
-    let rig = rig_on(repo, daemon, THREAD, "full").await;
+    let rig = rig_on(repo, daemon, THREAD, "yolo").await;
     rig.harness
         .observe(calm_server::harness::Observation::TrackGoal {
             text: "Read the track goal.".into(),

@@ -125,24 +125,35 @@ async fn an_ask_spawn_holds_each_can_use_tool_and_writes_the_answer_on_stdin() {
 }
 
 /// `never` keeps today's spawn and answers a stray `can_use_tool` itself; nothing reaches the
-/// held-request channel, not even the end of the spawn.
+/// held-request channel, not even the end of the spawn. `full` (#2441) answers it the same way,
+/// from a spawn that bypasses every check.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_never_spawn_answers_can_use_tool_itself() {
-    let rig = Rig::new("ask").await;
-    let mut rx = rig.session().subscribe_events();
-    start(&rig, "ask", PlannerPermissionMode::Never).await;
-    until_completed(&mut rx).await;
-    assert_eq!(
-        answers(&rig),
-        [
-            r#"{"type":"control_response","response":{"subtype":"success","request_id":"perm-1","response":{"behavior":"deny","message":"this Planner has no approval surface"}}}"#
-        ]
-    );
-    let argv = argv(&rig);
-    let prompts = argv.iter().position(|arg| arg == "--permission-prompts");
-    assert_eq!(prompts.map(|at| argv[at + 1].as_str()), Some("none"));
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert!(rig.held_is_empty().await);
+async fn a_never_or_full_spawn_answers_can_use_tool_itself() {
+    for (mode, permission_mode) in [
+        (PlannerPermissionMode::Never, None),
+        (PlannerPermissionMode::Full, Some("bypassPermissions")),
+    ] {
+        let rig = Rig::new("ask").await;
+        let mut rx = rig.session().subscribe_events();
+        start(&rig, "ask", mode).await;
+        until_completed(&mut rx).await;
+        assert_eq!(
+            answers(&rig),
+            [
+                r#"{"type":"control_response","response":{"subtype":"success","request_id":"perm-1","response":{"behavior":"deny","message":"this Planner has no approval surface"}}}"#
+            ],
+            "{mode:?}"
+        );
+        let argv = argv(&rig);
+        let after = |flag: &str| {
+            let at = argv.iter().position(|arg| arg == flag);
+            at.map(|at| argv[at + 1].as_str())
+        };
+        assert_eq!(after("--permission-prompts"), Some("none"), "{mode:?}");
+        assert_eq!(after("--permission-mode"), permission_mode, "{mode:?}");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(rig.held_is_empty().await, "{mode:?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -187,7 +198,7 @@ async fn an_unreadable_permission_mode_refuses_the_turn() {
     let runtime = stack.runtime(&card).await;
     let pool = stack.repo().sqlite_pool().expect("sqlite");
     sqlx::query(
-        "UPDATE cards SET payload = json_set(payload, '$.permission_mode', 'full') WHERE id = ?1",
+        "UPDATE cards SET payload = json_set(payload, '$.permission_mode', 'yolo') WHERE id = ?1",
     )
     .bind(&card)
     .execute(&pool)

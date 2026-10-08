@@ -96,6 +96,15 @@ async fn a_person_sets_the_mode_and_planner_run_reports_it() {
     let actor: Value = serde_json::from_str(&actor).expect("the actor column is JSON");
     assert_eq!(actor["kind"], json!("User"));
 
+    let (status, body) = put_mode(&boot, "user", json!({"permission_mode": "full"})).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(
+        body,
+        json!({"card_id": boot.planner_card.id.as_str(), "permission_mode": "full"})
+    );
+    assert_eq!(payload(&boot).await["permission_mode"], json!("full"));
+    assert_eq!(reported_mode(&boot).await, json!("full"));
+
     let (status, body) = put_mode(&boot, "user", json!({"permission_mode": "never"})).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(payload(&boot).await["permission_mode"], json!("never"));
@@ -105,8 +114,11 @@ async fn a_person_sets_the_mode_and_planner_run_reports_it() {
 #[tokio::test]
 async fn an_agent_actor_cannot_change_the_mode() {
     let boot = boot_with(idle_snapshot(vec![])).await;
-    for actor in ["ai:codex", "ai:claude", "ai:planner"] {
-        let (status, body) = put_mode(&boot, actor, json!({"permission_mode": "ask"})).await;
+    for (actor, mode) in ["ai:codex", "ai:claude", "ai:planner"]
+        .into_iter()
+        .flat_map(|actor| ["ask", "full"].map(|mode| (actor, mode)))
+    {
+        let (status, body) = put_mode(&boot, actor, json!({"permission_mode": mode})).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "actor={actor} body={body}");
         let message = body["error"].as_str().unwrap_or_default();
         assert!(
@@ -171,7 +183,7 @@ async fn a_payload_replacement_keeps_the_stored_mode_even_a_corrupt_one() {
     assert_eq!(stored["permission_mode"], json!("ask"));
     assert_eq!(stored["note"], json!("replaced"));
 
-    for corrupt in [r#""full""#, "42", "null", r#"{"mode":"ask"}"#] {
+    for corrupt in [r#""yolo""#, "42", "null", r#"{"mode":"ask"}"#] {
         store_raw(&boot, corrupt).await;
         let expected: Value = serde_json::from_str(corrupt).unwrap();
         let (status, body) = patch_payload(&boot, "user", replacement.clone()).await;
@@ -208,7 +220,15 @@ async fn the_body_is_one_mode_and_nothing_else() {
             StatusCode::UNPROCESSABLE_ENTITY,
         ),
         (
-            json!({"permission_mode": "full"}),
+            json!({"permission_mode": "yolo"}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            json!({"permission_mode": "Full"}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            json!({"permission_mode": {"full": null}}),
             StatusCode::UNPROCESSABLE_ENTITY,
         ),
         (

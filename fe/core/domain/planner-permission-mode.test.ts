@@ -18,8 +18,9 @@ describe('planner permission mode (#2348)', () => {
   it('reads the run\'s mode as required: a mode, `null` for a card that is not a Planner, never absent', () => {
     const { responseSchema } = plannerRunOperation('card-1');
     expect(responseSchema.parse({ ...RUN, permission_mode: 'ask' }).permission_mode).toBe('ask');
+    expect(responseSchema.parse({ ...RUN, permission_mode: 'full' }).permission_mode).toBe('full');
     expect(responseSchema.parse({ ...RUN, permission_mode: null }).permission_mode).toBeNull();
     expect(responseSchema.safeParse(RUN).success).toBe(false);
-    expect(responseSchema.safeParse({ ...RUN, permission_mode: 'full' }).success).toBe(false);
+    expect(responseSchema.safeParse({ ...RUN, permission_mode: 'yolo' }).success).toBe(false);
   });
 });

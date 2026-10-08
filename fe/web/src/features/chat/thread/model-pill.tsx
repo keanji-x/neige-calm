@@ -320,12 +320,13 @@ function EffortPill({
 const PERMISSION_MODES: Readonly<Record<PlannerPermissionMode, Readonly<{ label: string; description: string }>>> = Object.freeze({
   never: Object.freeze({ label: 'Never', description: 'Sandbox only; never asks.' }),
   ask: Object.freeze({ label: 'Ask me', description: 'Pauses the turn to ask you.' }),
+  full: Object.freeze({ label: 'Full access', description: "No sandbox; never asks. Runs with your account's access." }),
 });
 
 /** The kernel reads the mode when it starts a turn, so a change never reaches the one already running. */
 const PERMISSION_NOTE = 'Applies from the next turn.';
 
-/** A Planner conversation's approval setting (#2348): whether its turns may pause to ask before acting outside the sandbox. */
+/** A Planner conversation's approval setting (#2348, #2441): whether its turns stay in the sandbox, may pause to ask before leaving it, or run without one. */
 export function PermissionModePill({ mode, onChange, isDisabled = false, placement = 'above' }: Readonly<{
   /** What the card has stored. */
   mode: PlannerPermissionMode;
@@ -353,7 +354,9 @@ export function PermissionModePill({ mode, onChange, isDisabled = false, placeme
         }}
       >
         {(Object.keys(PERMISSION_MODES) as PlannerPermissionMode[]).map((value) => (
-          <Choice key={value} label={PERMISSION_MODES[value].label} description={PERMISSION_MODES[value].description}
+          /* A node, not a string: Astryx cuts a string description to one line, and Full access's says what it risks. */
+          <Choice key={value} label={PERMISSION_MODES[value].label}
+            description={<Text type="inherit" color="inherit">{PERMISSION_MODES[value].description}</Text>}
             isSelected={mode === value} onSelect={() => { if (value !== mode) onChange(value); }} />
         ))}
         <Divider />
@@ -399,7 +402,7 @@ function Choice({
   label, description, isSelected, isDisabled = false, onSelect,
 }: Readonly<{
   label: ReactNode;
-  description?: string;
+  description?: ReactNode;
   isSelected: boolean;
   isDisabled?: boolean;
   onSelect: () => void;

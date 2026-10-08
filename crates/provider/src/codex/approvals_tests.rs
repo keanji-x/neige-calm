@@ -140,7 +140,61 @@ fn a_planner_turn_says_all_three_settings_for_its_mode_and_a_worker_turn_none() 
             "sandboxPolicy": {"type": "workspaceWrite", "networkAccess": true},
         })
     );
+    assert_eq!(
+        frame(TurnApprovals::Explicit(PlannerPermissionMode::Full)),
+        json!({
+            "approvalPolicy": "never",
+            "approvalsReviewer": "user",
+            "sandboxPolicy": {"type": "dangerFullAccess"},
+        })
+    );
     assert_eq!(frame(TurnApprovals::Unchanged), json!({}));
+}
+
+/// #2441: codex keeps a turn's sandbox on the thread, so the turn after a `full` one is sandboxed
+/// again only because its own `turn/start` says so. Two turns on one thread, as codex reads them.
+#[tokio::test]
+async fn a_turn_after_a_full_turn_says_workspace_write_again() {
+    let (mut rig, _route, _rx) = routed().await;
+    let selection = TurnModelSelection::inherit();
+    let mut sandboxes = Vec::new();
+    for (n, mode) in [
+        PlannerPermissionMode::Full,
+        PlannerPermissionMode::Never,
+        PlannerPermissionMode::Full,
+        PlannerPermissionMode::Ask,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let start = rig.client.turn_start_with_client_id(
+            THREAD,
+            vec![InputItem::text("hi")],
+            &selection,
+            TurnApprovals::Explicit(mode),
+            None,
+        );
+        let server = &mut rig.server;
+        let peer = async {
+            let request = recv(server).await;
+            send(
+                server,
+                json!({"id":request["id"],"result":{"turn":{"id":format!("turn-{n}")}}}),
+            )
+            .await;
+            request
+        };
+        let (started, request) = tokio::join!(start, peer);
+        started.unwrap();
+        assert_eq!(request["method"], "turn/start");
+        sandboxes.push(request["params"]["sandboxPolicy"].clone());
+    }
+    let workspace_write = json!({"type": "workspaceWrite", "networkAccess": true});
+    let full = json!({"type": "dangerFullAccess"});
+    assert_eq!(
+        sandboxes,
+        [full.clone(), workspace_write.clone(), full, workspace_write]
+    );
 }
 
 /// The settings reach the `turn/start` frame the client writes.

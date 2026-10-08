@@ -128,8 +128,8 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(
         v["apiVersion"].as_str().unwrap(),
-        "26",
-        "#2348: an ask answer is a tagged option or text"
+        "27",
+        "#2441: the permission-mode route accepts `full`"
     );
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),
@@ -142,12 +142,12 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         v["webCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 46);
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 47);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 46);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 47);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,
@@ -350,6 +350,21 @@ async fn web_compat_floor_excludes_bundles_that_reject_the_live_claude_catalog()
     assert!(
         floor > LAST_FLOOR_WITHOUT_LIVE_CLAUDE_CATALOG,
         "minWebCompatVersion must exclude bundles that reject the live Claude catalog, got {floor}"
+    );
+}
+
+/// The last floor whose bundles reject a `full` Planner permission mode (#2441) and with it the
+/// card's whole run state; historical literal, do not move it with `WEB_COMPAT_VERSION`.
+#[tokio::test]
+async fn web_compat_floor_excludes_bundles_that_reject_the_full_permission_mode() {
+    const LAST_FLOOR_WITHOUT_FULL_PERMISSION_MODE: u64 = 46;
+
+    let floor = version_body(fresh_state().await).await["minWebCompatVersion"]
+        .as_u64()
+        .expect("minWebCompatVersion is a number");
+    assert!(
+        floor > LAST_FLOOR_WITHOUT_FULL_PERMISSION_MODE,
+        "minWebCompatVersion must exclude bundles that reject `permission_mode: full`, got {floor}"
     );
 }
 

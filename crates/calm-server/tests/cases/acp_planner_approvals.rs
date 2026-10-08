@@ -276,3 +276,43 @@ async fn acp_process_exit_withdraws_a_held_request_after_opening_it() {
     assert_eq!(stack.wait_outcomes(&card, 1).await[0]["status"], "failed");
     stack.shutdown().await;
 }
+
+/// #2441: a card the route set to `full` launches its agent allowing each acting tool by name, and
+/// a permission request that still arrives is answered `cancelled` as under `never`: no ask, and
+/// nothing reaches the held-request channel.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn acp_full_mode_allows_the_agents_tools_and_refuses_a_stray_request() {
+    let root = Root::new("unused");
+    let stack = boot(&root).await;
+    let (track, card) = create(&stack).await;
+    let (status, body) = stack
+        .send(
+            "PUT",
+            &format!("/api/cards/{card}/planner/permission-mode"),
+            Some(json!({"permission_mode": "full"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    std::fs::write(root.path().join("scenario"), "permission").unwrap();
+    let mut held = observe_held(&stack.runtime(&card).await.id);
+    assert_eq!(
+        turn(&stack, &card, "request permission", 1).await["status"],
+        "interrupted"
+    );
+    let [permission] = launch_permissions(&root).try_into().expect("one launch");
+    let permission: Value = serde_json::from_str(permission.as_str().unwrap()).unwrap();
+    assert_eq!(
+        permission,
+        json!({"bash": "allow", "edit": "allow", "webfetch": "allow",
+            "external_directory": "allow", "doom_loop": "allow", "read": "allow"})
+    );
+    wait_file(&root, "permission-reply.json").await;
+    let reply: Value = serde_json::from_str(
+        &std::fs::read_to_string(root.path().join("permission-reply.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(reply["result"]["outcome"], json!({"outcome": "cancelled"}));
+    assert!(held.try_recv().is_err(), "a full turn holds nothing");
+    assert!(rows(&stack, &track, "ask.requested").await.is_empty());
+    stack.shutdown().await;
+}

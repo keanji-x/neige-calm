@@ -85,8 +85,8 @@ unchanged.
 ## Permissions
 
 `session/request_permission` follows the permission mode the harness resolved when it issued the
-turn (#2348); `provider::acp::approvals` owns the mapping. Under `never` every request is answered
-`cancelled` where it is read. Under `ask` each request is a `hold` ask: one question whose title is
+turn (#2348); `provider::acp::approvals` owns the mapping. Under `never` and `full` (#2441) every
+request is answered `cancelled` where it is read. Under `ask` each request is a `hold` ask: one question whose title is
 the tool call's kind, title and files, and whose options are the agent's option names in its order.
 The chosen option is answered `selected` with that option's id; a request withdrawn or never asked
 is answered `cancelled`. The process is the held-request connection. The turn ends its requests by
@@ -105,6 +105,12 @@ has no flag or ACP method for this. Under `never` nothing is added: OpenCode run
 profile's own `permission` configuration, which with OpenCode's defaults runs bash, edits and
 fetches unsandboxed without asking, as before. OpenCode's own `always` answer approves a command
 prefix for the rest of the process, which is one turn here; it is not written to disk.
+
+Under `full` (#2441) the launch sets
+`OPENCODE_PERMISSION={"bash":"allow","edit":"allow","webfetch":"allow","external_directory":"allow","doom_loop":"allow","read":"allow"}`
+the same way: bash, edits, fetches and reads outside the workspace run without a
+`session/request_permission`. It names each tool rather than `*`, so tools OpenCode denies a
+Planner stay denied.
 
 ## Acceptance
 

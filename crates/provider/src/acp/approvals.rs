@@ -2,11 +2,11 @@
 //! `session/request_permission`, and how each request becomes one question of a Planner harness
 //! and each chosen option the ACP answer.
 //!
-//! The turn's permission mode is the harness's, read when it issued the turn. Under `never` every
-//! request is answered `cancelled` where it is read. Under `ask` each request becomes an `Open`
-//! whose [`AcpResponder`] answers it with the chosen option's id. The caller runs one agent
-//! process per turn, so the process is the connection: the [`HeldPermissions`] the turn's reader
-//! owns pushes `ConnectionLost` when it is dropped, after the reader's last frame.
+//! The turn's permission mode is the harness's, read when it issued the turn. Under `never` and
+//! `full` (#2441) every request is answered `cancelled` where it is read. Under `ask` each request
+//! becomes an `Open` whose [`AcpResponder`] answers it with the chosen option's id. The caller runs
+//! one agent process per turn, so the process is the connection: the [`HeldPermissions`] the turn's
+//! reader owns pushes `ConnectionLost` when it is dropped, after the reader's last frame.
 //!
 //! The turn ends its requests by a fence: a cancel (`session/cancel` first), and the end of the
 //! turn's read whatever ended it ([`Approvals::close`]), each answer every request still pending
@@ -32,8 +32,8 @@ use crate::held_requests::{
 /// How one turn answers the agent's requests to the client, fixed by the permission mode read
 /// when the turn started.
 pub enum Approvals {
-    /// `never`: a permission request is answered `cancelled` where it is read, on the turn's
-    /// agent process.
+    /// `never` and `full`: a permission request is answered `cancelled` where it is read, on the
+    /// turn's agent process.
     Refused(Client),
     /// `ask`: a permission request is put to the person through the harness.
     Held(HeldPermissions),
@@ -49,7 +49,9 @@ impl Approvals {
         client: &Client,
     ) -> Self {
         match mode {
-            PlannerPermissionMode::Never => Self::Refused(client.clone()),
+            PlannerPermissionMode::Never | PlannerPermissionMode::Full => {
+                Self::Refused(client.clone())
+            }
             PlannerPermissionMode::Ask => Self::Held(HeldPermissions {
                 sender: held.clone(),
                 connection: ConnectionId(turn.to_string()),

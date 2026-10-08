@@ -43,7 +43,8 @@ fn owner_settings() -> serde_json::Value {
 /// to the person through `can_use_tool`, and keeps sandboxed commands running without asking. It
 /// also denies editing the workspace's own Claude settings: project settings widen the sandbox
 /// without the workspace being trusted, so an approved edit would let the next spawn widen its own
-/// sandbox. Edit rules govern every file-editing tool, Write included.
+/// sandbox. Edit rules govern every file-editing tool, Write included. `full` (#2441) turns the
+/// sandbox off; with nothing left to widen it needs no denials.
 pub(crate) fn turn_settings_json(mode: PlannerPermissionMode, root: &PermissionRoot<'_>) -> String {
     let mut settings = owner_settings();
     match mode {
@@ -52,6 +53,9 @@ pub(crate) fn turn_settings_json(mode: PlannerPermissionMode, root: &PermissionR
             settings["permissions"]["deny"] = json!(root.settings_edit_denials());
             settings["sandbox"]["allowUnsandboxedCommands"] = json!(true);
             settings["sandbox"]["autoAllowBashIfSandboxed"] = json!(true);
+        }
+        PlannerPermissionMode::Full => {
+            settings["sandbox"]["enabled"] = json!(false);
         }
     }
     settings.to_string()
@@ -119,12 +123,12 @@ impl<'a> PermissionRoot<'a> {
 
 /// `--allowedTools` rules. Edit is confined to the workspace (an Edit rule governs Write too). A
 /// bare `Bash` would let every command run outside the sandbox once `ask` allows leaving it, so
-/// only `never`, which never leaves it, allows Bash by rule.
+/// only `never`, which never leaves it, and `full`, which bypasses every check, allow Bash by rule.
 fn allowed_tools(mode: PlannerPermissionMode, root: &PermissionRoot<'_>) -> String {
     let edit = root.rule("Edit", "**");
     let common = format!("Read ToolSearch WebFetch WebSearch mcp__{MCP_SERVER_KEY} {edit}");
     match mode {
-        PlannerPermissionMode::Never => format!("Bash {common}"),
+        PlannerPermissionMode::Never | PlannerPermissionMode::Full => format!("Bash {common}"),
         PlannerPermissionMode::Ask => common,
     }
 }
@@ -187,7 +191,7 @@ pub(crate) fn truncation_check_argv(thread: Uuid, truncation: &ResumeTruncation)
 /// effort as `--effort=<level>`, one token each so a value can never be read as a flag; the CLI
 /// judges the model and refuses one it cannot run. `None` passes the flag not at all, so the CLI
 /// runs its default. `truncation` rides right after `--resume <thread>`; a new session has nothing
-/// to cut. `mode` is the card's permission mode, read at this spawn (#2348); both modes load the
+/// to cut. `mode` is the card's permission mode, read at this spawn (#2348); every mode loads the
 /// project setting source, which is also where `CLAUDE.md` and `AGENTS.md` come from.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn argv(
@@ -246,6 +250,14 @@ pub(crate) fn argv(
         PlannerPermissionMode::Ask => {
             args.push("--permission-prompt-tool".into());
             args.push("stdio".into());
+        }
+        // Every check is bypassed; whatever would still ask (a workspace's
+        // `disableBypassPermissionsMode`) fails as under `never`.
+        PlannerPermissionMode::Full => {
+            args.push("--permission-mode".into());
+            args.push("bypassPermissions".into());
+            args.push("--permission-prompts".into());
+            args.push("none".into());
         }
     }
     args.push("--allowedTools".into());

@@ -21,4 +21,6 @@
 // Revision 25 (#2343): managed ACP adds OpenCode and the declared ACP session model catalog.
 // Revision 26 (#2348): an ask answer is `{"option": i}` or `{"text": ..}`, not a bare string; an
 // older kernel would refuse every answer this bundle sends.
-pub const REST_API_VERSION: &str = "26";
+// Revision 27 (#2441): `PUT /api/cards/{id}/planner/permission-mode` accepts `full`; an older
+// kernel would refuse it.
+pub const REST_API_VERSION: &str = "27";
