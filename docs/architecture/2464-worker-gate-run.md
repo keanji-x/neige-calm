@@ -130,8 +130,8 @@ command records nothing until it returns (L3).
     the reset, a run commit whose message lacks a trailer stays in the PR range for good: a
     Codex worker cannot rewrite history. With it, the branch carries at most two commits above
     the lease base: the latest run's commit and, if the worker edited after that run, the
-    delivery's. Earlier run commits leave the branch and stay reachable only through their
-    `gate-runs` refs.
+    delivery's. Earlier run commits leave the branch; their `gate-runs` refs keep them (the
+    reflog and `ORIG_HEAD` also hold them for a while).
     - Each remaining message is one the worker wrote. A missing trailer is the same mistake a
       `neige_task_done` message can make today, and it is cheaper to fix: this repository's
       gate runs the audit (K21), so the run is red and the next run replaces the commit.
@@ -163,8 +163,9 @@ command records nothing until it returns (L3).
   `W`.
   - **The deadline is end to end (F2).** It starts when the handler starts. One `BEGIN
     IMMEDIATE` transaction does the D10 admission and reserves the run by inserting its op row,
-    keyed `<attempt>#r<n>`. Two concurrent callers that pick the same `n` hit the same key and
-    payload, so the second joins.
+    keyed `<attempt>#r<n>`. Because admission is one transaction, a second caller sees the first
+    caller's row as `Unfinished` (D7) and joins it. A joining call's `commit_message` is dropped
+    (§6).
   - The handler then starts `runtime.drive()` in a detached task and waits on the completion
     bus, re-reading the op row, until the deadline. It never awaits the drive (K18). Dropping
     the request cancels nothing.
@@ -207,9 +208,16 @@ command records nothing until it returns (L3).
     run back.
   - **One helper** reads the gate ops of an attempt, both kinds (task-verify `#g…` and
     task-gate-run `#r…`): `attempt_gate_ops(tx, attempt) → Clear | Unfinished(key) |
-    Unproven(key)`. `Unproven` means terminal, but the marked group is not proven stopped
-    (K10).
-    - D8 waits on `Unfinished`.
+    Unproven(key)`.
+    - `Unfinished`: any non-terminal phase (`pending` through `parked`, `compensating`).
+    - `Unproven`: `stuck`, or `succeeded`/`failed` with a recorded group that is not proven
+      stopped by its marker (K10). Regate refuses `stuck` today (`regate.rs:162-169`), so this
+      keeps its rule.
+    - `Clear`: every op is `succeeded`/`failed` and proven stopped.
+    - D8 waits on `Unfinished` only. A `stuck` op never finishes: `runtime.wait` returns on it
+      (`operation/mod.rs:1072`), and waiting on it would retry the delivery forever
+      (`scheduler/git_delivery.rs:207-226`) while the unsettled row keeps the checkout `Busy`
+      (`track_occupancy.rs:83-93`).
     - A new run, reuse (§4 (5)) and regate require `Clear`; a call that finds `Unfinished`
       joins that run.
 - **D8 Delivery waits for the run.** `submit_delivery` (K8) declines to submit while the
@@ -221,7 +229,9 @@ command records nothing until it returns (L3).
   - Without this, a `neige_task_done` (or a cancel or liveness end) during a run commits files
     the steps are still writing.
   - The unsettled delivery keeps the checkout `Busy` meanwhile (K9).
-  - `Unproven` does not hold the delivery: that is the #2437 class, see §7.
+  - `Unproven` does not hold the delivery: the delivery submits, as a task-verify verdict whose
+    group was not proven stopped frees the checkout today (#2437). That is the #2437 class, see
+    §7. Test R13.
 - **D9 Run recovery (F3).** The run releases its wrapper in the observer, after the park
   commits: the forge-action order (K19). Before the park, therefore, no checkpoint and no step
   has run. task-verify keeps its own order: its worker is gone.
@@ -232,12 +242,19 @@ command records nothing until it returns (L3).
   - **`Parked`, any mode, leader gone (`alive = false`).** `Fail` with `gate-infra: the run
     ended without a kernel-observed verdict`. The driver's claim-then-fail path loses to an
     observer that already committed (K20).
-  - **`Parked`, `Boot`, leader alive.** `stop_group`, then `Fail` with `gate-infra: the kernel
-    restarted during the run`. The checkpoint may have moved `HEAD`; the next run resets it
-    (D2).
-  - **`Parked`, `PastDeadline`.** `Fail` with `gate timeout (parked deadline exceeded)`. The
-    reader maps it to `gate-timeout`, like a live timeout (the deadline is the gate timeout
-    plus slack).
+  - **`Parked`, leader alive, past the deadline (any mode).** The driver checks an overdue
+    parked op before the boot arm (`driver.rs:1236`). `Fail` with `gate timeout (parked
+    deadline exceeded)`. The reader maps it to `gate-timeout`, like a live timeout (the
+    deadline is the gate timeout plus slack).
+  - **`Parked`, `Boot`, leader alive, before the deadline.** `stop_group`, then `Fail` with
+    `gate-infra: the kernel restarted during the run`. The checkpoint may have moved `HEAD`;
+    the next run resets it (D2).
+  - **Zombie-hold invariant (H1).** The run observer reaps the wrapper's leader only after its
+    completion commits, as task-verify does (`task_verify_adapter/mod.rs:787-813`).
+    `observe_verdict` waits with `WNOWAIT` (`gate_process.rs:342-353`), so until the reap the
+    leader's identity still reads as alive. Otherwise D8's `runtime.wait`, which probes parked
+    ops (`driver.rs:339`), could see a dead leader in the gap and fail a passing run as P11.
+    Test R6, MA15.
   - No run path reads the exit file (K11): the worker is alive and same-user.
 - **D10 Who may run.** The caller must be the worker card of `attempt_id`. The attempt must be
   `running` and the current execution of its key, must declare a gate, and must hold a
@@ -245,7 +262,7 @@ command records nothing until it returns (L3).
   gate runs after the report (§11: none is gated on 4140). The context must not be stale
   (task-bound kind, K14). The command set is the frozen `gate_json` (K7): the worker chooses
   *when*, never *what*. `prepare_tx` re-checks the row guard; a row that moved between the
-  handler and the prepare fails the op (§5 P13).
+  handler and the prepare fails the op (§5 P14).
 
 ## 4. Reuse key
 
@@ -285,6 +302,16 @@ left out. A step that reads a moved ref through a fast-forward-stable form (`mer
 `<attempt>#r<n>`, and `before` is this prepare's sample. `FrozenTarget::Reused` makes the spawn
 a no-op, like a refusal. Slice 2 regenerates `wire.ts` and `openapi.json`.
 
+**The full log keeps its address (G1).** The Planner is told to read
+`runs/<attempt>/gates/1.log` (`git_candidate/verification.rs:111`, `calm-types/src/observation.rs:406`).
+The reader opens `<attempt>-g1.log` unconditionally (`calm-truth/src/track_fs_view/gate_logs.rs:82`).
+
+- Reuse therefore hard-links the run's log to `<attempt>-g1.log` in the same `gate-logs`
+  directory, and the verdict's `log_path` names that link. The reader, its path guard and the
+  advertised address do not change.
+- A link that fails means no reuse: the gate runs. Prepare already writes this directory
+  (`append_log_line`, `target.rs`).
+
 ## 5. Producer × state matrix of the run result
 
 `GateRunResult { run, commit: Option<sha>, refs: Option<digest>, verdict: GateVerdict, evidence:
@@ -313,12 +340,14 @@ result, so every outcome has exactly one producer. P5–P8 apply only after P1�
 | P8 | Gate timeout | | | ✓ | | |
 | P9 | Non-zero with no started step, signal, or wait failure (reachable only if P4 did not match) | | | | ✓ | |
 
+Rows P10–P14 are also in precedence order (P11, then P13, then P12).
+
 | # | Producer (no live observer) | Result |
 |---|---|---|
 | P10 | Re-drive before the park (D9) | none: a fresh wrapper replaces the never-released one |
 | P11 | `Parked`, leader gone, any mode (D9) | `gate-infra` |
-| P12 | `Parked`, `Boot`, leader alive (D9) | `gate-infra` ("the kernel restarted during the run") |
-| P13 | `Parked`, `PastDeadline` | `gate-timeout` |
+| P13 | `Parked`, leader alive, past the deadline, any mode (checked before the boot arm) | `gate-timeout` |
+| P12 | `Parked`, `Boot`, leader alive, before the deadline (D9) | `gate-infra` ("the kernel restarted during the run") |
 | P14 | `prepare_tx` guard fails, record/release fails, compensation, `Stuck` | `gate-infra` (op `failed` or `stuck`; the reader maps) |
 
 | Reader | May conclude |
@@ -355,6 +384,8 @@ listed for workers.
   - stale context and invalid `commit_message` keep their current texts.
 - A refusal writes no op row (D3): it neither consumes a run number nor becomes the highest
   run.
+- A call that joins an unfinished run answers for that run; its own `commit_message`, if any,
+  is dropped, because the run's checkpoint already used the first call's.
 - `neige_task_done` / `neige_task_fail` are not refused during a run (D8).
   - Both descriptions gain: "A gate run in progress finishes before the kernel commits."
   - `neige_task_done`'s `commit_message` text gains: "When you changed nothing since your last
@@ -428,8 +459,8 @@ second run.
 
 Tests go in `tests/cases/task_gate_run.rs`, with `task_regate.rs`'s fixtures: real git, the
 real wrapper, a test-played worker calling the tool through `ToolCallIdentity`, and a
-fixtures-only wait bound. R2–R5 and R7–R9 call on a clean tree (an empty change set). Their
-assertions do not depend on what the checkpoint commits.
+fixtures-only wait bound. R2, R4, R5 and R7–R9 call on a clean tree (an empty change set). R3
+changes the tree only while its step runs.
 
 - **R1** `a_gate_run_commits_new_files_before_its_steps_run`: an untracked `new.txt`; the step
   `git ls-files --error-unmatch new.txt && test -z "$(git status --porcelain)"` passes. The
@@ -448,17 +479,26 @@ assertions do not depend on what the checkpoint commits.
   completes after the request is dropped.
 - **R5** `the_sixth_run_is_refused_with_the_cap`.
 - **R6** `done_during_a_run_delivers_after_the_run`: no delivery op exists while the step blocks.
-  After release, the candidate equals the run commit and `#g1` runs.
+  - After the release, the observer is held by the fixtures-only `before_completion` pause,
+    after its verdict and before its completion. During the pause the test runs
+    `sweep_parked()` and the scheduler's delivery wait.
+  - Then the run is `passed`, the candidate equals the run commit, and `#g1` runs. In slice 2
+    this last assertion becomes reuse.
 - **R7** `a_cancel_during_a_run_keeps_the_checkout_busy_until_it_ends`: the next pending task is
   not claimed until the run ends.
 - **R8a** `a_restart_before_the_park_reruns_nothing`: seam `crash_point("task-gate-run-pre-park")`
   (`CALM_TEST_CRASH_AT` aborts the kernel process), after the artifacts are recorded and before
-  `Parked` is returned. The only step appends a line to a file outside the checkout. After the
-  reboot the run completes, and the file holds exactly one line.
+  `Parked` is returned. The only step appends a line to a file outside the checkout. Before the
+  reboot the test waits 2 s: nothing is released, so the file stays empty. After the reboot the
+  run completes, and the file holds exactly one line.
 - **R8b** `a_restart_after_the_park_ends_the_run_as_infra`: seam
   `crash_point("task-gate-run-post-park")`, at the start of the observer, before the release.
-  The held wrapper exits 75 at stdin EOF. After the reboot: `gate-infra` (P11), no step record in
-  the log, `HEAD` unmoved, and the next call is run 2.
+  The step blocks on a fifo. The held wrapper exits 75 at stdin EOF; the test waits 2 s before
+  the reboot. After the reboot: `gate-infra` (P11), no step record in the log, `HEAD` unmoved,
+  and the next call is run 2.
+- **R8d** `the_run_releases_its_wrapper_only_after_parked`: a fixtures-only hook at the release
+  boundary reads the op row and records its phase. The recorded phase is `parked`. This is the
+  deterministic pin of the release order; R8a and R8b test recovery.
 - **R8c** `a_restart_during_a_step_ends_it_as_infra`: the step blocks on a fifo, and the kernel
   process is killed and rebooted by the harness. The step keeps running across the restart (no
   `kill_on_drop`). At boot the group is stopped and the result is `gate-infra` "kernel
@@ -473,8 +513,12 @@ assertions do not depend on what the checkpoint commits.
   `Boot`.
 - **R12** `runs_keep_one_attempt_commit_above_the_lease_base`: run 1 (message M1, `a.txt`), then
   a self-made commit (Claude style), an edit to `b.txt`, and run 2 (M2). `git rev-list
-  base..HEAD` is one commit, with message M2, holding `a.txt` and `b.txt`. Run 1's commit is
-  reachable only from its `gate-runs` ref.
+  base..HEAD` is one commit, with message M2, holding `a.txt` and `b.txt`. Run 1's commit is off
+  the branch (`git branch --contains` lists none) and still pinned by its `gate-runs` ref.
+- **R13** `a_stuck_run_does_not_hold_the_delivery`: a run op is set `stuck` through the
+  repository's test helper, and the worker reports done. The delivery submits and settles, and
+  the checkout frees. A new `neige_task_gate_run` is refused (`Unproven`), and so is a regate of
+  the attempt after its gate fails.
 - **P1** (`task_prompt.rs` unit, plus goldens): the tool spelling per kind; the rendered `W`;
   "run every step yourself" is gone; the read-only gated variant.
 - **L1** (unit) `the_wait_bound_stays_under_the_idle_window`: `W(60 s) = 30 s`,
@@ -484,7 +528,7 @@ Predicted red sets (each mutation is one production change):
 
 | Mutation | Red |
 |---|---|
-| MA1 the run wrapper runs the checkpoint after the declared steps instead of before | {R1} |
+| MA1 the run wrapper runs the checkpoint after the declared steps instead of before | {R1, R2, R3, R10} (R2: a failing step ends the wrapper before the checkpoint, so there is no run ref, P4. R3: the edit is committed, so the after-sample is clean. R10: the checkpoint is no longer step 1, P4) |
 | MA2 the run's after-sample skipped | {R3} |
 | MA3 admission ignores the unfinished run | {R4} |
 | MA4 cap check removed | {R5} |
@@ -492,11 +536,13 @@ Predicted red sets (each mutation is one production change):
 | MA6 run `recover_parked` on `Boot` with a live leader reattaches like task-verify | {R8c} |
 | MA7 `W` ignores the idle window | {L1} |
 | MA8 the old precheck text kept | {P1} |
-| MA9 the run releases its wrapper before the park (task-verify order) | {R8a} |
+| MA9 the run releases its wrapper before the park (task-verify order) | {R8a, R8b, R8d} (R8d deterministic; R8a/R8b through their 2 s pre-reboot window) |
 | MA10 run `recover_parked` reads the exit file when the leader is gone | {R11} |
 | MA11 the reset line removed from the checkpoint script | {R12} |
 | MA12 the handler awaits the drive before its wait | {R4c} |
 | MA13 a checkpoint (step 1) failure classified as `gate-red` | {R10} |
+| MA14 `stuck` classified as `Unfinished` | {R13} |
+| MA15 the run observer reaps the leader before its completion commits | {R6} |
 
 Gates: `local-ratchet-gates.sh`, `local-contract-gates.sh` (tool registry golden, worker prompt
 goldens), `local-rust-gates.sh --quick`, focused `-p calm-server task_gate_run task_regate
@@ -505,15 +551,17 @@ scheduler` (the kind classification) and the delivery script tests, and the whol
 
 ### Slice 2: reuse at done (about 350 production lines)
 
-- §4 in `task_verify_adapter` (a new `reuse.rs`).
+- §4 in `task_verify_adapter` (a new `reuse.rs`), including the `g1` log link.
 - `FrozenTarget::Reused`; `VerifyTargetEvidence::Reused` in `calm-types`, with `wire.ts` and
   `openapi.json` regenerated.
 - `gate_runs` in `git_candidate/view.rs`; scorecard columns.
 
 Tests in the same file:
 
-- **U1** `an_unchanged_candidate_reuses_the_passing_run`: the task is `done`; the evidence is
-  `reused` naming `#r1`; no `#g1` wrapper or log was created; `log_path` is the run's.
+- **U1** `an_unchanged_candidate_reuses_the_passing_run`:
+  - The task is `done`, and the evidence is `reused` naming `#r1`.
+  - No `#g1` wrapper script was written.
+  - `neige_track_cat runs/<attempt>/gates/1.log` returns the run's log.
 - **U2** `a_change_after_the_run_runs_the_gate`.
 - **U3** `a_red_last_run_is_not_reused`: run 1 passes, run 2 on the same commit is red (a counter
   file).
@@ -529,6 +577,7 @@ Predicted red sets:
 | Mutation | Red |
 |---|---|
 | MR1 reuse disabled | {U1} |
+| MR7 reuse without the `g1` log link | {U1} |
 | MR2 commit equality dropped | {U2} |
 | MR3 any passed run instead of the highest | {U3} |
 | MR4 refs digest not compared | {U4, U5, U6} |
@@ -557,6 +606,17 @@ fixture database.
 - A restart while the checkpoint holds `index.lock` leaves the lock; the next run's checkpoint
   is `gate-infra` until it is removed (the same as #2058's reset gap).
 - #2437 stays open for delivery and occupancy.
+- A ref that moves and moves back (A→B→A) during a run is not seen by the digest.
+- Ignored files changed after a passing run and before done are not seen by reuse (the gate
+  at done would not compare them either, K2).
+- A worker that reverts everything after a run and reports done gets a `committed` delivery
+  with an empty net diff against the lease base.
+- The fold also flattens a Claude worker's own rebase or merge, so `base_is_ancestor` reads
+  true where it read false.
+- The checkpoint runs in the gate environment, which has no `SSH_AUTH_SOCK` /
+  `GIT_SSH_COMMAND` (`gate_process.rs:285-301`; the delivery's forge env passes them,
+  `calm-types/src/forge_env.rs:3-10`). A repository that signs commits over ssh gets a
+  `gate-infra` checkpoint where the delivery would succeed.
 ## 10. Out of scope
 
 - #2459 item 1's typed "worker does not precheck" marker: not needed, because the worker no
@@ -588,7 +648,9 @@ Queried read-only by the orchestrator on 2026-10-08 (`sqlite3 -readonly ~/.local
 - **O2** The cap is 5 spawned runs per attempt. 4140 has no attempt that needed a second gate
   verdict (§11), so 5 leaves room for the worker's fix loop without unbounded host load.
 
-## 13. Revision 1 (both review channels: CHANGES)
+## 13. Revisions
+
+### Revision 1 (both review channels: CHANGES)
 
 Each finding was checked against the source before it was patched.
 
@@ -605,8 +667,23 @@ Each finding was checked against the source before it was patched.
 | N2 `W` | Accepted: `W = min(90 s, idle / 2)`. The prompt renders it; the Claude timeout instruction and its KNOWN GAP are gone |
 | N3 P2 wording | Accepted. P2/P3 now say no declared step ran, and where `HEAD` may be |
 | N4 K1 | Accepted. Qualified to candidate-bound agent tasks |
-| N5 MA1 | Accepted. MA1 is one change (checkpoint after the steps) → {R1}. R2–R5 and R7–R9 run on a clean tree |
+| N5 MA1 | Accepted. MA1 is one change (checkpoint after the steps). Its red set and the clean-tree claim were corrected in revision 2 (G3) |
 | N6 past-deadline | Accepted. P13 maps to `gate-timeout`, like P8 |
 | N7 D8 placement | Accepted. The wait is in the spawned per-delivery task, outside the track scheduling lock. D8 and D7 share `attempt_gate_ops` |
 | Cancel waits out the run | Left as a KNOWN GAP, as instructed |
+
+### Revision 2 (round 2: both channels CHANGES, no structural problem)
+
+| Item | Resolution |
+|---|---|
+| G1 reuse breaks the full-log address | Accepted. Verified `verification.rs:111`, `observation.rs:406`, `gate_logs.rs:82`. Reuse hard-links the run log as `<attempt>-g1.log`; if the link fails, the gate runs. The reader and the address are unchanged (§4). U1 reads through `neige_track_cat`; MR7 |
+| G2 R8a cannot pin MA9 | Accepted. Added R8d, a release-boundary hook that records the phase, as the deterministic pin. R8a and R8b wait 2 s before the reboot, so a released wrapper has acted. MA9 → {R8a, R8b, R8d} |
+| G3 red sets | Accepted. Walked every test under MA1: {R1, R2, R3, R10}. R2 fails because a failing step ends the wrapper before the checkpoint (P4). The clean-tree sentence is corrected. MA9 now includes R8b |
+| G4 `stuck` placement | Accepted. Verified `driver.rs:400-414`, `mod.rs:1072`, `regate.rs:162-169`. Non-terminal phases are `Unfinished`; `stuck`, or a terminal op with an unproven group, is `Unproven`. D8 submits on `Unproven`, as a task-verify gate does today (#2437). A new run, reuse and regate refuse it. R13, MA14 |
+| H1 zombie hold | Accepted. The invariant is in D9; R6 holds the observer at `before_completion` and sweeps. MA15 → {R6}; in slice 2, R6 expects reuse |
+| H2 P11/P13 overlap | Accepted. Verified `driver.rs:1236`. P13 is the live-leader overdue case, before P12; the precedence is stated. D10 now points to P14 |
+| H3 gaps | Accepted. All five are added to §9. The ssh gap is verified against `gate_process.rs:285-301` and `forge_env.rs:3-10` |
+| H4 wording | Accepted. D2 (reflog and `ORIG_HEAD`), R12 (`branch --contains`), D3 (one-transaction join), §6 (a joining call's `commit_message` is dropped) |
+
+No item was rejected.
 
