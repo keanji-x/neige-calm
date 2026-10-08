@@ -189,10 +189,10 @@ impl Boot {
             .get(&session.id)
             .expect("the live session is registered");
         harness
-            .set_state_for_test(HarnessState::TurnRunning {
-                turn_id: "unconfirmed".into(),
-                started_at: Instant::now(),
-            })
+            .set_state_for_test(HarnessState::turn_running(
+                "unconfirmed".into(),
+                Instant::now(),
+            ))
             .await;
         harness
             .observe_user_message_durable(

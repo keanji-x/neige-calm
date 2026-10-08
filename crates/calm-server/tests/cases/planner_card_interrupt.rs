@@ -255,10 +255,7 @@ async fn interrupt_running_turn_issues_interrupt() {
     let boot = boot().await;
     let (card, runtime_id, thread_id, harness) = seed_live_planner_harness(&boot).await;
     harness
-        .set_state_for_test(HarnessState::TurnRunning {
-            turn_id: "T1".into(),
-            started_at: Instant::now(),
-        })
+        .set_state_for_test(HarnessState::turn_running("T1".into(), Instant::now()))
         .await;
 
     let (status, body) = post_empty(
@@ -432,10 +429,7 @@ async fn get_planner_run_running_turn_reports_phase() {
     let boot = boot().await;
     let (card, runtime_id, _thread_id, harness) = seed_live_planner_harness(&boot).await;
     harness
-        .set_state_for_test(HarnessState::TurnRunning {
-            turn_id: "T1".into(),
-            started_at: Instant::now(),
-        })
+        .set_state_for_test(HarnessState::turn_running("T1".into(), Instant::now()))
         .await;
 
     let (status, body) = get_json(
@@ -609,10 +603,10 @@ async fn get_planner_run_preserves_unconfirmed_stop_timeout_after_registry_loss(
     let boot = boot().await;
     let (card, session_id, _thread_id, harness) = seed_live_planner_harness(&boot).await;
     harness
-        .set_state_for_test(HarnessState::TurnRunning {
-            turn_id: "unconfirmed".into(),
-            started_at: Instant::now(),
-        })
+        .set_state_for_test(HarnessState::turn_running(
+            "unconfirmed".into(),
+            Instant::now(),
+        ))
         .await;
     harness
         .observe_for_test(

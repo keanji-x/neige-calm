@@ -19,7 +19,12 @@ pub enum HarnessState {
     },
     TurnRunning {
         turn_id: String,
+        /// When the harness accepted the turn's `TurnStarted`. Never moved: the running turn's
+        /// elapsed time, waits on the user included, is measured from it.
         started_at: Instant,
+        /// What the turn watchdog measures `max_turn_duration` from: `started_at`, moved forward
+        /// by every wait on a held request, so waiting on the user is not turn time.
+        watchdog_from: Instant,
     },
     TurnCompleted {
         last_turn_id: String,
@@ -66,6 +71,16 @@ pub fn run_status_for(state: &HarnessState) -> WorkerSessionState {
 }
 
 impl HarnessState {
+    /// `turn_id` running since `started_at`, with nothing waited on yet: the watchdog counts
+    /// from the same instant.
+    pub fn turn_running(turn_id: String, started_at: Instant) -> Self {
+        Self::TurnRunning {
+            turn_id,
+            started_at,
+            watchdog_from: started_at,
+        }
+    }
+
     pub fn can_issue_turn(&self) -> bool {
         matches!(self, Self::Idle | Self::TurnCompleted { .. })
     }
@@ -80,6 +95,7 @@ impl HarnessState {
             | Self::TurnRunning {
                 turn_id,
                 started_at,
+                ..
             } => Some(RunningTurn {
                 turn_id: turn_id.clone(),
                 elapsed: now.saturating_duration_since(*started_at),

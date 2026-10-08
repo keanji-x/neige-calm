@@ -403,12 +403,10 @@ async fn claude_watchdog_timeout_reason_survives_a_server_restart() {
         panic!("the fixture must still be running");
     };
     harness
-        .set_state_for_test(HarnessState::TurnRunning {
+        .set_state_for_test(HarnessState::turn_running(
             turn_id,
-            started_at: Instant::now()
-                - HarnessConfig::default().max_turn_duration
-                - Duration::from_secs(1),
-        })
+            Instant::now() - HarnessConfig::default().max_turn_duration - Duration::from_secs(1),
+        ))
         .await;
     let outcomes = stack.wait_outcomes(&card_id, 1).await;
     assert_eq!(outcomes[0]["status"], "interrupted");

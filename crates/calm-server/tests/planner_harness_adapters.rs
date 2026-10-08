@@ -379,10 +379,7 @@ async fn start_interrupt_and_shutdown_adapters_drive_harness_lifecycle() {
         .shared_codex_appserver
         .set_active_turn_for_test(&thread_id, &turn_id);
     harness
-        .set_state_for_test(HarnessState::TurnRunning {
-            turn_id: turn_id.clone(),
-            started_at: Instant::now(),
-        })
+        .set_state_for_test(HarnessState::turn_running(turn_id.clone(), Instant::now()))
         .await;
     let interrupt_id = state
         .operation_runtime
@@ -512,10 +509,7 @@ async fn a_started_planner_streams_into_the_live_replies_the_route_reads() {
     let harness = state.harness.get(&runtime.id).unwrap();
     let turn_id = "turn-live";
     harness
-        .set_state_for_test(HarnessState::TurnRunning {
-            turn_id: turn_id.into(),
-            started_at: Instant::now(),
-        })
+        .set_state_for_test(HarnessState::turn_running(turn_id.into(), Instant::now()))
         .await;
     let daemon = state.shared_codex_appserver.clone();
     daemon.emit_turn_started_for_test(&thread_id, turn_id);

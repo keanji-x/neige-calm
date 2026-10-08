@@ -1026,10 +1026,9 @@ impl PlannerHarness {
                     reason: "dev-forced".into(),
                 },
             },
-            HarnessPhaseTag::TurnRunning => HarnessState::TurnRunning {
-                turn_id: DEV_FORCED_TURN_ID.into(),
-                started_at: now,
-            },
+            HarnessPhaseTag::TurnRunning => {
+                HarnessState::turn_running(DEV_FORCED_TURN_ID.into(), now)
+            }
             HarnessPhaseTag::TurnCompleted => HarnessState::TurnCompleted {
                 last_turn_id: DEV_FORCED_TURN_ID.into(),
             },
@@ -1099,14 +1098,20 @@ impl PlannerHarness {
         debounce.last_pending_at = debounce.last_pending_at.map(rewind);
     }
 
-    /// Let `by` pass for the turn watchdog without sleeping: the running turn started, and the
-    /// table has held its requests since, `by` earlier. Same clock as
+    /// Let `by` pass for the running turn without sleeping: the turn started, its watchdog
+    /// started counting, and the table has held its requests since, `by` earlier. Same clock as
     /// [`Self::rewind_debounce_for_test`].
     #[cfg(feature = "fixtures")]
     pub async fn rewind_turn_clock_for_test(&self, by: Duration) {
         let rewind = |at: Instant| at.checked_sub(by).unwrap_or(at);
-        if let HarnessState::TurnRunning { started_at, .. } = &mut *self.inner.state.lock().await {
+        if let HarnessState::TurnRunning {
+            started_at,
+            watchdog_from,
+            ..
+        } = &mut *self.inner.state.lock().await
+        {
             *started_at = rewind(*started_at);
+            *watchdog_from = rewind(*watchdog_from);
         }
         let mut held_since = self.inner.watchdog_held_since.lock().await;
         *held_since = held_since.map(rewind);
@@ -2113,10 +2118,7 @@ async fn on_notification(
             *inner.last_turn_id.lock().await = Some(turn_id.clone());
             live.turn_started(&turn_id);
             if !already_running_same {
-                *inner.state.lock().await = HarnessState::TurnRunning {
-                    turn_id,
-                    started_at: Instant::now(),
-                };
+                *inner.state.lock().await = HarnessState::turn_running(turn_id, Instant::now());
                 held::sweep(inner).await;
             }
             *inner.issued_turn_id.lock().await = None;
@@ -3725,8 +3727,11 @@ async fn watchdog_tick(inner: &Arc<Inner>) -> Result<()> {
         match &*state {
             HarnessState::TurnRunning {
                 turn_id,
-                started_at,
-            } if Instant::now().duration_since(*started_at) >= inner.config.max_turn_duration => {
+                watchdog_from,
+                ..
+            } if Instant::now().duration_since(*watchdog_from)
+                >= inner.config.max_turn_duration =>
+            {
                 Some(turn_id.clone())
             }
             _ => None,
