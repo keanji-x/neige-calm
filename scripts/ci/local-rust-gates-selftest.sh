@@ -24,18 +24,8 @@ elif [ "${1:-}" = nextest ]; then
     echo "Rust gate leaked NEIGE_CODEX_BIN into nextest" >&2
     exit 1
   fi
-  if [ "${2:-}" = list ]; then
-    if [ "${NEXTEST_STUB_GUARD_FAIL:-}" = 1 ]; then exit 42; fi
-    if [[ " $* " == *" --partition "* || " $* " == *" --extract-to "* || " $* " == *" --extract-overwrite "* ]]; then
-      echo 'guard must use unpartitioned private inventory' >&2
-      exit 1
-    fi
-    printf '%s\n' "$*" >> "$RUST_NEXTEST_CAPTURE.guard"
-    python3 scripts/ci/check-nextest-overrides-selftest.py --emit-fixture "$@"
-  else
-    test "$(wc -l < "$RUST_NEXTEST_CAPTURE.guard")" -eq 2
-    printf '%s\0' "$@" >"$RUST_NEXTEST_CAPTURE"
-  fi
+  test "${2:-}" = run
+  printf '%s\0' "$@" >"$RUST_NEXTEST_CAPTURE"
 fi
 EOF
 chmod +x "$stub_bin/cargo"
@@ -180,25 +170,6 @@ assert_argv "$self_archive_capture" nextest run --archive-file "$archive_file" \
   --workspace-remap . --extract-to . --extract-overwrite --profile ci \
   --test-threads 8 --partition hash:1/2
 
-# Every production route must stop before run when guard evaluation fails.
-for route in github-hosted self-hosted; do
-  for mode in live archive; do
-    failure_capture="$temp_root/failure-$route-$mode.args"
-    failure_args=(--partition hash:1/2)
-    if [ "$mode" = archive ]; then failure_args+=(--archive-file "$archive_file"); fi
-    if PATH="$stub_bin:$PATH" NEXTEST_STUB_GUARD_FAIL=1 \
-      RUST_NEXTEST_CAPTURE="$failure_capture" \
-      scripts/run-ci-rust-nextest.sh "$route" "${failure_args[@]}" >/dev/null 2>&1; then
-      echo 'guard failure did not block run' >&2; exit 1
-    fi
-    test ! -e "$failure_capture"
-  done
-done
-# Archive guard sees the same archive, but never run-only partition/extraction flags.
-if ! grep -Fq -- "--archive-file $archive_file" "$archive_capture.guard"; then
-  echo 'archive guard did not receive archive inventory' >&2; exit 1
-fi
-
 invalid_output=""
 invalid_rc=0
 invalid_output="$(scripts/run-rust-nextest.sh --test-threads 00 2>&1)" || invalid_rc=$?
@@ -245,21 +216,24 @@ if grep -Fq 'migration replay gate (#679 PR0-D)' "$ci_file"; then
   exit 1
 fi
 
-python3 - "$local_capture" "$hosted_capture" "$self_hosted_capture" \
-  "$partition_capture" "$archive_capture" "$self_archive_capture" "$archive_file" <<'PYTEST'
-import pathlib
-import sys
-import tomllib
-with open('.config/nextest.toml', 'rb') as stream:
-    overrides = tomllib.load(stream)['profile']['ci']['overrides']
-for capture in sys.argv[1:-1]:
-    archive = capture in sys.argv[-3:-1]
-    source = (['--archive-file', sys.argv[-1], '--workspace-remap', str(pathlib.Path.cwd())]
-              if archive else ['--workspace', '--locked', '--features', 'calm-server/codex-e2e'])
-    expected = [' '.join(['nextest', 'list', *source, '--profile', 'ci',
-                          '--message-format', 'json', '-E', row['filter']]) for row in overrides]
-    actual = pathlib.Path(capture + '.guard').read_text().splitlines()
-    assert actual == expected, (capture, expected, actual)
+# Check the single archive producer invocation, including its step boundaries.
+python3 - <<'PYTEST'
+from pathlib import Path
+workflow = Path('.github/workflows/ci.yml').read_text()
+call = 'run: env -u NEIGE_CODEX_BIN python3 scripts/ci/check-nextest-overrides.py --archive-file nextest-archive.tar.zst'
+assert workflow.count('scripts/ci/check-nextest-overrides.py') == 1
+producer = workflow.split('  rust-build:\n', 1)[1].split('\n  rust-shards:', 1)[0]
+assert producer.count(call) == 1
+build = producer.index('cargo nextest archive --workspace --locked --features calm-server/codex-e2e --profile ci --archive-file nextest-archive.tar.zst')
+check = producer.index('      - name: check nextest override matches\n        ' + call)
+upload = producer.index('      - name: upload nextest archive')
+assert build < check < upload
+step = producer[check:upload]
+assert step.count('      - name:') == 1
+assert 'if:' not in step and 'continue-on-error:' not in step
+assert 'matrix:' not in producer
+for path in ('scripts/run-rust-nextest.sh', 'scripts/run-ci-rust-nextest.sh'):
+    assert 'check-nextest-overrides' not in Path(path).read_text(), path
 PYTEST
 
 echo "local Rust gate safety selftest: passed"

@@ -11,7 +11,6 @@ usage='usage: scripts/run-rust-nextest.sh [--archive-file FILE] [--test-threads 
 # extracted into ./target so compile-time CARGO_BIN_EXE_* paths still resolve.
 source_args=(--workspace --locked --features calm-server/codex-e2e)
 args=()
-guard_args=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --test-threads)
@@ -42,7 +41,6 @@ while [ "$#" -gt 0 ]; do
         echo "--archive-file requires an existing file" >&2
         exit 2
       fi
-      guard_args=(--archive-file "$2")
       source_args=(--archive-file "$2" --workspace-remap . --extract-to . --extract-overwrite)
       shift 2
       ;;
@@ -52,10 +50,6 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
-
-# Validate the complete CI inventory before partitioning. Archive guard listings
-# extract to private temporary directories; only the run below writes ./target.
-env -u NEIGE_CODEX_BIN python3 scripts/ci/check-nextest-overrides.py "${guard_args[@]}"
 
 exec env -u NEIGE_CODEX_BIN \
   cargo nextest run "${source_args[@]}" --profile ci "${args[@]}"
