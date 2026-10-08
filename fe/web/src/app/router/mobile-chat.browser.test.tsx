@@ -64,14 +64,14 @@ it.each([320, 390])('aligns the left circular controls and keeps chat usable at 
   const sheet = panel.closest('[data-nc-mobile-chat-panel]')!;
   expect(getComputedStyle(sheet.firstElementChild!).backgroundImage).toBe('none');
   const historyButton = page.getByRole('button', { name: 'Open conversation history', exact: true }).element();
-  expect(sheet.getBoundingClientRect().top - historyButton.getBoundingClientRect().bottom).toBeGreaterThan(200);
+  expect(sheet.getBoundingClientRect().top - historyButton.getBoundingClientRect().bottom).toBeGreaterThanOrEqual(16);
   const sendIcon = history.querySelector('[aria-label="Send"] svg')!;
   expect(sendIcon.getBoundingClientRect().width).toBe(24);
   const bounds = panel.getBoundingClientRect();
   expect(bounds.left).toBeGreaterThanOrEqual(0);
   expect(bounds.right).toBeLessThanOrEqual(width);
-  expect(bounds.height).toBeGreaterThan(844 * 0.6);
-  expect(bounds.height).toBeLessThan(844 * 0.75);
+  expect(bounds.height).toBeGreaterThan(844 * 0.75);
+  expect(bounds.height).toBeLessThan(844 * 0.9);
   await expect.poll(() => document.activeElement === message).toBe(true);
   const expandedBar = message.closest('[class*="vendorComposer"]')?.firstElementChild;
   expect(expandedBar).toBeTruthy();
@@ -205,17 +205,26 @@ it('keeps the fixed mobile editor above a reduced visible viewport without losin
 
 it('keeps the message viewport above a growing multiline composer', async () => {
   await page.viewport(390, 844);
-  renderDailyFixture({ emptyWorkspace: true });
+  renderDailyFixture({ emptyWorkspace: true, reply: request => request.path.includes('/harness/items') ? ok([{
+    id: 1, worker_session_id: 'runtime', card_id: 'daily-planner', track_id: 'daily', thread_id: 'thread',
+    turn_id: null, turn_error_text: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
+    params: JSON.stringify({ item: { text: `${'A previous reply.\n\n'.repeat(80)}Final line remains visible.` } }), created_at_ms: 1,
+  }]) : undefined });
   await page.getByRole('textbox', { name: 'Chat message', exact: true }).click();
   const field = page.getByRole('combobox', { name: 'Message', exact: true });
   await expect.element(field).toBeEnabled();
   const footer = document.querySelector<HTMLElement>('[data-nc-chat-footer]')!;
+  const finalLine = await page.getByText('Final line remains visible.', { exact: true }).findElement();
   const initialHeight = footer.getBoundingClientRect().height;
   await field.fill('First line\nSecond line\nThird line\nFourth line\nFifth line\nSixth line');
   await expect.poll(() => footer.getBoundingClientRect().height).toBeGreaterThan(initialHeight);
   const messages = document.querySelector<HTMLElement>('[data-nc-drawer-scroll]')!;
-  await expect.poll(() => messages.getBoundingClientRect().bottom - footer.getBoundingClientRect().top).toBeLessThanOrEqual(1);
+  await expect.poll(() => messages.getBoundingClientRect().bottom - footer.getBoundingClientRect().bottom).toBeLessThanOrEqual(1);
+  await expect.poll(() => Number.parseFloat(getComputedStyle(messages).paddingBottom)).toBeGreaterThanOrEqual(footer.getBoundingClientRect().height);
   expect(Math.round(footer.getBoundingClientRect().bottom)).toBe(844);
+  await expect.poll(() => finalLine.getBoundingClientRect().bottom).toBeLessThanOrEqual(footer.getBoundingClientRect().top);
+  const margin = document.elementFromPoint(footer.getBoundingClientRect().right - 2, footer.getBoundingClientRect().top + 16);
+  expect(margin?.closest('[data-nc-drawer-scroll]')).toBe(messages);
 });
 
 it('loads real mobile CJK weight ranges and keeps shadowed controls free of visible outlines', async () => {

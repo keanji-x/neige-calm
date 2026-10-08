@@ -118,7 +118,8 @@ it('uses Escape to close Planner before its Conversations page', async () => {
   const router = setup('/track/w1');
   await router.navigate({ to: '/track/w1', search: { panel: 'conversations' } });
   await page.getByRole('button', { name: /Design review/ }).click();
-  await page.getByRole('heading', { name: '对话', exact: true }).findElement();
+  await page.getByRole('button', { name: 'Close conversation', exact: true }).findElement();
+  await page.elementLocator(document.querySelector('[data-nc-mobile-chat-panel]')!).getByRole('heading', { name: 'Responsive mobile UI', exact: true }).findElement();
   await userEvent.keyboard('{Escape}');
   await settlePaint();
   expect(router.state.location.search).toHaveProperty('panel', 'conversations');
@@ -166,7 +167,7 @@ describe('Unified mobile headers', () => {
     await expect.element(page.getByRole('button', { name: 'New track', exact: true })).toBeVisible();
     expect(router.state.location.pathname).toBe('/track/w1');
     await page.getByRole('button', { name: 'Back to Areas' }).click();
-    await page.getByRole('heading', { name: '工作区', exact: true }).findElement();
+    await page.getByRole('heading', { name: 'Areas', exact: true }).findElement();
     await page.getByRole('button', { name: 'Back to workspace' }).click();
     expect(router.state.location.pathname).toBe('/track/w1');
     await page.viewport(1280, 720);
@@ -235,16 +236,20 @@ describe('Unified mobile headers', () => {
     await commands.emulateReducedMotion(true);
     try {
       await page.viewport(390, 844);
+      expect(window.matchMedia('(prefers-reduced-motion: reduce)').matches).toBe(true);
       setup('/track/w1');
       await page.getByRole('button', { name: 'Open workspace' }).click();
       await page.getByRole('button', { name: 'Product', exact: true }).click();
+      await expect.element(page.getByRole('heading', { name: 'Product', exact: true })).toBeVisible();
       const tracks = document.querySelector<HTMLElement>('[data-nc-workspace-page="tracks"]')!;
       expect(Number.parseFloat(getComputedStyle(tracks).transitionDuration)).toBeLessThanOrEqual(0.00001);
-      await Promise.all(tracks.getAnimations().map((animation) => animation.finished));
+      expect(tracks.getAnimations()).toHaveLength(0);
       expect(tracks.getBoundingClientRect().left).toBe(0);
       await page.getByRole('button', { name: 'Back to Areas' }).click();
+      await expect.element(page.getByRole('heading', { name: 'Areas', exact: true })).toBeVisible();
       const areas = document.querySelector<HTMLElement>('[data-nc-workspace-page="areas"]')!;
       expect(Number.parseFloat(getComputedStyle(areas).transitionDuration)).toBeLessThanOrEqual(0.00001);
+      expect(areas.getAnimations()).toHaveLength(0);
       expect(areas.getBoundingClientRect().left).toBe(0);
     } finally {
       await commands.emulateReducedMotion(false);
@@ -322,7 +327,7 @@ describe('Unified mobile headers', () => {
     expect(document.activeElement).not.toBe(document.body);
     expect(router.state.location.pathname).toBe('/track/w1');
     await page.getByRole('button', { name: 'Back to Areas' }).click();
-    await page.getByRole('heading', { name: '工作区', exact: true }).findElement();
+    await page.getByRole('heading', { name: 'Areas', exact: true }).findElement();
     expect(document.activeElement).not.toBe(document.body);
     await page.getByRole('button', { name: 'Back to workspace' }).click();
     await expect.poll(() => document.activeElement).toBe(opener);
@@ -419,7 +424,7 @@ describe('Unified mobile headers', () => {
         .map((animation) => animation.finished.catch(() => undefined)));
       await settlePaint();
       const box = header.getBoundingClientRect();
-      const button = header.querySelector('button')!;
+      const button = name === 'chat' ? header.querySelector('button[aria-label="Close conversation"]')! : header.querySelector('button')!;
       const hit = button.getBoundingClientRect();
       frames.push({ name, x: box.x, y: box.y, width: box.width, height: box.height, left: hit.x, top: hit.y });
       if (name === 'chat') {
@@ -427,7 +432,7 @@ describe('Unified mobile headers', () => {
         expect(box.y).toBeGreaterThan(80);
         expect(hit.width).toBe(44); expect(hit.height).toBe(44);
         expect(hit.right).toBe(width - 16);
-        expect(getComputedStyle(header.querySelector('h2')!).fontSize).toBe('18px');
+        expect(getComputedStyle(header.querySelector('h2')!).fontSize).toBe('16px');
         await page.screenshot({ path: `../../../../test-results/unified-${width}-${name}.png` });
         return;
       }
@@ -481,7 +486,7 @@ describe('Unified mobile headers', () => {
     await userEvent.keyboard('{Escape}');
     await expect.poll(() => document.activeElement).toBe(selector);
     await page.getByRole('button', { name: 'Open workspace' }).click();
-    await record('areas', (await page.getByRole('heading', { name: '工作区', exact: true }).findElement()).closest('header')!);
+    await record('areas', (await page.getByRole('heading', { name: 'Areas', exact: true }).findElement()).closest('header')!);
     await page.getByRole('button', { name: 'Product', exact: true }).click();
     await record('tracks', (await page.getByRole('heading', { name: 'Product', exact: true }).findElement()).closest('header')!);
     await page.getByRole('button', { name: 'New track', exact: true }).click();
@@ -493,7 +498,8 @@ describe('Unified mobile headers', () => {
     await router.navigate({ to: '/track/w1', search: { panel: 'conversations' } });
     await record('conversations', (await page.getByRole('heading', { name: 'Conversations', exact: true }).findElement()).closest('header')!);
     await page.getByRole('button', { name: /Conversation Design review/ }).click();
-    await record('chat', (await page.getByRole('heading', { name: '对话', exact: true }).findElement()).closest('header')!);
+    await page.getByRole('button', { name: 'Close conversation', exact: true }).findElement();
+    await record('chat', (await page.elementLocator(document.querySelector('[data-nc-mobile-chat-panel]')!).getByRole('heading', { name: 'Responsive mobile UI', exact: true }).findElement()).closest('header')!);
     await page.getByRole('button', { name: 'Close conversation' }).click();
     await expect.poll(() => document.querySelector('[data-nc-mobile-chat-panel]')?.closest('dialog')?.open).toBe(false);
     await page.getByRole('button', { name: 'Back to Report' }).click();

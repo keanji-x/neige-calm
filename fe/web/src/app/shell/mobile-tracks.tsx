@@ -66,7 +66,7 @@ function NavigationPage({
   const tracks = areaPinnedTracks(selected === undefined ? [] : tracksByArea.get(selected.id) ?? [],
     (track) => preferences.areaTrackPinned(track.areaId, track.id));
   return <div className={styles.page}>
-    <MobileNavigationHeader creationScope={view === 'areas' ? 'area' : 'track'} title={view === 'areas' ? '工作区' : selected?.name ?? 'Tracks'}
+    <MobileNavigationHeader creationScope={view === 'areas' ? 'area' : 'track'} title={view === 'areas' ? 'Areas' : selected?.name ?? 'Tracks'}
       backLabel={view === 'areas' ? 'workspace' : tracksBackLabel} area={view === 'tracks' ? selected : undefined}
       showSettings={false} actionsPlacement="floating"
       onBack={onBack} onNewTrack={onNewTrack} onCreateArea={onCreateArea} onEditArea={onEditArea} onOpenSettings={onOpenSettings} />

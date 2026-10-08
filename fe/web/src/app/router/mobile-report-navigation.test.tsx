@@ -215,7 +215,7 @@ describe('workspace header navigation', () => {
     setup('/track/w1?from=area');
     await userEvent.click(await screen.findByRole('button', { name: 'Open workspace' }));
     expect(screen.getByRole('dialog', { name: 'Tracks and settings' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: '工作区' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Areas' })).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Product' }));
     expect(screen.getByRole('heading', { name: 'Product' })).toBeTruthy();
     expect(document.querySelector('nav[aria-label="Primary"]')).toBeNull();
@@ -230,7 +230,7 @@ describe('workspace header navigation', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Second' }));
     expect(screen.getByRole('heading', { name: 'Second' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Back to Areas' })).toBeTruthy();
-    expect(screen.queryByRole('heading', { name: '工作区' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Areas' })).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: /^New track$/ }));
     await waitFor(() => { expect(href(router)).toBe('/area/c2/new'); });
     await waitFor(() => { expect(screen.queryByRole('dialog', { name: 'Tracks and settings' })).toBeNull(); });

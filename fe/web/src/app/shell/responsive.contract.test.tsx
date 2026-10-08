@@ -97,7 +97,7 @@ describe('compact navigation interaction contracts', () => {
     fireEvent.click(opener);
     expect(screen.getByRole('dialog', { name: 'Tracks and settings' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Settings' })).toBeNull();
-    expect(screen.getByRole('heading', { name: '工作区' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Areas' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^Responsive mobile UI/ })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Product' }));
     expect(screen.getByRole('button', { name: /^Responsive mobile UI/ })).toBeTruthy();

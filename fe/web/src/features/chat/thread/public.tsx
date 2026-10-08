@@ -158,11 +158,13 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
     : toolCallGroupShowsRunning(tail.activities.map(toolCallOf), groupUi.get(tail.key)?.expanded ?? false);
   /* The rail is portalled into the drawer's seam (`.drawer` is `overflow: hidden`, so a descendant cannot reach it). Held in state because a portal needs the node at render time. */
   const [railSeam, setRailSeam] = useState<HTMLElement | null>(null);
+  const [scrollOverlay, setScrollOverlay] = useState<HTMLElement | null>(null);
   /* The frame is not rendered on an empty transcript, so the first turn arriving is the one edge that creates it under a live component. */
   const hasTranscript = turns.length > 0;
   useLayoutEffect(() => {
     setRailSeam(drawerSeamAround(frameRef.current));
-  }, [hasTranscript]);
+    setScrollOverlay(frameRef.current?.closest('[data-nc-drawer]')?.querySelector<HTMLElement>('[data-nc-chat-scroll-overlay]') ?? null);
+  }, [hasTranscript, compactViewport]);
   const railShown = exchanges.length > 0 && railSeam !== null;
   const [active, setActive] = useState<string | null>(null);
   /** Re-derive the lit dot from the painted boxes; a no-op before the rail effect has installed it. */
@@ -308,6 +310,11 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
     );
   }
 
+  const scrollControls = <div className={styles.scrollDockContent} data-nc-chat-scroll-dock="">
+    {scrollOverlay === null && <div className={styles.scrollBlur} aria-hidden="true" />}
+    <ChatLayoutScrollButton isVisible className={styles.scrollButton} onClick={scrollFollower.followToEnd} />
+  </div>;
+
   return (
     <div className={styles.threadFrame} ref={frameRef}>
       {railShown && railSeam !== null && createPortal(
@@ -356,14 +363,8 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
         {currentMeta}
         <div ref={endRef} aria-hidden="true" />
       </div>
-      {scrolledUp && (
-        <div className={styles.scrollDock}>
-          <div className={styles.scrollDockContent} data-nc-chat-scroll-dock="">
-            <div className={styles.scrollBlur} aria-hidden="true" />
-            <ChatLayoutScrollButton isVisible className={styles.scrollButton} onClick={scrollFollower.followToEnd} />
-          </div>
-        </div>
-      )}
+      {scrolledUp && (scrollOverlay !== null ? createPortal(scrollControls, scrollOverlay)
+        : <div className={styles.scrollDock}>{scrollControls}</div>)}
     </div>
   );
 

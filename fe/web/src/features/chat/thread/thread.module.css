@@ -86,12 +86,15 @@
     inset-inline: calc(-1 * var(--nc-card-inset, var(--space-4)));
   }
 
+  [data-nc-chat-scroll-overlay] .scrollDockContent { inset-inline: 0; }
+
   .scrollBlur {
     position: absolute;
     inset-block-end: 0;
     inset-inline: 0;
     block-size: calc(var(--space-12) * 3);
     backdrop-filter: blur(var(--space-6));
+    -webkit-mask-image: linear-gradient(to bottom, transparent, black);
     mask-image: linear-gradient(to bottom, transparent, black);
     pointer-events: none;
   }

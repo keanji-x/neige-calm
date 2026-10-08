@@ -1,5 +1,6 @@
 @layer features {
-  .composer.composer { padding-inline-start: calc(var(--space-8) + var(--rail-w-collapsed) + var(--space-6)); padding-inline-end: var(--space-8); --color-accent: var(--accent); padding-block-end: calc(env(safe-area-inset-bottom) + var(--space-8)); --color-background-popover: var(--paper); --color-background-muted: var(--paper); --color-background-surface: var(--paper); }
+  .composer.composer { background: transparent; pointer-events: none; padding-inline-start: calc(var(--space-8) + var(--rail-w-collapsed) + var(--space-6)); padding-inline-end: var(--space-8); --color-accent: var(--accent); padding-block-end: calc(env(safe-area-inset-bottom) + var(--space-8)); --color-background-popover: var(--paper); --color-background-muted: var(--paper); --color-background-surface: var(--paper); }
+  .vendorComposer > * { pointer-events: auto; }
   /* Astryx owns editing and submission. Its documented input/footer slots share one row here. */
   .vendorComposer > div:has(.input) { --nc-mobile-input-row: 1; display: grid; position: relative; grid-template-columns: minmax(0, 1fr) var(--rail-w-collapsed); align-items: center; gap: var(--space-2); padding: var(--space-px); min-block-size: calc(var(--rail-w-collapsed) + var(--space-2)); border-radius: calc(var(--rail-w-collapsed) / 2 + var(--space-1)); background: var(--nc-float-fill); border: 1px solid var(--nc-float-edge); box-shadow: var(--nc-float-shadow); box-sizing: border-box; overflow: visible; }
   .vendorComposer > div:has([data-nc-edit-bar]) { --nc-mobile-input-row: 2; }

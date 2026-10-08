@@ -116,6 +116,20 @@ export default defineConfig({
             })),
             instances: [{ browser: 'chromium' }],
             commands: {
+              swipe: async ({ page, iframe }, selector: string, distance: number) => {
+                const box = await iframe.locator(selector).boundingBox();
+                if (box === null) throw new Error('Swipe target is not visible');
+                const session = await page.context().newCDPSession(page);
+                const x = box.x + box.width / 2;
+                const y = box.y + Math.min(40, box.height / 2);
+                try {
+                  await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+                  for (let step = 1; step <= 12; step++) {
+                    await session.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: y + distance * step / 12 }] });
+                  }
+                  await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+                } finally { await session.detach(); }
+              },
               tap: async ({ iframe }, selector: string) => {
                 await iframe.locator(selector).tap();
               },
