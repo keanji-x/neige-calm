@@ -10,7 +10,7 @@ change introduces; a pre-existing hazard is named and left alone.
 outside the sandbox (authority), persisted run records that later stand in for a gate verdict
 (persistence), and gate processes that run while the worker is alive (isolation).
 
-**Outcome.** A gated worker calls `neige_task_gate_run`. The kernel commits the worker's checkout
+**Outcome.** A gated worker calls `neige_task_gate`. The kernel commits the worker's checkout
 as the attempt's one commit above the lease base, with the delivery's own script, and runs the
 task's declared gate on that commit, in the lease checkout, outside the sandbox. The worker gets the result in the same session, fixes, and calls
 again. When the worker reports done and the delivery makes no further commit, the first gate
@@ -124,7 +124,8 @@ the worker keeps calling; it does not lift the hard run cap (`worker_liveness.rs
   it runs `neige_git reset -q --soft "$4"`, where `$4` is the lease base.
   - Then it commits as the delivery does: when the index differs from the lease base, with the
     call's `commit_message` (else `neige: attempt <id> gate run <n>`). It pins
-    `refs/neige/gate-runs/<track>/<card>/<attempt>-r<n>` last.
+    `refs/neige/gate-runs/<track>/<card>/r<n>` last (one worker card serves one attempt; an
+    attempt id, `<track>:<key>`, cannot appear in a ref name).
   - `HEAD` stays on that commit. The steps see exactly what the gate at done sees: `HEAD` is a
     commit with the worker's tree, and the index and worktree are clean.
   - **Why the reset (F1).** The ownership audit judges every commit in the range (K21). Without
@@ -200,7 +201,8 @@ the worker keeps calling; it does not lift the hard run cap (`worker_liveness.rs
   - Scorecard: `gate_red` keeps its meaning (final verdicts). Two new columns: `runs` (run ops
     of the window) and `reused` (verdicts with `reused` evidence).
   - The dev template's verification plan reads: "The kernel runs the gate when the worker asks;
-    a passing run on the unchanged commit is the gate's verdict."
+    a passing run on the unchanged commit is the gate's verdict." Slice 1 ships the sentence without reuse
+    (Revision 4, item 3).
 - **D7 4140 and the neighbours (Q7).**
   - Liveness: §2.1 and D3.
   - 4140: no migration, no table, no column. The run record is the op row (`kind =
@@ -378,7 +380,7 @@ Rows P10–P14 are also in precedence order (P11, then P13, then P12).
 
 ## 6. Tool surface
 
-**`neige_task_gate_run`** (`neige.task.gate_run`; CLI `neige task gate-run`). Worker role,
+**`neige_task_gate`** (CLI `neige task gate`; verb `gate`, agent-commands §3). Worker role,
 listed for workers.
 
 - Parameters: `attempt_id` (required), `commit_message` (optional, `CommitMessage::parse`, the
@@ -411,7 +413,7 @@ listed for workers.
     gate run, the kernel makes no commit and that run's message stands."
 
 **Replacement for `render_gate_precheck`** (kernel-delivery gated tasks; `<tool>` is
-`neige_task_gate_run` for Codex, `neige task gate-run --attempt-id <id>` for Claude; `<W>` is
+`neige_task_gate` for Codex, `neige task gate --attempt-id <id>` for Claude; `<W>` is
 the rendered bound, e.g. `90 seconds`):
 
 > This task has a gate: the steps below run in order from the checkout root under /bin/sh,
@@ -423,6 +425,12 @@ the rendered bound, e.g. `90 seconds`):
 > you change nothing after it, that run is the gate's verdict when you report done, and its
 > commit is what the kernel delivers. Otherwise the kernel runs the gate after you report. You
 > need not run these steps yourself.
+
+Slice 1 ships this text without the reuse clause (Revision 4, item 3): its sentence after "run
+again." reads "If you change nothing after the last run, its commit is what the kernel delivers.
+After you report done, the kernel runs the gate on the delivered commit, and that run decides."
+For `<tool>` the CLI form says `--commit-message` where the MCP form says `commit_message`.
+Slice 2 restores the reuse sentences.
 
 A gated task without a kernel-delivery lease gets only: "This task has a gate: after you report
 done, the kernel runs these steps in order from the checkout root under /bin/sh, outside your
@@ -458,7 +466,7 @@ second run.
   listed in `TASK_BOUND_ADAPTER_KINDS`. Phases as task-verify.
 - **The tool handler** (D3): the end-to-end deadline, the admission transaction that inserts
   the op row, the detached drive, the bounded wait. Also the CLI row and
-  `prompts/tools/neige_task_gate_run.md`.
+  `prompts/tools/neige_task_gate.md`.
 - **The adapter:**
   - `prepare_tx` re-checks the row guard and freezes the lease identity, the lease base and
     `gate_json`.
@@ -545,7 +553,7 @@ from the op row, so MA3 reddens R4 alone.
   the branch (`git branch --contains` lists none) and still pinned by its `gate-runs` ref.
 - **R13** `a_stuck_run_does_not_hold_the_delivery`: a run op is set `stuck` through the
   repository's test helper.
-  - While the attempt still runs, a new `neige_task_gate_run` is refused (`Unproven`).
+  - While the attempt still runs, a new `neige_task_gate` call is refused (`Unproven`).
   - Then the worker reports done. The delivery submits and settles, and the checkout frees.
   - A regate of the attempt after its gate fails is refused.
 - **P1** (`task_prompt.rs` unit, plus goldens): the tool spelling per kind; the rendered `W`;
@@ -746,3 +754,21 @@ No item was rejected.
 | `g1` link | Simplified. Prepare at gate attempt 1 unlinks a leftover `g1` first, then makes a plain hard link. The temporary name, the `rename` and `spawn_held`'s unlink are dropped, and MR9 with them. MR8 is now "the leftover unlink dropped". Verified `target.rs:498-517` (`O_APPEND`) and `gate_logs.rs:77-81` (no reader before the bump) |
 | Wording | `require_attempt_startable_tx` admits `dispatched`, `running` and `verifying` (`task_recovery.rs:25-28`); P14 excludes a refused release, which is P4; the commit line is `crates/calm-types/src/forge_git.rs:85` |
 
+### Revision 4 (implementation, slice 1)
+
+Recorded from the slice-1 implementation (`feat(gate): worker-requested gate runs, slice 1`);
+each item was verified against the code.
+
+| # | Item | Resolution |
+|---|---|---|
+| 1 | Tool name | `neige_task_gate` / `neige task gate`, not `neige_task_gate_run` / `gate-run`: the closed grammar (`kernel_tool_names_follow_the_grammar`, `kernel_tool_actions_are_in_the_vocabulary`) and the CLI's split at `_` refuse a two-word action. The verb `gate` is added to `docs/conventions/agent-commands.md` §3 |
+| 2 | Run ref | `refs/neige/gate-runs/<track>/<card>/r<N>`: attempt ids are `<track>:<key>` and `:` is illegal in a ref name; one worker card serves one attempt |
+| 3 | Prompt text | Slice 1 omits the reuse clause from §6 and the D6 `dev.md` sentence (slice 1 has no reuse): the gate after the report decides. `dev.md` reads "The kernel runs the gate when the worker asks and again after it reports; that last run is the evidence." Slice 2 restores the reuse wording |
+| 4 | Worker heads | They name the tool in parentheses (`neige_task_gate` / `neige task gate`): `worker_prompts_name_only_tools_the_worker_role_can_see` requires the MCP head to name every worker-visible tool |
+| 5 | Run evidence | `Verified.before` is a stand-in sample: the run commit, a clean tree and the lease's expected provenance (D1: the checkpoint's checks stand in for a before-sample). No wire type changes in slice 1 |
+| 6 | D7 helper | `attempt_gate_ops(tx, attempt)` has no `exclude` yet: no slice-1 caller needs it; slice 2 adds it with reuse (J1) |
+| 7 | `W` plumbing | `AppContext.gate_run_wait` (boot sets it from the configured idle window through `with_gate_run_wait`; other constructions keep the 3600 s bound) and the worker adapters' `with_gate_run_wait`. Tests set the bound on their own context before it is shared |
+| 8 | P11 before P13 | The reader maps a failed run whose class is `parked_deadline` to `gate-timeout` unless its reason starts with `gate-infra`, so a dead leader past the deadline stays infra |
+| 9 | Test blocking | Tests block steps and the R4b clean filter on flag files rather than fifos (the after-sample may run the filter again) |
+| 10 | Read-only gated rows | Plan validation refuses `read_only` with a gate, so R9 gives such a row its gate by hand; the read-only prompt variant and refusal guard legacy rows only |
+| 11 | Error codes | Not the caller's running attempt, no gate, no kernel commit: `-32602`; the cap and an op not proven stopped: `-32409`; the Planner: the registry role gate, `-32403`. A checkpoint failure (P2/P3) answers `failing_step: "neige-checkpoint"` with its exit code |

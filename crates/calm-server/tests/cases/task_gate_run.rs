@@ -335,10 +335,18 @@ async fn a_call_past_the_wait_bound_returns_running_and_the_next_call_joins() {
         (&json!(1), &json!("block"))
     );
 
-    touch(&flag);
-    let second = gate_run(&fx, &a, Some("a joining call's message"))
-        .await
-        .unwrap();
+    // The second call is admitted while the step still blocks, so it can only join r1; the step
+    // is released once that short admission is long done, well inside the call's 5 s wait.
+    let (second, ()) = tokio::join!(gate_run(&fx, &a, Some("a joining call's message")), async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(
+            run_ops(&fx, &a.task.id).await.len(),
+            1,
+            "the call joined r1"
+        );
+        touch(&flag);
+    });
+    let second = second.unwrap();
     passed(&second);
     assert_eq!(second["run"], 1, "{second}");
     assert_eq!(run_ops(&fx, &a.task.id).await.len(), 1, "one op row");
