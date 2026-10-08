@@ -73,9 +73,9 @@ it.each(['before', 'after'] as const)('cold saved Track and hot reconnect retain
   await waitFor(() => expect(access.read().phase).toBe('syncing')); act(replay); await waitFor(() => expect(access.read().phase).toBe('connected')); await painted();
   expect(document.querySelector('[data-nc-track-page]')).toBe(track);
   expect(screen.getByText('已连接')).toBeTruthy();
-  const status = document.querySelector('[data-nc-recovery-status]')!.getBoundingClientRect();
-  expect(status.right).toBeLessThanOrEqual(390);
-  expect(status.top).toBeGreaterThanOrEqual(document.querySelector('[data-nc-mobile-header]')!.getBoundingClientRect().bottom);
+  const status = document.querySelector('[data-nc-recovery-status="connected"]')!;
+  expect(status.closest('details')).toBeNull();
+  expect(status.getBoundingClientRect().width).toBeLessThanOrEqual(1);
   await page.screenshot({ path: '../../../../test-results/1712-restored-track-390.png' });
   mounted.unmount();
   // A subsequent ordinary web client gets the browser's real event source.

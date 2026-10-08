@@ -106,6 +106,16 @@ export class RecoverySession {
     if (!this.ports.online()) { this.access.invalidate('offline'); return; }
     void this.probe(false);
   };
+  /** Lifecycle reachability notifications join current foreground work; they
+   * cannot grant access. Real pauses already invalidate the generation, while
+   * authorization callers retain resume()'s forced revalidation contract. */
+  wake = (): void => {
+    if (this.stopped) return;
+    const phase = this.access.read().phase;
+    if (this.ports.visible() && this.ports.online() &&
+      (this.controller !== null || phase === 'connected' || phase === 'syncing')) return;
+    this.resume();
+  };
   resume = (): void => { if (this.blocked() || this.access.read().phase === 'login' || this.access.read().phase === 'update') return; this.cancel(); this.access.invalidate('recovering'); this.retry(); };
   unauthorized = (): void => {
     this.cancel(); this.access.invalidate('login', '需要重新登录');
