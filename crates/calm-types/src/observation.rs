@@ -16,6 +16,8 @@ use crate::verify_target::{
 mod receipt;
 
 #[cfg(test)]
+mod gate_text_tests;
+#[cfg(test)]
 mod origin_tests;
 
 /// The `source` of the `TrackWake` a mail writes (#2130): the kernel's own fixed identifier.
@@ -545,8 +547,9 @@ const REGATE_HINT: &str = " If an environment cause failed this gate, fix it, th
 /// The head sentence of a gate-result wake (everything before ` Log tail:`), #1727 S4 D3.
 /// A refused, discarded or no-candidate target names the target instead of the step verdict;
 /// every other target (`Unbound`, `Verified` with no reasons, `Unsampled`, absent) keeps the step
-/// verdict. A `gate-timeout` / `gate-infra` detail always names its class, with the step / exit
-/// attribution appended when the producer kept one; `gate-red` and an absent detail stay bare.
+/// verdict, and a `Verified` one also names the candidate it verified (#2459). A `gate-timeout` /
+/// `gate-infra` detail always names its class, with the step / exit attribution appended when the
+/// producer kept one; `gate-red` and an absent detail stay bare.
 fn gate_result_text(
     key: &str,
     passed: bool,
@@ -641,7 +644,17 @@ fn gate_result_text(
             } else {
                 ""
             };
-            format!("Task {key} gate {verdict} (gate run {attempt}).{order}")
+            // The arms above took a `Verified` target with reasons, so this one stands.
+            let on = match target {
+                Some(VerifyTarget::Candidate {
+                    candidate_id,
+                    commit_sha,
+                    evidence: VerifyTargetEvidence::Verified { .. },
+                    ..
+                }) => format!(" on candidate {candidate_id} ({commit_sha})"),
+                _ => String::new(),
+            };
+            format!("Task {key} gate {verdict}{on} (gate run {attempt}).{order}")
         }
     }
 }
