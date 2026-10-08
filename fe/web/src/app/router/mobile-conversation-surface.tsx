@@ -177,15 +177,15 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
     isOpen={props.open} onOpenChange={(open) => { if (!open) props.onClose(); }} hasScrim={false}
     finalFocusRef={finalFocus} label={frame.title || '对话'} height={`${sheetHeight}px`}
     style={{ translate: `0 -${visibleViewport.bottomInset}px` }} purpose="info">
-    <section ref={contentRef} onPointerDown={(event) => event.stopPropagation()} onPointerMove={(event) => event.stopPropagation()} className={styles.content} style={{ paddingBottom: footerHeight }} data-nc-drawer="" id={props.id}>
+    <section ref={contentRef} onPointerDown={(event) => event.stopPropagation()} onPointerMove={(event) => event.stopPropagation()} className={styles.content} data-nc-drawer="" id={props.id}>
       <header className={styles.conversationHeader}>
         <h2 className={styles.conversationHeading}>{frame.contextTitle ?? frame.title}</h2>
         <button type="button" className={styles.close} aria-label={fullscreen ? 'Collapse conversation' : 'Expand conversation'} aria-pressed={fullscreen} onClick={() => setFullscreen(value => !value)}><Icon name={fullscreen ? 'compact' : 'fullscreen'} /></button>
         <button type="button" className={styles.close} aria-label={props.closeLabel ?? 'Close conversation'} onClick={props.onClose}><Icon name="close" /></button>
       </header>
       <div className={styles.messageViewport}>
-        <div className={styles.messages} data-nc-drawer-scroll="">{frame.children}</div>
-        <div className={styles.scrollOverlay} data-nc-chat-scroll-overlay="" />
+        <div className={styles.messages} style={{ paddingBottom: `calc(${footerHeight}px + var(--space-8))`, scrollPaddingBottom: footerHeight }} data-nc-drawer-scroll="">{frame.children}</div>
+        <div className={styles.scrollOverlay} style={{ bottom: footerHeight }} data-nc-chat-scroll-overlay="" />
       </div>
     </section>
   </BottomSheet></div>;

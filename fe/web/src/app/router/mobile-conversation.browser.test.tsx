@@ -68,7 +68,9 @@ it('anchors the return-to-bottom control to the message viewport and joins the c
   await commands.wheelScroll('[data-nc-drawer-scroll]', -350);
   await expect.poll(() => dock.getBoundingClientRect().bottom).toBeCloseTo(initial, 0);
   const footer = document.querySelector<HTMLElement>('[data-nc-chat-footer]')!;
-  expect(scroller().getBoundingClientRect().bottom).toBeCloseTo(footer.getBoundingClientRect().top, 0);
+  expect(scroller().getBoundingClientRect().bottom).toBeCloseTo(footer.getBoundingClientRect().bottom, 0);
+  const overlay = document.querySelector<HTMLElement>('[data-nc-chat-scroll-overlay]')!;
+  expect(overlay.getBoundingClientRect().bottom).toBeCloseTo(footer.getBoundingClientRect().top, 0);
   await page.getByRole('button', { name: 'Scroll to bottom' }).click();
   await expect.poll(() => scroller().scrollHeight - scroller().scrollTop - scroller().clientHeight).toBeLessThanOrEqual(1);
 });
