@@ -705,10 +705,10 @@ async fn watchdog_interrupt_timeout_wedges() {
     let (_repo, harness, _runtime_id, _thread_id) =
         harness_with(repo, daemon, HarnessPhaseTag::TurnRunning, config).await;
     harness
-        .set_state_for_test(HarnessState::TurnRunning {
-            turn_id: "turn-timeout".into(),
-            started_at: Instant::now() - Duration::from_secs(1),
-        })
+        .set_state_for_test(HarnessState::turn_running(
+            "turn-timeout".into(),
+            Instant::now() - Duration::from_secs(1),
+        ))
         .await;
     wait_for_state(
         &harness,
@@ -843,10 +843,10 @@ async fn interrupt_target_completed_status_clears_watchdog() {
     )
     .await;
     harness
-        .set_state_for_test(HarnessState::TurnRunning {
-            turn_id: "turn-race".into(),
-            started_at: Instant::now(),
-        })
+        .set_state_for_test(HarnessState::turn_running(
+            "turn-race".into(),
+            Instant::now(),
+        ))
         .await;
     harness.interrupt("manual".into()).await.unwrap();
     assert!(matches!(
@@ -884,10 +884,10 @@ async fn interrupt_target_aborted_notification_clears_watchdog() {
     )
     .await;
     harness
-        .set_state_for_test(HarnessState::TurnRunning {
-            turn_id: "turn-aborted".into(),
-            started_at: Instant::now(),
-        })
+        .set_state_for_test(HarnessState::turn_running(
+            "turn-aborted".into(),
+            Instant::now(),
+        ))
         .await;
     harness.interrupt("manual".into()).await.unwrap();
     assert!(matches!(

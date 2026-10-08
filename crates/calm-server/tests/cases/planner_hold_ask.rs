@@ -401,19 +401,29 @@ impl Rig {
     }
 
     async fn post(&self, uri: String, body: Value) -> (StatusCode, Value) {
-        let resp = self
-            .app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(uri)
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        self.send_request(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+    }
+
+    /// `GET /api/cards/{id}/planner/run` on the Planner card.
+    async fn planner_run(&self) -> Value {
+        let uri = format!("/api/cards/{}/planner/run", self.card);
+        let (status, body) = self
+            .send_request(Request::get(uri).body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body
+    }
+
+    async fn send_request(&self, request: Request<Body>) -> (StatusCode, Value) {
+        let resp = self.app.clone().oneshot(request).await.unwrap();
         let status = resp.status();
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         (
@@ -766,6 +776,30 @@ async fn approving_after_31_minutes_of_waiting_is_not_interrupted() {
         "{:?}",
         rig.harness.state_for_test().await
     );
+    assert!(rig.daemon.interrupted_turns_for_test().is_empty());
+    rig.harness.shutdown().await.unwrap();
+}
+
+/// Waiting on the user is still time the turn has run: the watchdog leaves 31 minutes of waiting
+/// out, but `GET /planner/run` counts them in the running turn's `elapsed_ms`.
+#[tokio::test]
+async fn a_running_turns_elapsed_time_counts_the_wait_the_watchdog_leaves_out() {
+    let rig = rig().await;
+    let turn = rig.start_turn().await;
+    let (_ask_id, _request) = rig.open("req-1", CONNECTION).await;
+    wait_for("a watchdog tick to see the held request", || {
+        rig.harness.watchdog_saw_held_request_for_test()
+    })
+    .await;
+    let waited = Duration::from_secs(31 * 60);
+    rig.harness.rewind_turn_clock_for_test(waited).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let run = rig.planner_run().await;
+    assert_eq!(run["phase"], "turn_running", "{run}");
+    assert_eq!(run["running_turn"]["turn_id"], turn.as_str(), "{run}");
+    let elapsed_ms = run["running_turn"]["elapsed_ms"].as_u64().unwrap();
+    assert!(elapsed_ms >= waited.as_millis() as u64, "{run}");
     assert!(rig.daemon.interrupted_turns_for_test().is_empty());
     rig.harness.shutdown().await.unwrap();
 }

@@ -160,17 +160,18 @@ pub(super) fn release_all(inner: &Inner) {
 }
 
 /// The turn watchdog does not count time the turn spends waiting on the user: while the table
-/// holds a request, each tick moves the running turn's start forward by the time since the last
-/// tick that saw it held. Moving the start, rather than skipping the check, keeps the waited time
-/// out of the turn after the answer too.
+/// holds a request, each tick moves the running turn's `watchdog_from` forward by the time since
+/// the last tick that saw it held. Moving that instant, rather than skipping the check, keeps the
+/// waited time out of the watchdog after the answer too. The turn's `started_at` stays put: the
+/// wait is still part of how long the turn has run.
 pub(super) async fn pause_watchdog_while_held(inner: &Inner) {
     let now = Instant::now();
     let held = !inner.held_requests.is_empty();
     let mut held_since = inner.watchdog_held_since.lock().await;
     if let Some(since) = *held_since {
         let waited = now.saturating_duration_since(since);
-        if let HarnessState::TurnRunning { started_at, .. } = &mut *inner.state.lock().await {
-            *started_at = (*started_at + waited).min(now);
+        if let HarnessState::TurnRunning { watchdog_from, .. } = &mut *inner.state.lock().await {
+            *watchdog_from = (*watchdog_from + waited).min(now);
         }
     }
     *held_since = held.then_some(now);

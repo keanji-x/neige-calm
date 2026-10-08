@@ -567,10 +567,10 @@ async fn phase_log_failure_does_not_reject_or_erase_durable_input() {
     let (harness, _daemon, card_id, track_id) = seed_harness(repo.clone(), events).await;
 
     harness
-        .set_state_for_test(HarnessState::TurnRunning {
-            turn_id: "turn-rollback".into(),
-            started_at: Instant::now(),
-        })
+        .set_state_for_test(HarnessState::turn_running(
+            "turn-rollback".into(),
+            Instant::now(),
+        ))
         .await;
 
     sqlx::query("ALTER TABLE events RENAME TO events_broken")
@@ -946,12 +946,10 @@ async fn watchdog_execution_timeout_projects_durable_reason() {
     });
     recv_phase_event_into(&mut rx, HarnessPhaseTag::TurnRunning).await;
     harness
-        .set_state_for_test(HarnessState::TurnRunning {
-            turn_id: "turn-timeout".into(),
-            started_at: Instant::now()
-                - HarnessConfig::default().max_turn_duration
-                - Duration::from_secs(1),
-        })
+        .set_state_for_test(HarnessState::turn_running(
+            "turn-timeout".into(),
+            Instant::now() - HarnessConfig::default().max_turn_duration - Duration::from_secs(1),
+        ))
         .await;
     recv_phase_event_into(&mut rx, HarnessPhaseTag::IssuingInterrupt).await;
     assert_eq!(

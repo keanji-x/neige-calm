@@ -27,10 +27,8 @@ async fn compact_blocks_issuance_until_its_turn_starts_and_snapshot_recovers_bus
 #[tokio::test]
 async fn compact_refuses_busy_queued_missing_history_and_shutting_down_without_provider_call() {
     let f = ready().await;
-    *f.harness.inner.state.lock().await = HarnessState::TurnRunning {
-        turn_id: "old-turn".into(),
-        started_at: Instant::now(),
-    };
+    *f.harness.inner.state.lock().await =
+        HarnessState::turn_running("old-turn".into(), Instant::now());
     assert!(matches!(
         f.harness.compact().await,
         Err(CalmError::Conflict(_))

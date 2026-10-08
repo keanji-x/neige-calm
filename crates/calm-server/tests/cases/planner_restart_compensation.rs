@@ -516,10 +516,10 @@ async fn a_redriven_give_back_keeps_what_the_new_session_still_owes() {
     let wedged = boot.active().await.id;
     let harness = boot.state.harness.get(&wedged).unwrap();
     harness
-        .set_state_for_test(HarnessState::TurnRunning {
-            turn_id: "unconfirmed".into(),
-            started_at: Instant::now(),
-        })
+        .set_state_for_test(HarnessState::turn_running(
+            "unconfirmed".into(),
+            Instant::now(),
+        ))
         .await;
     for (text, attachments) in [(Q1, vec![image.clone()]), (Q2, vec![]), (Q3, vec![])] {
         harness
