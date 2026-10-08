@@ -283,6 +283,8 @@ pub struct PluginHost<E: ErrorFactory> {
     app_autospawn_wall: Duration,
     /// Crash-loop / respawn-backoff tunables.
     backoff: BackoffConfig,
+    #[cfg(feature = "test-support")]
+    supervisor_handshake: std::sync::Mutex<Option<supervision_test_support::ArmedHandshake>>,
 }
 
 /// Per-id lifecycle lock; created on first use and never removed.
@@ -440,5 +442,7 @@ mod core;
 mod spawn_app;
 mod state;
 mod supervision;
+#[cfg(feature = "test-support")]
+pub mod supervision_test_support;
 mod support;
 use support::*;
