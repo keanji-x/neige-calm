@@ -8,6 +8,8 @@ import { useState } from '../../../ui/state/public.ts';
 import styles from './reply.module.css';
 
 /** Bound by the app to the conversation's own Track. The server owns file containment. */
+export type ReplyLinkRenderer = (props: Readonly<{ href: string; children: ReactNode }>) => ReactNode;
+
 export type ReplyImageFiles = Readonly<{
   root: string;
   files: Pick<WorkspaceFilePort, 'rawUrl'>;
@@ -30,16 +32,16 @@ function ReplyImage({ src, alt, imageFiles }: {
     onError={() => { setFailed(true); }} />;
 }
 
-/** Stored and streamed replies share one renderer. File resolution is confined to image nodes,
- * so code fences, ordinary links, and the copied response retain their original text.
+/** Stored and streamed replies share one renderer. The app injects shared link rendering
+ * and track-scoped image files; code fences and copied responses keep their original text.
  * `headingLevelStart={3}` leaves the page's h1 and sections' h2 above the reply. */
-export const Reply = memo(function Reply({ text, imageFiles }: { text: string; imageFiles: ReplyImageFiles | null }) {
+export const Reply = memo(function Reply({ text, imageFiles, renderLink }: { text: string; imageFiles: ReplyImageFiles | null; renderLink?: ReplyLinkRenderer }) {
   const previewsEnabled = useGitHubPreviewsEnabled();
   const components = useMemo(() => ({
-    ...(previewsEnabled ? { link: ({ href, children }: { href: string; children: ReactNode }) => <GitHubPreviewLink href={href}>{children}</GitHubPreviewLink> } : {}),
+    ...(renderLink !== undefined ? { link: renderLink } : previewsEnabled ? { link: ({ href, children }: { href: string; children: ReactNode }) => <GitHubPreviewLink href={href}>{children}</GitHubPreviewLink> } : {}),
     image: ({ src, alt }: { src: string; alt: string }) => (
       <ReplyImage key={src} src={src} alt={alt} imageFiles={imageFiles} />
     ),
-  }), [imageFiles, previewsEnabled]);
+  }), [imageFiles, previewsEnabled, renderLink]);
   return <Markdown density="compact" headingLevelStart={3} components={components}>{text}</Markdown>;
 });

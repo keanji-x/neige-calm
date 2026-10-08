@@ -39,7 +39,7 @@ import {
   type TranscriptEntry,
 } from '../../../../../core/domain/conversation.ts';
 import { QuietSyncFold } from './quiet-sync.tsx';
-import type { ReplyImageFiles } from './reply.tsx';
+import type { ReplyImageFiles, ReplyLinkRenderer } from './reply.tsx';
 import { MessageEntry } from './message-entry.tsx';
 import styles from './thread.module.css';
 import { sideQuestion } from '../../../../../core/domain/side-conversation.ts';
@@ -88,9 +88,11 @@ export type ChatThreadProps = Readonly<{
   runningAnchor?: RunningTurnAnchor | null;
   /** Local reply images use the open conversation's workspace, never the browser's URL base. */
   imageFiles?: ReplyImageFiles | null;
+  /** App-owned shared link rendering, scoped to this conversation. */
+  renderLink?: ReplyLinkRenderer;
 }>;
 
-export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, readingView }: ChatThreadProps) {
+export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, renderLink, readingView }: ChatThreadProps) {
   const compactViewport = useCompactViewport();
   const localReading = useThreadReadingView(conversation.id);
   const reading = readingView ?? localReading;
@@ -295,7 +297,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
         attachments={turn.attachments} opens={opensExchange(turns, index)}
         gapLabel={opensAfterGap(turns, index) && index > 0 ? clockTime(turn.atMs) : null}
         queued={isQueuedConversationTurn(turn)} edited={edited.has(turn.id)} replacement={turn.id === replacement}
-        working={showLive && last} imageFiles={imageFiles} />
+        working={showLive && last} imageFiles={imageFiles} renderLink={renderLink} />
     );
   };
 
@@ -337,7 +339,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
         />,
         railSeam,
       )}
-      <div className={`${styles.thread} ${compactViewport ? mobileStyles.transcript : ''}`} data-nc-thread="" ref={focus.ref} onFocus={focus.onFocus} onBlur={focus.onBlur}>
+      <div className={`${styles.thread} ${compactViewport ? mobileStyles.transcript : ''}`} data-nc-thread="" data-nc-link-reading="" ref={focus.ref} onFocus={focus.onFocus} onBlur={focus.onBlur}>
         {transcriptGroups.map(({ entry: turn, activities, key }) => {
           const block = quietBlocks.get(turn.id);
           if (block !== undefined) {

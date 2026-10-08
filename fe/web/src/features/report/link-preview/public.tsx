@@ -77,13 +77,13 @@ export function ReportSourceLinkPreview({ target, label, children, resources, on
 }
 
 function readingSurface(trigger: HTMLElement): HTMLElement | null {
-  return trigger.closest<HTMLElement>('[data-nc-report-reading]');
+  return trigger.closest<HTMLElement>('[data-nc-link-reading]');
 }
 
 function readingAreas(): readonly HTMLElement[] {
   // Rendered reports inside a preview belong to that card, not the underlying
   // reading column. Treating them as avoidance areas makes a card chase itself.
-  return Array.from(document.querySelectorAll<HTMLElement>('[data-nc-report-reading]'))
+  return Array.from(document.querySelectorAll<HTMLElement>('[data-nc-link-reading]'))
     .filter((element) => element.getClientRects().length > 0 && element.closest('[data-nc-link-preview]') === null);
 }
 

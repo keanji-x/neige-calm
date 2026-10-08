@@ -98,7 +98,7 @@ export function ReportDocument({
       {report.blocks === null
         ? (
           <div className={styles.row}>
-            <div className={styles.block} data-nc-report-reading="">
+            <div className={styles.block} data-nc-report-reading="" data-nc-link-reading="">
               <ProseBlock
                 markdown={report.body || report.summary}
                 blockId={null}
@@ -201,7 +201,7 @@ function BlockSlot({
 }) {
   return (
     <div className={styles.row}>
-      <div className={styles.block} id={block.id} data-nc-report-reading="">
+      <div className={styles.block} id={block.id} data-nc-report-reading="" data-nc-link-reading="">
         {block.kind === 'prose'
           ? <ProseBlock
               markdown={block.payload.markdown}
@@ -402,7 +402,6 @@ function Inlines({ nodes, ...context }: { nodes: readonly SafeInline[] } & Block
 }
 
 function Inline({ node, ...context }: { node: SafeInline } & BlockContext): ReactNode {
-  const { onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, linkPreview } = context;
   switch (node.type) {
     case 'text':
       return node.value;
@@ -423,37 +422,7 @@ function Inline({ node, ...context }: { node: SafeInline } & BlockContext): Reac
       const body = image ? <span className={styles.imageAlt}>{node.alt || 'Image'}</span>
         : <Inlines nodes={node.children} {...context} inLink />;
       if (context.inLink) return body;
-      const renderMarkdown = (text: string, basePath?: string) => <ProseBlock
-        markdown={text} blockId={null} {...context} fileBasePath={basePath ?? fileBasePath} />;
-      const wrap = (destination: PreviewDestination, trigger: (activate: () => void, dismiss: () => void) => ReactNode, onOpen?: () => void) => (
-        <ReportLinkPreview destination={destination} resources={linkPreview} label={label}
-          trigger={trigger} onOpen={onOpen} renderMarkdown={renderMarkdown} />
-      );
-      const target = image ? null : parseReportLink(node.destination);
-      if (target !== null && (onOpenLink !== undefined || linkPreview !== undefined)) {
-        const open = onOpenLink === undefined ? undefined : () => onOpenLink(target);
-        return wrap({ kind: 'reference', destination: node.destination, target },
-          (activate, dismiss) => <button type="button" className={styles.link} onClick={open === undefined ? activate : () => { dismiss(); open(); }}>{body}</button>, open);
-      }
-      const sourceTarget = image ? null : parseReportSourceLink(node.destination);
-      if (sourceTarget !== null) {
-        return <ReportSourceLinkPreview target={sourceTarget} label={label} resources={linkPreview}
-          onOpen={onOpenSourceLink}>{body}</ReportSourceLinkPreview>;
-      }
-      const fileTarget = parseReportFileLink(node.destination);
-      const path = fileTarget !== null && fileRoot !== undefined
-        ? reportFilePathRelativeToRoot(fileRoot, fileTarget, fileBasePath) : null;
-      if (path !== null && (onOpenFileLink !== undefined || linkPreview !== undefined)) {
-        const open = onOpenFileLink === undefined ? undefined : () => onOpenFileLink({ path });
-        return wrap({ kind: 'file', path },
-          (activate, dismiss) => <button type="button" className={styles.link} title={path} onClick={open === undefined ? activate : () => { dismiss(); open(); }}>{body}</button>, open);
-      }
-      const url = externalPreviewUrl(node.destination);
-      if (url !== null) {
-        return wrap({ kind: 'web', url, image: image || /\.(png|jpe?g|gif|webp|avif|svg)(?:[?#]|$)/i.test(url) },
-          (activate) => <button type="button" className={styles.link} onClick={activate}>{body}</button>);
-      }
-      return body;
+      return <ProseLink destination={node.destination} image={image} label={label} {...context}>{body}</ProseLink>;
     }
   }
 }
@@ -465,4 +434,46 @@ function inlineLabel(nodes: readonly SafeInline[]): string {
     if (node.type === 'break') return ' ';
     return inlineLabel(node.children);
   }).join('');
+}
+
+/** Shared Markdown link rendering. The app injects it into other domains; the report
+ * remains the owner of file/source/reference admission and preview behavior. */
+export function ProseLink({ destination, image = false, label, children, ...context }: Pick<BlockContext,
+  'onOpenLink' | 'onOpenFileLink' | 'onOpenSourceLink' | 'fileRoot' | 'fileBasePath' | 'linkPreview'> & {
+  destination: string; image?: boolean; label: string; children: ReactNode;
+}): ReactNode {
+  const { onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, linkPreview } = context;
+  const renderMarkdown = (text: string, basePath?: string) => <ProseBlock
+    markdown={text} blockId={null} {...context} fileBasePath={basePath ?? fileBasePath} />;
+  const wrap = (destination: PreviewDestination, trigger: (activate: () => void, dismiss: () => void) => ReactNode, onOpen?: () => void) => (
+    <ReportLinkPreview destination={destination} resources={linkPreview} label={label}
+      trigger={trigger} onOpen={onOpen} renderMarkdown={renderMarkdown} />
+  );
+  const target = image ? null : parseReportLink(destination);
+  if (target !== null && (onOpenLink !== undefined || linkPreview !== undefined)) {
+    const open = onOpenLink === undefined ? undefined : () => onOpenLink(target);
+    return wrap({ kind: 'reference', destination, target },
+      (activate, dismiss) => <button type="button" className={styles.link} onClick={open === undefined ? activate : () => { dismiss(); open(); }}>{children}</button>, open);
+  }
+  const sourceTarget = image ? null : parseReportSourceLink(destination);
+  if (sourceTarget !== null) {
+    return <ReportSourceLinkPreview target={sourceTarget} label={label} resources={linkPreview}
+      onOpen={onOpenSourceLink}>{children}</ReportSourceLinkPreview>;
+  }
+  const fileTarget = parseReportFileLink(destination);
+  const path = fileTarget !== null && fileRoot !== undefined
+    ? reportFilePathRelativeToRoot(fileRoot, fileTarget, fileBasePath) : null;
+  if (path !== null && (onOpenFileLink !== undefined || linkPreview !== undefined)) {
+    const open = onOpenFileLink === undefined ? undefined : () => onOpenFileLink({ path });
+    return wrap({ kind: 'file', path },
+      (activate, dismiss) => <button type="button" className={styles.link} title={path} onClick={open === undefined ? activate : () => { dismiss(); open(); }}>{children}</button>, open);
+  }
+  const url = externalPreviewUrl(destination);
+  if (url !== null) {
+    return wrap({ kind: 'web', url, image: image || /\.(png|jpe?g|gif|webp|avif|svg)(?:[?#]|$)/i.test(url) },
+      (activate) => <button type="button" className={styles.link} onClick={activate}>{children}</button>);
+  }
+  // Non-preview contact/fragment links retain ordinary Markdown navigation.
+  if (/^(mailto:|tel:|#)/i.test(destination)) return <a className={styles.link} href={destination}>{children}</a>;
+  return children;
 }

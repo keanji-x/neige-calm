@@ -1,3 +1,5 @@
+import { ChatThread } from '../../features/chat/thread/public.tsx';
+import { useConversationLinks } from '../router/conversation-links.tsx';
 import { createRoot } from 'react-dom/client';
 import { useEffect, useMemo } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -34,6 +36,27 @@ function exampleReport(): TrackReport { return Object.freeze({ summary: '', body
   }) }),
 ]) }); }
 
+function ChatExample({ transport, unauthorized, onNotice }: {
+  transport: ReturnType<typeof createEvidencePreviewTransport>;
+  unauthorized: ReturnType<typeof createUnauthorizedChannel>;
+  onNotice: (text: string) => void;
+}) {
+  const [live, setLive] = useState(false);
+  const links = useConversationLinks({ transport, unauthorized, trackId: 'link-preview', root: '/preview', files,
+    onOpenLink: () => onNotice('此页面使用示例报告。'),
+    onOpenFile: (_owner, target) => onNotice(`已点击示例文件：${target.path}`) });
+  const text = '这是聊天回复示例。悬停 [**聊天来源**](neige://source/src_0971fbde#q1)、[聊天报告]('
+    + trackReportLinkUrl('reference-demo') + ')、[聊天文件](./docs/notes.md) 或 [聊天网页](https://example.com)。'
+    + (live ? '\n\n新生成的段落也使用同一入口：[新增链接](./docs/example.ts)。' : '');
+  return <section><h2>聊天消息也能预览 · 示例</h2>
+    <button type="button" className={styles.theme} onClick={() => setLive(!live)}>{live ? '恢复历史回复示例' : '模拟回复继续生成'}</button>
+    <ChatThread conversation={{ id: 'preview-chat', trackId: 'link-preview', title: '预览示例', kind: 'codex', state: 'idle', updatedAt: 0 }}
+      turns={[{ id: 'example-agent', author: 'agent', text, atMs: 0 }]} canContinue={false} cards={{}} stalled={false}
+      renderLink={links.renderLink} />
+    {links.sourceDrawer}
+  </section>;
+}
+
 function Preview() {
   const report = useMemo(exampleReport, []);
   const evidence = useMemo(evidenceExamples, []);
@@ -50,6 +73,7 @@ function Preview() {
       <div><p className={styles.eyebrow}>NEIGE · 链接预览</p><h1>悬停，停留，继续阅读。</h1><p className={styles.subtitle}>卡片优先放在正文旁边 · 沿路径移入交互 · 移到别处自动收起</p></div>
       <button type="button" className={styles.theme} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? '深色模式' : '浅色模式'}</button>
     </header>
+    <div className={styles.document}><ChatExample transport={transport} unauthorized={unauthorized} onNotice={setNotice} /></div>
     <div className={styles.document}>
       <ReportDocument report={evidence} empty={null} fileRoot="/preview" onOpenSourceLink={target => openSource('link-preview', target)}
         onOpenLink={() => setNotice('这是另一份报告的示例；可以在预览里继续查看其来源。')}
