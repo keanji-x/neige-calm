@@ -26,10 +26,12 @@ pub struct AcpAgentConfig {
 /// What OpenCode's own `permission` configuration is overridden with under `ask` (#2348): the
 /// tools that act without asking under its defaults ask instead. OpenCode 1.18.35 merges this
 /// variable over every config file, and has no flag or ACP method for it. `edit` covers its
-/// write and patch tools too.
+/// write and patch tools too. Paths outside the workspace do not ask on their own (#2452): an
+/// outside read runs, as it does for Codex and Claude, and an outside command or edit asks once,
+/// through its tool, instead of once for the directory and again for the tool.
 const OPENCODE_ASK_PERMISSION: (&str, &str) = (
     "OPENCODE_PERMISSION",
-    r#"{"bash":"ask","edit":"ask","webfetch":"ask"}"#,
+    r#"{"bash":"ask","edit":"ask","webfetch":"ask","external_directory":"allow"}"#,
 );
 
 /// What OpenCode's `permission` configuration is overridden with under `full` (#2441): every
@@ -245,15 +247,16 @@ mod tests {
         }
     }
 
-    /// `ask` makes OpenCode ask before bash, edits and fetches; `never` adds nothing, so its launch
-    /// is today's.
+    /// `ask` makes OpenCode ask before bash, edits and fetches, and only through those tools: a
+    /// path outside the workspace asks nothing more (#2452). Never with a `*` rule. `never` adds
+    /// nothing, so its launch is today's.
     #[test]
     fn only_ask_overrides_opencodes_permission_config() {
         assert_eq!(
             opencode().permission_env(PlannerPermissionMode::Ask),
             vec![(
                 "OPENCODE_PERMISSION",
-                r#"{"bash":"ask","edit":"ask","webfetch":"ask"}"#
+                r#"{"bash":"ask","edit":"ask","webfetch":"ask","external_directory":"allow"}"#
             )]
         );
         assert_eq!(

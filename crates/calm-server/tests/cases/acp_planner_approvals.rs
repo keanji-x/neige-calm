@@ -110,7 +110,7 @@ fn hold_ask(asked: &(i64, Event)) -> i64 {
     assert_eq!(
         questions,
         &vec![AskQuestion {
-            title: "execute: echo one > one.txt".into(),
+            title: "Run: echo one > one.txt".into(),
             options: vec!["Allow once".into(), "Always allow".into(), "Reject".into()],
         }]
     );
@@ -156,7 +156,10 @@ async fn acp_ask_mode_holds_each_request_and_answers_the_chosen_option_id() {
     assert!(rows(&stack, &track, "ask.withdrawn").await.is_empty());
     assert_eq!(
         launch_permissions(&root),
-        vec![json!(r#"{"bash":"ask","edit":"ask","webfetch":"ask"}"#); 3],
+        vec![
+            json!(r#"{"bash":"ask","edit":"ask","webfetch":"ask","external_directory":"allow"}"#);
+            3
+        ],
         "every ask turn's agent asks before bash, edits and fetches"
     );
     stack.shutdown().await;

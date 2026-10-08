@@ -216,16 +216,15 @@ impl Drop for HeldPermissions {
     }
 }
 
-/// The one question a permission request asks: what the tool call is (its kind and title) and the
-/// files it names. Only the call is cut when the whole is over the kernel's bound, so the files
-/// stay in view. The options are the agent's, by name, in its order.
+/// The one question a permission request asks: what the tool call does (its kind in a plain word,
+/// and its title) and the files it names. Only the call is cut when the whole is over the kernel's
+/// bound, so the files stay in view. The options are the agent's, by name, in its order.
 fn question(request: &PermissionRequest) -> AskQuestion {
     let call = &request.tool_call;
-    let head = match (&call.kind, &call.title) {
-        (Some(kind), Some(title)) => format!("{kind}: {title}"),
-        (None, Some(title)) => title.clone(),
-        (Some(kind), None) => format!("{kind}: {}", call.tool_call_id),
-        (None, None) => call.tool_call_id.clone(),
+    let what = call.title.as_deref().unwrap_or(&call.tool_call_id);
+    let head = match call.kind.as_deref().and_then(kind_word) {
+        Some(word) => format!("{word}: {what}"),
+        None => what.to_string(),
     };
     let paths: String = call
         .locations
@@ -251,6 +250,24 @@ fn question(request: &PermissionRequest) -> AskQuestion {
             .map(|option| option.name.clone())
             .collect(),
     }
+}
+
+/// The word a person is shown for an ACP tool kind, one of the protocol's closed set. `other`, and
+/// a kind this client does not know, show none: the raw kind means nothing to a reader, and the
+/// call's own title still says what it does (#2452).
+fn kind_word(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "read" => "Read",
+        "edit" => "Edit",
+        "delete" => "Delete",
+        "move" => "Move",
+        "search" => "Search",
+        "execute" => "Run",
+        "think" => "Think",
+        "fetch" => "Fetch",
+        "switch_mode" => "Switch mode",
+        _ => return None,
+    })
 }
 
 /// Answers one permission request: the chosen option's id, or `cancelled` when dropped
