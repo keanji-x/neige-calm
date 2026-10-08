@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import type {
   AgentProvider, HarnessInputPresentation, HarnessInputSegment, HarnessItem, HarnessPhaseTag,
-  PlannerAttachment, TrackConversationSummary, UploadAttachmentResponse,
+  PlannerAttachment, PlannerPermissionMode, TrackConversationSummary, UploadAttachmentResponse,
 } from '../api/generated/wire.js';
 import type { ApiFailure, ApiOperation } from '../api/types.js';
 import {
@@ -11,6 +11,7 @@ import {
   MAIL_SEND_TOOL,
 } from '../keys/mcp-tools.js';
 import { classifyFailure, failureReason, refusedText, type FailureTable, type WriteFailure, type WriteText } from './failure-class.js';
+import { plannerPermissionModeSchema } from './planner-permission-mode.js';
 import { sha256Hex } from './sha256.js';
 
 /** A frozen discussion source; does not name a provider session. */
@@ -224,6 +225,8 @@ export type PlannerRun = Readonly<{
   /** The conversation's model selection; `null` follows the default. */
   model: string | null;
   reasoning_effort: string | null;
+  /** Whether the Planner may pause a turn to ask before acting outside its sandbox; `null` exactly when the card is not a Planner. */
+  permission_mode: PlannerPermissionMode | null;
   /**
    * Why the queue is not draining, or `null`; render as one standing notice. `null` is not evidence
    * that anything succeeded.
@@ -295,6 +298,7 @@ export function plannerRunOperation(cardId: string): ApiOperation<PlannerRun> {
       /* `.nullable()` and NOT `.optional()`: the server always sends these, so accepting absence
          would hide the day one stopped being sent. */
       model: z.string().nullable(), reasoning_effort: z.string().nullable(),
+      permission_mode: plannerPermissionModeSchema.nullable(),
       blocked_reason: z.string().nullable(),
       /* Absent on older servers, and false is the safe read. */
       attachments_supported: z.boolean().optional().default(false),

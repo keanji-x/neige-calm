@@ -28,7 +28,7 @@ test('shows local screenshots in planner history after reopening and on mobile',
     if (path === `/api/areas/${track.area_id}/tracks`) body = [track];
     if (path === `/api/tracks/${track.id}`) body = { track, can_reopen: false, can_close: true, cards: [card], overlays: [] };
     if (path === `/api/cards/${card.id}/planner/run`) body = { card_id: card.id, worker_session_id: 'image-session',
-      phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null, running_turn: null };
+      phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, running_turn: null };
     if (path === `/api/cards/${card.id}/harness/items`) body = [{ id: 1, worker_session_id: 'image-session',
       card_id: card.id, track_id: track.id, thread_id: 'image-thread', turn_id: null, turn_error_text: null,
       item_uuid: 'reply', item_type: 'agentMessage', method: 'item/completed', created_at_ms: 1,

@@ -46,8 +46,11 @@ type MobilePanelKind = 'outline' | RowModuleView['key'] | 'conversations';
 export type TrackInputNotification = Readonly<{
   /** The kernel's item key; the row's key. */
   key: string;
-  /** `ask`: the Planner asks the user something; `planner-down`: the Planner stopped. */
-  kind: 'ask' | 'planner-down';
+  /**
+   * `ask`: the Planner asks the user something; `approval`: a Planner turn is paused on a request only an answer ends
+   * (#2348), so it cannot be dismissed; `planner-down`: the Planner stopped.
+   */
+  kind: 'ask' | 'approval' | 'planner-down';
   /** The kernel's words, shown verbatim: the Planner's questions, or the reason it stopped. */
   text: string;
   atMs: number;
@@ -55,13 +58,25 @@ export type TrackInputNotification = Readonly<{
 }>;
 
 /** A row's meta line: what kind of thing is waiting, in plain words; only its dot carries colour. */
-const NOTIFICATION_LABEL = Object.freeze({ ask: 'Needs your answer', 'planner-down': "Planner can't continue" } as const);
-
-/** What clicking a row does: shown in the label's place while the row is hovered or focused, and the start of its accessible name. */
-const NOTIFICATION_ACTION = Object.freeze({
-  ask: Object.freeze({ hint: 'Answer in Planner', name: 'Answer the Planner' }),
-  'planner-down': Object.freeze({ hint: 'Open Planner', name: 'Open the Planner' }),
+const NOTIFICATION_LABEL = Object.freeze({
+  ask: 'Needs your answer', approval: 'Waiting for your approval', 'planner-down': "Planner can't continue",
 } as const);
+
+/** Whether a row offers Dismiss. A paused turn's request stays until it is answered or goes away, so dismissing it would do nothing. */
+const NOTIFICATION_DISMISSABLE = Object.freeze({ ask: true, approval: false, 'planner-down': true } as const);
+
+/**
+ * What clicking a row does: shown in the label's place while the row is hovered or focused, and the start of its
+ * accessible name. A Planner question and a paused turn's request are both answered in the Planner.
+ */
+const NOTIFICATION_ACTION = Object.freeze({
+  answer: Object.freeze({ hint: 'Answer in Planner', name: 'Answer the Planner' }),
+  open: Object.freeze({ hint: 'Open Planner', name: 'Open the Planner' }),
+} as const);
+
+function notificationAction(kind: TrackInputNotification['kind']) {
+  return NOTIFICATION_ACTION[kind === 'planner-down' ? 'open' : 'answer'];
+}
 
 /** The start of a row's words, as plain text, for its accessible names; the whole text is in the Planner conversation. */
 function notificationGist(text: string): string {
@@ -608,13 +623,13 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
                       <button
                         type="button"
                         className={styles.noticeOpen}
-                        aria-label={`${NOTIFICATION_ACTION[notification.kind].name}: ${notificationGist(notification.text)}`}
+                        aria-label={`${notificationAction(notification.kind).name}: ${notificationGist(notification.text)}`}
                         onClick={onReply}
                       />
                     )}
                     <span className={styles.noticeMeta}>
                       <span
-                        className={`${styles.noticeDot} ${notification.kind === 'ask' ? styles.noticeDotAsk : styles.noticeDotDown}`}
+                        className={`${styles.noticeDot} ${notification.kind === 'planner-down' ? styles.noticeDotDown : styles.noticeDotAsk}`}
                         aria-hidden="true"
                       />
                       {/* One slot, two spans: the label, and the row's action in its place while the row is hovered
@@ -622,7 +637,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
                       <span className={styles.noticeLabel}>
                         <span className={styles.noticeLabelText}>{NOTIFICATION_LABEL[notification.kind]}</span>
                         {onReply !== undefined && (
-                          <span className={styles.noticeAction} aria-hidden="true">{NOTIFICATION_ACTION[notification.kind].hint}</span>
+                          <span className={styles.noticeAction} aria-hidden="true">{notificationAction(notification.kind).hint}</span>
                         )}
                       </span>
                       <time className={styles.noticeTime} dateTime={new Date(notification.atMs).toISOString()}>
@@ -634,7 +649,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
                     <div className={`${styles.noticeBody} ${notification.kind === 'planner-down' ? styles.noticeBodyClamped : ''}`}>
                       <Markdown density="compact" headingLevelStart={3}>{notification.text}</Markdown>
                     </div>
-                    {onDismiss !== undefined && notification.action === undefined && (
+                    {onDismiss !== undefined && notification.action === undefined && NOTIFICATION_DISMISSABLE[notification.kind] && (
                       <button
                         type="button"
                         className={styles.noticeDismiss}

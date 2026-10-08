@@ -7,10 +7,9 @@ import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
 import { TextInput } from '@astryxdesign/core/TextInput';
 
 import {
-  ANSWER_ASK_FAILURES, ANSWER_ASK_TEXT, askAnswers, askDraftsFor, clampAskAnswer, type AskDraft, type OpenAsk,
+  answerAskFailureText, askAnswers, askDraftsFor, clampAskAnswer, takesOptionsOnly, type AskDraft, type OpenAsk,
 } from '../../../../core/domain/ask.ts';
 import type { AskAnswer } from '../../../../core/api/generated/wire.ts';
-import { writeFailureText } from '../../../../core/domain/failure-class.ts';
 import { OperationFeedback, useOperationFeedback } from '../../ui/operation-feedback/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
 import { useState } from '../../ui/state/public.ts';
@@ -33,7 +32,7 @@ export function PlannerAskDrawer({ asks, onAnswer }: PlannerAskDrawerProps) {
   return <ChatComposerDrawer count={current.questions.length} label="Questions" className={styles.drawer}>
     <div className={styles.asks} data-nc-asks="">
       <AskForm key={current.askId} ask={current} onAnswer={onAnswer}
-        state={states[current.askId] ?? { drafts: askDraftsFor(current.questions), page: 0 }}
+        state={states[current.askId] ?? { drafts: askDraftsFor(current.questions, current.delivery), page: 0 }}
         onChange={state => setStates(previous => ({ ...previous, [current.askId]: state }))}
         onBusy={setBusy}
         onSettled={() => {
@@ -85,8 +84,7 @@ function AskForm({ ask, state, onChange, onAnswer, onBusy, onSettled }: {
     setBusy(true);
     onBusy(true);
     try {
-      const success = await feedback.run(onAnswer(ask.askId, answers),
-        writeFailureText(ANSWER_ASK_FAILURES, ANSWER_ASK_TEXT));
+      const success = await feedback.run(onAnswer(ask.askId, answers), answerAskFailureText(ask.delivery));
       if (success) onSettled();
     } finally {
       lock.current = false;
@@ -108,6 +106,8 @@ function AskForm({ ask, state, onChange, onAnswer, onBusy, onSettled }: {
     return advance(drafts.map((item, index) => index === page ? { ...item, own: answer } : item));
   };
   return <section role="group" aria-label="The Planner asks" className={styles.ask} data-nc-ask={ask.askId}>
+    {/* A `hold` ask is a provider request the running turn waits on (#2348). */}
+    {ask.delivery === 'hold' && <p className={styles.paused} data-nc-ask-paused="">Turn paused, waiting for your approval</p>}
     {ask.questions.length > 1 && <HStack justify="between" align="center" className={styles.meta}>
       <span>{page + 1} / {ask.questions.length}</span>
       {page > 0 && <Button label="Previous question" tooltip="Previous question" icon={<Icon name="arrow-left" size="sm" />} isIconOnly size="sm" variant="secondary" className={styles.back}
@@ -124,7 +124,7 @@ function AskForm({ ask, state, onChange, onAnswer, onBusy, onSettled }: {
           {draft.choice === index && draft.own.trim() === '' && <AstryxIcon icon="check" size="sm" color="accent" />}
         </span>
       </Button>)}
-      {ask.action === undefined && (<div className={styles.own} role="group" aria-label="Your answer">
+      {!takesOptionsOnly(ask) && <div className={styles.own} role="group" aria-label="Your answer">
         <TextInput ref={ownInput} label={question.title} isLabelHidden
           className={styles.answerInput} placeholder={question.options.length > 0 ? 'Or your own answer…' : 'Your answer…'} size="sm"
           value={draft.own} isDisabled={busy}
@@ -133,7 +133,7 @@ function AskForm({ ask, state, onChange, onAnswer, onBusy, onSettled }: {
         <Button label={ask.questions.length > 1 && page < ask.questions.length - 1 ? 'Next question' : 'Answer'}
           icon={<Icon name="arrow-up" size="sm" />} isIconOnly variant="secondary" size="sm" className={styles.answerButton}
           isDisabled={busy || draft.own.trim() === ''} onClick={() => { void ownAnswer(); }} />
-      </div>)}
+      </div>}
     </div>
     {busy && <span className={styles.meta} role="status">Sending answer…</span>}
     <OperationFeedback feedback={feedback} />

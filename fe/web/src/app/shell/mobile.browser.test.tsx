@@ -80,7 +80,7 @@ function setup(path: string, areaName = AREA.name, onRequest: (request: ApiReque
   const transport: ApiTransportPort = {
     send(request) {
       onRequest(request);
-      if (request.path.endsWith('/planner/run')) return Promise.resolve(ok({ card_id: 'card-review', worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null, running_turn: null }));
+      if (request.path.endsWith('/planner/run')) return Promise.resolve(ok({ card_id: 'card-review', worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, running_turn: null }));
       if (request.path === '/api/settings') return Promise.resolve(ok({ settings: {} }));
       if (request.path === '/api/areas') return Promise.resolve(ok([{ ...AREA, name: areaName }, OTHER_AREA]));
       if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([TRACK, OTHER_TRACK]));

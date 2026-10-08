@@ -247,6 +247,28 @@ describe('TrackPage header', () => {
     expect(onDismiss).toHaveBeenCalledWith('planner_down:9');
   });
 
+  /* #2348: a paused turn's request ends only when it is answered or goes away, so its row offers no Dismiss. */
+  it('labels a paused turn\'s request as waiting for approval and offers no Dismiss for it', async () => {
+    const onReply = vi.fn();
+    renderPage({
+      inputNotifications: [
+        { key: 'ask:12', kind: 'approval', atMs: 2, text: 'Run `cargo test` (cwd /work)?' },
+        { key: 'ask:7', kind: 'ask', atMs: 1, text: 'Merge now?' },
+      ],
+      onReply,
+      onDismiss: vi.fn(() => Promise.resolve()),
+    });
+    const [approval, ask] = screen.getByRole('region', { name: 'Notifications' })
+      .querySelectorAll<HTMLElement>('[data-nc-notification-state]');
+    expect(approval.getAttribute('data-nc-notification-state')).toBe('approval');
+    expect(within(approval).getByText('Waiting for your approval')).toBeTruthy();
+    expect(within(approval).getAllByRole('button').map((button) => button.getAttribute('aria-label')))
+      .toEqual(['Answer the Planner: Run cargo test (cwd /work)?']);
+    expect(within(ask).getByRole('button', { name: 'Dismiss: Needs your answer: Merge now?' })).toBeTruthy();
+    await userEvent.click(within(approval).getByRole('button', { name: 'Answer the Planner: Run cargo test (cwd /work)?' }));
+    expect(onReply).toHaveBeenCalledOnce();
+  });
+
   it('names a short markdown row by its plain words, without syntax or the link address', () => {
     renderPage({
       inputNotifications: [{

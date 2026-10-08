@@ -23,7 +23,7 @@ function renderRecovery(state: 'dormant' | 'paused', initial = '/track/daily?pan
       return ok({ card_id: 'daily-planner', terminal_id: '', new_thread_id: 'thread-2' });
     }
     if (request.path.endsWith('/planner/run')) return ok({ card_id: 'daily-planner', worker_session_id: 'runtime',
-      phase: state === 'paused' && !restarted ? 'wedged' : 'idle', model: null, reasoning_effort: null,
+      phase: state === 'paused' && !restarted ? 'wedged' : 'idle', model: null, reasoning_effort: null, permission_mode: 'never',
       blocked_reason: state === 'paused' && !restarted
         ? 'The stop request timed out before the model confirmed that this turn had stopped.' : null, running_turn: null });
     if (request.path.endsWith('/planner/input')) return restarted || state === 'paused'

@@ -143,7 +143,7 @@ function ok(body: unknown): ApiTransportResponse {
 
 /* The shapes are schema-checked by the transport; an off-schema body is refused before any test can observe anything. */
 const inputAccepted = () => ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r' });
-const runIdle = () => ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null, running_turn: null });
+const runIdle = () => ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'idle', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, running_turn: null });
 
 function created(body: unknown): ApiTransportResponse {
   return { status: 201, statusText: 'Created', body };
@@ -187,7 +187,7 @@ function setup(reply?: Reply, storage?: UiPreferenceStorage, recovery?: Recovery
       if (request.path.includes(HISTORY_PATH)) return ok([]);
       /* Both card endpoints echo the card in the path, as the kernel does; a fixed id
          would be a trap for the first case that reads the field. */
-      if (request.path.endsWith('/planner/run')) return ok({ card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null, running_turn: null });
+      if (request.path.endsWith('/planner/run')) return ok({ card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'idle', model: null, reasoning_effort: null, permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: null, running_turn: null });
       /* An off-schema body is refused by the transport and the optimistic echo rolled back. */
       if (request.path.endsWith('/planner/input')) return ok({ card_id: pathCardId(request.path), worker_session_id: 'r' });
       if (request.path === '/api/settings') return ok({});
@@ -647,7 +647,7 @@ describe('track conversations', () => {
         }
         if (request.path.endsWith('/planner/run') && wedged && !restarted) {
           return ok({ card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'wedged', model: null, reasoning_effort: null,
-            blocked_reason: 'The stop request timed out before the model confirmed that this turn had stopped.', running_turn: null });
+            permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: 'The stop request timed out before the model confirmed that this turn had stopped.', running_turn: null });
         }
         if (request.path.endsWith('/planner/input') && !restarted) return DORMANT;
         return undefined;
@@ -899,7 +899,7 @@ describe('track conversations', () => {
     '[F4] never labels the %s working-turn submission as queued, including after reopen', async (outcome) => {
       const text = `Keep ${outcome} queued attempt`;
       const { requests } = setup((request) => {
-        if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, blocked_reason: null, running_turn: null });
+        if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, running_turn: null });
         if (request.path.endsWith('/planner/input')) {
           if (outcome === 'unknown') throw new Error('response dropped');
           return failure(429, 'rate_limited', 'Wait a moment');
@@ -927,7 +927,7 @@ describe('track conversations', () => {
     let resolve!: (response: ApiTransportResponse) => void;
     const held = new Promise<ApiTransportResponse>((answer) => { resolve = answer; });
     const { requests } = setup((request) => {
-      if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, blocked_reason: null, running_turn: null });
+      if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, running_turn: null });
       if (request.path.endsWith('/planner/input')) return held;
       return undefined;
     });
@@ -1101,7 +1101,7 @@ describe('track conversations', () => {
     const view = setup((request) => {
       if (request.path.endsWith('/planner/run')) {
         return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase, model: null, reasoning_effort: null,
-          blocked_reason: null, running_turn: null, pending: state.queued ? [entry] : [], pending_overflow: 0 });
+          permission_mode: null, blocked_reason: null, running_turn: null, pending: state.queued ? [entry] : [], pending_overflow: 0 });
       }
       if (!request.path.endsWith('/planner/input')) return undefined;
       if (!state.accept) throw new Error('response dropped');
@@ -1158,7 +1158,7 @@ describe('track conversations', () => {
       if (request.path.includes(HISTORY_PATH)) return ok(rows);
       if (request.path.endsWith('/planner/run')) {
         return ok({ card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'idle', model: null, reasoning_effort: null,
-          blocked_reason: null, attachments_supported: true, running_turn: null });
+          permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: null, attachments_supported: true, running_turn: null });
       }
       if (request.path.endsWith('/planner/attachments')) {
         return ok({ attachmentId: ATTACHMENT_ID, contentType: 'image/png', size: 4,
@@ -1456,7 +1456,7 @@ describe('track conversations', () => {
       if (request.path.endsWith('/planner/run')) {
         return ok({
           card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'idle', model: null, reasoning_effort: null,
-          blocked_reason: null, attachments_supported: true, running_turn: null,
+          permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: null, attachments_supported: true, running_turn: null,
         });
       }
       if (request.path.endsWith('/planner/attachments')) {
@@ -1497,7 +1497,7 @@ describe('track conversations', () => {
     const dropped = (): never => { throw new Error('response dropped'); };
     const chatText = () => drawerElement().textContent;
     const running = () => ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'turn_running', model: null,
-      reasoning_effort: null, blocked_reason: null, attachments_supported: true, running_turn: null });
+      reasoning_effort: null, permission_mode: null, blocked_reason: null, attachments_supported: true, running_turn: null });
     async function openAssistant() {
       fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
       await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
@@ -1651,7 +1651,7 @@ describe('track conversations', () => {
     const { requests } = setup((request) => {
       if (request.path.includes(HISTORY_PATH)) return ok([user, reply, terminal]);
       if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'idle', model: null,
-        reasoning_effort: null, blocked_reason: null, attachments_supported: true, running_turn: null });
+        reasoning_effort: null, permission_mode: null, blocked_reason: null, attachments_supported: true, running_turn: null });
       if (request.path.endsWith('/planner/attachments')) return ok({ attachmentId: draftImageId, contentType: 'image/png', size: 4,
         url: `/api/cards/${ASSISTANT_CARD.id}/planner/attachments/${draftImageId}` });
       if (request.path.endsWith('/planner/input')) return held;
@@ -1720,7 +1720,7 @@ describe('track conversations', () => {
       if (answered !== undefined) return answered;
       if (request.path.includes(HISTORY_PATH)) return ok(pathCardId(request.path) === ASSISTANT_CARD.id ? rows() : []);
       if (request.path.endsWith('/planner/run')) return ok({ card_id: pathCardId(request.path), worker_session_id: 'r',
-        phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null, attachments_supported: true, running_turn: null });
+        phase: 'idle', model: null, reasoning_effort: null, permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: null, attachments_supported: true, running_turn: null });
       if (request.path.endsWith('/planner/attachments')) return ok({ attachmentId: DRAFT_IMAGE_ID, contentType: 'image/png', size: 4,
         url: `/api/cards/${pathCardId(request.path)}/planner/attachments/${DRAFT_IMAGE_ID}` });
       return undefined;
@@ -1744,7 +1744,7 @@ describe('track conversations', () => {
       }
       if (request.path.endsWith('/planner/run')) {
         return ok({ card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'idle', model: null,
-          reasoning_effort: null, blocked_reason: null, attachments_supported: true, running_turn: null, ...run });
+          reasoning_effort: null, permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: null, attachments_supported: true, running_turn: null, ...run });
       }
       if (request.path.endsWith('/planner/attachments')) {
         await uploadGate();
@@ -2202,7 +2202,7 @@ describe('track conversations', () => {
     setup(async (request) => {
       const card = pathCardId(request.path);
       if (request.path.endsWith('/planner/run')) {
-        return ok({ card_id: card, worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, blocked_reason: null,
+        return ok({ card_id: card, worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: card === PLANNER_CARD.id ? 'never' : null, blocked_reason: null,
           running_turn: null, pending: [{ entry_id: `entry-${card}`, text: `queued in ${card}`, rev: 1, queued_at_ms: 5 }], pending_overflow: 0 });
       }
       if (request.method === 'DELETE' && request.path.includes('/planner/input/')) {
@@ -2232,7 +2232,7 @@ describe('track conversations', () => {
     const { requests } = setup(async (request) => {
       const card = pathCardId(request.path);
       if (request.path.endsWith('/planner/run')) {
-        return ok({ card_id: card, worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, blocked_reason: null,
+        return ok({ card_id: card, worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: card === PLANNER_CARD.id ? 'never' : null, blocked_reason: null,
           running_turn: null, pending: [{ entry_id: `entry-${card}`, text: `queued in ${card}`, rev: 1, queued_at_ms: 5 }], pending_overflow: 0 });
       }
       if (request.method === 'DELETE' && request.path.includes('/planner/input/')) {
@@ -2321,7 +2321,7 @@ describe('track conversations', () => {
         return ok([...earlier, ...turnRows('turn-2', 101, 'Original prompt', 'Replacement answer')]);
       }
       if (request.path.endsWith('/planner/run')) return ok({ card_id: pathCardId(request.path), worker_session_id: 'r',
-        phase: 'idle', model: null, reasoning_effort: null, blocked_reason: null, attachments_supported: true, running_turn: null });
+        phase: 'idle', model: null, reasoning_effort: null, permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: null, attachments_supported: true, running_turn: null });
       if (request.path.endsWith('/planner/input')) { stage = 'replaced'; return inputAccepted(); }
       return undefined;
     });
@@ -2563,7 +2563,7 @@ describe('track conversations', () => {
     const { client } = setup((request) => {
       if (request.path.endsWith('/planner/run')) {
         return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: state.drained ? 'idle' : 'turn_running',
-          model: null, reasoning_effort: null, blocked_reason: null, running_turn: null,
+          model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, running_turn: null,
           pending: state.queued && !state.drained ? [{ entry_id: 'entry-a', text, rev: 0, queued_at_ms: 5 }] : [],
           pending_overflow: 0 });
       }
@@ -2603,7 +2603,7 @@ describe('track conversations', () => {
     const { requests } = setup((request) => {
       if (request.path.includes(HISTORY_PATH)) return ok([terminal]);
       if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id,
-        worker_session_id: 'r', phase: 'wedged', model: null, reasoning_effort: null, blocked_reason: reason, running_turn: null });
+        worker_session_id: 'r', phase: 'wedged', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: reason, running_turn: null });
       return undefined;
     });
     fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
@@ -2645,7 +2645,7 @@ describe('track conversations', () => {
     const pending = new Promise<ApiTransportResponse>((done) => { resolve = done; });
     const { client, requests } = setup((request) => {
       if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id,
-        worker_session_id: 'r', phase, model: null, reasoning_effort: null, blocked_reason: null, running_turn: null });
+        worker_session_id: 'r', phase, model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, running_turn: null });
       if (request.path.includes(HISTORY_PATH)) return ok(rows);
       if (request.path.endsWith('/planner/interrupt')) return pending;
       return undefined;
@@ -2676,7 +2676,7 @@ describe('track conversations', () => {
       params: JSON.stringify({ id: 'previous-turn', status: 'completed', error: null }) };
     const { client, requests } = setup((request) => {
       if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id,
-        worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, blocked_reason: null, running_turn: null });
+        worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, running_turn: null });
       if (request.path.includes(HISTORY_PATH)) return ok(change === 'load earlier' ? [current] : [current, historical]);
       if (request.path.endsWith('/planner/interrupt')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', stopped: true });
       return undefined;
@@ -2695,7 +2695,7 @@ describe('track conversations', () => {
   it.each(['issuing_turn', 'turn_running'])('shows an unconfirmed stop receipt without inventing a terminal result (%s)', async (phase) => {
     const { requests } = setup((request) => {
       if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id,
-        worker_session_id: 'r', phase, model: null, reasoning_effort: null, blocked_reason: null, running_turn: null });
+        worker_session_id: 'r', phase, model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, running_turn: null });
       if (request.path.endsWith('/planner/interrupt')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', stopped: false });
       return undefined;
     });
@@ -2717,7 +2717,7 @@ describe('track conversations', () => {
     let stops = 0;
     setup((request) => {
       if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id,
-        worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, blocked_reason: null, running_turn: null });
+        worker_session_id: 'r', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, running_turn: null });
       if (request.path.endsWith('/planner/interrupt')) {
         stops += 1;
         return stops === 1 ? failure(409, 'planner_harness_dormant', 'No live planner harness session.')
@@ -2740,7 +2740,7 @@ describe('track conversations', () => {
     const reason = 'The stop request timed out before the model confirmed that this turn had stopped.';
     const { requests } = setup((request) => request.path.endsWith('/planner/run')
       ? ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase: 'wedged', model: null,
-        reasoning_effort: null, blocked_reason: reason, running_turn: null }) : undefined);
+        reasoning_effort: null, permission_mode: null, blocked_reason: reason, running_turn: null }) : undefined);
     fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
     const disclosure = await screen.findByRole('button', { name: 'Paused', expanded: false });
     fireEvent.click(disclosure);
@@ -2759,7 +2759,7 @@ describe('track conversations', () => {
     let phase = 'turn_running';
     const { client, requests } = setup((request) => {
       if (request.path === CONVERSATIONS) return ok([assistantRow({ state: 'turn_pending' })]);
-      if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase, model: null, reasoning_effort: null, blocked_reason: null, running_turn: null });
+      if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase, model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, running_turn: null });
       return undefined;
     });
     fireEvent.click(await screen.findByRole('button', { name: /Conversation Assistant/ }));
@@ -2782,7 +2782,7 @@ describe('track conversations', () => {
   it('[F6] stops promising queued delivery after the harness becomes wedged', async () => {
     let phase = 'turn_running';
     const { client, requests } = setup((request) => request.path.endsWith('/planner/run')
-      ? ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase, model: null, reasoning_effort: null, blocked_reason: null, running_turn: null }) : undefined);
+      ? ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase, model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, running_turn: null }) : undefined);
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
     await screen.findByRole('button', { name: 'Stop' });
     await typeInto(messageField(), 'Queued before the stall');
@@ -2804,7 +2804,7 @@ describe('track conversations', () => {
     const held = new Promise<ApiTransportResponse>((resolve) => { release = resolve; });
     const { client } = setup((request) => {
       if (request.path.endsWith('/planner/input')) return held;
-      if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase, model: null, reasoning_effort: null, blocked_reason: null, running_turn: null });
+      if (request.path.endsWith('/planner/run')) return ok({ card_id: ASSISTANT_CARD.id, worker_session_id: 'r', phase, model: null, reasoning_effort: null, permission_mode: null, blocked_reason: null, running_turn: null });
       return undefined;
     });
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
@@ -4186,7 +4186,7 @@ it.each(['parent', 'side'] as const)('interrupts only the focused %s pane when p
     if (request.path === '/api/version') return sideVersion();
     if (request.path === CONVERSATIONS) return ok([assistantRow(), child]);
     if (request.path.endsWith('/planner/run')) return ok({ card_id: pathCardId(request.path), worker_session_id: 'r',
-      phase: 'turn_running', model: null, reasoning_effort: null, blocked_reason: null, running_turn: null });
+      phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: null, running_turn: null });
     if (request.path.endsWith('/planner/interrupt')) return ok({ card_id: pathCardId(request.path), worker_session_id: 'r', stopped: true });
     return undefined;
   });

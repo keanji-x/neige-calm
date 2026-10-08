@@ -2,6 +2,7 @@
 // every value is a prop; the queries and the write live in `app/router`. Each provider's catalog is one
 // group; on the new-track page the pick also decides the Planner's provider (#1810), and each group
 // follows its provider's availability (#1817). A Claude group is the Claude CLI's own list (#1822).
+// Beside it, a Planner conversation's approval setting (#2348), a trigger of the same kind.
 
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 import { Divider } from '@astryxdesign/core/Divider';
@@ -9,9 +10,9 @@ import { HStack } from '@astryxdesign/core/HStack';
 import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
 import { Text } from '@astryxdesign/core/Text';
 import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
-import { Fragment, useRef, type KeyboardEvent, type ReactNode } from 'react';
+import { Fragment, useRef, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 
-import type { AgentProvider } from '../../../../../core/api/generated/wire.ts';
+import type { AgentProvider, PlannerPermissionMode } from '../../../../../core/api/generated/wire.ts';
 import {
   CREATE_REFUSED_WHEN_UNAVAILABLE, STILL_CREATES_NOTE, type ProviderAvailability,
 } from '../../../../../core/domain/agent-providers.ts';
@@ -69,6 +70,20 @@ function visibleModelGroups(groups: readonly ModelGroup[], provider: AgentProvid
   return groups.filter((group) => group.provider === provider || (
     group.availability?.status !== 'not_configured'
     && (!PROVIDERS[group.provider].hiddenUntilKnown || (group.availability !== null && group.catalog !== null))));
+}
+
+/**
+ * Escape closes an open menu and returns focus to its trigger. A host Dialog's document listener would otherwise take
+ * Escape first and the trigger would not get its focus back.
+ */
+function closeOnEscape(open: boolean, setOpen: (open: boolean) => void, host: RefObject<HTMLSpanElement | null>) {
+  return (event: KeyboardEvent<HTMLSpanElement>) => {
+    if (event.key !== 'Escape' || !open) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setOpen(false);
+    requestAnimationFrame(() => host.current?.querySelector('button')?.focus());
+  };
 }
 
 /** The name of the default a catalog says is followed (for Claude, the model its CLI default resolves to), or `null` when it cannot say. */
@@ -134,18 +149,10 @@ export function ModelPill({
     ? catalog?.default.reasoning_effort ?? null
     : chosen?.default_reasoning_effort ?? null;
   const switchNote = shown.some((group) => PROVIDERS[group.provider].switchNote);
-  const closeOnEscape = (event: KeyboardEvent<HTMLSpanElement>) => {
-    if (event.key !== 'Escape' || !open) return;
-    // A host Dialog's document listener would otherwise take Escape first and the trigger would not get its focus back.
-    event.preventDefault();
-    event.stopPropagation();
-    setOpen(false);
-    requestAnimationFrame(() => hostRef.current?.querySelector('button')?.focus());
-  };
 
   return (
     <HStack gap={1} align="center" className={styles.group}>
-      <span ref={hostRef} className={styles.host} onKeyDownCapture={closeOnEscape}>
+      <span ref={hostRef} className={styles.host} onKeyDownCapture={closeOnEscape(open, setOpen, hostRef)}>
         <DropdownMenu
           placement={placement}
           isMenuOpen={open}
@@ -287,15 +294,8 @@ function EffortPill({
   const spokenLabel = value === null && defaultName !== null
     ? `Reasoning effort: ${label} (the default)`
     : `Reasoning effort: ${label}`;
-  const closeOnEscape = (event: KeyboardEvent<HTMLSpanElement>) => {
-    if (event.key !== 'Escape' || !open) return;
-    event.preventDefault();
-    event.stopPropagation();
-    setOpen(false);
-    requestAnimationFrame(() => hostRef.current?.querySelector('button')?.focus());
-  };
   return (
-    <span ref={hostRef} className={styles.host} onKeyDownCapture={closeOnEscape}>
+    <span ref={hostRef} className={styles.host} onKeyDownCapture={closeOnEscape(open, setOpen, hostRef)}>
       <DropdownMenu
         placement={placement}
         isMenuOpen={open}
@@ -311,6 +311,55 @@ function EffortPill({
         }}
       >
         <EffortChoices defaultName={defaultName} efforts={efforts} value={value} onChange={onChange} />
+      </DropdownMenu>
+    </span>
+  );
+}
+
+/** Total over `PlannerPermissionMode`, in menu order, so a new mode is a compile error here rather than a missing row. */
+const PERMISSION_MODES: Readonly<Record<PlannerPermissionMode, Readonly<{ label: string; description: string }>>> = Object.freeze({
+  never: Object.freeze({ label: 'Never', description: 'Sandbox only; never asks.' }),
+  ask: Object.freeze({ label: 'Ask me', description: 'Pauses the turn to ask you.' }),
+});
+
+/** The kernel reads the mode when it starts a turn, so a change never reaches the one already running. */
+const PERMISSION_NOTE = 'Applies from the next turn.';
+
+/** A Planner conversation's approval setting (#2348): whether its turns may pause to ask before acting outside the sandbox. */
+export function PermissionModePill({ mode, onChange, isDisabled = false, placement = 'above' }: Readonly<{
+  /** What the card has stored. */
+  mode: PlannerPermissionMode;
+  onChange: (mode: PlannerPermissionMode) => void;
+  isDisabled?: boolean;
+  placement?: 'above' | 'below';
+}>) {
+  const [open, setOpen] = useState(false);
+  const hostRef = useRef<HTMLSpanElement | null>(null);
+  const label = `Approvals: ${PERMISSION_MODES[mode].label}`;
+  return (
+    <span ref={hostRef} className={styles.host} onKeyDownCapture={closeOnEscape(open, setOpen, hostRef)}>
+      <DropdownMenu
+        placement={placement}
+        isMenuOpen={open}
+        onOpenChange={setOpen}
+        hasChevron={false}
+        button={{
+          label,
+          children: <Text type="inherit" color="inherit" maxLines={1}>{label}</Text>,
+          variant: 'ghost',
+          size: 'sm',
+          isDisabled,
+          className: styles.permission,
+        }}
+      >
+        {(Object.keys(PERMISSION_MODES) as PlannerPermissionMode[]).map((value) => (
+          <Choice key={value} label={PERMISSION_MODES[value].label} description={PERMISSION_MODES[value].description}
+            isSelected={mode === value} onSelect={() => { if (value !== mode) onChange(value); }} />
+        ))}
+        <Divider />
+        <div className={styles.permissionNote} role="note">
+          <Text type="supporting">{PERMISSION_NOTE}</Text>
+        </div>
       </DropdownMenu>
     </span>
   );

@@ -6,6 +6,7 @@ import { buildTranscript, FOLLOW_INSTALLATION_DEFAULT, harnessItemToTurns, isOpt
 import { describeConversation, pendingConversationIds, withRememberedConversation, withRememberedTitle, type ConversationFacts } from '../../../../core/domain/conversation-summary.ts';
 import { queueTombstoneHides as tombstoneHides } from '../../../../core/domain/conversation-outbox.ts';
 import { refusalText, writeFailureOf } from '../../../../core/domain/failure-class.ts';
+import { PERMISSION_MODE_CHANGE_TEXT, PLANNER_PERMISSION_MODE_FAILURES } from '../../../../core/domain/planner-permission-mode.ts';
 import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
 import { anchorRunningTurn, type RunningTurnAnchor } from '../../../../core/domain/conversation-meta.ts';
@@ -331,6 +332,17 @@ export function useConversationStore(
         .catch((error: unknown) => {
           fail(refusalText(writeFailureOf(error), PLANNER_MODEL_FAILURES, MODEL_CHANGE_TEXT.refused) ?? MODEL_CHANGE_TEXT.unknown);
         });
+    },
+    permissionMode: run.data?.permission_mode ?? null,
+    setPermissionMode: (mode) => {
+      const setFor = cardId;
+      setActionError(null);
+      void mutations.setPermissionMode(mode).catch((error: unknown) => {
+        /* Dropped when it settles while another conversation is shown, as a model change's is (#2068). */
+        if (shownCardId.current !== setFor) return;
+        setActionError({ cardId: setFor, message: refusalText(writeFailureOf(error), PLANNER_PERMISSION_MODE_FAILURES,
+          PERMISSION_MODE_CHANGE_TEXT.refused) ?? PERMISSION_MODE_CHANGE_TEXT.unknown });
+      });
     },
   };
 }

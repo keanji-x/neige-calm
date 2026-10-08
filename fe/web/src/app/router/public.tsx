@@ -54,7 +54,7 @@ import { ChatList } from '../../features/chat/list/public.tsx';
 import {
   ChatComposer, ChatFooterError, ChatFooterNotice, ChatFooterRemedy, ChatThread,
 } from '../../features/chat/thread/public.tsx';
-import { ModelPill } from '../../features/chat/thread/model-pill.tsx';
+import { ModelPill, PermissionModePill } from '../../features/chat/thread/model-pill.tsx';
 import { ContextRing } from '../../features/chat/thread/context-ring.tsx';
 import { useMentionTrigger } from '../../features/chat/thread/mention-trigger.tsx';
 import { ReportBacklinks } from '../../features/report/backlinks/public.tsx';
@@ -508,6 +508,7 @@ function useConversationPane(
     return steer(entry);
   });
   const setModel = useCommittedCallback(existingId, store.setModel);
+  const setPermissionMode = useCommittedCallback(existingId, store.setPermissionMode);
   const sendText = useCommittedCallback(existingId, (text: string) => open !== null
     && store.send(open.id, text, attachments.items, true, edit.replacesIn(open.id)) !== null);
   const sideQuestion = useCommittedCallback(existingId, (question: string) => {
@@ -538,14 +539,16 @@ function useConversationPane(
     modelCatalog: store.modelCatalog,
     pendingQueue: store.pendingQueue,
     pendingQueueOverflow: store.pendingQueueOverflow,
+    permissionMode: store.permissionMode,
     queueWriteOut: store.queueWriteOut,
     sendBlocked: store.sendBlocked,
     sending: store.sending,
     setModel: setModel,
+    setPermissionMode: setPermissionMode,
     steerQueuedEntry: canSteer ? steerQueuedEntry : undefined,
     stopping: store.stopping,
     working: store.working
-  }), [compact, store.compacting, store.attachmentsSupported, store.contextUsage, deleteQueuedEntry, store.historyReady, interrupt, store.model, store.modelCatalog, store.pendingQueue, store.pendingQueueOverflow, store.queueWriteOut, store.sendBlocked, store.sending, setModel, store.stopping, store.working, canSteer, steerQueuedEntry]);
+  }), [compact, store.compacting, store.attachmentsSupported, store.contextUsage, deleteQueuedEntry, store.historyReady, interrupt, store.model, store.modelCatalog, store.pendingQueue, store.pendingQueueOverflow, store.permissionMode, store.queueWriteOut, store.sendBlocked, store.sending, setModel, setPermissionMode, store.stopping, store.working, canSteer, steerQueuedEntry]);
   const { replacing, bar: editingBar } = edit;
   const composerNode = useMemo(() => existingId === null ? null : (
             <ChatComposer layout={compactComposer ? 'mobile' : 'standard'}
@@ -610,6 +613,11 @@ function useConversationPane(
                     onChange={composerView.setModel}
                     isDisabled={!composerView.historyReady}
                   />
+                  {/* A Planner's only (#2348): any other conversation reads `null` and has no approvals to set. */}
+                  {composerView.permissionMode !== null && (
+                    <PermissionModePill mode={composerView.permissionMode} onChange={composerView.setPermissionMode}
+                      isDisabled={!composerView.historyReady} />
+                  )}
                 </HStack>
               )}
             />
@@ -906,7 +914,7 @@ function TrackRoute({ transport, unauthorized, cardRuntime, recentFiles }: {
 function trackNotifications(items: TrackActivity['attentionItems']): readonly TrackInputNotification[] {
   return items.map((item): TrackInputNotification => ({
     key: item.key,
-    kind: item.source === 'ask' ? 'ask' : 'planner-down',
+    kind: item.source === 'planner_down' ? 'planner-down' : item.delivery === 'hold' ? 'approval' : 'ask',
     text: item.text,
     atMs: item.atMs,
     ...(item.source !== 'ask' || item.action === undefined ? {} : { action: item.action }),
