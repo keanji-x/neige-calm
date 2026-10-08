@@ -4,6 +4,7 @@
 # may match; an entry that stops matching fails too.
 # The plural `workflows` always matches (the trailing `s` is an identifier char);
 # genuine-English prose goes on the allowlist rather than being reworded.
+# `--untracked` scans tracked and untracked files in the working tree and skips ignored ones.
 
 set -uo pipefail
 
@@ -80,18 +81,18 @@ declare -A ACTUAL=()
 while IFS=: read -r path count; do
   [ -n "$path" ] || continue
   ACTUAL["$path"]="$count"
-done < <(git grep -P -c -i "$PATTERN" -- . "$SELF_EXCLUDE" || true)
+done < <(git grep --untracked -P -c -i "$PATTERN" -- . "$SELF_EXCLUDE" || true)
 
 fail=0
 
 for path in "${!ACTUAL[@]}"; do
   if [ -z "${EXPECTED[$path]+set}" ]; then
     echo "::error::residual workflow vocabulary: '$path' is not on the allowlist"
-    git grep -P -n -i "$PATTERN" -- "$path"
+    git grep --untracked -P -n -i "$PATTERN" -- "$path"
     fail=1
   elif [ "${ACTUAL[$path]}" != "${EXPECTED[$path]}" ]; then
     echo "::error::residual workflow vocabulary: '$path' matches ${ACTUAL[$path]} line(s), allowlist says ${EXPECTED[$path]}"
-    git grep -P -n -i "$PATTERN" -- "$path"
+    git grep --untracked -P -n -i "$PATTERN" -- "$path"
     fail=1
   fi
 done

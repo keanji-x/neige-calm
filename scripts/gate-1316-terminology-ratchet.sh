@@ -72,10 +72,11 @@ RATCHETED_SCOPES=(crates fe docs e2e)
 INFO_SCOPES=(web)
 
 # Counts OCCURRENCES, not matching lines: `-o` emits one line per match, so appending a second match to an already-matching line still moves the count.
+# `--untracked` scans tracked and untracked files in the working tree and skips ignored ones.
 count() { # $1=pattern $2=scope
   local matches grep_status
 
-  matches="$(git grep -P -o -h "$1" -- "$2" ":!$SELF" ":!$BASELINE" 2>/dev/null)"
+  matches="$(git grep --untracked -P -o -h "$1" -- "$2" ":!$SELF" ":!$BASELINE" 2>/dev/null)"
   grep_status=$?
   case "$grep_status" in
     0) printf '%s\n' "$matches" | wc -l ;;
@@ -85,24 +86,6 @@ count() { # $1=pattern $2=scope
       return "$grep_status"
       ;;
   esac
-}
-
-ensure_baseline_inputs_are_tracked() {
-  local untracked
-
-  if ! untracked="$(git ls-files --others --exclude-standard -- "${RATCHETED_SCOPES[@]}")"; then
-    echo "::error::could not check ratcheted scopes for untracked files; refusing to update $BASELINE." >&2
-    return 1
-  fi
-
-  if [ -n "$untracked" ]; then
-    echo "::error::refusing to update $BASELINE: git grep would omit these untracked files from ratcheted scopes:" >&2
-    while IFS= read -r path; do
-      printf '  %s\n' "$path" >&2
-    done <<<"$untracked"
-    echo "::error::Stage intended files with git add (or git add -N), then rerun --update-baseline." >&2
-    return 1
-  fi
 }
 
 emit_baseline() {
@@ -124,8 +107,6 @@ emit_baseline() {
 }
 
 if [ "${1:-}" = '--update-baseline' ]; then
-  ensure_baseline_inputs_are_tracked || exit 1
-
   if ! baseline_tmp="$(mktemp "$BASELINE.tmp.XXXXXX")"; then
     echo "::error::could not create a temporary baseline next to $BASELINE." >&2
     exit 1
@@ -149,10 +130,11 @@ fi
 
 if [ "${1:-}" = '--selftest' ]; then
   probe='crates/calm-types/src/_gate_1316_selftest_probe.rs'
-  # `git grep` only reads TRACKED paths, so `git add -N` puts the probe under the same scan a real commit would get.
+  # `*.swp` is in .gitignore, so this path is ignored in every ratcheted scope.
+  ignored_probe="$probe.swp"
   fail_git_dir=''
   bad_tsv="$(mktemp)" || exit 1
-  trap 'git rm -q --cached --force -- "$probe" >/dev/null 2>&1; rm -f "$probe" "$bad_tsv"; if [ -n "$fail_git_dir" ]; then rm -f "$fail_git_dir/git"; rmdir "$fail_git_dir"; fi' EXIT
+  trap 'rm -f "$probe" "$ignored_probe" "$bad_tsv"; if [ -n "$fail_git_dir" ]; then rm -f "$fail_git_dir/git"; rmdir "$fail_git_dir"; fi' EXIT
   fails=0
 
   # A tsv copy with a non-integer count must be red BY THE ROW VALIDATOR (judged with `case`, not grep).
@@ -163,26 +145,34 @@ if [ "${1:-}" = '--selftest' ]; then
     *) echo "SELFTEST FAIL: a tsv copy with a non-integer count is not red by the row validator:"$'\n'"$bad_tsv_output"; fails=1 ;;
   esac
 
-  # Baseline generation must fail closed before opening the baseline for write: `git grep` silently omits untracked files.
-  baseline_hash="$(git hash-object -- "$BASELINE")"
-  printf 'let x = wave_id;\n' >"$probe"
-  if update_output="$("./$SELF" --update-baseline 2>&1)"; then
-    echo "SELFTEST FAIL: --update-baseline accepted an untracked file in a ratcheted scope"
+  # An ignored file never reaches a commit, so the scan skips it.
+  printf 'let x = cove_id;\n' >"$ignored_probe"
+  if ! git check-ignore -q -- "$ignored_probe"; then
+    echo "SELFTEST FAIL: $ignored_probe is not ignored; choose an ignored probe path"
     fails=1
-  elif ! grep -Fq "$probe" <<<"$update_output"; then
-    echo "SELFTEST FAIL: --update-baseline rejected an untracked file without naming it"
+  elif ignored_output="$("./$SELF" 2>&1)"; then
+    echo "selftest ok: 'cove_id' in an ignored file is not counted"
+  else
+    echo "SELFTEST FAIL: 'cove_id' in an ignored file was counted:"$'\n'"$ignored_output"
     fails=1
-  elif [ "$(git hash-object -- "$BASELINE")" != "$baseline_hash" ]; then
-    echo "SELFTEST FAIL: rejected --update-baseline changed the existing baseline"
+  fi
+  rm -f -- "$ignored_probe"
+
+  # A new file that was never `git add`ed is part of the change, so the scan counts it.
+  printf 'let x = cove_id;\n' >"$probe"
+  untracked_output="$("./$SELF" 2>&1)" && { echo "SELFTEST FAIL: 'cove_id' in an untracked file did not trip the gate"; fails=1; }
+  if [ -n "$(git ls-files -- "$probe")" ]; then
+    echo "SELFTEST FAIL: $probe is tracked; the untracked case is not exercised"
     fails=1
   else
-    echo "selftest ok: --update-baseline rejects an untracked input and preserves the baseline"
+    case "$untracked_output" in
+      *'cove/crates rose from '*) echo "selftest ok: 'cove_id' in an untracked file trips the gate on cove/crates" ;;
+      *) echo "SELFTEST FAIL: 'cove_id' in an untracked file did not raise cove/crates:"$'\n'"$untracked_output"; fails=1 ;;
+    esac
   fi
 
-  printf 'let x = cove_id;\n' >"$probe"
-  git add -N -- "$probe" || exit 1
-
   # The wrapper fails only `git grep` and delegates every other git command to the real binary.
+  baseline_hash="$(git hash-object -- "$BASELINE")"
   fail_git_dir="$(mktemp -d)" || exit 1
   cat >"$fail_git_dir/git" <<'EOF'
 #!/usr/bin/env bash
@@ -203,12 +193,6 @@ EOF
     fails=1
   else
     echo "selftest ok: --update-baseline propagates scan errors and preserves the baseline"
-  fi
-
-  if "./$SELF" >/dev/null 2>&1; then
-    echo "SELFTEST FAIL: injected 'cove_id' did not trip the gate"; fails=1
-  else
-    echo "selftest ok: injected 'cove_id' trips the gate"
   fi
 
   printf 'The specification is loaded; a bad config fails at runtime.\nSee foo.spec.ts for the case.\n' >"$probe"

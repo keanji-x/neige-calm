@@ -3,7 +3,8 @@
 # that is green under local-rust-gates.sh is not red in CI.
 # The gate list is read from ci.yml: every lint-job step whose whole command is
 # `./scripts/gate-*.sh`. Not covered: the `--selftest` steps and the Rust-only steps.
-# The ratchets count with `git grep`: they measure tracked files in the working tree, not HEAD.
+# The ratchets count with `git grep --untracked`: they scan tracked and untracked files in the
+# working tree, not HEAD, and skip ignored ones.
 # Usage: scripts/local-ratchet-gates.sh
 
 set -uo pipefail
@@ -26,8 +27,8 @@ fi
 
 dirty_note() {
   [ -n "$(git --no-optional-locks status --porcelain --untracked-files=normal)" ] || return 0
-  echo "note: the working tree is not clean. Results measure tracked files in the working tree, not HEAD;"
-  echo "      untracked files are not counted (run \`git add -N <file>\` on new files you intend to commit)."
+  echo "note: the working tree is not clean. Results measure the working tree, not HEAD;"
+  echo "      untracked files count too, so delete local scratch files or list them in .git/info/exclude."
 }
 
 dirty_note

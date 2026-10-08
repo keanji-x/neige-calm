@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Prose ratchet: agent-facing prose must not flow back into Rust. Counts two text
 # shapes (`cjk`: a run of ≥4 ideographs; `long_literal`: a `"` followed by 120+ quote-free, backslash-free chars)
-# in tracked `*.rs` under `crates/` and fails when a cell rises above the committed
+# in `*.rs` under `crates/` (tracked and untracked, not ignored) and fails when a cell rises above the committed
 # baseline or falls below it without `--update-baseline` (a baseline is only valid for the tree it was generated on).
 # `LC_ALL=C.UTF-8` is load-bearing: `\x{4e00}` needs PCRE2 UTF mode (else git grep exits 128) and `long_literal` counts BYTES outside it.
-# The `:(glob)` pathspec magic is load-bearing: without it `crates/**/*.rs` misses a tracked `crates/foo.rs`.
+# The `:(glob)` pathspec magic is load-bearing: without it `crates/**/*.rs` misses a `crates/foo.rs`.
 
 set -uo pipefail
 
@@ -33,10 +33,11 @@ long_literal	$LONG_LITERAL
 EOF
 
 # Counts OCCURRENCES, not matching lines (`-o`); git's stderr is captured so a ≥2 exit names its cause.
+# `--untracked` scans tracked and untracked files in the working tree and skips ignored ones.
 count() { # $1=pattern $2=pathspec
   local matches grep_status errfile
   errfile="$(mktemp)" || return 1
-  matches="$(git grep -P -o -h "$1" -- "$2" ":!$SELF" ":!$BASELINE" 2>"$errfile")"
+  matches="$(git grep --untracked -P -o -h "$1" -- "$2" ":!$SELF" ":!$BASELINE" 2>"$errfile")"
   grep_status=$?
   case "$grep_status" in
     0) printf '%s\n' "$matches" | wc -l; grep_status=0 ;;
@@ -68,20 +69,11 @@ load_baseline() { # $1=tsv path
   done <"$1"
 }
 
-ensure_baseline_inputs_are_tracked() {
-  local untracked
-  untracked="$(git ls-files --others --exclude-standard -- "$PATHSPEC")" || { echo "::error::could not check $PATHSPEC for untracked files; refusing to update $BASELINE." >&2; return 1; }
-  [ -z "$untracked" ] && return 0
-  echo "::error::refusing to update $BASELINE: git grep would omit these untracked files in $PATHSPEC (git add -N them, then rerun --update-baseline):" >&2
-  while IFS= read -r path; do printf '  %s\n' "$path" >&2; done <<<"$untracked"
-  return 1
-}
-
 emit_baseline() {
   local term pattern found
   echo "# #1635 S6 prose ratchet baseline. Regenerate with:"
   echo "#   ./$SELF --update-baseline"
-  echo "# Counts are OCCURRENCES per (term, scope) in tracked *.rs under crates/. Only-down is enforced."
+  echo "# Counts are OCCURRENCES per (term, scope) in non-ignored *.rs under crates/. Only-down is enforced."
   printf '# term\tscope\tcount\n'
   while IFS=$'\t' read -r term pattern; do
     case "$term" in ''|'#'*) continue ;; esac
@@ -91,7 +83,6 @@ emit_baseline() {
 }
 
 if [ "${1:-}" = '--update-baseline' ]; then
-  ensure_baseline_inputs_are_tracked || exit 1
   baseline_tmp="$(mktemp "$BASELINE.tmp.XXXXXX")" || exit 1
   trap 'rm -f -- "$baseline_tmp"' EXIT
   trap 'exit 130' HUP INT TERM
@@ -113,17 +104,17 @@ if [ "${1:-}" = '--selftest' ]; then
       exit 1
     fi
   done
-  # `git grep` reads TRACKED paths only, so each probe is `git add -N`ed.
+  # Probes stay untracked: the scan must count a new file that was never `git add`ed.
   created=()
   make_probe() { # $1=path $2=content — O_EXCL via noclobber: an existing file or (dangling) symlink is refused, never written through
     if [ -L "$1" ] || ! ( set -o noclobber; printf '%s' "$2" >"$1" ); then echo "::error::refusing to write selftest probe '$1': something is already at that path"; return 1; fi
-    created+=("$1") && git add -N -- "$1"
+    created+=("$1")
   }
   printf -v rs_probe_text '// 提示词散文探针\nconst _GATE_PROSE_RATCHET_PROBE: &str = "%0130d";\n' 0
   printf -v md_probe_text '提示词散文探针\n"%0130d\n' 0
   cleanup_probes() {
     local p residue
-    for p in "${created[@]}"; do git rm -q --cached --force -- "$p" >/dev/null 2>&1; rm -f -- "$p"; done
+    for p in "${created[@]}"; do rm -f -- "$p"; done
     created=()
     residue="$(git status --porcelain -- "${PROBES[@]}")"
     [ -z "$residue" ] || { echo "::error::selftest probe residue after cleanup:"$'\n'"$residue"; return 1; }

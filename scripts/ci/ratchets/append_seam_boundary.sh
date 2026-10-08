@@ -202,9 +202,9 @@ d1_subject "struct PermissiveGate" '^pub struct PermissiveGate[;[:space:]]'
 d1_subject "impl DecisionGate for PermissiveGate" '^impl DecisionGate for PermissiveGate[[:space:]{]'
 d1_subject "fn commit_decision" '^pub async fn commit_decision[<(]'
 
-# S1: the events-table insert census. Enumerated with `git ls-files`, not `find`: sibling worktrees under `.claude/worktrees/` are untracked and a `find` would scan other branches' code.
+# S1: the events-table insert census. Enumerated with `git ls-files`, not `find`: tracked and untracked files count, while ignored ones (sibling worktrees under `.claude/worktrees/`, other branches' code) are skipped.
 actual_inserts="$(
-  git -C "$SCAN_ROOT" ls-files -z '*.rs' \
+  git -C "$SCAN_ROOT" ls-files -z --cached --others --exclude-standard -- '*.rs' \
     | (cd "$SCAN_ROOT" && xargs -0 --no-run-if-empty grep -HEic 'insert[[:space:]]+into[[:space:]]+[`"]?events\b') \
     | rg -v ':0$' | sort || true
 )"

@@ -1,6 +1,6 @@
 //! #2003 stale-name sweep: no retired kernel tool name and no retired MCP server key survives in a
-//! tracked file the product ships or runs, so a prompt, refusal, observation, fixture or fe constant
-//! that still says the old name is red here instead of misleading an agent at run time.
+//! non-ignored file the product ships or runs, so a prompt, refusal, observation, fixture or fe
+//! constant that still says the old name is red here instead of misleading an agent at run time.
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -130,11 +130,20 @@ fn workspace_root() -> PathBuf {
         .expect("workspace root")
 }
 
-fn tracked_files(root: &Path) -> Vec<String> {
+/// Tracked and untracked files under [`SCANNED`]; ignored files are skipped. A new file is part
+/// of the change before anyone runs `git add`.
+fn scanned_files(root: &Path) -> Vec<String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["ls-files", "-z", "--"])
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+        ])
         .args(SCANNED)
         .output()
         .expect("run git ls-files");
@@ -314,14 +323,14 @@ fn the_sweep_patterns_hit_only_retired_names() {
 fn no_retired_tool_names_remain() {
     let root = workspace_root();
     let patterns = patterns();
-    let files = tracked_files(&root);
+    let files = scanned_files(&root);
     assert!(
         files.len() > 500,
-        "anti-vacuity: {} tracked files",
+        "anti-vacuity: {} scanned files",
         files.len()
     );
     let mut hits = Vec::new();
-    // Tracked Python bytecode is a stale build artifact, not text anyone reads.
+    // Python bytecode is a build artifact, not text anyone reads.
     for path in files
         .iter()
         .filter(|path| !allowlisted(path) && !path.ends_with(".pyc"))
