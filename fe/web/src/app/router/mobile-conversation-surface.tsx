@@ -13,8 +13,9 @@ import styles from './mobile-chat.module.css';
 export function ConversationSurface({ mobileSheet, contextTitle, focusInput = false, ...props }: ComponentProps<typeof Drawer> & Readonly<{ mobileSheet: boolean; contextTitle?: string; focusInput?: boolean }>) {
   const nativeSheet = mobileSheet && props.companion === undefined;
   const [editing, setEditing] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
   const previousOpen = useRef(props.open);
-  if (previousOpen.current !== props.open) { previousOpen.current = props.open; if (props.open) setEditing(false); }
+  if (previousOpen.current !== props.open) { previousOpen.current = props.open; if (props.open) { setEditing(false); setFullscreen(false); } }
   // The footer's React owner stays fixed while the presentation host changes.
   const [footerHost] = useState(() => document.createElement('div'));
   const [footerAttached, setFooterAttached] = useState(false);
@@ -41,6 +42,20 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
     previousNativeSheet.current = nativeSheet;
   }
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLElement | null>(null);
+  // Astryx owns handle drag/settling. Message and header gestures stay local:
+  // native touch listeners must stop before its body listener, without cancelling scrolling.
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!nativeSheet || content === null) return;
+    const stop = (event: TouchEvent) => event.stopPropagation();
+    content.addEventListener('touchstart', stop, { passive: true });
+    content.addEventListener('touchmove', stop, { passive: true });
+    return () => {
+      content.removeEventListener('touchstart', stop);
+      content.removeEventListener('touchmove', stop);
+    };
+  }, [nativeSheet, footerAttached]);
   const finalFocus = useRef<HTMLElement | null>(null);
   const originalFocus = useRef<HTMLElement | null>(null);
   const focusWasOpen = useRef(false);
@@ -151,10 +166,10 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
     focusEditor();
     return () => { observer.disconnect(); };
   }, [focusInput, footerHost, footerAttached, mobileSheet, props.companion, props.open]);
-  const requestedHeight = visibleViewport.height * (expandedForInput ? 0.92 : 2 / 3);
-  const sheetHeight = Math.min(requestedHeight, Math.max(0, visibleViewport.bottomEdge - navigationBottom));
+  const requestedHeight = visibleViewport.height * (fullscreen ? 1 : expandedForInput ? 0.92 : 0.8);
+  const sheetHeight = fullscreen ? requestedHeight : Math.min(requestedHeight, Math.max(0, visibleViewport.bottomEdge - navigationBottom));
   // Grouped conversations retain the pane renderer that owns companion switching.
-  const surface = !nativeSheet ? <Drawer {...props} footer={<div ref={captureDesktop} />} /> : <div className={styles.sheet}><BottomSheet ref={capturePanel} className={`${styles.panel} ${mobileFontClassName}`} data-nc-mobile-chat-panel=""
+  const surface = !nativeSheet ? <Drawer {...props} footer={<div ref={captureDesktop} />} /> : <div className={styles.sheet}><BottomSheet ref={capturePanel} className={`${styles.panel} ${mobileFontClassName}`} data-nc-mobile-chat-panel="" data-nc-fullscreen={fullscreen}
     onKeyDown={(event) => {
       // A composer trigger/edit handler already owns this Escape; native sheet dismissal must stand down.
       if (event.key === 'Escape' && event.defaultPrevented) event.stopPropagation();
@@ -162,12 +177,16 @@ export function ConversationSurface({ mobileSheet, contextTitle, focusInput = fa
     isOpen={props.open} onOpenChange={(open) => { if (!open) props.onClose(); }} hasScrim={false}
     finalFocusRef={finalFocus} label={frame.title || '对话'} height={`${sheetHeight}px`}
     style={{ translate: `0 -${visibleViewport.bottomInset}px` }} purpose="info">
-    <section className={styles.content} style={{ paddingBottom: footerHeight }} data-nc-drawer="" id={props.id}>
+    <section ref={contentRef} onPointerDown={(event) => event.stopPropagation()} onPointerMove={(event) => event.stopPropagation()} className={styles.content} style={{ paddingBottom: footerHeight }} data-nc-drawer="" id={props.id}>
       <header className={styles.conversationHeader}>
-        <div className={styles.conversationHeading}><h2>对话</h2><p>{frame.contextTitle ?? frame.title}</p></div>
+        <h2 className={styles.conversationHeading}>{frame.contextTitle ?? frame.title}</h2>
+        <button type="button" className={styles.close} aria-label={fullscreen ? 'Collapse conversation' : 'Expand conversation'} aria-pressed={fullscreen} onClick={() => setFullscreen(value => !value)}><Icon name={fullscreen ? 'compact' : 'fullscreen'} /></button>
         <button type="button" className={styles.close} aria-label={props.closeLabel ?? 'Close conversation'} onClick={props.onClose}><Icon name="close" /></button>
       </header>
-      <div className={styles.messages} data-nc-drawer-scroll="">{frame.children}</div>
+      <div className={styles.messageViewport}>
+        <div className={styles.messages} data-nc-drawer-scroll="">{frame.children}</div>
+        <div className={styles.scrollOverlay} data-nc-chat-scroll-overlay="" />
+      </div>
     </section>
   </BottomSheet></div>;
   return <>{surface}{createPortal(<LayerDepthProvider><div className={nativeSheet ? styles.footer : undefined}

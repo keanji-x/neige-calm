@@ -86,6 +86,8 @@
     inset-inline: calc(-1 * var(--nc-card-inset, var(--space-4)));
   }
 
+  [data-nc-chat-scroll-overlay] .scrollDockContent { inset-inline: 0; }
+
   .scrollBlur {
     position: absolute;
     inset-block-end: 0;

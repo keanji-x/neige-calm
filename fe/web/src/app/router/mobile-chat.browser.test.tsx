@@ -64,14 +64,14 @@ it.each([320, 390])('aligns the left circular controls and keeps chat usable at 
   const sheet = panel.closest('[data-nc-mobile-chat-panel]')!;
   expect(getComputedStyle(sheet.firstElementChild!).backgroundImage).toBe('none');
   const historyButton = page.getByRole('button', { name: 'Open conversation history', exact: true }).element();
-  expect(sheet.getBoundingClientRect().top - historyButton.getBoundingClientRect().bottom).toBeGreaterThan(200);
+  expect(sheet.getBoundingClientRect().top - historyButton.getBoundingClientRect().bottom).toBeGreaterThanOrEqual(16);
   const sendIcon = history.querySelector('[aria-label="Send"] svg')!;
   expect(sendIcon.getBoundingClientRect().width).toBe(24);
   const bounds = panel.getBoundingClientRect();
   expect(bounds.left).toBeGreaterThanOrEqual(0);
   expect(bounds.right).toBeLessThanOrEqual(width);
-  expect(bounds.height).toBeGreaterThan(844 * 0.6);
-  expect(bounds.height).toBeLessThan(844 * 0.75);
+  expect(bounds.height).toBeGreaterThan(844 * 0.75);
+  expect(bounds.height).toBeLessThan(844 * 0.9);
   await expect.poll(() => document.activeElement === message).toBe(true);
   const expandedBar = message.closest('[class*="vendorComposer"]')?.firstElementChild;
   expect(expandedBar).toBeTruthy();
