@@ -63,7 +63,8 @@ pub(crate) struct VerificationView {
 }
 
 /// `verification.gate_runs` (#2464 D6): the runs the worker asked for in this attempt (`neige_task_gate`).
-/// Absent when it asked for none. Runs are advisory; only the gate's verdict judges the attempt.
+/// Absent when it asked for none. Only the gate's verdict judges the attempt; a passing last run can
+/// become that verdict by reuse.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct GateRunsView {
     /// Admitted runs (op rows), finished or not.

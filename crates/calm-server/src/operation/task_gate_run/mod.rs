@@ -1,7 +1,8 @@
 //! `task-gate-run` operation (#2464): the worker asks, the kernel commits the worker's checkout as
 //! the attempt's one commit above the lease base and runs the task's declared gate on it, in the
-//! lease checkout, outside the sandbox. One operation per run (`"{task.id}#r{N}"`); the result is
-//! advisory, the kernel's gate after the report stays the verdict.
+//! lease checkout, outside the sandbox. One operation per run (`"{task.id}#r{N}"`). The attempt's
+//! first gate verdict reuses the last run when §4 of the design holds (`task_verify_adapter/reuse.rs`);
+//! otherwise the kernel's gate after the report decides.
 //!
 //! The held wrapper's first step is the checkpoint (`checkpoint.rs`); its release waits for the
 //! park (the forge-action order), so before the park no checkpoint and no step has run, and a
