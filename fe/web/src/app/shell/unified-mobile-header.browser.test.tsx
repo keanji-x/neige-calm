@@ -166,7 +166,7 @@ describe('Unified mobile headers', () => {
     await expect.element(page.getByRole('button', { name: 'New track', exact: true })).toBeVisible();
     expect(router.state.location.pathname).toBe('/track/w1');
     await page.getByRole('button', { name: 'Back to Areas' }).click();
-    await page.getByRole('heading', { name: '工作区', exact: true }).findElement();
+    await page.getByRole('heading', { name: 'Areas', exact: true }).findElement();
     await page.getByRole('button', { name: 'Back to workspace' }).click();
     expect(router.state.location.pathname).toBe('/track/w1');
     await page.viewport(1280, 720);
@@ -322,7 +322,7 @@ describe('Unified mobile headers', () => {
     expect(document.activeElement).not.toBe(document.body);
     expect(router.state.location.pathname).toBe('/track/w1');
     await page.getByRole('button', { name: 'Back to Areas' }).click();
-    await page.getByRole('heading', { name: '工作区', exact: true }).findElement();
+    await page.getByRole('heading', { name: 'Areas', exact: true }).findElement();
     expect(document.activeElement).not.toBe(document.body);
     await page.getByRole('button', { name: 'Back to workspace' }).click();
     await expect.poll(() => document.activeElement).toBe(opener);
@@ -481,7 +481,7 @@ describe('Unified mobile headers', () => {
     await userEvent.keyboard('{Escape}');
     await expect.poll(() => document.activeElement).toBe(selector);
     await page.getByRole('button', { name: 'Open workspace' }).click();
-    await record('areas', (await page.getByRole('heading', { name: '工作区', exact: true }).findElement()).closest('header')!);
+    await record('areas', (await page.getByRole('heading', { name: 'Areas', exact: true }).findElement()).closest('header')!);
     await page.getByRole('button', { name: 'Product', exact: true }).click();
     await record('tracks', (await page.getByRole('heading', { name: 'Product', exact: true }).findElement()).closest('header')!);
     await page.getByRole('button', { name: 'New track', exact: true }).click();
