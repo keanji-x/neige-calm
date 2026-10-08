@@ -493,7 +493,7 @@ describe('Unified mobile headers', () => {
     await record('new-track', (await page.getByRole('button', { name: 'Switch area, Product' }).findElement()).closest('header')!);
     await router.navigate({ to: '/track/w1' });
     await router.navigate({ to: '/track/w1', search: { panel: 'cards' } });
-    await record('cards', (await page.getByRole('heading', { name: 'Cards', exact: true }).findElement()).closest('header')!);
+    await record('cards', (await page.getByRole('heading', { name: 'Tools', exact: true }).findElement()).closest('header')!);
     await page.getByRole('button', { name: 'Back to Report' }).click();
     await router.navigate({ to: '/track/w1', search: { panel: 'conversations' } });
     await record('conversations', (await page.getByRole('heading', { name: 'Conversations', exact: true }).findElement()).closest('header')!);

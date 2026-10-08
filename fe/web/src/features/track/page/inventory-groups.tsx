@@ -4,6 +4,7 @@ import type { InventoryGroup } from '../../../../../core/view/panel-groups.ts';
 import { useState } from '../../../ui/state/public.ts';
 import { SpringRotation } from '../../../ui/motion/rotation.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
+import { inventoryGroupIcon } from './inventory-kind.tsx';
 import styles from './inventory-groups.module.css';
 
 /** Keep collapsed rows mounted so actions, live state and the projection remain intact. */
@@ -17,6 +18,7 @@ export function InventoryGroups<T>({ groups, noun, renderRows }: Readonly<{
     const id = `${group.key}-${groups.slice(0, index).filter(previous => previous.key === group.key).length}`;
     return { ...group, id, open: opened[id] ?? group.expanded };
   });
+  const attentionLabel = (count: number) => count > 0 ? `, ${count} ${count === 1 ? 'needs' : 'need'} attention` : '';
   const budget = {
     '--nc-inventory-group-count': sections.length,
     '--nc-inventory-open-count': Math.max(1, sections.filter(group => group.open).length),
@@ -27,9 +29,9 @@ export function InventoryGroups<T>({ groups, noun, renderRows }: Readonly<{
         const open = event.currentTarget.open;
         setOpened(previous => previous[group.id] === open ? previous : { ...previous, [group.id]: open });
       }} data-nc-inventory-group={group.key}>
-      <summary className={styles.summary} aria-label={`${group.label}, ${group.rows.length} ${noun}${group.rows.length === 1 ? '' : 's'}`}>
-        <ListText tone="group" className={styles.label}>{group.label}</ListText>
-        <ListText tone="count" aria-hidden="true">{group.rows.length}</ListText>
+      <summary className={styles.summary} aria-label={`${group.label}, ${group.rows.length} ${noun}${group.rows.length === 1 ? '' : 's'}${attentionLabel(group.attentionCount)}`}>
+        <ListText tone="group" className={styles.label}><Icon name={inventoryGroupIcon(group.key)} size="sm" />{group.label}</ListText>
+        <ListText tone="count" aria-hidden="true">{group.rows.length}{group.attentionCount > 0 ? ` · ${group.attentionCount} alert${group.attentionCount === 1 ? '' : 's'}` : ''}</ListText>
         <SpringRotation className={styles.chevron} angle={group.open ? 90 : 0}><Icon name="chevron-right" size="sm" /></SpringRotation>
       </summary>
       <div className={styles.content}>{renderRows(group.rows)}</div>

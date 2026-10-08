@@ -8,7 +8,7 @@ import { areaOf, type Area } from '../../../../core/domain/area.ts';
 import { AREA_TRACK_LIMIT, limitAreaTracks, type Track } from '../../../../core/domain/track.ts';
 import { TrackRow } from '../../features/track/row/public.tsx';
 import { SpringRotation } from '../../ui/motion/rotation.tsx';
-import { Icon } from '../../ui/icon/public.tsx';
+import { Icon, type IconName } from '../../ui/icon/public.tsx';
 import { ListText } from '../../ui/list-typography/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import type { NavTarget } from '../router/navigation.ts';
@@ -34,6 +34,7 @@ export type GroupManagement = Readonly<{
 
 type GroupProps = Readonly<{
   title: string;
+  icon?: IconName;
   /** Distinguishes an Area disclosure from a workspace-wide group. */
   label: string;
   expanded: boolean;
@@ -46,7 +47,7 @@ type GroupProps = Readonly<{
 }>;
 
 /** Group geometry, disclosure and action slots; hosts supply membership and actions. */
-export function SidebarGroup({ title, label, expanded, onToggle, level, management, extraMenuItems, actions, disclosureRef, children }: GroupProps & {
+export function SidebarGroup({ title, icon, label, expanded, onToggle, level, management, extraMenuItems, actions, disclosureRef, children }: GroupProps & {
   children: ReactNode;
 }) {
   const disclosure = useCollapsible({ isCollapsible: { isOpen: expanded, onOpenChange: onToggle } });
@@ -62,7 +63,7 @@ export function SidebarGroup({ title, label, expanded, onToggle, level, manageme
     <SpringRotation className={styles.chevron} angle={disclosure.isOpen ? 90 : 0}>
       <Icon name="chevron-right" />
     </SpringRotation>
-    <ListText tone={level === 'section' ? 'section' : 'group'} className={styles.areaName} title={title} fadeOverflow>{title}</ListText>
+    <ListText tone={level === 'section' ? 'section' : 'group'} className={styles.areaName} title={title} fadeOverflow>{icon === undefined ? null : <Icon name={icon} size="sm" />}{title}</ListText>
   </button>;
   return <div role="group" aria-label={label} className={level === 'section' ? styles.section : styles.areaGroup}>
     <div className={styles.areaRowWrap}>

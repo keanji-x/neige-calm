@@ -186,10 +186,10 @@ describe('track route CARDS panel', () => {
     expect(labels.some((label) => label.includes('Terminal one'))).toBe(true);
   });
 
-  it('[INV-CARD-226] renders exactly the surviving cards in the kernel wire order', async () => {
+  it('[INV-CARD-226] preserves every surviving card and its wire order within each tool type', async () => {
     setup();
     expect(await inventoryLabels()).toEqual([
-      'Terminal oneterminal', 'Surfacepanel-surface', 'Codex chatcodex', 'Unclaimed thingpanel-unclaimed',
+      'Terminal oneterminal', 'Codex chatcodex', 'Surfacepanel-surface', 'Unclaimed thingpanel-unclaimed',
     ]);
   });
 
@@ -264,7 +264,7 @@ describe('track route CARDS panel', () => {
     expect(await screen.findByRole('heading', { name: 'Recent files' })).toBeTruthy();
     expect([...document.querySelectorAll('[data-nc-desktop-panel] h2')]
       .map((heading) => heading.textContent).slice(0, 3))
-      .toEqual(['Cards', 'Recent files', 'Tasks']);
+      .toEqual(['Tasks', 'Tools', 'Recent files']);
     await userEvent.click(screen.getByRole('button', { name: 'Open fe/web/src/app/router/public.tsx' }));
     await waitFor(() => {
       expect(document.querySelector('[data-nc-report-file-viewer]')).toBeTruthy();
@@ -312,15 +312,14 @@ describe('track route CARDS panel', () => {
 
   it('[INV-CARD-226] shows the empty state when every card the track has is headless', async () => {
     setup([PLANNER_CARD, REPORT_CARD], { withVisibleFixture: false });
-    expect(await screen.findByText('No cards yet.')).toBeTruthy();
+    expect(await screen.findByText('No tools yet.')).toBeTruthy();
   });
 
-  it('shows a titled card by its name AND its kind, and an untitled one by its kind alone', async () => {
+  it('preserves titled tools and gives anonymous terminals a distinct numbered name', async () => {
     setup([...CARDS, card({ id: 'card-bare', kind: 'terminal', sort: 6 })]);
     const labels = await inventoryLabels();
     expect(labels).toEqual([
-      'Terminal oneterminal', 'Surfacepanel-surface', 'Codex chatcodex', 'Unclaimed thingpanel-unclaimed',
-      'terminal',
+      'Terminal oneterminal', 'Terminal 01terminal', 'Codex chatcodex', 'Surfacepanel-surface', 'Unclaimed thingpanel-unclaimed',
     ]);
   });
 });

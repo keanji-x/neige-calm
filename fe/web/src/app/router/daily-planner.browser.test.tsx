@@ -127,7 +127,7 @@ it.each(['light', 'dark'])('uses the sidebar text roles and surfaces in %s theme
     expect(date.lineHeight).toBe('20px');
     await expect.element(page.getByText('No tasks for this day.')).toBeVisible();
     const empty = getComputedStyle(page.getByText('No tasks for this day.').element());
-    const metadata = getComputedStyle(page.getByText('No cards yet.', { exact: true }).element());
+    const metadata = getComputedStyle(page.getByText('No tools yet.', { exact: true }).element());
     expect(empty.fontFamily).toBe(metadata.fontFamily);
     expect(empty.fontSize).toBe(metadata.fontSize);
     expect(empty.lineHeight).toBe('16px');

@@ -23,9 +23,9 @@
     color: var(--text-3);
   }
   .section {
-    font: var(--list-section-font, var(--type-label));
-    letter-spacing: var(--list-section-tracking, var(--tracking-label));
-    text-transform: var(--list-section-transform, uppercase);
+    font: var(--list-section-font, var(--type-navigation-label));
+    letter-spacing: var(--list-section-tracking, var(--tracking-normal));
+    text-transform: var(--list-section-transform, none);
   }
   .count {
     font-variant-numeric: tabular-nums;

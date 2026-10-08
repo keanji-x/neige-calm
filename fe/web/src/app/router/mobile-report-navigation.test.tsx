@@ -125,7 +125,7 @@ describe('the mobile report panel is the URL (#1191 §2.4)', () => {
     await openPanel(router, 'cards');
 
     await waitFor(() => { expect(href(router)).toBe('/track/w1?panel=cards'); });
-    expect(screen.getByRole('heading', { name: 'Cards' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Tools' })).toBeTruthy();
     // The panel container takes focus, not whatever the menu left behind.
     await waitFor(() => { expect(document.activeElement).toBe(mobilePanel()); });
   });
@@ -162,7 +162,7 @@ describe('the mobile report panel is the URL (#1191 §2.4)', () => {
 
   it('takes the panel away when the reader walks off the report', async () => {
     const router = setup('/track/w1?panel=cards');
-    expect(await screen.findByRole('heading', { name: 'Cards' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Tools' })).toBeTruthy();
 
     await userEvent.click(await screen.findByRole('button', { name: /^Switch track,/ }));
     // Leaving the report layer drops the report's panel.
@@ -264,7 +264,7 @@ describe('a desktop viewport never lets ?panel= disable the track panel', () => 
     const router = setup('/track/w1?panel=cards');
 
     // A role query is the right instrument: `inert` + `aria-hidden` take the surface out of the accessibility tree.
-    expect(await screen.findByRole('heading', { name: 'Cards' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Tools' })).toBeTruthy();
     /* `^` anchors to the row itself: the delete sibling's accessible name also carries the card's title. */
     expect(await screen.findByRole('button', { name: /^Build log/ })).toBeTruthy();
     // And the URL stops claiming a state this viewport cannot be in.
@@ -274,7 +274,7 @@ describe('a desktop viewport never lets ?panel= disable the track panel', () => 
   it('drops ?panel= when the reader widens the window with the panel open', async () => {
     const viewport = stubViewport(true);
     const router = setup('/track/w1?panel=cards');
-    expect(await screen.findByRole('heading', { name: 'Cards' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Tools' })).toBeTruthy();
     expect(href(router)).toBe('/track/w1?panel=cards');
 
     viewport.widen();

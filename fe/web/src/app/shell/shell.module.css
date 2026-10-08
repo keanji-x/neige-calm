@@ -166,9 +166,6 @@
     --row-h: var(--navigation-row-height);
     --list-primary-font: var(--type-action);
     --list-group-font: var(--type-ui);
-    --list-section-font: var(--type-navigation-label);
-    --list-section-tracking: var(--tracking-normal);
-    --list-section-transform: none;
     display: flex;
     flex-direction: column;
     gap: 0;
@@ -522,6 +519,9 @@
   /* Areas and inventory status groups share one 13px medium text role.
      Icon slots and the shared group text role establish hierarchy without extra indent. */
   .areaName {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
     min-inline-size: 0;
     overflow: hidden;
     white-space: nowrap;

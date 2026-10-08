@@ -99,7 +99,7 @@ const blankStatusRow: PanelRow = Object.freeze({
 });
 
 const cards: RowModuleView = Object.freeze({
-  key: 'cards', title: 'Cards', empty: 'No cards yet', rows: Object.freeze([cardRow, plainRow, deleteOnlyRow]),
+  key: 'cards', title: 'Tools', empty: 'No cards yet', rows: Object.freeze([cardRow, plainRow, deleteOnlyRow]),
 });
 const tasks: RowModuleView = Object.freeze({
   key: 'tasks', title: 'Tasks', empty: 'No tasks yet', rows: Object.freeze([taskRow, blankStatusRow]),
@@ -326,7 +326,7 @@ describe('A / module layer', () => {
 
   it('module-nesting: the second module is painted inside the first', () => {
     // The nested module is the empty one, painted in full inside `cards`, so the
-    // flat key sequence is still `['cards', 'tasks']` and only the nesting is wrong.
+    // flat key sequence is still `['tasks', 'cards']` and only the nesting is wrong.
     const painter = variant({
       module: (parts) => (parts.key === 'tasks' ? null : (
         <section key={parts.key} {...mark(MARKER.module, parts.key)}>
@@ -683,7 +683,7 @@ describe('E / co-hosting', () => {
     actions: Object.freeze([]),
   });
   const cohostView: readonly RowModuleView[] = Object.freeze([Object.freeze({
-    key: 'cards', title: 'Cards', empty: 'No cards yet', rows: Object.freeze([cohostRow]),
+    key: 'cards', title: 'Tools', empty: 'No cards yet', rows: Object.freeze([cohostRow]),
   })]);
 
   it('marker-co-host: one element serves as both the badge and the kind carrier', () => {
@@ -731,7 +731,7 @@ describe('a faithful painter is green', () => {
       ]),
     });
     const tapView: readonly RowModuleView[] = Object.freeze([Object.freeze({
-      key: 'cards', title: 'Cards', empty: 'No cards yet', rows: Object.freeze([tapRow]),
+      key: 'cards', title: 'Tools', empty: 'No cards yet', rows: Object.freeze([tapRow]),
     })]);
     const painter = variant({
       row: (row) => (

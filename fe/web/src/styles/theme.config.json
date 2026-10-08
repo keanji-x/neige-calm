@@ -57,9 +57,9 @@
       },
       "navigation-label": {
         "family": "ui",
-        "size": "ui",
-        "weight": "regular",
-        "line": "ui"
+        "size": "caption",
+        "weight": "medium",
+        "line": "caption"
       },
       "reading": {
         "family": "reading",

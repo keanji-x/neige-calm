@@ -33,7 +33,7 @@
   .content {
     /* Expanded groups share one module's room, keeping the next module reachable. */
     max-block-size: max(var(--row-h), min(10rem, calc(
-      (min(24rem, 40dvh)
+      (min(24rem, 40dvh) - var(--space-4)
       - var(--row-h) * var(--nc-inventory-group-count)
       - (var(--nc-inventory-content-gap) + var(--nc-inventory-footer-inset)) * var(--nc-inventory-open-count))
       / var(--nc-inventory-open-count)
@@ -76,7 +76,13 @@
     background: var(--hairline);
     pointer-events: none;
   }
-  .label { min-inline-size: 0; text-align: start; }
+  .label {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    min-inline-size: 0;
+    text-align: start;
+  }
   .chevron { justify-self: center; transition: none; }
   .group[open] > .summary .chevron { rotate: 90deg; }
   @media (prefers-reduced-motion: reduce) {

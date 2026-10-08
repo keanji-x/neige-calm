@@ -57,9 +57,8 @@ describe('Drawer', () => {
     const onClose = vi.fn();
     open({ onClose });
     const close = screen.getByRole('button', { name: 'Close conversation' });
-    const paths = [...close.querySelectorAll('path')].map((path) => path.getAttribute('d'));
-    expect(paths).toEqual(['M6 3.5 10.5 8 6 12.5']);
-    expect(paths).not.toContain('M4 4l8 8');
+    expect(close.querySelector('svg')?.classList.contains('lucide-chevron-right')).toBe(true);
+    expect(close.querySelector('svg')?.classList.contains('lucide-x')).toBe(false);
     expect(close.textContent).not.toContain('›');
     close.click();
     expect(onClose).toHaveBeenCalled();

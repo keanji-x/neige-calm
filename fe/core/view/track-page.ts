@@ -1,6 +1,7 @@
 // The track page's panel view model, derived once for every viewport; the desktop and mobile
 // painters render from it and this file is the authority on the rules and the action wording.
 
+import { agentProviderSchema } from '../api/schemas.js';
 import { groupPanelRows } from './panel-groups.js';
 import { cardActivityOf, cardActivityState, type CardActivity } from '../domain/activity.js';
 import { boundedStatusDetail, type ReportTaskRow } from '../domain/report.js';
@@ -30,9 +31,9 @@ export function taskStatusPhrase(status: string, detail: string | null): string 
  * task's comes from the card's session and says so, in the phrase and in a visible `session` badge:
  * a superseded worker card keeps its task key as its title (#1946).
  */
-function cardRow(card: CardWire, taskStatus: RowStatus | null, activity: TrackPageActivity): PanelRow {
+function cardRow(card: CardWire, taskStatus: RowStatus | null, activity: TrackPageActivity, terminalNumber: number | null): PanelRow {
   const title = card.title;
-  const name = title ?? card.kind;
+  const name = title ?? (terminalNumber === null ? card.kind : `Terminal ${String(terminalNumber).padStart(2, '0')}`);
   const actions: RowAction[] = [
     { kind: 'open-card', cardId: card.id, label: null, hint: null, description: null },
   ];
@@ -51,7 +52,7 @@ function cardRow(card: CardWire, taskStatus: RowStatus | null, activity: TrackPa
   return {
     id: card.id,
     title: name,
-    kind: title !== null ? card.kind : null,
+    kind: title !== null || card.kind === 'terminal' || agentProviderSchema.safeParse(card.kind).success ? card.kind : null,
     badges,
     status: taskStatus ?? (sessionStatus === null ? null : { token: sessionStatus, phrase: `session ${sessionStatus}`, detail: null }),
     activity: rowActivity(activity, card.id),
@@ -115,7 +116,7 @@ function taskRow(task: ReportTaskRow, activity: TrackPageActivity, openableCards
   };
 }
 
-/** The track page's row modules; order is part of the view model: Cards before Tasks on both surfaces. */
+/** The track page's row modules; order is part of the view model: Tasks before Tools on both surfaces. */
 export function deriveTrackPageView(input: Readonly<{
   cards: readonly CardWire[];
   tasks: readonly ReportTaskRow[];
@@ -136,12 +137,16 @@ export function deriveTrackPageView(input: Readonly<{
     const workerCardId = workerCardByBlock.get(row.id) ?? null;
     if (workerCardId !== null && !taskStatusByCard.has(workerCardId)) taskStatusByCard.set(workerCardId, row.status);
   }
+  // Stable within this inventory across status regrouping; custom titles remain authoritative.
+  const terminals = input.cards.filter(card => card.kind === 'terminal')
+    .toSorted((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
+  const terminalNumbers = new Map(terminals.map((card, index) => [card.id, index + 1]));
   const cards: RowModuleView = {
     key: 'cards',
-    title: 'Cards',
-    rows: groupPanelRows(input.cards.map(card => cardRow(card, taskStatusByCard.get(card.id) ?? null, input.activity)), 'cards')
+    title: 'Tools',
+    rows: groupPanelRows(input.cards.map(card => cardRow(card, taskStatusByCard.get(card.id) ?? null, input.activity, terminalNumbers.get(card.id) ?? null)), 'cards')
       .flatMap(group => group.rows),
-    empty: 'No cards yet.',
+    empty: 'No tools yet.',
   };
   const tasks: RowModuleView = {
     key: 'tasks',
@@ -149,5 +154,5 @@ export function deriveTrackPageView(input: Readonly<{
     rows: taskRows,
     empty: 'No tasks declared yet.',
   };
-  return { rowModules: [cards, tasks] };
+  return { rowModules: [tasks, cards] };
 }

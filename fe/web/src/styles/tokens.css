@@ -100,7 +100,7 @@
     --type-action: 500 0.875rem/var(--line-ui) var(--font-sans);
     --type-detail: 400 1rem/var(--line-reading) var(--font-sans);
     --type-page-title: 600 0.875rem/var(--line-ui) var(--font-sans);
-    --type-navigation-label: 400 0.875rem/var(--line-ui) var(--font-sans);
+    --type-navigation-label: 500 0.75rem/var(--line-caption) var(--font-sans);
     --type-reading: 400 1rem/var(--line-reading) var(--font-serif);
     --type-chapter: 700 1.25rem/var(--line-heading) var(--font-serif);
     --type-table: 400 0.875rem/var(--line-ui) var(--font-sans);

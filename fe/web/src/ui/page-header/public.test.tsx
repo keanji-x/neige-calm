@@ -10,7 +10,7 @@ describe('Breadcrumb', () => {
   it('renders the back control with the shared stroked icon instead of a text glyph', () => {
     render(<Breadcrumb ancestor="Today" onNavigate={vi.fn()} onBack={vi.fn()} />);
     const back = screen.getByRole('button', { name: 'Back' });
-    expect(back.querySelector('svg')?.querySelector('path')?.getAttribute('d')).toBe('M13 8H3.5');
+    expect(back.querySelector('svg')?.classList.contains('lucide-arrow-left')).toBe(true);
     expect(back.textContent).not.toContain('←');
   });
 });

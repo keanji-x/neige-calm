@@ -210,8 +210,8 @@ describe('Track mobile presentation', () => {
     expect(panelBox.left).toBe(0);
     expect(panelBox.width).toBe(window.innerWidth);
     expect(document.querySelector('nav[aria-label="Primary"]')).toBeNull();
-    expect(page.getByRole('heading', { name: 'Cards' })).toBeTruthy();
-    const cardsHeader = await page.getByRole('heading', { name: 'Cards', exact: true }).findElement();
+    expect(page.getByRole('heading', { name: 'Tools' })).toBeTruthy();
+    const cardsHeader = await page.getByRole('heading', { name: 'Tools', exact: true }).findElement();
     expect(getComputedStyle(cardsHeader).fontSize).toBe('14px');
     expect(getComputedStyle(cardsHeader.closest('header')!).backdropFilter).toBe('none');
     expect(getComputedStyle(cardsHeader.closest('header')!).borderRadius).toBe('0px');
@@ -254,7 +254,7 @@ describe('Track mobile presentation', () => {
     await expect.poll(() => document.querySelector('[data-nc-workspace-header]')).not.toBeNull();
     expect(document.querySelectorAll('[data-nc-workspace-header] button[aria-label="Open conversation history"]')).toHaveLength(1);
     await router.navigate({ to: '/track/w1', search: { panel: 'cards' } });
-    await expect.element(page.getByRole('heading', { name: 'Cards', exact: true })).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'Tools', exact: true })).toBeVisible();
   });
 
   it('presents Settings as an inline mobile page and retains an install draft across viewport changes', async () => {
@@ -472,7 +472,7 @@ describe('Track mobile presentation', () => {
     const router = setup('/area/c1/new');
     await page.getByRole('button', { name: 'Switch area, Product', exact: true }).findElement();
     expect(page.getByRole('button', { name: 'Track actions', exact: true }).query()).toBeNull();
-    expect(page.getByRole('menuitem', { name: 'Cards', exact: true }).query()).toBeNull();
+    expect(page.getByRole('menuitem', { name: 'Tools', exact: true }).query()).toBeNull();
     expect(page.getByRole('menuitem', { name: 'Conversations', exact: true }).query()).toBeNull();
     expect(router.state.location.pathname).toBe('/area/c1/new');
     expect(document.querySelector('[data-nc-mobile-page]')).toBeNull();

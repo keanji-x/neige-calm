@@ -272,7 +272,7 @@ describe('mobile and desktop paint the same data-nc-activity set', () => {
   );
   const verdicts = track({ cards: { 'card-1': 'working', 'card-9': 'failed' } });
 
-  it.each(['cards', 'tasks'] as const)('on the %s module', (panel) => {
+  it.each(['tasks', 'cards'] as const)('on the %s module', (panel) => {
     const { container } = renderPage({ cards: CARDS, tasks: TASKS, track: verdicts, panel });
     const mobile = activityByRow(mobilePanel(container));
     const desktop = activityByRow(container.querySelector('[data-nc-desktop-panel]')!);

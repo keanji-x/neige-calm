@@ -70,7 +70,7 @@ function tooltipAt(x: number, y: number): string | null {
 }
 
 describe('a compact desktop TASKS row', () => {
-  it('shows only the name and right-aligned worker kind', async () => {
+  it('shows only the name and leading worker icon', async () => {
     await browserPage.viewport(1200, 800);
     const row = renderTasks([assigned]);
     const status = row.querySelector<HTMLElement>('[data-nc-task-status-text]')!;
@@ -86,7 +86,11 @@ describe('a compact desktop TASKS row', () => {
     expect(statusBox.width).toBeGreaterThan(0);
     expect(status.closest<HTMLElement>('[data-nc-inventory-metadata]')!.getBoundingClientRect().width).toBeLessThanOrEqual(1);
     expect(row.querySelector('[role="img"][data-nc-status]')).toBeNull();
-    expect(rowBox.right - kindBox.right).toBeCloseTo(4, 0);
+    expect(kindBox.left - rowBox.left).toBeCloseTo(4, 0);
+    const icon = kind.querySelector('svg')!.getBoundingClientRect();
+    const name = row.querySelector<HTMLElement>('[data-nc-field="title"]')!.getBoundingClientRect();
+    expect(icon.width).toBe(14);
+    expect(name.left - icon.right).toBeCloseTo(8, 0);
   });
 
   it('keeps a pending reason out of the row copy and exposes it on hover', async () => {

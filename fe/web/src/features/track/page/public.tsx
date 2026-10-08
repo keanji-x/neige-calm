@@ -555,7 +555,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
             {backlinks !== undefined && (
               <PanelModule title="Referenced by">{backlinks}</PanelModule>
             )}
-            <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
+            <PanelModule title="Conversations" icon="chat" action={conversationAction}>{conversationList}</PanelModule>
           </PanelCard>
           </div>
         </aside>
