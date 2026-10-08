@@ -94,3 +94,27 @@ it('leaves downward message swipes to scrolling instead of closing the conversat
   expect(close).not.toHaveBeenCalled();
   expect(panel.style.transform).toBe('');
 });
+
+it('keeps the header fixed when scrolling over the header and messages', async () => {
+  await page.viewport(390, 844);
+  surface();
+  const panel = document.querySelector<HTMLElement>('[data-nc-mobile-chat-panel]')!;
+  await expect.poll(() => panel.getAnimations().every(animation => animation.playState !== 'running')).toBe(true);
+  expect(getComputedStyle(panel.lastElementChild!).overflowY).toBe('hidden');
+  const heading = page.getByRole('heading', { name: 'Neige Calm', exact: true }).element();
+  await expect.poll(() => scroller().scrollTop).toBeGreaterThan(1000);
+  const top = heading.getBoundingClientRect().top;
+  const position = scroller().scrollTop;
+  await commands.wheelScroll('[data-nc-mobile-chat-panel] header', 600);
+  await expect.poll(() => heading.getBoundingClientRect().top).toBeCloseTo(top, 0);
+  await commands.wheelScroll('[data-nc-drawer-scroll]', -700);
+  await expect.poll(() => scroller().scrollTop).toBeLessThan(position);
+  expect(heading.getBoundingClientRect().top).toBeCloseTo(top, 0);
+  for (let ancestor = scroller().parentElement; ancestor !== null && ancestor !== panel; ancestor = ancestor.parentElement) {
+    expect(ancestor.scrollTop).toBe(0);
+  }
+  await expect.poll(() => document.querySelector('[data-nc-chat-scroll-dock]')).not.toBeNull();
+  const blur = document.querySelector<HTMLElement>('[data-nc-chat-scroll-dock]')!.firstElementChild!;
+  expect(blur.getBoundingClientRect().height).toBeLessThanOrEqual(48);
+  expect(getComputedStyle(blur).maskImage).toContain('linear-gradient');
+});
