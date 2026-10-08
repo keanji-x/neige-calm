@@ -726,7 +726,6 @@ pub fn spawn_source_with_path(
             poll_interval: Duration::from_millis(20),
             lazy_retry_delay: Duration::from_millis(10),
             lazy_retry_attempts: 3,
-            ..CodexRolloutFlowSourceOptions::default()
         },
     );
     let session = worker_session(seed);
@@ -755,7 +754,6 @@ pub fn spawn_source_with_discovery(
             poll_interval: Duration::from_millis(20),
             lazy_retry_delay: Duration::from_millis(10),
             lazy_retry_attempts: 3,
-            ..CodexRolloutFlowSourceOptions::default()
         },
     );
     let session = worker_session(seed);
@@ -784,7 +782,6 @@ pub fn spawn_claude_source_with_path(
             poll_interval: Duration::from_millis(20),
             lazy_retry_delay: Duration::from_millis(10),
             lazy_retry_attempts: 3,
-            ..ClaudeTranscriptFlowSourceOptions::default()
         },
     );
     let session = worker_session(seed);

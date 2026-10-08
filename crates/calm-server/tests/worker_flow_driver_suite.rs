@@ -1,5 +1,8 @@
 mod support;
 
+#[cfg(feature = "fixtures")]
+#[path = "cases/worker_flow_capture_atomicity.rs"]
+mod worker_flow_capture_atomicity;
 #[path = "cases/worker_flow_db_contention.rs"]
 mod worker_flow_db_contention;
 #[path = "cases/worker_flow_driver_boot.rs"]

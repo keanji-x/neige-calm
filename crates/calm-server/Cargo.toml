@@ -35,6 +35,7 @@ default = []
 # unset) and `pause_point` does nothing until a test arms it. See
 # `src/test_seams.rs` for the contract.
 fixtures = [
+    "calm-truth/fixtures",
     "provider/fixtures",
     "calm-proc-supervisor/test-support",
 ]

@@ -68,7 +68,6 @@ async fn codex_rollout_driver_waits_past_lazy_file_retry_budget_until_runtime_te
             poll_interval: Duration::from_millis(20),
             lazy_retry_delay: Duration::from_millis(50),
             lazy_retry_attempts: 3,
-            cursor_persist_every: 1,
         },
     );
     driver.start_on_boot().await.unwrap();

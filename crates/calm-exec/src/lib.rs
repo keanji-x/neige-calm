@@ -5,7 +5,10 @@ pub mod observation;
 pub mod provider;
 pub mod reaction;
 
-pub use flow::{FlowRowCtx, WorkerFlowItemSink, WorkerFlowSource};
+pub use flow::{
+    CaptureBatch, CaptureCheckpoint, CaptureOutcome, CapturePosition, FlowRowCtx,
+    WorkerFlowItemSink, WorkerFlowSource,
+};
 pub use observation::ObservationSink;
 pub use provider::{SpawnCtx, SpawnHandle, WorkerProvider};
 pub use reaction::{AgentReactor, DecisionIntent, DecisionSink};

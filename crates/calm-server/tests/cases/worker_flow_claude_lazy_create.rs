@@ -190,7 +190,6 @@ fn claude_driver_with_path(
             poll_interval,
             lazy_retry_delay,
             lazy_retry_attempts,
-            cursor_persist_every: 1,
         },
     )
 }

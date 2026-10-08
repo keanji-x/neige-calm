@@ -22,8 +22,6 @@ use crate::worker_flow::cursor::{self, CODEX_ROLLOUT_SOURCE_KIND, CursorWriter};
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const DEFAULT_LAZY_RETRY_DELAY: Duration = Duration::from_millis(100);
 const DEFAULT_LAZY_RETRY_ATTEMPTS: usize = 30;
-// Keep the cursor within one record of worker_flow_items so crash-resume cannot re-insert.
-const DEFAULT_CURSOR_PERSIST_EVERY: u64 = 1;
 
 #[derive(Clone, Debug)]
 pub struct CodexRolloutFlowSourceOptions {
@@ -31,7 +29,6 @@ pub struct CodexRolloutFlowSourceOptions {
     pub poll_interval: Duration,
     pub lazy_retry_delay: Duration,
     pub lazy_retry_attempts: usize,
-    pub cursor_persist_every: u64,
 }
 
 impl Default for CodexRolloutFlowSourceOptions {
@@ -41,7 +38,6 @@ impl Default for CodexRolloutFlowSourceOptions {
             poll_interval: DEFAULT_POLL_INTERVAL,
             lazy_retry_delay: DEFAULT_LAZY_RETRY_DELAY,
             lazy_retry_attempts: DEFAULT_LAZY_RETRY_ATTEMPTS,
-            cursor_persist_every: DEFAULT_CURSOR_PERSIST_EVERY,
         }
     }
 }
@@ -154,13 +150,13 @@ impl CodexRolloutFlowSource {
         path: PathBuf,
     ) -> Result<(), CoreError> {
         let source_path = path.to_string_lossy().to_string();
+        let ctx = row_ctx(session, &self.runtime);
         let stored = cursor::get(
             self.repo.as_ref(),
             &self.runtime.card_id,
             CODEX_ROLLOUT_SOURCE_KIND,
         )
-        .await?
-        .filter(|c| c.source_path == source_path);
+        .await?;
         let mut writer = CursorWriter::new(
             &self.runtime.card_id,
             CODEX_ROLLOUT_SOURCE_KIND,
@@ -169,6 +165,7 @@ impl CodexRolloutFlowSource {
             self.stop.clone(),
         );
         let mut cursor = stored
+            .filter(|c| c.source_path == source_path)
             .map(|c| CursorState {
                 record_index: c.record_index.max(0) as u64,
                 last_source_uuid: c.last_source_uuid,
@@ -202,7 +199,9 @@ impl CodexRolloutFlowSource {
             }
 
             if lines.is_empty() {
-                persist_cursor(&mut writer, &*self.repo, &cursor).await?;
+                if !persist_cursor(&mut writer, sink, &ctx, &cursor, vec![]).await? {
+                    return Ok(());
+                }
                 if !self.runtime_is_alive().await {
                     tracing::info!(
                         card_id = %self.runtime.card_id,
@@ -290,7 +289,6 @@ impl CodexRolloutFlowSource {
             });
             while (cursor.record_index as usize) < lines.len() {
                 if self.stop.is_cancelled() {
-                    persist_cursor(&mut writer, &*self.repo, &cursor).await?;
                     return Ok(());
                 }
 
@@ -308,6 +306,9 @@ impl CodexRolloutFlowSource {
                         cursor.last_source_uuid = None;
                         cursor.last_line_hash = Some(hash_line(&lines[line_index as usize]));
                         cursor.record_index += 1;
+                        if !persist_cursor(&mut writer, sink, &ctx, &cursor, vec![]).await? {
+                            return Ok(());
+                        }
                         continue;
                     }
                 };
@@ -317,6 +318,9 @@ impl CodexRolloutFlowSource {
                     cursor.last_source_uuid = None;
                     cursor.last_line_hash = Some(hash_line(&lines[line_index as usize]));
                     cursor.record_index += 1;
+                    if !persist_cursor(&mut writer, sink, &ctx, &cursor, vec![]).await? {
+                        return Ok(());
+                    }
                     continue;
                 }
 
@@ -326,27 +330,28 @@ impl CodexRolloutFlowSource {
                     line: Some(line_index),
                     record_type: Some(rollout_record_type(&parsed).to_string()),
                 };
-                if let Some(item) = normalize_rollout_line(
+                let items: Vec<_> = normalize_rollout_line(
                     &parsed,
                     position.seq,
                     position.turn,
                     &session.id,
                     raw_ref,
-                ) {
-                    record_with_backpressure(sink, &row_ctx(session, &self.runtime), item).await?;
-                    position.seq = position.seq.saturating_add(1);
-                }
+                )
+                .into_iter()
+                .collect();
+                position.seq = position.seq.saturating_add(items.len() as u64);
 
                 cursor.last_source_uuid = rollout_line_source_uuid(&parsed);
                 cursor.last_line_hash = Some(hash_line(&lines[line_index as usize]));
                 cursor.record_index += 1;
-                if cursor.record_index % self.options.cursor_persist_every.max(1) == 0 {
-                    // TODO: item insert + cursor write are two sqlite commits; a crash between them re-inserts on restart.
-                    persist_cursor(&mut writer, &*self.repo, &cursor).await?;
+                if !persist_cursor(&mut writer, sink, &ctx, &cursor, items).await? {
+                    return Ok(());
                 }
             }
 
-            persist_cursor(&mut writer, &*self.repo, &cursor).await?;
+            if !persist_cursor(&mut writer, sink, &ctx, &cursor, vec![]).await? {
+                return Ok(());
+            }
             // TODO: session_projection_complete_for_terminal bypasses the event bus; canonicalize via Event emission.
             if !self.runtime_is_alive().await {
                 tracing::info!(
@@ -433,34 +438,18 @@ fn row_ctx(session: &WorkerSession, runtime: &WorkerSessionProjection) -> FlowRo
     }
 }
 
-async fn record_with_backpressure(
-    sink: &dyn WorkerFlowItemSink,
-    ctx: &FlowRowCtx,
-    item: calm_types::worker_flow::WorkerFlowItem,
-) -> Result<(), CoreError> {
-    loop {
-        match sink.record(ctx, item.clone()).await {
-            Ok(()) => return Ok(()),
-            Err(CoreError::ServiceUnavailable(err)) => {
-                tracing::warn!(
-                    error = %err,
-                    "worker-flow sink backpressure; retrying captured item"
-                );
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            Err(err) => return Err(err),
-        }
-    }
-}
-
 async fn persist_cursor(
     writer: &mut CursorWriter,
-    repo: &dyn Repo,
+    sink: &dyn WorkerFlowItemSink,
+    ctx: &FlowRowCtx,
     cursor: &CursorState,
-) -> Result<(), CoreError> {
+    items: Vec<calm_types::worker_flow::WorkerFlowItem>,
+) -> Result<bool, CoreError> {
     writer
         .persist(
-            repo,
+            sink,
+            ctx,
+            items,
             cursor.record_index as i64,
             0,
             cursor.last_source_uuid.as_deref(),

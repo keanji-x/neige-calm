@@ -81,7 +81,6 @@ async fn worker_flow_driver_drop_cancels_start_on_boot_tail_tasks() {
             poll_interval: Duration::from_millis(20),
             lazy_retry_delay: Duration::from_millis(10),
             lazy_retry_attempts: 3,
-            cursor_persist_every: 1,
         },
     );
     driver.start_on_boot().await.unwrap();

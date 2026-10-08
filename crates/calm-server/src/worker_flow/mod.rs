@@ -154,6 +154,17 @@ impl WorkerFlowDriver {
             .count()
     }
 
+    #[cfg(feature = "fixtures")]
+    pub async fn stop_and_join_for_test(&self) {
+        let tasks = std::mem::take(&mut *self.tasks.lock().await);
+        for task in tasks.values() {
+            task.stop.cancel();
+        }
+        for (_, task) in tasks {
+            task.join.await.expect("capture task join");
+        }
+    }
+
     #[cfg(any(test, feature = "fixtures"))]
     pub async fn task_stop_tokens_for_test(&self) -> Vec<CancellationToken> {
         let tasks = self.tasks.lock().await;
@@ -364,27 +375,34 @@ impl WorkerFlowDriver {
             _ => {}
         }
 
-        {
-            let mut tasks = self.tasks.lock().await;
-            tasks.retain(|_, task| !task.join.is_finished() && !task.stop.is_cancelled());
-            match tasks.get(&runtime.card_id) {
-                Some(task) if task.worker_session_id == runtime.id => return Ok(()),
-                Some(_) => {
-                    let task = tasks
-                        .remove(&runtime.card_id)
-                        .expect("task existed for card");
-                    task.stop.cancel();
-                    tracing::info!(
-                        card_id = %runtime.card_id,
-                        old_runtime_id = %task.worker_session_id,
-                        new_runtime_id = %runtime.id,
-                        "worker-flow card runtime changed; cancelling stale tail task before attaching new one"
-                    );
-                }
-                None => {}
+        // Serialize cancellation, settlement and attachment under the task map
+        // lock. Sources do not acquire this lock. In-flight capture writes remain
+        // owned until their COMMIT/rollback finishes before a new cursor is read.
+        let mut tasks = self.tasks.lock().await;
+        tasks.retain(|_, task| !task.join.is_finished());
+        match tasks.get(&runtime.card_id) {
+            Some(task) if task.worker_session_id == runtime.id && !task.stop.is_cancelled() => {
+                return Ok(());
             }
+            Some(_) => {
+                let task = tasks
+                    .remove(&runtime.card_id)
+                    .expect("task existed for card");
+                tracing::info!(card_id = %runtime.card_id,
+                    old_runtime_id = %task.worker_session_id, new_runtime_id = %runtime.id,
+                    "worker-flow card runtime changed; settling stale tail task before attaching new one");
+                settle_task(task).await;
+            }
+            None => {}
         }
 
+        #[cfg(feature = "fixtures")]
+        calm_truth::capture_test_seam::reach(
+            &runtime.card_id,
+            -1,
+            calm_truth::capture_test_seam::CapturePoint::ReplacementReady,
+        )
+        .await;
         let session = session_from_runtime(&runtime, &card);
         let stop = CancellationToken::new();
         let sink = self.sink.clone();
@@ -429,7 +447,6 @@ impl WorkerFlowDriver {
             }
         };
 
-        let mut tasks = self.tasks.lock().await;
         tasks.insert(
             runtime.card_id.clone(),
             SourceTask {
@@ -463,10 +480,18 @@ impl WorkerFlowDriver {
     }
 
     async fn cancel_card(&self, card_id: &str) {
-        let task = self.tasks.lock().await.remove(card_id);
-        if let Some(task) = task {
-            task.stop.cancel();
+        let mut tasks = self.tasks.lock().await;
+        if let Some(task) = tasks.remove(card_id) {
+            settle_task(task).await;
         }
+    }
+}
+
+async fn settle_task(task: SourceTask) {
+    task.stop.cancel();
+    if let Err(err) = task.join.await {
+        tracing::warn!(worker_session_id = %task.worker_session_id, error = %err,
+            "worker-flow tail task failed while settling");
     }
 }
 

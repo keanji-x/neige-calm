@@ -53,7 +53,6 @@ async fn worker_flow_driver_replaces_stale_claude_tail_task_when_runtime_id_chan
             poll_interval: Duration::from_secs(5),
             lazy_retry_delay: Duration::from_millis(10),
             lazy_retry_attempts: 3,
-            cursor_persist_every: 1,
         },
     );
     driver.start_on_boot().await.unwrap();
