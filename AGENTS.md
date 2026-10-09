@@ -89,10 +89,10 @@ implementation changes, using the real call paths and ownership layers:
   A list of things that grow in ordinary work, such as test names, files or
   plugins, is not a closed set.
 - **External contract facts:** take facts about an external tool, such as a
-  session path, file name or record format, from its documented contract or
-  from an identifier Neige owns, like a hook payload field or an API response.
-  Do not re-derive them from the tool's private layout or naming rules, and do
-  not accept both forms as a fallback.
+  session path, file name or record format, from its documented contract, from
+  a value it reports such as a hook payload field or an API response, or from an
+  identifier Neige owns. Do not re-derive them from the tool's private layout
+  or naming rules, and do not accept both forms as a fallback.
 - **Cost of permanence:** for each new check, list or pin, state which files an
   ordinary later change (adding or renaming a test, file or variant) must edit,
   and how many times the check runs per CI workflow. Evidence that this change
