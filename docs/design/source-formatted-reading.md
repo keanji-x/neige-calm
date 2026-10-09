@@ -4,7 +4,7 @@
 
 Captured source panels currently print Markdown syntax in a raw preformatted body.
 Provide a formatted reading view by default and an exact original-text view.
-A citation carrying a quote anchor still opens original text, highlights the existing
+Full source readers receiving a quote anchor still open original text and highlight the existing
 first exact occurrence and scrolls only when the host allows it. Provenance wording,
 metadata, missing/error states and stored bytes remain unchanged.
 
@@ -22,8 +22,8 @@ or parser policy is introduced. Document rendering retains interactive destinati
 captured evidence selects the inert mode explicitly. Quote offsets remain owned by
 sourceHighlight and are not projected onto normalized rendered text.
 
-Use reading/original controls with explicit pressed states. Quote-bearing arrivals
-start in original mode; changing source or anchor resets the mode. All provenance
+Use reading/original controls with explicit pressed states. Hover previews explicitly start in reading mode even for quote citations. Full-reader
+quote-bearing arrivals start in original mode; changing source or anchor resets the mode. All provenance
 variants use the same view policy, with no plugin-specific identity assumptions.
 
 L2: this adds formatted presentation at an untrusted captured-evidence boundary and

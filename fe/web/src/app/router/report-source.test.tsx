@@ -219,6 +219,8 @@ describe('the source panel on the track page', () => {
     fireEvent.pointerEnter(link.parentElement!);
     const preview = await screen.findByRole('dialog', { name: 'Preview: Table evidence' });
     await within(preview).findByText('智堡摘要，非机构原文');
+    expect(preview.querySelector('[data-nc-report-source-reading]')).not.toBeNull();
+    fireEvent.click(within(preview).getByRole('button', { name: '原文' }));
     expect(preview.querySelector('mark')?.textContent).toBe('9月加息概率接近九成');
   });
 
@@ -301,6 +303,8 @@ describe('the source panel on the track page', () => {
     fireEvent.pointerEnter(link.parentElement!);
     const preview = await screen.findByRole('dialog', { name: 'Preview: Mikko 日志' });
     await within(preview).findByText('智堡摘要，非机构原文');
+    expect(preview.querySelector('[data-nc-report-source-reading]')).not.toBeNull();
+    fireEvent.click(within(preview).getByRole('button', { name: '原文' }));
     expect(preview.querySelector('mark')?.textContent).toBe('9月加息概率接近九成');
     expect(preview.querySelector('[data-nc-report-source-body]')?.textContent).toBe(SOURCE_ROW.body);
     expect(scrollIntoView).not.toHaveBeenCalled();

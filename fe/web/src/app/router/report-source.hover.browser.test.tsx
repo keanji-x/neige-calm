@@ -51,7 +51,7 @@ it('reads and scrolls a captured source beside the report without moving the rep
     source_id: 'src_0971fbde', title: '巴克莱芯片压力测试，10月7日', provenance: 'summary',
     origin: { kind: 'plugin', plugin_id: 'research', tool: 'read', args_sha256: 'ab', args_canon: 'v1' },
     published_at: '2026-10-07', captured_at: '2026-10-07T08:00:00Z', body_sha256: 'cd', body_bytes: 8000,
-    body: '供需变化与盈利风险。\n\n'.repeat(100) + '引用结论。',
+    body: '# 摘要阅读\n\n' + '供需变化与盈利风险。\n\n'.repeat(100) + '引用结论。',
     quotes: [{ id: 'q1', text: '引用结论。', start: 0, end: 1 }],
   };
   const send = vi.fn<ApiTransportPort['send']>(() => Promise.resolve({ status: 200, statusText: 'OK', body: source }));
@@ -74,6 +74,7 @@ it('reads and scrolls a captured source beside the report without moving the rep
   await link.hover();
   await expect.element(page.getByText('智堡摘要，非机构原文', { exact: true })).toBeVisible();
   expect(send.mock.calls[0]?.[0].path).toBe('/api/tracks/t1/sources/src_0971fbde');
+  await expect.element(page.getByRole('heading', { name: '摘要阅读', exact: true })).toBeVisible();
   const preview = page.getByRole('dialog', { name: `Preview: ${source.title}` }).element();
   const bounds = preview.getBoundingClientRect();
   expect(bounds.left).toBeGreaterThanOrEqual(reading.right);
@@ -85,7 +86,9 @@ it('reads and scrolls a captured source beside the report without moving the rep
   expect(region.scrollTop).toBeGreaterThan(0);
   expect(document.documentElement.scrollTop).toBe(scrollTop);
   expect(page.getByTestId('reading').element().querySelector('[data-nc-report-reading]')!.getBoundingClientRect().top).toBe(reading.top);
+  await page.getByRole('dialog', { name: `Preview: ${source.title}` }).getByRole('button', { name: '原文', exact: true }).click();
   expect(preview.querySelector('mark')?.textContent).toBe('引用结论。');
+  expect(document.documentElement.scrollTop).toBe(scrollTop);
   region.scrollTop = 0;
   await page.getByRole('dialog', { name: `Preview: ${source.title}` }).screenshot({ path: '../../../../test-results/neige-source-hover.png' });
   await page.getByRole('button', { name: 'Open in workspace', exact: true }).click();

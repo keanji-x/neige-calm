@@ -40,7 +40,7 @@ export function ReportSourcePreview({ transport, trackId, target, unauthorized }
   unauthorized: UnauthorizedChannel;
 }) {
   const query = useSource(transport, trackId, target, unauthorized);
-  return <ReportSourcePanel target={target} resolution={sourceResolutionOf(query)} scrollToQuote={false}
+  return <ReportSourcePanel target={target} resolution={sourceResolutionOf(query)} scrollToQuote={false} initialView="reading"
     onRetry={() => { void query.refetch(); }} />;
 }
 

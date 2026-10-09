@@ -29,4 +29,3 @@ export function ReportSourceCitation({ target, onOpen, children }: {
     </span>
   );
 }
-

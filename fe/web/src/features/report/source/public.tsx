@@ -27,6 +27,8 @@ export type ReportSourcePanelProps = Readonly<{
   onRetry: () => void;
   /** Hover previews must not scroll the underlying report. */
   scrollToQuote?: boolean;
+  /** Hover readers may start formatted even when the citation carries a quote. */
+  initialView?: 'reading' | 'original';
 }>;
 
 /** The drawer's accessible name for this state: the row's title once known, the generic word until then. */
@@ -34,7 +36,7 @@ export function reportSourcePanelTitle(resolution: SourceResolution): string {
   return resolution.status === 'ok' ? resolution.source.title : SOURCE_PANEL_COPY.panelTitle;
 }
 
-export function ReportSourcePanel({ target, resolution, onRetry, scrollToQuote = true }: ReportSourcePanelProps) {
+export function ReportSourcePanel({ target, resolution, onRetry, scrollToQuote = true, initialView }: ReportSourcePanelProps) {
   return (
     <div className={styles.panel} data-nc-report-source="">
       {target.sourceId === null
@@ -45,7 +47,7 @@ export function ReportSourcePanel({ target, resolution, onRetry, scrollToQuote =
             ? <p className={styles.state} role="status">{SOURCE_PANEL_COPY.loading}</p>
             : resolution.status === 'error'
               ? <ErrorBox message={readFailureText(resolution.failure, '无法读取来源。')} onRetry={onRetry} />
-              : <Source key={`${resolution.source.source_id}:${target.quoteId ?? ''}`} source={resolution.source} target={target} scrollToQuote={scrollToQuote} />}
+              : <Source key={`${resolution.source.source_id}:${target.quoteId ?? ''}:${initialView ?? ''}`} source={resolution.source} target={target} scrollToQuote={scrollToQuote} initialView={initialView ?? (target.quoteId === null ? 'reading' : 'original')} />}
     </div>
   );
 }
@@ -81,9 +83,9 @@ function Missing({ target, reason }: { target: ReportSourceLinkTarget; reason: '
   );
 }
 
-function Source({ source, target, scrollToQuote }: { source: TrackSourceDetail; target: ReportSourceLinkTarget; scrollToQuote: boolean }) {
+function Source({ source, target, scrollToQuote, initialView }: { source: TrackSourceDetail; target: ReportSourceLinkTarget; scrollToQuote: boolean; initialView: 'reading' | 'original' }) {
   const { quoteId } = target;
-  const [original, setOriginal] = useState(quoteId !== null);
+  const [original, setOriginal] = useState(initialView === 'original');
   const highlight = quoteId === null ? null : sourceHighlight(source, quoteId);
   const anchorMissed = quoteId !== null && highlight === null;
   const markRef = useRef<HTMLElement | null>(null);
