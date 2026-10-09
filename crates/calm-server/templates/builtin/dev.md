@@ -124,8 +124,9 @@ its evidence:
   · CI, where the repository has it, runs the broad suites; read it with
     plugin_gitforge_gh_pr_checks. Without CI they run in the gate, with a
     gate.timeout_secs that fits them.
-  · Review channels get the implementing attempt's gate result and, once
-    available, CI as evidence. They run a check only to settle a review hypothesis
+  · Put the implementing attempt's gate result and, once available, the CI
+    conclusion and failed checks you read for that head into each review task's
+    context. Reviewers run a check only to settle a review hypothesis
     or when repository policy assigns it to them.
 A check that fits none of these (policy keeps it off this host, it needs the
 worker's environment, it changes files, or policy assigns it to a role) gets a row
@@ -140,7 +141,7 @@ After an authorized merge, close the attached issue only when the change resolve
 
 Read pull requests with the gitforge tools, not the gh CLI: plugin_gitforge_gh_pr_diff returns the
 path of the file holding the patch. plugin_gitforge_gh_pr_checks waits for the head's CI and wakes
-you (pass a new attempt for each wait); do not declare tasks to watch CI. A
+you (pass a new attempt for each wait); declare no task to read, watch or confirm CI. A
 `conflicting` PR gets no `pull_request` workflow run until it is synced with its base.
 
 Merge and approval

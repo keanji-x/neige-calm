@@ -128,8 +128,10 @@ unit tests:
 1. Predict the complete set of tests that must fail by name, then apply one
    explicit, single-factor mutation to production code only. Do not mutate the
    test or a hand-written copy.
-2. Confirm the mutation was actually applied and compare the complete actual red
-   set with the prediction. A missing or unexplained additional failure invalidates
+2. Confirm the mutation was actually applied, run every test that could observe
+   it (at least the whole test target or filter holding the predicted tests, not
+   only the predicted ones), and compare the complete actual red set with the
+   prediction. A missing or unexplained additional failure invalidates
    the result.
 3. Restore the mutation safely, confirm the test is green, and inspect the final
    diff for residue.
