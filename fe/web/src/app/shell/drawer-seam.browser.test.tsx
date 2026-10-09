@@ -491,10 +491,13 @@ describe('dragged conversation width', () => {
     await frame();
   }
   /** Neither the page nor the drawer's pane scrolls sideways; the code block and the table each scroll in their own box. */
-  function expectNoSidewaysPage() {
+  async function expectNoSidewaysPage() {
+    await waitFor(() => {
+      expect(drawer().querySelector('[role="textbox"][aria-label="Code"]')).not.toBeNull();
+    }, { timeout: 10000 });
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(document.documentElement.clientWidth);
     expect(scroller().scrollWidth).toBeLessThanOrEqual(scroller().clientWidth);
-    for (const [name, element] of [['code block', drawer().querySelector('pre')!], ['table', drawer().querySelector('table')!]] as const) {
+    for (const [name, element] of [['code block', drawer().querySelector('[role="textbox"][aria-label="Code"]')!], ['table', drawer().querySelector('table')!]] as const) {
       const own = sidewaysScroller(element);
       expect(own, name).not.toBeNull();
       expect(own!.scrollWidth, name).toBeGreaterThan(own!.clientWidth);
@@ -712,7 +715,7 @@ describe('dragged conversation width', () => {
     await settled();
     if (widest) await dragEdge(-2000);
     expect(spanOf(drawer())).toBeCloseTo(widest ? 0.75 : 0.4, 2);
-    expectNoSidewaysPage();
+    await expectNoSidewaysPage();
   });
 
   it('has no edge on a phone, where the conversation is already the full width, and keeps the desktop width for the desktop', async () => {
@@ -726,7 +729,7 @@ describe('dragged conversation width', () => {
       await waitFor(() => expect(edge()).toBeNull());
       expect(drawer().hasAttribute('data-nc-drawer-resizable')).toBe(false);
       expect(widthOf(drawer())).toBe(390);
-      expectNoSidewaysPage();
+      await expectNoSidewaysPage();
       await page.viewport(1400, 900);
       await waitFor(() => expect(edge()).not.toBeNull());
       expect(widthOf(drawer())).toBeCloseTo(dragged, 0);
