@@ -18,7 +18,7 @@ use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::git_candidate::delivery::AttemptOutcome;
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::McpServer;
-use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
+use crate::mcp_server::wiring::mint_and_persist_card_token;
 use crate::model::{Card, CardRole, new_id};
 use crate::operation::task_gate_run::GateRunWait;
 use crate::operation::task_prompt::{GateRunPrompt, WorkerSurface, render_task_worker_prompt_tx};
@@ -370,7 +370,7 @@ fn build_claude_worker_command_line(
     claude_session_id: &str,
     track_id: &str,
     prompt: &str,
-) -> String {
+) -> Result<String> {
     let worker_system_prompt = crate::planner_card::render_system_prompt(
         crate::planner_card::SeededCardRole::Worker.prompt_template(),
         track_id,
@@ -382,22 +382,25 @@ fn build_claude_worker_command_line(
         shell_single_quote(claude_session_id),
         shell_single_quote(&worker_system_prompt),
     );
+    command_line.push_str(&worker_mcp::mcp_flags(&worker_mcp::mcp_config_path(
+        settings_path,
+    )?));
     command_line.push_str(" -- ");
     command_line.push_str(&shell_single_quote(prompt));
-    command_line
+    Ok(command_line)
 }
 
 async fn mint_claude_worker_mcp_token(
     ctx: &SpawnCtx,
     card_id: &str,
-    runtime_id: &str,
+    worker_session_id: &str,
 ) -> Result<String> {
     let card_id = card_id.to_string();
-    let runtime_id = runtime_id.to_string();
+    let worker_session_id = worker_session_id.to_string();
     write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
         let card_id = card_id.clone();
-        let runtime_id = runtime_id.clone();
-        Box::pin(async move { mint_and_persist_card_token(tx, &card_id, &runtime_id).await })
+        let worker_session_id = worker_session_id.clone();
+        Box::pin(async move { mint_and_persist_card_token(tx, &card_id, &worker_session_id).await })
     })
     .await
 }
@@ -810,7 +813,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             &claude_session_id,
             track_id.as_str(),
             &rendered_prompt,
-        );
+        )?;
         let env = build_claude_env(self.repo.as_ref(), &self.codex, &card_id).await?;
         let scope = card_scope(
             self.repo.as_ref(),
@@ -1038,14 +1041,6 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         // branch. Nothing is created.
         verify_worker_checkout(output, "claude-worker")?;
 
-        let raw_token = mint_claude_worker_mcp_token(ctx, &card_id, &runtime_id).await?;
-        let env_map = env.as_object_mut().ok_or_else(|| {
-            CalmError::Internal("claude worker env must be an object before spawn".into())
-        })?;
-        for (key, value) in card_mcp_env(&mcp_server.shim_config.socket_path, raw_token.as_str()) {
-            env_map.insert(key.into(), Value::String(value));
-        }
-
         fs::create_dir_all(&settings_dir).map_err(|e| {
             CalmError::Internal(format!(
                 "mkdir claude worker settings dir {}: {e}",
@@ -1062,6 +1057,15 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             build_claude_worker_settings_json(&hook_command),
         )
         .map_err(|e| CalmError::Internal(format!("write claude worker settings.json: {e}")))?;
+        worker_mcp::wire(
+            ctx,
+            mcp_server,
+            &card_id,
+            &runtime_id,
+            &worker_mcp::mcp_config_path(&settings_path)?,
+            &mut env,
+        )
+        .await?;
 
         let launch = super::task_launch::TaskLaunch::new(&payload.idempotency_key, _op);
         #[cfg(feature = "fixtures")]
@@ -1399,6 +1403,8 @@ fn step_arg_string(step: &CompensationStep, key: &str) -> Result<String> {
         .map(ToOwned::to_owned)
         .ok_or_else(|| CalmError::Internal(format!("claude compensation step missing {key} arg")))
 }
+
+pub(crate) mod worker_mcp;
 
 #[cfg(test)]
 mod tests;

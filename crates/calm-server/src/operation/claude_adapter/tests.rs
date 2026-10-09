@@ -18,22 +18,25 @@ use support::*;
 #[cfg(test)]
 mod reader_head_tests;
 
+#[cfg(test)]
+mod worker_mcp_tests;
+
 #[test]
-fn claude_worker_command_line_uses_appended_system_prompt_not_mcp_tools() {
+fn claude_worker_command_line_uses_appended_system_prompt() {
     let command = build_claude_worker_command_line(
         "claude",
         Path::new("/tmp/claude-worker/settings.json"),
         "session-1",
         "track-1",
         "Goal:\ndo the work",
-    );
+    )
+    .unwrap();
 
     assert!(command.contains("--append-system-prompt"));
     assert!(
         command.contains("neige task done"),
         "worker system prompt must instruct neige CLI completion: {command}"
     );
-    assert!(!command.contains("--mcp-config"), "{command}");
     assert!(!command.contains("--allowedTools"), "{command}");
     assert!(!command.contains("mcp__neige__task_complete"), "{command}");
 }

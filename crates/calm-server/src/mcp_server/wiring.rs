@@ -5,13 +5,36 @@ use sqlx::{Sqlite, Transaction};
 use crate::db::sqlite::{
     card_mcp_token_set_tx, session_mcp_token_set_if_active_tx, session_mcp_token_set_tx,
 };
-use crate::error::Result;
+use crate::error::{CalmError, Result};
 use crate::mcp_server::auth::{CardMcpToken, hash_token};
 use crate::model::CardRole;
 
 /// The key every provider registers the kernel MCP shim under: Codex `[mcp_servers.neige]`, Claude
 /// `mcpServers.neige`, so a client calls kernel tools as `mcp__neige__…`.
 pub const MCP_SERVER_KEY: &str = "neige";
+
+/// The `--mcp-config` of every Claude CLI the kernel starts with its MCP server (the Claude
+/// Planner, a Claude task worker): the kernel shim alone, whose secrets reach it through `${VAR}`
+/// expansion of the CLI's own environment, so the config carries none.
+pub(crate) fn claude_mcp_config_json(shim: &Path) -> Result<String> {
+    let command = shim.to_str().ok_or_else(|| {
+        CalmError::Internal(format!("mcp shim path is not UTF-8: {}", shim.display()))
+    })?;
+    Ok(serde_json::json!({
+        "mcpServers": {
+            MCP_SERVER_KEY: {
+                "type": "stdio",
+                "command": command,
+                "args": [],
+                "env": {
+                    "NEIGE_MCP_SOCKET": "${NEIGE_MCP_SOCKET}",
+                    "NEIGE_MCP_TOKEN": "${NEIGE_MCP_TOKEN}",
+                },
+            },
+        },
+    })
+    .to_string())
+}
 
 /// Pure per-card MCP environment assembler.
 pub fn card_mcp_env(socket_path: &Path, raw_token: &str) -> [(&'static str, String); 2] {

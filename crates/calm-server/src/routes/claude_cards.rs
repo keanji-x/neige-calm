@@ -385,16 +385,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn worker_settings_json_has_no_mcp_servers() {
-        let s = build_claude_worker_settings_json("bridge --provider claude");
-        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
-        assert!(v.get("hooks").is_some());
-        assert!(v.get("mcpServers").is_none());
-        assert!(v.get("mcp_servers").is_none());
-        assert_eq!(s, build_claude_settings_json("bridge --provider claude"));
-    }
-
     /// #1873 item 2: every kernel-written Claude settings file hides the attribution.
     #[test]
     fn claude_settings_hide_attribution() {

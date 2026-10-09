@@ -69,28 +69,8 @@ async fn claude_reader_restart_refuses_a_checkout_that_left_the_head() {
     .execute(harness.repo.pool())
     .await
     .unwrap();
-    // The worker op as the scheduler drives it, so the op records its card as its target.
+    let output = prepare_claude_worker_as_scheduled(&harness, "resume").await;
     let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
-    let op_id = op_repo
-        .insert_operation(
-            "claude-worker",
-            OperationKey {
-                operation_key: new_id(),
-                idempotency_key: Some(task_id.clone()),
-                payload_hash: "hash-resume".into(),
-            },
-            claude_worker_payload(&harness.track_id, "resume"),
-        )
-        .await
-        .unwrap();
-    let op = op_repo.claim_drive_batch(1).await.unwrap().remove(0);
-    assert_eq!(op.id, op_id);
-    let (op, _) = op_repo
-        .prepare_tx_and_advance(&op, &harness.adapter)
-        .await
-        .unwrap()
-        .unwrap();
-    let output = op.tx_output.unwrap();
     let card_id = output.output_string("card_id", "test").unwrap();
     let terminal_id = output.output_string("terminal_id", "test").unwrap();
     crate::db::RepoOutOfDomain::terminal_set_exit(
@@ -124,6 +104,7 @@ async fn claude_reader_restart_refuses_a_checkout_that_left_the_head() {
     let restart = ClaudeRestartAdapter::new_with_spawn_hook(
         route_repo.clone(),
         Arc::new(CodexClient::new_stub()),
+        None,
         CardRoleCache::new(),
         TrackAreaCache::new(),
         hook,

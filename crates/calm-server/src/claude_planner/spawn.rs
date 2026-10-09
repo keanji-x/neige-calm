@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use super::stop::MARKER_KEY;
 use crate::error::{CalmError, Result};
-use crate::mcp_server::wiring::MCP_SERVER_KEY;
+use crate::mcp_server::wiring::{MCP_SERVER_KEY, claude_mcp_config_json};
 use crate::planner_model::TurnModelSelection;
 use crate::planner_permission_mode::PlannerPermissionMode;
 use crate::shared_codex_appserver::SPAWN_ENV_PASSTHROUGH;
@@ -59,27 +59,6 @@ pub(crate) fn turn_settings_json(mode: PlannerPermissionMode, root: &PermissionR
         }
     }
     settings.to_string()
-}
-
-/// The kernel MCP shim; its secrets reach it through `${VAR}` expansion of the CLI's own environment.
-fn mcp_config_json(shim: &Path) -> Result<String> {
-    let command = shim.to_str().ok_or_else(|| {
-        CalmError::Internal(format!("mcp shim path is not UTF-8: {}", shim.display()))
-    })?;
-    Ok(json!({
-        "mcpServers": {
-            MCP_SERVER_KEY: {
-                "type": "stdio",
-                "command": command,
-                "args": [],
-                "env": {
-                    "NEIGE_MCP_SOCKET": "${NEIGE_MCP_SOCKET}",
-                    "NEIGE_MCP_TOKEN": "${NEIGE_MCP_TOKEN}",
-                },
-            },
-        },
-    })
-    .to_string())
 }
 
 /// The workspace as the root of Claude permission rules: an absolute path that cannot split or
@@ -239,7 +218,7 @@ pub(crate) fn argv(
         args.push(arg.into());
     }
     args.push("--mcp-config".into());
-    args.push(mcp_config_json(mcp_shim)?.into());
+    args.push(claude_mcp_config_json(mcp_shim)?.into());
     args.push("--settings".into());
     args.push(turn_settings_json(mode, &root).into());
     match mode {

@@ -293,6 +293,21 @@ const WORKER_SPAWN_OPS_OF_CARD: &str = "FROM operations \
        AND target_type = 'card' AND target_id = ?1 \
        AND json_extract(payload_json, '$.actor.kind') = 'KernelDispatcher'";
 
+/// Whether a scheduler worker-spawn op created `card_id`: a task worker's card, by the same op
+/// proof as [`worker_op_targets_card_tx`], never the card's (editable) payload.
+pub async fn card_is_worker_spawn_target_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    card_id: &str,
+) -> Result<bool> {
+    let spawned: bool = sqlx::query_scalar(&format!(
+        "SELECT EXISTS(SELECT 1 {WORKER_SPAWN_OPS_OF_CARD})"
+    ))
+    .bind(card_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(spawned)
+}
+
 /// #1933: the `head` declared by the attempt whose worker-spawn op created `card_id`, found
 /// through the same op proof as [`worker_op_targets_card_tx`], never the card's (editable)
 /// payload. `None` for any other card, or an attempt with no head.
