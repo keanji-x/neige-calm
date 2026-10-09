@@ -5,7 +5,7 @@ import type { WorkspaceFilePort } from '../../../../../core/domain/fs.ts';
 import type { ReportLinkTarget, TrackReport } from '../../../../../core/domain/report.ts';
 import type { ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
 import { ReportSourceCitation } from '../source/public.tsx';
-import { FileReadError, useReportFileResource } from '../../../systems/fs-viewers/public.tsx';
+import { FileCodePreview, FileReadError, useReportFileResource } from '../../../systems/fs-viewers/public.tsx';
 import { HoverPreview } from '../../../ui/hover-preview/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import styles from './content.module.css';
@@ -102,8 +102,8 @@ function FileContent({ path, files, renderMarkdown }: Readonly<{
     {resource.kind === 'loaded' && <>
       {resource.truncated && <p>Showing the first 2 MiB of this file.</p>}
       {resource.format === 'markdown'
-        ? renderMarkdown(resource.text, basePath)
-        : <pre className={styles.source}><code>{resource.text}</code></pre>}
+        ? <div className="calm-prose">{renderMarkdown(resource.text, basePath)}</div>
+        : <div className={styles.source}><FileCodePreview path={path} text={resource.text} /></div>}
     </>}
   </div>;
 }
@@ -121,7 +121,7 @@ function ReferenceContent({ destination, resources, renderMarkdown }: Readonly<{
     : report !== null && target?.blockId === null ? report.body || report.summary : null;
   return <div className={styles.content}>
     <p className={styles.destination}>{destination.destination}</p>
-    {text ? renderMarkdown(text, '') : <p>Open this reference in the workspace to read its contents.</p>}
+    {text ? <div className="calm-prose">{renderMarkdown(text, '')}</div> : <p>Open this reference in the workspace to read its contents.</p>}
   </div>;
 }
 

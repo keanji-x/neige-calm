@@ -195,7 +195,7 @@ function extensionsFor(path: string, theme?: PaneTheme) {
   const language = languageName(path);
   const lang = language === null
     ? null
-    : loadLanguage(language as Parameters<typeof loadLanguage>[0]);
+    : loadLanguage(language);
   return [
     EditorView.editable.of(false),
     EditorView.lineWrapping,
@@ -205,21 +205,21 @@ function extensionsFor(path: string, theme?: PaneTheme) {
 }
 
 /** Deliberately a short table: an unknown extension falls through to no highlighting rather than a wrong guess. */
-function languageName(path: string): string | null {
+function languageName(path: string): Parameters<typeof loadLanguage>[0] | null {
   const extension = path.split('.').pop()?.toLowerCase();
   switch (extension) {
     case 'cjs':
-    case 'cts':
     case 'js':
-    case 'jsx':
     case 'mjs':
-      return 'javascript';
+      return 'js';
+    case 'jsx': return 'jsx';
+    case 'tsx': return 'tsx';
+    case 'cts':
     case 'mts':
     case 'ts':
-    case 'tsx':
-      return 'typescript';
-    case 'rs': return 'rust';
-    case 'py': return 'python';
+      return 'ts';
+    case 'rs': return 'rs';
+    case 'py': return 'py';
     case 'go': return 'go';
     case 'java': return 'java';
     case 'json': return 'json';
@@ -235,7 +235,7 @@ function languageName(path: string): string | null {
     case 'sh':
     case 'bash':
     case 'zsh':
-      return 'shell';
+      return 'sh';
     default: return null;
   }
 }

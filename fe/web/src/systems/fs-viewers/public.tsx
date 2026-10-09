@@ -8,6 +8,7 @@ import { readFailureOf } from '../../../../core/domain/read-failure.ts';
 import { joinDirectoryPath } from '../../ui/directory-browser/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import type { PaneSearchAdapter, PaneTheme } from './code-pane.tsx';
+import { readHostTheme } from './theme.ts';
 import { isImagePath } from './file-kind.ts';
 import { FileReadError } from './read-error.tsx';
 
@@ -18,6 +19,13 @@ export type { ReportFileResource } from './report-file-resource.ts';
 
 const LazyCodePane = lazy(() => import('./code-pane.tsx').then((module) => ({ default: module.CodePane })));
 const LazyDiffPane = lazy(() => import('./code-pane.tsx').then((module) => ({ default: module.DiffPane })));
+
+/** Hover reads reuse the file viewer's language selection and read-only code pane. */
+export function FileCodePreview({ path, text }: Readonly<{ path: string; text: string }>) {
+  return <Suspense fallback={<pre><code>{text}</code></pre>}>
+    <LazyCodePane path={path} text={text} theme={readHostTheme()} />
+  </Suspense>;
+}
 
 type Tab = 'code' | 'diff';
 

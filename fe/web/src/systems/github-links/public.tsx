@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, type ReactNode } from 'react';
+import { Markdown } from '@astryxdesign/core/Markdown';
 import { useQuery } from '@tanstack/react-query';
 import { HoverPreview, PreviewSummary, PreviewTextLink } from '../../ui/hover-preview/public.tsx';
 import { parseGitHubReferenceUrl, type GitHubReference } from '../../../../core/domain/issue-url.ts';
@@ -9,7 +10,7 @@ import { useCompactViewport } from '../../ui/viewport/public.ts';
 const PreviewPort = createContext<GitHubPreviewPort | null>(null);
 
 /** App-owned session/recovery-aware reads. Queries use the app's QueryClient and die with it.
- * No provider means no previews. GitHub data is text, never HTML or a nested Markdown document. */
+ * No provider means no previews. Markdown uses the shared renderer; embedded images stay inert. */
 export function GitHubPreviewProvider({ port, children }: { port: GitHubPreviewPort; children: ReactNode }) {
   return <PreviewPort.Provider value={port}>{children}</PreviewPort.Provider>;
 }
@@ -75,9 +76,22 @@ function Preview({ target, port }: { target: GitHubReference; port: GitHubPrevie
     {preview === undefined ? <p role="status">{query.isError
       ? 'Preview unavailable. Check GitHub sign-in, repository access, or rate limits.'
       : 'Loading GitHub preview…'}</p> : <>
-      {preview.excerpt && <p>{preview.excerpt}</p>}
+      {preview.excerpt && <Markdown density="compact" headingLevelStart={2} components={{
+        image: PreviewImage, link: PreviewLink,
+      }}>{preview.excerpt}</Markdown>}
       {preview.changes !== null && <p>{preview.changes.changed_files} files · +{preview.changes.additions} / −{preview.changes.deletions}</p>}
       {query.isError && <p role="status">Could not refresh preview.</p>}
     </>}
   </PreviewSummary>;
+}
+
+/** Summaries never fetch author-supplied images on hover. */
+function PreviewImage({ alt }: { src: string; alt: string }) {
+  return <span>{alt}</span>;
+}
+
+/** Relative GitHub links must not navigate the authenticated application. */
+function PreviewLink({ href, children }: { href: string; children: ReactNode }) {
+  if (!/^https?:\/\//i.test(href)) return <span>{children}</span>;
+  return <PreviewTextLink href={href} external>{children}</PreviewTextLink>;
 }

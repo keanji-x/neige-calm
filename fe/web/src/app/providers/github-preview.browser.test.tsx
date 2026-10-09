@@ -93,3 +93,22 @@ it('preserves external, mail and relative navigation and keeps unsafe Markdown d
   expect(read).not.toHaveBeenCalled();
   client.clear();
 });
+
+it('renders Markdown and fenced code in a link preview without loading embedded resources', async () => {
+  const read = vi.fn(() => Promise.resolve({ ...summary(), excerpt:
+    '## Verification\n\n**Passed** with `cargo test`.\n\n- First check\n- Second check\n\n```ts\nconst result = 42;\n```\n\n![remote](https://example.com/image.png)\n\n[unsafe](javascript:alert)'
+  }));
+  const { client } = mount(<GitHubPreviewLink href="https://github.com/o/r/pull/42">PR</GitHubPreviewLink>, read);
+  await userEvent.hover(screen.getByRole('link', { name: 'PR' }));
+  await screen.findByText('Fix link previews');
+  const preview = screen.getByRole('dialog');
+  expect(preview.querySelector('h3')?.textContent).toBe('Verification');
+  expect(preview.querySelector('strong')?.textContent).toBe('Passed');
+  expect(preview.querySelector('code')?.textContent).toBe('cargo test');
+  expect(preview.querySelectorAll('li')).toHaveLength(2);
+  expect(preview.querySelector('pre')?.textContent).toContain('const result = 42;');
+  expect(preview.querySelectorAll('img, iframe, script')).toHaveLength(0);
+  expect(screen.queryByRole('link', { name: 'unsafe' })).toBeNull();
+  await page.screenshot({ path: 'test-results/github-preview-markdown.png' });
+  client.clear();
+});

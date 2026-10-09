@@ -53,4 +53,37 @@ describe('report preview placement through the production renderer', () => {
     expect(card.right).toBeLessThanOrEqual(1188);
     expect(card.left >= link.right || card.right <= link.left || card.top >= link.bottom || card.bottom <= link.top).toBe(true);
   });
+  it('keeps Markdown paragraph spacing and code formatting inside a file hover card', async () => {
+    await page.viewport(1200, 800);
+    const report = { summary: '', body: '[Notes](./notes.md)', blocks: null };
+    render(<ReportDocument report={report} empty={null} fileRoot="/repo" linkPreview={{ trackId: 't1', report, files: {
+      readFile: path => Promise.resolve({ path, text: '# Notes\n\nFirst paragraph.\n\nSecond **paragraph** with `code`.\n\n```rust\nlet answer = 42;\n```', size: 120, truncated: false }),
+      rawUrl: path => path,
+    } }} />);
+    await page.getByRole('button', { name: 'Notes', exact: true }).hover();
+    await expect.element(page.getByText('First paragraph.', { exact: true })).toBeVisible();
+    const card = page.getByRole('dialog').element();
+    const second = card.querySelector('strong')!.closest('p')!;
+    expect(parseFloat(getComputedStyle(second).marginBlockStart)).toBeGreaterThan(0);
+    expect(card.querySelector('code')?.textContent).toBe('code');
+    expect(card.querySelector('pre code')?.textContent).toBe('let answer = 42;');
+    await page.screenshot({ path: 'test-results/file-preview-markdown.png' });
+  });
+
+  it.each(['rs', 'ts', 'js', 'py', 'sh'])('uses the read-only file renderer for .%s source links', async extension => {
+    await page.viewport(1200, 800);
+    const report = { summary: '', body: `[Source](./example.${extension})`, blocks: null };
+    render(<ReportDocument report={report} empty={null} fileRoot="/repo" linkPreview={{ trackId: 't1', report, files: {
+      readFile: path => Promise.resolve({ path, text: extension === 'rs' ? 'fn main() { let answer = 42; }' : extension === 'py' ? 'def main(): return 42' : extension === 'sh' ? 'echo "hello"' : 'const answer = 42;', size: 32, truncated: false }),
+      rawUrl: path => path,
+    } }} />);
+    await page.getByRole('button', { name: 'Source', exact: true }).hover();
+    await expect.poll(() => page.getByRole('dialog').query()?.querySelector('[role="textbox"]') ?? null, { timeout: 10_000 }).not.toBeNull();
+    const editor = page.getByRole('dialog').element().querySelector('[role="textbox"]')!;
+    expect(editor.getAttribute('contenteditable')).toBe('false');
+    expect(editor.textContent).toContain(extension === 'rs' ? 'fn main()' : extension === 'py' ? 'def main()' : extension === 'sh' ? 'echo' : 'const answer');
+    expect(editor.querySelectorAll('span').length).toBeGreaterThan(0);
+    await page.screenshot({ path: `test-results/file-preview-${extension}.png` });
+  });
+
 });

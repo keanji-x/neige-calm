@@ -8,4 +8,5 @@ Queries share summaries for one minute and do not run before opening a card.
 Chat preserves link navigation; report prose reuses its existing preview controls,
 substituting summaries for GitHub iframe content. Compact and coarse-pointer clients retain their
 previous rendering with no card or read. HoverPreview owns positioning, pointer travel,
-focus and Escape dismissal. Summaries remain plain text; no GitHub content is executed.
+focus and Escape dismissal. Summaries use the shared Astryx Markdown renderer for headings, lists, tables and code.
+HTML remains text, embedded images stay inert, and only explicit HTTP(S) links are navigable.
