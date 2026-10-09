@@ -9,20 +9,22 @@ function cellText(value: string | number | null | undefined): string {
   return value === null || value === undefined ? '' : String(value);
 }
 
-function Cell({ value, onOpenSourceLink, linkPreview }: {
+function Cell({ value, onOpenSourceLink, linkPreview, renderText }: {
+  renderText?: (text: string) => ReactNode;
   value: string | number | null | undefined;
   onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
   linkPreview?: ReportLinkPreviewResources;
 }): ReactNode {
   const text = cellText(value);
   const citation = parseSourceCitationCell(text);
-  return citation === null ? text : (
+  return citation === null ? typeof value === 'string' && renderText !== undefined ? renderText(text) : text : (
     <ReportSourceLinkPreview target={citation.target} label={citation.label} resources={linkPreview}
       onOpen={onOpenSourceLink}>{citation.label}</ReportSourceLinkPreview>
   );
 }
 
-export function InlineTable({ payload, fallbackCaption, onOpenSourceLink, linkPreview }: {
+export function InlineTable({ payload, fallbackCaption, onOpenSourceLink, linkPreview, renderText }: {
+  renderText?: (text: string) => ReactNode;
   payload: InlineTableBlockPayload;
   fallbackCaption?: string | null;
   onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
@@ -47,7 +49,7 @@ export function InlineTable({ payload, fallbackCaption, onOpenSourceLink, linkPr
             <tr key={index} className={highlighted ? styles.highlighted : undefined}>
               {columns.map((column) => (
                 <td key={column.key} className={column.align === 'right' ? `${styles.cell} ${styles.right}` : styles.cell}>
-                  <Cell value={row[column.key]} onOpenSourceLink={onOpenSourceLink} linkPreview={linkPreview} />
+                  <Cell renderText={renderText} value={row[column.key]} onOpenSourceLink={onOpenSourceLink} linkPreview={linkPreview} />
                 </td>
               ))}
             </tr>

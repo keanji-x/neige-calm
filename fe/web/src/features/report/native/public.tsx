@@ -14,11 +14,11 @@ import { RecordBrowser, type RecordSelection } from './records.tsx';
 import styles from './native.module.css';
 
 type Inspection = { plots: ReadonlyMap<string, PlotSelection>; distributions: ReadonlyMap<string, string | null>; records: ReadonlyMap<string, RecordSelection>; snapshotOpen: boolean };
-type ReadingProps = { inspection: Inspection; onInspection: (next: Inspection) => void; onOpenSourceLink?: (target: ReportSourceLinkTarget) => void; linkPreview?: ReportLinkPreviewResources };
+type ReadingProps = { renderText?: (text: string) => ReactNode; inspection: Inspection; onInspection: (next: Inspection) => void; onOpenSourceLink?: (target: ReportSourceLinkTarget) => void; linkPreview?: ReportLinkPreviewResources };
 /** Live slot resolutions by slot id; `null` when the surface injects no overlay resolver. */
 type Resolutions = ReadonlyMap<string, LiveSlotResolution> | null;
 /** `at` keys inspection state: the component id inline, the slot id for a live unit. */
-function Cell({ component, at, inspection, onInspection, onOpenSourceLink, linkPreview }: ReadingProps & { component: NativeComponent; at: string }) {
+function Cell({ component, at, inspection, onInspection, onOpenSourceLink, linkPreview, renderText }: ReadingProps & { component: NativeComponent; at: string }) {
   switch (component.kind) {
     case 'bars': return <BarChart label={component.title} unit={component.unit} points={component.points} emptyText={component.emptyText} />;
     case 'meter': return <MeterChart label={component.title} unit={component.unit} used={component.used} limit={component.limit} usedLabel={component.usedLabel} limitLabel={component.limitLabel} detail={component.detail} emptyText={component.emptyText} tone={component.tone} />;
@@ -28,7 +28,7 @@ function Cell({ component, at, inspection, onInspection, onOpenSourceLink, linkP
       onSelection={next => onInspection({ ...inspection, plots: new Map(inspection.plots).set(at, next) })} /><p className={styles.muted}>{component.caption}</p></>;
     case 'distribution': return <DistributionChart label={component.title} unit={component.unit} slices={component.slices} emptyText={component.emptyText}
       selected={inspection.distributions.get(at) ?? null} onSelect={next => onInspection({ ...inspection, distributions: new Map(inspection.distributions).set(at, next) })} />;
-    case 'table': return <InlineTable payload={component.table} onOpenSourceLink={onOpenSourceLink} linkPreview={linkPreview} />;
+    case 'table': return <InlineTable renderText={renderText} payload={component.table} onOpenSourceLink={onOpenSourceLink} linkPreview={linkPreview} />;
     case 'records': return <RecordBrowser component={component}
       selection={inspection.records.get(at) ?? { datasetId: component.datasets[0].id, mode: 'cards', selectedId: null, disclosures: [] }}
       onSelection={next => onInspection({ ...inspection, records: new Map(inspection.records).set(at, next) })} />;
@@ -78,7 +78,8 @@ function Composition({ payload, resolutions, action, ...reading }: ReadingProps 
     </footer>}
   </div>;
 }
-export function NativeReportView({ payload, resolveOverlay, onOpenSourceLink, linkPreview }: {
+export function NativeReportView({ payload, resolveOverlay, onOpenSourceLink, linkPreview, renderText }: {
+  renderText?: (text: string) => ReactNode;
   payload: NativeViewPayload;
   /** The surface's exact overlay lookup; without one, every live slot shows that this view carries no live data. */
   resolveOverlay?: (source: string) => unknown;
@@ -93,13 +94,13 @@ export function NativeReportView({ payload, resolveOverlay, onOpenSourceLink, li
   const title = payload.title === '' ? null : <h2>{payload.title}</h2>;
   return <div className={styles.root}>
     {title !== null && <header className={styles.header}>{title}</header>}
-    <Composition payload={payload} {...reading} action={<button type="button" className={styles.wideToggle}
+    <Composition renderText={renderText} payload={payload} {...reading} action={<button type="button" className={styles.wideToggle}
       aria-label={payload.title === '' ? '放大查看' : `放大查看 ${payload.title}`} title="放大查看" onClick={() => setExpanded(true)}><Icon name="fullscreen" size="sm" />放大查看</button>} />
     <Dialog open={expanded} onClose={() => setExpanded(false)} title={payload.title === '' ? '视图' : payload.title} hideTitleRow wide>
       <div className={styles.root}>
         <header className={styles.header}>{title}<button type="button" className={styles.expand}
           aria-label="Close" title="关闭视图" onClick={() => setExpanded(false)}><Icon name="close" size="sm" /></button></header>
-        <Composition payload={payload} {...reading} />
+        <Composition renderText={renderText} payload={payload} {...reading} />
       </div>
     </Dialog>
   </div>;

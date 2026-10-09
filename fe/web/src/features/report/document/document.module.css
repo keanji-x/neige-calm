@@ -1,4 +1,9 @@
 @layer features {
+  .field :is(p, li, blockquote, table, h2, h3) { font: inherit; }
+  .field :is(p, h2, h3, ul, ol, blockquote) { margin-block: var(--space-4); }
+  .field > :first-child { margin-block-start: 0; }
+  .field > :last-child { margin-block-end: 0; }
+
   /*
    * The report's own layer, on top of `calm-prose`.
    *

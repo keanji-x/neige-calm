@@ -1,4 +1,5 @@
 // Both inline and live tables obey the same table-only contract.
+import type { ReactNode } from 'react';
 import type { ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
 import {
   inlineTableBlockPayloadSchema, isLiveTablePayload, type TableBlockPayload,
@@ -7,7 +8,8 @@ import { LivePlaceholder } from '../live/placeholder.tsx';
 import type { ReportLinkPreviewResources } from '../link-preview/public.tsx';
 import { InlineTable } from './inline.tsx';
 
-export function ReportTableBlock({ payload, resolveLive, onOpenSourceLink, linkPreview }: {
+export function ReportTableBlock({ payload, resolveLive, onOpenSourceLink, linkPreview, renderText }: {
+  renderText?: (text: string) => ReactNode;
   payload: TableBlockPayload;
   resolveLive?: (source: string) => unknown;
   onOpenSourceLink?: (target: ReportSourceLinkTarget) => void;
@@ -26,7 +28,7 @@ export function ReportTableBlock({ payload, resolveLive, onOpenSourceLink, linkP
       return <LivePlaceholder state="unavailable" source={payload.source} reason="this build cannot read it as a table"
         caption={payload.caption} />;
     }
-    return <InlineTable payload={decoded.data} fallbackCaption={payload.caption} onOpenSourceLink={onOpenSourceLink} linkPreview={linkPreview} />;
+    return <InlineTable renderText={renderText} payload={decoded.data} fallbackCaption={payload.caption} onOpenSourceLink={onOpenSourceLink} linkPreview={linkPreview} />;
   }
-  return <InlineTable payload={payload} onOpenSourceLink={onOpenSourceLink} linkPreview={linkPreview} />;
+  return <InlineTable renderText={renderText} payload={payload} onOpenSourceLink={onOpenSourceLink} linkPreview={linkPreview} />;
 }
