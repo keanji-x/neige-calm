@@ -92,3 +92,21 @@ describe('the source panel, as the engine lays it out', () => {
     expect(badge.getBoundingClientRect().bottom).toBeLessThanOrEqual(title.getBoundingClientRect().top + 1);
   });
 });
+
+it.each([1400, 390])('reads captured Markdown safely at viewport width %s and restores its original', async width => {
+  await page.viewport(width, 900);
+  const body = '# 盈利前瞻\n\n## Summary\n\n1. **增长未见减速迹象**\n2. [详情](https://external.invalid/page) ![图](https://external.invalid/pixel.png)\n\n| 指标 | 说明 |\n| --- | --- |\n| EPS | ' + LONG_LINE + ' |';
+  const source = { ...SOURCE, provenance: 'summary' as const, body };
+  render(<main style={{ maxWidth: '100%', padding: 16 }}><ReportSourcePanel
+    target={{ ...TARGET, quoteId: null }} resolution={{ status: 'ok', source }} onRetry={() => undefined} /></main>);
+  await expect.element(page.getByRole('heading', { name: '盈利前瞻', exact: true })).toBeVisible();
+  const reading = document.querySelector<HTMLElement>('[data-nc-report-source-reading]')!;
+  expect(reading.querySelector('strong')?.textContent).toBe('增长未见减速迹象');
+  expect(reading.querySelectorAll('ol > li')).toHaveLength(2);
+  expect(reading.querySelectorAll('a, button, img, iframe')).toHaveLength(0);
+  expect(document.documentElement.scrollWidth).toBe(document.documentElement.clientWidth);
+  await page.getByRole('button', { name: '原文', exact: true }).click();
+  expect(document.querySelector('pre[data-nc-report-source-body]')?.textContent).toBe(body);
+  await page.getByRole('button', { name: '阅读', exact: true }).click();
+  await expect.element(page.getByRole('heading', { name: '盈利前瞻', exact: true })).toBeVisible();
+});

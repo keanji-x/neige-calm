@@ -10,9 +10,11 @@ import styles from './document.module.css';
 
 /** The rendered-Markdown half of a report block. Exported for the recipe editor. */
 export function ProseBlock({
-  markdown, blockId, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, linkPreview, referenceRepository = null, compact = false,
+  markdown, blockId, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, linkPreview, referenceRepository = null, compact = false, destinationMode = 'interactive',
 }: {
   markdown: string;
+  /** Captured evidence may format labels without granting navigation or resource loading. */
+  destinationMode?: 'interactive' | 'inert';
   referenceRepository?: ReferenceRepository | null;
   compact?: boolean;
   blockId: string | null;
@@ -53,12 +55,14 @@ export function ProseBlock({
       fileBasePath={fileBasePath}
       linkPreview={linkPreview}
       referenceRepository={referenceRepository}
+      destinationMode={destinationMode}
     />
   ))}</>;
   return compact ? <div className={styles.field}>{rendered}</div> : rendered;
 }
 
 export type ReportTextContext = Readonly<{
+  destinationMode?: 'interactive' | 'inert';
   referenceRepository: ReferenceRepository | null;
   onOpenLink?: (target: ReportLinkTarget) => void;
   onOpenFileLink?: (target: ReportFileLinkTarget) => void;
@@ -196,6 +200,7 @@ function Inline({ node, ...context }: { node: SafeInline } & BlockContext): Reac
 function Destination({ destination, label, body, image = false, context }: {
   destination: string; label: string; body: ReactNode; image?: boolean; context: ReportTextContext;
 }) {
+  if (context.destinationMode === 'inert') return body;
   const { onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, linkPreview } = context;
   const renderMarkdown = (destination: PreviewDestination, text: string, basePath?: string) => <ProseBlock
     markdown={text} blockId={null} {...context} referenceRepository={destination.kind === 'reference'

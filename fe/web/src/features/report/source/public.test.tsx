@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
@@ -63,6 +63,7 @@ describe('ReportSourcePanel', () => {
     expect(container.textContent).toContain('mcp-wisburg');
     expect(container.textContent).toContain('get_article_detail');
     expect(container.textContent).toContain('752972');
+    fireEvent.click(screen.getByRole('button', { name: '原文' }));
     const body = container.querySelector('pre[data-nc-report-source-body]');
     expect(body?.textContent).toBe('看 [链接](https://example.com/x) 和 ![图](https://example.com/x.png) **不渲染**');
     expect(container.querySelectorAll('a, img, strong').length).toBe(0);
@@ -164,4 +165,46 @@ describe('ReportSourcePanel', () => {
     expect(reportSourcePanelTitle({ status: 'error', failure: null })).toBe(SOURCE_PANEL_COPY.panelTitle);
     expect(reportSourcePanelTitle({ status: 'ok', source: row() })).toBe('Mikko 全球市场日志 9-13');
   });
+});
+
+
+it('reads captured Markdown as formatted text and preserves the exact original view', () => {
+  const body = '# 2026年三季度美股盈利前瞻\n\n## Summary\n\n1. **增长未见减速迹象**\n2. 保持观察';
+  const { container } = render(<ReportSourcePanel target={NO_ANCHOR} resolution={{ status: 'ok', source: row({ provenance: 'summary', body }) }} onRetry={() => undefined} />);
+  expect(screen.getByRole('heading', { name: '2026年三季度美股盈利前瞻' })).toBeTruthy();
+  expect(container.querySelector('strong')?.textContent).toBe('增长未见减速迹象');
+  expect(container.querySelectorAll('ol > li')).toHaveLength(2);
+  fireEvent.click(screen.getByRole('button', { name: '原文' }));
+  expect(container.querySelector('pre[data-nc-report-source-body]')?.textContent).toBe(body);
+  fireEvent.click(screen.getByRole('button', { name: '阅读' }));
+  expect(container.querySelector('strong')?.textContent).toBe('增长未见减速迹象');
+});
+
+
+it('formats untrusted evidence without author-controlled navigation, HTML or resource loads', () => {
+  const body = '## Safe heading\n\n**readable** [web](https://example.com/x) [file](./inside.md) [script](javascript:alert(1)) ![picture](https://external.invalid/pixel.png)\n\n<script>bad()</script>\n\n```html\n<img src="https://external.invalid/code.png">\n```';
+  const { container } = render(<ReportSourcePanel target={NO_ANCHOR} resolution={{ status: 'ok', source: row({ body }) }} onRetry={() => undefined} />);
+  const reading = container.querySelector('[data-nc-report-source-reading]')!;
+  expect(reading.querySelector('strong')?.textContent).toBe('readable');
+  expect(reading.textContent).toContain('web');
+  expect(reading.textContent).toContain('picture');
+  expect(reading.querySelectorAll('a, img, iframe, script')).toHaveLength(0);
+  expect(Array.from(reading.querySelectorAll('button'), button => button.textContent)).toEqual(['Copy code']);
+  expect(reading.textContent).not.toContain('bad()');
+  fireEvent.click(screen.getByRole('button', { name: '原文' }));
+  expect(container.querySelector('pre[data-nc-report-source-body]')?.textContent).toBe(body);
+});
+
+it('resets the view for a new source or quote arrival and keeps exact quote placement in original text', () => {
+  const { container, rerender } = render(<ReportSourcePanel target={NO_ANCHOR} resolution={{ status: 'ok', source: row() }} onRetry={() => undefined} />);
+  expect(screen.getByRole('button', { name: '阅读' }).getAttribute('aria-pressed')).toBe('true');
+  rerender(<ReportSourcePanel target={WELL_FORMED} resolution={{ status: 'ok', source: row() }} onRetry={() => undefined} />);
+  expect(screen.getByRole('button', { name: '原文' }).getAttribute('aria-pressed')).toBe('true');
+  expect(container.querySelector('mark')?.textContent).toBe('9月加息概率接近九成');
+  fireEvent.click(screen.getByRole('button', { name: '阅读' }));
+  fireEvent.click(screen.getByRole('button', { name: '原文' }));
+  expect(container.querySelector('pre')?.textContent).toBe(BODY);
+  expect(scrollIntoView).toHaveBeenCalledTimes(2);
+  rerender(<ReportSourcePanel target={NO_ANCHOR} resolution={{ status: 'ok', source: row({ source_id: 'src_0971fbde' }) }} onRetry={() => undefined} />);
+  expect(screen.getByRole('button', { name: '阅读' }).getAttribute('aria-pressed')).toBe('true');
 });

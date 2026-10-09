@@ -1,45 +1,22 @@
 // The source panel: what a `neige://source/…` citation opens.
-// The body is raw text, never Markdown: a source is evidence, and rendering it would let an untrusted document draw links and images.
+// Captured evidence has an inert reading view and an exact original-text view.
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef } from 'react';
 
 import type {
   ReportSourceLinkTarget, SourceResolution, TrackSourceDetail,
 } from '../../../../../core/domain/report-source.ts';
 import { sourceHighlight } from '../../../../../core/domain/report-source.ts';
 import { readFailureText } from '../../../../../core/domain/read-failure.ts';
+import { useState } from '../../../ui/state/public.ts';
+import { ProseBlock } from '../document/content.tsx';
 import { ErrorBox } from '../../../ui/error-box/public.tsx';
 import { SOURCE_PANEL_COPY, SOURCE_PROVENANCE_COPY } from './copy.ts';
 import styles from './source.module.css';
 
 export { SOURCE_PANEL_COPY, SOURCE_PROVENANCE_COPY } from './copy.ts';
 
-/** The citation, as the document's prose and the table's cells both paint it. With a handler it is a `<button>` even when the id or anchor will not parse; without one it is the badge and its label. */
-export function ReportSourceCitation({ target, onOpen, children }: {
-  target: ReportSourceLinkTarget;
-  onOpen?: (target: ReportSourceLinkTarget) => void;
-  /** The link's label, already rendered. */
-  children: ReactNode;
-}) {
-  if (onOpen !== undefined) {
-    return (
-      <button
-        type="button"
-        className={styles.citationLink}
-        data-nc-report-source-link=""
-        onClick={() => onOpen(target)}
-      >
-        {children}
-      </button>
-    );
-  }
-  return (
-    <span className={styles.citation} data-nc-report-source-citation="">
-      <span className={styles.citationBadge}>{SOURCE_PANEL_COPY.citationBadge}</span>
-      {children}
-    </span>
-  );
-}
+export { ReportSourceCitation } from './citation.tsx';
 
 export type ReportSourcePanelProps = Readonly<{
   /** The citation that opened the panel. */
@@ -50,6 +27,8 @@ export type ReportSourcePanelProps = Readonly<{
   onRetry: () => void;
   /** Hover previews must not scroll the underlying report. */
   scrollToQuote?: boolean;
+  /** Hover readers may start formatted even when the citation carries a quote. */
+  initialView?: 'reading' | 'original';
 }>;
 
 /** The drawer's accessible name for this state: the row's title once known, the generic word until then. */
@@ -57,7 +36,7 @@ export function reportSourcePanelTitle(resolution: SourceResolution): string {
   return resolution.status === 'ok' ? resolution.source.title : SOURCE_PANEL_COPY.panelTitle;
 }
 
-export function ReportSourcePanel({ target, resolution, onRetry, scrollToQuote = true }: ReportSourcePanelProps) {
+export function ReportSourcePanel({ target, resolution, onRetry, scrollToQuote = true, initialView }: ReportSourcePanelProps) {
   return (
     <div className={styles.panel} data-nc-report-source="">
       {target.sourceId === null
@@ -68,7 +47,7 @@ export function ReportSourcePanel({ target, resolution, onRetry, scrollToQuote =
             ? <p className={styles.state} role="status">{SOURCE_PANEL_COPY.loading}</p>
             : resolution.status === 'error'
               ? <ErrorBox message={readFailureText(resolution.failure, '无法读取来源。')} onRetry={onRetry} />
-              : <Source source={resolution.source} target={target} scrollToQuote={scrollToQuote} />}
+              : <Source key={`${resolution.source.source_id}:${target.quoteId ?? ''}:${initialView ?? ''}`} source={resolution.source} target={target} scrollToQuote={scrollToQuote} initialView={initialView ?? (target.quoteId === null ? 'reading' : 'original')} />}
     </div>
   );
 }
@@ -104,17 +83,18 @@ function Missing({ target, reason }: { target: ReportSourceLinkTarget; reason: '
   );
 }
 
-function Source({ source, target, scrollToQuote }: { source: TrackSourceDetail; target: ReportSourceLinkTarget; scrollToQuote: boolean }) {
+function Source({ source, target, scrollToQuote, initialView }: { source: TrackSourceDetail; target: ReportSourceLinkTarget; scrollToQuote: boolean; initialView: 'reading' | 'original' }) {
   const { quoteId } = target;
+  const [original, setOriginal] = useState(initialView === 'original');
   const highlight = quoteId === null ? null : sourceHighlight(source, quoteId);
   const anchorMissed = quoteId !== null && highlight === null;
   const markRef = useRef<HTMLElement | null>(null);
 
   const placed = highlight !== null;
   useEffect(() => {
-    if (!placed || !scrollToQuote) return;
+    if (!placed || !original || !scrollToQuote) return;
     markRef.current?.scrollIntoView({ block: 'center' });
-  }, [placed, quoteId, source.source_id, scrollToQuote]);
+  }, [placed, original, quoteId, source.source_id, scrollToQuote]);
 
   return (
     <article className={styles.source}>
@@ -145,7 +125,11 @@ function Source({ source, target, scrollToQuote }: { source: TrackSourceDetail; 
           detail={SOURCE_PANEL_COPY.anchorMissingDetail}
         />
       )}
-      <pre className={styles.body} data-nc-report-source-body="">
+      <div className={styles.views} role="group" aria-label={SOURCE_PANEL_COPY.viewLabel}>
+        <button type="button" className={styles.view} aria-pressed={!original} onClick={() => { setOriginal(false); }}>{SOURCE_PANEL_COPY.reading}</button>
+        <button type="button" className={styles.view} aria-pressed={original} onClick={() => { setOriginal(true); }}>{SOURCE_PANEL_COPY.original}</button>
+      </div>
+      {original ? <pre className={styles.body} data-nc-report-source-body="">
         {highlight === null
           ? source.body
           : (
@@ -157,7 +141,9 @@ function Source({ source, target, scrollToQuote }: { source: TrackSourceDetail; 
               {highlight.after}
             </>
           )}
-      </pre>
+      </pre> : <div className={styles.reading} data-nc-report-source-reading="">
+        <ProseBlock markdown={source.body} blockId={null} destinationMode="inert" />
+      </div>}
     </article>
   );
 }
