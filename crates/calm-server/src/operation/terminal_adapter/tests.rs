@@ -21,6 +21,13 @@ async fn terminal_worker_harness_with_workspace(workspace: &str) -> TerminalWork
             .await
             .unwrap(),
     );
+    terminal_worker_harness_with_repo(repo, workspace).await
+}
+
+async fn terminal_worker_harness_with_repo(
+    repo: Arc<crate::db::sqlite::SqlxRepo>,
+    workspace: &str,
+) -> TerminalWorkerHarness {
     let area = crate::db::RepoSyncDomainRaw::area_create(
         repo.as_ref(),
         crate::model::NewArea {

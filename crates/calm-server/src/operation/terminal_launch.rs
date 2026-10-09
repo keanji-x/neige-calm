@@ -19,6 +19,11 @@ pub(crate) enum RequestState {
         supervisor_sock: PathBuf,
         pid: u32,
     },
+    Rejected {
+        version: u8,
+        terminal_id: String,
+        supervisor_sock: PathBuf,
+    },
     Requested {
         version: u8,
         terminal_id: String,
@@ -34,6 +39,7 @@ impl RequestState {
         let version = match &state {
             Self::NotRequested { version }
             | Self::Requested { version, .. }
+            | Self::Rejected { version, .. }
             | Self::HandedOff { version, .. } => *version,
         };
         if version != 1 {
@@ -99,6 +105,7 @@ pub(crate) async fn resolve(
                 if recorded != terminal_id { return Err(CalmError::Conflict("terminal launch identity disagrees with prepared operation".into())); }
                 Ok(TerminalStart::AttachOnly(supervisor_sock))
             }
+            Some(RequestState::Rejected {..}) => Err(CalmError::Conflict("terminal launch was rejected; compensate owned operation".into())),
             Some(RequestState::NotRequested {..}) => {
                 let Some(launch) = launch else { return Ok(TerminalStart::AttachOnly(sock)); };
                 if launch.operation().id != op_id || phase != "spawn_started" || owner.is_none() || owner != launch.operation().lease_owner {
@@ -144,5 +151,82 @@ pub(crate) async fn hand_off(
             .bind(i64::from(pid)).bind(op.id).bind(op.lease_owner).bind(terminal_id).execute(&mut **tx).await?.rows_affected();
         if changed != 1 { return Err(CalmError::Conflict("terminal ownership handoff changed; retain prepared operation for reconciliation".into())); }
         Ok(())
+    })).await
+}
+
+/// A complete negative reply only authorizes cleanup after this durable CAS.
+pub(crate) async fn reject_no_child(
+    repo: &dyn RouteRepo,
+    launch: &TaskLaunch,
+    terminal_id: &str,
+    supervisor_sock: &Path,
+) -> Result<()> {
+    let op = launch.operation().clone();
+    if op.lease_owner.as_deref().is_none_or(str::is_empty) || !supervisor_sock.is_absolute() {
+        return Err(CalmError::Conflict(
+            "negative launch acknowledgement has no lease or absolute endpoint".into(),
+        ));
+    }
+    let terminal_id = terminal_id.to_owned();
+    let socket = supervisor_sock.to_string_lossy().into_owned();
+    write_in_tx_typed(repo, move |tx| Box::pin(async move {
+        let changed = sqlx::query("UPDATE operations SET tx_output_json=json_set(tx_output_json,'$.data.terminal_launch.state','rejected') \
+            WHERE id=?1 AND lease_owner=?2 AND lease_until_ms>=?5 AND phase='spawn_started' AND \
+            json_extract(tx_output_json,'$.data.terminal_launch.version')=1 AND \
+            json_extract(tx_output_json,'$.data.terminal_launch.state')='requested' AND \
+            json_extract(tx_output_json,'$.data.terminal_launch.terminal_id')=?3 AND \
+            json_extract(tx_output_json,'$.data.terminal_launch.supervisor_sock')=?4 AND \
+            json_extract(tx_output_json,'$.data.terminal_id')=?3 AND target_type='card' AND EXISTS(SELECT 1 FROM \
+            terminals WHERE id=?3 AND card_id=operations.target_id AND pid IS NULL)")
+            .bind(op.id).bind(op.lease_owner).bind(terminal_id).bind(socket).bind(crate::model::now_ms())
+            .execute(&mut **tx).await?.rows_affected();
+        if changed != 1 {
+            return Err(CalmError::Conflict("negative launch acknowledgement changed; retain prepared resources".into()));
+        }
+        Ok(())
+    })).await
+}
+
+/// The owning checkpoint takes precedence over synthetic boot exit evidence.
+pub(crate) fn rejected(output: &Value, terminal_id: &str) -> Result<bool> {
+    match RequestState::read(output)? {
+        Some(RequestState::Rejected {
+            terminal_id: recorded,
+            supervisor_sock,
+            ..
+        }) => {
+            if recorded != terminal_id || !supervisor_sock.is_absolute() {
+                return Err(CalmError::Conflict(
+                    "rejected launch identity or endpoint changed; retain resources".into(),
+                ));
+            }
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+pub(crate) fn require_not_rejected(output: &Value, terminal_id: &str) -> Result<()> {
+    if rejected(output, terminal_id)? {
+        return Err(CalmError::Conflict(
+            "terminal launch was rejected; compensate owned operation".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Re-fetch because the renderer commits its receipt after the adapter's output
+/// was loaded. Never authorize using its stale in-memory launch state.
+pub(crate) async fn rejected_for_terminal(repo: &dyn RouteRepo, terminal_id: &str) -> Result<bool> {
+    let terminal_id = terminal_id.to_owned();
+    write_in_tx_typed(repo, move |tx| Box::pin(async move {
+        let rows: Vec<String> = sqlx::query_scalar("SELECT o.tx_output_json FROM operations o JOIN terminals t ON t.card_id=o.target_id WHERE t.id=?1 AND \
+            o.target_type='card' AND o.kind IN ('terminal-worker','claude-worker','codex-worker') LIMIT 2")
+            .bind(&terminal_id).fetch_all(&mut **tx).await?;
+        if rows.len() > 1 { return Err(CalmError::Conflict("conflicting launch ownership; retain resources".into())); }
+        match rows.first() {
+            Some(row) => rejected(&serde_json::from_str::<Value>(row)?["data"], &terminal_id),
+            None => Ok(false),
+        }
     })).await
 }

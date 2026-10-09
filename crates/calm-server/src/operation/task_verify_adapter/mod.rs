@@ -587,15 +587,19 @@ impl ProviderAdapter for TaskVerifyAdapter {
                 .stdin
                 .take()
                 .ok_or_else(|| CalmError::Internal("gate wrapper stdin handle missing".into()))?;
-            super::task_launch::TaskLaunch::new(&frozen.task_id, op)
-                .run(ctx.repo.as_ref(), async move {
-                    stdin.write_all(b"go\n").await.map_err(|error| {
-                        CalmError::Internal(format!("gate release write failed: {error}"))
-                    })?;
-                    drop(stdin);
-                    Ok(())
-                })
-                .await?;
+            super::task_launch::TaskLaunch::new(
+                &frozen.task_id,
+                op,
+                super::task_launch::TerminalLaunchRole::BusinessProcess,
+            )
+            .run(ctx.repo.as_ref(), async move {
+                stdin.write_all(b"go\n").await.map_err(|error| {
+                    CalmError::Internal(format!("gate release write failed: {error}"))
+                })?;
+                drop(stdin);
+                Ok(())
+            })
+            .await?;
             Ok::<SpawnArtifacts, CalmError>(artifacts.clone())
         };
         let artifacts = match tokio::time::timeout(RELEASE_TIMEOUT, record_release).await {

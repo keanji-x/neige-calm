@@ -139,7 +139,7 @@ async fn rejects_cwd(file: bool) -> anyhow::Result<()> {
     let mut supervisor = Supervisor::start(root.path()).await?;
     let reply = supervisor.ensure(cwd.to_str().unwrap(), &marker).await?;
     assert!(
-        matches!(&reply, ControlReply::SpawnFailed { error, child_already_reaped: false }
+        matches!(&reply, ControlReply::SpawnFailed { error, child_already_reaped: false, disposition: calm_session::control::SpawnFailedDisposition::NoChildCreated }
             if error.contains(cwd.to_str().unwrap()) && error.contains("not a directory")),
         "expected visible cwd rejection, got {reply:?}; command executed: {}",
         marker.exists()
@@ -251,5 +251,42 @@ async fn pty_cwd_validation_keeps_pipe_bootstrap_missing_directory_contract() ->
         !missing.exists(),
         "supervisor must leave cwd creation to daemon"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn pipe_spawn_error_is_unknown_but_pre_spawn_error_is_definite() -> anyhow::Result<()> {
+    let supervisor = calm_proc_supervisor::test_support::InProcessProcSupervisor::start().await?;
+    for (args, expected) in [
+        (
+            vec!["--ready-fd".into(), "0".into()],
+            calm_session::control::SpawnFailedDisposition::Unknown,
+        ),
+        (
+            vec![],
+            calm_session::control::SpawnFailedDisposition::NoChildCreated,
+        ),
+    ] {
+        let mut stream = UnixStream::connect(supervisor.sock()).await?;
+        write_frame(
+            &mut stream,
+            &ControlMsg::EnsureProc(EnsureProcRequest {
+                proc_id: "pipe-spawn-error".into(),
+                program: "/nonexistent/neige-pipe-test-program".into(),
+                args,
+                envs: vec![],
+                cwd: "/tmp".into(),
+                ready_timeout_ms: 100,
+                io_mode: IoMode::Pipe,
+                replay_bytes: 0,
+            }),
+        )
+        .await?;
+        let reply = receive(&mut stream).await?;
+        assert!(
+            matches!(reply, ControlReply::SpawnFailed { disposition, child_already_reaped: false, .. } if disposition == expected),
+            "{reply:?}"
+        );
+    }
     Ok(())
 }

@@ -281,6 +281,7 @@ pub struct EntryDebugStats {
 
 #[derive(Debug)]
 pub struct EnsureProcFailure {
+    pub disposition: calm_session::control::SpawnFailedDisposition,
     pub error: String,
     pub child_already_reaped: bool,
 }
@@ -521,6 +522,7 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
                         write_frame(
                             &mut stream,
                             &ControlReply::SpawnFailed {
+                                disposition: err.disposition,
                                 error: err.error,
                                 child_already_reaped: err.child_already_reaped,
                             },
@@ -1139,12 +1141,14 @@ async fn try_spawn_pipe(
     }
 
     let (ready_reader, ready_writer) = ready_pipe().map_err(|e| EnsureProcFailure {
+        disposition: calm_session::control::SpawnFailedDisposition::NoChildCreated,
         error: format!("create daemon ready pipe: {e}"),
         child_already_reaped: false,
     })?;
     let ready_fd = ready_writer.as_raw_fd();
     let mut args = request.args;
     replace_ready_fd_arg(&mut args, ready_fd).map_err(|e| EnsureProcFailure {
+        disposition: calm_session::control::SpawnFailedDisposition::NoChildCreated,
         error: format!(
             "daemon for terminal {} did not become ready ({e})",
             request.proc_id
@@ -1181,7 +1185,11 @@ async fn try_spawn_pipe(
         });
     }
 
+    // Tokio may fail building its child handle after std::process::Command has
+    // successfully exec'd (Tokio 1.52.3 process/mod.rs and unix::build_child).
+    // An opaque spawn error therefore cannot prove that no child was created.
     let child = cmd.spawn().map_err(|e| EnsureProcFailure {
+        disposition: calm_session::control::SpawnFailedDisposition::Unknown,
         error: format!("spawn pty bootstrap process: {e}"),
         child_already_reaped: false,
     })?;
@@ -1194,6 +1202,7 @@ async fn try_spawn_pipe(
             // Deliberately no kill here: for `None` tokio already reaped the child, and for `Some(0)` `Child::kill()` bottoms out in `kill(0, SIGKILL)` — the supervisor's own process group.
             // `child_already_reaped` is therefore only true for `None`.
             return Err(EnsureProcFailure {
+                disposition: calm_session::control::SpawnFailedDisposition::Unknown,
                 error: format!(
                     "pipe child for {} reported no usable pid ({observed:?}); refusing to register an entry whose group signal target would be 0",
                     request.proc_id
@@ -1208,6 +1217,7 @@ async fn try_spawn_pipe(
     // running `UnixMasterWriter::drop`'s blocking write under the lock. Bind it, release the lock, then drop.
     let displaced = {
         let mut entries = registry.inner.lock().map_err(|_| EnsureProcFailure {
+            disposition: calm_session::control::SpawnFailedDisposition::Unknown,
             error: "proc registry mutex poisoned".into(),
             child_already_reaped: false,
         })?;
@@ -1252,6 +1262,7 @@ async fn try_spawn_pty(
     // Preserve its empty-cwd default, but never substitute a requested workspace.
     if !request.cwd.is_empty() && !std::path::Path::new(&request.cwd).is_dir() {
         return Err(EnsureProcFailure {
+            disposition: calm_session::control::SpawnFailedDisposition::NoChildCreated,
             error: format!("pty cwd {:?} is not a directory", request.cwd),
             child_already_reaped: false,
         });
@@ -1265,6 +1276,7 @@ async fn try_spawn_pty(
             pixel_height: 0,
         })
         .map_err(|e| EnsureProcFailure {
+            disposition: calm_session::control::SpawnFailedDisposition::NoChildCreated,
             error: format!("allocate pty for {}: {e}", request.proc_id),
             child_already_reaped: false,
         })?;
@@ -1286,17 +1298,26 @@ async fn try_spawn_pty(
         .master
         .try_clone_reader()
         .map_err(|e| EnsureProcFailure {
+            disposition: calm_session::control::SpawnFailedDisposition::NoChildCreated,
             error: format!("clone pty reader for {}: {e}", request.proc_id),
             child_already_reaped: false,
         })?;
     let writer = pair.master.take_writer().map_err(|e| EnsureProcFailure {
+        disposition: calm_session::control::SpawnFailedDisposition::NoChildCreated,
         error: format!("take pty writer for {}: {e}", request.proc_id),
         child_already_reaped: false,
     })?;
+    // On Unix, portable-pty 0.9.0 unix.rs::spawn_command delegates directly
+    // to std::process::Command::spawn. std's exec-error handshake waits/reaps
+    // a child that fails before exec; portable-pty has no fallible work after
+    // successful spawn. This proves no executable child, not no fork. Re-audit
+    // on portable-pty/Rust upgrades; Tokio's pipe spawn above differs because
+    // its async handle construction can fail after successful exec.
     let child = pair
         .slave
         .spawn_command(cmd)
         .map_err(|e| EnsureProcFailure {
+            disposition: calm_session::control::SpawnFailedDisposition::NoChildCreated,
             error: format!("spawn pty child for {}: {e}", request.proc_id),
             child_already_reaped: false,
         })?;
@@ -1308,6 +1329,7 @@ async fn try_spawn_pty(
         Some(pid) if pid != 0 => pid,
         observed => {
             return Err(EnsureProcFailure {
+                disposition: calm_session::control::SpawnFailedDisposition::Unknown,
                 error: format!(
                     "pty child for {} reported no usable pid ({observed:?}); refusing to register an entry whose group signal target would be 0",
                     request.proc_id
@@ -1352,6 +1374,7 @@ async fn try_spawn_pty(
     // A same-`proc_id` respawn inside the reclaim grace makes the displaced `Arc` the last one; drop it outside the registry lock (its writer's `Drop` does a blocking write).
     let displaced = {
         let mut entries = registry.inner.lock().map_err(|_| EnsureProcFailure {
+            disposition: calm_session::control::SpawnFailedDisposition::Unknown,
             error: "proc registry mutex poisoned".into(),
             child_already_reaped: false,
         })?;
@@ -1838,6 +1861,7 @@ async fn await_readiness(
     tokio::select! {
         ready_res = read_ready_signal(&ready_reader, &ready_scanner) => {
             ready_res.map_err(|e| EnsureProcFailure {
+                disposition: calm_session::control::SpawnFailedDisposition::Unknown,
                 error: daemon_not_ready(proc_id, e),
                 child_already_reaped: false,
             })
@@ -1849,15 +1873,18 @@ async fn await_readiness(
                 Ok(true) => Ok(()),
                 Ok(false) => match wait_res {
                     Ok(status) => Err(EnsureProcFailure {
+                        disposition: calm_session::control::SpawnFailedDisposition::Unknown,
                         error: daemon_not_ready(proc_id, format_args!("exited before ready: {status}")),
                         child_already_reaped: true,
                     }),
                     Err(e) => Err(EnsureProcFailure {
+                        disposition: calm_session::control::SpawnFailedDisposition::Unknown,
                         error: daemon_not_ready(proc_id, format_args!("failed to observe child exit: {e}")),
                         child_already_reaped: true,
                     }),
                 },
                 Err(e) => Err(EnsureProcFailure {
+                    disposition: calm_session::control::SpawnFailedDisposition::Unknown,
                     error: daemon_not_ready(proc_id, format_args!("read ready fd after child exit: {e}")),
                     child_already_reaped: true,
                 }),
@@ -1865,6 +1892,7 @@ async fn await_readiness(
         }
         _ = tokio::time::sleep(timeout) => {
             Err(EnsureProcFailure {
+                disposition: calm_session::control::SpawnFailedDisposition::Unknown,
                 error: daemon_not_ready(proc_id, format_args!("ready-fd backstop after {timeout:?}")),
                 child_already_reaped: false,
             })

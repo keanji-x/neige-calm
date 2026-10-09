@@ -935,6 +935,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         let cwd = output.output_string("cwd", "claude worker")?;
         let mut env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
 
+        super::terminal_launch::require_not_rejected(&output.data, &terminal_id)?;
         let term = ctx
             .repo
             .terminal_get(&terminal_id)
@@ -1069,7 +1070,11 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         )
         .await?;
 
-        let launch = super::task_launch::TaskLaunch::new(&payload.idempotency_key, _op);
+        let launch = super::task_launch::TaskLaunch::new(
+            &payload.idempotency_key,
+            _op,
+            super::task_launch::TerminalLaunchRole::BusinessProcess,
+        );
         #[cfg(feature = "fixtures")]
         let handle = if let Some(hook) = &self.spawn_hook {
             launch
@@ -1250,7 +1255,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
                     &card_id,
                     &terminal_id,
                 )
-                .await;
+                .await?;
                 Ok(())
             }
             "delete_claude_settings_dir" => {

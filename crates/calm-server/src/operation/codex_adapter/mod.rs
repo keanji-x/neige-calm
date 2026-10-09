@@ -922,7 +922,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
         let card_id = output.output_string("card_id", "codex")?;
-        let runtime_id = output.output_string("runtime_id", "codex")?;
+        let session_id = output.output_string("runtime_id", "codex")?;
         let terminal_id = output.output_string("terminal_id", "codex")?;
         let track_id = TrackId::from(output.output_string("track_id", "codex")?);
         let cwd = output.output_string("cwd", "codex")?;
@@ -978,18 +978,22 @@ impl ProviderAdapter for CodexWorkerAdapter {
             .card_get(&card_id)
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-        let mcp_token = mint_card_mcp_token(ctx, &card_id, &runtime_id).await?;
+        let mcp_token = mint_card_mcp_token(ctx, &card_id, &session_id).await?;
 
         let handle = spawn_codex_worker_via_shared_daemon(CodexWorkerSpawnCtx {
             spawn_ctx: ctx,
-            launch: super::task_launch::TaskLaunch::new(&payload.idempotency_key, _op),
+            launch: super::task_launch::TaskLaunch::new(
+                &payload.idempotency_key,
+                _op,
+                super::task_launch::TerminalLaunchRole::OptionalViewer,
+            ),
             #[cfg(test)]
             viewer_preparation_hook: self.viewer_preparation_hook.as_ref(),
             shared_codex_appserver: &self.shared_codex_appserver,
             mcp_server: self.mcp_server.as_deref(),
             card: &card,
             term: &term,
-            worker_session_id: &runtime_id,
+            worker_session_id: &session_id,
             track_id: &track_id,
             mcp_token: Some(mcp_token.as_str()),
             rendered_prompt: &rendered_prompt,
@@ -1113,7 +1117,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
             &card_id,
             &terminal_id,
         )
-        .await;
+        .await?;
         if outcome == WorkerCleanupOutcome::Deleted
             && let Some((thread_id, persisted_turn)) = runtime_turn
         {

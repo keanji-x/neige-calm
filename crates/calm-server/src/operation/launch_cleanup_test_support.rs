@@ -73,6 +73,8 @@ impl AckProxy {
                             write_frame(
                                 &mut client,
                                 &ControlReply::SpawnFailed {
+                                    disposition:
+                                        calm_session::control::SpawnFailedDisposition::Unknown,
                                     error: "fixture rejects duplicate EnsureProc".into(),
                                     child_already_reaped: true,
                                 },
@@ -215,4 +217,85 @@ pub(crate) async fn probe_running(sock: &Path, proc_id: &str) -> bool {
             ..
         }
     )
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum NegativeFault {
+    Forward,
+    Unknown,
+    Disconnect,
+    LeaseLost,
+    WrongSocket,
+    PidConflict,
+    WrongIdentity,
+    ExpiredLease,
+}
+
+/// Faults are applied only after a real supervisor has rejected a real request.
+/// This proxy does not reproduce the supervisor's launch policy.
+pub(crate) async fn negative_ack_proxy(
+    upstream: &Path,
+    pool: sqlx::SqlitePool,
+    fault: NegativeFault,
+) -> AckProxy {
+    let dir = calm_test_sockets::socket_dir("negative");
+    let sock = dir.path().join("proxy.sock");
+    let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+    let upstream = upstream.to_path_buf();
+    let ensures = Arc::new(AtomicUsize::new(0));
+    let count = ensures.clone();
+    let task = tokio::spawn(async move {
+        let mut clients = tokio::task::JoinSet::new();
+        loop {
+            let (mut client, _) = listener.accept().await.unwrap();
+            let upstream = upstream.clone();
+            let count = count.clone();
+            let pool = pool.clone();
+            clients.spawn(async move {
+                let Ok(message) = read_frame::<ControlMsg, _>(&mut client).await else { return; };
+                let mut actual = tokio::net::UnixStream::connect(upstream).await.unwrap();
+                write_frame(&mut actual, &message).await.unwrap();
+                if let ControlMsg::EnsureProc(request) = &message {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    let mut reply = read_frame::<ControlReply, _>(&mut actual).await.unwrap();
+                    assert!(matches!(reply, ControlReply::SpawnFailed {
+                        disposition: calm_session::control::SpawnFailedDisposition::NoChildCreated, ..
+                    }));
+                    let terminal_id = request.proc_id.strip_prefix("term:").unwrap();
+                    let sql = match fault {
+                        NegativeFault::LeaseLost => Some("UPDATE operations SET lease_owner=NULL WHERE json_extract(tx_output_json,'$.data.terminal_id')=?1"),
+                        NegativeFault::WrongSocket => Some("UPDATE operations SET \
+            tx_output_json=json_set(tx_output_json,'$.data.terminal_launch.supervisor_sock','/wrong.sock') WHERE \
+            json_extract(tx_output_json,'$.data.terminal_id')=?1"),
+                        NegativeFault::WrongIdentity => Some("UPDATE operations SET \
+            tx_output_json=json_set(tx_output_json,'$.data.terminal_launch.terminal_id','wrong-terminal') WHERE \
+            json_extract(tx_output_json,'$.data.terminal_id')=?1"),
+                        NegativeFault::ExpiredLease => Some("UPDATE operations SET lease_until_ms=0 WHERE json_extract(tx_output_json,'$.data.terminal_id')=?1"),
+                        NegativeFault::PidConflict => Some("UPDATE terminals SET pid=2147483647 WHERE id=?1"),
+                        _ => None,
+                    };
+                    if let Some(sql) = sql { sqlx::query(sql).bind(terminal_id).execute(&pool).await.unwrap(); }
+                    match fault {
+                        NegativeFault::Disconnect => return,
+                        NegativeFault::Unknown => {
+                            if let ControlReply::SpawnFailed { disposition, .. } = &mut reply {
+                                *disposition = calm_session::control::SpawnFailedDisposition::Unknown;
+                            }
+                        }
+                        _ => {}
+                    }
+                    let _ = write_frame(&mut client, &reply).await;
+                } else {
+                    let _ = tokio::io::copy_bidirectional(&mut client, &mut actual).await;
+                }
+            });
+        }
+    });
+    AckProxy {
+        sock,
+        _dir: dir,
+        task,
+        ensures,
+        spawned: Arc::new(tokio::sync::Notify::new()),
+    }
 }

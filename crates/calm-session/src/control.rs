@@ -94,8 +94,17 @@ pub enum ProcSignal {
     Hup,
 }
 
-/// Two-phase reply: `Spawned` immediately after fork, then `Ready` or `ReadyFailed` after the ready-fd
-/// handshake; `SpawnFailed` short-circuits when the fork itself fails and no `Spawned` arrives.
+/// Evidence about this EnsureProc attempt, independent of child reaping.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SpawnFailedDisposition {
+    /// No executable child was created by this request.
+    NoChildCreated,
+    /// A child may have been created; this is never disposal permission.
+    Unknown,
+}
+
+/// Two-phase reply: Spawned precedes readiness; SpawnFailed has required creation evidence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ControlReply {
     /// Process forked; pid is final. Client persists pid + handle now.
@@ -109,10 +118,11 @@ pub enum ControlReply {
         error: String,
         child_already_reaped: bool,
     },
-    /// Fork itself failed. No pid; the stream closes after this frame.
+    /// No Spawned acknowledgement. Only the required disposition classifies creation evidence.
     SpawnFailed {
         error: String,
         child_already_reaped: bool,
+        disposition: SpawnFailedDisposition,
     },
     AttachOk(Attached),
     WriteAck {
@@ -146,4 +156,77 @@ pub enum ControlReply {
         signalled: bool,
         cursor: u64,
     },
+}
+
+#[cfg(test)]
+mod spawn_failed_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn spawn_failed_required_disposition_roundtrips() {
+        for disposition in [
+            SpawnFailedDisposition::NoChildCreated,
+            SpawnFailedDisposition::Unknown,
+        ] {
+            let (mut send, mut receive) = tokio::io::duplex(4096);
+            crate::write_frame(
+                &mut send,
+                &ControlReply::SpawnFailed {
+                    error: "failed".into(),
+                    child_already_reaped: false,
+                    disposition,
+                },
+            )
+            .await
+            .unwrap();
+            assert!(
+                matches!(crate::read_frame::<ControlReply, _>(&mut receive).await.unwrap(),
+                ControlReply::SpawnFailed { disposition: observed, .. } if observed == disposition)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_failed_legacy_receipt_fails_closed() {
+        // Exact v1 enum discriminants and SpawnFailed shape; no policy is emulated.
+        #[derive(Serialize)]
+        #[allow(dead_code)]
+        enum LegacyReply {
+            Spawned {
+                pid: u32,
+            },
+            Ready,
+            ReadyFailed {
+                error: String,
+                child_already_reaped: bool,
+            },
+            SpawnFailed {
+                error: String,
+                child_already_reaped: bool,
+            },
+        }
+        for error in ["", "x", "pty cwd is not a directory"] {
+            let (mut send, mut receive) = tokio::io::duplex(4096);
+            crate::write_frame(
+                &mut send,
+                &LegacyReply::SpawnFailed {
+                    error: error.into(),
+                    child_already_reaped: false,
+                },
+            )
+            .await
+            .unwrap();
+            assert!(
+                crate::read_frame::<ControlReply, _>(&mut receive)
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(
+            serde_json::from_value::<ControlReply>(serde_json::json!({"SpawnFailed": {
+                "error":"unknown", "child_already_reaped":false, "disposition":"future"
+            }}))
+            .is_err()
+        );
+    }
 }

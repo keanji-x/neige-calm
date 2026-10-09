@@ -729,6 +729,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
         let cmd = output.output_string("cmd", "terminal")?;
         let cwd = output.output_string("cwd", "terminal")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
+        super::terminal_launch::require_not_rejected(&output.data, &terminal_id)?;
         let existing_term = ctx
             .repo
             .terminal_get(&terminal_id)
@@ -773,7 +774,11 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             .await?
             .ok_or_else(|| CalmError::Internal(format!("terminal {terminal_id} vanished")))?;
 
-        let launch = super::task_launch::TaskLaunch::new(&payload.idempotency_key, _op);
+        let launch = super::task_launch::TaskLaunch::new(
+            &payload.idempotency_key,
+            _op,
+            super::task_launch::TerminalLaunchRole::BusinessProcess,
+        );
         let spawn_result = if let Some(hook) = &self.spawn_hook {
             launch
                 .run(
@@ -912,7 +917,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             card_id,
             terminal_id,
         )
-        .await;
+        .await?;
         Ok(())
     }
 }

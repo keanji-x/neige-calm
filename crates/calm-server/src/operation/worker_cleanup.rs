@@ -17,7 +17,10 @@ pub(crate) async fn worker_spawn_failure_preserved(
     let Some(term) = repo.terminal_get(terminal_id).await? else {
         return Ok(false);
     };
-    Ok(term.exit_code.is_some() || term.signal_killed)
+    Ok(
+        !super::terminal_launch::rejected_for_terminal(repo, terminal_id).await?
+            && (term.exit_code.is_some() || term.signal_killed),
+    )
 }
 
 pub(crate) async fn compensate_worker_rows(
@@ -26,7 +29,7 @@ pub(crate) async fn compensate_worker_rows(
     card_role_cache: &CardRoleCache,
     card_id: &str,
     terminal_id: &str,
-) -> WorkerCleanupOutcome {
+) -> crate::error::Result<WorkerCleanupOutcome> {
     let latest = match repo.terminal_get(terminal_id).await {
         Ok(opt) => opt,
         Err(e) => {
@@ -42,7 +45,9 @@ pub(crate) async fn compensate_worker_rows(
     };
 
     if let Some(term) = latest.as_ref() {
-        if term.exit_code.is_some() || term.signal_killed {
+        let rejected = super::terminal_launch::rejected_for_terminal(repo, terminal_id).await?
+            && term.pid.is_none();
+        if !rejected && (term.exit_code.is_some() || term.signal_killed) {
             tracing::error!(
                 card_id = %card_id,
                 terminal_id = %terminal_id,
@@ -51,7 +56,7 @@ pub(crate) async fn compensate_worker_rows(
                 "worker compensation: reached preserved branch after spawn failure; \
                  this should be unreachable because adapters convert fast-exit evidence to success",
             );
-            return WorkerCleanupOutcome::Preserved;
+            return Ok(WorkerCleanupOutcome::Preserved);
         }
 
         if terminal_renderer.get(&term.id).is_some() {
@@ -86,7 +91,7 @@ pub(crate) async fn compensate_worker_rows(
             "worker compensation rollback failed; sweeper fallback will reap on next tick",
         );
     }
-    WorkerCleanupOutcome::Deleted
+    Ok(WorkerCleanupOutcome::Deleted)
 }
 
 /// A failed start is not permission to discard an execution that may be live.
@@ -127,13 +132,31 @@ pub(crate) async fn require_cleanup_safe(
         return Ok(());
     }
     let state = RequestState::read(&output.data)?;
+    let terminal_id = output.output_string("terminal_id", "worker cleanup")?;
+    if !business_may_be_live && super::terminal_launch::rejected(&output.data, &terminal_id)? {
+        if ctx
+            .repo
+            .terminal_get(&terminal_id)
+            .await?
+            .is_some_and(|term| term.pid.is_some())
+        {
+            return Err(crate::error::CalmError::Conflict(
+                "rejected terminal has a contradictory PID; retain resources".into(),
+            ));
+        }
+        return Ok(());
+    }
     if !business_may_be_live && matches!(state, Some(RequestState::NotRequested { .. })) {
         return Ok(());
     }
-    let terminal_id = output.output_string("terminal_id", "worker cleanup")?;
     let sock = match state {
         Some(
             RequestState::Requested {
+                terminal_id: recorded,
+                supervisor_sock,
+                ..
+            }
+            | RequestState::Rejected {
                 terminal_id: recorded,
                 supervisor_sock,
                 ..
