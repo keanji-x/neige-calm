@@ -507,7 +507,7 @@ async fn post_claude_card_no_prompt_succeeds_through_saga() {
             .unwrap();
     assert_eq!(
         mcp_count.0, 0,
-        "Claude worker cards must not mint MCP tokens"
+        "owner Claude cards must not mint MCP tokens"
     );
     let terminal_id = card["payload"]["terminal_id"].as_str().unwrap();
     let term = boot.repo.terminal_get(terminal_id).await.unwrap().unwrap();

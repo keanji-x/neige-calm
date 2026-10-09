@@ -221,9 +221,19 @@ struct WorkerRestart {
     predecessor_token: String,
 }
 
-/// A task worker's card whose worker held a token and exited, with its restart prepared.
+/// How the worker before the restart ended.
 #[cfg(feature = "fixtures")]
-async fn prepared_worker_restart() -> WorkerRestart {
+enum PreviousEnd {
+    /// Its exit was persisted on the terminal row and its session completed.
+    Exited,
+    /// The reaper failed its session without a terminal exit: the row keeps the dead child's pid.
+    ReapedWithoutExitRow,
+}
+
+/// A task worker's card whose worker held a token and ended as `previous`, with its restart
+/// prepared.
+#[cfg(feature = "fixtures")]
+async fn prepared_worker_restart(previous: PreviousEnd) -> WorkerRestart {
     use crate::operation::claude_restart_adapter::{
         ClaudeRestartAdapter, ClaudeRestartOperationPayload,
     };
@@ -254,19 +264,49 @@ async fn prepared_worker_restart() -> WorkerRestart {
             .await
             .unwrap();
     assert!(handshake(&harness, &predecessor_token).await.is_some());
-    crate::db::RepoOutOfDomain::terminal_set_exit(
-        harness.repo.as_ref(),
-        &terminal_id,
-        Some(0),
-        false,
-    )
-    .await
-    .unwrap();
-    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
-    crate::db::sqlite::session_complete_for_card_tx(&mut tx, &card_id, WorkerSessionState::Exited)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
+    match previous {
+        PreviousEnd::Exited => {
+            crate::db::RepoOutOfDomain::terminal_set_exit(
+                harness.repo.as_ref(),
+                &terminal_id,
+                Some(0),
+                false,
+            )
+            .await
+            .unwrap();
+            let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+            crate::db::sqlite::session_complete_for_card_tx(
+                &mut tx,
+                &card_id,
+                WorkerSessionState::Exited,
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+        }
+        PreviousEnd::ReapedWithoutExitRow => {
+            use crate::db::prelude::*;
+            // What the first spawn recorded of its child.
+            crate::db::RepoOutOfDomain::terminal_set_pid(
+                harness.repo.as_ref(),
+                &terminal_id,
+                Some(4242),
+            )
+            .await
+            .unwrap();
+            harness
+                .repo
+                .session_commit_exit(
+                    &calm_types::worker::WorkerSessionId::from(first_session.as_str()),
+                    WorkerSessionState::Failed,
+                    crate::model::now_ms(),
+                    None,
+                    "failed",
+                )
+                .await
+                .unwrap();
+        }
+    }
 
     let mcp_dir = tempfile::tempdir().unwrap();
     let mcp_server = test_mcp_server(mcp_dir.path());
@@ -326,7 +366,7 @@ async fn release(harness: &ClaudeWorkerHarness, card_id: &str) {
 #[cfg(feature = "fixtures")]
 #[tokio::test]
 async fn claude_restart_of_a_worker_card_has_only_the_kernel_mcp_server() {
-    let r = prepared_worker_restart().await;
+    let r = prepared_worker_restart(PreviousEnd::Exited).await;
     r.restart
         .spawn_side_effect(&r.restart_output, &r.restart_op, &spawn_ctx(&r.harness))
         .await
@@ -359,43 +399,26 @@ async fn claude_restart_of_a_worker_card_has_only_the_kernel_mcp_server() {
     release(&r.harness, &r.card_id).await;
 }
 
-/// The restart's spawn is driven again after its child started (a crash or lost lease before the
-/// spawn was recorded): the live child keeps its token, and no second child is spawned.
+/// The reaper failed the worker's session without persisting a terminal exit, so the reused
+/// terminal row still names the dead child's pid. The restart spawns its child all the same.
 #[cfg(feature = "fixtures")]
 #[tokio::test]
-async fn claude_restart_redrive_keeps_the_live_childs_token() {
-    let r = prepared_worker_restart().await;
-    let terminal_id = r
-        .restart_output
-        .output_string("terminal_id", "test")
-        .unwrap();
+async fn claude_restart_after_a_reaped_child_without_an_exit_row_spawns() {
+    let r = prepared_worker_restart(PreviousEnd::ReapedWithoutExitRow).await;
     r.restart
         .spawn_side_effect(&r.restart_output, &r.restart_op, &spawn_ctx(&r.harness))
         .await
         .expect("restart spawn side effect");
-    // What the real spawn records of the child it started.
-    crate::db::RepoOutOfDomain::terminal_set_pid(r.harness.repo.as_ref(), &terminal_id, Some(4242))
-        .await
-        .unwrap();
-    let live_token = r.spawned.lock().await[0].1["NEIGE_MCP_TOKEN"]
-        .as_str()
-        .unwrap()
-        .to_string();
 
-    r.restart
-        .spawn_side_effect(&r.restart_output, &r.restart_op, &spawn_ctx(&r.harness))
-        .await
-        .expect("re-driven restart spawn side effect");
-
-    let card = handshake(&r.harness, &live_token)
-        .await
-        .expect("the live child's token still authenticates");
-    assert_eq!(card.card_id.as_str(), r.card_id);
-    assert_eq!(card.session_id, r.restart_session);
-    assert_eq!(
-        r.spawned.lock().await.len(),
-        1,
-        "no second child is spawned"
-    );
+    let spawned = r.spawned.lock().await.clone();
+    assert_eq!(spawned.len(), 1, "the restart spawns exactly one child");
+    assert_kernel_mcp_only(
+        &r.harness,
+        &r.mcp_server,
+        &spawned[0],
+        &r.card_id,
+        &r.restart_session,
+    )
+    .await;
     release(&r.harness, &r.card_id).await;
 }
