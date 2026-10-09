@@ -23,7 +23,9 @@ pub(crate) fn mcp_config_path(settings_path: &Path) -> Result<PathBuf> {
 /// The command-line flags that make `mcp_config` the session's only MCP configuration and let the
 /// kernel server's tools run without a permission prompt (#2509): without the rule, a call in the
 /// CLI's default permission mode stops at an approval. The kernel still authorizes every call by
-/// the card's role. `--allowedTools` takes a list, so an option must follow it.
+/// the card's role. The rule stays scoped to the kernel server only with `--strict-mcp-config`:
+/// without it, a project server named `neige__x` would match `mcp__neige` too. `--allowedTools`
+/// takes a list, so an option must follow it.
 pub(crate) fn mcp_flags(mcp_config: &Path) -> String {
     format!(
         " --allowedTools mcp__{MCP_SERVER_KEY} --strict-mcp-config --mcp-config {}",
