@@ -111,7 +111,7 @@ async fn cursor_upsert_overwrites_allows_reset_and_cascades() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let card_id = seed_card(&repo).await;
 
-    let stored = commit_checkpoint(
+    commit_checkpoint(
         &repo,
         &card_id,
         CaptureCheckpoint::Missing,
@@ -127,10 +127,25 @@ async fn cursor_upsert_overwrites_allows_reset_and_cascades() {
     assert_eq!(first.last_source_uuid.as_deref(), Some("uuid-a"));
     assert_eq!(first.last_line_hash.as_deref(), Some("hash-a"));
 
+    // Age the row directly, not through the upsert under test, so the next commit's overwrite of
+    // `updated_at_ms` is observable even when both commits land in the same millisecond.
+    sqlx::query("UPDATE worker_flow_cursors SET updated_at_ms = 1 WHERE card_id = ?1")
+        .bind(&card_id)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    let aged = CaptureCheckpoint::from(
+        &repo
+            .worker_flow_cursor_get(&card_id, "codex_rollout")
+            .await
+            .unwrap()
+            .unwrap(),
+    );
+
     let stored = commit_checkpoint(
         &repo,
         &card_id,
-        stored,
+        aged,
         position("/tmp/rollout-b.jsonl", 3, None, None),
     )
     .await;
@@ -143,6 +158,10 @@ async fn cursor_upsert_overwrites_allows_reset_and_cascades() {
     assert_eq!(reset.record_index, 3);
     assert!(reset.last_source_uuid.is_none());
     assert!(reset.last_line_hash.is_none());
+    assert!(
+        reset.updated_at_ms > 1,
+        "the commit overwrites updated_at_ms"
+    );
     assert_eq!(CaptureCheckpoint::from(&reset), stored);
 
     commit_checkpoint(

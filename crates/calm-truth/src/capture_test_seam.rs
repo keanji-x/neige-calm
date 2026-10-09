@@ -52,6 +52,8 @@ pub struct CommitPause {
     pub entered: Arc<Notify>,
     pub release: std::sync::mpsc::Sender<()>,
 }
+// Separate from `crate::test_seam`'s registry: the COMMIT hook runs on SQLite's worker thread and
+// must block synchronously, so it holds a std mpsc receiver rather than an async pause.
 type CommitKey = (String, i64);
 type CommitHook = (Arc<Notify>, std::sync::mpsc::Receiver<()>);
 fn commit_registry() -> &'static Mutex<HashMap<CommitKey, CommitHook>> {
