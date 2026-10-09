@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import '../../../styles/entry.css';
@@ -78,4 +78,25 @@ it('links qualified paths in structured table cells without interpreting their d
   expect(screen.getByText('**literal** <script>bad()</script>')).toBeTruthy();
   expect(document.querySelector('[data-nc-report] script')).toBeNull();
   expect(screen.getByText('3', { exact: true })).toBeTruthy();
+});
+
+
+it.each([
+  ['[Own repository](https://github.com/second/project/issues/1)\n\nissue #2', 'https://github.com/second/project/issues/2'],
+  ['issue #2', null],
+  ['[One](https://github.com/second/project/issues/1) [Two](https://github.com/third/project/issues/1)\n\nissue #2', null],
+])('scopes independent file preview references to their own source: %s', async (markdown, expected) => {
+  const report = { summary: '', body: '[Parent](https://github.com/first/project/issues/1)\n\n[Readme](./README.md)', blocks: null };
+  render(<ReportDocument report={report} fileRoot="/repo" empty={null} linkPreview={{ trackId: 't', report,
+    files: { readFile: (path) => Promise.resolve({ path, text: markdown, size: markdown.length, truncated: false }), rawUrl: (path) => path },
+  }} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Readme' }));
+  await screen.findByText('issue #2', { exact: true });
+  if (expected === null) {
+    expect(screen.queryByRole('button', { name: 'issue #2' })).toBeNull();
+  } else {
+    await userEvent.click(screen.getByRole('button', { name: 'issue #2' }));
+    await waitFor(() => { expect(within(screen.getByRole('dialog', { name: 'Preview: issue #2' }))
+      .getByRole('link', { name: 'Open in new tab ↗' }).getAttribute('href')).toBe(expected); });
+  }
 });
