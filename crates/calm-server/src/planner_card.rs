@@ -401,7 +401,8 @@ mod tests {
     fn every_guide_fits_its_byte_budget() {
         use crate::mcp_server::tools::track_file::GUIDES;
         const GUIDE_MAX_BYTES: usize = 6_144;
-        const GUIDES_TOTAL_MAX_BYTES: usize = 7_500;
+        // #1755 raised the total from 7_500 for the terminal guide's quiet-worker section.
+        const GUIDES_TOTAL_MAX_BYTES: usize = 8_200;
 
         assert!(GUIDES.len() >= 4, "anti-vacuity: {} guides", GUIDES.len());
         for (name, text) in GUIDES {

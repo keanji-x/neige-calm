@@ -1312,6 +1312,12 @@ impl AppState {
             harness.clone(),
             terminal_renderer.clone(),
         );
+        crate::worker_quiet::spawn(
+            route_repo.clone(),
+            events.clone(),
+            write.clone(),
+            terminal_renderer.clone(),
+        );
         let pending_codex_threads = Arc::new(PendingThreadStartRegistry::new(
             repo.clone(),
             events.clone(),
