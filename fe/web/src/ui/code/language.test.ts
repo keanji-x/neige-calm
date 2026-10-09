@@ -1,3 +1,4 @@
+import { EditorState } from '@codemirror/state';
 import { expect, it } from 'vitest';
 import { resolveCodeLanguage, exceedsCodeHighlightLimits, CODE_HIGHLIGHT_LIMITS } from './public.tsx';
 
@@ -42,4 +43,20 @@ it('bounds characters, lines and individual line length without truncation', () 
   const line = 'x'.repeat(1023) + '\n';
   expect(exceedsCodeHighlightLimits(line.repeat(CODE_HIGHLIGHT_LIMITS.characters / 1024))).toBe(false);
   expect(exceedsCodeHighlightLimits(line.repeat(CODE_HIGHLIGHT_LIMITS.characters / 1024) + 'x')).toBe(true);
+});
+
+it('uses the editor CR, LF and CRLF boundaries for the line budget', () => {
+  for (const separator of ['\r', '\n', '\r\n']) {
+    const text = ('x' + separator).repeat(CODE_HIGHLIGHT_LIMITS.lines);
+    expect(EditorState.create({ doc: text }).doc.lines).toBe(CODE_HIGHLIGHT_LIMITS.lines + 1);
+    expect(exceedsCodeHighlightLimits(text)).toBe(true);
+  }
+});
+
+it('uses the editor CR, LF and CRLF boundaries for the individual line budget', () => {
+  for (const separator of ['\r', '\n', '\r\n']) {
+    const text = 'x'.repeat(CODE_HIGHLIGHT_LIMITS.lineLength) + separator;
+    expect(EditorState.create({ doc: text }).doc.line(1).length).toBe(CODE_HIGHLIGHT_LIMITS.lineLength);
+    expect(exceedsCodeHighlightLimits(text)).toBe(false);
+  }
 });

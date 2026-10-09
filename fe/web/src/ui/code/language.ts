@@ -28,11 +28,13 @@ export function exceedsCodeHighlightLimits(text: string): boolean {
   if (text.length > CODE_HIGHLIGHT_LIMITS.characters) return true;
   let lines = 1;
   let lineLength = 0;
-  for (const character of text) {
-    if (character === '\n') {
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (character === '\r' || character === '\n') {
       lines += 1;
       lineLength = 0;
-    } else lineLength += character.length;
+      if (character === '\r' && text[index + 1] === '\n') index += 1;
+    } else lineLength += 1;
     if (lines > CODE_HIGHLIGHT_LIMITS.lines || lineLength > CODE_HIGHLIGHT_LIMITS.lineLength) return true;
   }
   return false;

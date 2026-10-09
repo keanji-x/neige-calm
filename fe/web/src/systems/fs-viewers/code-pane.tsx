@@ -2,11 +2,12 @@
 
 import { useEffect, useMemo, useRef } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
+import { useState } from '../../ui/state/public.ts';
 import { useCodeLanguage, type CodeTheme } from '../../ui/code/public.tsx';
 import { githubDark, githubLight } from '@uiw/codemirror-theme-github';
 import { MergeView } from '@codemirror/merge';
 import { EditorView, keymap } from '@codemirror/view';
-import { EditorState, Prec } from '@codemirror/state';
+import { Compartment, EditorState, Prec } from '@codemirror/state';
 import {
   SearchQuery,
   closeSearchPanel,
@@ -120,6 +121,7 @@ export function CodePane({
   const extensions = useMemo(
     () => [
       EditorState.readOnly.of(true), EditorView.lineWrapping,
+      EditorView.contentAttributes.of({ tabindex: '0', 'aria-readonly': 'true', 'aria-label': 'File code' }),
       ...(support === null ? [] : [support]),
       search({ createPanel: emptyPanel }),
       /* `Prec.highest` so `/` reaches the bar before any language/default binding — and before Firefox's quick-find. */
@@ -168,9 +170,11 @@ export function CodePane({
 /** HEAD on the left, the working tree on the right. `null` on either side is a real state (not in HEAD / deleted), exposed as `data-nc-fs-empty-*`. */
 export function DiffPane({ path, headText, workingText, theme }: DiffPaneProps) {
   const ref = useRef<HTMLDivElement | null>(null);
+  const mergeRef = useRef<MergeView | null>(null);
+  const [configuration] = useState(() => new Compartment());
   const { support } = useCodeLanguage({ kind: 'filename', value: path }, (headText ?? '') + (workingText ?? ''));
   const extensions = useMemo(() => [
-    EditorState.readOnly.of(true), EditorView.editable.of(false), EditorView.lineWrapping,
+    EditorView.lineWrapping,
     theme === 'dark' ? githubDark : githubLight,
     ...(support === null ? [] : [support]),
   ], [support, theme]);
@@ -178,14 +182,24 @@ export function DiffPane({ path, headText, workingText, theme }: DiffPaneProps) 
   useEffect(() => {
     const parent = ref.current;
     if (parent === null) return;
+    const initial = [EditorState.readOnly.of(true), EditorView.editable.of(false),
+      EditorView.contentAttributes.of({ tabindex: '0', 'aria-readonly': 'true' }), configuration.of([])];
     const merge = new MergeView({
       parent,
-      a: { doc: headText ?? '', extensions },
-      b: { doc: workingText ?? '', extensions },
+      a: { doc: headText ?? '', extensions: [initial, EditorView.contentAttributes.of({ 'aria-label': 'HEAD code' })] },
+      b: { doc: workingText ?? '', extensions: [initial, EditorView.contentAttributes.of({ 'aria-label': 'Working tree code' })] },
       collapseUnchanged: { margin: 3, minSize: 4 },
     });
-    return () => { merge.destroy(); };
-  }, [extensions, headText, workingText]);
+    mergeRef.current = merge;
+    return () => { mergeRef.current = null; merge.destroy(); };
+  }, [configuration, path, headText, workingText]);
+
+  useEffect(() => {
+    const merge = mergeRef.current;
+    if (merge === null) return;
+    merge.a.dispatch({ effects: configuration.reconfigure(extensions) });
+    merge.b.dispatch({ effects: configuration.reconfigure(extensions) });
+  }, [configuration, extensions, path, headText, workingText]);
 
   return (
     <div

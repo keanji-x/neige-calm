@@ -1,5 +1,6 @@
-import { cleanup, render, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
+import { resolveCodeLanguage } from '../../ui/code/public.tsx';
 import { EditorView } from '@codemirror/view';
 import { language } from '@codemirror/language';
 import { syntaxTree } from '@codemirror/language';
@@ -7,7 +8,7 @@ import { DiffPane } from './code-pane.tsx';
 import { CodePane, type PaneSearchAdapter } from './code-pane.tsx';
 import { ReportDocument } from '../../features/report/document/public.tsx';
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 it.each([
   ['main.rs', 'rust', 'fn main() {}'],
@@ -81,8 +82,42 @@ it('retains the full file pane search adapter and slash shortcut', async () => {
   expect(count).toHaveBeenLastCalledWith(1, 2);
   const content = container.querySelector<HTMLElement>('[role="textbox"]');
   if (content === null) throw new Error('Full pane missing');
+  content.focus();
+  expect(document.activeElement).toBe(content);
   const slash = new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true });
   content.dispatchEvent(slash);
   expect(slash.defaultPrevented).toBe(true);
   expect(open).toHaveBeenCalledOnce();
+});
+
+it('retains both diff views and expanded context when the grammar arrives', async () => {
+  const description = resolveCodeLanguage({ kind: 'filename', value: 'main.rs' });
+  if (description === null) throw new Error('Rust metadata missing');
+  const support = await description.load();
+  let finish: (value: typeof support) => void = () => { throw new Error('Load not started'); };
+  vi.spyOn(description, 'load').mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  const context = '// unchanged context\n'.repeat(40);
+  const { container } = render(<DiffPane path="main.rs" headText={context + 'fn old() {}'} workingText={context + 'fn new() {}'} theme="light" />);
+  const elements = container.querySelectorAll<HTMLElement>('[role="textbox"]');
+  const left = EditorView.findFromDOM(elements[0]);
+  const right = EditorView.findFromDOM(elements[1]);
+  if (left === null || right === null) throw new Error('Diff views missing');
+  screen.getAllByText(/unchanged lines/)[0].click();
+  expect(screen.queryAllByText(/unchanged lines/)).toHaveLength(0);
+  left.focus();
+  expect(left.hasFocus).toBe(true);
+  left.dispatch({ selection: { anchor: 20 } });
+  expect(left.state.selection.main.head).toBe(20);
+  finish(support);
+  await waitFor(() => {
+    const current = container.querySelectorAll<HTMLElement>('[role="textbox"]');
+    const currentLeft = EditorView.findFromDOM(current[0]);
+    const currentRight = EditorView.findFromDOM(current[1]);
+    expect(currentLeft?.state.facet(language)?.name).toBe('rust');
+    expect(currentLeft).toBe(left);
+    expect(currentRight).toBe(right);
+  });
+  expect(left.state.selection.main.head).toBe(20);
+  expect(left.hasFocus).toBe(true);
+  expect(screen.queryAllByText(/unchanged lines/)).toHaveLength(0);
 });

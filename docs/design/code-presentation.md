@@ -98,3 +98,16 @@ ran (DOM, desktop Chromium and coarse-pointer Chromium; no test-name filter).
 Predicted and actual red sets were exactly
 `keeps filename extensions and strict language labels in separate namespaces`.
 Restoring the production bytes made all 78 pass again. No mutation residue remains.
+
+## Approved tooling change request
+
+For the user-authorized #2474 implementation, the task orchestrator approves the
+architecture-owner changes to `fe/package.json`, `fe/package-lock.json`, and
+`fe/module-file-inventory.yaml`: declare the three CodeMirror dependencies,
+register the new UI module and benchmark owner, and expose the reproducible
+benchmark command. No frozen API, stylesheet token, or gate rule is loosened.
+Every affected commit carries the exact ownership trailers, preserved in the PR.
+
+The L2 review fixes additionally pin delayed diff grammar arrival without losing
+either view, selection, focus or expanded context, and use actual EditorState
+normalization as the oracle for CR/LF/CRLF line and individual-line budgets.
