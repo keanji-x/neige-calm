@@ -1,7 +1,8 @@
 """Read-only access to a calm database for the Track scripts (#2170 A, #2206 T2).
 
 track-scorecard.py and track-trace.py import this module, so they open the database, check its
-schema, find a Planner's turns and classify bypass commands the same way.
+schema, find a Planner's turns, read worker shell commands and classify bypass commands the same
+way.
 """
 
 import json
@@ -16,7 +17,7 @@ REQUIRED_COLUMNS = {
     "events": ["id", "kind", "payload", "actor", "at", "scope_track", "scope_card"],
     "tasks": ["track_id", "key", "kind", "goal", "status", "created_at_ms", "id", "status_detail"],
     "harness_items": ["id", "card_id", "turn_id", "item_uuid", "item_type", "method", "params", "created_at_ms", "input_segments"],
-    "worker_flow_items": ["track_id", "kind", "payload", "created_at_ms"],
+    "worker_flow_items": ["id", "track_id", "kind", "payload", "created_at_ms"],
     "operations": ["kind", "payload_json", "created_at_ms"],
 }
 
@@ -33,6 +34,8 @@ GH_WRITE = re.compile(
 GH_API = re.compile(r"\bgh\s+api\b")
 GH_API_METHOD = re.compile(r"(?:-X|--method)[\s=]*([A-Za-z]+)")
 GH_API_BODY = re.compile(r"(?:^|\s)(?:-f|-F|--field|--raw-field|--input)(?:\s|=|$)")
+# A worker shell use of raw gh on GitHub (reads too): the gitforge tools were not used (#2508).
+GH_RAW = re.compile(r"\bgh\s+" + GH_REPO + r"(?:pr|issue|api|run|repo)\b")
 # Codex workers run shell through `tools.exec_command({cmd:"…"})` inside a JS snippet.
 WORKER_CMD = re.compile(r"""cmd:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)""")
 SEGMENT_SPLIT = re.compile(r"\|\||&&|[|;\n]")
@@ -63,6 +66,12 @@ def write_segments(text, git_write=GIT_WRITE):
     return hits
 
 
+def gh_raw_segments(text):
+    """Return the shell segments of `text` that run `gh pr|issue|api|run|repo`."""
+    text = LINE_CONTINUATION.sub(" ", text)
+    return [segment.strip() for segment in SEGMENT_SPLIT.split(text) if GH_RAW.search(segment)]
+
+
 def worker_commands(exec_input):
     """The shell commands inside one Codex worker `exec` snippet."""
     return [
@@ -70,9 +79,9 @@ def worker_commands(exec_input):
     ]
 
 
-def check_schema(db):
+def check_schema(db, required=REQUIRED_COLUMNS):
     missing = []
-    for table, columns in REQUIRED_COLUMNS.items():
+    for table, columns in required.items():
         have = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
         missing += [f"{table}.{c}" for c in columns if c not in have]
     if missing:
@@ -135,14 +144,34 @@ def bypass_hits(db, track_id, planner_card_id, start, end):
             args = item["arguments"] if isinstance(item["arguments"], dict) else json.loads(item["arguments"])
             text = args.get("program") or (args.get("action") or {}).get("text") or ""
             add("planner " + item["tool"], text)
-    for (payload,) in db.execute(
-        "SELECT payload FROM worker_flow_items WHERE track_id = ? AND kind = 'toolCall'"
-        " AND created_at_ms BETWEEN ? AND ?",
+    for cmd in worker_shell_commands(db, track_id, start, end):
+        add("worker shell", cmd, GIT_REMOTE_WRITE)
+    return hits
+
+
+def worker_shell_commands(db, track_id, start, end):
+    """Every shell command a worker of the Track ran in [start, end], in capture order: the
+    commands inside Codex code-mode `exec` calls, and `commandExecution` items (Claude Bash, Codex
+    shell calls). A started and a completed item of one call (same session and call_id) count
+    once; a command the user typed into the worker's shell (source userShell) is not the worker's."""
+    commands = []
+    seen = set()
+    for kind, payload in db.execute(
+        "SELECT kind, payload FROM worker_flow_items WHERE track_id = ?"
+        " AND kind IN ('toolCall', 'commandExecution') AND created_at_ms BETWEEN ? AND ? ORDER BY id",
         (track_id, start, end),
     ):
-        call = json.loads(payload)
-        if call.get("name") != "exec":
+        item = json.loads(payload)
+        if kind == "toolCall":
+            if item.get("name") == "exec":
+                commands += worker_commands(item.get("input") or "")
             continue
-        for cmd in worker_commands(call.get("input") or ""):
-            add("worker shell", cmd, GIT_REMOTE_WRITE)
-    return hits
+        if item["source"] == "userShell":
+            continue
+        if item["call_id"] is not None:
+            call = (item["session_id"], item["call_id"])
+            if call in seen:
+                continue
+            seen.add(call)
+        commands.append(item["command"])
+    return commands
