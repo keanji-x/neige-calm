@@ -102,10 +102,11 @@ impl ClaudeTranscriptFlowSource {
             };
             let home = std::env::var("HOME")
                 .map_err(|e| CoreError::Internal(format!("HOME not set: {e}")))?;
-            PathBuf::from(home)
-                .join(".claude/projects")
-                .join(&expected_slug)
-                .join(format!("{session_id}.jsonl"))
+            claude_transcript_path(
+                &PathBuf::from(home).join(".claude/projects"),
+                &self.card_cwd,
+                session_id,
+            )
         };
 
         if should_check_transcript_slug(&path) {
@@ -692,12 +693,22 @@ fn hash_line(raw: &str) -> String {
     hash
 }
 
-/// Mirrors Claude 2.1.170 project-directory slugging; cwd cross-checks catch drift.
+/// Where Claude Code writes the transcript of session `session_id` started in `cwd`, under its
+/// `projects` directory.
+pub fn claude_transcript_path(projects_dir: &Path, cwd: &str, session_id: &str) -> PathBuf {
+    projects_dir
+        .join(slug_for_projects(cwd))
+        .join(format!("{session_id}.jsonl"))
+}
+
+/// Mirrors Claude 2.1.280 project-directory slugging (#1755, checked against the CLI): every UTF-16
+/// code unit other than an ASCII letter, digit or `-` becomes `-` (2.1.170 kept `_` and `.`); cwd
+/// cross-checks catch drift.
 pub fn slug_for_projects(cwd: &str) -> String {
     let mut slug = String::with_capacity(cwd.len());
     for unit in cwd.encode_utf16() {
         if let Some(ch) = char::from_u32(unit as u32)
-            && (ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.')
+            && (ch.is_ascii_alphanumeric() || ch == '-')
         {
             slug.push(ch);
             continue;

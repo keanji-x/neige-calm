@@ -5,19 +5,21 @@
 //! resting on "Yes, I trust this folder". Claude persists the trust in its own config; neige never
 //! touches it. Owner Claude cards are never answered for: a human is there to decide.
 //!
-//! Text alone cannot tell the dialog from a session whose output quotes it (a goal or a grep hit
-//! that quotes the dialog). The session's own banner can: every session screen carries "Claude
-//! Code v<version>" on top, and the dialog screen never does. So the first time any screen the
-//! watch observes carries the banner, the session has started and the watch ends for good without
-//! a key; only a complete dialog screen without the banner is ever answered.
-use std::sync::Arc;
+//! The session's own output can quote the dialog, so the kernel never acts on text alone once the
+//! session may have started. Claude writes its transcript (`<projects>/<cwd slug>/<session
+//! id>.jsonl`) only after trust, and paints its "Claude Code v<version>" banner on top of every
+//! session screen and never on the dialog: either one, seen at any point of the watch (the banner
+//! anywhere in the buffer, scrollback included), ends the watch for good without a key. Only a
+//! complete dialog screen in Claude's own layout (a rule row, then the "Accessing workspace:"
+//! header one column in; an echoed goal is indented further) is ever answered.
+//!
+//! The watch never fails the task: a dialog it cannot get past ends it with a warning, and the
+//! task's liveness timeout stays the backstop.
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use crate::db::write_with_actor_events_typed;
-use crate::event::EventBus;
 use crate::operation::SpawnCtx;
-use crate::state::WriteContext;
 use crate::terminal_interaction::{
     AllPresent, ConditionState, InputOutcome, KernelClaim, KernelTerminal, RowTest, ScreenWait,
     TextConditions,
@@ -26,8 +28,10 @@ use crate::terminal_renderer::TerminalRendererRegistry;
 
 /// The session banner Claude Code paints on top of every session screen, never on the dialog.
 const SESSION_BANNER: &str = "Claude Code v";
-/// The dialog screen's header, as Claude Code 2.1.280 paints it.
-const WORKSPACE_HEADER: &str = "Accessing workspace:";
+/// The dialog screen's rule row, painted from column 0 right above its header.
+const DIALOG_RULE: char = '─';
+/// The dialog's header row as Claude Code 2.1.280 paints it, one column in.
+const DIALOG_HEADER_ROW: &str = " Accessing workspace:";
 /// The dialog's question.
 pub(crate) const TRUST_QUESTION: &str = "Is this a project you created or one you trust?";
 /// The declining option's label (Claude's default selection).
@@ -53,7 +57,7 @@ const DOWN_ATTEMPTS: usize = 2;
 pub struct TrustPromptWatch {
     /// From the spawn until a complete dialog must have settled; past it nothing is sent.
     pub appear: Duration,
-    /// For Claude's cursor to settle after Down, and to leave the dialog after Enter.
+    /// For Claude's cursor to settle after Down, and for the session to start after Enter.
     pub step: Duration,
     /// Test observability: every watch's outcome, sent once it is final.
     #[cfg(feature = "fixtures")]
@@ -71,50 +75,46 @@ impl Default for TrustPromptWatch {
     }
 }
 
-/// How one watch ended. Only `NotAccepted` fails the worker's task.
+/// How one watch ended. No outcome fails the task.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TrustOutcome {
-    /// The kernel selected "Yes, I trust this folder" and the session started or the dialog left.
+    /// The kernel selected "Yes, I trust this folder" and the session started.
     Accepted,
-    /// No further key was sent: the session banner appeared, no complete dialog settled within
-    /// the window, or the dialog left the screen before the kernel acted.
+    /// No (further) key was sent: the session had started, no complete dialog settled within the
+    /// window, or the dialog left the screen before the kernel acted.
     NotShown,
     /// The terminal stopped (exit, no live renderer), or a key's outcome could not be confirmed.
     Stopped,
     /// Another client (a human, as a rule) held or took the terminal: theirs to answer.
     HumanOwned,
-    /// The banner-free dialog was still shown after the kernel answered: the worker task fails
-    /// with this reason.
-    NotAccepted(String),
+    /// The kernel could not get past the dialog (the cursor never rested on Yes, or no session
+    /// started after Enter). Logged; the task's liveness timeout is the backstop.
+    Unanswered(String),
 }
 
 /// The worker whose terminal is watched.
 pub(crate) struct TrustTarget {
     pub card_id: String,
-    pub track_id: String,
     pub terminal_id: String,
     pub worker_session_id: String,
+    /// Where this worker's Claude writes its session transcript, once its session has started.
+    pub transcript: PathBuf,
 }
 
 /// Watch the just-spawned worker's terminal in the background and answer the dialog if it comes
-/// before the session. A dialog the kernel could not accept fails the worker's task through the
-/// scheduler's startup-blocked failure.
+/// before the session.
 pub(crate) fn watch_worker_trust_prompt(
     ctx: &SpawnCtx,
-    write: WriteContext,
     target: TrustTarget,
     watch: &TrustPromptWatch,
 ) {
     let renderer = ctx.terminal_renderer.clone();
-    let repo = ctx.repo.clone();
-    let events = ctx.events.clone();
     let watch = watch.clone();
     tokio::spawn(async move {
         let outcome = answer(&renderer, &target, &watch).await;
         match &outcome {
-            TrustOutcome::NotAccepted(reason) => {
-                tracing::warn!(card_id = %target.card_id, terminal_id = %target.terminal_id, %reason, "claude worker trust dialog not accepted; failing its task");
-                fail_worker(repo, &events, &write, &target, reason).await;
+            TrustOutcome::Unanswered(reason) => {
+                tracing::warn!(card_id = %target.card_id, terminal_id = %target.terminal_id, %reason, "claude worker trust dialog left unanswered; the task's liveness timeout is the backstop");
             }
             other => {
                 tracing::info!(card_id = %target.card_id, terminal_id = %target.terminal_id, outcome = ?other, "claude worker trust dialog watch ended");
@@ -127,18 +127,29 @@ pub(crate) fn watch_worker_trust_prompt(
     });
 }
 
-/// Whether the session banner was on any screen tested so far: sticky for the whole watch.
-#[derive(Default)]
-struct SessionBanner(AtomicBool);
-impl SessionBanner {
+/// Evidence that the session has started, sticky for the whole watch.
+struct SessionStart<'a> {
+    seen: AtomicBool,
+    transcript: &'a Path,
+}
+impl SessionStart<'_> {
+    /// From one screen: the banner on it, or the transcript on disk.
     fn observe(&self, rows: &[String]) -> bool {
-        if rows.iter().any(|row| row.contains(SESSION_BANNER)) {
-            self.0.store(true, Ordering::SeqCst);
+        if rows.iter().any(|row| row.contains(SESSION_BANNER)) || self.transcript.exists() {
+            self.seen.store(true, Ordering::SeqCst);
         }
-        self.seen()
+        self.seen.load(Ordering::SeqCst)
     }
-    fn seen(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
+    /// Before an action: the banner anywhere in the buffer (scrollback included), or the
+    /// transcript. A buffer that cannot be read counts as started.
+    fn confirmed(&self, terminal: &KernelTerminal) -> bool {
+        if !self.seen.load(Ordering::SeqCst)
+            && (terminal.buffer_contains(SESSION_BANNER).unwrap_or(true)
+                || self.transcript.exists())
+        {
+            self.seen.store(true, Ordering::SeqCst);
+        }
+        self.seen.load(Ordering::SeqCst)
     }
 }
 
@@ -150,47 +161,41 @@ fn verdict(holds: bool) -> (Option<(String, usize)>, ConditionState) {
     (None, state)
 }
 
-/// Holds once the session banner has been seen.
-struct SessionSeen<'a>(&'a SessionBanner);
+/// Holds once the session has been seen to start.
+struct SessionSeen<'a>(&'a SessionStart<'a>);
 impl RowTest for SessionSeen<'_> {
     fn test(&self, rows: &[String]) -> (Option<(String, usize)>, ConditionState) {
         verdict(self.0.observe(rows))
     }
 }
 
-/// Holds on a complete dialog screen (header, question, both options, footer) while no screen
-/// ever carried the banner, and on `rows` too when given (a cursor row).
+/// A complete dialog screen in Claude's layout: a rule row from column 0, the header row right
+/// under it, and the question, both options and the footer.
+fn dialog_screen(rows: &[String]) -> bool {
+    let anchored = rows
+        .windows(2)
+        .any(|pair| pair[0].starts_with(DIALOG_RULE) && pair[1].starts_with(DIALOG_HEADER_ROW));
+    let elements = AllPresent(
+        [TRUST_QUESTION, DECLINE_OPTION, TRUST_OPTION, DIALOG_FOOTER]
+            .map(String::from)
+            .to_vec(),
+    );
+    anchored && elements.holds(rows)
+}
+
+/// Holds on a dialog screen while the session was never seen to start, and on `rows` too when
+/// given (a cursor row).
 struct Dialog<'a> {
-    banner: &'a SessionBanner,
+    session: &'a SessionStart<'a>,
     rows: Option<TextConditions>,
 }
 impl RowTest for Dialog<'_> {
     fn test(&self, rows: &[String]) -> (Option<(String, usize)>, ConditionState) {
-        let screen = AllPresent(
-            [
-                WORKSPACE_HEADER,
-                TRUST_QUESTION,
-                DECLINE_OPTION,
-                TRUST_OPTION,
-                DIALOG_FOOTER,
-            ]
-            .map(String::from)
-            .to_vec(),
-        );
         let also = self
             .rows
             .as_ref()
             .is_none_or(|also| also.test(rows).1.holds());
-        verdict(!self.banner.observe(rows) && screen.holds(rows) && also)
-    }
-}
-
-/// Holds once the dialog has left: the banner seen, or the dialog's header gone.
-struct DialogLeft<'a>(&'a SessionBanner);
-impl RowTest for DialogLeft<'_> {
-    fn test(&self, rows: &[String]) -> (Option<(String, usize)>, ConditionState) {
-        let session = self.0.observe(rows);
-        verdict(session || !rows.iter().any(|row| row.contains(WORKSPACE_HEADER)))
+        verdict(!self.session.observe(rows) && dialog_screen(rows) && also)
     }
 }
 
@@ -202,25 +207,25 @@ enum Seen {
     TimedOut,
 }
 
-/// `dialog` settled for `settle`, raced against the session banner on any screen.
+/// `dialog` settled for `settle`, raced against the session starting.
 async fn dialog_or_session(
     terminal: &KernelTerminal,
-    banner: &SessionBanner,
+    session: &SessionStart<'_>,
     dialog: &Dialog<'_>,
     budget: Duration,
     settle: Duration,
 ) -> Seen {
-    let session = SessionSeen(banner);
+    let started = SessionSeen(session);
     let waited = tokio::select! {
         biased;
-        waited = terminal.wait_until(&session, budget, Duration::ZERO) => match waited {
+        waited = terminal.wait_until(&started, budget, Duration::ZERO) => match waited {
             ScreenWait::Held => return Seen::Session,
             other => other,
         },
         waited = terminal.wait_until(dialog, budget, settle) => waited,
     };
     match waited {
-        _ if banner.seen() => Seen::Session,
+        _ if session.observe(&[]) => Seen::Session,
         ScreenWait::Held => Seen::Dialog,
         ScreenWait::Stopped => Seen::Stopped,
         ScreenWait::TimedOut => Seen::TimedOut,
@@ -246,46 +251,53 @@ async fn answer(
             return TrustOutcome::Stopped;
         }
     };
-    let banner = SessionBanner::default();
+    let session = SessionStart {
+        seen: AtomicBool::new(false),
+        transcript: &target.transcript,
+    };
     let dialog = Dialog {
-        banner: &banner,
+        session: &session,
         rows: None,
     };
-    match dialog_or_session(&terminal, &banner, &dialog, watch.appear, TRUST_SETTLE).await {
+    match dialog_or_session(&terminal, &session, &dialog, watch.appear, TRUST_SETTLE).await {
         Seen::Dialog => {}
         Seen::Session | Seen::TimedOut => return TrustOutcome::NotShown,
         Seen::Stopped => return TrustOutcome::Stopped,
     }
+    if session.confirmed(&terminal) {
+        return TrustOutcome::NotShown;
+    }
     match terminal.claim_if_unowned().await {
         Ok(KernelClaim::Granted) => {}
-        Ok(KernelClaim::HeldByAnother) => return TrustOutcome::HumanOwned,
-        Ok(KernelClaim::Unavailable(reason)) => {
-            tracing::info!(terminal_id = %target.terminal_id, %reason, "claude worker trust dialog: terminal not claimed");
+        Ok(KernelClaim::HeldByAnother | KernelClaim::Unavailable(_)) => {
             return TrustOutcome::HumanOwned;
         }
         Err(_) => return TrustOutcome::Stopped,
     }
-    let outcome = select_yes(&terminal, &banner, watch).await;
+    let outcome = select_yes(&terminal, &session, watch).await;
     terminal.release().await;
     outcome
 }
 
 /// Down until Claude's cursor rests on the accepting option (one retry when it stayed on "No,
-/// exit"), then Enter only while the banner-free dialog still shows it there: Enter is never sent
-/// on "No, exit", and no key is sent once the session started or the dialog left.
+/// exit"), then Enter only while the dialog still shows it there. Before every key the session
+/// start is checked again: no key is sent once it may have started, and none on "No, exit".
 async fn select_yes(
     terminal: &KernelTerminal,
-    banner: &SessionBanner,
+    session: &SessionStart<'_>,
     watch: &TrustPromptWatch,
 ) -> TrustOutcome {
     let on = |cursors: &[&str]| Dialog {
-        banner,
+        session,
         rows: Some(TextConditions {
             present: cursors.iter().map(|row| (*row).to_owned()).collect(),
             absent: vec![],
         }),
     };
-    let shown = Dialog { banner, rows: None };
+    let shown = Dialog {
+        session,
+        rows: None,
+    };
     let (on_yes, on_no, at_rest) = (
         on(&[TRUST_CURSOR]),
         on(&[DECLINE_CURSOR]),
@@ -293,13 +305,13 @@ async fn select_yes(
     );
     let mut rests_on_yes = false;
     for _ in 0..DOWN_ATTEMPTS {
-        if !terminal.shows(&shown) {
+        if session.confirmed(terminal) || !terminal.shows(&shown) {
             return TrustOutcome::NotShown;
         }
         if let Some(ended) = pressed(terminal.press("Down").await) {
             return ended;
         }
-        match dialog_or_session(terminal, banner, &at_rest, watch.step, TRUST_SETTLE).await {
+        match dialog_or_session(terminal, session, &at_rest, watch.step, TRUST_SETTLE).await {
             Seen::Session => return TrustOutcome::NotShown,
             Seen::Stopped => return TrustOutcome::Stopped,
             Seen::Dialog if terminal.shows(&on_yes) => {
@@ -310,87 +322,47 @@ async fn select_yes(
             Seen::Dialog | Seen::TimedOut => break,
         }
     }
-    // Re-read right before Enter: still the banner-free dialog, the cursor still on Yes.
-    if !terminal.shows(&shown) {
+    // Re-read right before Enter: no session, still the dialog, the cursor still on Yes.
+    if session.confirmed(terminal) || !terminal.shows(&shown) {
         return TrustOutcome::NotShown;
     }
     if !rests_on_yes || !terminal.shows(&on_yes) {
-        return not_accepted(&format!("the cursor never rested on \"{TRUST_OPTION}\""));
+        return unanswered(
+            terminal,
+            &format!("the cursor never rested on \"{TRUST_OPTION}\""),
+        );
     }
     if let Some(ended) = pressed(terminal.press("Enter").await) {
         return ended;
     }
-    dialog_left(terminal, banner, watch).await
+    // Accepted once the session starts: its banner or its transcript.
+    match terminal
+        .wait_until(&SessionSeen(session), watch.step, Duration::ZERO)
+        .await
+    {
+        ScreenWait::Held => TrustOutcome::Accepted,
+        ScreenWait::Stopped => TrustOutcome::Stopped,
+        ScreenWait::TimedOut if session.confirmed(terminal) => TrustOutcome::Accepted,
+        ScreenWait::TimedOut => unanswered(terminal, "no session started after Enter"),
+    }
 }
 
-/// After Enter: accepted once the banner appears, or once the dialog's header is gone and still
-/// gone a settle period later. The task fails only if the banner-free dialog is still shown when
-/// the step ends.
-async fn dialog_left(
-    terminal: &KernelTerminal,
-    banner: &SessionBanner,
-    watch: &TrustPromptWatch,
-) -> TrustOutcome {
-    let left = DialogLeft(banner);
-    let deadline = tokio::time::Instant::now() + watch.step;
-    loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        match terminal.wait_until(&left, remaining, Duration::ZERO).await {
-            ScreenWait::Held if banner.seen() => return TrustOutcome::Accepted,
-            ScreenWait::Held => {}
-            ScreenWait::Stopped => return TrustOutcome::Stopped,
-            ScreenWait::TimedOut if terminal.shows(&Dialog { banner, rows: None }) => {
-                return not_accepted("the dialog was still shown after Enter");
-            }
-            ScreenWait::TimedOut => return TrustOutcome::NotShown,
-        }
-        tokio::time::sleep(TRUST_SETTLE).await;
-        if terminal.shows(&left) {
-            return TrustOutcome::Accepted;
-        }
+/// The kernel could not get past the dialog; when another client holds the terminal by now, it
+/// is theirs.
+fn unanswered(terminal: &KernelTerminal, detail: &str) -> TrustOutcome {
+    if terminal.holds_control() {
+        TrustOutcome::Unanswered(format!("Claude's workspace trust dialog: {detail}"))
+    } else {
+        TrustOutcome::HumanOwned
     }
 }
 
 /// `None` when the key was written. A refused key means another client took the terminal: the
-/// owner is handling the dialog, so nothing fails.
+/// owner is handling the dialog.
 fn pressed(written: anyhow::Result<InputOutcome>) -> Option<TrustOutcome> {
     match written {
         Ok(InputOutcome::Written) => None,
         Ok(InputOutcome::Refused) => Some(TrustOutcome::HumanOwned),
         Ok(InputOutcome::Unknown) | Err(_) => Some(TrustOutcome::Stopped),
-    }
-}
-
-fn not_accepted(detail: &str) -> TrustOutcome {
-    TrustOutcome::NotAccepted(format!(
-        "Claude's workspace trust dialog was not accepted: {detail}"
-    ))
-}
-
-async fn fail_worker(
-    repo: Arc<dyn crate::db::RouteRepo>,
-    events: &EventBus,
-    write: &WriteContext,
-    target: &TrustTarget,
-    reason: &str,
-) {
-    let (card_id, track_id, reason) = (
-        target.card_id.clone(),
-        target.track_id.clone(),
-        reason.to_owned(),
-    );
-    let result =
-        write_with_actor_events_typed::<(), _>(repo.as_ref(), None, events, write, move |tx| {
-            Box::pin(async move {
-                let events = crate::scheduler::fail_worker_startup_blocked_tx(
-                    tx, &card_id, &track_id, &reason,
-                )
-                .await?;
-                Ok(((), events))
-            })
-        })
-        .await;
-    if let Err(error) = result {
-        tracing::warn!(card_id = %target.card_id, %error, "claude worker trust dialog failure could not be recorded");
     }
 }

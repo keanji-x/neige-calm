@@ -233,6 +233,18 @@ impl Config {
         })
     }
 
+    /// Claude Code's `projects` directory for the CLI the kernel spawns in a PTY:
+    /// `$HOME/.claude/projects`. The proc supervisor passes `HOME` to its children and never
+    /// `CLAUDE_CONFIG_DIR`, so this is where a worker's Claude writes its transcripts. Resolved once
+    /// at startup into [`crate::state::CodexClient::claude_projects_dir`].
+    pub fn claude_projects_dir_resolved(&self) -> PathBuf {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default()
+            .join(".claude")
+            .join("projects")
+    }
+
     pub fn proc_supervisor_sock_resolved(&self) -> PathBuf {
         self.proc_supervisor_sock
             .clone()

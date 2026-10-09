@@ -109,6 +109,8 @@ pub struct CodexClient {
     pub claude_settings_dir: PathBuf,
     /// Parent directory for generated Planner terminal hook settings; server-owned.
     pub terminal_hook_settings_dir: PathBuf,
+    /// Claude Code's `projects` directory, where the spawned CLI writes session transcripts.
+    pub claude_projects_dir: PathBuf,
     /// Test-only handle: `new_stub()` stows its `TempDir` here so per-card `$CODEX_HOME`
     /// subdirs are removed when the test drops its `AppState`. `None` in production.
     _codex_homes_tempdir: Option<tempfile::TempDir>,
@@ -133,6 +135,7 @@ impl CodexClient {
             )),
             claude_settings_dir: data_dir.join("claude-settings"),
             terminal_hook_settings_dir: data_dir.join("terminal-hooks"),
+            claude_projects_dir: cfg.claude_projects_dir_resolved(),
             _codex_homes_tempdir: None,
         }
     }
@@ -175,6 +178,7 @@ impl CodexClient {
             ingest_url: "http://127.0.0.1:0".into(),
             claude_settings_dir: codex_homes_dir.join("claude-settings"),
             terminal_hook_settings_dir: codex_homes_dir.join("terminal-hooks"),
+            claude_projects_dir: codex_homes_dir.join("claude-projects"),
             codex_homes_dir,
             shared_codex_home,
             _codex_homes_tempdir: tmp,

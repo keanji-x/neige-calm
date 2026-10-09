@@ -6,18 +6,23 @@
 #   dialog before its input handler is live: for STARTUP seconds after the first paint a key only
 #   moves the painted cursor, Enter acts on the real selection ("No, exit"), and the dialog then
 #   repaints with the selection reset to No;
-# - the session: the "Claude Code v2.1.280" banner on top, then the prompt echoed (`❯ Goal: ...`).
+# - the session: the "Claude Code v2.1.280" banner on top, then the whole prompt echoed
+#   (`❯ Goal: ...`, every line, so a long goal scrolls the banner off the viewport) in one write;
+#   about 0.15 s later the session transcript `projects/<cwd slug>/<--session-id>.jsonl` (under
+#   this directory) is written, as the real CLI does once trusted.
 # It logs every byte it reads. The test copies it into a private directory next to a `scenario`
 # file:
 #   in:  scenario: `dialog` (Down moves the cursor; Enter on Yes starts the session), `stuck` (the
 #        cursor never moves), `eatdown` (the first Down after startup is dropped), `gated`
 #        (`dialog`, painted only once a `go` file exists), `takeover` (`dialog`, the cursor moves
-#        on Down only once a `move` file exists), `session` (a trusted start: runs the
-#        SessionStart hook from `--settings`, then paints the session and stays static),
-#        `hookloss` (`session` with no hook delivered)
+#        on Down only once a `move` file exists), `takeenter` (`dialog` whose Enter is ignored:
+#        the dialog stays), `session` (a trusted start: runs the SessionStart hook from
+#        `--settings`, then paints the session and stays static), `hookloss` (`session` with no
+#        hook delivered), `replica` (`hookloss`, then the screen and its scrollback cleared and
+#        an exact dialog replica painted: only the transcript tells it from the dialog)
 #   out: painted (a dialog or session screen is up), downed (a Down reached the live dialog),
-#        hooked (the SessionStart hook ran), received (every byte read, appended),
-#        accepted / declined (Enter on Yes / on No)
+#        entered (an Enter reached the live dialog), hooked (the SessionStart hook ran),
+#        received (every byte read, appended), accepted / declined (Enter on Yes / on No)
 import json
 import os
 import select
@@ -54,16 +59,30 @@ def paint(cursor):
     record("painted")
 
 
+def slug(path):
+    """Claude Code 2.1.280's project directory name: every UTF-16 unit but [A-Za-z0-9-] is `-`."""
+    units = path.encode("utf-16-le")
+    return "".join(
+        chr(unit) if unit < 128 and (chr(unit).isalnum() or chr(unit) == "-") else "-"
+        for unit in (int.from_bytes(units[at:at + 2], "little") for at in range(0, len(units), 2)))
+
+
 def session():
-    """The session's first frame: the banner, then the prompt echoed as Claude does."""
+    """The session's first frame (the banner, then the whole prompt echoed) in one write, then
+    its transcript."""
     prompt = sys.argv[-1].splitlines() if "--" in sys.argv else []
     rows = [" ▐▛███▛█   Claude Code v2.1.280",
             "▝▜██████▀  Opus 5.5 (1M context) · API Usage Billing",
             "  ▝▝ ▝▝    /…/" + os.path.basename(os.getcwd()), "", ""]
-    rows += [("❯ " if at == 0 else "  ") + line for at, line in enumerate(prompt[:14])]
+    rows += [("❯ " if at == 0 else "  ") + line for at, line in enumerate(prompt)]
     rows += ["", "─" * 80, "❯ ", "─" * 80]
     write("\x1b[2J\x1b[H" + "\n".join(rows) + "\n")
     record("painted")
+    time.sleep(0.15)
+    transcript = os.path.join(D, "projects", slug(os.getcwd()), arg("--session-id") + ".jsonl")
+    os.makedirs(os.path.dirname(transcript), exist_ok=True)
+    with open(transcript, "a") as out:
+        out.write('{"type":"summary"}\n')
 
 
 def arg(flag):
@@ -89,10 +108,14 @@ def idle():
 
 
 tty.setraw(0)
-if SCENARIO in ("session", "hookloss"):
+if SCENARIO in ("session", "hookloss", "replica"):
     if SCENARIO == "session":
         session_start_hook()
     session()
+    if SCENARIO == "replica":
+        time.sleep(0.3)
+        write("\x1b[2J\x1b[3J\x1b[H")
+        paint(0)
     idle()
 while SCENARIO == "gated" and not os.path.exists(os.path.join(D, "go")):
     time.sleep(0.02)
@@ -132,6 +155,9 @@ while True:
             paint(cursor)
         elif pending.startswith(b"\r"):
             pending = b""
+            if SCENARIO == "takeenter" and not starting:
+                record("entered")
+                continue
             if cursor == 1 and not starting:
                 record("accepted")
                 session()

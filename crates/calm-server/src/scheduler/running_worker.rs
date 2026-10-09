@@ -38,8 +38,6 @@ pub(crate) enum WorkerCleanupReason {
     LivenessTimeout,
     TurnEnded,
     PlannerCanceled,
-    /// The kernel could not get the worker past its provider's startup screen (#1755).
-    StartupBlocked,
 }
 
 impl WorkerCleanupReason {
@@ -48,7 +46,6 @@ impl WorkerCleanupReason {
             Self::LivenessTimeout => "running_liveness_timeout",
             Self::TurnEnded => "worker_turn_ended",
             Self::PlannerCanceled => "planner_canceled",
-            Self::StartupBlocked => "worker_startup_blocked",
         }
     }
 }

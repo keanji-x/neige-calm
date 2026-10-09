@@ -38,6 +38,7 @@ use crate::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSes
 use crate::state::{CodexClient, WriteContext};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::track_area_cache::TrackAreaCache;
+use crate::worker_flow::claude_transcript::claude_transcript_path;
 
 use trust_prompt::{TrustPromptWatch, TrustTarget};
 
@@ -1081,6 +1082,12 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         )
         .await?;
 
+        // Written by the worker's Claude once its session has started (#1755).
+        let transcript = claude_transcript_path(
+            &self.codex.claude_projects_dir,
+            &cwd,
+            &output.output_string("claude_session_id", "claude worker")?,
+        );
         let launch = super::task_launch::TaskLaunch::new(&payload.idempotency_key, _op);
         #[cfg(feature = "fixtures")]
         let handle = if let Some(hook) = &self.spawn_hook {
@@ -1103,12 +1110,11 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             Ok(handle) => {
                 trust_prompt::watch_worker_trust_prompt(
                     ctx,
-                    WriteContext::new(self.card_role_cache.clone(), self.track_area_cache.clone()),
                     TrustTarget {
                         card_id: card_id.clone(),
-                        track_id: track_id.to_string(),
                         terminal_id: terminal_id.clone(),
                         worker_session_id: worker_session_id.clone(),
+                        transcript,
                     },
                     &self.trust_prompt,
                 );

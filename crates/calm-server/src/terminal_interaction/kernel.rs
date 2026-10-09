@@ -90,6 +90,48 @@ impl KernelTerminal {
         }
     }
 
+    /// Whether `needle` is on any row of the whole buffer: the live viewport and every scrollback
+    /// row still held (a screen that scrolled keeps its earlier rows there).
+    pub fn buffer_contains(&self, needle: &str) -> Result<bool> {
+        let view = self
+            .client
+            .entry
+            .handle
+            .model_view
+            .lock()
+            .map_err(|_| anyhow::anyhow!("terminal view poisoned"))?;
+        let (live, _) = view.capture(0)?;
+        let (rows, history) = (usize::from(live.rows).max(1), live.history_rows);
+        if live.text.iter().any(|row| row.contains(needle)) {
+            return Ok(true);
+        }
+        // A capture at offset `n` shows the rows starting `n` rows above the live viewport.
+        let mut offset = 0;
+        while offset < history {
+            offset = (offset + rows).min(history);
+            if view
+                .capture(offset)?
+                .0
+                .text
+                .iter()
+                .any(|row| row.contains(needle))
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Whether this connection holds control of the terminal right now.
+    pub fn holds_control(&self) -> bool {
+        self.client
+            .entry
+            .handle
+            .owner_registry
+            .lock()
+            .is_ok_and(|registry| registry.current_owner() == Some(self.client.id))
+    }
+
     /// Whether `test` holds on the live viewport right now.
     pub fn shows(&self, test: &impl RowTest) -> bool {
         super::wait::live_rows(&self.client).is_some_and(|(rows, _)| test.test(&rows).1.holds())
