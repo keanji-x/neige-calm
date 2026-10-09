@@ -3,6 +3,7 @@ import { Compartment, EditorState } from '@codemirror/state';
 import { EditorView, keymap, lineNumbers } from '@codemirror/view';
 import { standardKeymap } from '@codemirror/commands';
 import { githubDark, githubLight } from '@uiw/codemirror-theme-github';
+import { CopyCodeButton } from './copy-button.tsx';
 import { useState } from '../state/public.ts';
 import { useCodeLanguage } from './use-language.ts';
 import type { ReadOnlyCodeProps } from './public.tsx';
@@ -13,8 +14,6 @@ export function ReadOnlyPane({ text, source, theme }: ReadOnlyCodeProps) {
   const viewRef = useRef<EditorView | null>(null);
   const [configuration] = useState(() => new Compartment());
   const { description, support, status } = useCodeLanguage(source, text);
-  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
-  const copyGeneration = useRef(0);
   const label = status === 'ready' ? description?.name
     : status === 'loading' ? `Loading ${description?.name}…`
       : status === 'limited' ? 'Plain text · large file'
@@ -27,7 +26,7 @@ export function ReadOnlyPane({ text, source, theme }: ReadOnlyCodeProps) {
     EditorView.theme({
       '&': { fontSize: 'inherit', backgroundColor: 'var(--surface-code)', color: 'var(--text-1)' },
       '.cm-scroller': { overflow: 'auto', maxHeight: '24rem', fontFamily: 'var(--font-code)' },
-      '.cm-gutters': { backgroundColor: 'var(--surface-code)', color: 'var(--text-3)', border: 'none' },
+      '.cm-gutters': { backgroundColor: 'var(--bg)', color: 'var(--text-3)', border: 'none' },
       '.cm-content': { padding: 'var(--space-6) 0' },
       '&.cm-focused': { outline: '2px solid var(--accent)', outlineOffset: '-2px' },
     }),
@@ -47,29 +46,26 @@ export function ReadOnlyPane({ text, source, theme }: ReadOnlyCodeProps) {
   useEffect(() => {
     const view = viewRef.current;
     if (view === null || view.state.doc.toString() === text) return;
-    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
-    view.scrollDOM.scrollTop = 0;
-    view.scrollDOM.scrollLeft = 0;
+    const top = view.scrollDOM.scrollTop;
+    const left = view.scrollDOM.scrollLeft;
+    const selection = view.state.selection.main;
+    const document = view.state.toText(text);
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: document },
+      selection: { anchor: Math.min(selection.anchor, document.length), head: Math.min(selection.head, document.length) } });
+    view.scrollDOM.scrollTop = top;
+    view.scrollDOM.scrollLeft = left;
   }, [text]);
   useEffect(() => {
-    copyGeneration.current += 1;
-    setCopyState('idle');
-    return () => { copyGeneration.current += 1; };
-  }, [text, setCopyState]);
-  const copy = async () => {
-    const generation = ++copyGeneration.current;
-    try {
-      await navigator.clipboard.writeText(text);
-      if (generation === copyGeneration.current) setCopyState('copied');
-    } catch {
-      if (generation === copyGeneration.current) setCopyState('failed');
-    }
-  };
+    const view = viewRef.current;
+    if (view === null) return;
+    view.dispatch({ selection: { anchor: 0 } });
+    view.scrollDOM.scrollTop = 0;
+    view.scrollDOM.scrollLeft = 0;
+  }, [source.kind, source.value]);
   return <div className={styles.code} data-nc-code-status={status}>
     <div className={styles.toolbar}>
       <span>{label}</span>
-      <button type="button" onClick={() => { void copy(); }}>Copy code</button>
-      <span role="status">{copyState === 'copied' ? 'Copied' : copyState === 'failed' ? 'Copy failed' : ''}</span>
+      <CopyCodeButton text={text} />
     </div>
     <div ref={parent} />
   </div>;

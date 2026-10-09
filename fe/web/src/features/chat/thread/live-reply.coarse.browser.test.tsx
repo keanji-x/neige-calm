@@ -86,7 +86,7 @@ describe('a streamed reply under a coarse pointer', () => {
       /* No typewriter: every character the poll brought is on the page in the same commit. */
       const [reply] = replies();
       expect(reply.textContent).toContain(newest);
-      expect(reply.querySelector('pre')).not.toBeNull();
+      expect(reply.querySelector('pre, [role="textbox"][aria-readonly="true"]')).not.toBeNull();
       await frames();
       expect(pane().scrollWidth).toBeLessThanOrEqual(pane().clientWidth);
     }

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
-import { useCodeLanguage } from '../../ui/code/public.tsx';
+import { useCodeLanguage, type CodeTheme } from '../../ui/code/public.tsx';
 import { githubDark, githubLight } from '@uiw/codemirror-theme-github';
 import { MergeView } from '@codemirror/merge';
 import { EditorView, keymap } from '@codemirror/view';
@@ -19,7 +19,7 @@ import {
   setSearchQuery,
 } from '@codemirror/search';
 
-export type PaneTheme = 'light' | 'dark';
+export type PaneTheme = CodeTheme;
 
 /** What the shared search bar drives; the seam that keeps the bar from knowing about CodeMirror. */
 export interface PaneSearchAdapter {

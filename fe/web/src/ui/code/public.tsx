@@ -1,4 +1,6 @@
-import { lazy, Suspense, useSyncExternalStore } from 'react';
+import { useEffect, useSyncExternalStore, type ComponentType } from 'react';
+import { useState } from '../state/public.ts';
+import { CopyCodeButton } from './copy-button.tsx';
 import type { CodeSource } from './language.ts';
 import styles from './code.module.css';
 
@@ -8,8 +10,6 @@ export { useCodeLanguage } from './use-language.ts';
 
 export type CodeTheme = 'light' | 'dark';
 export type ReadOnlyCodeProps = Readonly<{ text: string; source: CodeSource; theme?: CodeTheme }>;
-
-const LazyReadOnlyPane = lazy(() => import('./read-only-pane.tsx').then(module => ({ default: module.ReadOnlyPane })));
 
 function hostTheme(): CodeTheme {
   return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
@@ -25,9 +25,26 @@ function subscribeTheme(onChange: () => void) {
  * Source is always preserved while the display/grammar loads. */
 export function ReadOnlyCode({ text, source, theme }: ReadOnlyCodeProps) {
   const currentTheme = useSyncExternalStore(subscribeTheme, hostTheme, () => 'dark' as const);
-  return <Suspense fallback={<pre className={styles.fallback}><code>{text}</code></pre>}>
-    <LazyReadOnlyPane text={text} source={source} theme={theme ?? currentTheme} />
-  </Suspense>;
+  const [Pane, setPane] = useState<ComponentType<ReadOnlyCodeProps> | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    // A resolved effect import displays immediately; Suspense's reveal delay adds
+    // ~300 ms to a transient preview even when its editor chunk is already cached.
+    import('./read-only-pane.tsx').then(
+      module => { if (!cancelled) setPane(() => module.ReadOnlyPane); },
+      () => { if (!cancelled) setFailed(true); },
+    );
+    return () => { cancelled = true; };
+  }, [setPane, setFailed]);
+  if (Pane !== null) return <Pane text={text} source={source} theme={theme ?? currentTheme} />;
+  return <div className={styles.code}>
+    <div className={styles.toolbar}>
+      <span>{failed ? 'Plain text · code display unavailable' : 'Loading code…'}</span>
+      <CopyCodeButton text={text} />
+    </div>
+    <pre className={styles.fallback}><code>{text}</code></pre>
+  </div>;
 }
 
 /** Astryx Markdown's declared fence renderer contract. */

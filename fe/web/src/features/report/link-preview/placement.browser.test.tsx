@@ -1,4 +1,6 @@
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { EditorView } from '@codemirror/view';
+import { language } from '@codemirror/language';
 import { page } from 'vitest/browser';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -53,4 +55,41 @@ describe('report preview placement through the production renderer', () => {
     expect(card.right).toBeLessThanOrEqual(1188);
     expect(card.left >= link.right || card.right <= link.left || card.top >= link.bottom || card.bottom <= link.top).toBe(true);
   });
+});
+
+it('highlights a source hover through the file resource owner and keeps its card stable while reading', async () => {
+  await page.viewport(1200, 800);
+  const text = ('fn main() { let value = "' + 'x'.repeat(200) + '"; }\n').repeat(140);
+  const report = { summary: '', body: '[Source](./main.rs)', blocks: null };
+  render(<div style={{ position: 'absolute', left: 100, top: 220, width: 480,
+    ['--document-start' as string]: '0px', ['--document-measure' as string]: '480px' }}>
+    <ReportDocument report={report} empty={null} fileRoot="/repo" linkPreview={{ trackId: 't1', report, files: {
+      readFile: path => Promise.resolve({ path, text, size: text.length, truncated: false }), rawUrl: path => path,
+    } }} />
+  </div>);
+  await page.getByRole('button', { name: 'Source', exact: true }).hover();
+  const element = await screen.findByRole('textbox', { name: 'Code' });
+  const view = EditorView.findFromDOM(element);
+  if (view === null) throw new Error('Source view missing');
+  await waitFor(() => { expect(view.state.facet(language)?.name).toBe('rust'); });
+  const card = screen.getByRole('dialog');
+  const before = card.getBoundingClientRect();
+  const trigger = page.getByRole('button', { name: 'Source', exact: true }).element().getBoundingClientRect();
+  expect(before.left >= trigger.right || before.right <= trigger.left || before.top >= trigger.bottom || before.bottom <= trigger.top).toBe(true);
+  view.focus();
+  view.scrollDOM.scrollTop = 120;
+  view.scrollDOM.scrollLeft = 60;
+  await page.getByRole('textbox', { name: 'Code' }).hover();
+  for (let frame = 0; frame < 10; frame++) {
+    await new Promise<void>(resolve => { requestAnimationFrame(() => resolve()); });
+    const after = card.getBoundingClientRect();
+    expect(after.left).toBe(before.left);
+    expect(after.top).toBe(before.top);
+  }
+  expect(view.scrollDOM.scrollTop).toBe(120);
+  expect(view.scrollDOM.scrollLeft).toBe(60);
+  expect(element.getAttribute('contenteditable')).toBe('false');
+  await page.screenshot({ path: 'test-results/code-source-hover.png' });
+  element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await waitFor(() => { expect(screen.queryByRole('dialog')).toBeNull(); });
 });

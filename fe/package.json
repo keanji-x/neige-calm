@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev": "vite",
+    "benchmark:code": "node tools/benchmark-code.mjs",
     "build": "npm run theme:check && tsc -b && vite build",
     "typecheck": "tsc -b",
     "test": "vitest run --project platform-independent --project web-dom",
