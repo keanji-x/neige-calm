@@ -73,14 +73,27 @@ impl KernelTerminal {
         })
     }
 
-    /// Wait until `test` holds on the live viewport, re-tested on every revision.
-    pub async fn wait_until(&self, test: &impl RowTest, budget: Duration) -> ScreenWait {
-        match super::wait::wait_for_rows(&self.client, test, budget, Duration::ZERO).await {
+    /// Wait until `test` holds on the live viewport, re-tested on every revision, and the screen
+    /// has then been unchanged for `settle` (zero: as soon as it holds).
+    pub async fn wait_until(
+        &self,
+        test: &impl RowTest,
+        budget: Duration,
+        settle: Duration,
+    ) -> ScreenWait {
+        match super::wait::wait_for_rows(&self.client, test, budget, settle).await {
             None => ScreenWait::Stopped,
             Some(waited) if waited.exited => ScreenWait::Stopped,
-            Some(waited) if waited.holds => ScreenWait::Held,
+            Some(waited) if waited.holds && (settle.is_zero() || waited.settled) => {
+                ScreenWait::Held
+            }
             Some(_) => ScreenWait::TimedOut,
         }
+    }
+
+    /// Whether `test` holds on the live viewport right now.
+    pub fn shows(&self, test: &impl RowTest) -> bool {
+        super::wait::live_rows(&self.client).is_some_and(|(rows, _)| test.test(&rows).1.holds())
     }
 
     /// Claim control only if no other client holds it (decided under the owner-registry lock).

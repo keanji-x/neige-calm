@@ -1,0 +1,6 @@
+#!/bin/sh
+# Test stand-in for neige-codex-bridge with the same env contract (NEIGE_HOOK_URL): POSTs the hook
+# body on stdin to the kernel's hook route.
+curl -sS --noproxy '*' -o /dev/null -X POST -H 'content-type: application/json' \
+  -H 'X-Calm-Actor: ai:claude' --data-binary @- "$NEIGE_HOOK_URL"
+printf '{"continue":true}'

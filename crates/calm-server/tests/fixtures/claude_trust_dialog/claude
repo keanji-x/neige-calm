@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
 # A fake interactive `claude` for the #1755 trust-dialog tests: in its PTY it paints Claude Code
 # 2.1.280's workspace trust dialog, moves the `❯` cursor on Down, and logs every byte it reads.
+# Like the real CLI it paints the dialog before its input handler is live: for STARTUP seconds
+# after the first paint a key only moves the painted cursor, Enter acts on the real selection
+# ("No, exit"), and the dialog then repaints with the selection reset to No.
 # The test copies it into a private directory next to a `scenario` file:
-#   in:  scenario: `dialog` (Down moves the cursor), `stuck` (the cursor never moves), `gated`
-#        (`dialog`, painted only once a `go` file exists), `none` (no dialog: a session screen)
-#   out: painted (the dialog is on screen), received (every byte read, appended), accepted /
-#        declined (Enter on Yes / on No)
+#   in:  scenario: `dialog` (Down moves the cursor), `stuck` (the cursor never moves), `eatdown`
+#        (the first Down after startup is dropped), `gated` (`dialog`, painted only once a `go`
+#        file exists), `none` (no dialog: a session screen), `session` (runs the SessionStart hook
+#        from `--settings`, paints a session screen, then output that looks like the dialog)
+#   out: painted (the dialog is on screen), hooked (the SessionStart hook ran), received (every
+#        byte read, appended), accepted / declined (Enter on Yes / on No)
+import json
 import os
+import select
+import subprocess
 import sys
 import time
 import tty
@@ -14,21 +22,12 @@ import tty
 D = os.path.dirname(os.path.abspath(__file__))
 SCENARIO = open(os.path.join(D, "scenario")).read().strip()
 OPTIONS = ["No, exit", "Yes, I trust this folder"]
+QUESTION = "Quick safety check: Is this a project you created or one you trust?"
+STARTUP = 0.5
 
 
 def write(text):
     os.write(1, text.replace("\n", "\r\n").encode())
-
-
-def paint(cursor):
-    rows = [
-        "Quick safety check: Is this a project you created or one you trust?",
-        "",
-    ]
-    rows += [("❯ " if at == cursor else "  ") + label for at, label in enumerate(OPTIONS)]
-    rows += ["", "Enter to confirm · Esc to cancel"]
-    write("\x1b[2J\x1b[H" + "\n".join(rows) + "\n")
-    record("painted")
 
 
 def record(name, data=b""):
@@ -36,39 +35,89 @@ def record(name, data=b""):
         out.write(data)
 
 
+def paint(cursor):
+    rows = [QUESTION, ""]
+    rows += [("❯ " if at == cursor else "  ") + label for at, label in enumerate(OPTIONS)]
+    rows += ["", "Enter to confirm · Esc to cancel"]
+    write("\x1b[2J\x1b[H" + "\n".join(rows) + "\n")
+    record("painted")
+
+
+def arg(flag):
+    return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else None
+
+
+def session_start_hook():
+    settings = json.load(open(arg("--settings")))
+    command = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    body = {"hook_event_name": "SessionStart", "session_id": arg("--session-id"),
+            "source": "startup", "cwd": os.getcwd()}
+    done = subprocess.run(["/bin/sh", "-c", command], input=json.dumps(body).encode(),
+                          stdout=subprocess.DEVNULL)
+    record("hooked", str(done.returncode).encode())
+
+
+def idle():
+    while True:
+        data = os.read(0, 64)
+        if not data:
+            sys.exit(0)
+        record("received", data)
+
+
 tty.setraw(0)
 if SCENARIO == "none":
     write("\x1b[2J\x1b[Hfake claude: session started\n")
-else:
-    while SCENARIO == "gated" and not os.path.exists(os.path.join(D, "go")):
-        time.sleep(0.02)
-    cursor = 0
-    paint(cursor)
+    idle()
+if SCENARIO == "session":
+    session_start_hook()
+    write("\x1b[2J\x1b[H> fake claude: session started, working\n")
+    time.sleep(0.3)
+    write("Bash(grep -rh trust docs/)\n  " + QUESTION + "\n  ❯ No, exit\n  ❯ Yes, I trust this folder\n")
+    record("painted")
+    idle()
+while SCENARIO == "gated" and not os.path.exists(os.path.join(D, "go")):
+    time.sleep(0.02)
+cursor = 0
+painted_at = time.monotonic()
+paint(cursor)
+remounted = False
+downs = 0
 pending = b""
 while True:
+    starting = time.monotonic() - painted_at < STARTUP
+    if not starting and not remounted:
+        # The dialog settles: whatever a key did to the painted cursor is undone.
+        remounted = True
+        cursor = 0
+        paint(cursor)
+    ready = select.select([0], [], [], 0.05)[0]
+    if not ready:
+        continue
     data = os.read(0, 64)
     if not data:
         sys.exit(0)
     record("received", data)
-    if SCENARIO == "none":
-        continue
     pending += data
     while pending:
         if pending.startswith((b"\x1b[B", b"\x1bOB")):
             pending = pending[3:]
-            if SCENARIO != "stuck":
-                cursor = min(cursor + 1, len(OPTIONS) - 1)
+            if starting:
+                paint(min(cursor + 1, len(OPTIONS) - 1))
+                continue
+            downs += 1
+            if SCENARIO == "stuck" or (SCENARIO == "eatdown" and downs == 1):
+                continue
+            cursor = min(cursor + 1, len(OPTIONS) - 1)
             paint(cursor)
         elif pending.startswith(b"\r"):
-            pending = pending[1:]
-            if cursor == 1:
+            pending = b""
+            if cursor == 1 and not starting:
                 record("accepted")
                 write("\x1b[2J\x1b[Hfake claude: session started\n")
-                SCENARIO = "none"
-                pending = b""
-            else:
-                record("declined")
-                sys.exit(1)
+                idle()
+            record("declined")
+            sys.exit(1)
         elif pending.startswith(b"\x1b") and len(pending) < 3:
             break
         else:

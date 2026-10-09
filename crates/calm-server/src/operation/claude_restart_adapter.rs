@@ -17,9 +17,6 @@ use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::McpServer;
 use crate::model::new_id;
-use crate::operation::claude_adapter::trust_prompt::{
-    TrustPromptWatch, TrustTarget, watch_worker_trust_prompt,
-};
 use crate::operation::claude_adapter::{CLAUDE_PHASES, build_claude_env, worker_mcp};
 use crate::operation::workspace_lease::worker::{
     record_declared_head, verify_declared_head, verify_recorded_head,
@@ -59,8 +56,6 @@ pub struct ClaudeRestartAdapter {
     mcp_server: Option<Arc<McpServer>>,
     card_role_cache: CardRoleCache,
     track_area_cache: TrackAreaCache,
-    /// How the kernel watches a restarted task worker's screen for Claude's trust dialog (#1755).
-    trust_prompt: TrustPromptWatch,
     #[cfg(feature = "fixtures")]
     spawn_hook: Option<SpawnHook>,
 }
@@ -79,16 +74,9 @@ impl ClaudeRestartAdapter {
             mcp_server,
             card_role_cache,
             track_area_cache,
-            trust_prompt: TrustPromptWatch::default(),
             #[cfg(feature = "fixtures")]
             spawn_hook: None,
         }
-    }
-
-    /// The trust-dialog watch of a task worker's restart (`TrustPromptWatch::default()` otherwise).
-    pub fn with_trust_prompt(mut self, watch: TrustPromptWatch) -> Self {
-        self.trust_prompt = watch;
-        self
     }
 
     #[cfg(feature = "fixtures")]
@@ -106,7 +94,6 @@ impl ClaudeRestartAdapter {
             mcp_server,
             card_role_cache,
             track_area_cache,
-            trust_prompt: TrustPromptWatch::default(),
             spawn_hook: Some(spawn_hook),
         }
     }
@@ -347,20 +334,6 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             )),
             None => None,
         };
-        // Only a task worker's card is answered for (#1755); an owner's card is the human's.
-        let trust_target = match &kernel_mcp {
-            Some(_) => Some(TrustTarget {
-                card_id: card_id.clone(),
-                track_id: output
-                    .output_optional_string("track_id", "claude restart")?
-                    .ok_or_else(|| {
-                        CalmError::Internal("claude worker restart has no track".into())
-                    })?,
-                terminal_id: terminal_id.clone(),
-                worker_session_id: worker_session_id.clone(),
-            }),
-            None => None,
-        };
 
         ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
         ctx.terminal_renderer.drop_entry(&terminal_id).await;
@@ -406,17 +379,6 @@ impl ProviderAdapter for ClaudeRestartAdapter {
 
         match handle {
             Ok(handle) => {
-                if let Some(target) = trust_target {
-                    watch_worker_trust_prompt(
-                        ctx,
-                        WriteContext::new(
-                            self.card_role_cache.clone(),
-                            self.track_area_cache.clone(),
-                        ),
-                        target,
-                        &self.trust_prompt,
-                    );
-                }
                 let status_result: Result<()> = async {
                     let existing = ctx.repo.session_projection_active_for_card(&card_id).await?;
                     let needs_status_write = existing

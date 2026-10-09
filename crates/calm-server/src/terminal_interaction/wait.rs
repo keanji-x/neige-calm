@@ -251,7 +251,7 @@ fn client_stopped(client: &Client) -> bool {
 
 /// The live viewport's rows and the revision they were captured at; `None` while the
 /// projection is unavailable.
-fn live_rows(client: &Client) -> Option<(Vec<String>, u64)> {
+pub(super) fn live_rows(client: &Client) -> Option<(Vec<String>, u64)> {
     client
         .entry
         .handle

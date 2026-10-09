@@ -1,32 +1,32 @@
 //! #1755: the kernel accepts Claude's workspace trust dialog in a scheduler-spawned worker's PTY,
 //! and only there. Real PTYs through the production spawn path; the fake `claude` paints the
-//! dialog and logs every byte it reads.
+//! dialog (before its input handler is live, as the real CLI does) and logs every byte it reads.
 #![cfg(feature = "fixtures")]
 use super::*;
 use crate::operation::claude_adapter::trust_prompt::{TrustOutcome, TrustPromptWatch};
-use crate::operation::claude_restart_adapter::{
-    ClaudeRestartAdapter, ClaudeRestartOperationPayload,
-};
 use calm_proc_supervisor::test_support::InProcessProcSupervisor;
 use std::time::Duration;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 const DOWN: &[u8] = b"\x1b[B";
 
-/// A private copy of the fake `claude` with its scenario.
+/// A private copy of the fake `claude` (and its hook bridge) with its scenario.
 struct FakeClaude {
     dir: tempfile::TempDir,
 }
 impl FakeClaude {
     fn new(scenario: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let source =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude_trust_dialog/claude");
-        std::fs::copy(source, dir.path().join("claude")).unwrap();
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude_trust_dialog");
+        for file in ["claude", "bridge"] {
+            std::fs::copy(fixture.join(file), dir.path().join(file)).unwrap();
+        }
         std::fs::write(dir.path().join("scenario"), scenario).unwrap();
         Self { dir }
     }
-    fn codex(&self) -> Arc<CodexClient> {
+    /// The worker's Claude is the fake; its hooks reach `ingest_url` through the fake bridge.
+    fn codex(&self, ingest_url: &str) -> Arc<CodexClient> {
         let mut codex = CodexClient::new_stub();
         codex.claude_bin = self
             .dir
@@ -34,13 +34,18 @@ impl FakeClaude {
             .join("claude")
             .to_string_lossy()
             .into_owned();
+        codex.bridge_bin = self.dir.path().join("bridge");
+        codex.ingest_url = ingest_url.to_owned();
         Arc::new(codex)
     }
     fn has(&self, name: &str) -> bool {
         self.dir.path().join(name).exists()
     }
+    fn read(&self, name: &str) -> Vec<u8> {
+        std::fs::read(self.dir.path().join(name)).unwrap_or_default()
+    }
     fn received(&self) -> Vec<u8> {
-        std::fs::read(self.dir.path().join("received")).unwrap_or_default()
+        self.read("received")
     }
     async fn wait_for(&self, name: &str) {
         tokio::time::timeout(Duration::from_secs(15), async {
@@ -51,6 +56,45 @@ impl FakeClaude {
         .await
         .unwrap_or_else(|_| panic!("the fake claude never wrote {name}"));
     }
+}
+
+/// The production hook route (`/internal/claude/hook`) over the harness's repository, event bus
+/// and caches, served on loopback: where the worker's bridge posts its hooks.
+async fn hook_route(
+    harness: &ClaudeWorkerHarness,
+    dir: &Path,
+    roles: &CardRoleCache,
+    areas: &TrackAreaCache,
+) -> String {
+    let repo: Arc<dyn crate::db::Repo> = harness.repo.clone();
+    let write = WriteContext::new(roles.clone(), areas.clone());
+    let plugin = Arc::new(crate::plugin_host::PluginHost::new_full(
+        Arc::new(crate::plugin_host::PluginRegistry::empty()),
+        repo.clone(),
+        PathBuf::new(),
+        dir.join("plugins"),
+        vec![],
+        EventBus::new(),
+        write,
+    ));
+    let state = crate::state::AppState::from_parts(
+        repo,
+        harness.events.clone(),
+        Arc::new(DaemonClient::new_stub()),
+        plugin,
+        Arc::new(CodexClient::new_stub()),
+        Some(roles.clone()),
+        Some(areas.clone()),
+    );
+    let app = crate::routes::router()
+        .layer(axum::middleware::from_fn(crate::actor::actor_middleware))
+        .with_state(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    base_url
 }
 
 /// The production spawn context over a real proc supervisor and renderer. A renderer without a
@@ -92,7 +136,7 @@ fn watch(appear_ms: u64) -> (TrustPromptWatch, UnboundedReceiver<TrustOutcome>) 
     let (outcomes, received) = unbounded_channel();
     let watch = TrustPromptWatch {
         appear: Duration::from_millis(appear_ms),
-        step: Duration::from_secs(2),
+        step: Duration::from_secs(3),
         outcomes: Some(outcomes),
     };
     (watch, received)
@@ -112,10 +156,22 @@ struct Worker {
     card_id: String,
     terminal_id: String,
     task_id: String,
+    _hooks: tempfile::TempDir,
+    /// Keeps the adapter (and the settings directory its client owns) alive.
+    _runtime: crate::operation::OperationRuntime,
 }
-/// Submitted to the operation runtime as the scheduler submits a task's worker.
+
+/// Submitted to the operation runtime as the scheduler submits a task's worker, its hooks posted
+/// to the production hook route.
 async fn spawn_worker(fake: &FakeClaude, watch: TrustPromptWatch) -> Worker {
     let harness = claude_worker_harness().await;
+    let hooks = tempfile::tempdir().unwrap();
+    // One role and area cache for the adapter and the routes, as the kernel shares them.
+    let (roles, areas) = (CardRoleCache::new(), TrackAreaCache::new());
+    crate::db::ServerRepoReadExt::seed_track_area_cache(harness.repo.as_ref(), &areas)
+        .await
+        .unwrap();
+    let ingest_url = hook_route(&harness, hooks.path(), &roles, &areas).await;
     let pty = pty(
         &harness,
         TerminalRendererRegistry::new_with_repo(harness.repo.clone()),
@@ -134,10 +190,10 @@ async fn spawn_worker(fake: &FakeClaude, watch: TrustPromptWatch) -> Worker {
     .unwrap();
     let adapter = ClaudeWorkerAdapter::new(
         harness.repo.clone(),
-        fake.codex(),
+        fake.codex(&ingest_url),
         Some(pty.mcp_server.clone()),
-        CardRoleCache::new(),
-        TrackAreaCache::new(),
+        roles,
+        areas,
         harness.workspace.path().to_path_buf(),
     )
     .with_trust_prompt(watch);
@@ -175,6 +231,8 @@ async fn spawn_worker(fake: &FakeClaude, watch: TrustPromptWatch) -> Worker {
         task_id,
         harness,
         pty,
+        _hooks: hooks,
+        _runtime: runtime,
     }
 }
 impl Worker {
@@ -285,6 +343,19 @@ async fn worker_spawn_accepts_the_trust_dialog_with_down_then_enter() {
     worker.stop().await;
 }
 
+/// Claude dropped the first Down: one more Down, then Enter once the cursor rests on Yes.
+#[tokio::test]
+async fn worker_dialog_that_drops_the_first_down_is_accepted_after_one_retry() {
+    let fake = FakeClaude::new("eatdown");
+    let (watch, mut outcomes) = watch(15_000);
+    let worker = spawn_worker(&fake, watch).await;
+
+    assert_eq!(outcome(&mut outcomes).await, TrustOutcome::Accepted);
+    assert_eq!(fake.received(), [DOWN, DOWN, b"\r"].concat());
+    assert!(fake.has("accepted") && !fake.has("declined"));
+    worker.stop().await;
+}
+
 #[tokio::test]
 async fn worker_spawn_without_a_dialog_sends_nothing() {
     let fake = FakeClaude::new("none");
@@ -298,6 +369,27 @@ async fn worker_spawn_without_a_dialog_sends_nothing() {
         "dispatched",
         "an unrecognized screen is no failure"
     );
+    worker.stop().await;
+}
+
+/// The session started (its SessionStart hook reached the kernel through the production route);
+/// output that looks like the dialog afterwards is the worker's own, never answered.
+#[tokio::test]
+async fn worker_output_that_looks_like_the_dialog_after_session_start_gets_no_input() {
+    let fake = FakeClaude::new("session");
+    let (watch, mut outcomes) = watch(15_000);
+    let worker = spawn_worker(&fake, watch).await;
+
+    assert_eq!(outcome(&mut outcomes).await, TrustOutcome::NotShown);
+    fake.wait_for("painted").await;
+    assert_eq!(
+        fake.read("hooked"),
+        b"0",
+        "the SessionStart hook was delivered"
+    );
+    assert!(fake.has("painted"));
+    assert_eq!(fake.received(), b"", "nothing typed into the live session");
+    assert_eq!(worker.task().await.0, "dispatched", "nothing failed");
     worker.stop().await;
 }
 
@@ -329,8 +421,8 @@ async fn worker_dialog_whose_cursor_never_reaches_yes_fails_the_task() {
     };
     assert_eq!(
         fake.received(),
-        DOWN,
-        "never Enter while the cursor is on No"
+        [DOWN, DOWN].concat(),
+        "one retry, never Enter on No"
     );
     assert!(!fake.has("declined"));
     let (status, detail) = worker.task().await;
@@ -368,7 +460,7 @@ async fn owner_claude_card_spawn_gets_no_input() {
         TerminalRendererRegistry::new_with_repo(harness.repo.clone()),
     )
     .await;
-    let codex = fake.codex();
+    let codex = fake.codex("http://127.0.0.1:9");
     let request = prepare_claude_create_request(
         harness.repo.as_ref(),
         &codex,
@@ -414,84 +506,4 @@ async fn owner_claude_card_spawn_gets_no_input() {
     pty.renderer
         .drop_entry(&output.output_string("terminal_id", "test").unwrap())
         .await;
-}
-
-#[tokio::test]
-async fn worker_card_restart_accepts_the_trust_dialog() {
-    let fake = FakeClaude::new("dialog");
-    let mut harness = claude_worker_harness().await;
-    // A prepared worker card's own launch record admits only an attach, so the restarted Claude
-    // is spawned unbound to it.
-    let pty = pty(&harness, TerminalRendererRegistry::new()).await;
-    harness.adapter = ClaudeWorkerAdapter::new(
-        harness.repo.clone(),
-        fake.codex(),
-        Some(pty.mcp_server.clone()),
-        CardRoleCache::new(),
-        TrackAreaCache::new(),
-        harness.workspace.path().to_path_buf(),
-    );
-    sqlx::query(
-        "INSERT INTO tasks (id, track_id, key, kind, goal, context_json, depends_on_json, status, \
-         created_at_ms, updated_at_ms) \
-         VALUES (?1, ?2, 'again', 'claude', 'work', 'null', '[]', 'running', 1, 1)",
-    )
-    .bind(format!("{}:again", harness.track_id))
-    .bind(&harness.track_id)
-    .execute(harness.repo.pool())
-    .await
-    .unwrap();
-    let first = prepare_claude_worker_as_scheduled(&harness, "again").await;
-    let card_id = first.output_string("card_id", "test").unwrap();
-    let terminal_id = first.output_string("terminal_id", "test").unwrap();
-    crate::db::RepoOutOfDomain::terminal_set_exit(
-        harness.repo.as_ref(),
-        &terminal_id,
-        Some(0),
-        false,
-    )
-    .await
-    .unwrap();
-    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
-    crate::db::sqlite::session_complete_for_card_tx(&mut tx, &card_id, WorkerSessionState::Exited)
-        .await
-        .unwrap();
-    tx.commit().await.unwrap();
-
-    let (watch, mut outcomes) = watch(15_000);
-    let restart = ClaudeRestartAdapter::new(
-        harness.repo.clone(),
-        fake.codex(),
-        Some(pty.mcp_server.clone()),
-        CardRoleCache::new(),
-        TrackAreaCache::new(),
-    )
-    .with_trust_prompt(watch);
-    let payload = serde_json::to_value(ClaudeRestartOperationPayload {
-        actor: ActorId::User,
-        worker_session_id: None,
-        card_id: card_id.clone(),
-    })
-    .unwrap();
-    let op = claude_worker_op("op-restart", payload.clone());
-    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
-    let output = restart.prepare_tx(&mut tx, &payload, &op).await.unwrap();
-    tx.commit().await.unwrap();
-    restart
-        .spawn_side_effect(&output, &op, &pty.ctx)
-        .await
-        .expect("restart spawn");
-
-    assert_eq!(outcome(&mut outcomes).await, TrustOutcome::Accepted);
-    assert_eq!(fake.received(), [DOWN, b"\r"].concat(), "Down, then Enter");
-    assert!(fake.has("accepted"));
-    pty.renderer.drop_entry(&terminal_id).await;
-    release_workspace_lease_for_card_repo(
-        harness.repo.as_ref(),
-        &harness.events,
-        &card_id,
-        ReleaseDelivery::Commit(AttemptOutcome::Completed),
-    )
-    .await
-    .ok();
 }
