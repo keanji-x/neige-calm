@@ -5243,3 +5243,6 @@ mod terminal_approval;
 
 #[path = "cases/shared_codex_thread_release.rs"]
 mod thread_release;
+
+#[path = "cases/shared_codex_thread_path.rs"]
+mod thread_path;

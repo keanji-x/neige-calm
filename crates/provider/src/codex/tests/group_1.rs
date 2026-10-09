@@ -67,6 +67,23 @@ fn thread_read_parses_an_unmodelled_turn_status_as_unknown() {
     );
 }
 
+/// #2494: a metadata-only read (codex 0.159.2, before the first turn) names the rollout path;
+/// an ephemeral thread answers `null`.
+#[test]
+fn thread_read_parses_the_thread_path_or_null() {
+    let path = "/codex-home/sessions/2026/10/09/rollout-2026-10-09T22-01-24-t.jsonl";
+    let named: ThreadReadResponse = serde_json::from_value(json!({
+        "thread": { "status": { "type": "idle" }, "turns": [], "path": path, "ephemeral": false }
+    }))
+    .unwrap();
+    assert_eq!(named.thread.path.as_deref(), Some(path));
+    let ephemeral: ThreadReadResponse = serde_json::from_value(json!({
+        "thread": { "status": { "type": "idle" }, "turns": [], "path": null, "ephemeral": true }
+    }))
+    .unwrap();
+    assert_eq!(ephemeral.thread.path, None);
+}
+
 #[test]
 fn thread_read_requires_the_turn_status_field() {
     let absent = serde_json::from_value::<ThreadReadResponse>(json!({

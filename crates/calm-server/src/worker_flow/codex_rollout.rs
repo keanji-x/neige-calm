@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,6 +12,7 @@ use calm_types::worker_flow::RawRef;
 use tokio_util::sync::CancellationToken;
 
 use crate::db::Repo;
+use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::worker_flow::codex_normalizer::{
     RolloutLine, is_turn_context, normalize_rollout_line, rollout_line_source_uuid,
     rollout_record_type, session_meta_id,
@@ -45,7 +45,7 @@ impl Default for CodexRolloutFlowSourceOptions {
 pub struct CodexRolloutFlowSource {
     repo: Arc<dyn Repo>,
     runtime: WorkerSessionProjection,
-    codex_home: PathBuf,
+    shared_codex_appserver: Arc<SharedCodexAppServer>,
     stop: CancellationToken,
     options: CodexRolloutFlowSourceOptions,
 }
@@ -54,13 +54,13 @@ impl CodexRolloutFlowSource {
     pub fn new(
         repo: Arc<dyn Repo>,
         runtime: WorkerSessionProjection,
-        codex_home: PathBuf,
+        shared_codex_appserver: Arc<SharedCodexAppServer>,
         stop: CancellationToken,
     ) -> Self {
         Self::new_with_options(
             repo,
             runtime,
-            codex_home,
+            shared_codex_appserver,
             stop,
             CodexRolloutFlowSourceOptions::default(),
         )
@@ -69,14 +69,14 @@ impl CodexRolloutFlowSource {
     pub fn new_with_options(
         repo: Arc<dyn Repo>,
         runtime: WorkerSessionProjection,
-        codex_home: PathBuf,
+        shared_codex_appserver: Arc<SharedCodexAppServer>,
         stop: CancellationToken,
         options: CodexRolloutFlowSourceOptions,
     ) -> Self {
         Self {
             repo,
             runtime,
-            codex_home,
+            shared_codex_appserver,
             stop,
             options,
         }
@@ -95,31 +95,57 @@ impl CodexRolloutFlowSource {
             return Ok(None);
         };
 
+        // The rollout file is the one Codex names in `Thread.path` (`thread/read`; upstream marks it
+        // `[UNSTABLE]`): known from `thread/start` on, before the first turn creates the file, and
+        // after a daemon restart.
         let warn_after = self.options.lazy_retry_attempts;
         let mut warned = false;
         let mut attempt = 0_usize;
+        let mut reported: Option<PathBuf> = None;
+        let mut read_error: Option<String> = None;
         loop {
             if self.stop.is_cancelled() {
                 return Ok(None);
             }
-            match find_thread_path_by_id_str(&self.codex_home, thread_id).await {
-                Ok(Some(path)) => return Ok(Some(path)),
-                Ok(None) => {}
-                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-                Err(err) => return Err(CoreError::Io(err)),
+            if reported.is_none() {
+                // Settlement joins this task under the driver's task lock: never wait out an RPC.
+                let read = tokio::select! {
+                    _ = self.stop.cancelled() => return Ok(None),
+                    read = self.shared_codex_appserver.thread_path(thread_id) => read,
+                };
+                match read {
+                    Ok(Some(path)) => reported = Some(path),
+                    Ok(None) => {
+                        tracing::warn!(
+                            card_id = %self.runtime.card_id,
+                            runtime_id = %self.runtime.id,
+                            thread_id,
+                            "codex app-server reported no rollout path (Thread.path is null); not capturing"
+                        );
+                        return Ok(None);
+                    }
+                    Err(err) => read_error = Some(err.to_string()),
+                }
+            }
+            if let Some(path) = &reported
+                && rollout_exists(path).await?
+            {
+                return Ok(Some(path.clone()));
             }
 
             if !self.runtime_is_alive().await {
-                if let Ok(Some(path)) =
-                    find_thread_path_by_id_str(&self.codex_home, thread_id).await
+                if let Some(path) = &reported
+                    && rollout_exists(path).await?
                 {
-                    return Ok(Some(path));
+                    return Ok(Some(path.clone()));
                 }
+                // `source_path: None` means thread/read never answered; `error` says why.
                 tracing::info!(
                     card_id = %self.runtime.card_id,
-                    runtime_id = %self.runtime.id,
                     thread_id,
-                    "codex runtime reached terminal status without creating a rollout file; exiting source"
+                    source_path = ?reported,
+                    error = ?read_error,
+                    "codex runtime reached terminal status with no rollout file to read; exiting source"
                 );
                 return Ok(None);
             }
@@ -130,7 +156,9 @@ impl CodexRolloutFlowSource {
                     card_id = %self.runtime.card_id,
                     runtime_id = %self.runtime.id,
                     thread_id,
-                    "codex rollout file not found after lazy-create retry budget; continuing to poll while runtime is alive"
+                    source_path = ?reported,
+                    error = ?read_error,
+                    "codex rollout not readable after lazy-create retry budget; polling while runtime is alive"
                 );
             }
             let delay = if attempt < warn_after {
@@ -568,64 +596,6 @@ fn split_complete_lines(bytes: Vec<u8>) -> io::Result<RolloutRead> {
     })
 }
 
-async fn find_thread_path_by_id_str(
-    codex_home: &Path,
-    thread_id: &str,
-) -> io::Result<Option<PathBuf>> {
-    let root = codex_home.join("sessions");
-    let thread_id = thread_id.to_string();
-    tokio::task::spawn_blocking(move || find_thread_path_blocking(&root, &thread_id))
-        .await
-        .map_err(io::Error::other)?
-}
-
-fn find_thread_path_blocking(root: &Path, thread_id: &str) -> io::Result<Option<PathBuf>> {
-    if !root.exists() {
-        return Ok(None);
-    }
-    let mut queue = VecDeque::from([root.to_path_buf()]);
-    while let Some(dir) = queue.pop_front() {
-        for entry in std::fs::read_dir(&dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            let ty = entry.file_type()?;
-            if ty.is_dir() {
-                queue.push_back(path);
-                continue;
-            }
-            if !ty.is_file() {
-                continue;
-            }
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            let plain_name = name
-                .strip_suffix(".zst")
-                .unwrap_or(name)
-                .strip_suffix(".jsonl")
-                .unwrap_or(name);
-            if plain_name.starts_with("rollout-") && plain_name.ends_with(thread_id) {
-                return Ok(Some(path));
-            }
-        }
-    }
-    Ok(None)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn finds_rollout_file_by_thread_id() {
-        let dir = tempfile::tempdir().unwrap();
-        let sessions = dir.path().join("sessions/2026/06/13");
-        std::fs::create_dir_all(&sessions).unwrap();
-        let path = sessions.join("rollout-2026-06-13T00-00-00-abc-123.jsonl");
-        std::fs::write(&path, "{}\n").unwrap();
-        let found = find_thread_path_blocking(&dir.path().join("sessions"), "abc-123")
-            .unwrap()
-            .unwrap();
-        assert_eq!(found, path);
-    }
+async fn rollout_exists(path: &Path) -> Result<bool, CoreError> {
+    tokio::fs::try_exists(path).await.map_err(CoreError::Io)
 }

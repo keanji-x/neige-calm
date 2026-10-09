@@ -415,7 +415,7 @@ impl WorkerFlowDriver {
                 let source = CodexRolloutFlowSource::new_with_options(
                     self.repo.clone(),
                     runtime.clone(),
-                    self.shared_codex_appserver.codex_home_path().to_path_buf(),
+                    self.shared_codex_appserver.clone(),
                     stop.clone(),
                     self.flow_options.clone(),
                 );

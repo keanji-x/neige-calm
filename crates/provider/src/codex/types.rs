@@ -146,7 +146,7 @@ pub struct TurnSteerResult {
     pub turn_id: String,
 }
 
-// `thread/read` + `thread/loaded/list` responses: narrowed mirrors of upstream `app-server-protocol` v2, defining only the fields the death arbiter reads.
+// `thread/read` + `thread/loaded/list` responses: narrowed mirrors of upstream `app-server-protocol` v2, defining only the fields the death arbiter and the rollout capture read.
 
 /// Upstream `ThreadStatus`: internally tagged on `type`, camelCase variants. The arbiter keys on `Active`; the other arms mean "no turn running".
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -169,7 +169,7 @@ pub enum ThreadActiveFlag {
     WaitingOnUserInput,
 }
 
-/// `thread/read` response, narrowed to the fields the arbiter needs.
+/// `thread/read` response, narrowed to the fields the arbiter and the rollout capture need.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ThreadReadResponse {
     pub thread: ThreadView,
@@ -182,6 +182,10 @@ pub struct ThreadView {
     pub status: ThreadStatus,
     #[serde(default)]
     pub turns: Option<Vec<TurnView>>,
+    /// Upstream `path: string | null`, marked `[UNSTABLE]` there: the thread's rollout file on
+    /// disk, known before the file exists. `null` for a thread with no rollout (an ephemeral one).
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 /// Narrowed mirror of upstream `Turn`: `completedAt` (`null` = died mid-turn) and the turn's

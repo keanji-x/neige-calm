@@ -574,6 +574,9 @@ pub struct FakeSharedCodexAppServer {
     mcp_server_reload_attempts: AtomicU64,
     /// How the next `config/mcpServer/reload` calls are answered; sent unless a test says otherwise.
     mcp_server_reload_answer: std::sync::Mutex<FakeMcpServerReload>,
+    /// `thread/read`'s `thread.path` per thread; an unlisted thread is answered the way codex
+    /// answers a thread it does not have loaded.
+    thread_paths: std::sync::Mutex<std::collections::HashMap<String, Option<PathBuf>>>,
 }
 
 /// A scripted [`SharedCodexAppServer::mcp_server_reload`] outcome.
@@ -625,6 +628,7 @@ impl FakeSharedCodexAppServer {
             mcp_server_reloads: AtomicU64::new(0),
             mcp_server_reload_attempts: AtomicU64::new(0),
             mcp_server_reload_answer: std::sync::Mutex::new(FakeMcpServerReload::Sent),
+            thread_paths: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 }
@@ -1248,6 +1252,28 @@ impl SharedCodexAppServer {
         }
         let client = self.connected_client().await?;
         Ok(client.config_read(cwd, deadline).await?.config)
+    }
+
+    /// `thread/read` (metadata only) for the thread's rollout file. Upstream marks `Thread.path`
+    /// `[UNSTABLE]`; `Ok(None)` is its `null`. Connection-only: it never spawns or heals the daemon.
+    pub async fn thread_path(&self, thread_id: &str) -> Result<Option<PathBuf>> {
+        #[cfg(feature = "fixtures")]
+        if let Some(fake) = self.fake.as_ref() {
+            return fake
+                .thread_paths
+                .lock()
+                .expect("fake shared codex thread paths mutex poisoned")
+                .get(thread_id)
+                .cloned()
+                .ok_or_else(|| {
+                    CalmError::CodexRefused(format!(
+                        "thread/read failed: thread not loaded: {thread_id} (code -32600)"
+                    ))
+                });
+        }
+        let client = self.connected_client().await?;
+        let read = client.thread_read(thread_id, false).await?;
+        Ok(read.thread.path.map(PathBuf::from))
     }
 
     /// Drop this daemon's `thread_id -> card_id` attribution for Cards whose delete has already
@@ -3488,6 +3514,18 @@ impl SharedCodexAppServer {
     #[cfg(feature = "fixtures")]
     pub fn clear_active_turn_for_test(&self, thread_id: &str) {
         self.active_turns.remove(thread_id);
+    }
+
+    /// Script `thread/read`'s `thread.path` for `thread_id`; `None` is codex's `null`.
+    #[cfg(feature = "fixtures")]
+    pub fn answer_thread_path_for_test(&self, thread_id: &str, path: Option<&Path>) {
+        self.fake
+            .as_ref()
+            .expect("fake daemon")
+            .thread_paths
+            .lock()
+            .expect("fake shared codex thread paths mutex poisoned")
+            .insert(thread_id.to_string(), path.map(Path::to_path_buf));
     }
 
     #[cfg(feature = "fixtures")]

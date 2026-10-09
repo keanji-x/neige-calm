@@ -19,8 +19,6 @@ async fn worker_flow_driver_attaches_codex_runtime_on_card_added() {
     tokio::time::sleep(Duration::from_millis(20)).await;
 
     let thread_id = "thread-card-added";
-    let path = wf::rollout_path(state.shared_codex_appserver.codex_home_path(), thread_id);
-    wf::write_rollout(&path, &[wf::session_meta(thread_id)]);
     let seed = wf::seed_card_and_runtime(&repo, "card-added-attach", Some(thread_id)).await;
 
     events.emit(ActorId::Kernel, Event::CardAdded(seed.card.clone()));
@@ -47,8 +45,6 @@ async fn worker_flow_driver_card_added_race_attaches_on_later_status() {
     tokio::time::sleep(Duration::from_millis(80)).await;
     assert_eq!(state.worker_flow.tasks_alive_for_test().await, 0);
 
-    let path = wf::rollout_path(state.shared_codex_appserver.codex_home_path(), thread_id);
-    wf::write_rollout(&path, &[wf::session_meta(thread_id)]);
     let runtime = wf::seed_runtime_for_card_with_status(
         &repo,
         &card,

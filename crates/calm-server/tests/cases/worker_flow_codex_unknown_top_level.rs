@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use calm_exec::flow::WorkerFlowSource;
 use calm_server::db::RepoRead;
 use calm_server::db::sqlite::SqlxRepo;
+use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::worker_flow::codex_normalizer::{RolloutItem, RolloutLine};
 use calm_server::worker_flow::codex_rollout::{
     CodexRolloutFlowSource, CodexRolloutFlowSourceOptions,
@@ -119,7 +120,7 @@ async fn codex_unknown_top_level_production_tail_and_recovery() {
     let source = CodexRolloutFlowSource::new_with_options(
         repo.clone(),
         seed.runtime.clone(),
-        dir.path().to_path_buf(),
+        SharedCodexAppServer::new_stub(repo.clone()),
         CancellationToken::new(),
         CodexRolloutFlowSourceOptions {
             path_override: Some(path.clone()),

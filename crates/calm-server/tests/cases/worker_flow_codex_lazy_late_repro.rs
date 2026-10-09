@@ -6,6 +6,7 @@ use std::time::Duration;
 use calm_exec::flow::WorkerFlowSource;
 use calm_server::db::RepoRead;
 use calm_server::db::sqlite::SqlxRepo;
+use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::worker_flow::codex_rollout::{
     CodexRolloutFlowSource, CodexRolloutFlowSourceOptions,
 };
@@ -22,8 +23,10 @@ async fn codex_rollout_source_ingests_file_created_after_budget_while_alive() {
     let card_id = "card-late";
     // Runtime stays Running (alive) for the whole test — never goes terminal.
     let seed = wf::seed_card_and_runtime(&repo, card_id, Some(thread_id)).await;
-    let codex_home = tempfile::tempdir().unwrap();
-    let path = wf::rollout_path(codex_home.path(), thread_id);
+    let dir = tempfile::tempdir().unwrap();
+    let path = wf::rollout_path(dir.path(), thread_id);
+    let shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    shared.answer_thread_path_for_test(thread_id, Some(&path));
 
     // Tiny budget: 3 attempts * 30ms ~= 90ms. The file will not exist during
     // that window; it is created well after the budget would have elapsed.
@@ -31,7 +34,7 @@ async fn codex_rollout_source_ingests_file_created_after_budget_while_alive() {
     let source = CodexRolloutFlowSource::new_with_options(
         repo.clone(),
         seed.runtime.clone(),
-        codex_home.path().to_path_buf(),
+        shared,
         token.clone(),
         CodexRolloutFlowSourceOptions {
             path_override: None,
