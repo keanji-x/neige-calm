@@ -281,7 +281,7 @@ async fn a_card_that_is_not_the_task_worker_does_not_wake() {
 }
 
 #[tokio::test]
-async fn a_worker_without_a_live_printing_pty_does_not_wake() {
+async fn a_worker_without_a_live_readable_printing_pty_does_not_wake() {
     let h = Harness::start().await;
     let (control, _control) = quiet_worker(&h, "claude").await;
     // No renderer entry.
@@ -297,6 +297,14 @@ async fn a_worker_without_a_live_printing_pty_does_not_wake() {
         render_rev: 0,
         exited_at: std::time::SystemTime::now(),
     });
+    // An entry whose screen can no longer be read (an attach-only reattach invalidates its view).
+    let (_, unreadable) = quiet_worker(&h, "claude").await;
+    unreadable
+        .handle
+        .model_view
+        .lock()
+        .unwrap()
+        .invalidate("attach-only reattach");
     // A worker session that has ended.
     let (ended, _ended) = quiet_worker(&h, "claude").await;
     h.sql

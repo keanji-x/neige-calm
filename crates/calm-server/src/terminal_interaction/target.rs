@@ -269,13 +269,7 @@ impl TerminalInteraction {
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
         let mut result = serde_json::to_value(&resolved.binding)?;
         let entry = self.renderer.get(&resolved.binding.terminal_id);
-        let available = entry.as_ref().is_some_and(|entry| {
-            entry
-                .handle
-                .model_view
-                .lock()
-                .is_ok_and(|view| view.capture(0).is_ok())
-        });
+        let available = entry.as_ref().is_some_and(|entry| entry.observable());
         result["available"] = json!(available);
         result["controllable"] = json!(available && resolved.controllable);
         result["card_kind"] = json!(resolved.card_kind);

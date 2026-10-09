@@ -202,6 +202,15 @@ impl RendererEntry {
         &self.config
     }
 
+    /// Whether this entry's screen can be read: its model view still captures. A view invalidated
+    /// (an attach-only reattach, an exhausted sequence) stays unreadable for the entry's lifetime.
+    pub fn observable(&self) -> bool {
+        self.handle
+            .model_view
+            .lock()
+            .is_ok_and(|view| view.capture(0).is_ok())
+    }
+
     pub fn take_initial_event_rx(&self) -> Option<broadcast::Receiver<DaemonMsg>> {
         self.initial_event_rx
             .lock()

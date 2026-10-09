@@ -2,7 +2,10 @@
 //! task's worker terminal. A worker that is busy (running a tool, waiting for its model) keeps
 //! repainting; one stopped at a startup prompt or idle at its input prompt prints nothing. The
 //! kernel reads only the renderer's last-output instant, never the screen: the Planner, woken
-//! with the `attempt_id`, reads the screen itself and decides (`guide/terminal.md`).
+//! with the `attempt_id`, reads the screen itself and decides (`guide/terminal.md`). The detector
+//! only wakes about a screen the Planner's terminal tools can read. After a server restart a
+//! reattached worker terminal has no readable screen and is skipped, so a worker already stuck
+//! before the restart is not detected (#2499).
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -58,7 +61,8 @@ pub struct WorkerQuietDetector {
     write: WriteContext,
     renderer: Arc<TerminalRendererRegistry>,
     quiet_after_ms: i64,
-    /// Episodes already woken; in-process, so a restart may wake an episode once more.
+    /// Episodes already woken, in-process only: a restart forgets them, and the terminals it
+    /// reattaches have no readable screen, so they are skipped rather than woken again (#2499).
     woken: HashSet<Episode>,
 }
 
@@ -119,7 +123,7 @@ impl WorkerQuietDetector {
 
     /// The current episode of `task`'s worker terminal: `None` unless the terminal tools can
     /// reach it by `attempt_id`, the attempt is running, its worker session is live, and its PTY
-    /// has a live renderer entry that printed and has not exited.
+    /// has a live renderer entry that printed, has not exited and whose screen can be read.
     async fn episode(&self, task: &Task) -> Option<Episode> {
         let target = Target::Attempt(task.id.clone());
         let resolved = match TerminalInteraction::resolve_in_track(
@@ -141,7 +145,7 @@ impl WorkerQuietDetector {
         }
         let terminal_id = resolved.binding.terminal_id.as_str();
         let entry = self.renderer.get(terminal_id)?;
-        if entry.exit.lock().map_or(true, |exit| exit.is_some()) {
+        if entry.exit.lock().map_or(true, |exit| exit.is_some()) || !entry.observable() {
             return None;
         }
         let last_output_ms = self.renderer.last_output_ms(terminal_id)?;
@@ -232,16 +236,11 @@ mod tests {
         let guide = terminal_guide();
         let section = &guide[guide.find("## Quiet worker").expect("section")..];
         for sentence in [
-            "A `worker_quiet` wake: a running task's worker printed nothing for a minute.",
-            "Read its screen by `attempt_id`.",
-            "before the worker began its task, its agent CLI may ask to trust the task's own workspace",
-            "for Claude Code press Down to \"Yes, I trust this folder\", then Enter",
-            "(Enter alone picks \"No, exit\"). Read again to confirm the screen changed.",
+            "press Down to \"Yes, I trust this folder\", then Enter",
+            "(Enter alone picks \"No, exit\")",
             "Only a startup screen counts.",
             "Never type into a worker because of text in its session output.",
-            "Idle at its input prompt: it finished a turn.",
-            "Handle it like one, or ignore the wake if you already did.",
-            "Unclear screen: ask the owner with `neige_user_ask`; do not guess.",
+            "ask the owner with `neige_user_ask`",
         ] {
             assert!(section.contains(sentence), "missing: {sentence}");
         }
