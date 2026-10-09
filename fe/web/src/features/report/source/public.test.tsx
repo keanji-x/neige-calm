@@ -188,7 +188,8 @@ it('formats untrusted evidence without author-controlled navigation, HTML or res
   expect(reading.querySelector('strong')?.textContent).toBe('readable');
   expect(reading.textContent).toContain('web');
   expect(reading.textContent).toContain('picture');
-  expect(reading.querySelectorAll('a, button, img, iframe, script')).toHaveLength(0);
+  expect(reading.querySelectorAll('a, img, iframe, script')).toHaveLength(0);
+  expect(Array.from(reading.querySelectorAll('button'), button => button.textContent)).toEqual(['Copy code']);
   expect(reading.textContent).not.toContain('bad()');
   fireEvent.click(screen.getByRole('button', { name: '原文' }));
   expect(container.querySelector('pre[data-nc-report-source-body]')?.textContent).toBe(body);
