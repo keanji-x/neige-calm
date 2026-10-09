@@ -22,7 +22,7 @@ pub(super) trait RuntimeAliveProbe: Send {
 
 /// Where the transcript comes from: a fixed path, or the `transcript_path` Claude reports in
 /// its documented hook input for this session (persisted `claude.hook` events, so it survives
-/// a server restart and a `--resume`).
+/// a server restart and a `--resume`). Only a regular file resolves.
 pub(super) enum TranscriptLookup {
     Fixed(PathBuf),
     Hook(HookTranscriptPath),
@@ -39,8 +39,15 @@ pub(super) struct HookTranscriptPath {
 
 enum Probe {
     Missing,
+    NotRegularFile(PathBuf),
     Found(PathBuf),
     Conflict,
+}
+
+impl Probe {
+    fn is_waiting(&self) -> bool {
+        matches!(self, Self::Missing | Self::NotRegularFile(_))
+    }
 }
 
 impl TranscriptLookup {
@@ -74,7 +81,8 @@ impl TranscriptLookup {
             }
         };
         match tokio::fs::metadata(path).await {
-            Ok(_) => Ok(Probe::Found(path.clone())),
+            Ok(metadata) if metadata.is_file() => Ok(Probe::Found(path.clone())),
+            Ok(_) => Ok(Probe::NotRegularFile(path.clone())),
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Probe::Missing),
             Err(err) => Err(CoreError::Io(err)),
         }
@@ -94,6 +102,8 @@ impl TranscriptLookup {
 
 impl HookTranscriptPath {
     /// Folds hook events past the cursor; returns false when two report different paths.
+    /// This conflict policy covers the hooks seen before the path resolves: once tailing
+    /// starts, later hooks are not consulted.
     async fn read_new_hooks(&mut self) -> Result<bool, CoreError> {
         let rows = self
             .repo
@@ -149,6 +159,7 @@ pub(super) async fn wait_for_transcript_path(
 ) -> Result<Option<PathBuf>, CoreError> {
     let warn_after = options.lazy_retry_attempts;
     let mut warned = false;
+    let mut warned_not_regular_file = false;
     let mut attempt = 0_usize;
     loop {
         if stop.is_cancelled() {
@@ -157,9 +168,9 @@ pub(super) async fn wait_for_transcript_path(
         let mut probe = lookup.probe().await?;
         // Runtime shutdown can be what closes Claude's writer and flushes the transcript
         // path, so terminal liveness gets one final probe before the source exits.
-        if matches!(probe, Probe::Missing) && !runtime_alive.is_alive().await {
+        if probe.is_waiting() && !runtime_alive.is_alive().await {
             probe = lookup.probe().await?;
-            if matches!(probe, Probe::Missing) {
+            if probe.is_waiting() {
                 tracing::info!(
                     card_id = %runtime.card_id,
                     runtime_id = %runtime.id,
@@ -172,6 +183,16 @@ pub(super) async fn wait_for_transcript_path(
         match probe {
             Probe::Found(path) => return Ok(Some(path)),
             Probe::Conflict => return Ok(None),
+            Probe::NotRegularFile(path) => {
+                if !warned_not_regular_file {
+                    warned_not_regular_file = true;
+                    tracing::warn!(
+                        card_id = %runtime.card_id,
+                        source_path = %path.display(),
+                        "claude transcript path is not a regular file; not tailing it"
+                    );
+                }
+            }
             Probe::Missing => {}
         }
         if !warned && attempt >= warn_after {

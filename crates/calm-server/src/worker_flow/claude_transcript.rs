@@ -288,7 +288,7 @@ impl ClaudeTranscriptFlowSource {
 
                 if !cwd_checked && let Some(inband_cwd) = record_cwd(&parsed) {
                     cwd_checked = true;
-                    if inband_cwd != self.card_cwd {
+                    if Path::new(inband_cwd) != Path::new(&self.card_cwd) {
                         tracing::warn!(
                             card_id = %self.runtime.card_id,
                             runtime_id = %self.runtime.id,

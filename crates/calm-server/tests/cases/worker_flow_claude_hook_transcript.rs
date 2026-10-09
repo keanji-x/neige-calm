@@ -46,7 +46,8 @@ async fn claude_transcript_source_waits_for_session_hook_before_ingesting() {
     let session_id = "session-claude-hook-later";
     let seed = wf::seed_claude_card_and_runtime(&repo, card_id, session_id, DOTTED_CWD).await;
     let root = tempfile::tempdir().unwrap();
-    let path = transcript_file(root.path(), CLI_PROJECT_DIR, session_id, "hook later");
+    // No layout rule: any absolute path Claude reports is used as-is.
+    let path = write_transcript_at(root.path().join("anywhere").join("t.jsonl"), "hook later");
 
     let (token, handle) = hooks::spawn_claude_source(repo.clone(), seed.runtime.clone(), &seed);
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -128,8 +129,120 @@ async fn claude_transcript_source_exits_without_ingesting_on_conflicting_hook_pa
     assert_eq!(item_count(&repo, card_id).await, 0);
 }
 
+#[tokio::test]
+async fn claude_transcript_source_uses_main_path_from_subagent_stop_hook() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let card_id = "card-claude-subagent-stop";
+    let session_id = "session-claude-subagent-stop";
+    let seed = wf::seed_claude_card_and_runtime(&repo, card_id, session_id, DOTTED_CWD).await;
+    let root = tempfile::tempdir().unwrap();
+    let main = transcript_file(root.path(), CLI_PROJECT_DIR, session_id, "main");
+    let agent = write_transcript_at(
+        root.path()
+            .join(CLI_PROJECT_DIR)
+            .join(session_id)
+            .join("subagents")
+            .join("agent-x.jsonl"),
+        "agent",
+    );
+    hooks::post_claude_hook(
+        &repo,
+        card_id,
+        hooks::session_start(session_id, DOTTED_CWD, &main),
+    )
+    .await;
+    hooks::post_claude_hook(
+        &repo,
+        card_id,
+        json!({
+            "hook_event_name": "SubagentStop",
+            "session_id": session_id,
+            "cwd": DOTTED_CWD,
+            "transcript_path": main,
+            "agent_id": "agent-x",
+            "agent_transcript_path": agent,
+            "stop_hook_active": false
+        }),
+    )
+    .await;
+
+    let (token, handle) = hooks::spawn_claude_source(repo.clone(), seed.runtime.clone(), &seed);
+    wait_for_user_text(&repo, card_id, "main").await;
+    token.cancel();
+    handle.await.unwrap().unwrap();
+
+    assert_eq!(user_texts(&repo, card_id).await, vec!["main"]);
+}
+
+#[tokio::test]
+async fn claude_transcript_source_skips_relative_transcript_path() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let card_id = "card-claude-relative-path";
+    let session_id = "session-claude-relative-path";
+    let seed = wf::seed_claude_card_and_runtime(&repo, card_id, session_id, DOTTED_CWD).await;
+    let root = tempfile::tempdir().unwrap();
+    let path = transcript_file(root.path(), CLI_PROJECT_DIR, session_id, "absolute");
+    hooks::post_claude_hook(
+        &repo,
+        card_id,
+        hooks::session_start(session_id, DOTTED_CWD, Path::new("relative/t.jsonl")),
+    )
+    .await;
+
+    let (token, handle) = hooks::spawn_claude_source(repo.clone(), seed.runtime.clone(), &seed);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!handle.is_finished(), "a relative path must not resolve");
+    assert_eq!(item_count(&repo, card_id).await, 0);
+
+    // Were the relative path kept, this absolute one would be a conflict and end the source.
+    hooks::post_claude_hook(
+        &repo,
+        card_id,
+        hooks::session_start(session_id, DOTTED_CWD, &path),
+    )
+    .await;
+    wait_for_user_text(&repo, card_id, "absolute").await;
+    token.cancel();
+    handle.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn claude_transcript_source_does_not_tail_a_non_regular_transcript_path() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let card_id = "card-claude-directory-path";
+    let session_id = "session-claude-directory-path";
+    let seed = wf::seed_claude_card_and_runtime(&repo, card_id, session_id, DOTTED_CWD).await;
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join(CLI_PROJECT_DIR);
+    std::fs::create_dir_all(&directory).unwrap();
+    hooks::post_claude_hook(
+        &repo,
+        card_id,
+        hooks::session_start(session_id, DOTTED_CWD, &directory),
+    )
+    .await;
+
+    let (token, handle) = hooks::spawn_claude_source(repo.clone(), seed.runtime.clone(), &seed);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !handle.is_finished(),
+        "a non-regular path must keep the source waiting"
+    );
+    token.cancel();
+    tokio::time::timeout(wf::LIVENESS_BUDGET, handle)
+        .await
+        .expect("cancelled source must end")
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(item_count(&repo, card_id).await, 0);
+}
+
 fn transcript_file(root: &Path, dir: &str, session_id: &str, text: &str) -> PathBuf {
-    let path = root.join(dir).join(format!("{session_id}.jsonl"));
+    write_transcript_at(root.join(dir).join(format!("{session_id}.jsonl")), text)
+}
+
+fn write_transcript_at(path: PathBuf, text: &str) -> PathBuf {
     wf::write_transcript(
         &path,
         &[
