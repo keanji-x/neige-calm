@@ -27,5 +27,3 @@ mod suite_registry;
 mod worker_flow_claude_suite;
 #[path = "worker_flow_codex_suite.rs"]
 mod worker_flow_codex_suite;
-#[path = "worker_flow_driver_suite.rs"]
-mod worker_flow_driver_suite;

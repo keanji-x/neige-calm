@@ -401,6 +401,10 @@ name = "api_suite"
 path = "tests/api_suite.rs"
 
 [[test]]
+name = "worker_flow_driver_suite"
+path = "tests/worker_flow_driver_suite.rs"
+
+[[test]]
 name = "runtime_suite"
 path = "tests/runtime_suite.rs"
 

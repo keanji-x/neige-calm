@@ -15,3 +15,7 @@ mod worker_flow_driver_drop;
 mod worker_flow_driver_restart;
 #[path = "cases/worker_flow_ws_keying.rs"]
 mod worker_flow_ws_keying;
+
+#[cfg(feature = "fixtures")]
+#[path = "cases/worker_flow_driver_session_identity.rs"]
+mod worker_flow_driver_session_identity;
