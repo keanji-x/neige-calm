@@ -66,6 +66,12 @@ impl RowTest for TextConditions {
 /// Planner wait). The match names the first pattern; an empty list never holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AllPresent(pub Vec<String>);
+impl AllPresent {
+    /// Whether every pattern is on some row of `rows`.
+    pub fn holds(&self, rows: &[String]) -> bool {
+        RowTest::test(self, rows).1.holds()
+    }
+}
 impl RowTest for AllPresent {
     fn test(&self, rows: &[String]) -> (Option<(String, usize)>, ConditionState) {
         let all = !self.0.is_empty()

@@ -22,7 +22,8 @@ mod client;
 mod input_control;
 mod kernel;
 pub use kernel::{
-    AllPresent, InputOutcome, KernelClaim, KernelTerminal, ScreenWait, TextConditions,
+    AllPresent, InputOutcome, KernelClaim, KernelTerminal, ScreenWait, SettledScreen,
+    TextConditions,
 };
 mod observation;
 mod operations;

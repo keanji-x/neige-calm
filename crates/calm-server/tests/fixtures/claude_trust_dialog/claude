@@ -8,7 +8,8 @@
 #   in:  scenario: `dialog` (Down moves the cursor), `stuck` (the cursor never moves), `eatdown`
 #        (the first Down after startup is dropped), `gated` (`dialog`, painted only once a `go`
 #        file exists), `none` (no dialog: a session screen), `session` (runs the SessionStart hook
-#        from `--settings`, paints a session screen, then output that looks like the dialog)
+#        from `--settings`, paints a session screen that settles, then output that looks like the
+#        dialog, both cursor rows included), `hookloss` (`session` with no hook delivered)
 #   out: painted (the dialog is on screen), hooked (the SessionStart hook ran), received (every
 #        byte read, appended), accepted / declined (Enter on Yes / on No)
 import json
@@ -24,6 +25,8 @@ SCENARIO = open(os.path.join(D, "scenario")).read().strip()
 OPTIONS = ["No, exit", "Yes, I trust this folder"]
 QUESTION = "Quick safety check: Is this a project you created or one you trust?"
 STARTUP = 0.5
+# Longer than the kernel's settle window: the session screen settles before the later output.
+SESSION_SETTLES = 1.5
 
 
 def write(text):
@@ -69,10 +72,11 @@ tty.setraw(0)
 if SCENARIO == "none":
     write("\x1b[2J\x1b[Hfake claude: session started\n")
     idle()
-if SCENARIO == "session":
-    session_start_hook()
+if SCENARIO in ("session", "hookloss"):
+    if SCENARIO == "session":
+        session_start_hook()
     write("\x1b[2J\x1b[H> fake claude: session started, working\n")
-    time.sleep(0.3)
+    time.sleep(SESSION_SETTLES)
     write("Bash(grep -rh trust docs/)\n  " + QUESTION + "\n  ❯ No, exit\n  ❯ Yes, I trust this folder\n")
     record("painted")
     idle()

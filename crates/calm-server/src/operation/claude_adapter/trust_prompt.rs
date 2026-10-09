@@ -5,22 +5,20 @@
 //! resting on "Yes, I trust this folder". Claude persists the trust in its own config; neige never
 //! touches it. Owner Claude cards are never answered for: a human is there to decide.
 //!
-//! The dialog only exists before the session starts, so the watch ends, sending nothing more, at
-//! this worker session's `SessionStart` hook: text that merely looks like the dialog afterwards
-//! (a grep hit in the worker's output) is never answered.
-use std::future::Future;
+//! The kernel decides once, on the first screen that settles. Claude paints nothing before either
+//! the dialog (untrusted folder) or its session banner (trusted), so a first settled screen that
+//! is not the dialog means the session has started: the watch ends there and never sends a key,
+//! whatever the worker prints later (a grep hit that quotes the dialog included).
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::Value;
-use tokio::sync::broadcast::{self, error::TryRecvError};
-
 use crate::db::write_with_actor_events_typed;
-use crate::event::{BroadcastEnvelope, Event, EventBus};
+use crate::event::EventBus;
 use crate::operation::SpawnCtx;
 use crate::state::WriteContext;
 use crate::terminal_interaction::{
-    AllPresent, InputOutcome, KernelClaim, KernelTerminal, ScreenWait, TextConditions,
+    AllPresent, InputOutcome, KernelClaim, KernelTerminal, ScreenWait, SettledScreen,
+    TextConditions,
 };
 use crate::terminal_renderer::TerminalRendererRegistry;
 
@@ -32,11 +30,9 @@ pub(crate) const TRUST_OPTION: &str = "Yes, I trust this folder";
 pub(crate) const TRUST_CURSOR: &str = "❯ Yes, I trust this folder";
 /// The declining option's row while the cursor is on it (Claude's default).
 const DECLINE_CURSOR: &str = "❯ No, exit";
-/// Claude's hook event once a session has started; its `session_id` is the worker's `--session-id`.
-const SESSION_START_HOOK: &str = "SessionStart";
-/// How long the screen must be unchanged before a key is sent, and the cursor row steady before
-/// Enter: Claude paints the dialog before its input handler is live, and a key sent then is lost
-/// or undone when the dialog settles.
+/// How long a screen must be unchanged to count as settled: the first settled screen decides,
+/// and the cursor row must rest this long before Enter. Claude paints the dialog before its input
+/// handler is live, and a key sent then is lost or undone when the dialog settles.
 pub const TRUST_SETTLE: Duration = Duration::from_secs(1);
 /// Down presses per answer: one, plus one retry when Claude dropped the first.
 const DOWN_ATTEMPTS: usize = 2;
@@ -70,7 +66,8 @@ impl Default for TrustPromptWatch {
 pub enum TrustOutcome {
     /// The kernel selected "Yes, I trust this folder" and the dialog went away.
     Accepted,
-    /// No dialog was answered: the session started first, or the window ended without one.
+    /// No key was sent: the first settled screen was not the dialog, no screen settled within the
+    /// window, or the dialog left before the kernel acted.
     NotShown,
     /// The terminal stopped (exit, no live renderer) before an answer: no failure is reported.
     Stopped,
@@ -87,134 +84,47 @@ pub(crate) struct TrustTarget {
     pub track_id: String,
     pub terminal_id: String,
     pub worker_session_id: String,
-    /// The `--session-id` the worker's Claude was started with.
-    pub claude_session_id: String,
 }
 
-/// This worker session's `SessionStart` hook on the kernel event bus, subscribed before the
-/// spawn so it can never be missed.
-struct SessionStart {
-    events: broadcast::Receiver<BroadcastEnvelope>,
-    card_id: String,
-    claude_session_id: String,
-    started: bool,
-}
-
-impl SessionStart {
-    fn is_start(&self, envelope: &BroadcastEnvelope) -> bool {
-        let Event::ClaudeHook {
-            card_id, payload, ..
-        } = &envelope.event
-        else {
-            return false;
-        };
-        card_id.as_str() == self.card_id
-            && payload.get("hook_event_name").and_then(Value::as_str) == Some(SESSION_START_HOOK)
-            && payload.get("session_id").and_then(Value::as_str)
-                == Some(self.claude_session_id.as_str())
-    }
-
-    /// Whether the session has started, from what the bus delivered so far. A lagged or closed
-    /// bus may have dropped the hook, so it counts as started: the kernel then stays silent.
-    fn seen(&mut self) -> bool {
-        while !self.started {
-            match self.events.try_recv() {
-                Ok(envelope) => self.started = self.is_start(&envelope),
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Lagged(_) | TryRecvError::Closed) => self.started = true,
-            }
-        }
-        self.started
-    }
-
-    async fn wait(&mut self) {
-        while !self.started {
-            match self.events.recv().await {
-                Ok(envelope) => self.started = self.is_start(&envelope),
-                Err(_) => self.started = true,
-            }
-        }
-    }
-}
-
-/// A watch subscribed before the spawn and started once the spawn succeeded.
-pub(crate) struct PendingTrustWatch {
+/// Watch the just-spawned worker's terminal in the background and answer the dialog when it is
+/// the first screen to settle. A dialog the kernel could not accept fails the worker's task
+/// through the scheduler's startup-blocked failure.
+pub(crate) fn watch_worker_trust_prompt(
+    ctx: &SpawnCtx,
+    write: WriteContext,
     target: TrustTarget,
-    session: SessionStart,
-    watch: TrustPromptWatch,
-}
-
-impl PendingTrustWatch {
-    pub(crate) fn before_spawn(
-        ctx: &SpawnCtx,
-        target: TrustTarget,
-        watch: &TrustPromptWatch,
-    ) -> Self {
-        let session = SessionStart {
-            events: ctx.events.subscribe(),
-            card_id: target.card_id.clone(),
-            claude_session_id: target.claude_session_id.clone(),
-            started: false,
-        };
-        Self {
-            target,
-            session,
-            watch: watch.clone(),
+    watch: &TrustPromptWatch,
+) {
+    let renderer = ctx.terminal_renderer.clone();
+    let repo = ctx.repo.clone();
+    let events = ctx.events.clone();
+    let watch = watch.clone();
+    tokio::spawn(async move {
+        let outcome = answer(&renderer, &target, &watch).await;
+        match &outcome {
+            TrustOutcome::NotAccepted(reason) => {
+                tracing::warn!(card_id = %target.card_id, terminal_id = %target.terminal_id, %reason, "claude worker trust dialog not accepted; failing its task");
+                fail_worker(repo, &events, &write, &target, reason).await;
+            }
+            other => {
+                tracing::info!(card_id = %target.card_id, terminal_id = %target.terminal_id, outcome = ?other, "claude worker trust dialog watch ended");
+            }
         }
-    }
-
-    /// Watch the just-spawned worker's terminal in the background and answer the dialog when it
-    /// appears. A dialog the kernel could not accept fails the worker's task through the
-    /// scheduler's startup-blocked failure.
-    pub(crate) fn start(self, ctx: &SpawnCtx, write: WriteContext) {
-        let renderer = ctx.terminal_renderer.clone();
-        let repo = ctx.repo.clone();
-        let events = ctx.events.clone();
-        let Self {
-            target,
-            mut session,
-            watch,
-        } = self;
-        tokio::spawn(async move {
-            let outcome = answer(&renderer, &target, &watch, &mut session).await;
-            match &outcome {
-                TrustOutcome::NotAccepted(reason) => {
-                    tracing::warn!(card_id = %target.card_id, terminal_id = %target.terminal_id, %reason, "claude worker trust dialog not accepted; failing its task");
-                    fail_worker(repo, &events, &write, &target, reason).await;
-                }
-                other => {
-                    tracing::info!(card_id = %target.card_id, terminal_id = %target.terminal_id, outcome = ?other, "claude worker trust dialog watch ended");
-                }
-            }
-            #[cfg(feature = "fixtures")]
-            if let Some(outcomes) = &watch.outcomes {
-                let _ = outcomes.send(outcome);
-            }
-        });
-    }
+        #[cfg(feature = "fixtures")]
+        if let Some(outcomes) = &watch.outcomes {
+            let _ = outcomes.send(outcome);
+        }
+    });
 }
 
-/// `wait` raced against the session start: `None` once the session has started.
-async fn until_started(
-    session: &mut SessionStart,
-    wait: impl Future<Output = ScreenWait>,
-) -> Option<ScreenWait> {
-    if session.seen() {
-        return None;
-    }
-    let waited = tokio::select! {
-        biased;
-        () = session.wait() => return None,
-        waited = wait => waited,
-    };
-    (!session.seen()).then_some(waited)
+fn dialog() -> AllPresent {
+    AllPresent(vec![TRUST_QUESTION.into(), TRUST_OPTION.into()])
 }
 
 async fn answer(
     renderer: &TerminalRendererRegistry,
     target: &TrustTarget,
     watch: &TrustPromptWatch,
-    session: &mut SessionStart,
 ) -> TrustOutcome {
     let terminal = match KernelTerminal::attach(
         renderer,
@@ -230,16 +140,11 @@ async fn answer(
             return TrustOutcome::Stopped;
         }
     };
-    let dialog = AllPresent(vec![TRUST_QUESTION.into(), TRUST_OPTION.into()]);
-    match until_started(
-        session,
-        terminal.wait_until(&dialog, watch.appear, TRUST_SETTLE),
-    )
-    .await
-    {
-        Some(ScreenWait::Held) => {}
-        Some(ScreenWait::Stopped) => return TrustOutcome::Stopped,
-        Some(ScreenWait::TimedOut) | None => return TrustOutcome::NotShown,
+    // Decided once: a first settled screen that is not the dialog ends the watch for good.
+    match terminal.settled_screen(watch.appear, TRUST_SETTLE).await {
+        SettledScreen::Rows(rows) if dialog().holds(&rows) => {}
+        SettledScreen::Rows(_) | SettledScreen::TimedOut => return TrustOutcome::NotShown,
+        SettledScreen::Stopped => return TrustOutcome::Stopped,
     }
     match terminal.claim_if_unowned().await {
         Ok(KernelClaim::Granted) => {}
@@ -249,18 +154,15 @@ async fn answer(
         }
         Err(error) => return not_accepted(&format!("the terminal could not be claimed: {error}")),
     }
-    let outcome = select_yes(&terminal, watch, session).await;
+    let outcome = select_yes(&terminal, watch).await;
     terminal.release().await;
     outcome
 }
 
 /// Down until Claude's cursor rests on the accepting option (one retry when it stayed on "No,
-/// exit"), then Enter only while it is still there: Enter is never sent on "No, exit".
-async fn select_yes(
-    terminal: &KernelTerminal,
-    watch: &TrustPromptWatch,
-    session: &mut SessionStart,
-) -> TrustOutcome {
+/// exit"), then Enter only while it is still there: Enter is never sent on "No, exit", and no key
+/// is sent once the dialog has left the screen.
+async fn select_yes(terminal: &KernelTerminal, watch: &TrustPromptWatch) -> TrustOutcome {
     let cursor = |row: &str| TextConditions {
         present: vec![row.into()],
         absent: vec![],
@@ -272,43 +174,40 @@ async fn select_yes(
     };
     let mut rests_on_yes = false;
     for _ in 0..DOWN_ATTEMPTS {
-        if session.seen() {
+        if !terminal.shows(&dialog()) {
             return TrustOutcome::NotShown;
         }
         if let Some(failed) = pressed("Down", terminal.press("Down").await) {
             return failed;
         }
-        let rested = terminal.wait_until(&at_rest, watch.step, TRUST_SETTLE);
-        match until_started(session, rested).await {
-            None => return TrustOutcome::NotShown,
-            Some(ScreenWait::Stopped) => return TrustOutcome::Stopped,
-            Some(ScreenWait::Held) if terminal.shows(&on_yes) => {
+        match terminal
+            .wait_until(&at_rest, watch.step, TRUST_SETTLE)
+            .await
+        {
+            ScreenWait::Stopped => return TrustOutcome::Stopped,
+            ScreenWait::Held if terminal.shows(&on_yes) => {
                 rests_on_yes = true;
                 break;
             }
-            Some(ScreenWait::Held) if terminal.shows(&on_no) => {}
-            Some(_) => break,
+            ScreenWait::Held if terminal.shows(&on_no) => {}
+            _ => break,
         }
     }
-    // Re-read right before Enter: the steady row must still be the accepting one.
+    // Re-read right before Enter: still the dialog, and the steady row still the accepting one.
+    if !terminal.shows(&dialog()) {
+        return TrustOutcome::NotShown;
+    }
     if !rests_on_yes || !terminal.shows(&on_yes) {
         return not_accepted(&format!("the cursor never rested on \"{TRUST_OPTION}\""));
-    }
-    if session.seen() {
-        return TrustOutcome::NotShown;
     }
     if let Some(failed) = pressed("Enter", terminal.press("Enter").await) {
         return failed;
     }
-    dialog_left(terminal, watch, session).await
+    dialog_left(terminal, watch).await
 }
 
-/// After Enter: the session starting, or the question gone and still gone a settle period later.
-async fn dialog_left(
-    terminal: &KernelTerminal,
-    watch: &TrustPromptWatch,
-    session: &mut SessionStart,
-) -> TrustOutcome {
+/// After Enter: the question gone, and still gone a settle period later.
+async fn dialog_left(terminal: &KernelTerminal, watch: &TrustPromptWatch) -> TrustOutcome {
     let gone = TextConditions {
         present: vec![],
         absent: vec![TRUST_QUESTION.into()],
@@ -316,19 +215,12 @@ async fn dialog_left(
     let deadline = tokio::time::Instant::now() + watch.step;
     loop {
         let left = deadline.saturating_duration_since(tokio::time::Instant::now());
-        match until_started(session, terminal.wait_until(&gone, left, Duration::ZERO)).await {
-            None => return TrustOutcome::Accepted,
-            Some(ScreenWait::Stopped) => return TrustOutcome::Stopped,
-            Some(ScreenWait::TimedOut) => {
-                return not_accepted("the dialog was still shown after Enter");
-            }
-            Some(ScreenWait::Held) => {}
+        match terminal.wait_until(&gone, left, Duration::ZERO).await {
+            ScreenWait::Held => {}
+            ScreenWait::Stopped => return TrustOutcome::Stopped,
+            ScreenWait::TimedOut => return not_accepted("the dialog was still shown after Enter"),
         }
-        tokio::select! {
-            biased;
-            () = session.wait() => return TrustOutcome::Accepted,
-            () = tokio::time::sleep(TRUST_SETTLE) => {}
-        }
+        tokio::time::sleep(TRUST_SETTLE).await;
         if terminal.shows(&gone) {
             return TrustOutcome::Accepted;
         }

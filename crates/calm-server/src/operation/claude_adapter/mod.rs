@@ -39,7 +39,7 @@ use crate::state::{CodexClient, WriteContext};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::track_area_cache::TrackAreaCache;
 
-use trust_prompt::{PendingTrustWatch, TrustPromptWatch, TrustTarget};
+use trust_prompt::{TrustPromptWatch, TrustTarget};
 
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation, PhaseTag,
@@ -1081,18 +1081,6 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         )
         .await?;
 
-        // Subscribed to the session's hooks before Claude starts, so its start is never missed.
-        let trust_watch = PendingTrustWatch::before_spawn(
-            ctx,
-            TrustTarget {
-                card_id: card_id.clone(),
-                track_id: track_id.to_string(),
-                terminal_id: terminal_id.clone(),
-                worker_session_id: worker_session_id.clone(),
-                claude_session_id: output.output_string("claude_session_id", "claude worker")?,
-            },
-            &self.trust_prompt,
-        );
         let launch = super::task_launch::TaskLaunch::new(&payload.idempotency_key, _op);
         #[cfg(feature = "fixtures")]
         let handle = if let Some(hook) = &self.spawn_hook {
@@ -1113,9 +1101,16 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
 
         match handle {
             Ok(handle) => {
-                trust_watch.start(
+                trust_prompt::watch_worker_trust_prompt(
                     ctx,
                     WriteContext::new(self.card_role_cache.clone(), self.track_area_cache.clone()),
+                    TrustTarget {
+                        card_id: card_id.clone(),
+                        track_id: track_id.to_string(),
+                        terminal_id: terminal_id.clone(),
+                        worker_session_id: worker_session_id.clone(),
+                    },
+                    &self.trust_prompt,
                 );
                 mark_claude_worker_running(
                     ctx,

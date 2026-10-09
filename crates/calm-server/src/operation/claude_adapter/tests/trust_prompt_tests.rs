@@ -393,6 +393,23 @@ async fn worker_output_that_looks_like_the_dialog_after_session_start_gets_no_in
     worker.stop().await;
 }
 
+/// The SessionStart hook never reached the kernel (the bridge does not post), yet the session
+/// screen settled first: later output that looks like the dialog, both cursor rows included, on a
+/// static screen, is never answered.
+#[tokio::test]
+async fn worker_output_that_looks_like_the_dialog_after_a_lost_session_start_hook_gets_no_input() {
+    let fake = FakeClaude::new("hookloss");
+    let (watch, mut outcomes) = watch(15_000);
+    let worker = spawn_worker(&fake, watch).await;
+
+    assert_eq!(outcome(&mut outcomes).await, TrustOutcome::NotShown);
+    fake.wait_for("painted").await;
+    assert!(!fake.has("hooked"), "no hook was delivered");
+    assert_eq!(fake.received(), b"", "nothing typed into the live session");
+    assert_eq!(worker.task().await.0, "dispatched", "nothing failed");
+    worker.stop().await;
+}
+
 #[tokio::test]
 async fn worker_terminal_held_by_a_human_gets_no_input() {
     let fake = FakeClaude::new("gated");
