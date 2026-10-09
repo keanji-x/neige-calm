@@ -1,10 +1,17 @@
 // Natural-language references. The Markdown parser and file admission keep their owners.
 import { parse, sanitizeAstPolicy, type SafeBlock, type SafeInline } from '../markdown/public.js';
 import { parseGitHubReferenceUrl, type GitHubReference } from './issue-url.js';
+import type { TrackReport } from './report.js';
 import { parseReportFileLink } from './report-file.js';
 
 export type ReferenceRepository = Readonly<Pick<GitHubReference, 'owner' | 'name'>>;
 export type ReportTextReference = Readonly<{ text: string; destination: string | null }>;
+
+/** Repository context belongs to all visible prose of one report, including its block previews. */
+export function reportDocumentReferenceRepository(report: TrackReport | null): ReferenceRepository | null {
+  return reportReferenceRepository(report === null ? [] : report.blocks === null
+    ? [report.body || report.summary] : report.blocks.flatMap(block => block.kind === 'prose' ? [block.payload.markdown] : []));
+}
 
 /** Only explicit links in visible prose establish a unique repository. Code/HTML are not context. */
 export function reportReferenceRepository(markdown: readonly string[]): ReferenceRepository | null {

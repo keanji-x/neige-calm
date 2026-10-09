@@ -100,3 +100,14 @@ it.each([
       .getByRole('link', { name: 'Open in new tab ↗' }).getAttribute('href')).toBe(expected); });
   }
 });
+
+it('retains the owning report repository in a same-report block preview', async () => {
+  const report = { summary: '', body: '', blocks: [
+    { id: 'context', kind: 'prose' as const, payload: { markdown: '[Parent](https://github.com/first/project/issues/1) [Details](neige://wave/t#details)' } },
+    { id: 'details', kind: 'prose' as const, payload: { markdown: 'issue #2' } },
+  ] };
+  render(<ReportDocument report={report} empty={null} linkPreview={{ trackId: 't', report }} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Details' }));
+  const preview = screen.getByRole('dialog', { name: 'Preview: Details' });
+  await waitFor(() => { expect(within(preview).getByRole('button', { name: 'issue #2' })).toBeTruthy(); });
+});

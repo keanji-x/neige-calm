@@ -3,7 +3,7 @@ import { extractOutline, parse, REPORT_MAX_DEPTH, reportHeadingIdPolicy, sanitiz
 import { parseReportLink, type ReportLinkTarget } from '../../../../../core/domain/report.ts';
 import { parseReportFileLink, reportFilePathRelativeToRoot, type ReportFileLinkTarget } from '../../../../../core/domain/report-file.ts';
 import { parseReportSourceLink, type ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
-import { reportReferenceRepository, reportTextReferences, qualifiedReportFileReference, type ReferenceRepository } from '../../../../../core/domain/report-references.ts';
+import { reportDocumentReferenceRepository, reportReferenceRepository, reportTextReferences, qualifiedReportFileReference, type ReferenceRepository } from '../../../../../core/domain/report-references.ts';
 import { ReadOnlyCode } from '../../../ui/code/public.tsx';
 import { ReportLinkPreview, ReportSourceLinkPreview, externalPreviewUrl, type ReportLinkPreviewResources, type PreviewDestination } from '../link-preview/public.tsx';
 import styles from './document.module.css';
@@ -197,11 +197,12 @@ function Destination({ destination, label, body, image = false, context }: {
   destination: string; label: string; body: ReactNode; image?: boolean; context: ReportTextContext;
 }) {
   const { onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, linkPreview } = context;
-  const renderMarkdown = (text: string, basePath?: string) => <ProseBlock
-    markdown={text} blockId={null} {...context} referenceRepository={reportReferenceRepository([text])} fileBasePath={basePath ?? fileBasePath} />;
+  const renderMarkdown = (destination: PreviewDestination, text: string, basePath?: string) => <ProseBlock
+    markdown={text} blockId={null} {...context} referenceRepository={destination.kind === 'reference'
+      ? reportDocumentReferenceRepository(linkPreview?.report ?? null) : reportReferenceRepository([text])} fileBasePath={basePath ?? fileBasePath} />;
   const wrap = (destination: PreviewDestination, trigger: (activate: () => void, dismiss: () => void) => ReactNode, onOpen?: () => void) => (
     <ReportLinkPreview destination={destination} resources={linkPreview} label={label}
-      trigger={trigger} onOpen={onOpen} renderMarkdown={renderMarkdown} />
+      trigger={trigger} onOpen={onOpen} renderMarkdown={(text, basePath) => renderMarkdown(destination, text, basePath)} />
   );
   const target = image ? null : parseReportLink(destination);
   if (target !== null && (onOpenLink !== undefined || linkPreview !== undefined)) {

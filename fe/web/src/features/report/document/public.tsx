@@ -6,7 +6,7 @@ import { useEffect, useMemo, type ReactNode } from 'react';
 import { parse, sanitizeAstPolicy } from '../../../../../core/markdown/public.ts';
 import { ProseBlock, PlainReportText } from './content.tsx';
 export { ProseBlock } from './content.tsx';
-import { reportReferenceRepository, type ReferenceRepository } from '../../../../../core/domain/report-references.ts';
+import { reportDocumentReferenceRepository, type ReferenceRepository } from '../../../../../core/domain/report-references.ts';
 import {
   deriveReportTasks, isTaskBlock,
   type PreviewResolution, type ReportBlock, type ReportLinkTarget, type ReportTaskRow, type TaskVerdict,
@@ -76,8 +76,7 @@ export function ReportDocument({
   arrivalAnchorId, taskVerdicts, taskRows, renderTaskExecution,
 }: ReportDocumentProps) {
   const compactViewport = useCompactViewport();
-  const referenceRepository = useMemo(() => reportReferenceRepository(report === null ? [] : report.blocks === null
-    ? [report.body || report.summary] : report.blocks.flatMap(block => block.kind === 'prose' ? [block.payload.markdown] : [])), [report]);
+  const referenceRepository = useMemo(() => reportDocumentReferenceRepository(report), [report]);
   useEffect(() => {
     if (arrivalAnchorId === null || arrivalAnchorId === undefined) return;
     revealReportAnchor(arrivalAnchorId);
