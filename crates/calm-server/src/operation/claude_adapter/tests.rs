@@ -21,6 +21,9 @@ mod reader_head_tests;
 #[cfg(test)]
 mod worker_mcp_tests;
 
+#[cfg(test)]
+mod trust_prompt_tests;
+
 #[test]
 fn claude_worker_command_line_uses_appended_system_prompt() {
     let command = build_claude_worker_command_line(

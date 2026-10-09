@@ -36,6 +36,12 @@ pub fn find_match(patterns: &[String], rows: &[String]) -> Option<(String, usize
     })
 }
 
+/// A test of the rendered rows a text wait re-runs on every revision: the present match, if
+/// any, and which conditions held.
+pub trait RowTest {
+    fn test(&self, rows: &[String]) -> (Option<(String, usize)>, ConditionState);
+}
+
 impl TextConditions {
     pub fn is_empty(&self) -> bool {
         self.present.is_empty() && self.absent.is_empty()
@@ -46,6 +52,31 @@ impl TextConditions {
         let state = ConditionState {
             present: (!self.present.is_empty()).then_some(matched.is_some()),
             absent: (!self.absent.is_empty()).then(|| find_match(&self.absent, rows).is_none()),
+        };
+        (matched, state)
+    }
+}
+impl RowTest for TextConditions {
+    fn test(&self, rows: &[String]) -> (Option<(String, usize)>, ConditionState) {
+        TextConditions::test(self, rows)
+    }
+}
+
+/// Every pattern on some row of one screen (a kernel wait for one specific screen, never a
+/// Planner wait). The match names the first pattern; an empty list never holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AllPresent(pub Vec<String>);
+impl RowTest for AllPresent {
+    fn test(&self, rows: &[String]) -> (Option<(String, usize)>, ConditionState) {
+        let all = !self.0.is_empty()
+            && self
+                .0
+                .iter()
+                .all(|pattern| find_match(std::slice::from_ref(pattern), rows).is_some());
+        let matched = all.then(|| find_match(&self.0[..1], rows)).flatten();
+        let state = ConditionState {
+            present: Some(all),
+            absent: None,
         };
         (matched, state)
     }
@@ -70,6 +101,25 @@ mod tests {
         );
         assert_eq!(find_match(&list(&["q"]), &rows), None);
         assert_eq!(find_match(&list(&["a"]), &[]), None);
+    }
+
+    #[test]
+    fn all_present_holds_only_when_every_pattern_is_on_the_screen() {
+        let rows = list(&[
+            "Is this a project you trust?",
+            "",
+            "  Yes, I trust this folder",
+        ]);
+        let both = AllPresent(list(&["you trust?", "Yes, I trust"]));
+        let (matched, state) = both.test(&rows);
+        assert_eq!(matched, Some(("you trust?".into(), 0)));
+        assert!(state.holds());
+        let (matched, state) = both.test(&rows[..1]);
+        assert_eq!(matched, None, "one pattern alone is not the screen");
+        assert!(!state.holds());
+        let (matched, state) = AllPresent(vec![]).test(&rows);
+        assert_eq!(matched, None);
+        assert!(!state.holds(), "an empty list never holds");
     }
 
     #[test]

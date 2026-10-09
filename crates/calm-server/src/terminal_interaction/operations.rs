@@ -207,7 +207,7 @@ impl TerminalInteraction {
         // 5. Release: after the write's outcome is known and cached; never clears `pending`. A call
         // cancelled here leaves `requested` in the cached receipt and a replay never releases.
         if options.release {
-            result["release"] = self.release(&client).await.to_json();
+            result["release"] = input_control::release(&client).await.to_json();
             cache(&client, &key, &fingerprint, &result).await;
         }
         Ok(self
@@ -408,39 +408,62 @@ async fn write_action(
     shape: WriteShape,
     receipts: WriteReceipts,
 ) -> Result<Value> {
-    let sequence = {
-        let mut state = client.screen.lock().unwrap();
-        let sequence = state
-            .ack
-            .max(state.refused)
-            .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("input sequence exhausted"))?;
-        state.pending = Some(sequence);
-        sequence
-    };
+    let sequence = reserve_input(client)?;
     cache(client, &key, &fingerprint, &receipts.unknown).await;
-    let result = if client.send_input(bytes, sequence, shape).await.is_err() {
-        receipts.unknown
-    } else {
-        match client
-            .wait(
-                |state| state.ack >= sequence || state.refused >= sequence,
-                Duration::from_secs(7),
-            )
-            .await
-        {
-            Ok(()) => {
-                if client.screen.lock().unwrap().ack >= sequence {
-                    receipts.written
-                } else {
-                    receipts.refused
-                }
-            }
-            Err(_) => receipts.unknown,
-        }
+    let result = match send_reserved(client, bytes, sequence, shape).await {
+        InputOutcome::Written => receipts.written,
+        InputOutcome::Refused => receipts.refused,
+        InputOutcome::Unknown => receipts.unknown,
     };
     cache(client, &key, &fingerprint, &result).await;
     Ok(result)
+}
+/// What became of one ordered write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputOutcome {
+    Written,
+    Refused,
+    /// Not sent, or neither acknowledged nor refused within the budget; `pending` stays reserved.
+    Unknown,
+}
+/// Reserve the next input sequence: `pending` is set until its ack or refusal is applied.
+pub(super) fn reserve_input(client: &Client) -> Result<u64> {
+    let mut state = client
+        .screen
+        .lock()
+        .map_err(|_| anyhow::anyhow!("terminal state poisoned"))?;
+    let sequence = state
+        .ack
+        .max(state.refused)
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("input sequence exhausted"))?;
+    state.pending = Some(sequence);
+    Ok(sequence)
+}
+/// Send the write reserved as `sequence` and await its ack or refusal.
+pub(super) async fn send_reserved(
+    client: &Client,
+    bytes: Vec<u8>,
+    sequence: u64,
+    shape: WriteShape,
+) -> InputOutcome {
+    if client.send_input(bytes, sequence, shape).await.is_err() {
+        return InputOutcome::Unknown;
+    }
+    match client
+        .wait(
+            |state| state.ack >= sequence || state.refused >= sequence,
+            Duration::from_secs(7),
+        )
+        .await
+    {
+        Ok(()) => match client.screen.lock() {
+            Ok(state) if state.ack >= sequence => InputOutcome::Written,
+            Ok(_) => InputOutcome::Refused,
+            Err(_) => InputOutcome::Unknown,
+        },
+        Err(_) => InputOutcome::Unknown,
+    }
 }
 async fn cache(client: &Client, key: &str, fingerprint: &str, receipt: &Value) {
     client

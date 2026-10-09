@@ -14,7 +14,10 @@ pub use running_worker::{
     PLANNER_CANCELED, WORKER_IDLE_PROBE_TIMEOUT, WORKER_IDLE_TURN_GRACE, WORKER_TURN_ENDED,
     WorkerIdleClock, WorkerIdleWake,
 };
-pub(crate) use worker_failure::{fail_tasks_for_deleted_card_tx, fail_worker_task_tx};
+pub use worker_failure::WORKER_STARTUP_BLOCKED;
+pub(crate) use worker_failure::{
+    fail_tasks_for_deleted_card_tx, fail_worker_startup_blocked_tx, fail_worker_task_tx,
+};
 pub(crate) use worker_liveness::LivenessExpiry;
 pub use worker_liveness::WorkerLiveness;
 

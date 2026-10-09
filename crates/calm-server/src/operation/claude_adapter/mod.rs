@@ -39,6 +39,8 @@ use crate::state::{CodexClient, WriteContext};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::track_area_cache::TrackAreaCache;
 
+use trust_prompt::{TrustPromptWatch, TrustTarget};
+
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation, PhaseTag,
     ProviderAdapter, SpawnCtx, SpawnHandle, SpawnOutcome, Tx, TxOutput,
@@ -82,6 +84,8 @@ pub struct ClaudeWorkerAdapter {
     workspace_root: PathBuf,
     /// The wait of one gate-run call its prompt states (#2464 D3).
     gate_run_wait: GateRunWait,
+    /// How the kernel watches the worker's screen for Claude's trust dialog (#1755).
+    trust_prompt: TrustPromptWatch,
     #[cfg(feature = "fixtures")]
     preparation_hook: Option<Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>,
 }
@@ -128,6 +132,12 @@ impl ClaudeWorkerAdapter {
         self
     }
 
+    /// The trust-dialog watch of every spawn (`TrustPromptWatch::default()` otherwise).
+    pub fn with_trust_prompt(mut self, watch: TrustPromptWatch) -> Self {
+        self.trust_prompt = watch;
+        self
+    }
+
     pub fn new(
         repo: Arc<dyn crate::db::RouteRepo>,
         codex: Arc<CodexClient>,
@@ -144,6 +154,7 @@ impl ClaudeWorkerAdapter {
             track_area_cache,
             workspace_root,
             gate_run_wait: GateRunWait::DEFAULT,
+            trust_prompt: TrustPromptWatch::default(),
             #[cfg(feature = "fixtures")]
             spawn_hook: None,
             #[cfg(feature = "fixtures")]
@@ -169,6 +180,7 @@ impl ClaudeWorkerAdapter {
             track_area_cache,
             workspace_root,
             gate_run_wait: GateRunWait::DEFAULT,
+            trust_prompt: TrustPromptWatch::default(),
             spawn_hook: Some(spawn_hook),
             preparation_hook: None,
         }
@@ -926,7 +938,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
         let card_id = output.output_string("card_id", "claude worker")?;
-        let runtime_id = output.output_string("runtime_id", "claude worker")?;
+        let worker_session_id = output.output_string("runtime_id", "claude worker")?;
         let terminal_id = output.output_string("terminal_id", "claude worker")?;
         let track_id = TrackId::from(output.output_string("track_id", "claude worker")?);
         let settings_path = PathBuf::from(output.output_string("settings_path", "claude worker")?);
@@ -1063,7 +1075,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             ctx,
             mcp_server,
             &card_id,
-            &runtime_id,
+            &worker_session_id,
             &worker_mcp::mcp_config_path(&settings_path)?,
             &mut env,
         )
@@ -1089,6 +1101,17 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
 
         match handle {
             Ok(handle) => {
+                trust_prompt::watch_worker_trust_prompt(
+                    ctx,
+                    WriteContext::new(self.card_role_cache.clone(), self.track_area_cache.clone()),
+                    TrustTarget {
+                        card_id: card_id.clone(),
+                        track_id: track_id.to_string(),
+                        terminal_id: terminal_id.clone(),
+                        worker_session_id: worker_session_id.clone(),
+                    },
+                    &self.trust_prompt,
+                );
                 mark_claude_worker_running(
                     ctx,
                     &self.card_role_cache,
@@ -1406,6 +1429,7 @@ fn step_arg_string(step: &CompensationStep, key: &str) -> Result<String> {
         .ok_or_else(|| CalmError::Internal(format!("claude compensation step missing {key} arg")))
 }
 
+pub mod trust_prompt;
 pub(crate) mod worker_mcp;
 
 #[cfg(test)]

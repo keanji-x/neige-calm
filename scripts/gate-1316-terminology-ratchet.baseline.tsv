@@ -14,7 +14,7 @@ spec	crates	505
 spec	fe	63
 spec	docs	0
 spec	e2e	1
-runtime_id	crates	1236
+runtime_id	crates	1234
 runtime_id	fe	0
 runtime_id	docs	1
 runtime_id	e2e	4

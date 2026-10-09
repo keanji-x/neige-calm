@@ -1,7 +1,7 @@
 //! Text waiting: re-test the live viewport rows against the text conditions on every revision
 //! and return once they have held for the settle window. "Until the screen shows X", not
 //! "until X appears anew": a screen that already matches settles from the wait's start.
-use super::text_conditions::{ConditionState, TextConditions};
+use super::text_conditions::{ConditionState, RowTest};
 use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::sync::watch;
@@ -50,7 +50,7 @@ pub async fn wait_for_text(
     mut events: watch::Receiver<u64>,
     stopped: impl Fn() -> bool,
     capture: impl Fn() -> Option<(Vec<String>, u64)>,
-    conditions: &TextConditions,
+    conditions: &impl RowTest,
     started: Instant,
     deadline: Instant,
     settle: Duration,
@@ -145,6 +145,7 @@ pub async fn wait_for_text(
 
 #[cfg(test)]
 mod tests {
+    use super::super::text_conditions::TextConditions;
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};

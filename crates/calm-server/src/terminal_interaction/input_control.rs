@@ -84,124 +84,131 @@ impl TerminalInteraction {
         #[cfg(feature = "fixtures")]
         self.run_claim_window_seam(&client.binding.terminal_id)
             .await;
-        let budget = Duration::from_secs(7);
-        let started = Instant::now();
-        let unconfirmed = |reason: &str| ClaimStep::Unavailable {
-            status: "unconfirmed",
-            reason: reason.to_owned(),
-        };
-        let outcome = match tokio::time::timeout(budget, client.claim_if_unowned().await?).await {
-            Ok(Ok(outcome)) => outcome,
-            Ok(Err(_)) => anyhow::bail!("terminal disconnected"),
-            Err(_) => return Ok(unconfirmed("terminal claim timed out")),
-        };
-        if let ClaimOutcome::Refused { reason } = outcome {
-            return Ok(ClaimStep::Unavailable {
-                status: "unavailable",
-                reason,
-            });
-        }
-        // Granted: the `OwnerChanged` naming this connection mints the control id when applied.
-        match client
-            .wait(
-                |state| state.grants != grants_before,
-                budget.saturating_sub(started.elapsed()),
-            )
-            .await
-        {
-            Ok(()) => {}
-            Err(error)
-                if error
-                    .downcast_ref::<tokio::time::error::Elapsed>()
-                    .is_some() =>
-            {
-                return Ok(unconfirmed(
-                    "terminal claim granted but its delivery timed out",
-                ));
-            }
-            Err(error) => return Err(error),
-        }
-        let state = client
-            .screen
-            .lock()
-            .map_err(|_| anyhow::anyhow!("terminal state poisoned"))?;
-        match state.control {
-            Some(control) if state.owner == Some(client.id) => Ok(ClaimStep::Claimed(control)),
-            _ => Ok(ClaimStep::Unavailable {
-                status: "unavailable",
-                reason: CONTROL_TAKEN_BY_ANOTHER_CLIENT.into(),
-            }),
-        }
+        claim_unowned(client, grants_before).await
     }
-    /// The release step. Never touches `pending` or the write outcome. On an exited terminal the
-    /// pump stops forwarding after `TerminalExited`, so the registry is the truth and the mirror a
-    /// stale cache: the registry is polled (it does not wake `changed()`) and the mirror set from it.
-    pub(super) async fn release(&self, client: &Client) -> ReleaseStep {
-        let (held_in_mirror, exited) = client
-            .screen
+}
+
+/// The atomic claim-if-unowned on a connection without control, and the delivery of its grant.
+/// `grants_before` is the connection's grant count read before the claim was decided on.
+pub(super) async fn claim_unowned(client: &Client, grants_before: u64) -> Result<ClaimStep> {
+    let budget = Duration::from_secs(7);
+    let started = Instant::now();
+    let unconfirmed = |reason: &str| ClaimStep::Unavailable {
+        status: "unconfirmed",
+        reason: reason.to_owned(),
+    };
+    let outcome = match tokio::time::timeout(budget, client.claim_if_unowned().await?).await {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(_)) => anyhow::bail!("terminal disconnected"),
+        Err(_) => return Ok(unconfirmed("terminal claim timed out")),
+    };
+    if let ClaimOutcome::Refused { reason } = outcome {
+        return Ok(ClaimStep::Unavailable {
+            status: "unavailable",
+            reason,
+        });
+    }
+    // Granted: the `OwnerChanged` naming this connection mints the control id when applied.
+    match client
+        .wait(
+            |state| state.grants != grants_before,
+            budget.saturating_sub(started.elapsed()),
+        )
+        .await
+    {
+        Ok(()) => {}
+        Err(error)
+            if error
+                .downcast_ref::<tokio::time::error::Elapsed>()
+                .is_some() =>
+        {
+            return Ok(unconfirmed(
+                "terminal claim granted but its delivery timed out",
+            ));
+        }
+        Err(error) => return Err(error),
+    }
+    let state = client
+        .screen
+        .lock()
+        .map_err(|_| anyhow::anyhow!("terminal state poisoned"))?;
+    match state.control {
+        Some(control) if state.owner == Some(client.id) => Ok(ClaimStep::Claimed(control)),
+        _ => Ok(ClaimStep::Unavailable {
+            status: "unavailable",
+            reason: CONTROL_TAKEN_BY_ANOTHER_CLIENT.into(),
+        }),
+    }
+}
+
+/// The release step. Never touches `pending` or the write outcome. On an exited terminal the
+/// pump stops forwarding after `TerminalExited`, so the registry is the truth and the mirror a
+/// stale cache: the registry is polled (it does not wake `changed()`) and the mirror set from it.
+pub(super) async fn release(client: &Client) -> ReleaseStep {
+    let (held_in_mirror, exited) = client
+        .screen
+        .lock()
+        .map(|state| (state.control.is_some(), state.exited))
+        .unwrap_or((false, false));
+    let registry_owner = || {
+        client
+            .entry
+            .handle
+            .owner_registry
             .lock()
-            .map(|state| (state.control.is_some(), state.exited))
-            .unwrap_or((false, false));
-        let registry_owner = || {
-            client
-                .entry
-                .handle
-                .owner_registry
-                .lock()
-                .map(|registry| registry.current_owner())
+            .map(|registry| registry.current_owner())
+    };
+    if !held_in_mirror || registry_owner().ok().flatten() != Some(client.id) {
+        return ReleaseStep::NotHeld;
+    }
+    if let Err(error) = client.send(ClientMsg::OwnerRelease).await {
+        return ReleaseStep::Unconfirmed {
+            reason: format!("terminal release not sent: {error}"),
         };
-        if !held_in_mirror || registry_owner().ok().flatten() != Some(client.id) {
-            return ReleaseStep::NotHeld;
-        }
-        if let Err(error) = client.send(ClientMsg::OwnerRelease).await {
-            return ReleaseStep::Unconfirmed {
-                reason: format!("terminal release not sent: {error}"),
-            };
-        }
-        if exited {
-            let deadline = Instant::now() + Duration::from_secs(1);
-            loop {
-                match registry_owner() {
-                    Ok(owner) if owner != Some(client.id) => {
-                        if let Ok(mut state) = client.screen.lock() {
-                            state.owner = owner;
-                            state.control = None;
-                        }
-                        return ReleaseStep::Released;
+    }
+    if exited {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            match registry_owner() {
+                Ok(owner) if owner != Some(client.id) => {
+                    if let Ok(mut state) = client.screen.lock() {
+                        state.owner = owner;
+                        state.control = None;
                     }
-                    Ok(_) => {}
-                    Err(_) => {
-                        return ReleaseStep::Unconfirmed {
-                            reason: "terminal owner registry poisoned".into(),
-                        };
-                    }
+                    return ReleaseStep::Released;
                 }
-                if Instant::now() >= deadline {
+                Ok(_) => {}
+                Err(_) => {
                     return ReleaseStep::Unconfirmed {
-                        reason: RELEASE_NOT_CONFIRMED_AFTER_EXIT.into(),
+                        reason: "terminal owner registry poisoned".into(),
                     };
                 }
-                tokio::time::sleep(Duration::from_millis(20)).await;
             }
+            if Instant::now() >= deadline {
+                return ReleaseStep::Unconfirmed {
+                    reason: RELEASE_NOT_CONFIRMED_AFTER_EXIT.into(),
+                };
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        match client
-            .wait(|state| state.control.is_none(), Duration::from_secs(7))
-            .await
+    }
+    match client
+        .wait(|state| state.control.is_none(), Duration::from_secs(7))
+        .await
+    {
+        Ok(()) => ReleaseStep::Released,
+        Err(error)
+            if error
+                .downcast_ref::<tokio::time::error::Elapsed>()
+                .is_some() =>
         {
-            Ok(()) => ReleaseStep::Released,
-            Err(error)
-                if error
-                    .downcast_ref::<tokio::time::error::Elapsed>()
-                    .is_some() =>
-            {
-                ReleaseStep::Unconfirmed {
-                    reason: "terminal release timed out".into(),
-                }
+            ReleaseStep::Unconfirmed {
+                reason: "terminal release timed out".into(),
             }
-            Err(error) => ReleaseStep::Unconfirmed {
-                reason: error.to_string(),
-            },
         }
+        Err(error) => ReleaseStep::Unconfirmed {
+            reason: error.to_string(),
+        },
     }
 }
 

@@ -20,6 +20,10 @@ mod action_observation;
 mod actions;
 mod client;
 mod input_control;
+mod kernel;
+pub use kernel::{
+    AllPresent, InputOutcome, KernelClaim, KernelTerminal, ScreenWait, TextConditions,
+};
 mod observation;
 mod operations;
 pub use operations::InputOptions;
@@ -565,7 +569,7 @@ impl TerminalInteraction {
                 None
             }
             // An unconfirmed release is a receipt fact (`release.status`), never the call's error.
-            "release" => Some(self.release(&client).await),
+            "release" => Some(input_control::release(&client).await),
             _ => anyhow::bail!("unknown terminal control action"),
         };
         let control = client.screen.lock().unwrap().control;

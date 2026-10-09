@@ -4,7 +4,7 @@
 use super::client::Client;
 use super::repaint::{Repaint, settle_after_signal};
 pub use super::repaint::{RepaintOutcome, RepaintPlan, RepaintReport};
-use super::text_conditions::{ConditionState, TextConditions};
+use super::text_conditions::{ConditionState, RowTest, TextConditions};
 use super::text_wait::{self, TextMatch, TextWait};
 pub use super::wait_plan::{WaitFor, WaitPlan};
 use crate::terminal_renderer::{SharedModelView, Signal};
@@ -127,20 +127,7 @@ pub async fn wait(
     }
     let deadline = started + budget;
     let events = client.changed();
-    let stopped = || {
-        client
-            .screen
-            .lock()
-            .map(|state| !state.available || state.exited)
-            .unwrap_or(true)
-            || client
-                .entry
-                .exit
-                .lock()
-                .map(|exit| exit.is_some())
-                .unwrap_or(true)
-            || projection_unavailable(&client.entry.handle.model_view)
-    };
+    let stopped = || client_stopped(client);
     // Both modes subscribe to the projection: an invalidation must end a signal wait too instead
     // of leaving it — and the connection's input serial — parked to the budget.
     let revisions = match client.entry.handle.model_view.lock() {
@@ -150,16 +137,7 @@ pub async fn wait(
         }
     };
     // One capture per revision wake, the view lock dropped before the rows are tested.
-    let capture = || {
-        client
-            .entry
-            .handle
-            .model_view
-            .lock()
-            .ok()
-            .and_then(|view| view.capture(0).ok())
-            .map(|(frame, revision)| (frame.text, revision))
-    };
+    let capture = || live_rows(client);
     let conditions = plan.conditions();
     if plan.mode == WaitFor::Signal {
         let ring = &client.entry.signals;
@@ -253,6 +231,60 @@ pub async fn wait(
         WaitOutcome::Unchanged
     };
     report(outcome, started.elapsed(), settled && !exited, None)
+}
+
+/// The connection is gone, the process exited, or the projection was invalidated.
+fn client_stopped(client: &Client) -> bool {
+    client
+        .screen
+        .lock()
+        .map(|state| !state.available || state.exited)
+        .unwrap_or(true)
+        || client
+            .entry
+            .exit
+            .lock()
+            .map(|exit| exit.is_some())
+            .unwrap_or(true)
+        || projection_unavailable(&client.entry.handle.model_view)
+}
+
+/// The live viewport's rows and the revision they were captured at; `None` while the
+/// projection is unavailable.
+fn live_rows(client: &Client) -> Option<(Vec<String>, u64)> {
+    client
+        .entry
+        .handle
+        .model_view
+        .lock()
+        .ok()
+        .and_then(|view| view.capture(0).ok())
+        .map(|(frame, revision)| (frame.text, revision))
+}
+
+/// The text-mode loop on `client`'s live viewport against `test`, for a kernel-originated wait
+/// ([`super::kernel::KernelTerminal`]); `None` when the projection cannot be subscribed.
+pub(super) async fn wait_for_rows(
+    client: &Client,
+    test: &impl RowTest,
+    budget: Duration,
+    settle: Duration,
+) -> Option<TextWait> {
+    let started = Instant::now();
+    let revisions = client.entry.handle.model_view.lock().ok()?.subscribe();
+    Some(
+        text_wait::wait_for_text(
+            revisions,
+            client.changed(),
+            || client_stopped(client),
+            || live_rows(client),
+            test,
+            started,
+            started + budget,
+            settle,
+        )
+        .await,
+    )
 }
 
 /// `ModelView::invalidate` wakes revision subscribers without a new revision; a change wait
