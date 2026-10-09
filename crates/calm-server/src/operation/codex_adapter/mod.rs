@@ -22,7 +22,7 @@ use crate::mcp_server::McpServer;
 use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
 use crate::model::{Card, CardRole, new_id, now_ms};
 use crate::operation::task_gate_run::GateRunWait;
-use crate::operation::task_prompt::{GateRunPrompt, WorkerSurface, render_task_worker_prompt_tx};
+use crate::operation::task_prompt::render_task_worker_prompt_tx;
 use crate::operation::worker_cleanup::{WorkerCleanupOutcome, compensate_worker_rows};
 use crate::operation::workspace_lease::{
     ReleaseDelivery, acquire_workspace_lease_tx, prepare_worker_lease_tx,
@@ -805,10 +805,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
             &payload.context,
             payload.acceptance_criteria.as_deref(),
             &plan,
-            GateRunPrompt {
-                surface: WorkerSurface::Mcp,
-                wait: self.gate_run_wait,
-            },
+            self.gate_run_wait,
         )
         .await?;
         let scope = card_scope(

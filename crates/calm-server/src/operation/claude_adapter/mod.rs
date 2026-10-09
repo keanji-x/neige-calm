@@ -21,7 +21,7 @@ use crate::mcp_server::McpServer;
 use crate::mcp_server::wiring::mint_and_persist_card_token;
 use crate::model::{Card, CardRole, new_id};
 use crate::operation::task_gate_run::GateRunWait;
-use crate::operation::task_prompt::{GateRunPrompt, WorkerSurface, render_task_worker_prompt_tx};
+use crate::operation::task_prompt::render_task_worker_prompt_tx;
 use crate::operation::worker_cleanup::{compensate_worker_rows, worker_spawn_failure_preserved};
 use crate::operation::workspace_lease::{
     ReleaseDelivery, acquire_workspace_lease_tx, prepare_worker_lease_tx,
@@ -372,7 +372,7 @@ fn build_claude_worker_command_line(
     prompt: &str,
 ) -> Result<String> {
     let worker_system_prompt = crate::planner_card::render_system_prompt(
-        crate::planner_card::SeededCardRole::Worker.prompt_template(),
+        crate::planner_card::SeededCardRole::WorkerClaude.prompt_template(),
         track_id,
     );
     let mut command_line = format!(
@@ -801,10 +801,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             &payload.context,
             payload.acceptance_criteria.as_deref(),
             &plan,
-            GateRunPrompt {
-                surface: WorkerSurface::Cli,
-                wait: self.gate_run_wait,
-            },
+            self.gate_run_wait,
         )
         .await?;
         let command_line = build_claude_worker_command_line(

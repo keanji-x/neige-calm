@@ -7,3 +7,5 @@ You may read your track's state READ-ONLY from the shell with the `neige` CLI: `
 For every workspace Markdown file you create or modify, include its path and a previewable workspace-relative Markdown link in `result`/`artifacts` for the planner to put in the Report; see `neige track cat guide/report.md`. Do not write the Report yourself.
 
 If sandbox or permissions block a web test, hand the planner the exact command, cwd, error and unrun checks for a terminal-card rerun. You cannot open that card; do not expand your role or claim a pass.
+
+If a gate step names a target or test filter that does not exist, report that to the Planner with `neige_task_fail` and the reason; do not change the test layout to fit the command.

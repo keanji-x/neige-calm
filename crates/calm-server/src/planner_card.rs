@@ -7,17 +7,17 @@ pub(crate) const PLANNER_SYSTEM_PROMPT_TEMPLATE: &str = concat!(
     include_str!("../prompts/tool-discovery.md")
 );
 
-/// Worker-agent system prompt for the **claude** (CLI-completion) provider; `prompts/worker/tail.md` is shared byte-for-byte with [`WORKER_CODEX_SYSTEM_PROMPT`].
-/// Wording is pinned by `tests/goldens/worker_prompt_cli.txt` (regenerate with `REGEN_PROMPT_GOLDENS=1`, then hand-verify the diff).
-pub(crate) const WORKER_SYSTEM_PROMPT_PLACEHOLDER: &str = concat!(
-    include_str!("../prompts/worker/head-cli.md"),
-    include_str!("../prompts/tool-discovery.md"),
+/// Worker-agent system prompt for the **claude** provider: the shared head and tail, with a one-sentence tool discovery (#2509): its neige MCP tools are already in Claude's tool list.
+/// Wording is pinned by `tests/goldens/worker_prompt_claude.txt` (regenerate with `REGEN_PROMPT_GOLDENS=1`, then hand-verify the diff).
+pub(crate) const WORKER_CLAUDE_SYSTEM_PROMPT: &str = concat!(
+    include_str!("../prompts/worker/head.md"),
+    include_str!("../prompts/worker/tool-discovery-claude.md"),
     include_str!("../prompts/worker/tail.md")
 );
 
-/// codex worker variant: differs from [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] only in reporting completion through the native `neige_task_done` / `neige_task_fail` MCP tools instead of the `neige` shell CLI. Pinned by `tests/goldens/worker_prompt_mcp.txt`.
+/// codex worker variant: the same head and tail as [`WORKER_CLAUDE_SYSTEM_PROMPT`], with the code-mode tool discovery the Planner and Assistant share. Pinned by `tests/goldens/worker_prompt_codex.txt`.
 pub(crate) const WORKER_CODEX_SYSTEM_PROMPT: &str = concat!(
-    include_str!("../prompts/worker/head-mcp.md"),
+    include_str!("../prompts/worker/head.md"),
     include_str!("../prompts/tool-discovery.md"),
     include_str!("../prompts/worker/tail.md")
 );
@@ -95,15 +95,10 @@ pub(crate) fn validate_planner_prompt_contract(prompt: &str) -> Result<(), Strin
     Ok(())
 }
 
-/// Test-only seam: the rendered worker prompt for the provider under test. Doc-hidden so it does not widen the public prompt API.
+/// Test-only seam: the rendered codex worker prompt. Doc-hidden so it does not widen the public prompt API.
 #[doc(hidden)]
-pub fn render_worker_prompt_for_e2e(track_id: &str, codex: bool) -> String {
-    let role = if codex {
-        SeededCardRole::WorkerCodex
-    } else {
-        SeededCardRole::Worker
-    };
-    render_system_prompt(role.prompt_template(), track_id)
+pub fn render_worker_prompt_for_e2e(track_id: &str) -> String {
+    render_system_prompt(SeededCardRole::WorkerCodex.prompt_template(), track_id)
 }
 
 /// Test-only seam: the exact `developer_instructions` string a track assistant's `thread/start` must carry, so the test asserts equality against production's own value.
@@ -125,9 +120,9 @@ pub fn render_launchpad_assistant_prompt_for_test(track_id: &str) -> String {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SeededCardRole {
     Planner,
-    /// Worker card for a **claude** provider: completion is reported through the `neige` shell CLI.
-    Worker,
-    /// Worker card for a **codex** provider: completion is reported through the native `neige_task_done` / `neige_task_fail` MCP tools.
+    /// Worker card for a **claude** provider.
+    WorkerClaude,
+    /// Worker card for a **codex** provider.
     WorkerCodex,
 }
 
@@ -135,7 +130,7 @@ impl SeededCardRole {
     pub(crate) fn prompt_template(self) -> &'static str {
         match self {
             SeededCardRole::Planner => PLANNER_SYSTEM_PROMPT_TEMPLATE,
-            SeededCardRole::Worker => WORKER_SYSTEM_PROMPT_PLACEHOLDER,
+            SeededCardRole::WorkerClaude => WORKER_CLAUDE_SYSTEM_PROMPT,
             SeededCardRole::WorkerCodex => WORKER_CODEX_SYSTEM_PROMPT,
         }
     }
@@ -149,7 +144,7 @@ mod tests {
     fn render_system_prompt_substitutes_track_id() {
         for template in [
             PLANNER_SYSTEM_PROMPT_TEMPLATE,
-            WORKER_SYSTEM_PROMPT_PLACEHOLDER,
+            WORKER_CLAUDE_SYSTEM_PROMPT,
             WORKER_CODEX_SYSTEM_PROMPT,
         ] {
             let out = render_system_prompt(template, "track-abc");
@@ -219,19 +214,16 @@ mod tests {
             PLANNER_SYSTEM_PROMPT_TEMPLATE
         );
         assert_eq!(
-            SeededCardRole::Worker.prompt_template(),
-            WORKER_SYSTEM_PROMPT_PLACEHOLDER
+            SeededCardRole::WorkerClaude.prompt_template(),
+            WORKER_CLAUDE_SYSTEM_PROMPT
         );
         assert_eq!(
             SeededCardRole::WorkerCodex.prompt_template(),
             WORKER_CODEX_SYSTEM_PROMPT
         );
-        assert_ne!(
-            PLANNER_SYSTEM_PROMPT_TEMPLATE,
-            WORKER_SYSTEM_PROMPT_PLACEHOLDER
-        );
+        assert_ne!(PLANNER_SYSTEM_PROMPT_TEMPLATE, WORKER_CLAUDE_SYSTEM_PROMPT);
         assert_ne!(PLANNER_SYSTEM_PROMPT_TEMPLATE, WORKER_CODEX_SYSTEM_PROMPT);
-        assert_ne!(WORKER_SYSTEM_PROMPT_PLACEHOLDER, WORKER_CODEX_SYSTEM_PROMPT);
+        assert_ne!(WORKER_CLAUDE_SYSTEM_PROMPT, WORKER_CODEX_SYSTEM_PROMPT);
     }
 
     /// The expected wire spellings are pinned here on purpose: they are the independent statement that catches a silent shrink of the const.
@@ -325,8 +317,10 @@ mod tests {
         );
     }
 
-    const WORKER_PROMPT_CLI_GOLDEN: &str = include_str!("../tests/goldens/worker_prompt_cli.txt");
-    const WORKER_PROMPT_MCP_GOLDEN: &str = include_str!("../tests/goldens/worker_prompt_mcp.txt");
+    const WORKER_PROMPT_CLAUDE_GOLDEN: &str =
+        include_str!("../tests/goldens/worker_prompt_claude.txt");
+    const WORKER_PROMPT_CODEX_GOLDEN: &str =
+        include_str!("../tests/goldens/worker_prompt_codex.txt");
 
     /// Regenerate with `REGEN_PROMPT_GOLDENS=1`, then hand-verify the diff: a regen is a review, not a fix.
     #[test]
@@ -335,14 +329,14 @@ mod tests {
         let mut mismatched = Vec::new();
         for (file, template, golden) in [
             (
-                "worker_prompt_cli.txt",
-                WORKER_SYSTEM_PROMPT_PLACEHOLDER,
-                WORKER_PROMPT_CLI_GOLDEN,
+                "worker_prompt_claude.txt",
+                WORKER_CLAUDE_SYSTEM_PROMPT,
+                WORKER_PROMPT_CLAUDE_GOLDEN,
             ),
             (
-                "worker_prompt_mcp.txt",
+                "worker_prompt_codex.txt",
                 WORKER_CODEX_SYSTEM_PROMPT,
-                WORKER_PROMPT_MCP_GOLDEN,
+                WORKER_PROMPT_CODEX_GOLDEN,
             ),
         ] {
             let rendered = render_system_prompt(template, "track-golden-1635");
@@ -369,7 +363,7 @@ mod tests {
         }
         assert!(
             !regen,
-            "worker_prompt_cli.txt / worker_prompt_mcp.txt regenerated from the current \
+            "worker_prompt_claude.txt / worker_prompt_codex.txt regenerated from the current \
              prompts; hand-verify the diff, commit, and re-run without REGEN_PROMPT_GOLDENS"
         );
         assert!(
@@ -652,18 +646,13 @@ mod tests {
         }
     }
 
-    /// The codex prompt must name **every** tool the Worker can see: advertising only one of `neige_task_done` / `neige_task_fail` would leave a codex worker with no way to report the other outcome. The CLI prompt completes through `neige task done` and is exempt.
+    /// Each worker prompt must name **every** tool the Worker can see: advertising only one of `neige_task_done` / `neige_task_fail` would leave a worker with no way to report the other outcome.
     #[test]
     fn worker_prompts_name_only_tools_the_worker_role_can_see() {
-        // `min_named` guards against an empty scanner only: the CLI prompt names exactly the one forbidden tool; the codex prompt adds the two visible completion tools.
-        for (label, template, must_name_all_visible, min_named) in [
-            (
-                "CLI worker prompt",
-                WORKER_SYSTEM_PROMPT_PLACEHOLDER,
-                false,
-                1,
-            ),
-            ("codex worker prompt", WORKER_CODEX_SYSTEM_PROMPT, true, 3),
+        // `min_named` guards against an empty scanner only.
+        for (label, template) in [
+            ("claude worker prompt", WORKER_CLAUDE_SYSTEM_PROMPT),
+            ("codex worker prompt", WORKER_CODEX_SYSTEM_PROMPT),
         ] {
             assert_prompt_tool_names(
                 label,
@@ -671,8 +660,8 @@ mod tests {
                 calm_types::model::CardRole::Worker,
                 &[],
                 &["neige_task_accept", "neige_task_reject"],
-                must_name_all_visible,
-                min_named,
+                true,
+                3,
             );
         }
     }
@@ -722,22 +711,40 @@ mod tests {
         }
     }
 
-    /// Stated against the file, not a marker string, so a second copy of the tail that drifted would fail here rather than pass a `contains` check.
+    /// Stated against the files, not marker strings, so a drifted second copy of the head or tail fails here rather than passing a `contains` check. The two workers differ only in tool discovery (#2509): Claude's neige tools are already in its tool list, so it gets no code-mode lookup procedure.
     #[test]
-    fn worker_prompts_share_identical_reads_tail() {
+    fn worker_prompts_share_one_head_and_tail() {
+        let head = include_str!("../prompts/worker/head.md");
         let tail = include_str!("../prompts/worker/tail.md");
-        assert!(!tail.is_empty(), "the shared reads tail is empty");
-        let cli_head = WORKER_SYSTEM_PROMPT_PLACEHOLDER
-            .strip_suffix(tail)
-            .expect("CLI worker prompt ends with the shared reads tail");
-        let mcp_head = WORKER_CODEX_SYSTEM_PROMPT
-            .strip_suffix(tail)
-            .expect("codex worker prompt ends with the shared reads tail");
-        assert!(!cli_head.is_empty() && !mcp_head.is_empty());
-        assert_ne!(
-            cli_head, mcp_head,
-            "the two worker heads must differ (completion channel); if they do \
-             not, one provider's prompt was silently wired to the other's head"
+        assert!(!head.is_empty() && !tail.is_empty());
+        let discovery = |prompt: &'static str, label: &str| {
+            prompt
+                .strip_prefix(head)
+                .and_then(|rest| rest.strip_suffix(tail))
+                .unwrap_or_else(|| panic!("{label} worker prompt is head + discovery + tail"))
+        };
+        assert_eq!(
+            discovery(WORKER_CODEX_SYSTEM_PROMPT, "codex"),
+            include_str!("../prompts/tool-discovery.md")
         );
+        assert_eq!(
+            discovery(WORKER_CLAUDE_SYSTEM_PROMPT, "claude"),
+            include_str!("../prompts/worker/tool-discovery-claude.md")
+        );
+        for cli_path in [
+            "neige task done",
+            "neige task fail",
+            "neige task gate",
+            "neige tool ls",
+            "neige tool describe",
+            "ALL_TOOLS",
+            "loader",
+        ] {
+            assert!(
+                !WORKER_CLAUDE_SYSTEM_PROMPT.contains(cli_path),
+                "the claude worker prompt routes through the CLI or code-mode discovery: \
+                 `{cli_path}`"
+            );
+        }
     }
 }

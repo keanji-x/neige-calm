@@ -1,7 +1,7 @@
 //! Proves against the real codex binary that a codex worker's completion report reaches the kernel through the
 //! native `neige_task_done` MCP tool (channel 2) with channel 3 (`shell_environment_policy` carrying
 //! `NEIGE_MCP_SOCKET`/`NEIGE_MCP_TOKEN`) stripped, so the `neige task done` CLI cannot be the path.
-//! `#[ignore]`-gated + `feature = "codex-e2e"`; flip `WORKER_CODEX` to `false` to re-capture the CLI baseline.
+//! `#[ignore]`-gated + `feature = "codex-e2e"`.
 
 #![cfg(all(unix, feature = "codex-e2e"))]
 
@@ -37,9 +37,6 @@ use support::codex_fixture::resolve_codex_bin;
 use tokio::time::timeout;
 
 const TEST_CWD: &str = "/tmp";
-
-/// `false` = CLI worker prompt (needs channel 3), `true` = codex MCP prompt (rides channel 2, shipped).
-const WORKER_CODEX: bool = true;
 
 fn cfg(root: &std::path::Path, codex_bin: &str) -> Config {
     Config::parse_from(vec![
@@ -186,7 +183,7 @@ async fn worker_completes_with_channel3_stripped() {
     let mut bus_rx = events.subscribe();
     let (card_id, track_id) = seed_worker_card(&repo, &card_role_cache).await;
     repo.seed_track_area_cache(&track_area_cache).await.unwrap();
-    eprintln!("[worker-mcp] seeded track={track_id} worker_card={card_id} codex={WORKER_CODEX}");
+    eprintln!("[worker-mcp] seeded track={track_id} worker_card={card_id}");
 
     let daemon_token = auth::CardMcpToken::generate().into_inner();
     let daemon_token_hash = auth::hash_token(&daemon_token);
@@ -238,8 +235,7 @@ async fn worker_completes_with_channel3_stripped() {
     eprintln!("[worker-mcp] shared codex daemon started");
 
     let idempotency_key = "wm-strip-c3";
-    let worker_instructions =
-        calm_server::planner_card::render_worker_prompt_for_e2e(&track_id, WORKER_CODEX);
+    let worker_instructions = calm_server::planner_card::render_worker_prompt_for_e2e(&track_id);
 
     // Channel 3 STRIPPED: no `shell_environment_policy`, so only the native MCP tool (channel 2) can reach the kernel.
     let thread_id = daemon
@@ -326,8 +322,7 @@ contract, report task completion exactly once now, then stop."
     assert!(
         saw_completed,
         "kernel must commit Event::TaskCompleted for key={idempotency_key} \
-via the native MCP tool with channel 3 stripped (saw_failed={saw_failed:?}). \
-With SeededCardRole::Worker (CLI) this is RED; with WorkerCodex (MCP) GREEN."
+via the native MCP tool with channel 3 stripped (saw_failed={saw_failed:?})."
     );
     let _ = (&mcp_server, &daemon);
 }

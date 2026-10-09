@@ -1,5 +1,6 @@
 //! #2470: a Claude task worker's session has the kernel MCP server alone, authenticated as its
-//! own Worker card, at its first spawn and at a restart of its card.
+//! own Worker card, at its first spawn and at a restart of its card. #2509: its tools run without
+//! a permission prompt, and the task prompt routes the gate through them.
 use super::*;
 use crate::mcp_server::wiring::claude_mcp_config_json;
 
@@ -18,7 +19,8 @@ fn shell_argv(command_line: &str) -> Vec<String> {
         .collect()
 }
 
-/// The one `--mcp-config` file before `--`, with `--strict-mcp-config` beside it.
+/// The one `--mcp-config` file before `--`, with `--strict-mcp-config` beside it and the kernel
+/// server's tools allowed without a prompt.
 fn strict_mcp_config(argv: &[String]) -> PathBuf {
     let options = &argv[..argv
         .iter()
@@ -28,6 +30,23 @@ fn strict_mcp_config(argv: &[String]) -> PathBuf {
         options.iter().any(|arg| arg == "--strict-mcp-config"),
         "no --strict-mcp-config: {argv:?}"
     );
+    // `--allowedTools` takes a list: an option, not a positional, has to end it.
+    let allowed: Vec<_> = options
+        .iter()
+        .enumerate()
+        .filter(|(_, arg)| arg.starts_with("--allowedTools") || arg.starts_with("--allowed-tools"))
+        .map(|(at, arg)| {
+            assert_eq!(arg, "--allowedTools", "{argv:?}");
+            assert!(
+                options
+                    .get(at + 2)
+                    .is_some_and(|next| next.starts_with("--")),
+                "{argv:?}"
+            );
+            options[at + 1].as_str()
+        })
+        .collect();
+    assert_eq!(allowed, ["mcp__neige"], "{argv:?}");
     let configs: Vec<_> = options
         .iter()
         .enumerate()
@@ -59,6 +78,43 @@ fn claude_worker_command_line_makes_its_card_config_the_only_mcp_config() {
         Path::new("/tmp/claude worker's dir/mcp.json")
     );
     assert_eq!(argv.last().unwrap(), "Goal:\ndo the work", "{argv:?}");
+}
+
+/// #2509: a gated Claude worker is told to run its gate through the kernel's MCP tool, as the
+/// Codex worker is, never through the `neige` CLI.
+#[tokio::test]
+async fn claude_worker_task_prompt_runs_its_gate_through_the_mcp_tool() {
+    let harness = claude_worker_harness().await;
+    sqlx::query(
+        "INSERT INTO tasks (id, track_id, key, kind, goal, context_json, depends_on_json, status, \
+         created_at_ms, updated_at_ms, gate_json) \
+         VALUES (?1, ?2, 'gated', 'claude', 'test', 'null', '[]', 'dispatched', 1, 1, ?3)",
+    )
+    .bind(format!("{}:gated", harness.track_id))
+    .bind(&harness.track_id)
+    .bind(json!({ "steps": [{ "name": "check", "cmd": "true" }] }).to_string())
+    .execute(harness.repo.pool())
+    .await
+    .unwrap();
+    let (output, _, _) = prepare_claude_worker(&harness, "gated").await;
+    let prompt = output.output_string("prompt", "test").unwrap();
+
+    assert!(
+        prompt.contains("To run them, call `neige_task_gate` with `commit_message`:"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("\nGate step 1 `check`:"), "{prompt}");
+    assert!(!prompt.contains("neige task gate"), "{prompt}");
+    assert!(!prompt.contains("--commit-message"), "{prompt}");
+    let card_id = output.output_string("card_id", "test").unwrap();
+    release_workspace_lease_for_card_repo(
+        harness.repo.as_ref(),
+        &harness.events,
+        &card_id,
+        ReleaseDelivery::Commit(AttemptOutcome::Completed),
+    )
+    .await
+    .unwrap();
 }
 
 #[cfg(feature = "fixtures")]
@@ -146,6 +202,17 @@ async fn assert_kernel_mcp_only(
         .expect("the worker token must authenticate");
     assert_eq!(card.card_id.as_str(), card_id);
     assert_eq!(card.role, CardRole::Worker);
+    let listed: Vec<_> = crate::mcp_server::build_default_registry()
+        .descriptors_listed_for(card.role)
+        .into_iter()
+        .map(|descriptor| descriptor.name)
+        .collect();
+    for tool in ["neige_task_done", "neige_task_fail", "neige_task_gate"] {
+        assert!(
+            listed.iter().any(|name| name == tool),
+            "{tool} is not listed for the worker card's role: {listed:?}"
+        );
+    }
     assert_eq!(card.provider, AgentProvider::Claude);
     assert_eq!(card.session_id, worker_session_id);
 }

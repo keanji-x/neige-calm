@@ -9,24 +9,10 @@ use super::workspace_lease::worker::{CatchUpFacts, ReaderFacts, WorkerLeasePlan}
 use crate::error::Result;
 use crate::mcp_server::tools::task_gate::TOOL_TASK_GATE;
 
-/// How a worker calls the kernel's tools: Codex through the neige MCP server, Claude through the
-/// `neige` CLI from its shell (#2464 L7).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum WorkerSurface {
-    Mcp,
-    Cli,
-}
-
-/// What the gate section of a worker's prompt needs besides the steps: the worker's surface and
-/// the configured wait of one gate-run call.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct GateRunPrompt {
-    pub surface: WorkerSurface,
-    pub wait: GateRunWait,
-}
-
 /// The prompt both worker adapters freeze in their prepare transaction: the attempt's lease plan
-/// and its declared gate are read here, from the `tasks` row, never from the op payload.
+/// and its declared gate are read here, from the `tasks` row, never from the op payload. Both
+/// workers call the kernel's tools over its MCP server (#2479, #2509); `gate_run` is the
+/// configured wait of one gate-run call.
 pub(crate) async fn render_task_worker_prompt_tx(
     tx: &mut Tx<'_>,
     attempt_id: &str,
@@ -34,7 +20,7 @@ pub(crate) async fn render_task_worker_prompt_tx(
     context: &Value,
     acceptance: Option<&str>,
     plan: &WorkerLeasePlan,
-    gate_run: GateRunPrompt,
+    gate_run: GateRunWait,
 ) -> Result<String> {
     let gate = declared_gate_steps_tx(tx, attempt_id).await?;
     Ok(render_task_worker_prompt(
@@ -59,7 +45,7 @@ fn render_task_worker_prompt(
     acceptance: Option<&str>,
     reader: Option<&ReaderFacts>,
     catch_up: Option<&CatchUpFacts>,
-    gate: Option<(&[GateStep], GateRunPrompt)>,
+    gate: Option<(&[GateStep], GateRunWait)>,
 ) -> String {
     let prompt = render_worker_prompt(goal, context, acceptance);
     let gate = gate
@@ -67,7 +53,7 @@ fn render_task_worker_prompt(
             // A read-only task holds no kernel-delivery lease: nothing to commit, so its gate runs
             // only after the report.
             let run = reader.is_none().then_some(gate_run);
-            render_gate(attempt_id, steps, run)
+            render_gate(steps, run)
         })
         .unwrap_or_default();
     let reader = reader.map(render_reader_facts).unwrap_or_default();
@@ -79,27 +65,20 @@ fn render_task_worker_prompt(
 
 /// The gate section (#2464 §6): the kernel runs the steps, on the worker's request when it commits
 /// the checkout (`run`), otherwise after the report. The worker never runs them in its sandbox.
-fn render_gate(attempt_id: &str, steps: &[GateStep], run: Option<GateRunPrompt>) -> String {
+fn render_gate(steps: &[GateStep], run: Option<GateRunWait>) -> String {
     let mut out = match run {
-        Some(GateRunPrompt { surface, wait }) => {
-            let (tool, message) = match surface {
-                WorkerSurface::Mcp => (format!("`{TOOL_TASK_GATE}`"), "`commit_message`"),
-                WorkerSurface::Cli => (
-                    format!("`neige task gate --attempt-id {attempt_id}`"),
-                    "`--commit-message`",
-                ),
-            };
+        Some(wait) => {
             format!(
                 "\n\nThis task has a gate: the steps below run in order from the checkout root \
-                 under /bin/sh, outside your sandbox. To run them, call {tool} with {message}: the \
-                 full message of the commit (what the repository requires: subject, body, \
-                 trailers). The kernel makes your current changes the one commit of this attempt, \
-                 with that message, and runs the gate on it here. It answers within {}; while it \
-                 says `running`, call it again. Do not edit files while a run is in progress. Fix \
-                 what a failing step reports and run again. If the last run passed and you change \
-                 nothing after it, that run is the gate's verdict when you report done, and its \
-                 commit is what the kernel delivers. Otherwise the kernel runs the gate after you \
-                 report. You need not run these steps yourself.",
+                 under /bin/sh, outside your sandbox. To run them, call `{TOOL_TASK_GATE}` with \
+                 `commit_message`: the full message of the commit (what the repository requires: \
+                 subject, body, trailers). The kernel makes your current changes the one commit of \
+                 this attempt, with that message, and runs the gate on it here. It answers within \
+                 {}; while it says `running`, call it again. Do not edit files while a run is in \
+                 progress. Fix what a failing step reports and run again. If the last run passed \
+                 and you change nothing after it, that run is the gate's verdict when you report \
+                 done, and its commit is what the kernel delivers. Otherwise the kernel runs the \
+                 gate after you report. You need not run these steps yourself.",
                 wait.render()
             )
         }
@@ -217,65 +196,50 @@ mod tests {
         ]
     }
 
-    fn gate_run(surface: WorkerSurface) -> GateRunPrompt {
-        GateRunPrompt {
-            surface,
-            wait: GateRunWait::DEFAULT,
-        }
-    }
-
-    /// P1 (#2464): a gated task with a kernel commit is told to have the kernel run its gate, by
-    /// its surface's spelling of the tool, with the configured wait; the sandbox precheck is gone.
+    /// P1 (#2464): a gated task with a kernel commit is told to have the kernel run its gate
+    /// through the MCP tool, with the configured wait; the sandbox precheck is gone.
     #[test]
     fn a_gated_task_prompt_names_the_gate_run_tool_and_its_wait() {
         let steps = steps();
-        for (surface, tool, message) in [
-            (WorkerSurface::Mcp, "`neige_task_gate`", "`commit_message`"),
-            (
-                WorkerSurface::Cli,
-                "`neige task gate --attempt-id t:build`",
-                "`--commit-message`",
+        let out = render_task_worker_prompt(
+            "t:build",
+            "g",
+            &Value::Null,
+            None,
+            None,
+            None,
+            Some((&steps, GateRunWait::DEFAULT)),
+        );
+        assert!(
+            out.contains(
+                "To run them, call `neige_task_gate` with `commit_message`: the full message"
             ),
-        ] {
-            let out = render_task_worker_prompt(
-                "t:build",
-                "g",
-                &Value::Null,
-                None,
-                None,
-                None,
-                Some((&steps, gate_run(surface))),
-            );
-            assert!(
-                out.contains(&format!(
-                    "To run them, call {tool} with {message}: the full message"
-                )),
-                "{out}"
-            );
-            assert!(out.contains("It answers within 90 seconds;"), "{out}");
-            assert!(out.contains("outside your sandbox"), "{out}");
-            assert!(
-                out.contains(
-                    "If the last run passed and you change nothing after it, that run is the \
-                     gate's verdict when you report done"
-                ),
-                "{out}"
-            );
-            assert!(
-                out.contains("You need not run these steps yourself."),
-                "{out}"
-            );
-            assert!(!out.contains("run every step yourself"), "{out}");
-            assert!(!out.contains("When a step cannot run here"), "{out}");
-            let fmt = out
-                .find("\nGate step 1 `fmt`:\n```sh\ncargo fmt --check\n```")
-                .expect(&out);
-            let test = out
-                .find("\nGate step 2 `test`:\n```sh\ncargo test -p x\n```")
-                .expect(&out);
-            let attempt = out.find("\n\nTask attempt_id: t:build").expect(&out);
-            assert!(fmt < test && test < attempt, "{out}");
-        }
+            "{out}"
+        );
+        assert!(!out.contains("neige task gate"), "{out}");
+        assert!(out.contains("It answers within 90 seconds;"), "{out}");
+        assert!(out.contains("outside your sandbox"), "{out}");
+        assert!(
+            out.contains(
+                "If the last run passed and you change nothing after it, that run is the \
+                 gate's verdict when you report done"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("You need not run these steps yourself."),
+            "{out}"
+        );
+        assert!(!out.contains("run every step yourself"), "{out}");
+        assert!(!out.contains("When a step cannot run here"), "{out}");
+        let fmt = out
+            .find("\nGate step 1 `fmt`:\n```sh\ncargo fmt --check\n```")
+            .expect(&out);
+        let test = out
+            .find("\nGate step 2 `test`:\n```sh\ncargo test -p x\n```")
+            .expect(&out);
+        let attempt = out.find("\n\nTask attempt_id: t:build").expect(&out);
+        assert!(fmt < test && test < attempt, "{out}");
         let short = render_task_worker_prompt(
             "t:build",
             "g",
@@ -285,10 +249,7 @@ mod tests {
             None,
             Some((
                 &steps,
-                GateRunPrompt {
-                    surface: WorkerSurface::Mcp,
-                    wait: GateRunWait::for_idle(std::time::Duration::from_secs(60)),
-                },
+                GateRunWait::for_idle(std::time::Duration::from_secs(60)),
             )),
         );
         assert!(short.contains("It answers within 30 seconds;"), "{short}");
@@ -312,7 +273,7 @@ mod tests {
             None,
             Some(&reader),
             None,
-            Some((&steps, gate_run(WorkerSurface::Mcp))),
+            Some((&steps, GateRunWait::DEFAULT)),
         );
         assert!(
             out.contains(
