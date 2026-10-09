@@ -1251,7 +1251,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
                     &card_id,
                     &terminal_id,
                 )
-                .await;
+                .await?;
                 Ok(())
             }
             "delete_claude_settings_dir" => {

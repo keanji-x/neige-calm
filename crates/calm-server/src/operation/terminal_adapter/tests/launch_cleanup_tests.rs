@@ -28,6 +28,7 @@ enum Fault {
     WrongIdentity,
     ExpiredLease,
     NegativeWriteFailure,
+    EvidenceReadFailure,
 }
 
 #[tokio::test]
@@ -75,6 +76,11 @@ async fn spawn_failed_negative_cas_fences_retain_ownership() {
     ] {
         exercise(fault).await;
     }
+}
+
+#[tokio::test]
+async fn spawn_failed_evidence_read_failure_retains_compensation_for_retry() {
+    exercise(Fault::EvidenceReadFailure).await;
 }
 
 #[tokio::test]
@@ -232,6 +238,16 @@ async fn exercise(fault: Fault) {
     if let Some(sql) = interruption {
         sqlx::query(sql).execute(harness.repo.pool()).await.unwrap();
     }
+    if fault == Fault::EvidenceReadFailure {
+        sqlx::query("CREATE TRIGGER conflict_evidence AFTER UPDATE OF phase ON operations WHEN NEW.phase='compensating' \
+            BEGIN INSERT INTO operations (id,operation_key,kind,payload_hash,target_type,target_id,target_json, \
+            payload_json,tx_output_json,phase,created_at_ms,updated_at_ms) VALUES ('conflict','conflict',NEW.kind, \
+            NEW.payload_hash,NEW.target_type,NEW.target_id,NEW.target_json,NEW.payload_json,NEW.tx_output_json, \
+            'failed',1,1); END").execute(harness.repo.pool()).await.unwrap();
+        sqlx::query("CREATE TRIGGER block_stuck BEFORE UPDATE OF phase ON operations WHEN NEW.phase='stuck' \
+            BEGIN SELECT RAISE(ABORT,'hold failed cleanup for reboot'); END")
+            .execute(harness.repo.pool()).await.unwrap();
+    }
     let submitted_key = key.clone();
     let drive = runtime.clone();
     let run = tokio::spawn(async move {
@@ -299,7 +315,65 @@ async fn exercise(fault: Fault) {
             .await
             .unwrap()
             .unwrap();
-        if matches!(fault, Fault::AckRestart | Fault::CompensationRestart) {
+        if fault == Fault::EvidenceReadFailure {
+            let op = op_repo
+                .find_by_idempotency_key(kind, &key)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                op.phase,
+                Phase::Compensating,
+                "unavailable evidence must not complete cleanup: {result:?}"
+            );
+            let state: crate::operation::CompensationStateVersioned =
+                serde_json::from_value(op.compensation_state.clone().unwrap()).unwrap();
+            assert!(!state.steps[0].completed);
+            assert!(
+                state.steps[0]
+                    .last_error
+                    .as_deref()
+                    .unwrap()
+                    .contains("conflicting launch ownership")
+            );
+            assert_eq!(state.steps[0].attempts, 1);
+            assert!(result.is_err(), "blocked fallback must expose the failure");
+            assert!(workspace.path().is_dir());
+            let output = op.tx_output.as_ref().unwrap();
+            assert!(
+                harness
+                    .repo
+                    .card_get(&output.output_string("card_id", "test").unwrap())
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                harness
+                    .repo
+                    .terminal_get(&output.output_string("terminal_id", "test").unwrap())
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+            sqlx::query("DROP TRIGGER conflict_evidence")
+                .execute(harness.repo.pool())
+                .await
+                .unwrap();
+            sqlx::query("DROP TRIGGER block_stuck")
+                .execute(harness.repo.pool())
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM operations WHERE id='conflict'")
+                .execute(harness.repo.pool())
+                .await
+                .unwrap();
+            runtime
+                .apply_recovery(runtime.recover_on_boot().await.unwrap())
+                .await
+                .unwrap();
+            op.id
+        } else if matches!(fault, Fault::AckRestart | Fault::CompensationRestart) {
             // Block both the interrupted write and drive's fallback Stuck write:
             // only the durable phase/checkpoint define the crash boundary.
             let _ = result;
@@ -502,7 +576,10 @@ async fn exercise(fault: Fault) {
     if invalid
         && !matches!(
             fault,
-            Fault::InvalidCwd | Fault::AckRestart | Fault::CompensationRestart
+            Fault::InvalidCwd
+                | Fault::AckRestart
+                | Fault::CompensationRestart
+                | Fault::EvidenceReadFailure
         )
     {
         assert_eq!(output.data["terminal_launch"]["state"], "requested");

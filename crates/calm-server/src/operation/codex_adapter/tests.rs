@@ -22,13 +22,21 @@ struct WorkerLeaseHarness {
 }
 
 async fn worker_lease_harness() -> WorkerLeaseHarness {
+    worker_lease_harness_with_disk(false).await
+}
+
+async fn worker_lease_harness_with_disk(disk: bool) -> WorkerLeaseHarness {
     let repo_root = tempfile::tempdir().unwrap();
     init_git_repo(repo_root.path());
-    let repo = Arc::new(
-        crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
-            .await
-            .unwrap(),
-    );
+    let url = if disk {
+        format!(
+            "sqlite:{}",
+            repo_root.path().join(".git/test.sqlite").display()
+        )
+    } else {
+        "sqlite::memory:".into()
+    };
+    let repo = Arc::new(crate::db::sqlite::SqlxRepo::open(&url).await.unwrap());
     let area = crate::db::RepoSyncDomainRaw::area_create(
         repo.as_ref(),
         crate::model::NewArea {

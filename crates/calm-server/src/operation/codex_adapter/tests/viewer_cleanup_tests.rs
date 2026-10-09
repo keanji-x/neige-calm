@@ -13,19 +13,24 @@ use std::time::Duration;
 
 #[tokio::test]
 async fn codex_viewer_completion_preserves_business() {
-    exercise_viewer_report(crate::model::TaskStatus::Done).await;
+    exercise_viewer_report(crate::model::TaskStatus::Done, false).await;
 }
 #[tokio::test]
 async fn codex_viewer_failure_preserves_business() {
-    exercise_viewer_report(crate::model::TaskStatus::Failed).await;
+    exercise_viewer_report(crate::model::TaskStatus::Failed, false).await;
 }
 #[tokio::test]
 async fn codex_viewer_verifying_preserves_business() {
-    exercise_viewer_report(crate::model::TaskStatus::Verifying).await;
+    exercise_viewer_report(crate::model::TaskStatus::Verifying, false).await;
 }
 
-async fn exercise_viewer_report(expected: crate::model::TaskStatus) {
-    let harness = worker_lease_harness().await;
+#[tokio::test]
+async fn codex_rejected_viewer_restart_preserves_started_business() {
+    exercise_viewer_report(crate::model::TaskStatus::Verifying, true).await;
+}
+
+async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: bool) {
+    let harness = worker_lease_harness_with_disk(restart).await;
     harness
         .repo
         .seed_track_area_cache(&harness.adapter.track_area_cache)
@@ -116,6 +121,7 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus) {
     let op_repo = Arc::new(SqlxOperationRepo::new(harness.repo.pool().clone()));
     let mut daemon = DaemonClient::new_stub();
     daemon.proc_supervisor_sock = Some(sock);
+    let daemon = Arc::new(daemon);
     let completion = OperationCompletionBus::new();
     let runtime = Arc::new(
         OperationRuntime::new(
@@ -126,7 +132,7 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus) {
             SpawnCtx::new(
                 harness.repo.clone(),
                 op_repo.clone(),
-                Arc::new(daemon),
+                daemon.clone(),
                 TerminalRendererRegistry::new_with_repo(harness.repo.clone()),
                 harness.events.clone(),
                 completion,
@@ -141,6 +147,11 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus) {
         idempotency_key: Some(task.id.clone()),
         payload_hash: crate::routes::idempotency_key::stable_payload_hash(&payload).unwrap(),
     };
+    if restart {
+        sqlx::query("CREATE TRIGGER interrupt_launch BEFORE UPDATE OF phase ON operations WHEN NEW.phase IN \
+            ('spawn_succeeded','compensating','stuck') BEGIN SELECT RAISE(ABORT,'viewer ack interruption'); END")
+            .execute(harness.repo.pool()).await.unwrap();
+    }
     let submitted_key = key.clone();
     let run = tokio::spawn(async move { runtime.submit(kind, submitted_key, payload).await });
     let _run_abort = Abort(run.abort_handle());
@@ -166,6 +177,147 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus) {
         b"preserve this completed work\n",
     )
     .unwrap();
+    if restart {
+        resume.notify_one();
+        let _ = tokio::time::timeout(Duration::from_secs(10), run)
+            .await
+            .unwrap()
+            .unwrap();
+        let op = op_repo.get_operation(&op.id).await.unwrap().unwrap();
+        assert_eq!(op.phase, Phase::SpawnStarted);
+        assert_eq!(
+            op.tx_output.as_ref().unwrap().data["terminal_launch"]["state"],
+            "rejected"
+        );
+        let session = harness
+            .repo
+            .session_projection_by_id(&session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(session.thread_id.is_some());
+        assert!(session.active_turn_id.is_some());
+        sqlx::query("DROP TRIGGER interrupt_launch")
+            .execute(harness.repo.pool())
+            .await
+            .unwrap();
+        let reboot_repo = Arc::new(
+            crate::db::sqlite::SqlxRepo::open(&format!(
+                "sqlite:{}",
+                harness.repo_root.path().join(".git/test.sqlite").display()
+            ))
+            .await
+            .unwrap(),
+        );
+        let reboot_ops = Arc::new(SqlxOperationRepo::new(reboot_repo.pool().clone()));
+        let events = crate::event::EventBus::new();
+        let state = crate::state::AppState::from_parts(
+            reboot_repo.clone(),
+            events.clone(),
+            daemon.clone(),
+            Arc::new(crate::plugin_host::PluginHost::new_full(
+                Arc::new(crate::plugin_host::PluginRegistry::empty()),
+                reboot_repo.clone(),
+                std::path::PathBuf::new(),
+                dir.path().join("plugins"),
+                vec![],
+                events.clone(),
+                write,
+            )),
+            Arc::new(CodexClient::new_stub()),
+            None,
+            None,
+        );
+        crate::reconcile_supervisor_on_boot(&state).await;
+        let reboot_adapter = CodexWorkerAdapter::new(
+            reboot_repo.clone(),
+            Arc::new(CodexClient::new_stub()),
+            shared.clone(),
+            None,
+            harness.adapter.card_role_cache.clone(),
+            harness.adapter.track_area_cache.clone(),
+            harness.repo_root.path().into(),
+        );
+        let bus = OperationCompletionBus::new();
+        let reboot = OperationRuntime::new(
+            reboot_ops.clone(),
+            vec![Arc::new(reboot_adapter)],
+            events.clone(),
+            bus.clone(),
+            SpawnCtx::new(
+                reboot_repo.clone(),
+                reboot_ops.clone(),
+                daemon,
+                TerminalRendererRegistry::new_with_repo(reboot_repo.clone()),
+                events,
+                bus,
+            ),
+        )
+        .await
+        .unwrap();
+        for _ in 0..2 {
+            reboot
+                .apply_recovery(reboot.recover_on_boot().await.unwrap())
+                .await
+                .unwrap();
+            reboot.drive().await.unwrap();
+        }
+        assert_eq!(
+            shared.interrupted_turns_for_test().len(),
+            0,
+            "viewer rejection must not interrupt business"
+        );
+        assert_eq!(
+            shared.started_turns_for_test().len(),
+            1,
+            "recovery must not duplicate turn/start"
+        );
+        assert_eq!(
+            starts.load(Ordering::SeqCst),
+            1,
+            "recovery must not repeat viewer Ensure"
+        );
+        assert_eq!(
+            reboot_ops
+                .get_operation(&op.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .phase,
+            Phase::Succeeded
+        );
+        assert!(reboot_repo.card_get(&card_id).await.unwrap().is_some());
+        assert!(
+            reboot_repo
+                .session_projection_by_id(&session_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            reboot_repo
+                .terminal_get(&output.output_string("terminal_id", "test").unwrap())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let recovered_session = reboot_repo
+            .session_projection_by_id(&session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered_session.thread_id, session.thread_id);
+        assert_eq!(recovered_session.active_turn_id, session.active_turn_id);
+        let lease_state: String =
+            sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id=?1")
+                .bind(output.output_string("lease_id", "test").unwrap())
+                .fetch_one(reboot_repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(lease_state, "held");
+        assert!(cwd.join("completed-notes.txt").is_file());
+        return;
+    }
     let session = harness
         .repo
         .session_projection_by_id(&session_id)

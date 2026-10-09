@@ -1185,8 +1185,11 @@ async fn try_spawn_pipe(
         });
     }
 
+    // Tokio may fail building its child handle after std::process::Command has
+    // successfully exec'd (Tokio 1.52.3 process/mod.rs and unix::build_child).
+    // An opaque spawn error therefore cannot prove that no child was created.
     let child = cmd.spawn().map_err(|e| EnsureProcFailure {
-        disposition: calm_session::control::SpawnFailedDisposition::NoChildCreated,
+        disposition: calm_session::control::SpawnFailedDisposition::Unknown,
         error: format!("spawn pty bootstrap process: {e}"),
         child_already_reaped: false,
     })?;

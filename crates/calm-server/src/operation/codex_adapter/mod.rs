@@ -922,14 +922,24 @@ impl ProviderAdapter for CodexWorkerAdapter {
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
         let card_id = output.output_string("card_id", "codex")?;
-        let runtime_id = output.output_string("runtime_id", "codex")?;
+        let session_id = output.output_string("runtime_id", "codex")?;
         let terminal_id = output.output_string("terminal_id", "codex")?;
         let track_id = TrackId::from(output.output_string("track_id", "codex")?);
         let cwd = output.output_string("cwd", "codex")?;
         let rendered_prompt = output.output_string("prompt", "codex")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
 
-        super::terminal_launch::require_not_rejected(&output.data, &terminal_id)?;
+        if super::terminal_launch::rejected(&output.data, &terminal_id)? {
+            // This receipt describes the optional viewer, not the shared business turn.
+            // Only the persisted business contract authorizes successful recovery.
+            if let Some(session) = ctx.repo.session_projection_by_id(&session_id).await?
+                && TxOutput::non_empty_string(session.thread_id.as_deref()).is_some()
+                && TxOutput::non_empty_string(session.active_turn_id.as_deref()).is_some()
+            {
+                return Ok(SpawnOutcome::Ready(SpawnHandle::NoOp));
+            }
+            super::terminal_launch::require_not_rejected(&output.data, &terminal_id)?;
+        }
         let term = ctx
             .repo
             .terminal_get(&terminal_id)
@@ -979,7 +989,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
             .card_get(&card_id)
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-        let mcp_token = mint_card_mcp_token(ctx, &card_id, &runtime_id).await?;
+        let mcp_token = mint_card_mcp_token(ctx, &card_id, &session_id).await?;
 
         let handle = spawn_codex_worker_via_shared_daemon(CodexWorkerSpawnCtx {
             spawn_ctx: ctx,
@@ -990,7 +1000,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
             mcp_server: self.mcp_server.as_deref(),
             card: &card,
             term: &term,
-            worker_session_id: &runtime_id,
+            worker_session_id: &session_id,
             track_id: &track_id,
             mcp_token: Some(mcp_token.as_str()),
             rendered_prompt: &rendered_prompt,
@@ -1114,7 +1124,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
             &card_id,
             &terminal_id,
         )
-        .await;
+        .await?;
         if outcome == WorkerCleanupOutcome::Deleted
             && let Some((thread_id, persisted_turn)) = runtime_turn
         {

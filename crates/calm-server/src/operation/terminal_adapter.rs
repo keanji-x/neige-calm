@@ -913,7 +913,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             card_id,
             terminal_id,
         )
-        .await;
+        .await?;
         Ok(())
     }
 }

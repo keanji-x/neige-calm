@@ -29,7 +29,7 @@ pub(crate) async fn compensate_worker_rows(
     card_role_cache: &CardRoleCache,
     card_id: &str,
     terminal_id: &str,
-) -> WorkerCleanupOutcome {
+) -> crate::error::Result<WorkerCleanupOutcome> {
     let latest = match repo.terminal_get(terminal_id).await {
         Ok(opt) => opt,
         Err(e) => {
@@ -45,14 +45,8 @@ pub(crate) async fn compensate_worker_rows(
     };
 
     if let Some(term) = latest.as_ref() {
-        let rejected = match super::terminal_launch::rejected_for_terminal(repo, terminal_id).await
-        {
-            Ok(rejected) => rejected && term.pid.is_none(),
-            Err(error) => {
-                tracing::error!(%error, "worker compensation launch evidence unavailable; retaining rows");
-                return WorkerCleanupOutcome::Preserved;
-            }
-        };
+        let rejected = super::terminal_launch::rejected_for_terminal(repo, terminal_id).await?
+            && term.pid.is_none();
         if !rejected && (term.exit_code.is_some() || term.signal_killed) {
             tracing::error!(
                 card_id = %card_id,
@@ -62,7 +56,7 @@ pub(crate) async fn compensate_worker_rows(
                 "worker compensation: reached preserved branch after spawn failure; \
                  this should be unreachable because adapters convert fast-exit evidence to success",
             );
-            return WorkerCleanupOutcome::Preserved;
+            return Ok(WorkerCleanupOutcome::Preserved);
         }
 
         if terminal_renderer.get(&term.id).is_some() {
@@ -97,7 +91,7 @@ pub(crate) async fn compensate_worker_rows(
             "worker compensation rollback failed; sweeper fallback will reap on next tick",
         );
     }
-    WorkerCleanupOutcome::Deleted
+    Ok(WorkerCleanupOutcome::Deleted)
 }
 
 /// A failed start is not permission to discard an execution that may be live.
