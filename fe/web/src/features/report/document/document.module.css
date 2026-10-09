@@ -575,7 +575,6 @@
   /* Its own scroll container so a long line cannot widen the page (§3.2).
      `--surface-code` and nothing else: the legacy drew a hairline around this
      too, and a fill that already separates does not also get a line. */
-  .code,
   .raw {
     overflow-x: auto;
     padding: var(--space-6);
@@ -583,9 +582,6 @@
     background: var(--surface-code);
     color: var(--text-2);
     font: var(--type-code);
-  }
-
-  .raw {
     white-space: pre-wrap;
   }
 
@@ -672,8 +668,7 @@
       white-space: normal;
     }
 
-    .code,
-    .raw,
+      .raw,
     .tableWrap {
       max-inline-size: 100%;
     }

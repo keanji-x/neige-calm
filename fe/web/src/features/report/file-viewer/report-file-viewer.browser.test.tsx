@@ -1,4 +1,6 @@
-import { cleanup, render, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { EditorView } from '@codemirror/view';
+import { language } from '@codemirror/language';
 import { page as browserPage } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -7,7 +9,7 @@ import '../../../styles/entry.css';
 import type { WorkspaceFilePort } from '../../../../../core/domain/fs.ts';
 import { ReportFileViewer } from './public.tsx';
 
-afterEach(() => { cleanup(); document.body.replaceChildren(); });
+afterEach(() => { cleanup(); document.getSelection()?.removeAllRanges(); vi.restoreAllMocks(); document.body.replaceChildren(); });
 
 function files(path: string, text: string): WorkspaceFilePort {
   return {
@@ -124,4 +126,22 @@ describe('ReportFileViewer', () => {
     const layer = document.querySelector<HTMLElement>('[data-nc-report-file-viewer]')!;
     expect(layer.scrollWidth).toBeLessThanOrEqual(layer.clientWidth);
   });
+});
+
+it('shares filename highlighting and original copying in the standalone file reader', async () => {
+  const original = 'fn main() {}\r\n';
+  const write = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
+  const close = vi.fn();
+  render(<div style={{ position: 'relative', inlineSize: 900, blockSize: 600 }}>
+    <ReportFileViewer path="src/main.rs" files={files('src/main.rs', original)} fileRoot="/repo" wide onClose={close} />
+  </div>);
+  const content = await screen.findByRole('textbox', { name: 'Code' });
+  const view = EditorView.findFromDOM(content);
+  if (view === null) throw new Error('Standalone code view missing');
+  await waitFor(() => { expect(view.state.facet(language)?.name).toBe('rust'); });
+  screen.getByRole('button', { name: 'Copy code' }).click();
+  expect(write).toHaveBeenCalledExactlyOnceWith(original);
+  content.focus();
+  content.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  expect(close).toHaveBeenCalledOnce();
 });

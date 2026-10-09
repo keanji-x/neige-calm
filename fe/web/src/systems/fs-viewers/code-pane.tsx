@@ -2,11 +2,12 @@
 
 import { useEffect, useMemo, useRef } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
-import { loadLanguage } from '@uiw/codemirror-extensions-langs';
+import { useState } from '../../ui/state/public.ts';
+import { useCodeLanguage, type CodeTheme } from '../../ui/code/public.tsx';
 import { githubDark, githubLight } from '@uiw/codemirror-theme-github';
 import { MergeView } from '@codemirror/merge';
 import { EditorView, keymap } from '@codemirror/view';
-import { Prec } from '@codemirror/state';
+import { Compartment, EditorState, Prec } from '@codemirror/state';
 import {
   SearchQuery,
   closeSearchPanel,
@@ -19,7 +20,7 @@ import {
   setSearchQuery,
 } from '@codemirror/search';
 
-export type PaneTheme = 'light' | 'dark';
+export type PaneTheme = CodeTheme;
 
 /** What the shared search bar drives; the seam that keeps the bar from knowing about CodeMirror. */
 export interface PaneSearchAdapter {
@@ -107,6 +108,7 @@ function buildCodeSearchAdapter(
 export function CodePane({
   path, text, theme, onSearchAdapterReady, onSearchCount, onSlashOpen,
 }: CodePaneProps) {
+  const { support } = useCodeLanguage({ kind: 'filename', value: path }, text);
   const viewRef = useRef<EditorView | null>(null);
   /* Callbacks live in refs so a caller re-creating them per render cannot tear the editor down. */
   const onSearchAdapterReadyRef = useRef(onSearchAdapterReady);
@@ -118,7 +120,9 @@ export function CodePane({
 
   const extensions = useMemo(
     () => [
-      ...extensionsFor(path),
+      EditorView.lineWrapping,
+      EditorView.contentAttributes.of({ tabindex: '0', 'aria-readonly': 'true', 'aria-label': 'File code' }),
+      ...(support === null ? [] : [support]),
       search({ createPanel: emptyPanel }),
       /* `Prec.highest` so `/` reaches the bar before any language/default binding — and before Firefox's quick-find. */
       Prec.highest(keymap.of([{
@@ -126,7 +130,7 @@ export function CodePane({
         run: () => { onSlashOpenRef.current?.(); return true; },
       }])),
     ],
-    [path],
+    [support],
   );
 
   useEffect(() => {
@@ -156,7 +160,8 @@ export function CodePane({
       height="100%"
       theme={theme === 'dark' ? githubDark : githubLight}
       extensions={extensions}
-      editable={false}
+      editable={true}
+      readOnly={true}
       basicSetup={{ lineNumbers: true, foldGutter: true }}
       onCreateEditor={(view) => { viewRef.current = view; }}
     />
@@ -166,19 +171,36 @@ export function CodePane({
 /** HEAD on the left, the working tree on the right. `null` on either side is a real state (not in HEAD / deleted), exposed as `data-nc-fs-empty-*`. */
 export function DiffPane({ path, headText, workingText, theme }: DiffPaneProps) {
   const ref = useRef<HTMLDivElement | null>(null);
-  const extensions = useMemo(() => extensionsFor(path, theme), [path, theme]);
+  const mergeRef = useRef<MergeView | null>(null);
+  const [configuration] = useState(() => new Compartment());
+  const { support } = useCodeLanguage({ kind: 'filename', value: path }, (headText ?? '') + (workingText ?? ''));
+  const extensions = useMemo(() => [
+    EditorView.lineWrapping,
+    theme === 'dark' ? githubDark : githubLight,
+    ...(support === null ? [] : [support]),
+  ], [support, theme]);
 
   useEffect(() => {
     const parent = ref.current;
     if (parent === null) return;
+    const initial = [EditorState.readOnly.of(true),
+      EditorView.contentAttributes.of({ tabindex: '0', 'aria-readonly': 'true' }), configuration.of([])];
     const merge = new MergeView({
       parent,
-      a: { doc: headText ?? '', extensions },
-      b: { doc: workingText ?? '', extensions },
+      a: { doc: headText ?? '', extensions: [initial, EditorView.contentAttributes.of({ 'aria-label': 'HEAD code' })] },
+      b: { doc: workingText ?? '', extensions: [initial, EditorView.contentAttributes.of({ 'aria-label': 'Working tree code' })] },
       collapseUnchanged: { margin: 3, minSize: 4 },
     });
-    return () => { merge.destroy(); };
-  }, [extensions, headText, workingText]);
+    mergeRef.current = merge;
+    return () => { mergeRef.current = null; merge.destroy(); };
+  }, [configuration, path, headText, workingText]);
+
+  useEffect(() => {
+    const merge = mergeRef.current;
+    if (merge === null) return;
+    merge.a.dispatch({ effects: configuration.reconfigure(extensions) });
+    merge.b.dispatch({ effects: configuration.reconfigure(extensions) });
+  }, [configuration, extensions, path, headText, workingText]);
 
   return (
     <div
@@ -189,53 +211,4 @@ export function DiffPane({ path, headText, workingText, theme }: DiffPaneProps) 
       data-nc-fs-empty-right={workingText === null ? 'true' : undefined}
     />
   );
-}
-
-function extensionsFor(path: string, theme?: PaneTheme) {
-  const language = languageName(path);
-  const lang = language === null
-    ? null
-    : loadLanguage(language as Parameters<typeof loadLanguage>[0]);
-  return [
-    EditorView.editable.of(false),
-    EditorView.lineWrapping,
-    ...(theme === undefined ? [] : [theme === 'dark' ? githubDark : githubLight]),
-    ...(lang === null ? [] : [lang]),
-  ];
-}
-
-/** Deliberately a short table: an unknown extension falls through to no highlighting rather than a wrong guess. */
-function languageName(path: string): string | null {
-  const extension = path.split('.').pop()?.toLowerCase();
-  switch (extension) {
-    case 'cjs':
-    case 'cts':
-    case 'js':
-    case 'jsx':
-    case 'mjs':
-      return 'javascript';
-    case 'mts':
-    case 'ts':
-    case 'tsx':
-      return 'typescript';
-    case 'rs': return 'rust';
-    case 'py': return 'python';
-    case 'go': return 'go';
-    case 'java': return 'java';
-    case 'json': return 'json';
-    case 'md':
-    case 'markdown':
-      return 'markdown';
-    case 'css': return 'css';
-    case 'html': return 'html';
-    case 'toml': return 'toml';
-    case 'yaml':
-    case 'yml':
-      return 'yaml';
-    case 'sh':
-    case 'bash':
-    case 'zsh':
-      return 'shell';
-    default: return null;
-  }
 }

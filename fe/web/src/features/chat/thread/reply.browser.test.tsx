@@ -1,8 +1,11 @@
+import { EditorView } from '@codemirror/view';
+import { language } from '@codemirror/language';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
 
 import '../../../styles/entry.css';
 import type { Conversation, ConversationTurn } from '../../../../../core/domain/conversation.ts';
+import { Reply } from './reply.tsx';
 import { ChatThread } from './public.tsx';
 
 afterEach(cleanup);
@@ -38,4 +41,13 @@ it('loads a local screenshot in streamed and stored replies and fits a narrow co
   } finally {
     URL.revokeObjectURL(screenshot);
   }
+});
+
+it('shares the code contract with Astryx fences through the real chat renderer', async () => {
+  render(<Reply text="```rust\nfn main() {}\n```" imageFiles={null} />);
+  await waitFor(() => {
+    const content = screen.getByRole('textbox', { name: 'Code' });
+    expect(EditorView.findFromDOM(content)?.state.facet(language)?.name).toBe('rust');
+  }, { timeout: 10000 });
+  expect(screen.getByRole('button', { name: 'Copy code' })).toBeTruthy();
 });

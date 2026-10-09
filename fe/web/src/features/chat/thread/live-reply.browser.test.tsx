@@ -1,6 +1,6 @@
 /* A reply as it streams (#1923 S2): the pane follows its growth only for a reader at the end, and
    the stored reply that replaces it lands without a jump. Measured against a real engine. */
-import { cleanup, act, fireEvent, render } from '@testing-library/react';
+import { cleanup, act, fireEvent, render, waitFor } from '@testing-library/react';
 import { page, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -93,10 +93,14 @@ describe('a streamed reply in a real engine', () => {
       /* No typewriter: every character the poll brought is on the page in the same commit. */
       const [reply] = replies();
       expect(reply.textContent).toContain(newest);
-      expect(reply.querySelector('pre')).not.toBeNull();
+      // Both the immediate source fallback and the loaded read-only pane keep
+      // a fence visible while its text grows; the rendering element may change.
+      expect(reply.querySelector('pre, [role="textbox"][aria-readonly="true"]')).not.toBeNull();
       await frames();
       expect(pane().scrollWidth).toBeLessThanOrEqual(pane().clientWidth);
     }
+    // Compare settled code panes; the async grammar may finish between polls.
+    await waitFor(() => { expect(replies()[0].querySelector('[data-nc-code-status="ready"]')).not.toBeNull(); });
     const final = polls[polls.length - 1][0];
     const [streamed] = replies();
     expect(streamed.textContent).toContain('It keeps the old behaviour.');
@@ -106,6 +110,7 @@ describe('a streamed reply in a real engine', () => {
     /* The row can land while the turn still runs (a tool call may follow the reply). */
     rerender(<Pane turns={[asked, stored(final)]} />);
     await frames();
+    await waitFor(() => { expect(replies()[0].querySelector('[data-nc-code-status="ready"]')).not.toBeNull(); });
     const [landed] = replies();
     expect(replies()).toHaveLength(1);
     expect(landed.innerText).toBe(before.text);

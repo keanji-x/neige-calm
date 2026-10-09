@@ -1,0 +1,6 @@
+@layer ui {
+  .code { min-width: 0; max-width: 100%; overflow: hidden; border-radius: var(--radius-sm); background: var(--surface-code); font: var(--type-code); }
+  .toolbar { display: flex; align-items: center; gap: var(--space-8); padding: var(--space-4) var(--space-6); color: var(--text-2); font: var(--type-detail); }
+  .toolbar button { margin-inline-start: auto; color: var(--accent); cursor: pointer; }
+  .fallback { max-height: 24rem; overflow: auto; padding: var(--space-6); border-radius: var(--radius-sm); background: var(--surface-code); color: var(--text-1); font: var(--type-code); white-space: pre; }
+}

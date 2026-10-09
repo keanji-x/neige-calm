@@ -1,3 +1,4 @@
+import { MarkdownCode } from '../../../ui/code/public.tsx';
 import { memo, useMemo, type ReactNode } from 'react';
 import { GitHubPreviewLink, useGitHubPreviewsEnabled } from '../../../systems/github-links/public.tsx';
 import { Markdown } from '@astryxdesign/core/Markdown';
@@ -36,6 +37,7 @@ function ReplyImage({ src, alt, imageFiles }: {
 export const Reply = memo(function Reply({ text, imageFiles }: { text: string; imageFiles: ReplyImageFiles | null }) {
   const previewsEnabled = useGitHubPreviewsEnabled();
   const components = useMemo(() => ({
+    code: MarkdownCode,
     ...(previewsEnabled ? { link: ({ href, children }: { href: string; children: ReactNode }) => <GitHubPreviewLink href={href}>{children}</GitHubPreviewLink> } : {}),
     image: ({ src, alt }: { src: string; alt: string }) => (
       <ReplyImage key={src} src={src} alt={alt} imageFiles={imageFiles} />

@@ -1,3 +1,4 @@
+import { ReadOnlyCode } from '../../../ui/code/public.tsx';
 import type { ReactNode } from 'react';
 import { GitHubPreviewContent } from '../../../systems/github-links/public.tsx';
 
@@ -103,7 +104,7 @@ function FileContent({ path, files, renderMarkdown }: Readonly<{
       {resource.truncated && <p>Showing the first 2 MiB of this file.</p>}
       {resource.format === 'markdown'
         ? renderMarkdown(resource.text, basePath)
-        : <pre className={styles.source}><code>{resource.text}</code></pre>}
+        : <ReadOnlyCode text={resource.text} source={{ kind: 'filename', value: path }} />}
     </>}
   </div>;
 }
