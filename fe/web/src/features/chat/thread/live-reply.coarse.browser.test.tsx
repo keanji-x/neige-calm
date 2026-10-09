@@ -1,6 +1,6 @@
 /* A reply as it streams (#1923 S2), as a finger gets it (`vitest.config.ts`: `pointer: coarse`, touch): the pane
    follows its growth only for a reader at the end, and a narrow pane takes a growing code block without overflowing. */
-import { cleanup, act, fireEvent, render } from '@testing-library/react';
+import { cleanup, act, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import '../../../styles/entry.css';
@@ -91,6 +91,7 @@ describe('a streamed reply under a coarse pointer', () => {
       expect(pane().scrollWidth).toBeLessThanOrEqual(pane().clientWidth);
     }
     const final = polls[polls.length - 1][0];
+    await waitFor(() => { expect(replies()[0].querySelector('[data-nc-code-status="ready"]')).not.toBeNull(); });
     const [streamed] = replies();
     expect(streamed.textContent).toContain('It keeps the old behaviour.');
     const box = streamed.getBoundingClientRect();
@@ -99,6 +100,7 @@ describe('a streamed reply under a coarse pointer', () => {
     /* The row can land while the turn still runs (a tool call may follow the reply). */
     rerender(<Pane width={358} turns={[asked, stored(final)]} />);
     await frames();
+    await waitFor(() => { expect(replies()[0].querySelector('[data-nc-code-status="ready"]')).not.toBeNull(); });
     const [landed] = replies();
     expect(replies()).toHaveLength(1);
     expect(landed.innerText).toBe(before.text);
