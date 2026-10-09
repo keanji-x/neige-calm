@@ -253,6 +253,7 @@ impl WorkerFlowDriver {
                 }
             }
             Event::WorkerSessionStatusChanged {
+                worker_session_id,
                 card_id,
                 new_status:
                     WorkerSessionState::Exited
@@ -260,7 +261,7 @@ impl WorkerFlowDriver {
                     | WorkerSessionState::Superseded,
                 ..
             } => {
-                self.cancel_card(&card_id).await;
+                self.cancel_card(&card_id, Some(&worker_session_id)).await;
             }
             Event::WorkerSessionStatusChanged {
                 worker_session_id: runtime_id,
@@ -311,11 +312,13 @@ impl WorkerFlowDriver {
                 }
             }
             Event::WorkerSessionSuperseded {
+                old_worker_session_id,
                 new_worker_session_id: new_runtime_id,
                 card_id,
                 ..
             } => {
-                self.cancel_card(&card_id).await;
+                self.cancel_card(&card_id, Some(&old_worker_session_id))
+                    .await;
                 match self.repo.session_projection_by_id(&new_runtime_id).await {
                     Ok(Some(runtime)) if is_supported_runtime(&runtime) => {
                         if let Err(err) = self.attach_runtime(runtime).await {
@@ -352,7 +355,7 @@ impl WorkerFlowDriver {
         // An assistant session is a `CodexCard` runtime with a codex provider, so `source_kind_for_runtime`
         // would classify it as a worker rollout source and ingest a conversation as a dispatched task.
         if crate::plain_chat::card_is_lazy_conversation(&card) {
-            self.cancel_card(&runtime.card_id).await;
+            self.cancel_card(&runtime.card_id, None).await;
             return Ok(());
         }
         match source_kind {
@@ -479,8 +482,17 @@ impl WorkerFlowDriver {
         crate::routes::codex_cards::default_cwd()
     }
 
-    async fn cancel_card(&self, card_id: &str) {
+    // Session events may arrive after replacement attachment. Match identity and
+    // remove under the same lock that serializes attachment and settlement.
+    // None is reserved for card-level exclusion (lazy conversations).
+    async fn cancel_card(&self, card_id: &str, worker_session_id: Option<&str>) {
         let mut tasks = self.tasks.lock().await;
+        if !tasks
+            .get(card_id)
+            .is_some_and(|task| worker_session_id.is_none_or(|id| task.worker_session_id == id))
+        {
+            return;
+        }
         if let Some(task) = tasks.remove(card_id) {
             settle_task(task).await;
         }
