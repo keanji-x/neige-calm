@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use calm_exec::flow::{CaptureCheckpoint, CaptureOutcome, CapturePosition};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
@@ -26,6 +27,8 @@ use calm_server::session_projection_repo::{
 };
 use calm_server::track_report::TrackReportPayload;
 use calm_server::track_vcs;
+use calm_server::worker_flow::cursor::CODEX_ROLLOUT_SOURCE_KIND;
+use calm_truth::db::worker_flow_capture::{CaptureItem, WorkerFlowCapture};
 use serde_json::{Value, json};
 
 const PLANNER_SESSION_ID: &str = "planner-session";
@@ -857,24 +860,37 @@ async fn card_conversation_md_renders_worker_flow_when_present() {
         "provider_extra": null, "raw_ref": null,
         "text": "Build is green.", "is_final": true, "phase": null
     });
-    for (kind, payload) in [
+    let items = [
         ("userMessage", &user),
         ("commandExecution", &cmd),
         ("agentMessage", &answer),
-    ] {
-        boot.repo
-            .worker_flow_item_insert(
-                Some(card_id.as_str()),
-                Some(runtime.id.as_str()),
-                Some(boot.track_id.as_str()),
-                Some(runtime.id.as_str()),
-                kind,
-                &serde_json::to_string(payload).unwrap(),
-                now_ms(),
-            )
-            .await
-            .expect("insert worker flow item");
-    }
+    ]
+    .into_iter()
+    .map(|(kind, payload)| CaptureItem {
+        kind: kind.into(),
+        payload: serde_json::to_string(payload).unwrap(),
+    })
+    .collect();
+    let outcome = boot
+        .repo
+        .worker_flow_capture_commit(&WorkerFlowCapture {
+            card_id: card_id.to_string(),
+            source_kind: CODEX_ROLLOUT_SOURCE_KIND.into(),
+            session_id: runtime.id.as_str().into(),
+            track_id: Some(boot.track_id.to_string()),
+            expected: CaptureCheckpoint::Missing,
+            next: CapturePosition {
+                source_path: "/tmp/rollout.jsonl".into(),
+                record_index: 1,
+                byte_offset: 0,
+                last_source_uuid: None,
+                last_line_hash: None,
+            },
+            items,
+        })
+        .await
+        .expect("capture worker flow items");
+    assert!(matches!(outcome, CaptureOutcome::Applied(_)));
 
     let out = call_tool(
         &boot,

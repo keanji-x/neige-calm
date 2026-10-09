@@ -2,7 +2,11 @@ use crate::support;
 
 use std::sync::Arc;
 
-use calm_server::db::sqlite::{SqlxRepo, card_delete_tx, worker_flow_item_insert_tx};
+use calm_exec::flow::{CaptureCheckpoint, CaptureOutcome, CapturePosition};
+use calm_server::db::RepoOutOfDomain;
+use calm_server::db::sqlite::{SqlxRepo, card_delete_tx};
+use calm_server::worker_flow::cursor::CODEX_ROLLOUT_SOURCE_KIND;
+use calm_truth::db::worker_flow_capture::{CaptureItem, WorkerFlowCapture};
 
 use support::worker_flow as wf;
 
@@ -109,26 +113,35 @@ async fn card_delete_preserves_worker_flow_items_and_nulls_card_and_session_keys
     let session_id = seed.runtime.id.clone();
     let track_id = seed.card.track_id.as_str().to_string();
 
-    let rows = [
-        ("user_message", r#"{"text":"first"}"#, 1_i64),
-        ("assistant_message", r#"{"text":"second"}"#, 2_i64),
-    ];
-    for (kind, payload, created_at_ms) in rows {
-        let mut tx = repo.pool().begin().await.unwrap();
-        worker_flow_item_insert_tx(
-            &mut tx,
-            Some(&card_id),
-            Some(&session_id),
-            Some(&track_id),
-            Some(&session_id),
-            kind,
-            payload,
-            created_at_ms,
-        )
+    let items = [
+        ("user_message", r#"{"text":"first"}"#),
+        ("assistant_message", r#"{"text":"second"}"#),
+    ]
+    .into_iter()
+    .map(|(kind, payload)| CaptureItem {
+        kind: kind.into(),
+        payload: payload.into(),
+    })
+    .collect();
+    let outcome = repo
+        .worker_flow_capture_commit(&WorkerFlowCapture {
+            card_id: card_id.clone(),
+            source_kind: CODEX_ROLLOUT_SOURCE_KIND.into(),
+            session_id: session_id.as_str().into(),
+            track_id: Some(track_id),
+            expected: CaptureCheckpoint::Missing,
+            next: CapturePosition {
+                source_path: "/tmp/rollout.jsonl".into(),
+                record_index: 1,
+                byte_offset: 0,
+                last_source_uuid: None,
+                last_line_hash: None,
+            },
+            items,
+        })
         .await
         .unwrap();
-        tx.commit().await.unwrap();
-    }
+    assert!(matches!(outcome, CaptureOutcome::Applied(_)));
 
     let mut tx = repo.pool().begin().await.unwrap();
     card_delete_tx(&mut tx, &card_id, repo.card_role_cache())

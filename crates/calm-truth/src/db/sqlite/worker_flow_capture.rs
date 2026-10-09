@@ -39,16 +39,9 @@ impl SqlxRepo {
                 return Err(e.into());
             }
         };
-        let stored = sqlx::query_as::<_, WorkerFlowCursor>(
-            r#"SELECT card_id, source_kind, source_path, record_index,
-                      byte_offset, last_source_uuid, last_line_hash, updated_at_ms
-               FROM worker_flow_cursors
-               WHERE card_id = ?1 AND source_kind = ?2"#,
-        )
-        .bind(&capture.card_id)
-        .bind(&capture.source_kind)
-        .fetch_optional(&mut *tx)
-        .await;
+        // The compare read runs inside the write transaction (CAS under BEGIN IMMEDIATE).
+        let stored =
+            worker_flow_cursor_select(&mut *tx, &capture.card_id, &capture.source_kind).await;
         let stored = match stored {
             Ok(stored) => stored,
             Err(e) => {
@@ -131,7 +124,47 @@ impl SqlxRepo {
     }
 }
 
-pub(super) async fn worker_flow_cursor_upsert_tx(
+/// The one cursor projection: the capture's in-transaction compare read and the pool reader
+/// (`RepoRead::worker_flow_cursor_get`) both select through here.
+pub(super) async fn worker_flow_cursor_select<'e, E>(
+    executor: E,
+    card_id: &str,
+    source_kind: &str,
+) -> std::result::Result<Option<WorkerFlowCursor>, sqlx::Error>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as::<_, WorkerFlowCursor>(
+        r#"SELECT card_id, source_kind, source_path, record_index,
+                  byte_offset, last_source_uuid, last_line_hash, updated_at_ms
+           FROM worker_flow_cursors
+           WHERE card_id = ?1 AND source_kind = ?2"#,
+    )
+    .bind(card_id)
+    .bind(source_kind)
+    .fetch_optional(executor)
+    .await
+}
+
+/// Fixture-only checkpoint at a chosen `updated_at_ms`, a state the wall-clock `capture_commit`
+/// cannot produce (liveness tests stand a cursor in the past). Writes no items; not on `Repo`.
+#[cfg(any(test, feature = "fixtures"))]
+pub async fn worker_flow_cursor_set_for_test(
+    pool: &sqlx::SqlitePool,
+    card_id: &str,
+    source_kind: &str,
+    position: &calm_exec::flow::CapturePosition,
+    updated_at_ms: i64,
+) -> Result<()> {
+    let mut tx = super::begin_immediate_tx(pool).await?;
+    worker_flow_cursor_upsert_tx(&mut tx, card_id, source_kind, position, updated_at_ms).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// `record_index` may move down when a source file is rewritten (compaction); the capture's
+/// checkpoint compare, not this upsert, decides whether that reset applies.
+async fn worker_flow_cursor_upsert_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: &str,
     source_kind: &str,

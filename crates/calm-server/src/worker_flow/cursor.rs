@@ -31,7 +31,7 @@ where
     calm_truth::capture_test_seam::reach(
         card_id,
         -1,
-        calm_truth::capture_test_seam::CapturePoint::CheckpointLoaded,
+        crate::test_seams::WorkerFlowPoint::CheckpointLoaded,
     )
     .await;
     Ok(stored)
@@ -94,7 +94,7 @@ impl CursorWriter {
             calm_truth::capture_test_seam::reach(
                 &self.card_id,
                 record_index,
-                calm_truth::capture_test_seam::CapturePoint::Idle,
+                crate::test_seams::WorkerFlowPoint::Idle,
             )
             .await;
             return Ok(true);
@@ -119,7 +119,7 @@ impl CursorWriter {
                 _ = self.stop.cancelled() => {
                     #[cfg(feature = "fixtures")]
                     calm_truth::capture_test_seam::reach(&self.card_id, record_index,
-                        calm_truth::capture_test_seam::CapturePoint::CancellationSettling).await;
+                        crate::test_seams::WorkerFlowPoint::CancellationSettling).await;
                     capture.await
                 },
                 result = &mut capture => result,

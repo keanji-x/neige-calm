@@ -631,17 +631,10 @@ impl RepoRead for SqlxRepo {
         card_id: &str,
         source_kind: &str,
     ) -> Result<Option<crate::db::rows::WorkerFlowCursor>> {
-        let row = sqlx::query_as::<_, crate::db::rows::WorkerFlowCursor>(
-            r#"SELECT card_id, source_kind, source_path, record_index,
-                      byte_offset, last_source_uuid, last_line_hash, updated_at_ms
-               FROM worker_flow_cursors
-               WHERE card_id = ?1 AND source_kind = ?2"#,
+        Ok(
+            super::worker_flow_capture::worker_flow_cursor_select(&self.pool, card_id, source_kind)
+                .await?,
         )
-        .bind(card_id)
-        .bind(source_kind)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row)
     }
 
     async fn shared_daemon_runtime_get(&self) -> Result<SharedCodexDaemonRecord> {

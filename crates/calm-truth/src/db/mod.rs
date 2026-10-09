@@ -566,35 +566,6 @@ pub trait RepoOutOfDomain: RepoRead {
         capture: &worker_flow_capture::WorkerFlowCapture,
     ) -> Result<calm_exec::flow::CaptureOutcome>;
 
-    /// Append one captured worker-flow item, returning the new row id. `card_id` is nullable so the row can outlive
-    /// its worker card (`ON DELETE SET NULL`); `worker_session_id` is a required FK.
-    #[allow(clippy::too_many_arguments)]
-    async fn worker_flow_item_insert(
-        &self,
-        card_id: Option<&str>,
-        captured_session_id: Option<&str>,
-        track_id: Option<&str>,
-        worker_session_id: Option<&str>,
-        kind: &str,
-        payload: &str,
-        created_at_ms: i64,
-    ) -> Result<i64>;
-
-    /// Upsert the passive worker-flow capture cursor for one card/source. `record_index` may move down when a rollout
-    /// file is rewritten during compaction; callers validate the source identity before taking that reset path.
-    #[allow(clippy::too_many_arguments)]
-    async fn worker_flow_cursor_upsert(
-        &self,
-        card_id: &str,
-        source_kind: &str,
-        source_path: &str,
-        record_index: i64,
-        byte_offset: i64,
-        last_source_uuid: Option<&str>,
-        last_line_hash: Option<&str>,
-        updated_at_ms: i64,
-    ) -> Result<()>;
-
     /// Upsert by id; `installed_at` is preserved on update and `enabled` defaults to false on the install row.
     async fn plugin_install(&self, p: NewPlugin) -> Result<Plugin>;
     async fn plugin_update_enabled(&self, id: &str, enabled: bool) -> Result<Plugin>;

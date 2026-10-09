@@ -3,6 +3,7 @@
 
 use super::*;
 
+use calm_exec::flow::CapturePosition;
 use calm_server::scheduler::LivenessFailTestHook;
 use calm_server::worker_flow::cursor::CODEX_ROLLOUT_SOURCE_KIND;
 
@@ -55,21 +56,25 @@ async fn seed_worker_started_at(boot: &Boot, label: &str, started_ms: i64) -> Li
     }
 }
 
-/// The transcript capture advancing at `at_ms`, written through the capture's own repo upsert.
+/// The transcript capture's checkpoint standing at `at_ms`, a time the wall-clock capture commit
+/// cannot choose, so through the fixture-only cursor writer.
 async fn record_progress(boot: &Boot, card_id: &str, at_ms: i64) {
-    boot.repo
-        .worker_flow_cursor_upsert(
-            card_id,
-            CODEX_ROLLOUT_SOURCE_KIND,
-            "/tmp/rollout.jsonl",
-            at_ms,
-            at_ms,
-            None,
-            None,
-            at_ms,
-        )
-        .await
-        .expect("record transcript progress");
+    let position = CapturePosition {
+        source_path: "/tmp/rollout.jsonl".into(),
+        record_index: at_ms,
+        byte_offset: at_ms,
+        last_source_uuid: None,
+        last_line_hash: None,
+    };
+    calm_server::db::sqlite::worker_flow_cursor_set_for_test(
+        &boot.repo.sqlite_pool().unwrap(),
+        card_id,
+        CODEX_ROLLOUT_SOURCE_KIND,
+        &position,
+        at_ms,
+    )
+    .await
+    .expect("record transcript progress");
 }
 
 /// A booted scheduler with the default windows whose boot lies far in the past, so a stale

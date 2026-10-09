@@ -1,7 +1,17 @@
-//! Typed one-shot handshakes on the real capture persistence path; fixtures only.
+//! Typed one-shot handshakes on the real capture path, keyed by card and record; fixtures only.
+//! The points named here are calm-truth's persistence points; a higher layer names its own
+//! lifecycle points by implementing [`CaptureSeamPoint`]. Both arm the one [`crate::test_seam`] registry.
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::Notify;
+
+use crate::test_seam::{PausePoint, install_pause_for_test, pause_point};
+
+/// A named pause point on one capture, keyed by card and source record index.
+pub trait CaptureSeamPoint: Copy {
+    /// Registry name; unique across every layer's points.
+    fn name(self) -> &'static str;
+}
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum CapturePoint {
@@ -9,42 +19,31 @@ pub enum CapturePoint {
     Committed,
     BeforeTransaction,
     Busy,
-    Idle,
-    CheckpointLoaded,
-    ReplacementReady,
-    CancellationSettling,
 }
 
-#[derive(Clone, Default)]
-pub struct CapturePause {
-    pub entered: Arc<Notify>,
-    pub release: Arc<Notify>,
+impl CaptureSeamPoint for CapturePoint {
+    fn name(self) -> &'static str {
+        match self {
+            Self::ItemInserted => "capture-item-inserted",
+            Self::Committed => "capture-committed",
+            Self::BeforeTransaction => "capture-before-transaction",
+            Self::Busy => "capture-busy",
+        }
+    }
 }
 
-type Key = (String, i64, CapturePoint);
-fn registry() -> &'static Mutex<HashMap<Key, CapturePause>> {
-    static POINTS: OnceLock<Mutex<HashMap<Key, CapturePause>>> = OnceLock::new();
-    POINTS.get_or_init(Default::default)
+fn key(card_id: &str, record_index: i64) -> String {
+    format!("{card_id}#{record_index}")
 }
 
-pub fn install(card_id: &str, record_index: i64, point: CapturePoint) -> CapturePause {
-    let pause = CapturePause::default();
-    registry()
-        .lock()
-        .unwrap()
-        .insert((card_id.to_owned(), record_index, point), pause.clone());
+pub fn install(card_id: &str, record_index: i64, point: impl CaptureSeamPoint) -> PausePoint {
+    let pause = PausePoint::default();
+    install_pause_for_test(point.name(), &key(card_id, record_index), pause.clone());
     pause
 }
 
-pub async fn reach(card_id: &str, record_index: i64, point: CapturePoint) {
-    let pause = registry()
-        .lock()
-        .unwrap()
-        .remove(&(card_id.to_owned(), record_index, point));
-    if let Some(pause) = pause {
-        pause.entered.notify_one();
-        pause.release.notified().await;
-    }
+pub async fn reach(card_id: &str, record_index: i64, point: impl CaptureSeamPoint) {
+    pause_point(point.name(), &key(card_id, record_index)).await;
 }
 
 /// Blocks the actual SQLite worker inside COMMIT, before durability/acknowledgement.
@@ -53,6 +52,8 @@ pub struct CommitPause {
     pub entered: Arc<Notify>,
     pub release: std::sync::mpsc::Sender<()>,
 }
+// Separate from `crate::test_seam`'s registry: the COMMIT hook runs on SQLite's worker thread and
+// must block synchronously, so it holds a std mpsc receiver rather than an async pause.
 type CommitKey = (String, i64);
 type CommitHook = (Arc<Notify>, std::sync::mpsc::Receiver<()>);
 fn commit_registry() -> &'static Mutex<HashMap<CommitKey, CommitHook>> {

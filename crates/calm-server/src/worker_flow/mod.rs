@@ -400,7 +400,7 @@ impl WorkerFlowDriver {
         calm_truth::capture_test_seam::reach(
             &runtime.card_id,
             -1,
-            calm_truth::capture_test_seam::CapturePoint::ReplacementReady,
+            crate::test_seams::WorkerFlowPoint::ReplacementReady,
         )
         .await;
         let session = session_from_runtime(&runtime, &card);
