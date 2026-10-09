@@ -19,15 +19,13 @@ async fn codex_rollout_source_waits_for_lazy_file_creation() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let thread_id = "thread-lazy";
     let seed = wf::seed_card_and_runtime(&repo, "card-lazy", Some(thread_id)).await;
-    let codex_home = tempfile::tempdir().unwrap();
-    let path = wf::rollout_path(codex_home.path(), thread_id);
+    let dir = tempfile::tempdir().unwrap();
+    let path = wf::rollout_path(dir.path(), thread_id);
+    let shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    shared.answer_thread_path_for_test(thread_id, Some(&path));
 
-    let (token, handle) = wf::spawn_source_with_discovery(
-        repo.clone(),
-        seed.runtime.clone(),
-        &seed,
-        codex_home.path(),
-    );
+    let (token, handle) =
+        wf::spawn_source_with_reported_path(repo.clone(), seed.runtime.clone(), &seed, shared);
     tokio::time::sleep(Duration::from_millis(15)).await;
     wf::write_rollout(
         &path,
@@ -57,10 +55,14 @@ async fn codex_rollout_driver_waits_past_lazy_file_retry_budget_until_runtime_te
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let card_id = "card-lazy-ghost";
     wf::seed_card_and_runtime(&repo, card_id, Some("ghost")).await;
+    // Codex names the path at `thread/start`; the first turn never comes to create the file.
+    let dir = tempfile::tempdir().unwrap();
+    let shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    shared.answer_thread_path_for_test("ghost", Some(&wf::rollout_path(dir.path(), "ghost")));
 
     let driver = WorkerFlowDriver::new_with_flow_options_for_test(
         repo.clone(),
-        SharedCodexAppServer::new_stub(repo.clone()),
+        shared,
         Arc::new(WorkerFlowSink::new(repo.clone())),
         EventBus::new(),
         CodexRolloutFlowSourceOptions {

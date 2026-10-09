@@ -173,14 +173,6 @@ async fn worker_flow_driver_attaches_when_thread_arrives_on_running_status() {
     assert_eq!(state.worker_flow.tasks_alive_for_test().await, 0);
 
     let thread_id = "thread-status-attach";
-    let path = wf::rollout_path(state.shared_codex_appserver.codex_home_path(), thread_id);
-    wf::write_rollout(
-        &path,
-        &[
-            wf::session_meta(thread_id),
-            wf::user_message("u-status", "attached after thread bind"),
-        ],
-    );
     let mut tx = repo.pool().begin().await.unwrap();
     session_bind_attribution_tx(
         &mut tx,

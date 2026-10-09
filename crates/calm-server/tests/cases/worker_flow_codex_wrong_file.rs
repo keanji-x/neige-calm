@@ -21,8 +21,10 @@ async fn codex_rollout_session_meta_mismatch_exits_without_ingesting_wrong_file(
     let events = EventBus::new();
     let wanted_thread_id = "wanted";
     let seed = wf::seed_card_and_runtime(&repo, "card-wrong-file", Some(wanted_thread_id)).await;
-    let shared_codex = SharedCodexAppServer::new_stub(repo.clone());
-    let path = wf::rollout_path(shared_codex.codex_home_path(), wanted_thread_id);
+    let dir = tempfile::tempdir().unwrap();
+    let path = wf::rollout_path(dir.path(), wanted_thread_id);
+    let shared_codex = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    shared_codex.answer_thread_path_for_test(wanted_thread_id, Some(&path));
     wf::write_rollout(
         &path,
         &[

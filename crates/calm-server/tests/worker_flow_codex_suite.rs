@@ -20,6 +20,8 @@ mod worker_flow_codex_rewrite_prefix;
 mod worker_flow_codex_tail;
 #[path = "cases/worker_flow_codex_terminal_completion.rs"]
 mod worker_flow_codex_terminal_completion;
+#[path = "cases/worker_flow_codex_thread_path.rs"]
+mod worker_flow_codex_thread_path;
 #[path = "cases/worker_flow_codex_torn_line.rs"]
 mod worker_flow_codex_torn_line;
 #[path = "cases/worker_flow_codex_turn_end.rs"]

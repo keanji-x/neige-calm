@@ -14,6 +14,7 @@ use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionProjection,
 };
+use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::worker_flow::claude_transcript::{
     ClaudeTranscriptFlowSource, ClaudeTranscriptFlowSourceOptions,
@@ -280,10 +281,9 @@ pub fn worker_session(seed: &SeededRuntime) -> WorkerSession {
     }
 }
 
-pub fn rollout_path(codex_home: &Path, thread_id: &str) -> PathBuf {
-    codex_home
-        .join("sessions/2026/06/13")
-        .join(format!("rollout-2026-06-13T00-00-00-{thread_id}.jsonl"))
+/// Any file works: capture follows the path Codex reports (#2494), never a naming convention.
+pub fn rollout_path(dir: &Path, thread_id: &str) -> PathBuf {
+    dir.join(format!("{thread_id}.jsonl"))
 }
 
 pub fn claude_card_cwd(seed: &SeededRuntime) -> String {
@@ -717,9 +717,7 @@ pub fn spawn_source_with_path(
     let source = CodexRolloutFlowSource::new_with_options(
         repo.clone(),
         runtime,
-        path.parent()
-            .unwrap_or_else(|| Path::new("/"))
-            .to_path_buf(),
+        SharedCodexAppServer::new_stub(repo.clone()),
         token.clone(),
         CodexRolloutFlowSourceOptions {
             path_override: Some(path.to_path_buf()),
@@ -734,11 +732,12 @@ pub fn spawn_source_with_path(
     (token, handle)
 }
 
-pub fn spawn_source_with_discovery(
+/// A source that asks `shared_codex_appserver` for the thread's rollout path, as production does.
+pub fn spawn_source_with_reported_path(
     repo: Arc<SqlxRepo>,
     runtime: WorkerSessionProjection,
     seed: &SeededRuntime,
-    codex_home: &Path,
+    shared_codex_appserver: Arc<SharedCodexAppServer>,
 ) -> (
     CancellationToken,
     tokio::task::JoinHandle<Result<(), calm_types::error::CoreError>>,
@@ -747,7 +746,7 @@ pub fn spawn_source_with_discovery(
     let source = CodexRolloutFlowSource::new_with_options(
         repo.clone(),
         runtime,
-        codex_home.to_path_buf(),
+        shared_codex_appserver,
         token.clone(),
         CodexRolloutFlowSourceOptions {
             path_override: None,

@@ -18,14 +18,6 @@ async fn worker_flow_driver_drop_cancels_tail_tasks() {
     let thread_id = "thread-driver-drop";
     let seed = wf::seed_card_and_runtime(&repo, "card-driver-drop", Some(thread_id)).await;
     let shared = SharedCodexAppServer::new_stub(repo.clone());
-    let path = wf::rollout_path(shared.codex_home_path(), thread_id);
-    wf::write_rollout(
-        &path,
-        &[
-            wf::session_meta(thread_id),
-            wf::user_message("u-drop", "running before drop"),
-        ],
-    );
 
     let driver = WorkerFlowDriver::new(
         repo.clone(),
@@ -62,14 +54,6 @@ async fn worker_flow_driver_drop_cancels_start_on_boot_tail_tasks() {
     let thread_id = "thread-driver-drop-boot";
     wf::seed_card_and_runtime(&repo, "card-driver-drop-boot", Some(thread_id)).await;
     let shared = SharedCodexAppServer::new_stub(repo.clone());
-    let path = wf::rollout_path(shared.codex_home_path(), thread_id);
-    wf::write_rollout(
-        &path,
-        &[
-            wf::session_meta(thread_id),
-            wf::user_message("u-drop-boot", "running before drop"),
-        ],
-    );
 
     let driver = WorkerFlowDriver::new_with_flow_options_for_test(
         repo.clone(),
