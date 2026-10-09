@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
-# A fake interactive `claude` for the #1755 trust-dialog tests: in its PTY it paints Claude Code
-# 2.1.280's workspace trust dialog, moves the `❯` cursor on Down, and logs every byte it reads.
-# Like the real CLI it paints the dialog before its input handler is live: for STARTUP seconds
-# after the first paint a key only moves the painted cursor, Enter acts on the real selection
-# ("No, exit"), and the dialog then repaints with the selection reset to No.
-# The test copies it into a private directory next to a `scenario` file:
-#   in:  scenario: `dialog` (Down moves the cursor), `stuck` (the cursor never moves), `eatdown`
-#        (the first Down after startup is dropped), `gated` (`dialog`, painted only once a `go`
-#        file exists), `none` (no dialog: a session screen), `session` (runs the SessionStart hook
-#        from `--settings`, paints a session screen that settles, then output that looks like the
-#        dialog, both cursor rows included), `hookloss` (`session` with no hook delivered)
-#   out: painted (the dialog is on screen), hooked (the SessionStart hook ran), received (every
-#        byte read, appended), accepted / declined (Enter on Yes / on No)
+# A fake interactive `claude` for the #1755 trust-dialog tests, painting the screens of Claude Code
+# 2.1.280 as its PTY output lays them out (rows taken from a real run):
+# - the workspace trust dialog: "Accessing workspace:", the question, both options with the `❯`
+#   cursor, the "Enter to confirm" footer, and no session banner. Like the real CLI it paints the
+#   dialog before its input handler is live: for STARTUP seconds after the first paint a key only
+#   moves the painted cursor, Enter acts on the real selection ("No, exit"), and the dialog then
+#   repaints with the selection reset to No;
+# - the session: the "Claude Code v2.1.280" banner on top, then the prompt echoed (`❯ Goal: ...`).
+# It logs every byte it reads. The test copies it into a private directory next to a `scenario`
+# file:
+#   in:  scenario: `dialog` (Down moves the cursor; Enter on Yes starts the session), `stuck` (the
+#        cursor never moves), `eatdown` (the first Down after startup is dropped), `gated`
+#        (`dialog`, painted only once a `go` file exists), `takeover` (`dialog`, the cursor moves
+#        on Down only once a `move` file exists), `session` (a trusted start: runs the
+#        SessionStart hook from `--settings`, then paints the session and stays static),
+#        `hookloss` (`session` with no hook delivered)
+#   out: painted (a dialog or session screen is up), downed (a Down reached the live dialog),
+#        hooked (the SessionStart hook ran), received (every byte read, appended),
+#        accepted / declined (Enter on Yes / on No)
 import json
 import os
 import select
@@ -23,10 +29,7 @@ import tty
 D = os.path.dirname(os.path.abspath(__file__))
 SCENARIO = open(os.path.join(D, "scenario")).read().strip()
 OPTIONS = ["No, exit", "Yes, I trust this folder"]
-QUESTION = "Quick safety check: Is this a project you created or one you trust?"
 STARTUP = 0.5
-# Longer than the kernel's settle window: the session screen settles before the later output.
-SESSION_SETTLES = 1.5
 
 
 def write(text):
@@ -39,9 +42,26 @@ def record(name, data=b""):
 
 
 def paint(cursor):
-    rows = [QUESTION, ""]
-    rows += [("❯ " if at == cursor else "  ") + label for at, label in enumerate(OPTIONS)]
-    rows += ["", "Enter to confirm · Esc to cancel"]
+    rows = ["─" * 80, " Accessing workspace:", "", " " + os.getcwd()[:78], "",
+            " Quick safety check: Is this a project you created or one you trust? (Like your",
+            " own code, a well-known open source project, or work from your team). If not,",
+            " take a moment to review what's in this folder first.", "",
+            " Claude Code'll be able to read, edit, and execute files here.", "",
+            " Security guide", ""]
+    rows += [(" ❯ " if at == cursor else "   ") + label for at, label in enumerate(OPTIONS)]
+    rows += ["", " Enter to confirm · Esc to cancel"]
+    write("\x1b[2J\x1b[H" + "\n".join(rows) + "\n")
+    record("painted")
+
+
+def session():
+    """The session's first frame: the banner, then the prompt echoed as Claude does."""
+    prompt = sys.argv[-1].splitlines() if "--" in sys.argv else []
+    rows = [" ▐▛███▛█   Claude Code v2.1.280",
+            "▝▜██████▀  Opus 5.5 (1M context) · API Usage Billing",
+            "  ▝▝ ▝▝    /…/" + os.path.basename(os.getcwd()), "", ""]
+    rows += [("❯ " if at == 0 else "  ") + line for at, line in enumerate(prompt[:14])]
+    rows += ["", "─" * 80, "❯ ", "─" * 80]
     write("\x1b[2J\x1b[H" + "\n".join(rows) + "\n")
     record("painted")
 
@@ -69,16 +89,10 @@ def idle():
 
 
 tty.setraw(0)
-if SCENARIO == "none":
-    write("\x1b[2J\x1b[Hfake claude: session started\n")
-    idle()
 if SCENARIO in ("session", "hookloss"):
     if SCENARIO == "session":
         session_start_hook()
-    write("\x1b[2J\x1b[H> fake claude: session started, working\n")
-    time.sleep(SESSION_SETTLES)
-    write("Bash(grep -rh trust docs/)\n  " + QUESTION + "\n  ❯ No, exit\n  ❯ Yes, I trust this folder\n")
-    record("painted")
+    session()
     idle()
 while SCENARIO == "gated" and not os.path.exists(os.path.join(D, "go")):
     time.sleep(0.02)
@@ -95,8 +109,7 @@ while True:
         remounted = True
         cursor = 0
         paint(cursor)
-    ready = select.select([0], [], [], 0.05)[0]
-    if not ready:
+    if not select.select([0], [], [], 0.05)[0]:
         continue
     data = os.read(0, 64)
     if not data:
@@ -110,15 +123,18 @@ while True:
                 paint(min(cursor + 1, len(OPTIONS) - 1))
                 continue
             downs += 1
+            record("downed")
             if SCENARIO == "stuck" or (SCENARIO == "eatdown" and downs == 1):
                 continue
+            while SCENARIO == "takeover" and not os.path.exists(os.path.join(D, "move")):
+                time.sleep(0.02)
             cursor = min(cursor + 1, len(OPTIONS) - 1)
             paint(cursor)
         elif pending.startswith(b"\r"):
             pending = b""
             if cursor == 1 and not starting:
                 record("accepted")
-                write("\x1b[2J\x1b[Hfake claude: session started\n")
+                session()
                 idle()
             record("declined")
             sys.exit(1)

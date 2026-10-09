@@ -7,14 +7,13 @@ use super::client::Client;
 use super::input_control::{self, ClaimStep, ReleaseStep};
 pub use super::operations::InputOutcome;
 use super::operations::{reserve_input, send_reserved};
-pub use super::text_conditions::{AllPresent, TextConditions};
-use super::text_conditions::{ConditionState, RowTest};
+pub use super::text_conditions::{AllPresent, ConditionState, RowTest, TextConditions};
 use crate::terminal_renderer::{
     CONTROL_HELD_BY_ANOTHER_CLIENT, ClientInputScope, TerminalRendererRegistry, WriteShape,
 };
 use anyhow::{Result, ensure};
 use futures::future::BoxFuture;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// How a kernel wait for a screen ended.
@@ -26,34 +25,6 @@ pub enum ScreenWait {
     Stopped,
     /// The budget ended first.
     TimedOut,
-}
-
-/// How a wait for the first settled screen ended.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SettledScreen {
-    /// The rows of the first non-blank screen that stayed unchanged for the settle window.
-    Rows(Vec<String>),
-    /// The process exited, the connection ended or the projection was invalidated.
-    Stopped,
-    /// No non-blank screen settled within the budget.
-    TimedOut,
-}
-
-/// Holds on any non-blank screen and keeps the rows it was last tested on: the wait re-tests on
-/// every revision, so once it settles they are the settled screen's rows.
-struct NonBlank(Mutex<Vec<String>>);
-impl RowTest for NonBlank {
-    fn test(&self, rows: &[String]) -> (Option<(String, usize)>, ConditionState) {
-        if let Ok(mut last) = self.0.lock() {
-            *last = rows.to_vec();
-        }
-        let non_blank = rows.iter().any(|row| !row.trim().is_empty());
-        let state = ConditionState {
-            present: Some(non_blank),
-            absent: None,
-        };
-        (None, state)
-    }
 }
 
 /// The verdict of a kernel claim.
@@ -116,16 +87,6 @@ impl KernelTerminal {
                 ScreenWait::Held
             }
             Some(_) => ScreenWait::TimedOut,
-        }
-    }
-
-    /// The first non-blank screen that stays unchanged for `settle`, as its rows.
-    pub async fn settled_screen(&self, budget: Duration, settle: Duration) -> SettledScreen {
-        let screen = NonBlank(Mutex::new(Vec::new()));
-        match self.wait_until(&screen, budget, settle).await {
-            ScreenWait::Held => SettledScreen::Rows(screen.0.into_inner().unwrap_or_default()),
-            ScreenWait::Stopped => SettledScreen::Stopped,
-            ScreenWait::TimedOut => SettledScreen::TimedOut,
         }
     }
 

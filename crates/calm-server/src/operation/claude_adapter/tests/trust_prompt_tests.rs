@@ -1,6 +1,7 @@
 //! #1755: the kernel accepts Claude's workspace trust dialog in a scheduler-spawned worker's PTY,
-//! and only there. Real PTYs through the production spawn path; the fake `claude` paints the
-//! dialog (before its input handler is live, as the real CLI does) and logs every byte it reads.
+//! and only there: never once the session (its "Claude Code v" banner) is on screen, whatever the
+//! session's output quotes. Real PTYs through the production spawn path; the fake `claude` paints
+//! the real CLI's dialog and session screens and logs every byte it reads.
 #![cfg(feature = "fixtures")]
 use super::*;
 use crate::operation::claude_adapter::trust_prompt::{TrustOutcome, TrustPromptWatch};
@@ -9,6 +10,11 @@ use std::time::Duration;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 const DOWN: &[u8] = b"\x1b[B";
+/// A goal quoting the whole dialog screen (header, question, both cursor rows, footer): the
+/// session echoes it under its banner.
+const QUOTED_DIALOG: &str = "Investigate this text from issue 1755:\nAccessing workspace:\n\
+    Quick safety check: Is this a project you created or one you trust?\n❯ No, exit\n\
+    ❯ Yes, I trust this folder\nEnter to confirm · Esc to cancel\nthen report.";
 
 /// A private copy of the fake `claude` (and its hook bridge) with its scenario.
 struct FakeClaude {
@@ -164,6 +170,15 @@ struct Worker {
 /// Submitted to the operation runtime as the scheduler submits a task's worker, its hooks posted
 /// to the production hook route.
 async fn spawn_worker(fake: &FakeClaude, watch: TrustPromptWatch) -> Worker {
+    spawn_worker_with_goal(fake, watch, None).await
+}
+
+/// [`spawn_worker`] whose task goal is `goal` instead of the default.
+async fn spawn_worker_with_goal(
+    fake: &FakeClaude,
+    watch: TrustPromptWatch,
+    goal: Option<&str>,
+) -> Worker {
     let harness = claude_worker_harness().await;
     let hooks = tempfile::tempdir().unwrap();
     // One role and area cache for the adapter and the routes, as the kernel shares them.
@@ -207,7 +222,10 @@ async fn spawn_worker(fake: &FakeClaude, watch: TrustPromptWatch) -> Worker {
     )
     .await
     .unwrap();
-    let payload = claude_worker_payload(&harness.track_id, "trust");
+    let mut payload = claude_worker_payload(&harness.track_id, "trust");
+    if let Some(goal) = goal {
+        payload["goal"] = Value::String(goal.to_owned());
+    }
     let key = OperationKey {
         operation_key: new_id(),
         idempotency_key: Some(task_id.clone()),
@@ -242,6 +260,16 @@ impl Worker {
             .fetch_one(self.harness.repo.pool())
             .await
             .unwrap()
+    }
+    async fn reap_marker(&self) -> Option<String> {
+        sqlx::query_scalar(
+            "SELECT json_extract(handle_state_json, '$.timeout_cleanup.reason') \
+             FROM worker_sessions WHERE card_id = ?1",
+        )
+        .bind(&self.card_id)
+        .fetch_one(self.harness.repo.pool())
+        .await
+        .unwrap()
     }
     async fn stop(self) {
         self.pty.renderer.drop_entry(&self.terminal_id).await;
@@ -356,57 +384,90 @@ async fn worker_dialog_that_drops_the_first_down_is_accepted_after_one_retry() {
     worker.stop().await;
 }
 
+/// The session's first screen (banner, then the echoed goal quoting the whole dialog) once the
+/// kernel accepted: accepted by the banner, the running worker never failed.
 #[tokio::test]
-async fn worker_spawn_without_a_dialog_sends_nothing() {
-    let fake = FakeClaude::new("none");
-    let (watch, mut outcomes) = watch(1_500);
-    let worker = spawn_worker(&fake, watch).await;
+async fn worker_accepted_dialog_whose_session_echoes_a_quoted_dialog_is_not_failed() {
+    let fake = FakeClaude::new("dialog");
+    let (watch, mut outcomes) = watch(15_000);
+    let worker = spawn_worker_with_goal(&fake, watch, Some(QUOTED_DIALOG)).await;
 
-    assert_eq!(outcome(&mut outcomes).await, TrustOutcome::NotShown);
-    assert_eq!(fake.received(), b"");
+    assert_eq!(outcome(&mut outcomes).await, TrustOutcome::Accepted);
+    assert_eq!(fake.received(), [DOWN, b"\r"].concat());
+    assert!(fake.has("accepted"));
     assert_eq!(
         worker.task().await.0,
         "dispatched",
-        "an unrecognized screen is no failure"
+        "the running worker is not failed"
     );
+    assert_eq!(worker.reap_marker().await, None, "nor marked for the reap");
     worker.stop().await;
 }
 
-/// The session started (its SessionStart hook reached the kernel through the production route);
-/// output that looks like the dialog afterwards is the worker's own, never answered.
 #[tokio::test]
-async fn worker_output_that_looks_like_the_dialog_after_session_start_gets_no_input() {
-    let fake = FakeClaude::new("session");
-    let (watch, mut outcomes) = watch(15_000);
-    let worker = spawn_worker(&fake, watch).await;
-
-    assert_eq!(outcome(&mut outcomes).await, TrustOutcome::NotShown);
-    fake.wait_for("painted").await;
-    assert_eq!(
-        fake.read("hooked"),
-        b"0",
-        "the SessionStart hook was delivered"
-    );
-    assert!(fake.has("painted"));
-    assert_eq!(fake.received(), b"", "nothing typed into the live session");
-    assert_eq!(worker.task().await.0, "dispatched", "nothing failed");
-    worker.stop().await;
-}
-
-/// The SessionStart hook never reached the kernel (the bridge does not post), yet the session
-/// screen settled first: later output that looks like the dialog, both cursor rows included, on a
-/// static screen, is never answered.
-#[tokio::test]
-async fn worker_output_that_looks_like_the_dialog_after_a_lost_session_start_hook_gets_no_input() {
+async fn worker_spawn_without_a_dialog_sends_nothing() {
     let fake = FakeClaude::new("hookloss");
     let (watch, mut outcomes) = watch(15_000);
     let worker = spawn_worker(&fake, watch).await;
 
     assert_eq!(outcome(&mut outcomes).await, TrustOutcome::NotShown);
+    assert_eq!(fake.received(), b"");
+    assert_eq!(worker.task().await.0, "dispatched");
+    worker.stop().await;
+}
+
+/// A trusted start: the first screen is the session (banner, then the echoed goal quoting the
+/// whole dialog), settled for well over the settle window and then static. Nothing is typed.
+async fn trusted_start_quoting_the_dialog(scenario: &str) -> FakeClaude {
+    let fake = FakeClaude::new(scenario);
+    let (watch, mut outcomes) = watch(15_000);
+    let worker = spawn_worker_with_goal(&fake, watch, Some(QUOTED_DIALOG)).await;
+
+    assert_eq!(outcome(&mut outcomes).await, TrustOutcome::NotShown);
     fake.wait_for("painted").await;
-    assert!(!fake.has("hooked"), "no hook was delivered");
+    // Longer than a settle window plus a step: no key follows the static quoting screen.
+    tokio::time::sleep(Duration::from_millis(3_500)).await;
     assert_eq!(fake.received(), b"", "nothing typed into the live session");
     assert_eq!(worker.task().await.0, "dispatched", "nothing failed");
+    worker.stop().await;
+    fake
+}
+
+#[tokio::test]
+async fn worker_trusted_start_quoting_the_dialog_gets_no_input() {
+    let fake = trusted_start_quoting_the_dialog("session").await;
+    assert_eq!(
+        fake.read("hooked"),
+        b"0",
+        "the SessionStart hook was delivered"
+    );
+}
+
+#[tokio::test]
+async fn worker_trusted_start_quoting_the_dialog_with_its_hooks_lost_gets_no_input() {
+    let fake = trusted_start_quoting_the_dialog("hookloss").await;
+    assert!(!fake.has("hooked"), "no hook was delivered");
+}
+
+/// A human took the terminal after the kernel's Down: the owner answers, nothing fails.
+#[tokio::test]
+async fn worker_terminal_taken_over_after_down_is_not_failed() {
+    let fake = FakeClaude::new("takeover");
+    let (watch, mut outcomes) = watch(15_000);
+    let worker = spawn_worker(&fake, watch).await;
+    fake.wait_for("downed").await;
+    let entry = worker.pty.renderer.get(&worker.terminal_id).unwrap();
+    let human = human_claims(&entry).await;
+    std::fs::write(fake.dir.path().join("move"), "").unwrap();
+
+    assert_eq!(outcome(&mut outcomes).await, TrustOutcome::HumanOwned);
+    assert_eq!(fake.received(), DOWN, "no Enter after the takeover");
+    assert_eq!(
+        worker.task().await.0,
+        "dispatched",
+        "the owner is answering"
+    );
+    human.abort();
     worker.stop().await;
 }
 
@@ -452,14 +513,7 @@ async fn worker_dialog_whose_cursor_never_reaches_yes_fails_the_task() {
         reason.contains("trust dialog") && reason.contains("Yes, I trust this folder"),
         "{reason}"
     );
-    let marker: Option<String> = sqlx::query_scalar(
-        "SELECT json_extract(handle_state_json, '$.timeout_cleanup.reason') FROM worker_sessions \
-         WHERE card_id = ?1",
-    )
-    .bind(&worker.card_id)
-    .fetch_one(worker.harness.repo.pool())
-    .await
-    .unwrap();
+    let marker = worker.reap_marker().await;
     assert_eq!(
         marker.as_deref(),
         Some("worker_startup_blocked"),
