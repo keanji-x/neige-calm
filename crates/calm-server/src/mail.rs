@@ -5,7 +5,6 @@
 
 use std::sync::{Arc, Mutex};
 
-use calm_truth::decision_gate::{GateDecision, PrincipalDecisionGate};
 use calm_types::observation::MAIL_WAKE_SOURCE;
 use serde_json::{Value, json};
 use sqlx::{Sqlite, Transaction};
@@ -15,7 +14,7 @@ use crate::db::{write_in_tx_typed, write_with_events_typed};
 use crate::error::CalmError;
 use crate::event::{Event, EventScope};
 use crate::harness::turn_input::{self, TurnInput};
-use crate::ids::{ActorId, TrackId};
+use crate::ids::ActorId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
 use crate::model::{new_id, now_ms};
@@ -114,21 +113,6 @@ fn caller_track(identity: &ToolCallIdentity, tool: &str) -> Result<String, RpcEr
     })
 }
 
-/// D16: the caller session is still the active authority of a card on its Track, in the caller's tx.
-async fn session_is_active(
-    tx: &mut Transaction<'_, Sqlite>,
-    identity: &ToolCallIdentity,
-    track: &str,
-) -> Result<bool, CalmError> {
-    let Some(principal) = identity.to_principal() else {
-        return Ok(false);
-    };
-    let decision = PrincipalDecisionGate::new(principal)
-        .decide_recorder(tx, &TrackId::from(track.to_string()))
-        .await?;
-    Ok(matches!(decision, GateDecision::Allow))
-}
-
 /// §5: 1 in a turn the user spoke in, else 1 + the highest hop among the mails to this Track read
 /// since the turn started and the mail replied to.
 async fn next_hop(
@@ -169,7 +153,7 @@ pub async fn send(
         move |tx| {
             Box::pin(async move {
                 let slot = refusals;
-                if !session_is_active(tx, &identity, &caller).await? {
+                if !identity.session_is_active(tx, &caller).await? {
                     return Err(slot.refuse(
                         -32403,
                         "session_inactive",
@@ -454,7 +438,7 @@ pub async fn cat(
                     ),
                 ));
             }
-            if !session_is_active(tx, &identity, &caller).await? {
+            if !identity.session_is_active(tx, &caller).await? {
                 return Err(slot.refuse(
                     -32403,
                     "session_inactive",

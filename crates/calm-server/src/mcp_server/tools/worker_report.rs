@@ -88,10 +88,8 @@ async fn worker_report(
     args: Value,
 ) -> Result<ToolResult, RpcError> {
     let (attempt_id, verdict) = verdict(args)?;
-    let reported = crate::worker_watch::report(&ctx, &identity, &attempt_id, &verdict).await?;
-    Ok(ToolResult::structured(
-        json!({ "key": reported.key, "replayed": reported.replayed }),
-    ))
+    let key = crate::worker_watch::report(&ctx, &identity, &attempt_id, &verdict).await?;
+    Ok(ToolResult::structured(json!({ "key": key })))
 }
 
 #[cfg(test)]

@@ -54,14 +54,6 @@ pub fn today_summary_card_id_for_test(track_id: &str) -> String {
     summary_conversation_keys(track_id).card_id
 }
 
-/// The actor every request from this endpoint is attributed to. Fixed, not read from
-/// the request: the payload is hashed into the operation's `payload_hash`, and a
-/// same-key different-hash submit is a 409 that never expires. `user` because the act
-/// is a human pressing a button; `Actor("kernel").to_actor_id()` degrades to `User` anyway.
-fn synthetic_actor() -> Actor {
-    Actor(Actor::DEFAULT.to_string())
-}
-
 /// The standing instruction the summary conversation is opened with. Sent when the
 /// card's currently ACTIVE runtime has no `harness.user_message.enqueued` row of its
 /// own, and never again while that runtime stays active.
@@ -171,7 +163,7 @@ pub(crate) async fn write_today_summary(
     // Idempotent, and the only bootstrap on this path; it materializes the workspace and
     // waits on a `planner-harness-start`.
     let (_status, Json(launchpad)) =
-        ensure_today_launchpad(State(app.clone()), synthetic_actor()).await?;
+        ensure_today_launchpad(State(app.clone()), Actor::server_send()).await?;
     let track_id = launchpad.track_id;
     let derived = summary_conversation_keys(&track_id);
 
@@ -201,7 +193,7 @@ pub(crate) async fn write_today_summary(
         let created = create_track_conversation_inner(
             s.clone(),
             w.clone(),
-            synthetic_actor(),
+            Actor::server_send(),
             headers,
             track_id.clone(),
             NewTrackConversationBody {
@@ -302,7 +294,7 @@ async fn send_summary(
         s,
         w,
         cs,
-        synthetic_actor(),
+        Actor::server_send(),
         card_id.to_string(),
         SendPlannerInputRequest {
             text,

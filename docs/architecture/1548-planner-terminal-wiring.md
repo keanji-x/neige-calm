@@ -297,14 +297,14 @@ are the post-wait values; if the execution binding changed during the wait the
 readback is `unavailable` with the reason and the action receipt stands.
 
 Serialization: one connection runs one action at a time, and the readback wait
-is part of the action. A second input or control call from the same Planner on
+is part of the action. A second input or control call from the same caller on
 the same terminal queues behind a readback in progress (bounded by the wait
 budget) instead of writing into the screen the first call is still waiting to
 read back. Releasing the serial before the readback would keep the fences
 sound (the pending reservation is cleared by the acknowledgement and the
 revision fence still applies) but would let the second write end the first
 wait with output that is not the first action's reply, so the readback stays
-inside the serialized section. Connections of other Planners or humans are not
+inside the serialized section. Connections of other agents or humans are not
 serialized by it. A probe
 of Codex 0.153.4 showed the model receives both `content` and
 `structuredContent` verbatim, so the duplicate state was real.
@@ -316,20 +316,24 @@ and `openWorldHint: true` annotations. The Planner's `approvalPolicy: never`
 otherwise rejects them before the MCP server sees the call. The application
 therefore explicitly sets `mcp_servers.calm.tools.<tool>.approval_mode = "approve"`
 for exactly `calm.terminal.open`, `calm.terminal.control` and
-`calm.terminal.input` on Planner threads. This uses the provider's
+`calm.terminal.input` on Planner threads, and for exactly `calm.terminal.control`
+and `calm.terminal.input` on Assistant threads (#2492: an Assistant opens no
+card). This uses the provider's
 [per-tool configuration](https://learn.chatgpt.com/docs/config-file/config-reference),
 not a server-wide approval default or an annotation shortcut.
 
 This delegates the provider prompt decision to the kernel's existing authenticated
-Planner authority, which already includes same-Track terminal task execution.
+Planner or Assistant authority, which already includes same-Track terminal task
+execution.
 The live role, Track, task/session, observation and human-control checks still
 apply, including at the queued write boundary. It does not authorize actions
 outside that contract, or certify that a TUI completed an operation.
 
 The required card role is carried through typed thread configuration. Fresh
 Planner starts and valid cold resumes use the same producer; cold resume reads
-the current persisted card role. Assistant, Worker and plain-chat threads gain
-no tool approval override. Unknown card roles do not receive a policy. Global
+the current persisted card role. Worker and plain-chat threads gain no tool
+approval override; an Assistant thread gains only the override for the two
+writes it may call. Unknown card roles do not receive a policy. Global
 approval/sandbox settings and daemon-wide MCP configuration remain unchanged.
 A hot takeover retains its already-loaded provider thread configuration, so a
 new Planner thread or a proper cold daemon restart is needed to adopt the policy.
@@ -345,7 +349,7 @@ this is provider-policy evidence, not an actual astry autonomous acceptance run.
 Resolve, observe, control and input accept exactly one of `terminal_id` or
 `task_id`. The latter is the exact current `attempt_id` returned by
 `calm.plan.list`, not the logical task key. It resolves the task's actual Worker
-card and current worker session in the authenticated Planner's Track. Terminal,
+card and current worker session in the authenticated caller's Track. Terminal,
 Codex and Claude Worker cards are supported; Planner and Assistant cards are
 excluded. Manual Codex/Claude Worker cards may be addressed by Terminal ID.
 

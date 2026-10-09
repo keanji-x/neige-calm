@@ -7,7 +7,9 @@
 mod report;
 mod watcher;
 
-pub use report::{Reported, report};
+#[cfg(feature = "fixtures")]
+pub use report::WORKER_REPORT_AUTHORIZED;
+pub use report::report;
 pub use watcher::{WORKER_WATCHER_CONVERSATION_KEY, WorkerWatcher, watcher_card_id};
 
 use serde::Deserialize;

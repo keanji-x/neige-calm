@@ -1687,7 +1687,7 @@
   },
   {
     "name": "neige_worker_report",
-    "description_sha256": "4521fcea2beb070199d152fb9641aa305cf42e3fc2e936e4529de59dba78e000",
+    "description_sha256": "4dc8b0ac1a9ac16404bcf976e6638725adec0a4d3b5d480baf6cdc52222606ff",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

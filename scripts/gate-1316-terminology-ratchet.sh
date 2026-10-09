@@ -46,9 +46,6 @@
 # `event_spec` protocol: checks_pre2363.rs has one field assignment, one constructor
 # call and one test field reference; checks-pre-2363.json has one frozen payload key.
 # These four occurrences freeze the complete pre-2363 replay descriptor; no new vocabulary.
-# #2492 bounded exception: harness_item/crates 278 -> 279 comes solely from one test insert of a
-# recorded turn input into the existing transcript table (`neige_worker_report` keys a report by
-# the caller's turn, `transcript_latest_turn_input_tx`); no new name.
 # Patterns are boundary-anchored per case; the two words' uppercase branches are deliberately
 # asymmetric (`COVE[A-Z]+` is English, `WAVE[A-Z]+` is oracle ids) and `.spec.ts` is excluded by lookahead.
 

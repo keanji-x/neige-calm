@@ -30,13 +30,6 @@ pub fn watcher_card_id(track_id: &str) -> String {
     derive_track_conversation_keys(track_id, WORKER_WATCHER_CONVERSATION_KEY).card_id
 }
 
-/// Every create and send is a person's send, as `today_summary`'s are: only that actor lets the
-/// send path start a card with no thread to preserve or recover a failed session
-/// (`planner_session::ensure_planner_session`). Fixed, since the actor enters the payload hashes.
-fn send_actor() -> Actor {
-    Actor(Actor::DEFAULT.to_string())
-}
-
 /// Delivers quiet episodes to each Track's watcher conversation over the production routes.
 pub struct WorkerWatcher {
     route: RouteState,
@@ -69,7 +62,7 @@ impl WorkerWatcher {
         let created = create_track_conversation_inner(
             self.route.clone(),
             self.worker.clone(),
-            send_actor(),
+            Actor::server_send(),
             headers,
             track_id.to_string(),
             NewTrackConversationBody {
@@ -99,7 +92,7 @@ impl WorkerWatcher {
             &self.route,
             &self.worker,
             &self.codex_shell,
-            send_actor(),
+            Actor::server_send(),
             card_id,
             SendPlannerInputRequest {
                 text,
