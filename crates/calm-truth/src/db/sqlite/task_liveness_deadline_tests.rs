@@ -2,7 +2,6 @@ use super::{
     RunningLivenessFacts, SqlxRepo, task_claim_pending_tx, task_get_tx, task_mark_running_tx,
     task_running_liveness_tx, task_stamp_missing_running_liveness_tx,
 };
-use crate::db::RepoOutOfDomain;
 use crate::model::{Task, TaskKind, TaskStatus, now_ms};
 
 fn task(key: &str, status: TaskStatus) -> Task {
@@ -188,9 +187,16 @@ async fn liveness_facts_take_the_latest_cursor_of_the_worker_card_only() {
         ("worker-card", "claude_transcript", 5000),
         ("other-card", "codex_rollout", 8000),
     ] {
-        repo.worker_flow_cursor_upsert(card, kind, "/rollout.jsonl", 1, 10, None, None, at)
+        let position = calm_exec::flow::CapturePosition {
+            source_path: "/rollout.jsonl".into(),
+            record_index: 1,
+            byte_offset: 10,
+            last_source_uuid: None,
+            last_line_hash: None,
+        };
+        super::worker_flow_cursor_set_for_test(repo.pool(), card, kind, &position, at)
             .await
-            .expect("upsert cursor");
+            .expect("set cursor");
     }
     let mut tx = repo.pool().begin().await.expect("begin read tx");
     let facts = task_running_liveness_tx(&mut tx, &id, Some("worker-card"))

@@ -12,57 +12,37 @@ pub fn crash_point(point: &str) {
     }
 }
 
-/// A one-shot pause a race test arms on a production path: the path calls [`pause_point`] with a
-/// named point and the key it is working on, signals `entered`, and waits for `release`.
+/// The one pause registry lives at the lowest layer that pauses (calm-truth); server points arm it too.
 #[cfg(feature = "fixtures")]
-#[derive(Clone)]
-pub struct PausePoint {
-    pub entered: std::sync::Arc<tokio::sync::Notify>,
-    pub release: std::sync::Arc<tokio::sync::Notify>,
+pub use calm_truth::test_seam::{
+    PausePoint, blocking_pause_point, install_pause_for_test, pause_point,
+};
+
+/// Worker-flow lifecycle points, keyed like calm-truth's capture persistence points by card and
+/// source record index (`-1` for points before any record). Arm with
+/// `calm_truth::capture_test_seam::install`.
+#[cfg(feature = "fixtures")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkerFlowPoint {
+    /// A record left the checkpoint unchanged and wrote nothing.
+    Idle,
+    /// An attachment has read its durable checkpoint.
+    CheckpointLoaded,
+    /// An attach has settled any previous source of the card and is about to start the new one.
+    ReplacementReady,
+    /// Cancellation arrived while a capture was in flight; that capture is being settled.
+    CancellationSettling,
 }
 
 #[cfg(feature = "fixtures")]
-type PauseRegistry = std::sync::Mutex<std::collections::HashMap<(String, String), PausePoint>>;
-
-#[cfg(feature = "fixtures")]
-fn pause_points() -> &'static PauseRegistry {
-    static POINTS: std::sync::OnceLock<PauseRegistry> = std::sync::OnceLock::new();
-    POINTS.get_or_init(Default::default)
-}
-
-/// Arm `hook` for the next request that reaches `point` working on `key`; the first one consumes it.
-#[cfg(feature = "fixtures")]
-pub fn install_pause_for_test(point: &str, key: &str, hook: PausePoint) {
-    pause_points()
-        .lock()
-        .expect("pause point mutex")
-        .insert((point.to_owned(), key.to_owned()), hook);
-}
-
-/// Pause here when a test armed `point` for `key`. Call sites MUST be gated with
-/// `#[cfg(feature = "fixtures")]` as a whole statement.
-#[cfg(feature = "fixtures")]
-pub async fn pause_point(point: &str, key: &str) {
-    let hook = pause_points()
-        .lock()
-        .expect("pause point mutex")
-        .remove(&(point.to_owned(), key.to_owned()));
-    if let Some(hook) = hook {
-        hook.entered.notify_one();
-        hook.release.notified().await;
-    }
-}
-
-/// The same observation-only pause for production paths already running on a blocking thread.
-#[cfg(feature = "fixtures")]
-pub fn blocking_pause_point(point: &str, key: &str) {
-    let hook = pause_points()
-        .lock()
-        .expect("pause point mutex")
-        .remove(&(point.to_owned(), key.to_owned()));
-    if let Some(hook) = hook {
-        hook.entered.notify_one();
-        tokio::runtime::Handle::current().block_on(hook.release.notified());
+impl calm_truth::capture_test_seam::CaptureSeamPoint for WorkerFlowPoint {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Idle => "worker-flow-idle",
+            Self::CheckpointLoaded => "worker-flow-checkpoint-loaded",
+            Self::ReplacementReady => "worker-flow-replacement-ready",
+            Self::CancellationSettling => "worker-flow-cancellation-settling",
+        }
     }
 }
 

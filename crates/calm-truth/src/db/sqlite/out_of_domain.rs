@@ -74,8 +74,10 @@ pub async fn transcript_delete_thread_suffix_tx(
     Ok(i64::try_from(done.rows_affected()).unwrap_or(i64::MAX))
 }
 
+/// Append one captured item in the caller's transaction. Production writes items only from the
+/// atomic `capture_commit`, in the transaction that also writes their checkpoint.
 #[allow(clippy::too_many_arguments)]
-pub async fn worker_flow_item_insert_tx(
+pub(crate) async fn worker_flow_item_insert_tx(
     tx: &mut Transaction<'_, Sqlite>,
     card_id: Option<&str>,
     captured_session_id: Option<&str>,
@@ -551,64 +553,6 @@ impl RepoOutOfDomain for SqlxRepo {
         capture: &crate::db::worker_flow_capture::WorkerFlowCapture,
     ) -> Result<calm_exec::flow::CaptureOutcome> {
         self.capture_commit(capture).await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn worker_flow_item_insert(
-        &self,
-        card_id: Option<&str>,
-        captured_session_id: Option<&str>,
-        track_id: Option<&str>,
-        worker_session_id: Option<&str>,
-        kind: &str,
-        payload: &str,
-        created_at_ms: i64,
-    ) -> Result<i64> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
-        let id = worker_flow_item_insert_tx(
-            &mut tx,
-            card_id,
-            captured_session_id,
-            track_id,
-            worker_session_id,
-            kind,
-            payload,
-            created_at_ms,
-        )
-        .await?;
-        tx.commit().await?;
-        Ok(id)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn worker_flow_cursor_upsert(
-        &self,
-        card_id: &str,
-        source_kind: &str,
-        source_path: &str,
-        record_index: i64,
-        byte_offset: i64,
-        last_source_uuid: Option<&str>,
-        last_line_hash: Option<&str>,
-        updated_at_ms: i64,
-    ) -> Result<()> {
-        let mut tx = begin_immediate_tx(&self.pool).await?;
-        super::worker_flow_capture::worker_flow_cursor_upsert_tx(
-            &mut tx,
-            card_id,
-            source_kind,
-            &calm_exec::flow::CapturePosition {
-                source_path: source_path.into(),
-                record_index,
-                byte_offset,
-                last_source_uuid: last_source_uuid.map(str::to_owned),
-                last_line_hash: last_line_hash.map(str::to_owned),
-            },
-            updated_at_ms,
-        )
-        .await?;
-        tx.commit().await?;
-        Ok(())
     }
 
     /// The `DO UPDATE` set deliberately omits `user_config`: only

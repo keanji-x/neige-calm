@@ -94,10 +94,11 @@ pub use card_composite::{
 pub use events::append_probe;
 pub use events::{append_decision_event_in_tx, append_decision_events_in_tx};
 pub use infra::{begin_immediate_tx, is_sqlite_busy};
+#[cfg(test)]
+pub(crate) use out_of_domain::worker_flow_item_insert_tx;
 pub use out_of_domain::{
     HarnessTranscriptMeasure, harness_items_delete_by_card_tx, harness_items_measure_by_card_tx,
-    transcript_delete_thread_suffix_tx, worker_flow_item_insert_tx,
-    worker_flow_items_delete_by_card_tx,
+    transcript_delete_thread_suffix_tx, worker_flow_items_delete_by_card_tx,
 };
 pub use overlay::{
     overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_track_tx,
@@ -158,6 +159,8 @@ pub use task_projection::{
     task_delete_pending_tx,
 };
 pub use task_regate::task_regate_tx;
+#[cfg(any(test, feature = "fixtures"))]
+pub use worker_flow_capture::worker_flow_cursor_set_for_test;
 // The request-fingerprint enum is exported with its binding: route code must
 // construct V1 on write and handle LegacyUnknown explicitly on read.
 pub use track::{

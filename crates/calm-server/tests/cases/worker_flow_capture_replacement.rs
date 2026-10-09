@@ -3,16 +3,17 @@ use std::sync::Arc;
 use calm_server::db::RepoRead;
 use calm_server::event::EventBus;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
+use calm_server::test_seams::{PausePoint, WorkerFlowPoint};
 use calm_server::worker_flow::WorkerFlowDriver;
 use calm_server::worker_flow::claude_transcript::ClaudeTranscriptFlowSourceOptions;
 use calm_server::worker_flow::codex_rollout::CodexRolloutFlowSourceOptions;
-use calm_truth::capture_test_seam::{CapturePause, CapturePoint, install, install_commit};
+use calm_truth::capture_test_seam::{install, install_commit};
 use calm_truth::worker_flow_sink::WorkerFlowSink;
 
 use super::Case;
 use crate::support::worker_flow as wf;
 
-async fn entered(pause: &CapturePause) {
+async fn entered(pause: &PausePoint) {
     tokio::time::timeout(wf::LIVENESS_BUDGET, pause.entered.notified())
         .await
         .unwrap();
@@ -76,12 +77,12 @@ pub(super) async fn replacement(claude: bool, card: &str) {
         "WAL reader sees old checkpoint while COMMIT holds writer lock"
     );
     let old_token = driver.task_stop_tokens_for_test().await.pop().unwrap();
-    let ready = install(case.card(), -1, CapturePoint::ReplacementReady);
-    let loaded = install(case.card(), -1, CapturePoint::CheckpointLoaded);
+    let ready = install(case.card(), -1, WorkerFlowPoint::ReplacementReady);
+    let loaded = install(case.card(), -1, WorkerFlowPoint::CheckpointLoaded);
     let settling = install(
         case.card(),
         case.interrupted,
-        CapturePoint::CancellationSettling,
+        WorkerFlowPoint::CancellationSettling,
     );
     // A new runtime identity for the same source: the read model's original FK
     // remains valid; source rows are checked against their captured identity below.
@@ -140,7 +141,7 @@ pub(super) async fn replacement(claude: bool, card: &str) {
     .await;
     loaded.release.notify_one();
     attach.await.unwrap().unwrap();
-    let idle = install(case.card(), case.lines.len() as i64, CapturePoint::Idle);
+    let idle = install(case.card(), case.lines.len() as i64, WorkerFlowPoint::Idle);
     if drained {
         case.wait(&repo).await;
         entered(&idle).await;
@@ -218,7 +219,7 @@ pub(super) async fn path_change(claude: bool, card: &str) {
         item["source_uuid"] =
             serde_json::json!(format!("b-{}", item["source_uuid"].as_str().unwrap()));
     }
-    let idle = install(case.card(), case.lines.len() as i64, CapturePoint::Idle);
+    let idle = install(case.card(), case.lines.len() as i64, WorkerFlowPoint::Idle);
     let (token, task) = case.spawn(repo.clone());
     tokio::time::timeout(wf::LIVENESS_BUDGET, idle.entered.notified())
         .await

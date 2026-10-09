@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use calm_server::db::RepoRead;
 use calm_server::db::sqlite::SqlxRepo;
+use calm_server::test_seams::WorkerFlowPoint;
 use calm_truth::capture_test_seam::{CapturePoint, install};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
@@ -223,7 +224,7 @@ impl Case {
         repo.pool().close().await;
         drop(repo);
         let repo = open(self.dir.path()).await;
-        let idle = install(self.card(), self.lines.len() as i64, CapturePoint::Idle);
+        let idle = install(self.card(), self.lines.len() as i64, WorkerFlowPoint::Idle);
         let (token, task) = self.spawn(repo.clone());
         tokio::time::timeout(wf::LIVENESS_BUDGET, idle.entered.notified())
             .await
@@ -650,7 +651,7 @@ async fn empty_records(claude: bool, card: &str) {
     repo.pool().close().await;
     drop(repo);
     let repo = open(case.dir.path()).await;
-    let idle = install(case.card(), next, CapturePoint::Idle);
+    let idle = install(case.card(), next, WorkerFlowPoint::Idle);
     let (token, task) = case.spawn(repo.clone());
     tokio::time::timeout(wf::LIVENESS_BUDGET, idle.entered.notified())
         .await

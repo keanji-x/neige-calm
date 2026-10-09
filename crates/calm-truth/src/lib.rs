@@ -25,6 +25,8 @@ pub mod session_repo;
 pub mod state;
 #[cfg(any(test, feature = "test-helpers"))]
 pub mod test_helpers;
+#[cfg(feature = "fixtures")]
+pub mod test_seam;
 pub mod track_area_cache;
 pub mod track_fs_view;
 pub mod track_vcs;
