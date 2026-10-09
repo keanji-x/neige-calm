@@ -10,7 +10,7 @@ it('links issue references and Markdown in the real Reference task fields', asyn
   const openFile = vi.fn();
   render(<ReportDocument report={{ summary: '', body: '', blocks: [
     { id: 'context', kind: 'prose', payload: { markdown: '[Source issue](https://github.com/example/project/issues/2420)' } },
-    { id: 'task', kind: 'task', payload: { key: 'investigate', kind: 'codex', declared_by: 'spec', ready: true,
+    { id: 'task', kind: 'task', payload: { key: 'investigate', kind: 'codex', declared_by: 'user', ready: true,
       goal: '调查 issue #2420，读取 [日志](./evidence.log)。',
       acceptance: 'PR #2484 已发布；验证 fe/core/sample.ts:10-20。' } },
   ] }} fileRoot="/repo" onOpenFileLink={openFile} empty={null} />);
@@ -28,10 +28,10 @@ it('keeps task link admission, literals, nesting and disclosure intact', async (
   const openFile = vi.fn();
   render(<ReportDocument report={{ summary: '', body: '', blocks: [
     { id: 'context', kind: 'prose', payload: { markdown: '[Repo](https://github.com/other/repository/issues/1)\n\nBare PR #7 and `fe/core/context.ts:4`.' } },
-    { id: 'task', kind: 'task', payload: { key: 'safe', kind: 'codex', declared_by: 'spec', ready: true,
+    { id: 'task', kind: 'task', payload: { key: 'safe', kind: 'codex', declared_by: 'user', ready: true,
       goal: '[Already issue #6](https://github.com/other/repository/issues/6), ../../outside.ts:1-2 and [bad](javascript:alert(1)).\n\n![external image](https://external.invalid/pixel.png)\n\n```text\nissue #8 fe/core/literal.ts\n```',
       acceptance: 'issue #9；[file](./inside.ts:3)' } },
-    { id: 'terminal', kind: 'task', payload: { key: 'command', kind: 'terminal', declared_by: 'spec', ready: true,
+    { id: 'terminal', kind: 'task', payload: { key: 'command', kind: 'terminal', declared_by: 'user', ready: true,
       command: 'echo "issue #10 fe/core/command.ts"', gate: { steps: [{ name: 'check', cmd: 'echo "PR #11"' }] } } },
   ] }} fileRoot="/repo" onOpenFileLink={openFile} empty={null} />);
   expect(screen.getByRole('button', { name: 'PR #7' }).querySelector('button')).toBeNull();
@@ -54,7 +54,7 @@ it('keeps task link admission, literals, nesting and disclosure intact', async (
 it('does not borrow repository context from another report or from task code', async () => {
   render(<ReportDocument report={{ summary: '', body: '', blocks: [
     { id: 'context', kind: 'prose', payload: { markdown: '[One](https://github.com/one/project/issues/1) [Two](https://github.com/two/project/issues/2)' } },
-    { id: 'task', kind: 'task', payload: { key: 'ambiguous', kind: 'codex', declared_by: 'spec', ready: true,
+    { id: 'task', kind: 'task', payload: { key: 'ambiguous', kind: 'codex', declared_by: 'user', ready: true,
       goal: 'issue #2420', acceptance: 'PR #2484' } },
   ] }} empty={null} />);
   await userEvent.click(document.querySelector('[data-nc-report-reference] > summary')!);
@@ -106,7 +106,7 @@ it('retains the owning report repository in a same-report block preview', async 
     { id: 'context', kind: 'prose' as const, payload: { markdown: '[Parent](https://github.com/first/project/issues/1) [Details](neige://wave/t#details)' } },
     { id: 'details', kind: 'prose' as const, payload: { markdown: 'issue #2' } },
   ] };
-  render(<ReportDocument report={report} empty={null} linkPreview={{ trackId: 't', report }} />);
+  render(<ReportDocument report={report} empty={null} linkPreview={{ trackId: 't', report, files: { readFile: () => Promise.reject(new Error('No file requested')), rawUrl: (path) => path } }} />);
   await userEvent.click(screen.getByRole('button', { name: 'Details' }));
   const preview = screen.getByRole('dialog', { name: 'Preview: Details' });
   await waitFor(() => { expect(within(preview).getByRole('button', { name: 'issue #2' })).toBeTruthy(); });
