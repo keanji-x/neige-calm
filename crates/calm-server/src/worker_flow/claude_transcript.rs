@@ -20,6 +20,9 @@ use crate::worker_flow::claude_normalizer::{
     ClaudeNormalizerState, normalize_record_with_state, record_cwd, record_starts_turn,
     record_type, source_uuid,
 };
+use crate::worker_flow::claude_transcript_lookup::{
+    RuntimeAliveProbe, TranscriptLookup, wait_for_transcript_path,
+};
 use crate::worker_flow::cursor::{self, CursorWriter};
 
 pub const CLAUDE_TRANSCRIPT_SOURCE_KIND: &str = "claude_transcript";
@@ -87,12 +90,14 @@ impl ClaudeTranscriptFlowSource {
         }
     }
 
-    async fn resolve_transcript_path(&self) -> Result<Option<PathBuf>, CoreError> {
-        let expected_slug = slug_for_projects(&self.card_cwd);
-        let path = if let Some(path) = &self.options.path_override {
-            path.clone()
+    async fn resolve_transcript_path(
+        &self,
+        session: &WorkerSession,
+    ) -> Result<Option<PathBuf>, CoreError> {
+        let mut lookup = if let Some(path) = &self.options.path_override {
+            TranscriptLookup::Fixed(path.clone())
         } else {
-            let Some(session_id) = self.runtime.session_id.as_deref() else {
+            let Some(session_id) = self.runtime.session_id.clone() else {
                 tracing::warn!(
                     card_id = %self.runtime.card_id,
                     runtime_id = %self.runtime.id,
@@ -100,35 +105,16 @@ impl ClaudeTranscriptFlowSource {
                 );
                 return Ok(None);
             };
-            let home = std::env::var("HOME")
-                .map_err(|e| CoreError::Internal(format!("HOME not set: {e}")))?;
-            PathBuf::from(home)
-                .join(".claude/projects")
-                .join(&expected_slug)
-                .join(format!("{session_id}.jsonl"))
+            TranscriptLookup::hook(
+                self.repo.clone(),
+                session.track_id.as_str().to_string(),
+                self.runtime.card_id.clone(),
+                session_id,
+            )
         };
-
-        if should_check_transcript_slug(&path) {
-            let actual_slug = path
-                .parent()
-                .and_then(|parent| parent.file_name())
-                .and_then(|name| name.to_str());
-            if actual_slug != Some(expected_slug.as_str()) {
-                tracing::warn!(
-                    card_id = %self.runtime.card_id,
-                    runtime_id = %self.runtime.id,
-                    expected_slug = %expected_slug,
-                    actual_slug = actual_slug.unwrap_or("<missing>"),
-                    source_path = %path.display(),
-                    "claude transcript slug mismatch (claude-code may use a different slug rule); exiting source"
-                );
-                return Ok(None);
-            }
-        }
-
         let mut runtime_alive = RepoRuntimeAlive(self);
         wait_for_transcript_path(
-            path,
+            &mut lookup,
             &self.stop,
             &self.options,
             &self.runtime,
@@ -302,17 +288,13 @@ impl ClaudeTranscriptFlowSource {
 
                 if !cwd_checked && let Some(inband_cwd) = record_cwd(&parsed) {
                     cwd_checked = true;
-                    let expected = slug_for_projects(&self.card_cwd);
-                    let actual = slug_for_projects(inband_cwd);
-                    if actual != expected {
+                    if inband_cwd != self.card_cwd {
                         tracing::warn!(
                             card_id = %self.runtime.card_id,
                             runtime_id = %self.runtime.id,
-                            expected_slug = expected,
-                            actual_slug = actual,
                             card_cwd = %self.card_cwd,
                             inband_cwd,
-                            "claude transcript in-band cwd slug mismatch; continuing after path-time transcript slug matched"
+                            "claude transcript in-band cwd differs from card cwd; continuing because the hook-reported session path is the identity"
                         );
                     }
                 }
@@ -382,71 +364,11 @@ impl ClaudeTranscriptFlowSource {
     }
 }
 
-trait RuntimeAliveProbe: Send {
-    fn is_alive<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
-}
-
 struct RepoRuntimeAlive<'a>(&'a ClaudeTranscriptFlowSource);
 
 impl RuntimeAliveProbe for RepoRuntimeAlive<'_> {
     fn is_alive<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
         Box::pin(self.0.runtime_is_alive())
-    }
-}
-
-async fn wait_for_transcript_path(
-    path: PathBuf,
-    stop: &CancellationToken,
-    options: &ClaudeTranscriptFlowSourceOptions,
-    runtime: &WorkerSessionProjection,
-    runtime_alive: &mut (dyn RuntimeAliveProbe + Send),
-) -> Result<Option<PathBuf>, CoreError> {
-    let warn_after = options.lazy_retry_attempts;
-    let mut warned = false;
-    let mut attempt = 0_usize;
-    loop {
-        if stop.is_cancelled() {
-            return Ok(None);
-        }
-        match tokio::fs::metadata(&path).await {
-            Ok(_) => return Ok(Some(path)),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                // Runtime shutdown can be what closes Claude's writer and
-                // flushes the transcript path, so terminal liveness gets one
-                // final filesystem probe before the source exits.
-                if !runtime_alive.is_alive().await {
-                    match tokio::fs::metadata(&path).await {
-                        Ok(_) => return Ok(Some(path)),
-                        Err(_) => {
-                            tracing::info!(
-                                card_id = %runtime.card_id,
-                                runtime_id = %runtime.id,
-                                source_path = %path.display(),
-                                "claude runtime reached terminal status without creating a transcript; exiting source"
-                            );
-                            return Ok(None);
-                        }
-                    }
-                }
-                if !warned && attempt >= warn_after {
-                    warned = true;
-                    tracing::warn!(
-                        card_id = %runtime.card_id,
-                        runtime_id = %runtime.id,
-                        source_path = %path.display(),
-                        "claude transcript not present after lazy-retry budget; continuing to poll (claude creates file on first prompt)"
-                    );
-                }
-                let delay = if attempt < warn_after {
-                    options.lazy_retry_delay
-                } else {
-                    Duration::from_secs(1)
-                };
-                sleep_or_cancel(delay, stop).await?;
-                attempt = attempt.saturating_add(1);
-            }
-            Err(err) => return Err(CoreError::Io(err)),
-        }
     }
 }
 
@@ -461,7 +383,7 @@ impl WorkerFlowSource for ClaudeTranscriptFlowSource {
         session: &WorkerSession,
         sink: &dyn WorkerFlowItemSink,
     ) -> Result<(), CoreError> {
-        let Some(path) = self.resolve_transcript_path().await? else {
+        let Some(path) = self.resolve_transcript_path(session).await? else {
             tracing::info!(
                 card_id = %self.runtime.card_id,
                 runtime_id = %self.runtime.id,
@@ -559,18 +481,6 @@ async fn reconstruct_prefix_once(
     Ok((position, state))
 }
 
-fn should_check_transcript_slug(path: &Path) -> bool {
-    let Some(projects_dir) = path.parent().and_then(|slug_dir| slug_dir.parent()) else {
-        return false;
-    };
-    projects_dir.file_name().and_then(|name| name.to_str()) == Some("projects")
-        && projects_dir
-            .parent()
-            .and_then(|claude_dir| claude_dir.file_name())
-            .and_then(|name| name.to_str())
-            == Some(".claude")
-}
-
 fn parse_line(raw: &str, line_index: u64, source_path: &str) -> Result<Value, CoreError> {
     serde_json::from_str(raw).map_err(|e| {
         CoreError::Internal(format!(
@@ -579,7 +489,10 @@ fn parse_line(raw: &str, line_index: u64, source_path: &str) -> Result<Value, Co
     })
 }
 
-async fn sleep_or_cancel(duration: Duration, stop: &CancellationToken) -> Result<(), CoreError> {
+pub(super) async fn sleep_or_cancel(
+    duration: Duration,
+    stop: &CancellationToken,
+) -> Result<(), CoreError> {
     tokio::select! {
         _ = stop.cancelled() => Ok(()),
         _ = tokio::time::sleep(duration) => Ok(()),
@@ -690,81 +603,4 @@ fn hash_line(raw: &str) -> String {
         write!(&mut hash, "{byte:02x}").expect("writing to String cannot fail");
     }
     hash
-}
-
-/// Mirrors Claude 2.1.170 project-directory slugging; cwd cross-checks catch drift.
-pub fn slug_for_projects(cwd: &str) -> String {
-    let mut slug = String::with_capacity(cwd.len());
-    for unit in cwd.encode_utf16() {
-        if let Some(ch) = char::from_u32(unit as u32)
-            && (ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.')
-        {
-            slug.push(ch);
-            continue;
-        }
-        slug.push('-');
-    }
-    slug
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use calm_types::runtime::{AgentProvider, WorkerSessionKind};
-
-    struct CreateTranscriptOnTerminal {
-        path: PathBuf,
-        calls: usize,
-    }
-
-    impl RuntimeAliveProbe for CreateTranscriptOnTerminal {
-        fn is_alive<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
-            Box::pin(async move {
-                self.calls = self.calls.saturating_add(1);
-                tokio::fs::write(&self.path, b"{}\n").await.unwrap();
-                false
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn lazy_resolve_final_recheck_catches_file_created_during_terminal_liveness() {
-        let transcript_dir = tempfile::tempdir().unwrap();
-        let path = transcript_dir.path().join("session-lazy-race.jsonl");
-        let stop = CancellationToken::new();
-        let options = ClaudeTranscriptFlowSourceOptions {
-            path_override: None,
-            poll_interval: Duration::from_millis(20),
-            lazy_retry_delay: Duration::from_millis(10),
-            lazy_retry_attempts: 3,
-        };
-        let runtime = WorkerSessionProjection {
-            id: "rt-lazy-race".into(),
-            card_id: "card-lazy-race".into(),
-            kind: WorkerSessionKind::ClaudeCard,
-            agent_provider: Some(AgentProvider::Claude),
-            status: WorkerSessionState::Running,
-            terminal_run_id: None,
-            thread_id: None,
-            session_id: Some("session-lazy-race".into()),
-            active_turn_id: None,
-            handle_state_json: None,
-            created_at_ms: 0,
-            updated_at_ms: 0,
-            completed_at_ms: None,
-            last_turn_completed_ms: None,
-        };
-        let mut runtime_alive = CreateTranscriptOnTerminal {
-            path: path.clone(),
-            calls: 0,
-        };
-
-        let resolved =
-            wait_for_transcript_path(path.clone(), &stop, &options, &runtime, &mut runtime_alive)
-                .await
-                .unwrap();
-
-        assert_eq!(resolved, Some(path));
-        assert_eq!(runtime_alive.calls, 1);
-    }
 }

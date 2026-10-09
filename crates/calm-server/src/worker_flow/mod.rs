@@ -1,5 +1,6 @@
 pub mod claude_normalizer;
 pub mod claude_transcript;
+mod claude_transcript_lookup;
 pub mod codex_normalizer;
 pub mod codex_rollout;
 pub mod cursor;
