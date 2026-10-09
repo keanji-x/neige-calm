@@ -23,6 +23,10 @@ mod origin_tests;
 /// The `source` of the `TrackWake` a mail writes (#2130): the kernel's own fixed identifier.
 pub const MAIL_WAKE_SOURCE: &str = "mail";
 
+/// The `source` of the `TrackWake` the quiet-worker detector writes (#1755): a running task's
+/// worker printed nothing on its terminal for the detector's threshold.
+pub const WORKER_QUIET_WAKE_SOURCE: &str = "worker_quiet";
+
 /// Shared acceptance guidance for Planner prompts, tool descriptions, and result notices.
 pub const TASK_ACCEPTANCE_GUIDANCE: &str = include_str!("observation/task-acceptance.md");
 

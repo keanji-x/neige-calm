@@ -601,6 +601,7 @@ pub mod thread_seals;
 pub mod track_activity;
 pub mod track_area_cache;
 pub mod validation;
+pub mod worker_quiet;
 pub mod workspace_materialize;
 pub mod workspace_recycle;
 pub mod workspace_repoint;

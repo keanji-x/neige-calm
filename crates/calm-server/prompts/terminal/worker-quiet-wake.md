@@ -1,0 +1,1 @@
+Task {task_key} (attempt_id {attempt_id}): its worker has written no terminal output for {quiet_secs}s while the task is still running. Read its screen by attempt_id and follow "Quiet worker" in guide/terminal.md.

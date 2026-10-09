@@ -59,9 +59,11 @@ impl std::fmt::Display for CodexTaskWorkerInputRefused {
 }
 impl std::error::Error for CodexTaskWorkerInputRefused {}
 
-pub(super) struct Resolved {
+pub(crate) struct Resolved {
     pub binding: Binding,
     pub controllable: bool,
+    /// The card's current worker session still holds live authority (not exited or failed).
+    pub session_active: bool,
     pub task_status: Option<TaskStatus>,
     pub card_kind: String,
     /// A codex card bound to a task execution: observable, never writable.
@@ -100,8 +102,17 @@ impl TerminalInteraction {
         target: &Target,
     ) -> Result<Resolved> {
         let track = Self::authorize(repo, identity).await?;
+        Self::resolve_in_track(repo, &track, target).await
+    }
+    /// What a Planner of `track` resolves for `target`, minus the caller's identity check; the
+    /// quiet-worker detector resolves through it so it wakes only about what the tools can reach.
+    pub(crate) async fn resolve_in_track(
+        repo: &dyn RouteRepo,
+        track: &str,
+        target: &Target,
+    ) -> Result<Resolved> {
         let requested_task = match target {
-            Target::Attempt(id) => Some(Self::current_task(repo, &track, id).await?),
+            Target::Attempt(id) => Some(Self::current_task(repo, track, id).await?),
             Target::Terminal(_) => None,
         };
         let terminal = match target {
@@ -177,13 +188,13 @@ impl TerminalInteraction {
         let task = if let Some(task) = requested_task {
             Some(task)
         } else if let Some(id) = operation_task.as_deref() {
-            Some(Self::current_task(repo, &track, id).await?)
+            Some(Self::current_task(repo, track, id).await?)
         } else {
             repo.task_for_worker_card(card.id.as_str()).await?
         };
         let task = match task {
             Some(task) => {
-                let latest = Self::current_task(repo, &track, &task.id).await?;
+                let latest = Self::current_task(repo, track, &task.id).await?;
                 ensure!(
                     latest.worker_card_id.as_deref() == Some(card.id.as_str())
                         && operation_task.as_deref() == Some(latest.id.as_str()),
@@ -203,7 +214,8 @@ impl TerminalInteraction {
             None => None,
         };
         let codex_task_worker = card.kind == "codex" && task.is_some();
-        let controllable = session.state.is_active_authority()
+        let session_active = session.state.is_active_authority();
+        let controllable = session_active
             && !codex_task_worker
             && task
                 .as_ref()
@@ -219,6 +231,7 @@ impl TerminalInteraction {
                 }),
             },
             controllable,
+            session_active,
             task_status: task.map(|task| task.status),
             card_kind: card.kind,
             codex_task_worker,
