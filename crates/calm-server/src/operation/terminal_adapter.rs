@@ -729,6 +729,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
         let cmd = output.output_string("cmd", "terminal")?;
         let cwd = output.output_string("cwd", "terminal")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
+        super::terminal_launch::require_not_rejected(&output.data, &terminal_id)?;
         let existing_term = ctx
             .repo
             .terminal_get(&terminal_id)

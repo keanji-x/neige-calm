@@ -935,6 +935,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         let cwd = output.output_string("cwd", "claude worker")?;
         let mut env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
 
+        super::terminal_launch::require_not_rejected(&output.data, &terminal_id)?;
         let term = ctx
             .repo
             .terminal_get(&terminal_id)

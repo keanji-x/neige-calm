@@ -929,6 +929,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
         let rendered_prompt = output.output_string("prompt", "codex")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
 
+        super::terminal_launch::require_not_rejected(&output.data, &terminal_id)?;
         let term = ctx
             .repo
             .terminal_get(&terminal_id)

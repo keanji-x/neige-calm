@@ -139,7 +139,7 @@ async fn rejects_cwd(file: bool) -> anyhow::Result<()> {
     let mut supervisor = Supervisor::start(root.path()).await?;
     let reply = supervisor.ensure(cwd.to_str().unwrap(), &marker).await?;
     assert!(
-        matches!(&reply, ControlReply::SpawnFailed { error, child_already_reaped: false }
+        matches!(&reply, ControlReply::SpawnFailed { error, child_already_reaped: false, disposition: calm_session::control::SpawnFailedDisposition::NoChildCreated }
             if error.contains(cwd.to_str().unwrap()) && error.contains("not a directory")),
         "expected visible cwd rejection, got {reply:?}; command executed: {}",
         marker.exists()

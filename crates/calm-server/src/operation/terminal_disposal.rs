@@ -54,11 +54,18 @@ async fn unresolved_tx(tx: &mut Tx<'_>, scope: &Scope) -> Result<Vec<Unresolved>
         let state = RequestState::read(&output.data)?;
         let successful = matches!(op.phase, Phase::Succeeded | Phase::SpawnSucceeded);
         let socket = match state {
-            Some(RequestState::Requested {
-                terminal_id: recorded,
-                supervisor_sock,
-                ..
-            }) => {
+            Some(
+                RequestState::Requested {
+                    terminal_id: recorded,
+                    supervisor_sock,
+                    ..
+                }
+                | RequestState::Rejected {
+                    terminal_id: recorded,
+                    supervisor_sock,
+                    ..
+                },
+            ) => {
                 if recorded != terminal_id {
                     return Err(CalmError::Conflict(
                         "prepared launch terminal identity changed; retain resources".into(),

@@ -731,7 +731,22 @@ async fn ensure_entry(
                     }
                 }
             }
-            ControlReply::SpawnFailed { error, .. } => anyhow::bail!("{error}"),
+            ControlReply::SpawnFailed {
+                error, disposition, ..
+            } => {
+                if disposition == calm_session::control::SpawnFailedDisposition::NoChildCreated
+                    && let (Some(repo), Some(launch)) = (repo.as_deref(), launch.as_ref())
+                {
+                    terminal_launch::reject_no_child(
+                        repo,
+                        launch,
+                        &cfg.terminal_id,
+                        &cfg.supervisor_sock,
+                    )
+                    .await?;
+                }
+                anyhow::bail!("{error}")
+            }
             other => anyhow::bail!("unexpected proc-supervisor spawn reply: {other:?}"),
         }
         match read_control_reply(&mut control_conn, SPAWN_CONTROL_READ_TIMEOUT, "ready").await? {

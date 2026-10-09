@@ -27,7 +27,7 @@ pub const FRAME_VERSION: u16 = 4;
 pub const PROTOCOL_VERSION: u16 = 4;
 
 /// Supervisor control wire version; bumped when the ControlMsg / ControlReply shapes change incompatibly.
-pub const SUPERVISOR_CONTROL_VERSION: u32 = 1;
+pub const SUPERVISOR_CONTROL_VERSION: u32 = 2;
 
 /// Typed errors from the framing layer; the kernel↔daemon WS bridge matches on `BadMagic` / `UnsupportedFrameVersion` to close on version skew.
 #[derive(thiserror::Error, Debug)]

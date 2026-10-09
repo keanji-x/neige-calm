@@ -70,6 +70,8 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus) {
                     let _ = write_frame(
                         &mut connection,
                         &ControlReply::SpawnFailed {
+                            disposition:
+                                calm_session::control::SpawnFailedDisposition::NoChildCreated,
                             error: "fixture optional viewer unavailable".into(),
                             child_already_reaped: true,
                         },
