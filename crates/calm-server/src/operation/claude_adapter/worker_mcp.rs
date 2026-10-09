@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::error::{CalmError, Result};
 use crate::mcp_server::McpServer;
-use crate::mcp_server::wiring::{card_mcp_env, claude_mcp_config_json};
+use crate::mcp_server::wiring::{MCP_SERVER_KEY, card_mcp_env, claude_mcp_config_json};
 use crate::operation::SpawnCtx;
 use crate::routes::codex_cards::shell_single_quote;
 
@@ -20,10 +20,13 @@ pub(crate) fn mcp_config_path(settings_path: &Path) -> Result<PathBuf> {
     Ok(super::settings_path_parent(settings_path)?.join("mcp.json"))
 }
 
-/// The command-line flags that make `mcp_config` the session's only MCP configuration.
+/// The command-line flags that make `mcp_config` the session's only MCP configuration and let the
+/// kernel server's tools run without a permission prompt (#2509): without the rule, a call in the
+/// CLI's default permission mode stops at an approval. The kernel still authorizes every call by
+/// the card's role. `--allowedTools` takes a list, so an option must follow it.
 pub(crate) fn mcp_flags(mcp_config: &Path) -> String {
     format!(
-        " --strict-mcp-config --mcp-config {}",
+        " --allowedTools mcp__{MCP_SERVER_KEY} --strict-mcp-config --mcp-config {}",
         shell_single_quote(&mcp_config.to_string_lossy())
     )
 }
