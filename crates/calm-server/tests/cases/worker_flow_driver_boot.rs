@@ -15,11 +15,11 @@ use calm_server::session_projection_repo::{AgentProvider, ThreadAttribution, Wor
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::worker_flow::WorkerFlowDriver;
 use calm_server::worker_flow::claude_transcript::ClaudeTranscriptFlowSourceOptions;
-use calm_server::worker_flow::claude_transcript::slug_for_projects;
 use calm_server::worker_flow::codex_rollout::CodexRolloutFlowSourceOptions;
 use calm_truth::worker_flow_sink::WorkerFlowSink;
 use serde_json::json;
 
+use support::claude_hooks as hooks;
 use support::worker_flow as wf;
 
 #[tokio::test]
@@ -221,7 +221,7 @@ async fn worker_flow_driver_attaches_when_thread_arrives_on_running_status() {
 }
 
 #[tokio::test]
-async fn worker_flow_driver_uses_terminal_row_cwd_for_legacy_claude_card() {
+async fn worker_flow_driver_captures_legacy_claude_card_from_hook_transcript_path() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let card_id = "card-driver-legacy-claude-cwd";
     let session_id = "session-driver-legacy-claude-cwd";
@@ -266,21 +266,20 @@ async fn worker_flow_driver_uses_terminal_row_cwd_for_legacy_claude_card() {
     )
     .await;
     let transcript_root = tempfile::tempdir().unwrap();
-    let expected_path = transcript_path(
-        transcript_root.path(),
-        &slug_for_projects(terminal_cwd),
-        session_id,
-    );
-    let stale_card_cwd_path = transcript_path(
-        transcript_root.path(),
-        &slug_for_projects("/server/default"),
-        session_id,
-    );
-    assert_ne!(expected_path, stale_card_cwd_path);
+    let path = transcript_root
+        .path()
+        .join("-path-from-terminal")
+        .join(format!("{session_id}.jsonl"));
     wf::write_transcript(
-        &expected_path,
+        &path,
         &[wf::claude_system("sys-driver-legacy-cwd", terminal_cwd)],
     );
+    hooks::post_claude_hook(
+        &repo,
+        card_id,
+        hooks::session_start(session_id, terminal_cwd, &path),
+    )
+    .await;
 
     let driver = WorkerFlowDriver::new_with_source_options_for_test(
         repo.clone(),
@@ -294,7 +293,7 @@ async fn worker_flow_driver_uses_terminal_row_cwd_for_legacy_claude_card() {
             lazy_retry_attempts: 1,
         },
         ClaudeTranscriptFlowSourceOptions {
-            path_override: Some(expected_path.clone()),
+            path_override: None,
             poll_interval: Duration::from_millis(20),
             lazy_retry_delay: Duration::from_millis(10),
             lazy_retry_attempts: 1,
@@ -311,22 +310,7 @@ async fn worker_flow_driver_uses_terminal_row_cwd_for_legacy_claude_card() {
         stop.cancel();
     }
 
-    assert_eq!(
-        expected_path,
-        transcript_path(
-            transcript_root.path(),
-            &slug_for_projects(terminal_cwd),
-            session_id
-        )
-    );
     assert_eq!(item_count(&repo, card_id).await, 1);
-}
-
-fn transcript_path(root: &std::path::Path, slug: &str, session_id: &str) -> std::path::PathBuf {
-    root.join(".claude")
-        .join("projects")
-        .join(slug)
-        .join(format!("{session_id}.jsonl"))
 }
 
 async fn item_count(repo: &SqlxRepo, card_id: &str) -> usize {
