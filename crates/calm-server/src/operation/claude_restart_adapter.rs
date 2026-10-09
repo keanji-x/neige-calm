@@ -17,7 +17,9 @@ use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::McpServer;
 use crate::model::new_id;
-use crate::operation::claude_adapter::{CLAUDE_PHASES, build_claude_env, worker_mcp};
+use crate::operation::claude_adapter::{
+    CLAUDE_PHASES, build_claude_env, claude_child_live, worker_mcp,
+};
 use crate::operation::workspace_lease::worker::{
     record_declared_head, verify_declared_head, verify_recorded_head,
 };
@@ -35,11 +37,9 @@ use calm_truth::model::NewTerminal;
 
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation, PhaseTag,
-    ProviderAdapter, SpawnCtx, SpawnOutcome, Tx, TxOutput,
+    ProviderAdapter, SpawnCtx, SpawnHandle, SpawnOutcome, Tx, TxOutput,
 };
 
-#[cfg(feature = "fixtures")]
-use super::SpawnHandle;
 #[cfg(feature = "fixtures")]
 use futures::future::BoxFuture;
 
@@ -108,6 +108,23 @@ pub struct ClaudeRestartOperationPayload {
     #[serde(rename = "runtime_id")]
     pub worker_session_id: Option<String>,
     pub card_id: String,
+}
+
+impl ClaudeRestartAdapter {
+    async fn spawn_child(
+        &self,
+        ctx: &SpawnCtx,
+        term: &crate::model::Terminal,
+        command_line: String,
+        cwd: String,
+        env: Value,
+    ) -> Result<SpawnHandle> {
+        #[cfg(feature = "fixtures")]
+        if let Some(hook) = &self.spawn_hook {
+            return hook(term.id.clone(), command_line, cwd, env).await;
+        }
+        ctx.spawn_terminal(term, &command_line, &cwd, &env).await
+    }
 }
 
 #[async_trait]
@@ -335,47 +352,54 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             None => None,
         };
 
-        ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
-        ctx.terminal_renderer.drop_entry(&terminal_id).await;
-        let term = ctx
+        // A re-driven spawn whose child already runs (a crash or lost lease after the spawn, before
+        // it was recorded) must not rotate the token that child holds, nor spawn a second one.
+        let current = ctx
             .repo
             .terminal_get(&terminal_id)
             .await?
             .ok_or_else(|| CalmError::Internal(format!("terminal {terminal_id} vanished")))?;
-        std::fs::create_dir_all(&settings_dir).map_err(|e| {
-            CalmError::Internal(format!(
-                "mkdir claude settings dir {}: {e}",
-                settings_dir.display()
-            ))
-        })?;
-        let hook_command = claude_hook_command(
-            &self.codex.bridge_bin.to_string_lossy(),
-            &card_id,
-            &self.codex.ingest_url,
-        );
-        std::fs::write(&settings_path, build_claude_settings_json(&hook_command))
-            .map_err(|e| CalmError::Internal(format!("write claude settings.json: {e}")))?;
-        if let Some((mcp_server, mcp_config)) = &kernel_mcp {
-            worker_mcp::wire(
-                ctx,
-                mcp_server,
-                &card_id,
-                &worker_session_id,
-                mcp_config,
-                &mut env,
-            )
-            .await?;
-        }
-
-        #[cfg(feature = "fixtures")]
-        let handle = if let Some(hook) = &self.spawn_hook {
-            hook(terminal_id.clone(), command_line, cwd, env).await
+        let handle = if claude_child_live(&current) {
+            tracing::info!(
+                card_id = %card_id,
+                terminal_id = %terminal_id,
+                pid = ?current.pid,
+                "claude restart re-drive: child already live; skipping token rotation and respawn",
+            );
+            Ok(SpawnHandle::NoOp)
         } else {
-            ctx.spawn_terminal(&term, &command_line, &cwd, &env).await
+            ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
+            ctx.terminal_renderer.drop_entry(&terminal_id).await;
+            let term =
+                ctx.repo.terminal_get(&terminal_id).await?.ok_or_else(|| {
+                    CalmError::Internal(format!("terminal {terminal_id} vanished"))
+                })?;
+            std::fs::create_dir_all(&settings_dir).map_err(|e| {
+                CalmError::Internal(format!(
+                    "mkdir claude settings dir {}: {e}",
+                    settings_dir.display()
+                ))
+            })?;
+            let hook_command = claude_hook_command(
+                &self.codex.bridge_bin.to_string_lossy(),
+                &card_id,
+                &self.codex.ingest_url,
+            );
+            std::fs::write(&settings_path, build_claude_settings_json(&hook_command))
+                .map_err(|e| CalmError::Internal(format!("write claude settings.json: {e}")))?;
+            if let Some((mcp_server, mcp_config)) = &kernel_mcp {
+                worker_mcp::wire(
+                    ctx,
+                    mcp_server,
+                    &card_id,
+                    &worker_session_id,
+                    mcp_config,
+                    &mut env,
+                )
+                .await?;
+            }
+            self.spawn_child(ctx, &term, command_line, cwd, env).await
         };
-
-        #[cfg(not(feature = "fixtures"))]
-        let handle = ctx.spawn_terminal(&term, &command_line, &cwd, &env).await;
 
         match handle {
             Ok(handle) => {

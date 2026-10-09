@@ -374,6 +374,12 @@ mod tests {
             .collect();
         // Settings must register exactly the worker hook table — every row, nothing else.
         assert_eq!(registered, expected);
+        // A restart rewrites a worker card's settings with `build_claude_settings_json`, so both
+        // spellings must stay one file.
+        assert_eq!(
+            s,
+            build_claude_worker_settings_json("bridge --provider claude")
+        );
         // Matcher presence per hook must match the table flag.
         for h in CLAUDE_WORKER_HOOKS {
             let has_matcher = v["hooks"][h.event_name][0].get("matcher").is_some();

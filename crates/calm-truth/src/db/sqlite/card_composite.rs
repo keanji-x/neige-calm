@@ -270,8 +270,9 @@ pub async fn card_with_codex_create_tx(
     Ok((card, term, mcp_token))
 }
 
-/// Atomically create a `claude`-kind worker card AND its terminal row. Claude cards intentionally have no MCP
-/// token/config path; completion observability comes solely from Claude hook events.
+/// Atomically create a `claude`-kind worker card AND its terminal row. An owner's Claude card gets no MCP
+/// token/config path; completion observability comes solely from Claude hook events. A scheduler worker's
+/// Claude card (`card_with_claude_worker_create_tx`) gets the neige MCP server at spawn (#2470).
 #[allow(clippy::too_many_arguments)]
 pub async fn card_with_claude_create_tx(
     tx: &mut Transaction<'_, Sqlite>,

@@ -984,7 +984,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             });
             return Ok(SpawnOutcome::Ready(SpawnHandle::NoOp));
         }
-        if term.pid.is_some() && term.exit_code.is_none() && !term.signal_killed {
+        if claude_child_live(&term) {
             tracing::info!(
                 card_id = %card_id,
                 terminal_id = %terminal_id,
@@ -1377,6 +1377,12 @@ fn project_claude_runtime_fields_for_response(
             .or_insert_with(|| Value::String(claude_session_id.to_string()));
     }
     card
+}
+
+/// A Claude terminal whose child was spawned and has not exited: a re-driven spawn finds it
+/// running and must neither rotate the card token it holds nor spawn a second child.
+pub(crate) fn claude_child_live(term: &crate::model::Terminal) -> bool {
+    term.pid.is_some() && term.exit_code.is_none() && !term.signal_killed
 }
 
 fn settings_path_parent(path: &Path) -> Result<PathBuf> {
