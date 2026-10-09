@@ -374,6 +374,12 @@ mod tests {
             .collect();
         // Settings must register exactly the worker hook table — every row, nothing else.
         assert_eq!(registered, expected);
+        // A restart rewrites a worker card's settings with `build_claude_settings_json`, so both
+        // spellings must stay one file.
+        assert_eq!(
+            s,
+            build_claude_worker_settings_json("bridge --provider claude")
+        );
         // Matcher presence per hook must match the table flag.
         for h in CLAUDE_WORKER_HOOKS {
             let has_matcher = v["hooks"][h.event_name][0].get("matcher").is_some();
@@ -383,16 +389,6 @@ mod tests {
                 h.event_name, h.matcher
             );
         }
-    }
-
-    #[test]
-    fn worker_settings_json_has_no_mcp_servers() {
-        let s = build_claude_worker_settings_json("bridge --provider claude");
-        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
-        assert!(v.get("hooks").is_some());
-        assert!(v.get("mcpServers").is_none());
-        assert!(v.get("mcp_servers").is_none());
-        assert_eq!(s, build_claude_settings_json("bridge --provider claude"));
     }
 
     /// #1873 item 2: every kernel-written Claude settings file hides the attribution.

@@ -172,6 +172,7 @@ where
     let claude_restart_adapter = Arc::new(ClaudeRestartAdapter::new_with_spawn_hook(
         route_repo.clone(),
         codex,
+        None,
         state.card_role_cache.clone(),
         state.track_area_cache.clone(),
         hook,
@@ -506,7 +507,7 @@ async fn post_claude_card_no_prompt_succeeds_through_saga() {
             .unwrap();
     assert_eq!(
         mcp_count.0, 0,
-        "Claude worker cards must not mint MCP tokens"
+        "owner Claude cards must not mint MCP tokens"
     );
     let terminal_id = card["payload"]["terminal_id"].as_str().unwrap();
     let term = boot.repo.terminal_get(terminal_id).await.unwrap().unwrap();
@@ -612,6 +613,14 @@ async fn post_claude_restart_after_exit_reuses_terminal_and_resumes_session() {
     assert!(!restart_call.program.contains("--session-id"));
     assert!(!restart_call.program.contains("--fork-session"));
     assert!(!restart_call.program.contains("first prompt"));
+    // #2470: only a task worker's card is restarted with the kernel MCP server alone.
+    assert!(
+        !restart_call.program.contains("--strict-mcp-config")
+            && !restart_call.program.contains("--mcp-config"),
+        "an owner's Claude card keeps the owner's MCP servers: {}",
+        restart_call.program
+    );
+    assert!(restart_call.env.get("NEIGE_MCP_TOKEN").is_none());
 
     let rows = sqlx::query(
         "SELECT state AS status, terminal_run_id, agent_session_id AS session_id FROM worker_sessions WHERE card_id = ?1 ORDER BY created_at_ms ASC, id ASC",

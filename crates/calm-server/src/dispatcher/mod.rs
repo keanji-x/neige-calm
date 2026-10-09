@@ -390,6 +390,7 @@ fn dispatcher_operation_runtime(
     let claude_restart_adapter = Arc::new(ClaudeRestartAdapter::new(
         route_repo.clone(),
         codex,
+        mcp_server.clone(),
         write.role_cache().clone(),
         write.area_cache().clone(),
     ));

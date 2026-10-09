@@ -206,3 +206,33 @@ pub(super) async fn try_prepare_claude_worker(
     tx.commit().await.unwrap();
     Ok((output, claimed_op_id))
 }
+
+/// Prepares a worker as the scheduler drives it, so its op records the card as its target: the
+/// proof a restart reads to tell a task worker's card (`card_is_worker_spawn_target_tx`). The
+/// caller inserts the `tasks` row `{track_id}:{key}`.
+pub(super) async fn prepare_claude_worker_as_scheduled(
+    harness: &ClaudeWorkerHarness,
+    key: &str,
+) -> TxOutput {
+    let op_repo = SqlxOperationRepo::new(harness.repo.pool().clone());
+    let op_id = op_repo
+        .insert_operation(
+            "claude-worker",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(format!("{}:{key}", harness.track_id)),
+                payload_hash: format!("hash-{key}"),
+            },
+            claude_worker_payload(&harness.track_id, key),
+        )
+        .await
+        .unwrap();
+    let op = op_repo.claim_drive_batch(1).await.unwrap().remove(0);
+    assert_eq!(op.id, op_id);
+    let (op, _) = op_repo
+        .prepare_tx_and_advance(&op, &harness.adapter)
+        .await
+        .unwrap()
+        .unwrap();
+    op.tx_output.unwrap()
+}

@@ -208,6 +208,7 @@ async fn prompted_adapters_accept_legacy_failed_status_compensation_op() {
     let adapter = crate::operation::claude_restart_adapter::ClaudeRestartAdapter::new(
         harness.route_repo.clone(),
         Arc::new(crate::state::CodexClient::new_stub()),
+        None,
         crate::card_role_cache::CardRoleCache::new(),
         crate::track_area_cache::TrackAreaCache::new(),
     );
