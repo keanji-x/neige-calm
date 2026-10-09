@@ -112,7 +112,7 @@
           },
           "pr": {
             "type": "integer",
-            "description": "Pull request number"
+            "description": "Pull request number; labels the read, does not select or check the commits"
           },
           "base_sha": {
             "type": "string",
