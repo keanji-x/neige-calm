@@ -984,8 +984,8 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             });
             return Ok(SpawnOutcome::Ready(SpawnHandle::NoOp));
         }
-        // The terminal row is created in this operation's `prepare_tx`, so a pid on it was
-        // written by this operation's own spawn.
+        // The row's pid and exit fields stand in for liveness; they can show a dead child as
+        // live (#2478).
         if term.pid.is_some() && term.exit_code.is_none() && !term.signal_killed {
             tracing::info!(
                 card_id = %card_id,
