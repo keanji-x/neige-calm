@@ -3129,11 +3129,12 @@ async fn one_shot_output_before_attach_is_unread() {
         (Some(0), false),
         "the sticky exit followed the replay"
     );
+    // The mark can advance before the persisted exit is projected; wait for both.
     let a = await_activity(
         &h,
-        "the mark advanced to the replayed output",
+        "the exit projected with the mark advanced to the replayed output",
         Duration::from_secs(5),
-        |a| a.activity_at_ms.is_some_and(|at| at >= spawned_at),
+        |a| !a.working && a.activity_at_ms.is_some_and(|at| at >= spawned_at),
     )
     .await;
     assert!(!a.working, "an exited PTY is not working: {a:?}");
