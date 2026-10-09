@@ -9,7 +9,13 @@ import '../../styles/entry.css';
 import { ReadOnlyCode, MarkdownCode, resolveCodeLanguage, CODE_HIGHLIGHT_LIMITS } from './public.tsx';
 import { Reply } from '../../features/chat/thread/reply.tsx';
 
-afterEach(() => { cleanup(); vi.restoreAllMocks(); delete document.documentElement.dataset.theme; });
+afterEach(() => {
+  cleanup();
+  // Native selections must not refer to detached CodeMirror nodes in the next fixture.
+  document.getSelection()?.removeAllRanges();
+  vi.restoreAllMocks();
+  delete document.documentElement.dataset.theme;
+});
 
 async function codeView() {
   const element = await screen.findByRole('textbox', { name: 'Code' });
@@ -46,7 +52,7 @@ it('is keyboard readable and read-only without consuming the search shortcut', a
   await waitFor(() => { expect(view.state.facet(language)?.name).toBe('rust'); });
   expect(view.state.facet(EditorState.readOnly)).toBe(true);
   expect(screen.getByText('1', { exact: true })).toBeTruthy();
-  expect(view.contentDOM.getAttribute('contenteditable')).toBe('false');
+  expect(view.contentDOM.getAttribute('contenteditable')).toBe('true');
   expect(view.contentDOM.getAttribute('aria-readonly')).toBe('true');
   await userEvent.click(screen.getByRole('button', { name: 'Copy code' }));
   await userEvent.tab();
@@ -57,6 +63,7 @@ it('is keyboard readable and read-only without consuming the search shortcut', a
   view.contentDOM.dispatchEvent(slash);
   expect(slash.defaultPrevented).toBe(false);
   await userEvent.keyboard('x{Backspace}');
+  await userEvent.paste('replacement');
   expect(view.state.doc.toString()).toBe('fn main() {}');
   expect(view.dom.querySelector('[name="search"]')).toBeNull();
 });
@@ -149,4 +156,24 @@ it('clamps a reading selection to the normalized document when CRLF source shrin
   rerender(<MarkdownCode code={'x\r\n'.repeat(30)} language="text" />);
   expect(view.state.doc.toString()).toBe('x\n'.repeat(30));
   expect(view.state.selection.main.head).toBe(view.state.doc.length);
+});
+
+it('retains the focused selection when a fence grammar replaces text nodes', async () => {
+  const description = resolveCodeLanguage({ kind: 'language', value: 'rust' });
+  if (description === null) throw new Error('Rust metadata missing');
+  const support = await description.load();
+  let finish: (value: typeof support) => void = () => { throw new Error('Load not started'); };
+  vi.spyOn(description, 'load').mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  render(<MarkdownCode code="// unchanged context\nfn main() {}" language="rust" />);
+  const view = await codeView();
+  view.focus();
+  await new Promise<void>(resolve => { requestAnimationFrame(() => resolve()); });
+  view.dispatch({ selection: { anchor: 20 } });
+  expect(view.state.selection.main.head).toBe(20);
+  finish(support);
+  await waitFor(() => { expect(view.state.facet(language)?.name).toBe('rust'); });
+  await new Promise<void>(resolve => { requestAnimationFrame(() => resolve()); });
+  expect(await codeView()).toBe(view);
+  expect(view.hasFocus).toBe(true);
+  expect(view.state.selection.main.head).toBe(20);
 });

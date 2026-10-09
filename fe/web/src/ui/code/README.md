@@ -31,3 +31,10 @@ The only metadata supplement is `.zsh -> Shell`, preserving prior file support
 that upstream omits. It references a declared name and has an actual loader test.
 
 See [design and measurements](../../../../../docs/design/code-presentation.md).
+
+Readonly is enforced by `EditorState.readOnly`, not by disabling the browser's
+contenteditable selection surface. Keeping that native surface is necessary for
+stable keyboard caret/selection when async highlighting replaces DOM text nodes.
+The display still installs no history, completion, search or editing consumer.
+Typing, deletion and paste regressions assert that the document stays unchanged;
+ARIA declares the textbox readonly. Delayed grammar tests cover all three callers.

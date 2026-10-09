@@ -120,7 +120,7 @@ export function CodePane({
 
   const extensions = useMemo(
     () => [
-      EditorState.readOnly.of(true), EditorView.lineWrapping,
+      EditorView.lineWrapping,
       EditorView.contentAttributes.of({ tabindex: '0', 'aria-readonly': 'true', 'aria-label': 'File code' }),
       ...(support === null ? [] : [support]),
       search({ createPanel: emptyPanel }),
@@ -160,7 +160,8 @@ export function CodePane({
       height="100%"
       theme={theme === 'dark' ? githubDark : githubLight}
       extensions={extensions}
-      editable={false}
+      editable={true}
+      readOnly={true}
       basicSetup={{ lineNumbers: true, foldGutter: true }}
       onCreateEditor={(view) => { viewRef.current = view; }}
     />
@@ -182,7 +183,7 @@ export function DiffPane({ path, headText, workingText, theme }: DiffPaneProps) 
   useEffect(() => {
     const parent = ref.current;
     if (parent === null) return;
-    const initial = [EditorState.readOnly.of(true), EditorView.editable.of(false),
+    const initial = [EditorState.readOnly.of(true),
       EditorView.contentAttributes.of({ tabindex: '0', 'aria-readonly': 'true' }), configuration.of([])];
     const merge = new MergeView({
       parent,

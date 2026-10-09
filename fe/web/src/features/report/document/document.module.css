@@ -582,9 +582,6 @@
     background: var(--surface-code);
     color: var(--text-2);
     font: var(--type-code);
-  }
-
-  .raw {
     white-space: pre-wrap;
   }
 

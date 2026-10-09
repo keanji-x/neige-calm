@@ -19,7 +19,7 @@ export function ReadOnlyPane({ text, source, theme }: ReadOnlyCodeProps) {
       : status === 'limited' ? 'Plain text · large file'
         : status === 'unavailable' ? 'Plain text · highlighting unavailable' : 'Plain text';
   const extensions = useMemo(() => [
-    EditorState.readOnly.of(true), EditorView.editable.of(false),
+    EditorState.readOnly.of(true),
     EditorView.contentAttributes.of({ 'aria-label': 'Code', 'aria-readonly': 'true', tabindex: '0' }),
     lineNumbers(), keymap.of(standardKeymap),
     theme === 'light' ? githubLight : githubDark,

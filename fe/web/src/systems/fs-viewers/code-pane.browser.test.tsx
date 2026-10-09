@@ -1,5 +1,7 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
+import { EditorState } from '@codemirror/state';
+import { getSearchQuery } from '@codemirror/search';
 import { resolveCodeLanguage } from '../../ui/code/public.tsx';
 import { EditorView } from '@codemirror/view';
 import { language } from '@codemirror/language';
@@ -8,7 +10,11 @@ import { DiffPane } from './code-pane.tsx';
 import { CodePane, type PaneSearchAdapter } from './code-pane.tsx';
 import { ReportDocument } from '../../features/report/document/public.tsx';
 
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => {
+  cleanup();
+  document.getSelection()?.removeAllRanges();
+  vi.restoreAllMocks();
+});
 
 it.each([
   ['main.rs', 'rust', 'fn main() {}'],
@@ -26,7 +32,7 @@ it.each([
     expect(editor).not.toBeNull();
     const view = editor === null ? null : EditorView.findFromDOM(editor as HTMLElement);
     expect(view?.state.facet(language)?.name.toLowerCase()).toBe(name);
-  });
+  }, { timeout: 10000 });
 });
 
 it('uses the fence language through the real report renderer', async () => {
@@ -59,7 +65,8 @@ it('loads the same filename grammar for both real diff sides', async () => {
     for (const editor of editors) {
       const view = EditorView.findFromDOM(editor);
       expect(view?.state.facet(language)?.name).toBe('rust');
-      expect(editor.getAttribute('contenteditable')).toBe('false');
+      expect(view?.state.facet(EditorState.readOnly)).toBe(true);
+      expect(editor.getAttribute('aria-readonly')).toBe('true');
     }
   });
 });
@@ -120,4 +127,33 @@ it('retains both diff views and expanded context when the grammar arrives', asyn
   expect(left.state.selection.main.head).toBe(20);
   expect(left.hasFocus).toBe(true);
   expect(screen.queryAllByText(/unchanged lines/)).toHaveLength(0);
+});
+
+it('retains full-file selection and search state when a grammar replaces text nodes', async () => {
+  const description = resolveCodeLanguage({ kind: 'filename', value: 'main.rs' });
+  if (description === null) throw new Error('Rust metadata missing');
+  const support = await description.load();
+  let finish: (value: typeof support) => void = () => { throw new Error('Load not started'); };
+  vi.spyOn(description, 'load').mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  const ready: { adapter: PaneSearchAdapter | null } = { adapter: null };
+  const { container } = render(<CodePane path="main.rs" text="// unchanged context\nfn main() {}" theme="dark"
+    onSearchAdapterReady={adapter => { ready.adapter = adapter; }} />);
+  const content = container.querySelector<HTMLElement>('[role="textbox"]');
+  if (content === null) throw new Error('Full file pane missing');
+  const view = EditorView.findFromDOM(content);
+  if (view === null) throw new Error('Full file view missing');
+  await waitFor(() => { expect(ready.adapter).not.toBeNull(); });
+  ready.adapter?.setQuery('main');
+  view.focus();
+  await new Promise<void>(resolve => { requestAnimationFrame(() => resolve()); });
+  view.dispatch({ selection: { anchor: 20 } });
+  expect(view.state.selection.main.head).toBe(20);
+  finish(support);
+  await waitFor(() => { expect(view.state.facet(language)?.name).toBe('rust'); });
+  await new Promise<void>(resolve => { requestAnimationFrame(() => resolve()); });
+  expect(EditorView.findFromDOM(content)).toBe(view);
+  expect(view.state.facet(EditorState.readOnly)).toBe(true);
+  expect(view.hasFocus).toBe(true);
+  expect(view.state.selection.main.head).toBe(20);
+  expect(getSearchQuery(view.state).search).toBe('main');
 });

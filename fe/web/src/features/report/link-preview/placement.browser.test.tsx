@@ -1,4 +1,5 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { language } from '@codemirror/language';
 import { page } from 'vitest/browser';
@@ -88,7 +89,8 @@ it('highlights a source hover through the file resource owner and keeps its card
   }
   expect(view.scrollDOM.scrollTop).toBe(120);
   expect(view.scrollDOM.scrollLeft).toBe(60);
-  expect(element.getAttribute('contenteditable')).toBe('false');
+  expect(view.state.facet(EditorState.readOnly)).toBe(true);
+  expect(element.getAttribute('aria-readonly')).toBe('true');
   await page.screenshot({ path: 'test-results/code-source-hover.png' });
   element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   await waitFor(() => { expect(screen.queryByRole('dialog')).toBeNull(); });

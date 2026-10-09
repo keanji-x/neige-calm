@@ -111,3 +111,11 @@ Every affected commit carries the exact ownership trailers, preserved in the PR.
 The L2 review fixes additionally pin delayed diff grammar arrival without losing
 either view, selection, focus or expanded context, and use actual EditorState
 normalization as the oracle for CR/LF/CRLF line and individual-line budgets.
+
+Async-highlight selection preservation uses CodeMirror's native read-only mode:
+`EditorState.readOnly` rejects changes, while the native contenteditable surface
+retains browser caret/selection. Disabling that surface reset focused selections
+after highlighted text nodes changed, even without destroying the view. Deferred
+grammar regressions cover full files, diffs and fences; typing/deletion/paste are
+blocked and ARIA remains readonly. No delayed restoration or duplicate selection
+synchronizer is added.
