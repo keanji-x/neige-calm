@@ -6,7 +6,7 @@ import { githubDark, githubLight } from '@uiw/codemirror-theme-github';
 import { CopyCodeButton } from './copy-button.tsx';
 import { useState } from '../state/public.ts';
 import { useCodeLanguage } from './use-language.ts';
-import type { ReadOnlyCodeProps } from './public.tsx';
+import type { ReadOnlyCodeProps } from './types.ts';
 import styles from './code.module.css';
 
 export function ReadOnlyPane({ text, source, theme }: ReadOnlyCodeProps) {

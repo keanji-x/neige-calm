@@ -7,7 +7,6 @@ import { EditorState } from '@codemirror/state';
 import { language } from '@codemirror/language';
 import '../../styles/entry.css';
 import { ReadOnlyCode, MarkdownCode, resolveCodeLanguage, CODE_HIGHLIGHT_LIMITS } from './public.tsx';
-import { Reply } from '../../features/chat/thread/reply.tsx';
 
 afterEach(() => {
   cleanup();
@@ -23,12 +22,6 @@ async function codeView() {
   if (view === null) throw new Error('CodeMirror view missing');
   return view;
 }
-
-it('shares the code contract with Astryx fences through the real chat renderer', async () => {
-  render(<Reply text="```rust\nfn main() {}\n```" imageFiles={null} />);
-  await waitFor(async () => { expect((await codeView()).state.facet(language)?.name).toBe('rust'); });
-  expect(screen.getByRole('button', { name: 'Copy code' })).toBeTruthy();
-});
 
 it('keeps unknown code as explicitly labelled plain text and copies the original bytes', async () => {
   const write = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();

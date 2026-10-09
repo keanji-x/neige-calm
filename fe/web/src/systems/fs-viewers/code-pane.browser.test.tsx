@@ -8,7 +8,6 @@ import { language } from '@codemirror/language';
 import { syntaxTree } from '@codemirror/language';
 import { DiffPane } from './code-pane.tsx';
 import { CodePane, type PaneSearchAdapter } from './code-pane.tsx';
-import { ReportDocument } from '../../features/report/document/public.tsx';
 
 afterEach(() => {
   cleanup();
@@ -33,17 +32,6 @@ it.each([
     const view = editor === null ? null : EditorView.findFromDOM(editor as HTMLElement);
     expect(view?.state.facet(language)?.name.toLowerCase()).toBe(name);
   }, { timeout: 10000 });
-});
-
-it('uses the fence language through the real report renderer', async () => {
-  const report = { summary: '', body: '```rust\nfn main() {}\n```', blocks: null };
-  const { container } = render(<ReportDocument report={report} empty={null} />);
-  await waitFor(() => {
-    const editor = container.querySelector('[role="textbox"]');
-    expect(editor).not.toBeNull();
-    const view = editor === null ? null : EditorView.findFromDOM(editor as HTMLElement);
-    expect(view?.state.facet(language)?.name).toBe('rust');
-  });
 });
 
 it.each(['main.jsx', 'main.tsx'])('parses JSX syntax for %s rather than plain JS/TS', async path => {

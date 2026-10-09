@@ -1,3 +1,4 @@
+import { ReadOnlyCode } from '../../../ui/code/public.tsx';
 import { useEffect, useRef } from 'react';
 
 import type { WorkspaceFilePort } from '../../../../../core/domain/fs.ts';
@@ -99,7 +100,7 @@ export function ReportFileViewer({
         {resource.kind === 'loaded' && resource.format === 'source' && (
           <div className={styles.sourceWrap}>
             {resource.truncated && <p className={styles.notice}>Showing the first 2 MiB of this file.</p>}
-            <pre className={styles.source} data-nc-report-file-source=""><code>{resource.text}</code></pre>
+            <div data-nc-report-file-source=""><ReadOnlyCode text={resource.text} source={{ kind: 'filename', value: resource.path }} /></div>
           </div>
         )}
       </div>

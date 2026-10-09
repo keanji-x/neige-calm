@@ -212,4 +212,3 @@ export function DiffPane({ path, headText, workingText, theme }: DiffPaneProps) 
     />
   );
 }
-

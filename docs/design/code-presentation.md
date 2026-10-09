@@ -2,7 +2,8 @@
 
 ## Outcome and ownership
 
-File hover cards and Markdown fences in reports/chat share one read-only display.
+File hover cards, standalone report files and Markdown fences in reports/chat
+share one read-only display.
 Complete file viewers and diffs retain their existing interactions but consume the
 same language resolver. No file reads, link policy, or report semantics move into
 UI. GitHub summaries remain plain text until #2473 introduces Markdown rendering;
@@ -78,11 +79,11 @@ resources and headers over uncompressed localhost HTTP, not gzip bundle sizes.
 
 | Python source | Old CodePane median | Read-only median | Updated full CodePane median |
 | --- | ---: | ---: | ---: |
-| 200 lines | 234.2 ms | 108.7 ms | 119.8 ms |
-| 4,000 lines | 237.5 ms | 124.4 ms | 129.0 ms |
+| 200 lines | 242.8 ms | 110.2 ms | 120.0 ms |
+| 4,000 lines | 224.7 ms | 127.4 ms | 116.9 ms |
 
-Old CodePane: 749,319 transferred bytes / 115 resources. Read-only: 269,015 bytes /
-16 resources. Updated full CodePane: 283,261 bytes / 16 resources. The shared
+Old CodePane: 749,317 transferred bytes / 115 resources. Read-only: 269,054 bytes /
+16 resources. Updated full CodePane: 283,336 bytes / 16 resources. The shared
 metadata registry loads only the selected parser rather than the old loader's
 full static language roster. Raw per-sample results are written to ignored
 `fe/test-results/code-benchmark/results.json`.

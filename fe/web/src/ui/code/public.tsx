@@ -1,15 +1,14 @@
 import { useEffect, useSyncExternalStore, type ComponentType } from 'react';
 import { useState } from '../state/public.ts';
 import { CopyCodeButton } from './copy-button.tsx';
-import type { CodeSource } from './language.ts';
+import type { CodeTheme, ReadOnlyCodeProps } from './types.ts';
 import styles from './code.module.css';
 
 export { resolveCodeLanguage, exceedsCodeHighlightLimits, CODE_HIGHLIGHT_LIMITS } from './language.ts';
 export type { CodeSource } from './language.ts';
 export { useCodeLanguage } from './use-language.ts';
 
-export type CodeTheme = 'light' | 'dark';
-export type ReadOnlyCodeProps = Readonly<{ text: string; source: CodeSource; theme?: CodeTheme }>;
+export type { CodeTheme, ReadOnlyCodeProps } from './types.ts';
 
 function hostTheme(): CodeTheme {
   return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
