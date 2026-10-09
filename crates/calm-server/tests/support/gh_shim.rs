@@ -241,12 +241,21 @@ case "$area:$verb" in
     case "$endpoint" in
       */actions/*) repo=${endpoint#repos/}; repo=${repo%/actions/*} ;;
       */check-runs/*) repo=${endpoint#repos/}; repo=${repo%/check-runs/*} ;;
+      */compare/*) repo=${endpoint#repos/}; repo=${repo%/compare/*} ;;
       *) exit 2 ;;
     esac
     state=$(ensure_state "$repo")
     printf 'api %s\n' "$endpoint" >> "$state/gh.log"
     printf 'api.args %s %s\n' "$verb" "$*" >> "$state/gh.log"
     block_if_requested "$state" api
+    case "$endpoint" in
+      */compare/*)
+        # The diff media type of GitHub's compare: base...head is the merge-base diff of those
+        # commits; an unknown commit fails like GitHub's 404.
+        case "$*" in *'Accept: application/vnd.github.diff'*) ;; *) exit 2 ;; esac
+        exec git --git-dir "$repo" diff "${endpoint##*/compare/}"
+        ;;
+    esac
     fixture=$(printf '%s' "$endpoint" | tr '/' '_')
     [ -f "$state/actions/$fixture" ] || exit 1
     filter=$(get_arg --jq "$@") || exit 2
@@ -324,27 +333,6 @@ case "$area:$verb" in
     [ "$(cat "$pr_dir/merged")" = "false" ] || exit 1
     get_arg --title "$@" > "$pr_dir/title" || exit 2
     get_arg --body "$@" > "$pr_dir/body" || exit 2
-    ;;
-  pr:diff)
-    [ "$#" -ge 1 ] || exit 2
-    selector=$1
-    repo=$(get_arg --repo "$@") || exit 2
-    state=$(ensure_state "$repo")
-    pr_dir=$(find_pr "$selector" "$state") || exit 1
-    base=$(cat "$pr_dir/base")
-    head=$(cat "$pr_dir/head")
-    patch_file="$state/diff.$$"
-    if git --git-dir "$repo" diff --patch "$base...$head" > "$patch_file" && [ -s "$patch_file" ]; then
-      cat "$patch_file"
-    else
-      printf 'diff --git a/feature.txt b/feature.txt\n'
-      printf 'new file mode 100644\n'
-      printf '--- /dev/null\n'
-      printf '+++ b/feature.txt\n'
-      printf '@@ -0,0 +1 @@\n'
-      printf '+hello from e2e\n'
-    fi
-    rm -f "$patch_file"
     ;;
   pr:view)
     [ "$#" -ge 1 ] || exit 2

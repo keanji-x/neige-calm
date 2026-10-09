@@ -280,29 +280,29 @@ fn lowers_gh_pr_list() {
 
 #[test]
 fn lowers_gh_pr_diff() {
+    const BASE: &str = "1111111111111111111111111111111111111111";
+    const HEAD: &str = "2222222222222222222222222222222222222222";
     let payload = lower(
         "gh_pr_diff",
         &json!({
             "repo": "owner/repo",
             "pr": "42",
-            "base_sha": "base123",
-            "head_sha": "head456"
+            "base_sha": BASE,
+            "head_sha": HEAD
         }),
     )
     .expect("lower gh pr diff");
+    assert!(
+        PR_DIFF_READ_SCRIPT.contains(
+            "gh api --hostname \"$host\" -H 'Accept: application/vnd.github.diff' \"repos/$repo/compare/$2...$3\""
+        ),
+        "the read is the three-dot compare of the requested commits"
+    );
     assert_eq!(
         payload,
         json!({
-            "argv": [
-                "gh",
-                "pr",
-                "diff",
-                "42",
-                "--repo",
-                "owner/repo",
-                "--patch"
-            ],
-            "idem_key": "gh.pr.diff:owner/repo:42:base123:head456",
+            "argv": ["sh", "-c", PR_DIFF_READ_SCRIPT, "sh", "owner/repo", BASE, HEAD],
+            "idem_key": format!("gh.pr.diff:v2:owner/repo:42:{BASE}:{HEAD}"),
             "event_spec": {
                 "event_kind": "forge.pr.diff.read",
                 "fields": {}
@@ -310,8 +310,8 @@ fn lowers_gh_pr_diff() {
             "subject": null,
             "context": {
                 "pr_number": 42,
-                "base_sha": "base123",
-                "head_sha": "head456"
+                "base_sha": BASE,
+                "head_sha": HEAD
             },
             "probe": null,
             "parked": false

@@ -12,6 +12,32 @@ fn rejects_missing_required_arg() {
     assert!(err.contains("idem"));
 }
 
+/// The SHAs are placed in the compare API path, so only full commit ids are accepted.
+#[test]
+fn gh_pr_diff_rejects_non_sha_commits() {
+    let full = "a".repeat(40);
+    for bad in [
+        "main",
+        "abc1234",
+        "../../user",
+        &format!("{full}?x=1"),
+        &"a".repeat(41),
+    ] {
+        for key in ["base_sha", "head_sha"] {
+            let mut args = json!({"repo":"o/r","pr":1,"base_sha":full,"head_sha":full});
+            args[key] = json!(bad);
+            let err = lower("gh_pr_diff", &args).expect_err("non-SHA commit rejected");
+            assert_eq!(err, format!("{key} must be a full commit SHA"));
+        }
+    }
+    let sha256 = "b".repeat(64);
+    lower(
+        "gh_pr_diff",
+        &json!({"repo":"o/r","pr":1,"base_sha":full,"head_sha":sha256}),
+    )
+    .expect("SHA-1 and SHA-256 commit ids are accepted");
+}
+
 #[test]
 fn gh_pr_checks_rejects_non_boolean_wait_policy_and_separates_all_mode() {
     for value in [json!(null), json!(1), json!("true")] {

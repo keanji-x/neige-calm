@@ -1,5 +1,7 @@
 # attached 仓库的候选绑定（#1727 S4）— 设计 v9
 
+> **#2459（2026-10-09）**：`gh_pr_diff` 改读 GitHub compare 的净 diff `base_sha...head_sha`（`gh api repos/<repo>/compare/<base>...<head>`，diff 媒体类型），钉在调用方给的两个 commit 上，不再读 PR 当前 head 的逐提交 `--patch`；`forge.pr.diff.read.head_sha` 因此就是 diff 所读的 head。G9 的另一半「PR 远端 head == 候选」仍不由内核核对（合并围栏 `expected_head_sha` 照旧）。下文 F5.4、G9 中「`gh pr diff` 自己读 PR」的描述是历史记录。
+>
 > **#1893 S6（2026-09-30）**：`calm.task.delivery{retry|abandon}` 与 `task_git_delivery_abandonments`（迁移 0126 删表）已删除。失败的交付在结算事务里把仍在 `verifying` 的 gated 行翻成 `failed/delivery-failed`，ungated 行保持 `done`；读面没有 `abandoned` 状态与 `failure.retry_allowed`。下文涉及 retry / abandon 的段落是历史记录。
 >
 > **#1893 S4（2026-10-01）**：isolated-codex-v1 执行路径已删除，候选绑定不再有 `isolated` 原因；遗留的 4 个 isolated 任务读作 `no_lease`。下文涉及 isolated 的段落是历史记录。
