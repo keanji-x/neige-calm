@@ -147,3 +147,5 @@
 - { path: fe/web/src/ui/hover-preview, type: directory, owner: ui/hover-preview, readonly: false, basis: "#2237 transient pinnable preview lifecycle with injected content and no domain policy" }
 
 - { path: fe/web/src/systems/github-links, type: directory, owner: systems/github-links, readonly: false, basis: "Desktop GitHub citation lifecycle; docs/design/github-link-preview.md" }
+
+- { path: fe/web/src/ui/code, type: directory, owner: ui/code, readonly: false, basis: "#2474 domain-free language metadata and read-only code presentation" }

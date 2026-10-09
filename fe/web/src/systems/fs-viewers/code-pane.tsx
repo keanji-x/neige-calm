@@ -2,11 +2,11 @@
 
 import { useEffect, useMemo, useRef } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
-import { loadLanguage } from '@uiw/codemirror-extensions-langs';
+import { useCodeLanguage } from '../../ui/code/public.tsx';
 import { githubDark, githubLight } from '@uiw/codemirror-theme-github';
 import { MergeView } from '@codemirror/merge';
 import { EditorView, keymap } from '@codemirror/view';
-import { Prec } from '@codemirror/state';
+import { EditorState, Prec } from '@codemirror/state';
 import {
   SearchQuery,
   closeSearchPanel,
@@ -107,6 +107,7 @@ function buildCodeSearchAdapter(
 export function CodePane({
   path, text, theme, onSearchAdapterReady, onSearchCount, onSlashOpen,
 }: CodePaneProps) {
+  const { support } = useCodeLanguage({ kind: 'filename', value: path }, text);
   const viewRef = useRef<EditorView | null>(null);
   /* Callbacks live in refs so a caller re-creating them per render cannot tear the editor down. */
   const onSearchAdapterReadyRef = useRef(onSearchAdapterReady);
@@ -118,7 +119,8 @@ export function CodePane({
 
   const extensions = useMemo(
     () => [
-      ...extensionsFor(path),
+      EditorState.readOnly.of(true), EditorView.lineWrapping,
+      ...(support === null ? [] : [support]),
       search({ createPanel: emptyPanel }),
       /* `Prec.highest` so `/` reaches the bar before any language/default binding — and before Firefox's quick-find. */
       Prec.highest(keymap.of([{
@@ -126,7 +128,7 @@ export function CodePane({
         run: () => { onSlashOpenRef.current?.(); return true; },
       }])),
     ],
-    [path],
+    [support],
   );
 
   useEffect(() => {
@@ -166,7 +168,12 @@ export function CodePane({
 /** HEAD on the left, the working tree on the right. `null` on either side is a real state (not in HEAD / deleted), exposed as `data-nc-fs-empty-*`. */
 export function DiffPane({ path, headText, workingText, theme }: DiffPaneProps) {
   const ref = useRef<HTMLDivElement | null>(null);
-  const extensions = useMemo(() => extensionsFor(path, theme), [path, theme]);
+  const { support } = useCodeLanguage({ kind: 'filename', value: path }, (headText ?? '') + (workingText ?? ''));
+  const extensions = useMemo(() => [
+    EditorState.readOnly.of(true), EditorView.editable.of(false), EditorView.lineWrapping,
+    theme === 'dark' ? githubDark : githubLight,
+    ...(support === null ? [] : [support]),
+  ], [support, theme]);
 
   useEffect(() => {
     const parent = ref.current;
@@ -191,51 +198,3 @@ export function DiffPane({ path, headText, workingText, theme }: DiffPaneProps) 
   );
 }
 
-function extensionsFor(path: string, theme?: PaneTheme) {
-  const language = languageName(path);
-  const lang = language === null
-    ? null
-    : loadLanguage(language as Parameters<typeof loadLanguage>[0]);
-  return [
-    EditorView.editable.of(false),
-    EditorView.lineWrapping,
-    ...(theme === undefined ? [] : [theme === 'dark' ? githubDark : githubLight]),
-    ...(lang === null ? [] : [lang]),
-  ];
-}
-
-/** Deliberately a short table: an unknown extension falls through to no highlighting rather than a wrong guess. */
-function languageName(path: string): string | null {
-  const extension = path.split('.').pop()?.toLowerCase();
-  switch (extension) {
-    case 'cjs':
-    case 'cts':
-    case 'js':
-    case 'jsx':
-    case 'mjs':
-      return 'javascript';
-    case 'mts':
-    case 'ts':
-    case 'tsx':
-      return 'typescript';
-    case 'rs': return 'rust';
-    case 'py': return 'python';
-    case 'go': return 'go';
-    case 'java': return 'java';
-    case 'json': return 'json';
-    case 'md':
-    case 'markdown':
-      return 'markdown';
-    case 'css': return 'css';
-    case 'html': return 'html';
-    case 'toml': return 'toml';
-    case 'yaml':
-    case 'yml':
-      return 'yaml';
-    case 'sh':
-    case 'bash':
-    case 'zsh':
-      return 'shell';
-    default: return null;
-  }
-}

@@ -3,6 +3,11 @@
  * mid-run and reloads the page importing a test. Browser projects do not inherit the root list.
  */
 export const OPTIMIZED_DEPENDENCIES = Object.freeze([
+  '@codemirror/language-data',
+  '@codemirror/language',
+  '@codemirror/commands',
+  '@codemirror/state',
+  '@codemirror/view',
   '@fullcalendar/react',
   '@fullcalendar/react/daygrid',
   '@fullcalendar/react/interaction',

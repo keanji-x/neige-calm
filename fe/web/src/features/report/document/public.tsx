@@ -1,3 +1,5 @@
+import { ReadOnlyCode } from '../../../ui/code/public.tsx';
+
 import { useCompactViewport } from '../../../ui/viewport/public.ts';
 // The report document — the main column on a track and an area: a sequence of typed blocks.
 
@@ -340,7 +342,7 @@ function Block({ block, headingIds, ...rest }: { block: SafeBlock } & BlockConte
     case 'paragraph':
       return <p className={styles.p}><Inlines nodes={block.children} {...context} /></p>;
     case 'code':
-      return <pre className={styles.code}><code>{block.value}</code></pre>;
+      return <ReadOnlyCode text={block.value} source={{ kind: 'language', value: block.language ?? '' }} />;
     case 'blockquote':
       return (
         <blockquote className={styles.quote}>

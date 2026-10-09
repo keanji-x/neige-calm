@@ -27,6 +27,9 @@
   },
   "dependencies": {
     "@astryxdesign/core": "0.6.3",
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/language": "^6.13.1",
+    "@codemirror/language-data": "^6.5.2",
     "@codemirror/merge": "^6.12.2",
     "@codemirror/search": "^6.7.2",
     "@codemirror/state": "^6.7.2",
