@@ -17,7 +17,8 @@ export function resolveCodeLanguage(source: CodeSource): LanguageDescription | n
   const normalized = dot < 0 ? filename : filename.slice(0, dot) + filename.slice(dot).toLowerCase();
   const matched = LanguageDescription.matchFilename(languages, normalized);
   if (matched !== null) return matched;
-  const extra = dot < 0 ? undefined : extraExtensions[normalized.slice(dot + 1)];
+  const extension = dot < 0 ? '' : normalized.slice(dot + 1);
+  const extra = Object.hasOwn(extraExtensions, extension) ? extraExtensions[extension] : undefined;
   return extra === undefined ? null : LanguageDescription.matchLanguageName(languages, extra, false);
 }
 

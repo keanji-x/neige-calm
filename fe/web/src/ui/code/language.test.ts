@@ -60,3 +60,9 @@ it('uses the editor CR, LF and CRLF boundaries for the individual line budget', 
     expect(exceedsCodeHighlightLimits(text)).toBe(false);
   }
 });
+
+it('keeps inherited object keys out of filename metadata supplements', () => {
+  for (const value of ['main.constructor', 'main.__proto__', 'main.toString']) {
+    expect(resolveCodeLanguage({ kind: 'filename', value })).toBeNull();
+  }
+});
