@@ -51,7 +51,7 @@ function destinationPath(destination: string): string | null {
     filePath === ''
     || (filePath !== withoutFragment && !filePath.startsWith('/'))
   ) return null;
-  return filePath.replace(/:\d+(?::\d+)?$/, '');
+  return filePath.replace(/:\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*(?::\d+)?$/, '');
 }
 
 /** Parse and normalize one candidate; root admission happens separately. */

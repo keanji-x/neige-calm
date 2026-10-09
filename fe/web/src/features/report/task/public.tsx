@@ -1,4 +1,5 @@
-import type { ReactNode } from 'react';
+import type { ReactNode, ComponentProps } from 'react';
+import { ProseBlock } from '../document/content.tsx';
 import { boundedStatusDetail, type ReportTaskRow, type TaskBlockPayload } from '../../../../../core/domain/report.ts';
 import { taskStatusPhrase } from '../../../../../core/view/track-page.ts';
 import { useState } from '../../../ui/state/public.ts';
@@ -18,7 +19,8 @@ function isWithdrawn(payload: TaskBlockPayload): payload is WithdrawnTask {
   return 'tombstoned_by' in payload;
 }
 
-export function ReportTaskBlock({ payload, blockId, task, renderExecution }: {
+export function ReportTaskBlock({ payload, blockId, task, renderExecution, textContext }: {
+  textContext?: Omit<ComponentProps<typeof ProseBlock>, 'markdown' | 'blockId' | 'compact'>;
   payload: TaskBlockPayload;
   blockId: string;
   task?: ReportTaskRow;
@@ -37,7 +39,7 @@ export function ReportTaskBlock({ payload, blockId, task, renderExecution }: {
           <span className={styles.withdrawn}>Withdrawn</span>
         </summary>
         {reason !== null && reason !== undefined && reason !== '' && (
-          <p className={styles.goal}>{reason}</p>
+          <div className={styles.goal}><ProseBlock markdown={reason} blockId={null} compact {...textContext} /></div>
         )}
         <dl className={styles.fields}>
           <dt className={styles.label}>Declared by</dt>
@@ -71,15 +73,15 @@ export function ReportTaskBlock({ payload, blockId, task, renderExecution }: {
       </summary>
 
       {task !== undefined && live.key !== '' && renderExecution?.(task, expanded)}
-      <p className={styles.goal}>
-        {live.kind === 'terminal' ? live.command : live.goal}
-      </p>
+      <div className={styles.goal}>
+        {live.kind === 'terminal' ? live.command : <ProseBlock markdown={live.goal} blockId={null} compact {...textContext} />}
+      </div>
 
       <dl className={styles.fields}>
         {live.acceptance != null && live.acceptance !== '' && (
           <>
             <dt className={styles.label}>Done when</dt>
-            <dd className={styles.value}>{live.acceptance}</dd>
+            <dd className={styles.value}><ProseBlock markdown={live.acceptance} blockId={null} compact {...textContext} /></dd>
           </>
         )}
         {live.gate != null && live.gate.steps.length > 0 && (
