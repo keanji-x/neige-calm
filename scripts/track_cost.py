@@ -3,7 +3,8 @@
 One row per task attempt (tasks.id) created in the scorecard window:
   queue_ms  created_at_ms to running_started_at_ms (null before migration 0159 or if never run)
   run_ms    running_started_at_ms to finished_at_ms; it includes the kernel gate after the worker
-            reports (null while unfinished or never run)
+            reports, and for a regated attempt (whose finished_at_ms the regate resets) also the
+            time it sat failed before the regate (null while unfinished or never run)
   gate_ms   summed wall clock of the attempt's gate operations: kernel gates (task-verify) and
             worker runs (task-gate-run), linked by payload task_id; 0 when there were none. Null
             while one is unfinished (gate_open).
@@ -13,9 +14,11 @@ One row per task attempt (tasks.id) created in the scorecard window:
             usage. Codex: the last token_count event's info.total_token_usage (cumulative per
             thread). Claude: message.usage of assistant lines, once per message.id; input counts
             uncached, cache-write and cache-read input, as Codex's input_tokens includes cached
-            input. Claude subagent transcripts in other files are not read.
-The total row sums the known values; `missing` counts the attempts each sum lacks. Token totals
-count each transcript file once. Transcript files are opened read-only.
+            input; the repeated lines of one message carry the same usage. Only the file the
+            cursor names now is read: a card whose session moved to another transcript (a
+            restart) or that spawned subagent transcripts is undercounted, not marked missing.
+The total row sums the known values; `missing` counts the attempts each sum lacks. Transcript
+files are opened read-only.
 """
 
 import json
@@ -119,7 +122,6 @@ def span(start, stop):
 def attempts(db, track_id, start, end):
     """(rows, total) for the task attempts created in [start, end]; see the module docstring."""
     ops = gate_ops(db, track_id)
-    files = {}  # source_path -> (usage, reason), read once
     rows = []
     for task_id, key, kind, status, created, running, finished, card in db.execute(
         "SELECT id, key, kind, status, created_at_ms, running_started_at_ms, finished_at_ms, worker_card_id"
@@ -146,9 +148,7 @@ def attempts(db, track_id, start, end):
             source_kind, path = cursors[0]
             row["provider"] = SOURCES[source_kind][0] if source_kind in SOURCES else None
             row["transcript"] = path
-            if path not in files:
-                files[path] = file_tokens(source_kind, path)
-            row["tokens"], row["tokens_error"] = files[path]
+            row["tokens"], row["tokens_error"] = file_tokens(source_kind, path)
         rows.append(row)
     return rows, total(rows)
 
@@ -158,17 +158,14 @@ def total(rows):
         values = [r[field] for r in rows if r[field] is not None]
         return sum(values) if values else None
 
-    seen = {}
-    for r in rows:
-        if r["tokens"] is not None:
-            seen[r["transcript"]] = r["tokens"]
+    tokens = [r["tokens"] for r in rows if r["tokens"] is not None]
     return {
         "attempts": len(rows),
         "queue_ms": known_sum("queue_ms"),
         "run_ms": known_sum("run_ms"),
         "gate_ms": known_sum("gate_ms"),
         "gate_ops": sum(r["gate_ops"] for r in rows),
-        "tokens": {f: sum(u[f] for u in seen.values()) for f in TOKEN_FIELDS} if seen else None,
+        "tokens": {f: sum(u[f] for u in tokens) for f in TOKEN_FIELDS} if tokens else None,
         "missing": {f: sum(1 for r in rows if r[f] is None) for f in ("queue_ms", "run_ms", "gate_ms", "tokens")},
     }
 
