@@ -90,6 +90,10 @@ pub enum TrustOutcome {
     /// The kernel could not get past the dialog (the cursor never rested on Yes, or no session
     /// started after Enter). Logged; the task's liveness timeout is the backstop.
     Unanswered(String),
+    /// No transcript path could be derived for the worker's cwd (its project directory name is
+    /// longer than Claude keeps as is), so the session start could be missed: the watch stayed
+    /// out without looking at the screen.
+    Unwatched,
 }
 
 /// The worker whose terminal is watched.
@@ -97,8 +101,9 @@ pub(crate) struct TrustTarget {
     pub card_id: String,
     pub terminal_id: String,
     pub worker_session_id: String,
-    /// Where this worker's Claude writes its session transcript, once its session has started.
-    pub transcript: PathBuf,
+    /// Where this worker's Claude writes its session transcript, once its session has started;
+    /// `None` when that path cannot be derived reliably.
+    pub transcript: Option<PathBuf>,
 }
 
 /// Watch the just-spawned worker's terminal in the background and answer the dialog if it comes
@@ -111,7 +116,13 @@ pub(crate) fn watch_worker_trust_prompt(
     let renderer = ctx.terminal_renderer.clone();
     let watch = watch.clone();
     tokio::spawn(async move {
-        let outcome = answer(&renderer, &target, &watch).await;
+        let outcome = match &target.transcript {
+            Some(transcript) => answer(&renderer, &target, transcript, &watch).await,
+            None => {
+                tracing::warn!(card_id = %target.card_id, terminal_id = %target.terminal_id, "claude worker trust dialog watch stays out: no reliable transcript path for the worker's cwd");
+                TrustOutcome::Unwatched
+            }
+        };
         match &outcome {
             TrustOutcome::Unanswered(reason) => {
                 tracing::warn!(card_id = %target.card_id, terminal_id = %target.terminal_id, %reason, "claude worker trust dialog left unanswered; the task's liveness timeout is the backstop");
@@ -235,6 +246,7 @@ async fn dialog_or_session(
 async fn answer(
     renderer: &TerminalRendererRegistry,
     target: &TrustTarget,
+    transcript: &Path,
     watch: &TrustPromptWatch,
 ) -> TrustOutcome {
     let terminal = match KernelTerminal::attach(
@@ -253,7 +265,7 @@ async fn answer(
     };
     let session = SessionStart {
         seen: AtomicBool::new(false),
-        transcript: &target.transcript,
+        transcript,
     };
     let dialog = Dialog {
         session: &session,

@@ -1082,7 +1082,8 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         )
         .await?;
 
-        // Written by the worker's Claude once its session has started (#1755).
+        // Written by the worker's Claude once its session has started (#1755); `None` when its
+        // path cannot be derived reliably, and the trust watch then stays out.
         let transcript = claude_transcript_path(
             &self.codex.claude_projects_dir,
             &cwd,

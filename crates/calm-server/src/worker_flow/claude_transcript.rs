@@ -88,7 +88,10 @@ impl ClaudeTranscriptFlowSource {
     }
 
     async fn resolve_transcript_path(&self) -> Result<Option<PathBuf>, CoreError> {
-        let expected_slug = slug_for_projects(&self.card_cwd);
+        // Above Claude's slug limit the kernel has no reliable directory; the raw slug is kept as
+        // before (its slug check then exits when Claude's hashed directory differs).
+        let expected_slug = claude_project_slug(&self.card_cwd)
+            .unwrap_or_else(|| slug_for_projects(&self.card_cwd));
         let path = if let Some(path) = &self.options.path_override {
             path.clone()
         } else {
@@ -102,11 +105,10 @@ impl ClaudeTranscriptFlowSource {
             };
             let home = std::env::var("HOME")
                 .map_err(|e| CoreError::Internal(format!("HOME not set: {e}")))?;
-            claude_transcript_path(
-                &PathBuf::from(home).join(".claude/projects"),
-                &self.card_cwd,
-                session_id,
-            )
+            PathBuf::from(home)
+                .join(".claude/projects")
+                .join(&expected_slug)
+                .join(format!("{session_id}.jsonl"))
         };
 
         if should_check_transcript_slug(&path) {
@@ -693,12 +695,30 @@ fn hash_line(raw: &str) -> String {
     hash
 }
 
+/// Longest project directory name Claude 2.1.280 uses as is; a longer slug is cut to this many
+/// units and suffixed with a hash of the cwd, which the kernel does not reproduce.
+pub const CLAUDE_PROJECT_SLUG_MAX: usize = 200;
+
+/// The directory name Claude 2.1.280 gives the project started in `cwd`: the slug of its realpath
+/// (Claude resolves symlinks even when `PWD` names the link; the given path when it cannot be
+/// resolved). `None` above [`CLAUDE_PROJECT_SLUG_MAX`]: there is no reliable name.
+pub fn claude_project_slug(cwd: &str) -> Option<String> {
+    let real = std::fs::canonicalize(cwd)
+        .ok()
+        .and_then(|real| real.to_str().map(str::to_owned))
+        .unwrap_or_else(|| cwd.to_owned());
+    let slug = slug_for_projects(&real);
+    (slug.encode_utf16().count() <= CLAUDE_PROJECT_SLUG_MAX).then_some(slug)
+}
+
 /// Where Claude Code writes the transcript of session `session_id` started in `cwd`, under its
-/// `projects` directory.
-pub fn claude_transcript_path(projects_dir: &Path, cwd: &str, session_id: &str) -> PathBuf {
-    projects_dir
-        .join(slug_for_projects(cwd))
-        .join(format!("{session_id}.jsonl"))
+/// `projects` directory; `None` when the project's directory name cannot be derived reliably.
+pub fn claude_transcript_path(projects_dir: &Path, cwd: &str, session_id: &str) -> Option<PathBuf> {
+    Some(
+        projects_dir
+            .join(claude_project_slug(cwd)?)
+            .join(format!("{session_id}.jsonl")),
+    )
 }
 
 /// Mirrors Claude 2.1.280 project-directory slugging (#1755, checked against the CLI): every UTF-16
@@ -721,6 +741,46 @@ pub fn slug_for_projects(cwd: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_project_slug_is_the_realpath_slug_of_a_symlinked_cwd() {
+        let root = tempfile::tempdir().unwrap();
+        let real = root.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let real = std::fs::canonicalize(&real).unwrap();
+        assert_eq!(
+            claude_project_slug(link.to_str().unwrap()),
+            Some(slug_for_projects(real.to_str().unwrap()))
+        );
+        assert_eq!(
+            claude_transcript_path(Path::new("/p"), link.to_str().unwrap(), "s"),
+            Some(
+                Path::new("/p")
+                    .join(slug_for_projects(real.to_str().unwrap()))
+                    .join("s.jsonl")
+            )
+        );
+        // An unresolvable cwd keeps its own slug.
+        assert_eq!(
+            claude_project_slug("/no/such/dir"),
+            Some("-no-such-dir".to_owned())
+        );
+    }
+
+    #[test]
+    fn claude_project_slug_above_the_limit_has_no_reliable_path() {
+        let at_limit = format!("/{}", "a".repeat(CLAUDE_PROJECT_SLUG_MAX - 1));
+        assert_eq!(
+            claude_project_slug(&at_limit).map(|slug| slug.len()),
+            Some(CLAUDE_PROJECT_SLUG_MAX)
+        );
+        // Claude 2.1.280 cuts this one to 200 units plus `-<hash>`; the kernel derives none.
+        let over = format!("/tmp/{}", "a".repeat(210));
+        assert_eq!(claude_project_slug(&over), None);
+        assert_eq!(claude_transcript_path(Path::new("/p"), &over, "s"), None);
+    }
     use calm_types::runtime::{AgentProvider, WorkerSessionKind};
 
     struct CreateTranscriptOnTerminal {

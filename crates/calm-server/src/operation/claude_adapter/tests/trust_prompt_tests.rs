@@ -192,7 +192,35 @@ async fn spawn_worker_with_goal(
     watch: TrustPromptWatch,
     goal: Option<&str>,
 ) -> Worker {
-    let harness = claude_worker_harness().await;
+    spawn_worker_in(fake, watch, goal, &std::env::temp_dir()).await
+}
+
+/// Where the real CLI writes its transcripts for a session started in `cwd`: the directory named
+/// after its realpath; `None` above 200 units, where the CLI hashes the name.
+fn real_claude_transcript_dir(projects: &Path, cwd: &Path) -> Option<PathBuf> {
+    let real = std::fs::canonicalize(cwd).unwrap();
+    let slug = crate::worker_flow::claude_transcript::slug_for_projects(real.to_str().unwrap());
+    (slug.len() <= 200).then(|| projects.join(slug))
+}
+
+/// [`spawn_worker_with_goal`] with the workspace under `base`; the fake writes its transcript where
+/// the real CLI would.
+async fn spawn_worker_in(
+    fake: &FakeClaude,
+    watch: TrustPromptWatch,
+    goal: Option<&str>,
+    base: &Path,
+) -> Worker {
+    let harness = claude_worker_harness_in(base).await;
+    if let Some(dir) =
+        real_claude_transcript_dir(&fake.dir.path().join("projects"), &harness.worktree)
+    {
+        std::fs::write(
+            fake.dir.path().join("transcript_dir"),
+            dir.to_str().unwrap(),
+        )
+        .unwrap();
+    }
     let hooks = tempfile::tempdir().unwrap();
     // One role and area cache for the adapter and the routes, as the kernel shares them.
     let (roles, areas) = (CardRoleCache::new(), TrackAreaCache::new());
@@ -256,6 +284,11 @@ async fn spawn_worker_with_goal(
         op.last_error
     );
     let output = op.tx_output.unwrap();
+    assert_eq!(
+        Path::new(&output.output_string("cwd", "test").unwrap()),
+        harness.worktree,
+        "the worker runs in the track worktree"
+    );
     Worker {
         card_id: output.output_string("card_id", "test").unwrap(),
         terminal_id: output.output_string("terminal_id", "test").unwrap(),
@@ -535,6 +568,56 @@ async fn worker_terminal_taken_over_after_enter_is_not_failed() {
     assert_eq!(worker.task().await.0, "dispatched", "nothing fails");
     assert_eq!(worker.reap_marker().await, None);
     human.abort();
+    worker.stop().await;
+}
+
+/// The workspace is reached through a symlink: Claude names its project directory after the
+/// realpath, and the replica (only the transcript tells) still gets no input.
+#[tokio::test]
+async fn worker_session_in_a_symlinked_workspace_that_repaints_a_dialog_replica_gets_no_input() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("real")).unwrap();
+    std::os::unix::fs::symlink(root.path().join("real"), root.path().join("link")).unwrap();
+    let fake = FakeClaude::new("replica");
+    let (watch, mut outcomes) = watch(15_000);
+    let goal = long_quoted_dialog();
+    let worker = spawn_worker_in(&fake, watch, Some(&goal), &root.path().join("link")).await;
+    assert!(
+        worker
+            .harness
+            .worktree
+            .starts_with(root.path().join("link")),
+        "the worker's cwd names the symlink"
+    );
+
+    assert_eq!(outcome(&mut outcomes).await, TrustOutcome::NotShown);
+    fake.wait_for("painted").await;
+    tokio::time::sleep(Duration::from_millis(3_500)).await;
+    assert_eq!(fake.received(), b"", "nothing typed into the live session");
+    assert_eq!(worker.task().await.0, "dispatched");
+    worker.stop().await;
+}
+
+/// A cwd whose project directory name is longer than Claude keeps as is: no transcript path can be
+/// derived, so the watch stays out even of a real dialog.
+#[tokio::test]
+async fn worker_in_a_cwd_without_a_reliable_transcript_path_gets_no_input() {
+    let root = tempfile::tempdir().unwrap();
+    let deep = root.path().join("d".repeat(150)).join("e".repeat(60));
+    std::fs::create_dir_all(&deep).unwrap();
+    let fake = FakeClaude::new("dialog");
+    let (watch, mut outcomes) = watch(15_000);
+    let worker = spawn_worker_in(&fake, watch, None, &deep).await;
+    assert!(
+        !fake.has("transcript_dir"),
+        "the real CLI would hash this directory name"
+    );
+
+    assert_eq!(outcome(&mut outcomes).await, TrustOutcome::Unwatched);
+    fake.wait_for("painted").await;
+    tokio::time::sleep(Duration::from_millis(3_500)).await;
+    assert_eq!(fake.received(), b"", "the real dialog is left alone");
+    assert_eq!(worker.task().await.0, "dispatched");
     worker.stop().await;
 }
 

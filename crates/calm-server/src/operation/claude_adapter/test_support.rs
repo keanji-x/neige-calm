@@ -11,6 +11,11 @@ pub(super) struct ClaudeWorkerHarness {
 }
 
 pub(super) async fn claude_worker_harness() -> ClaudeWorkerHarness {
+    claude_worker_harness_in(&std::env::temp_dir()).await
+}
+
+/// [`claude_worker_harness`] whose workspace is made under `base`.
+pub(super) async fn claude_worker_harness_in(base: &Path) -> ClaudeWorkerHarness {
     let repo = Arc::new(
         crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
             .await
@@ -26,7 +31,7 @@ pub(super) async fn claude_worker_harness() -> ClaudeWorkerHarness {
     )
     .await
     .unwrap();
-    let workspace = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir_in(base).unwrap();
     for args in [
         vec!["init", "-q"],
         vec![

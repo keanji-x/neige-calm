@@ -8,8 +8,9 @@
 #   repaints with the selection reset to No;
 # - the session: the "Claude Code v2.1.280" banner on top, then the whole prompt echoed
 #   (`❯ Goal: ...`, every line, so a long goal scrolls the banner off the viewport) in one write;
-#   about 0.15 s later the session transcript `projects/<cwd slug>/<--session-id>.jsonl` (under
-#   this directory) is written, as the real CLI does once trusted.
+#   about 0.15 s later the session transcript `<transcript_dir>/<--session-id>.jsonl` is written,
+#   as the real CLI does once trusted. The test names the directory the real CLI would use in a
+#   `transcript_dir` file (no transcript without it): the fixture never derives it.
 # It logs every byte it reads. The test copies it into a private directory next to a `scenario`
 # file:
 #   in:  scenario: `dialog` (Down moves the cursor; Enter on Yes starts the session), `stuck` (the
@@ -59,14 +60,6 @@ def paint(cursor):
     record("painted")
 
 
-def slug(path):
-    """Claude Code 2.1.280's project directory name: every UTF-16 unit but [A-Za-z0-9-] is `-`."""
-    units = path.encode("utf-16-le")
-    return "".join(
-        chr(unit) if unit < 128 and (chr(unit).isalnum() or chr(unit) == "-") else "-"
-        for unit in (int.from_bytes(units[at:at + 2], "little") for at in range(0, len(units), 2)))
-
-
 def session():
     """The session's first frame (the banner, then the whole prompt echoed) in one write, then
     its transcript."""
@@ -79,10 +72,12 @@ def session():
     write("\x1b[2J\x1b[H" + "\n".join(rows) + "\n")
     record("painted")
     time.sleep(0.15)
-    transcript = os.path.join(D, "projects", slug(os.getcwd()), arg("--session-id") + ".jsonl")
-    os.makedirs(os.path.dirname(transcript), exist_ok=True)
-    with open(transcript, "a") as out:
-        out.write('{"type":"summary"}\n')
+    named = os.path.join(D, "transcript_dir")
+    if os.path.exists(named):
+        transcript = os.path.join(open(named).read().strip(), arg("--session-id") + ".jsonl")
+        os.makedirs(os.path.dirname(transcript), exist_ok=True)
+        with open(transcript, "a") as out:
+            out.write('{"type":"summary"}\n')
 
 
 def arg(flag):
