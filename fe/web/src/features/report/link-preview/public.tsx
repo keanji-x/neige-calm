@@ -5,7 +5,7 @@ import { GitHubPreviewContent } from '../../../systems/github-links/public.tsx';
 import type { WorkspaceFilePort } from '../../../../../core/domain/fs.ts';
 import type { ReportLinkTarget, TrackReport } from '../../../../../core/domain/report.ts';
 import type { ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
-import { ReportSourceCitation } from '../source/public.tsx';
+import { ReportSourceCitation } from '../source/citation.tsx';
 import { FileReadError, useReportFileResource } from '../../../systems/fs-viewers/public.tsx';
 import { HoverPreview } from '../../../ui/hover-preview/public.tsx';
 import { useState } from '../../../ui/state/public.ts';

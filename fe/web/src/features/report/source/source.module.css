@@ -5,7 +5,7 @@
    * Two registers and nothing else. The head — badge, title, the row's facts
    * — is the panel's own sans, in the small sizes the series figure's head
    * already uses for "what this figure says about itself". The body is
-   * evidence, so it is set the way the document sets a block it will not
+   * the exact original view, so it is set the way the document sets a block it will not
    * interpret (`document.module.css`'s `.raw`): code face, code surface,
    * wrapped rather than scrolled sideways, because a captured article is
    * prose and a horizontal scrollbar on prose is a defect.
@@ -219,6 +219,33 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     tab-size: 2;
+  }
+
+  .views {
+    display: flex;
+    gap: var(--space-2);
+    margin-block: var(--space-4);
+  }
+
+  .view {
+    padding: var(--space-1) var(--space-3);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-2);
+    font: inherit;
+    font-size: var(--text-sm);
+    cursor: pointer;
+  }
+
+  .view[aria-pressed='true'] {
+    background: var(--surface-chip);
+    color: var(--text);
+  }
+
+  .reading {
+    min-inline-size: 0;
+    overflow-wrap: anywhere;
   }
 
   .quote {

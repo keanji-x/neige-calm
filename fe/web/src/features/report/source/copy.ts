@@ -12,6 +12,9 @@ export const SOURCE_PROVENANCE_COPY = Object.freeze({
 export const SOURCE_PANEL_COPY = Object.freeze({
   /** The drawer's name before the row has arrived, and the citation badge. */
   panelTitle: '来源',
+  viewLabel: '来源阅读方式',
+  reading: '阅读',
+  original: '原文',
   closeLabel: '关闭来源',
   loading: '正在读取来源…',
   /** A citation the track cannot answer: dangling id, or a link that will not parse. */
