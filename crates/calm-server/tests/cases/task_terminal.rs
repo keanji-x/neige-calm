@@ -17,7 +17,7 @@ pub(crate) struct Worker {
     pub(crate) session: String,
     pub(crate) terminal: String,
 }
-const ECHO_WORKER: &str = "printf 'WORKER_READY\\n'; while IFS= read -r line; do printf 'WORKER_REPLY:%s\\n' \"$line\"; done";
+pub(crate) const ECHO_WORKER: &str = "printf 'WORKER_READY\\n'; while IFS= read -r line; do printf 'WORKER_REPLY:%s\\n' \"$line\"; done";
 async fn worker(h: &Harness, kind: &str, track: &str, viewer: bool) -> Worker {
     worker_running(h, kind, track, viewer.then_some(ECHO_WORKER)).await
 }

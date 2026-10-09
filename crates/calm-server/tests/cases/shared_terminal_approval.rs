@@ -59,20 +59,28 @@ async fn cold_resume_selects_terminal_policy_from_current_card_role() {
             .find(|r| r["method"] == "thread/resume" && r["params"]["threadId"] == *thread)
             .unwrap();
         let tools = request.pointer("/params/config/mcp_servers/neige/tools");
-        if *role == CardRole::Planner {
-            assert_eq!(
+        match role {
+            CardRole::Planner => assert_eq!(
                 tools,
                 Some(&json!({
                     "neige_terminal_open":{"approval_mode":"approve"},
                     "neige_terminal_control":{"approval_mode":"approve"},
                     "neige_terminal_input":{"approval_mode":"approve"}
                 }))
-            );
-        } else {
-            assert!(request.pointer("/params/config/mcp_servers").is_none());
+            ),
+            // #2492: an Assistant drives existing workers but opens no card.
+            CardRole::Assistant => assert_eq!(
+                tools,
+                Some(&json!({
+                    "neige_terminal_control":{"approval_mode":"approve"},
+                    "neige_terminal_input":{"approval_mode":"approve"}
+                }))
+            ),
+            _ => assert!(request.pointer("/params/config/mcp_servers").is_none()),
         }
     }
-    // A stale SharedPlanner session kind cannot retain delegation after demotion.
+    // A stale SharedPlanner session kind cannot retain the Planner's delegation after demotion: the
+    // resumed thread gets the Assistant's, without `neige_terminal_open`.
     sqlx::query("UPDATE cards SET role='assistant' WHERE id=?1")
         .bind(&targets[0].0)
         .execute(repo.pool())
@@ -86,7 +94,13 @@ async fn cold_resume_selects_terminal_policy_from_current_card_role() {
         .rev()
         .find(|r| r["method"] == "thread/resume" && r["params"]["threadId"] == targets[0].1)
         .unwrap();
-    assert!(resumed.pointer("/params/config/mcp_servers").is_none());
+    assert_eq!(
+        resumed.pointer("/params/config/mcp_servers/neige/tools"),
+        Some(&json!({
+            "neige_terminal_control":{"approval_mode":"approve"},
+            "neige_terminal_input":{"approval_mode":"approve"}
+        }))
+    );
 }
 
 #[tokio::test]

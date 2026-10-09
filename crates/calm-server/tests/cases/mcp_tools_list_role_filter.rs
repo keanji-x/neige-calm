@@ -240,12 +240,18 @@ async fn tools_list_for_assistant_role_returns_reports_and_conditional_workspace
             "neige_report_describe",
             "neige_report_read",
             "neige_report_write",
+            "neige_terminal_control",
+            "neige_terminal_input",
+            "neige_terminal_read",
+            "neige_terminal_show",
+            "neige_worker_report",
             "neige_workspace_cat",
             "neige_workspace_diff",
             "neige_workspace_log",
             "neige_workspace_ls",
         ],
-        "assistant tools/list includes workspace reads that require a kernel-issued grant",
+        "assistant tools/list includes workspace reads that require a kernel-issued grant and \
+         the worker watcher's terminal tools and report (#2492)",
     );
 }
 

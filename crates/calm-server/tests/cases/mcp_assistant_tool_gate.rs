@@ -26,6 +26,13 @@ const ASSISTANT_ALLOWED_TOOLS: &[&str] = &[
     "neige_report_describe",
     "neige_report_commit",
     "neige_report_write",
+    // #2492: an Assistant (the worker watcher among them) reads and drives its own Track's task
+    // workers under the Planner's checks, and reports what it found to the Planner.
+    "neige_terminal_show",
+    "neige_terminal_read",
+    "neige_terminal_control",
+    "neige_terminal_input",
+    "neige_worker_report",
 ];
 
 /// Denied tools whose handler a **Planner** token gets past; also the control list below.
@@ -60,11 +67,9 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     // Preview gateway registration is a Planner action.
     "neige_preview_add",
     "neige_preview_rm",
+    // Opening a terminal card is the Planner's; the role gate keeps an Assistant's writes to its
+    // own card.
     "neige_terminal_open",
-    "neige_terminal_show",
-    "neige_terminal_read",
-    "neige_terminal_control",
-    "neige_terminal_input",
     // Track filesystem + history drill-ins (Planner|Worker, never Assistant).
     "neige_track_ls",
     "neige_track_cat",

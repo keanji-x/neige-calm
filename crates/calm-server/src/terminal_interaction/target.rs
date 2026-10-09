@@ -45,7 +45,7 @@ impl Binding {
     }
 }
 /// Typing into a codex task Worker's remote TUI interrupts its turn and starts no replacement
-/// turn (#1782), so the Planner's input and claim on that card are refused (#1784).
+/// turn (#1782), so an agent's input and claim on that card are refused (#1784).
 const CODEX_TASK_WORKER_INPUT_REFUSED: &str =
     include_str!("../../prompts/terminal/codex-task-worker-input-refused.md");
 
@@ -85,7 +85,7 @@ impl TerminalInteraction {
             .task_get(id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("task execution unavailable"))?;
-        ensure!(task.track_id == track, "task outside Planner Track");
+        ensure!(task.track_id == track, "task outside the caller's Track");
         let current = repo
             .task_current_get(track, &task.key)
             .await?
@@ -104,8 +104,9 @@ impl TerminalInteraction {
         let track = Self::authorize(repo, identity).await?;
         Self::resolve_in_track(repo, &track, target).await
     }
-    /// What a Planner of `track` resolves for `target`, minus the caller's identity check; the
-    /// quiet-worker detector resolves through it so it wakes only about what the tools can reach.
+    /// What a caller of `track` resolves for `target`, minus the caller's identity check: the one
+    /// same-Track rule of the terminal tools, the quiet-worker detector (it hands the watcher only
+    /// what the tools can reach) and `neige_worker_report` (#2492).
     pub(crate) async fn resolve_in_track(
         repo: &dyn RouteRepo,
         track: &str,
@@ -142,7 +143,7 @@ impl TerminalInteraction {
             .ok_or_else(|| anyhow::anyhow!("terminal card unavailable"))?;
         ensure!(
             card.track_id.as_str() == track,
-            "terminal outside Planner Track"
+            "terminal outside the caller's Track"
         );
         ensure!(
             matches!(card.kind.as_str(), "terminal" | "codex" | "claude"),

@@ -1,6 +1,12 @@
 # Planner Terminal client wiring (#1548)
 
-The application entry point is a Planner-only MCP tool set:
+The application entry point is an MCP tool set for the Track's Planner and, since
+#2492, its Assistants (the worker watcher among them). Both pass the same caller
+check (`TerminalInteraction::authorize`: live session, unchanged card role and
+Track) and resolve targets inside their own Track only. Opening a Terminal card
+stays the Planner's: the role gate keeps an Assistant's writes to its own card.
+Each role's Codex thread is delegated approval for exactly the terminal writes it
+may call (`mcp_server/wiring.rs`).
 
 | Tool | Behavior |
 |---|---|

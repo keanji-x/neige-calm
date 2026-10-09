@@ -964,10 +964,12 @@
       "readOnlyHint": false
     },
     "roles": [
-      "planner"
+      "planner",
+      "assistant"
     ],
     "listed_for": [
-      "planner"
+      "planner",
+      "assistant"
     ]
   },
   {
@@ -1141,10 +1143,12 @@
       "readOnlyHint": false
     },
     "roles": [
-      "planner"
+      "planner",
+      "assistant"
     ],
     "listed_for": [
-      "planner"
+      "planner",
+      "assistant"
     ]
   },
   {
@@ -1322,10 +1326,12 @@
       "readOnlyHint": true
     },
     "roles": [
-      "planner"
+      "planner",
+      "assistant"
     ],
     "listed_for": [
-      "planner"
+      "planner",
+      "assistant"
     ]
   },
   {
@@ -1350,10 +1356,12 @@
       "readOnlyHint": true
     },
     "roles": [
-      "planner"
+      "planner",
+      "assistant"
     ],
     "listed_for": [
-      "planner"
+      "planner",
+      "assistant"
     ]
   },
   {
@@ -1675,6 +1683,49 @@
     ],
     "listed_for": [
       "planner"
+    ]
+  },
+  {
+    "name": "neige_worker_report",
+    "description_sha256": "4521fcea2beb070199d152fb9641aa305cf42e3fc2e936e4529de59dba78e000",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "note": {
+          "maxLength": 300,
+          "minLength": 1,
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "trust_accepted",
+            "idle_at_prompt",
+            "needs_owner",
+            "unclear"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "attempt_id",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "roles": [
+      "assistant"
+    ],
+    "listed_for": [
+      "assistant"
     ]
   },
   {

@@ -276,11 +276,11 @@ pub(crate) async fn write_today_summary(
     }))
 }
 
-/// Is a failed create one this handler may continue past? Only a `conflict` or an
-/// `idempotency_key_reused` (the race loser's payload-hash flavour; anything else means the
-/// create did not happen), and only if the card is there (a conflict about anything else is
-/// still a conflict).
-fn create_conflict_is_recoverable(error: &CalmError, card_exists: bool) -> bool {
+/// Is a failed create under a fixed conversation key one its caller may continue past? Only a
+/// `conflict` or an `idempotency_key_reused` (the race loser's payload-hash flavour; anything else
+/// means the create did not happen), and only if the card is there (a conflict about anything else
+/// is still a conflict). Shared with the worker watcher's create (#2492).
+pub(crate) fn create_conflict_is_recoverable(error: &CalmError, card_exists: bool) -> bool {
     matches!(
         error,
         CalmError::Conflict(_) | CalmError::IdempotencyKeyReused(_)

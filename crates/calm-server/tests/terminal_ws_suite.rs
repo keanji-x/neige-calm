@@ -48,5 +48,11 @@ mod codex_worker_terminal_input;
 #[path = "cases/worker_quiet.rs"]
 mod worker_quiet;
 
+#[path = "cases/assistant_terminal.rs"]
+mod assistant_terminal;
+
+#[path = "cases/worker_report.rs"]
+mod worker_report;
+
 #[path = "support/terminal_interaction.rs"]
 mod terminal_support;

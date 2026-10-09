@@ -1,4 +1,4 @@
-//! Planner-owned clients of the same renderer and PTY as human Terminal cards.
+//! Planner and Assistant clients of the same renderer and PTY as human Terminal cards.
 use crate::db::RouteRepo;
 use crate::mcp_server::registry::ToolCallIdentity;
 use crate::model::CardRole;
@@ -55,6 +55,11 @@ pub(crate) struct ReadbackBaseline {
 /// previous observation on the connection; the rest are counted as dropped).
 pub const SIGNALS_PER_OBSERVATION: usize = 20;
 
+/// The card roles the terminal tools serve (#2492): the Track's Planner and its Assistants, under
+/// the same checks and inside their own Track only. Opening a terminal card stays the Planner's
+/// (`neige_terminal_open`): the role gate keeps an Assistant's writes to its own card.
+pub const TERMINAL_ROLES: &[CardRole] = &[CardRole::Planner, CardRole::Assistant];
+
 /// Reason of an `open claim:true` whose granted claim was taken over before this connection observed the grant.
 pub const CONTROL_TAKEN_BY_ANOTHER_CLIENT: &str = "terminal control was taken by another client";
 
@@ -93,29 +98,31 @@ impl TerminalInteraction {
             claim_window_seam: StdMutex::new(None),
         }
     }
+    /// The caller's own Track, after proving its session is live and its card still holds the
+    /// role and Track it connected with. Every target resolves inside that Track only.
     pub async fn authorize(repo: &dyn RouteRepo, identity: &ToolCallIdentity) -> Result<String> {
         ensure!(
-            identity.role == CardRole::Planner,
-            "planner-only terminal tool"
+            TERMINAL_ROLES.contains(&identity.role),
+            "terminal tools serve Planner and Assistant cards only"
         );
         let session = repo
             .session_get_by_id(&identity.session_id.clone().into())
             .await?
-            .ok_or_else(|| anyhow::anyhow!("planner session unavailable"))?;
+            .ok_or_else(|| anyhow::anyhow!("caller session unavailable"))?;
         ensure!(
             session.state.is_active_authority(),
-            "planner session authority ended"
+            "caller session authority ended"
         );
         let current = repo
             .card_identity_get_by_session(&identity.session_id)
             .await?
-            .ok_or_else(|| anyhow::anyhow!("planner card unavailable"))?;
+            .ok_or_else(|| anyhow::anyhow!("caller card unavailable"))?;
         ensure!(
-            current.role == CardRole::Planner
+            current.role == identity.role
                 && current.card_id.as_str() == identity.card_id
                 && Some(current.track_id.as_str()) == identity.track_id.as_deref()
                 && current.area_id.as_str() == identity.area_id,
-            "planner identity or Track changed"
+            "caller identity or Track changed"
         );
         Ok(current.track_id.to_string())
     }
@@ -142,7 +149,7 @@ impl TerminalInteraction {
             );
             return Ok(client.clone());
         }
-        ensure!(clients.len() < 128, "Planner terminal client limit reached");
+        ensure!(clients.len() < 128, "agent terminal client limit reached");
         let scope = Self::bound_scope(self.repo.clone(), identity, resolved);
         let client = Arc::new(Client::attach(entry, scope, resolved.clone()).await?);
         clients.insert(binding, client.clone());

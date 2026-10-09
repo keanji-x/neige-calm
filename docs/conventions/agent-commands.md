@@ -93,6 +93,7 @@ Effect classes: **V** view (no state change, no anchor; access metadata excepted
 | `gate` | LC | run the attempt's declared gate now, on the Worker's changes committed as the attempt's commit (Worker, #2464) | none (domain) |
 | `done` | LC | the Worker's claim that its attempt met the task (was `report_success`, #2053) | `task <id> done` (Taskwarrior) |
 | `fail` | LC | the Worker's claim that its attempt cannot meet the task, with a `reason` (was `report_failure`) | none (plain English) |
+| `report` | W | the worker watcher's closed verdict on a quiet task worker; the kernel wakes the Planner with it (#2492) | none (plain English) |
 | `gc` | M | prune history and sweep unreferenced objects | `git gc` |
 | `vacuum` | M | reclaim database pages | SQLite `VACUUM` |
 
@@ -122,6 +123,9 @@ Decisions, one line each:
   claims (`task_done`, `task_fail`); the Planner decides (`task_accept`, `task_reject`).
 - **A view may stamp access metadata** (e.g. a last-seen time) and refresh derived projections onto
   the caller's own Track; it never changes authority or domain state (#2104).
+- **`report` is the watcher's verdict** (#2492): `worker_report` takes a closed `outcome`, so it
+  is not `send` (free text to another Track) or `ask` (the user's notifications, which only the
+  Planner writes).
 - **`send` means mail only** (#2130): `add` would hide the wake (principle 2), `ask` is the
   user's notifications and `input` is a terminal. Appendix B's cut `terminal_input` → `send` stays
   cut.
