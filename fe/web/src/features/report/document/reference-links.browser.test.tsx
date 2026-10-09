@@ -2,6 +2,7 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import '../../../styles/entry.css';
+import { trackReportLinkUrl } from '../../../../../core/domain/report.ts';
 import { ReportDocument } from './public.tsx';
 
 afterEach(() => { cleanup(); document.getSelection()?.removeAllRanges(); });
@@ -103,7 +104,7 @@ it.each([
 
 it('retains the owning report repository in a same-report block preview', async () => {
   const report = { summary: '', body: '', blocks: [
-    { id: 'context', kind: 'prose' as const, payload: { markdown: '[Parent](https://github.com/first/project/issues/1) [Details](neige://wave/t#details)' } },
+    { id: 'context', kind: 'prose' as const, payload: { markdown: `[Parent](https://github.com/first/project/issues/1) [Details](${trackReportLinkUrl('t')}#details)` } },
     { id: 'details', kind: 'prose' as const, payload: { markdown: 'issue #2' } },
   ] };
   render(<ReportDocument report={report} empty={null} linkPreview={{ trackId: 't', report, files: { readFile: () => Promise.reject(new Error('No file requested')), rawUrl: (path) => path } }} />);
