@@ -1070,7 +1070,11 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         )
         .await?;
 
-        let launch = super::task_launch::TaskLaunch::new(&payload.idempotency_key, _op);
+        let launch = super::task_launch::TaskLaunch::new(
+            &payload.idempotency_key,
+            _op,
+            super::task_launch::TerminalLaunchRole::BusinessProcess,
+        );
         #[cfg(feature = "fixtures")]
         let handle = if let Some(hook) = &self.spawn_hook {
             launch

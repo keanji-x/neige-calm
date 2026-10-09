@@ -736,6 +736,8 @@ async fn ensure_entry(
             } => {
                 if disposition == calm_session::control::SpawnFailedDisposition::NoChildCreated
                     && let (Some(repo), Some(launch)) = (repo.as_deref(), launch.as_ref())
+                    && launch.terminal_role()
+                        == crate::operation::task_launch::TerminalLaunchRole::BusinessProcess
                 {
                     terminal_launch::reject_no_child(
                         repo,

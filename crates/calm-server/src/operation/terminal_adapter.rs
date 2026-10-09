@@ -774,7 +774,11 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             .await?
             .ok_or_else(|| CalmError::Internal(format!("terminal {terminal_id} vanished")))?;
 
-        let launch = super::task_launch::TaskLaunch::new(&payload.idempotency_key, _op);
+        let launch = super::task_launch::TaskLaunch::new(
+            &payload.idempotency_key,
+            _op,
+            super::task_launch::TerminalLaunchRole::BusinessProcess,
+        );
         let spawn_result = if let Some(hook) = &self.spawn_hook {
             launch
                 .run(

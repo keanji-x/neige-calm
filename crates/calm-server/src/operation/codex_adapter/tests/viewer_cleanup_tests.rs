@@ -13,24 +13,63 @@ use std::time::Duration;
 
 #[tokio::test]
 async fn codex_viewer_completion_preserves_business() {
-    exercise_viewer_report(crate::model::TaskStatus::Done, false).await;
+    exercise_viewer_report(crate::model::TaskStatus::Done, None).await;
 }
 #[tokio::test]
 async fn codex_viewer_failure_preserves_business() {
-    exercise_viewer_report(crate::model::TaskStatus::Failed, false).await;
+    exercise_viewer_report(crate::model::TaskStatus::Failed, None).await;
 }
 #[tokio::test]
 async fn codex_viewer_verifying_preserves_business() {
-    exercise_viewer_report(crate::model::TaskStatus::Verifying, false).await;
+    exercise_viewer_report(crate::model::TaskStatus::Verifying, None).await;
 }
 
 #[tokio::test]
-async fn codex_rejected_viewer_restart_preserves_started_business() {
-    exercise_viewer_report(crate::model::TaskStatus::Verifying, true).await;
+async fn codex_viewer_restart_before_phase_preserves_started_business() {
+    exercise_viewer_report(
+        crate::model::TaskStatus::Verifying,
+        Some(Restart::BeforePhase),
+    )
+    .await;
 }
 
-async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: bool) {
-    let harness = worker_lease_harness_with_disk(restart).await;
+#[tokio::test]
+async fn codex_viewer_restart_before_card_added_restores_event() {
+    exercise_viewer_report(
+        crate::model::TaskStatus::Verifying,
+        Some(Restart::BeforeCardAdded),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn codex_viewer_restart_projection_error_does_not_interrupt_business() {
+    exercise_viewer_report(
+        crate::model::TaskStatus::Verifying,
+        Some(Restart::ProjectionError),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn codex_viewer_restart_attach_only_never_resends() {
+    exercise_viewer_report(
+        crate::model::TaskStatus::Verifying,
+        Some(Restart::BeforeReconcile),
+    )
+    .await;
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Restart {
+    BeforePhase,
+    BeforeReconcile,
+    BeforeCardAdded,
+    ProjectionError,
+}
+
+async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: Option<Restart>) {
+    let harness = worker_lease_harness_with_disk(restart.is_some()).await;
     harness
         .repo
         .seed_track_area_cache(&harness.adapter.track_area_cache)
@@ -67,22 +106,28 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: boo
             let (mut connection, _) = listener.accept().await.unwrap();
             let starts = starts_for_endpoint.clone();
             clients.spawn(async move {
-                if matches!(
-                    read_frame::<ControlMsg, _>(&mut connection).await,
-                    Ok(ControlMsg::EnsureProc(_))
-                ) {
-                    starts.fetch_add(1, Ordering::SeqCst);
-                    let _ = write_frame(
-                        &mut connection,
-                        &ControlReply::SpawnFailed {
+                let reply = match read_frame::<ControlMsg, _>(&mut connection).await {
+                    Ok(ControlMsg::EnsureProc(_)) => {
+                        starts.fetch_add(1, Ordering::SeqCst);
+                        ControlReply::SpawnFailed {
                             disposition:
                                 calm_session::control::SpawnFailedDisposition::NoChildCreated,
                             error: "fixture optional viewer unavailable".into(),
                             child_already_reaped: true,
-                        },
-                    )
-                    .await;
-                }
+                        }
+                    }
+                    Ok(ControlMsg::Probe(_)) => ControlReply::ProbeOk {
+                        supervisor_version: calm_session::SUPERVISOR_CONTROL_VERSION,
+                        proc_running: false,
+                    },
+                    Ok(ControlMsg::Attach(_)) => ControlReply::Error {
+                        kind: calm_session::control::ControlErrorKind::UnknownProc,
+                        message: "optional viewer was never created".into(),
+                    },
+                    Err(_) => return,
+                    other => panic!("unexpected viewer endpoint request: {other:?}"),
+                };
+                let _ = write_frame(&mut connection, &reply).await;
             });
         }
     });
@@ -147,9 +192,14 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: boo
         idempotency_key: Some(task.id.clone()),
         payload_hash: crate::routes::idempotency_key::stable_payload_hash(&payload).unwrap(),
     };
-    if restart {
+    if restart.is_some() {
         sqlx::query("CREATE TRIGGER interrupt_launch BEFORE UPDATE OF phase ON operations WHEN NEW.phase IN \
             ('spawn_succeeded','compensating','stuck') BEGIN SELECT RAISE(ABORT,'viewer ack interruption'); END")
+            .execute(harness.repo.pool()).await.unwrap();
+    }
+    if restart == Some(Restart::BeforeCardAdded) {
+        sqlx::query("CREATE TRIGGER interrupt_card_added BEFORE INSERT ON events WHEN NEW.kind='card.added' BEGIN SELECT \
+                RAISE(ABORT,'crash before CardAdded'); END")
             .execute(harness.repo.pool()).await.unwrap();
     }
     let submitted_key = key.clone();
@@ -177,7 +227,7 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: boo
         b"preserve this completed work\n",
     )
     .unwrap();
-    if restart {
+    if restart.is_some() {
         resume.notify_one();
         let _ = tokio::time::timeout(Duration::from_secs(10), run)
             .await
@@ -187,7 +237,7 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: boo
         assert_eq!(op.phase, Phase::SpawnStarted);
         assert_eq!(
             op.tx_output.as_ref().unwrap().data["terminal_launch"]["state"],
-            "rejected"
+            "requested"
         );
         let session = harness
             .repo
@@ -195,12 +245,22 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: boo
             .await
             .unwrap()
             .unwrap();
+        let task_before = harness.repo.task_get(&task.id).await.unwrap().unwrap();
         assert!(session.thread_id.is_some());
         assert!(session.active_turn_id.is_some());
         sqlx::query("DROP TRIGGER interrupt_launch")
             .execute(harness.repo.pool())
             .await
             .unwrap();
+        if restart == Some(Restart::BeforeCardAdded) {
+            sqlx::query("DROP TRIGGER interrupt_card_added")
+                .execute(harness.repo.pool())
+                .await
+                .unwrap();
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind='card.added' AND json_extract(payload,'$.id')=?1")
+                .bind(&card_id).fetch_one(harness.repo.pool()).await.unwrap();
+            assert_eq!(count, 0, "crash seam must precede the durable event");
+        }
         let reboot_repo = Arc::new(
             crate::db::sqlite::SqlxRepo::open(&format!(
                 "sqlite:{}",
@@ -228,7 +288,48 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: boo
             None,
             None,
         );
-        crate::reconcile_supervisor_on_boot(&state).await;
+        if restart != Some(Restart::BeforeReconcile) {
+            crate::reconcile_supervisor_on_boot(&state).await;
+            let terminal = reboot_repo
+                .terminal_get(&output.output_string("terminal_id", "test").unwrap())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                terminal.exit_code,
+                Some(-1),
+                "real boot must record the absent viewer"
+            );
+        }
+        if restart == Some(Restart::ProjectionError) {
+            // Fail the real projection decoder until the next lifecycle write.
+            // Recovery's CardAdded transaction repairs it before VCS projection;
+            // compensation's transition also repairs it, exposing any interrupt.
+            // Neither trigger copies the adapter's business/launch decision.
+            sqlx::query("CREATE TABLE projection_fault_backup AS SELECT id, handle_state_json FROM worker_sessions WHERE id=?1")
+                .bind(&session_id).execute(reboot_repo.pool()).await.unwrap();
+            sqlx::query("UPDATE worker_sessions SET handle_state_json='invalid-json' WHERE id=?1")
+                .bind(&session_id)
+                .execute(reboot_repo.pool())
+                .await
+                .unwrap();
+            assert!(
+                reboot_repo
+                    .session_projection_by_id(&session_id)
+                    .await
+                    .is_err()
+            );
+            sqlx::query("CREATE TRIGGER repair_projection AFTER UPDATE OF phase ON operations WHEN NEW.phase='compensating' \
+                BEGIN UPDATE worker_sessions SET handle_state_json=(SELECT handle_state_json FROM \
+                projection_fault_backup WHERE id=worker_sessions.id) WHERE id IN (SELECT id FROM \
+                projection_fault_backup); END")
+                .execute(reboot_repo.pool()).await.unwrap();
+            sqlx::query("CREATE TRIGGER repair_event_projection BEFORE INSERT ON events WHEN NEW.kind='card.added' BEGIN \
+                UPDATE worker_sessions SET handle_state_json=(SELECT handle_state_json FROM projection_fault_backup \
+                WHERE id=worker_sessions.id) WHERE id IN (SELECT id FROM projection_fault_backup); END")
+                .execute(reboot_repo.pool()).await.unwrap();
+        }
+        let mut recovered_events = events.subscribe();
         let reboot_adapter = CodexWorkerAdapter::new(
             reboot_repo.clone(),
             Arc::new(CodexClient::new_stub()),
@@ -285,6 +386,47 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: boo
                 .unwrap()
                 .phase,
             Phase::Succeeded
+        );
+        let mut card_added_id = None;
+        while let Ok(envelope) = recovered_events.try_recv() {
+            if matches!(&envelope.event, Event::CardAdded(card) if card.id.as_str() == card_id) {
+                card_added_id = Some(envelope.id);
+            }
+        }
+        let event_id = card_added_id.expect("recovery must publish CardAdded");
+        assert!(event_id > 0);
+        let persisted: String = sqlx::query_scalar("SELECT kind FROM events WHERE id=?1")
+            .bind(event_id)
+            .fetch_one(reboot_repo.pool())
+            .await
+            .unwrap();
+        assert_eq!(persisted, "card.added");
+        let persisted_card: String =
+            sqlx::query_scalar("SELECT json_extract(payload,'$.id') FROM events WHERE id=?1")
+                .bind(event_id)
+                .fetch_one(reboot_repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(persisted_card, card_id);
+        assert_eq!(
+            reboot_ops
+                .get_operation(&op.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .tx_output
+                .unwrap()
+                .data["terminal_launch"]["state"],
+            "requested"
+        );
+        assert_eq!(
+            reboot_repo
+                .task_get(&task.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            task_before.status
         );
         assert!(reboot_repo.card_get(&card_id).await.unwrap().is_some());
         assert!(
@@ -417,5 +559,11 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: boo
         starts.load(Ordering::SeqCst),
         usize::from(expected == crate::model::TaskStatus::Verifying)
     );
+    assert_ne!(
+        op.tx_output.as_ref().unwrap().data["terminal_launch"]["state"],
+        "rejected"
+    );
+    assert_eq!(shared.interrupted_turns_for_test().len(), 0);
+    assert_eq!(shared.started_turns_for_test().len(), 1);
     assert_eq!(op.phase, Phase::Succeeded);
 }

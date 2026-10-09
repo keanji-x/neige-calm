@@ -3,10 +3,20 @@ use crate::db::{RepoEventWrite, write_in_tx_typed};
 use crate::error::{CalmError, Result};
 use std::future::Future;
 
+/// The owner declares what the terminal starts; this is not a persisted
+/// classification of provider business state. Nonterminal task effects still
+/// carry their owner's process role when using the shared admission guard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TerminalLaunchRole {
+    BusinessProcess,
+    OptionalViewer,
+}
+
 #[derive(Clone)]
 pub(crate) struct TaskLaunch {
     task_id: String,
     operation: super::Operation,
+    terminal_role: TerminalLaunchRole,
 }
 
 #[derive(Debug)]
@@ -24,11 +34,20 @@ impl From<CalmError> for LaunchFailure {
 }
 
 impl TaskLaunch {
-    pub(crate) fn new(task_id: &str, operation: &super::Operation) -> Self {
+    pub(crate) fn new(
+        task_id: &str,
+        operation: &super::Operation,
+        terminal_role: TerminalLaunchRole,
+    ) -> Self {
         Self {
             task_id: task_id.into(),
             operation: operation.clone(),
+            terminal_role,
         }
+    }
+
+    pub(crate) fn terminal_role(&self) -> TerminalLaunchRole {
+        self.terminal_role
     }
 
     pub(crate) fn operation(&self) -> &super::Operation {

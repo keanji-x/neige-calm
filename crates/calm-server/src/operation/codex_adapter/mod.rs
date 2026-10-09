@@ -929,17 +929,6 @@ impl ProviderAdapter for CodexWorkerAdapter {
         let rendered_prompt = output.output_string("prompt", "codex")?;
         let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
 
-        if super::terminal_launch::rejected(&output.data, &terminal_id)? {
-            // This receipt describes the optional viewer, not the shared business turn.
-            // Only the persisted business contract authorizes successful recovery.
-            if let Some(session) = ctx.repo.session_projection_by_id(&session_id).await?
-                && TxOutput::non_empty_string(session.thread_id.as_deref()).is_some()
-                && TxOutput::non_empty_string(session.active_turn_id.as_deref()).is_some()
-            {
-                return Ok(SpawnOutcome::Ready(SpawnHandle::NoOp));
-            }
-            super::terminal_launch::require_not_rejected(&output.data, &terminal_id)?;
-        }
         let term = ctx
             .repo
             .terminal_get(&terminal_id)
@@ -993,7 +982,11 @@ impl ProviderAdapter for CodexWorkerAdapter {
 
         let handle = spawn_codex_worker_via_shared_daemon(CodexWorkerSpawnCtx {
             spawn_ctx: ctx,
-            launch: super::task_launch::TaskLaunch::new(&payload.idempotency_key, _op),
+            launch: super::task_launch::TaskLaunch::new(
+                &payload.idempotency_key,
+                _op,
+                super::task_launch::TerminalLaunchRole::OptionalViewer,
+            ),
             #[cfg(test)]
             viewer_preparation_hook: self.viewer_preparation_hook.as_ref(),
             shared_codex_appserver: &self.shared_codex_appserver,

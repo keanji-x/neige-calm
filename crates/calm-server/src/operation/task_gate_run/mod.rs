@@ -501,7 +501,11 @@ impl Observer {
             self.child.stdin.take().ok_or_else(|| {
                 CalmError::Internal("gate run wrapper stdin handle missing".into())
             })?;
-        let launch = super::task_launch::TaskLaunch::new(&self.frozen.task_id, &self.op);
+        let launch = super::task_launch::TaskLaunch::new(
+            &self.frozen.task_id,
+            &self.op,
+            super::task_launch::TerminalLaunchRole::BusinessProcess,
+        );
         let release = launch.run(self.ctx.repo.as_ref(), async move {
             // Newline-terminated: POSIX `read` returns non-zero on EOF-before-newline.
             stdin.write_all(b"go\n").await.map_err(|error| {

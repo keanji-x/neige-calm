@@ -1307,6 +1307,12 @@ async fn try_spawn_pty(
         error: format!("take pty writer for {}: {e}", request.proc_id),
         child_already_reaped: false,
     })?;
+    // On Unix, portable-pty 0.9.0 unix.rs::spawn_command delegates directly
+    // to std::process::Command::spawn. std's exec-error handshake waits/reaps
+    // a child that fails before exec; portable-pty has no fallible work after
+    // successful spawn. This proves no executable child, not no fork. Re-audit
+    // on portable-pty/Rust upgrades; Tokio's pipe spawn above differs because
+    // its async handle construction can fail after successful exec.
     let child = pair
         .slave
         .spawn_command(cmd)
