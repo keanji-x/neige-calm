@@ -144,6 +144,23 @@ async fn a_quiet_codex_worker_wakes_too() {
 }
 
 #[tokio::test]
+async fn a_task_without_an_agent_worker_does_not_wake() {
+    let h = Harness::start().await;
+    let (control, _control) = quiet_worker(&h, "claude").await;
+    // A terminal task's command may run silently for long; quiet says nothing about it.
+    let (_terminal, _terminal_entry) = quiet_worker(&h, "terminal").await;
+    // A child-Track route row: its worker is another Track, never this card.
+    let (child, _child_entry) = quiet_worker(&h, "codex").await;
+    sqlx::query("UPDATE tasks SET spawn = ?2 WHERE id = ?1")
+        .bind(&child.task)
+        .bind(calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE)
+        .execute(h.sql.pool())
+        .await
+        .unwrap();
+    assert_only_control_wakes(&h, &control).await;
+}
+
+#[tokio::test]
 async fn a_task_that_is_not_running_does_not_wake() {
     let h = Harness::start().await;
     let (control, _control) = quiet_worker(&h, "claude").await;

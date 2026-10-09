@@ -121,10 +121,16 @@ impl WorkerQuietDetector {
         woke
     }
 
-    /// The current episode of `task`'s worker terminal: `None` unless the terminal tools can
+    /// The current episode of `task`'s worker terminal: `None` unless the task is an agent
+    /// worker the scheduler holds to a running-liveness deadline, the terminal tools can
     /// reach it by `attempt_id`, the attempt is running, its worker session is live, and its PTY
     /// has a live renderer entry that printed, has not exited and whose screen can be read.
     async fn episode(&self, task: &Task) -> Option<Episode> {
+        // Only an agent worker is stuck or idle when silent: a terminal task's command (or a child
+        // Track's row) may print nothing for long, and the scheduler's deadline covers it.
+        if !crate::scheduler::task_has_running_liveness_deadline(task) {
+            return None;
+        }
         let target = Target::Attempt(task.id.clone());
         let resolved = match TerminalInteraction::resolve_in_track(
             self.repo.as_ref(),
