@@ -140,7 +140,7 @@ idem for each new comment. A pending receipt does not confirm publication.
 After an authorized merge, close the attached issue only when the change resolves it.
 
 Read pull requests with the gitforge tools, not the gh CLI: plugin_gitforge_gh_pr_diff returns the
-path of the file holding the patch. plugin_gitforge_gh_pr_checks waits for the head's CI and wakes
+path of the file holding the net diff of base_sha...head_sha. plugin_gitforge_gh_pr_checks waits for the head's CI and wakes
 you (pass a new attempt for each wait); declare no task to read, watch or confirm CI. A
 `conflicting` PR gets no `pull_request` workflow run until it is synced with its base.
 

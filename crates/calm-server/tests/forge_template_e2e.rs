@@ -9,6 +9,8 @@ mod issue_creation;
 mod issue_comment_recovery;
 #[path = "cases/forge_pr_checks.rs"]
 mod pr_checks;
+#[path = "cases/forge_pr_diff.rs"]
+mod pr_diff;
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -2044,6 +2046,21 @@ async fn drive_pr_to_diff(
     contents: &str,
     title: &str,
 ) -> ForgePrRun {
+    let (pr, base_sha) =
+        drive_pr_to_published(fx, id_base, issue_number, filename, contents, title).await;
+    read_pr_diff(fx, id_base + 3, &pr, &base_sha, &pr.head_sha).await;
+    pr
+}
+
+/// Commit `filename` and publish it as a PR; returns the PR and the base_sha it was cut from.
+async fn drive_pr_to_published(
+    fx: &mut Fixture,
+    id_base: i64,
+    issue_number: u64,
+    filename: &str,
+    contents: &str,
+    title: &str,
+) -> (ForgePrRun, String) {
     let repo_arg = fx.origin_repo.display().to_string();
     let branch = format!("neige/track-{}", fx.track_id);
     let head = branch.as_str();
@@ -2076,14 +2093,29 @@ async fn drive_pr_to_diff(
     })
     .await;
     let pr_number = opened.payload["pr_number"].as_u64().expect("pr number");
+    let pr = ForgePrRun {
+        repo_arg,
+        pr_number,
+        head_sha,
+    };
+    (pr, base_sha)
+}
 
+/// Read the PR's diff of `base_sha...head_sha` through `gh_pr_diff`; returns its event row.
+async fn read_pr_diff(
+    fx: &Fixture,
+    id: i64,
+    pr: &ForgePrRun,
+    base_sha: &str,
+    head_sha: &str,
+) -> EventRow {
     let diff_resp = call_tool(
         fx,
-        id_base + 3,
+        id,
         PR_DIFF_TOOL,
         json!({
-            "repo": repo_arg,
-            "pr": pr_number,
+            "repo": pr.repo_arg,
+            "pr": pr.pr_number,
             "base_sha": base_sha,
             "head_sha": head_sha
         }),
@@ -2092,17 +2124,12 @@ async fn drive_pr_to_diff(
     assert_tool_succeeded(&diff_resp, "gh_pr_diff");
     let diff = wait_for_event_matching(&fx.repo, "forge.pr.diff.read", |row| {
         row.scope_track.as_deref() == Some(&fx.track_id)
-            && row.payload["pr_number"] == json!(pr_number)
+            && row.payload["pr_number"] == json!(pr.pr_number)
             && row.payload["head_sha"] == json!(head_sha)
     })
     .await;
     assert_eq!(diff.payload["base_sha"], base_sha);
-
-    ForgePrRun {
-        repo_arg,
-        pr_number,
-        head_sha,
-    }
+    diff
 }
 
 /// Run `gh_pr_checks` and return its event row. The call parks and the event lands with the

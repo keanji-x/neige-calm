@@ -101,7 +101,7 @@
     },
     {
       "name": "gh_pr_diff",
-      "description": "Read a GitHub pull request diff. The call waits and returns result.event.artifact_path, the file holding the full patch",
+      "description": "Read a GitHub pull request's net diff of base_sha...head_sha (merge base to head), pinned to those commits rather than the PR's current head. The call waits and returns result.event.artifact_path, the file holding the diff",
       "kind": "forge-action",
       "input_schema": {
         "type": "object",
@@ -112,15 +112,15 @@
           },
           "pr": {
             "type": "integer",
-            "description": "Pull request number"
+            "description": "Pull request number; labels the read, does not select or check the commits"
           },
           "base_sha": {
             "type": "string",
-            "description": "Base commit SHA for the diff"
+            "description": "Full base commit SHA; the diff starts at its merge base with head_sha"
           },
           "head_sha": {
             "type": "string",
-            "description": "Head commit SHA for the diff"
+            "description": "Full head commit SHA whose diff is read"
           }
         },
         "required": [

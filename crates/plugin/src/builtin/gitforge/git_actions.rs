@@ -203,23 +203,33 @@ fn lower_gh_pr_list(args: &Value) -> Result<Value, String> {
     )
 }
 
+/// $1 repository selector, $2 base SHA, $3 head SHA. The three-dot compare is the pull request's
+/// net diff (merge base to head) of the requested commits, not of the PR's current head. An HTTP
+/// error, such as an unknown commit or an oversized comparison, exits non-zero.
+const PR_DIFF_READ_SCRIPT: &str = concat!(
+    "identity=$(gh repo view \"$1\" --json nameWithOwner,url --jq '(.url | split(\"/\")[2]), .nameWithOwner') || exit 1\n",
+    "host=${identity%%\n*}\nrepo=${identity#*\n}\n",
+    "exec gh api --hostname \"$host\" -H 'Accept: application/vnd.github.diff' \"repos/$repo/compare/$2...$3\"\n",
+);
+
 fn lower_gh_pr_diff(args: &Value) -> Result<Value, String> {
     // Idempotent read: intentionally probe-free.
     let repo = required_string(args, "repo")?;
     let pr = required_u64(args, "pr")?;
-    let base_sha = required_string(args, "base_sha")?;
-    let head_sha = required_string(args, "head_sha")?;
+    let base_sha = required_commit_sha(args, "base_sha")?;
+    let head_sha = required_commit_sha(args, "head_sha")?;
     forge_payload(
         vec![
-            "gh".into(),
-            "pr".into(),
-            "diff".into(),
-            pr.to_string(),
-            "--repo".into(),
+            "sh".into(),
+            "-c".into(),
+            PR_DIFF_READ_SCRIPT.into(),
+            "sh".into(),
             repo.clone(),
-            "--patch".into(),
+            base_sha.clone(),
+            head_sha.clone(),
         ],
-        format!("gh.pr.diff:{repo}:{pr}:{base_sha}:{head_sha}"),
+        // v2: v1 results hold per-commit patches of whatever head the PR had then.
+        format!("gh.pr.diff:v2:{repo}:{pr}:{base_sha}:{head_sha}"),
         Some(event_spec("forge.pr.diff.read", [])),
         json!({
             "pr_number": pr,
@@ -422,6 +432,15 @@ fn required_string(args: &Value, key: &str) -> Result<String, String> {
         return Err(format!("missing required string argument `{key}`"));
     }
     Ok(value.to_string())
+}
+
+/// A full commit id (SHA-1 or SHA-256); the value is placed in an API path.
+fn required_commit_sha(args: &Value, key: &str) -> Result<String, String> {
+    let value = required_string(args, key)?;
+    if !matches!(value.len(), 40 | 64) || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!("{key} must be a full commit SHA"));
+    }
+    Ok(value)
 }
 
 fn required_u64(args: &Value, key: &str) -> Result<u64, String> {
