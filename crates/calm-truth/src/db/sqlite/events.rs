@@ -752,6 +752,28 @@ impl RepoEventWrite for SqlxRepo {
         Ok((n, max_id))
     }
 
+    async fn card_hook_seen(
+        &self,
+        event_kind: &str,
+        card_id: &str,
+        actor: &ActorId,
+        hook_kind: &str,
+    ) -> Result<bool> {
+        let seen: bool = sqlx::query_scalar(
+            r#"SELECT EXISTS(
+                   SELECT 1 FROM events
+                   WHERE kind = ?1 AND scope_card = ?2 AND actor = ?3
+                     AND json_extract(payload, '$.kind') = ?4)"#,
+        )
+        .bind(event_kind)
+        .bind(card_id)
+        .bind(serde_json::to_string(actor)?)
+        .bind(hook_kind)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(seen)
+    }
+
     async fn events_for_track(
         &self,
         track_id: &str,

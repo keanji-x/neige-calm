@@ -48,6 +48,9 @@ mod worker_message;
 #[path = "cases/worker_message_pending.rs"]
 mod worker_message_pending;
 
+#[path = "cases/worker_message_ready.rs"]
+mod worker_message_ready;
+
 #[path = "cases/worker_write_leg.rs"]
 mod worker_write_leg;
 

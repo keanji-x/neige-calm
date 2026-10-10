@@ -402,6 +402,16 @@ pub trait RepoEventWrite: RepoRead {
         since_id: Option<i64>,
     ) -> Result<Vec<TrackEvent>>;
 
+    /// Whether `card_id` has a persisted `event_kind` row whose payload `kind` is `hook_kind` and
+    /// whose actor is `actor`: a seek on `idx_events_kind_scope_card` over that card's rows.
+    async fn card_hook_seen(
+        &self,
+        event_kind: &str,
+        card_id: &str,
+        actor: &ActorId,
+        hook_kind: &str,
+    ) -> Result<bool>;
+
     /// Lowest live `events.id`; a `since` cursor below it predates the retention horizon and gets `_snapshot_required`.
     async fn events_earliest_id(&self) -> Result<Option<i64>>;
 

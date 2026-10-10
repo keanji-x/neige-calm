@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use calm_exec::{BoundKeys, SpawnCtx, TuiInput, WorkerProvider};
+use calm_exec::{BoundKeys, MessageReady, SpawnCtx, TuiInput, WorkerProvider};
 use calm_types::error::CoreError;
 use calm_types::worker::{ExitEvidence, ExitInterpretation, Liveness, SessionMode, WorkerSession};
 
@@ -32,10 +32,13 @@ impl WorkerProvider for ClaudeProvider {
     }
 
     /// A message is one bracketed paste and Enter (a new turn when idle, queued while a turn
-    /// runs); the CLI also takes typed keys.
+    /// runs); the CLI also takes typed keys. The task prompt is the CLI's positional argument,
+    /// submitted only once its startup screens (a folder-trust dialog) are cleared, so a message
+    /// waits for that submission's `UserPromptSubmit` hook (#2532).
     fn tui_input(&self) -> TuiInput {
         TuiInput::BracketedPasteSubmit {
             keys_while_bound: BoundKeys::Accepted,
+            ready: MessageReady::AfterPromptSubmitted,
         }
     }
 
@@ -115,10 +118,15 @@ mod tests {
         assert_eq!(
             tui,
             TuiInput::BracketedPasteSubmit {
-                keys_while_bound: BoundKeys::Accepted
+                keys_while_bound: BoundKeys::Accepted,
+                ready: MessageReady::AfterPromptSubmitted,
             }
         );
         assert!(tui.takes_message());
         assert_eq!(tui.keys_while_bound(), BoundKeys::Accepted);
+        assert_eq!(
+            tui.message_ready(),
+            Some(MessageReady::AfterPromptSubmitted)
+        );
     }
 }

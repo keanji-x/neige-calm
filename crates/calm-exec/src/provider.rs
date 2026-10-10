@@ -42,6 +42,18 @@ pub enum BoundKeys {
     Refused,
 }
 
+/// From when a running task worker's terminal UI takes a message (#2532): its Enter must reach the
+/// conversation, never a startup screen that a paste and Enter would answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MessageReady {
+    /// Once the task is running: the provider starts the task's first turn before its terminal UI
+    /// spawns.
+    WhenRunning,
+    /// Once the provider's hooks report the worker session's first `UserPromptSubmit`: the task
+    /// prompt is a launch argument the agent submits itself after its startup screens.
+    AfterPromptSubmitted,
+}
+
 /// The terminal-input declaration of a worker provider (#2493): how the kernel may put a message
 /// into its terminal UI, and whether typed keys are accepted while bound. Keys are refused only
 /// beside a message delivery, so a bound worker always keeps one way to take input.
@@ -49,7 +61,10 @@ pub enum BoundKeys {
 pub enum TuiInput {
     /// One bracketed paste of the message, then Enter: a new turn when idle, a steer or a queued
     /// message while a turn runs.
-    BracketedPasteSubmit { keys_while_bound: BoundKeys },
+    BracketedPasteSubmit {
+        keys_while_bound: BoundKeys,
+        ready: MessageReady,
+    },
     /// The terminal runs no agent conversation that takes a message; typed keys are accepted.
     KeysOnly,
 }
@@ -63,8 +78,18 @@ impl TuiInput {
     /// Whether typed keys are accepted while the terminal serves a task attempt.
     pub fn keys_while_bound(self) -> BoundKeys {
         match self {
-            Self::BracketedPasteSubmit { keys_while_bound } => keys_while_bound,
+            Self::BracketedPasteSubmit {
+                keys_while_bound, ..
+            } => keys_while_bound,
             Self::KeysOnly => BoundKeys::Accepted,
+        }
+    }
+
+    /// From when a message may be written; `None` when the kernel delivers none.
+    pub fn message_ready(self) -> Option<MessageReady> {
+        match self {
+            Self::BracketedPasteSubmit { ready, .. } => Some(ready),
+            Self::KeysOnly => None,
         }
     }
 }

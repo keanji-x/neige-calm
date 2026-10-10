@@ -4,6 +4,7 @@
 //! takes both, and a parked or unreadable worker takes nothing.
 use super::task_terminal::{Worker, stop, worker_running};
 use super::terminal_support::{Harness, human_takeover};
+use super::worker_message_ready::prompt_submitted;
 use calm_server::db::prelude::*;
 use calm_server::model::now_ms;
 use calm_server::terminal_interaction::message_header;
@@ -81,7 +82,18 @@ pub(crate) struct Fixture {
     pub(crate) flip: PathBuf,
 }
 
+/// A running worker that has started its task: a Claude worker's agent reported submitting its
+/// task prompt (#2532); a codex worker's first turn starts before its terminal UI.
 pub(crate) async fn running(h: &Harness, kind: &str, paste: bool, flip: bool) -> Fixture {
+    let fixture = unstarted(h, kind, paste, flip).await;
+    if kind == "claude" {
+        prompt_submitted(h, &fixture.worker).await;
+    }
+    fixture
+}
+
+/// A running worker whose agent has reported nothing yet.
+pub(crate) async fn unstarted(h: &Harness, kind: &str, paste: bool, flip: bool) -> Fixture {
     let tag = uuid::Uuid::new_v4();
     let log = h.root.path().join(format!("{kind}-{tag}.log"));
     let flip_file = h.root.path().join(format!("{kind}-{tag}.flip"));
@@ -452,6 +464,7 @@ async fn message_replay_writes_once() {
 async fn terminal_without_readable_view_refuses_message() {
     let h = Harness::start().await;
     let worker = worker_running(&h, "claude", &h.track, None).await;
+    prompt_submitted(&h, &worker).await;
     let reply = message(&h, json!({"attempt_id":worker.task}), "m", "x").await;
     assert_refusal(
         &reply,
@@ -480,7 +493,11 @@ async fn bracketed_paste_off_refuses_message() {
 
 /// Hold the renderer's write admission once the message client has attached and before its input
 /// is sent; `change` runs while the write waits in the writer's queue, then admission resumes.
-async fn queued_change(h: &Harness, f: &Fixture, change: impl std::future::Future<Output = ()>) {
+pub(crate) async fn queued_change(
+    h: &Harness,
+    f: &Fixture,
+    change: impl std::future::Future<Output = ()>,
+) {
     let held = Arc::new(Mutex::new(None));
     let (entered, entered_rx) = tokio::sync::oneshot::channel();
     let registry = h.state.terminal_renderer.clone();

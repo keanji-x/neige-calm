@@ -2,6 +2,7 @@
 //! Mounted under `/internal/*` because the frontend never calls it; the bridge resolves the URL from `NEIGE_CALM_BASE_URL`.
 
 use crate::actor::Actor;
+use crate::db::prelude::*;
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventScope};
 use crate::extract::{JsonBody, Query};
@@ -12,7 +13,7 @@ use crate::session_projection_lookup::resolve_session_for_thread;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::{AppState, RouteState};
 use axum::{Router, extract::State, http::StatusCode, routing::post};
-use calm_types::worker::WorkerSessionId;
+use calm_types::worker::{WorkerProviderKind, WorkerSessionId};
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -35,10 +36,33 @@ pub(crate) enum HookProvider {
 }
 
 impl HookProvider {
+    /// The hook source of a worker provider; `None` for one that posts no hooks.
+    fn for_worker(provider: WorkerProviderKind) -> Option<Self> {
+        match provider {
+            WorkerProviderKind::Codex => Some(Self::Codex),
+            WorkerProviderKind::Claude => Some(Self::Claude),
+            WorkerProviderKind::OpenCode | WorkerProviderKind::Terminal => None,
+        }
+    }
+
     fn kind_prefix(self) -> &'static str {
         match self {
             Self::Codex => "hook.codex",
             Self::Claude => "hook.claude",
+        }
+    }
+
+    /// The persisted hook discriminator of a documented hook event name (`PreToolUse` →
+    /// `hook.claude.pre_tool_use`).
+    fn hook_kind(self, event_name: &str) -> String {
+        format!("{}.{}", self.kind_prefix(), to_snake_case(event_name))
+    }
+
+    /// The `events.kind` its hooks are persisted under.
+    fn event_tag(self) -> &'static str {
+        match self {
+            Self::Codex => "codex.hook",
+            Self::Claude => "claude.hook",
         }
     }
 
@@ -126,7 +150,7 @@ pub(crate) async fn ingest_provider_hook(
         .get("hook_event_name")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
-    let kind = format!("{}.{}", provider.kind_prefix(), to_snake_case(event_name));
+    let kind = provider.hook_kind(event_name);
     let hook_idempotency_key = hook_idempotency_key(provider, &card_id_str, &payload);
 
     // A hook for a Planner-opened terminal is advisory telemetry, never worker state: it is appended to the live renderer entry's ring and acknowledged BEFORE the worker dedupe cache and the persist path, so it can never evict a worker key.
@@ -197,6 +221,29 @@ pub(crate) async fn ingest_provider_hook(
         .expect("hook ingest cache mutex poisoned")
         .insert(hook_idempotency_key);
     Ok(())
+}
+
+/// Whether the worker session's agent has submitted a prompt (#2532): a persisted
+/// `UserPromptSubmit` hook on its card that the ingest attributed to this session (the payload's
+/// `session_id` resolved to it, [`cross_check_session_card`]). A provider that posts no hooks never
+/// reports one.
+pub(crate) async fn worker_prompt_submitted(
+    repo: &dyn RouteRepo,
+    provider: WorkerProviderKind,
+    card_id: &str,
+    worker_session_id: &str,
+) -> Result<bool> {
+    let Some(hooks) = HookProvider::for_worker(provider) else {
+        return Ok(false);
+    };
+    Ok(repo
+        .card_hook_seen(
+            hooks.event_tag(),
+            card_id,
+            &hooks.session_actor(WorkerSessionId::from(worker_session_id.to_owned())),
+            &hooks.hook_kind("UserPromptSubmit"),
+        )
+        .await?)
 }
 
 /// Whether `card` was opened by the Planner with hook signals: the creation-time `TERMINAL_SIGNALS_PAYLOAD_KEY == true` marker. Read from the card, never from the terminal row or the patchable `kind`.
@@ -396,6 +443,24 @@ mod tests {
                  the kernel expects this hook but codex CLI never fires it.",
             );
         }
+    }
+
+    /// The started-fact read (#2532) finds exactly the rows the ingest writes.
+    #[test]
+    fn hook_event_tag_and_kind_match_the_persisted_event() {
+        for provider in [HookProvider::Codex, HookProvider::Claude] {
+            let event = provider.event(
+                CardId::from("c"),
+                provider.hook_kind("UserPromptSubmit"),
+                Value::Null,
+                String::new(),
+            );
+            assert_eq!(provider.event_tag(), event.kind_tag());
+        }
+        assert_eq!(
+            HookProvider::Claude.hook_kind("UserPromptSubmit"),
+            "hook.claude.user_prompt_submit"
+        );
     }
 
     #[test]

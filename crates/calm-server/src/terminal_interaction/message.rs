@@ -2,13 +2,15 @@
 //! Enter, into a running task worker's agent TUI. Its writer is a kernel-private client that
 //! writes as an Observer (`kernel_originated_input`), so it never claims or takes control; its
 //! scope re-runs the message rule and the terminal checks when the writer admits the write. The
-//! replay contract and the write leg are typed input's ([`super::write_leg`]).
+//! replay contract and the write leg are typed input's ([`super::write_leg`]). A worker takes a
+//! message only from when its provider declares it ready ([`MessageReady`], #2532); typed keys
+//! keep their own rule, since the worker watcher answers a startup screen with them.
 use super::client::InputRole;
 use super::target::{InputRefused, Resolved, refused};
-use super::write_leg::{Admission, Delivered};
+use super::write_leg::{Admission, Delivered, WriteRule};
 use super::*;
 use crate::terminal_renderer::{RendererEntry, WriteShape};
-use calm_exec::TuiInput;
+use calm_exec::{MessageReady, TuiInput};
 
 /// Cap on the header, its newline and the text (the probe's 7,999-byte paste arrived byte-exact
 /// on both TUIs).
@@ -70,8 +72,8 @@ pub fn encode_message(attempt_id: &str, text: &str) -> Result<Vec<u8>, MessageIn
     Ok(bytes)
 }
 
-/// The message rule, before the write and again when the writer admits it: a task worker whose
-/// provider declares message delivery, under the shared write rule ([`Resolved::write_refusal`]).
+/// The message rule's declaration part: a task worker whose provider declares message delivery,
+/// under the shared write rule ([`Resolved::write_refusal`]).
 fn message_refusal(resolved: &Resolved, tui: TuiInput, providers: &str) -> Option<InputRefused> {
     if resolved.binding.task.is_none() || !tui.takes_message() {
         return Some(refused(
@@ -86,6 +88,42 @@ fn message_refusal(resolved: &Resolved, tui: TuiInput, providers: &str) -> Optio
     }
     resolved.write_refusal()
 }
+
+/// The message rule, before the write and again when the writer admits it: the declaration part,
+/// then readiness. A provider whose message waits for the task prompt's submission refuses until
+/// its hooks reported one for this worker session; the persisted hook survives a restart.
+async fn message_check(
+    repo: &dyn RouteRepo,
+    resolved: &Resolved,
+    tui: TuiInput,
+    providers: &str,
+) -> Result<Option<InputRefused>> {
+    if let Some(refusal) = message_refusal(resolved, tui, providers) {
+        return Ok(Some(refusal));
+    }
+    if tui.message_ready() != Some(MessageReady::AfterPromptSubmitted) {
+        return Ok(None);
+    }
+    let started = crate::routes::codex::worker_prompt_submitted(
+        repo,
+        resolved.provider,
+        &resolved.binding.card_id,
+        &resolved.binding.worker_session_id,
+    )
+    .await?;
+    let attempt = resolved
+        .binding
+        .task
+        .as_ref()
+        .map_or("", |task| task.attempt_id.as_str());
+    Ok((!started).then(|| refused("worker_starting", NOT_STARTED.replace("{attempt}", attempt))))
+}
+
+/// A running worker whose agent has not submitted its task prompt: Enter may answer a startup
+/// screen instead (a folder-trust dialog's "No, exit", #2532).
+const NOT_STARTED: &str = "attempt {attempt} is running, but its worker has not started its task \
+     yet; its agent may still be on a startup screen, which the worker watcher handles. Read its \
+     screen or wait, then send again";
 
 /// Readable (the model view captures, as `observable`), not exited, and bracketed paste on: what
 /// the write needs from the terminal.
@@ -113,12 +151,15 @@ impl TerminalInteraction {
             .join(", ")
     }
     /// The message rule (a new write's check), from the provider's declaration.
-    fn message_rule(&self, resolved: &Resolved) -> Result<()> {
-        match message_refusal(
+    pub(super) async fn message_rule(&self, resolved: &Resolved) -> Result<()> {
+        match message_check(
+            self.repo.as_ref(),
             resolved,
             self.tui_input(resolved)?,
             &self.message_providers(),
-        ) {
+        )
+        .await?
+        {
             Some(refusal) => Err(refusal.into()),
             None => Ok(()),
         }
@@ -160,7 +201,7 @@ impl TerminalInteraction {
                 &key,
                 &fingerprint,
                 observation_wait.clone(),
-                |resolved| self.message_rule(resolved),
+                WriteRule::Message,
             )
             .await?
         {
@@ -267,8 +308,10 @@ impl TerminalInteraction {
                 Box::pin(async move {
                     match Self::check_binding(repo.as_ref(), &actor, &expected, false).await {
                         Ok(resolved) => {
-                            message_refusal(&resolved, tui, &providers).is_none()
-                                && terminal_takes_paste(&entry)
+                            matches!(
+                                message_check(repo.as_ref(), &resolved, tui, &providers).await,
+                                Ok(None)
+                            ) && terminal_takes_paste(&entry)
                         }
                         Err(_) => false,
                     }
