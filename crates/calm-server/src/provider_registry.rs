@@ -57,6 +57,19 @@ impl WorkerProviderRegistry {
         ])
     }
 
+    /// The registry for `daemon`'s proc supervisor: the one constructor the Dispatcher and the
+    /// terminal tools share.
+    pub fn for_daemon(
+        daemon: &crate::state::DaemonClient,
+        shared_codex_appserver: Arc<SharedCodexAppServer>,
+        harness: crate::harness::HarnessRegistry,
+    ) -> Self {
+        let supervisor_sock = daemon.proc_supervisor_sock.clone().unwrap_or_else(|| {
+            std::env::temp_dir().join("neige-reaper-missing-proc-supervisor.sock")
+        });
+        Self::new(supervisor_sock, shared_codex_appserver, harness)
+    }
+
     pub fn from_entries<I>(entries: I) -> Self
     where
         I: IntoIterator<Item = (WorkerProviderKind, Arc<dyn WorkerProvider>)>,
@@ -68,5 +81,23 @@ impl WorkerProviderRegistry {
 
     pub fn get(&self, provider: WorkerProviderKind) -> Option<Arc<dyn WorkerProvider>> {
         self.providers.get(&provider).cloned()
+    }
+
+    /// Every registered provider's terminal-input declaration, ordered by provider name.
+    pub fn tui_inputs(&self) -> Vec<(WorkerProviderKind, calm_exec::TuiInput)> {
+        let mut declared: Vec<_> = self
+            .providers
+            .iter()
+            .map(|(kind, provider)| (*kind, provider.tui_input()))
+            .collect();
+        declared.sort_by_key(|(kind, _)| kind.as_db_str());
+        declared
+    }
+
+    /// The terminal-input declaration of `provider` (#2493); `None` for an unregistered kind.
+    pub fn tui_input(&self, provider: WorkerProviderKind) -> Option<calm_exec::TuiInput> {
+        self.providers
+            .get(&provider)
+            .map(|provider| provider.tui_input())
     }
 }

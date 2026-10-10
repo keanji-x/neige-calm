@@ -246,7 +246,7 @@ fn input_schema_lists_only_live_actions() {
     assert_eq!(
         live,
         [
-            json!({"enum":["text","submit"]}),
+            json!({"enum":["text","submit","message"]}),
             json!({"const":"key"}),
             json!({"const":"sequence"}),
         ],
@@ -255,7 +255,7 @@ fn input_schema_lists_only_live_actions() {
     for (action, kind, properties, mandatory) in [
         (
             &actions[0],
-            json!(["text", "submit"]),
+            json!(["text", "submit", "message"]),
             vec!["type", "text"],
             vec!["type", "text"],
         ),
@@ -306,4 +306,31 @@ fn input_schema_lists_only_live_actions() {
         actions[2]["properties"]["steps"],
         json!({"type":"array","minItems":2,"maxItems":8,"items":{"type":"object"}})
     );
+}
+
+/// `message`'s valid and refused option lists are exactly `neige_terminal_input`'s properties.
+#[test]
+fn message_option_lists_cover_the_input_schema() {
+    let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);
+    let input = &descriptors
+        .iter()
+        .find(|descriptor| descriptor.name == "neige_terminal_input")
+        .unwrap()
+        .input_schema;
+    let schema: BTreeSet<String> = input["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    let valid: BTreeSet<String> = super::MESSAGE_OPTIONS
+        .split(", ")
+        .map(str::to_owned)
+        .collect();
+    let refused: BTreeSet<String> = super::MESSAGE_REFUSED_OPTIONS
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    assert!(valid.is_disjoint(&refused));
+    assert_eq!(&valid | &refused, schema);
 }

@@ -51,6 +51,14 @@ impl InputBarrier {
         drop(self.write_completion.lock().await);
     }
 
+    /// Test seam: hold every grant (handshakes, claims and the writer's admission) until the
+    /// guard drops, so a test can change state while a write waits in the writer's queue.
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub async fn hold_for_test(&self) -> OwnedMutexGuard<()> {
+        self.serial.clone().lock_owned().await
+    }
+
     pub async fn grant(&self) -> Option<OwnedMutexGuard<()>> {
         let guard = self.serial.clone().lock_owned().await;
         if self.uncertain.load(Ordering::Acquire) {

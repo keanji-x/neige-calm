@@ -4,6 +4,15 @@ Status: design, final after L2 round 9 (round 3 narrowed delivery and continuati
 references are to `f1ca87776`. Builds on 773 (worker lifecycle), 2053 (worker reports), 2003 and
 `docs/conventions/agent-commands.md` (command surface).
 
+**Scope (shipped, #2493):** only §4 (B, `message`). S1 (§1–§3) and A (§5) are deferred to #2520.
+Without continuation one session serves one attempt, so today's target resolution
+(`terminal_interaction/target.rs` `resolve_target`/`check_binding`: binding equality, session
+active, task `running`) is the write rule wherever §4 says `may_write_tx`. Refusal codes are §4's
+minus `binding_changed` (today's text stays); `worker_parked` names no `continues`; the keys refusal
+is `worker_keys_refused`; a task-less terminal is `message_unsupported`; only the Planner messages
+(`assistant_no_message`); `text`/`submit`/`key`/claim on a task worker share `message`'s typed write refusal.
+Receipts: `written`, `unknown` (fences the connection's next write until it settles) or `refused`.
+
 **A, continuation:** after a task ends (done or failed) the *same* worker (card, conversation, MCP
 token) takes the next round. **B, message:** the Planner adds a line to a running worker. **S1**
 makes "which attempt does this session serve" an explicit kernel fact with one owning module;
@@ -292,10 +301,10 @@ Refusals (`-32403` like every terminal runtime failure, agent-commands §9; text
 | `terminal_unreadable` | `the worker's terminal has no live readable view (after a server restart until reattached, #2499), or bracketed paste is off; nothing was sent.` |
 | `-32602` | invalid text (`U+001B at byte 12; only printable characters, newline and tab`), over the cap, or an option `message` does not take (`valid: attempt_id, terminal_id, idempotency_key, read, wait_*`) |
 
-#1787 becomes "codex Live worker: `message` only"; `prompts/guides/terminal.md` item 2 (line 6; guides use 8,175 of `GUIDES_TOTAL_MAX_BYTES` 8,200,
-`planner_card.rs:405`, so the rewrite is net ≤ 0 B) becomes "send
-`message` by `attempt_id`". **Feature B** = this action; confirmation is the readback, a stuck
-worker is caught by the #2507 quiet wake. No receipts.
+#1787 becomes "codex Live worker: `message` only"; guide item 2 becomes "correct codex/claude workers
+via `message`" (guides 7,484 of 7,500). **Feature B** = this action; the readback confirms, the #2507
+quiet wake catches a stuck worker. Receipts: `written`, `unknown`, or physical-write `refused` with its
+reason; the typed policy refusals above are -32403 with `data.refusal`.
 
 ## 5. Continuation (feature A)
 
@@ -441,11 +450,10 @@ Codex-only; the TUI path gives up delivery without a viewer, `codex_adapter/mod.
 1. **Resolved: viewers need no change.** Browser viewers hold control (`xterm-view.tsx:469-473,
    594-597`; the grid keeps cards mounted), which refuses a claim-based kernel write
    (`client_pump.rs:353-362`); `deliver` writes as Observer via the kernel-input capability (§4).
-2. **Confirm:** a human typing into a Parked worker in the browser stays allowed (§4). Limit
-   (pre-existing): browser input bypasses attempt authority (`input_authority.rs:21-35`), so a human
-   can change the tree a running gate reads (verifying) or dirty it for the next prepare, which
-   refuses a dirty tree. Alternative the owner can choose: apply the agent write rule to browser
-   writes on Parked workers.
+2. **Decided:** a human typing into a Parked worker in the browser stays allowed (§4). The safety
+   boundary is the workspace: the gate samples HEAD and dirty state against its candidate
+   (`gate-target-mismatch`, `task_verify_adapter/target.rs` `reasons()`), and the next prepare
+   refuses a dirty tree (`ensure_clean_tree`). The Planner's parked refusal is guidance.
 3. **Confirm:** `Unbound` as a fourth state (§2); the 8,000-byte cap, which refuses 2 of 264
    rendered prompts on 4140 (max 9,213 B).
 
@@ -465,6 +473,8 @@ Codex-only; the TUI path gives up delivery without a viewer, `codex_adapter/mod.
   task row shows its card's current activity (`fe/core/view/track-page.ts:74-116`), i.e. the
   successor's; `claude-restart` refuses a bound task worker (a bound Claude worker whose CLI exited
   waits for the liveness timeout) and no longer gives an unbound legacy worker card MCP flags.
+- The gate samples the workspace when it ends, so a change made and reverted during the gate (a
+  human in the browser, §10.2) is invisible to it.
 - A B message queued just before the worker reported may still reach the model (§6). Untested:
   Codex `disable_paste_burst`/`tui.keymap.*`, Claude Rewind, Tab queue vs `turn/start`, `TERM`;
   the Codex viewer starts a title thread per turn (#2510).

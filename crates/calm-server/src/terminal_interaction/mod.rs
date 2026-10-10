@@ -2,6 +2,7 @@
 use crate::db::RouteRepo;
 use crate::mcp_server::registry::ToolCallIdentity;
 use crate::model::CardRole;
+use crate::provider_registry::WorkerProviderRegistry;
 use crate::terminal_renderer::{
     CONTROL_HELD_BY_ANOTHER_CLIENT, ClaimOutcome, ClientInputScope, TerminalRendererRegistry,
 };
@@ -20,6 +21,8 @@ mod action_observation;
 mod actions;
 mod client;
 mod input_control;
+mod message;
+pub use message::{MESSAGE_BYTES_MAX, MessageInvalid, message_header};
 mod observation;
 mod operations;
 pub use operations::InputOptions;
@@ -37,7 +40,7 @@ use client::{Client, LatestObservation};
 pub(crate) use target::Binding;
 #[cfg(test)]
 pub(crate) use target::TaskBinding;
-pub use target::{CodexTaskWorkerInputRefused, Target};
+pub use target::{InputRefused, Target};
 pub use wait_plan::{
     SETTLE_MS_DEFAULT, SETTLE_MS_MAX, SIGNAL_WAIT_MS_DEFAULT, TEXT_WAIT_MS_DEFAULT, WAIT_MS_MAX,
     WaitFor, WaitPlan,
@@ -59,6 +62,10 @@ pub const SIGNALS_PER_OBSERVATION: usize = 20;
 /// the same checks and inside their own Track only. An Assistant reaches task workers only
 /// (`resolve_target`), and opening a terminal card stays the Planner's (`neige_terminal_open`):
 /// the role gate keeps an Assistant's writes to its own card.
+/// A client scope's predicate (`ClientInputScope::Bound`).
+pub(super) type ScopeCheck =
+    Arc<dyn Fn() -> futures::future::BoxFuture<'static, bool> + Send + Sync>;
+
 pub const TERMINAL_ROLES: &[CardRole] = &[CardRole::Planner, CardRole::Assistant];
 
 /// Reason of an `open claim:true` whose granted claim was taken over before this connection observed the grant.
@@ -72,10 +79,14 @@ pub type ClaimWindowSeam =
 pub struct TerminalInteraction {
     repo: Arc<dyn RouteRepo>,
     renderer: Arc<TerminalRendererRegistry>,
+    /// Each worker provider's terminal-input declaration (#2493).
+    providers: WorkerProviderRegistry,
     clients: Mutex<HashMap<String, Arc<Client>>>,
     observations: StdMutex<HashMap<Uuid, Observation>>,
     #[cfg(feature = "fixtures")]
     claim_window_seam: StdMutex<Option<ClaimWindowSeam>>,
+    #[cfg(feature = "fixtures")]
+    message_write_seam: StdMutex<Option<ClaimWindowSeam>>,
 }
 struct Observation {
     binding: String,
@@ -89,14 +100,21 @@ struct Observation {
     created: Instant,
 }
 impl TerminalInteraction {
-    pub fn new(repo: Arc<dyn RouteRepo>, renderer: Arc<TerminalRendererRegistry>) -> Self {
+    pub fn new(
+        repo: Arc<dyn RouteRepo>,
+        renderer: Arc<TerminalRendererRegistry>,
+        providers: WorkerProviderRegistry,
+    ) -> Self {
         Self {
             repo,
             renderer,
+            providers,
             clients: Mutex::new(HashMap::new()),
             observations: StdMutex::new(HashMap::new()),
             #[cfg(feature = "fixtures")]
             claim_window_seam: StdMutex::new(None),
+            #[cfg(feature = "fixtures")]
+            message_write_seam: StdMutex::new(None),
         }
     }
     /// The caller's own Track, after proving its session is live and its card still holds the
@@ -152,7 +170,9 @@ impl TerminalInteraction {
         }
         ensure!(clients.len() < 128, "agent terminal client limit reached");
         let scope = Self::bound_scope(self.repo.clone(), identity, resolved);
-        let client = Arc::new(Client::attach(entry, scope, resolved.clone()).await?);
+        let client = Arc::new(
+            Client::attach(entry, scope, resolved.clone(), client::InputRole::Claimed).await?,
+        );
         clients.insert(binding, client.clone());
         Ok(client)
     }
@@ -161,26 +181,28 @@ impl TerminalInteraction {
         identity: &ToolCallIdentity,
         resolved: &Binding,
     ) -> ClientInputScope {
-        let scope_check = |write: bool| {
-            let repo = repo.clone();
-            let actor = identity.clone();
-            let expected = resolved.clone();
-            Arc::new(move || {
-                let repo = repo.clone();
-                let actor = actor.clone();
-                let expected = expected.clone();
-                Box::pin(async move {
-                    Self::check_binding(repo.as_ref(), &actor, &expected, write)
-                        .await
-                        .is_ok()
-                }) as futures::future::BoxFuture<'static, bool>
-            })
-                as Arc<dyn Fn() -> futures::future::BoxFuture<'static, bool> + Send + Sync>
-        };
         ClientInputScope::Bound {
-            observe: scope_check(false),
-            control: scope_check(true),
+            observe: Self::binding_check(repo.clone(), identity, resolved, false),
+            control: Self::binding_check(repo, identity, resolved, true),
         }
+    }
+    /// A scope predicate: `check_binding` of `expected` for `identity`, read fresh on each call.
+    pub(super) fn binding_check(
+        repo: Arc<dyn RouteRepo>,
+        identity: &ToolCallIdentity,
+        expected: &Binding,
+        write: bool,
+    ) -> ScopeCheck {
+        let actor = identity.clone();
+        let expected = expected.clone();
+        Arc::new(move || {
+            let (repo, actor, expected) = (repo.clone(), actor.clone(), expected.clone());
+            Box::pin(async move {
+                Self::check_binding(repo.as_ref(), &actor, &expected, write)
+                    .await
+                    .is_ok()
+            }) as futures::future::BoxFuture<'static, bool>
+        })
     }
     /// The highest input sequence acknowledged on this identity's connection. Test observability only.
     #[doc(hidden)]
@@ -305,6 +327,7 @@ impl TerminalInteraction {
         };
         let resolved =
             Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
+        let controllable = self.keys_controllable(&resolved)?;
         let observation_id = Uuid::new_v4();
         let changed_since_previous = previous.is_some_and(|prior| prior.revision != revision);
         // The listed signals and the recorded `last_seq` come from one ring read, so advancing the
@@ -317,7 +340,7 @@ impl TerminalInteraction {
         );
         let metadata = json!({"terminal_id":terminal,"observation_id":observation_id,"connection_id":client.connection,
             "terminal_session_id":client.entry.handle.session_id,"control_id":control,"role":if control.is_some(){"owner"}else{"observer"},
-            "task_status":resolved.task_status,"controllable":resolved.controllable,"task":resolved.binding.task,"worker_session_id":resolved.binding.worker_session_id,"card_id":resolved.binding.card_id,
+            "task_status":resolved.task_status,"controllable":controllable,"task":resolved.binding.task,"worker_session_id":resolved.binding.worker_session_id,"card_id":resolved.binding.card_id,
             "observation_revision":revision.to_string(),"cols":frame.cols,"rows":frame.rows,"cursor":frame.cursor,
             "alternate":frame.alternate,"scroll_offset":frame.scroll_offset,"history_rows":frame.history_rows,
             "text":frame.text,"exited":exited,"exit_code":exit_code,"observed_at":crate::time_format::at(observation::epoch_ms(observed_at)),
@@ -371,6 +394,7 @@ impl TerminalInteraction {
     ) -> Result<Value> {
         readback.validate()?;
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
+        self.ensure_keys_accepted(&resolved)?;
         Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, true).await?;
         let client = self.client(identity, &resolved.binding).await?;
         let terminal = resolved.binding.terminal_id.as_str();
@@ -538,6 +562,9 @@ impl TerminalInteraction {
         }
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
         let terminal = resolved.binding.terminal_id.as_str();
+        if action == "claim" {
+            self.ensure_keys_accepted(&resolved)?;
+        }
         Self::check_binding(
             self.repo.as_ref(),
             identity,

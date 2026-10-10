@@ -1,7 +1,8 @@
 //! #2492: every Assistant of a Track reaches that Track's task workers through the terminal tools,
-//! under the Planner's checks: same Track only, codex task workers read-only, a finished task not
-//! writable, and no terminal card of its own. Unlike the Planner it reaches task workers only: a
-//! manual Terminal card or a task-less agent card is refused. Driven over the production MCP socket.
+//! under the Planner's checks: same Track only, no typed keys into a codex task worker, a finished
+//! task not writable, and no terminal card of its own. Unlike the Planner it reaches task workers
+//! only: a manual Terminal card or a task-less agent card is refused. Driven over the production
+//! MCP socket.
 use super::task_terminal::{ECHO_WORKER, Worker, spawn_viewer, stop, worker_running};
 use super::terminal_support::Harness;
 use calm_server::card_role_cache::CardRoleCache;
@@ -246,8 +247,29 @@ async fn an_assistant_reads_but_never_types_into_a_codex_task_worker_or_a_finish
     .await;
     assert_eq!(refused["error"]["code"], -32403, "{refused}");
     assert_eq!(
-        refused["error"]["data"]["refusal"], "codex_task_worker_input",
+        refused["error"]["data"]["refusal"], "worker_keys_refused",
         "{refused}"
+    );
+    // `message` is the Planner's: its header names the Planner (#2493).
+    let message = h
+        .call_with_token(
+            &assistant,
+            "neige_terminal_input",
+            json!({"attempt_id":codex.task,"idempotency_key":"message",
+                "action":{"type":"message","text":"x"}}),
+        )
+        .await;
+    assert_eq!(message["error"]["code"], -32403, "{message}");
+    assert!(
+        message["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("action \"message\" is the Planner's"),
+        "{message}"
+    );
+    assert_eq!(
+        message["error"]["data"]["refusal"], "assistant_no_message",
+        "{message}"
     );
 
     let finished = worker_running(&h, "claude", &h.track, Some(ECHO_WORKER)).await;

@@ -95,6 +95,10 @@ repository, checkout, head and base. A task waiting for the checkout shows
 *Waiting for the track's checkout*.
 Terminal and child-track tasks are not held.
 
+The Planner can correct a running Codex or Claude worker without stopping it: its message arrives in
+the worker's conversation headed `[neige] Planner message for attempt …`. A worker whose task has
+finished takes no messages; the Planner declares a new task instead.
+
 A Track that has fallen behind its upstream catches up with a Codex or Claude
 task declared `start: "upstream"`. The kernel fetches the upstream, starts the
 Track's checkout there, and the worker replays the Track's last done commit;

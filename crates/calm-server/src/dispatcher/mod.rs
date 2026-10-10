@@ -53,12 +53,6 @@ const DEFAULT_PERMITS: usize = 8;
 pub(crate) const PLANNER_WAKE_AUTHORS: &[EditAuthor] =
     &[EditAuthor::User, EditAuthor::Plugin, EditAuthor::Assistant];
 
-fn supervisor_sock_for_provider_registry(daemon: &DaemonClient) -> PathBuf {
-    daemon
-        .proc_supervisor_sock
-        .clone()
-        .unwrap_or_else(|| std::env::temp_dir().join("neige-reaper-missing-proc-supervisor.sock"))
-}
 /// The event kinds `event_warrants_planner_push_with_role` can answer `true` for — exactly the
 /// rows the boot catch-up reads back from the events table.
 pub(crate) const PLANNER_CATCH_UP_KINDS: &[&str] = &[
@@ -500,6 +494,8 @@ pub struct Dispatcher {
     operation_runtime: Arc<OperationRuntime>,
     scheduler: Arc<Scheduler>,
     context_monitor: Arc<TaskContextMonitor>,
+    /// The worker providers the reaper consults; also the terminal tools' input declarations.
+    provider_registry: WorkerProviderRegistry,
     /// Slow periodic reconcile sweep (`NEIGE_SCHEDULER_RECONCILE_SECS`, default 300).
     #[allow(dead_code)]
     reconcile_handle: JoinHandle<()>,
@@ -560,6 +556,10 @@ impl Dispatcher {
 
     pub fn scheduler(&self) -> Arc<Scheduler> {
         Arc::clone(&self.scheduler)
+    }
+
+    pub fn provider_registry(&self) -> WorkerProviderRegistry {
+        self.provider_registry.clone()
     }
 
     pub fn context_monitor(&self) -> Arc<TaskContextMonitor> {
@@ -663,15 +663,20 @@ impl Dispatcher {
             plugin,
             workspace_root,
         );
+        let harness = HarnessRegistry::new();
+        let provider_registry = WorkerProviderRegistry::for_daemon(
+            &daemon,
+            shared_codex_appserver.clone(),
+            harness.clone(),
+        );
         Self::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
             repo,
             events,
             write,
             codex,
-            daemon,
             terminal_renderer,
             mcp_server,
-            HarnessRegistry::new(),
+            harness.clone(),
             shared_codex_appserver,
             operation_runtime,
             // No `RouteState` shares this dispatcher's runtime, so its scheduler fences child
@@ -680,6 +685,7 @@ impl Dispatcher {
             permits,
             crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
             crate::scheduler::WorkerLiveness::DEFAULT,
+            provider_registry,
         )
     }
 
@@ -696,15 +702,20 @@ impl Dispatcher {
         operation_runtime: Arc<OperationRuntime>,
         permits: usize,
     ) -> Self {
+        let harness = HarnessRegistry::new();
+        let provider_registry = WorkerProviderRegistry::for_daemon(
+            &daemon,
+            shared_codex_appserver.clone(),
+            harness.clone(),
+        );
         Self::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
             repo,
             events,
             write,
             codex,
-            daemon,
             terminal_renderer,
             mcp_server,
-            HarnessRegistry::new(),
+            harness.clone(),
             shared_codex_appserver,
             operation_runtime,
             // No `RouteState` shares this dispatcher's runtime, so its scheduler fences child
@@ -713,6 +724,7 @@ impl Dispatcher {
             permits,
             crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
             crate::scheduler::WorkerLiveness::DEFAULT,
+            provider_registry,
         )
     }
 
@@ -745,12 +757,16 @@ impl Dispatcher {
             plugin,
             workspace_root,
         );
+        let provider_registry = WorkerProviderRegistry::for_daemon(
+            &daemon,
+            shared_codex_appserver.clone(),
+            harness.clone(),
+        );
         Self::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
             repo,
             events,
             write,
             codex,
-            daemon,
             terminal_renderer,
             mcp_server,
             harness,
@@ -762,6 +778,7 @@ impl Dispatcher {
             permits,
             crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
             crate::scheduler::WorkerLiveness::DEFAULT,
+            provider_registry,
         )
     }
 
@@ -774,7 +791,6 @@ impl Dispatcher {
         events: EventBus,
         write: WriteContext,
         _codex: Arc<CodexClient>,
-        daemon: Arc<DaemonClient>,
         terminal_renderer: Arc<TerminalRendererRegistry>,
         _mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
         harness: HarnessRegistry,
@@ -784,6 +800,7 @@ impl Dispatcher {
         permits: usize,
         gate_logs_dir: PathBuf,
         worker_liveness: crate::scheduler::WorkerLiveness,
+        provider_registry: WorkerProviderRegistry,
     ) -> Self {
         let permits = if permits == 0 {
             DEFAULT_PERMITS
@@ -812,18 +829,11 @@ impl Dispatcher {
             write.clone(),
             scheduler.context_metrics(),
         ));
-        // Take the feeder's notification subscription BEFORE `shared_codex_appserver` is moved
-        // into the provider registry.
         let liveness_feeder_rx = shared_codex_appserver.subscribe_notifications();
         let liveness_feeder_repo = repo.clone();
-        let provider_registry = WorkerProviderRegistry::new(
-            supervisor_sock_for_provider_registry(&daemon),
-            shared_codex_appserver,
-            harness.clone(),
-        );
         let reaper = Arc::new(Reaper::new(
             repo.clone(),
-            provider_registry,
+            provider_registry.clone(),
             events.clone(),
             write.clone(),
         ));
@@ -953,6 +963,7 @@ impl Dispatcher {
             operation_runtime,
             scheduler,
             context_monitor,
+            provider_registry,
             reconcile_handle,
             reaper_handle,
             liveness_feeder_handle,

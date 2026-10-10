@@ -58,7 +58,7 @@ impl TerminalInteraction {
             "invalid input idempotency_key"
         );
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
-        resolved.ensure_accepts_input()?;
+        self.ensure_keys_accepted(&resolved)?;
         let terminal = resolved.binding.terminal_id.as_str();
         let client = self.client(identity, &resolved.binding).await?;
         // One action at a time per connection, readback wait included; other connections are not serialized.
@@ -77,29 +77,17 @@ impl TerminalInteraction {
             "allow_output_since_observation":options.allow_output_since_observation,
             "claim":options.claim,"release":options.release
         }))?;
-        let cached = {
-            let requests = client.requests.lock().await;
-            if let Some((prior, result)) = requests.get(&key) {
-                ensure!(
-                    prior == &fingerprint,
-                    "input idempotency_key reused with different arguments"
-                );
-                Some(result.clone())
-            } else {
-                ensure!(
-                    requests.len() < 4096,
-                    "terminal connection receipt limit reached; detach and read on a fresh connection"
-                );
-                None
-            }
-        };
-        if let Some(receipt) = cached {
-            // A replayed receipt's readback compares against the CURRENT state, not the state before
-            // the original write.
-            let current = Self::current_baseline(&client);
-            return Ok(self
-                .with_observation(identity, &client, receipt, observation_wait, current)
-                .await);
+        if let Some(replayed) = self
+            .replay(
+                identity,
+                &client,
+                &key,
+                &fingerprint,
+                observation_wait.clone(),
+            )
+            .await?
+        {
+            return Ok(replayed);
         }
         let observation = match observation {
             Some(id) => id,
@@ -223,9 +211,48 @@ impl TerminalInteraction {
             )
             .await)
     }
+    /// The receipt cached under `key` on this connection, with its readback, or `None` for a new
+    /// key. A key reused with other arguments is refused. Runs under the connection's serial
+    /// guard after the caller's binding is proven. `message` calls it before any new-write check;
+    /// `input` keeps its order: the write check (`check_binding(write)`) first.
+    pub(super) async fn replay(
+        &self,
+        identity: &ToolCallIdentity,
+        client: &Arc<Client>,
+        key: &str,
+        fingerprint: &str,
+        observation_wait: Option<WaitPlan>,
+    ) -> Result<Option<Value>> {
+        let cached = {
+            let requests = client.requests.lock().await;
+            if let Some((prior, result)) = requests.get(key) {
+                ensure!(
+                    prior == fingerprint,
+                    "input idempotency_key reused with different arguments"
+                );
+                Some(result.clone())
+            } else {
+                ensure!(
+                    requests.len() < 4096,
+                    "terminal connection receipt limit reached; detach and read on a fresh connection"
+                );
+                None
+            }
+        };
+        let Some(receipt) = cached else {
+            return Ok(None);
+        };
+        // A replayed receipt's readback compares against the CURRENT state, not the state before
+        // the original write.
+        let current = Self::current_baseline(client);
+        Ok(Some(
+            self.with_observation(identity, client, receipt, observation_wait, current)
+                .await,
+        ))
+    }
     /// The revision and signal seq right now (a replayed receipt's readback
     /// baseline); `None` when the projection is unavailable.
-    fn current_baseline(client: &Client) -> Option<ReadbackBaseline> {
+    pub(super) fn current_baseline(client: &Client) -> Option<ReadbackBaseline> {
         let signal_seq = client.entry.signals.last_seq();
         client
             .entry
@@ -268,13 +295,16 @@ impl TerminalInteraction {
             created: saved.created,
         })
     }
-    fn ensure_writable(client: &Client) -> Result<()> {
+    /// The connection's pending-write fence, shared by `input` and `message`: no new write while
+    /// an earlier one (typed input or a retained message delivery) has no known outcome.
+    pub(super) fn ensure_writable(client: &Client) -> Result<()> {
+        let delivery_unresolved = client.delivery_unresolved();
         let state = client
             .screen
             .lock()
             .map_err(|_| anyhow::anyhow!("terminal state poisoned"))?;
         ensure!(
-            state.available && !state.exited && state.pending.is_none(),
+            state.available && !state.exited && state.pending.is_none() && !delivery_unresolved,
             "terminal unavailable or prior input outcome unknown"
         );
         Ok(())
@@ -442,7 +472,7 @@ async fn write_action(
     cache(client, &key, &fingerprint, &result).await;
     Ok(result)
 }
-async fn cache(client: &Client, key: &str, fingerprint: &str, receipt: &Value) {
+pub(super) async fn cache(client: &Client, key: &str, fingerprint: &str, receipt: &Value) {
     client
         .requests
         .lock()

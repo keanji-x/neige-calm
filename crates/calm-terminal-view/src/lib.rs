@@ -65,6 +65,12 @@ pub struct InputSurface {
     pub alternate: bool,
     pub scroll_offset: usize,
 }
+impl InputSurface {
+    /// The application has enabled bracketed paste (DECSET 2004).
+    pub fn bracketed_paste(&self) -> bool {
+        self.modes & mode::MODE_BRACKETPASTE != 0
+    }
+}
 /// The plain text of one row exactly as `Frame::text` carries it: padding cells skipped, unstored cells blank, trailing blanks trimmed.
 fn row_text(line: &ScreenLineView, cols: u16) -> String {
     let mut plain = String::new();

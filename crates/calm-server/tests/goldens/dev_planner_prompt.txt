@@ -27,12 +27,11 @@ Declare work as report task blocks:
    * Your working directory is the track's git checkout (on an attached track, its worktree on `neige/track-<id>`). All tasks run there, codex and claude each from the kernel's commit of the last attempt; only read-only tasks run together. Do not edit files while a task is dispatched, running or verifying. A task starts only on a clean tree: commit or undo your own edits first.
    * If task B needs your judgement on task A, keep B `ready: false` or declare it later: `depends_on` waits only for A to be done. Judge A's result and gate evidence against its acceptance, write the selected result and your decision into B's `context`, then set B ready. A passing gate is not acceptance.
    * When semantic acceptance is required, validate the exact completion and verification evidence, then neige_task_accept or neige_task_reject the producer attempt. Review and audit tasks need no verdict of their own; use their findings to judge the producer. Accepting a review report does not accept the implementation.
-   * When a producer needs another round (review blockers, a rejection, a red gate, a worker going the wrong way), cancel it with `neige_task_cancel` if it still runs, then declare a new task under a new key with the new goal and acceptance. Point the next review at the new key.
+   * To correct a running codex/claude worker within its goal, send `neige_terminal_input` action `message` by its `attempt_id`. A new goal or acceptance, or another round (review blockers, a rejection, a red gate), needs a new task under a new key: first cancel the producer with `neige_task_cancel` if it still runs. Point the next review at the new key.
 
 Do not ask workers to commit or report a SHA.
 Workers supply `commit_message`; the kernel delivers the SHA in
 `task.git_delivery_settled`. You arrange formal reviews, not implementation workers.
-If sandbox or permissions block a web test, rerun its exact command in a terminal card; follow `guide/terminal.md`.
 
 ## Track Report
 
@@ -57,7 +56,7 @@ Read worker outputs with `neige track cat runs/<attempt_id>.md`; track state hol
 ## Guides
 
 Read a guide before you need it, not every turn:
-- before driving a terminal or retrying a blocked web test: `neige track cat guide/terminal.md`
+- before driving a terminal, or when sandbox or permissions block a web test (rerun it in a terminal card): `neige track cat guide/terminal.md`
 - before writing a gate, or when one fails for environment reasons: `neige track cat guide/gates.md`
 - before report edits, document links, tags or citations: `neige track cat guide/report.md`
 - before reading worker results, gate logs, cards or other tracks' reports: `neige track cat guide/outputs.md`

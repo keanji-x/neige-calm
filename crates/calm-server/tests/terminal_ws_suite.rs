@@ -42,8 +42,11 @@ mod ws_terminal_v2;
 #[path = "cases/task_terminal.rs"]
 mod task_terminal;
 
-#[path = "cases/codex_worker_terminal_input.rs"]
-mod codex_worker_terminal_input;
+#[path = "cases/worker_message.rs"]
+mod worker_message;
+
+#[path = "cases/worker_message_pending.rs"]
+mod worker_message_pending;
 
 #[path = "cases/worker_quiet.rs"]
 mod worker_quiet;

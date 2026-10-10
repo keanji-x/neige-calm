@@ -3,7 +3,7 @@
 The `neige_terminal_*` descriptions define switches.
 
 1. Discover `neige_terminal_show`, `open`, `read`, `control`, `input` once.
-2. For a worker, use `neige_terminal_show` and its current `attempt_id` from `neige_task_ls` for read/control/input. No substitute terminal; await codex task settlement before planning its successor.
+2. For a worker, use `neige_terminal_show` and its current `attempt_id` from `neige_task_ls` for read/control/input. No substitute terminal; correct codex/claude workers via `message`.
 3. Open your terminal with `neige_terminal_open`, stable `idempotency_key`, `claim: true` to operate it.
 4. To start Claude: `program` `claude --settings "$NEIGE_CLAUDE_SETTINGS"` (`ccode` if requested; keep proxy), `claim: true`, `wait_for: "text"`, `wait_text: ["trust this folder","❯"]`.
 5. Prompt Claude: `submit`, `read: true`, `wait_for: "signal"`, `wait_text_absent: ["esc to interrupt"]`. `stop` means finished; `permission_request`/notifications need input.

@@ -1,1 +1,0 @@
-a running codex worker cannot be redirected yet: terminal input interrupts its turn without starting a new one; wait for its task to settle, then plan or rewire its successor

@@ -1,6 +1,6 @@
 //! Liveness of a managed conversation is owned by its host, not its per-turn child process.
 use async_trait::async_trait;
-use calm_exec::{SpawnCtx, WorkerProvider};
+use calm_exec::{BoundKeys, MessageDelivery, SpawnCtx, TuiInput, WorkerProvider};
 use calm_types::error::CoreError;
 use calm_types::worker::{ExitEvidence, ExitInterpretation, Liveness, SessionMode, WorkerSession};
 use std::sync::Arc;
@@ -27,6 +27,13 @@ impl WorkerProvider for ManagedProvider {
     }
     fn session_mode(&self) -> SessionMode {
         SessionMode::Resumable
+    }
+    /// A managed session runs no terminal UI.
+    fn tui_input(&self) -> TuiInput {
+        TuiInput {
+            message: MessageDelivery::Unsupported,
+            keys_while_bound: BoundKeys::Accepted,
+        }
     }
     async fn probe_liveness(
         &self,

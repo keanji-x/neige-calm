@@ -96,6 +96,13 @@ impl WorkerProvider for FakeProvider {
         self.session_mode
     }
 
+    fn tui_input(&self) -> calm_exec::TuiInput {
+        calm_exec::TuiInput {
+            message: calm_exec::MessageDelivery::Unsupported,
+            keys_while_bound: calm_exec::BoundKeys::Accepted,
+        }
+    }
+
     async fn probe_liveness(
         &self,
         _session: &WorkerSession,

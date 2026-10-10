@@ -191,7 +191,9 @@ mod tests {
         // #2405: `neige_task_regate` (789 bytes: description 562, schema 227) has no tool to
         // replace; on top of the measured 30,095 (#2427 trimmed `neige_user_ask`) the cap is the
         // measured 30,884.
-        const SURFACE_MAX_BYTES: usize = 30_884;
+        // #2493: action `message` (schema +10, description +44) was paid for by restated wait
+        // argument names (open) and schema facts (read); the measured 30,860 is the cap.
+        const SURFACE_MAX_BYTES: usize = 30_860;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);
