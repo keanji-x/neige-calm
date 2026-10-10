@@ -1425,16 +1425,13 @@ mod tests {
             .await
             .unwrap();
 
-        let (state, attempt): (String, String) =
-            sqlx::query_as("SELECT state, attempt_id FROM workspace_leases WHERE card_id = ?1")
-                .bind(&cid)
+        let (state, card): (String, String) =
+            sqlx::query_as("SELECT state, card_id FROM workspace_leases WHERE attempt_id = ?1")
+                .bind(&task_id)
                 .fetch_one(pool)
                 .await
                 .unwrap();
-        assert_eq!(
-            (state.as_str(), attempt.as_str()),
-            ("released", task_id.as_str())
-        );
+        assert_eq!((state.as_str(), card.as_str()), ("released", cid.as_str()));
         let (producer, outcome): (String, String) = sqlx::query_as(
             "SELECT producer_attempt_id, outcome FROM task_git_deliveries WHERE card_id = ?1",
         )
