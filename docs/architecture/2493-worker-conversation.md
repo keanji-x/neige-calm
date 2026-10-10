@@ -1,6 +1,6 @@
 # #2493 — Worker conversation: explicit attempt↔session binding and TUI message delivery
 
-Status: design, L2 review round 8 (round 3 narrowed delivery and continuation). Issue: #2493 (requirements, 4140 data, TUI probe). Code
+Status: design, L2 review round 9 (round 3 narrowed delivery and continuation). Issue: #2493 (requirements, 4140 data, TUI probe). Code
 references are to `f1ca87776`. Builds on 773 (worker lifecycle), 2053 (worker reports), 2003 and
 `docs/conventions/agent-commands.md` (command surface).
 
@@ -134,10 +134,10 @@ Each reader asks one question. H = history (the binding fact, any session state)
 | 13 | `scheduler/mod.rs:2037-2068` `on_terminal_exit` | card payload key | view for the card + status check | H | — (terminal kind never continues) |
 | 14 | `scheduler/running_worker.rs:175-211` idle check ("each execution gets a fresh card and thread") | latest codex session of the card | the attempt's session row; comment rewritten; counts a turn only if `last_activity_ms` > `worker_bound_at_ms` (§3, PR-3) | H | old turn cannot fail the successor |
 | 15 | `reaper/mod.rs:375-470` | `spawn_op_id` → attempt; release by card | `Session(s)` (active while converging): Live → fail it and release its lease, as today | A: Live | fails the new attempt |
-| 16 | `workspace_lease/release.rs:54-72`, `:163-184`; callers `decision_sink.rs:185`, `reaper:433,461`, `scheduler:125,1701`, `routes/cards.rs:634`, `plugin_host/callbacks.rs:536` | card's newest active lease; `lease_attempt_tx` via owner op | lease by `attempt_id`; card delete resolves the card's bound `dispatched|running` attempt once, before `fail_tasks_for_deleted_card_tx` (`routes/cards.rs:632-634`, `plugin_host/callbacks.rs:534-536`), and passes it to both the failure and the release | the ending attempt | late old report cannot release the new lease |
+| 16 | `workspace_lease/release.rs:54-72`, `:163-184`; callers `decision_sink.rs:185`, `reaper:433,461`, `scheduler:125,1701`, `routes/cards.rs:634`, `plugin_host/callbacks.rs:536` | card's newest active lease; `lease_attempt_tx` via owner op | lease by `attempt_id`; card delete resolves the card's latest bound attempt once (history, any status), before `fail_tasks_for_deleted_card_tx` (`routes/cards.rs:632-634`, `plugin_host/callbacks.rs:534-536`): fails it only if `dispatched|running`, and releases its held lease regardless (a cancel keeps it while cleanup is pending, `plan/cancel_running.rs:114-139`) | the ending attempt | late old report cannot release the new lease |
 | 17 | `workspace_lease/facts.rs:50-81`; callers `plan.rs:589-600`, `git_delivery_settled.rs:53-61`, `git_candidate/view.rs:308-311`, `task_gate_run/admission.rs:72`, `task_verify_adapter/target.rs:219-223` | card's newest lease | PR-1: the attempt's lease; last commit stays the card's latest `worktree.committed` (`facts.rs:69-76`). PR-3: last commit scoped by the attempt's `delivery_id`; 19 legacy attempts on 4140 whose latest event has no `delivery_id` (41 such events) lose `last_commit` (accepted) | the attempt | old views never show the new lease |
-| 18 | `task_verify_adapter/mod.rs:373-399` gate cwd | card's newest lease; terminal cwd from `terminal-worker` op `tx_output` by `idempotency_key` | the attempt's lease; terminal cwd from the bound session's terminal row | the attempt | regate of an old attempt uses its own lease |
-| 19 | `task_gate_run/admission.rs:48-57` | `worker_card_id == card` and Running | `Session(identity)` Live{a = attempt_id} Running | A | neutral |
+| 18 | `task_verify_adapter/mod.rs:373-399` gate cwd | card's newest lease; terminal cwd from `terminal-worker` op `tx_output` by `idempotency_key` | only the lease arm moves to the attempt's lease; the terminal arm (frozen `terminal-worker` op output, a sanctioned op↔attempt read) is unchanged | the attempt | regate of an old attempt uses its own lease |
+| 19 | `task_gate_run/admission.rs:48-57` | `worker_card_id == card` and Running | `run_target_tx` is shared with `task-gate-run` `prepare_tx` (no identity): `Attempt(attempt_id)` Live Running ∧ its session's card == payload card; `Session(identity)` only at MCP admission | A | neutral |
 | 20 | `mcp_server/transport.rs:1039-1046` + `read.rs:970-985` `workspace_lease_for_card` (Worker forge cwd) | card's newest `held` lease | `Session(identity)` Live → its lease | A: Live | the running attempt's lease |
 | 21 | `track_activity.rs:145-159`, `:186-215`; `track_activity/sql.rs:144-170` | every current row raises its `worker_card_id` | the view's attempt per session raises the card | H (ended sessions included) | old `failed` no longer outranks new `working` |
 | 22 | `track_vcs/delta.rs:344-394`, `:405-412`, `runs.rs:85-95,373-395`, `track_fs_view/mod.rs:518`, `:1303-1312` | card payload key; first run with the card; run Markdown from card payload | run ↔ card from bindings; attempt facts per §5 | H | each run shows its own goal and prompt |
@@ -156,21 +156,24 @@ workspace_leases`, `spawn_op_id`, op kinds in SQL, `find_by_kind_and_idempotency
 settings and forge dedup keys are per conversation; only row 27 assumed one attempt per card.
 
 **Neutrality proof for PR-1.** (a) No production-reachable assertion changes except the
-`claude-restart` refusal (§1). Rewritten to drive the binding, because they mutate inference columns
-PR-1 deletes: `tests/cases/task_terminal.rs:502-577,652-693` and the restart tests
-(`claude_adapter/tests/reader_head_tests.rs:53`; `worker_mcp_tests.rs:368,406` via its `:236`
-helper). Deleted: `task_terminal.rs:696`, which deletes a bound row (production deletes only with
-the track/area or pending rows, `area.rs:212`, `track.rs:413`, `task_projection.rs:1413`). `:580`
-stays green unchanged (key-current check). Fixtures bind through
-`bind_attempt_tx` while `dispatched`, then flip to `running`. (b) `worker_binding_backfill_matches_spawn_op_inference`:
-real migrator to N−1; spawn op / session / task / lease per kind × attempt status × session state
-{running, exited, failed} with surviving cards, an op-less legacy session and a deleted-session
-row; migrate; assert view, `worker_binding_tx`, activity fold and occupancy against today's
-inference. (c) `session_binding_view_matches_is_active_authority`. (d) The 4140 SELECTs. PR-1 also
-updates the FE comments on the late stamp (`fe/web/src/app/events/README.md:130`,
-`fe/web/src/app/providers/queries.ts:458`, `fe/core/domain/report.ts:451-453`).
+`claude-restart` refusal (§1; it also drops #2470's MCP flags for an unbound legacy Claude worker
+card) and the backfill stamping one spawn-failed 4140 task (`06ff541a…:audit-planner-ui-final`),
+whose card then shows a failed task. Re-fixtured through `bind_attempt_tx` (bind while
+`dispatched`, then flip): the `seed_worker_op_target` tests (`tests/scheduler.rs:1682,1723,1756,
+1807,1923,1964,2021,6902,6990,7093,7136`; `long_task_reliability.rs:36,71,135`; the four testing
+the op proof become binding-forgery tests or go), `task_terminal.rs:502-577,652-693`, and the
+restart tests (`reader_head_tests.rs:53`; `worker_mcp_tests.rs:368,406`). Deleted:
+`task_terminal.rs:696` (deletes a bound row; production never does, `area.rs:212`,
+`track.rs:413`, `task_projection.rs:1413`); `:580` stays green (key-current check). (b)
+`worker_binding_backfill_matches_spawn_op_inference`: real migrator to N−1; spawn op / session /
+task / lease per kind × attempt status × session state {running, exited, failed} with surviving
+cards, an op-less legacy session, a deleted-session row; assert view, `worker_binding_tx`,
+activity fold and occupancy against today's inference. (c) `session_binding_view_matches_is_active_authority`.
+(d) The 4140 SELECTs. FE comments on the late stamp are updated (`fe/web/src/app/events/README.md:130`,
+`queries.ts:458`, `fe/core/domain/report.ts:451-453`).
 
-**Scan.** `scripts/gate-2493-worker-binding-inference.sh` (run by `local-ratchet-gates.sh`): `git
+**Scan.** `scripts/gate-2493-worker-binding-inference.sh` (run by `local-ratchet-gates.sh`; a lint
+step plus a `--selftest` step in `.github/workflows/ci.yml`): `git
 grep` for `spawn_op_id` reads, `worker_op_targets`, `WORKER_SPAWN_OPS`,
 `operation_idempotency_key_by_id`, `task_for_worker_card`, `owns_key`, card payload
 `idempotency_key` reads, `worker_card_id =` in a `WHERE`, and `workspace_leases` filtered by
@@ -283,7 +286,7 @@ Refusals (`-32403` like every terminal runtime failure, agent-commands §9; text
 | `worker_parked` | `attempt <id> (task <key>) is <status>; its worker takes no input.` + by status: done/failed `Declare a task with "continues": "<key>", or a new task for a fresh worker.`; verifying `Wait for its gate.`; canceled `Declare a new task.` |
 | `worker_ended` | `the worker of attempt <id> has ended (<state>); nothing was sent. Declare a new task.` |
 | `worker_starting` | `attempt <id> is dispatched; its worker is starting. Read again, then send.` |
-| `binding_changed` | `terminal <id> now serves attempt <new> (was <old>); show and read again.` (today's text, `target.rs:256-257`) |
+| `binding_changed` | `terminal <id> now serves attempt <new> (was <old>); show and read again.` (extends today's text, `target.rs:256-257`) |
 | `message_unsupported` | `action "message" needs a task worker whose agent declares it (<providers>); terminal <id> runs <provider>. Use "text" or "submit".` |
 | `worker_keys_refused` (was `codex_task_worker_input`) | `a <provider> task worker takes only action "message"; typed keys interrupt its turn without starting one.` |
 | `terminal_unreadable` | `the worker's terminal has no live readable view (after a server restart until reattached, #2499), or bracketed paste is off; nothing was sent.` |
@@ -410,7 +413,7 @@ targets before the mutation run.
 
 | PR | Scope | Tests | Mutations → red set |
 |---|---|---|---|
-| PR-1 S1 (L2) | column `worker_session_id`, index, view, migration + backfill, `worker_binding.rs`, rows #1–#26 (PR-3 anchors excepted), lease `attempt_id`, card-delete order, `claude-restart` refusal, scan | `worker_binding_backfill_matches_spawn_op_inference`; `session_binding_view_matches_is_active_authority`; `first_spawn_binds_attempt_in_prepare_tx` (codex, claude, terminal); `bind_refuses_non_dispatched`; `one_attempt_per_session_is_enforced_by_sql`; `authority_follows_session_liveness`; `ended_worker_keeps_its_activity_and_run`; `report_for_another_attempt_names_the_bound_attempt`; `terminal_task_completes_after_its_session_is_exited`; `card_delete_fails_and_releases_the_live_attempt` (REST route and plugin callback; lease released, delivery attributed); `claude_restart_refuses_a_bound_card` | M1 view ignores `session_active` for Live → `authority_follows_session_liveness`, `worker_binding_backfill_matches_spawn_op_inference`; M2 drop `status='dispatched'` from the bind guard → `bind_refuses_non_dispatched`; M4 drop the unique index → `one_attempt_per_session_is_enforced_by_sql`; M5 activity reads authority instead of history → `ended_worker_keeps_its_activity_and_run`, `worker_binding_backfill_matches_spawn_op_inference`; M6 resolve the card's attempt after the failure flip → `card_delete_fails_and_releases_the_live_attempt`; M7 restore one `worker_op_targets_card_tx` call → scan gate; M26 report admission ignores the session binding → `report_for_another_attempt_names_the_bound_attempt`, `tests/scheduler.rs:6902` `unstamped_dispatched_row_rejects_sibling_report` and its siblings (:7020-7160) |
+| PR-1 S1 (L2) | column `worker_session_id`, index, view, migration + backfill, `worker_binding.rs`, rows #1–#26 (PR-3 anchors excepted), lease `attempt_id`, card-delete order, `claude-restart` refusal, scan | `worker_binding_backfill_matches_spawn_op_inference`; `session_binding_view_matches_is_active_authority`; `first_spawn_binds_attempt_in_prepare_tx` (codex, claude, terminal); `bind_refuses_non_dispatched`; `one_attempt_per_session_is_enforced_by_sql`; `authority_follows_session_liveness`; `ended_worker_keeps_its_activity_and_run`; `report_for_another_attempt_names_the_bound_attempt`; `terminal_task_completes_after_its_session_is_exited`; `card_delete_fails_and_releases_the_live_attempt` and `card_delete_after_cancel_releases_the_held_lease` (REST route and plugin callback; free occupancy; lease released, delivery attributed); `claude_restart_refuses_a_bound_card` | M1 view ignores `session_active` for Live → `authority_follows_session_liveness`, `worker_binding_backfill_matches_spawn_op_inference`; M2 drop `status='dispatched'` from the bind guard → `bind_refuses_non_dispatched`; M4 drop the unique index → `one_attempt_per_session_is_enforced_by_sql`; M5 activity reads authority instead of history → `ended_worker_keeps_its_activity_and_run`, `worker_binding_backfill_matches_spawn_op_inference`; M6 resolve the card's attempt after the failure flip → `card_delete_fails_and_releases_the_live_attempt`; M7 restore one `worker_op_targets_card_tx` call → scan gate; M26 report admission ignores the session binding → `report_for_another_attempt_names_the_bound_attempt`, `parked_same_outcome_report_is_idempotent`; M27 drop the flip's session guard → `tests/scheduler.rs:6902` `unstamped_dispatched_row_rejects_sibling_report` and its forgery siblings (:7020-7160) |
 | PR-2 S2′ + B (L2) | `TuiInput`, `deliver` (kernel-input client), `message` action, envelope, typed `WriteVerdict`, Parked refusal on every agent write path, refusals, prompt/guide/tool text | `message_is_one_bracketed_paste_write`; `message_never_leads_with_slash_or_bang`; `message_text_refuses_controls`; `message_over_cap_is_refused`; `message_refuses_anchor_and_control_options`; `parked_worker_refuses_input_{done,verifying,failed}` (every action); `unbound_terminal_takes_text_refuses_message`; `input_after_rebinding_reports_binding_changed`; `codex_live_worker_takes_message_refuses_keys`; `claude_live_worker_takes_message_and_keys`; `message_refused_when_bracketed_paste_off`; `queued_message_refused_when_paste_mode_turns_off` (pause after enqueue; 0 bytes); `message_delivered_while_a_browser_owns_the_terminal` (real pump, kernel-input client); the existing `ws_strips_kernel_originated_input_flag` (`tests/cases/ws_terminal_v2.rs:640-690`) covers browsers; `message_replay_writes_once`; `message_to_a_just_reported_attempt_is_refused`; `terminal_without_readable_view_refuses_message` | M8 `may_write_tx` returns `Allowed` for a `Parked` binding → `parked_worker_refuses_input_{done,verifying,failed}`, `message_to_a_just_reported_attempt_is_refused`, `task_terminal.rs:327` `task_completion_revokes_control_but_preserves_current_output`, `:422` `input_queued_behind_a_readback_rechecks_write_authority_under_the_serial`; M9 header omitted → `message_is_one_bracketed_paste_write`, `message_never_leads_with_slash_or_bang`; M10 ESC allowed → `message_text_refuses_controls`; M11 `SplitTrailingCr` → `message_is_one_bracketed_paste_write`; M12 Codex declares `BoundKeys::Accepted` → `codex_live_worker_takes_message_refuses_keys` (PR-2 replaces `tests/cases/codex_worker_terminal_input.rs:55` with it); M13 `deliver` hello without `kernel_originated_input` → `message_delivered_while_a_browser_owns_the_terminal`, `message_is_one_bracketed_paste_write`, `message_never_leads_with_slash_or_bang`, `codex_live_worker_takes_message_refuses_keys`, `claude_live_worker_takes_message_and_keys`, `message_replay_writes_once`; M21 drop paste mode from `deliver`'s scope callback → `queued_message_refused_when_paste_mode_turns_off` |
 | PR-3 A + prompt (L2) | `continues`, `worker_bound_at_ms`, seq migration (`worker_bind_seq = 1 WHERE worker_session_id IS NOT NULL`, `UNIQUE (worker_session_id, worker_bind_seq)`, index swap; no cross-column CHECK: `ON DELETE SET NULL` nulls only the session id, and SQLite cannot add one to a table with rows), admission, tx-only `worker-continue`, in-process delivery, turn fence, gate refs (row 27), attempt-owned run facts, worker/Planner prompts, docs | block/plan validation matrix; `seq_migration_backfills`; `one_live_attempt_per_session_is_enforced_by_sql` (raw second bind); `bind_order_is_unique_per_session`; `gate_runs_of_two_attempts_keep_their_own_refs` (through `neige_task_gate`: both attempts run r1, both refs keep their commits, an interrupted successor checkpoint cannot read the predecessor's pin); `card_delete_after_seq_migration_with_a_continued_session` (both entry points); `continuation_is_running_before_any_byte` (real pump/writer); `continuation_refused_when_worker_gone` (asserts the admission reason before any precondition, task `failed` and its `task.failed` reason; card/session counts unchanged); `crash_after_claim_before_commit_continues_not_respawns` (card/session counts unchanged); `concurrent_dispatch_and_recovery_write_once` (one initial write, zero recovery writes); `gate_red_then_continuation_reuses_card_and_session`; `done_then_continuation_reuses_card_and_session`; `second_continuation_of_one_key_refused`; `checkout_moved_before_delivery_writes_nothing`; `refused_delivery_fails_the_attempt_and_releases_its_lease`; `lost_ack_keeps_the_lease_and_runs`; `in_process_drop_after_commit_does_not_write_and_quiet_wake_fires`; `restart_after_commit_does_not_write_and_idle_window_fails`; `continuation_timeout_is_reaped_and_releases_its_lease`; `input_after_continuation_binding_is_accepted`; `lease_release_is_keyed_by_attempt`; `regate_of_an_older_attempt_uses_its_own_lease`; `turn_ended_ignores_a_turn_completed_before_the_bind`; `turn_ended_counts_a_turn_completed_after_the_bind`; `turn_ended_counts_a_failed_turn_after_the_bind`; `turn_ended_counts_a_first_spawn_turn_failed_before_the_running_stamp`; `quiet_wake_anchors_to_attempt_start`; `run_views_show_each_attempts_goal_and_prompt`; prompt goldens + budgets | M3 release by card → `lease_release_is_keyed_by_attempt`; M14 admission accepts NoSession → `continuation_refused_when_worker_gone`; M16 skip `verify_worker_checkout` → `checkout_moved_before_delivery_writes_nothing`; M17 release the lease on `Unknown` → `lost_ack_keeps_the_lease_and_runs`; M18 drop the turn fence → `turn_ended_ignores_a_turn_completed_before_the_bind`; M19 run view reads the card payload → `run_views_show_each_attempts_goal_and_prompt`; M20 fence on `last_turn_completed_ms` → `turn_ended_counts_a_failed_turn_after_the_bind`; M22 anchor on `running_started_at_ms` → `turn_ended_counts_a_first_spawn_turn_failed_before_the_running_stamp`; M23 drop the Live index → `one_live_attempt_per_session_is_enforced_by_sql`; M24 drop `UNIQUE (worker_session_id, worker_bind_seq)` → `bind_order_is_unique_per_session`; M25 restore card naming in `gate_run_ref_name` → `gate_runs_of_two_attempts_keep_their_own_refs` |
 
@@ -448,23 +451,20 @@ Codex-only; the TUI path gives up delivery without a viewer, `codex_adapter/mod.
 
 ## 11. KNOWN GAPs
 
-- Residual composer text, or what a human types at that instant, merges with the message (c3, k5;
-  no clear key, no control fence for kernel input): residual text starting with `/` or `!` is
-  interpreted as a command. No screen parsing; the header shows the boundary.
-- An input-capturing prompt in either TUI (approval, question, permission), if one appears, takes
-  the message and its Enter (Claude: no sound signal; 0 `permission_request` hooks on 4140).
+- Residual composer text or concurrent human typing merges with the message (c3, k5; no clear key,
+  no control fence); residual `/` or `!` runs as a command. An input-capturing prompt in either TUI
+  takes the message and its Enter (Claude has no sound signal; 0 `permission_request` on 4140).
 - After a server restart, workers started before it take neither messages nor continuations until
   reattached and readable (#2499); nor does a Codex worker whose optional viewer failed or exited.
 - A crash after the continuation commit may leave the attempt Running without its prompt (after a
   restart, only the 1 h idle window or a cancel resolves it); a lost ack (A or B) locks input.
-- The time-boundary turn fence: any thread-status stamp after the bind (`last_activity_ms` moves on
-  every `thread/status/changed`, `liveness_feeder.rs:46-50`), including a predecessor turn's,
-  makes the session a candidate (outcome: the live recheck, idle classifier and grace path).
+- Turn fence: any thread-status stamp after the bind (`liveness_feeder.rs:46-50`), a predecessor
+  turn's included, makes the session a candidate (then the live recheck and grace path decide).
 - A codex viewer whose thread died while its PTY lives is not reaped (progress waits for the idle
   window); the reused card keeps its first-round title, goal and prompt (card payload); a predecessor
   task row shows its card's current activity (`fe/core/view/track-page.ts:74-116`), i.e. the
-  successor's; `claude-restart` refuses a bound task worker,
-  and a bound Claude worker whose CLI exited waits for the liveness timeout.
+  successor's; `claude-restart` refuses a bound task worker (a bound Claude worker whose CLI exited
+  waits for the liveness timeout) and no longer gives an unbound legacy worker card MCP flags.
 - A B message queued just before the worker reported may still reach the model (§6). Untested:
   Codex `disable_paste_burst`/`tui.keymap.*`, Claude Rewind, Tab queue vs `turn/start`, `TERM`;
   the Codex viewer starts a title thread per turn (#2510).
