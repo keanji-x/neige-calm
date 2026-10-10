@@ -10,7 +10,7 @@ Without continuation one session serves one attempt, so today's target resolutio
 active, task `running`) is the write rule wherever §4 says `may_write_tx`. Refusal codes are §4's
 minus `binding_changed` (today's text stays); `worker_parked` names no `continues`; the keys refusal
 is `worker_keys_refused`; a task-less terminal is `message_unsupported`; only the Planner messages
-(`assistant_no_message`); `text`/`submit`/`key`/claim on a task worker share its typed write refusal.
+(`assistant_no_message`); `text`/`submit`/`key`/claim on a task worker share `message`'s typed write refusal.
 Receipts: `written`, `unknown` (fences the connection's next write until it settles) or `refused`.
 
 **A, continuation:** after a task ends (done or failed) the *same* worker (card, conversation, MCP
