@@ -292,12 +292,40 @@ async fn a_replace_removes_the_turn_and_its_message_reverts_codex_before_startin
     assert_eq!(stored_snapshot(&boot).await["last_turn_id"], json!(TURN_C));
 }
 
+/// Codex answers `turn not found` alike for a wrong turn and for one it already reverted (#2512),
+/// so that answer is a refusal: no turn starts and the cut stays.
 #[tokio::test]
-async fn a_revert_codex_already_applied_still_starts_the_turn_and_clears_the_cut() {
+async fn a_revert_codex_answers_turn_not_found_is_refused_and_keeps_the_cut() {
     let boot = two_turns().await;
     boot.daemon.answer_revert_turn_not_found_for_test(true);
     let (status, body) = replace(&boot, TURN_B, "edited").await;
     assert_eq!(status, StatusCode::OK, "body={body}");
+    wait_for("the refusal", || async {
+        boot.harness.refused_issuances_for_test() == 1
+    })
+    .await;
+    assert_eq!(boot.daemon.reverted_threads_for_test().len(), 1);
+    assert_eq!(boot.daemon.turn_start_count_for_test(), 2);
+    assert_eq!(
+        stored_snapshot(&boot).await["pending_rewind"],
+        json!({ "provider": "codex", "before_turn_id": TURN_B })
+    );
+}
+
+/// A revert that went through is the kernel's own record (#2512): when `turn/start` then fails, the
+/// retry starts the turn without reverting again.
+#[tokio::test]
+async fn a_turn_start_that_fails_after_the_revert_retries_without_reverting_again() {
+    let boot = two_turns().await;
+    boot.daemon.fail_turn_start_for_test();
+    let (status, body) = replace(&boot, TURN_B, "edited").await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    wait_for("the refusal", || async {
+        boot.harness.refused_issuances_for_test() == 1
+    })
+    .await;
+    boot.daemon.clear_turn_start_failure_for_test();
+    boot.harness.retry_issuance_now().await;
     wait_for("the next turn", || async {
         boot.daemon.turn_start_count_for_test() == 3
     })

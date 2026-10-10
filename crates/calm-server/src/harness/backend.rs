@@ -58,6 +58,8 @@ pub struct BackendRewind(RewindArm);
 enum RewindArm {
     /// `thread/revert {threadId, beforeTurnId}` before the next `turn/start`.
     Codex { before_turn_id: String },
+    /// That revert went through; the next `turn/start` sends none (#2512).
+    CodexReverted { before_turn_id: String },
     /// `--resume-session-at` / `--resume-drops-turn` on the next spawn.
     Claude { resume_at: Uuid, drops_turn: Uuid },
 }
@@ -222,7 +224,7 @@ impl PlannerBackend {
         permission: PlannerPermissionMode,
         client_id: &str,
         claim: &[crate::harness::QueueEntry],
-        rewind: Option<&BackendRewind>,
+        mut rewind: Option<&mut BackendRewind>,
     ) -> std::result::Result<TurnId, TurnStartFailure> {
         if let Some(reader) = self.issuance_hold() {
             return Err(TurnStartFailure::AwaitingRecovery {
@@ -230,7 +232,6 @@ impl PlannerBackend {
                 reader,
             });
         }
-        let rewind = rewind.map(|rewind| &rewind.0);
         match &self.0 {
             Arm::Acp(session) => {
                 if rewind.is_some() {
@@ -241,12 +242,20 @@ impl PlannerBackend {
                     .await
             }
             Arm::Codex(daemon, approvals) => {
-                match rewind {
-                    None => {}
-                    Some(RewindArm::Codex { before_turn_id }) => {
-                        revert_codex_thread(daemon, thread_id, before_turn_id).await?
+                if let Some(rewind) = rewind.as_deref_mut() {
+                    match &rewind.0 {
+                        RewindArm::Codex { before_turn_id } => {
+                            revert_codex_thread(daemon, thread_id, before_turn_id).await?;
+                            // The caller keeps this if the start below fails, so its retry does
+                            // not ask Codex again: Codex answers `turn not found` alike for a
+                            // reverted turn and a wrong one.
+                            rewind.0 = RewindArm::CodexReverted {
+                                before_turn_id: before_turn_id.clone(),
+                            };
+                        }
+                        RewindArm::CodexReverted { .. } => {}
+                        RewindArm::Claude { .. } => return Err(mismatched_rewind()),
                     }
-                    Some(RewindArm::Claude { .. }) => return Err(mismatched_rewind()),
                 }
                 // Before `turn/start`, so the turn's first approval already has somewhere to go.
                 approvals.route(daemon, thread_id);
@@ -263,7 +272,7 @@ impl PlannerBackend {
                     .map_err(codex_turn_start_failure)
             }
             Arm::Claude(session) => {
-                let truncation = match rewind {
+                let truncation = match rewind.map(|rewind| &rewind.0) {
                     None => None,
                     Some(RewindArm::Claude {
                         resume_at,
@@ -272,7 +281,9 @@ impl PlannerBackend {
                         at: *resume_at,
                         drops_turn: *drops_turn,
                     }),
-                    Some(RewindArm::Codex { .. }) => return Err(mismatched_rewind()),
+                    Some(RewindArm::Codex { .. } | RewindArm::CodexReverted { .. }) => {
+                        return Err(mismatched_rewind());
+                    }
                 };
                 session
                     .turn_start(
@@ -506,11 +517,9 @@ impl PlannerEvents {
 fn codex_turn_start_failure(error: CalmError) -> TurnStartFailure {
     match error {
         CalmError::CodexRefused(message) => {
-            if let Some(failure) = provider::codex::AuthenticationFailure::from_message(&message)
-                .or_else(|| provider::codex::AuthenticationFailure::from_code(&message))
-            {
+            if message == crate::codex_authentication::SIGN_IN_REFUSAL {
                 TurnStartFailure::AwaitingRecovery {
-                    error: CalmError::CodexRefused(failure.code().into()),
+                    error: CalmError::CodexRefused(message),
                     reader: format!(
                         "{} Your message is still queued.",
                         crate::codex_authentication::SIGN_IN_REQUIRED
@@ -542,8 +551,8 @@ fn mismatched_rewind() -> TurnStartFailure {
     }
 }
 
-/// `thread/revert` before the turn that follows a rewind. A turn the thread no longer has was
-/// reverted by an earlier attempt, so that answer lets the turn start.
+/// `thread/revert` before the turn that follows a rewind. Any refusal, `turn not found` included,
+/// keeps the turn from starting: only the kernel's own record says a revert already went through.
 async fn revert_codex_thread(
     daemon: &SharedCodexAppServer,
     thread_id: &str,

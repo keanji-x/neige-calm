@@ -63,10 +63,10 @@ pub fn locate_shim_bin() -> PathBuf {
 
 pub fn seed_auth_only(home: &SharedCodexHome) {
     home.seed_from(None).expect("seed empty shared CODEX_HOME");
-    let Some(host_home) = std::env::var_os("HOME") else {
+    let Some(host) = provider::codex::shared::home::host_codex_home() else {
         return;
     };
-    let src = Path::new(&host_home).join(".codex").join("auth.json");
+    let src = host.join("auth.json");
     if !src.exists() {
         return;
     }

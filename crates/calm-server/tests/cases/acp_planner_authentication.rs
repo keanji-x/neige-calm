@@ -7,7 +7,7 @@ async fn acp_does_not_inherit_codex_authentication_hold_or_notice() {
     let stack = boot(&root).await;
     let daemon = &stack.state.shared_codex_appserver;
     daemon.emit_notification_for_test(calm_server::codex_appserver::Notification::Other {
-        method: "error".into(), params: json!({"error":{"message":"Your access token could not be refreshed because your refresh token was already used."}}),
+        method: "error".into(), params: json!({"error":{"message":"Your access token could not be refreshed because your refresh token was already used.","codexErrorInfo":"unauthorized"}}),
     });
     assert!(daemon.authentication_hold().is_some());
     let (_, card) = create(&stack).await;

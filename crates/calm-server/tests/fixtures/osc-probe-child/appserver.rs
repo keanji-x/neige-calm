@@ -505,18 +505,34 @@ async fn serve_conn(
                 .await?;
             }
             "turn/start" => {
-                // Script a native refusal verbatim; no failure policy lives in this fixture.
-                if let Ok(message) =
-                    std::fs::read_to_string(reads.sock.with_extension("turn-start-refusal"))
+                // Script a native turn failure verbatim (a `TurnError` object): Codex accepts the
+                // turn, then reports it on `error` and a failed `turn/completed`, as 0.159.2 does
+                // for a refresh token it cannot use (#2512). No failure policy lives here.
+                if let Ok(error) = std::fs::read_to_string(reads.sock.with_extension("turn-error"))
                 {
-                    while reads
-                        .sock
-                        .with_extension("turn-start-refusal-wait")
-                        .exists()
-                    {
-                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                    }
-                    send_error(&mut write, &id, -32000, message.trim()).await?;
+                    let error: Value = serde_json::from_str(&error)
+                        .map_err(|e| format!("turn-error is not JSON: {e}"))?;
+                    send_result(&mut write, &id, json!({ "turn": { "id": turn_id } })).await?;
+                    send_notification(
+                        &mut write,
+                        "turn/started",
+                        json!({ "threadId": thread_id, "turn": { "id": turn_id } }),
+                    )
+                    .await?;
+                    send_notification(
+                        &mut write,
+                        "error",
+                        json!({ "threadId": thread_id, "turnId": turn_id, "willRetry": false,
+                            "error": error }),
+                    )
+                    .await?;
+                    send_notification(
+                        &mut write,
+                        "turn/completed",
+                        json!({ "threadId": thread_id,
+                            "turn": { "id": turn_id, "status": "failed", "error": error } }),
+                    )
+                    .await?;
                     continue;
                 }
                 if env_flag("FAKE_CODEX_FAIL_TURN_START") {

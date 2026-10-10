@@ -9,7 +9,7 @@ use tower::ServiceExt;
 
 async fn retry(boot: &Boot) -> (StatusCode, serde_json::Value) {
     let daemon = &boot.state.shared_codex_appserver;
-    daemon.emit_notification_for_test(Notification::Other {method:"error".into(),params:json!({"error":{"message":"Your access token could not be refreshed because your refresh token was already used."}})});
+    daemon.emit_notification_for_test(Notification::Other {method:"error".into(),params:json!({"error":{"message":"Your access token could not be refreshed because your refresh token was already used.","codexErrorInfo":"unauthorized"}})});
     let revision = daemon.authentication_notice().unwrap().revision;
     let auth = AuthState::new(AuthConfig {
         username: None,

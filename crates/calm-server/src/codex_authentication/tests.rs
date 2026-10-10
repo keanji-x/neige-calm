@@ -1,31 +1,14 @@
 use super::*;
 use serde_json::json;
-use std::io::Write;
 
-const ERROR: &str = "Your access token could not be refreshed because your refresh token was already used. private-fixture-detail";
-const LOG: &str = "2026-10-07T01:00:00Z ERROR codex_core::auth: Failed to refresh token: \
-    Your access token could not be refreshed because your refresh token was already used.";
 fn observer(root: &std::path::Path) -> CodexAuthentication {
-    CodexAuthentication::new(
-        root.join("checkpoint.json"),
-        root.join("codex-home"),
-        root.join("stderr.log"),
-    )
+    CodexAuthentication::new(root.join("checkpoint.json"), root.join("codex-home"))
 }
 fn login(auth: &CodexAuthentication) {
     auth.observe(&Notification::Other {
         method: "account/login/completed".into(),
         params: json!({"success":true,"error":null}),
     });
-}
-fn append(root: &std::path::Path, text: &str) {
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(root.join("stderr.log"))
-        .unwrap()
-        .write_all(text.as_bytes())
-        .unwrap();
 }
 fn start(auth: &CodexAuthentication, id: &str) {
     auth.observe(&Notification::TurnStarted {
@@ -39,66 +22,46 @@ fn complete(auth: &CodexAuthentication, id: &str, status: &str) {
         turn: json!({"id":id,"status":status,"error":null}),
     });
 }
-
-#[test]
-fn confirmed_failure_and_login_are_atomically_restored_without_native_details() {
-    let tmp = tempfile::tempdir().unwrap();
-    let auth = observer(tmp.path());
-    auth.record(0, ERROR);
-    assert_eq!(
-        observer(tmp.path()).problem(),
-        Some(AuthenticationFailure::Reused)
-    );
-    let bytes = std::fs::read_to_string(tmp.path().join("checkpoint.json")).unwrap();
-    assert!(!bytes.contains("private-fixture-detail") && !bytes.contains("Your access token"));
-    login(&auth);
-    auth.record(0, ERROR);
-    let restored = observer(tmp.path());
-    assert_eq!(restored.generation(), 1);
-    assert_eq!(restored.problem(), None);
-    assert_eq!(restored.hold(), None);
-    restored.record(1, ERROR);
-    assert_eq!(
-        observer(tmp.path()).problem(),
-        Some(AuthenticationFailure::Reused)
-    );
+/// A report whose generation is unknown: the checkpoint is unreadable when the failure arrives,
+/// then comes back.
+fn report(root: &std::path::Path) -> CodexAuthentication {
+    login(&observer(root));
+    let saved = std::fs::read(root.join("checkpoint.json")).unwrap();
+    std::fs::write(root.join("checkpoint.json"), "unavailable").unwrap();
+    let auth = observer(root);
+    auth.record(0);
+    std::fs::write(root.join("checkpoint.json"), saved).unwrap();
+    auth.poll();
+    auth
 }
 
 #[test]
-fn late_stderr_after_login_is_only_a_report_and_cannot_suspend_requests() {
+fn confirmed_failure_and_login_are_atomically_restored() {
     let tmp = tempfile::tempdir().unwrap();
     let auth = observer(tmp.path());
-    auth.record(0, ERROR);
+    auth.record(0);
+    assert!(observer(tmp.path()).sign_in_failed());
+    let bytes = std::fs::read_to_string(tmp.path().join("checkpoint.json")).unwrap();
+    assert!(!bytes.contains("fixture"), "{bytes}");
     login(&auth);
-    append(tmp.path(), &format!("{LOG}\n"));
-    auth.poll(None);
-    assert_eq!(auth.problem(), None);
-    assert_eq!(auth.hold(), None);
-    assert_eq!(
-        auth.notice().unwrap().kind,
-        AuthenticationNoticeKind::RefreshErrorReported
-    );
+    auth.record(0);
     let restored = observer(tmp.path());
+    assert_eq!(restored.generation(), 1);
+    assert!(!restored.sign_in_failed());
     assert_eq!(restored.hold(), None);
-    assert_eq!(
-        restored.notice().unwrap().kind,
-        AuthenticationNoticeKind::RefreshErrorReported
-    );
+    restored.record(1);
+    assert!(observer(tmp.path()).sign_in_failed());
 }
 
 #[test]
 fn only_successful_current_turn_clears_report_never_confirmed_failure() {
     let tmp = tempfile::tempdir().unwrap();
-    let auth = observer(tmp.path());
-    start(&auth, "old");
-    login(&auth);
-    append(tmp.path(), &format!("{LOG}\n"));
-    auth.poll(None);
-    complete(&auth, "old", "completed");
-    assert!(
-        auth.notice().is_some(),
-        "old completion cannot clear a new report"
+    let auth = report(tmp.path());
+    assert_eq!(
+        auth.notice().unwrap().kind,
+        AuthenticationNoticeKind::RefreshErrorReported
     );
+    assert_eq!(auth.hold(), None, "a report does not suspend requests");
     start(&auth, "failed");
     complete(&auth, "failed", "failed");
     assert!(
@@ -109,7 +72,7 @@ fn only_successful_current_turn_clears_report_never_confirmed_failure() {
     complete(&auth, "current", "completed");
     assert_eq!(auth.notice(), None);
     assert_eq!(observer(tmp.path()).notice(), None);
-    auth.record(auth.generation(), ERROR);
+    auth.record(auth.generation());
     start(&auth, "another");
     complete(&auth, "another", "completed");
     assert!(
@@ -117,59 +80,6 @@ fn only_successful_current_turn_clears_report_never_confirmed_failure() {
         "a usable access token cannot repair a failed refresh credential"
     );
     assert!(observer(tmp.path()).hold().is_some());
-}
-
-#[test]
-fn log_rotation_truncate_regrow_and_split_records_are_read_without_latching() {
-    let tmp = tempfile::tempdir().unwrap();
-    let auth = observer(tmp.path());
-    append(tmp.path(), "neutral\n");
-    auth.poll(None);
-    std::fs::rename(tmp.path().join("stderr.log"), tmp.path().join("old.log")).unwrap();
-    append(tmp.path(), &LOG[..40]);
-    auth.poll(None);
-    assert_eq!(auth.notice(), None, "a partial record is not evidence");
-    append(tmp.path(), &format!("{}\n", &LOG[40..]));
-    auth.poll(None);
-    assert!(auth.notice().is_some());
-    login(&auth);
-    let neutral = "x".repeat(LOG.len() + 20);
-    std::fs::write(tmp.path().join("stderr.log"), format!("{neutral}\n")).unwrap();
-    auth.poll(None);
-    assert_eq!(auth.notice(), None);
-    std::fs::write(
-        tmp.path().join("stderr.log"),
-        format!("{LOG}\n{}\n", "n".repeat(300)),
-    )
-    .unwrap();
-    auth.poll(None);
-    assert!(
-        auth.notice().is_some(),
-        "same-inode truncate/regrow must be detected by its anchor"
-    );
-    assert_eq!(auth.hold(), None);
-}
-
-#[test]
-fn login_discards_old_partial_record_and_oversized_records_stay_bounded() {
-    let tmp = tempfile::tempdir().unwrap();
-    let auth = observer(tmp.path());
-    append(tmp.path(), &LOG[..40]);
-    auth.poll(None);
-    login(&auth);
-    append(tmp.path(), &format!("{}\n", &LOG[40..]));
-    auth.poll(None);
-    assert_eq!(auth.notice(), None);
-    append(tmp.path(), &"a".repeat(128 * 1024));
-    auth.poll(None);
-    auth.poll(None);
-    append(tmp.path(), &format!("{LOG}\n{LOG}\n"));
-    auth.poll(None);
-    assert!(
-        auth.notice().is_some(),
-        "valid record following a discarded huge line is still read"
-    );
-    assert_eq!(auth.hold(), None);
 }
 
 #[test]
@@ -187,15 +97,41 @@ fn malformed_checkpoint_is_visible_and_restoring_storage_releases_maintenance_ho
         serde_json::to_vec(&store::Checkpoint::empty(tmp.path().join("codex-home"))).unwrap(),
     )
     .unwrap();
-    auth.poll(None);
+    auth.poll();
     assert_eq!(auth.hold(), None);
+}
+
+/// #2512: version 1 kept a log cursor and a reason read from Codex's prose. It starts clear rather
+/// than holding requests as unreadable storage would.
+#[test]
+fn a_version_1_checkpoint_starts_clear() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("codex-home");
+    for evidence in [
+        json!({"state":"clear"}),
+        json!({"state":"confirmed","failure":"reused"}),
+    ] {
+        std::fs::write(
+            tmp.path().join("checkpoint.json"),
+            json!({"version":1,"home":home,"generation":0,"evidence":evidence,"revision":0,
+                "revision_scope":"f9820335-5d36-4f45-8a9a-abf6731c2c84","reported":false,
+                "cursor":{"identity":[66306,48899775],"offset":4966716,"anchor":"5411","skip_line":false}})
+            .to_string(),
+        )
+        .unwrap();
+        let auth = observer(tmp.path());
+        assert_eq!(auth.notice(), None, "{evidence}");
+        assert!(!auth.sign_in_failed());
+        auth.record(0);
+        assert!(observer(tmp.path()).sign_in_failed(), "{evidence}");
+    }
 }
 
 #[test]
 fn failed_login_checkpoint_write_stays_visible_until_it_retries_successfully() {
     let tmp = tempfile::tempdir().unwrap();
     let auth = observer(tmp.path());
-    auth.record(0, ERROR);
+    auth.record(0);
     std::fs::remove_file(tmp.path().join("checkpoint.json")).unwrap();
     std::fs::create_dir(tmp.path().join("checkpoint.json")).unwrap();
     login(&auth);
@@ -205,7 +141,7 @@ fn failed_login_checkpoint_write_stays_visible_until_it_retries_successfully() {
     );
     assert!(auth.hold().is_some());
     std::fs::remove_dir(tmp.path().join("checkpoint.json")).unwrap();
-    auth.poll(None);
+    auth.poll();
     assert_eq!(auth.hold(), None);
     assert_eq!(observer(tmp.path()).hold(), None);
 }
@@ -213,13 +149,12 @@ fn failed_login_checkpoint_write_stays_visible_until_it_retries_successfully() {
 #[test]
 fn another_codex_home_does_not_inherit_a_confirmed_failure() {
     let tmp = tempfile::tempdir().unwrap();
-    observer(tmp.path()).record(0, ERROR);
+    observer(tmp.path()).record(0);
     let other = CodexAuthentication::new(
         tmp.path().join("checkpoint.json"),
         tmp.path().join("other-home"),
-        tmp.path().join("stderr.log"),
     );
-    assert_eq!(other.problem(), None);
+    assert!(!other.sign_in_failed());
     assert_eq!(other.hold(), None);
 }
 
@@ -227,16 +162,9 @@ fn another_codex_home_does_not_inherit_a_confirmed_failure() {
 fn owner_retry_is_a_durable_cas_intent_and_new_failure_relocks_it() {
     let tmp = tempfile::tempdir().unwrap();
     let auth = observer(tmp.path());
-    auth.record(0, ERROR);
+    auth.record(0);
     start(&auth, "old");
     let revision = auth.notice().unwrap().revision;
-    append(tmp.path(), &format!("{LOG}\n"));
-    auth.poll(None);
-    assert_eq!(
-        auth.notice().unwrap().revision,
-        revision,
-        "unattributed logs cannot invalidate the confirmed episode's CAS"
-    );
     let requested = auth.request_retry(&revision).unwrap();
     assert_ne!(requested, revision);
     assert_eq!(auth.hold(), None);
@@ -260,13 +188,13 @@ fn owner_retry_is_a_durable_cas_intent_and_new_failure_relocks_it() {
             .contains("failed_generation"),
         "original evidence remains recorded, not falsely marked repaired"
     );
-    auth.record(0, ERROR);
+    auth.record(0);
     complete(&auth, "old", "completed");
     assert_eq!(
         auth.notice().unwrap().kind,
         AuthenticationNoticeKind::RetryRequested
     );
-    auth.record(auth.generation(), ERROR);
+    auth.record(auth.generation());
     assert!(auth.hold().is_some());
     assert_ne!(auth.notice().unwrap().revision, requested);
     assert!(observer(tmp.path()).hold().is_some());
@@ -281,14 +209,14 @@ fn owner_retry_is_a_durable_cas_intent_and_new_failure_relocks_it() {
 fn retry_intent_cannot_open_issuance_before_its_checkpoint_commits() {
     let tmp = tempfile::tempdir().unwrap();
     let auth = observer(tmp.path());
-    auth.record(0, ERROR);
+    auth.record(0);
     let revision = auth.notice().unwrap().revision;
     std::fs::remove_file(tmp.path().join("checkpoint.json")).unwrap();
     std::fs::create_dir(tmp.path().join("checkpoint.json")).unwrap();
     assert!(auth.request_retry(&revision).is_err());
     assert!(auth.hold().is_some());
     std::fs::remove_dir(tmp.path().join("checkpoint.json")).unwrap();
-    auth.poll(None);
+    auth.poll();
     assert_eq!(auth.hold(), None);
     assert_eq!(
         observer(tmp.path()).notice().unwrap().kind,
@@ -300,57 +228,47 @@ fn retry_intent_cannot_open_issuance_before_its_checkpoint_commits() {
 fn old_connection_cannot_clear_or_reassert_current_authentication_state() {
     let tmp = tempfile::tempdir().unwrap();
     let auth = observer(tmp.path());
-    let old_epoch = auth.bind_client(1);
-    let old_stamp = auth.stamp(1);
-    let current_epoch = auth.bind_client(2);
-    assert_eq!(auth.stamp(1).map(|s| s.connection_epoch), None);
-    auth.record_stamped(auth.stamp(2), ERROR);
-    auth.observe_from_connection(
-        old_epoch,
-        &Notification::Other {
-            method: "account/login/completed".into(),
-            params: json!({"success":true,"error":null}),
-        },
-    );
+    let old_epoch = auth.bind_client();
+    let current_epoch = auth.bind_client();
+    let failure = Notification::Other {
+        method: "error".into(),
+        params: json!({"error":{"message":"fixture","codexErrorInfo":"unauthorized"}}),
+    };
+    let login = Notification::Other {
+        method: "account/login/completed".into(),
+        params: json!({"success":true,"error":null}),
+    };
+    auth.observe_from_connection(current_epoch, &failure);
+    auth.observe_from_connection(old_epoch, &login);
     assert!(
         auth.hold().is_some(),
         "old daemon's completion is not current login proof"
     );
-    auth.observe_from_connection(
-        current_epoch,
-        &Notification::Other {
-            method: "account/login/completed".into(),
-            params: json!({"success":true,"error":null}),
-        },
-    );
-    auth.record_stamped(old_stamp, ERROR);
+    auth.observe_from_connection(current_epoch, &login);
+    auth.observe_from_connection(old_epoch, &failure);
     assert_eq!(auth.hold(), None);
     assert_eq!(observer(tmp.path()).hold(), None);
 }
 
 #[test]
-fn unreadable_storage_does_not_assign_unknown_native_errors_a_confirmed_generation() {
+fn unreadable_storage_does_not_assign_unknown_generation_errors_a_confirmed_generation() {
     let tmp = tempfile::tempdir().unwrap();
     let original = observer(tmp.path());
     login(&original);
     login(&original);
-    original.record(original.generation(), ERROR);
+    original.record(original.generation());
     let before = std::fs::read(tmp.path().join("checkpoint.json")).unwrap();
     let original_revision = original.notice().unwrap().revision;
     std::fs::write(tmp.path().join("checkpoint.json"), "unreadable checkpoint").unwrap();
     let unknown = observer(tmp.path());
-    unknown.record(
-        0,
-        "Your access token could not be refreshed because your refresh token was revoked.",
-    );
-    assert_eq!(
-        unknown.problem(),
-        None,
-        "without a restored generation a native error is only diagnostic evidence"
+    unknown.record(0);
+    assert!(
+        !unknown.sign_in_failed(),
+        "without a restored generation a sign-in error is only diagnostic evidence"
     );
     std::fs::write(tmp.path().join("checkpoint.json"), before).unwrap();
-    unknown.poll(None);
-    assert_eq!(unknown.problem(), Some(AuthenticationFailure::Reused));
+    unknown.poll();
+    assert!(unknown.sign_in_failed());
     assert_eq!(unknown.notice().unwrap().revision, original_revision);
 }
 
@@ -358,12 +276,12 @@ fn unreadable_storage_does_not_assign_unknown_native_errors_a_confirmed_generati
 fn replacing_lost_checkpoint_after_verified_login_uses_a_new_revision_scope() {
     let tmp = tempfile::tempdir().unwrap();
     let old = observer(tmp.path());
-    old.record(0, ERROR);
+    old.record(0);
     let revision = old.notice().unwrap().revision;
     std::fs::write(tmp.path().join("checkpoint.json"), "lost checkpoint").unwrap();
     let fresh = observer(tmp.path());
     login(&fresh);
-    fresh.record(fresh.generation(), ERROR);
+    fresh.record(fresh.generation());
     assert_ne!(
         fresh.notice().unwrap().revision,
         revision,
@@ -376,14 +294,7 @@ fn replacing_lost_checkpoint_after_verified_login_uses_a_new_revision_scope() {
 #[test]
 fn an_unknown_generation_report_is_committed_when_valid_clear_storage_returns() {
     let tmp = tempfile::tempdir().unwrap();
-    let original = observer(tmp.path());
-    login(&original);
-    let before = std::fs::read(tmp.path().join("checkpoint.json")).unwrap();
-    std::fs::write(tmp.path().join("checkpoint.json"), "unavailable").unwrap();
-    let auth = observer(tmp.path());
-    auth.record(0, ERROR);
-    std::fs::write(tmp.path().join("checkpoint.json"), before).unwrap();
-    auth.poll(None);
+    let auth = report(tmp.path());
     assert_eq!(
         auth.notice().unwrap().kind,
         AuthenticationNoticeKind::RefreshErrorReported
@@ -394,20 +305,27 @@ fn an_unknown_generation_report_is_committed_when_valid_clear_storage_returns() 
     );
 }
 
+/// #2512: Codex's `codexErrorInfo` decides a sign-in failure, never the sentence beside it.
 #[test]
-fn neutral_log_cursor_is_committed_and_survives_observer_recreation() {
+fn a_turn_error_is_a_sign_in_failure_by_its_codex_error_info_alone() {
     let tmp = tempfile::tempdir().unwrap();
     let auth = observer(tmp.path());
-    login(&auth);
-    append(tmp.path(), "neutral log record\n");
-    auth.poll(None);
-    let saved = std::fs::read(tmp.path().join("checkpoint.json")).unwrap();
-    let checkpoint: serde_json::Value = serde_json::from_slice(&saved).unwrap();
-    assert!(checkpoint["cursor"]["offset"].as_u64().unwrap() > 0);
-    let restored = observer(tmp.path());
-    restored.poll(None);
-    assert_eq!(
-        std::fs::read(tmp.path().join("checkpoint.json")).unwrap(),
-        saved
+    let fail = |id: &str, error: serde_json::Value| {
+        start(&auth, id);
+        auth.observe(&Notification::TurnCompleted {
+            thread_id: "thread".into(),
+            turn: json!({"id":id,"status":"failed","error":error}),
+        });
+    };
+    fail(
+        "transient",
+        json!({"message":"Failed to refresh token: 500 Internal Server Error: boom","codexErrorInfo":"other"}),
     );
+    assert_eq!(auth.hold(), None);
+    fail(
+        "reworded",
+        json!({"message":"Sign in to Codex again.","codexErrorInfo":"unauthorized"}),
+    );
+    assert!(auth.hold().is_some());
+    assert!(observer(tmp.path()).hold().is_some());
 }

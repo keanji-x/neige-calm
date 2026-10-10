@@ -44,7 +44,7 @@ DECOYS="${DECOYS:-0}"
 
 TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 CODEX_BIN_RAW="${NEIGE_CODEX_BIN:-$HOME/.local/bin/codex}"
-AUTH_RAW="$HOME/.codex/auth.json"
+AUTH_RAW="${CODEX_HOME:-$HOME/.codex}/auth.json"
 KILLER_LOG=/home/kenji/neige-killer.log
 PROXY_BIN="$TARGET_DIR/debug/e2e-egress-proxy"
 # Host-compiled workspace bin, bind-mounted onto the run container's PATH so the planner agent's bare `neige` calls resolve.

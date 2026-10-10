@@ -566,7 +566,7 @@ pub struct FakeSharedCodexAppServer {
     turn_steer_return_hook: std::sync::Mutex<Option<TurnStartReturnHook>>,
     /// Every `thread/revert`: thread, `beforeTurnId`, and how many `turn/start`s preceded it.
     reverted_threads: std::sync::Mutex<Vec<(String, String, u64)>>,
-    /// Answer `thread/revert` with codex's `turn not found` refusal, as a repeated revert gets.
+    /// Answer `thread/revert` with codex's `turn not found`, as a wrong or reverted turn gets.
     revert_turn_not_found: AtomicBool,
     /// How many `config/mcpServer/reload` calls this fake answered as sent.
     mcp_server_reloads: AtomicU64,
@@ -736,8 +736,6 @@ impl SharedCodexAppServer {
         let authentication = Arc::new(crate::codex_authentication::CodexAuthentication::new(
             data_dir.join("state/codex-authentication.json"),
             home.path().to_path_buf(),
-            cfg.shared_codex_appserver_log_dir_resolved()
-                .join("stderr.log"),
         ));
         let (tx, _) = broadcast::channel(1024);
         Arc::new(Self {
@@ -1116,16 +1114,13 @@ impl SharedCodexAppServer {
             return Ok(turn_id);
         }
         let client = self.authenticated_client().await?;
-        let turn = self
-            .authentication_rpc(
-                &client,
-                client.turn_start_with_client_id(
-                    thread_id,
-                    items,
-                    selection,
-                    approvals,
-                    client_user_message_id,
-                ),
+        let turn = client
+            .turn_start_with_client_id(
+                thread_id,
+                items,
+                selection,
+                approvals,
+                client_user_message_id,
             )
             .await?;
         let turn_id = turn
@@ -1218,9 +1213,7 @@ impl SharedCodexAppServer {
                 .clone());
         }
         let client = self.connected_client().await?;
-        self.authentication_rpc(&client, client.account_read(deadline))
-            .await
-            .map_err(Into::into)
+        client.account_read(deadline).await.map_err(Into::into)
     }
 
     /// `config/read` — the layer-merged effective config, narrowed to the model defaults;
@@ -1421,11 +1414,8 @@ impl SharedCodexAppServer {
             };
         }
         let client = self.authenticated_client().await?;
-        let steered = self
-            .authentication_rpc(
-                &client,
-                client.turn_steer(thread_id, expected_turn_id, items, client_user_message_id),
-            )
+        let steered = client
+            .turn_steer(thread_id, expected_turn_id, items, client_user_message_id)
             .await?;
         Ok(steered.turn_id)
     }
@@ -1461,7 +1451,9 @@ impl SharedCodexAppServer {
         #[cfg(not(feature = "fixtures"))]
         let fake_answer: Option<provider::codex::error::Result<serde_json::Value>> = None;
         match fake_answer {
-            Some(answer) => crate::codex_appserver::thread_revert_outcome(answer)?,
+            Some(answer) => {
+                answer?;
+            }
             None => {
                 self.authenticated_client()
                     .await?
@@ -1590,40 +1582,10 @@ impl SharedCodexAppServer {
                 let Some(daemon) = weak.upgrade() else {
                     break;
                 };
-                let runtime = {
-                    let core = daemon.core.lock().await;
-                    match &core.state {
-                        SupervisorState::Running { runtime, .. } => Some(runtime.clone()),
-                        _ => None,
-                    }
-                };
                 let authentication = daemon.authentication.clone();
                 drop(daemon);
-                if let Err(e) = tokio::task::spawn_blocking(move || {
-                    // The producer keeps its inherited file descriptor after a rename rotation.
-                    // Use only the supervisor's verified process identity and a regular file.
-                    let source = runtime.and_then(|runtime| {
-                        #[cfg(target_os = "linux")]
-                        if read_proc_start_time(runtime.pid) == Some(runtime.process_start_time)
-                            && read_boot_id().is_some_and(|boot| boot == runtime.boot_id)
-                        {
-                            let path = PathBuf::from(format!("/proc/{}/fd/2", runtime.pid));
-                            if let Ok(file) = std::fs::File::open(&path)
-                                && file.metadata().is_ok_and(|m| m.is_file())
-                                && read_proc_start_time(runtime.pid)
-                                    == Some(runtime.process_start_time)
-                                && read_boot_id().is_some_and(|boot| boot == runtime.boot_id)
-                            {
-                                return Some(file);
-                            }
-                        }
-                        None
-                    });
-                    authentication.poll(source);
-                })
-                .await
-                {
-                    tracing::warn!(error=%e,"authentication log observer failed");
+                if let Err(e) = tokio::task::spawn_blocking(move || authentication.poll()).await {
+                    tracing::warn!(error=%e,"authentication checkpoint observer failed");
                 }
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
@@ -1632,27 +1594,14 @@ impl SharedCodexAppServer {
 
     fn require_authentication(&self) -> Result<()> {
         if let Some(reader) = self.authentication_hold() {
-            if let Some(problem) = self.authentication_failure() {
-                return Err(CalmError::CodexRefused(problem.code().into()));
+            if self.authentication_failed() {
+                return Err(CalmError::CodexRefused(
+                    crate::codex_authentication::SIGN_IN_REFUSAL.into(),
+                ));
             }
             return Err(CalmError::ServiceUnavailable(reader));
         }
         Ok(())
-    }
-
-    async fn authentication_rpc<T>(
-        &self,
-        client: &Arc<CodexAppServer>,
-        request: impl std::future::Future<
-            Output = std::result::Result<T, provider::codex::error::Error>,
-        >,
-    ) -> std::result::Result<T, provider::codex::error::Error> {
-        let stamp = self.authentication.stamp(Arc::as_ptr(client) as usize);
-        request.await.inspect_err(|error| {
-            if let provider::codex::error::Error::Refused(message) = error {
-                self.authentication.record_stamped(stamp, message);
-            }
-        })
     }
 
     pub fn request_authentication_retry(&self, expected_revision: &str) -> Result<String> {
@@ -1669,8 +1618,9 @@ impl SharedCodexAppServer {
         self.authentication.hold()
     }
 
-    pub fn authentication_failure(&self) -> Option<provider::codex::AuthenticationFailure> {
-        self.authentication.problem()
+    /// Whether Codex confirmed that its sign-in must be renewed.
+    pub fn authentication_failed(&self) -> bool {
+        self.authentication.sign_in_failed()
     }
 
     pub fn subscribe_notifications(&self) -> broadcast::Receiver<Notification> {
@@ -3245,7 +3195,7 @@ impl SharedCodexAppServer {
             .store(now_ms(), Ordering::SeqCst);
         let tx = self.notifications.clone();
         let authentication = self.authentication.clone();
-        let authentication_epoch = authentication.bind_client(Arc::as_ptr(&client) as usize);
+        let authentication_epoch = authentication.bind_client();
         // The notification task must not keep its own client alive: a strong Arc here leaves the
         // old connection open forever. Upgrade only for the late-turn interrupt that needs an RPC.
         let client = Arc::downgrade(&client);

@@ -299,7 +299,7 @@ impl<'a> IssueTurnHandle<'a> {
         permission: PlannerPermissionMode,
         client_user_message_id: &str,
         claim: &[QueueEntry],
-        pending_rewind: Option<&BackendRewind>,
+        pending_rewind: Option<&mut BackendRewind>,
     ) -> std::result::Result<String, TurnStartFailure> {
         self.backend
             .turn_start(
@@ -3357,8 +3357,9 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         ProjectionWrite(CalmError),
         TurnStart(TurnStartFailure),
     }
-    // A rewind's cut rides with whatever turn starts next; it is consumed only once one has.
-    let pending_rewind = inner.pending_rewind.lock().await.clone();
+    // A rewind's cut rides with whatever turn starts next; it is consumed only once one has. The
+    // backend records in it what it already applied, which a failed start keeps below.
+    let mut pending_rewind = inner.pending_rewind.lock().await.clone();
     let issued = async {
         // Written before `turn/start` goes out, so the row says what codex is told.
         write_projection_row(inner, &thread_id, client_id.as_str(), &segments)
@@ -3372,7 +3373,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
                 permission,
                 client_id.as_str(),
                 &drained,
-                pending_rewind.as_ref(),
+                pending_rewind.as_mut(),
             )
             .await
             .map_err(IssueFailure::TurnStart)?;
@@ -3399,9 +3400,9 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             *inner.issued_turn_head.lock().await = diff.current_head.clone();
             // Cleared in the same snapshot that empties the queue, so no restart can pair this key with a later batch.
             *inner.projection_client_id.lock().await = None;
-            // Known gap (#1923): a crash between this start and the snapshot write below replays the
-            // cut on restart. Codex answers `turn not found` (applied); the Claude CLI guard fails that
-            // one turn loudly. Either way the cut is then consumed and later turns are unaffected.
+            // Known gap (#1923): a crash between the revert or start and the snapshot write below
+            // replays the cut on restart. Codex then answers `turn not found`, which is refused
+            // (#2512); the Claude CLI guard fails that one turn loudly.
             *inner.pending_rewind.lock().await = None;
             *inner.last_turn_base.lock().await = Some(TurnBase {
                 turn_id: turn_id.clone(),
@@ -3410,6 +3411,9 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             persist_issuance_outcome(inner).await?;
         }
         Err(failure) => {
+            // Persisted below with the re-buffered batch. No replace runs meanwhile: it refuses
+            // while this batch's projection key is set.
+            *inner.pending_rewind.lock().await = pending_rewind;
             // Paced, like the refusal above: `rebuffer_head` arms `hard_fire`, and `PUT /planner/model`
             // can store a slug codex does not know, so an unpaced retry was twenty RPCs a second. The split
             // is the backend's TYPED verdict (#1981): `Rejected` because no choice is KNOWN to remove the need.
