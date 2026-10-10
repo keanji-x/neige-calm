@@ -19,8 +19,10 @@ pub struct KeyError(pub String);
 pub fn chord(keys: &str) -> Result<Vec<InputEvent>, KeyError> {
     let bad = |why: String| KeyError(format!("key `{keys}`: {why}"));
     let mut parts: Vec<&str> = keys.split('+').collect();
-    // `ctrl++` is Ctrl and the plus key.
-    if keys.ends_with("++") {
+    // `+` is the plus key, and `ctrl++` is Ctrl and the plus key.
+    if keys == "+" {
+        parts = vec!["+"];
+    } else if keys.ends_with("++") {
         parts.truncate(parts.len() - 2);
         parts.push("+");
     }
@@ -267,6 +269,16 @@ mod tests {
                 (KEY_SLASH, false),
                 (KEY_LEFTSHIFT, false)
             ]
+        );
+        assert_eq!(
+            keys(&chord("+").unwrap()),
+            [
+                (KEY_LEFTSHIFT, true),
+                (KEY_EQUAL, true),
+                (KEY_EQUAL, false),
+                (KEY_LEFTSHIFT, false)
+            ],
+            "a bare + is the plus key"
         );
         for plus in ["ctrl++", "ctrl+plus"] {
             assert_eq!(

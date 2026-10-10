@@ -85,6 +85,11 @@ impl Windows {
             .cloned()
     }
 
+    /// A receiver that sees every change to the table.
+    pub fn changes(&self) -> watch::Receiver<u64> {
+        self.inner.changes.subscribe()
+    }
+
     /// Waits up to `timeout` for `pid`'s main window, giving up early when
     /// `still_wanted` turns false (the app exited or was relaunched).
     pub async fn wait_main_window(

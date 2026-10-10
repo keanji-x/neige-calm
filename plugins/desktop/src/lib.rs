@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use compositor::Compositor;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -98,7 +98,7 @@ struct Started {
 async fn run(env: PluginEnv) -> ExitCode {
     let (out, out_rx) = mpsc::unbounded_channel::<String>();
     let writer = tokio::spawn(write_frames(out_rx));
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    let mut lines = Frames(BufReader::new(tokio::io::stdin()));
     let shutdown = CancellationToken::new();
 
     // Nothing runs before the handshake: it carries the configuration.
@@ -260,6 +260,26 @@ fn dispatch(desktop: &Arc<Desktop>, line: &str, out: &mpsc::UnboundedSender<Stri
         ),
     };
     let _ = out.send(reply);
+}
+
+/// Newline-delimited frames from the kernel. A line that is not UTF-8 is a
+/// malformed frame, skipped like any other; only EOF or a read error ends it.
+struct Frames<R>(R);
+
+impl<R: AsyncBufRead + Unpin> Frames<R> {
+    async fn next_line(&mut self) -> std::io::Result<Option<String>> {
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            if self.0.read_until(b'\n', &mut line).await? == 0 {
+                return Ok(None);
+            }
+            match String::from_utf8(std::mem::take(&mut line)) {
+                Ok(text) => return Ok(Some(text.trim_end_matches(['\n', '\r']).to_owned())),
+                Err(_) => tracing::warn!("ignoring a frame that is not UTF-8"),
+            }
+        }
+    }
 }
 
 async fn write_frames(mut frames: mpsc::UnboundedReceiver<String>) {

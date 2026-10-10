@@ -168,23 +168,61 @@ pub(crate) async fn read(cdp: &Cdp, max_text_units: u32) -> Result<PageText> {
         CALL_TIMEOUT,
     )
     .await?;
-    parse(text)
+    let mut text: PageText = parse(text)?;
+    // Again here: the page owns `String.prototype` and can defeat its own cut.
+    cut(&mut text.url, URL_LIMIT);
+    cut(&mut text.title, TITLE_LIMIT);
+    if cut(&mut text.text, max_text_units as usize) {
+        text.text_truncated = true;
+    }
+    Ok(text)
 }
 
-/// The page-side read. The text is cut inside the page, so an unbounded body
-/// never crosses the CDP pipe. The limit counts UTF-16 code units; a cut that
-/// would split a surrogate pair drops its high half, so the reply stays valid
-/// JSON.
+/// Most UTF-16 code units of a page title, and of a page url, that reach a
+/// caller. Both are the page's to choose (`document.title`, `history.pushState`).
+pub(crate) const TITLE_LIMIT: usize = 1000;
+pub(crate) const URL_LIMIT: usize = 4096;
+/// Most UTF-16 code units of an error message that quotes the page.
+const MESSAGE_LIMIT: usize = 2000;
+
+/// The page-side `cut(s, n)`: `s` as a string of at most `n` UTF-16 code units;
+/// a cut that would split a surrogate pair drops its high half, so the reply
+/// stays valid JSON.
+pub(crate) const CUT_JS: &str = "const cut = (s, n) => { s = String(s); if (s.length <= n) return s; \
+     const t = s.slice(0, n); const c = t.charCodeAt(n - 1); \
+     return c >= 0xD800 && c <= 0xDBFF ? t.slice(0, -1) : t; };";
+
+/// The page-side read. Every string the page controls is cut inside the
+/// page, so an unbounded title, url or body never crosses the CDP pipe.
 pub(crate) fn read_expression(max_text_units: u32) -> String {
     format!(
-        "(() => {{ const all = document.body ? document.body.innerText : ''; \
-         let text = all.length > {max_text_units} ? all.slice(0, {max_text_units}) : all; \
-         const last = text.length ? text.charCodeAt(text.length - 1) : 0; \
-         if (text.length < all.length && last >= 0xD800 && last <= 0xDBFF) \
-         {{ text = text.slice(0, -1); }} \
-         return {{url: location.href, title: document.title, text, \
-         text_truncated: text.length < all.length}}; }})()"
+        "(() => {{ {CUT_JS} const all = document.body ? document.body.innerText : ''; \
+         const text = cut(all, {max_text_units}); \
+         return {{url: cut(location.href, {URL_LIMIT}), title: cut(document.title, {TITLE_LIMIT}), \
+         text, text_truncated: text.length < all.length}}; }})()"
     )
+}
+
+/// The page-side url and title after a navigation, cut as in [`read_expression`].
+pub(crate) fn location_expression() -> String {
+    format!(
+        "(() => {{ {CUT_JS} return {{url: cut(location.href, {URL_LIMIT}), \
+         title: cut(document.title, {TITLE_LIMIT})}}; }})()"
+    )
+}
+
+/// Cuts `s` to at most `max_units` UTF-16 code units, on a character
+/// boundary; whether it cut anything.
+pub(crate) fn cut(s: &mut String, max_units: usize) -> bool {
+    let mut units = 0;
+    for (at, c) in s.char_indices() {
+        units += c.len_utf16();
+        if units > max_units {
+            s.truncate(at);
+            return true;
+        }
+    }
+    false
 }
 
 /// The index of the one visible page, or the typed refusal naming the
@@ -285,10 +323,13 @@ async fn probe_one(cdp: &Cdp, sessions: &Sessions, target: TargetInfo) -> Result
             }
         }
     };
+    let (mut url, mut title) = (target.url, target.title);
+    cut(&mut url, URL_LIMIT);
+    cut(&mut title, TITLE_LIMIT);
     let info = PageInfo {
         target_id: target.id,
-        url: target.url,
-        title: target.title,
+        url,
+        title,
         visibility,
     };
     Ok(Probed { info, session })
@@ -345,14 +386,10 @@ async fn navigate_in(
             }
         }
     };
-    let now = evaluate(
-        cdp,
-        session,
-        "({url: location.href, title: document.title})",
-        CALL_TIMEOUT,
-    )
-    .await?;
-    let Location { url, title } = parse(now)?;
+    let now = evaluate(cdp, session, &location_expression(), CALL_TIMEOUT).await?;
+    let Location { mut url, mut title } = parse(now)?;
+    cut(&mut url, URL_LIMIT);
+    cut(&mut title, TITLE_LIMIT);
     Ok(Navigated { url, title, loaded })
 }
 
@@ -397,9 +434,12 @@ async fn evaluate(cdp: &Cdp, session: &str, expression: &str, timeout: Duration)
         )
         .await?;
     if let Some(exception) = reply.get("exceptionDetails") {
+        // The page can make the script throw, with a message of its choosing.
+        let mut message = exception.to_string();
+        cut(&mut message, MESSAGE_LIMIT);
         return Err(Error::Cdp {
             method: "Runtime.evaluate".into(),
-            message: exception.to_string(),
+            message,
         });
     }
     Ok(reply["result"]
@@ -413,9 +453,11 @@ fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T> {
 }
 
 fn unexpected(what: &str, value: &Value) -> Error {
+    let mut message = format!("unexpected reply: {value}");
+    cut(&mut message, MESSAGE_LIMIT);
     Error::Cdp {
         method: what.into(),
-        message: format!("unexpected reply: {value}"),
+        message,
     }
 }
 

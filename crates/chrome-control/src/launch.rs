@@ -70,6 +70,9 @@ fn arguments(config: &LaunchConfig) -> Vec<OsString> {
         // the owner's own logins from being flagged as automation.
         "--disable-blink-features=AutomationControlled".into(),
         format!("--window-size={},{}", config.size.0, config.size.1).into(),
+        // After an abrupt stop (a SIGKILL) the next launch would ask "Restore
+        // pages?" in a bubble over the page; the tabs are not restored either way.
+        "--hide-crash-restore-bubble".into(),
     ];
     if let Some(proxy) = &config.proxy_server {
         args.push(format!("--proxy-server={proxy}").into());
@@ -277,6 +280,7 @@ mod tests {
                 "--no-default-browser-check",
                 "--disable-blink-features=AutomationControlled",
                 "--window-size=1280,800",
+                "--hide-crash-restore-bubble",
             ]
         );
     }
@@ -291,7 +295,7 @@ mod tests {
             .map(|arg| arg.to_str().unwrap())
             .collect();
         assert_eq!(args.last(), Some(&"--proxy-server=http://127.0.0.1:2080"));
-        assert_eq!(args.len(), 8);
+        assert_eq!(args.len(), 9);
         let env = environment(
             [
                 ("https_proxy".into(), "http://evil:1".into()),

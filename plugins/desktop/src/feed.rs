@@ -22,14 +22,28 @@ pub struct CompositorWindow {
     compositor: Compositor,
     windows: Windows,
     id: WindowId,
+    /// Set when the window is served as the main window of the app with this
+    /// client pid: a newer window of that app (a login popup) ends the feed,
+    /// so the viewer reconnects and gets the new main window.
+    main_of: Option<u32>,
 }
 
 impl CompositorWindow {
+    /// The window `id` for as long as it is open.
     pub fn new(compositor: Compositor, windows: Windows, id: WindowId) -> Self {
         Self {
             compositor,
             windows,
             id,
+            main_of: None,
+        }
+    }
+
+    /// The window `id` for as long as it is the main window of client `pid`.
+    pub fn main_window(compositor: Compositor, windows: Windows, id: WindowId, pid: u32) -> Self {
+        Self {
+            main_of: Some(pid),
+            ..Self::new(compositor, windows, id)
         }
     }
 }
@@ -42,7 +56,9 @@ impl WindowSource for CompositorWindow {
             .map_err(|e| SourceError(e.to_string()))?;
         Ok(Box::new(WatchFeed {
             watch: Arc::new(watch),
+            changes: self.windows.changes(),
             windows: self.windows.clone(),
+            main_of: self.main_of,
         }))
     }
 
@@ -59,12 +75,27 @@ impl WindowSource for CompositorWindow {
 pub struct WatchFeed {
     watch: Arc<FrameWatch>,
     windows: Windows,
+    changes: tokio::sync::watch::Receiver<u64>,
+    main_of: Option<u32>,
+}
+
+impl WatchFeed {
+    /// Whether the app has a newer main window than this one.
+    fn superseded(&self) -> bool {
+        self.main_of.is_some_and(|pid| {
+            self.windows.main_window(pid).map(|w| w.id) != Some(self.watch.window())
+        })
+    }
 }
 
 impl FrameFeed for WatchFeed {
     fn next(&mut self) -> BoxFuture<'_, Option<Frame>> {
         Box::pin(async move {
             loop {
+                self.changes.borrow_and_update();
+                if self.superseded() {
+                    return None;
+                }
                 // The slot itself, on every wakeup: the newest frame, or the
                 // window's end, which drops any frame it still held.
                 match self.watch.try_take() {
@@ -72,14 +103,16 @@ impl FrameFeed for WatchFeed {
                     Ok(None) => {}
                     Err(_) => return None,
                 }
-                // Wait for the compositor's wakeup off the async workers. The
-                // wait takes nothing, so dropping this future loses no frame.
+                // Wait for the compositor's wakeup off the async workers, or a
+                // change of the window table. The wait takes nothing, so
+                // dropping this future loses no frame.
                 let watch = self.watch.clone();
-                if tokio::task::spawn_blocking(move || watch.wait(WAKE_WAIT))
-                    .await
-                    .is_err()
-                {
-                    return None;
+                let woken = tokio::task::spawn_blocking(move || watch.wait(WAKE_WAIT));
+                tokio::select! {
+                    joined = woken => if joined.is_err() {
+                        return None;
+                    },
+                    _ = self.changes.changed() => {}
                 }
             }
         })

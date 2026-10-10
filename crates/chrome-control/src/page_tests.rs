@@ -76,6 +76,8 @@ const LOAD_FOR_THE_NEW_DOCUMENT: &[(&str, &str)] =
 /// never answered. Records every `(method, sessionId)` it receives.
 struct Script {
     targets: Vec<(&'static str, &'static str)>,
+    /// Page-controlled strings far over every limit: titles, urls and text.
+    long: bool,
     silent: Vec<&'static str>,
     loads: Vec<(&'static str, &'static str)>,
     log: Arc<Mutex<Log>>,
@@ -85,10 +87,16 @@ impl Script {
     fn new(targets: &[(&'static str, &'static str)]) -> Self {
         Self {
             targets: targets.to_vec(),
+            long: false,
             silent: Vec::new(),
             loads: LOAD_FOR_THE_NEW_DOCUMENT.to_vec(),
             log: Arc::default(),
         }
+    }
+
+    fn long_strings(mut self) -> Self {
+        self.long = true;
+        self
     }
 
     fn silent(mut self, methods: &[&'static str]) -> Self {
@@ -123,6 +131,15 @@ impl Script {
         let silent = self.silent.clone();
         let loads = self.loads.clone();
         let log = self.log.clone();
+        let long = self.long;
+        // Over every limit, and ending in a surrogate pair where a cut could land.
+        let stretch = move |s: &str| {
+            if long {
+                format!("{s}{}", "\u{1F600}".repeat(40_000))
+            } else {
+                s.to_owned()
+            }
+        };
         tokio::spawn(async move {
             while let Some(message) = peer.recv().await {
                 let method = message["method"].as_str().unwrap().to_owned();
@@ -147,7 +164,7 @@ impl Script {
                             .iter()
                             .map(|(t, _)| {
                                 json!({ "targetId": t, "type": "page", "attached": false,
-                                    "url": format!("https://{t}.test/"), "title": t })
+                                    "url": stretch(&format!("https://{t}.test/")), "title": stretch(t) })
                             })
                             .collect();
                         infos.push(json!({ "targetId": "sw", "type": "service_worker",
@@ -165,8 +182,9 @@ impl Script {
                         }
                     }
                     "Runtime.evaluate" => json!({ "result": { "type": "object", "value": {
-                        "url": "https://after.test/", "title": "after", "text": "body text",
-                        "text_truncated": expression.contains("> 9 ?") } } }),
+                        "url": stretch("https://after.test/"), "title": stretch("after"),
+                        "text": stretch("body text"),
+                        "text_truncated": expression.contains("all, 9)") } } }),
                     "Page.navigate" => {
                         let reply = json!({ "frameId": "F", "loaderId": "L-new" });
                         peer.send(json!({ "id": id, "result": reply })).await;
@@ -306,12 +324,99 @@ async fn read_sends_its_limit_into_the_page_and_reports_the_cut() {
     assert!(text.text_truncated);
 }
 
+/// Every page-controlled string is cut in the page, before it crosses the
+/// pipe, and never inside a surrogate pair.
 #[test]
-fn the_read_expression_cuts_in_the_page_and_never_splits_a_surrogate_pair() {
-    let expression = super::read_expression(100_000);
-    assert!(expression.contains("all.length > 100000 ? all.slice(0, 100000) : all"));
-    assert!(expression.contains("last >= 0xD800 && last <= 0xDBFF"));
-    assert!(expression.contains("text_truncated: text.length < all.length"));
+fn the_page_side_reads_cut_every_page_controlled_string() {
+    let read = super::read_expression(100_000);
+    assert!(read.contains("const text = cut(all, 100000)"), "{read}");
+    assert!(
+        read.contains("text_truncated: text.length < all.length"),
+        "{read}"
+    );
+    for expression in [read, super::location_expression()] {
+        assert!(expression.contains(super::CUT_JS), "{expression}");
+        assert!(
+            expression.contains("title: cut(document.title, 1000)"),
+            "{expression}"
+        );
+        assert!(
+            expression.contains("url: cut(location.href, 4096)"),
+            "{expression}"
+        );
+    }
+    assert!(super::CUT_JS.contains("c >= 0xD800 && c <= 0xDBFF"));
+}
+
+#[test]
+fn a_cut_counts_utf16_units_and_never_splits_a_character() {
+    let mut s = "abc\u{1F600}d".to_owned();
+    assert!(super::cut(&mut s, 4));
+    assert_eq!(s, "abc");
+    let mut s = "abc\u{1F600}d".to_owned();
+    assert!(super::cut(&mut s, 5));
+    assert_eq!(s, "abc\u{1F600}");
+    let mut s = "abc\u{1F600}d".to_owned();
+    assert!(!super::cut(&mut s, 6));
+    assert_eq!(s, "abc\u{1F600}d");
+}
+
+/// What a page controls is bounded in what reaches the caller even when the
+/// page-side cut was defeated (a page can replace `String.prototype.slice`).
+#[tokio::test]
+async fn read_bounds_the_title_url_and_text_it_returns() {
+    let (cdp, peer) = connected();
+    let script = Script::new(&[("only", "visible")]).long_strings();
+    let server = script.serve(peer);
+    let text = read(&cdp, 50).await.unwrap();
+    server.abort();
+    assert!(
+        text.title.encode_utf16().count() <= 1000,
+        "{}",
+        text.title.len()
+    );
+    assert!(
+        text.url.encode_utf16().count() <= 4096,
+        "{}",
+        text.url.len()
+    );
+    assert!(
+        text.text.encode_utf16().count() <= 50,
+        "{}",
+        text.text.len()
+    );
+    assert!(text.text_truncated);
+    assert!(text.title.starts_with("after"));
+}
+
+#[tokio::test]
+async fn navigate_bounds_the_title_and_url_it_returns() {
+    let (cdp, peer) = connected();
+    let script = Script::new(&[("only", "visible")]).long_strings();
+    let server = script.serve(peer);
+    let navigated = navigate(&cdp, "https://after.test/", Duration::from_secs(5))
+        .await
+        .unwrap();
+    server.abort();
+    assert!(navigated.title.encode_utf16().count() <= 1000);
+    assert!(navigated.url.encode_utf16().count() <= 4096);
+}
+
+/// Refusals name every page; the names are bounded too.
+#[tokio::test]
+async fn refusals_bound_the_page_titles_and_urls_they_name() {
+    let (cdp, peer) = connected();
+    let script = Script::new(&[("one", "visible"), ("two", "visible")]).long_strings();
+    let server = script.serve(peer);
+    let result = read(&cdp, LIMIT).await;
+    server.abort();
+    let Err(Error::AmbiguousPage { pages }) = result else {
+        panic!("expected AmbiguousPage, got {result:?}");
+    };
+    for page in pages {
+        assert!(page.title.encode_utf16().count() <= 1000);
+        assert!(page.url.encode_utf16().count() <= 4096);
+    }
 }
 
 fn ids(pages: &[PageInfo]) -> Vec<&str> {

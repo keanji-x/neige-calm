@@ -67,11 +67,17 @@ async fn stream(
     }
 }
 
-/// Launches the app if it is not running and waits for its main window.
+/// Launches the app if it is not running and waits for its main window. A
+/// running app is served from its published state, never behind the app's
+/// queue, where an agent's navigation may be waiting on a hung page.
 async fn main_window_source(desktop: &Desktop) -> Arc<dyn WindowSource> {
-    let pid = match desktop.app.start().await {
-        Ok(pid) => pid,
-        Err(e) => return Arc::new(NoWindow(e.to_string())),
+    let running = desktop.app.state().pid;
+    let pid = match running {
+        Some(pid) => pid,
+        None => match desktop.app.start().await {
+            Ok(pid) => pid,
+            Err(e) => return Arc::new(NoWindow(e.to_string())),
+        },
     };
     let state = desktop.app.subscribe();
     let still_running = move || state.borrow().pid == Some(pid);
@@ -80,10 +86,11 @@ async fn main_window_source(desktop: &Desktop) -> Arc<dyn WindowSource> {
         .wait_main_window(pid, MAIN_WINDOW_WAIT, still_running)
         .await
     {
-        Some(window) => Arc::new(CompositorWindow::new(
+        Some(window) => Arc::new(CompositorWindow::main_window(
             desktop.compositor.clone(),
             desktop.windows.clone(),
             window.id,
+            pid,
         )),
         None => Arc::new(NoWindow(format!(
             "Chrome (pid {pid}) showed no window within {MAIN_WINDOW_WAIT:?}"

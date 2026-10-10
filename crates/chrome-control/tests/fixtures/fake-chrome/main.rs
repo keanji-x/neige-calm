@@ -1,15 +1,18 @@
 //! Test fixture: a stand-in for Chrome, started through `Chrome::launch`.
 //!
 //! It reads its mode from `<user-data-dir>/fake-chrome-mode`:
-//! - `serve`: answer every CDP command on fd 3 with a result on fd 4.
+//! - `serve`: answer every CDP command on fd 3 with a result on fd 4; on
+//!   `Browser.close`, answer and exit 0, as Chrome closes in order.
 //! - `helpers`: first fork three helpers, as Chrome forks its zygotes and
 //!   crashpad handlers: one stays in the browser's process group, one moves to
 //!   a group of its own, one starts a new session. Their pids go to
 //!   `<user-data-dir>/fake-chrome-helpers` as `in_group own_group session`.
-//!   Then serve.
+//!   Then serve. `helpers-ignore-close` does the same and serves as
+//!   `ignore-close` does.
 //!   The in-group helper records a SIGTERM by creating
 //!   `<user-data-dir>/in-group-helper-sigterm` before it exits.
-//! - `ignore-term`: ignore SIGTERM, then serve.
+//! - `ignore-close`: serve, but answer `Browser.close` without closing.
+//! - `ignore-term`: ignore SIGTERM, then serve as `ignore-close` does.
 //! - `exit:<code>`: exit at once with `code` (a hand-off to a profile holder).
 //!
 //! Unlike Chrome, it does not exit when the CDP pipe closes, so tests observe
@@ -62,7 +65,7 @@ mod fake {
             // SAFETY: plain signal disposition change.
             unsafe { libc::signal(libc::SIGTERM, libc::SIG_IGN) };
         }
-        if mode == "helpers" {
+        if mode.starts_with("helpers") {
             let marker = profile.join("in-group-helper-sigterm");
             let marker = CString::new(marker.into_os_string().into_encoded_bytes()).unwrap();
             SIGTERM_MARKER.store(marker.into_raw(), Ordering::SeqCst);
@@ -92,7 +95,7 @@ mod fake {
             fs::write(&staged, list).unwrap();
             fs::rename(staged, profile.join("fake-chrome-helpers")).unwrap();
         }
-        serve();
+        serve(!mode.ends_with("ignore-close") && mode != "ignore-term");
         std::thread::sleep(LIFETIME);
     }
 
@@ -120,8 +123,9 @@ mod fake {
         }
     }
 
-    /// Answers CDP commands until the pipe closes.
-    fn serve() {
+    /// Answers CDP commands until the pipe closes; `Browser.close` ends the
+    /// process when `closes`.
+    fn serve(closes: bool) {
         // SAFETY: Chrome::launch hands us fds 3 (commands) and 4 (responses).
         let commands = unsafe { File::from_raw_fd(3) };
         let mut responses = unsafe { File::from_raw_fd(4) };
@@ -143,6 +147,9 @@ mod fake {
             bytes.push(0);
             if responses.write_all(&bytes).is_err() {
                 return;
+            }
+            if closes && request["method"] == "Browser.close" {
+                std::process::exit(0);
             }
         }
     }

@@ -27,7 +27,7 @@
     },
     {
       "name": "window_cat",
-      "description": "A PNG screenshot of one open window, taken after the window has had a moment (under a second) to draw, plus `{window_id, title, width, height}`. A closed window is an error (-32404), never an old image. Coordinates for `window_input` are pixels of this image.",
+      "description": "A PNG screenshot of one open window, taken after the window has had a moment (under a second) to draw, plus `{window_id, title, width, height}`. An effect that takes longer (a page still loading, an animation) needs another call. A closed window is an error (-32404), never an old image. Coordinates for `window_input` are pixels of this image.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -92,7 +92,7 @@
     },
     {
       "name": "page_open",
-      "description": "Opens an http or https URL in Chrome's visible tab, starting Chrome when it is not running, and returns `{url, title, loaded}` after the page's load event, or after 20 s with `loaded: false` (the load may still go on). Refused, naming the pages, when no tab or more than one tab may be visible (a second window, a popup, a dialog).",
+      "description": "Opens an http or https URL in Chrome's visible tab, the one the owner also sees, replacing what it showed; starts Chrome when it is not running. Returns `{url, title, loaded}` after the page's load event; `loaded: false` when the page committed but its load event had not come within 20 s (it may still go on). A navigation that gets no answer within 20 s at all is an error (-32503), and so is a page that failed to load. Refused (-32409), naming the pages, when no tab or more than one tab may be visible (a second window, a popup, a dialog). The title and url are cut at 1000 and 4096 characters.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -107,13 +107,13 @@
       "annotations": {
         "title": "Open a page",
         "readOnlyHint": false,
-        "destructiveHint": false,
+        "destructiveHint": true,
         "openWorldHint": true
       }
     },
     {
       "name": "page_cat",
-      "description": "The visible Chrome tab's `{url, title, text, text_truncated}`: `text` is the page's rendered text, cut at 100000 characters (`text_truncated` says whether it was). Refused, naming the pages, when no tab or more than one tab may be visible (a second window, a popup, a dialog), and when Chrome is not running (-32503); it does not start Chrome.",
+      "description": "The visible Chrome tab's `{url, title, text, text_truncated}`: `text` is the page's rendered text, cut at 100000 characters (`text_truncated` says whether it was); the title and url are cut at 1000 and 4096. Refused, naming the pages, when no tab or more than one tab may be visible (a second window, a popup, a dialog), and when Chrome is not running (-32503); it does not start Chrome.",
       "input_schema": {
         "type": "object",
         "properties": {},

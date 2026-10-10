@@ -16,9 +16,13 @@ use crate::{Error, Result};
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long launch waits for the exit status after the CDP pipe closed.
 const EXIT_GRACE: Duration = Duration::from_secs(5);
-/// How long [`Chrome::stop`] waits for the browser after SIGTERM: time for an
-/// orderly shutdown in which the network service flushes cookies to disk.
-const STOP_GRACE: Duration = Duration::from_secs(5);
+/// How long [`Chrome::stop`] waits for the browser to close after asking it
+/// over CDP: an orderly shutdown in which the network service writes its
+/// cookies to disk.
+const CLOSE_GRACE: Duration = Duration::from_secs(5);
+/// How long [`Chrome::stop`] waits after SIGTERM, when the browser did not
+/// close on request, before the group's SIGKILL.
+const TERM_GRACE: Duration = Duration::from_secs(2);
 
 /// Exit codes of a browser that found its profile held by another browser
 /// before it answered on the CDP pipe:
@@ -111,13 +115,29 @@ impl Chrome {
         self.process.exited().await
     }
 
-    /// Sends SIGTERM to the browser process alone, so Chrome shuts down in
-    /// order (its network service flushes cookies), waits up to five seconds
-    /// for it to exit, then sends SIGKILL to the whole group, which ends any
-    /// helper still in it, and returns the browser's exit status.
+    /// Stops the browser in order and returns its exit status:
+    /// 1. asks it over CDP to close (`Browser.close`), which shuts Chrome down
+    ///    the way closing its last window does, cookies written to disk
+    ///    (SIGTERM alone ends it within milliseconds, before they are), and
+    ///    waits up to five seconds for it to exit;
+    /// 2. if it has not, sends SIGTERM to the browser process alone and waits
+    ///    two more seconds;
+    /// 3. sends SIGKILL to the whole group, which ends any helper still in it.
+    ///
+    /// Every signal goes to a browser this handle has not reaped yet.
     pub async fn stop(self) -> Result<ExitStatus> {
-        self.process.signal_leader(libc::SIGTERM);
-        let _ = tokio::time::timeout(STOP_GRACE, self.process.exited()).await;
+        let closed = async {
+            // A reply, an error or a closed pipe: either way, wait for the exit.
+            let _ = self
+                .cdp
+                .call("Browser.close", json!({}), None, CLOSE_GRACE)
+                .await;
+            self.process.exited().await
+        };
+        if tokio::time::timeout(CLOSE_GRACE, closed).await.is_err() {
+            self.process.signal_leader(libc::SIGTERM);
+            let _ = tokio::time::timeout(TERM_GRACE, self.process.exited()).await;
+        }
         self.process.signal_group(libc::SIGKILL);
         self.process.exited().await
     }

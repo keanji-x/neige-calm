@@ -327,6 +327,99 @@ async fn a_killed_desktop_takes_chrome_along_and_a_new_one_takes_over() {
     assert!(alive(relaunched));
 }
 
+/// A line that is not UTF-8 is a malformed frame: skipped, not the end of
+/// stdin.
+#[test]
+fn a_line_that_is_not_utf8_is_skipped() {
+    let tmp = tmp();
+    let mut plugin = Plugin::spawn(&tmp.path().join("desktop"));
+    plugin.initialize(FAKE_CHROME);
+    plugin.write_line(b"{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"\xff\xfe\"}");
+    let ls = plugin.tool("window_ls", json!({})).unwrap();
+    assert_eq!(ls["structuredContent"]["apps"][0]["app"], "chrome");
+    assert!(plugin.wait_exit(Duration::from_millis(100)).is_none());
+}
+
+/// A new viewer of a running app is served at once, also while an agent's
+/// navigation waits on a browser that does not answer.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_viewer_is_served_while_a_navigation_hangs() {
+    let tmp = tmp();
+    let mut plugin = Plugin::spawn(&tmp.path().join("desktop"));
+    plugin.initialize(FAKE_CHROME);
+    let mut first = connect(&plugin).await;
+    assert_eq!(next_text(&mut first).await["type"], "hello");
+    drop(first);
+    std::fs::write(plugin.home().join("hang-cdp"), b"").unwrap();
+    let _hung = plugin.send(
+        "tools/call",
+        json!({ "name": "page_open", "arguments": { "url": "https://example.com/" } }),
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let started = std::time::Instant::now();
+    let mut second = connect(&plugin).await;
+    let hello = tokio::time::timeout(Duration::from_secs(3), next_text(&mut second))
+        .await
+        .unwrap_or_else(|_| panic!("no hello within 3 s of a hung navigation"));
+    assert_eq!(hello["type"], "hello", "{hello}");
+    assert!(started.elapsed() < Duration::from_secs(3));
+}
+
+/// A newer window of the app (a login popup) ends the session on the older
+/// one, so the viewer reconnects to it; its close ends that session, and the
+/// next one streams the original window again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_main_window_ends_the_session_and_the_next_one_streams_it() {
+    let tmp = tmp();
+    let mut plugin = Plugin::spawn(&tmp.path().join("desktop"));
+    plugin.initialize(FAKE_CHROME);
+    let mut first = connect(&plugin).await;
+    assert_eq!(next_text(&mut first).await["title"], "Fake Chrome");
+    std::fs::write(plugin.home().join("open-second"), b"").unwrap();
+    until_closed(&mut first).await;
+
+    let mut second = connect(&plugin).await;
+    assert_eq!(next_text(&mut second).await["title"], "Fake Popup");
+    let ls = plugin.tool("window_ls", json!({})).unwrap()["structuredContent"].clone();
+    assert_eq!(ls["windows"].as_array().unwrap().len(), 2, "{ls}");
+    std::fs::write(plugin.home().join("close-second"), b"").unwrap();
+    until_closed(&mut second).await;
+
+    let mut third = connect(&plugin).await;
+    assert_eq!(next_text(&mut third).await["title"], "Fake Chrome");
+}
+
+async fn connect(plugin: &Plugin) -> Ws {
+    let stream = tokio::net::UnixStream::connect(plugin.socket())
+        .await
+        .unwrap();
+    tokio_tungstenite::client_async("ws://localhost/apps/chrome/stream", stream)
+        .await
+        .expect("upgrade")
+        .0
+}
+
+/// Reads until `closed`, which must come within 10 s.
+async fn until_closed(ws: &mut Ws) {
+    let wait = async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    let message: Value = serde_json::from_str(&text).unwrap();
+                    if message["type"] == "closed" {
+                        return;
+                    }
+                }
+                Some(Ok(_)) => {}
+                other => panic!("expected closed, got {other:?}"),
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), wait)
+        .await
+        .expect("closed within 10 s");
+}
+
 /// Starts the fake Chrome through `page_open`, which the fake cannot serve.
 fn launch_fake(plugin: &mut Plugin) -> u32 {
     let err = plugin

@@ -94,12 +94,29 @@ impl Plugin {
 
     /// Sends one request and waits for its reply frame.
     pub fn request(&mut self, method: &str, params: Value) -> Value {
+        let id = self.send(method, params);
+        self.reply(id)
+    }
+
+    /// Sends one request without waiting; its id.
+    pub fn send(&mut self, method: &str, params: Value) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         let frame = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+        self.write_line(frame.to_string().as_bytes());
+        id
+    }
+
+    /// Writes `bytes` and a newline to stdin as they are.
+    pub fn write_line(&mut self, bytes: &[u8]) {
         let stdin = self.stdin.as_mut().expect("stdin open");
-        writeln!(stdin, "{frame}").unwrap();
+        stdin.write_all(bytes).unwrap();
+        stdin.write_all(b"\n").unwrap();
         stdin.flush().unwrap();
+    }
+
+    /// Waits for the reply to request `id`.
+    pub fn reply(&mut self, id: u64) -> Value {
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             if let Some(reply) = self.pending.remove(&id) {

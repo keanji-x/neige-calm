@@ -215,8 +215,8 @@ fn owner_sigkill_kills_the_browser() {
     );
 }
 
-/// `stop()`: SIGTERM then SIGKILL to the browser's group ends the browser and
-/// every helper still in the group, and nothing outside it.
+/// `stop()`: the browser closes itself on `Browser.close`, then SIGKILL to its
+/// group ends every helper still in the group, and nothing outside it.
 #[tokio::test]
 async fn stop_ends_the_browser_group() {
     let dirs = dirs("helpers");
@@ -225,8 +225,9 @@ async fn stop_ends_the_browser_group() {
     let (in_group, own_group, session) = helpers(&dirs.profile);
     let status = chrome.stop().await.unwrap();
     assert_eq!(
-        std::os::unix::process::ExitStatusExt::signal(&status),
-        Some(libc::SIGTERM)
+        status.code(),
+        Some(0),
+        "the browser closed itself: {status}"
     );
     assert!(!browser.alive(), "stop returns after the browser exited");
     assert!(
@@ -239,11 +240,12 @@ async fn stop_ends_the_browser_group() {
     );
 }
 
-/// `stop()` sends SIGTERM to the browser alone, so Chrome shuts down in order;
-/// only then does SIGKILL reach the rest of the group.
+/// When the browser does not close on request, `stop()` sends SIGTERM to the
+/// browser alone, so Chrome shuts down in order; only then does SIGKILL reach
+/// the rest of the group.
 #[tokio::test]
 async fn stop_sends_sigterm_to_the_browser_only() {
-    let dirs = dirs("helpers");
+    let dirs = dirs("helpers-ignore-close");
     let chrome = Chrome::launch(config(&dirs)).await.unwrap();
     let (in_group, _own_group, _session) = helpers(&dirs.profile);
     chrome.stop().await.unwrap();
@@ -254,10 +256,46 @@ async fn stop_sends_sigterm_to_the_browser_only() {
     );
 }
 
-/// A browser that does not exit on SIGTERM gets the full grace period (time
-/// to flush cookies), then SIGKILL.
+/// `stop()` asks the browser to close over CDP first: Chrome then shuts down
+/// in order and writes its cookies; SIGTERM alone ends it before they are
+/// written. A browser that closes gets no signal before it exits.
 #[tokio::test]
-async fn stop_gives_the_browser_five_seconds_before_sigkill() {
+async fn stop_asks_the_browser_to_close_before_any_signal() {
+    let dirs = dirs("serve");
+    let chrome = Chrome::launch(config(&dirs)).await.unwrap();
+    let started = Instant::now();
+    let status = chrome.stop().await.unwrap();
+    assert_eq!(status.code(), Some(0), "closed, not signalled: {status}");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+/// A browser that does not close on request gets the five-second grace, then
+/// SIGTERM to the browser alone.
+#[tokio::test]
+async fn stop_falls_back_to_sigterm_when_the_browser_does_not_close() {
+    let dirs = dirs("ignore-close");
+    let chrome = Chrome::launch(config(&dirs)).await.unwrap();
+    let started = Instant::now();
+    let status = chrome.stop().await.unwrap();
+    let took = started.elapsed();
+    assert_eq!(
+        std::os::unix::process::ExitStatusExt::signal(&status),
+        Some(libc::SIGTERM)
+    );
+    assert!(
+        took >= Duration::from_millis(4900) && took < Duration::from_secs(7),
+        "stop took {took:?}"
+    );
+}
+
+/// A browser that neither closes nor exits on SIGTERM gets the close grace
+/// and the SIGTERM grace, then SIGKILL.
+#[tokio::test]
+async fn stop_kills_a_browser_that_ignores_close_and_sigterm() {
     let dirs = dirs("ignore-term");
     let chrome = Chrome::launch(config(&dirs)).await.unwrap();
     let started = Instant::now();
@@ -268,7 +306,7 @@ async fn stop_gives_the_browser_five_seconds_before_sigkill() {
         Some(libc::SIGKILL)
     );
     assert!(
-        took >= Duration::from_millis(4900) && took < Duration::from_secs(8),
+        took >= Duration::from_millis(6900) && took < Duration::from_secs(10),
         "stop took {took:?}"
     );
 }

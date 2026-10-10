@@ -266,6 +266,8 @@ fn the_manifest_matches_the_binary_and_the_kernel_accepts_it() {
             }
             "window_input" | "page_open" => {
                 assert_eq!(a["readOnlyHint"], false, "{}", tool.name);
+                // Both can discard what the owner had open in the shared tab.
+                assert_eq!(a["destructiveHint"], true, "{}", tool.name);
                 assert_eq!(a["openWorldHint"], true, "{}", tool.name);
             }
             other => panic!("unexpected tool {other}"),

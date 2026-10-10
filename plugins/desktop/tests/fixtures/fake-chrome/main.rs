@@ -9,7 +9,10 @@
 //!   callback, as a real client draws only when the compositor asks.
 //! - Under `$HOME`: writes `fake-chrome.pid`, appends `key <evdev> <0|1>` and
 //!   `button <code> <0|1>` lines to `fake-chrome.log`, and closes its window
-//!   and exits when a file named `close` appears.
+//!   and exits when a file named `close` appears. While `open-second` exists it
+//!   maps a second toplevel, "Fake Popup", solid red, and `close-second`
+//!   closes it again. While `hang-cdp` exists, `Target.getTargets` is never
+//!   answered (a hung browser).
 #[cfg(target_os = "linux")]
 fn main() {
     fake::main();
@@ -42,7 +45,8 @@ mod fake {
         let home = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
         std::fs::write(home.join("fake-chrome.pid"), std::process::id().to_string()).unwrap();
         if std::env::var_os("FAKE_CHROME_NO_CDP").is_none() {
-            std::thread::spawn(serve_cdp);
+            let home = home.clone();
+            std::thread::spawn(move || serve_cdp(&home));
         }
         let conn = Connection::connect_to_env().expect("connect to WAYLAND_DISPLAY");
         let (globals, mut queue) = registry_queue_init::<Client>(&conn).expect("registry");
@@ -51,42 +55,48 @@ mod fake {
         let wm_base: xdg_wm_base::XdgWmBase = globals.bind(&qh, 2..=2, ()).unwrap();
         let shm: wl_shm::WlShm = globals.bind(&qh, 1..=1, ()).unwrap();
         let _seat: wl_seat::WlSeat = globals.bind(&qh, 5..=5, ()).unwrap();
-        let surface = compositor.create_surface(&qh, ());
-        let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
-        let toplevel = xdg.get_toplevel(&qh, ());
-        toplevel.set_title("Fake Chrome".into());
-        surface.commit();
         let mut client = Client {
             qh: qh.clone(),
             shm,
-            surface,
-            xdg,
-            size: None,
-            configure: None,
+            windows: Vec::new(),
             redraw: None,
             log: OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(home.join("fake-chrome.log"))
                 .unwrap(),
-            buffers: Vec::new(),
         };
-        let close = home.join("close");
-        let mut mapped = false;
+        client.open(&compositor, &wm_base, "Fake Chrome", BLUE);
+        let (close, open_second, close_second) = (
+            home.join("close"),
+            home.join("open-second"),
+            home.join("close-second"),
+        );
+        let mut second_opened = false;
         loop {
             queue.dispatch_pending(&mut client).unwrap();
-            if let Some(serial) = client.configure.take() {
-                client.xdg.ack_configure(serial);
-                if !mapped {
-                    client.draw(BLUE);
-                    mapped = true;
+            for window in &mut client.windows {
+                if let Some(serial) = window.configure.take() {
+                    window.xdg.ack_configure(serial);
+                    if !window.mapped {
+                        window.mapped = true;
+                        let rgb = window.rgb;
+                        window.draw(&client.shm, &client.qh, rgb);
+                    }
                 }
+            }
+            if open_second.exists() && !second_opened {
+                second_opened = true;
+                client.open(&compositor, &wm_base, "Fake Popup", RED);
+            }
+            if close_second.exists() && client.windows.len() == 2 {
+                client.windows.pop().unwrap().destroy();
             }
             queue.flush().unwrap();
             if close.exists() {
-                toplevel.destroy();
-                client.xdg.destroy();
-                client.surface.destroy();
+                for window in client.windows.drain(..) {
+                    window.destroy();
+                }
                 queue.flush().unwrap();
                 std::process::exit(0);
             }
@@ -108,18 +118,58 @@ mod fake {
     struct Client {
         qh: QueueHandle<Client>,
         shm: wl_shm::WlShm,
-        surface: wl_surface::WlSurface,
-        xdg: xdg_surface::XdgSurface,
-        size: Option<(i32, i32)>,
-        configure: Option<u32>,
-        /// The colour to draw at the next frame callback.
+        /// The main window first; a second one while `open-second` exists.
+        windows: Vec<Window>,
+        /// The colour the main window draws at its next frame callback.
         redraw: Option<u32>,
         log: File,
+    }
+
+    struct Window {
+        surface: wl_surface::WlSurface,
+        xdg: xdg_surface::XdgSurface,
+        toplevel: xdg_toplevel::XdgToplevel,
+        rgb: u32,
+        size: Option<(i32, i32)>,
+        configure: Option<u32>,
+        mapped: bool,
         buffers: Vec<(File, wl_shm_pool::WlShmPool, wl_buffer::WlBuffer)>,
     }
 
     impl Client {
-        fn draw(&mut self, rgb: u32) {
+        fn open(
+            &mut self,
+            compositor: &wl_compositor::WlCompositor,
+            wm_base: &xdg_wm_base::XdgWmBase,
+            title: &str,
+            rgb: u32,
+        ) {
+            let index = self.windows.len();
+            let surface = compositor.create_surface(&self.qh, ());
+            let xdg = wm_base.get_xdg_surface(&surface, &self.qh, index);
+            let toplevel = xdg.get_toplevel(&self.qh, index);
+            toplevel.set_title(title.into());
+            surface.commit();
+            self.windows.push(Window {
+                surface,
+                xdg,
+                toplevel,
+                rgb,
+                size: None,
+                configure: None,
+                mapped: false,
+                buffers: Vec::new(),
+            });
+        }
+
+        fn note(&mut self, line: String) {
+            writeln!(self.log, "{line}").unwrap();
+            self.log.flush().unwrap();
+        }
+    }
+
+    impl Window {
+        fn draw(&mut self, shm: &wl_shm::WlShm, qh: &QueueHandle<Client>, rgb: u32) {
             let (w, h) = self.size.unwrap_or((640, 480));
             let len = (w * h * 4) as usize;
             // SAFETY: memfd_create with a valid NUL-terminated name.
@@ -129,8 +179,8 @@ mod fake {
             let mut file = unsafe { File::from_raw_fd(fd) };
             let pixels: Vec<u8> = rgb.to_le_bytes().repeat((w * h) as usize);
             file.write_all(&pixels).unwrap();
-            let pool = self.shm.create_pool(file.as_fd(), len as i32, &self.qh, ());
-            let buffer = pool.create_buffer(0, w, h, w * 4, wl_shm::Format::Xrgb8888, &self.qh, ());
+            let pool = shm.create_pool(file.as_fd(), len as i32, qh, ());
+            let buffer = pool.create_buffer(0, w, h, w * 4, wl_shm::Format::Xrgb8888, qh, ());
             self.surface.attach(Some(&buffer), 0, 0);
             self.surface.damage_buffer(0, 0, w, h);
             self.surface.commit();
@@ -143,14 +193,15 @@ mod fake {
             }
         }
 
-        fn note(&mut self, line: String) {
-            writeln!(self.log, "{line}").unwrap();
-            self.log.flush().unwrap();
+        fn destroy(self) {
+            self.toplevel.destroy();
+            self.xdg.destroy();
+            self.surface.destroy();
         }
     }
 
     /// Minimal CDP: fd 3 in, fd 4 out, NUL-delimited.
-    fn serve_cdp() {
+    fn serve_cdp(home: &std::path::Path) {
         // SAFETY: the launcher put the CDP pipe ends on fds 3 and 4.
         let mut commands = unsafe { File::from_raw_fd(3) };
         let mut responses = unsafe { File::from_raw_fd(4) };
@@ -170,6 +221,8 @@ mod fake {
                     "Browser.getVersion" => {
                         json!({ "id": id, "result": { "product": "FakeChrome/1" } })
                     }
+                    // A hung browser while `hang-cdp` exists: no answer at all.
+                    "Target.getTargets" if home.join("hang-cdp").exists() => continue,
                     "Target.getTargets" => json!({ "id": id, "result": { "targetInfos": [] } }),
                     other => {
                         json!({ "id": id, "error": { "code": -32601, "message": format!("{other} not faked") } })
@@ -209,35 +262,38 @@ mod fake {
         }
     }
 
-    impl Dispatch<xdg_surface::XdgSurface, ()> for Client {
+    impl Dispatch<xdg_surface::XdgSurface, usize> for Client {
         fn event(
             state: &mut Self,
             _: &xdg_surface::XdgSurface,
             event: xdg_surface::Event,
-            _: &(),
+            index: &usize,
             _: &Connection,
             _: &QueueHandle<Self>,
         ) {
-            if let xdg_surface::Event::Configure { serial } = event {
-                state.configure = Some(serial);
+            if let xdg_surface::Event::Configure { serial } = event
+                && let Some(window) = state.windows.get_mut(*index)
+            {
+                window.configure = Some(serial);
             }
         }
     }
 
-    impl Dispatch<xdg_toplevel::XdgToplevel, ()> for Client {
+    impl Dispatch<xdg_toplevel::XdgToplevel, usize> for Client {
         fn event(
             state: &mut Self,
             _: &xdg_toplevel::XdgToplevel,
             event: xdg_toplevel::Event,
-            _: &(),
+            index: &usize,
             _: &Connection,
             _: &QueueHandle<Self>,
         ) {
             if let xdg_toplevel::Event::Configure { width, height, .. } = event
                 && width > 0
                 && height > 0
+                && let Some(window) = state.windows.get_mut(*index)
             {
-                state.size = Some((width, height));
+                window.size = Some((width, height));
             }
         }
     }
@@ -284,8 +340,9 @@ mod fake {
                 state.note(format!("key {key} {}", u8::from(pressed)));
                 if key == KEY_R && pressed {
                     state.redraw = Some(RED);
-                    state.surface.frame(qh, ());
-                    state.surface.commit();
+                    let main = &state.windows[0].surface;
+                    main.frame(qh, ());
+                    main.commit();
                 }
             }
         }
@@ -324,7 +381,8 @@ mod fake {
             if let wl_callback::Event::Done { .. } = event
                 && let Some(rgb) = state.redraw.take()
             {
-                state.draw(rgb);
+                let (shm, qh) = (state.shm.clone(), state.qh.clone());
+                state.windows[0].draw(&shm, &qh, rgb);
             }
         }
     }

@@ -8,8 +8,9 @@
 //!
 //! - the browser runs in its own process group with `PR_SET_PDEATHSIG(SIGKILL)`,
 //!   forked from one launcher thread that lives as long as the process;
-//! - [`Chrome::stop`] and dropping the handle signal that group, and only while
-//!   the browser is unreaped, so its id cannot name another process;
+//! - [`Chrome::stop`] asks the browser to close over CDP first; it and
+//!   dropping the handle signal that group, and only while the browser is
+//!   unreaped, so its id cannot name another process;
 //! - nothing here signals a process it did not spawn: no pid files, no `/proc`
 //!   scans, no start-up reaping.
 //!

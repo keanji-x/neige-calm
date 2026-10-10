@@ -26,11 +26,21 @@ The kernel reaches the stream through the manifest's `http_socket`
 `/api/plugins/desktop/ws/…`. Neither `desktop` nor Chrome listens on TCP.
 
 Chrome starts on the first demand: a viewer of the stream, or `page_open`. It
-stops when the plugin stops: stdin EOF (the kernel went away) or SIGTERM stop
-it in order (SIGTERM, five seconds, then SIGKILL of its process group); a
-SIGKILL of `desktop` (the kernel's plugin stop) kills Chrome through
-`PR_SET_PDEATHSIG`, and Chrome's helpers exit with it. If the owner closes
-Chrome's last window, the app is not running until the next demand.
+stops when the plugin stops:
+
+- stdin EOF (the kernel went away) or SIGTERM: `desktop` asks Chrome over CDP
+  to close (`Browser.close`), as closing its last window does, so Chrome
+  writes its cookies; if it has not exited after five seconds it gets SIGTERM,
+  and two seconds later its process group gets SIGKILL;
+- a SIGKILL of `desktop`, which is what the kernel's plugin stop, disable,
+  reload and server restart send: Chrome dies through `PR_SET_PDEATHSIG` and
+  its helpers exit with it. Nothing is written in order then, so cookies set
+  in the last seconds before it can be lost (see the known gaps).
+
+If the owner closes Chrome's last window, the app is not running until the
+next demand. A viewer always shows the app's newest open window: when Chrome
+opens another window (a login popup), the stream switches to it, and back
+when it closes.
 
 Files, all under `<plugins_data_dir>/desktop/` (directories 0700):
 
@@ -54,6 +64,9 @@ The kernel serves them as `plugin_desktop_<tool>`.
 | `window_input {window_id, events[]}` | clicks, moves, scrolls, key chords (`ctrl+l`) and US-ASCII text | `{ok: true}` |
 | `page_open {url}` | opens an http(s) URL in the visible tab; starts Chrome | `{url, title, loaded}` |
 | `page_cat` | the visible tab's text, cut at 100000 characters | `{url, title, text, text_truncated}` |
+
+Page titles and urls are the page's to choose; every one a tool returns is cut
+at 1000 and 4096 characters.
 
 A closed window is `-32404`, and Chrome not running is `-32503`; neither ever
 returns an older result. `page_*` refuse with `-32409`, naming every tab, when
@@ -159,8 +172,11 @@ outside. While Chrome or the plugin is stopped, the block shows "unavailable".
 The MVP's last acceptance is manual, on the owner's own account:
 
 1. Enable the plugin, with `proxy_server` set if this host needs a proxy to
-   reach x.com, and open a Report with the Chrome `window` block.
-2. In the block, click the address bar, open `x.com` and log in.
+   reach x.com, and open a Report with the Chrome `window` block. Note
+   whether Google Chrome stable shows the "unsupported command-line flag" bar,
+   and close it.
+2. In the block, click the address bar, open `x.com` and log in. A login
+   popup (Google sign-in) replaces the block's picture while it is open.
 3. Wait at least 60 seconds: Chrome writes cookies in batches, and a plugin
    stop is a SIGKILL.
 4. Restart the plugin (`POST /api/plugins/desktop/reload`), then restart the
@@ -168,6 +184,16 @@ The MVP's last acceptance is manual, on the owner's own account:
 5. Ask an agent to call `page_open https://x.com/home`, summarize the timeline
    with `page_cat`, and show it with `window_cat`. Note whether the model
    received the image (unverified, see below).
+6. A4 on Google Chrome stable. With Chrome running, record the launch:
+
+   ```sh
+   B=$(pgrep -o -f -- "--user-data-dir=$PLUGINS_DATA/desktop/profiles/chrome")
+   ps -o pid=,args= -g "$B" | cut -c1-100 > /tmp/a4-group.txt          # browser, zygotes, renderers…
+   pgrep -af "chrome_crashpad_handler.*$PLUGINS_DATA/desktop/home" > /tmp/a4-crashpad.txt
+   ```
+
+   Disable the plugin (`POST /api/plugins/desktop/disable`), wait 5 seconds,
+   and run `ps -g "$B"` and the `pgrep` again: neither may print a process.
 
 Record the result in the PR.
 
@@ -194,8 +220,13 @@ Record the result in the PR.
   `window_input` can click through their prompts.
 - **Prompt injection.** Page text reaches models. Disabling the plugin is the
   immediate off switch.
-- **Abrupt stop loses the last cookies.** A login made seconds before a stop
-  can be lost.
+- **Abrupt stop loses the last cookies.** The kernel stops a plugin with
+  SIGKILL, so a login made seconds before a plugin stop, reload or server
+  restart can be lost; only stdin EOF and SIGTERM close Chrome in order.
+- **Abrupt stop loses the tabs.** After a SIGKILL Chrome would ask "Restore
+  pages?" in a bubble over the page; `--hide-crash-restore-bubble` hides it
+  (checked on Chrome for Testing 151, no extra flag bar), and the tabs are not
+  restored.
 - **Shared seat.** The owner's and the agents' input interleave; the last
   input wins.
 - **Model image receipt unverified.** Whether Codex or Claude pass the
