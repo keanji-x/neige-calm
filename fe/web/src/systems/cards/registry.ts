@@ -42,6 +42,8 @@ export interface CardComponentProps<Card extends { readonly id: string; readonly
   readonly onRemove?: () => void;
   /** The kernel's activity verdict, or `null`; a prop rather than a capability because it changes every tick and `host` is frozen at mount. */
   readonly activity: CardActivity | null;
+  /** A one-line state the composer supplies about this card (a task worker whose attempt has ended), or `null`. Shown as given; a prop for the same reason as `activity`. */
+  readonly notice: string | null;
 }
 
 /** One create-form input. `kind` is what the form renders; every value reaches the create path as a string. */

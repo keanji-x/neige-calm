@@ -28,7 +28,7 @@ function mountCard(
   const card = partitionTrackCards(registry, [wire]).visible[0]?.card;
   if (card === undefined) throw new Error('Missing built-in card');
   return render(<BoardHost host={createCardHost(registry)} items={[
-    { card, title: kind, originalIndex: 0, deletable: true, activity },
+    { card, title: kind, originalIndex: 0, deletable: true, activity, notice: null },
   ]} visible activeCardId="card-1" />);
 }
 

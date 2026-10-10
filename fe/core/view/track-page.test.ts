@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ReportTaskRow } from '../domain/report.js';
 import { NEUTRAL_ACTIVITY, type CardWire } from '../domain/track.js';
-import { deriveTrackPageView, taskStatusPhrase, type TrackPageActivity } from './track-page.js';
+import { deriveTrackPageView, parkedWorkerNotices, taskStatusPhrase, type TrackPageActivity } from './track-page.js';
 
 function card(overrides: Partial<CardWire> = {}): CardWire {
   return {
@@ -395,4 +395,46 @@ it('separates an execution label from its actual explanation', () => {
   ]).rows;
   expect(detailed.status).toEqual({ token: 'failed', phrase: 'Failed — Gate exited with code 1', detail: 'Gate exited with code 1' });
   expect(labelOnly.status).toEqual({ token: 'failed', phrase: 'Failed', detail: null });
+});
+
+describe('parkedWorkerNotices (#2526)', () => {
+  const worker = (status: string | null, workerCardId: string | null = 'card-w', key = 'alpha-task') =>
+    task({ blockId: `b-${key}`, key, kind: 'codex', status, workerCardId });
+
+  it('names each parked attempt status in the task panel\'s words', () => {
+    const notices = new Map(['verifying', 'done', 'failed', 'canceled'].map((status) => [
+      status, parkedWorkerNotices([worker(status)]).get('card-w'),
+    ]));
+    expect(Object.fromEntries(notices)).toEqual({
+      verifying: 'Checking result — this attempt has ended; input typed here belongs to no task.',
+      done: 'Completed — this attempt has ended; input typed here belongs to no task.',
+      failed: 'Failed — this attempt has ended; input typed here belongs to no task.',
+      canceled: 'Canceled — this attempt has ended; input typed here belongs to no task.',
+    });
+  });
+
+  it('says nothing for a running or starting attempt, an unknown status, or a task without a worker', () => {
+    for (const status of ['running', 'pending', 'dispatched', 'awaiting_projection', 'later-status', null]) {
+      expect(parkedWorkerNotices([worker(status)]).size).toBe(0);
+    }
+    expect(parkedWorkerNotices([worker('done', null)]).size).toBe(0);
+  });
+
+  it('keys by the worker card, so a card no task names (a plain or Planner terminal) has none', () => {
+    const notices = parkedWorkerNotices([worker('done', 'card-w')]);
+    expect([...notices.keys()]).toEqual(['card-w']);
+    expect(notices.get('card-plain')).toBeUndefined();
+  });
+
+  it('reads the loaded execution over the report verdict', () => {
+    const execution = { attemptId: 'a2', generation: 2, status: 'running', label: 'Running',
+      statusDetail: null, workerCardId: 'card-w', blockingReason: null };
+    expect(parkedWorkerNotices([{ ...worker('done'), execution }]).size).toBe(0);
+    expect(parkedWorkerNotices([{ ...worker('running'), execution: { ...execution, status: 'failed' } }]).get('card-w'))
+      .toBe('Failed — this attempt has ended; input typed here belongs to no task.');
+  });
+
+  it('lets a live claim on the card win over a parked one', () => {
+    expect(parkedWorkerNotices([worker('done', 'card-w', 'a'), worker('running', 'card-w', 'b')]).size).toBe(0);
+  });
 });

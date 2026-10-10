@@ -24,7 +24,7 @@ function initialItems(): readonly BoardHostItem[] { return Object.freeze([
   { id: 'preview-working', title: '继续推进', detail: '移动途中拖住顶部，动作会立即交给你。' },
   { id: 'preview-result', title: '查看结果', detail: '拖动右下角调整尺寸，也可以在补位途中试试。' },
 ].map((card, originalIndex): BoardHostItem => Object.freeze({
-  card: Object.freeze({ ...card, type: 'motion-preview' as const }), title: card.title, originalIndex, activity: null,
+  card: Object.freeze({ ...card, type: 'motion-preview' as const }), title: card.title, originalIndex, activity: null, notice: null,
 }))); }
 
 /** Development composition only: actual grid/headers, local cards, no kernel mapping or writes. */

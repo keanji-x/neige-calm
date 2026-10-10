@@ -1,4 +1,5 @@
 import { Suspense, useCallback, useEffect } from 'react';
+import { Banner } from '@astryxdesign/core/Banner';
 
 import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
@@ -9,7 +10,7 @@ import { CardHead } from '../ui/card-head.tsx';
 import type { WorkerSessionState } from '../../../../../core/api/schemas.js';
 import { activityLabelOf, cardActivityState, type CardActivity } from '../../../../../core/domain/activity.js';
 
-export function TerminalCardView({ card, host, onRemove, activity, fallbackTitle = 'terminal' }: {
+export function TerminalCardView({ card, host, onRemove, activity, notice, fallbackTitle = 'terminal' }: {
   card: {
     readonly id: string;
     readonly title: string | null;
@@ -22,6 +23,8 @@ export function TerminalCardView({ card, host, onRemove, activity, fallbackTitle
   onRemove?: () => void;
   /** The head's indicator comes from this alone — not `card.sessionState` (alive while a process exists) nor the surface's connection status (this tab's attachment). */
   activity: CardActivity | null;
+  /** The composer's state line, shown as given above the terminal; it never gates input. */
+  notice: string | null;
   /** Claude and codex worker cards share this renderer and must not announce themselves as "terminal". */
   fallbackTitle?: string;
 }) {
@@ -72,6 +75,9 @@ export function TerminalCardView({ card, host, onRemove, activity, fallbackTitle
       )}
       {card.gateCwd !== null && (
         <PathLabel label="Gate working directory" path={card.gateCwd} />
+      )}
+      {notice !== null && (
+        <Banner status="info" container="section" title={notice} data-nc-terminal-notice="" />
       )}
       <div className="term-body">
         {attached

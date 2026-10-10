@@ -42,7 +42,7 @@ it('brings a newly selected card into the board viewport', async () => {
     card: { type: 'board-scroll-term' as const, id: `card-${index}`, title: `Worker ${index}` },
     title: `Worker ${index}`,
     originalIndex: index,
-    activity: null,
+    activity: null, notice: null,
   }));
 
   function Harness() {
@@ -82,7 +82,7 @@ it('keeps the real dragged card under direct pointer control', async () => {
   await browserPage.viewport(1200, 800);
   const registry = createCardRegistry(); registry.register(entry);
   const host = createCardHost(registry);
-  const items: readonly BoardHostItem[] = [{ card: { type: 'board-scroll-term', id: 'direct-card', title: 'Direct card' }, title: 'Direct card', originalIndex: 0, activity: null }];
+  const items: readonly BoardHostItem[] = [{ card: { type: 'board-scroll-term', id: 'direct-card', title: 'Direct card' }, title: 'Direct card', originalIndex: 0, activity: null, notice: null }];
   render(<div style={{ display: 'flex', inlineSize: 900, blockSize: 600 }}><BoardHost host={host} items={items} activeCardId="direct-card" visible /></div>);
   await expect.poll(() => document.querySelector('[data-nc-card-id="direct-card"]')).not.toBeNull();
   const handle = document.querySelector<HTMLElement>('[data-nc-card-id="direct-card"] [data-nc-card-drag]')!;
@@ -105,7 +105,7 @@ it('keeps feedback timing at rest and suppresses motion during a real resize', a
   await browserPage.viewport(1200, 800);
   const registry = createCardRegistry(); registry.register(entry);
   const host = createCardHost(registry);
-  const items: readonly BoardHostItem[] = [{ card: { type: 'board-scroll-term', id: 'resize-card', title: 'Resize card' }, title: 'Resize card', originalIndex: 0, activity: null }];
+  const items: readonly BoardHostItem[] = [{ card: { type: 'board-scroll-term', id: 'resize-card', title: 'Resize card' }, title: 'Resize card', originalIndex: 0, activity: null, notice: null }];
   render(<div style={{ display: 'flex', inlineSize: 900, blockSize: 600 }}><BoardHost host={host} items={items} activeCardId="resize-card" visible /></div>);
   await expect.poll(() => document.querySelector('[data-nc-card-id="resize-card"]')).not.toBeNull();
   const cell = document.querySelector<HTMLElement>('[data-nc-card-id="resize-card"]')!;
@@ -130,7 +130,7 @@ it('settles a remaining card with native spring geometry after compaction', asyn
   const registry = createCardRegistry(); registry.register(entry);
   const host = createCardHost(registry);
   const item = (id: string, originalIndex: number): BoardHostItem => ({
-    card: { type: 'board-scroll-term', id, title: id }, title: id, originalIndex, activity: null,
+    card: { type: 'board-scroll-term', id, title: id }, title: id, originalIndex, activity: null, notice: null,
   });
   const first = item('first', 0), second = item('second', 1);
   const scene = (items: readonly BoardHostItem[]) => <div style={{ display: 'flex', inlineSize: 900, blockSize: 600 }}>
@@ -157,7 +157,7 @@ it('hands an in-flight compaction to the pointer without jumping', async () => {
   const registry = createCardRegistry(); registry.register(entry);
   const host = createCardHost(registry);
   const item = (id: string, originalIndex: number): BoardHostItem => ({
-    card: { type: 'board-scroll-term', id, title: id }, title: id, originalIndex, activity: null,
+    card: { type: 'board-scroll-term', id, title: id }, title: id, originalIndex, activity: null, notice: null,
   });
   const first = item('handoff-first', 0), second = item('handoff-second', 1);
   const scene = (items: readonly BoardHostItem[]) => <div style={{ display: 'flex', inlineSize: 900, blockSize: 600 }}>
@@ -191,7 +191,7 @@ it('compacts directly when reduced motion is enabled', async () => {
   const registry = createCardRegistry(); registry.register(entry);
   const host = createCardHost(registry);
   const item = (id: string, originalIndex: number): BoardHostItem => ({
-    card: { type: 'board-scroll-term', id, title: id }, title: id, originalIndex, activity: null,
+    card: { type: 'board-scroll-term', id, title: id }, title: id, originalIndex, activity: null, notice: null,
   });
   const first = item('reduce-first', 0), second = item('reduce-second', 1);
   const scene = (items: readonly BoardHostItem[]) => <div style={{ display: 'flex', inlineSize: 900, blockSize: 600 }}>
@@ -211,7 +211,7 @@ it('holds the painted position while an in-flight compaction is resized', async 
   const registry = createCardRegistry(); registry.register(entry);
   const host = createCardHost(registry);
   const item = (id: string, originalIndex: number): BoardHostItem => ({
-    card: { type: 'board-scroll-term', id, title: id }, title: id, originalIndex, activity: null,
+    card: { type: 'board-scroll-term', id, title: id }, title: id, originalIndex, activity: null, notice: null,
   });
   const first = item('resize-flight-first', 0), second = item('resize-flight-second', 1);
   const scene = (items: readonly BoardHostItem[]) => <div style={{ display: 'flex', inlineSize: 900, blockSize: 600 }}>
@@ -249,7 +249,7 @@ it('keeps logical placement when a moving header is clicked without dragging', a
   const host = createCardHost(registry);
   const items: readonly BoardHostItem[] = Array.from({ length: 4 }, (_, originalIndex) => ({
     card: { type: 'board-scroll-term', id: `click-${originalIndex}`, title: null },
-    title: `click-${originalIndex}`, originalIndex, activity: null,
+    title: `click-${originalIndex}`, originalIndex, activity: null, notice: null,
   }));
   const scene = (items: readonly BoardHostItem[]) => <div style={{ display: 'flex', inlineSize: 900, blockSize: 600 }}>
     <BoardHost host={host} items={items} activeCardId={null} visible />

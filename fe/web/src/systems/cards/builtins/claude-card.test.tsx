@@ -29,7 +29,7 @@ describe('claude card component', () => {
       <Component
         card={{ type: 'claude', id: 'c1', title: null, terminalId: 't1', sessionState: 'running', cwd: null, gateCwd: null }}
         host={fakeHost()}
-        activity={null}
+        activity={null} notice={null}
       />,
     );
 
@@ -45,7 +45,7 @@ describe('claude card component', () => {
       <Component
         card={{ type: 'claude', id: 'c1', title: 'tencent-valuation', terminalId: 't1', sessionState: 'running', cwd: null, gateCwd: null }}
         host={fakeHost()}
-        activity={null}
+        activity={null} notice={null}
       />,
     );
     expect(screen.getByText('tencent-valuation')).toBeTruthy();
@@ -58,7 +58,7 @@ describe('claude card component', () => {
       <Component
         card={{ type: 'claude', id: 'c1', title: null, terminalId: null, sessionState: 'starting', cwd: null, gateCwd: null }}
         host={fakeHost()}
-        activity={null}
+        activity={null} notice={null}
       />,
     );
     expect(screen.getByText('Starting claude…')).toBeTruthy();
@@ -72,7 +72,7 @@ describe('claude card component', () => {
       <Component
         card={{ type: 'terminal', id: 't-card', title: null, terminalId: null, sessionState: 'starting', cwd: null, gateCwd: null }}
         host={fakeHost()}
-        activity={null}
+        activity={null} notice={null}
       />,
     );
     expect(screen.getByText('terminal')).toBeTruthy();

@@ -521,3 +521,40 @@ describe('track route TASKS panel convergence', () => {
     expect(reportReads()).toBe(afterFirstRead);
   });
 });
+
+/* #2526: the board tells a task worker whose attempt is no longer running that what is typed into it
+ * serves no task. A display only — the terminal stays live — read from the same task rows the TASKS module draws. */
+describe('track route worker card notice', () => {
+  const PLAIN_TERMINAL = card({ id: 'card-plain', kind: 'terminal', title: 'Plain shell', sort: 7 });
+  const cell = (cardId: string) => [...document.querySelectorAll('[data-nc-card-cell]')]
+    .find((element) => element.getAttribute('data-nc-card-id') === cardId) ?? null;
+  const notice = (cardId: string) => cell(cardId)?.querySelector('[data-nc-terminal-notice]') ?? null;
+  const verdicts = (codexStatus: string) => [
+    { blockId: 'b-term', key: 'has-adapter', schedulable: true, status: 'running', workerCardId: UNKNOWN_TERMINAL.id, diagnostics: [] },
+    { blockId: 'b-codex', key: 'codex-adapter', schedulable: true, status: codexStatus, workerCardId: ORDINARY_CODEX.id, diagnostics: [] },
+  ];
+
+  for (const [status, label] of [
+    ['verifying', 'Checking result'], ['done', 'Completed'], ['failed', 'Failed'], ['canceled', 'Canceled'],
+  ] as const) {
+    it(`marks the ${status} attempt's worker and leaves the running worker and a task-less terminal quiet`, async () => {
+      window.history.replaceState({}, '', `${APP_BASEPATH}/track/w1?card=${ORDINARY_CODEX.id}`);
+      setup([...TASK_CARDS, PLAIN_TERMINAL], { taskDiagnostics: verdicts(status) });
+      await waitFor(() => expect(notice(ORDINARY_CODEX.id)?.textContent)
+        .toBe(`${label} — this attempt has ended; input typed here belongs to no task.`));
+      expect(notice(ORDINARY_CODEX.id)?.getAttribute('role')).toBe('status');
+      expect(notice(UNKNOWN_TERMINAL.id)).toBeNull();
+      expect(notice(PLAIN_TERMINAL.id)).toBeNull();
+      expect(document.querySelectorAll('[data-nc-terminal-notice]')).toHaveLength(1);
+    });
+  }
+
+  it('draws no notice while the attempt runs', async () => {
+    window.history.replaceState({}, '', `${APP_BASEPATH}/track/w1?card=${ORDINARY_CODEX.id}`);
+    setup([...TASK_CARDS, PLAIN_TERMINAL], { taskDiagnostics: verdicts('running') });
+    await waitFor(() => expect(document.querySelector('[data-nc-task-inventory] [data-nc-row="b-codex"] [data-nc-row-action="reveal-block"]')
+      ?.getAttribute('aria-description')).toBe('running'));
+    expect(cell(ORDINARY_CODEX.id)).toBeTruthy();
+    expect(document.querySelectorAll('[data-nc-terminal-notice]')).toHaveLength(0);
+  });
+});

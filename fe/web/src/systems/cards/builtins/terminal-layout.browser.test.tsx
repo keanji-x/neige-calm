@@ -30,7 +30,7 @@ it('preserves attached terminal geometry and output when its session exits', asy
     });
     if (card === null) throw new Error('Missing terminal');
     return <BoardHost host={host} items={[
-      { card, title: 'Terminal', originalIndex: 0, deletable: true, activity: null },
+      { card, title: 'Terminal', originalIndex: 0, deletable: true, activity: null, notice: null },
     ]} visible activeCardId="card-1" />;
   };
   const { rerender } = render(board('running'));
