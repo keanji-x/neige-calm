@@ -133,5 +133,5 @@ pub async fn project_task(pool: &SqlitePool, task: &Task) -> Result<()> {
         )));
     }
     tx.commit().await?;
-    Ok(())
+    calm_server::test_seams::bind_seeded_task_for_test(pool, &task.id).await
 }

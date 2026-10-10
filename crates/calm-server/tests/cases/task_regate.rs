@@ -157,7 +157,7 @@ async fn settled(
     change: Option<&str>,
 ) -> (Task, KernelWorkspaceLease, CandidateRowView) {
     let worker = fx.new_worker(key, AgentProvider::Codex).await;
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, key).await;
     let task = fx.running_task(key, "codex", &worker.card_id, gate).await;
     if let Some(change) = change {
         std::fs::write(lease.path.join(format!("{key}.txt")), change).unwrap();
@@ -214,7 +214,7 @@ async fn regate_reruns_gate_on_same_candidate() {
     let fx = fixture().await;
     let green = outside(&fx, "green");
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "rerun").await;
     let task = fx
         .running_task("rerun", "codex", &worker.card_id, gate_on(&green, None))
         .await;

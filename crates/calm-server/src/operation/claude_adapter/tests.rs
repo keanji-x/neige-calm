@@ -2,7 +2,9 @@ use super::*;
 use crate::db::sqlite::begin_immediate_tx;
 use crate::event::EventBus;
 use crate::git_candidate::delivery::AttemptOutcome;
-use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_repo};
+use crate::operation::workspace_lease::{
+    ReleaseDelivery, release_workspace_lease_for_attempt_repo,
+};
 use crate::operation::{OperationCompletionBus, OperationKey, OperationRepo, SqlxOperationRepo};
 use crate::state::DaemonClient;
 use crate::terminal_renderer::TerminalRendererRegistry;
@@ -100,10 +102,10 @@ async fn claude_worker_prepare_acquires_held_workspace_lease_and_spawn_op() {
     );
 
     assert!(
-        release_workspace_lease_for_card_repo(
+        release_workspace_lease_for_attempt_repo(
             harness.repo.as_ref(),
             &harness.events,
-            &card_id,
+            &bound_attempt(&harness.repo, &card_id).await,
             ReleaseDelivery::Commit(AttemptOutcome::Completed),
         )
         .await
@@ -127,10 +129,10 @@ async fn claude_worker_env_disables_claude_auto_memory() {
         "{}",
         output.data["env"]
     );
-    release_workspace_lease_for_card_repo(
+    release_workspace_lease_for_attempt_repo(
         harness.repo.as_ref(),
         &harness.events,
-        &card_id,
+        &bound_attempt(&harness.repo, &card_id).await,
         ReleaseDelivery::Commit(AttemptOutcome::Completed),
     )
     .await
@@ -162,10 +164,10 @@ async fn claude_worker_prepare_stores_idempotency_key_in_card_payload() {
         output.data.get("prompt").and_then(Value::as_str)
     );
 
-    release_workspace_lease_for_card_repo(
+    release_workspace_lease_for_attempt_repo(
         harness.repo.as_ref(),
         &harness.events,
-        &card_id,
+        &bound_attempt(&harness.repo, &card_id).await,
         ReleaseDelivery::Commit(AttemptOutcome::Completed),
     )
     .await
@@ -255,10 +257,10 @@ async fn claude_worker_spawn_env_carries_raw_card_token_and_socket() {
     assert_eq!(card_hash, token_hash);
     assert_eq!(session_hash.as_deref(), Some(card_hash.as_str()));
 
-    release_workspace_lease_for_card_repo(
+    release_workspace_lease_for_attempt_repo(
         harness.repo.as_ref(),
         &harness.events,
-        &card_id,
+        &bound_attempt(&harness.repo, &card_id).await,
         ReleaseDelivery::Commit(AttemptOutcome::Completed),
     )
     .await
@@ -432,10 +434,10 @@ async fn claude_spawn_refuses_a_checkout_that_moved_after_prepare() {
     );
     assert_eq!(git_head(Path::new(&cwd)), moved_head, "nothing was reset");
 
-    release_workspace_lease_for_card_repo(
+    release_workspace_lease_for_attempt_repo(
         harness.repo.as_ref(),
         &harness.events,
-        &card_id,
+        &bound_attempt(&harness.repo, &card_id).await,
         ReleaseDelivery::Commit(AttemptOutcome::Completed),
     )
     .await
@@ -700,10 +702,10 @@ async fn claude_worker_prompt_includes_completion_task_id() {
     let harness = claude_worker_harness().await;
     let (output, _, _) = prepare_claude_worker(&harness, "identity").await;
     let card_id = output.output_string("card_id", "test").unwrap();
-    release_workspace_lease_for_card_repo(
+    release_workspace_lease_for_attempt_repo(
         harness.repo.as_ref(),
         &harness.events,
-        &card_id,
+        &bound_attempt(&harness.repo, &card_id).await,
         ReleaseDelivery::Commit(AttemptOutcome::Completed),
     )
     .await
@@ -756,6 +758,7 @@ async fn worker_lease_is_kernel_policy() {
         &plain_card,
         &harness.track_id,
         "op-plain",
+        "attempt-plain",
         &harness.workspace.path().join("plain-lease"),
     )
     .await
@@ -769,4 +772,51 @@ async fn worker_lease_is_kernel_policy() {
             .await
             .unwrap();
     assert_eq!(policy, None, "the plain fixture lease is legacy");
+}
+
+/// The attempt the card's worker session is bound to (#2493), read through the owning module.
+async fn bound_attempt(repo: &crate::db::sqlite::SqlxRepo, card_id: &str) -> String {
+    calm_truth::db::RepoRead::card_binding(repo, card_id)
+        .await
+        .unwrap()
+        .and_then(|binding| binding.attempt_id)
+        .expect("the prepared worker card is bound to its attempt")
+}
+
+/// #2493: the claude worker op's prepare binds its attempt to the session it creates, stamps the
+/// card in the same write, and takes the lease for that attempt — one transaction.
+#[tokio::test]
+async fn first_spawn_binds_attempt_in_prepare_tx() {
+    let harness = claude_worker_harness().await;
+    let (output, _, _) = prepare_claude_worker(&harness, "bind").await;
+    let task_id = format!("{}:bind", harness.track_id);
+    let (session, card): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT worker_session_id, worker_card_id FROM tasks WHERE id = ?1")
+            .bind(&task_id)
+            .fetch_one(harness.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        session.as_deref(),
+        Some(output.output_string("runtime_id", "test").unwrap().as_str())
+    );
+    assert_eq!(
+        card.as_deref(),
+        Some(output.output_string("card_id", "test").unwrap().as_str())
+    );
+    let lease_attempt: String =
+        sqlx::query_scalar("SELECT attempt_id FROM workspace_leases WHERE lease_id = ?1")
+            .bind(output.output_string("lease_id", "test").unwrap())
+            .fetch_one(harness.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(lease_attempt, task_id);
+    release_workspace_lease_for_attempt_repo(
+        harness.repo.as_ref(),
+        &harness.events,
+        &task_id,
+        ReleaseDelivery::Commit(AttemptOutcome::Completed),
+    )
+    .await
+    .unwrap();
 }

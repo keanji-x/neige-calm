@@ -43,7 +43,46 @@ pub(crate) async fn insert_task_tx(tx: &mut Transaction<'_, Sqlite>, task: &Task
     .bind(task.start.as_str())
     .execute(&mut **tx)
     .await?;
+    // `worker_card_id` is written only with the binding (#2493): a seeded worker card runs the
+    // attempt in a session of it. A row naming a card the fixture never made stays unbound.
+    if let Some(card_id) = task.worker_card_id.as_deref() {
+        let card_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM cards WHERE id = ?1)")
+                .bind(card_id)
+                .fetch_one(&mut **tx)
+                .await?;
+        if card_exists {
+            bind_seeded_task_tx(tx, task).await?;
+        }
+    }
     Ok(())
+}
+
+/// Bind a seeded `task` (inserted with `worker_card_id` set, its track row present) to a
+/// worker session on that card through the production binder (#2493), whatever status the row was
+/// seeded with: the row is bound while `dispatched`, then given its status back. Returns the
+/// session id.
+pub(crate) async fn bind_seeded_task_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    task: &Task,
+) -> Result<String> {
+    let card_id = task
+        .worker_card_id
+        .as_deref()
+        .expect("a seeded bound task names its worker card");
+    sqlx::query("UPDATE tasks SET status = 'dispatched' WHERE id = ?1")
+        .bind(&task.id)
+        .execute(&mut **tx)
+        .await?;
+    let session_id = crate::test_seams::bind_fixture_worker_tx(tx, &task.id, card_id)
+        .await
+        .map_err(|e| calm_truth::TruthError::Internal(e.to_string()))?;
+    sqlx::query("UPDATE tasks SET status = ?1 WHERE id = ?2")
+        .bind(task.status)
+        .bind(&task.id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(session_id)
 }
 
 /// Give an attached track its #1830 track worktree, as the create route does (the production

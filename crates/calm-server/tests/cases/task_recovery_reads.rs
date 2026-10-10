@@ -429,6 +429,7 @@ async fn task_recovery_list_carries_the_worker_worktree_facts() {
         &card,
         &track,
         "test-owner",
+        &b.id,
         &lease_path,
     )
     .await
@@ -522,6 +523,7 @@ async fn task_recovery_list_names_the_worktree_base_sha_from_the_lease_row() {
         &card,
         &track,
         "test-owner",
+        &format!("{track}:b"),
         &lease_path,
         base_sha,
     )

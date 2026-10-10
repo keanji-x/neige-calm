@@ -333,7 +333,8 @@ async fn cli_state_text_is_one_fact_per_line() {
     );
 }
 
-/// Stamp an ungated task execution on its worker card.
+/// Stamp an ungated task execution on its worker card; a claimed one is bound to the card's
+/// worker session, as its spawn binds it (#2493).
 async fn stamp_task(boot: &CardBoot, id: &str, key: &str, status: &str, worker: &str) {
     sqlx::query(concat!(
         "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,",
@@ -347,6 +348,11 @@ async fn stamp_task(boot: &CardBoot, id: &str, key: &str, status: &str, worker: 
     .execute(boot.sqlx.pool())
     .await
     .unwrap();
+    if status != "pending" {
+        calm_server::test_seams::bind_task_to_card_for_test(boot.sqlx.pool(), id, worker)
+            .await
+            .unwrap();
+    }
 }
 
 #[tokio::test]

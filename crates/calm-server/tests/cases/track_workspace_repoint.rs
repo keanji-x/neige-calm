@@ -1264,6 +1264,7 @@ async fn the_first_workspace_lease_freezes_the_workspace() {
         &card,
         &track,
         "test-owner",
+        "attempt-repoint",
         &target,
     )
     .await
@@ -1328,6 +1329,7 @@ async fn a_workspace_lease_never_freezes_the_launchpad() {
         &planner_card,
         &track,
         "test-owner",
+        "attempt-launchpad",
         &target,
     )
     .await

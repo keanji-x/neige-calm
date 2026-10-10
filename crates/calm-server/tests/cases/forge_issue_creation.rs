@@ -53,14 +53,24 @@ async fn recover(fx: &Fixture, op: &str, lease: &str) -> OperationResult {
     let result = wait_for_recovery_result(&runtime, op).await;
     // Boot reclaims the stale lease. Give the authenticated caller a fresh lease
     // before asking the MCP entry point to replay the durable outcome.
-    let (card, track, path): (String, String, String) =
-        sqlx::query_as("SELECT card_id,track_id,path FROM workspace_leases WHERE lease_id=?1")
-            .bind(lease)
-            .fetch_one(fx.repo.pool())
-            .await
-            .unwrap();
+    let (card, track, path, attempt): (String, String, String, String) = sqlx::query_as(
+        "SELECT card_id,track_id,path,attempt_id FROM workspace_leases WHERE lease_id=?1",
+    )
+    .bind(lease)
+    .fetch_one(fx.repo.pool())
+    .await
+    .unwrap();
+    // The reclaim also failed the lease's attempt (#2493: the lease is its attempt's); the caller
+    // runs it again for the replay.
+    sqlx::query(
+        "UPDATE tasks SET status='running', status_detail=NULL, finished_at_ms=NULL WHERE id=?1",
+    )
+    .bind(&attempt)
+    .execute(fx.repo.pool())
+    .await
+    .unwrap();
     let mut tx = fx.repo.pool().begin().await.unwrap();
-    insert_workspace_lease(&mut tx, &card, &track, &path).await;
+    insert_workspace_lease(&mut tx, &card, &track, &attempt, &path).await;
     tx.commit().await.unwrap();
     result
 }

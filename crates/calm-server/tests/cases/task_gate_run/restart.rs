@@ -29,7 +29,7 @@ impl Drop for Release {
 async fn admitted(world: &FileWorld, key: &str, steps: Value) -> (Attempt, String) {
     let fx = &world.fx;
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, key).await;
     declare(
         &fx.boot,
         json!({"key": key, "kind": "codex", "goal": format!("run {key}"),
@@ -42,6 +42,7 @@ async fn admitted(world: &FileWorld, key: &str, steps: Value) -> (Attempt, Strin
         &fx.pool(),
         &task.id,
         &worker.card_id,
+        &worker.session_id,
         fx.track(),
     )
     .await
@@ -219,6 +220,7 @@ async fn a_restart_after_the_park_ends_the_run_as_infra() {
         &fx.pool(),
         &a.task.id,
         &a.worker.card_id,
+        &a.worker.session_id,
         fx.track(),
     )
     .await

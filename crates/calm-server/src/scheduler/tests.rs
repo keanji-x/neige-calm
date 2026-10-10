@@ -543,18 +543,23 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
     sqlx::query(
         r#"INSERT INTO workspace_leases (
                    lease_id, card_id, track_id, path, state, lease_owner, lease_until_ms,
-                   boot_id, created_at_ms, updated_at_ms
+                   boot_id, created_at_ms, updated_at_ms, attempt_id
                )
                VALUES ('lease-claude-timeout', ?1, ?2, '/tmp/neige-claude-timeout-lease',
-                       'held', 'test-owner', ?3, NULL, ?4, ?4)"#,
+                       'held', 'test-owner', ?3, NULL, ?4, ?4, ?5)"#,
     )
     .bind(card.id.as_ref())
     .bind(track.id.as_str())
     .bind(now + 60_000)
     .bind(now)
+    .bind(&task_id)
     .execute(&pool)
     .await
     .expect("insert held lease");
+    // The spawn's prepare bound the attempt to the card's session and its lease (#2493).
+    crate::test_seams::bind_task_to_card_for_test(&pool, &task_id, card.id.as_ref())
+        .await
+        .expect("bind the attempt to its worker session");
 
     let events = EventBus::new();
     let write = WriteContext::new(

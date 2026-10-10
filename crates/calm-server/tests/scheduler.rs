@@ -469,6 +469,7 @@ fn plan_task(track_id: &TrackId, key: &str, kind: TaskKind, deps: &[&str]) -> Ta
 
 async fn seed_task(boot: &Boot, task: Task) {
     let pool = boot.repo.sqlite_pool().unwrap();
+    let attempt_id = task.id.clone();
     sqlx::query(
         r#"INSERT INTO tasks
            (id,track_id,key,kind,goal,context_json,acceptance_criteria,cwd,
@@ -506,6 +507,9 @@ async fn seed_task(boot: &Boot, task: Task) {
     .execute(&pool)
     .await
     .expect("seed task row");
+    calm_server::test_seams::bind_seeded_task_for_test(&pool, &attempt_id)
+        .await
+        .expect("bind the seeded task's worker");
 }
 
 async fn seed_projected_task(boot: &Boot, task: Task) {
@@ -604,10 +608,13 @@ async fn seed_projected_task_for(
     .bind(task.created_at_ms)
     .bind(task.updated_at_ms)
     .bind(task.finished_at_ms)
-    .bind(task.id)
+    .bind(&task.id)
     .execute(&boot.repo.sqlite_pool().unwrap())
     .await
     .expect("restore projected task runtime state");
+    calm_server::test_seams::bind_seeded_task_for_test(&boot.repo.sqlite_pool().unwrap(), &task.id)
+        .await
+        .expect("bind the seeded task's worker");
 }
 
 async fn set_closed(boot: &Boot, closed: bool) {
@@ -687,6 +694,7 @@ async fn seed_codex_worker_card_with_terminal(
 }
 
 /// Seed a `held` workspace lease whose `path` exists on disk; the caller keeps the returned guard alive for the test.
+/// The held lease of attempt `<track>:<label>` (#2493: a lease is its attempt's) on `card_id`.
 async fn seed_held_workspace_lease(
     boot: &Boot,
     card_id: &str,
@@ -703,9 +711,9 @@ async fn seed_held_workspace_lease(
     sqlx::query(
         r#"INSERT INTO workspace_leases (
                lease_id, card_id, track_id, path, state, lease_owner, lease_until_ms,
-               boot_id, created_at_ms, updated_at_ms
+               boot_id, created_at_ms, updated_at_ms, attempt_id
            )
-           VALUES (?1, ?2, ?3, ?4, 'held', 'test-owner', ?5, NULL, ?6, ?6)"#,
+           VALUES (?1, ?2, ?3, ?4, 'held', 'test-owner', ?5, NULL, ?6, ?6, ?7)"#,
     )
     .bind(&lease_id)
     .bind(card_id)
@@ -713,6 +721,7 @@ async fn seed_held_workspace_lease(
     .bind(path.display().to_string())
     .bind(now + 60_000)
     .bind(now)
+    .bind(format!("{}:{label}", boot.track_id))
     .execute(&pool)
     .await
     .expect("insert held workspace lease");
@@ -808,6 +817,14 @@ async fn seed_worker_op_target(boot: &Boot, kind: &str, task_id: &str, card_id: 
         }),
     )
     .await;
+    // #2493: the scheduler's spawn op binds the attempt to the session it creates on the card.
+    calm_server::test_seams::bind_task_to_card_for_test(
+        &boot.repo.sqlite_pool().expect("sqlite pool"),
+        task_id,
+        card_id,
+    )
+    .await
+    .expect("bind the attempt to its worker card's session");
 }
 
 /// [`seed_worker_op_target`] with a caller-supplied persisted payload.
@@ -973,10 +990,17 @@ impl ProviderAdapter for CardSpawnAdapter {
     }
     async fn prepare_tx<'tx>(
         &self,
-        _tx: &mut Tx<'tx>,
+        tx: &mut Tx<'tx>,
         _input: &Value,
-        _op: &Operation,
+        op: &Operation,
     ) -> CalmResult<TxOutput> {
+        // A worker op's prepare binds its attempt to the session it starts (#2493).
+        calm_server::test_seams::bind_fixture_worker_tx(
+            tx,
+            op.idempotency_key.as_deref().expect("worker op key"),
+            &self.card_id,
+        )
+        .await?;
         Ok(TxOutput::new(
             "card",
             Some(self.card_id.clone()),
@@ -1173,10 +1197,17 @@ impl ProviderAdapter for FastReportAdapter {
     }
     async fn prepare_tx<'tx>(
         &self,
-        _tx: &mut Tx<'tx>,
+        tx: &mut Tx<'tx>,
         _input: &Value,
-        _op: &Operation,
+        op: &Operation,
     ) -> CalmResult<TxOutput> {
+        // A worker op's prepare binds its attempt to the session it starts (#2493).
+        calm_server::test_seams::bind_fixture_worker_tx(
+            tx,
+            op.idempotency_key.as_deref().expect("worker op key"),
+            &self.card_id,
+        )
+        .await?;
         Ok(TxOutput::new(
             "card",
             Some(self.card_id.clone()),
@@ -1960,6 +1991,31 @@ async fn terminal_hook_completes_task_on_exit() {
     assert_eq!(task_row(&boot, "term").await.status, TaskStatus::Done);
 }
 
+/// #2493 row 2: a terminal task's exit completes it by its binding (history), not by the
+/// session's liveness: the ephemeral terminal session has already ended when the exit lands.
+#[tokio::test]
+async fn terminal_exit_completes_a_task_whose_session_already_ended() {
+    let boot = boot().await;
+    let mut task = plan_task(&boot.track_id, "ended-term", TaskKind::Terminal, &[]);
+    task.status = TaskStatus::Running;
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+    let (card_id, terminal_id) = seed_terminal_worker(&boot, &task_id).await;
+    seed_worker_op_target(&boot, "terminal-worker", &task_id, card_id.as_str()).await;
+    sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE card_id = ?1")
+        .bind(card_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+
+    let hook = TerminalTaskHook::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
+    hook.on_terminal_exit(&terminal_id, Some(0), false, "built\n", false)
+        .await;
+
+    assert_eq!(task_row(&boot, "ended-term").await.status, TaskStatus::Done);
+    assert_eq!(event_rows(&boot, "task.completed").await.len(), 1);
+}
+
 #[tokio::test]
 async fn terminal_exit_beats_running_stamp() {
     // The exit lands while the row is still `dispatched`: the hook resolves the task from the card payload's
@@ -1995,14 +2051,8 @@ async fn terminal_exit_beats_running_stamp() {
         move |tx| {
             Box::pin(async move {
                 let now = now_ms();
-                calm_server::db::sqlite::task_mark_running_tx(
-                    tx,
-                    &task_id,
-                    Some("late"),
-                    now,
-                    now + 7_200_000,
-                )
-                .await
+                calm_server::db::sqlite::task_mark_running_tx(tx, &task_id, now, now + 7_200_000)
+                    .await
             })
         }
     })
@@ -7053,7 +7103,12 @@ async fn forged_payload_sibling_report_rejected_without_op_target() {
     .expect_err("forged payload without an op target must be rejected");
     let row = task_row(&boot, "forged").await;
     assert_eq!(row.status, TaskStatus::Dispatched, "row untouched");
-    assert_eq!(row.worker_card_id, None, "no stamp stolen");
+    // #2493: the bind stamped the owning card; the forged report does not move it.
+    assert_eq!(
+        row.worker_card_id.as_deref(),
+        Some(boot.worker_card_id.as_str()),
+        "no stamp stolen"
+    );
     assert!(
         event_rows(&boot, "task.completed").await.is_empty(),
         "rejected forged report persists nothing"
@@ -7111,7 +7166,12 @@ async fn forged_payload_terminal_exit_rejected_without_op_target() {
         TaskStatus::Running,
         "forged terminal exit must not terminalize the unstamped row"
     );
-    assert_eq!(row.worker_card_id, None, "no stamp stolen");
+    // #2493: the bind stamped the real card; the forged exit does not move it.
+    assert_eq!(
+        row.worker_card_id.as_deref(),
+        Some(real_card_id.as_str()),
+        "no stamp stolen"
+    );
     assert!(
         event_rows(&boot, "task.completed").await.is_empty(),
         "rejected forged exit persists nothing"

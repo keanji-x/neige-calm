@@ -517,7 +517,7 @@ async fn candidate_of_another_track(fx: &Fx, attempt: &str, commit: &str) -> Str
             vec![attempt.to_string()],
         ),
         (
-            "UPDATE r5_task SET id = ?1, track_id = ?2",
+            "UPDATE r5_task SET id = ?1, track_id = ?2, worker_session_id = NULL",
             vec![other_attempt.clone(), other.clone()],
         ),
         ("INSERT INTO tasks SELECT * FROM r5_task", vec![]),

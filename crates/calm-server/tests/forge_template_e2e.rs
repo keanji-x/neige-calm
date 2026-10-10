@@ -1593,8 +1593,25 @@ async fn create_worker_caller(
             token.into_inner()
         }
     };
-    let lease_id = insert_workspace_lease(&mut tx, &card_id, track_id.as_str(), &lease_path).await;
+    // The worker runs an attempt (#2493): its forge cwd is that attempt's lease.
+    let attempt_id = format!("{track_id}:forge-worker-{card_id}");
+    let lease_id = insert_workspace_lease(
+        &mut tx,
+        &card_id,
+        track_id.as_str(),
+        &attempt_id,
+        &lease_path,
+    )
+    .await;
     tx.commit().await.expect("commit card tx");
+    calm_server::test_seams::running_worker_attempt_for_test(
+        sqlx_repo.pool(),
+        track_id.as_str(),
+        &card_id,
+        &format!("forge-worker-{card_id}"),
+    )
+    .await
+    .expect("the worker's running attempt");
 
     let thread_id = format!("thread-{card_id}");
     seed_runtime_thread(sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
@@ -1748,6 +1765,7 @@ async fn insert_workspace_lease(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     card_id: &str,
     track_id: &str,
+    attempt_id: &str,
     path: &str,
 ) -> String {
     let now = now_ms();
@@ -1755,9 +1773,9 @@ async fn insert_workspace_lease(
     sqlx::query(
         r#"INSERT INTO workspace_leases (
                lease_id, card_id, track_id, path, state, lease_owner,
-               lease_until_ms, boot_id, created_at_ms, updated_at_ms
+               lease_until_ms, boot_id, created_at_ms, updated_at_ms, attempt_id
            )
-           VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, NULL, ?7, ?7)"#,
+           VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, NULL, ?7, ?7, ?8)"#,
     )
     .bind(&lease_id)
     .bind(card_id)
@@ -1766,6 +1784,7 @@ async fn insert_workspace_lease(
     .bind("test-lease-owner")
     .bind(now + 60_000)
     .bind(now)
+    .bind(attempt_id)
     .execute(&mut **tx)
     .await
     .expect("insert workspace lease");

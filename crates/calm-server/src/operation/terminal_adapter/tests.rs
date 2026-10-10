@@ -369,3 +369,25 @@ mod disposal_tests;
 
 #[cfg(test)]
 mod pty_cwd_tests;
+
+/// #2493: the terminal worker op's prepare binds its attempt to the session it creates and stamps
+/// the card in the same write.
+#[tokio::test]
+async fn first_spawn_binds_attempt_in_prepare_tx() {
+    let harness = terminal_worker_harness().await;
+    let output = prepare_terminal_worker(&harness, "bind").await;
+    let (session, card): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT worker_session_id, worker_card_id FROM tasks WHERE id = ?1")
+            .bind(format!("{}:bind", harness.track_id))
+            .fetch_one(harness.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        session.as_deref(),
+        Some(output.output_string("runtime_id", "test").unwrap().as_str())
+    );
+    assert_eq!(
+        card.as_deref(),
+        Some(output.output_string("card_id", "test").unwrap().as_str())
+    );
+}

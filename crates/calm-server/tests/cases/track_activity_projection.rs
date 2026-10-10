@@ -471,9 +471,12 @@ async fn superseded_failed_attempt_session_is_not_actionable() {
     )
     .await;
     f.claim_attempt(&t, "build", &attempt_b, 6_000).await;
+    let session_b = calm_server::test_seams::bind_worker_for_test(&f.pool, &attempt_b, &card_b)
+        .await
+        .unwrap();
     let mut tx = begin_immediate_tx(&f.pool).await.unwrap();
     assert_eq!(
-        task_mark_running_tx(&mut tx, &attempt_b, Some(&card_b), 7_000, i64::MAX)
+        task_mark_running_tx(&mut tx, &attempt_b, 7_000, i64::MAX)
             .await
             .unwrap(),
         1
@@ -483,9 +486,8 @@ async fn superseded_failed_attempt_session_is_not_actionable() {
             &mut tx,
             &attempt_b,
             &t,
-            calm_server::db::sqlite::TaskReporter::Card {
-                card_id: &card_b,
-                owns_key: true,
+            calm_server::db::sqlite::TaskReporter::Session {
+                session_id: &session_b,
             },
             8_000,
         )

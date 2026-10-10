@@ -211,6 +211,14 @@ async fn insert_task(repo: &SqlxRepo, track_id: &TrackId, key: &str, status: Tas
     task
 }
 
+/// What the spawn op's prepare does for its session (#2493): bind the attempt to the card's
+/// session through the production binder (fixture seam).
+async fn bind_worker(repo: &SqlxRepo, task_id: &str, card: &Card) {
+    crate::test_seams::bind_task_to_card_for_test(repo.pool(), task_id, card.id.as_str())
+        .await
+        .expect("bind the attempt to its worker session");
+}
+
 async fn insert_spawn_operation(
     repo: &SqlxRepo,
     task_id: Option<&str>,
@@ -252,6 +260,7 @@ async fn acquire_test_workspace_lease(
     card_id: &str,
     track_id: &TrackId,
     lease_owner: &str,
+    attempt_id: &str,
 ) -> (String, String) {
     // The worker lease is the track worktree (#1830 S2): give the attached track one first.
     let checkout: String = sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE id = ?1")
@@ -279,6 +288,7 @@ async fn acquire_test_workspace_lease(
         card_id,
         track_id.as_str(),
         lease_owner,
+        attempt_id,
         &plan,
     )
     .await
@@ -441,7 +451,8 @@ async fn sweep_exited_failed_converges_dead_worker_task() {
     let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
     let mut worker = session("ws-dead-worker", track_id.clone(), 1);
     worker.spawn_op_id = Some(op_id);
-    insert_session(&repo, worker).await;
+    let card = insert_session(&repo, worker).await;
+    bind_worker(&repo, &task.id, &card).await;
 
     let fake = Arc::new(FakeProvider::new().with_probe_script([exited_liveness()]));
     let events = EventBus::new();
@@ -520,7 +531,8 @@ async fn sweep_resumable_codex_exited_arbiter_dead_converges() {
     worker.mode = SessionMode::Resumable;
     worker.thread_id = Some("t-codex-dead".into());
     worker.spawn_op_id = Some(op_id);
-    insert_session(&repo, worker).await;
+    let card = insert_session(&repo, worker).await;
+    bind_worker(&repo, &task.id, &card).await;
 
     let fake = Arc::new(
         FakeProvider::new()
@@ -595,7 +607,8 @@ async fn sweep_resumable_codex_dead_worker_releases_same_boot_workspace_lease() 
     worker.spawn_op_id = Some(op_id.clone());
     let card = insert_session(&repo, worker).await;
     let (lease_id, lease_path) =
-        acquire_test_workspace_lease(&repo, card.id.as_str(), &track_id, &op_id).await;
+        acquire_test_workspace_lease(&repo, card.id.as_str(), &track_id, &op_id, &task.id).await;
+    bind_worker(&repo, &task.id, &card).await;
     assert!(
         std::path::Path::new(&lease_path).is_dir(),
         "leased cwd exists before reaping"
@@ -674,8 +687,17 @@ async fn converge_dead_worker_without_spawn_op_releases_workspace_lease() {
     worker.thread_id = Some("t-codex-no-spawn-op".into());
     let card = insert_session(&repo, worker.clone()).await;
     worker.card_id = Some(CardId(card.id.to_string()));
-    let (lease_id, lease_path) =
-        acquire_test_workspace_lease(&repo, card.id.as_str(), &track_id, "missing-spawn-op").await;
+    // The session has no spawn op; its attempt is its binding (#2493).
+    let task = insert_task(&repo, &track_id, "no-spawn-op", TaskStatus::Running).await;
+    let (lease_id, lease_path) = acquire_test_workspace_lease(
+        &repo,
+        card.id.as_str(),
+        &track_id,
+        "missing-spawn-op",
+        &task.id,
+    )
+    .await;
+    bind_worker(&repo, &task.id, &card).await;
     assert!(
         std::path::Path::new(&lease_path).is_dir(),
         "leased cwd exists before converge guard"
@@ -1008,6 +1030,7 @@ async fn sweep_exited_race_lost_after_live_terminal_completion_emits_no_second_e
         .execute(repo.pool())
         .await
         .expect("stamp session spawn op");
+    bind_worker(&repo, &task.id, &worker_card).await;
 
     let events = EventBus::new();
     let write = write_context(&repo).await;
@@ -1017,7 +1040,7 @@ async fn sweep_exited_race_lost_after_live_terminal_completion_emits_no_second_e
         &write,
         &task.id,
         track_id.as_str(),
-        worker_card.id.as_str(),
+        worker.id.as_str(),
         Some(0),
         false,
         "",

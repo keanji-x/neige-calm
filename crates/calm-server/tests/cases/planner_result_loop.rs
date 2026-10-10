@@ -32,9 +32,12 @@ async fn start(boot: &Boot, scheduler: &Arc<Scheduler>, task: &Task, worker_card
     let frozen = current(boot, &task.key).await;
     assert_eq!(frozen.status, TaskStatus::Dispatched);
     let pool = boot.repo.sqlite_pool().unwrap();
+    calm_server::test_seams::bind_worker_for_test(&pool, &task.id, worker_card)
+        .await
+        .unwrap();
     let mut tx = begin_immediate_tx(&pool).await.unwrap();
     assert_eq!(
-        task_mark_running_tx(&mut tx, &task.id, Some(worker_card), 11, 100000)
+        task_mark_running_tx(&mut tx, &task.id, 11, 100000)
             .await
             .unwrap(),
         1
@@ -100,12 +103,13 @@ async fn planner_advertised_result_route_reads_recorded_audit() {
     // worker's lease worktree, so the worker card gets a released lease at `dir`.
     sqlx::query(
         "INSERT INTO workspace_leases (lease_id, path, card_id, track_id, state, lease_owner, \
-         lease_until_ms, created_at_ms, updated_at_ms) \
-         VALUES ('audit-checkout', ?1, ?2, ?3, 'released', 'test', 1, 1, 1)",
+         lease_until_ms, created_at_ms, updated_at_ms, attempt_id) \
+         VALUES ('audit-checkout', ?1, ?2, ?3, 'released', 'test', 1, 1, 1, ?4)",
     )
     .bind(dir.path().to_str().unwrap())
     .bind(boot.worker_card_id.as_str())
     .bind(boot.track_id.as_str())
+    .bind(&a.id)
     .execute(&boot.repo.sqlite_pool().unwrap())
     .await
     .unwrap();

@@ -25,7 +25,7 @@ async fn acquire_plain_workspace_lease_creates_leaf_for_non_git_track_cwd() {
 
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
     let (lease, _event) =
-        acquire_plain_workspace_lease_tx(&mut tx, &card_id, &track_id, "op-test", &path)
+        acquire_plain_workspace_lease_tx(&mut tx, &card_id, &track_id, "op-test", &card_id, &path)
             .await
             .unwrap();
     tx.commit().await.unwrap();
@@ -36,7 +36,7 @@ async fn acquire_plain_workspace_lease_creates_leaf_for_non_git_track_cwd() {
 
     let events = EventBus::new();
     assert!(
-        release_workspace_lease_for_card_repo(
+        release_workspace_lease_for_attempt_repo(
             &repo,
             &events,
             &card_id,
@@ -249,9 +249,10 @@ async fn prepare_takes_the_track_worktree_at_its_head() {
     )
     .await
     .unwrap();
-    let (lease, event) = acquire_workspace_lease_tx(&mut tx, &card_id, &track_id, "op-test", &plan)
-        .await
-        .unwrap();
+    let (lease, event) =
+        acquire_workspace_lease_tx(&mut tx, &card_id, &track_id, "op-test", &card_id, &plan)
+            .await
+            .unwrap();
     tx.commit().await.unwrap();
 
     assert_eq!(plan.path, target.path);
@@ -372,9 +373,10 @@ async fn prepare_supersedes_a_stuck_owners_lease() {
     )
     .await
     .unwrap();
-    let (stuck, _) = acquire_workspace_lease_tx(&mut tx, &card_id, &track_id, "op-stuck", &plan)
-        .await
-        .unwrap();
+    let (stuck, _) =
+        acquire_workspace_lease_tx(&mut tx, &card_id, &track_id, "op-stuck", &card_id, &plan)
+            .await
+            .unwrap();
     tx.commit().await.unwrap();
     sqlx::query(
         "INSERT INTO operations (id, operation_key, kind, idempotency_key, payload_hash, \
@@ -401,7 +403,7 @@ async fn prepare_supersedes_a_stuck_owners_lease() {
         1,
         "the stuck owner's lease is released"
     );
-    acquire_workspace_lease_tx(&mut tx, &next_card, &track_id, "op-next", &plan)
+    acquire_workspace_lease_tx(&mut tx, &next_card, &track_id, "op-next", &next_card, &plan)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -445,7 +447,7 @@ async fn every_lease_reader_returns_base_and_policy() {
             .await
             .unwrap();
             let (lease, _event) =
-                acquire_workspace_lease_tx(&mut tx, &card_id, track_id, "op-test", &plan)
+                acquire_workspace_lease_tx(&mut tx, &card_id, track_id, "op-test", &card_id, &plan)
                     .await
                     .unwrap();
             tx.commit().await.unwrap();
@@ -458,7 +460,7 @@ async fn every_lease_reader_returns_base_and_policy() {
     // The card-repo release.
     take(first_card.clone()).await;
     assert!(
-        release_workspace_lease_for_card_repo(
+        release_workspace_lease_for_attempt_repo(
             &repo,
             &events,
             &first_card,
@@ -471,7 +473,7 @@ async fn every_lease_reader_returns_base_and_policy() {
     let card_tx = new_card(&repo, &track_id).await;
     take(card_tx.clone()).await;
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-    let released = release_workspace_lease_for_card_tx(
+    let released = release_workspace_lease_for_attempt_tx(
         &mut tx,
         &card_tx,
         ReleaseDelivery::Commit(AttemptOutcome::Failed),

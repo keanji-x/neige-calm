@@ -12,7 +12,7 @@ async fn regate_refused_while_checkout_busy() {
     fx.dispatcher.abort_event_listener_for_test();
     let (task, _, _) = red(&fx, "busy-a", gate_on(&outside(&fx, "green"), None)).await;
     let other = fx.new_worker("busy-b", AgentProvider::Codex).await;
-    fx.kernel_lease(&other.card_id).await;
+    fx.kernel_lease(&other.card_id, "busy-b").await;
     fx.running_task("busy-b", "codex", &other.card_id, json!({}))
         .await;
 
@@ -159,7 +159,7 @@ async fn regate_refuses_rows_that_cannot_rerun() {
 
     // A failure the worker reported: its gate never judged the candidate.
     let worker = fx.new_worker("reported", AgentProvider::Codex).await;
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "reported").await;
     let reported = fx
         .running_task(
             "reported",
@@ -188,7 +188,7 @@ async fn regate_refuses_rows_that_cannot_rerun() {
 
     // A failed delivery: no candidate was ever gated.
     let worker = fx.new_worker("undelivered", AgentProvider::Codex).await;
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "undelivered").await;
     install_pre_commit(&lease, HOOK_EXIT_1);
     let undelivered = fx
         .running_task(
@@ -221,6 +221,7 @@ async fn regate_refuses_rows_that_cannot_rerun() {
         &worker.card_id,
         fx.track(),
         "legacy-owner",
+        &format!("{}:unbound", fx.track()),
         &dir,
     )
     .await
@@ -264,7 +265,7 @@ async fn regate_refuses_rows_that_cannot_rerun() {
     // A red gate a later task delivered past.
     let (passed_by, _, _) = red(&fx, "passed-by", gate_on(&outside(&fx, "never"), None)).await;
     let worker = fx.new_worker("later", AgentProvider::Codex).await;
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "later").await;
     let later = fx
         .running_task("later", "codex", &worker.card_id, json!({}))
         .await;

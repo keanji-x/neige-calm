@@ -836,8 +836,8 @@ async fn gated_self_report_predicate() {
     );
 }
 
-/// Lookup errors are produced the way production produces them: two rows claiming the same
-/// worker card make `task_for_worker_card` return `Conflict`.
+/// Lookup errors are produced the way production produces them: two bound sessions on one
+/// worker card make the card's binding read return `Conflict` (#2493).
 #[tokio::test]
 async fn stale_worker_stop_hook_consultation_per_task_status() {
     let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
@@ -885,9 +885,31 @@ async fn stale_worker_stop_hook_consultation_per_task_status() {
         mk_task("ambiguous-a", "card-ambiguous", TaskStatus::Verifying),
         mk_task("ambiguous-b", "card-ambiguous", TaskStatus::Verifying),
     ];
+    sqlx::raw_sql("INSERT INTO areas(id,name,color,sort,created_at,updated_at) VALUES('c','Area','red',0,1,1);
+        INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) VALUES('w','c','Track',0,1,1);")
+        .execute(repo.pool()).await.unwrap();
+    for card in [
+        "card-dispatched",
+        "card-running",
+        "card-verifying",
+        "card-done",
+        "card-failed",
+        "card-canceled",
+        "card-ambiguous",
+    ] {
+        sqlx::query(
+            "INSERT INTO cards(id,track_id,kind,sort,payload,title,deletable,created_at,updated_at,role) \
+             VALUES(?1,'w','codex',0,'{}',NULL,1,1,1,'worker')",
+        )
+        .bind(card)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    }
     crate::db::write_in_tx_typed(&repo, move |tx| {
         Box::pin(async move {
             for t in &seeded {
+                // A second attempt on the ambiguous card runs in a second session of it.
                 crate::test_support::insert_task_tx(tx, t).await?;
             }
             Ok(())
@@ -896,7 +918,7 @@ async fn stale_worker_stop_hook_consultation_per_task_status() {
     .await
     .expect("seed tasks");
     assert!(
-        calm_truth::db::RepoRead::task_for_worker_card(&repo, "card-ambiguous")
+        calm_truth::db::RepoRead::card_binding(&repo, "card-ambiguous")
             .await
             .is_err(),
         "fixture: the ambiguous card must make the lookup fail"
@@ -2216,6 +2238,7 @@ async fn planner_push_delivery_fixture() -> (crate::db::sqlite::SqlxRepo, Event)
         "worker",
         "w",
         "delivery-wiring",
+        task_id,
         &lease_path,
     )
     .await

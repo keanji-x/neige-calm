@@ -172,7 +172,6 @@ where
     let claude_restart_adapter = Arc::new(ClaudeRestartAdapter::new_with_spawn_hook(
         route_repo.clone(),
         codex,
-        None,
         state.card_role_cache.clone(),
         state.track_area_cache.clone(),
         hook,

@@ -251,6 +251,10 @@ async fn seed_task(
         .await
         .unwrap();
     tx.commit().await.unwrap();
+    // A bound row runs in its card's worker session (#2493).
+    calm_server::test_seams::bind_seeded_task_for_test(boot.repo_sqlx.pool(), &task.id)
+        .await
+        .unwrap();
     task
 }
 

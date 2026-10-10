@@ -2299,6 +2299,10 @@ async fn in_flight_task_worker_survives_sweep() {
     .execute(h.sql.pool())
     .await
     .unwrap();
+    // The attempt runs on this card's session (#2493: its spawn bound it).
+    calm_server::test_seams::bind_task_to_card_for_test(h.sql.pool(), &task_id, &p.card)
+        .await
+        .unwrap();
     let current: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM current_tasks WHERE id = ?1 AND status = 'running' AND worker_card_id = ?2",
     )
@@ -2892,6 +2896,10 @@ async fn task_bound_worker_output_is_ignored() {
     .execute(h.sql.pool())
     .await
     .unwrap();
+    // The attempt runs on this card's session (#2493: its spawn bound it).
+    calm_server::test_seams::bind_task_to_card_for_test(h.sql.pool(), &task_id, &p.card)
+        .await
+        .unwrap();
     let a = recompute(&h, &pj).await;
     assert!(a.working, "W: the running task: {a:?}");
     assert_eq!(card_state(&a, &p.card), Some(CardState::Working));

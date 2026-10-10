@@ -140,7 +140,7 @@ async fn mark_running_stamps_running_liveness_deadline() {
     assert_eq!(claimed.status, TaskStatus::Dispatched);
     assert_eq!(claimed.running_deadline_ms, None);
 
-    let rows = task_mark_running_tx(&mut tx, &id, Some("worker-card"), 2000, 9200)
+    let rows = task_mark_running_tx(&mut tx, &id, 2000, 9200)
         .await
         .expect("mark running");
     assert_eq!(rows, 1);
@@ -153,7 +153,8 @@ async fn mark_running_stamps_running_liveness_deadline() {
         .expect("read liveness facts");
     tx.commit().await.expect("commit");
     assert_eq!(running.status, TaskStatus::Running);
-    assert_eq!(running.worker_card_id.as_deref(), Some("worker-card"));
+    // #2493: the worker card is bound when the spawn prepares, never stamped here.
+    assert_eq!(running.worker_card_id, None);
     assert_eq!(running.running_deadline_ms, Some(9200));
     assert_eq!(
         facts,
@@ -177,7 +178,7 @@ async fn liveness_facts_take_the_latest_cursor_of_the_worker_card_only() {
     task_claim_pending_tx(&mut tx, &id, 1000, &[], false)
         .await
         .expect("claim pending");
-    task_mark_running_tx(&mut tx, &id, Some("worker-card"), 2000, 9200)
+    task_mark_running_tx(&mut tx, &id, 2000, 9200)
         .await
         .expect("mark running");
     tx.commit().await.expect("commit");

@@ -110,25 +110,17 @@ async fn card_delete_settles_active_tasks_and_preserves_other_tasks() {
         .await
         .unwrap();
     }
-    use calm_server::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
-    let op = SqlxOperationRepo::new(pool.clone())
-        .insert_operation(
-            "codex-worker",
-            OperationKey {
-                operation_key: "delete-task-op".into(),
-                idempotency_key: Some(format!("{}:unstamped", track.id)),
-                payload_hash: "test".into(),
-            },
-            json!({"track_id":track.id,"actor":{"kind":"KernelDispatcher"}}),
+    // #2493: each in-flight attempt of the card runs in a session of it, bound when its spawn
+    // prepared (the bind stamps `worker_card_id` with it, so no row is unstamped any more).
+    for key in ["running", "dispatched", "unstamped"] {
+        calm_server::test_seams::bind_task_to_card_for_test(
+            &pool,
+            &format!("{}:{key}", track.id),
+            card.id.as_str(),
         )
         .await
         .unwrap();
-    sqlx::query("UPDATE operations SET target_type='card',target_id=?1 WHERE id=?2")
-        .bind(card.id.as_str())
-        .bind(op.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
+    }
     let app = build_app(state.clone());
     // A failed deletion must roll back task status and its events as well.
     sqlx::query("CREATE TRIGGER refuse_card_delete BEFORE DELETE ON cards BEGIN SELECT RAISE(ABORT, 'test delete failure'); END")
@@ -152,7 +144,7 @@ async fn card_delete_settles_active_tasks_and_preserves_other_tasks() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(active, 2);
+    assert_eq!(active, 3);
     let events: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM events WHERE kind IN ('task.failed','card.deleted')",
     )

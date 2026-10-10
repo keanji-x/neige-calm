@@ -297,6 +297,7 @@ fn project_runs_uses_task_dispatched_as_requested_record_fallback() {
     let runs = project_runs(
         &write,
         vec![],
+        &BTreeMap::new(),
         vec![dispatched_event(5, 500, "w:k", "codex")],
         vec![],
     );
@@ -335,6 +336,7 @@ fn project_runs_canceled_row_ends_a_run_without_a_self_report() {
     let runs = project_runs(
         &write,
         vec![],
+        &BTreeMap::new(),
         vec![dispatched_event(5, 500, "w:k", "codex")],
         vec![canceled_attempt("w:k", 700)],
     );
@@ -359,6 +361,7 @@ fn project_runs_self_report_outranks_a_canceled_row() {
     let runs = project_runs(
         &write,
         vec![],
+        &BTreeMap::new(),
         vec![dispatched_event(5, 500, "w:k", "codex"), failed],
         vec![canceled_attempt("w:k", 700)],
     );
@@ -384,6 +387,7 @@ fn project_runs_dispatched_then_completed_resolves_terminal_status() {
     let runs = project_runs(
         &write,
         vec![],
+        &BTreeMap::new(),
         vec![dispatched_event(5, 500, "w:k", "terminal"), completed],
         vec![],
     );
@@ -421,6 +425,7 @@ fn failed_run_markdown_retains_structured_terminal_output_evidence() {
     let runs = project_runs(
         &write,
         vec![],
+        &BTreeMap::new(),
         vec![dispatched_event(5, 500, "w:k", "terminal"), failed],
         vec![],
     );
@@ -462,6 +467,7 @@ fn project_runs_real_requested_event_wins_over_dispatch_record() {
     let runs = project_runs(
         &write,
         vec![],
+        &BTreeMap::new(),
         vec![requested, dispatched_event(5, 500, "w:k", "codex")],
         vec![],
     );

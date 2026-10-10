@@ -64,7 +64,7 @@ async fn an_exited_worker_is_released_by_its_timeout_flip() {
     let w = world().await;
     let fx = &w.fx;
     let worker = fx.new_worker("a", AgentProvider::Codex).await;
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "a").await;
     let task = fx
         .running_task("a", "codex", &worker.card_id, json!({}))
         .await;
@@ -99,7 +99,7 @@ async fn an_exited_worker_is_released_by_its_timeout_flip() {
 async fn a_lease_from_an_older_boot_fails_its_attempt_and_is_released() {
     let mut w = world().await;
     let worker = w.fx.new_worker("a", AgentProvider::Codex).await;
-    let lease = w.fx.kernel_lease(&worker.card_id).await;
+    let lease = w.fx.kernel_lease(&worker.card_id, "a").await;
     let task =
         w.fx.running_task("a", "codex", &worker.card_id, json!({}))
             .await;

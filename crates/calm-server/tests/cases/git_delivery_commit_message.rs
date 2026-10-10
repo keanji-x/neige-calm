@@ -68,7 +68,7 @@ async fn task_completed_events(fx: &Fx, attempt: &str) -> i64 {
 async fn worker_commit_message_is_the_candidate_commit_message() {
     let fx = fixture().await;
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "owned").await;
     let task = fx
         .running_task("owned", "codex", &worker.card_id, json!({}))
         .await;
@@ -99,7 +99,7 @@ async fn crash_before_submission_commits_the_worker_message() {
     let mut fx = fixture().await;
     fx.dispatcher.abort_event_listener_for_test();
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "handoff").await;
     let task = fx
         .running_task("handoff", "codex", &worker.card_id, json!({}))
         .await;
@@ -128,7 +128,7 @@ async fn crash_before_submission_commits_the_worker_message() {
 async fn duplicate_completion_keeps_the_first_commit_message() {
     let fx = fixture().await;
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "twice").await;
     let task = fx
         .running_task("twice", "codex", &worker.card_id, json!({}))
         .await;
@@ -162,7 +162,7 @@ async fn duplicate_completion_keeps_the_first_commit_message() {
 async fn invalid_commit_message_refuses_the_report_before_any_write() {
     let fx = fixture().await;
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "refused").await;
     let task = fx
         .running_task("refused", "codex", &worker.card_id, json!({}))
         .await;
@@ -208,7 +208,7 @@ async fn invalid_commit_message_refuses_the_report_before_any_write() {
 async fn failed_attempt_commits_with_the_kernel_message() {
     let fx = fixture().await;
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "broken").await;
     let task = fx
         .running_task("broken", "codex", &worker.card_id, json!({}))
         .await;

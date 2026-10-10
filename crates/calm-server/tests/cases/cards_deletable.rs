@@ -151,6 +151,7 @@ async fn insert_held_workspace_lease(
     lease_id: &str,
     card_id: &str,
     track_id: &str,
+    attempt_id: &str,
 ) -> String {
     let lease_path = boot
         .tmp
@@ -164,9 +165,9 @@ async fn insert_held_workspace_lease(
     sqlx::query(
         r#"INSERT INTO workspace_leases (
                lease_id, card_id, track_id, path, state, lease_owner,
-               lease_until_ms, boot_id, created_at_ms, updated_at_ms
+               lease_until_ms, boot_id, created_at_ms, updated_at_ms, attempt_id
            )
-           VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, NULL, ?7, ?7)"#,
+           VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, NULL, ?7, ?7, ?8)"#,
     )
     .bind(lease_id)
     .bind(card_id)
@@ -175,6 +176,7 @@ async fn insert_held_workspace_lease(
     .bind("owner-delete-test")
     .bind(60_000_i64)
     .bind(1_i64)
+    .bind(attempt_id)
     .execute(&pool)
     .await
     .unwrap();
@@ -409,8 +411,26 @@ async fn delete_card_releases_active_workspace_lease_row_before_card_row_delete(
         "worker card create body: {body}"
     );
     let card_id = body["id"].as_str().unwrap().to_string();
+    // #2493: the card runs an attempt, whose lease it is; the delete resolves that attempt once,
+    // fails it and releases its lease.
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let attempt_id = format!("{track_id}:deleted-worker");
+    sqlx::query(
+        "INSERT INTO tasks (id, track_id, key, kind, goal, context_json, status, declared_by, \
+         created_at_ms, updated_at_ms) \
+         VALUES (?1, ?2, 'deleted-worker', 'codex', 'g', '[]', 'running', 'user', 1, 1)",
+    )
+    .bind(&attempt_id)
+    .bind(&track_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    calm_server::test_seams::bind_task_to_card_for_test(&pool, &attempt_id, &card_id)
+        .await
+        .unwrap();
     let lease_id = format!("lease-{card_id}");
-    let lease_path = insert_held_workspace_lease(&boot, &lease_id, &card_id, &track_id).await;
+    let lease_path =
+        insert_held_workspace_lease(&boot, &lease_id, &card_id, &track_id, &attempt_id).await;
     assert!(std::path::Path::new(&lease_path).is_dir());
 
     let status = delete(boot.app.clone(), &format!("/api/cards/{card_id}")).await;
@@ -420,7 +440,6 @@ async fn delete_card_releases_active_workspace_lease_row_before_card_row_delete(
         std::path::Path::new(&lease_path).is_dir(),
         "card delete releases the row without removing lease artifacts"
     );
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
     let state: String =
         sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
             .bind(&lease_id)
@@ -434,6 +453,19 @@ async fn delete_card_releases_active_workspace_lease_row_before_card_row_delete(
             .await
             .unwrap();
     assert_eq!(released_events, 1);
+    let (status, detail): (String, Option<String>) =
+        sqlx::query_as("SELECT status, status_detail FROM tasks WHERE id = ?1")
+            .bind(&attempt_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(status, "failed", "the card's running attempt fails with it");
+    assert!(
+        detail
+            .as_deref()
+            .is_some_and(|d| d.starts_with("worker-card-deleted")),
+        "{detail:?}"
+    );
 }
 
 #[tokio::test]
@@ -564,7 +596,8 @@ async fn track_delete_releases_active_workspace_lease_rows_before_cascade() {
     let cards = boot.repo.cards_by_track(&track_id).await.unwrap();
     let card_id = cards[0].id.as_str().to_string();
     let lease_id = format!("lease-{card_id}");
-    let lease_path = insert_held_workspace_lease(&boot, &lease_id, &card_id, &track_id).await;
+    let lease_path =
+        insert_held_workspace_lease(&boot, &lease_id, &card_id, &track_id, "no-task-attempt").await;
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
     assert!(std::path::Path::new(&lease_path).is_dir());
 
@@ -604,7 +637,8 @@ async fn area_delete_releases_track_workspace_lease_rows_before_cascade() {
     let cards = boot.repo.cards_by_track(&track_id).await.unwrap();
     let card_id = cards[0].id.as_str().to_string();
     let lease_id = format!("lease-{card_id}");
-    let lease_path = insert_held_workspace_lease(&boot, &lease_id, &card_id, &track_id).await;
+    let lease_path =
+        insert_held_workspace_lease(&boot, &lease_id, &card_id, &track_id, "no-task-attempt").await;
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
     assert!(std::path::Path::new(&lease_path).is_dir());
 
@@ -733,4 +767,107 @@ async fn patch_card_with_deletable_returns_400() {
         StatusCode::BAD_REQUEST,
         "patching deletable must 400; body={body}",
     );
+}
+
+/// #2493 row 16: a canceled attempt keeps its kernel-delivery lease until its cleanup reaps the
+/// worker. Deleting the card before that resolves the card's bound attempt (whatever its status)
+/// and releases that attempt's lease, committing the attempt as `interrupted`, so the checkout is
+/// not stranded.
+#[tokio::test]
+async fn card_delete_after_cancel_releases_the_canceled_attempts_lease() {
+    let boot = boot().await;
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/tracks",
+        json!({"planner_provider": "codex", "area_id": boot.area_id, "title": "w", "cwd": attached_repo_fixture("issue-2493-cancel-then-delete"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "track create body: {body}");
+    let track_id = body["id"].as_str().unwrap().to_string();
+    let (status, body) = post(
+        boot.app.clone(),
+        &format!("/api/tracks/{track_id}/cards"),
+        json!({"kind": "plugin:t:v"}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "worker card create body: {body}"
+    );
+    let card_id = body["id"].as_str().unwrap().to_string();
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let attempt_id = format!("{track_id}:canceled-worker");
+    sqlx::query(
+        "INSERT INTO tasks (id, track_id, key, kind, goal, context_json, status, declared_by, \
+         created_at_ms, updated_at_ms) \
+         VALUES (?1, ?2, 'canceled-worker', 'codex', 'g', '[]', 'running', 'user', 1, 1)",
+    )
+    .bind(&attempt_id)
+    .bind(&track_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    calm_server::test_seams::bind_task_to_card_for_test(&pool, &attempt_id, &card_id)
+        .await
+        .unwrap();
+    let lease_dir = boot.tmp.path().join("cancel-then-delete-lease");
+    std::fs::create_dir_all(&lease_dir).unwrap();
+    calm_server::test_seams::acquire_based_workspace_lease_for_test(
+        &pool,
+        &card_id,
+        &track_id,
+        "owner-cancel-then-delete",
+        &attempt_id,
+        &lease_dir,
+        "0123456789abcdef0123456789abcdef01234567",
+    )
+    .await
+    .unwrap();
+    // The cancel moved the row; the worker is not reaped yet, so its lease is still held.
+    sqlx::query("UPDATE tasks SET status = 'canceled', finished_at_ms = 2 WHERE id = ?1")
+        .bind(&attempt_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let status = delete(boot.app.clone(), &format!("/api/cards/{card_id}")).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (state, lease_attempt): (String, String) =
+        sqlx::query_as("SELECT state, attempt_id FROM workspace_leases WHERE card_id = ?1")
+            .bind(&card_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (state.as_str(), lease_attempt.as_str()),
+        ("released", attempt_id.as_str())
+    );
+    let (producer, outcome): (String, String) = sqlx::query_as(
+        "SELECT producer_attempt_id, outcome FROM task_git_deliveries WHERE card_id = ?1",
+    )
+    .bind(&card_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (producer.as_str(), outcome.as_str()),
+        (attempt_id.as_str(), "interrupted"),
+        "the release commits the canceled attempt"
+    );
+    let status: String = sqlx::query_scalar("SELECT status FROM tasks WHERE id = ?1")
+        .bind(&attempt_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "canceled", "a terminal attempt is not failed again");
+    let held: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM workspace_leases WHERE track_id = ?1 AND state IN ('held','releasing')",
+    )
+    .bind(&track_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(held, 0, "no lease is stranded on the checkout");
 }

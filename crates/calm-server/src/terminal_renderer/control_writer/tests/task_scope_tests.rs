@@ -100,8 +100,11 @@ async fn queued_task_change(replace_session: bool) {
     sql.session_projection_set_status_for_card(&card, WorkerSessionState::Running)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,declared_by,created_at_ms,updated_at_ms) VALUES (?1,?2,?3,'terminal','test','[]','running',?4,'user',?5,?5)")
-        .bind(&task).bind(track.id.as_str()).bind(&key).bind(&card).bind(now_ms()).execute(sql.pool()).await.unwrap();
+    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,declared_by,created_at_ms,updated_at_ms) VALUES (?1,?2,?3,'terminal','test','[]','dispatched','user',?4,?4)")
+        .bind(&task).bind(track.id.as_str()).bind(&key).bind(now_ms()).execute(sql.pool()).await.unwrap();
+    crate::test_seams::bind_running_worker_for_test(sql.pool(), &task, &card)
+        .await
+        .unwrap();
     let identity = ToolCallIdentity {
         card_id: planner,
         role: CardRole::Planner,

@@ -606,7 +606,7 @@ async fn cancel_running_claude_task_cancels_and_reaps_worker() {
         .session_projection_set_status_for_card(&card_id, WorkerSessionState::Running)
         .await
         .unwrap();
-    let (lease_id, _lease_dir) = seed_held_workspace_lease(&boot, &card_id, "claude").await;
+    let (lease_id, _lease_dir) = seed_held_workspace_lease(&boot, &card_id, "claude-cancel").await;
     let mut task = plan_task(&boot.track_id, "claude-cancel", TaskKind::Claude, &[]);
     task.status = TaskStatus::Running;
     task.worker_card_id = Some(card_id.clone());

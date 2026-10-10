@@ -68,7 +68,7 @@ async fn plan_list_reads_how_far_an_upstream_candidate_is_behind() {
 
     // The worker's lease starts from the track worktree's HEAD (#1830 S2), whatever the upstream.
     let worker = fx.new_worker("up", AgentProvider::Codex).await;
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "up").await;
     assert_eq!(lease.base_sha, git(&fx.worktree, &["rev-parse", "HEAD"]));
     assert_eq!(
         lease_base_source(&fx.pool(), &lease.lease_id).await,

@@ -38,10 +38,11 @@ pub(super) async fn seed_track(repo: &SqlxRepo) -> String {
     track.id.to_string()
 }
 
+/// A lease of attempt `attempt_id`, on a card of the same name.
 async fn insert_workspace_lease(
     repo: &SqlxRepo,
     lease_id: &str,
-    card_id: &str,
+    attempt_id: &str,
     track_id: &str,
     path: &str,
     state: &str,
@@ -50,12 +51,13 @@ async fn insert_workspace_lease(
     sqlx::query(
         r#"INSERT INTO workspace_leases (
                    lease_id, card_id, track_id, path, state, lease_owner,
-                   lease_until_ms, boot_id, created_at_ms, updated_at_ms, released_at_ms
+                   lease_until_ms, boot_id, created_at_ms, updated_at_ms, released_at_ms,
+                   attempt_id
                )
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?8, NULL)"#,
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?8, NULL, ?2)"#,
     )
     .bind(lease_id)
-    .bind(card_id)
+    .bind(attempt_id)
     .bind(track_id)
     .bind(path)
     .bind(state)
@@ -68,7 +70,7 @@ async fn insert_workspace_lease(
 }
 
 #[tokio::test]
-async fn workspace_lease_for_card_returns_only_held_leases() {
+async fn workspace_lease_for_attempt_returns_only_held_leases() {
     let repo = SqlxRepo::open("sqlite::memory:").await.expect("open repo");
     let track_id = seed_track(&repo).await;
 
@@ -83,7 +85,7 @@ async fn workspace_lease_for_card_returns_only_held_leases() {
     )
     .await;
     assert!(
-        repo.workspace_lease_for_card("card-releasing-only")
+        repo.workspace_lease_for_attempt("card-releasing-only")
             .await
             .expect("lookup releasing-only lease")
             .is_none(),
@@ -112,7 +114,7 @@ async fn workspace_lease_for_card_returns_only_held_leases() {
     .await;
 
     let lease = repo
-        .workspace_lease_for_card("card-held-with-newer-releasing")
+        .workspace_lease_for_attempt("card-held-with-newer-releasing")
         .await
         .expect("lookup mixed lease states")
         .expect("held lease should resolve");

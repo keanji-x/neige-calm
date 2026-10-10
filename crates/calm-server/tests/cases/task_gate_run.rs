@@ -109,7 +109,7 @@ pub(super) struct Attempt {
 /// `steps`.
 pub(super) async fn running(fx: &Fx, key: &str, steps: Value) -> Attempt {
     let worker = fx.new_worker(key, AgentProvider::Codex).await;
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, key).await;
     let task = fx
         .running_task(
             key,

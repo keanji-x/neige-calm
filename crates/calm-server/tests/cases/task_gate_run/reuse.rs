@@ -207,7 +207,7 @@ async fn a_moved_remote_ref_runs_the_gate() {
 async fn a_regate_never_reuses() {
     let fx = world(LONG_IDLE).await;
     let worker = fx.new_worker("u5", AgentProvider::Codex).await;
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "u5").await;
     let base = lease.base_sha.clone();
     let step = format!("test \"$(git rev-parse {ORIGIN_MAIN})\" = {base}");
     let task = fx

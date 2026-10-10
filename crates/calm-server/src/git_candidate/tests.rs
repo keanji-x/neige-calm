@@ -941,6 +941,7 @@ fn delivery_script_no_change_after_commit_reset() {
         path: repo.lease.to_str().unwrap().to_string(),
         state: "held".into(),
         boot_id: None,
+        attempt_id: "attempt-1".into(),
         base: Some(LeaseBase {
             base_sha: c0.clone(),
             base_source: base::BaseSource::Head,
@@ -1238,9 +1239,10 @@ async fn kernel_lease(
         catch_up: None,
     };
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-    let (lease, _event) = acquire_workspace_lease_tx(&mut tx, card_id, track_id, "op-test", &plan)
-        .await
-        .unwrap();
+    let (lease, _event) =
+        acquire_workspace_lease_tx(&mut tx, card_id, track_id, "op-test", card_id, &plan)
+            .await
+            .unwrap();
     tx.commit().await.unwrap();
     lease
 }
@@ -1902,6 +1904,7 @@ async fn initial_delivery_row_and_readers() {
         &plain_card,
         &fx.track_id,
         "op-plain",
+        "attempt-plain",
         &fx._tmp.path().join("plain"),
     )
     .await
@@ -2038,6 +2041,7 @@ fn candidate_from_operation_result_copies_event_and_lease() {
         path: "/repo/.claude/worktrees/track-trk".into(),
         state: "released".into(),
         boot_id: None,
+        attempt_id: "attempt-1".into(),
         base: Some(LeaseBase {
             base_sha: "b".repeat(40),
             base_source: base::BaseSource::Commit,
@@ -2504,6 +2508,7 @@ fn lease(delivery_policy: Option<DeliveryPolicy>) -> WorkspaceLease {
         path: "/repo/.claude/worktrees/trk/crd".into(),
         state: "held".into(),
         boot_id: None,
+        attempt_id: "attempt-1".into(),
         base: Some(LeaseBase {
             base_sha: "b".repeat(40),
             base_source: base::BaseSource::Head,

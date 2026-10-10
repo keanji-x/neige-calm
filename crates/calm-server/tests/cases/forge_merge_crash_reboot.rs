@@ -604,14 +604,23 @@ async fn seed_world(repo: &Arc<SqlxRepo>, track_cwd: &Path) -> Seeded {
 }
 
 async fn seed_caller_lease(repo: &SqlxRepo, seeded: &Seeded) {
+    // #2493: the caller runs an attempt; the lease is that attempt's.
+    let attempt_id = calm_server::test_seams::running_worker_attempt_for_test(
+        repo.pool(),
+        &seeded.track_id,
+        &seeded.card_id,
+        "forge-caller",
+    )
+    .await
+    .expect("the caller's running attempt");
     let mut tx = repo.pool().begin().await.unwrap();
     let now = now_ms();
     sqlx::query(
         r#"INSERT INTO workspace_leases (
                lease_id, card_id, track_id, path, state, lease_owner,
-               lease_until_ms, boot_id, created_at_ms, updated_at_ms
+               lease_until_ms, boot_id, created_at_ms, updated_at_ms, attempt_id
            )
-           VALUES (?1, ?2, ?3, ?4, 'held', 'e2-test-lease-owner', ?5, NULL, ?6, ?6)"#,
+           VALUES (?1, ?2, ?3, ?4, 'held', 'e2-test-lease-owner', ?5, NULL, ?6, ?6, ?7)"#,
     )
     .bind(calm_server::model::new_id())
     .bind(&seeded.card_id)
@@ -619,6 +628,7 @@ async fn seed_caller_lease(repo: &SqlxRepo, seeded: &Seeded) {
     .bind(seeded.lease_abs.display().to_string())
     .bind(now + 3_600_000)
     .bind(now)
+    .bind(&attempt_id)
     .execute(&mut *tx)
     .await
     .expect("insert workspace lease");

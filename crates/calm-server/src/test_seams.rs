@@ -137,6 +137,7 @@ pub async fn acquire_workspace_lease_for_test(
     card_id: &str,
     track_id: &str,
     lease_owner: &str,
+    attempt_id: &str,
     path: &std::path::Path,
 ) -> crate::error::Result<()> {
     let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
@@ -145,6 +146,7 @@ pub async fn acquire_workspace_lease_for_test(
         card_id,
         track_id,
         lease_owner,
+        attempt_id,
         path,
     )
     .await?;
@@ -165,6 +167,7 @@ pub async fn acquire_based_workspace_lease_for_test(
     card_id: &str,
     track_id: &str,
     lease_owner: &str,
+    attempt_id: &str,
     path: &std::path::Path,
     base_sha: &str,
 ) -> crate::error::Result<()> {
@@ -186,26 +189,215 @@ pub async fn acquire_based_workspace_lease_for_test(
         catch_up: None,
     };
     let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
-    acquire_workspace_lease_tx(&mut tx, card_id, track_id, lease_owner, &plan).await?;
+    acquire_workspace_lease_tx(&mut tx, card_id, track_id, lease_owner, attempt_id, &plan).await?;
     tx.commit().await?;
     Ok(())
 }
 
-/// Release a card's active workspace lease through the production release (#1830 S2 D7), with
-/// the attempt committed as its terminal `tasks.status` says.
+/// Stand where a worker op's `prepare_tx` would for a fixture worker card (#2493): the
+/// `dispatched` attempt is bound to the card's active worker session through the production
+/// `bind_attempt_tx`. Returns the session id.
 #[cfg(feature = "fixtures")]
-pub async fn release_workspace_lease_for_card_for_test(
-    repo: &dyn crate::db::RepoEventWrite,
-    events: &crate::event::EventBus,
+pub async fn bind_worker_for_test(
+    pool: &sqlx::SqlitePool,
+    attempt_id: &str,
     card_id: &str,
-) -> crate::error::Result<bool> {
-    crate::operation::workspace_lease::release_workspace_lease_for_card_repo(
-        repo,
-        events,
-        card_id,
-        crate::operation::workspace_lease::ReleaseDelivery::CommitAsTaskEnded,
+) -> crate::error::Result<String> {
+    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
+    let session_id = bind_fixture_worker_tx(&mut tx, attempt_id, card_id).await?;
+    tx.commit().await?;
+    Ok(session_id)
+}
+
+/// A worker card that runs a task (#2493): a `codex` attempt `<track>:<key>` is inserted and
+/// bound, running, to the card's worker session ([`bind_running_worker_for_test`]). Returns the
+/// attempt id.
+#[cfg(feature = "fixtures")]
+pub async fn running_worker_attempt_for_test(
+    pool: &sqlx::SqlitePool,
+    track_id: &str,
+    card_id: &str,
+    key: &str,
+) -> crate::error::Result<String> {
+    let attempt_id = format!("{track_id}:{key}");
+    let now = crate::model::now_ms();
+    sqlx::query(
+        "INSERT INTO tasks (id, track_id, key, kind, goal, context_json, depends_on_json, status, \
+         declared_by, created_at_ms, updated_at_ms) \
+         VALUES (?1, ?2, ?3, 'codex', 'fixture worker', 'null', '[]', 'dispatched', 'user', ?4, ?4)",
     )
-    .await
+    .bind(&attempt_id)
+    .bind(track_id)
+    .bind(key)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    bind_running_worker_for_test(pool, &attempt_id, card_id).await?;
+    Ok(attempt_id)
+}
+
+/// [`bind_worker_for_test`] for a `pending` or `dispatched` attempt, then the running stamp a
+/// spawn's success makes, in one transaction.
+#[cfg(feature = "fixtures")]
+pub async fn bind_running_worker_for_test(
+    pool: &sqlx::SqlitePool,
+    attempt_id: &str,
+    card_id: &str,
+) -> crate::error::Result<String> {
+    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
+    sqlx::query("UPDATE tasks SET status = 'dispatched' WHERE id = ?1 AND status = 'pending'")
+        .bind(attempt_id)
+        .execute(&mut *tx)
+        .await?;
+    let session_id = bind_fixture_worker_tx(&mut tx, attempt_id, card_id).await?;
+    sqlx::query(
+        "UPDATE tasks SET status = 'running', updated_at_ms = ?2 \
+         WHERE id = ?1 AND status = 'dispatched'",
+    )
+    .bind(attempt_id)
+    .bind(crate::model::now_ms())
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(session_id)
+}
+
+/// For a fixture that seeds a `tasks` row with `worker_card_id` set, as the binding writer leaves
+/// it (#2493): [`bind_task_to_card_for_test`] with that card. A row with no `worker_card_id`, one
+/// naming a card the fixture never made, or one already bound, is left alone.
+#[cfg(feature = "fixtures")]
+pub async fn bind_seeded_task_for_test(
+    pool: &sqlx::SqlitePool,
+    attempt_id: &str,
+) -> crate::error::Result<()> {
+    let row: Option<(Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT worker_card_id, worker_session_id FROM tasks WHERE id = ?1")
+            .bind(attempt_id)
+            .fetch_optional(pool)
+            .await?;
+    if let Some((Some(card_id), None)) = row {
+        let card_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM cards WHERE id = ?1)")
+                .bind(&card_id)
+                .fetch_one(pool)
+                .await?;
+        if card_exists {
+            bind_task_to_card_for_test(pool, attempt_id, &card_id).await?;
+        }
+    }
+    Ok(())
+}
+
+/// A fixture's "this card is the attempt's worker" (#2493): the attempt is bound, through
+/// [`bind_fixture_worker_tx`], to the worker session it runs in on the card; an attempt already
+/// bound to this card is left as it is. Whatever status the row has, it is bound
+/// while `dispatched` and given its status back. Returns the session id.
+#[cfg(feature = "fixtures")]
+pub async fn bind_task_to_card_for_test(
+    pool: &sqlx::SqlitePool,
+    attempt_id: &str,
+    card_id: &str,
+) -> crate::error::Result<String> {
+    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
+    if let Some(bound) = crate::db::sqlite::attempt_binding_tx(&mut tx, attempt_id).await? {
+        tx.rollback().await?;
+        return if bound.card_id.as_deref() == Some(card_id) {
+            Ok(bound.session_id)
+        } else {
+            Err(crate::error::CalmError::Conflict(format!(
+                "fixture attempt {attempt_id} is already bound to another card"
+            )))
+        };
+    }
+    let status: String = sqlx::query_scalar("SELECT status FROM tasks WHERE id = ?1")
+        .bind(attempt_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE tasks SET status = 'dispatched' WHERE id = ?1")
+        .bind(attempt_id)
+        .execute(&mut *tx)
+        .await?;
+    let session_id = bind_fixture_worker_tx(&mut tx, attempt_id, card_id).await?;
+    sqlx::query("UPDATE tasks SET status = ?1 WHERE id = ?2")
+        .bind(&status)
+        .bind(attempt_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(session_id)
+}
+
+/// The bind a stub worker adapter's `prepare_tx` makes, as the real ones do (#2493): `attempt_id`
+/// (dispatched) to `card_id`'s active worker session, in the caller's transaction. Returns the
+/// session id.
+#[cfg(feature = "fixtures")]
+pub async fn bind_fixture_worker_tx(
+    tx: &mut crate::operation::Tx<'_>,
+    attempt_id: &str,
+    card_id: &str,
+) -> crate::error::Result<String> {
+    let session_id = fixture_worker_session_tx(tx, attempt_id, card_id).await?;
+    crate::db::sqlite::bind_attempt_tx(tx, attempt_id, &session_id, card_id).await?;
+    Ok(session_id)
+}
+
+/// The worker session a fixture attempt runs in on `card_id`, through the production session
+/// writers: the card's active session while it serves no attempt; otherwise a new running one,
+/// as a new spawn mints one (superseding an active session that already serves an attempt).
+#[cfg(feature = "fixtures")]
+async fn fixture_worker_session_tx(
+    tx: &mut crate::operation::Tx<'_>,
+    attempt_id: &str,
+    card_id: &str,
+) -> crate::error::Result<String> {
+    use crate::session_projection_repo::{
+        AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+    };
+    let active: Option<(String, Option<String>)> = sqlx::query_as(
+        "SELECT session_id, attempt_id FROM worker_session_binding \
+         WHERE card_id = ?1 AND session_active",
+    )
+    .bind(card_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some((session_id, None)) = &active {
+        return Ok(session_id.clone());
+    }
+    let card_kind: Option<String> = sqlx::query_scalar("SELECT kind FROM cards WHERE id = ?1")
+        .bind(card_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    let (kind, agent_provider) = match card_kind.as_deref() {
+        Some("claude") => (WorkerSessionKind::ClaudeCard, Some(AgentProvider::Claude)),
+        Some("terminal") => (WorkerSessionKind::Terminal, None),
+        _ => (WorkerSessionKind::CodexCard, Some(AgentProvider::Codex)),
+    };
+    let terminal_run_id: Option<String> =
+        sqlx::query_scalar("SELECT id FROM terminals WHERE card_id = ?1")
+            .bind(card_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    let init = WorkerSessionInit {
+        id: format!("{attempt_id}-worker-session"),
+        card_id: card_id.to_string(),
+        kind,
+        agent_provider,
+        status: WorkerSessionState::Running,
+        terminal_run_id,
+        thread_id: None,
+        session_id: None,
+        active_turn_id: None,
+        handle_state_json: None,
+        spawn_op_id: None,
+        now_ms: crate::model::now_ms(),
+    };
+    let started = match active {
+        Some((old, Some(_))) => {
+            crate::db::sqlite::session_supersede_and_start_tx(tx, &old, init).await?
+        }
+        _ => crate::db::sqlite::session_start_runtime_tx(tx, init).await?,
+    };
+    Ok(started.id)
 }
 
 /// Build git commands in a test exactly the way the server does: a bare `git` is redirected by
@@ -239,6 +431,7 @@ pub async fn take_kernel_workspace_lease_for_test(
     pool: &sqlx::SqlitePool,
     track_id: &str,
     card_id: &str,
+    attempt_id: &str,
     workspace_root: &std::path::Path,
 ) -> crate::error::Result<KernelWorkspaceLease> {
     use crate::operation::workspace_lease::{
@@ -253,7 +446,8 @@ pub async fn take_kernel_workspace_lease_for_test(
     )
     .await?;
     let (lease, _event) =
-        acquire_workspace_lease_tx(&mut tx, card_id, track_id, "op-test", &plan).await?;
+        acquire_workspace_lease_tx(&mut tx, card_id, track_id, "op-test", attempt_id, &plan)
+            .await?;
     tx.commit().await?;
     Ok(KernelWorkspaceLease {
         lease_id: lease.lease_id,
@@ -272,12 +466,14 @@ pub async fn admit_gate_run_for_test(
     pool: &sqlx::SqlitePool,
     attempt_id: &str,
     card_id: &str,
+    session_id: &str,
     track_id: &str,
 ) -> crate::error::Result<String> {
     let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
-    let admitted =
-        crate::operation::task_gate_run::admit_run_tx(&mut tx, attempt_id, card_id, track_id, None)
-            .await?;
+    let admitted = crate::operation::task_gate_run::admit_run_tx(
+        &mut tx, attempt_id, card_id, session_id, track_id, None,
+    )
+    .await?;
     tx.commit().await?;
     match admitted {
         crate::operation::task_gate_run::Admitted::New { key, .. }

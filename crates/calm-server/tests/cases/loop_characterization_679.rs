@@ -727,6 +727,10 @@ async fn dead_worker_never_reporting_reaper_converges() {
     .await
     .unwrap();
     tx.commit().await.unwrap();
+    // The spawn's prepare binds the attempt to the session it started (#2493).
+    calm_server::test_seams::bind_task_to_card_for_test(&pool, &task_id, worker_card.id.as_str())
+        .await
+        .unwrap();
 
     let fake = Arc::new(FakeProvider::new().with_probe_script([Liveness::Exited {
         evidence: ExitEvidence {

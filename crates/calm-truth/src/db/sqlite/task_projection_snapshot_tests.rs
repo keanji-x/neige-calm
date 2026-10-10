@@ -150,7 +150,7 @@ async fn setup() -> Arc<SqlxRepo> {
         1
     );
     assert_eq!(
-        task_mark_running_tx(&mut tx, &task_id, None, 0, 1_000)
+        task_mark_running_tx(&mut tx, &task_id, 0, 1_000)
             .await
             .expect("mark task running"),
         1

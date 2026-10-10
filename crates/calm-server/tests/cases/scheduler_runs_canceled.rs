@@ -11,15 +11,11 @@ use calm_server::mcp_server::tools::plan::TOOL_TASK_CANCEL;
 use calm_server::mcp_server::tools::track_file::TOOL_TRACK_CAT;
 use calm_server::track_vcs;
 
-/// A worker card as the codex adapter mints one: its payload names the attempt and a `card.added`
-/// announces it, so the track VCS projects it too.
-async fn announce_worker_card(boot: &Boot, attempt_id: &str) -> String {
+/// A worker card as the codex adapter mints one: its payload names the attempt. The spawn's
+/// prepare binds the attempt to the card's session (#2493); a `card.added` then announces it
+/// ([`announce_worker_card`]), so the track VCS projects it too.
+async fn mint_worker_card(boot: &Boot, attempt_id: &str) -> String {
     let card_id = new_id();
-    let scope = EventScope::Card {
-        card: CardId::from(card_id.clone()),
-        track: boot.track_id.clone(),
-        area: boot.area_id.clone(),
-    };
     let new_card = NewCard {
         track_id: boot.track_id.clone(),
         title: None,
@@ -27,8 +23,34 @@ async fn announce_worker_card(boot: &Boot, attempt_id: &str) -> String {
         sort: None,
         payload: json!({ "idempotency_key": attempt_id }),
     };
-    let role_cache = boot.card_role_cache.clone();
-    let id = card_id.clone();
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let mut tx = pool.begin().await.unwrap();
+    card_create_with_id_tx(
+        &mut tx,
+        card_id.clone(),
+        new_card,
+        CardRole::Worker,
+        true,
+        &boot.card_role_cache,
+    )
+    .await
+    .expect("mint worker card");
+    tx.commit().await.unwrap();
+    card_id
+}
+
+async fn announce_worker_card(boot: &Boot, card_id: &str) {
+    let scope = EventScope::Card {
+        card: CardId::from(card_id.to_string()),
+        track: boot.track_id.clone(),
+        area: boot.area_id.clone(),
+    };
+    let card = boot
+        .repo
+        .card_get(card_id)
+        .await
+        .expect("read worker card")
+        .expect("worker card");
     write_with_event_typed(
         boot.repo.as_ref(),
         ActorId::KernelDispatcher,
@@ -36,18 +58,10 @@ async fn announce_worker_card(boot: &Boot, attempt_id: &str) -> String {
         None,
         &boot.events,
         &boot.write,
-        move |tx| {
-            Box::pin(async move {
-                let card =
-                    card_create_with_id_tx(tx, id, new_card, CardRole::Worker, true, &role_cache)
-                        .await?;
-                Ok(((), Event::CardAdded(card)))
-            })
-        },
+        move |_tx| Box::pin(async move { Ok(((), Event::CardAdded(card))) }),
     )
     .await
     .expect("announce worker card");
-    card_id
 }
 
 async fn live_json(boot: &Boot, path: &str) -> Value {
@@ -109,16 +123,17 @@ async fn canceled_running_task_reads_canceled_in_every_runs_view() {
     let boot = boot().await;
     let task = plan_task(&boot.track_id, "runs-cancel", TaskKind::Codex, &[]);
     let attempt_id = task.id.clone();
-    let worker_card_id = announce_worker_card(&boot, &attempt_id).await;
+    let worker_card_id = mint_worker_card(&boot, &attempt_id).await;
     seed_projected_task(&boot, task).await;
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
             kind: "codex-worker",
-            card_id: worker_card_id,
+            card_id: worker_card_id.clone(),
         })],
     );
     scheduler.schedule_track(boot.track_id.clone()).await;
+    announce_worker_card(&boot, &worker_card_id).await;
     assert_eq!(
         task_row(&boot, "runs-cancel").await.status,
         TaskStatus::Running

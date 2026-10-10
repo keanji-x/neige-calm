@@ -211,7 +211,7 @@ async fn settled_gated_task_with(
     CandidateRowView,
 ) {
     let worker = fx.new_worker(name, AgentProvider::Codex).await;
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, name).await;
     let task = fx
         .running_task(name, "codex", &worker.card_id, gate_json)
         .await;
@@ -332,7 +332,7 @@ async fn gate_is_not_submitted_while_delivery_pending() {
     // handler submits it without waiting; `resume_git_deliveries` runs only from a pass).
     fx.dispatcher.abort_event_listener_for_test();
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "admit").await;
     let flag = fx.track_root.parent().unwrap().join("commit-may-proceed");
     install_pre_commit(&lease, &hook_waiting_for(&flag, 0));
     let task = fx
@@ -420,7 +420,7 @@ async fn gate_waiter_settles_terminal_unsettled_delivery() {
     // nobody settles it.
     fx.dispatcher.abort_event_listener_for_test();
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "waiter").await;
     let task = fx
         .running_task("waiter", "codex", &worker.card_id, gated("true"))
         .await;
@@ -465,7 +465,7 @@ async fn gate_waiter_settles_terminal_unsettled_delivery() {
     // candidate row, one `#g1`, both executors `Ok` (the second UPDATE is the SQL guard's 0
     // rows, never the once-write trigger).
     let worker = fx.new_worker("waiter-2", AgentProvider::Codex).await;
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "waiter-2").await;
     let task = fx
         .running_task("waiter-2", "codex", &worker.card_id, gated("true"))
         .await;
@@ -554,7 +554,7 @@ async fn gate_prepare_refuses_unsettled_delivery() {
 
     // 1. The delivery is pending (held in its hook).
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "pending").await;
     install_pre_commit(&lease, &hook_waiting_for(&flag, 0));
     let task = fx
         .running_task("pending", "codex", &worker.card_id, gated("true"))
@@ -579,7 +579,7 @@ async fn gate_prepare_refuses_unsettled_delivery() {
 
     // 2. No delivery row at all (deleted while the hook holds the commit).
     let worker = fx.new_worker("rowless-worker", AgentProvider::Codex).await;
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "rowless").await;
     install_pre_commit(&lease, &hook_waiting_for(&flag, 0));
     let task = fx
         .running_task("rowless", "codex", &worker.card_id, gated("true"))
@@ -972,7 +972,7 @@ async fn gate_result_discarded_when_tree_changed_during_steps() {
     let fx = fixture().await;
     let planner = fx.planner().await;
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "touches").await;
     let task = fx
         .running_task(
             "touches",
@@ -1031,7 +1031,7 @@ async fn gate_result_discarded_when_tree_changed_during_steps() {
 async fn gate_catches_untracked_under_suppressing_config() {
     let fx = fixture().await;
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "suppressed").await;
     // Repository-level config, so the lease worktree's default `git status` hides untracked files.
     git(&lease.path, &["config", "status.showUntrackedFiles", "no"]);
     let task = fx
@@ -1068,7 +1068,7 @@ async fn gate_catches_untracked_under_suppressing_config() {
 
     // Positive: without the config the same step is caught the same way.
     let worker = fx.new_worker("plain", AgentProvider::Codex).await;
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "plain").await;
     git(
         &lease.path,
         &["config", "--unset", "status.showUntrackedFiles"],
@@ -1406,7 +1406,7 @@ async fn existing_terminal_gate_op_is_reconciled_before_admission() {
     // row since #1893 S6) ...
     let flag = fx.track_root.parent().unwrap().join("commit-may-proceed");
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "upgraded").await;
     install_pre_commit(&lease, &hook_waiting_for(&flag, 0));
     let task = fx
         .running_task("upgraded", "codex", &worker.card_id, gated("true"))
@@ -1687,6 +1687,7 @@ async fn legacy_lease_gate_runs_without_target_check() {
         &worker.card_id,
         fx.track(),
         "legacy-owner",
+        &format!("{}:legacy", fx.track()),
         &dir,
     )
     .await
@@ -1839,7 +1840,7 @@ async fn gated_candidate_happy_path_wakes_planner_once() {
     let fx = fixture().await;
     let planner = fx.planner().await;
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "happy").await;
     let task = fx
         .running_task("happy", "codex", &worker.card_id, gated("true"))
         .await;
@@ -1933,7 +1934,7 @@ async fn plan_list_reads_gate_verification() {
         .unwrap()
         .join("infra-commit-may-proceed");
     let worker = fx.new_worker("v-infra-w", AgentProvider::Codex).await;
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "v-infra").await;
     install_pre_commit(&lease, &hook_waiting_for(&infra_flag, 0));
     let task = fx
         .running_task("v-infra", "codex", &worker.card_id, gated("true"))
@@ -1977,7 +1978,7 @@ async fn plan_list_reads_gate_verification() {
 
     // not_started (running worker) and ungated
     let worker = fx.new_worker("v-started-w", AgentProvider::Codex).await;
-    fx.kernel_lease(&worker.card_id).await;
+    fx.kernel_lease(&worker.card_id, "v-not-started").await;
     fx.running_task("v-not-started", "codex", &worker.card_id, gated("true"))
         .await;
     let v = verification(&fx.plan_entry("v-not-started").await);
@@ -1985,7 +1986,7 @@ async fn plan_list_reads_gate_verification() {
     // One held lease per checkout (#1830 S2): the running worker's lease is let go by hand.
     fx.release_lease_by_hand(&worker.card_id).await;
     let worker = fx.new_worker("v-ungated-w", AgentProvider::Codex).await;
-    fx.kernel_lease(&worker.card_id).await;
+    fx.kernel_lease(&worker.card_id, "v-ungated").await;
     fx.running_task("v-ungated", "codex", &worker.card_id, json!({}))
         .await;
     let v = verification(&fx.plan_entry("v-ungated").await);
@@ -2004,7 +2005,7 @@ async fn plan_list_reads_gate_verification() {
     let flag = fx.track_root.parent().unwrap().join("commit-may-proceed");
     fx.release_lease_by_hand(&worker.card_id).await;
     let worker = fx.new_worker("v-pending-w", AgentProvider::Codex).await;
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "v-pending").await;
     install_pre_commit(&lease, &hook_waiting_for(&flag, 0));
     let task = fx
         .running_task("v-pending", "codex", &worker.card_id, gated("true"))
@@ -2173,15 +2174,9 @@ pub(super) async fn claim_with_closure(fx: &Fx, key: &str, worker: &str) -> Task
         1
     );
     tx.commit().await.unwrap();
-    sqlx::query(
-        "UPDATE tasks SET status = 'running', worker_card_id = ?1, updated_at_ms = ?3 WHERE id = ?2",
-    )
-    .bind(worker)
-    .bind(&task.id)
-    .bind(now_ms())
-    .execute(&pool)
-    .await
-    .unwrap();
+    calm_server::test_seams::bind_running_worker_for_test(&pool, &task.id, worker)
+        .await
+        .unwrap();
     current(&fx.boot, key).await
 }
 
@@ -2233,7 +2228,7 @@ async fn file_world_candidate(
     use crate::task_recovery::declare;
     let fx = &world.fx;
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, key).await;
     declare(
         &fx.boot,
         json!({

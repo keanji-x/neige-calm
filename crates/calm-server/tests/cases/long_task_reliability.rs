@@ -14,10 +14,11 @@ async fn long_task_gate_uses_released_worker_checkout() {
     let mut task = gate_task(&boot, "checkout", &gate);
     task.cwd = Some(shared.path().to_string_lossy().into_owned());
     task.worker_card_id = Some(boot.worker_card_id.to_string());
+    let task_id = task.id.clone();
     seed_task(&boot, task).await;
-    sqlx::query("INSERT INTO workspace_leases (lease_id, path, card_id, track_id, state, lease_owner, lease_until_ms, created_at_ms, updated_at_ms) VALUES ('checkout', ?1, ?2, ?3, 'released', 'test', 1, 1, 1)")
+    sqlx::query("INSERT INTO workspace_leases (lease_id, path, card_id, track_id, state, lease_owner, lease_until_ms, created_at_ms, updated_at_ms, attempt_id) VALUES ('checkout', ?1, ?2, ?3, 'released', 'test', 1, 1, 1, ?4)")
         .bind(checkout.path().to_str().unwrap())
-        .bind(boot.worker_card_id.as_str()).bind(boot.track_id.as_str())
+        .bind(boot.worker_card_id.as_str()).bind(boot.track_id.as_str()).bind(&task_id)
         .execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
     let (_runtime, scheduler) = build_scheduler(
         &boot,
@@ -113,9 +114,10 @@ async fn long_task_missing_worker_checkout_never_falls_back() {
         task.worker_card_id = Some(boot.worker_card_id.to_string());
         seed_task(&boot, task).await;
         if !missing_lease {
-            sqlx::query("INSERT INTO workspace_leases (lease_id, path, card_id, track_id, state, lease_owner, created_at_ms, updated_at_ms) VALUES ('missing', ?1, ?2, ?3, 'released', 'test', 1, 1)")
+            sqlx::query("INSERT INTO workspace_leases (lease_id, path, card_id, track_id, state, lease_owner, created_at_ms, updated_at_ms, attempt_id) VALUES ('missing', ?1, ?2, ?3, 'released', 'test', 1, 1, ?4)")
                 .bind(shared.path().join("missing-checkout").to_str().unwrap())
                 .bind(boot.worker_card_id.as_str()).bind(boot.track_id.as_str())
+                .bind(format!("{}:missing", boot.track_id.as_str()))
                 .execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
         }
         let (_runtime, scheduler) = build_scheduler(
@@ -268,4 +270,87 @@ async fn long_task_bound_worker_without_op_cannot_report_card_id() {
         "the durable task-card binding also prevents the legacy key path"
     );
     assert!(event_rows(&boot, "task.completed").await.is_empty());
+}
+
+/// #2493 row 1: report admission is the reporting session's binding. A report naming another
+/// attempt is refused naming the attempt this worker runs, and moves nothing.
+#[tokio::test]
+async fn report_for_another_attempt_names_the_bound_attempt() {
+    let boot = boot().await;
+    let mut bound = plan_task(&boot.track_id, "bound-here", TaskKind::Codex, &[]);
+    bound.status = TaskStatus::Running;
+    bound.worker_card_id = Some(boot.worker_card_id.to_string());
+    let bound_id = bound.id.clone();
+    seed_task(&boot, bound).await;
+    let mut other = plan_task(&boot.track_id, "elsewhere", TaskKind::Codex, &[]);
+    other.status = TaskStatus::Running;
+    let other_id = other.id.clone();
+    seed_task(&boot, other).await;
+
+    for (tool, args) in [
+        (
+            TOOL_TASK_DONE,
+            json!({"attempt_id": other_id, "result": {}}),
+        ),
+        (
+            TOOL_TASK_FAIL,
+            json!({"attempt_id": other_id, "reason": "not mine"}),
+        ),
+    ] {
+        let refused = call_tool(&boot, tool, worker_identity(&boot), args)
+            .await
+            .expect_err("a report for another attempt is refused");
+        assert!(
+            format!("{refused:?}").contains(&format!("belongs to attempt_id {bound_id}")),
+            "{tool}: {refused:?}"
+        );
+    }
+    assert_eq!(
+        task_row(&boot, "elsewhere").await.status,
+        TaskStatus::Running
+    );
+    assert_eq!(
+        task_row(&boot, "bound-here").await.status,
+        TaskStatus::Running
+    );
+    assert!(event_rows(&boot, "task.completed").await.is_empty());
+    assert!(event_rows(&boot, "task.failed").await.is_empty());
+}
+
+/// #2493 row 1: a non-Live attempt bound to the reporting session (`done`, `verifying`) answers a
+/// repeated report of the same outcome idempotently.
+#[tokio::test]
+async fn parked_same_outcome_report_is_idempotent() {
+    for gated in [false, true] {
+        let boot = boot().await;
+        let mut bound = plan_task(&boot.track_id, "bound-here", TaskKind::Codex, &[]);
+        bound.status = TaskStatus::Running;
+        bound.worker_card_id = Some(boot.worker_card_id.to_string());
+        if gated {
+            bound.gate_json = Some(json!({"steps": [{"name": "t", "cmd": "true"}]}).to_string());
+        }
+        let bound_id = bound.id.clone();
+        seed_task(&boot, bound).await;
+        for _ in 0..2 {
+            call_tool(
+                &boot,
+                TOOL_TASK_DONE,
+                worker_identity(&boot),
+                json!({"attempt_id": bound_id, "result": {"ok": true}}),
+            )
+            .await
+            .expect("its own attempt's report, and its repeat, are admitted");
+        }
+        let expected = if gated {
+            TaskStatus::Verifying
+        } else {
+            TaskStatus::Done
+        };
+        assert_eq!(task_row(&boot, "bound-here").await.status, expected);
+        assert_eq!(
+            event_rows(&boot, "task.completed").await.len(),
+            1,
+            "the repeat is idempotent (gated={gated})"
+        );
+    }
 }

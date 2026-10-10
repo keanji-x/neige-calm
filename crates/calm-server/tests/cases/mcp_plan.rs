@@ -496,16 +496,21 @@ async fn assert_cancel_refused(boot: &Boot, status: &str, expect: &str) {
     );
 }
 
+/// Task `a` in `status`, bound to the worker card's session (#2493) as its spawn binds it.
 async fn declare_bound_task(boot: &Boot, status: &str) {
     write_task_block(boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
     exec_sql(
         boot,
-        &format!(
-            "UPDATE tasks SET status = '{status}', worker_card_id = '{}' WHERE key = 'a'",
-            boot.worker_card_id
-        ),
+        &format!("UPDATE tasks SET status = '{status}' WHERE key = 'a'"),
     )
     .await;
+    calm_server::test_seams::bind_task_to_card_for_test(
+        &boot.repo.sqlite_pool().expect("sqlite pool"),
+        &format!("{}:a", boot.track_id),
+        boot.worker_card_id.as_str(),
+    )
+    .await
+    .expect("bind task a to the worker card");
 }
 
 #[tokio::test]
@@ -519,7 +524,7 @@ async fn cancel_dispatched_task_refused_with_status() {
 #[tokio::test]
 async fn cancel_dispatched_task_refusal_names_dispatched_whatever_blocks_it() {
     // An unbound card or an off-route kind must not change the sentence for a `dispatched` row.
-    for column in ["worker_card_id = NULL", "kind = 'terminal'"] {
+    for column in ["worker_session_id = NULL", "kind = 'terminal'"] {
         let boot = boot().await;
         declare_bound_task(&boot, "dispatched").await;
         exec_sql(&boot, &format!("UPDATE tasks SET {column} WHERE key = 'a'")).await;
@@ -635,7 +640,7 @@ async fn cancel_running_task_without_worker_card_refused() {
     declare_bound_task(&boot, "running").await;
     exec_sql(
         &boot,
-        "UPDATE tasks SET worker_card_id = NULL WHERE key = 'a'",
+        "UPDATE tasks SET worker_session_id = NULL WHERE key = 'a'",
     )
     .await;
     assert_cancel_refused(&boot, "running", "no worker card is bound").await;

@@ -156,6 +156,7 @@ const TASK_PERSISTENT_COLUMNS: &[&str] = &[
     "base",
     "start",
     "running_started_at_ms",
+    "worker_session_id",
 ];
 
 const TRACK_PERSISTENT_COLUMNS: &[&str] = &[

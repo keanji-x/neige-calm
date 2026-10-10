@@ -2,7 +2,9 @@ use super::*;
 use crate::db::sqlite::begin_immediate_tx;
 use crate::event::EventBus;
 use crate::git_candidate::delivery::AttemptOutcome;
-use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_repo};
+use crate::operation::workspace_lease::{
+    ReleaseDelivery, release_workspace_lease_for_attempt_repo,
+};
 use crate::operation::{OperationCompletionBus, OperationKey, OperationRepo, SqlxOperationRepo};
 use crate::state::DaemonClient;
 use crate::terminal_renderer::TerminalRendererRegistry;
@@ -307,10 +309,10 @@ async fn codex_worker_prepare_acquires_held_workspace_lease_cwd() {
     assert!(matches!(events[0].event, Event::WorkspaceLeased { .. }));
 
     assert!(
-        release_workspace_lease_for_card_repo(
+        release_workspace_lease_for_attempt_repo(
             harness.repo.as_ref(),
             &harness.events,
-            &card_id,
+            &bound_attempt(&harness.repo, &card_id).await,
             ReleaseDelivery::Commit(AttemptOutcome::Completed),
         )
         .await
@@ -330,10 +332,10 @@ async fn workspace_lease_release_flips_row_and_persists_event() {
     let lease_id = output.output_string("lease_id", "test").unwrap();
 
     assert!(
-        release_workspace_lease_for_card_repo(
+        release_workspace_lease_for_attempt_repo(
             harness.repo.as_ref(),
             &harness.events,
-            &card_id,
+            &bound_attempt(&harness.repo, &card_id).await,
             ReleaseDelivery::Commit(AttemptOutcome::Completed),
         )
         .await
@@ -360,10 +362,10 @@ async fn workspace_lease_release_flips_row_and_persists_event() {
     assert_eq!(removed_events, 0);
 
     assert!(
-        !release_workspace_lease_for_card_repo(
+        !release_workspace_lease_for_attempt_repo(
             harness.repo.as_ref(),
             &harness.events,
-            &card_id,
+            &bound_attempt(&harness.repo, &card_id).await,
             ReleaseDelivery::Commit(AttemptOutcome::Completed),
         )
         .await
@@ -538,10 +540,10 @@ async fn codex_spawn_refuses_a_checkout_that_moved_after_prepare() {
         "{message}"
     );
 
-    release_workspace_lease_for_card_repo(
+    release_workspace_lease_for_attempt_repo(
         harness.repo.as_ref(),
         &harness.events,
-        &card_id,
+        &bound_attempt(&harness.repo, &card_id).await,
         ReleaseDelivery::Commit(AttemptOutcome::Completed),
     )
     .await
@@ -645,6 +647,7 @@ async fn worker_lease_is_kernel_policy() {
         &plain_card,
         &harness.track_id,
         "op-plain",
+        "attempt-plain",
         &plain_path,
     )
     .await
@@ -658,4 +661,51 @@ async fn worker_lease_is_kernel_policy() {
             .await
             .unwrap();
     assert_eq!(policy, None, "the plain fixture lease is legacy");
+}
+
+/// The attempt the card's worker session is bound to (#2493), read through the owning module.
+async fn bound_attempt(repo: &crate::db::sqlite::SqlxRepo, card_id: &str) -> String {
+    calm_truth::db::RepoRead::card_binding(repo, card_id)
+        .await
+        .unwrap()
+        .and_then(|binding| binding.attempt_id)
+        .expect("the prepared worker card is bound to its attempt")
+}
+
+/// #2493: the codex worker op's prepare binds its attempt to the session it creates, stamps the
+/// card in the same write, and takes the lease for that attempt — one transaction.
+#[tokio::test]
+async fn first_spawn_binds_attempt_in_prepare_tx() {
+    let harness = worker_lease_harness().await;
+    let (output, _) = prepare_worker(&harness, "bind").await;
+    let task_id = format!("{}:bind", harness.track_id);
+    let (session, card): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT worker_session_id, worker_card_id FROM tasks WHERE id = ?1")
+            .bind(&task_id)
+            .fetch_one(harness.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        session.as_deref(),
+        Some(output.output_string("runtime_id", "test").unwrap().as_str())
+    );
+    assert_eq!(
+        card.as_deref(),
+        Some(output.output_string("card_id", "test").unwrap().as_str())
+    );
+    let lease_attempt: String =
+        sqlx::query_scalar("SELECT attempt_id FROM workspace_leases WHERE lease_id = ?1")
+            .bind(output.output_string("lease_id", "test").unwrap())
+            .fetch_one(harness.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(lease_attempt, task_id);
+    release_workspace_lease_for_attempt_repo(
+        harness.repo.as_ref(),
+        &harness.events,
+        &task_id,
+        ReleaseDelivery::Commit(AttemptOutcome::Completed),
+    )
+    .await
+    .unwrap();
 }

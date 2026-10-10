@@ -470,24 +470,31 @@ impl Fx {
         current(&self.boot, key).await
     }
 
+    /// The attempt bound to `worker`'s session and running, as its spawn would leave it (#2493).
     pub(super) async fn claim_running(&self, task_id: &str, worker: &str) {
-        sqlx::query(
-            "UPDATE tasks SET status = 'running', worker_card_id = ?1, updated_at_ms = ?3 WHERE id = ?2",
-        )
-        .bind(worker)
-        .bind(task_id)
-        .bind(now_ms())
-        .execute(&self.pool())
+        // Boxed: the seam's future would otherwise sit inline in every test's own future.
+        Box::pin(calm_server::test_seams::bind_running_worker_for_test(
+            &self.pool(),
+            task_id,
+            worker,
+        ))
         .await
         .unwrap();
     }
 
     /// The production lease sequence for `card` (#1830 S2): prepare the track worktree (refused
     /// when dirty), its HEAD as the base, the kernel-policy row. One held lease per checkout.
-    pub(super) async fn kernel_lease(&self, card: &str) -> KernelWorkspaceLease {
-        take_kernel_workspace_lease_for_test(&self.pool(), self.track(), card, &self.workspace_root)
-            .await
-            .unwrap()
+    /// `key` names the first attempt the lease is taken for (#2493: a lease is its attempt's).
+    pub(super) async fn kernel_lease(&self, card: &str, key: &str) -> KernelWorkspaceLease {
+        take_kernel_workspace_lease_for_test(
+            &self.pool(),
+            self.track(),
+            card,
+            &format!("{}:{key}", self.track()),
+            &self.workspace_root,
+        )
+        .await
+        .unwrap()
     }
 
     /// Flip the card's held lease to `released` by hand, writing nothing else: a fixture that
@@ -780,7 +787,7 @@ impl Fx {
         extra: Value,
     ) -> (ToolCallIdentity, Task, KernelWorkspaceLease) {
         let worker = self.codex_worker();
-        let lease = self.kernel_lease(&worker.card_id).await;
+        let lease = self.kernel_lease(&worker.card_id, key).await;
         install_pre_commit(&lease, HOOK_EXIT_1);
         let task = self
             .running_task(key, "codex", &worker.card_id, extra)
@@ -1093,7 +1100,7 @@ async fn claude_worker_completion_yields_kernel_candidate() {
     let scheduler = fx.scheduler();
     let planner = fx.planner().await;
     let worker = fx.claude_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "deliver").await;
     let task = fx
         .running_task("deliver", "claude", &worker.card_id, json!({}))
         .await;
@@ -1196,7 +1203,7 @@ async fn claude_worker_completion_yields_kernel_candidate() {
 async fn unchanged_worker_completion_settles_no_change() {
     let fx = fixture().await;
     let worker = fx.claude_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "unchanged").await;
     let task = fx
         .running_task("unchanged", "claude", &worker.card_id, json!({}))
         .await;
@@ -1226,7 +1233,7 @@ async fn unchanged_worker_completion_settles_no_change() {
 async fn duplicate_completion_has_one_delivery() {
     let fx = fixture().await;
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "twice").await;
     let task = fx
         .running_task("twice", "codex", &worker.card_id, json!({}))
         .await;
@@ -1261,7 +1268,7 @@ async fn candidate_row_is_minted_from_operation_result_not_events() {
     // test schedules the Track itself.
     fx.dispatcher.abort_event_listener_for_test();
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "from-result").await;
     let task = fx
         .running_task("from-result", "codex", &worker.card_id, json!({}))
         .await;
@@ -1357,7 +1364,7 @@ async fn crash_window_without_result_file_reads_ref_not_head() {
     let mut fx = fixture().await;
     fx.dispatcher.abort_event_listener_for_test();
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "crash-ref").await;
     let task = fx
         .running_task("crash-ref", "codex", &worker.card_id, json!({}))
         .await;
@@ -1394,7 +1401,7 @@ pub(super) async fn crashed_before_ref(
 ) -> (ToolCallIdentity, Task, KernelWorkspaceLease) {
     fx.dispatcher.abort_event_listener_for_test();
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "crash-noref").await;
     let task = fx
         .running_task("crash-noref", "codex", &worker.card_id, json!({}))
         .await;
@@ -1569,7 +1576,7 @@ async fn delivery_row_survives_crash_before_submission() {
     let mut fx = fixture().await;
     fx.dispatcher.abort_event_listener_for_test();
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "handoff").await;
     let task = fx
         .running_task("handoff", "codex", &worker.card_id, json!({}))
         .await;
@@ -1604,7 +1611,7 @@ async fn resubmitted_delivery_reuses_persisted_operation_key() {
     let mut fx = fixture().await;
     fx.dispatcher.abort_event_listener_for_test();
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "keyed").await;
     let task = fx
         .running_task("keyed", "codex", &worker.card_id, json!({}))
         .await;
@@ -1637,7 +1644,7 @@ async fn ungated_delivery_crashed_before_submission_settles_on_boot() {
     let mut fx = fixture().await;
     fx.dispatcher.abort_event_listener_for_test();
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "boot-settle").await;
     let task = fx
         .running_task("boot-settle", "codex", &worker.card_id, json!({}))
         .await;
@@ -1706,7 +1713,7 @@ async fn settlement_uses_lease_common_dir_when_track_cwd_moved() {
     let fx = fixture_with(linked_worktree_track).await;
     fx.dispatcher.abort_event_listener_for_test();
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "moved-cwd").await;
     assert!(lease.path.starts_with(&fx.track_root));
     let main_git = fx
         .track_root
@@ -1756,7 +1763,7 @@ async fn settlement_uses_lease_common_dir_when_track_cwd_moved() {
 async fn linked_worktree_track_delivers() {
     let fx = fixture_with(linked_worktree_track).await;
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "linked").await;
     let main_git = fx
         .track_root
         .parent()
@@ -1792,7 +1799,7 @@ async fn linked_worktree_track_delivers() {
 async fn moved_worktree_behind_symlink_is_provenance_mismatch() {
     let fx = fixture().await;
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "symlinked").await;
     let task = fx
         .running_task("symlinked", "codex", &worker.card_id, json!({}))
         .await;
@@ -1844,7 +1851,7 @@ async fn delivery_refuses_switched_branch_as_provenance_mismatch() {
     ];
     for (name, checkout) in cases {
         let worker = fx.new_worker(name, AgentProvider::Codex).await;
-        let lease = fx.kernel_lease(&worker.card_id).await;
+        let lease = fx.kernel_lease(&worker.card_id, name).await;
         let task = fx
             .running_task(name, "codex", &worker.card_id, json!({}))
             .await;
@@ -1889,7 +1896,7 @@ async fn delivery_refuses_switched_branch_as_provenance_mismatch() {
 
     // The positive case: the track branch delivers.
     let worker = fx.new_worker("on-branch", AgentProvider::Codex).await;
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "on-branch").await;
     let task = fx
         .running_task("on-branch", "codex", &worker.card_id, json!({}))
         .await;
@@ -1935,7 +1942,7 @@ async fn delivery_refuses_in_progress_merge() {
     for (name, op, pseudo_ref, conflicting, unmerged_evidence) in cases {
         let fx = fixture().await;
         let worker = fx.codex_worker();
-        let lease = fx.kernel_lease(&worker.card_id).await;
+        let lease = fx.kernel_lease(&worker.card_id, name).await;
         let task = fx
             .running_task(name, "codex", &worker.card_id, json!({}))
             .await;
@@ -2058,7 +2065,7 @@ async fn rebased_lease_tip_records_base_not_ancestor() {
     })
     .await;
     let rebased = fx.new_worker("rebased", AgentProvider::Codex).await;
-    let lease = fx.kernel_lease(&rebased.card_id).await;
+    let lease = fx.kernel_lease(&rebased.card_id, "rebased").await;
     let base = lease.base_sha.clone();
     let root = git(&fx.track_root, &["rev-list", "--max-parents=0", "HEAD"]);
     // A new commit R' on top of R, then the lease branch is rebased onto it: B is no ancestor.
@@ -2099,7 +2106,7 @@ async fn rebased_lease_tip_records_base_not_ancestor() {
 
     // The positive case: an unrebased lease reads `true`.
     let plain = fx.new_worker("plain", AgentProvider::Codex).await;
-    let plain_lease = fx.kernel_lease(&plain.card_id).await;
+    let plain_lease = fx.kernel_lease(&plain.card_id, "plain").await;
     let plain_task = fx
         .running_task("plain", "codex", &plain.card_id, json!({}))
         .await;
@@ -2125,7 +2132,7 @@ async fn rebased_lease_tip_records_base_not_ancestor() {
 async fn observation_failure_settles_as_commit_failed() {
     let fx = fixture().await;
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "observed").await;
     let task = fx
         .running_task("observed", "codex", &worker.card_id, json!({}))
         .await;
@@ -2191,7 +2198,7 @@ async fn workspace_missing_delivery_is_not_retryable() {
     let mut fx = fixture().await;
     fx.dispatcher.abort_event_listener_for_test();
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "gone").await;
     let task = fx
         .running_task("gone", "codex", &worker.card_id, json!({}))
         .await;
@@ -2234,7 +2241,7 @@ async fn ungated_candidate_settlement_wakes_planner_once() {
     let fx = fixture().await;
     let planner = fx.planner().await;
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "wake-once").await;
     let task = fx
         .running_task("wake-once", "codex", &worker.card_id, json!({}))
         .await;
@@ -2312,7 +2319,7 @@ async fn candidate_settlement_wakes_when_gate_already_flipped() {
     let fx = fixture().await;
     let planner = fx.planner().await;
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "gate-first").await;
     // The delivery's commit blocks in a pre-commit hook until the flag appears.
     let flag = fx.track_root.parent().unwrap().join("commit-may-proceed");
     let hooks = lease.git_common_dir.join("hooks");
@@ -2411,7 +2418,7 @@ async fn settlement_wake_is_replay_stable() {
     let fx = fixture().await;
     let planner = fx.planner().await;
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "deferred").await;
     let flag = fx.track_root.parent().unwrap().join("gate-may-finish");
     let task = fx
         .running_task(
@@ -2536,7 +2543,7 @@ async fn slice1_lease_completing_after_slice2_stays_legacy() {
         ("legacy-claude", AgentProvider::Claude),
     ] {
         let worker = fx.new_worker(name, provider.clone()).await;
-        let lease = fx.kernel_lease(&worker.card_id).await;
+        let lease = fx.kernel_lease(&worker.card_id, name).await;
         sqlx::query("UPDATE workspace_leases SET delivery_policy = NULL WHERE lease_id = ?1")
             .bind(&lease.lease_id)
             .execute(&fx.pool())
@@ -2602,7 +2609,7 @@ async fn slice1_lease_completing_after_slice2_stays_legacy() {
     // Slice 4: a gated legacy-lease attempt runs its gate as today — admitted at once (no
     // delivery to wait for), frozen and recorded `Unbound { LegacyLease }`, no sample taken.
     let worker = fx.new_worker("legacy-gated", AgentProvider::Claude).await;
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "legacy-gated").await;
     sqlx::query("UPDATE workspace_leases SET delivery_policy = NULL WHERE lease_id = ?1")
         .bind(&lease.lease_id)
         .execute(&fx.pool())
@@ -2663,7 +2670,7 @@ async fn candidate_view_is_total_over_task_status() {
 
     // `running` on a kernel lease, never reported.
     let running = fx.new_worker("running", AgentProvider::Codex).await;
-    fx.kernel_lease(&running.card_id).await;
+    fx.kernel_lease(&running.card_id, "running").await;
     fx.running_task("running", "codex", &running.card_id, json!({}))
         .await;
     fx.release_lease_by_hand(&running.card_id).await;
@@ -2678,7 +2685,7 @@ async fn candidate_view_is_total_over_task_status() {
 
     // `failed/spawn-failed` with a lease and no delivery row.
     let spawn_failed = fx.new_worker("spawn-failed", AgentProvider::Codex).await;
-    fx.kernel_lease(&spawn_failed.card_id).await;
+    fx.kernel_lease(&spawn_failed.card_id, "spawn-failed").await;
     let task = fx
         .running_task("spawn-failed", "codex", &spawn_failed.card_id, json!({}))
         .await;
@@ -2692,7 +2699,7 @@ async fn candidate_view_is_total_over_task_status() {
 
     // `failed/worker-timeout`, gated.
     let timed_out = fx.new_worker("timed-out", AgentProvider::Codex).await;
-    fx.kernel_lease(&timed_out.card_id).await;
+    fx.kernel_lease(&timed_out.card_id, "timed-out").await;
     let task = fx
         .running_task(
             "timed-out",
@@ -2711,7 +2718,7 @@ async fn candidate_view_is_total_over_task_status() {
 
     // `done` whose delivery row was deleted.
     let done = fx.new_worker("done", AgentProvider::Codex).await;
-    fx.kernel_lease(&done.card_id).await;
+    fx.kernel_lease(&done.card_id, "done").await;
     let task = fx
         .running_task("done", "codex", &done.card_id, json!({}))
         .await;
@@ -2824,7 +2831,7 @@ async fn failed_delivery_fails_the_gated_task() {
     let planner = fx.planner().await;
     let flag = fx.track_root.parent().unwrap().join("gate-may-finish");
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "first").await;
     install_pre_commit(&lease, HOOK_EXIT_1);
     let task = fx
         .running_task(
@@ -2935,7 +2942,7 @@ async fn track_and_area_delete_after_a_failed_delivery() {
         remove_pre_commit(&lease);
         undo_worker_changes(&lease.path);
         let other = fx.new_worker("delivers", AgentProvider::Codex).await;
-        let other_lease = fx.kernel_lease(&other.card_id).await;
+        let other_lease = fx.kernel_lease(&other.card_id, "delivers").await;
         let other_task = fx
             .running_task("delivers", "codex", &other.card_id, json!({}))
             .await;
@@ -2987,7 +2994,7 @@ async fn track_and_area_delete_after_a_failed_delivery() {
 async fn candidate_refs_are_deleted_with_the_track() {
     let fx = fixture_with(linked_worktree_track).await;
     let worker = fx.codex_worker();
-    let lease = fx.kernel_lease(&worker.card_id).await;
+    let lease = fx.kernel_lease(&worker.card_id, "moved-then-deleted").await;
     let main_git = fx
         .track_root
         .parent()

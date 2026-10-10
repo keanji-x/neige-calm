@@ -525,12 +525,34 @@ async fn insert_workspace_lease(
     path: &str,
 ) {
     let now = now_ms();
+    // #2493: the worker runs an attempt bound to its session; the lease is that attempt's.
+    let attempt_id = format!("{track_id}:forge-worker-{card_id}");
+    sqlx::query(
+        "INSERT INTO tasks (id, track_id, key, kind, goal, context_json, depends_on_json, status, \
+         declared_by, created_at_ms, updated_at_ms) \
+         VALUES (?1, ?2, ?3, 'codex', 'forge worker', 'null', '[]', 'dispatched', 'user', ?4, ?4)",
+    )
+    .bind(&attempt_id)
+    .bind(track_id)
+    .bind(format!("forge-worker-{card_id}"))
+    .bind(now)
+    .execute(&mut **tx)
+    .await
+    .expect("insert the worker's attempt");
+    calm_server::test_seams::bind_fixture_worker_tx(tx, &attempt_id, card_id)
+        .await
+        .expect("bind the worker's attempt");
+    sqlx::query("UPDATE tasks SET status = 'running' WHERE id = ?1")
+        .bind(&attempt_id)
+        .execute(&mut **tx)
+        .await
+        .expect("the worker's attempt runs");
     sqlx::query(
         r#"INSERT INTO workspace_leases (
                lease_id, card_id, track_id, path, state, lease_owner,
-               lease_until_ms, boot_id, created_at_ms, updated_at_ms
+               lease_until_ms, boot_id, created_at_ms, updated_at_ms, attempt_id
            )
-           VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, NULL, ?7, ?7)"#,
+           VALUES (?1, ?2, ?3, ?4, 'held', ?5, ?6, NULL, ?7, ?7, ?8)"#,
     )
     .bind(calm_server::model::new_id())
     .bind(card_id)
@@ -539,6 +561,7 @@ async fn insert_workspace_lease(
     .bind("test-lease-owner")
     .bind(now + 60_000)
     .bind(now)
+    .bind(&attempt_id)
     .execute(&mut **tx)
     .await
     .expect("insert workspace lease");

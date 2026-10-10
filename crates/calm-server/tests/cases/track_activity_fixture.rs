@@ -340,7 +340,8 @@ impl Fx {
         assert_eq!(n, 1, "claim {key}");
     }
 
-    /// `dispatched → running` + `worker_card_id` (the post-spawn stamp).
+    /// The worker card's session bound to the attempt (#2493, what the spawn's prepare does),
+    /// then `dispatched → running` (the post-spawn stamp).
     pub(crate) async fn mark_running(
         &self,
         track_id: &str,
@@ -348,18 +349,33 @@ impl Fx {
         worker_card_id: &str,
         at_ms: i64,
     ) {
-        let mut tx = begin_immediate_tx(&self.pool).await.unwrap();
-        let n = task_mark_running_tx(
-            &mut tx,
+        calm_server::test_seams::bind_worker_for_test(
+            &self.pool,
             &Self::task_id(track_id, key),
-            Some(worker_card_id),
-            at_ms,
-            i64::MAX,
+            worker_card_id,
         )
         .await
         .unwrap();
+        let mut tx = begin_immediate_tx(&self.pool).await.unwrap();
+        let n = task_mark_running_tx(&mut tx, &Self::task_id(track_id, key), at_ms, i64::MAX)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
         assert_eq!(n, 1, "mark_running {key}");
+    }
+
+    /// The worker session the attempt is bound to, on `worker_card_id`.
+    async fn bound_session(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        attempt_id: &str,
+        worker_card_id: &str,
+    ) -> String {
+        let binding = calm_server::db::sqlite::attempt_binding_tx(tx, attempt_id)
+            .await
+            .unwrap()
+            .expect("the attempt was bound by mark_running");
+        assert_eq!(binding.card_id.as_deref(), Some(worker_card_id));
+        binding.session_id
     }
 
     /// The worker's `neige_task_done` flip (`done` + `finished_at_ms`).
@@ -371,13 +387,14 @@ impl Fx {
         at_ms: i64,
     ) {
         let mut tx = begin_immediate_tx(&self.pool).await.unwrap();
+        let session_id =
+            Self::bound_session(&mut tx, &Self::task_id(track_id, key), worker_card_id).await;
         let n = task_complete_from_worker_tx(
             &mut tx,
             &Self::task_id(track_id, key),
             track_id,
-            calm_server::db::sqlite::TaskReporter::Card {
-                card_id: worker_card_id,
-                owns_key: true,
+            calm_server::db::sqlite::TaskReporter::Session {
+                session_id: &session_id,
             },
             at_ms,
         )
@@ -390,13 +407,14 @@ impl Fx {
     /// The worker's `neige_task_fail` flip (`failed` + `finished_at_ms`).
     pub(crate) async fn fail(&self, track_id: &str, key: &str, worker_card_id: &str, at_ms: i64) {
         let mut tx = begin_immediate_tx(&self.pool).await.unwrap();
+        let session_id =
+            Self::bound_session(&mut tx, &Self::task_id(track_id, key), worker_card_id).await;
         let n = task_fail_from_worker_tx(
             &mut tx,
             &Self::task_id(track_id, key),
             track_id,
-            calm_server::db::sqlite::TaskReporter::Card {
-                card_id: worker_card_id,
-                owns_key: true,
+            calm_server::db::sqlite::TaskReporter::Session {
+                session_id: &session_id,
             },
             "worker-failed: fixture",
             at_ms,

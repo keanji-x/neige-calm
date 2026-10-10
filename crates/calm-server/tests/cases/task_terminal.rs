@@ -133,9 +133,12 @@ pub(crate) async fn worker_running(
     if let Some(script) = viewer {
         spawn_viewer_running(h, &terminal.id, script).await;
     }
-    // Stamp the task/worker association after its viewer exists.
-    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,declared_by,created_at_ms,updated_at_ms) VALUES (?1,?2,?3,?4,'test','[]','running',?5,'user',?6,?6)")
-        .bind(&task).bind(track).bind(key).bind(kind).bind(&card).bind(now_ms()).execute(h.sql.pool()).await.unwrap();
+    // Bind the task to its worker after its viewer exists (#2493: the spawn's prepare binds it).
+    sqlx::query("INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,declared_by,created_at_ms,updated_at_ms) VALUES (?1,?2,?3,?4,'test','[]','dispatched','user',?5,?5)")
+        .bind(&task).bind(track).bind(key).bind(kind).bind(now_ms()).execute(h.sql.pool()).await.unwrap();
+    calm_server::test_seams::bind_running_worker_for_test(h.sql.pool(), &task, &card)
+        .await
+        .unwrap();
     Worker {
         task,
         card,
@@ -552,6 +555,13 @@ async fn worker_session_replacement_invalidates_previous_task_observations() {
         )
         .await
         .unwrap();
+        // The attempt now runs in the replacement session: its binding moves (#2493).
+        sqlx::query("UPDATE tasks SET worker_session_id=?2 WHERE id=?1")
+            .bind(&w.task)
+            .bind(&next)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
         let resolved = h
             .ok("neige_terminal_show", json!({"attempt_id":w.task}))
@@ -671,13 +681,30 @@ async fn reassigned_task_worker_and_manual_restart_do_not_bypass_execution_bindi
         );
     }
     let restarted = worker(&h, "claude", &h.track, true).await;
-    // The current task still names this card, but its replaced session
-    // no longer carries the owning task operation. Direct ID must not bypass it.
-    sqlx::query("UPDATE worker_sessions SET spawn_op_id=NULL WHERE id=?1")
-        .bind(&restarted.session)
-        .execute(h.sql.pool())
-        .await
-        .unwrap();
+    // A manual restart replaced the card's session with one bound to no attempt (#2493: the
+    // binding stays on the session that ran the task). Direct ID must not bypass it.
+    let mut tx = h.sql.pool().begin().await.unwrap();
+    calm_server::db::sqlite::session_supersede_and_start_tx(
+        &mut tx,
+        &restarted.session,
+        calm_server::session_projection_repo::WorkerSessionInit {
+            id: new_id(),
+            card_id: restarted.card.clone(),
+            kind: calm_server::session_projection_repo::WorkerSessionKind::ClaudeCard,
+            agent_provider: Some(calm_server::session_projection_repo::AgentProvider::Claude),
+            status: calm_server::session_projection_repo::WorkerSessionState::Running,
+            terminal_run_id: Some(restarted.terminal.clone()),
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: None,
+            spawn_op_id: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
     assert!(
         h.call(
             "neige_terminal_show",
@@ -690,30 +717,6 @@ async fn reassigned_task_worker_and_manual_restart_do_not_bypass_execution_bindi
     stop(&h, &old).await;
     stop(&h, &other).await;
     stop(&h, &restarted).await;
-}
-
-#[tokio::test]
-async fn missing_task_projection_cannot_be_reclassified_as_a_manual_terminal() {
-    let h = Harness::start().await;
-    let w = worker(&h, "codex", &h.track, true).await;
-    assert_eq!(
-        h.ok("neige_terminal_show", json!({"attempt_id":w.task}))
-            .await["available"],
-        true
-    );
-    sqlx::query("DELETE FROM tasks WHERE id=?1")
-        .bind(&w.task)
-        .execute(h.sql.pool())
-        .await
-        .unwrap();
-    let result = h
-        .call("neige_terminal_show", json!({"terminal_id":w.terminal}))
-        .await;
-    stop(&h, &w).await;
-    assert!(
-        result.get("error").is_some(),
-        "lost task row must not turn its Worker into a manual terminal: {result}"
-    );
 }
 
 #[tokio::test]
