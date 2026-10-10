@@ -43,3 +43,21 @@ fn a_recorded_revert_stays_readable_by_the_previous_binary() {
         unapplied
     );
 }
+
+/// A sign-in hold that lands after `issuance_hold()` reaches `turn/start` as the daemon's refusal
+/// code: it awaits recovery like the hold itself, never the "change the model" refusal.
+#[test]
+fn the_sign_in_refusal_awaits_recovery_and_other_refusals_stay_refusals() {
+    assert!(matches!(
+        codex_turn_start_failure(CalmError::CodexRefused(
+            crate::codex_authentication::SIGN_IN_REFUSAL.into()
+        )),
+        TurnStartFailure::AwaitingRecovery { .. }
+    ));
+    assert!(matches!(
+        codex_turn_start_failure(CalmError::CodexRefused(
+            "turn/start failed: unknown model".into()
+        )),
+        TurnStartFailure::Refused { .. }
+    ));
+}

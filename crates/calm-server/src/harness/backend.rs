@@ -602,5 +602,5 @@ pub(crate) async fn interrupt_codex_thread(
 }
 
 #[cfg(test)]
-#[path = "backend_rewind_tests.rs"]
-mod rewind_tests;
+#[path = "backend_tests.rs"]
+mod tests;
