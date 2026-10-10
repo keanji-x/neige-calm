@@ -19,9 +19,10 @@ pub fn spawn_on_boot(
     tokio::spawn(async move { resume_owner_claude_cards(&state, &stale_terminal_ids).await })
 }
 
-/// Submit one `claude-restart` per owner-created Claude card among `stale_terminal_ids` (the
-/// terminals the boot reconcile just marked exited), at most once per card. A failure is logged
-/// and leaves the card exited, to be resumed by hand.
+/// Run the card's Update (`update_claude_card`) once per owner-created Claude card among
+/// `stale_terminal_ids` (the terminals the boot reconcile just marked exited); with no child to
+/// stop it is the dead-child restart. A failure is logged and leaves the card exited, to be
+/// resumed by hand.
 pub async fn resume_owner_claude_cards(state: &AppState, stale_terminal_ids: &[String]) {
     let mut resumed = HashSet::new();
     for terminal_id in stale_terminal_ids {

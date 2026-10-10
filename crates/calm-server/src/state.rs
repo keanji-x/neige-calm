@@ -119,9 +119,9 @@ pub struct RouteState {
     /// The scheduler takes it holding only its per-track pass lock and a spawn permit, which no
     /// holder of this lock waits on: a holder's start is driven by its own `wait`, never by the
     /// scheduler, and no operation adapter re-enters this lock under the drive mutex.
-    /// A Claude card's Update (#2516, `claude_update`) holds the card's entry across its stop
-    /// (which may take `track_delete_locks`) and its `claude-restart` (the drive mutex), in the
-    /// order above.
+    /// A Claude card's Update (#2516, `claude_update`) holds the card's entry across its stop,
+    /// under `track_delete_locks`, and then its `claude-restart`, under the drive mutex; it never
+    /// holds `track_delete_locks` and the drive mutex at once.
     pub(crate) planner_recovery_locks: crate::per_card_lock::PerCardLocks,
     /// Per-card claim for the Today bootstrap's first-message send. A SEPARATE map from
     /// `planner_recovery_locks`: the claim is held across a call that takes that lock and

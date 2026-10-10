@@ -169,7 +169,7 @@ pub struct CardPatch {
     pub kind: Option<String>,
     pub sort: Option<f64>,
     /// Replaces the stored payload. A payload carrying a server-owned key is refused with 400:
-    /// `terminal_signals`, `template_context`, `planner_provider`, `side_source_card_id`, `permission_mode`, `owner_created`. Every kernel-minted server-owned value the card already carries is kept.
+    /// `terminal_signals`, `template_context`, `planner_provider`, `side_source_card_id`, `permission_mode`, `owner_created`, `settings_path`, `claude_session_id`. Every kernel-minted server-owned value the card already carries is kept.
     #[schema(value_type = Option<Object>)]
     pub payload: Option<serde_json::Value>,
     /// Not patchable via API: surfaced only so a client sending it gets a clear

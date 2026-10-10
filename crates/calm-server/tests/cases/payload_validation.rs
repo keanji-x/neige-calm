@@ -284,7 +284,9 @@ async fn post_card_with_a_server_owned_key_is_rejected_for_every_kind() {
             "planner_provider",
             "side_source_card_id",
             "permission_mode",
-            "owner_created"
+            "owner_created",
+            "settings_path",
+            "claude_session_id"
         ]
     );
     for key in SERVER_OWNED_CARD_PAYLOAD_KEYS {

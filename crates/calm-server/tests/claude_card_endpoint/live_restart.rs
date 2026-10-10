@@ -345,37 +345,89 @@ async fn update_of_a_running_task_worker_card_is_refused_and_leaves_its_child() 
         .await;
 }
 
-/// An Update that cannot restart the card stops nothing: here an owner-created card's payload is
-/// replaced through the API without its `settings_path` (its `owner_created` marker is kept), so
-/// the restart's own check refuses it before the running child is touched.
+async fn patch_payload(
+    boot: &Boot,
+    card_id: &str,
+    payload: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let resp = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/cards/{card_id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "payload": payload }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    response_json(resp).await
+}
+
+/// The payload facts a restart depends on are the kernel's: a client can neither set a Claude
+/// card's `settings_path` nor drop it.
+#[tokio::test]
+async fn a_client_can_neither_set_nor_drop_a_claude_cards_settings_path() {
+    let _guard = ENV_LOCK.lock().await;
+    let live = live_card().await;
+    let boot = &live.boot;
+    let minted = boot
+        .repo
+        .card_get(&live.card_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .payload["settings_path"]
+        .clone();
+
+    let (status, refused) = patch_payload(
+        boot,
+        &live.card_id,
+        json!({ "schemaVersion": 1, "settings_path": "/" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={refused:?}");
+    let (status, patched) = patch_payload(
+        boot,
+        &live.card_id,
+        json!({ "schemaVersion": 1, "icon_bg": "#fff" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={patched:?}");
+    let stored = boot
+        .repo
+        .card_get(&live.card_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .payload;
+    assert_eq!(stored["settings_path"], minted, "{stored}");
+    assert_eq!(stored["owner_created"], true, "{stored}");
+
+    boot.state
+        .terminal_renderer
+        .drop_entry(&live.terminal_id)
+        .await;
+}
+
+/// An Update that cannot restart the card stops nothing: a `settings_path` with no parent
+/// directory (seeded below the API, which refuses it) is refused by the restart's prepare, which
+/// the Update dry-runs before the running child is touched.
 #[tokio::test]
 async fn update_that_cannot_restart_the_card_leaves_its_child_running() {
     let _guard = ENV_LOCK.lock().await;
     let live = live_card().await;
     let (boot, log) = (&live.boot, &live.log);
     let (pid, _) = starts(log)[0];
-    let patched = boot
-        .app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri(format!("/api/cards/{}", live.card_id))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({ "payload": { "schemaVersion": 1, "icon_bg": "#fff" } }).to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let (patch_status, patched) = response_json(patched).await;
-    assert_eq!(patch_status, StatusCode::OK, "body={patched:?}");
-    assert_eq!(patched["payload"]["owner_created"], true, "{patched}");
-    assert!(
-        patched["payload"].get("settings_path").is_none(),
-        "{patched}"
-    );
+    sqlx::query(
+        "UPDATE cards SET payload = json_set(payload, '$.settings_path', '/') WHERE id = ?1",
+    )
+    .bind(&live.card_id)
+    .execute(boot.repo.pool())
+    .await
+    .unwrap();
 
     let (status, response) = post_restart(boot.app.clone(), &live.card_id).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={response:?}");
@@ -383,7 +435,7 @@ async fn update_that_cannot_restart_the_card_leaves_its_child_running() {
         response["error"]
             .as_str()
             .unwrap()
-            .contains("no settings_path"),
+            .contains("settings_path has no parent directory"),
         "body={response:?}"
     );
     assert!(alive(pid) && !got_sigterm(log, pid), "the child runs on");
@@ -397,8 +449,6 @@ async fn update_that_cannot_restart_the_card_leaves_its_child_running() {
         .await;
 }
 
-/// An owner-created card whose terminal a task owns would only be reattached by the restart, so
-/// its Update refuses before the stop and the child runs on.
 #[tokio::test]
 async fn update_of_an_owner_card_whose_terminal_a_task_owns_leaves_its_child_running() {
     let _guard = ENV_LOCK.lock().await;

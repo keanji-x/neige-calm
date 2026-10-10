@@ -1,8 +1,7 @@
 //! #2516: Update of a Claude card. An owner-created card's live child is stopped through the
 //! kernel's terminal reap, but only once a dry run of the restart's own prepare accepts; then,
-//! once its exit is recorded and the card has no active runtime, the card is restarted with the
-//! same `claude-restart` that resumes a card whose child is gone. One sequence per card at a
-//! time.
+//! once its exit is recorded and the card has no active runtime, it is restarted through
+//! `run_claude_restart`, the dead-child restart. One sequence per card at a time.
 
 use std::time::Duration;
 

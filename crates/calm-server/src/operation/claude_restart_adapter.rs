@@ -226,6 +226,11 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             .filter(|s| !s.is_empty())
             .map(ToOwned::to_owned)
             .ok_or_else(|| CalmError::Forbidden("Claude card has no settings_path".into()))?;
+        // In prepare, not only at the spawn: a dry run (#2516) must see every refusal that needs no
+        // side effect first.
+        settings_path_parent(Path::new(&settings_path)).map_err(|_| {
+            CalmError::Forbidden("Claude card's settings_path has no parent directory".into())
+        })?;
         if let Some(active) = session_projection_active_for_card_tx(tx, &card_id).await? {
             if claude_runtime_is_live(active.status) {
                 return Err(CalmError::Conflict(
