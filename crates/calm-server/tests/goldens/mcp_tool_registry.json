@@ -268,7 +268,8 @@
                   "app",
                   "task",
                   "preview",
-                  "view"
+                  "view",
+                  "window"
                 ],
                 "type": "string"
               },
@@ -333,7 +334,7 @@
   },
   {
     "name": "neige_report_describe",
-    "description_sha256": "004d0d3ec01d99d01ad8bfef1615cb008b115f532cc7f79b9f84767d919e28df",
+    "description_sha256": "bb7505615344496b412bcb714b70f4f49f539bae522188c78ddf1d0efcd14250",
     "input_schema": {
       "additionalProperties": false,
       "properties": {},

@@ -194,7 +194,9 @@ mod tests {
         // #2493: action `message` (schema +10, description +44) was paid for by restated wait
         // argument names (open) and schema facts (read); the measured 30,860 is the cap.
         // #2528: the input replay contract, written once, saved 11 bytes; the cap is 30,849.
-        const SURFACE_MAX_BYTES: usize = 30_849;
+        // #2530: the `window` kind (commit enum +9, describe +6) was paid for by the describe line,
+        // which no longer restates its result shape; the cap is the measured 30,846.
+        const SURFACE_MAX_BYTES: usize = 30_846;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);

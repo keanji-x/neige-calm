@@ -1,0 +1,58 @@
+@layer features {
+  .figure {
+    margin: 0;
+  }
+
+  /* The app block's register: a tint and no border. The window is scaled to fit inside it. */
+  .stage {
+    position: relative;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background: var(--surface-code);
+  }
+
+  .canvas {
+    display: block;
+    inline-size: 100%;
+    block-size: 100%;
+    object-fit: contain;
+    touch-action: none;
+  }
+
+  .canvas:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+
+  /* Not live: whatever frame is left is old, so it is dimmed under the state, never shown as current. */
+  .stage:not([data-nc-state="live"]) .canvas {
+    opacity: 0.3;
+    filter: grayscale(1);
+  }
+
+  .status {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    pointer-events: none;
+  }
+
+  /* On its own surface, so the state stays legible over whatever the old frame shows. */
+  .label {
+    padding: var(--space-1) var(--space-3);
+    border-radius: var(--radius-sm);
+    background: var(--surface-card);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-2);
+  }
+
+  .caption {
+    margin-block-start: var(--space-3);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+  }
+}

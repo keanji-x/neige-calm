@@ -14,7 +14,4 @@ tracing = "0.1"
 
 [dev-dependencies]
 jpeg-decoder = { version = "0.3", default-features = false }
-tokio = { version = "1", features = ["macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
-# examples/dev.rs only: the loopback harness (removed in #2530 E3b).
-axum = { version = "0.8", features = ["ws"] }
-compositor = { path = "../compositor" }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }

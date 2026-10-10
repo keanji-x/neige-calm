@@ -14,6 +14,7 @@ pub const KIND_VIEW: &str = "view";
 pub const KIND_APP: &str = "app";
 pub const KIND_TASK: &str = "task";
 pub const KIND_PREVIEW: &str = "preview";
+pub const KIND_WINDOW: &str = "window";
 
 /// Maximum candle rows in a `chart.candles` payload.
 pub const MAX_CHART_CANDLES: usize = 5000;
@@ -32,7 +33,7 @@ pub const MAX_CANONICAL_BYTES: usize = 256 * 1024;
 pub const MAX_LIVE_UNIT_BYTES: usize = 4 * 1024 * 1024;
 
 /// The non-prose kinds a report may contain, in `blocks.kinds` order.
-pub const DATA_KINDS: [&str; 7] = [
+pub const DATA_KINDS: [&str; 8] = [
     KIND_CHART_CANDLES,
     KIND_CHART_SERIES,
     KIND_TABLE,
@@ -40,6 +41,7 @@ pub const DATA_KINDS: [&str; 7] = [
     KIND_TASK,
     KIND_PREVIEW,
     KIND_VIEW,
+    KIND_WINDOW,
 ];
 
 pub fn is_data_kind(kind: &str) -> bool {
@@ -87,6 +89,7 @@ pub fn validate_payload(kind: &str, payload: &Value) -> Result<(), String> {
         KIND_APP => validate_app(map, &mut errors),
         KIND_TASK => validate_task(map, &mut errors),
         KIND_PREVIEW => validate_preview(map, &mut errors),
+        KIND_WINDOW => super::window::validate_window(map, &mut errors),
         other => errors.push(format!(
             "unknown block kind `{other}` — known data kinds: {}",
             DATA_KINDS.join(", ")
@@ -710,19 +713,19 @@ fn is_preview_key(key: &str) -> bool {
         && key.chars().all(|c| head(c) || c == '_' || c == '-')
 }
 
-const SAME_ORIGIN_PATH_RULE: &str = "same-origin path starting with `/` (no scheme, no \
+pub(super) const SAME_ORIGIN_PATH_RULE: &str = "same-origin path starting with `/` (no scheme, no \
      `//host`, no backslashes, no control characters — the WHATWG URL parser strips \
      tab/newline/C0 controls before parsing, so `/\\host` or `/\\n/host` would normalize to a \
      protocol-relative URL; percent-encoded forms like `/%0A` are fine)";
 
-fn is_same_origin_path(path: &str) -> bool {
+pub(super) fn is_same_origin_path(path: &str) -> bool {
     path.starts_with('/')
         && !path.starts_with("//")
         && !path.contains('\\')
         && !path.chars().any(is_url_hostile_char)
 }
 
-fn optional_height(map: &Map<String, Value>, errors: &mut Vec<String>) {
+pub(super) fn optional_height(map: &Map<String, Value>, errors: &mut Vec<String>) {
     if let Some(height) = map.get("height") {
         match height.as_f64() {
             Some(px) if (120.0..=2000.0).contains(&px) => {}

@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
-use calm_types::plugin::KERNEL_OVERLAY_PLUGIN_ID;
+use calm_types::plugin::{KERNEL_OVERLAY_PLUGIN_ID, is_valid_plugin_id};
 use calm_types::report_blocks::tasks::key_is_valid;
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -1608,20 +1608,6 @@ pub const LEGACY_PLUGIN_IDS: [&str; 5] = [
 /// The install route's id rule: a word, or one of the [`LEGACY_PLUGIN_IDS`].
 pub fn is_installable_plugin_id(s: &str) -> bool {
     is_word_plugin_id(s) || LEGACY_PLUGIN_IDS.contains(&s)
-}
-
-/// `^[a-z0-9][a-z0-9.-]{1,63}$` — total 2..=64 chars; head is alphanumeric.
-fn is_valid_plugin_id(s: &str) -> bool {
-    let bytes = s.as_bytes();
-    if bytes.len() < 2 || bytes.len() > 64 {
-        return false;
-    }
-    if !is_lower_alnum(bytes[0]) {
-        return false;
-    }
-    bytes[1..]
-        .iter()
-        .all(|&b| is_lower_alnum(b) || b == b'.' || b == b'-')
 }
 
 /// `^[a-z0-9][a-z0-9-]{0,31}$` — total 1..=32 chars; head is alphanumeric.

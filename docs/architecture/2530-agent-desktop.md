@@ -63,8 +63,9 @@ input.
 | kernel: plugin approval delegation | calm-server | — | Codex approval delegation for plugin tools whose manifest asks for it, granted by the owner's enable, carried in the shared kernel MCP entry | which plugin, which tool |
 
 The three libraries carry no `calm-` prefix (AGENTS.md "Contracts and code") and no Neige
-dependencies. Each has a dev example that runs without Neige: `compositor` dumps a window to PNG,
-and `window-stream` serves a loopback test page.
+dependencies. `compositor` has a dev example that runs without Neige and dumps a window to PNG.
+`window-stream` had a loopback dev page for E1; E3b removed it, and the Report `window` block's
+viewer (`fe/web/src/systems/window-stream/`) is the protocol's viewer since.
 
 ### 2.1 Why a plugin, not a kernel feature
 
