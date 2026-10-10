@@ -41,6 +41,8 @@ struct Server {
 }
 
 /// Starts the compositor on its own thread. Returns once the socket accepts clients.
+///
+/// The receiver carries [`WindowEvent`]s; see there for draining it.
 pub fn start(config: Config) -> Result<(Compositor, mpsc::Receiver<WindowEvent>)> {
     if config.size.0 == 0 || config.size.1 == 0 || config.max_fps == 0 {
         return Err(Error::Setup(
@@ -174,6 +176,7 @@ fn setup(
         size: config.size,
         started: Instant::now(),
         pointer_window: None,
+        popup_grab: None,
         dh: dh.clone(),
     };
 
@@ -183,13 +186,24 @@ fn setup(
         .insert_source(
             Generic::new(listener, Interest::READ, PollMode::Level),
             |_, listener, server| {
-                while let Some(stream) = listener.accept()? {
-                    if let Err(e) = server
-                        .state
-                        .dh
-                        .insert_client(stream, Arc::new(ClientState::default()))
-                    {
-                        tracing::warn!(error = %e, "inserting a Wayland client failed");
+                // Errors stay inside the callback: returning one would stop the
+                // whole compositor, while the next readiness retries the accept.
+                loop {
+                    match listener.accept() {
+                        Ok(Some(stream)) => {
+                            if let Err(e) = server
+                                .state
+                                .dh
+                                .insert_client(stream, Arc::new(ClientState::default()))
+                            {
+                                tracing::warn!(error = %e, "inserting a Wayland client failed");
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "accepting a Wayland client failed");
+                            break;
+                        }
                     }
                 }
                 Ok(PostAction::Continue)
@@ -205,7 +219,12 @@ fn setup(
         .insert_source(
             Generic::new(poll_fd, Interest::READ, PollMode::Level),
             |_, _, server| {
-                server.display.dispatch_clients(&mut server.state)?;
+                // A client's protocol error disconnects only that client; any
+                // other error is logged rather than returned, which would stop
+                // the compositor for every client.
+                if let Err(e) = server.display.dispatch_clients(&mut server.state) {
+                    tracing::warn!(error = %e, "dispatching Wayland clients failed");
+                }
                 Ok(PostAction::Continue)
             },
         )

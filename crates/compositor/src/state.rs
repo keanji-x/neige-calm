@@ -6,8 +6,8 @@ use std::time::Instant;
 use smithay::backend::renderer::pixman::PixmanRenderer;
 use smithay::backend::renderer::utils::on_commit_buffer_handler;
 use smithay::desktop::{
-    PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, PopupUngrabStrategy, Window,
-    find_popup_root_surface, get_popup_toplevel_coords,
+    PopupGrab, PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, PopupUngrabStrategy,
+    Window, find_popup_root_surface, get_popup_toplevel_coords,
 };
 use smithay::input::pointer::{CursorImageStatus, Focus};
 use smithay::input::{Seat, SeatHandler, SeatState};
@@ -49,8 +49,11 @@ pub(crate) struct State {
     pub events: mpsc::Sender<WindowEvent>,
     pub size: (u32, u32),
     pub started: Instant,
-    /// The window whose coordinate space the seat's pointer is in.
+    /// The window whose coordinate space the seat's pointer is in. It may name
+    /// a closed window; ids are never reused, so that matches no live window.
     pub pointer_window: Option<WindowId>,
+    /// The seat's latest explicit popup grab and the toplevel surface it is rooted in.
+    pub popup_grab: Option<(WlSurface, PopupGrab<State>)>,
 }
 
 #[derive(Default)]
@@ -81,10 +84,14 @@ impl State {
         self.windows.iter_mut().find(|w| w.id == id)
     }
 
+    /// The window whose toplevel surface is `root`.
+    fn position_by_root(&self, root: &WlSurface) -> Option<usize> {
+        self.windows.iter().position(|w| w.has_root(root))
+    }
+
     fn tracked_by_root(&mut self, root: &WlSurface) -> Option<&mut Tracked> {
-        self.windows
-            .iter_mut()
-            .find(|w| w.window.toplevel().is_some_and(|t| t.wl_surface() == root))
+        let index = self.position_by_root(root)?;
+        Some(&mut self.windows[index])
     }
 
     /// Constrains a popup to its toplevel's window geometry, the only screen it has.
@@ -93,11 +100,7 @@ impl State {
         let Ok(root) = find_popup_root_surface(&kind) else {
             return;
         };
-        let Some(window) = self
-            .windows
-            .iter()
-            .find(|w| w.window.toplevel().is_some_and(|t| t.wl_surface() == &root))
-        else {
+        let Some(window) = self.position_by_root(&root).map(|i| &self.windows[i]) else {
             return;
         };
         // Window coordinates put the window geometry at the origin; the positioner
@@ -192,18 +195,10 @@ impl XdgShellHandler for State {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
-        let Some(index) = self.windows.iter().position(|w| {
-            w.window
-                .toplevel()
-                .is_some_and(|t| t.wl_surface() == surface.wl_surface())
-        }) else {
+        let Some(index) = self.position_by_root(surface.wl_surface()) else {
             return;
         };
-        let tracked = self.windows.remove(index);
-        if self.pointer_window == Some(tracked.id) {
-            self.pointer_window = None;
-        }
-        if let Some(event) = tracked.close() {
+        if let Some(event) = self.windows.remove(index).close() {
             self.emit(event);
         }
     }
@@ -250,7 +245,7 @@ impl XdgShellHandler for State {
         let Ok(root) = find_popup_root_surface(&kind) else {
             return;
         };
-        let Ok(mut grab) = self.popups.grab_popup(root, kind, &seat, serial) else {
+        let Ok(mut grab) = self.popups.grab_popup(root.clone(), kind, &seat, serial) else {
             return;
         };
         if let Some(keyboard) = seat.get_keyboard() {
@@ -274,6 +269,7 @@ impl XdgShellHandler for State {
             }
             pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
         }
+        self.popup_grab = Some((root, grab));
     }
 }
 

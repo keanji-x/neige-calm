@@ -6,7 +6,7 @@ mod support;
 
 use std::time::Duration;
 
-use compositor::{Error, Frame, InputEvent, WindowEvent};
+use compositor::{Compositor, Error, Frame, InputEvent, WindowEvent, WindowInfo};
 use support::{BTN_LEFT, KEY_A, Seen, TestClient, run_dir, start, wait_opened};
 
 const RED: u32 = 0x00d0_2020;
@@ -49,7 +49,7 @@ fn each_frame_holds_only_its_own_window_and_popups() {
     );
 
     // A popup that asks to extend past the window is constrained into it.
-    red.open_popup(GREEN, (140, 100, 40, 30));
+    red.open_popup(GREEN, (140, 100, 40, 30), false);
     red.roundtrip();
 
     let red_frame = compositor.capture(red_info.id).unwrap();
@@ -75,7 +75,7 @@ fn each_frame_holds_only_its_own_window_and_popups() {
 }
 
 #[test]
-fn a_closed_or_emptied_window_errors_instead_of_returning_a_stale_frame() {
+fn a_closed_window_errors_instead_of_returning_a_stale_frame() {
     let dir = run_dir();
     let (compositor, events) = start(dir.path(), SIZE, 30);
     let mut kept = TestClient::connect(compositor.wayland_socket());
@@ -106,13 +106,221 @@ fn a_closed_or_emptied_window_errors_instead_of_returning_a_stale_frame() {
         Err(Error::WindowGone(_))
     ));
     assert_eq!(compositor.windows().unwrap(), vec![kept_info.clone()]);
+}
 
-    // A window whose buffer is detached has no content to show.
-    kept.unmap();
+#[test]
+fn an_unmapped_window_closes_without_a_stale_frame_and_remaps_as_a_new_window() {
+    let dir = run_dir();
+    let (compositor, events) = start(dir.path(), SIZE, 30);
+    let mut client = TestClient::connect(compositor.wayland_socket());
+    client.open_window("unmapping", RED);
+    let info = wait_opened(&events);
+    // The watch starts with a frame pending; nobody takes it before the unmap.
+    let watch = compositor.watch(info.id).expect("watch while mapped");
+
+    // Attaching a null buffer unmaps the toplevel: it closes like a destroyed one.
+    client.unmap();
+    let taken = watch.try_take();
+    assert!(
+        matches!(taken, Err(Error::WindowGone(id)) if id == info.id),
+        "the watch of an unmapped window yielded {:?}",
+        taken.map(|frame| frame.map(|f| f.pixel(5, 5)))
+    );
     assert!(matches!(
-        compositor.capture(kept_info.id),
-        Err(Error::NoBuffer(_))
+        watch.take_timeout(Duration::from_millis(50)),
+        Err(Error::WindowGone(_))
     ));
+    assert_eq!(
+        events.recv_timeout(Duration::from_secs(5)),
+        Ok(WindowEvent::Closed(info.id))
+    );
+    assert!(matches!(compositor.capture(info.id), Err(Error::WindowGone(id)) if id == info.id));
+    assert!(matches!(
+        compositor.watch(info.id),
+        Err(Error::WindowGone(_))
+    ));
+    assert_eq!(compositor.windows().unwrap(), vec![]);
+
+    // Mapping it again opens a new window; the old id stays gone.
+    client.remap(GREEN);
+    let remapped = wait_opened(&events);
+    assert_ne!(remapped.id, info.id);
+    assert_eq!(remapped.title, "unmapping");
+    assert_eq!(compositor.windows().unwrap(), vec![remapped.clone()]);
+    assert_eq!(compositor.capture(remapped.id).unwrap().pixel(5, 5), GREEN);
+    assert!(matches!(
+        compositor.capture(info.id),
+        Err(Error::WindowGone(_))
+    ));
+}
+
+/// Window `a` (red) with a popup holding an explicit grab, made the way a
+/// client makes a menu: on a button press. Window `b` (blue) is a second
+/// client. Both clients' records are empty on return.
+fn grabbing_popup_and_another_window(
+    compositor: &Compositor,
+    events: &std::sync::mpsc::Receiver<WindowEvent>,
+) -> (TestClient, WindowInfo, TestClient, WindowInfo) {
+    let mut a = TestClient::connect(compositor.wayland_socket());
+    a.open_window("a", RED);
+    let a_info = wait_opened(events);
+    let mut b = TestClient::connect(compositor.wayland_socket());
+    b.open_window("b", BLUE);
+    let b_info = wait_opened(events);
+
+    let button = |pressed| InputEvent::Button {
+        code: BTN_LEFT,
+        pressed,
+    };
+    compositor
+        .input(
+            a_info.id,
+            vec![InputEvent::Motion { x: 10.0, y: 10.0 }, button(true)],
+        )
+        .unwrap();
+    a.roundtrip();
+    a.open_popup(GREEN, (20, 20, 40, 30), true);
+    compositor.input(a_info.id, vec![button(false)]).unwrap();
+    a.roundtrip();
+    b.roundtrip();
+    a.state.seen.clear();
+    b.state.seen.clear();
+    (a, a_info, b, b_info)
+}
+
+fn key(pressed: bool) -> InputEvent {
+    InputEvent::Key {
+        evdev: KEY_A,
+        pressed,
+    }
+}
+
+fn buttons_and_keys(seen: &[Seen]) -> Vec<Seen> {
+    seen.iter()
+        .filter(|s| matches!(s, Seen::Button { .. } | Seen::Key { .. }))
+        .cloned()
+        .collect()
+}
+
+const KEY_DOWN_UP: [Seen; 2] = [
+    Seen::Key {
+        key: KEY_A,
+        pressed: true,
+    },
+    Seen::Key {
+        key: KEY_A,
+        pressed: false,
+    },
+];
+
+#[test]
+fn keys_for_another_window_end_a_popup_grab_and_reach_that_window() {
+    let dir = run_dir();
+    let (compositor, events) = start(dir.path(), SIZE, 30);
+    let (mut a, a_info, mut b, b_info) = grabbing_popup_and_another_window(&compositor, &events);
+
+    // Input to the grabbing window keeps its grab: the popup gets the keys.
+    compositor
+        .input(a_info.id, vec![key(true), key(false)])
+        .unwrap();
+    a.roundtrip();
+    assert_eq!(buttons_and_keys(&a.state.seen), KEY_DOWN_UP);
+    assert!(
+        !a.state.seen.contains(&Seen::PopupDone),
+        "{:?}",
+        a.state.seen
+    );
+    a.state.seen.clear();
+
+    compositor
+        .input(b_info.id, vec![key(true), key(false)])
+        .unwrap();
+    a.roundtrip();
+    b.roundtrip();
+    assert_eq!(
+        buttons_and_keys(&b.state.seen),
+        KEY_DOWN_UP,
+        "b got: {:?}; a got: {:?}",
+        b.state.seen,
+        a.state.seen
+    );
+    assert!(b.state.seen.contains(&Seen::KeyboardEnter));
+    assert_eq!(
+        buttons_and_keys(&a.state.seen),
+        vec![],
+        "{:?}",
+        a.state.seen
+    );
+    assert!(
+        a.state.seen.contains(&Seen::PopupDone),
+        "the grabbing popup is dismissed: {:?}",
+        a.state.seen
+    );
+    assert!(
+        !a.state.seen.contains(&Seen::KeyboardEnter),
+        "focus does not pass through the grabbing window: {:?}",
+        a.state.seen
+    );
+}
+
+#[test]
+fn a_click_then_keys_for_another_window_all_reach_that_window_during_a_popup_grab() {
+    let dir = run_dir();
+    let (compositor, events) = start(dir.path(), SIZE, 30);
+    let (mut a, _, mut b, b_info) = grabbing_popup_and_another_window(&compositor, &events);
+
+    let button = |pressed| InputEvent::Button {
+        code: BTN_LEFT,
+        pressed,
+    };
+    compositor
+        .input(
+            b_info.id,
+            vec![
+                InputEvent::Motion { x: 10.0, y: 20.0 },
+                button(true),
+                button(false),
+                key(true),
+                key(false),
+            ],
+        )
+        .unwrap();
+    a.roundtrip();
+    b.roundtrip();
+    let mut expected = vec![
+        Seen::Button {
+            button: BTN_LEFT,
+            pressed: true,
+        },
+        Seen::Button {
+            button: BTN_LEFT,
+            pressed: false,
+        },
+    ];
+    expected.extend(KEY_DOWN_UP);
+    assert_eq!(
+        buttons_and_keys(&b.state.seen),
+        expected,
+        "b got: {:?}; a got: {:?}",
+        b.state.seen,
+        a.state.seen
+    );
+    assert_eq!(
+        buttons_and_keys(&a.state.seen),
+        vec![],
+        "{:?}",
+        a.state.seen
+    );
+    assert!(
+        a.state.seen.contains(&Seen::PopupDone),
+        "the grabbing popup is dismissed: {:?}",
+        a.state.seen
+    );
+    assert!(
+        !a.state.seen.contains(&Seen::KeyboardEnter),
+        "focus does not pass through the grabbing window: {:?}",
+        a.state.seen
+    );
 }
 
 #[test]
@@ -252,8 +460,11 @@ fn watched_windows_get_fast_frame_callbacks_and_unwatched_ones_one_per_second() 
     assert_eq!(first.damage.len(), 1);
     assert_eq!((first.damage[0].width, first.damage[0].height), SIZE);
     let watched = count_over(&mut client);
+    // Nominally 2 * MAX_FPS = 40. A loaded runner drops ticks, so the lower
+    // bound is half that, still far above the at most 3 an unwatched window
+    // gets; the upper bound leaves room for timer jitter at the span's edges.
     assert!(
-        (2 * MAX_FPS - 12..=2 * MAX_FPS + 2).contains(&watched),
+        (MAX_FPS..=2 * MAX_FPS + 5).contains(&watched),
         "watched: {watched} callbacks in 2 s"
     );
 

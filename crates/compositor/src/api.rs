@@ -28,6 +28,10 @@ pub struct Config {
 }
 
 /// Process-unique window identity. Never reused within one process.
+///
+/// An id names one mapping of a toplevel. A toplevel that commits a null
+/// buffer is unmapped and closed; if it maps again it is a new window with a
+/// new id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct WindowId(pub u64);
 
@@ -49,13 +53,18 @@ pub struct WindowInfo {
 }
 
 /// Window lifecycle notifications, in the order the compositor observed them.
+///
+/// They arrive on the receiver [`start`](crate::start) returns. That channel is
+/// unbounded: a caller must keep draining it, or drop the receiver to stop
+/// listening, or the events pile up in memory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WindowEvent {
-    /// A toplevel committed its first buffer.
+    /// A toplevel committed its first buffer, or its first one after an unmap.
     Opened(WindowInfo),
     /// Title or size changed.
     Changed(WindowInfo),
-    /// The toplevel was destroyed or its client disconnected.
+    /// The toplevel was destroyed or unmapped, or its client disconnected. The
+    /// id never comes back.
     Closed(WindowId),
 }
 
@@ -91,7 +100,16 @@ pub struct Frame {
 
 impl Frame {
     /// The pixel at (x, y) as `0x00RRGGBB`.
+    ///
+    /// # Panics
+    ///
+    /// When (x, y) lies outside the frame.
     pub fn pixel(&self, x: u32, y: u32) -> u32 {
+        assert!(
+            x < self.size.0 && y < self.size.1,
+            "pixel ({x}, {y}) is outside the {:?} frame",
+            self.size
+        );
         let at = (y * self.stride + x * 4) as usize;
         let px = &self.xrgb8888[at..at + 4];
         u32::from_le_bytes([px[0], px[1], px[2], 0])
@@ -182,7 +200,9 @@ impl Compositor {
         self.call(|reply| Command::Capture(id, reply))?
     }
 
-    /// Delivers input to the window and gives it keyboard focus.
+    /// Delivers input to the window and gives it keyboard focus. A popup grab
+    /// held by another window ends first, and that window's grabbing popups
+    /// are dismissed.
     pub fn input(&self, id: WindowId, events: Vec<InputEvent>) -> Result<()> {
         self.call(|reply| Command::Input(id, events, reply))?
     }

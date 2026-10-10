@@ -4,7 +4,7 @@
 //! The seat's pointer lives in the space of the window that last got input.
 
 use smithay::backend::input::{Axis, AxisSource, ButtonState, KeyState};
-use smithay::desktop::WindowSurfaceType;
+use smithay::desktop::{PopupUngrabStrategy, WindowSurfaceType};
 use smithay::input::keyboard::{FilterResult, Keycode};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
@@ -26,6 +26,10 @@ impl State {
             return Err(Error::WindowGone(id));
         };
         let position = tracked.pointer;
+        // With no grab left outside `id`, nothing in the batch can move the
+        // keyboard to another window: only clients start grabs, and no client
+        // request runs until the batch is done.
+        self.end_popup_grab_outside(id);
         self.focus(id);
         if self.pointer_window != Some(id) {
             // Bring the pointer into this window's space before any button lands.
@@ -41,6 +45,35 @@ impl State {
             }
         }
         Ok(())
+    }
+
+    /// Ends the seat's popup grab when it is rooted in another window than `id`:
+    /// dismisses its popups and releases the keyboard and pointer grabs, which
+    /// would otherwise keep that window's popup focused.
+    fn end_popup_grab_outside(&mut self, id: WindowId) {
+        let Some((root, mut grab)) = self.popup_grab.take() else {
+            return;
+        };
+        if grab.has_ended() {
+            return;
+        }
+        if self.tracked(id).is_some_and(|t| t.has_root(&root)) {
+            self.popup_grab = Some((root, grab));
+            return;
+        }
+        grab.ungrab(PopupUngrabStrategy::All);
+        // The keyboard first: releasing the pointer grab would otherwise hand
+        // the keyboard back to the grab's root before `focus` moves it.
+        if let Some(keyboard) = self.seat.get_keyboard()
+            && keyboard.has_grab(grab.serial())
+        {
+            keyboard.unset_grab(self);
+        }
+        if let Some(pointer) = self.seat.get_pointer()
+            && pointer.has_grab(grab.serial())
+        {
+            pointer.unset_grab(self, SERIAL_COUNTER.next_serial(), self.now_ms());
+        }
     }
 
     /// Moves keyboard focus to the window unless it, or one of its popups, has it.

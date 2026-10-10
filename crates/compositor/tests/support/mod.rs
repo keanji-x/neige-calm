@@ -1,7 +1,7 @@
 //! A minimal pure-Rust Wayland client for the compositor tests: one xdg
-//! toplevel filled with a solid colour through `wl_shm`, an optional popup,
-//! frame-callback counting and a record of the pointer and keyboard events it
-//! receives.
+//! toplevel filled with a solid colour through `wl_shm`, an optional popup
+//! (grabbing or not), frame-callback counting and a record of the pointer,
+//! keyboard and popup events it receives.
 
 use std::fs::File;
 use std::io::Write;
@@ -59,12 +59,26 @@ pub fn wait_opened(events: &std::sync::mpsc::Receiver<WindowEvent>) -> WindowInf
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Seen {
-    PointerEnter { x: f64, y: f64 },
-    PointerMotion { x: f64, y: f64 },
-    Button { button: u32, pressed: bool },
+    PointerEnter {
+        x: f64,
+        y: f64,
+    },
+    PointerMotion {
+        x: f64,
+        y: f64,
+    },
+    Button {
+        button: u32,
+        pressed: bool,
+    },
     KeyboardEnter,
     KeyboardLeave,
-    Key { key: u32, pressed: bool },
+    Key {
+        key: u32,
+        pressed: bool,
+    },
+    /// The compositor dismissed the client's popup.
+    PopupDone,
 }
 
 pub struct TestClient {
@@ -86,10 +100,12 @@ pub struct ClientState {
     popup: Option<PopupParts>,
     buffers: Vec<ShmBuffer>,
     pub seen: Vec<Seen>,
+    /// Serial of the last pointer button event, for `xdg_popup.grab`.
+    last_button_serial: Option<u32>,
     pub frame_callbacks: u32,
     /// Request a new frame callback (and commit) every time one is done.
     pub keep_drawing: bool,
-    _seat: wl_seat::WlSeat,
+    seat: wl_seat::WlSeat,
 }
 
 struct PopupParts {
@@ -128,9 +144,10 @@ impl TestClient {
             popup: None,
             buffers: Vec::new(),
             seen: Vec::new(),
+            last_button_serial: None,
             frame_callbacks: 0,
             keep_drawing: false,
-            _seat: seat,
+            seat,
         };
         queue.roundtrip(&mut state).expect("initial roundtrip");
         Self { conn, queue, state }
@@ -189,8 +206,26 @@ impl TestClient {
         self.roundtrip();
     }
 
+    /// Maps the toplevel again after [`unmap`](Self::unmap): the initial
+    /// commit-configure sequence, then a solid buffer.
+    pub fn remap(&mut self, rgb: u32) {
+        self.state.pending_configure = None;
+        self.state.surface.as_ref().unwrap().commit();
+        self.wait_for(|s| s.pending_configure.is_some());
+        let serial = self.state.pending_configure.take().unwrap();
+        self.state
+            .xdg_surface
+            .as_ref()
+            .unwrap()
+            .ack_configure(serial);
+        let (w, h) = self.state.configured_size.expect("configured size");
+        self.draw(rgb, (w, h));
+    }
+
     /// Opens a popup at `rect` (x, y, w, h) relative to the toplevel, solid `rgb`.
-    pub fn open_popup(&mut self, rgb: u32, rect: (i32, i32, i32, i32)) {
+    /// With `grab`, the popup takes an explicit grab with the serial of the last
+    /// pointer button event the client received.
+    pub fn open_popup(&mut self, rgb: u32, rect: (i32, i32, i32, i32), grab: bool) {
         let qh = self.state.qh.clone();
         let positioner = self.state.wm_base.create_positioner(&qh, ());
         positioner.set_size(rect.2, rect.3);
@@ -204,6 +239,13 @@ impl TestClient {
         let surface = self.state.compositor.create_surface(&qh, ());
         let xdg_surface = self.state.wm_base.get_xdg_surface(&surface, &qh, ());
         let popup = xdg_surface.get_popup(self.state.xdg_surface.as_ref(), &positioner, &qh, ());
+        if grab {
+            let serial = self
+                .state
+                .last_button_serial
+                .expect("a button event before a grabbing popup");
+            popup.grab(&self.state.seat, serial);
+        }
         surface.commit();
         self.state.popup = Some(PopupParts {
             surface,
@@ -394,13 +436,17 @@ impl Dispatch<wl_pointer::WlPointer, ()> for ClientState {
                 y: surface_y,
             },
             wl_pointer::Event::Button {
+                serial,
                 button,
                 state: WEnum::Value(button_state),
                 ..
-            } => Seen::Button {
-                button,
-                pressed: button_state == wl_pointer::ButtonState::Pressed,
-            },
+            } => {
+                state.last_button_serial = Some(serial);
+                Seen::Button {
+                    button,
+                    pressed: button_state == wl_pointer::ButtonState::Pressed,
+                }
+            }
             _ => return,
         };
         state.seen.push(seen);
@@ -457,4 +503,18 @@ delegate_noop!(ClientState: ignore wl_shm::WlShm);
 delegate_noop!(ClientState: ignore wl_shm_pool::WlShmPool);
 delegate_noop!(ClientState: ignore wl_buffer::WlBuffer);
 delegate_noop!(ClientState: ignore xdg_positioner::XdgPositioner);
-delegate_noop!(ClientState: ignore xdg_popup::XdgPopup);
+
+impl Dispatch<xdg_popup::XdgPopup, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &xdg_popup::XdgPopup,
+        event: xdg_popup::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_popup::Event::PopupDone = event {
+            state.seen.push(Seen::PopupDone);
+        }
+    }
+}

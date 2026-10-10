@@ -6,7 +6,8 @@
 //! allowlisted environment, dumps PNGs of its window, clicks the `<input>`,
 //! types "hello", opens the `<select>` popup and picks an option with the
 //! keyboard, then measures idle and watched CPU and memory of both sides.
-//! Everything lands in `out-dir` (default `$TMPDIR/probe`).
+//! Everything lands in `out-dir` (default `$TMPDIR/probe`). Chrome's profile is
+//! `$TMPDIR/probe-profile`, which every run deletes first.
 #[cfg(target_os = "linux")]
 fn main() -> probe::Res<()> {
     probe::main()
