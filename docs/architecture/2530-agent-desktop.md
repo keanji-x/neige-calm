@@ -1,6 +1,6 @@
 # #2530 — Agent desktop: a headless compositor that streams app windows into Reports
 
-Status: design, L2 round 4 (round 1: teardown ownership, honest tool annotations; rounds 2–3: the approval carrier, narrowed to thread start). Issue: #2530. Code references are to `d4f1ba067`.
+Status: design, L2 round 5 (round 1: teardown ownership, honest tool annotations; rounds 2–3: the approval carrier, narrowed to thread start; round 4: start-up reaping deleted). Issue: #2530. Code references are to `d4f1ba067`.
 
 ## 0. Outcome
 
@@ -56,7 +56,7 @@ input.
 |---|---|---|---|---|
 | `compositor` | lib, Linux | smithay 0.7 (`wayland_frontend`, `desktop`, `renderer_pixman`), calloop | Wayland protocol, windows, per-window software rendering and damage, frame pacing, input injection, US keymap | browsers, encoding, networks, Neige |
 | `window-stream` | lib | tokio, tokio-tungstenite, `jpeg-encoder` (pure Rust) | its own `Frame` type, `FrameEncoder`, wire protocol v1, one viewer session over any WebSocket, latest-wins pacing, browser key code → evdev | smithay, Chrome, Neige |
-| `chrome-control` | lib, Linux | tokio, serde_json | Chrome command line, allowlisted child environment, process-group ownership and reaping, `--remote-debugging-pipe` CDP client, page target selection | Wayland internals, Neige |
+| `chrome-control` | lib, Linux | tokio, serde_json | Chrome command line, allowlisted child environment, process-group ownership of its own child, `--remote-debugging-pipe` CDP client, page target selection | Wayland internals, Neige |
 | `desktop` (`plugins/desktop`) | bin, Linux | the three above, axum | plugin stdio MCP (handshake echo per `plugin-handshake-meta.md`), app registry and launch, HTTP on a Unix socket, the five tools, adapting `compositor` frames and input to `window-stream`'s types | kernel internals: it uses only the plugin protocol |
 | kernel: plugin WebSocket proxy | calm-server | — | a session- and origin-gated route that tunnels WebSocket upgrades to a socket that a plugin declares | which plugin, what protocol |
 | kernel: `window` block | calm-types, fe | — | payload validation; the fe viewer component that speaks window-stream v1 | which plugin serves it |
@@ -109,7 +109,7 @@ three additions are generic, so later plugins can use them.
 
 ### 2.3 Kernel addition 2: `window` Report block
 
-- Payload `{src, title?, height?}`. `src` is a same-origin path under `/api/plugins/`, validated
+- Payload `{src, title?, height?}`. `src` is a same-origin path under `/api/plugins/{id}/ws/`, validated
   like the `app` block's `src` (`crates/calm-types/src/report_blocks/kinds.rs:674-684`), and
   refused if it contains a dot segment, encoded or not (`/../`, `%2e`), because the browser
   normalizes it. The kind
@@ -132,7 +132,10 @@ approval for exactly its write tools, per role, in the Codex thread config
 
 Codex asks for approval for any MCP tool that is not `readOnlyHint: true`, unless it is both
 `destructiveHint: false` and `openWorldHint: false` (`requires_mcp_tool_approval`,
-`external/codex/codex-rs/core/src/mcp_tool_call.rs:2096`). Read-only tools are never asked.
+`external/codex/codex-rs/core/src/mcp_tool_call.rs:2096`). A read-only tool is never asked unless
+it also says `destructiveHint: true`. Under the Planner's `full` tier (`never` with
+`dangerFullAccess`) Codex approves MCP prompts by itself (`codex-mcp/src/mcp/mod.rs:79-87`), so
+the delegation matters for the `never` and `ask` tiers and for Workers.
 
 - A manifest tool may declare `"approval": "delegated"` (manifest version 6).
 - **Carrier: the shared kernel MCP entry, read at thread start.** The refresh that bumps
@@ -154,8 +157,9 @@ Codex asks for approval for any MCP tool that is not `readOnlyHint: true`, unles
   that the kernel serves plugin tools to: the Planner and Workers (`transport.rs:57`). This is
   stated, not hidden: Claude-backed agents already allow every `mcp__neige` tool in every mode
   (`claude_planner/spawn.rs:106-112`), so a Planner-only grant would not be a boundary anyway.
-  The kernel's own per-role terminal map is unchanged, and `card_mcp_thread_start_config` is not
-  touched.
+  Assistant and ReportCard threads read the map too, but it is inert there because plugin tools
+  are not served to them. The kernel's own per-role terminal map is unchanged, and
+  `card_mcp_thread_start_config` is not touched.
 - **Authority.** The owner's install and enable is the grant. The kernel stays the live role,
   scope and running-state authority for every call.
 - **Probe (E3c), against the production Codex binary** with a fake model: a thread started after
@@ -244,24 +248,25 @@ pub async fn serve_viewer<S: WebSocketStream>(ws: S, source: Arc<dyn WindowSourc
   which owns the child, and drops it with `kill_on_drop`, i.e. SIGKILL (`host/state.rs:81-95`,
   `host/spawn_app.rs:121-133`, `process.rs:79-80`). And a production calm-server that dies
   abruptly leaves its children running (`KillMode=process`). So teardown cannot depend on
-  `desktop` being asked to stop. It rests on three mechanisms, all owned by `chrome-control`:
-  1. Chrome is spawned in its own session and process group with `PR_SET_PDEATHSIG(SIGKILL)`, from a
+  `desktop` being asked to stop. It rests on two mechanisms:
+  1. `chrome-control` spawns Chrome in its own process group with `PR_SET_PDEATHSIG(SIGKILL)`, from a
      dedicated launcher thread that lives as long as the process (PDEATHSIG fires when the
      forking *thread* exits, so never from a tokio blocking thread; precedent
      `neige-app/src/tailnet/mod.rs:189`). Whenever `desktop` dies, SIGKILL included, the
      browser process dies.
   2. Chrome's helper processes (zygote, renderers, GPU and utility) exit when their browser
      process is gone. This is Chrome's own behaviour, not ours, so E2 measures it (A4).
-  3. **Reap by session and profile.** Chrome is started with `setsid`, and `desktop` records the
-     session id in `run/chrome.sid`. On start, before it launches anything, and on its own exit,
-     `desktop` kills every process of this user whose session id is the recorded one or whose
-     `/proc/<pid>/cmdline` names this profile directory (helpers such as the zygote may not carry
-     `--user-data-dir`). A4 checks the same predicate. Stale
-     sockets (`http.sock`, the Wayland socket) are unlinked only after a connect to them fails.
+  There is deliberately no start-up reaping of earlier runs: a recorded pid, group or session id
+  can be reused by an unrelated process after the owner dies or the host reboots, and a
+  command-line match is not ownership. Relaunching on the same profile needs no reaping either:
+  Chrome's `SingletonLock` names the browser process, which mechanism 1 has killed, and Chrome
+  takes over a lock whose holder is gone. Stale sockets (`http.sock`, the Wayland socket) are
+  unlinked only after a connect to them fails.
 - `desktop` exits on stdin EOF (the kernel side of the MCP pipe is gone) and on SIGTERM. On
-  those paths it stops Chrome's group in order: SIGTERM, then SIGKILL after one second.
-- **Contingency.** If E2 shows Chrome helpers outliving their browser process long enough to
-  matter, Chrome stays in `desktop`'s process group, and the kernel spawns app plugins as group
+  those paths it stops the group of the Chrome child it still holds (not yet reaped, so its id
+  cannot have been reused) in order: SIGTERM, then SIGKILL after one second.
+- **Contingency.** If E2 shows Chrome helpers outliving their browser process, or a relaunch
+  refused by the profile lock, Chrome stays in `desktop`'s process group, and the kernel spawns app plugins as group
   leaders and stops them by group (`child_process.rs:31-47` has the helper). That is a generic
   kernel change added to E3a at L2. A separate pre-existing defect makes every app-plugin stop a
   SIGKILL (stop finds the child already moved to the supervisor); it is filed as #2535, and
@@ -282,7 +287,8 @@ pub async fn serve_viewer<S: WebSocketStream>(ws: S, source: Arc<dyn WindowSourc
 - **`http.sock`** serves one route: `GET /apps/{app}/stream`, a WebSocket that launches the app
   if it is not running and then serves its main window.
 - **Tools** (minted `plugin_desktop_<tool>`, names per `docs/conventions/agent-commands.md` §6).
-  Annotations are truthful: the three views are `readOnlyHint: true, openWorldHint: false`;
+  Annotations are truthful: the three views are `readOnlyHint: true, destructiveHint: false,
+  openWorldHint: false`;
   `page_open` and `window_input` are `openWorldHint: true` with `"approval": "delegated"`
   (§2.4).
 
@@ -304,10 +310,10 @@ unavailable app or window is an error (-32503 / -32404), never a stale result.
 | Owner enables the plugin | the kernel spawns `desktop`; it starts the compositor, binds `http.sock` and answers the handshake. Chrome is not launched yet |
 | First stream connect or `page_open` | Chrome is launched with the profile; a viewer waits for the main window (with a timeout, then `closed`) |
 | Chrome exits (owner closed the last window, or a crash) | the app becomes not running; viewers get `closed`; the next demand relaunches it |
-| `desktop` crashes or is killed | PDEATHSIG kills Chrome's browser process and its helpers exit; the kernel cancels tunnels and respawns `desktop` with backoff; the new `desktop` reaps leftovers before launching; viewers reconnect |
+| `desktop` crashes or is killed | PDEATHSIG kills Chrome's browser process and its helpers exit; the kernel cancels tunnels and respawns `desktop` with backoff; viewers reconnect |
 | Plugin disabled or stopped | the kernel SIGKILLs `desktop` (`kill_on_drop`); the same chain as a crash, without respawn; the kernel cancels tunnels |
 | calm-server graceful restart or deploy | plugin children die with it (`kill_on_drop`); Chrome restarts on next demand with logins intact and tabs lost (KNOWN GAP) |
-| calm-server dies abruptly | `desktop` survives (`KillMode=process`), reads stdin EOF and stops Chrome's group, then exits; the next calm-server spawns a new `desktop`, which reaps anything left |
+| calm-server dies abruptly | `desktop` survives (`KillMode=process`), reads stdin EOF and stops Chrome's group, then exits; the next calm-server spawns a new `desktop` |
 
 ## 5. Accepts
 
@@ -316,7 +322,7 @@ unavailable app or window is an error (-32503 / -32404), never a stale result.
 | A1 | The browser is reachable only through the session-gated route: no TCP listener from `desktop` or Chrome; CDP over a pipe; `http.sock` 0600 inside a 0700 tree | E4: `ss -lntp` before/after shows no new listener; permission check in a test |
 | A2 | The proxy refuses requests without a session, refuses cross-origin upgrades, strips `calm-session`, returns 503 when the plugin is not running, and cancels tunnels on stop | E3a route tests through the real router; mutation-verify the session and origin checks |
 | A3 | Chrome's environment is exactly the allowlist | E2 test reads `/proc/<pid>/environ` of the launched child |
-| A4 | No orphan: after SIGKILL of `desktop`, its stdin EOF, or SIGKILL of calm-server, no process naming that profile survives 5 s, and a relaunch on the same profile succeeds; a leftover group from an earlier run is reaped before launch | E2 process test (SIGKILL, EOF, leftover group); E4 with the real plugin host stop and a calm-server SIGKILL |
+| A4 | No orphan: after SIGKILL of `desktop`, its stdin EOF, or SIGKILL of calm-server, no descendant of the launched Chrome survives 5 s (the test records the whole process tree while Chrome runs, by parent links, before the kill), and a relaunch on the same profile succeeds. `desktop` never signals a process it did not spawn | E2 process test (SIGKILL, EOF); E4 with the real plugin host stop and a calm-server SIGKILL |
 | A5 | A frame contains only its window's surface tree and popups | E0 test with two test clients in distinct colours |
 | A6 | Nothing is encoded without a viewer; unwatched windows get 1 Hz frame callbacks | E1 counter test |
 | A7 | A slow viewer does not block the compositor or a second viewer; memory is bounded by one frame per session | E1 test with a stalled socket |
@@ -334,7 +340,7 @@ unavailable app or window is an error (-32503 / -32404), never a stale result.
 | **E2** | `chrome-control` crate (can run in parallel with E1) | launch, navigate, read the visible tab's text; A3, A4; `navigator.webdriver` is false with `--remote-debugging-pipe`, or a mitigation is named | **L2**: credential-sensitive child environment and process teardown |
 | **E3a** | kernel: manifest v6 with `http_socket`, the shared proxy module, the WebSocket proxy route | A2, A9; gateway tests unchanged and green | **L2**: authentication |
 | **E3b** | `window` block: calm-types, report contracts, fe viewer and browser test (removes E1's dev page) | the viewer streams and sends input through E3a; A9 | L1 |
-| **E3c** | `"approval": "delegated"` and the shared-entry writer | A11 | **L2**: approval |
+| **E3c** | `"approval": "delegated"` and the shared-entry writer; lands after E3a and takes the next manifest version | A9, A11 | **L2**: approval |
 | **E4** | `desktop` plugin: wiring, config, tools, manifest, runbook (Chrome install, enable) | **MVP:** in a Report the owner sees Chrome live, logs into X, and an agent uses `page_open` + `page_cat` to summarize the timeline and `window_cat` to show it; A1, A4, A8, A10 | **L2**: credentials and a new endpoint |
 | E5+ | later, one at a time by need: H.264 + WebCodecs, then WebRTC; IME and non-ASCII; clipboard; resize/HiDPI; multiple profiles; separate agent seat; write approvals; surviving server restarts | — | — |
 
@@ -361,7 +367,8 @@ probes, recorded in each PR.
 - **Prompt injection.** Page text reaches models, and delegated writes are never asked, also
   when the Planner runs in the `ask` tier (the tier sets only the turn's policy,
   `provider/src/codex/approvals.rs:39-55`). Dropping `"approval": "delegated"` from the manifest
-  makes Codex ask under `ask` and refuse under `never`.
+  makes Codex ask (`ask`) or refuse (`never`) in threads started afterwards; loaded threads keep
+  their grant. The immediate off switch is disabling the plugin: routing then refuses every call.
 - **Abrupt stop loses the last cookies.** Plugin stop is SIGKILL, and Chrome commits cookies to
   disk in batches, so a login made seconds before a stop can be lost.
 - **Shared seat.** Human and agent input interleave; last input wins.
