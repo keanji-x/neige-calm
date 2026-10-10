@@ -161,7 +161,17 @@ pub(crate) async fn restart_claude_card(
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<Json<Card>> {
-    match crate::claude_update::update_claude_card(&app, actor.to_actor_id(), id).await? {
+    // An owned task: a client disconnect drops the handler future, and an Update that has sent
+    // its TERM must still restart the card.
+    let actor = actor.to_actor_id();
+    let update =
+        tokio::spawn(
+            async move { crate::claude_update::update_claude_card(&app, actor, id).await },
+        );
+    let outcome = update.await.map_err(|error| {
+        CalmError::Internal(format!("claude card update task failed: {error}"))
+    })??;
+    match outcome {
         OperationOutcome::Succeeded { result }
         | OperationOutcome::SucceededViaCollision { result, .. } => {
             let mut card: Card = serde_json::from_value(result)?;

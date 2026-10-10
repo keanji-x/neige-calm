@@ -84,7 +84,7 @@ pub use card::{
     CardExecutionShape, card_body_crdt_get_tx, card_create_tx, card_create_with_id_tx,
     card_delete_tx, card_execution_shape_tx, card_update_tx, card_update_with_crdt_tx,
     planner_permission_mode_set_tx, terminal_create_tx, terminal_delete_tx,
-    terminal_get_by_card_tx,
+    terminal_get_by_card_tx, terminal_set_exit_with_output_tx,
 };
 pub use card_composite::{
     card_mcp_token_set_tx, card_with_claude_create_tx, card_with_claude_worker_create_tx,

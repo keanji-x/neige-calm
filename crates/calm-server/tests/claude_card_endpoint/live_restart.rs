@@ -435,3 +435,38 @@ async fn update_of_an_owner_card_whose_terminal_a_task_owns_leaves_its_child_run
         .drop_entry(&live.terminal_id)
         .await;
 }
+
+/// An Update whose restart the actor may not make stops nothing: the restart's prepare refuses
+/// `ai:codex` at the role gate, and its dry run says so before the child is touched.
+#[tokio::test]
+async fn update_by_an_actor_the_restart_refuses_leaves_its_child_running() {
+    let _guard = ENV_LOCK.lock().await;
+    let live = live_card().await;
+    let (boot, log) = (&live.boot, &live.log);
+    let (pid, _) = starts(log)[0];
+
+    let resp = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/cards/{}/claude/restart", live.card_id))
+                .header("X-Calm-Actor", "ai:codex")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, response) = response_json(resp).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={response:?}");
+    assert!(alive(pid) && !got_sigterm(log, pid), "the child runs on");
+    assert_eq!(starts(log).len(), 1);
+    assert_eq!(runtime_states(boot, &live.card_id).await, ["running"]);
+    assert_eq!(terminal_exit(boot, &live.terminal_id).await, (None, false));
+
+    boot.state
+        .terminal_renderer
+        .drop_entry(&live.terminal_id)
+        .await;
+}

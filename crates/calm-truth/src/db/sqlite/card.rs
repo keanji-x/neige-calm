@@ -30,6 +30,34 @@ pub async fn terminal_get_by_card_tx(
     Ok(row)
 }
 
+/// A terminal's exit evidence in one UPDATE, so exit and output land together; `signal_killed`
+/// implies `exit_code = NULL`, which is the writer's responsibility.
+pub(super) const TERMINAL_SET_EXIT_WITH_OUTPUT_SQL: &str = "UPDATE terminals SET exit_code=?1,\
+     signal_killed=?2,pty_output=?3,pty_output_truncated=?4 WHERE id=?5";
+
+/// [`TERMINAL_SET_EXIT_WITH_OUTPUT_SQL`] inside a caller's transaction.
+pub async fn terminal_set_exit_with_output_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    exit_code: Option<i32>,
+    signal_killed: bool,
+    pty_output: &str,
+    pty_output_truncated: bool,
+) -> Result<()> {
+    let res = sqlx::query(TERMINAL_SET_EXIT_WITH_OUTPUT_SQL)
+        .bind(exit_code)
+        .bind(if signal_killed { 1_i64 } else { 0_i64 })
+        .bind(pty_output)
+        .bind(if pty_output_truncated { 1_i64 } else { 0_i64 })
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+    if res.rows_affected() == 0 {
+        return Err(CalmError::NotFound(format!("terminal {id}")));
+    }
+    Ok(())
+}
+
 /// Card-row insert that lets the caller pre-mint the row id, so atomic-card endpoints can stamp it into per-card
 /// sidecar paths before the row exists. Direct SQL and frozen migration seeds bypass the track-report guard below.
 pub async fn card_create_with_id_tx(

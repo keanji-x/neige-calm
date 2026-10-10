@@ -115,65 +115,6 @@ pub struct ClaudeRestartOperationPayload {
     pub card_id: String,
 }
 
-/// What a restart of a Claude card needs, all checked before it writes or stops anything.
-pub(crate) struct RestartPrerequisites {
-    pub(crate) card: crate::model::Card,
-    pub(crate) declared_head: Option<String>,
-    pub(crate) claude_session_id: String,
-    pub(crate) settings_path: String,
-}
-
-/// The restart's checks of `card_id`, the one definition its prepare and the card's Update (before
-/// it stops a child, #2516) share: a Claude card, a task reader's checkout at its declared head
-/// (#1933), a resumable session id and a `settings_path`.
-pub(crate) async fn restart_prerequisites_tx(
-    tx: &mut Tx<'_>,
-    repo: &dyn crate::db::RouteRepo,
-    card_id: &str,
-) -> Result<RestartPrerequisites> {
-    let card = repo
-        .card_get(card_id)
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-    if card.kind != "claude" {
-        return Err(CalmError::Forbidden(format!(
-            "card {card_id} is not a Claude card"
-        )));
-    }
-
-    // #1933: a resumed reader is refused before anything is written while its checkout is not
-    // at its declared head; the spawn checks again for a re-drive.
-    let declared_head = worker_card_declared_head_tx(tx, card_id).await?;
-    if let Some(head) = declared_head.as_deref() {
-        let term = terminal_get_by_card_tx(tx, card_id).await?.ok_or_else(|| {
-            CalmError::Conflict(format!(
-                "refused: worker card {card_id} has no terminal to check its declared head in"
-            ))
-        })?;
-        verify_declared_head(Path::new(&term.cwd), head)?;
-    }
-    // Read in this transaction: a SessionStart hook moves the session id under the same write
-    // lock (#2516), so the restart resumes exactly what the card last started.
-    let projectable = session_projection_projectable_for_card_tx(tx, card_id).await?;
-    let claude_session_id = claude_session_of_runtime(projectable.as_ref())
-        .or_else(|| legacy_claude_session_of_card(card_id, projectable.as_ref(), Some(&card)))
-        .ok_or_else(|| CalmError::Forbidden("Claude card has no resumable session id".into()))?;
-    let settings_path = card
-        .payload
-        .get("settings_path")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| CalmError::Forbidden("Claude card has no settings_path".into()))?;
-    Ok(RestartPrerequisites {
-        card,
-        declared_head,
-        claude_session_id,
-        settings_path,
-    })
-}
-
 /// Whether a Claude runtime still has a child: Claude runtimes reach only Starting/Running while
 /// live; Idle/TurnPending are not part of the Claude state machine.
 pub(crate) fn claude_runtime_is_live(status: WorkerSessionState) -> bool {
@@ -194,11 +135,7 @@ pub async fn run_claude_restart(
         "actor": &actor,
         "card_id": &card_id,
     }))?;
-    let payload = serde_json::to_value(ClaudeRestartOperationPayload {
-        actor,
-        worker_session_id: Some(new_id()),
-        card_id,
-    })?;
+    let payload = claude_restart_payload(actor, card_id)?;
     let op_id = runtime
         .submit(
             "claude-restart",
@@ -211,6 +148,16 @@ pub async fn run_claude_restart(
         )
         .await?;
     Ok(runtime.wait(&op_id).await?.outcome)
+}
+
+/// The `claude-restart` payload for `actor` and `card_id`: what [`run_claude_restart`] submits and
+/// what the card's Update dry-runs before it stops a child (#2516).
+pub(crate) fn claude_restart_payload(actor: ActorId, card_id: String) -> Result<Value> {
+    Ok(serde_json::to_value(ClaudeRestartOperationPayload {
+        actor,
+        worker_session_id: Some(new_id()),
+        card_id,
+    })?)
 }
 
 #[async_trait]
@@ -239,12 +186,46 @@ impl ProviderAdapter for ClaudeRestartAdapter {
     ) -> Result<TxOutput> {
         let payload: ClaudeRestartOperationPayload = serde_json::from_value(input.clone())?;
         let card_id = payload.card_id.trim().to_string();
-        let RestartPrerequisites {
-            card,
-            declared_head,
-            claude_session_id,
-            settings_path,
-        } = restart_prerequisites_tx(tx, self.repo.as_ref(), &card_id).await?;
+        let card = self
+            .repo
+            .card_get(&card_id)
+            .await?
+            .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+        if card.kind != "claude" {
+            return Err(CalmError::Forbidden(format!(
+                "card {card_id} is not a Claude card"
+            )));
+        }
+
+        // #1933: a resumed reader is refused before anything is written while its checkout is not
+        // at its declared head; the spawn checks again for a re-drive.
+        let declared_head = worker_card_declared_head_tx(tx, &card_id).await?;
+        if let Some(head) = declared_head.as_deref() {
+            let term = terminal_get_by_card_tx(tx, &card_id)
+                .await?
+                .ok_or_else(|| {
+                    CalmError::Conflict(format!(
+                        "refused: worker card {card_id} has no terminal to check its declared head in"
+                    ))
+                })?;
+            verify_declared_head(Path::new(&term.cwd), head)?;
+        }
+        // Read in this transaction: a SessionStart hook moves the session id under the same write
+        // lock (#2516), so the restart resumes exactly what the card last started.
+        let projectable = session_projection_projectable_for_card_tx(tx, &card_id).await?;
+        let claude_session_id = claude_session_of_runtime(projectable.as_ref())
+            .or_else(|| legacy_claude_session_of_card(&card_id, projectable.as_ref(), Some(&card)))
+            .ok_or_else(|| {
+                CalmError::Forbidden("Claude card has no resumable session id".into())
+            })?;
+        let settings_path = card
+            .payload
+            .get("settings_path")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| CalmError::Forbidden("Claude card has no settings_path".into()))?;
         if let Some(active) = session_projection_active_for_card_tx(tx, &card_id).await? {
             if claude_runtime_is_live(active.status) {
                 return Err(CalmError::Conflict(

@@ -77,18 +77,6 @@ pub(crate) enum TerminalStart {
 const WORKER_OPS_OF_CARD: &str = "FROM operations WHERE target_type='card' AND target_id=?1 \
      AND kind IN ('codex-worker','claude-worker','terminal-worker')";
 
-async fn task_owned_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    card_id: &str,
-) -> Result<bool> {
-    Ok(
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tasks WHERE worker_card_id=?1)")
-            .bind(card_id)
-            .fetch_one(&mut **tx)
-            .await?,
-    )
-}
-
 /// Whether a spawn with no task launch of its own starts `card_id`'s terminal: neither a worker
 /// operation nor a task owns it, so [`resolve`] answers `Unbound`; otherwise it only attaches.
 pub(crate) async fn card_launch_unbound_tx(
@@ -100,7 +88,15 @@ pub(crate) async fn card_launch_unbound_tx(
             .bind(card_id)
             .fetch_one(&mut **tx)
             .await?;
-    Ok(!worker_owned && !task_owned_tx(tx, card_id).await?)
+    if worker_owned {
+        return Ok(false);
+    }
+    let task_owned: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tasks WHERE worker_card_id=?1)")
+            .bind(card_id)
+            .fetch_one(&mut **tx)
+            .await?;
+    Ok(!task_owned)
 }
 
 pub(crate) async fn resolve(
@@ -125,7 +121,7 @@ pub(crate) async fn resolve(
         if rows.len() > 1 { return Err(CalmError::Conflict("terminal has conflicting worker operation ownership".into())); }
         let Some((op_id, phase, owner, output)) = rows.into_iter().next() else {
             if launch.is_some() { return Err(CalmError::Conflict("task launch operation does not own this terminal".into())); }
-            return Ok(if task_owned_tx(tx, &card).await? { TerminalStart::AttachOnly(sock) } else { TerminalStart::Unbound });
+            return Ok(if card_launch_unbound_tx(tx, &card).await? { TerminalStart::Unbound } else { TerminalStart::AttachOnly(sock) });
         };
         let output: Value = serde_json::from_str(&output)?;
         match RequestState::read(&output["data"])? {
