@@ -62,6 +62,10 @@ pub const SIGNALS_PER_OBSERVATION: usize = 20;
 /// the same checks and inside their own Track only. An Assistant reaches task workers only
 /// (`resolve_target`), and opening a terminal card stays the Planner's (`neige_terminal_open`):
 /// the role gate keeps an Assistant's writes to its own card.
+/// A client scope's predicate (`ClientInputScope::Bound`).
+pub(super) type ScopeCheck =
+    Arc<dyn Fn() -> futures::future::BoxFuture<'static, bool> + Send + Sync>;
+
 pub const TERMINAL_ROLES: &[CardRole] = &[CardRole::Planner, CardRole::Assistant];
 
 /// Reason of an `open claim:true` whose granted claim was taken over before this connection observed the grant.
@@ -177,26 +181,28 @@ impl TerminalInteraction {
         identity: &ToolCallIdentity,
         resolved: &Binding,
     ) -> ClientInputScope {
-        let scope_check = |write: bool| {
-            let repo = repo.clone();
-            let actor = identity.clone();
-            let expected = resolved.clone();
-            Arc::new(move || {
-                let repo = repo.clone();
-                let actor = actor.clone();
-                let expected = expected.clone();
-                Box::pin(async move {
-                    Self::check_binding(repo.as_ref(), &actor, &expected, write)
-                        .await
-                        .is_ok()
-                }) as futures::future::BoxFuture<'static, bool>
-            })
-                as Arc<dyn Fn() -> futures::future::BoxFuture<'static, bool> + Send + Sync>
-        };
         ClientInputScope::Bound {
-            observe: scope_check(false),
-            control: scope_check(true),
+            observe: Self::binding_check(repo.clone(), identity, resolved, false),
+            control: Self::binding_check(repo, identity, resolved, true),
         }
+    }
+    /// A scope predicate: `check_binding` of `expected` for `identity`, read fresh on each call.
+    pub(super) fn binding_check(
+        repo: Arc<dyn RouteRepo>,
+        identity: &ToolCallIdentity,
+        expected: &Binding,
+        write: bool,
+    ) -> ScopeCheck {
+        let actor = identity.clone();
+        let expected = expected.clone();
+        Arc::new(move || {
+            let (repo, actor, expected) = (repo.clone(), actor.clone(), expected.clone());
+            Box::pin(async move {
+                Self::check_binding(repo.as_ref(), &actor, &expected, write)
+                    .await
+                    .is_ok()
+            }) as futures::future::BoxFuture<'static, bool>
+        })
     }
     /// The highest input sequence acknowledged on this identity's connection. Test observability only.
     #[doc(hidden)]

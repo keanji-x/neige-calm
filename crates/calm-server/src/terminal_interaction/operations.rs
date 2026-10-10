@@ -213,8 +213,8 @@ impl TerminalInteraction {
     }
     /// The receipt cached under `key` on this connection, with its readback, or `None` for a new
     /// key. A key reused with other arguments is refused. Runs under the connection's serial
-    /// guard, after the caller's binding is proven and before any new-write check (`input`,
-    /// `message`).
+    /// guard after the caller's binding is proven. `message` calls it before any new-write check;
+    /// `input` keeps its order: the write check (`check_binding(write)`) first.
     pub(super) async fn replay(
         &self,
         identity: &ToolCallIdentity,
@@ -295,13 +295,16 @@ impl TerminalInteraction {
             created: saved.created,
         })
     }
-    fn ensure_writable(client: &Client) -> Result<()> {
+    /// The connection's pending-write fence, shared by `input` and `message`: no new write while
+    /// an earlier one (typed input or a retained message delivery) has no known outcome.
+    pub(super) fn ensure_writable(client: &Client) -> Result<()> {
+        let delivery_unresolved = client.delivery_unresolved();
         let state = client
             .screen
             .lock()
             .map_err(|_| anyhow::anyhow!("terminal state poisoned"))?;
         ensure!(
-            state.available && !state.exited && state.pending.is_none(),
+            state.available && !state.exited && state.pending.is_none() && !delivery_unresolved,
             "terminal unavailable or prior input outcome unknown"
         );
         Ok(())

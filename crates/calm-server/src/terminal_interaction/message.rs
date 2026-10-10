@@ -197,6 +197,7 @@ impl TerminalInteraction {
         {
             return Ok(replayed);
         }
+        Self::ensure_writable(&client)?;
         let entry = self.message_precheck(&resolved)?;
         ensure!(
             Arc::ptr_eq(&entry, &client.entry),
@@ -216,17 +217,25 @@ impl TerminalInteraction {
         let baseline = Self::current_baseline(&client);
         // Cached before the write: a call cancelled mid-write replays as unknown, never writes again.
         cache(&client, &key, &fingerprint, &receipt("unknown")).await;
-        let result = match self.deliver(identity, &resolved, entry, bytes).await {
+        let result = match self
+            .deliver(identity, &resolved, entry, bytes, &client)
+            .await
+        {
             Delivered::Written => {
                 let mut written = receipt("written");
                 written["next"] = json!("read the application result");
                 written
             }
             Delivered::Refused(reason) => {
+                // Proven unwritten: nothing stays cached, so a resend of the key tries again (as
+                // `control_unavailable`).
+                client.requests.lock().await.remove(&key);
                 let mut refused = receipt("refused");
                 refused["reason"] = json!(reason);
                 refused["next"] = json!("nothing was written; show and read again");
-                refused
+                return Ok(self
+                    .with_observation(identity, &client, refused, observation_wait, baseline)
+                    .await);
             }
             Delivered::Unknown => receipt("unknown"),
         };
@@ -237,12 +246,15 @@ impl TerminalInteraction {
     }
     /// The write leg: a kernel-private client that writes `bytes` once as an Observer. Its scope
     /// admits the physical write only while the message rule and the terminal check still hold.
+    /// `holder` is the caller's connection: it retains the kernel client until the write settles,
+    /// so its pending-write fence holds across a lost acknowledgement or a cancelled request.
     pub(crate) async fn deliver(
         &self,
         identity: &ToolCallIdentity,
         resolved: &Resolved,
         entry: Arc<RendererEntry>,
         bytes: Vec<u8>,
+        holder: &Client,
     ) -> Delivered {
         let tui = match self.tui_input(resolved) {
             Ok(tui) => tui,
@@ -258,16 +270,24 @@ impl TerminalInteraction {
         #[cfg(feature = "fixtures")]
         self.run_message_write_seam(&resolved.binding.terminal_id)
             .await;
+        let client = Arc::new(client);
         let sequence = 1;
         if let Ok(mut state) = client.screen.lock() {
             state.pending = Some(sequence);
         }
+        // Retained before the input is sent: a cancelled request or a lost acknowledgement leaves
+        // the fence up until this client sees the write's outcome.
+        *holder
+            .delivery
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((client.clone(), sequence));
         if client
             .send_input(bytes, sequence, WriteShape::Verbatim)
             .await
             .is_err()
         {
             // The pump never received the input.
+            holder.delivery_release();
             return Delivered::Refused("terminal disconnected before the write".into());
         }
         let settled = client
@@ -279,6 +299,9 @@ impl TerminalInteraction {
         let Ok(state) = client.screen.lock() else {
             return Delivered::Unknown;
         };
+        if settled.is_ok() {
+            holder.delivery_release();
+        }
         match settled {
             Ok(()) if state.ack >= sequence => Delivered::Written,
             Ok(()) => Delivered::Refused(
@@ -299,20 +322,7 @@ impl TerminalInteraction {
         tui: TuiInput,
         entry: Arc<RendererEntry>,
     ) -> ClientInputScope {
-        let observe = {
-            let repo = self.repo.clone();
-            let actor = identity.clone();
-            let expected = binding.clone();
-            Arc::new(move || {
-                let (repo, actor, expected) = (repo.clone(), actor.clone(), expected.clone());
-                Box::pin(async move {
-                    Self::check_binding(repo.as_ref(), &actor, &expected, false)
-                        .await
-                        .is_ok()
-                }) as futures::future::BoxFuture<'static, bool>
-            })
-                as Arc<dyn Fn() -> futures::future::BoxFuture<'static, bool> + Send + Sync>
-        };
+        let observe = Self::binding_check(self.repo.clone(), identity, binding, false);
         let control = {
             let repo = self.repo.clone();
             let actor = identity.clone();
@@ -330,8 +340,7 @@ impl TerminalInteraction {
                         Err(_) => false,
                     }
                 }) as futures::future::BoxFuture<'static, bool>
-            })
-                as Arc<dyn Fn() -> futures::future::BoxFuture<'static, bool> + Send + Sync>
+            }) as ScopeCheck
         };
         ClientInputScope::Bound { observe, control }
     }

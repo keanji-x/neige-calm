@@ -33,7 +33,7 @@ fn recorder(log: &Path, paste: bool, flip: Option<&Path>) -> String {
 }
 
 /// The reads the worker saw, each decoded from its hex line.
-fn reads(log: &Path) -> Vec<Vec<u8>> {
+pub(crate) fn reads(log: &Path) -> Vec<Vec<u8>> {
     std::fs::read_to_string(log)
         .unwrap_or_default()
         .lines()
@@ -47,7 +47,7 @@ fn reads(log: &Path) -> Vec<Vec<u8>> {
         .collect()
 }
 
-async fn wait_for_reads(log: &Path, count: usize) -> Vec<Vec<u8>> {
+pub(crate) async fn wait_for_reads(log: &Path, count: usize) -> Vec<Vec<u8>> {
     let start = Instant::now();
     loop {
         let seen = reads(log);
@@ -64,7 +64,7 @@ async fn wait_for_reads(log: &Path, count: usize) -> Vec<Vec<u8>> {
     }
 }
 
-fn expected(attempt: &str, text: &str) -> Vec<u8> {
+pub(crate) fn expected(attempt: &str, text: &str) -> Vec<u8> {
     [
         b"\x1b[200~".as_slice(),
         message_header(attempt).as_bytes(),
@@ -75,13 +75,13 @@ fn expected(attempt: &str, text: &str) -> Vec<u8> {
     .concat()
 }
 
-struct Fixture {
-    worker: Worker,
-    log: PathBuf,
-    flip: PathBuf,
+pub(crate) struct Fixture {
+    pub(crate) worker: Worker,
+    pub(crate) log: PathBuf,
+    pub(crate) flip: PathBuf,
 }
 
-async fn running(h: &Harness, kind: &str, paste: bool, flip: bool) -> Fixture {
+pub(crate) async fn running(h: &Harness, kind: &str, paste: bool, flip: bool) -> Fixture {
     let tag = uuid::Uuid::new_v4();
     let log = h.root.path().join(format!("{kind}-{tag}.log"));
     let flip_file = h.root.path().join(format!("{kind}-{tag}.flip"));
@@ -95,14 +95,14 @@ async fn running(h: &Harness, kind: &str, paste: bool, flip: bool) -> Fixture {
     }
 }
 
-async fn message(h: &Harness, target: Value, key: &str, text: &str) -> Value {
+pub(crate) async fn message(h: &Harness, target: Value, key: &str, text: &str) -> Value {
     let mut args = target;
     args["idempotency_key"] = json!(key);
     args["action"] = json!({"type":"message","text":text});
     h.call("neige_terminal_input", args).await
 }
 
-fn assert_refusal(reply: &Value, code: i64, refusal: Option<&str>, text: &str) {
+pub(crate) fn assert_refusal(reply: &Value, code: i64, refusal: Option<&str>, text: &str) {
     let error = reply
         .get("error")
         .unwrap_or_else(|| panic!("expected a refusal, got {reply}"));
@@ -118,7 +118,7 @@ fn assert_refusal(reply: &Value, code: i64, refusal: Option<&str>, text: &str) {
     );
 }
 
-fn written(reply: &Value) -> &Value {
+pub(crate) fn written(reply: &Value) -> &Value {
     assert!(reply.get("error").is_none(), "{reply}");
     let receipt = &reply["result"]["structuredContent"];
     assert_eq!(receipt["outcome"], "written", "{receipt}");
@@ -216,7 +216,7 @@ async fn message_over_cap_is_refused() {
     stop(&h, &f.worker).await;
 }
 
-async fn set_status(h: &Harness, task: &str, status: &str) {
+pub(crate) async fn set_status(h: &Harness, task: &str, status: &str) {
     sqlx::query("UPDATE tasks SET status=?2,finished_at_ms=?3 WHERE id=?1")
         .bind(task)
         .bind(status)
@@ -515,6 +515,10 @@ async fn queued_change(h: &Harness, f: &Fixture, change: impl std::future::Futur
     // The writer dropped the refused item before answering; nothing of it can land later.
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(reads(&f.log).is_empty(), "{:?}", reads(&f.log));
+    // A proven refusal is not cached: a resend of the key is decided anew (refused by the rule
+    // or the terminal check now), never answered with the refused receipt.
+    let resend = message(h, json!({"attempt_id":f.worker.task}), "queued", "x").await;
+    assert_eq!(resend["error"]["code"], -32403, "{resend}");
 }
 
 #[tokio::test]

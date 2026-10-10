@@ -99,6 +99,10 @@ pub struct Client {
     pub requests: Mutex<std::collections::HashMap<String, (String, serde_json::Value)>>,
     pub last_used: Arc<StdMutex<std::time::Instant>>,
     pub latest_observation: StdMutex<Option<LatestObservation>>,
+    /// The kernel client of a `message` whose write is not settled, with its input sequence
+    /// (#2493). Kept alive so a write queued before a timeout or a cancelled request is still
+    /// acknowledged; like `pending`, it fences every new write on this connection.
+    pub delivery: StdMutex<Option<(Arc<Client>, u64)>>,
     /// Test seam: the reader takes this lock before applying each daemon message.
     #[cfg(feature = "fixtures")]
     pub delivery_gate: Arc<Mutex<()>>,
@@ -267,6 +271,7 @@ impl Client {
             requests: Mutex::new(std::collections::HashMap::new()),
             last_used,
             latest_observation: StdMutex::new(None),
+            delivery: StdMutex::new(None),
             #[cfg(feature = "fixtures")]
             delivery_gate,
             incoming,
@@ -275,6 +280,31 @@ impl Client {
             pump,
             reader,
         })
+    }
+    /// Whether a retained `message` delivery is still unsettled; a settled one (acknowledged or
+    /// refused) is released here.
+    pub fn delivery_unresolved(&self) -> bool {
+        let Ok(mut slot) = self.delivery.lock() else {
+            return true;
+        };
+        let Some((delivery, sequence)) = slot.as_ref() else {
+            return false;
+        };
+        let settled = delivery
+            .screen
+            .lock()
+            .is_ok_and(|state| state.ack >= *sequence || state.refused >= *sequence);
+        if settled {
+            *slot = None;
+        }
+        !settled
+    }
+    /// Drop a retained `message` delivery whose outcome is known.
+    pub fn delivery_release(&self) {
+        *self
+            .delivery
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
     pub async fn wait(
         &self,
