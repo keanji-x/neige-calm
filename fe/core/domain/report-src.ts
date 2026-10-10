@@ -30,11 +30,7 @@ export function sameOriginPath() {
  */
 export const WINDOW_SRC_PATTERN = '^/api/plugins/[a-z0-9][a-z0-9.-]{1,63}/ws/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*$';
 
-/** A fresh matcher of [`WINDOW_SRC_PATTERN`]: no flags, so `$` is the end of the input. */
-export function windowSrcRegex(): RegExp {
-  return new RegExp(WINDOW_SRC_PATTERN);
-}
-
+/** No flags: `$` is the end of the input, and no `.`, `\s` or Unicode class can widen the match. */
 export function windowStreamSrc() {
-  return max2048CodePoints(z.string().regex(windowSrcRegex(), { message: 'must be a plugin window-stream path' }));
+  return max2048CodePoints(z.string().regex(new RegExp(WINDOW_SRC_PATTERN), { message: 'must be a plugin window-stream path' }));
 }

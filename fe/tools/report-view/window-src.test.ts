@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { readTrackReport, TRACK_REPORT_CARD_KIND } from '../../core/domain/report.js';
-import { WINDOW_SRC_PATTERN, windowSrcRegex } from '../../core/domain/report-src.js';
+import { WINDOW_SRC_PATTERN } from '../../core/domain/report-src.js';
 import type { CardWire } from '../../core/domain/track.js';
 
 /** The one `window` src rule, shared with the kernel (`crates/calm-types/src/report_blocks/window_tests.rs`). */
@@ -21,11 +21,9 @@ function readsAsWindow(src: string): boolean {
 }
 
 describe('window src conformance shared with the kernel', () => {
+  // The schema compiles this text itself; the cases below run through that schema.
   it('uses the kernel pattern verbatim', () => {
     expect(WINDOW_SRC_PATTERN).toBe(fixture.pattern);
-    // `RegExp#source` escapes `/`; compare against the same construction of the shared text.
-    expect(windowSrcRegex().source).toBe(new RegExp(fixture.pattern).source);
-    expect(windowSrcRegex().flags).toBe('');
   });
 
   it('reads every accept case as a window block', () => {

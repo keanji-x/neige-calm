@@ -220,3 +220,34 @@ it('sends chorded buttons one change at a time and releases held buttons', async
   pointer(canvas, 'pointerup', 0, 0);
   expect(buttonsSent(sockets[1])).toEqual([]);
 });
+
+it('follows the buttons mask only for a press that began on the canvas', async () => {
+  const { sockets, canvas, red } = await mountLive();
+  await goLive(sockets, 0, red);
+
+  // A move with a button held but no press on the canvas: someone else's drag passing over.
+  pointer(canvas, 'pointermove', -1, 1);
+  expect(buttonsSent(sockets[0])).toEqual([]);
+
+  // A text-selection drag that starts outside, crosses the block and is released outside.
+  pointer(canvas, 'pointerover', -1, 1);
+  pointer(canvas, 'pointerenter', -1, 1);
+  pointer(canvas, 'pointermove', -1, 1);
+  pointer(canvas, 'pointermove', -1, 1);
+  pointer(canvas, 'pointerleave', -1, 1);
+  document.body.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, button: 0, buttons: 0 }));
+  pointer(canvas, 'pointermove', -1, 0);
+  expect(buttonsSent(sockets[0])).toEqual([]);
+
+  // A press the canvas owns still follows the mask, chord included.
+  pointer(canvas, 'pointerdown', 0, 1);
+  pointer(canvas, 'pointermove', 2, 3);
+  pointer(canvas, 'pointerup', 0, 2);
+  pointer(canvas, 'pointerup', 2, 0);
+  expect(buttonsSent(sockets[0])).toEqual([
+    { type: 'button', button: 0, pressed: true },
+    { type: 'button', button: 2, pressed: true },
+    { type: 'button', button: 0, pressed: false },
+    { type: 'button', button: 2, pressed: false },
+  ]);
+});

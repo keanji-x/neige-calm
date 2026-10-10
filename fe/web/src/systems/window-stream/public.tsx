@@ -73,19 +73,29 @@ export function useWindowStream(src: string, options: WindowStreamOptions = {}):
       heldKeys.clear();
       releaseButtons();
     };
-    /* Every pointer event carries the full `buttons` mask; a chord's second button arrives on `pointermove`. */
-    const pointer = (event: PointerEvent) => {
-      if (!session.isLive()) return;
+    const moveTo = (event: PointerEvent) => {
       const { x, y } = toWindowPoint(event.clientX, event.clientY, canvas.getBoundingClientRect(), size());
       session.send({ type: 'pointer', x, y });
-      buttonsTo(event.buttons);
+    };
+    /* The window follows the `buttons` mask only for a press the canvas owns: one that began with a
+       `pointerdown` here. A drag that started elsewhere and crosses the canvas moves the pointer and
+       presses nothing. A chord's second button arrives on `pointermove` while the first is held. */
+    const pointer = (event: PointerEvent) => {
+      if (!session.isLive()) return;
+      moveTo(event);
+      if (heldButtons !== 0) buttonsTo(event.buttons);
     };
     const press = (event: PointerEvent) => {
       canvas.focus();
       if (!session.isLive()) return;
       event.preventDefault();
       try { canvas.setPointerCapture(event.pointerId); } catch { /* the pointer is no longer active */ }
-      pointer(event);
+      moveTo(event);
+      buttonsTo(event.buttons);
+    };
+    /* Without capture a press that leaves the canvas would stay held remotely with nothing to end it. */
+    const leave = (event: PointerEvent) => {
+      if (!canvas.hasPointerCapture(event.pointerId)) releaseButtons();
     };
     const wheel = (event: WheelEvent) => {
       if (!session.isLive()) return;
@@ -108,6 +118,7 @@ export function useWindowStream(src: string, options: WindowStreamOptions = {}):
       ['pointermove', pointer as EventListener],
       ['pointerdown', press as EventListener],
       ['pointerup', pointer as EventListener],
+      ['pointerleave', leave as EventListener],
       ['pointercancel', releaseButtons],
       ['lostpointercapture', releaseButtons],
       ['blur', releaseAll],
