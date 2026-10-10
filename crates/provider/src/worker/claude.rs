@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use calm_exec::{SpawnCtx, WorkerProvider};
+use calm_exec::{BoundKeys, MessageDelivery, SpawnCtx, TuiInput, WorkerProvider};
 use calm_types::error::CoreError;
 use calm_types::worker::{ExitEvidence, ExitInterpretation, Liveness, SessionMode, WorkerSession};
 
@@ -29,6 +29,15 @@ impl WorkerProvider for ClaudeProvider {
 
     fn session_mode(&self) -> SessionMode {
         SessionMode::Ephemeral
+    }
+
+    /// A message is one bracketed paste and Enter (a new turn when idle, queued while a turn
+    /// runs); the CLI also takes typed keys.
+    fn tui_input(&self) -> TuiInput {
+        TuiInput {
+            message: MessageDelivery::BracketedPasteSubmit,
+            keys_while_bound: BoundKeys::Accepted,
+        }
     }
 
     async fn probe_liveness(

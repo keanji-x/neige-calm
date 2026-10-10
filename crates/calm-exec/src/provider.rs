@@ -33,6 +33,32 @@ impl SpawnCtx {
     }
 }
 
+/// How the kernel may put a message into this provider's terminal UI (#2493).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MessageDelivery {
+    /// One bracketed paste of the message, then Enter: a new turn when idle, a steer or a queued
+    /// message while a turn runs.
+    BracketedPasteSubmit,
+    /// The terminal runs no agent conversation that takes a message.
+    Unsupported,
+}
+
+/// Whether typed keys (`text`, `submit`, `key`, `sequence`, a control claim) are accepted while
+/// the terminal serves a task attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoundKeys {
+    Accepted,
+    /// Typing interrupts the running turn without starting one (Codex remote TUI, #1782).
+    Refused,
+}
+
+/// The terminal-input declaration of a worker provider (#2493).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TuiInput {
+    pub message: MessageDelivery,
+    pub keys_while_bound: BoundKeys,
+}
+
 /// Owns a worker session after spawn: liveness, exit interpretation, and resume.
 ///
 /// Probes and interpretation run outside the write lock; only the final CAS transition commits under it.
@@ -41,6 +67,9 @@ pub trait WorkerProvider: Send + Sync {
     fn kind(&self) -> &'static str;
 
     fn session_mode(&self) -> SessionMode;
+
+    /// How its terminal takes a kernel message and typed keys while bound to a task attempt.
+    fn tui_input(&self) -> TuiInput;
 
     /// One observation round against a live-or-unknown session.
     async fn probe_liveness(

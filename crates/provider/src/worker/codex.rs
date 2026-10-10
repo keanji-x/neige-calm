@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use calm_exec::{SpawnCtx, SpawnHandle, WorkerProvider};
+use calm_exec::{BoundKeys, MessageDelivery, SpawnCtx, SpawnHandle, TuiInput, WorkerProvider};
 use calm_types::error::CoreError;
 use calm_types::runtime::TimestampMs;
 use calm_types::worker::{
@@ -93,6 +93,15 @@ impl WorkerProvider for CodexProvider {
 
     fn session_mode(&self) -> SessionMode {
         SessionMode::Resumable
+    }
+
+    /// A message is one bracketed paste and Enter (a new turn when idle, `turn/steer` while a
+    /// turn runs); typed keys interrupt the turn without starting one (#1782).
+    fn tui_input(&self) -> TuiInput {
+        TuiInput {
+            message: MessageDelivery::BracketedPasteSubmit,
+            keys_while_bound: BoundKeys::Refused,
+        }
     }
 
     async fn probe_liveness(
