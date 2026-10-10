@@ -16,37 +16,11 @@ use crate::terminal_renderer::{RendererDropOutcome, TerminalRendererRegistry};
 use calm_session::control::ProcSignal;
 use sqlx::Row;
 
-/// Which runtime a terminal's PTY exit may end.
-pub(crate) enum ExitedRuntime {
-    /// The terminal's active runtime: the boot reconcile, which runs before anything respawns.
-    Active,
-    /// The runtime the exited child's attach reader was set up for (`None`: none was active then).
-    /// A replacement started on the same terminal since (#2516) is never ended by this exit.
-    AttachedFor(Option<String>),
-}
-
-/// The runtime active on `terminal_id` now: what a new attach reader serves.
-pub(crate) async fn active_runtime_on_terminal(
-    repo: &dyn crate::db::RouteRepo,
-    terminal_id: &str,
-) -> Result<Option<String>> {
-    let Some(term) = repo.terminal_get(terminal_id).await? else {
-        return Ok(None);
-    };
-    let runtime = repo
-        .session_projection_active_for_card(&term.card_id.to_string())
-        .await?;
-    Ok(runtime
-        .filter(|runtime| runtime.terminal_run_id.as_deref() == Some(terminal_id))
-        .map(|runtime| runtime.id))
-}
-
 /// A PTY exit ends an ephemeral session. For a resumable session it is only viewer/liveness
 /// evidence: the provider death arbiter and explicit completion retain authority.
 pub(crate) async fn complete_ephemeral_session_from_terminal_exit(
     repo: &dyn crate::db::RouteRepo,
     terminal_id: &str,
-    which: ExitedRuntime,
     terminal_status: crate::session_projection_repo::WorkerSessionState,
 ) -> Result<()> {
     use crate::db::sqlite::{
@@ -60,11 +34,6 @@ pub(crate) async fn complete_ephemeral_session_from_terminal_exit(
             else {
                 return Ok(());
             };
-            if let ExitedRuntime::AttachedFor(attached) = &which
-                && attached.as_deref() != Some(active.id.as_str())
-            {
-                return Ok(());
-            }
             let session = session_get_tx(tx, &WorkerSessionId(active.id.clone()))
                 .await?
                 .ok_or_else(|| {
@@ -290,21 +259,35 @@ where
     let Some(term) = state.repo.terminal_get(&session.terminal_id).await? else {
         return Ok(());
     };
+    if !reap_live_terminal(state, &term).await? {
+        tracing::info!(
+            terminal_id = %term.id,
+            "terminal_sweeper: no renderer obtained for a completed-track session; \
+             left to the orphan arm / boot reconcile"
+        );
+    }
+    Ok(())
+}
+
+/// Stop the live child of `term`: its renderer, or a reattach to the child the supervisor runs,
+/// then the reap (TERM, bounded wait, KILL), whose reader persists the exit and ends an ephemeral
+/// runtime. `false` when no renderer could be obtained: no running child to stop.
+pub(crate) async fn reap_live_terminal(state: &AppState, term: &Terminal) -> Result<bool> {
     match crate::ws::terminal::resolve_live_renderer_from_terminal(state, term.clone()).await? {
         crate::ws::terminal::LiveRenderer::Alive(_) => {
-            reap_terminal_artifacts_with_renderer(Some(state.terminal_renderer.as_ref()), &term)
+            reap_terminal_artifacts_with_renderer(Some(state.terminal_renderer.as_ref()), term)
                 .await;
+            Ok(true)
         }
         crate::ws::terminal::LiveRenderer::ChildExited { exit_code } => {
             tracing::info!(
                 terminal_id = %term.id,
                 ?exit_code,
-                "terminal_sweeper: no renderer obtained for a completed-track session; \
-                 left to the orphan arm / boot reconcile"
+                "no renderer obtained for the terminal; no running child to stop"
             );
+            Ok(false)
         }
     }
-    Ok(())
 }
 
 /// The set narrowed to one session, built from the same text so the set and the claim cannot drift.

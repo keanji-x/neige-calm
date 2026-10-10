@@ -41,9 +41,6 @@ pub fn spawn_supervisor_attach_reader(
     exited_tx: oneshot::Sender<Option<i32>>,
     repo: Option<Arc<dyn RouteRepo>>,
     terminal_id: String,
-    // The runtime active on the terminal when this reader was set up: the only one its child's
-    // exit may end, never a replacement a restart started on the same terminal since (#2516).
-    attached_runtime: Option<String>,
     task_hook: Option<Arc<crate::scheduler::TerminalTaskHook>>,
     // Flipped to `true` once the whole `Exited` arm below has run. Teardown waits on this, never
     // on the task handle: the loop also ends on a read error, which persists nothing.
@@ -151,9 +148,6 @@ pub fn spawn_supervisor_attach_reader(
                             crate::terminal_sweeper::complete_ephemeral_session_from_terminal_exit(
                                 repo.as_ref(),
                                 &terminal_id,
-                                crate::terminal_sweeper::ExitedRuntime::AttachedFor(
-                                    attached_runtime.clone(),
-                                ),
                                 terminal_status,
                             )
                             .await

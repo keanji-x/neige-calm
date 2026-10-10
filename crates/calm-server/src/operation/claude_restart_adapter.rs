@@ -8,9 +8,9 @@ use serde_json::{Value, json};
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
     append_decision_event_in_tx, card_is_worker_spawn_target_tx, session_complete_tx,
-    session_mark_superseded_runtime_tx, session_projection_active_for_card_tx,
-    session_projection_projectable_for_card_tx, session_set_status_tx, session_start_runtime_tx,
-    terminal_create_tx, terminal_get_by_card_tx, worker_card_declared_head_tx,
+    session_projection_active_for_card_tx, session_projection_projectable_for_card_tx,
+    session_set_status_tx, session_start_runtime_tx, terminal_create_tx, terminal_get_by_card_tx,
+    worker_card_declared_head_tx,
 };
 use crate::db::write_with_events_typed;
 use crate::error::{CalmError, Result};
@@ -37,16 +37,14 @@ use crate::state::{CodexClient, WriteContext};
 use crate::track_area_cache::TrackAreaCache;
 use calm_truth::model::NewTerminal;
 
-use super::claude_restart_recovery::{
-    LivePredecessor, fail_replacement_runtime, own_runtime_status, predecessor_restored,
-    restore_live_predecessor,
-};
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation,
     OperationKey, OperationOutcome, OperationRuntime, PhaseTag, ProviderAdapter, SpawnCtx,
-    SpawnHandle, SpawnOutcome, Tx, TxOutput,
+    SpawnOutcome, Tx, TxOutput,
 };
 
+#[cfg(feature = "fixtures")]
+use super::SpawnHandle;
 #[cfg(feature = "fixtures")]
 use futures::future::BoxFuture;
 
@@ -117,8 +115,8 @@ pub struct ClaudeRestartOperationPayload {
     pub card_id: String,
 }
 
-/// One unkeyed `claude-restart` of `card_id`, submitted and awaited: the single entry point of the
-/// restart route and the boot auto-resume.
+/// One unkeyed `claude-restart` of `card_id`, submitted and awaited: the restart of a card whose
+/// child is gone, shared by the card's Update route and the boot auto-resume (#2516).
 pub async fn run_claude_restart(
     runtime: &OperationRuntime,
     actor: ActorId,
@@ -197,8 +195,8 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                 })?;
             verify_declared_head(Path::new(&term.cwd), head)?;
         }
-        // Read in this transaction: the session id a SessionStart hook moves is bound under the
-        // same write lock, so the restart resumes exactly what the card last started.
+        // Read in this transaction: a SessionStart hook moves the session id under the same write
+        // lock (#2516), so the restart resumes exactly what the card last started.
         let projectable = session_projection_projectable_for_card_tx(tx, &card_id).await?;
         let claude_session_id = claude_session_of_runtime(projectable.as_ref())
             .or_else(|| legacy_claude_session_of_card(&card_id, projectable.as_ref(), Some(&card)))
@@ -213,30 +211,23 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             .filter(|s| !s.is_empty())
             .map(ToOwned::to_owned)
             .ok_or_else(|| CalmError::Forbidden("Claude card has no settings_path".into()))?;
-        // #2516: a live child is not refused. The spawn stops it before the replacement starts;
-        // until then its runtime is only superseded, so compensation can make it the card's
-        // runtime again while that child still runs.
-        let mut live_predecessor = None;
         if let Some(active) = session_projection_active_for_card_tx(tx, &card_id).await? {
             // Claude runtimes only reach Starting/Running here; Idle/TurnPending are not part of the Claude state machine.
             if matches!(
                 active.status,
                 WorkerSessionState::Starting | WorkerSessionState::Running
             ) {
-                session_mark_superseded_runtime_tx(tx, &active.id).await?;
-                live_predecessor = Some(LivePredecessor {
-                    worker_session_id: active.id,
-                    status: active.status,
-                });
-            } else {
-                session_complete_tx(tx, &active.id, WorkerSessionState::Exited).await?;
+                return Err(CalmError::Conflict(
+                    "kill or wait for child exit before restart".into(),
+                ));
             }
+            session_complete_tx(tx, &active.id, WorkerSessionState::Exited).await?;
         }
 
         // A task worker's card gets the permission mode (#2521) and the MCP servers (#2470) it
         // first started with. `exec` as at create. `--resume=<id>` is one token: the id comes
-        // from a hook payload, so a `-`-led value must stay the option's value, never be read as
-        // another option.
+        // from a hook payload, so it must stay the option's value, never be read as another
+        // option (#2516).
         let is_worker = card_is_worker_spawn_target_tx(tx, &card_id).await?;
         let mut command_line = format!(
             "exec {} {} --settings {} --resume={}",
@@ -342,7 +333,6 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             "prev_signal_killed": prev_signal_killed,
             "prev_pty_output": prev_pty_output,
             "prev_pty_output_truncated": prev_pty_output_truncated,
-            "live_predecessor": live_predecessor,
         });
         record_declared_head(&mut output.data, declared_head.as_deref());
         output.post_commit_events.push(BroadcastEnvelope {
@@ -378,18 +368,6 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         let command_line = output.output_string("command_line", "claude restart")?;
         let cwd = output.output_string("cwd", "claude restart")?;
         let mut env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
-        // The drive interleaves operations by phase: a second restart of the card prepared since
-        // this one did superseded this one's runtime, and it stops and replaces the child itself.
-        if own_runtime_status(ctx, &worker_session_id).await?
-            == Some(WorkerSessionState::Superseded)
-        {
-            tracing::info!(
-                card_id = %card_id,
-                worker_session_id = %worker_session_id,
-                "a newer restart of the card superseded this one; it stands down"
-            );
-            return Ok(SpawnOutcome::Ready(SpawnHandle::NoOp));
-        }
         // #1933: a resumed reader starts only while its checkout is still at its declared head.
         verify_recorded_head(output, "claude restart")?;
         let kernel_mcp = match output.output_optional_string("mcp_config_path", "claude restart")? {
@@ -404,6 +382,13 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             None => None,
         };
 
+        ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
+        ctx.terminal_renderer.drop_entry(&terminal_id).await;
+        let term = ctx
+            .repo
+            .terminal_get(&terminal_id)
+            .await?
+            .ok_or_else(|| CalmError::Internal(format!("terminal {terminal_id} vanished")))?;
         std::fs::create_dir_all(&settings_dir).map_err(|e| {
             CalmError::Internal(format!(
                 "mkdir claude settings dir {}: {e}",
@@ -429,47 +414,15 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             .await?;
         }
 
-        // #2516: every fallible preparation is done; only now is the card's current child, live
-        // or not, stopped, and then the row cleared for its replacement. Spawn steps run one at a
-        // time under the drive mutex: a later restart's spawn finds this one's child.
-        #[cfg(feature = "fixtures")]
-        crate::test_seams::pause_point(crate::test_seams::CLAUDE_RESTART_BEFORE_STOP, &card_id)
-            .await;
-        // The fence holds from the stop through the spawn: no lazy reattach can set up a reader
-        // on the dying child, and the spawn below gets a renderer of its own.
-        let fence = ctx.terminal_renderer.fence_respawn(&terminal_id)?;
-        ctx.terminal_renderer
-            .stop_for_respawn(&fence, ctx.daemon.proc_supervisor_sock.as_deref())
-            .await?;
-        ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
-        let term = ctx
-            .repo
-            .terminal_get(&terminal_id)
-            .await?
-            .ok_or_else(|| CalmError::Internal(format!("terminal {terminal_id} vanished")))?;
-        // Before the fence, a reader on the old child could still end the replacement; then
-        // nothing is spawned for a runtime that is over.
-        if !own_runtime_status(ctx, &worker_session_id)
-            .await?
-            .is_some_and(|status| status == WorkerSessionState::Starting)
-        {
-            return Err(CalmError::Internal(format!(
-                "claude card {card_id}: replacement runtime {worker_session_id} ended before its spawn"
-            )));
-        }
-
         #[cfg(feature = "fixtures")]
         let handle = if let Some(hook) = &self.spawn_hook {
             hook(terminal_id.clone(), command_line, cwd, env).await
         } else {
-            ctx.respawn_terminal(&term, &command_line, &cwd, &env, &fence)
-                .await
+            ctx.spawn_terminal(&term, &command_line, &cwd, &env).await
         };
 
         #[cfg(not(feature = "fixtures"))]
-        let handle = ctx
-            .respawn_terminal(&term, &command_line, &cwd, &env, &fence)
-            .await;
+        let handle = ctx.spawn_terminal(&term, &command_line, &cwd, &env).await;
 
         match handle {
             Ok(handle) => {
@@ -562,10 +515,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         output: &TxOutput,
         _op: &Operation,
     ) -> Result<CompensationStateVersioned> {
-        // The restart's own runtime is the operation's target.
-        let worker_session_id = output.target_id.clone().ok_or_else(|| {
-            CalmError::Internal("claude restart tx_output has no target runtime".into())
-        })?;
+        let card_id = output.output_string("card_id", "claude restart")?;
         let terminal_id = output.output_string("terminal_id", "claude restart")?;
         let prev_exit_code = output_optional_i32(output, "prev_exit_code");
         let prev_signal_killed = output_bool(output, "prev_signal_killed");
@@ -575,34 +525,14 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             .and_then(Value::as_str)
             .unwrap_or_default();
         let prev_pty_output_truncated = output_bool(output, "prev_pty_output_truncated");
-        let live_predecessor: Option<LivePredecessor> = output
-            .data
-            .get("live_predecessor")
-            .cloned()
-            .map(serde_json::from_value)
-            .transpose()?
-            .flatten();
         Ok(CompensationStateVersioned {
             version: 1,
             from_phase,
             reason: reason.to_string(),
             steps: vec![
-                // Only this restart's own runtime: a newer restart of the card may own the card's
-                // active runtime by now (the drive interleaves operations by phase).
                 CompensationStep {
-                    op: "fail_replacement_runtime".into(),
-                    args: json!({ "worker_session_id": worker_session_id }),
-                    completed: false,
-                    attempts: 0,
-                    last_error: None,
-                },
-                // After the replacement failed above: one active runtime per card.
-                CompensationStep {
-                    op: "restore_live_predecessor".into(),
-                    args: json!({
-                        "terminal_id": terminal_id,
-                        "live_predecessor": live_predecessor,
-                    }),
+                    op: "session_projection_set_status_failed_for_card".into(),
+                    args: json!({ "card_id": card_id }),
                     completed: false,
                     attempts: 0,
                     last_error: None,
@@ -615,7 +545,6 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                         "prev_signal_killed": prev_signal_killed,
                         "prev_pty_output": prev_pty_output,
                         "prev_pty_output_truncated": prev_pty_output_truncated,
-                        "live_predecessor": live_predecessor,
                     }),
                     completed: false,
                     attempts: 0,
@@ -645,7 +574,6 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                     .await?;
                 Ok(())
             }
-            "fail_replacement_runtime" => fail_replacement_runtime(ctx, step).await,
             "restore_terminal_exit" => {
                 let terminal_id = step_arg_string(step, "terminal_id")?;
                 let prev_exit_code = step
@@ -668,10 +596,6 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                     .get("prev_pty_output_truncated")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-                // #2516: the child this restart was to stop is exited by signal unless the step
-                // above found it still running and made its runtime the card's again.
-                let prev_signal_killed =
-                    prev_signal_killed || !predecessor_restored(ctx, step).await?;
                 ctx.repo
                     .terminal_set_exit_with_output(
                         &terminal_id,
@@ -683,7 +607,6 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                     .await?;
                 Ok(())
             }
-            "restore_live_predecessor" => restore_live_predecessor(ctx, step).await,
             other => Err(CalmError::Internal(format!(
                 "unknown claude restart compensation op {other}"
             ))),

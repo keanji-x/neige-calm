@@ -9,7 +9,6 @@ use crate::operation::claude_adapter::{
     normalize_claude_create_request as normalize_claude_create_request_payload,
     prepare_claude_create_request,
 };
-use crate::operation::claude_restart_adapter::run_claude_restart;
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::codex_cards::shell_single_quote;
 use crate::routes::idempotency_key::{
@@ -149,19 +148,20 @@ pub(crate) fn normalize_claude_create_request(
     tag = "claude",
     params(("id" = String, Path, description = "Claude card id")),
     responses(
-        (status = 200, description = "Claude card restarted on its latest session id; a live child is stopped first (SIGTERM, bounded wait, SIGKILL)", body = Card),
+        (status = 200, description = "Update: a live child is stopped and its exit recorded, then the card resumes its latest session", body = Card),
         (status = 403, description = "Card is not a Claude card or lacks resumable Claude metadata", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
-        (status = 409, description = "A task worker's checkout is not at its declared head, or its card has no terminal to check it in", body = ErrorBody),
-        (status = 500, description = "The live child would not stop, or the daemon spawn failed; rows persist and sweeper handles cleanup", body = ErrorBody),
+        (status = 409, description = "The stopped child's exit was not recorded in time (card left as it is), or a task worker's checkout check failed", body = ErrorBody),
+        (status = 500, description = "Daemon spawn failed; rows persist and sweeper handles cleanup", body = ErrorBody),
     ),
 )]
 pub(crate) async fn restart_claude_card(
     State(s): State<RouteState>,
+    State(app): State<AppState>,
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<Json<Card>> {
-    match run_claude_restart(&s.operation_runtime, actor.to_actor_id(), id).await? {
+    match crate::claude_update::update_claude_card(&app, actor.to_actor_id(), id).await? {
         OperationOutcome::Succeeded { result }
         | OperationOutcome::SucceededViaCollision { result, .. } => {
             let mut card: Card = serde_json::from_value(result)?;

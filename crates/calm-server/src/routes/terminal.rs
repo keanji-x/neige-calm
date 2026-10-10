@@ -38,24 +38,19 @@ pub(crate) async fn get_terminal_for_card(
     Ok(Json(term))
 }
 
-/// Ensure a renderer-backed terminal process exists for the given terminal row.
-pub(crate) async fn spawn_terminal_for(
+/// A renderer on the child the supervisor runs for `term` now; never a start of `term.program`
+/// (#2516). A terminal with no running child is an error.
+pub(crate) async fn attach_terminal_for(
     s: &AppState,
     term: &Terminal,
-    program: &str,
-    cwd: &str,
-    env: &serde_json::Value,
 ) -> Result<Arc<RendererEntry>> {
-    spawn_terminal_with_parts(
-        s.daemon.as_ref(),
-        s.terminal_renderer.as_ref(),
-        s.repo.as_ref(),
-        term,
-        program,
-        cwd,
-        env,
-    )
-    .await
+    s.terminal_renderer
+        .attach_running(
+            terminal_renderer_config(s.daemon.as_ref(), term, &term.program, &term.cwd, &term.env)
+                .await?,
+        )
+        .await
+        .map_err(|error| CalmError::Internal(error.to_string()))
 }
 
 /// Lower-level seam over `spawn_terminal_for` taking the constituent parts instead of
@@ -71,25 +66,6 @@ pub(crate) async fn spawn_terminal_with_parts(
 ) -> Result<Arc<RendererEntry>> {
     renderer
         .ensure(terminal_renderer_config(daemon, term, program, cwd, env).await?)
-        .await
-        .map_err(|error| CalmError::Internal(error.to_string()))
-}
-
-/// [`spawn_terminal_with_parts`] for a respawn holding `fence`: always a new renderer (#2516).
-pub(crate) async fn respawn_terminal_with_parts(
-    daemon: &DaemonClient,
-    renderer: &TerminalRendererRegistry,
-    term: &Terminal,
-    program: &str,
-    cwd: &str,
-    env: &serde_json::Value,
-    fence: &crate::terminal_renderer::RespawnFence,
-) -> Result<Arc<RendererEntry>> {
-    renderer
-        .ensure_respawn(
-            terminal_renderer_config(daemon, term, program, cwd, env).await?,
-            fence,
-        )
         .await
         .map_err(|error| CalmError::Internal(error.to_string()))
 }

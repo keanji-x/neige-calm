@@ -276,6 +276,11 @@ async fn a_session_start_id_that_is_not_a_uuid_is_not_followed() {
         StatusCode::OK
     );
     assert_eq!(agent_session_ids(&boot, card_id).await, [minted]);
+    // Exited first: no child runs under a spawn hook for the Update to stop.
+    boot.repo
+        .session_projection_complete_for_card(card_id, WorkerSessionState::Exited)
+        .await
+        .unwrap();
 
     let (status, restarted) = post_restart(boot.app.clone(), card_id).await;
     assert_eq!(status, StatusCode::OK, "body={restarted:?}");

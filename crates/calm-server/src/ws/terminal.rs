@@ -145,23 +145,18 @@ pub(crate) async fn resolve_live_renderer_from_terminal(
         });
     }
 
-    // Probe the supervisor first: `spawn_terminal_for` on a proc it does not know would SPAWN a fresh child
-    // instead of reattaching.
+    // Probe first, then attach to the running child only: a reattach never starts `term.program`,
+    // even when the child exits between the probe and the attach (#2516).
     match crate::probe_supervisor_for_terminal(s, &term.id).await {
         Ok(true) => {
             tracing::info!(
                 terminal_id = %term.id,
                 "supervisor confirms live PTY; attempting lazy renderer reattach",
             );
-            match crate::routes::terminal::spawn_terminal_for(
-                s,
-                &term,
-                &term.program,
-                &term.cwd,
-                &term.env,
-            )
-            .await
-            {
+            #[cfg(feature = "fixtures")]
+            crate::test_seams::pause_point(crate::test_seams::VIEWER_REATTACH_PROBED, &term.id)
+                .await;
+            match crate::routes::terminal::attach_terminal_for(s, &term).await {
                 Ok(entry) => Ok(LiveRenderer::Alive(entry)),
                 Err(e) => {
                     tracing::warn!(

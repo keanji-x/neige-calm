@@ -1,13 +1,12 @@
 //! #2516: after the boot reconcile, each owner-created Claude card whose PTY was lost is resumed
-//! through the same `claude-restart` its restart route submits. A Planner task worker's card is
-//! left to its Planner, which owns that recovery.
+//! through the card's Update entry point, as its restart route resumes it. A Planner task
+//! worker's card is left to its Planner, which owns that recovery.
 
 use std::collections::HashSet;
 
 use crate::error::Result;
 use crate::ids::ActorId;
 use crate::operation::OperationOutcome;
-use crate::operation::claude_restart_adapter::run_claude_restart;
 use crate::state::AppState;
 
 /// Run off the boot path: the restarts start PTYs, and their Claude hooks need the server
@@ -62,7 +61,10 @@ pub async fn resume_owner_claude_cards(state: &AppState, stale_terminal_ids: &[S
                 continue;
             }
         }
-        match run_claude_restart(&state.operation_runtime, ActorId::Kernel, card_id.clone()).await {
+        // The card's Update entry point: under its per-card lock, and with no child to stop.
+        match crate::claude_update::update_claude_card(state, ActorId::Kernel, card_id.clone())
+            .await
+        {
             Ok(OperationOutcome::Succeeded { .. })
             | Ok(OperationOutcome::SucceededViaCollision { .. }) => {
                 tracing::info!(card_id, "claude card resumed after its PTY was lost");
@@ -89,12 +91,13 @@ async fn terminal_still_exited(state: &AppState, terminal_id: &str) -> Result<bo
     if term.exit_code.is_none() && !term.signal_killed {
         return Ok(false);
     }
-    // An undecided probe resumes nothing: the restart could not stop a child it cannot see.
-    Ok(state
-        .terminal_renderer
-        .child_running(state.daemon.proc_supervisor_sock.as_deref(), terminal_id)
-        .await
-        == Some(false))
+    // An unanswered or failed probe resumes nothing: a restart cannot stop a child it cannot see.
+    let probe = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        crate::probe_supervisor_for_terminal(state, terminal_id),
+    )
+    .await;
+    Ok(matches!(probe, Ok(Ok(false))))
 }
 
 /// The card of `terminal_id` when it is a Claude card created through the claude-cards route: the

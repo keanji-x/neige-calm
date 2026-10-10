@@ -1980,7 +1980,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Claude card restarted on its latest session id; a live child is stopped first (SIGTERM, bounded wait, SIGKILL)",
+            "description": "Update: a live child is stopped and its exit recorded, then the card resumes its latest session",
             "content": {
               "application/json": {
                 "schema": {
@@ -2030,7 +2030,7 @@
             }
           },
           "409": {
-            "description": "A task worker's checkout is not at its declared head, or its card has no terminal to check it in",
+            "description": "The stopped child's exit was not recorded in time (card left as it is), or a task worker's checkout check failed",
             "content": {
               "application/json": {
                 "schema": {
@@ -2040,7 +2040,7 @@
             }
           },
           "500": {
-            "description": "The live child would not stop, or the daemon spawn failed; rows persist and sweeper handles cleanup",
+            "description": "Daemon spawn failed; rows persist and sweeper handles cleanup",
             "content": {
               "application/json": {
                 "schema": {

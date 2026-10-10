@@ -1,4 +1,4 @@
-//! #2516: restarting a Claude card whose child is running, with real processes under a real proc
+//! #2516: Update of a Claude card whose child is running, with real processes under a real proc
 //! supervisor. The child is a stand-in for the Claude CLI that logs each start and each SIGTERM.
 
 use std::os::unix::fs::PermissionsExt;
@@ -10,7 +10,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_proc_supervisor::test_support::InProcessProcSupervisor;
 use calm_server::db::prelude::*;
-use calm_server::test_seams::{CLAUDE_RESTART_BEFORE_STOP, PausePoint, install_pause_for_test};
+use calm_server::test_seams::{PausePoint, VIEWER_REATTACH_PROBED, install_pause_for_test};
 use serde_json::json;
 use tokio::sync::Notify;
 use tower::ServiceExt;
@@ -66,9 +66,15 @@ fn got_sigterm(log: &Path, pid: i32) -> bool {
         .any(|line| line == format!("term {pid}"))
 }
 
+/// Whether `pid` runs: it exists and is not a zombie its parent has yet to reap.
 fn alive(pid: i32) -> bool {
     // SAFETY: signal 0 delivers nothing; it only checks that the pid exists.
-    unsafe { libc::kill(pid, 0) == 0 }
+    let exists = unsafe { libc::kill(pid, 0) == 0 };
+    let zombie = std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        stat.rsplit_once(") ")
+            .is_some_and(|(_, rest)| rest.starts_with('Z'))
+    });
+    exists && !zombie
 }
 
 async fn eventually(what: &str, mut condition: impl FnMut() -> bool) {
@@ -86,7 +92,6 @@ struct LiveCard {
     log: std::path::PathBuf,
     card_id: String,
     terminal_id: String,
-    settings_path: String,
 }
 
 /// A Claude card created through the route, its child running under a real supervisor.
@@ -112,10 +117,6 @@ async fn live_card_exiting_after(term_delay: Duration) -> LiveCard {
         .as_str()
         .unwrap()
         .to_string();
-    let settings_path = created["payload"]["settings_path"]
-        .as_str()
-        .unwrap()
-        .to_string();
     eventually("the first child starts", || starts(&log).len() == 1).await;
     LiveCard {
         boot,
@@ -124,7 +125,6 @@ async fn live_card_exiting_after(term_delay: Duration) -> LiveCard {
         log,
         card_id,
         terminal_id,
-        settings_path,
     }
 }
 
@@ -143,25 +143,19 @@ async fn terminal_exit(boot: &Boot, terminal_id: &str) -> (Option<i32>, bool) {
     (term.exit_code, term.signal_killed)
 }
 
-#[tokio::test]
-async fn restart_of_a_running_card_stops_its_child_and_resumes_the_latest_session() {
-    let _guard = ENV_LOCK.lock().await;
-    let live = live_card().await;
-    let (boot, log) = (&live.boot, &live.log);
-
-    // The running child `/clear`s: its session id changes.
+async fn post_session_start(boot: &Boot, card_id: &str, session_id: &str) {
     let hook = boot
         .app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/internal/claude/hook?card_id={}", live.card_id))
+                .uri(format!("/internal/claude/hook?card_id={card_id}"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({
                         "hook_event_name": "SessionStart",
-                        "session_id": SESSION_AFTER_CLEAR,
+                        "session_id": session_id,
                         "source": "clear",
                     })
                     .to_string(),
@@ -170,16 +164,54 @@ async fn restart_of_a_running_card_stops_its_child_and_resumes_the_latest_sessio
         )
         .await
         .unwrap();
-    let (hook_status, hook_body) = response_json(hook).await;
-    assert_eq!(hook_status, StatusCode::OK, "body={hook_body:?}");
-    // The server restarted while the child kept running: no renderer holds it.
+    let (status, body) = response_json(hook).await;
+    assert_eq!(status, StatusCode::OK, "body={body:?}");
+}
+
+/// Update of a running card: the old child gets SIGTERM and its exit is recorded, then exactly one
+/// new child resumes the session the card last started.
+#[tokio::test]
+async fn update_of_a_running_card_stops_its_child_then_resumes_the_latest_session() {
+    let _guard = ENV_LOCK.lock().await;
+    let live = live_card().await;
+    let (boot, log) = (&live.boot, &live.log);
+    let (old_pid, _) = starts(log)[0];
+    post_session_start(boot, &live.card_id, SESSION_AFTER_CLEAR).await;
+
+    let (status, response) = post_restart(boot.app.clone(), &live.card_id).await;
+    assert_eq!(status, StatusCode::OK, "body={response:?}");
+    assert_eq!(response["runtime"]["status"], "running", "{response}");
+    eventually("the replacement starts", || starts(log).len() == 2).await;
+    assert!(got_sigterm(log, old_pid) && !alive(old_pid));
+    let (new_pid, argv) = starts(log)[1].clone();
+    assert!(alive(new_pid));
+    assert!(
+        argv.contains(&format!("--resume={SESSION_AFTER_CLEAR}")),
+        "{argv}"
+    );
+    assert_eq!(
+        runtime_states(boot, &live.card_id).await,
+        ["exited", "running"]
+    );
+    assert_eq!(terminal_exit(boot, &live.terminal_id).await, (None, false));
+
+    boot.state
+        .terminal_renderer
+        .drop_entry(&live.terminal_id)
+        .await;
+}
+
+/// Two Updates at once, after a server restart left the child with no renderer: they run one
+/// after the other, so exactly one child runs at the end and every runtime but the last is over.
+#[tokio::test]
+async fn two_concurrent_updates_leave_exactly_one_live_child() {
+    let _guard = ENV_LOCK.lock().await;
+    let live = live_card().await;
+    let (boot, log) = (&live.boot, &live.log);
     boot.state
         .terminal_renderer
         .forget_entry_for_test(&live.terminal_id);
 
-    // A double submit while the child runs: both succeed. The drive interleaves them by phase, so
-    // either each replaces the child in turn, or the first stands down for the second, whose
-    // prepare superseded it.
     let (first, second) = tokio::join!(
         post_restart(boot.app.clone(), &live.card_id),
         post_restart(boot.app.clone(), &live.card_id),
@@ -187,81 +219,29 @@ async fn restart_of_a_running_card_stops_its_child_and_resumes_the_latest_sessio
     assert_eq!(first.0, StatusCode::OK, "body={:?}", first.1);
     assert_eq!(second.0, StatusCode::OK, "body={:?}", second.1);
 
-    eventually(
-        "only the last child runs; every earlier one got SIGTERM",
-        || {
-            let started = starts(log);
-            let Some(((last, _), earlier)) = started.split_last() else {
-                return false;
-            };
-            started.len() >= 2
-                && alive(*last)
-                && !got_sigterm(log, *last)
-                && earlier
-                    .iter()
-                    .all(|(pid, _)| got_sigterm(log, *pid) && !alive(*pid))
-        },
-    )
-    .await;
+    eventually("both replacements start", || starts(log).len() == 3).await;
     let started = starts(log);
-    assert!(matches!(started.len(), 2 | 3), "{started:?}");
-    for (_, argv) in &started[1..] {
-        assert!(
-            argv.contains(&format!("--resume={SESSION_AFTER_CLEAR}")),
-            "a restart resumes the latest session id: {argv}"
-        );
+    let live_pids: Vec<i32> = started
+        .iter()
+        .map(|(pid, _)| *pid)
+        .filter(|pid| alive(*pid))
+        .collect();
+    assert_eq!(
+        live_pids,
+        [started[2].0],
+        "exactly one child runs: {started:?}"
+    );
+    for (pid, _) in &started[..2] {
+        assert!(got_sigterm(log, *pid), "a replaced child gets SIGTERM");
     }
-    assert_eq!(
-        runtime_states(boot, &live.card_id).await,
-        ["superseded", "superseded", "running"]
-    );
-    assert_eq!(terminal_exit(boot, &live.terminal_id).await, (None, false));
-
-    boot.state
-        .terminal_renderer
-        .drop_entry(&live.terminal_id)
-        .await;
-}
-
-/// The old child exits after the restart committed its replacement runtime on the same terminal
-/// and before the restart stopped it: that exit ends the old runtime, never the replacement.
-#[tokio::test]
-async fn an_old_child_exiting_inside_the_restart_does_not_end_the_replacement() {
-    let _guard = ENV_LOCK.lock().await;
-    let live = live_card().await;
-    let (boot, log) = (&live.boot, &live.log);
-    let (old_pid, _) = starts(log)[0];
-    let old_entry = boot
-        .state
-        .terminal_renderer
-        .get(&live.terminal_id)
-        .expect("the first child's renderer");
-    let paused = PausePoint {
-        entered: Arc::new(Notify::new()),
-        release: Arc::new(Notify::new()),
-    };
-    install_pause_for_test(CLAUDE_RESTART_BEFORE_STOP, &live.card_id, paused.clone());
-
-    let app = boot.app.clone();
-    let card_id = live.card_id.clone();
-    let restart = tokio::spawn(async move { post_restart(app, &card_id).await });
-    tokio::time::timeout(BUDGET, paused.entered.notified())
-        .await
-        .expect("the restart reaches its stop");
-    // SAFETY: a plain signal to the stand-in child this test started.
-    assert_eq!(unsafe { libc::kill(old_pid, libc::SIGTERM) }, 0);
+    let states = runtime_states(boot, &live.card_id).await;
+    assert_eq!(states.len(), 3, "{states:?}");
+    assert_eq!(states[2], "running", "{states:?}");
     assert!(
-        old_entry.wait_exit_persisted_for_test(BUDGET).await,
-        "the old child's reader handles its exit"
-    );
-    paused.release.notify_one();
-
-    let (status, response) = restart.await.unwrap();
-    assert_eq!(status, StatusCode::OK, "body={response:?}");
-    eventually("the replacement starts", || starts(log).len() == 2).await;
-    assert_eq!(
-        runtime_states(boot, &live.card_id).await,
-        ["superseded", "running"]
+        states[..2]
+            .iter()
+            .all(|state| state == "exited" || state == "failed"),
+        "{states:?}"
     );
     assert_eq!(terminal_exit(boot, &live.terminal_id).await, (None, false));
 
@@ -271,74 +251,52 @@ async fn an_old_child_exiting_inside_the_restart_does_not_end_the_replacement() 
         .await;
 }
 
-/// A restart that fails before it stops the child leaves that child running, and its terminal
-/// row says so: compensation records no signal exit for a child it never stopped.
+/// A viewer's reattach that saw a live child, and reaches the supervisor only once that child is
+/// gone (as an Update's stop leaves it), never starts `term.program`: the card's original
+/// `--session-id=` command line runs once, at the card's creation.
+///
+/// The child is stopped out of band here: a reattach that found no renderer holds the track's
+/// fence, which an Update's stop of a renderer-less child takes too, so the two meet only here.
 #[tokio::test]
-async fn a_restart_failing_before_its_stop_leaves_the_child_and_its_row_live() {
-    let _guard = ENV_LOCK.lock().await;
-    let live = live_card().await;
-    let (boot, log) = (&live.boot, &live.log);
-    let (pid, _) = starts(log)[0];
-    // The restart rewrites the settings file before it stops anything; a directory there fails it.
-    std::fs::remove_file(&live.settings_path).unwrap();
-    std::fs::create_dir(&live.settings_path).unwrap();
-
-    let (status, response) = post_restart(boot.app.clone(), &live.card_id).await;
-    assert_eq!(
-        status,
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "body={response:?}"
-    );
-    assert!(
-        alive(pid) && !got_sigterm(log, pid),
-        "the child was never stopped"
-    );
-    assert_eq!(starts(log).len(), 1);
-    // The card shows the running child: its runtime is back in its pre-restart state, and the
-    // replacement that never started is failed.
-    assert_eq!(
-        runtime_states(boot, &live.card_id).await,
-        ["running", "failed"]
-    );
-    assert_eq!(terminal_exit(boot, &live.terminal_id).await, (None, false));
-
-    boot.state
-        .terminal_renderer
-        .drop_entry(&live.terminal_id)
-        .await;
-}
-
-/// A WS reconnect while the restart stops the old child (it takes ~2 s to exit after SIGTERM)
-/// sets up no renderer on that child: its exit cannot end the replacement, and the restart gets a
-/// renderer and a child of its own.
-#[tokio::test]
-async fn a_reattach_while_the_restart_stops_the_old_child_does_not_take_its_place() {
+async fn a_viewer_reattach_never_starts_the_terminal_program() {
     let _guard = ENV_LOCK.lock().await;
     let live = live_card_exiting_after(Duration::from_secs(2)).await;
     let (boot, log) = (&live.boot, &live.log);
     let (old_pid, _) = starts(log)[0];
-
-    let app = boot.app.clone();
-    let card_id = live.card_id.clone();
-    let restart = tokio::spawn(async move { post_restart(app, &card_id).await });
-    eventually("the old child gets SIGTERM", || got_sigterm(log, old_pid)).await;
-    assert!(alive(old_pid), "the old child is still exiting");
-    calm_server::ws::terminal::resolve_live_renderer_for_test(&boot.state, &live.terminal_id)
-        .await
-        .unwrap();
-
-    let (status, response) = restart.await.unwrap();
-    assert_eq!(status, StatusCode::OK, "body={response:?}");
-    eventually("the replacement starts", || starts(log).len() == 2).await;
-    assert_eq!(
-        runtime_states(boot, &live.card_id).await,
-        ["superseded", "running"]
-    );
-    assert_eq!(response["runtime"]["status"], "running", "{response}");
-    assert_eq!(terminal_exit(boot, &live.terminal_id).await, (None, false));
-
     boot.state
         .terminal_renderer
-        .drop_entry(&live.terminal_id)
-        .await;
+        .forget_entry_for_test(&live.terminal_id);
+    let paused = PausePoint {
+        entered: Arc::new(Notify::new()),
+        release: Arc::new(Notify::new()),
+    };
+    install_pause_for_test(VIEWER_REATTACH_PROBED, &live.terminal_id, paused.clone());
+
+    let state = boot.state.clone();
+    let terminal_id = live.terminal_id.clone();
+    let reattach = tokio::spawn(async move {
+        calm_server::ws::terminal::resolve_live_renderer_for_test(&state, &terminal_id).await
+    });
+    tokio::time::timeout(BUDGET, paused.entered.notified())
+        .await
+        .expect("the reattach sees the live child");
+    // SAFETY: a plain signal to the stand-in child this test started.
+    assert_eq!(unsafe { libc::kill(old_pid, libc::SIGKILL) }, 0);
+    eventually("the old child is gone", || !alive(old_pid)).await;
+    paused.release.notify_one();
+
+    let reattached = reattach.await.unwrap().unwrap();
+    assert!(
+        matches!(
+            reattached,
+            calm_server::ws::terminal::TestLiveRenderer::ChildExited { .. }
+        ),
+        "a reattach to a child that is gone gets no renderer"
+    );
+    let with_session_id = starts(log)
+        .iter()
+        .filter(|(_, argv)| argv.contains("--session-id="))
+        .count();
+    assert_eq!(with_session_id, 1, "{:?}", starts(log));
+    assert_eq!(starts(log).len(), 1, "{:?}", starts(log));
 }

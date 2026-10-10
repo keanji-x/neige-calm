@@ -73,7 +73,6 @@ pub async fn reconcile_supervisor_on_boot(state: &state::AppState) -> Vec<String
                     terminal_sweeper::complete_ephemeral_session_from_terminal_exit(
                         state.repo.as_ref(),
                         &term.id,
-                        terminal_sweeper::ExitedRuntime::Active,
                         WorkerSessionState::Exited,
                     )
                 })
@@ -550,6 +549,8 @@ pub mod card_role_cache;
 pub mod claude_auto_resume;
 pub(crate) mod claude_code_env;
 pub mod claude_planner;
+/// #2516: Update of a Claude card: stop a live child, then resume its latest session.
+pub mod claude_update;
 pub mod codex_appserver;
 pub mod codex_mcp_toolset;
 pub mod config;

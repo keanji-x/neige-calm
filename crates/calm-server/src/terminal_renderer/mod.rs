@@ -33,8 +33,6 @@ pub mod attach_hold_for_test;
 #[cfg(test)]
 pub(crate) mod establishment_test_hook;
 mod output_capture;
-mod respawn;
-pub(crate) use respawn::RespawnFence;
 pub mod signals;
 mod snapshot;
 pub use signals::{IncomingSignal, SIGNAL_MESSAGE_MAX_CHARS, Signal, SignalRing, SignalsSince};
@@ -301,9 +299,6 @@ pub struct TerminalRendererRegistry {
     /// Installed by [`Self::set_output_wake`] when the projector loop starts; cloned into every
     /// attach reader at spawn.
     output_wake: OutputWake,
-    /// Terminals between a respawn's stop and its spawn (#2516): no renderer may be set up for
-    /// them except the respawn's own. Locked after `entries` when both are held.
-    respawn_fences: StdMutex<std::collections::HashSet<String>>,
 }
 
 impl TerminalRendererRegistry {
@@ -314,7 +309,6 @@ impl TerminalRendererRegistry {
             task_hook: StdMutex::new(None),
             hook_settings_dir: StdMutex::new(None),
             output_wake: Arc::new(StdMutex::new(None)),
-            respawn_fences: StdMutex::new(std::collections::HashSet::new()),
         })
     }
 
@@ -325,7 +319,6 @@ impl TerminalRendererRegistry {
             task_hook: StdMutex::new(None),
             hook_settings_dir: StdMutex::new(None),
             output_wake: Arc::new(StdMutex::new(None)),
-            respawn_fences: StdMutex::new(std::collections::HashSet::new()),
         })
     }
 
@@ -393,7 +386,8 @@ impl TerminalRendererRegistry {
         &self,
         cfg: RendererConfig,
     ) -> Result<Arc<RendererEntry>, RendererSpawnError> {
-        self.ensure_with_launch(cfg, None, None).await
+        self.ensure_with_launch(cfg, None, Establish::SpawnOrAttach)
+            .await
     }
 
     pub(crate) async fn ensure_for_task(
@@ -401,39 +395,28 @@ impl TerminalRendererRegistry {
         cfg: RendererConfig,
         launch: crate::operation::task_launch::TaskLaunch,
     ) -> Result<Arc<RendererEntry>, RendererSpawnError> {
-        self.ensure_with_launch(cfg, Some(launch), None).await
+        self.ensure_with_launch(cfg, Some(launch), Establish::SpawnOrAttach)
+            .await
     }
 
-    /// A respawn's own renderer: always a new entry, never one a caller set up before (#2516).
-    pub(crate) async fn ensure_respawn(
+    /// A viewer's reattach: attach to the child the supervisor runs for the terminal now, and
+    /// never spawn one (#2516). No running child is an error, never a start of `cfg.program`.
+    pub(crate) async fn attach_running(
         &self,
         cfg: RendererConfig,
-        fence: &respawn::RespawnFence,
     ) -> Result<Arc<RendererEntry>, RendererSpawnError> {
-        self.ensure_with_launch(cfg, None, Some(fence)).await
+        self.ensure_with_launch(cfg, None, Establish::AttachRunning)
+            .await
     }
 
     async fn ensure_with_launch(
         &self,
         cfg: RendererConfig,
         launch: Option<crate::operation::task_launch::TaskLaunch>,
-        respawn: Option<&respawn::RespawnFence>,
+        establish: Establish,
     ) -> Result<Arc<RendererEntry>, RendererSpawnError> {
-        match respawn {
-            None if self.respawn_fenced(&cfg.terminal_id) => {
-                return Err(respawn::fenced_error(&cfg.terminal_id).into());
-            }
-            None => {
-                if let Some(existing) = self.get(&cfg.terminal_id) {
-                    return Ok(existing);
-                }
-            }
-            Some(fence) => {
-                fence.check(&cfg.terminal_id)?;
-                if self.get(&cfg.terminal_id).is_some() {
-                    return Err(respawn::stale_entry_error(&cfg.terminal_id).into());
-                }
-            }
+        if let Some(existing) = self.get(&cfg.terminal_id) {
+            return Ok(existing);
         }
 
         let EstablishedRenderer { entry, handoff } = ensure_entry(
@@ -442,6 +425,7 @@ impl TerminalRendererRegistry {
             self.task_hook(),
             launch,
             Arc::clone(&self.output_wake),
+            establish,
         )
         .await?;
         #[cfg(test)]
@@ -454,16 +438,6 @@ impl TerminalRendererRegistry {
                 .entries
                 .lock()
                 .map_err(|_| anyhow::anyhow!("terminal renderer registry mutex poisoned"))?;
-            // Checked under `entries`: a caller that began before the fence cannot land its entry
-            // inside the fenced window, and a respawn never adopts an entry it did not set up.
-            if respawn.is_none() && self.respawn_fenced(&entry.terminal_id) {
-                entry.abort_tasks();
-                return Err(respawn::fenced_error(&entry.terminal_id).into());
-            }
-            if respawn.is_some() && entries.contains_key(&entry.terminal_id) {
-                entry.abort_tasks();
-                return Err(respawn::stale_entry_error(&entry.terminal_id).into());
-            }
             if let Some(existing) = entries.get(&entry.terminal_id) {
                 entry.abort_tasks();
                 if handoff.is_some()
@@ -514,6 +488,20 @@ impl TerminalRendererRegistry {
             .lock()
             .ok()
             .and_then(|entries| entries.get(terminal_id).cloned())
+    }
+
+    /// Forget `terminal_id`'s renderer without touching its child, as a server restart does: the
+    /// supervisor keeps the PTY and this process has no entry for it.
+    #[cfg(feature = "fixtures")]
+    pub fn forget_entry_for_test(&self, terminal_id: &str) {
+        let entry = self
+            .entries
+            .lock()
+            .ok()
+            .and_then(|mut entries| entries.remove(terminal_id));
+        if let Some(entry) = entry {
+            entry.abort_tasks();
+        }
     }
 
     #[cfg(feature = "fixtures")]
@@ -606,8 +594,6 @@ impl TerminalRendererRegistry {
         self.drop_entry_with_outcome(terminal_id).await
     }
 
-    /// Teardown that waits on the reader persisting the exit; `stop_for_respawn` (respawn.rs) is
-    /// its counterpart for a row about to run a replacement, where that exit must not land.
     async fn drop_entry_with_outcome(&self, terminal_id: &str) -> RendererDropOutcome {
         let entry = self
             .entries
@@ -655,6 +641,15 @@ impl TerminalRendererRegistry {
     }
 }
 
+/// How [`TerminalRendererRegistry::ensure_with_launch`] may set up a renderer.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Establish {
+    /// Start the terminal's program unless the supervisor already runs it (`EnsureProc`).
+    SpawnOrAttach,
+    /// Attach to a running child only (#2516).
+    AttachRunning,
+}
+
 struct EstablishedRenderer {
     entry: RendererEntry,
     handoff: Option<(crate::operation::task_launch::TaskLaunch, u32)>,
@@ -666,6 +661,7 @@ async fn ensure_entry(
     task_hook: Option<Arc<crate::scheduler::TerminalTaskHook>>,
     launch: Option<crate::operation::task_launch::TaskLaunch>,
     output_wake: OutputWake,
+    establish: Establish,
 ) -> anyhow::Result<EstablishedRenderer> {
     use crate::operation::terminal_launch::{self, TerminalStart};
     // Match the absolute endpoint persisted in the one-use launch record.
@@ -681,7 +677,7 @@ async fn ensure_entry(
     };
     let (launch, attach_only) = match start {
         TerminalStart::Fresh(launch) => (Some(*launch), false),
-        TerminalStart::Unbound => (None, false),
+        TerminalStart::Unbound => (None, establish == Establish::AttachRunning),
         TerminalStart::AttachOnly(sock) => {
             cfg.supervisor_sock = sock;
             (None, true)
@@ -868,8 +864,16 @@ async fn ensure_entry(
             ControlReply::AttachOk(Attached {
                 cursor_head,
                 replay,
+                running,
                 ..
             }) => {
+                if establish == Establish::AttachRunning && !running {
+                    control_task.abort();
+                    anyhow::bail!(
+                        "terminal {} has no running child to attach to",
+                        cfg.terminal_id
+                    );
+                }
                 let output_capture =
                     output_capture::TerminalOutputCapture::shared(cursor_head, &replay);
                 if cursor_head != 0 {
@@ -901,12 +905,6 @@ async fn ensure_entry(
     // The sender lives inside the attach reader task, so it is dropped the moment that task ends —
     // which is how `await_exit_persisted` tells "ended without persisting" apart from "still working".
     let (exit_persisted_tx, exit_persisted) = watch::channel(false);
-    let attached_runtime = match repo.as_deref() {
-        Some(repo) => crate::terminal_sweeper::active_runtime_on_terminal(repo, &cfg.terminal_id)
-            .await
-            .map_err(anyhow::Error::from)?,
-        None => None,
-    };
     let attach_task = attach_reader::spawn_supervisor_attach_reader(
         attach_conn,
         proc_id.clone(),
@@ -917,7 +915,6 @@ async fn ensure_entry(
         exited_tx,
         repo,
         cfg.terminal_id.clone(),
-        attached_runtime,
         task_hook,
         exit_persisted_tx,
         output_capture,

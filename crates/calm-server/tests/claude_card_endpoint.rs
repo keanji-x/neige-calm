@@ -975,10 +975,10 @@ async fn post_claude_restart_spawn_failure_restores_terminal_exit_and_marks_runt
     assert_eq!(second_terminal, terminal_id);
 }
 
-/// #2516: a restart of a card whose child is running is not refused; it replaces the child on
-/// the same terminal. `claude_card_endpoint/live_restart.rs` runs the same with real processes.
+/// #2516: an Update whose stopped child's exit never gets recorded (here no child runs at all,
+/// so nothing can record one) answers 409 after a bounded wait and leaves the card as it is.
 #[tokio::test]
-async fn post_claude_restart_while_running_replaces_the_child() {
+async fn an_update_whose_child_exit_is_never_recorded_leaves_the_card_as_it_is() {
     let _guard = ENV_LOCK.lock().await;
     let boot = boot_success().await;
 
@@ -989,16 +989,16 @@ async fn post_claude_restart_while_running_replaces_the_child() {
     assert_eq!(runtime_status(&boot.repo, card_id).await, "running");
 
     let (status, response) = post_restart(boot.app.clone(), card_id).await;
-    assert_eq!(status, StatusCode::OK, "body={response:?}");
-    assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 2);
-    let states: Vec<String> = sqlx::query_scalar(
-        "SELECT state FROM worker_sessions WHERE card_id = ?1 ORDER BY created_at_ms ASC, id ASC",
-    )
-    .bind(card_id)
-    .fetch_all(boot.repo.pool())
-    .await
-    .unwrap();
-    assert_eq!(states, ["superseded", "running"]);
+    assert_eq!(status, StatusCode::CONFLICT, "body={response:?}");
+    assert!(
+        response["error"]
+            .as_str()
+            .unwrap()
+            .contains("exit was not recorded in time; left as it is"),
+        "body={response:?}"
+    );
+    assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
+    assert_eq!(runtime_status(&boot.repo, card_id).await, "running");
 }
 
 #[tokio::test]
