@@ -249,7 +249,8 @@ async fn parked(status: &str, next: &str) {
         f.worker.task.split_once(':').unwrap().1
     );
     assert_refusal(&reply, -32403, Some("worker_parked"), &text);
-    // Every agent write path refuses with the same typed refusal (owner, "S1 评审意见").
+    // Every agent write path refuses with the same typed refusal (the owner's S1 review comment
+    // on #2493).
     for (key, action) in [
         ("text", json!({"type":"text","text":"x"})),
         ("submit", json!({"type":"submit","text":"x"})),
