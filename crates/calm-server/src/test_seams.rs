@@ -60,6 +60,11 @@ pub const PLANNER_FIRST_START: &str = "planner-first-start";
 #[cfg(feature = "fixtures")]
 pub const TRACK_CREATE_BEFORE_PLANNER_START: &str = "track-create-before-planner-start";
 
+/// Where a viewer's lazy reattach has seen a live child and not yet attached to it (#2516);
+/// keyed by terminal id.
+#[cfg(feature = "fixtures")]
+pub const VIEWER_REATTACH_PROBED: &str = "viewer-reattach-probed";
+
 /// Where an operation insert has found no row under its `(kind, idempotency_key)` and is about to
 /// write one; keyed by the idempotency key.
 #[cfg(feature = "fixtures")]

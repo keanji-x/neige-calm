@@ -13,8 +13,8 @@ use crate::ids::TrackId;
 use crate::model::*;
 use crate::session_projection_repo::{AgentProvider, WorkerSessionInit, WorkerSessionKind};
 use crate::validation::{
-    CLAUDE_PAYLOAD_SCHEMA_VERSION, CODEX_PAYLOAD_SCHEMA_VERSION, TERMINAL_PAYLOAD_SCHEMA_VERSION,
-    TERMINAL_SIGNALS_PAYLOAD_KEY,
+    CLAUDE_PAYLOAD_SCHEMA_VERSION, CODEX_PAYLOAD_SCHEMA_VERSION, OWNER_CREATED_PAYLOAD_KEY,
+    TERMINAL_PAYLOAD_SCHEMA_VERSION, TERMINAL_SIGNALS_PAYLOAD_KEY,
 };
 use calm_types::worker::WorkerSessionState;
 
@@ -330,6 +330,11 @@ pub async fn card_with_claude_create_tx(
     payload.insert(
         "settings_path".into(),
         serde_json::Value::String(settings_path),
+    );
+    // #2516: the creation-time proof of an owner-created Claude card, server-owned and sticky.
+    payload.insert(
+        OWNER_CREATED_PAYLOAD_KEY.into(),
+        serde_json::Value::Bool(true),
     );
     if !cwd.is_empty() {
         payload.insert("cwd".into(), serde_json::Value::String(cwd));

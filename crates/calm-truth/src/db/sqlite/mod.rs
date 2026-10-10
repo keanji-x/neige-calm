@@ -84,7 +84,7 @@ pub use card::{
     CardExecutionShape, card_body_crdt_get_tx, card_create_tx, card_create_with_id_tx,
     card_delete_tx, card_execution_shape_tx, card_update_tx, card_update_with_crdt_tx,
     planner_permission_mode_set_tx, terminal_create_tx, terminal_delete_tx,
-    terminal_get_by_card_tx,
+    terminal_get_by_card_tx, terminal_set_exit_with_output_tx,
 };
 pub use card_composite::{
     card_mcp_token_set_tx, card_with_claude_create_tx, card_with_claude_worker_create_tx,
@@ -118,8 +118,9 @@ pub use session_projection::{
     session_complete_for_card_tx, session_complete_for_terminal_tx, session_complete_tx,
     session_fail_if_active_runtime_tx, session_handle_state_by_id_tx,
     session_mark_queue_harvested_tx, session_mark_superseded_runtime_tx,
-    session_projection_active_for_card_tx, session_projection_active_for_terminal_tx,
-    session_projection_by_id_tx, session_projection_failed_carrier_for_card_tx,
+    session_projection_active_by_session_tx, session_projection_active_for_card_tx,
+    session_projection_active_for_terminal_tx, session_projection_by_id_tx,
+    session_projection_failed_carrier_for_card_tx, session_projection_projectable_for_card_tx,
     session_restore_failed_carrier_runtime_tx, session_restore_from_superseded_runtime_tx,
     session_set_active_turn_tx, session_set_handle_state_of_any_runtime_tx,
     session_set_handle_state_of_retired_runtime_tx, session_set_handle_state_tx,

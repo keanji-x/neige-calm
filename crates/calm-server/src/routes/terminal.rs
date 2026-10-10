@@ -1,5 +1,5 @@
-//! `/api/cards/:id/terminal` — read-side helpers for terminal cards, plus the
-//! `spawn_terminal_for` seam card creation and WS lazy reattach use.
+//! `/api/cards/:id/terminal` — read-side helpers for terminal cards, plus the spawn seam card
+//! creation uses and the attach-only seam WS lazy reattach uses.
 
 use crate::db::RouteRepo;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -38,28 +38,23 @@ pub(crate) async fn get_terminal_for_card(
     Ok(Json(term))
 }
 
-/// Ensure a renderer-backed terminal process exists for the given terminal row.
-pub(crate) async fn spawn_terminal_for(
+/// A renderer on the child the supervisor runs for `term` now; never a start of `term.program`
+/// (#2516). A terminal with no running child is an error.
+pub(crate) async fn attach_terminal_for(
     s: &AppState,
     term: &Terminal,
-    program: &str,
-    cwd: &str,
-    env: &serde_json::Value,
 ) -> Result<Arc<RendererEntry>> {
-    spawn_terminal_with_parts(
-        s.daemon.as_ref(),
-        s.terminal_renderer.as_ref(),
-        s.repo.as_ref(),
-        term,
-        program,
-        cwd,
-        env,
-    )
-    .await
+    s.terminal_renderer
+        .attach_running(
+            terminal_renderer_config(s.daemon.as_ref(), term, &term.program, &term.cwd, &term.env)
+                .await?,
+        )
+        .await
+        .map_err(|error| CalmError::Internal(error.to_string()))
 }
 
-/// Lower-level seam over `spawn_terminal_for` taking the constituent parts instead of
-/// the full `AppState`; used by the dispatcher, which doesn't own an `AppState`.
+/// Start a terminal's program from its constituent parts rather than the full `AppState`; used by
+/// the operation spawns and the dispatcher, which doesn't own an `AppState`.
 pub(crate) async fn spawn_terminal_with_parts(
     daemon: &DaemonClient,
     renderer: &TerminalRendererRegistry,

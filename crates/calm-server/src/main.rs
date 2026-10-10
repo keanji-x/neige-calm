@@ -50,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
     // cannot run is a warning, never a boot failure. The handle is detached on purpose.
     drop(calm_server::agent_providers::spawn_boot_check(&state));
 
-    calm_server::reconcile_supervisor_on_boot(&state).await;
+    let stale_terminals = calm_server::reconcile_supervisor_on_boot(&state).await;
 
     if let Err(e) = calm_server::worker_flow::start_on_boot(&state).await {
         tracing::warn!(
@@ -67,6 +67,13 @@ async fn main() -> anyhow::Result<()> {
     }
 
     calm_server::recover_operations_on_boot(&state).await?;
+
+    // #2516: after operation recovery, one `claude-restart` per owner-created Claude card whose
+    // PTY the reconcile above found lost. Off the boot path; the handle is detached on purpose.
+    drop(calm_server::claude_auto_resume::spawn_on_boot(
+        &state,
+        stale_terminals,
+    ));
 
     calm_server::reaper_on_boot();
 

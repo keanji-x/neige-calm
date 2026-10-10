@@ -30,14 +30,29 @@ pub const SIDE_SOURCE_CARD_PAYLOAD_KEY: &str = "side_source_card_id";
 /// by its own writer, `planner_permission_mode_set_tx`, which the User-only route calls.
 pub const PLANNER_PERMISSION_MODE_PAYLOAD_KEY: &str = "permission_mode";
 
+/// `Card.payload` key stamped `true` at creation only on a Claude card the owner created through
+/// `POST /api/tracks/{id}/claude-cards` (#2516): the cards the boot auto-resume brings back. A
+/// Planner task worker's Claude card never carries it.
+pub const OWNER_CREATED_PAYLOAD_KEY: &str = "owner_created";
+
+/// `Card.payload` key of a Claude card's kernel-minted settings file: what a restart writes the
+/// hooks into and passes as `--settings` (#2516).
+pub const CLAUDE_SETTINGS_PATH_PAYLOAD_KEY: &str = "settings_path";
+/// `Card.payload` key of a Claude card's creation-time session id: what a restart resumes when its
+/// runtime row carries none (pre-backfill rows).
+pub const CLAUDE_SESSION_ID_PAYLOAD_KEY: &str = "claude_session_id";
+
 /// Kernel-owned card fields, refused at client boundaries and preserved by
 /// `card_update_tx` even when a replacement payload omits them.
-pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 5] = [
+pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 8] = [
     TERMINAL_SIGNALS_PAYLOAD_KEY,
     PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY,
     PLANNER_PROVIDER_PAYLOAD_KEY,
     SIDE_SOURCE_CARD_PAYLOAD_KEY,
     PLANNER_PERMISSION_MODE_PAYLOAD_KEY,
+    OWNER_CREATED_PAYLOAD_KEY,
+    CLAUDE_SETTINGS_PATH_PAYLOAD_KEY,
+    CLAUDE_SESSION_ID_PAYLOAD_KEY,
 ];
 
 /// Whether a stored value of a server-owned key is the shape the kernel mints (and so is kept
@@ -51,7 +66,12 @@ pub fn server_owned_value_is_sticky(key: &str, value: &Value) -> bool {
         PLANNER_PROVIDER_PAYLOAD_KEY | SIDE_SOURCE_CARD_PAYLOAD_KEY => true,
         // Only its own writer changes it; a replacement can neither drop nor "repair" a stored value.
         PLANNER_PERMISSION_MODE_PAYLOAD_KEY => true,
-        TERMINAL_SIGNALS_PAYLOAD_KEY => value.as_bool() == Some(true),
+        TERMINAL_SIGNALS_PAYLOAD_KEY | OWNER_CREATED_PAYLOAD_KEY => value.as_bool() == Some(true),
+        // What a Claude restart writes into and resumes (#2516): a client can neither set nor
+        // drop it.
+        CLAUDE_SETTINGS_PATH_PAYLOAD_KEY | CLAUDE_SESSION_ID_PAYLOAD_KEY => {
+            value.as_str().is_some_and(|text| !text.trim().is_empty())
+        }
         _ => false,
     }
 }

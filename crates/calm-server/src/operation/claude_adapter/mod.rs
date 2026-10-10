@@ -312,8 +312,10 @@ pub async fn prepare_claude_create_request(
         .to_string_lossy()
         .to_string();
     let env = build_claude_env(repo, codex, &card_id).await?;
+    // `exec`: Claude is the PTY's process-group leader, so a stop's SIGTERM grace waits on Claude
+    // itself, not on the wrapping shell (#2516). An id rides as one `--flag=value` token.
     let mut command_line = format!(
-        "{} {CLAUDE_CARD_PERMISSION_FLAGS} --settings {} --session-id {}",
+        "exec {} {CLAUDE_CARD_PERMISSION_FLAGS} --settings {} --session-id={}",
         shell_single_quote(&codex.claude_bin),
         shell_single_quote(&settings_path),
         shell_single_quote(&claude_session_id),
@@ -383,8 +385,9 @@ fn build_claude_worker_command_line(
         crate::planner_card::SeededCardRole::WorkerClaude.prompt_template(),
         track_id,
     );
+    // `exec` and the one-token id as in `prepare_claude_create_request`.
     let mut command_line = format!(
-        "{} {CLAUDE_WORKER_PERMISSION_FLAGS} --settings {} --session-id {} --append-system-prompt {}",
+        "exec {} {CLAUDE_WORKER_PERMISSION_FLAGS} --settings {} --session-id={} --append-system-prompt {}",
         shell_single_quote(claude_bin),
         shell_single_quote(&settings_path.to_string_lossy()),
         shell_single_quote(claude_session_id),

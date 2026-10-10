@@ -24,10 +24,20 @@ use super::worker_flow::{self as wf, SeededRuntime};
 
 /// Ingests a Claude hook through the production `/internal/claude/hook` route.
 pub async fn post_claude_hook(repo: &Arc<SqlxRepo>, card_id: &str, payload: Value) {
+    post_claude_hook_on(repo, EventBus::new(), card_id, payload).await;
+}
+
+/// [`post_claude_hook`] publishing on `events`, for a subscriber that must see the hook event.
+pub async fn post_claude_hook_on(
+    repo: &Arc<SqlxRepo>,
+    events: EventBus,
+    card_id: &str,
+    payload: Value,
+) {
     let app = axum::Router::new()
         .merge(routes::router())
         .layer(axum::middleware::from_fn(actor_middleware))
-        .with_state(hook_app_state(repo));
+        .with_state(hook_app_state(repo, events));
     let response = app
         .oneshot(
             Request::builder()
@@ -43,8 +53,7 @@ pub async fn post_claude_hook(repo: &Arc<SqlxRepo>, card_id: &str, payload: Valu
 }
 
 /// The ingest role gate reads the repo's seeded role and area caches.
-fn hook_app_state(repo: &Arc<SqlxRepo>) -> AppState {
-    let events = EventBus::new();
+fn hook_app_state(repo: &Arc<SqlxRepo>, events: EventBus) -> AppState {
     let write = WriteContext::new(
         repo.card_role_cache().clone(),
         repo.track_area_cache().clone(),

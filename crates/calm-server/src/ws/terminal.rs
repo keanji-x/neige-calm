@@ -115,6 +115,19 @@ pub(crate) async fn resolve_live_renderer_from_terminal(
     let _track_delete_guard =
         crate::per_card_lock::lock_key(s.track_delete_locks(), initial_card.track_id.as_str())
             .await;
+    resolve_live_renderer_under_track_fence(s, term, initial_card.track_id.as_str()).await
+}
+
+/// [`resolve_live_renderer_from_terminal`] for a caller that already holds the terminal's track
+/// entry in `track_delete_locks` (`track_id`): the same reattach, without taking it again.
+pub(crate) async fn resolve_live_renderer_under_track_fence(
+    s: &AppState,
+    term: Terminal,
+    track_id: &str,
+) -> Result<LiveRenderer> {
+    if let Some(entry) = s.terminal_renderer.get(&term.id) {
+        return Ok(LiveRenderer::Alive(entry));
+    }
     let term = s
         .repo
         .terminal_get(term.id.as_str())
@@ -125,12 +138,9 @@ pub(crate) async fn resolve_live_renderer_from_terminal(
         .card_get(term.card_id.as_str())
         .await?
         .ok_or_else(|| crate::error::CalmError::NotFound(format!("card {}", term.card_id)))?;
-    if card.track_id != initial_card.track_id
-        || s.repo.track_get(card.track_id.as_str()).await?.is_none()
-    {
+    if card.track_id.as_str() != track_id || s.repo.track_get(track_id).await?.is_none() {
         return Err(crate::error::CalmError::NotFound(format!(
-            "track {}",
-            initial_card.track_id
+            "track {track_id}"
         )));
     }
 
@@ -145,23 +155,18 @@ pub(crate) async fn resolve_live_renderer_from_terminal(
         });
     }
 
-    // Probe the supervisor first: `spawn_terminal_for` on a proc it does not know would SPAWN a fresh child
-    // instead of reattaching.
+    // Probe first, then attach to the running child only: a reattach never starts `term.program`,
+    // even when the child exits between the probe and the attach (#2516).
     match crate::probe_supervisor_for_terminal(s, &term.id).await {
         Ok(true) => {
             tracing::info!(
                 terminal_id = %term.id,
                 "supervisor confirms live PTY; attempting lazy renderer reattach",
             );
-            match crate::routes::terminal::spawn_terminal_for(
-                s,
-                &term,
-                &term.program,
-                &term.cwd,
-                &term.env,
-            )
-            .await
-            {
+            #[cfg(feature = "fixtures")]
+            crate::test_seams::pause_point(crate::test_seams::VIEWER_REATTACH_PROBED, &term.id)
+                .await;
+            match crate::routes::terminal::attach_terminal_for(s, &term).await {
                 Ok(entry) => Ok(LiveRenderer::Alive(entry)),
                 Err(e) => {
                     tracing::warn!(

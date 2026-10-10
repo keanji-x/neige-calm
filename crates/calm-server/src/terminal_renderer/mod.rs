@@ -386,7 +386,8 @@ impl TerminalRendererRegistry {
         &self,
         cfg: RendererConfig,
     ) -> Result<Arc<RendererEntry>, RendererSpawnError> {
-        self.ensure_with_launch(cfg, None).await
+        self.ensure_with_launch(cfg, None, Establish::SpawnOrAttach)
+            .await
     }
 
     pub(crate) async fn ensure_for_task(
@@ -394,13 +395,25 @@ impl TerminalRendererRegistry {
         cfg: RendererConfig,
         launch: crate::operation::task_launch::TaskLaunch,
     ) -> Result<Arc<RendererEntry>, RendererSpawnError> {
-        self.ensure_with_launch(cfg, Some(launch)).await
+        self.ensure_with_launch(cfg, Some(launch), Establish::SpawnOrAttach)
+            .await
+    }
+
+    /// A viewer's reattach: attach to the child the supervisor runs for the terminal now, and
+    /// never spawn one (#2516). No running child is an error, never a start of `cfg.program`.
+    pub(crate) async fn attach_running(
+        &self,
+        cfg: RendererConfig,
+    ) -> Result<Arc<RendererEntry>, RendererSpawnError> {
+        self.ensure_with_launch(cfg, None, Establish::AttachRunning)
+            .await
     }
 
     async fn ensure_with_launch(
         &self,
         cfg: RendererConfig,
         launch: Option<crate::operation::task_launch::TaskLaunch>,
+        establish: Establish,
     ) -> Result<Arc<RendererEntry>, RendererSpawnError> {
         if let Some(existing) = self.get(&cfg.terminal_id) {
             return Ok(existing);
@@ -412,6 +425,7 @@ impl TerminalRendererRegistry {
             self.task_hook(),
             launch,
             Arc::clone(&self.output_wake),
+            establish,
         )
         .await?;
         #[cfg(test)]
@@ -474,6 +488,20 @@ impl TerminalRendererRegistry {
             .lock()
             .ok()
             .and_then(|entries| entries.get(terminal_id).cloned())
+    }
+
+    /// Forget `terminal_id`'s renderer without touching its child, as a server restart does: the
+    /// supervisor keeps the PTY and this process has no entry for it.
+    #[cfg(feature = "fixtures")]
+    pub fn forget_entry_for_test(&self, terminal_id: &str) {
+        let entry = self
+            .entries
+            .lock()
+            .ok()
+            .and_then(|mut entries| entries.remove(terminal_id));
+        if let Some(entry) = entry {
+            entry.abort_tasks();
+        }
     }
 
     #[cfg(feature = "fixtures")]
@@ -613,6 +641,15 @@ impl TerminalRendererRegistry {
     }
 }
 
+/// How [`TerminalRendererRegistry::ensure_with_launch`] may set up a renderer.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Establish {
+    /// Start the terminal's program unless the supervisor already runs it (`EnsureProc`).
+    SpawnOrAttach,
+    /// Attach to a running child only (#2516).
+    AttachRunning,
+}
+
 struct EstablishedRenderer {
     entry: RendererEntry,
     handoff: Option<(crate::operation::task_launch::TaskLaunch, u32)>,
@@ -624,6 +661,7 @@ async fn ensure_entry(
     task_hook: Option<Arc<crate::scheduler::TerminalTaskHook>>,
     launch: Option<crate::operation::task_launch::TaskLaunch>,
     output_wake: OutputWake,
+    establish: Establish,
 ) -> anyhow::Result<EstablishedRenderer> {
     use crate::operation::terminal_launch::{self, TerminalStart};
     // Match the absolute endpoint persisted in the one-use launch record.
@@ -639,7 +677,7 @@ async fn ensure_entry(
     };
     let (launch, attach_only) = match start {
         TerminalStart::Fresh(launch) => (Some(*launch), false),
-        TerminalStart::Unbound => (None, false),
+        TerminalStart::Unbound => (None, establish == Establish::AttachRunning),
         TerminalStart::AttachOnly(sock) => {
             cfg.supervisor_sock = sock;
             (None, true)
@@ -826,8 +864,16 @@ async fn ensure_entry(
             ControlReply::AttachOk(Attached {
                 cursor_head,
                 replay,
+                running,
                 ..
             }) => {
+                if establish == Establish::AttachRunning && !running {
+                    control_task.abort();
+                    anyhow::bail!(
+                        "terminal {} has no running child to attach to",
+                        cfg.terminal_id
+                    );
+                }
                 let output_capture =
                     output_capture::TerminalOutputCapture::shared(cursor_head, &replay);
                 if cursor_head != 0 {

@@ -31,7 +31,8 @@ pub use calm_types::model::AREA_CHAT_PURPOSE;
 
 /// Reconcile DB rows that still look live with the process supervisor's PTY registry: a
 /// supposedly running terminal the supervisor does not know is marked exited with sentinel `-1`.
-pub async fn reconcile_supervisor_on_boot(state: &state::AppState) {
+/// Returns the ids of the terminals this pass marked so.
+pub async fn reconcile_supervisor_on_boot(state: &state::AppState) -> Vec<String> {
     let rows = match state.repo.terminals_running().await {
         Ok(rs) => rs,
         Err(e) => {
@@ -39,32 +40,33 @@ pub async fn reconcile_supervisor_on_boot(state: &state::AppState) {
                 error = %e,
                 "reconcile_supervisor_on_boot: list-running query failed; skipping sweep"
             );
-            return;
+            return Vec::new();
         }
     };
     let mut running = 0usize;
-    let mut stale = 0usize;
+    let mut marked_stale = Vec::new();
     for term in rows {
         match probe_supervisor_for_terminal(state, &term.id).await {
             Ok(true) => running += 1,
             Ok(false) => {
-                stale += 1;
                 tracing::warn!(
                     terminal_id = %term.id,
                     "terminal row is running in DB but supervisor has no live PTY; marking exited",
                 );
                 // Boot is the most lock-contended window the DB sees; retry both writes through the
                 // busy/locked window, and if the budget exhausts log at error level but keep boot alive.
-                if let Err(e) =
-                    retry_on_sqlite_busy(|| state.repo.terminal_set_exit(&term.id, Some(-1), false))
-                        .await
+                match retry_on_sqlite_busy(|| {
+                    state.repo.terminal_set_exit(&term.id, Some(-1), false)
+                })
+                .await
                 {
-                    tracing::error!(
+                    Ok(()) => marked_stale.push(term.id.clone()),
+                    Err(e) => tracing::error!(
                         terminal_id = %term.id,
                         error = %e,
                         "failed to mark stale terminal exited during boot reconcile; \
                          terminal row left running against a dead PTY"
-                    );
+                    ),
                 }
                 // Synthetic -1 is terminal evidence, not resumable thread death.
                 if let Err(e) = retry_on_sqlite_busy(|| {
@@ -93,7 +95,12 @@ pub async fn reconcile_supervisor_on_boot(state: &state::AppState) {
             }
         }
     }
-    tracing::info!(running, stale, "reconcile_supervisor_on_boot: complete",);
+    tracing::info!(
+        running,
+        stale = marked_stale.len(),
+        "reconcile_supervisor_on_boot: complete",
+    );
+    marked_stale
 }
 
 /// Bounded busy/locked retry for boot-reconcile writes, which run outside any caller-held
@@ -538,8 +545,12 @@ pub mod area_reports;
 /// One way to ask the user (#2209): `ask.requested` / `ask.answered`.
 pub mod ask;
 pub mod card_role_cache;
+/// #2516: resume owner-created Claude cards whose PTY the boot reconcile found lost.
+pub mod claude_auto_resume;
 pub(crate) mod claude_code_env;
 pub mod claude_planner;
+/// #2516: Update of a Claude card: stop a live child, then resume its latest session.
+pub mod claude_update;
 pub mod codex_appserver;
 pub mod codex_mcp_toolset;
 pub mod config;

@@ -8,8 +8,9 @@ use serde_json::{Value, json};
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
     append_decision_event_in_tx, card_is_worker_spawn_target_tx, session_complete_tx,
-    session_projection_active_for_card_tx, session_set_status_tx, session_start_runtime_tx,
-    terminal_create_tx, terminal_get_by_card_tx, worker_card_declared_head_tx,
+    session_projection_active_for_card_tx, session_projection_projectable_for_card_tx,
+    session_set_status_tx, session_start_runtime_tx, terminal_create_tx, terminal_get_by_card_tx,
+    worker_card_declared_head_tx,
 };
 use crate::db::write_with_events_typed;
 use crate::error::{CalmError, Result};
@@ -28,7 +29,7 @@ use crate::routes::cards::{card_scope, card_scope_tx};
 use crate::routes::claude_cards::{build_claude_settings_json, claude_hook_command};
 use crate::routes::codex_cards::shell_single_quote;
 use crate::routes::theme::RequestTheme;
-use crate::session_projection_lookup::resolve_claude_session_for_card;
+use crate::session_projection_lookup::{claude_session_of_runtime, legacy_claude_session_of_card};
 use crate::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -37,8 +38,9 @@ use crate::track_area_cache::TrackAreaCache;
 use calm_truth::model::NewTerminal;
 
 use super::{
-    AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation, PhaseTag,
-    ProviderAdapter, SpawnCtx, SpawnOutcome, Tx, TxOutput,
+    AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation,
+    OperationKey, OperationOutcome, OperationRuntime, PhaseTag, ProviderAdapter, SpawnCtx,
+    SpawnOutcome, Tx, TxOutput,
 };
 
 #[cfg(feature = "fixtures")]
@@ -113,6 +115,51 @@ pub struct ClaudeRestartOperationPayload {
     pub card_id: String,
 }
 
+/// Whether a Claude runtime still has a child: Claude runtimes reach only Starting/Running while
+/// live; Idle/TurnPending are not part of the Claude state machine.
+pub(crate) fn claude_runtime_is_live(status: WorkerSessionState) -> bool {
+    matches!(
+        status,
+        WorkerSessionState::Starting | WorkerSessionState::Running
+    )
+}
+
+/// One unkeyed `claude-restart` of `card_id`, submitted and awaited: the restart of a card whose
+/// child is gone, shared by the card's Update route and the boot auto-resume (#2516).
+pub async fn run_claude_restart(
+    runtime: &OperationRuntime,
+    actor: ActorId,
+    card_id: String,
+) -> Result<OperationOutcome> {
+    let payload_hash = crate::routes::idempotency_key::stable_payload_hash(&json!({
+        "actor": &actor,
+        "card_id": &card_id,
+    }))?;
+    let payload = claude_restart_payload(actor, card_id)?;
+    let op_id = runtime
+        .submit(
+            "claude-restart",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: None,
+                payload_hash,
+            },
+            payload,
+        )
+        .await?;
+    Ok(runtime.wait(&op_id).await?.outcome)
+}
+
+/// The `claude-restart` payload for `actor` and `card_id`: what [`run_claude_restart`] submits and
+/// what the card's Update dry-runs before it stops a child (#2516).
+pub(crate) fn claude_restart_payload(actor: ActorId, card_id: String) -> Result<Value> {
+    Ok(serde_json::to_value(ClaudeRestartOperationPayload {
+        actor,
+        worker_session_id: Some(new_id()),
+        card_id,
+    })?)
+}
+
 #[async_trait]
 impl ProviderAdapter for ClaudeRestartAdapter {
     fn kind(&self) -> &'static str {
@@ -163,8 +210,11 @@ impl ProviderAdapter for ClaudeRestartAdapter {
                 })?;
             verify_declared_head(Path::new(&term.cwd), head)?;
         }
-        let claude_session_id = resolve_claude_session_for_card(self.repo.as_ref(), &card_id)
-            .await?
+        // Read in this transaction: a SessionStart hook moves the session id under the same write
+        // lock (#2516), so the restart resumes exactly what the card last started.
+        let projectable = session_projection_projectable_for_card_tx(tx, &card_id).await?;
+        let claude_session_id = claude_session_of_runtime(projectable.as_ref())
+            .or_else(|| legacy_claude_session_of_card(&card_id, projectable.as_ref(), Some(&card)))
             .ok_or_else(|| {
                 CalmError::Forbidden("Claude card has no resumable session id".into())
             })?;
@@ -176,12 +226,13 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             .filter(|s| !s.is_empty())
             .map(ToOwned::to_owned)
             .ok_or_else(|| CalmError::Forbidden("Claude card has no settings_path".into()))?;
+        // In prepare, not only at the spawn: a dry run (#2516) must see every refusal that needs no
+        // side effect first.
+        settings_path_parent(Path::new(&settings_path)).map_err(|_| {
+            CalmError::Forbidden("Claude card's settings_path has no parent directory".into())
+        })?;
         if let Some(active) = session_projection_active_for_card_tx(tx, &card_id).await? {
-            // Claude runtimes only reach Starting/Running here; Idle/TurnPending are not part of the Claude state machine.
-            if matches!(
-                active.status,
-                WorkerSessionState::Starting | WorkerSessionState::Running
-            ) {
+            if claude_runtime_is_live(active.status) {
                 return Err(CalmError::Conflict(
                     "kill or wait for child exit before restart".into(),
                 ));
@@ -190,10 +241,12 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         }
 
         // A task worker's card gets the permission mode (#2521) and the MCP servers (#2470) it
-        // first started with.
+        // first started with. `exec` as at create. `--resume=<id>` is one token: the id comes
+        // from a hook payload, so it must stay the option's value, never be read as another
+        // option (#2516).
         let is_worker = card_is_worker_spawn_target_tx(tx, &card_id).await?;
         let mut command_line = format!(
-            "{} {} --settings {} --resume {}",
+            "exec {} {} --settings {} --resume={}",
             shell_single_quote(&self.codex.claude_bin),
             if is_worker {
                 CLAUDE_WORKER_PERMISSION_FLAGS

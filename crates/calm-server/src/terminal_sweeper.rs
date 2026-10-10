@@ -23,29 +23,37 @@ pub(crate) async fn complete_ephemeral_session_from_terminal_exit(
     terminal_id: &str,
     terminal_status: crate::session_projection_repo::WorkerSessionState,
 ) -> Result<()> {
+    let terminal_id = terminal_id.to_owned();
+    crate::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            complete_ephemeral_session_for_terminal_tx(tx, &terminal_id, terminal_status).await
+        })
+    })
+    .await
+}
+
+/// [`complete_ephemeral_session_from_terminal_exit`] inside a caller's transaction.
+pub(crate) async fn complete_ephemeral_session_for_terminal_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    terminal_id: &str,
+    terminal_status: crate::session_projection_repo::WorkerSessionState,
+) -> Result<()> {
     use crate::db::sqlite::{
         session_complete_tx, session_get_tx, session_projection_active_for_terminal_tx,
     };
     use calm_types::worker::{SessionMode, WorkerSessionId};
-    let terminal_id = terminal_id.to_owned();
-    crate::db::write_in_tx_typed(repo, move |tx| {
-        Box::pin(async move {
-            let Some(active) = session_projection_active_for_terminal_tx(tx, &terminal_id).await?
-            else {
-                return Ok(());
-            };
-            let session = session_get_tx(tx, &WorkerSessionId(active.id.clone()))
-                .await?
-                .ok_or_else(|| {
-                    crate::error::CalmError::NotFound(format!("worker session {}", active.id))
-                })?;
-            if session.mode == SessionMode::Ephemeral {
-                session_complete_tx(tx, &active.id, terminal_status).await?;
-            }
-            Ok(())
-        })
-    })
-    .await
+    let Some(active) = session_projection_active_for_terminal_tx(tx, terminal_id).await? else {
+        return Ok(());
+    };
+    let session = session_get_tx(tx, &WorkerSessionId(active.id.clone()))
+        .await?
+        .ok_or_else(|| {
+            crate::error::CalmError::NotFound(format!("worker session {}", active.id))
+        })?;
+    if session.mode == SessionMode::Ephemeral {
+        session_complete_tx(tx, &active.id, terminal_status).await?;
+    }
+    Ok(())
 }
 
 /// Actor stamped on every event the sweeper produces.
@@ -259,21 +267,58 @@ where
     let Some(term) = state.repo.terminal_get(&session.terminal_id).await? else {
         return Ok(());
     };
-    match crate::ws::terminal::resolve_live_renderer_from_terminal(state, term.clone()).await? {
+    if !reap_live_terminal(state, &term).await? {
+        tracing::info!(
+            terminal_id = %term.id,
+            "terminal_sweeper: no renderer obtained for a completed-track session; \
+             left to the orphan arm / boot reconcile"
+        );
+    }
+    Ok(())
+}
+
+/// Stop the live child of `term`: its renderer, or a reattach to the child the supervisor runs,
+/// then the reap (TERM, bounded wait, KILL), whose reader persists the exit and ends an ephemeral
+/// runtime. `false` when no renderer could be obtained: no running child to stop.
+pub(crate) async fn reap_live_terminal(state: &AppState, term: &Terminal) -> Result<bool> {
+    let live =
+        crate::ws::terminal::resolve_live_renderer_from_terminal(state, term.clone()).await?;
+    reap_resolved(state, term, live).await
+}
+
+/// [`reap_live_terminal`] for a caller holding the terminal's track entry in
+/// `track_delete_locks` (`track_id`) across the stop: no viewer can reattach meanwhile.
+pub(crate) async fn reap_live_terminal_under_track_fence(
+    state: &AppState,
+    term: &Terminal,
+    track_id: &str,
+) -> Result<bool> {
+    let live =
+        crate::ws::terminal::resolve_live_renderer_under_track_fence(state, term.clone(), track_id)
+            .await?;
+    reap_resolved(state, term, live).await
+}
+
+async fn reap_resolved(
+    state: &AppState,
+    term: &Terminal,
+    live: crate::ws::terminal::LiveRenderer,
+) -> Result<bool> {
+    match live {
         crate::ws::terminal::LiveRenderer::Alive(_) => {
-            reap_terminal_artifacts_with_renderer(Some(state.terminal_renderer.as_ref()), &term)
+            reap_terminal_artifacts_with_renderer(Some(state.terminal_renderer.as_ref()), term)
                 .await;
+            Ok(true)
         }
         crate::ws::terminal::LiveRenderer::ChildExited { exit_code } => {
             tracing::info!(
                 terminal_id = %term.id,
                 ?exit_code,
-                "terminal_sweeper: no renderer obtained for a completed-track session; \
-                 left to the orphan arm / boot reconcile"
+                "no renderer obtained for the terminal; no running child to stop"
             );
+            Ok(false)
         }
     }
-    Ok(())
 }
 
 /// The set narrowed to one session, built from the same text so the set and the claim cannot drift.

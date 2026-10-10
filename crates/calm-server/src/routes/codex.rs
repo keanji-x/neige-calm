@@ -10,7 +10,7 @@ use crate::ids::{ActorId, CardId};
 use crate::model::Terminal;
 use crate::role_gate::RoleViolation;
 use crate::session_projection_lookup::resolve_session_for_thread;
-use crate::session_projection_repo::AgentProvider;
+use crate::session_projection_repo::{AgentProvider, ThreadAttribution, WorkerSessionKind};
 use crate::state::{AppState, RouteState};
 use axum::{Router, extract::State, http::StatusCode, routing::post};
 use calm_types::worker::{WorkerProviderKind, WorkerSessionId};
@@ -28,6 +28,11 @@ pub fn router() -> Router<AppState> {
 pub struct IngestQuery {
     pub card_id: Option<CardId>,
 }
+
+const CLAUDE_HOOK_KIND_PREFIX: &str = "hook.claude";
+/// The event kind a Claude `SessionStart` hook is ingested as: [`HookProvider::Claude`]'s prefix
+/// and the snake-cased event name (#2516).
+pub(crate) const CLAUDE_SESSION_START_HOOK_KIND: &str = "hook.claude.session_start";
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum HookProvider {
@@ -48,7 +53,7 @@ impl HookProvider {
     fn kind_prefix(self) -> &'static str {
         match self {
             Self::Codex => "hook.codex",
-            Self::Claude => "hook.claude",
+            Self::Claude => CLAUDE_HOOK_KIND_PREFIX,
         }
     }
 
@@ -330,7 +335,7 @@ async fn cross_check_session_card(
         resolve_session_for_thread(s.repo.as_ref(), provider.into_agent_provider(), session_id)
             .await?
     else {
-        return Ok(None);
+        return follow_claude_session_start(s, card_id_str, payload, provider, session_id).await;
     };
     if resolved_card != card_id_str {
         tracing::warn!(
@@ -341,12 +346,107 @@ async fn cross_check_session_card(
             session_id = %session_id,
             "hook ingest rejected: session_id maps to different card"
         );
-        return Err(CalmError::BadRequest(
-            "hook session_id/card_id mismatch".into(),
-        ));
+        return Err(session_card_mismatch());
     }
 
     Ok(Some(worker_session_id))
+}
+
+fn session_card_mismatch() -> CalmError {
+    CalmError::BadRequest("hook session_id/card_id mismatch".into())
+}
+
+/// #2516: Claude mints a new session id on `/clear` and `/resume` and reports it in that
+/// session's `SessionStart` hook, whatever its `source`. The card's active Claude runtime takes
+/// the id, so a restart resumes the conversation the card shows. An id an active runtime of
+/// another card holds is rejected, checked in the binding transaction itself.
+async fn follow_claude_session_start(
+    s: &RouteState,
+    card_id: &str,
+    payload: &Value,
+    provider: HookProvider,
+    session_id: &str,
+) -> Result<Option<WorkerSessionId>> {
+    if !matches!(provider, HookProvider::Claude)
+        || payload.get("hook_event_name").and_then(Value::as_str) != Some("SessionStart")
+    {
+        return Ok(None);
+    }
+    // Claude's documented `--session-id` takes a UUID and its CLI refuses anything else, so any
+    // other value is no session a restart could resume.
+    // Only the canonical hyphenated form, as Claude prints its ids; `parse_str` also takes braced,
+    // `urn:` and simple-hex spellings.
+    if !uuid::Uuid::parse_str(session_id).is_ok_and(|uuid| {
+        uuid.hyphenated()
+            .to_string()
+            .eq_ignore_ascii_case(session_id)
+    }) {
+        tracing::warn!(
+            target: "hook.ingest.claude_session_not_uuid",
+            card_id = %card_id,
+            session_id = %session_id,
+            "claude SessionStart session_id is not a UUID; not followed"
+        );
+        return Ok(None);
+    }
+    let card_id = card_id.to_owned();
+    let session_id = session_id.to_owned();
+    crate::db::write_in_tx_typed(s.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            if let Some(holder) = crate::db::sqlite::session_projection_active_by_session_tx(
+                tx,
+                AgentProvider::Claude,
+                &session_id,
+            )
+            .await?
+            {
+                if holder.card_id != card_id {
+                    tracing::warn!(
+                        target: "hook.ingest.card_mismatch",
+                        query_card = %card_id,
+                        payload_card = %holder.card_id,
+                        session_id = %session_id,
+                        "claude SessionStart rejected: another card's runtime holds the id"
+                    );
+                    return Err(session_card_mismatch());
+                }
+                return Ok(Some(WorkerSessionId::from(holder.id)));
+            }
+            let Some(runtime) =
+                crate::db::sqlite::session_projection_active_for_card_tx(tx, &card_id).await?
+            else {
+                return Ok(None);
+            };
+            if runtime.kind != WorkerSessionKind::ClaudeCard
+                || runtime.agent_provider != Some(AgentProvider::Claude)
+            {
+                return Ok(None);
+            }
+            tracing::info!(
+                target: "hook.ingest.claude_session_followed",
+                card_id = %card_id,
+                runtime_id = %runtime.id,
+                old_session_id = ?runtime.session_id,
+                new_session_id = %session_id,
+                "claude SessionStart reported a new session id; the card's runtime follows it"
+            );
+            // The bind writes all three identity columns; only the session id changes.
+            crate::db::sqlite::session_bind_attribution_tx(
+                tx,
+                &runtime.id,
+                ThreadAttribution {
+                    worker_session_id: runtime.id.clone(),
+                    provider: AgentProvider::Claude,
+                    thread_id: runtime.thread_id.clone(),
+                    session_id: Some(session_id),
+                    active_turn_id: runtime.active_turn_id.clone(),
+                },
+            )
+            .await?;
+            Ok(Some(WorkerSessionId::from(runtime.id)))
+        })
+    })
+    .await
 }
 
 fn hook_idempotency_key(provider: HookProvider, card_id: &str, payload: &Value) -> String {
@@ -460,6 +560,18 @@ mod tests {
         assert_eq!(
             HookProvider::Claude.hook_kind("UserPromptSubmit"),
             "hook.claude.user_prompt_submit"
+        );
+    }
+
+    #[test]
+    fn claude_session_start_kind_is_the_ingest_composition() {
+        assert_eq!(
+            format!(
+                "{}.{}",
+                HookProvider::Claude.kind_prefix(),
+                to_snake_case("SessionStart")
+            ),
+            CLAUDE_SESSION_START_HOOK_KIND
         );
     }
 

@@ -16,6 +16,7 @@ pub mod child_track_adapter;
 pub mod claude_adapter;
 pub mod claude_restart_adapter;
 pub mod codex_adapter;
+mod dry_run;
 pub mod forge_action_adapter;
 pub(crate) mod gate_lifecycle;
 pub(crate) mod gate_ops;

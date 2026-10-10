@@ -9,7 +9,6 @@ use crate::operation::claude_adapter::{
     normalize_claude_create_request as normalize_claude_create_request_payload,
     prepare_claude_create_request,
 };
-use crate::operation::claude_restart_adapter::ClaudeRestartOperationPayload;
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::codex_cards::shell_single_quote;
 use crate::routes::idempotency_key::{
@@ -149,43 +148,30 @@ pub(crate) fn normalize_claude_create_request(
     tag = "claude",
     params(("id" = String, Path, description = "Claude card id")),
     responses(
-        (status = 200, description = "Claude card restarted through the existing session", body = Card),
+        (status = 200, description = "Resumes the latest session; only an owner-created card has its live child stopped first, exit recorded", body = Card),
         (status = 403, description = "Card is not a Claude card or lacks resumable Claude metadata", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
-        (status = 409, description = "Claude child is still active; kill or wait for child exit before restart", body = ErrorBody),
+        (status = 409, description = "A live child on a card not owner-created (kill or wait), a task-owned terminal, or an exit not recorded in time", body = ErrorBody),
         (status = 500, description = "Daemon spawn failed; rows persist and sweeper handles cleanup", body = ErrorBody),
     ),
 )]
 pub(crate) async fn restart_claude_card(
     State(s): State<RouteState>,
+    State(app): State<AppState>,
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<Json<Card>> {
-    let operation_key = new_id();
-    let runtime_id = new_id();
-    let payload_hash = stable_payload_hash(&serde_json::json!({
-        "actor": actor.as_str(),
-        "card_id": &id,
-    }))?;
-    let payload = serde_json::to_value(ClaudeRestartOperationPayload {
-        actor: actor.to_actor_id(),
-        worker_session_id: Some(runtime_id),
-        card_id: id,
-    })?;
-    let op_id = s
-        .operation_runtime
-        .submit(
-            "claude-restart",
-            OperationKey {
-                operation_key,
-                idempotency_key: None,
-                payload_hash,
-            },
-            payload,
-        )
-        .await?;
-    let result = s.operation_runtime.wait(&op_id).await?;
-    match result.outcome {
+    // An owned task: a client disconnect drops the handler future, and an Update that has sent
+    // its TERM must still restart the card.
+    let actor = actor.to_actor_id();
+    let update =
+        tokio::spawn(
+            async move { crate::claude_update::update_claude_card(&app, actor, id).await },
+        );
+    let outcome = update.await.map_err(|error| {
+        CalmError::Internal(format!("claude card update task failed: {error}"))
+    })??;
+    match outcome {
         OperationOutcome::Succeeded { result }
         | OperationOutcome::SucceededViaCollision { result, .. } => {
             let mut card: Card = serde_json::from_value(result)?;
