@@ -1,6 +1,6 @@
 # #2530 — Agent desktop: a headless compositor that streams app windows into Reports
 
-Status: design, L2 round 3 (round 1: teardown ownership, honest tool annotations; round 2: the approval carrier). Issue: #2530. Code references are to `d4f1ba067`.
+Status: design, L2 round 4 (round 1: teardown ownership, honest tool annotations; rounds 2–3: the approval carrier, narrowed to thread start). Issue: #2530. Code references are to `d4f1ba067`.
 
 ## 0. Outcome
 
@@ -92,7 +92,8 @@ three additions are generic, so later plugins can use them.
   upgrade, like `/api/terminals/{id}`. The kernel strips the `calm-session` cookie and forwards
   the upgrade to the Unix socket with the remaining path and query. The cookie strip moves into
   the shared proxy module (today it sits in the gateway's `rewrite_request`,
-  `gateway.rs:288-297`), so neither caller can forget it. Version 1 proxies no plain
+  `gateway.rs:288-297`), and so does the response-side filter that drops a `Set-Cookie` for
+  `calm-session` (`gateway.rs:310-318`), so neither caller can forget either. Version 1 proxies no plain
   HTTP: plugin-generated pages on calm's own origin would need the sandbox and `nosniff` rules
   that `fs.rs:765-766` applies, and nothing here needs them. The route is reachable wherever the
   WS router is mounted, including the mobile router (`routes/application.rs:30-49`), with the
@@ -109,7 +110,9 @@ three additions are generic, so later plugins can use them.
 ### 2.3 Kernel addition 2: `window` Report block
 
 - Payload `{src, title?, height?}`. `src` is a same-origin path under `/api/plugins/`, validated
-  like the `app` block's `src` (`crates/calm-types/src/report_blocks/kinds.rs:674-684`). The kind
+  like the `app` block's `src` (`crates/calm-types/src/report_blocks/kinds.rs:674-684`), and
+  refused if it contains a dot segment, encoded or not (`/../`, `%2e`), because the browser
+  normalizes it. The kind
   means "a live window that speaks window-stream protocol v1 at `src`". It names no plugin.
 - The fe viewer (`fe/web/src/systems/window-stream/`) opens `ws(s)://<location.host><src>`, so the
   session cookie and origin rules of the page apply. It draws frames on a canvas scaled to fit,
@@ -132,32 +135,34 @@ Codex asks for approval for any MCP tool that is not `readOnlyHint: true`, unles
 `external/codex/codex-rs/core/src/mcp_tool_call.rs:2096`). Read-only tools are never asked.
 
 - A manifest tool may declare `"approval": "delegated"` (manifest version 6).
-- **Carrier: the shared kernel MCP entry.** The per-thread map that carries the terminal
-  delegation is fixed for a loaded thread: a toolset reload keeps per-thread overrides
-  (`codex_mcp_toolset.rs:16-19`) and loaded threads ignore resume config
-  (`shared_codex_appserver.rs:3419-3420`), while Planner threads stay loaded until their card or
-  session ends. So the plugin grant lives in the shared `CODEX_HOME` entry instead. Its
-  `tools` map lists `approval_mode: "approve"` for the delegated tools (minted names) of every
-  installed and **enabled** plugin. The same refresh that bumps `NEIGE_MCP_TOOLSET` rewrites it
-  (`codex_mcp_toolset.rs:112-127`, `shared_codex_home.rs`), so enable and disable reach loaded
-  threads exactly as the tool list does. Using "enabled", not "running", avoids a race with boot
-  autospawn and crash backoff; a call to a plugin that is not running is still refused by
-  routing (`transport.rs:562-564`).
-- **Grant scope.** The shared entry is seen by every Codex thread, so the grant covers every role
+- **Carrier: the shared kernel MCP entry, read at thread start.** The refresh that bumps
+  `NEIGE_MCP_TOOLSET` (`codex_mcp_toolset.rs:112-127`, `shared_codex_home.rs`) also writes, into
+  the shared `CODEX_HOME` entry's `tools` map, `approval_mode: "approve"` for the delegated tools
+  (minted names) of every installed and **enabled** plugin. "Enabled", not "running", avoids a
+  race with boot autospawn and crash backoff; a call to a plugin that is not running is still
+  refused by routing (`transport.rs:562-564`). Codex merges config layers key by key, so the
+  per-thread terminal map and this map combine.
+- **v1 reach: threads that start, or cold-resume, after the refresh.** A loaded thread keeps
+  the user config it started with: an MCP reload rebuilds only the server connections, and loaded
+  threads ignore resume config (`codex_mcp_toolset.rs:16-19`,
+  `shared_codex_appserver.rs:3419-3420`; in Codex, `core/src/session/mcp.rs` and
+  `core/src/session/turn_context.rs`). So a Planner thread loaded before the owner enables the
+  plugin lists the write tools but cannot call them (KNOWN GAP). Hot-reloading loaded threads
+  (Codex `config/batchWrite` with `reloadUserConfig: true`) is a later, separate kernel→Codex
+  call, not part of v1.
+- **Grant scope.** The shared entry is read by every Codex thread, so the grant covers every role
   that the kernel serves plugin tools to: the Planner and Workers (`transport.rs:57`). This is
   stated, not hidden: Claude-backed agents already allow every `mcp__neige` tool in every mode
   (`claude_planner/spawn.rs:106-112`), so a Planner-only grant would not be a boundary anyway.
-  The kernel's own per-role terminal map is unchanged.
+  The kernel's own per-role terminal map is unchanged, and `card_mcp_thread_start_config` is not
+  touched.
 - **Authority.** The owner's install and enable is the grant. The kernel stays the live role,
   scope and running-state authority for every call.
-- **Decisive probe first (E3).** With a fake model, as #2014 probed reloads: a loaded Planner
-  thread that carries its per-thread terminal map, after enable and reload, calls a delegated
-  plugin tool without approval; after disable and reload the tool is gone; a Worker thread
-  behaves the same. If Codex lets the per-thread `tools` map shadow the shared one, the fallback
-  is a snapshot at thread start or resume from enabled manifests, and KNOWN GAPS gains "enable
-  the plugin before the Planner thread starts".
-- Effect: the desktop's two write tools are usable by Codex agents once the owner enables the
-  plugin. The three views are `readOnlyHint: true` and need nothing.
+- **Probe (E3c), against the production Codex binary** with a fake model: a thread started after
+  enable calls a delegated tool without approval and still has its terminal grants; a thread
+  started after disable is asked (or refused under `never`).
+- Effect: the desktop's two write tools are usable by Codex agents whose thread started after the
+  owner enabled the plugin. The three views are `readOnlyHint: true` and need nothing.
 
 ## 3. Interfaces (proposals, settled in each slice's PR)
 
@@ -240,23 +245,25 @@ pub async fn serve_viewer<S: WebSocketStream>(ws: S, source: Arc<dyn WindowSourc
   `host/spawn_app.rs:121-133`, `process.rs:79-80`). And a production calm-server that dies
   abruptly leaves its children running (`KillMode=process`). So teardown cannot depend on
   `desktop` being asked to stop. It rests on three mechanisms, all owned by `chrome-control`:
-  1. Chrome is spawned in its own process group with `PR_SET_PDEATHSIG(SIGKILL)`, from a
+  1. Chrome is spawned in its own session and process group with `PR_SET_PDEATHSIG(SIGKILL)`, from a
      dedicated launcher thread that lives as long as the process (PDEATHSIG fires when the
      forking *thread* exits, so never from a tokio blocking thread; precedent
      `neige-app/src/tailnet/mod.rs:189`). Whenever `desktop` dies, SIGKILL included, the
      browser process dies.
   2. Chrome's helper processes (zygote, renderers, GPU and utility) exit when their browser
      process is gone. This is Chrome's own behaviour, not ours, so E2 measures it (A4).
-  3. **Reap by profile.** On start, before it launches anything, and on its own exit, `desktop`
-     kills every process of this user whose `/proc/<pid>/cmdline` names this profile directory
-     (the same predicate A4 checks), so a helper that left the group is caught too. Stale
+  3. **Reap by session and profile.** Chrome is started with `setsid`, and `desktop` records the
+     session id in `run/chrome.sid`. On start, before it launches anything, and on its own exit,
+     `desktop` kills every process of this user whose session id is the recorded one or whose
+     `/proc/<pid>/cmdline` names this profile directory (helpers such as the zygote may not carry
+     `--user-data-dir`). A4 checks the same predicate. Stale
      sockets (`http.sock`, the Wayland socket) are unlinked only after a connect to them fails.
 - `desktop` exits on stdin EOF (the kernel side of the MCP pipe is gone) and on SIGTERM. On
   those paths it stops Chrome's group in order: SIGTERM, then SIGKILL after one second.
 - **Contingency.** If E2 shows Chrome helpers outliving their browser process long enough to
   matter, Chrome stays in `desktop`'s process group, and the kernel spawns app plugins as group
   leaders and stops them by group (`child_process.rs:31-47` has the helper). That is a generic
-  kernel change added to E3 at L2. A separate pre-existing defect makes every app-plugin stop a
+  kernel change added to E3a at L2. A separate pre-existing defect makes every app-plugin stop a
   SIGKILL (stop finds the child already moved to the supervisor); it is filed as #2535, and
   fixing it would give `desktop` a graceful stop.
 - CDP runs over pipe fds 3 and 4 with NUL-delimited JSON. No TCP port exists, so no other local
@@ -307,25 +314,27 @@ unavailable app or window is an error (-32503 / -32404), never a stale result.
 | # | Invariant | Evidence (where it is proven) |
 |---|---|---|
 | A1 | The browser is reachable only through the session-gated route: no TCP listener from `desktop` or Chrome; CDP over a pipe; `http.sock` 0600 inside a 0700 tree | E4: `ss -lntp` before/after shows no new listener; permission check in a test |
-| A2 | The proxy refuses requests without a session, refuses cross-origin upgrades, strips `calm-session`, returns 503 when the plugin is not running, and cancels tunnels on stop | E3 route tests through the real router; mutation-verify the session and origin checks |
+| A2 | The proxy refuses requests without a session, refuses cross-origin upgrades, strips `calm-session`, returns 503 when the plugin is not running, and cancels tunnels on stop | E3a route tests through the real router; mutation-verify the session and origin checks |
 | A3 | Chrome's environment is exactly the allowlist | E2 test reads `/proc/<pid>/environ` of the launched child |
 | A4 | No orphan: after SIGKILL of `desktop`, its stdin EOF, or SIGKILL of calm-server, no process naming that profile survives 5 s, and a relaunch on the same profile succeeds; a leftover group from an earlier run is reaped before launch | E2 process test (SIGKILL, EOF, leftover group); E4 with the real plugin host stop and a calm-server SIGKILL |
 | A5 | A frame contains only its window's surface tree and popups | E0 test with two test clients in distinct colours |
 | A6 | Nothing is encoded without a viewer; unwatched windows get 1 Hz frame callbacks | E1 counter test |
 | A7 | A slow viewer does not block the compositor or a second viewer; memory is bounded by one frame per session | E1 test with a stalled socket |
 | A8 | Unavailable never returns stale: a closed window, a stopped app or a stopped plugin gives an error or `closed`, never a cached image | E0/E1/E4 tests |
-| A9 | Generic layers name no plugin: the proxy, the `window` block and the approval delegation contain no `desktop` identity | E3 review + grep |
-| A11 | Delegation is exact: the shared entry's approval map equals the delegated tools of enabled plugins after every refresh; per-thread terminal maps are unchanged; the E3 probe shows enable and disable reaching a loaded thread | E3 unit test on the entry writer; E3 fake-model probe recorded in the PR |
+| A9 | Generic layers name no plugin: the proxy, the `window` block and the approval delegation contain no `desktop` identity | E3a–E3c review + grep |
+| A11 | Delegation is exact: the shared entry's approval map equals the delegated tools of enabled plugins after every refresh; per-thread terminal maps are unchanged; a thread started after enable has the grant and one started after disable has none | E3c unit test on the entry writer; E3c fake-model probe on the production binary, recorded in the PR |
 | A10 | Logins persist: a login, followed by at least 60 s and then a plugin respawn and a server restart, still shows the logged-in X timeline | E4 manual acceptance, recorded in the PR |
 
 ## 6. Slices
 
 | Slice | Content | Acceptance | Tier |
 |---|---|---|---|
-| **E0** | `compositor` crate and a probe example that launches Chrome on it and dumps PNGs | Chrome renders a real page with no GPU; a `<select>` popup appears in the frame; injected click and typing change the page; A5, A8 with a Rust test client; idle CPU/RSS recorded | L1: no Neige surface |
-| **E1** | `window-stream` crate and a loopback dev page (dev harness, removed in E3) | the owner clicks and types in Chrome through the dev page; A6, A7 | L1 |
-| **E2** | `chrome-control` crate (can run in parallel with E1) | launch, navigate, read the visible tab's text; A3, A4 | **L2**: credential-sensitive child environment and process teardown |
-| **E3** | kernel: manifest v6 `http_socket` and the WebSocket proxy route (shared with the preview gateway), `"approval": "delegated"` and its Codex wiring, the `window` block (calm-types, report contracts, fe viewer and browser test) | A2, A9, A11; gateway tests unchanged and green | **L2**: authentication and approval boundaries |
+| **E0** | `compositor` crate and a probe example that launches Chrome on it and dumps PNGs | Chrome renders a real page with no GPU; a `<select>` popup appears in the frame; injected click and typing change the page; A5, A8 with a Rust test client; idle CPU/RSS recorded; `navigator.webdriver` recorded | L1: no Neige surface |
+| **E1** | `window-stream` crate and a loopback dev page (dev harness, removed in E3b) | the owner clicks and types in Chrome through the dev page; A6, A7 | L1 |
+| **E2** | `chrome-control` crate (can run in parallel with E1) | launch, navigate, read the visible tab's text; A3, A4; `navigator.webdriver` is false with `--remote-debugging-pipe`, or a mitigation is named | **L2**: credential-sensitive child environment and process teardown |
+| **E3a** | kernel: manifest v6 with `http_socket`, the shared proxy module, the WebSocket proxy route | A2, A9; gateway tests unchanged and green | **L2**: authentication |
+| **E3b** | `window` block: calm-types, report contracts, fe viewer and browser test (removes E1's dev page) | the viewer streams and sends input through E3a; A9 | L1 |
+| **E3c** | `"approval": "delegated"` and the shared-entry writer | A11 | **L2**: approval |
 | **E4** | `desktop` plugin: wiring, config, tools, manifest, runbook (Chrome install, enable) | **MVP:** in a Report the owner sees Chrome live, logs into X, and an agent uses `page_open` + `page_cat` to summarize the timeline and `window_cat` to show it; A1, A4, A8, A10 | **L2**: credentials and a new endpoint |
 | E5+ | later, one at a time by need: H.264 + WebCodecs, then WebRTC; IME and non-ASCII; clipboard; resize/HiDPI; multiple profiles; separate agent seat; write approvals; surviving server restarts | — | — |
 
@@ -347,6 +356,8 @@ probes, recorded in each PR.
 - **Tool scope.** The plugin keeps the default scope, so its tools appear on every unbound Track
   for the Planner and Workers, and the delegation covers both (§2.4). Narrowing to bound Tracks is
   one manifest field (`agent_tools_scope: "bound-track"`, `manifest.rs:138-145`).
+- **Approval grant reaches only new threads.** A Codex thread loaded before the owner enables
+  the plugin lists the two write tools but cannot call them until it starts again (§2.4).
 - **Prompt injection.** Page text reaches models, and delegated writes are never asked, also
   when the Planner runs in the `ask` tier (the tier sets only the turn's policy,
   `provider/src/codex/approvals.rs:39-55`). Dropping `"approval": "delegated"` from the manifest
