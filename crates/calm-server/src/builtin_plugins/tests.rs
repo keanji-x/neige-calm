@@ -541,3 +541,25 @@ async fn native_tools_refuse_exactly_the_roles_they_do_not_declare() {
     }
     assert!(checked >= 20, "anti-vacuity: {checked} native calls");
 }
+
+/// #2530 E3c: the compiled natives are claimants no manifest grant may cover, enabled or not.
+#[test]
+fn native_tool_names_are_every_compiled_built_in_tool() {
+    let names = native_tool_names();
+    for native in NATIVE {
+        assert!(names.contains(native), "{names:?}");
+    }
+    assert!(
+        names
+            .iter()
+            .any(|name| name.starts_with("plugin_calendar_")),
+        "{names:?}"
+    );
+    let registered: BTreeSet<String> = crate::mcp_server::build_default_registry()
+        .descriptors()
+        .into_iter()
+        .map(|descriptor| descriptor.name)
+        .filter(|name| owner(name).is_some())
+        .collect();
+    assert_eq!(names, registered);
+}

@@ -326,7 +326,8 @@ impl SharedCodexHome {
         Ok(generation)
     }
 
-    /// toml_edit round-trip idempotent writer for `<home>/config.toml`.
+    /// toml_edit round-trip idempotent writer for `<home>/config.toml`. Writing the application entry
+    /// drops its per-tool `tools` map; the next [`Self::refresh_mcp_entry`] writes it again.
     pub fn ensure_config(&self, mcp_block: Option<&McpServerConfig<'_>>) -> io::Result<()> {
         fs::create_dir_all(&self.home)?;
 
@@ -366,6 +367,9 @@ impl SharedCodexHome {
                     kernel_table["command"] =
                         toml_edit::value(shim.command.to_string_lossy().to_string());
                     kernel_table["args"] = toml_edit::value(toml_edit::Array::new());
+                    // Approval grants are [`Self::refresh_mcp_entry`]'s alone, and a boot never carries
+                    // one across a restart: the plugin behind a granted name may have changed meanwhile.
+                    kernel_table.remove("tools");
                     let env = kernel_table.entry("env").or_insert(toml_edit::table());
                     if let Some(env_table) = env.as_table_mut() {
                         for (key, value) in shim.env {

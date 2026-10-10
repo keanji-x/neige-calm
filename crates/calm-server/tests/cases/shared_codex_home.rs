@@ -518,7 +518,8 @@ args = ["--bar"]
 
     /// #2014: the generation counter is one more `env` key of the kernel entry. Every bump changes
     /// it, an unparseable value restarts from 0, the boot-written keys survive it, a boot rewrite
-    /// keeps it and the approval grants (#2530), and it never creates an entry Codex cannot start.
+    /// keeps it but drops the approval grants (#2530), and it never creates an entry Codex cannot
+    /// start.
     #[test]
     fn mcp_toolset_lives_in_the_kernel_entry_and_needs_one() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -554,11 +555,11 @@ args = ["--bar"]
         assert_eq!(toolset(&home).as_deref(), Some("2"));
         home.ensure_daemon_mcp_config(&shim, "daemon-token")
             .expect("boot rewrite");
-        assert_eq!(
-            parsed_config(&home)["mcp_servers"]["neige"]["tools"]["plugin_x_open"]["approval_mode"]
-                .as_str(),
-            Some("approve"),
-            "a boot rewrite keeps the grants until the next refresh"
+        assert!(
+            parsed_config(&home)["mcp_servers"]["neige"]
+                .get("tools")
+                .is_none(),
+            "a boot rewrite drops the grants; the daemon's Running refresh writes them again"
         );
         let env = parsed_config(&home)["mcp_servers"]["neige"]["env"].clone();
         assert_eq!(env["NEIGE_MCP_TOOLSET"].as_str(), Some("2"));

@@ -115,6 +115,15 @@ static CATALOG: LazyLock<Vec<BuiltinPlugin>> = LazyLock::new(|| {
         })
         .collect()
 });
+/// Every compiled built-in tool under its minted name, whether or not its component is enabled:
+/// names no manifest tool's approval grant may cover.
+pub fn native_tool_names() -> BTreeSet<String> {
+    catalog()
+        .iter()
+        .flat_map(|plugin| plugin.native.descriptors())
+        .map(|descriptor| descriptor.name)
+        .collect()
+}
 pub fn catalog() -> &'static [BuiltinPlugin] {
     &CATALOG
 }

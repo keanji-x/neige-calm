@@ -173,8 +173,9 @@ impl<E: ErrorFactory> PluginHost<E> {
 
     /// Set the plugin enabled and running; returns the row re-read after the spawn. A plugin already
     /// running (or spawning) is in that state, so it answers its row.
-    /// A spawn refused with a 4xx restores the bit this call found, inside the guard, so the refusal
-    /// changed nothing. A 503 wait or a 5xx keeps `enabled = true`, so autospawn keeps trying.
+    /// A spawn refused with a 4xx restores the bit this call found, inside the guard, and announces
+    /// `Disabled`, so the refusal leaves the row as it was. A 503 wait or a 5xx keeps
+    /// `enabled = true`, so autospawn keeps trying.
     pub async fn enable(self: &Arc<Self>, id: &str) -> Result<Plugin, E> {
         // The 404 probe stays before the guard: a guard taken first would turn "unknown id AND busy" into a 409.
         self.plugin_row_or_404(id).await?;
@@ -188,7 +189,8 @@ impl<E: ErrorFactory> PluginHost<E> {
             .await?
             .ok_or_else(|| E::not_found(format!("plugin {id}")))?;
         self.lifecycle_db.set_enabled(id, true).await?;
-        // A conflict refusal of a row found disabled is rolled back below, so it publishes nothing.
+        // A conflict refusal of a row found disabled is rolled back below, so it publishes no
+        // `crashed`; the rollback announces `Disabled`.
         let report = if found {
             super::ConflictReport::Publish
         } else {
@@ -203,16 +205,19 @@ impl<E: ErrorFactory> PluginHost<E> {
                         HostError::TemplateConflict { .. } | HostError::MintedNameConflict { .. }
                     );
                 let answer = spawn_error_to_calm::<E>(e);
-                if answer.is_client_refusal()
-                    && !found
-                    && let Err(rollback) = self.lifecycle_db.set_enabled(id, false).await
-                {
-                    // The row stays enabled after all, so the refusal the spawn left unpublished is
-                    // published now: an enabled plugin says why it is not running.
-                    if unpublished {
-                        self.emit_crashed_under(&guard, &answer.reason()).await;
+                if answer.is_client_refusal() && !found {
+                    if let Err(rollback) = self.lifecycle_db.set_enabled(id, false).await {
+                        // The row stays enabled after all, so the refusal the spawn left unpublished is
+                        // published now: an enabled plugin says why it is not running.
+                        if unpublished {
+                            self.emit_crashed_under(&guard, &answer.reason()).await;
+                        }
+                        return Err(rollback);
                     }
-                    return Err(rollback);
+                    // The bit was on for a moment. Announce it off, so a `plugin.state` follower that
+                    // read the row meanwhile (the shared Codex home's approval grants) reads it again.
+                    self.emit_state_under(&guard, &super::PluginRuntimeStatus::Disabled)
+                        .await;
                 }
                 return Err(answer);
             }

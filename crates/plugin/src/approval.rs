@@ -22,13 +22,18 @@ pub enum ToolApproval {
 }
 
 /// The minted names (`plugin_<id>_<tool>`) of the delegated tools among `enabled`, the manifests
-/// of the installed and enabled plugins. A name that more than one enabled tool mints is left out:
-/// the grant is keyed by name, so it would also cover a tool that did not ask for it.
+/// of the installed and enabled plugins. `claimed` holds the names another source serves, such as
+/// a compiled built-in's native tools. A name that more than one tool claims is left out: the
+/// grant is keyed by name, so it would also cover a tool that did not ask for it.
 pub fn delegated_tool_names<'a>(
     enabled: impl IntoIterator<Item = &'a Manifest>,
+    claimed: &BTreeSet<String>,
 ) -> BTreeSet<String> {
     // Minted name -> (claimants, all delegated).
-    let mut minted: BTreeMap<String, (usize, bool)> = BTreeMap::new();
+    let mut minted: BTreeMap<String, (usize, bool)> = claimed
+        .iter()
+        .map(|name| (name.clone(), (1, false)))
+        .collect();
     for manifest in enabled {
         for tool in &manifest.exposes_tools {
             let name = crate::results::registry_name(&manifest.id, &tool.name);
@@ -87,6 +92,10 @@ mod tests {
             ManifestError::Invalid { field, .. } => field,
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+
+    fn none() -> BTreeSet<String> {
+        BTreeSet::new()
     }
 
     fn named(id: &str, tools: &[(&str, bool)]) -> Manifest {
@@ -160,8 +169,10 @@ mod tests {
 
     #[test]
     fn only_delegated_tools_are_named_and_names_are_minted() {
-        let names =
-            delegated_tool_names(&[named("probe", &[("web.fetch", true), ("write", false)])]);
+        let names = delegated_tool_names(
+            &[named("probe", &[("web.fetch", true), ("write", false)])],
+            &none(),
+        );
         assert_eq!(
             names,
             BTreeSet::from(["plugin_probe_web_fetch".to_string()])
@@ -170,10 +181,13 @@ mod tests {
 
     #[test]
     fn two_plugins_combine() {
-        let names = delegated_tool_names(&[
-            named("alpha", &[("open", true), ("ls", false)]),
-            named("beta", &[("input", true)]),
-        ]);
+        let names = delegated_tool_names(
+            &[
+                named("alpha", &[("open", true), ("ls", false)]),
+                named("beta", &[("input", true)]),
+            ],
+            &none(),
+        );
         assert_eq!(
             names,
             BTreeSet::from([
@@ -181,7 +195,7 @@ mod tests {
                 "plugin_beta_input".to_string()
             ])
         );
-        assert!(delegated_tool_names(&[]).is_empty());
+        assert!(delegated_tool_names(&[], &none()).is_empty());
     }
 
     #[test]
@@ -189,9 +203,31 @@ mod tests {
         // `svc.tools`/`x` and `svc`/`tools_x` both mint `plugin_svc_tools_x`.
         let delegated = named("svc.tools", &[("x", true)]);
         let other = named("svc", &[("tools_x", false)]);
-        assert!(delegated_tool_names(&[delegated.clone(), other]).is_empty());
+        assert!(delegated_tool_names(&[delegated.clone(), other], &none()).is_empty());
         let both = named("svc", &[("tools_x", true)]);
-        assert!(delegated_tool_names(&[delegated.clone(), both]).is_empty());
-        assert_eq!(delegated_tool_names(&[delegated]).len(), 1);
+        assert!(delegated_tool_names(&[delegated.clone(), both], &none()).is_empty());
+        assert_eq!(delegated_tool_names(&[delegated], &none()).len(), 1);
+    }
+
+    #[test]
+    fn a_name_another_source_serves_is_never_granted() {
+        // A compiled built-in native such as `plugin_gitforge_publish`.
+        let delegated = named("gitforge", &[("publish", true), ("open", true)]);
+        let natives = BTreeSet::from(["plugin_gitforge_publish".to_string()]);
+        assert_eq!(
+            delegated_tool_names(&[delegated], &natives),
+            BTreeSet::from(["plugin_gitforge_open".to_string()])
+        );
+    }
+
+    #[test]
+    fn a_forge_action_may_not_delegate_approval() {
+        let err = app(
+            7,
+            json!([{ "name": "ship", "kind": "forge-action", "approval": "delegated" }]),
+        )
+        .unwrap_err();
+        assert_eq!(field(err), "exposes_tools");
+        app(7, json!([{ "name": "ship", "kind": "forge-action" }])).unwrap();
     }
 }

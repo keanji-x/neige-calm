@@ -17,17 +17,21 @@ use std::time::Duration;
 use calm_server::codex_mcp_toolset::{CodexMcpToolset, DEBOUNCE};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
+use calm_server::error::CalmError;
 use calm_server::event::{BroadcastEnvelope, EventBus};
 use calm_server::mcp_server::{AppContext, McpServer, McpShimConfig, build_default_registry};
-use calm_server::plugin_host::{PluginHost, PluginRegistry};
+use calm_server::model::Plugin;
+use calm_server::plugin_host::lifecycle::LifecycleDb;
+use calm_server::plugin_host::{PluginHost, PluginListDb, PluginRegistry};
 use calm_server::shared_codex_appserver::{FakeMcpServerReload, SharedCodexAppServer};
 use calm_server::shared_codex_home::{EXPECTED_MCP_SERVERS, SharedCodexHome};
 use serde_json::{Value, json};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
-use tokio::sync::OnceCell;
 use tokio::sync::broadcast::Receiver;
+use tokio::sync::{Notify, OnceCell};
 use tokio::time::{Instant, sleep};
 
 const ECHO_BIN: &str = env!("CARGO_BIN_EXE_plugin-host-stub-echo");
@@ -44,11 +48,59 @@ struct Fx {
     appserver: Arc<SharedCodexAppServer>,
     /// The kernel MCP listener a Codex thread's shim reaches.
     server: Arc<McpServer>,
+    seams: Arc<Seams>,
     _tmp: TempDir,
+}
+
+/// Test-held seams in the host's two row ports, pass-through by default: the enabled-bit write can
+/// pause right after it turns a bit on, and the plugin-row enumeration can fail.
+#[derive(Default)]
+struct Seams {
+    pause_after_enable: AtomicBool,
+    flipped: Notify,
+    release: Notify,
+    list_fails: AtomicBool,
+}
+
+struct SeamDb {
+    repo: Arc<dyn Repo>,
+    seams: Arc<Seams>,
+}
+
+#[async_trait::async_trait]
+impl LifecycleDb for SeamDb {
+    async fn enabled_row(&self, id: &str) -> Result<Option<bool>, CalmError> {
+        Ok(self.repo.plugin_get_by_id(id).await?.map(|row| row.enabled))
+    }
+    async fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), CalmError> {
+        self.repo.plugin_update_enabled(id, enabled).await?;
+        if enabled && self.seams.pause_after_enable.swap(false, Ordering::SeqCst) {
+            self.seams.flipped.notify_one();
+            self.seams.release.notified().await;
+        }
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl PluginListDb for SeamDb {
+    async fn plugins_list_all(&self) -> Result<Vec<Plugin>, CalmError> {
+        if self.seams.list_fails.load(Ordering::SeqCst) {
+            return Err(CalmError::Internal(
+                "injected plugin-row read failure".into(),
+            ));
+        }
+        Ok(self.repo.plugins_list_all().await?)
+    }
 }
 
 /// An `app` plugin over the echo stub exposing `tools`, each `(name, delegated)`.
 fn write_app(plugins_dir: &Path, id: &str, tools: &[(&str, bool)]) {
+    write_app_for(plugins_dir, id, tools, "0.0.1");
+}
+
+/// [`write_app`] requiring kernel `min_kernel`.
+fn write_app_for(plugins_dir: &Path, id: &str, tools: &[(&str, bool)], min_kernel: &str) {
     let dir = plugins_dir.join(id);
     std::fs::create_dir_all(dir.join("bin")).unwrap();
     let stub = dir.join("bin").join("stub");
@@ -71,7 +123,7 @@ fn write_app(plugins_dir: &Path, id: &str, tools: &[(&str, bool)]) {
         "manifest_version": if delegates { 7 } else { 1 },
         "id": id,
         "version": "0.1.0",
-        "min_kernel_version": "0.0.1",
+        "min_kernel_version": min_kernel,
         "display_name": id,
         "entrypoint": { "command": "bin/stub" },
         "exposes_tools": exposes,
@@ -94,6 +146,11 @@ async fn fixture(plugins: &[(&str, &[&str])]) -> Fx {
 
 /// [`fixture`] with tools `(name, delegated)`.
 async fn fixture_with(plugins: &[(&str, &[(&str, bool)])]) -> Fx {
+    fixture_requiring(plugins, &[]).await
+}
+
+/// [`fixture_with`] where the plugins named in `too_new` require a kernel newer than this one.
+async fn fixture_requiring(plugins: &[(&str, &[(&str, bool)])], too_new: &[&str]) -> Fx {
     let tmp = tempfile::tempdir().unwrap();
     let plugins_dir = tmp.path().join("plugins");
     let data_dir = tmp.path().join("data");
@@ -101,7 +158,12 @@ async fn fixture_with(plugins: &[(&str, &[(&str, bool)])]) -> Fx {
     std::fs::create_dir_all(&data_dir).unwrap();
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     for (id, tools) in plugins {
-        write_app(&plugins_dir, id, tools);
+        let min_kernel = if too_new.contains(id) {
+            "999.0.0"
+        } else {
+            "0.0.1"
+        };
+        write_app_for(&plugins_dir, id, tools, min_kernel);
         repo.plugin_install(calm_server::model::NewPlugin {
             id: (*id).into(),
             version: "0.1.0".into(),
@@ -120,15 +182,24 @@ async fn fixture_with(plugins: &[(&str, &[(&str, bool)])]) -> Fx {
         calm_server::card_role_cache::CardRoleCache::new(),
         calm_server::track_area_cache::TrackAreaCache::new(),
     );
-    let host = Arc::new(PluginHost::new_full(
-        Arc::new(plugin_registry),
-        repo.clone(),
-        plugins_dir.clone(),
-        data_dir.clone(),
-        Vec::new(),
-        events.clone(),
-        write.clone(),
-    ));
+    let seams = Arc::new(Seams::default());
+    let seam_db = Arc::new(SeamDb {
+        repo: repo.clone(),
+        seams: seams.clone(),
+    });
+    let host = Arc::new(
+        PluginHost::new_full(
+            Arc::new(plugin_registry),
+            repo.clone(),
+            plugins_dir.clone(),
+            data_dir.clone(),
+            Vec::new(),
+            events.clone(),
+            write.clone(),
+        )
+        .with_lifecycle_db(seam_db.clone())
+        .with_plugin_list_db(seam_db),
+    );
     let host_cell = Arc::new(OnceCell::new());
     host_cell.set(host.clone()).ok().unwrap();
     let ctx = AppContext::new(
@@ -166,6 +237,7 @@ async fn fixture_with(plugins: &[(&str, &[(&str, bool)])]) -> Fx {
         home,
         appserver: SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None),
         server,
+        seams,
         _tmp: tmp,
     }
 }
@@ -530,90 +602,6 @@ async fn a_failed_generation_write_is_retried_at_the_next_plugin_change() {
     assert_eq!(fx.toolset().as_deref(), Some("1"));
 }
 
-fn names(names: &[&str]) -> BTreeSet<String> {
-    names.iter().map(|name| (*name).to_string()).collect()
-}
-
-/// #2530 A11: after every refresh the kernel entry's grants are exactly the delegated tools of the
-/// installed and enabled plugins, and nothing else in the entry changes.
-#[tokio::test]
-async fn the_grants_follow_enable_disable_and_uninstall_exactly() {
-    let fx = fixture_with(&[
-        ("probe", &[("web.fetch", true), ("write", false)]),
-        ("other", &[("input", true)]),
-        ("plain", &[("ls", false)]),
-    ])
-    .await;
-    let rest = fx.entry_rest();
-    fx.start();
-
-    fx.host.enable("probe").await.unwrap();
-    fx.host.enable("plain").await.unwrap();
-    fx.forward();
-    fx.wait_reloads(1).await;
-    assert_eq!(
-        fx.granted(),
-        names(&["plugin_probe_web_fetch"]),
-        "only the enabled plugin's delegated tool; `other` is installed but disabled"
-    );
-    assert_eq!(fx.entry_rest(), rest);
-
-    fx.host.enable("other").await.unwrap();
-    fx.forward();
-    fx.wait_reloads(2).await;
-    assert_eq!(
-        fx.granted(),
-        names(&["plugin_other_input", "plugin_probe_web_fetch"])
-    );
-
-    fx.host.disable("probe").await.unwrap();
-    fx.forward();
-    fx.wait_reloads(3).await;
-    assert_eq!(fx.granted(), names(&["plugin_other_input"]));
-
-    fx.host.uninstall("other").await.unwrap();
-    fx.forward();
-    fx.wait_reloads(4).await;
-    assert_eq!(fx.granted(), BTreeSet::new());
-    assert_eq!(fx.entry_rest(), rest);
-    fx.home
-        .verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
-        .expect("the grants live inside the kernel entry");
-}
-
-/// Enabled, not running: a stopped plugin keeps its grant (routing refuses its calls), and
-/// disabling it then removes the grant although no process stopped.
-#[tokio::test]
-async fn disabling_a_plugin_that_is_not_running_removes_its_grant() {
-    let fx = fixture_with(&[("probe", &[("web.fetch", true)])]).await;
-    fx.start();
-    fx.host.enable("probe").await.unwrap();
-    fx.host.stop("probe").await.unwrap();
-    fx.forward();
-    fx.wait_reloads(1).await;
-    assert_eq!(fx.granted(), names(&["plugin_probe_web_fetch"]));
-
-    fx.host.disable("probe").await.unwrap();
-    fx.forward();
-    fx.wait_reloads(2).await;
-    assert_eq!(fx.granted(), BTreeSet::new());
-}
-
-/// A daemon Running refresh writes the same grants, so a calm-server restart re-derives them.
-#[tokio::test]
-async fn a_daemon_running_refresh_writes_the_grants_and_repeats_them_unchanged() {
-    let fx = fixture_with(&[("probe", &[("web.fetch", true), ("write", false)])]).await;
-    fx.host.enable("probe").await.unwrap();
-    fx.start();
-    fx.appserver.publish_readiness_for_test(1, true);
-    fx.wait_reloads(1).await;
-    assert_eq!(fx.granted(), names(&["plugin_probe_web_fetch"]));
-    let first = fx.entry_rest();
-
-    fx.appserver.publish_readiness_for_test(1, false);
-    fx.appserver.publish_readiness_for_test(2, true);
-    fx.wait_reloads(2).await;
-    assert_eq!(fx.granted(), names(&["plugin_probe_web_fetch"]));
-    assert_eq!(fx.entry_rest(), first);
-    assert_eq!(fx.toolset().as_deref(), Some("2"));
-}
+/// #2530 E3c: the approval grants the same refresh writes.
+#[path = "codex_mcp_toolset_approval.rs"]
+mod approval;

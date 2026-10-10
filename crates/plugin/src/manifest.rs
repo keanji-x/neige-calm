@@ -489,7 +489,8 @@ pub struct ExposedTool {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub annotations: Option<Value>,
     /// `delegated`: the owner's enable grants the agent runtime's approval for this tool
-    /// (`crate::approval`); legal only at `manifest_version` 7 and only for `app` plugins.
+    /// (`crate::approval`); legal only at `manifest_version` 7 and later, only for `app` plugins, and
+    /// never on a forge action.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<crate::approval::ToolApproval>,
 }
@@ -662,6 +663,22 @@ impl Manifest {
                     "tool `{}` declares `approval`, which requires manifest_version {}",
                     tool.name,
                     crate::approval::MIN_MANIFEST_VERSION
+                ),
+            ));
+        }
+
+        // A forge action carries the forge credential passthrough; it is always asked.
+        if let Some(tool) = self
+            .exposes_tools
+            .iter()
+            .find(|t| t.kind == Some(ToolKind::ForgeAction) && t.approval.is_some())
+        {
+            return Err(ManifestError::invalid(
+                "exposes_tools",
+                format!(
+                    "tool `{}` is a forge action, which carries the forge credential passthrough \
+                     and cannot declare `approval`",
+                    tool.name
                 ),
             ));
         }

@@ -66,7 +66,7 @@ const LIFECYCLE_DB_READ_RETRY_DELAY: Duration = Duration::from_millis(200);
 enum ConflictReport {
     /// The plugin stays enabled and is not running; the live state says why.
     Publish,
-    /// The caller undoes its own enable on this refusal, so the request changes nothing at all.
+    /// The caller undoes its own enable on this refusal and announces `Disabled`, so no `crashed` is published.
     Silent,
 }
 
@@ -230,7 +230,7 @@ struct CrashWindow {
     started: Instant,
 }
 
-/// Narrow port for the plugin-row read that starts boot autospawn.
+/// Narrow port for the plugin-row enumeration that starts boot autospawn and computes the approval grants.
 /// Implementors must stay cooperative: the boot fence can only preempt at await points.
 #[async_trait]
 pub trait PluginListDb<E: ErrorFactory>: Send + Sync {
@@ -262,7 +262,7 @@ pub struct PluginHost<E: ErrorFactory> {
     registry: Arc<PluginRegistry>,
     /// `RouteRepo`, not `Repo`: raw sync-domain writes are unreachable so the host cannot bypass the audit log.
     pub(crate) repo: Arc<dyn Store<E>>,
-    /// Narrow read port used only by boot autospawn's initial enumeration.
+    /// Narrow read port for the plugin-row enumeration: boot autospawn and the approval grants.
     plugin_list_db: Arc<dyn PluginListDb<E>>,
     /// Wall-clock fence for the initial plugin enumeration.
     plugin_list_wall: Duration,

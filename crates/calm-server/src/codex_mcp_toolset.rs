@@ -31,12 +31,16 @@
 //! exactly the delegated tools (manifest v7 `"approval": "delegated"`) of the installed and enabled
 //! plugins, each `approval_mode = "approve"`, read from the plugin host at refresh time. Codex merges
 //! it with the per-role terminal map a thread's start config carries. The kernel promises the grants
-//! to threads that start or cold-resume after the refresh. Codex 0.159.2 also applies them to a
-//! loaded thread when the reload below restarts its kernel server, since the map is part of the
-//! server entry the reload re-reads, and the per-thread terminal map survives that (both probed
-//! with a fake model, #2530 E3c); a reload that does not reach the daemon leaves loaded threads as
-//! they were. A refresh whose plugin-row read fails writes nothing, so no generation without its
-//! grants is ever published.
+//! to threads that start after the refresh. Codex 0.159.2 also applies them to a loaded thread when
+//! the reload below restarts its kernel server, since the map is part of the server entry the reload
+//! re-reads, and the per-thread terminal map survives that (both probed with a fake model, #2530
+//! E3c); a reload that does not reach the daemon leaves loaded threads as they were.
+//!
+//! Every path fails closed. A refresh whose plugin-row read fails publishes its generation with no
+//! grants at all, and the next readable refresh restores them; a written generation therefore never
+//! carries a grant the plugin rows did not vouch for at that refresh. Boot's rewrite of the entry
+//! drops the map, so a restart never carries a grant to changed plugin code; the daemon's Running
+//! refresh writes it again.
 //!
 //! Writes take the shared home's `.config.lock`, as every calm writer does. Codex's own config
 //! writes (`config/value/write`, `config/batchWrite`, neither of which calm sends) do not.
@@ -44,6 +48,7 @@
 //! The task has no shutdown handle: like the other boot-time followers it lives as long as the
 //! process, since the bus it follows never closes while the app context holds a sender.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -126,14 +131,19 @@ impl CodexMcpToolset {
     /// Bump the entry's generation and write its approval grants, then ask the daemon to reload MCP.
     /// The write comes first: a reload over an unchanged entry restarts nothing.
     async fn refresh(&self) {
-        let delegated = match self.plugins.approval_delegated_tools().await {
+        let delegated = match self
+            .plugins
+            .approval_delegated_tools(&crate::builtin_plugins::native_tool_names())
+            .await
+        {
             Ok(delegated) => delegated,
+            // Fail closed: a grant the kernel cannot vouch for is revoked, not kept.
             Err(error) => {
                 tracing::warn!(
                     %error,
-                    "plugin rows unreadable, kernel MCP entry left as it was; the next plugin change or daemon Running retries"
+                    "plugin rows unreadable, every approval grant revoked; the next plugin change or daemon Running restores them"
                 );
-                return;
+                BTreeSet::new()
             }
         };
         // The write takes a file lock and fsyncs: off the async workers.

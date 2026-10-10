@@ -196,9 +196,10 @@ async fn a_kernel_too_old_refusal_leaves_the_row_disabled() {
 
 /// A 409 conflict restores the bit the request found, whichever it was: a row already enabled
 /// (as a boot leaves one whose spawn failed) stays enabled, so autospawn keeps trying it.
-/// A refusal that rolls the enable back publishes no live state either, so a client is not told
-/// `crashed` beside a disabled row. One that keeps the row enabled reports why that enabled plugin
-/// is not running.
+/// A refusal that rolls the enable back publishes no `crashed`, so a client is not told it beside a
+/// disabled row; it announces `disabled`, so a follower that read the row while the bit was on
+/// (#2530 E3c: the approval grants) reads it again. One that keeps the row enabled reports why that
+/// enabled plugin is not running.
 #[tokio::test]
 async fn a_minted_name_refusal_leaves_the_row_as_it_found_it() {
     for found in [false, true] {
@@ -223,9 +224,11 @@ async fn a_minted_name_refusal_leaves_the_row_as_it_found_it() {
             assert_eq!(state, "crashed");
             assert_eq!(last_error.as_deref(), body["error"].as_str());
         } else {
+            let mut announced = before.clone();
+            announced.push(("disabled".to_string(), None));
             assert_eq!(
-                after, before,
-                "a rolled-back refusal publishes no live state"
+                after, announced,
+                "a rolled-back refusal announces `disabled` and publishes no `crashed`"
             );
         }
         call(&fx, "POST", "/api/plugins/mint-a/disable").await;

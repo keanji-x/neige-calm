@@ -149,7 +149,7 @@ the delegation matters for the `never` and `ask` tiers and for Workers.
   race with boot autospawn and crash backoff; a call to a plugin that is not running is still
   refused by routing (`transport.rs:562-564`). Codex merges config layers key by key, so the
   per-thread terminal map and this map combine.
-- **Reach.** The kernel promises the grant to threads that start, or cold-resume, after the refresh.
+- **Reach.** The kernel promises the grant to threads that start after the refresh.
   The E3c probe on the production Codex binary (0.159.2) found that loaded threads pick it up too,
   in both directions, at the refresh's existing `config/mcpServer/reload`. That reload re-reads the
   shared entry's `tools` map, and threads keep their per-thread terminal grants. Writing the file
@@ -171,8 +171,13 @@ the delegation matters for the `never` and `ask` tiers and for Workers.
   - a thread started after disable is asked, or refused under `never`.
 
   This probe also produced the finding on reach above.
-- Effect: the desktop's two write tools are usable by Codex agents once the owner has enabled
-  the plugin. The three views are `readOnlyHint: true` and need nothing.
+- **Fail closed.** An enable refused after it turned the bit on announces `Disabled`, a refresh
+  that cannot read the plugin rows writes an empty map, boot's rewrite of the entry drops the map
+  until the daemon-Running refresh, and a name another enabled tool or a compiled built-in native
+  also claims is never granted. Forge actions cannot declare the key.
+- Effect: the desktop's two write tools are usable without a prompt by Codex threads that start
+  after the refresh that follows the owner's enable. The three views are `readOnlyHint: true` and
+  need nothing.
 
 ## 3. Interfaces (proposals, settled in each slice's PR)
 
@@ -400,8 +405,8 @@ probes, recorded in each PR.
 - **Prompt injection.** Page text reaches models, and delegated writes are never asked, also
   when the Planner runs in the `ask` tier (the tier sets only the turn's policy,
   `provider/src/codex/approvals.rs:39-55`). Dropping `"approval": "delegated"` from the manifest
-  makes Codex ask (`ask`) or refuse (`never`) after the next refresh. On Codex 0.159.2 this also
-  applies to loaded threads. The immediate off switch is disabling the plugin: routing then refuses every call.
+  makes Codex ask (`ask`) or refuse (`never`) once the plugin is reloaded or the server restarts,
+  for threads that start after that refresh; on Codex 0.159.2 this also applies to loaded threads. The immediate off switch is disabling the plugin: routing then refuses every call.
 - **Abrupt stop loses the last cookies.** Plugin stop is SIGKILL, and Chrome commits cookies to
   disk in batches, so a login made seconds before a stop can be lost.
 - **Shared seat.** Human and agent input interleave; last input wins.
