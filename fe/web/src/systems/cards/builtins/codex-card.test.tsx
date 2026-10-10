@@ -90,13 +90,13 @@ describe('worker checkout visibility', () => {
 describe('composer notice (#2526)', () => {
   const card = { type: 'codex', id: 'x1', title: null, terminalId: 't1', sessionState: 'running', cwd: null, gateCwd: null } as const;
 
-  it('shows the notice as a status line and keeps the live terminal', () => {
+  /* Input and attachment while a notice shows are pinned in `terminal-reconnect.browser.test.tsx`. */
+  it('shows the notice as a status line', () => {
     const Component = CODEX_CARD_ENTRY.component;
     render(<Component card={card} host={fakeHost()} activity={null} notice="Completed — this attempt has ended." />);
     const notice = document.querySelector('[data-nc-terminal-notice]');
     expect(notice?.getAttribute('role')).toBe('status');
     expect(notice?.textContent).toContain('Completed — this attempt has ended.');
-    expect(document.querySelector('[data-nc-terminal-id="t1"]')).not.toBeNull();
   });
 
   it('draws nothing without one', () => {

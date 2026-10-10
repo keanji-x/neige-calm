@@ -81,6 +81,8 @@ const PARKED_ATTEMPT_STATUSES: readonly string[] = Object.freeze(['verifying', '
  * The one-line state each task worker card shows while its current attempt is parked, keyed by worker card.
  * A display only: a person's keys still reach the terminal (#2526). A card a task names with any other status
  * (running, or still starting) gets none, and so does a card no task names — a plain or Planner-opened terminal.
+ * A withdrawn declaration shows none either: its row carries no runtime in the panel, though the kernel still
+ * refuses agent input to its parked worker.
  */
 export function parkedWorkerNotices(tasks: readonly ReportTaskRow[]): ReadonlyMap<string, string> {
   const notices = new Map<string, string>();

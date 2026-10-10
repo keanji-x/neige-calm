@@ -51,16 +51,19 @@ function terminalTransport() {
   return sockets;
 }
 
-function mountTerminal(status: 'running' | 'starting' = 'running', width?: number, recovery?: RecoveryAccess) {
+function mountTerminal(status: 'running' | 'starting' = 'running', width?: number, recovery?: RecoveryAccess, notice: string | null = null) {
   const registry = createCardRegistry();
   registerAvailableBuiltinCards(registry);
   const card = registry.resolve({ id: 'card-1', kind: 'terminal', payload: {},
     runtime: { worker_session_id: 'run-1', kind: 'terminal', status, terminal_id: 'pty-1' },
   });
   if (card === null) throw new Error('Missing terminal');
-  return render(<div style={{ width }}><BoardHost host={createCardHost(registry, { recovery })} items={[
-    { card, title: 'Terminal', originalIndex: 0, deletable: true, activity: null, notice: null },
-  ]} visible activeCardId="card-1" onRemoveCard={() => {}} /></div>);
+  const host = createCardHost(registry, { recovery });
+  const board = (next: string | null) => <div style={{ width }}><BoardHost host={host} items={[
+    { card, title: 'Terminal', originalIndex: 0, deletable: true, activity: null, notice: next },
+  ]} visible activeCardId="card-1" onRemoveCard={() => {}} /></div>;
+  const mounted = render(board(notice));
+  return Object.assign(mounted, { setNotice: (next: string | null) => mounted.rerender(board(next)) });
 }
 
 /* The head's activity indicator. Its absence after a successful connect is the
@@ -174,6 +177,34 @@ it('accepts input and later automatically reconnects after a recoverable ownersh
   act(() => access.invalidate('recovering')); act(() => access.change('connected'));
   await waitFor(() => expect(sockets).toHaveLength(2));
   expect(sockets[1].url).toBe(sockets[0].url);
+});
+
+/* #2526: the parked-worker notice is a display only. Typed input still reaches the socket, and changing
+   or clearing the notice re-renders the card without a new attachment. */
+it('keeps input and the same attachment while the notice shows, changes and clears', async () => {
+  await page.viewport(1200, 800);
+  const sockets = terminalTransport();
+  const inputs = () => sockets[0].sent.filter((frame) => typeof frame === 'object' && 'Input' in frame);
+  const notice = () => document.querySelector('[data-nc-card-cell] [data-nc-terminal-notice]');
+  const mounted = mountTerminal('running', undefined, undefined, 'Completed — this attempt has ended.');
+  await waitFor(() => expect(sockets).toHaveLength(1));
+  act(() => sockets[0].open('parked prompt'));
+  await waitFor(() => expect(headStatusText()).toBeNull());
+  expect(notice()?.textContent).toContain('Completed — this attempt has ended.');
+  await userEvent.click(screen.getByLabelText('Terminal input'));
+  await userEvent.keyboard('x');
+  await waitFor(() => expect(inputs()).toHaveLength(1));
+
+  mounted.setNotice('Failed — this attempt has ended.');
+  expect(notice()?.textContent).toContain('Failed — this attempt has ended.');
+  mounted.setNotice(null);
+  expect(notice()).toBeNull();
+  await userEvent.click(screen.getByLabelText('Terminal input'));
+  await userEvent.keyboard('y');
+  await waitFor(() => expect(inputs()).toHaveLength(2));
+  expect(sockets).toHaveLength(1);
+  expect(sockets[0].readyState).toBe(1);
+  expect(sockets[0].sent.filter((frame) => typeof frame === 'object' && 'ClientHello' in frame)).toHaveLength(1);
 });
 
 it.each(['UnsupportedVersion', 'UnsupportedEncoding', 'BadHandshake', 'BadSequence', 'SnapshotMissing', 'closed', 'exited'] as const)(
