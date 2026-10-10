@@ -1,6 +1,6 @@
 # #2530 — Agent desktop: a headless compositor that streams app windows into Reports
 
-Status: design, L2 round 5 (round 1: teardown ownership, honest tool annotations; rounds 2–3: the approval carrier, narrowed to thread start; round 4: start-up reaping deleted). Issue: #2530. Code references are to `d4f1ba067`.
+Status: design, L2 round 5 (round 1: teardown ownership, honest tool annotations; rounds 2–3: the approval carrier, narrowed to thread start; round 4: start-up reaping deleted; round 5: crashpad handlers). Issue: #2530. Code references are to `d4f1ba067`.
 
 ## 0. Outcome
 
@@ -137,7 +137,8 @@ it also says `destructiveHint: true`. Under the Planner's `full` tier (`never` w
 `dangerFullAccess`) Codex approves MCP prompts by itself (`codex-mcp/src/mcp/mod.rs:79-87`), so
 the delegation matters for the `never` and `ask` tiers and for Workers.
 
-- A manifest tool may declare `"approval": "delegated"` (manifest version 6).
+- A manifest tool may declare `"approval": "delegated"` (manifest version 7; E3a's
+  `http_socket` is version 6).
 - **Carrier: the shared kernel MCP entry, read at thread start.** The refresh that bumps
   `NEIGE_MCP_TOOLSET` (`codex_mcp_toolset.rs:112-127`, `shared_codex_home.rs`) also writes, into
   the shared `CODEX_HOME` entry's `tools` map, `approval_mode: "approve"` for the delegated tools
@@ -150,7 +151,7 @@ the delegation matters for the `never` and `ask` tiers and for Workers.
   threads ignore resume config (`codex_mcp_toolset.rs:16-19`,
   `shared_codex_appserver.rs:3419-3420`; in Codex, `core/src/session/mcp.rs` and
   `core/src/session/turn_context.rs`). So a Planner thread loaded before the owner enables the
-  plugin lists the write tools but cannot call them (KNOWN GAP). Hot-reloading loaded threads
+  plugin lists the write tools but has no delegated grant: under `never` its calls are refused, under `ask` they are asked (KNOWN GAP). Hot-reloading loaded threads
   (Codex `config/batchWrite` with `reloadUserConfig: true`) is a later, separate kernel→Codex
   call, not part of v1.
 - **Grant scope.** The shared entry is read by every Codex thread, so the grant covers every role
@@ -240,8 +241,10 @@ pub async fn serve_viewer<S: WebSocketStream>(ws: S, source: Arc<dyn WindowSourc
   command line: `--ozone-platform=wayland --user-data-dir=<profile> --remote-debugging-pipe
   --no-first-run --no-default-browser-check --window-size=…`. It adds no `--enable-automation` and
   no headless flag.
-- The child environment is built from an explicit allowlist: `HOME`, `LANG`/`LC_*`, `PATH`,
-  `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR` and font variables (AGENTS.md: credential-sensitive
+- The child environment is built from an explicit allowlist: `LANG`/`LC_*`, `PATH`,
+  `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR` and font variables, with `HOME` set to
+  `<plugins_data_dir>/desktop/home` so that Chrome's crash database and NSS state stay with the
+  profile instead of the owner's real home (AGENTS.md: credential-sensitive
   boundary). The plugin process itself inherits the whole service environment (`process.rs:70`),
   so this allowlist is what keeps service secrets out of the browser.
 - **Teardown ownership.** The kernel's plugin stop does not send SIGTERM: it aborts the supervisor,
@@ -254,14 +257,24 @@ pub async fn serve_viewer<S: WebSocketStream>(ws: S, source: Arc<dyn WindowSourc
      forking *thread* exits, so never from a tokio blocking thread; precedent
      `neige-app/src/tailnet/mod.rs:189`). Whenever `desktop` dies, SIGKILL included, the
      browser process dies.
-  2. Chrome's helper processes (zygote, renderers, GPU and utility) exit when their browser
-     process is gone. This is Chrome's own behaviour, not ours, so E2 measures it (A4).
+  2. Chrome's helper processes exit when their browser process is gone: the zygote, renderers,
+     GPU and utility processes (in the browser's group), and the two `chrome_crashpad_handler`
+     processes, which double-fork into their own sessions under the user's systemd (observed in
+     the E0 probe), so neither a group stop nor parent links reach them. This is Chrome's own
+     behaviour, not ours, so E2 measures it (A4). If the crashpad handlers do not exit, E2 finds
+     and records a launch switch that stops Chrome from starting them; the kernel group-stop
+     contingency below would not reach them.
   There is deliberately no start-up reaping of earlier runs: a recorded pid, group or session id
   can be reused by an unrelated process after the owner dies or the host reboots, and a
   command-line match is not ownership. Relaunching on the same profile needs no reaping either:
   Chrome's `SingletonLock` names the browser process, which mechanism 1 has killed, and Chrome
   takes over a lock whose holder is gone. Stale sockets (`http.sock`, the Wayland socket) are
   unlinked only after a connect to them fails.
+- **Restart overlap.** A plugin restart spawns the new `desktop` while the old one's SIGKILL is
+  still in flight (`host/state.rs:83-85,118-128`). A live old socket or a live old
+  `SingletonLock` holder is therefore a transient condition that the new `desktop` retries with
+  a bound. A Chrome launch that hands its command line to a live holder and exits is detected by
+  its exit, never awaited on the CDP pipe.
 - `desktop` exits on stdin EOF (the kernel side of the MCP pipe is gone) and on SIGTERM. On
   those paths it stops the group of the Chrome child it still holds (not yet reaped, so its id
   cannot have been reused) in order: SIGTERM, then SIGKILL after one second.
@@ -322,7 +335,7 @@ unavailable app or window is an error (-32503 / -32404), never a stale result.
 | A1 | The browser is reachable only through the session-gated route: no TCP listener from `desktop` or Chrome; CDP over a pipe; `http.sock` 0600 inside a 0700 tree | E4: `ss -lntp` before/after shows no new listener; permission check in a test |
 | A2 | The proxy refuses requests without a session, refuses cross-origin upgrades, strips `calm-session`, returns 503 when the plugin is not running, and cancels tunnels on stop | E3a route tests through the real router; mutation-verify the session and origin checks |
 | A3 | Chrome's environment is exactly the allowlist | E2 test reads `/proc/<pid>/environ` of the launched child |
-| A4 | No orphan: after SIGKILL of `desktop`, its stdin EOF, or SIGKILL of calm-server, no descendant of the launched Chrome survives 5 s (the test records the whole process tree while Chrome runs, by parent links, before the kill), and a relaunch on the same profile succeeds. `desktop` never signals a process it did not spawn | E2 process test (SIGKILL, EOF); E4 with the real plugin host stop and a calm-server SIGKILL |
+| A4 | No orphan: after SIGKILL of `desktop`, its stdin EOF, or SIGKILL of calm-server, no process of that launch survives 5 s. The test records the set while Chrome runs, before the kill: the descendants by parent links plus the crashpad handlers named by the children's `--crashpad-handler-pid` and their `--monitor-self` peer (measurement only, never used to signal), and a relaunch on the same profile succeeds. `desktop` never signals a process it did not spawn | E2 process test (SIGKILL, EOF); E4 with the real plugin host stop and a calm-server SIGKILL |
 | A5 | A frame contains only its window's surface tree and popups | E0 test with two test clients in distinct colours |
 | A6 | Nothing is encoded without a viewer; unwatched windows get 1 Hz frame callbacks | E1 counter test |
 | A7 | A slow viewer does not block the compositor or a second viewer; memory is bounded by one frame per session | E1 test with a stalled socket |
@@ -340,7 +353,7 @@ unavailable app or window is an error (-32503 / -32404), never a stale result.
 | **E2** | `chrome-control` crate (can run in parallel with E1) | launch, navigate, read the visible tab's text; A3, A4; `navigator.webdriver` is false with `--remote-debugging-pipe`, or a mitigation is named | **L2**: credential-sensitive child environment and process teardown |
 | **E3a** | kernel: manifest v6 with `http_socket`, the shared proxy module, the WebSocket proxy route | A2, A9; gateway tests unchanged and green | **L2**: authentication |
 | **E3b** | `window` block: calm-types, report contracts, fe viewer and browser test (removes E1's dev page) | the viewer streams and sends input through E3a; A9 | L1 |
-| **E3c** | `"approval": "delegated"` and the shared-entry writer; lands after E3a and takes the next manifest version | A9, A11 | **L2**: approval |
+| **E3c** | `"approval": "delegated"` and the shared-entry writer; lands after E3a; manifest version 7 | A9, A11 | **L2**: approval |
 | **E4** | `desktop` plugin: wiring, config, tools, manifest, runbook (Chrome install, enable) | **MVP:** in a Report the owner sees Chrome live, logs into X, and an agent uses `page_open` + `page_cat` to summarize the timeline and `window_cat` to show it; A1, A4, A8, A10 | **L2**: credentials and a new endpoint |
 | E5+ | later, one at a time by need: H.264 + WebCodecs, then WebRTC; IME and non-ASCII; clipboard; resize/HiDPI; multiple profiles; separate agent seat; write approvals; surviving server restarts | — | — |
 
@@ -363,7 +376,11 @@ probes, recorded in each PR.
   for the Planner and Workers, and the delegation covers both (§2.4). Narrowing to bound Tracks is
   one manifest field (`agent_tools_scope: "bound-track"`, `manifest.rs:138-145`).
 - **Approval grant reaches only new threads.** A Codex thread loaded before the owner enables
-  the plugin lists the two write tools but cannot call them until it starts again (§2.4).
+  the plugin lists the two write tools without the delegated grant until it starts again: refused under `never`, asked under `ask` (§2.4).
+- **Outbound from pages.** Pages that Chrome loads run script on the host and can try loopback
+  services, such as unauthenticated dev servers behind preview ports. Only Chrome's Local Network
+  Access checks stand between them, and `window_input` can click through their prompts. A launch
+  policy that blocks local-network requests is a later option.
 - **Prompt injection.** Page text reaches models, and delegated writes are never asked, also
   when the Planner runs in the `ask` tier (the tier sets only the turn's policy,
   `provider/src/codex/approvals.rs:39-55`). Dropping `"approval": "delegated"` from the manifest
