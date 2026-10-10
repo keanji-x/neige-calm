@@ -29,7 +29,8 @@ pub struct Config {
 
 /// Process-unique window identity. Never reused within one process.
 ///
-/// An id names one mapping of a toplevel. A toplevel that commits a null
+/// An id names one mapping of a toplevel and is assigned when the toplevel
+/// maps, so ids grow in the order windows open. A toplevel that commits a null
 /// buffer is unmapped and closed; if it maps again it is a new window with a
 /// new id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -183,7 +184,7 @@ impl Compositor {
         &self.inner.socket
     }
 
-    /// Mapped toplevel windows, oldest first.
+    /// Mapped toplevel windows in the order they opened (ascending id), oldest first.
     pub fn windows(&self) -> Result<Vec<WindowInfo>> {
         self.call(Command::Windows)
     }

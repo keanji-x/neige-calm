@@ -176,6 +176,7 @@ fn setup(
         size: config.size,
         started: Instant::now(),
         pointer_window: None,
+        pressed_buttons: Vec::new(),
         popup_grab: None,
         dh: dh.clone(),
     };
@@ -255,11 +256,13 @@ impl State {
         // A dropped reply receiver only means the caller stopped waiting.
         match command {
             Command::Windows(reply) => {
-                let windows = self
+                let mut windows: Vec<_> = self
                     .windows
                     .iter()
                     .filter_map(|t| t.announced.clone())
                     .collect();
+                // Ids grow in the order windows open.
+                windows.sort_by_key(|info| info.id);
                 let _ = reply.send(windows);
             }
             Command::Watch(id, reply) => {
@@ -292,9 +295,9 @@ impl State {
         let tracked = self
             .windows
             .iter_mut()
-            .find(|t| t.id == id && t.is_mapped())
+            .find(|t| t.id() == Some(id))
             .ok_or(Error::WindowGone(id))?;
-        render(renderer, tracked).map(whole)
+        render(renderer, id, tracked).map(whole)
     }
 
     /// Renders watched windows that changed and sends frame callbacks: every tick
@@ -312,10 +315,10 @@ impl State {
             let watched = tracked.is_watched();
             if watched
                 && tracked.dirty
-                && tracked.is_mapped()
-                && let Err(e) = render(renderer, tracked)
+                && let Some(id) = tracked.id()
+                && let Err(e) = render(renderer, id, tracked)
             {
-                tracing::debug!(window = %tracked.id, error = %e, "render skipped");
+                tracing::debug!(window = %id, error = %e, "render skipped");
             }
             let due = watched
                 || tracked

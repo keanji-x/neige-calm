@@ -166,26 +166,23 @@ impl TestClient {
         }
     }
 
-    /// Creates a toplevel, waits for its configure and commits a solid buffer.
+    /// Creates a toplevel and maps it with a solid buffer.
     pub fn open_window(&mut self, title: &str, rgb: u32) {
+        self.create_window(title);
+        self.map(rgb);
+    }
+
+    /// Creates a toplevel without mapping it.
+    pub fn create_window(&mut self, title: &str) {
         let qh = self.state.qh.clone();
         let surface = self.state.compositor.create_surface(&qh, ());
         let xdg_surface = self.state.wm_base.get_xdg_surface(&surface, &qh, ());
         let toplevel = xdg_surface.get_toplevel(&qh, ());
         toplevel.set_title(title.into());
-        surface.commit();
         self.state.surface = Some(surface);
         self.state.xdg_surface = Some(xdg_surface);
         self.state._toplevel = Some(toplevel);
-        self.wait_for(|s| s.pending_configure.is_some());
-        let serial = self.state.pending_configure.take().unwrap();
-        self.state
-            .xdg_surface
-            .as_ref()
-            .unwrap()
-            .ack_configure(serial);
-        let (w, h) = self.state.configured_size.expect("configured size");
-        self.draw(rgb, (w, h));
+        self.roundtrip();
     }
 
     /// Fills the whole toplevel with a colour and commits.
@@ -206,9 +203,9 @@ impl TestClient {
         self.roundtrip();
     }
 
-    /// Maps the toplevel again after [`unmap`](Self::unmap): the initial
-    /// commit-configure sequence, then a solid buffer.
-    pub fn remap(&mut self, rgb: u32) {
+    /// Maps an unmapped toplevel (new, or after [`unmap`](Self::unmap)): the
+    /// initial commit-configure sequence, then a solid buffer.
+    pub fn map(&mut self, rgb: u32) {
         self.state.pending_configure = None;
         self.state.surface.as_ref().unwrap().commit();
         self.wait_for(|s| s.pending_configure.is_some());

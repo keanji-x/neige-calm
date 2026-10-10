@@ -21,15 +21,11 @@ const PIXELS_PER_NOTCH: f64 = 15.0;
 
 impl State {
     pub fn input(&mut self, id: WindowId, events: Vec<InputEvent>) -> Result<()> {
-        let tracked = self.tracked(id).filter(|t| t.is_mapped());
-        let Some(tracked) = tracked else {
+        let Some(tracked) = self.tracked(id) else {
             return Err(Error::WindowGone(id));
         };
         let position = tracked.pointer;
-        // With no grab left outside `id`, nothing in the batch can move the
-        // keyboard to another window: only clients start grabs, and no client
-        // request runs until the batch is done.
-        self.end_popup_grab_outside(id);
+        self.release_other_windows(id);
         self.focus(id);
         if self.pointer_window != Some(id) {
             // Bring the pointer into this window's space before any button lands.
@@ -47,30 +43,43 @@ impl State {
         Ok(())
     }
 
-    /// Ends the seat's popup grab when it is rooted in another window than `id`:
-    /// dismisses its popups and releases the keyboard and pointer grabs, which
-    /// would otherwise keep that window's popup focused.
-    fn end_popup_grab_outside(&mut self, id: WindowId) {
-        let Some((root, mut grab)) = self.popup_grab.take() else {
-            return;
-        };
-        if grab.has_ended() {
-            return;
-        }
-        if self.tracked(id).is_some_and(|t| t.has_root(&root)) {
-            self.popup_grab = Some((root, grab));
-            return;
-        }
-        grab.ungrab(PopupUngrabStrategy::All);
-        // The keyboard first: releasing the pointer grab would otherwise hand
-        // the keyboard back to the grab's root before `focus` moves it.
-        if let Some(keyboard) = self.seat.get_keyboard()
-            && keyboard.has_grab(grab.serial())
+    /// Ends every grab the seat holds for a window other than `id`, so that the
+    /// batch reaches `id` alone. Two kinds outlive a batch: a client's popup
+    /// grab, and the pointer's implicit grab while a button is held.
+    /// - A popup grab rooted in another window: its popups are dismissed.
+    /// - Buttons held in another window (the pointer's): released there, so
+    ///   that client sees each press end.
+    /// - Keyboard and pointer grabs that started in another window: released.
+    ///   smithay keeps a dismissed popup's grabs live until its client destroys
+    ///   the popup, which cannot happen before the batch is done.
+    fn release_other_windows(&mut self, id: WindowId) {
+        if let Some((root, mut grab)) = self.popup_grab.take()
+            && !grab.has_ended()
         {
-            keyboard.unset_grab(self);
+            if self.tracked(id).is_some_and(|t| t.holds(&root)) {
+                self.popup_grab = Some((root, grab));
+            } else {
+                grab.ungrab(PopupUngrabStrategy::All);
+                // Before the pointer grab: releasing that would hand the
+                // keyboard back to the grab's root before `focus` moves it.
+                if let Some(keyboard) = self.seat.get_keyboard()
+                    && keyboard.has_grab(grab.serial())
+                {
+                    keyboard.unset_grab(self);
+                }
+            }
+        }
+        if self.pointer_window != Some(id) {
+            for code in std::mem::take(&mut self.pressed_buttons) {
+                self.button(code, false);
+            }
         }
         if let Some(pointer) = self.seat.get_pointer()
-            && pointer.has_grab(grab.serial())
+            && pointer.grab_start_data().is_some_and(|start| {
+                !start
+                    .focus
+                    .is_some_and(|(surface, _)| self.tracked(id).is_some_and(|t| t.holds(&surface)))
+            })
         {
             pointer.unset_grab(self, SERIAL_COUNTER.next_serial(), self.now_ms());
         }
@@ -88,18 +97,14 @@ impl State {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
-        let focused_here = keyboard.current_focus().is_some_and(|focus| {
-            let mut inside = false;
-            if let Some(t) = self.tracked(id) {
-                t.window.with_surfaces(|s, _| inside |= *s == focus);
-            }
-            inside
-        });
+        let focused_here = keyboard
+            .current_focus()
+            .is_some_and(|focus| self.tracked(id).is_some_and(|t| t.holds(&focus)));
         if focused_here {
             return;
         }
         for tracked in &self.windows {
-            let active = tracked.id == id;
+            let active = tracked.id() == Some(id);
             if let Some(toplevel) = tracked.window.toplevel() {
                 let changed = toplevel.with_pending_state(|state| {
                     let was = state.states.contains(xdg_toplevel::State::Activated);
@@ -140,6 +145,11 @@ impl State {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
+        if !pressed {
+            self.pressed_buttons.retain(|&held| held != code);
+        } else if !self.pressed_buttons.contains(&code) {
+            self.pressed_buttons.push(code);
+        }
         let event = ButtonEvent {
             serial: SERIAL_COUNTER.next_serial(),
             time: self.now_ms(),

@@ -1,4 +1,7 @@
 //! Per-window bookkeeping: identity, mapping, announced info and watchers.
+//!
+//! A toplevel gets its [`WindowId`] when it maps, so ids grow in the order
+//! windows open. Unmapping closes the window; mapping again opens a new one.
 
 use std::sync::Weak;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,11 +24,11 @@ fn next_id() -> WindowId {
 }
 
 pub(crate) struct Tracked {
-    pub id: WindowId,
     pub window: Window,
     pub pid: i32,
-    /// The info last announced through `Opened`/`Changed`; `None` while the
-    /// toplevel is unmapped (before its first buffer and after a null one).
+    /// The info last announced through `Opened`/`Changed`, which holds the
+    /// window's id; `None` while the toplevel is unmapped (before its first
+    /// buffer and after a null one).
     pub announced: Option<WindowInfo>,
     pub canvas: Option<Canvas>,
     /// Something in the window's surface tree or popups committed since the last render.
@@ -39,7 +42,6 @@ pub(crate) struct Tracked {
 impl Tracked {
     pub fn new(window: Window, pid: i32) -> Self {
         Self {
-            id: next_id(),
             window,
             pid,
             announced: None,
@@ -58,8 +60,16 @@ impl Tracked {
             .is_some_and(|toplevel| toplevel.wl_surface() == surface)
     }
 
-    pub fn is_mapped(&self) -> bool {
-        self.announced.is_some()
+    /// The id of the current mapping; `None` while unmapped.
+    pub fn id(&self) -> Option<WindowId> {
+        self.announced.as_ref().map(|info| info.id)
+    }
+
+    /// Whether `surface` belongs to this window: its surface tree or a popup's.
+    pub fn holds(&self, surface: &WlSurface) -> bool {
+        let mut held = false;
+        self.window.with_surfaces(|s, _| held |= s == surface);
+        held
     }
 
     /// Whether the toplevel surface currently holds a buffer.
@@ -70,7 +80,7 @@ impl Tracked {
         })
     }
 
-    pub fn info(&self) -> WindowInfo {
+    fn info(&self, id: WindowId) -> WindowInfo {
         let title = self
             .window
             .toplevel()
@@ -86,7 +96,7 @@ impl Tracked {
             .unwrap_or_default();
         let size = self.window.geometry().size;
         WindowInfo {
-            id: self.id,
+            id,
             title,
             size: (size.w.max(0) as u32, size.h.max(0) as u32),
             pid: self.pid,
@@ -97,8 +107,13 @@ impl Tracked {
     pub fn root_committed(&mut self) -> Option<WindowEvent> {
         self.window.on_commit();
         self.dirty = true;
-        if self.is_mapped() && !self.has_buffer() {
-            return Some(self.unmap());
+        // A mapped toplevel that commits without a buffer is unmapped. It
+        // closes like a destroyed one; a later map opens a new window.
+        if !self.has_buffer()
+            && let Some(closed) = self.announced.take()
+        {
+            self.end_watches();
+            return Some(WindowEvent::Closed(closed.id));
         }
         let toplevel = self.window.toplevel()?;
         if !toplevel.is_initial_configure_sent() {
@@ -109,7 +124,7 @@ impl Tracked {
             if !self.has_buffer() {
                 return None;
             }
-            let info = self.info();
+            let info = self.info(next_id());
             self.announced = Some(info.clone());
             return Some(WindowEvent::Opened(info));
         }
@@ -119,7 +134,7 @@ impl Tracked {
     /// Announces a title or size change of a mapped window.
     pub fn refresh_info(&mut self) -> Option<WindowEvent> {
         let announced = self.announced.as_ref()?;
-        let info = self.info();
+        let info = self.info(announced.id);
         if *announced == info {
             return None;
         }
@@ -133,21 +148,10 @@ impl Tracked {
         !self.watchers.is_empty()
     }
 
-    /// A mapped toplevel that commits without a buffer closes like a destroyed
-    /// one: its watches end and `Closed` goes out. It takes a fresh id, so a
-    /// later map announces a new window and the old id stays gone.
-    fn unmap(&mut self) -> WindowEvent {
-        self.end_watches();
-        self.announced = None;
-        let closed = self.id;
-        self.id = next_id();
-        WindowEvent::Closed(closed)
-    }
-
     /// Ends every watch and reports the close if the window is mapped.
     pub fn close(mut self) -> Option<WindowEvent> {
         self.end_watches();
-        self.announced.map(|_| WindowEvent::Closed(self.id))
+        self.announced.map(|info| WindowEvent::Closed(info.id))
     }
 
     /// Closes every watch, which drops its pending frame.

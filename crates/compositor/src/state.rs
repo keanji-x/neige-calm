@@ -52,6 +52,9 @@ pub(crate) struct State {
     /// The window whose coordinate space the seat's pointer is in. It may name
     /// a closed window; ids are never reused, so that matches no live window.
     pub pointer_window: Option<WindowId>,
+    /// Buttons pressed through the seat and not yet released, all in
+    /// `pointer_window`. smithay tracks the same list but exposes it only to grabs.
+    pub pressed_buttons: Vec<u32>,
     /// The seat's latest explicit popup grab and the toplevel surface it is rooted in.
     pub popup_grab: Option<(WlSurface, PopupGrab<State>)>,
 }
@@ -77,11 +80,11 @@ impl State {
     }
 
     pub fn tracked(&self, id: WindowId) -> Option<&Tracked> {
-        self.windows.iter().find(|w| w.id == id)
+        self.windows.iter().find(|w| w.id() == Some(id))
     }
 
     pub fn tracked_mut(&mut self, id: WindowId) -> Option<&mut Tracked> {
-        self.windows.iter_mut().find(|w| w.id == id)
+        self.windows.iter_mut().find(|w| w.id() == Some(id))
     }
 
     /// The window whose toplevel surface is `root`.
@@ -158,11 +161,7 @@ impl CompositorHandler for State {
         }
         // Popups and subsurfaces belong to some window's frame: mark it changed.
         for tracked in &mut self.windows {
-            let mut contains = false;
-            tracked
-                .window
-                .with_surfaces(|s, _| contains |= s == surface);
-            if contains {
+            if tracked.holds(surface) {
                 tracked.dirty = true;
             }
         }

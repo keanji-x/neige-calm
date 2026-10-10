@@ -115,6 +115,9 @@ fn an_unmapped_window_closes_without_a_stale_frame_and_remaps_as_a_new_window() 
     let mut client = TestClient::connect(compositor.wayland_socket());
     client.open_window("unmapping", RED);
     let info = wait_opened(&events);
+    let mut other = TestClient::connect(compositor.wayland_socket());
+    other.open_window("other", BLUE);
+    let other_info = wait_opened(&events);
     // The watch starts with a frame pending; nobody takes it before the unmap.
     let watch = compositor.watch(info.id).expect("watch while mapped");
 
@@ -139,19 +142,120 @@ fn an_unmapped_window_closes_without_a_stale_frame_and_remaps_as_a_new_window() 
         compositor.watch(info.id),
         Err(Error::WindowGone(_))
     ));
-    assert_eq!(compositor.windows().unwrap(), vec![]);
+    assert_eq!(compositor.windows().unwrap(), vec![other_info.clone()]);
 
-    // Mapping it again opens a new window; the old id stays gone.
-    client.remap(GREEN);
+    // Mapping it again opens a new window, the newest; the old id stays gone.
+    client.map(GREEN);
     let remapped = wait_opened(&events);
-    assert_ne!(remapped.id, info.id);
+    assert!(
+        remapped.id > other_info.id,
+        "{remapped:?} after {other_info:?}"
+    );
     assert_eq!(remapped.title, "unmapping");
-    assert_eq!(compositor.windows().unwrap(), vec![remapped.clone()]);
+    assert_eq!(
+        compositor.windows().unwrap(),
+        vec![other_info, remapped.clone()],
+        "windows are listed in the order they opened"
+    );
     assert_eq!(compositor.capture(remapped.id).unwrap().pixel(5, 5), GREEN);
     assert!(matches!(
         compositor.capture(info.id),
         Err(Error::WindowGone(_))
     ));
+}
+
+#[test]
+fn window_ids_and_the_window_list_follow_the_order_windows_open() {
+    let dir = run_dir();
+    let (compositor, events) = start(dir.path(), SIZE, 30);
+    let mut late = TestClient::connect(compositor.wayland_socket());
+    late.create_window("created first, opened last");
+    let mut early = TestClient::connect(compositor.wayland_socket());
+    early.open_window("created last, opened first", BLUE);
+    let early_info = wait_opened(&events);
+    late.map(RED);
+    let late_info = wait_opened(&events);
+    assert!(late_info.id > early_info.id, "{late_info:?} {early_info:?}");
+    assert_eq!(compositor.windows().unwrap(), vec![early_info, late_info]);
+}
+
+#[test]
+fn a_button_held_in_one_window_is_released_there_before_input_reaches_another() {
+    let dir = run_dir();
+    let (compositor, events) = start(dir.path(), SIZE, 30);
+    let mut a = TestClient::connect(compositor.wayland_socket());
+    a.open_window("a", RED);
+    let a_info = wait_opened(&events);
+    let mut b = TestClient::connect(compositor.wayland_socket());
+    b.open_window("b", BLUE);
+    let b_info = wait_opened(&events);
+    let button = |pressed| InputEvent::Button {
+        code: BTN_LEFT,
+        pressed,
+    };
+    // A press with no release, as from a viewer that drops mid-drag.
+    compositor
+        .input(
+            a_info.id,
+            vec![InputEvent::Motion { x: 10.0, y: 10.0 }, button(true)],
+        )
+        .unwrap();
+    a.roundtrip();
+    b.roundtrip();
+    a.state.seen.clear();
+    b.state.seen.clear();
+
+    compositor
+        .input(
+            b_info.id,
+            vec![
+                InputEvent::Motion { x: 50.0, y: 60.0 },
+                button(true),
+                button(false),
+                key(true),
+                key(false),
+            ],
+        )
+        .unwrap();
+    a.roundtrip();
+    b.roundtrip();
+    let mut expected = vec![
+        Seen::Button {
+            button: BTN_LEFT,
+            pressed: true,
+        },
+        Seen::Button {
+            button: BTN_LEFT,
+            pressed: false,
+        },
+    ];
+    expected.extend(KEY_DOWN_UP);
+    assert_eq!(
+        buttons_and_keys(&b.state.seen),
+        expected,
+        "b got: {:?}; a got: {:?}",
+        b.state.seen,
+        a.state.seen
+    );
+    assert!(
+        b.state.seen.iter().any(|s| matches!(s, Seen::PointerEnter { x, y } | Seen::PointerMotion { x, y } if *x == 50.0 && *y == 60.0)),
+        "{:?}",
+        b.state.seen
+    );
+    assert_eq!(
+        buttons_and_keys(&a.state.seen),
+        vec![Seen::Button {
+            button: BTN_LEFT,
+            pressed: false
+        }],
+        "a's held button is released in a: {:?}",
+        a.state.seen
+    );
+    assert!(
+        !a.state.seen.iter().any(|s| matches!(s, Seen::PointerEnter { x, y } | Seen::PointerMotion { x, y } if *x == 50.0 && *y == 60.0)),
+        "a got b's pointer position: {:?}",
+        a.state.seen
+    );
 }
 
 /// Window `a` (red) with a popup holding an explicit grab, made the way a
@@ -259,6 +363,34 @@ fn keys_for_another_window_end_a_popup_grab_and_reach_that_window() {
     assert!(
         !a.state.seen.contains(&Seen::KeyboardEnter),
         "focus does not pass through the grabbing window: {:?}",
+        a.state.seen
+    );
+}
+
+#[test]
+fn pointer_motion_for_another_window_reaches_it_during_a_popup_grab() {
+    let dir = run_dir();
+    let (compositor, events) = start(dir.path(), SIZE, 30);
+    let (mut a, _, mut b, b_info) = grabbing_popup_and_another_window(&compositor, &events);
+
+    // Hover alone, no click: the dismissed popup's client has not destroyed
+    // it yet, so its pointer grab is still live unless released.
+    compositor
+        .input(b_info.id, vec![InputEvent::Motion { x: 30.0, y: 40.0 }])
+        .unwrap();
+    a.roundtrip();
+    b.roundtrip();
+    let at_30_40 = |s: &Seen| matches!(s, Seen::PointerEnter { x, y } | Seen::PointerMotion { x, y } if *x == 30.0 && *y == 40.0);
+    assert!(
+        b.state.seen.iter().any(at_30_40),
+        "b got: {:?}; a got: {:?}",
+        b.state.seen,
+        a.state.seen
+    );
+    assert!(!a.state.seen.iter().any(at_30_40), "{:?}", a.state.seen);
+    assert!(
+        a.state.seen.contains(&Seen::PopupDone),
+        "{:?}",
         a.state.seen
     );
 }

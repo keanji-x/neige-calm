@@ -13,7 +13,7 @@ use smithay::backend::renderer::{Bind, ExportMem, Offscreen};
 use smithay::reexports::pixman::Image;
 use smithay::utils::{Physical, Point, Rectangle, Scale, Transform};
 
-use crate::api::{Error, Frame, Rect, Result};
+use crate::api::{Error, Frame, Rect, Result, WindowId};
 use crate::watch::full;
 use crate::windows::Tracked;
 
@@ -47,8 +47,11 @@ impl Canvas {
 
 /// Renders the window and publishes the result to its watchers when anything
 /// changed. Returns the full current frame with the render's damage.
-pub(crate) fn render(renderer: &mut PixmanRenderer, tracked: &mut Tracked) -> Result<Frame> {
-    let id = tracked.id;
+pub(crate) fn render(
+    renderer: &mut PixmanRenderer,
+    id: WindowId,
+    tracked: &mut Tracked,
+) -> Result<Frame> {
     if !tracked.has_buffer() {
         return Err(Error::NoBuffer(id));
     }
