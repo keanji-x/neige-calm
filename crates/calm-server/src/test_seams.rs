@@ -60,6 +60,11 @@ pub const PLANNER_FIRST_START: &str = "planner-first-start";
 #[cfg(feature = "fixtures")]
 pub const TRACK_CREATE_BEFORE_PLANNER_START: &str = "track-create-before-planner-start";
 
+/// Where a Claude restart has committed its replacement runtime and not yet stopped the card's
+/// current child (#2516); keyed by card id.
+#[cfg(feature = "fixtures")]
+pub const CLAUDE_RESTART_BEFORE_STOP: &str = "claude-restart-before-stop";
+
 /// Where an operation insert has found no row under its `(kind, idempotency_key)` and is about to
 /// write one; keyed by the idempotency key.
 #[cfg(feature = "fixtures")]

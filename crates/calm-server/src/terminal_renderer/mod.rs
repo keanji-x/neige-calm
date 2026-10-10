@@ -567,6 +567,8 @@ impl TerminalRendererRegistry {
         self.drop_entry_with_outcome(terminal_id).await
     }
 
+    /// Teardown that waits on the reader persisting the exit; `stop_for_respawn` (respawn.rs) is
+    /// its counterpart for a row about to run a replacement, where that exit must not land.
     async fn drop_entry_with_outcome(&self, terminal_id: &str) -> RendererDropOutcome {
         let entry = self
             .entries
@@ -860,6 +862,12 @@ async fn ensure_entry(
     // The sender lives inside the attach reader task, so it is dropped the moment that task ends —
     // which is how `await_exit_persisted` tells "ended without persisting" apart from "still working".
     let (exit_persisted_tx, exit_persisted) = watch::channel(false);
+    let attached_runtime = match repo.as_deref() {
+        Some(repo) => crate::terminal_sweeper::active_runtime_on_terminal(repo, &cfg.terminal_id)
+            .await
+            .map_err(anyhow::Error::from)?,
+        None => None,
+    };
     let attach_task = attach_reader::spawn_supervisor_attach_reader(
         attach_conn,
         proc_id.clone(),
@@ -870,6 +878,7 @@ async fn ensure_entry(
         exited_tx,
         repo,
         cfg.terminal_id.clone(),
+        attached_runtime,
         task_hook,
         exit_persisted_tx,
         output_capture,

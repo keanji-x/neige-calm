@@ -469,7 +469,7 @@ async fn claude_restart_of_a_worker_card_has_only_the_kernel_mcp_server() {
     let spawned = r.spawned.lock().await.clone();
     assert_eq!(spawned.len(), 1);
     assert!(
-        spawned[0].0.contains(" --resume "),
+        spawned[0].0.contains(" --resume="),
         "a restart resumes: {}",
         spawned[0].0
     );

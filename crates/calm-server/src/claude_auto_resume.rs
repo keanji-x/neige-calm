@@ -47,6 +47,27 @@ pub async fn resume_owner_claude_cards(state: &AppState, stale_terminal_ids: &[S
         if !resumed.insert(card_id.clone()) {
             continue;
         }
+        // Operation recovery may have finished a restart the crash interrupted: resume only a
+        // terminal that is still exited, at submit time.
+        match terminal_still_exited(state, terminal_id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::info!(
+                    card_id,
+                    terminal_id,
+                    "claude card already running again; not resumed"
+                );
+                continue;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    card_id,
+                    %error,
+                    "claude auto-resume could not re-read the card's terminal; left as it is"
+                );
+                continue;
+            }
+        }
         match run_claude_restart(&state.operation_runtime, ActorId::Kernel, card_id.clone()).await {
             Ok(OperationOutcome::Succeeded { .. })
             | Ok(OperationOutcome::SucceededViaCollision { .. }) => {
@@ -64,6 +85,20 @@ pub async fn resume_owner_claude_cards(state: &AppState, stale_terminal_ids: &[S
             ),
         }
     }
+}
+
+/// Whether `terminal_id`'s row still records an exit and no child runs on it.
+async fn terminal_still_exited(state: &AppState, terminal_id: &str) -> Result<bool> {
+    let Some(term) = state.repo.terminal_get(terminal_id).await? else {
+        return Ok(false);
+    };
+    if term.exit_code.is_none() && !term.signal_killed {
+        return Ok(false);
+    }
+    Ok(!state
+        .terminal_renderer
+        .child_running(state.daemon.proc_supervisor_sock.as_deref(), terminal_id)
+        .await)
 }
 
 /// The card of `terminal_id` when it is a Claude card created through the claude-cards route.

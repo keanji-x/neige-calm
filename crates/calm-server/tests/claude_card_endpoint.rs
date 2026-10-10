@@ -651,7 +651,7 @@ async fn post_claude_restart_after_exit_reuses_terminal_and_resumes_session() {
     assert!(
         restart_call
             .program
-            .contains(&format!("--resume '{}'", session_id)),
+            .contains(&format!("--resume='{}'", session_id)),
         "restart program must resume existing session: {}",
         restart_call.program
     );
@@ -755,7 +755,7 @@ async fn post_claude_restart_recreates_missing_terminal_row_and_resumes_session(
     assert!(
         restart_call
             .program
-            .contains(&format!("--resume '{}'", session_id)),
+            .contains(&format!("--resume='{}'", session_id)),
         "restart program must resume existing session: {}",
         restart_call.program
     );
@@ -998,7 +998,7 @@ async fn post_claude_restart_while_running_replaces_the_child() {
     .fetch_all(boot.repo.pool())
     .await
     .unwrap();
-    assert_eq!(states, ["exited", "running"]);
+    assert_eq!(states, ["superseded", "running"]);
 }
 
 #[tokio::test]

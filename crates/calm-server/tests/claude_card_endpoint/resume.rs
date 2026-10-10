@@ -84,7 +84,7 @@ async fn restart_after_clear_resumes_the_session_the_card_last_started() {
     assert_eq!(status, StatusCode::OK, "body={restarted:?}");
     let program = calls.lock().await.last().unwrap().program.clone();
     assert!(
-        program.contains(&format!("--resume '{cleared}'")),
+        program.contains(&format!("--resume='{cleared}'")),
         "a restart must resume the session the card last started: {program}"
     );
     assert!(!program.contains(minted), "{program}");
@@ -209,7 +209,7 @@ async fn boot_resumes_owner_created_claude_cards_and_leaves_task_workers_exited(
             .last()
             .unwrap()
             .program
-            .contains(&format!("--resume '{owner_session}'")),
+            .contains(&format!("--resume='{owner_session}'")),
         "{}",
         calls.last().unwrap().program
     );
@@ -240,4 +240,76 @@ async fn boot_resumes_owner_created_claude_cards_and_leaves_task_workers_exited(
         "a task worker stays exited"
     );
     assert_eq!(runtime_status(&boot.repo, &worker_id).await, "exited");
+}
+
+/// The argv `/bin/sh -c` hands the CLI for `program`, as the terminal runs it.
+fn shell_argv(program: &str) -> Vec<String> {
+    let output = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!("set -- {program}; printf '%s\\0' \"$@\""))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .split_terminator('\0')
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+/// The followed id comes from an unauthenticated hook payload: one that reads like an option is
+/// still only the value of `--resume`, never an option of its own.
+#[tokio::test]
+async fn a_dash_led_session_id_stays_the_value_of_resume() {
+    let _guard = ENV_LOCK.lock().await;
+    let calls = Arc::new(tokio::sync::Mutex::new(Vec::<SpawnCall>::new()));
+    let calls_for_factory = calls.clone();
+    let boot =
+        boot_with_spawn_hook_factory(move |_, _| recording_spawn_hook(calls_for_factory)).await;
+    let (status, created) = post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
+    assert_eq!(status, StatusCode::CREATED, "body={created:?}");
+    let card_id = created["id"].as_str().unwrap();
+    assert_eq!(
+        post_hook(&boot, card_id, session_start("--version", "clear")).await,
+        StatusCode::OK
+    );
+
+    let (status, restarted) = post_restart(boot.app.clone(), card_id).await;
+    assert_eq!(status, StatusCode::OK, "body={restarted:?}");
+    let argv = shell_argv(&calls.lock().await.last().unwrap().program);
+    assert!(
+        argv.iter().any(|arg| arg == "--resume=--version"),
+        "{argv:?}"
+    );
+    assert!(!argv.iter().any(|arg| arg == "--version"), "{argv:?}");
+}
+
+/// Operation recovery finished the restart a crash interrupted before the auto-resume runs: the
+/// card is running again, so the auto-resume leaves it alone.
+#[tokio::test]
+async fn boot_auto_resume_skips_a_card_already_running_again() {
+    let _guard = ENV_LOCK.lock().await;
+    let calls = Arc::new(tokio::sync::Mutex::new(Vec::<SpawnCall>::new()));
+    let calls_for_factory = calls.clone();
+    let boot =
+        boot_with_spawn_hook_factory(move |_, _| recording_spawn_hook(calls_for_factory)).await;
+    let (status, owner) = post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
+    assert_eq!(status, StatusCode::CREATED, "body={owner:?}");
+    let owner_id = owner["id"].as_str().unwrap();
+    let stale = calm_server::reconcile_supervisor_on_boot(&boot.state).await;
+    assert_eq!(stale.len(), 1);
+    // What recovery's completed restart leaves: the card running on its terminal again.
+    let (status, restarted) = post_restart(boot.app.clone(), owner_id).await;
+    assert_eq!(status, StatusCode::OK, "body={restarted:?}");
+    let spawns_before = calls.lock().await.len();
+
+    calm_server::claude_auto_resume::resume_owner_claude_cards(&boot.state, &stale).await;
+
+    let restarts: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM operations WHERE kind = 'claude-restart'")
+            .fetch_one(boot.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(restarts, 1, "only the recovered restart");
+    assert_eq!(calls.lock().await.len(), spawns_before);
 }

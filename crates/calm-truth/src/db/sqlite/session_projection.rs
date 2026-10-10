@@ -119,22 +119,40 @@ pub(super) async fn runtime_get_active_by_thread_from_pool(
     row.as_ref().map(card_runtime_from_ws_join_row).transpose()
 }
 
-pub(super) async fn runtime_get_active_by_session_from_pool(
-    pool: &SqlitePool,
-    provider: AgentProvider,
-    session_id: &str,
-) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
-    let sql = format!(
+fn active_by_session_sql() -> String {
+    format!(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
            WHERE ws.provider = ?1 AND ws.agent_session_id = ?2
              AND ws.state IN ('starting','running','idle','turn_pending')
            ORDER BY ws.updated_at_ms DESC, ws.created_at_ms DESC, ws.id DESC
            LIMIT 1"#,
-    );
-    let row = sqlx::query(&sql)
+    )
+}
+
+pub(super) async fn runtime_get_active_by_session_from_pool(
+    pool: &SqlitePool,
+    provider: AgentProvider,
+    session_id: &str,
+) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
+    let row = sqlx::query(&active_by_session_sql())
         .bind(agent_provider_to_db(&provider))
         .bind(session_id)
         .fetch_optional(pool)
+        .await?;
+    row.as_ref().map(card_runtime_from_ws_join_row).transpose()
+}
+
+/// [`runtime_get_active_by_session_from_pool`] inside a write transaction, for a writer that
+/// binds a session id and must see who holds it in the same transaction.
+pub async fn session_projection_active_by_session_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    provider: AgentProvider,
+    session_id: &str,
+) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
+    let row = sqlx::query(&active_by_session_sql())
+        .bind(agent_provider_to_db(&provider))
+        .bind(session_id)
+        .fetch_optional(&mut **tx)
         .await?;
     row.as_ref().map(card_runtime_from_ws_join_row).transpose()
 }

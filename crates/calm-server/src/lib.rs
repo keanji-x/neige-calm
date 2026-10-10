@@ -73,6 +73,7 @@ pub async fn reconcile_supervisor_on_boot(state: &state::AppState) -> Vec<String
                     terminal_sweeper::complete_ephemeral_session_from_terminal_exit(
                         state.repo.as_ref(),
                         &term.id,
+                        terminal_sweeper::ExitedRuntime::Active,
                         WorkerSessionState::Exited,
                     )
                 })

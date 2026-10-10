@@ -294,18 +294,20 @@ async fn cross_check_session_card(
             session_id = %session_id,
             "hook ingest rejected: session_id maps to different card"
         );
-        return Err(CalmError::BadRequest(
-            "hook session_id/card_id mismatch".into(),
-        ));
+        return Err(session_card_mismatch());
     }
 
     Ok(Some(worker_session_id))
 }
 
+fn session_card_mismatch() -> CalmError {
+    CalmError::BadRequest("hook session_id/card_id mismatch".into())
+}
+
 /// #2516: Claude mints a new session id on `/clear` and `/resume` and reports it in that
 /// session's `SessionStart` hook, whatever its `source`. The card's active Claude runtime takes
-/// the id, so a restart resumes the conversation the card shows. An id already bound to another
-/// card never reaches here: the caller rejects it first.
+/// the id, so a restart resumes the conversation the card shows. An id an active runtime of
+/// another card holds is rejected, checked in the binding transaction itself.
 async fn follow_claude_session_start(
     s: &RouteState,
     card_id: &str,
@@ -322,6 +324,25 @@ async fn follow_claude_session_start(
     let session_id = session_id.to_owned();
     crate::db::write_in_tx_typed(s.repo.as_ref(), move |tx| {
         Box::pin(async move {
+            if let Some(holder) = crate::db::sqlite::session_projection_active_by_session_tx(
+                tx,
+                AgentProvider::Claude,
+                &session_id,
+            )
+            .await?
+            {
+                if holder.card_id != card_id {
+                    tracing::warn!(
+                        target: "hook.ingest.card_mismatch",
+                        query_card = %card_id,
+                        payload_card = %holder.card_id,
+                        session_id = %session_id,
+                        "claude SessionStart rejected: another card's runtime holds the id"
+                    );
+                    return Err(session_card_mismatch());
+                }
+                return Ok(Some(WorkerSessionId::from(holder.id)));
+            }
             let Some(runtime) =
                 crate::db::sqlite::session_projection_active_for_card_tx(tx, &card_id).await?
             else {

@@ -16,11 +16,37 @@ use crate::terminal_renderer::{RendererDropOutcome, TerminalRendererRegistry};
 use calm_session::control::ProcSignal;
 use sqlx::Row;
 
+/// Which runtime a terminal's PTY exit may end.
+pub(crate) enum ExitedRuntime {
+    /// The terminal's active runtime: the boot reconcile, which runs before anything respawns.
+    Active,
+    /// The runtime the exited child's attach reader was set up for (`None`: none was active then).
+    /// A replacement started on the same terminal since (#2516) is never ended by this exit.
+    AttachedFor(Option<String>),
+}
+
+/// The runtime active on `terminal_id` now: what a new attach reader serves.
+pub(crate) async fn active_runtime_on_terminal(
+    repo: &dyn crate::db::RouteRepo,
+    terminal_id: &str,
+) -> Result<Option<String>> {
+    let Some(term) = repo.terminal_get(terminal_id).await? else {
+        return Ok(None);
+    };
+    let runtime = repo
+        .session_projection_active_for_card(&term.card_id.to_string())
+        .await?;
+    Ok(runtime
+        .filter(|runtime| runtime.terminal_run_id.as_deref() == Some(terminal_id))
+        .map(|runtime| runtime.id))
+}
+
 /// A PTY exit ends an ephemeral session. For a resumable session it is only viewer/liveness
 /// evidence: the provider death arbiter and explicit completion retain authority.
 pub(crate) async fn complete_ephemeral_session_from_terminal_exit(
     repo: &dyn crate::db::RouteRepo,
     terminal_id: &str,
+    which: ExitedRuntime,
     terminal_status: crate::session_projection_repo::WorkerSessionState,
 ) -> Result<()> {
     use crate::db::sqlite::{
@@ -34,6 +60,11 @@ pub(crate) async fn complete_ephemeral_session_from_terminal_exit(
             else {
                 return Ok(());
             };
+            if let ExitedRuntime::AttachedFor(attached) = &which
+                && attached.as_deref() != Some(active.id.as_str())
+            {
+                return Ok(());
+            }
             let session = session_get_tx(tx, &WorkerSessionId(active.id.clone()))
                 .await?
                 .ok_or_else(|| {
