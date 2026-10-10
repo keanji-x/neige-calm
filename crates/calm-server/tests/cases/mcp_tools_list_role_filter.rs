@@ -305,5 +305,22 @@ async fn tools_list_for_shared_daemon_without_thread_returns_role_union() {
         names.contains(&"neige_report_commit".to_string()),
         "daemon-trust tools/list without threadId must include report.commit, got: {names:?}"
     );
+    // #2533: a Codex thread keeps the catalog it listed before attribution, so the unattributed
+    // listing covers every role's own listing, the worker watcher's Assistant-only report included.
+    assert!(
+        names.contains(&"neige_worker_report".to_string()),
+        "daemon-trust tools/list without threadId must include worker_report, got: {names:?}"
+    );
+    for role in [CardRole::Planner, CardRole::Worker, CardRole::Assistant] {
+        let missing: Vec<_> = tools_list_names_for_role(role)
+            .await
+            .into_iter()
+            .filter(|name| !names.contains(name))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "unattributed tools/list omits {role:?} tools {missing:?}"
+        );
+    }
     let _ = (&boot.server, &boot.repo);
 }
