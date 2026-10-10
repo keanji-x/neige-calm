@@ -408,9 +408,16 @@ impl Observation {
                 } else {
                     ""
                 };
-                format!(
-                    "{head} Log tail:\n{log_tail}\nRead the full log at runs/{idempotency_key}/gates/{attempt}.log; read the worker output at runs/{idempotency_key}.md.{regate}"
-                )
+                let paths = format!(
+                    "Read the full log at runs/{idempotency_key}/gates/{attempt}.log; read the worker output at runs/{idempotency_key}.md."
+                );
+                // A passed gate's tail is not evidence the Planner acts on, and it was half of all
+                // kernel-written turn input (#2536); the log path stays.
+                if *passed {
+                    format!("{head} {paths}")
+                } else {
+                    format!("{head} Log tail:\n{log_tail}\n{paths}{regate}")
+                }
             }
             Observation::TaskGitDeliverySettled {
                 key,
@@ -548,7 +555,8 @@ impl Observation {
 /// Appended to a failed candidate-bound gate wake whose checkout was sampled (#2405).
 const REGATE_HINT: &str = " If an environment cause failed this gate, fix it, then re-run it on the same candidate with neige_task_regate.";
 
-/// The head sentence of a gate-result wake (everything before ` Log tail:`), #1727 S4 D3.
+/// The head sentence of a gate-result wake (everything before ` Log tail:`, or before the log path
+/// on a pass), #1727 S4 D3.
 /// A refused, discarded or no-candidate target names the target instead of the step verdict;
 /// every other target (`Unbound`, `Verified` with no reasons, `Unsampled`, absent) keeps the step
 /// verdict, and a `Verified` one also names the candidate it verified (#2459). A `gate-timeout` /
@@ -848,9 +856,9 @@ mod tests {
         let obs = Observation::TaskGateResult {
             idempotency_key: "w:k".into(),
             key: "k".into(),
-            passed: true,
-            failing_step: None,
-            exit_code: Some(0),
+            passed: false,
+            failing_step: Some("test".into()),
+            exit_code: Some(101),
             log_tail: "ok\nwarn\nwarn\nwarn\n".into(),
             attempt: 1,
             status_detail: None,
@@ -859,6 +867,34 @@ mod tests {
         let text = obs.to_turn_text();
         assert!(text.contains("Log tail:\nok\nwarn (×3)\n"), "{text}");
         assert!(!text.contains("warn\nwarn"), "{text}");
+    }
+
+    /// #2536: a passed gate's wake names the log; its tail stays in the stored observation and the
+    /// log file, not in the Planner's turn input.
+    #[test]
+    fn a_passed_gate_wake_names_the_log_without_its_tail() {
+        let obs = Observation::TaskGateResult {
+            idempotency_key: "w:k".into(),
+            key: "k".into(),
+            passed: true,
+            failing_step: None,
+            exit_code: Some(0),
+            log_tail: "PASS one\nPASS two\n".into(),
+            attempt: 1,
+            status_detail: None,
+            target: None,
+        };
+        let text = obs.to_turn_text();
+        assert!(
+            !text.contains("PASS one") && !text.contains("Log tail"),
+            "{text}"
+        );
+        assert!(
+            text.ends_with(
+                " Read the full log at runs/w:k/gates/1.log; read the worker output at runs/w:k.md."
+            ),
+            "{text}"
+        );
     }
 
     /// #1727 S4 slice 4: an observation persisted by a pre-slice-4 harness snapshot has neither
