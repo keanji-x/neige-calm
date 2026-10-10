@@ -1914,27 +1914,32 @@ fn harness_observation_from_event_mapping_pin() {
         wake.to_turn_text(),
         "Wake from calendar (entry-1): Calendar entry is due."
     );
-    // #1755: the quiet-worker wake rides the same variant as a plain system update.
-    let quiet_text = crate::worker_quiet::wake_text("build", "t:build", 60);
-    let quiet = harness_observation_from_event(
+    // #2492: the worker watcher's report rides the same variant as a plain system update.
+    let report_text = crate::worker_watch::report_line(
+        "build",
+        "t:build",
+        &crate::worker_watch::Verdict::TrustAccepted(None),
+    )
+    .unwrap();
+    let report = harness_observation_from_event(
         &track,
         &Event::TrackWakeRequested {
             track_id: TrackId::from("payload-track-ignored"),
-            source: calm_types::observation::WORKER_QUIET_WAKE_SOURCE.into(),
-            key: "t:build:1000".into(),
-            text: quiet_text.clone(),
+            source: calm_types::observation::WORKER_WATCH_WAKE_SOURCE.into(),
+            key: "t:build:trust_accepted:1000".into(),
+            text: report_text.clone(),
         },
         None,
     )
-    .expect("a quiet-worker wake maps to an observation");
-    assert!(quiet.is_hard_fire());
+    .expect("a worker watcher report maps to an observation");
+    assert!(report.is_hard_fire());
     assert_eq!(
-        quiet.input_segment(None).presentation,
+        report.input_segment(None).presentation,
         calm_types::model::HarnessInputPresentation::System
     );
     assert_eq!(
-        quiet.to_turn_text(),
-        format!("Wake from worker_quiet (t:build:1000): {quiet_text}")
+        report.to_turn_text(),
+        format!("Wake from worker_watch (t:build:trust_accepted:1000): {report_text}")
     );
     assert_eq!(
         harness_observation_from_event(

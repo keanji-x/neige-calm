@@ -1312,12 +1312,6 @@ impl AppState {
             harness.clone(),
             terminal_renderer.clone(),
         );
-        crate::worker_quiet::spawn(
-            route_repo.clone(),
-            events.clone(),
-            write.clone(),
-            terminal_renderer.clone(),
-        );
         let pending_codex_threads = Arc::new(PendingThreadStartRegistry::new(
             repo.clone(),
             events.clone(),
@@ -1503,6 +1497,9 @@ impl AppState {
         // Orphan-terminal sweeper; emits `TerminalDeleted` through the audited write pipeline. The
         // same tick also ends worker sessions left running on completed tracks.
         crate::terminal_sweeper::spawn(state.clone());
+        // Quiet task workers go to the Track's worker watcher, which needs the full route state to
+        // create its conversation and send it a message (#2492).
+        crate::worker_quiet::spawn(&state);
 
         // VCS objects are content-addressed and shared by multiple tracks, so deletion only
         // removes refs + commits; unreferenced objects are reclaimed hourly with a grace window.

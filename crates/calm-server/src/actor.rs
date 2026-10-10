@@ -28,6 +28,16 @@ impl Actor {
         &self.0
     }
 
+    /// The actor of a server-internal create or send on a person's behalf (the Today summary, the
+    /// worker watcher, #2492). Fixed, never read from a request: the actor enters the operation's
+    /// and the send's payload hash, and a same-key different-hash submit is a 409 that never
+    /// expires. `user`, because only a person's send may start a conversation with no thread to
+    /// preserve or recover a failed one (`planner_session::ensure_planner_session`); `kernel`
+    /// would degrade to `User` in [`Self::to_actor_id`] anyway.
+    pub(crate) fn server_send() -> Self {
+        Self(Self::DEFAULT.to_string())
+    }
+
     /// Map the header actor to a typed [`ActorId`]. Only `"user"` and `"ai:codex"` are header-reachable; anything else maps to `User` as defence in depth.
     pub fn to_actor_id(&self) -> ActorId {
         if self.0 == "user" {

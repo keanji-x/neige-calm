@@ -1,30 +1,76 @@
-//! #1755: the quiet-worker detector against production task, card, session and terminal rows and
-//! a live renderer entry whose last-output instant and the sweep clock the test sets.
+//! #1755, #2492: the quiet-worker detector against production task, card, session and terminal
+//! rows and a live renderer entry whose last-output instant and the sweep clock the test sets. The
+//! routing cases deliver through the production watcher (conversation create and planner-input
+//! send over a fake app-server); the gating cases record what the detector hands over.
 use super::task_terminal::{Worker, worker_running};
 use super::terminal_support::Harness;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::card_with_terminal_create_tx;
+use calm_server::error::CalmError;
 use calm_server::model::{CardRole, new_id, now_ms};
 use calm_server::session_projection_repo::WorkerSessionState;
 use calm_server::terminal_renderer::{RendererConfig, RendererEntry, TerminalExitInfo};
-use calm_server::worker_quiet::{WorkerQuietDetector, wake_text};
-use calm_types::observation::WORKER_QUIET_WAKE_SOURCE;
+use calm_server::worker_quiet::{QuietWorkerInbox, WorkerQuietDetector};
+use calm_server::worker_watch::{WorkerWatcher, watch_text, watcher_card_id};
+use futures::future::BoxFuture;
 use serde_json::{Value, json};
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const QUIET: Duration = Duration::from_secs(5);
 const QUIET_MS: i64 = 5_000;
 const T0: i64 = 1_000_000;
 
-fn detector(h: &Harness) -> WorkerQuietDetector {
+/// What the detector handed over, as `(track_id, episode_key, text)`.
+#[derive(Default)]
+struct Recorder(Mutex<Vec<(String, String, String)>>);
+
+impl QuietWorkerInbox for Recorder {
+    fn deliver<'a>(
+        &'a self,
+        track_id: &'a str,
+        episode_key: &'a str,
+        text: String,
+    ) -> BoxFuture<'a, calm_server::error::Result<()>> {
+        self.0
+            .lock()
+            .unwrap()
+            .push((track_id.to_owned(), episode_key.to_owned(), text));
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// The production watcher behind one refused first delivery.
+struct FailFirst {
+    watcher: WorkerWatcher,
+    failed: AtomicBool,
+}
+
+impl QuietWorkerInbox for FailFirst {
+    fn deliver<'a>(
+        &'a self,
+        track_id: &'a str,
+        episode_key: &'a str,
+        text: String,
+    ) -> BoxFuture<'a, calm_server::error::Result<()>> {
+        if !self.failed.swap(true, Ordering::SeqCst) {
+            return Box::pin(async {
+                Err(CalmError::ServiceUnavailable(
+                    "first delivery refused".into(),
+                ))
+            });
+        }
+        Box::pin(self.watcher.deliver(track_id, episode_key, text))
+    }
+}
+
+fn detector(h: &Harness, inbox: Arc<dyn QuietWorkerInbox>) -> WorkerQuietDetector {
     WorkerQuietDetector::new(
         h.sql.clone(),
-        h.state.events.clone(),
-        h.state.write().clone(),
         h.state.terminal_renderer.clone(),
+        inbox,
         QUIET,
     )
 }
@@ -54,34 +100,92 @@ async fn quiet_worker(h: &Harness, kind: &str) -> (Worker, Arc<RendererEntry>) {
     (w, entry)
 }
 
-/// Every persisted `track.wake_requested` as `(source, key, text)`, oldest first.
-async fn wakes(h: &Harness) -> Vec<(String, String, String)> {
-    let rows: Vec<(String,)> = sqlx::query_as(
-        "SELECT payload FROM events WHERE kind = 'track.wake_requested' ORDER BY id",
-    )
-    .fetch_all(h.sql.pool())
-    .await
-    .unwrap();
-    rows.into_iter()
-        .map(|(payload,)| {
-            let v: Value = serde_json::from_str(&payload).unwrap();
-            assert_eq!(v["track_id"], json!(h.track), "{v}");
-            (
-                v["source"].as_str().unwrap().to_owned(),
-                v["key"].as_str().unwrap().to_owned(),
-                v["text"].as_str().unwrap().to_owned(),
-            )
-        })
-        .collect()
+/// Every persisted `track.wake_requested`, of any source.
+async fn wake_events(h: &Harness) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind = 'track.wake_requested'")
+        .fetch_one(h.sql.pool())
+        .await
+        .unwrap()
 }
 
-/// Sweep once past every fixture's threshold and require that only the positive control woke.
-async fn assert_only_control_wakes(h: &Harness, control: &Worker) {
-    let mut d = detector(h);
+/// The keys `card` took planner input under, oldest first: one per message it was sent.
+async fn input_keys(h: &Harness, card: &str) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT idempotency_key FROM planner_input_idempotency WHERE card_id = ?1 ORDER BY id",
+    )
+    .bind(card)
+    .fetch_all(h.sql.pool())
+    .await
+    .unwrap()
+}
+
+/// `harness.user_message.enqueued` rows of `card`: its first message and every send that queued.
+async fn enqueued(h: &Harness, card: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM events \
+          WHERE kind = 'harness.user_message.enqueued' AND scope_card = ?1",
+    )
+    .bind(card)
+    .fetch_one(h.sql.pool())
+    .await
+    .unwrap()
+}
+
+/// Wait until `needle` reached `card`: a turn the fake app-server started, or the card's persisted
+/// queue (the fake never completes a turn, so later messages wait there).
+async fn await_delivered(h: &Harness, card: &str, needle: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let mut texts: Vec<String> = h
+            .state
+            .shared_codex_appserver
+            .started_turns_for_test()
+            .into_iter()
+            .flat_map(|(_, items)| items)
+            .filter_map(|item| match item {
+                calm_server::codex_appserver::InputItem::Text { text } => Some(text),
+                _ => None,
+            })
+            .collect();
+        let states: Vec<Option<String>> =
+            sqlx::query_scalar("SELECT handle_state_json FROM worker_sessions WHERE card_id = ?1")
+                .bind(card)
+                .fetch_all(h.sql.pool())
+                .await
+                .unwrap();
+        for state in states.into_iter().flatten() {
+            let parsed: Value = serde_json::from_str(&state).unwrap();
+            for obs in parsed["pending_queue"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+            {
+                texts.push(obs["text"].as_str().unwrap_or_default().to_owned());
+            }
+        }
+        if texts.iter().any(|text| text.contains(needle)) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{needle:?} never reached the watcher: {texts:#?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Sweep once past every fixture's threshold and require that only the positive control is handed
+/// over, with its watch message.
+async fn assert_only_control_delivered(h: &Harness, control: &Worker) {
+    let recorder = Arc::new(Recorder::default());
+    let mut d = detector(h, recorder.clone());
     let key = format!("{}:{T0}", control.task);
     assert_eq!(d.tick(T0 + 10 * QUIET_MS).await, vec![key.clone()]);
-    let keys: Vec<String> = wakes(h).await.into_iter().map(|(_, key, _)| key).collect();
-    assert_eq!(keys, vec![key]);
+    let text = watch_text(&task_key(h, &control.task).await, &control.task, 5).unwrap();
+    assert_eq!(
+        *recorder.0.lock().unwrap(),
+        vec![(h.track.clone(), key, text)]
+    );
 }
 
 async fn task_key(h: &Harness, attempt_id: &str) -> String {
@@ -89,54 +193,97 @@ async fn task_key(h: &Harness, attempt_id: &str) -> String {
 }
 
 #[tokio::test]
-async fn a_quiet_running_worker_wakes_once_per_quiet_episode() {
-    let h = Harness::start().await;
+async fn a_quiet_worker_goes_to_the_tracks_watcher_once_per_episode_never_to_the_planner() {
+    let h = Harness::start_with_fake_codex().await;
     let (w, entry) = quiet_worker(&h, "claude").await;
     let key = task_key(&h, &w.task).await;
-    let mut d = detector(&h);
+    let watcher = Arc::new(WorkerWatcher::new(&h.state));
+    let mut d = detector(&h, watcher.clone());
+    let card = watcher_card_id(&h.track);
 
-    // Output is recent: no wake.
+    // Output is recent: nothing is handed over, and no watcher exists yet.
     assert!(d.tick(T0 + QUIET_MS - 1).await.is_empty());
-    assert!(wakes(&h).await.is_empty());
+    assert!(h.sql.card_get(&card).await.unwrap().is_none());
 
-    // Quiet for the threshold: exactly one wake naming the attempt and the episode.
+    // Quiet for the threshold: the watcher is created, a plain Assistant, and sent the episode.
     let first = format!("{}:{T0}", w.task);
     assert_eq!(d.tick(T0 + QUIET_MS).await, vec![first.clone()]);
-    let expected = (
-        WORKER_QUIET_WAKE_SOURCE.to_owned(),
-        first.clone(),
-        wake_text(&key, &w.task, 5),
+    let (kind, role, profile): (String, String, String) = sqlx::query_as(
+        "SELECT kind, role, json_extract(payload, '$.harness_profile') FROM cards WHERE id = ?1",
+    )
+    .bind(&card)
+    .fetch_one(h.sql.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        (kind.as_str(), role.as_str(), profile.as_str()),
+        ("codex", "assistant", "assistant")
     );
-    assert_eq!(wakes(&h).await, vec![expected.clone()]);
+    let first_text = watch_text(&key, &w.task, 5).unwrap();
+    assert!(first_text.contains(&format!("Task {key} (attempt_id {})", w.task)));
+    assert_eq!(input_keys(&h, &card).await, vec![first.clone()]);
+    assert_eq!(
+        enqueued(&h, &card).await,
+        2,
+        "its first message and the episode's"
+    );
+    await_delivered(&h, &card, &first_text).await;
 
-    // The same episode never wakes again.
+    // The same episode is never handed over again, and a replay under its key queues nothing.
     assert!(d.tick(T0 + 4 * QUIET_MS).await.is_empty());
-    assert_eq!(wakes(&h).await.len(), 1);
+    watcher
+        .deliver(&h.track, &first, first_text.clone())
+        .await
+        .unwrap();
+    assert_eq!(input_keys(&h, &card).await, vec![first.clone()]);
+    assert_eq!(enqueued(&h, &card).await, 2);
 
-    // New output starts a new episode; its own quiet wakes again.
+    // New output starts a new episode; its own quiet goes to the same watcher.
     let t1 = T0 + 10 * QUIET_MS;
     entry.last_output_ms.store(t1, Ordering::SeqCst);
     assert!(d.tick(t1 + 1_000).await.is_empty());
     let second = format!("{}:{t1}", w.task);
     assert_eq!(d.tick(t1 + 2 * QUIET_MS).await, vec![second.clone()]);
-    assert_eq!(
-        wakes(&h).await,
-        vec![
-            expected,
-            (
-                WORKER_QUIET_WAKE_SOURCE.to_owned(),
-                second,
-                wake_text(&key, &w.task, 10),
-            ),
-        ]
-    );
+    assert_eq!(input_keys(&h, &card).await, vec![first, second]);
+    assert_eq!(enqueued(&h, &card).await, 3);
+    let assistants: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM cards WHERE track_id = ?1 AND role = 'assistant'")
+            .bind(&h.track)
+            .fetch_one(h.sql.pool())
+            .await
+            .unwrap();
+    assert_eq!(assistants, 1, "one watcher per Track");
+
+    // The Planner is never woken by the detector itself.
+    assert_eq!(wake_events(&h).await, 0);
 }
 
 #[tokio::test]
-async fn a_quiet_codex_worker_wakes_too() {
+async fn a_failed_delivery_stays_due_and_is_retried_under_the_episode_key() {
+    let h = Harness::start_with_fake_codex().await;
+    let (w, _entry) = quiet_worker(&h, "codex").await;
+    let mut d = detector(
+        &h,
+        Arc::new(FailFirst {
+            watcher: WorkerWatcher::new(&h.state),
+            failed: AtomicBool::new(false),
+        }),
+    );
+    let card = watcher_card_id(&h.track);
+    assert!(d.tick(T0 + QUIET_MS).await.is_empty());
+    assert!(h.sql.card_get(&card).await.unwrap().is_none());
+    let episode = format!("{}:{T0}", w.task);
+    assert_eq!(d.tick(T0 + 2 * QUIET_MS).await, vec![episode.clone()]);
+    assert_eq!(input_keys(&h, &card).await, vec![episode]);
+    assert_eq!(wake_events(&h).await, 0);
+}
+
+#[tokio::test]
+async fn a_quiet_codex_worker_is_handed_over_too() {
     let h = Harness::start().await;
     let (w, _entry) = quiet_worker(&h, "codex").await;
-    let mut d = detector(&h);
+    let recorder = Arc::new(Recorder::default());
+    let mut d = detector(&h, recorder);
     assert_eq!(
         d.tick(T0 + QUIET_MS).await,
         vec![format!("{}:{T0}", w.task)]
@@ -144,7 +291,7 @@ async fn a_quiet_codex_worker_wakes_too() {
 }
 
 #[tokio::test]
-async fn a_task_without_an_agent_worker_does_not_wake() {
+async fn a_task_without_an_agent_worker_is_not_handed_over() {
     let h = Harness::start().await;
     let (control, _control) = quiet_worker(&h, "claude").await;
     // A terminal task's command may run silently for long; quiet says nothing about it.
@@ -157,11 +304,11 @@ async fn a_task_without_an_agent_worker_does_not_wake() {
         .execute(h.sql.pool())
         .await
         .unwrap();
-    assert_only_control_wakes(&h, &control).await;
+    assert_only_control_delivered(&h, &control).await;
 }
 
 #[tokio::test]
-async fn a_task_that_is_not_running_does_not_wake() {
+async fn a_task_that_is_not_running_is_not_handed_over() {
     let h = Harness::start().await;
     let (control, _control) = quiet_worker(&h, "claude").await;
     let mut workers = Vec::new();
@@ -176,11 +323,11 @@ async fn a_task_that_is_not_running_does_not_wake() {
             .unwrap();
         workers.push((w, entry));
     }
-    assert_only_control_wakes(&h, &control).await;
+    assert_only_control_delivered(&h, &control).await;
 }
 
 #[tokio::test]
-async fn a_superseded_attempt_does_not_wake() {
+async fn a_superseded_attempt_is_not_handed_over() {
     use calm_types::task_recovery::{
         TASK_IN_TRACK_ROUTE, TaskAttemptOrigin, TaskRecoveryConstraint,
     };
@@ -241,7 +388,7 @@ async fn a_superseded_attempt_does_not_wake() {
     .await
     .unwrap();
     tx.commit().await.unwrap();
-    assert_only_control_wakes(&h, &control).await;
+    assert_only_control_delivered(&h, &control).await;
 }
 
 /// A terminal card the Planner or the owner opened (no worker-spawn operation).
@@ -272,7 +419,7 @@ async fn manual_terminal(h: &Harness) -> (String, String) {
 }
 
 #[tokio::test]
-async fn a_card_that_is_not_the_task_worker_does_not_wake() {
+async fn a_card_that_is_not_the_task_worker_is_not_handed_over() {
     let h = Harness::start().await;
     let (control, _control) = quiet_worker(&h, "claude").await;
     // A quiet terminal card with no task at all.
@@ -294,11 +441,11 @@ async fn a_card_that_is_not_the_task_worker_does_not_wake() {
     .execute(h.sql.pool())
     .await
     .unwrap();
-    assert_only_control_wakes(&h, &control).await;
+    assert_only_control_delivered(&h, &control).await;
 }
 
 #[tokio::test]
-async fn a_worker_without_a_live_readable_printing_pty_does_not_wake() {
+async fn a_worker_without_a_live_readable_printing_pty_is_not_handed_over() {
     let h = Harness::start().await;
     let (control, _control) = quiet_worker(&h, "claude").await;
     // No renderer entry.
@@ -328,5 +475,5 @@ async fn a_worker_without_a_live_readable_printing_pty_does_not_wake() {
         .session_projection_set_status_for_card(&ended.card, WorkerSessionState::Exited)
         .await
         .unwrap();
-    assert_only_control_wakes(&h, &control).await;
+    assert_only_control_delivered(&h, &control).await;
 }

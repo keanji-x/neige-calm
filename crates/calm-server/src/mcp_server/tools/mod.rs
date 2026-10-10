@@ -24,6 +24,7 @@ pub mod track_report_blocks;
 pub(crate) mod track_report_hydrate;
 pub mod track_state;
 pub mod user_ask;
+pub mod worker_report;
 pub mod workspace_reports;
 pub(crate) mod write_args;
 
@@ -50,6 +51,7 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     crate::builtin_plugins::register_native_tools(registry);
     admin::register_into(registry);
     workspace_reports::register_into(registry);
+    worker_report::register_into(registry);
 }
 
 #[cfg(test)]
@@ -562,7 +564,7 @@ mod tests {
             "ls", "cat", "show", "status", "log", "diff", "find", "describe", "read", "write",
             "commit", "tag", "rename", "add", "set", "rm", "capture", "ask", "send", "input",
             "control", "open", "close", "cancel", "publish", "accept", "reject", "regate", "gate",
-            "done", "fail", "gc", "vacuum",
+            "done", "fail", "report", "gc", "vacuum",
         ];
         let word = regex::Regex::new(r"^[a-z0-9]+$").expect("word regex");
         let outside: Vec<String> = kernel_tool_names()

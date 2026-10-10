@@ -97,6 +97,26 @@ impl ToolCallIdentity {
     }
 }
 
+impl ToolCallIdentity {
+    /// The caller session is still the active authority of a Planner or Assistant card on
+    /// `track`, read in the caller's write transaction (#2130 D16): the check a kernel-written
+    /// effect of an agent's tool call re-runs where it commits.
+    pub(crate) async fn session_is_active(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        track: &str,
+    ) -> Result<bool, crate::error::CalmError> {
+        use calm_truth::decision_gate::{GateDecision, PrincipalDecisionGate};
+        let Some(principal) = self.to_principal() else {
+            return Ok(false);
+        };
+        let decision = PrincipalDecisionGate::new(principal)
+            .decide_recorder(tx, &TrackId::from(track.to_string()))
+            .await?;
+        Ok(matches!(decision, GateDecision::Allow))
+    }
+}
+
 fn provider_session_actor(provider: &AgentProvider, session_id: WorkerSessionId) -> ActorId {
     match provider {
         // The released identity contract permits OpenCode only for managed Planner sessions.

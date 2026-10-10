@@ -1,4 +1,5 @@
-//! Planner Terminal tools route through the same card operation and renderer as UI.
+//! Terminal tools (Planner; every tool but open also the Track's Assistants, #2492) route through
+//! the same card operation and renderer as UI.
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
@@ -11,8 +12,8 @@ use crate::operation::terminal_adapter::{
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::idempotency_key::stable_payload_hash;
 use crate::terminal_interaction::{
-    CodexTaskWorkerInputRefused, InputOptions, Target, TerminalInteraction, WaitFor, WaitPlan,
-    receipt_summary, summary_line,
+    CodexTaskWorkerInputRefused, InputOptions, TERMINAL_ROLES, Target, TerminalInteraction,
+    WaitFor, WaitPlan, receipt_summary, summary_line,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -68,9 +69,19 @@ pub fn register_into(registry: &mut ToolRegistry) {
             input_schema,
             // Terminal programs may reach network/filesystem; no auto-approval annotation.
             annotations:Some(json!({"readOnlyHint":matches!(name,"neige_terminal_read"|"neige_terminal_show"),"destructiveHint":!matches!(name,"neige_terminal_read"|"neige_terminal_show"),"openWorldHint":true})),
-            roles: &[CardRole::Planner],
-            listed_for: &[CardRole::Planner],
+            roles: terminal_roles(name),
+            listed_for: terminal_roles(name),
         },handler);
+    }
+}
+/// Who may call `name`: opening a card is the Planner's, since the role gate keeps an Assistant's
+/// writes to its own card; showing, reading and driving an existing worker serve every
+/// [`TERMINAL_ROLES`] caller of the Track (#2492).
+fn terminal_roles(name: &str) -> &'static [CardRole] {
+    if name == "neige_terminal_open" {
+        &[CardRole::Planner]
+    } else {
+        TERMINAL_ROLES
     }
 }
 #[derive(Deserialize)]

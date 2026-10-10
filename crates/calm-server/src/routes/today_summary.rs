@@ -54,14 +54,6 @@ pub fn today_summary_card_id_for_test(track_id: &str) -> String {
     summary_conversation_keys(track_id).card_id
 }
 
-/// The actor every request from this endpoint is attributed to. Fixed, not read from
-/// the request: the payload is hashed into the operation's `payload_hash`, and a
-/// same-key different-hash submit is a 409 that never expires. `user` because the act
-/// is a human pressing a button; `Actor("kernel").to_actor_id()` degrades to `User` anyway.
-fn synthetic_actor() -> Actor {
-    Actor(Actor::DEFAULT.to_string())
-}
-
 /// The standing instruction the summary conversation is opened with. Sent when the
 /// card's currently ACTIVE runtime has no `harness.user_message.enqueued` row of its
 /// own, and never again while that runtime stays active.
@@ -171,7 +163,7 @@ pub(crate) async fn write_today_summary(
     // Idempotent, and the only bootstrap on this path; it materializes the workspace and
     // waits on a `planner-harness-start`.
     let (_status, Json(launchpad)) =
-        ensure_today_launchpad(State(app.clone()), synthetic_actor()).await?;
+        ensure_today_launchpad(State(app.clone()), Actor::server_send()).await?;
     let track_id = launchpad.track_id;
     let derived = summary_conversation_keys(&track_id);
 
@@ -201,7 +193,7 @@ pub(crate) async fn write_today_summary(
         let created = create_track_conversation_inner(
             s.clone(),
             w.clone(),
-            synthetic_actor(),
+            Actor::server_send(),
             headers,
             track_id.clone(),
             NewTrackConversationBody {
@@ -276,11 +268,11 @@ pub(crate) async fn write_today_summary(
     }))
 }
 
-/// Is a failed create one this handler may continue past? Only a `conflict` or an
-/// `idempotency_key_reused` (the race loser's payload-hash flavour; anything else means the
-/// create did not happen), and only if the card is there (a conflict about anything else is
-/// still a conflict).
-fn create_conflict_is_recoverable(error: &CalmError, card_exists: bool) -> bool {
+/// Is a failed create under a fixed conversation key one its caller may continue past? Only a
+/// `conflict` or an `idempotency_key_reused` (the race loser's payload-hash flavour; anything else
+/// means the create did not happen), and only if the card is there (a conflict about anything else
+/// is still a conflict). Shared with the worker watcher's create (#2492).
+pub(crate) fn create_conflict_is_recoverable(error: &CalmError, card_exists: bool) -> bool {
     matches!(
         error,
         CalmError::Conflict(_) | CalmError::IdempotencyKeyReused(_)
@@ -302,7 +294,7 @@ async fn send_summary(
         s,
         w,
         cs,
-        synthetic_actor(),
+        Actor::server_send(),
         card_id.to_string(),
         SendPlannerInputRequest {
             text,

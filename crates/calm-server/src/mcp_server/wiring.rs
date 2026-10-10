@@ -50,7 +50,7 @@ pub fn card_mcp_env(socket_path: &Path, raw_token: &str) -> [(&'static str, Stri
 /// codex does NOT inherit the daemon process env into exec-shells; the per-thread `shell_environment_policy.set` field is the
 /// ONLY channel that reaches the `neige` CLI an agent must run. `path` is the kernel-led PATH: `set` is re-applied after codex
 /// restores its login-shell snapshot, so `neige` stays the running kernel's CLI (#1784). The card role additionally selects the
-/// Planner Terminal approval policy.
+/// terminal tools' approval policy.
 pub(crate) fn card_mcp_thread_start_config(
     socket_path: &Path,
     raw_token: &str,
@@ -75,14 +75,22 @@ pub(crate) fn card_mcp_thread_start_config(
             "set": set,
         },
     });
-    // Delegated only for a Planner thread; the kernel remains the live role/Track/session/control authority.
-    if role == CardRole::Planner {
-        config["mcp_servers"] = serde_json::json!({MCP_SERVER_KEY:{"tools":{
+    // Delegated only for the terminal tools' roles, each for the writes it may call (#2492: an
+    // Assistant drives existing workers but opens no card); the kernel remains the live
+    // role/Track/session/control authority.
+    let tools = match role {
+        CardRole::Planner => serde_json::json!({
             "neige_terminal_open":{"approval_mode":"approve"},
             "neige_terminal_control":{"approval_mode":"approve"},
             "neige_terminal_input":{"approval_mode":"approve"}
-        }}});
-    }
+        }),
+        CardRole::Assistant => serde_json::json!({
+            "neige_terminal_control":{"approval_mode":"approve"},
+            "neige_terminal_input":{"approval_mode":"approve"}
+        }),
+        CardRole::Worker | CardRole::ReportCard => return config,
+    };
+    config["mcp_servers"] = serde_json::json!({MCP_SERVER_KEY:{"tools":tools}});
     config
 }
 
@@ -203,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn planner_terminal_policy_never_grants_other_roles() {
+    fn terminal_policy_is_delegated_only_to_the_terminal_roles() {
         for role in [
             CardRole::Planner,
             CardRole::Assistant,
@@ -216,48 +224,43 @@ mod tests {
                 role,
                 "/k/bin:/usr/bin",
             );
-            if role == CardRole::Planner {
-                assert_eq!(
+            match role {
+                CardRole::Planner => assert_eq!(
                     cfg["mcp_servers"],
                     serde_json::json!({"neige":{"tools":{
                         "neige_terminal_open":{"approval_mode":"approve"},
                         "neige_terminal_control":{"approval_mode":"approve"},
                         "neige_terminal_input":{"approval_mode":"approve"}
                     }}})
-                );
-            } else {
-                assert!(
+                ),
+                CardRole::Assistant => assert_eq!(
+                    cfg["mcp_servers"],
+                    serde_json::json!({"neige":{"tools":{
+                        "neige_terminal_control":{"approval_mode":"approve"},
+                        "neige_terminal_input":{"approval_mode":"approve"}
+                    }}})
+                ),
+                CardRole::Worker | CardRole::ReportCard => assert!(
                     cfg.get("mcp_servers").is_none(),
                     "unexpected provider delegation for {role:?}"
-                );
+                ),
             }
             assert!(cfg.get("approval_policy").is_none());
             assert!(cfg.get("sandbox_mode").is_none());
         }
     }
 
+    /// Each role is delegated exactly the terminal writes its declared `roles` let it call.
     #[test]
     fn terminal_policy_keeps_truthful_annotations_and_exact_write_inventory() {
-        let cfg = card_mcp_thread_start_config(
-            Path::new("/tmp/kernel.sock"),
-            "raw-token",
-            CardRole::Planner,
-            "/k/bin:/usr/bin",
-        );
-        let granted: std::collections::BTreeSet<_> = cfg["mcp_servers"]["neige"]["tools"]
-            .as_object()
-            .unwrap()
-            .keys()
-            .cloned()
-            .collect();
         let descriptors = crate::mcp_server::build_default_registry().descriptors();
-        let mut writes = std::collections::BTreeSet::new();
-        for descriptor in descriptors
+        let terminal: Vec<_> = descriptors
             .iter()
             .filter(|d| d.name.starts_with("neige_terminal_"))
-        {
-            assert_eq!(descriptor.roles, &[CardRole::Planner]);
-            assert_eq!(descriptor.listed_for, &[CardRole::Planner]);
+            .collect();
+        assert_eq!(terminal.len(), 5, "anti-vacuity: {}", terminal.len());
+        for descriptor in &terminal {
+            assert_eq!(descriptor.listed_for, descriptor.roles);
             let read = matches!(
                 descriptor.name.as_str(),
                 "neige_terminal_show" | "neige_terminal_read"
@@ -268,14 +271,36 @@ mod tests {
                     "readOnlyHint":read,"destructiveHint":!read,"openWorldHint":true
                 }))
             );
-            if !read {
-                writes.insert(descriptor.name.clone());
-            }
         }
-        assert_eq!(
-            granted, writes,
-            "new write capabilities require an explicit policy decision"
-        );
+        for role in [CardRole::Planner, CardRole::Assistant] {
+            let cfg = card_mcp_thread_start_config(
+                Path::new("/tmp/kernel.sock"),
+                "raw-token",
+                role,
+                "/k/bin:/usr/bin",
+            );
+            let granted: std::collections::BTreeSet<_> = cfg["mcp_servers"]["neige"]["tools"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect();
+            let writes: std::collections::BTreeSet<_> = terminal
+                .iter()
+                .filter(|d| d.roles.contains(&role))
+                .filter(|d| {
+                    !matches!(
+                        d.name.as_str(),
+                        "neige_terminal_show" | "neige_terminal_read"
+                    )
+                })
+                .map(|d| d.name.clone())
+                .collect();
+            assert_eq!(
+                granted, writes,
+                "{role:?}: new write capabilities require an explicit policy decision"
+            );
+        }
     }
 
     #[test]
