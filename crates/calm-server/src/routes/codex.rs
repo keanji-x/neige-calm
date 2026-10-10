@@ -9,7 +9,7 @@ use crate::ids::{ActorId, CardId};
 use crate::model::Terminal;
 use crate::role_gate::RoleViolation;
 use crate::session_projection_lookup::resolve_session_for_thread;
-use crate::session_projection_repo::AgentProvider;
+use crate::session_projection_repo::{AgentProvider, ThreadAttribution, WorkerSessionKind};
 use crate::state::{AppState, RouteState};
 use axum::{Router, extract::State, http::StatusCode, routing::post};
 use calm_types::worker::WorkerSessionId;
@@ -283,7 +283,7 @@ async fn cross_check_session_card(
         resolve_session_for_thread(s.repo.as_ref(), provider.into_agent_provider(), session_id)
             .await?
     else {
-        return Ok(None);
+        return follow_claude_session_start(s, card_id_str, payload, provider, session_id).await;
     };
     if resolved_card != card_id_str {
         tracing::warn!(
@@ -300,6 +300,63 @@ async fn cross_check_session_card(
     }
 
     Ok(Some(worker_session_id))
+}
+
+/// #2516: Claude mints a new session id on `/clear` and `/resume` and reports it in that
+/// session's `SessionStart` hook, whatever its `source`. The card's active Claude runtime takes
+/// the id, so a restart resumes the conversation the card shows. An id already bound to another
+/// card never reaches here: the caller rejects it first.
+async fn follow_claude_session_start(
+    s: &RouteState,
+    card_id: &str,
+    payload: &Value,
+    provider: HookProvider,
+    session_id: &str,
+) -> Result<Option<WorkerSessionId>> {
+    if !matches!(provider, HookProvider::Claude)
+        || payload.get("hook_event_name").and_then(Value::as_str) != Some("SessionStart")
+    {
+        return Ok(None);
+    }
+    let card_id = card_id.to_owned();
+    let session_id = session_id.to_owned();
+    crate::db::write_in_tx_typed(s.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            let Some(runtime) =
+                crate::db::sqlite::session_projection_active_for_card_tx(tx, &card_id).await?
+            else {
+                return Ok(None);
+            };
+            if runtime.kind != WorkerSessionKind::ClaudeCard
+                || runtime.agent_provider != Some(AgentProvider::Claude)
+            {
+                return Ok(None);
+            }
+            tracing::info!(
+                target: "hook.ingest.claude_session_followed",
+                card_id = %card_id,
+                runtime_id = %runtime.id,
+                old_session_id = ?runtime.session_id,
+                new_session_id = %session_id,
+                "claude SessionStart reported a new session id; the card's runtime follows it"
+            );
+            // The bind writes all three identity columns; only the session id changes.
+            crate::db::sqlite::session_bind_attribution_tx(
+                tx,
+                &runtime.id,
+                ThreadAttribution {
+                    worker_session_id: runtime.id.clone(),
+                    provider: AgentProvider::Claude,
+                    thread_id: runtime.thread_id.clone(),
+                    session_id: Some(session_id),
+                    active_turn_id: runtime.active_turn_id.clone(),
+                },
+            )
+            .await?;
+            Ok(Some(WorkerSessionId::from(runtime.id)))
+        })
+    })
+    .await
 }
 
 fn hook_idempotency_key(provider: HookProvider, card_id: &str, payload: &Value) -> String {

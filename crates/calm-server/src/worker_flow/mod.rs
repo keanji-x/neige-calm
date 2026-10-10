@@ -45,6 +45,8 @@ pub struct WorkerFlowDriver {
 
 struct SourceTask {
     worker_session_id: String,
+    /// The agent session id the source was attached with: a Claude transcript is per session id.
+    agent_session_id: Option<String>,
     stop: CancellationToken,
     join: JoinHandle<()>,
 }
@@ -288,6 +290,31 @@ impl WorkerFlowDriver {
                     "worker-flow runtime-status lookup failed"
                 ),
             },
+            // #2516: a Claude `/clear` or `/resume` starts a new session id, and a new transcript,
+            // in the same runtime; ingest has already moved the runtime to the id this hook reports.
+            Event::ClaudeHook { card_id, kind, .. } if kind == "hook.claude.session_start" => {
+                match self
+                    .repo
+                    .session_projection_active_for_card(&card_id.to_string())
+                    .await
+                {
+                    Ok(Some(runtime)) if is_supported_runtime(&runtime) => {
+                        if let Err(err) = self.attach_runtime(runtime).await {
+                            tracing::warn!(
+                                card_id = %card_id,
+                                error = %err,
+                                "worker-flow claude session-start attach failed"
+                            );
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(err) => tracing::warn!(
+                        card_id = %card_id,
+                        error = %err,
+                        "worker-flow claude session-start runtime lookup failed"
+                    ),
+                }
+            }
             Event::CardAdded(card) if card.kind == "codex" || card.kind == "claude" => {
                 let card_id = card.id.to_string();
                 match self.repo.session_projection_active_for_card(&card_id).await {
@@ -385,7 +412,11 @@ impl WorkerFlowDriver {
         let mut tasks = self.tasks.lock().await;
         tasks.retain(|_, task| !task.join.is_finished());
         match tasks.get(&runtime.card_id) {
-            Some(task) if task.worker_session_id == runtime.id && !task.stop.is_cancelled() => {
+            Some(task)
+                if task.worker_session_id == runtime.id
+                    && task.agent_session_id == runtime.session_id
+                    && !task.stop.is_cancelled() =>
+            {
                 return Ok(());
             }
             Some(_) => {
@@ -455,6 +486,7 @@ impl WorkerFlowDriver {
             runtime.card_id.clone(),
             SourceTask {
                 worker_session_id: runtime.id.clone(),
+                agent_session_id: runtime.session_id.clone(),
                 stop,
                 join,
             },

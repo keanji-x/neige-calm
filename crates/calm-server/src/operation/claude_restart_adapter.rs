@@ -37,8 +37,9 @@ use crate::track_area_cache::TrackAreaCache;
 use calm_truth::model::NewTerminal;
 
 use super::{
-    AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation, PhaseTag,
-    ProviderAdapter, SpawnCtx, SpawnOutcome, Tx, TxOutput,
+    AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation,
+    OperationKey, OperationOutcome, OperationRuntime, PhaseTag, ProviderAdapter, SpawnCtx,
+    SpawnOutcome, Tx, TxOutput,
 };
 
 #[cfg(feature = "fixtures")]
@@ -113,6 +114,36 @@ pub struct ClaudeRestartOperationPayload {
     pub card_id: String,
 }
 
+/// One unkeyed `claude-restart` of `card_id`, submitted and awaited: the single entry point of the
+/// restart route and the boot auto-resume.
+pub async fn run_claude_restart(
+    runtime: &OperationRuntime,
+    actor: ActorId,
+    card_id: String,
+) -> Result<OperationOutcome> {
+    let payload_hash = crate::routes::idempotency_key::stable_payload_hash(&json!({
+        "actor": &actor,
+        "card_id": &card_id,
+    }))?;
+    let payload = serde_json::to_value(ClaudeRestartOperationPayload {
+        actor,
+        worker_session_id: Some(new_id()),
+        card_id,
+    })?;
+    let op_id = runtime
+        .submit(
+            "claude-restart",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: None,
+                payload_hash,
+            },
+            payload,
+        )
+        .await?;
+    Ok(runtime.wait(&op_id).await?.outcome)
+}
+
 #[async_trait]
 impl ProviderAdapter for ClaudeRestartAdapter {
     fn kind(&self) -> &'static str {
@@ -176,16 +207,15 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             .filter(|s| !s.is_empty())
             .map(ToOwned::to_owned)
             .ok_or_else(|| CalmError::Forbidden("Claude card has no settings_path".into()))?;
+        // #2516: a live child is not refused. The spawn stops it before the replacement starts, so
+        // its runtime ends here, and a failed replacement leaves the terminal exited, not running.
+        let mut stops_live_child = false;
         if let Some(active) = session_projection_active_for_card_tx(tx, &card_id).await? {
             // Claude runtimes only reach Starting/Running here; Idle/TurnPending are not part of the Claude state machine.
-            if matches!(
+            stops_live_child = matches!(
                 active.status,
                 WorkerSessionState::Starting | WorkerSessionState::Running
-            ) {
-                return Err(CalmError::Conflict(
-                    "kill or wait for child exit before restart".into(),
-                ));
-            }
+            );
             session_complete_tx(tx, &active.id, WorkerSessionState::Exited).await?;
         }
 
@@ -273,7 +303,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
 
         // Preserve the previous exit row so compensation can restore the Restart affordance if the replacement spawn fails.
         let prev_exit_code = term.exit_code;
-        let prev_signal_killed = term.signal_killed;
+        let prev_signal_killed = term.signal_killed || stops_live_child;
         let prev_pty_output = term.pty_output.clone();
         let prev_pty_output_truncated = term.pty_output_truncated;
         let mut output = TxOutput::new(
@@ -345,8 +375,12 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             None => None,
         };
 
+        // #2516: the card's current child, live or not, is gone before the row is cleared for its
+        // replacement. The operation drive is serial, so a second restart finds this one's child.
+        ctx.terminal_renderer
+            .stop_for_respawn(ctx.daemon.proc_supervisor_sock.as_deref(), &terminal_id)
+            .await?;
         ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
-        ctx.terminal_renderer.drop_entry(&terminal_id).await;
         let term = ctx
             .repo
             .terminal_get(&terminal_id)

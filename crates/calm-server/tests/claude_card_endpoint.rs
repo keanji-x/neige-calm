@@ -77,6 +77,27 @@ where
         Arc<calm_server::terminal_renderer::TerminalRendererRegistry>,
     ) -> (Arc<AtomicUsize>, TestSpawnHook),
 {
+    boot_inner(None, factory).await
+}
+
+/// A Claude child started by the production PTY path: the proc supervisor at `sock` runs
+/// `claude_bin`, a test stand-in for the CLI.
+struct RealClaude {
+    sock: PathBuf,
+    claude_bin: String,
+}
+
+async fn boot_with_real_claude(real: RealClaude) -> Boot {
+    boot_inner(Some(real), |_, _| success_spawn_hook()).await
+}
+
+async fn boot_inner<F>(real: Option<RealClaude>, factory: F) -> Boot
+where
+    F: FnOnce(
+        Arc<SqlxRepo>,
+        Arc<calm_server::terminal_renderer::TerminalRendererRegistry>,
+    ) -> (Arc<AtomicUsize>, TestSpawnHook),
+{
     let tmp = TempDir::new().expect("tempdir");
     let repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -108,10 +129,12 @@ where
     let events = EventBus::new();
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().join("terminals"),
-        proc_supervisor_sock: None,
+        proc_supervisor_sock: real.as_ref().map(|real| real.sock.clone()),
     });
     let mut codex = CodexClient::new_stub();
-    codex.claude_bin = "/bin/true".into();
+    codex.claude_bin = real
+        .as_ref()
+        .map_or_else(|| "/bin/true".into(), |real| real.claude_bin.clone());
     codex.ingest_url = "http://127.0.0.1:4040".into();
     let codex = Arc::new(codex);
     let mut state = AppState::from_parts(
@@ -131,8 +154,9 @@ where
             ),
         )),
         codex.clone(),
-        None,
-        None,
+        // The repo's seeded caches, so a hook ingested through the route passes the role gate.
+        Some(repo.card_role_cache().clone()),
+        Some(repo.track_area_cache().clone()),
     );
     let pending = Arc::new(PendingThreadStartRegistry::new(
         repo.clone(),
@@ -162,21 +186,41 @@ where
         state.track_area_cache.clone(),
         silent_spawn_hook(),
     ));
-    let claude_adapter = Arc::new(ClaudeAdapter::new_with_spawn_hook(
-        route_repo.clone(),
-        codex.clone(),
-        state.card_role_cache.clone(),
-        state.track_area_cache.clone(),
-        hook.clone(),
-    ));
-    let claude_restart_adapter = Arc::new(ClaudeRestartAdapter::new_with_spawn_hook(
-        route_repo.clone(),
-        codex,
-        None,
-        state.card_role_cache.clone(),
-        state.track_area_cache.clone(),
-        hook,
-    ));
+    let (claude_adapter, claude_restart_adapter) = if real.is_some() {
+        (
+            Arc::new(ClaudeAdapter::new(
+                route_repo.clone(),
+                codex.clone(),
+                state.card_role_cache.clone(),
+                state.track_area_cache.clone(),
+            )),
+            Arc::new(ClaudeRestartAdapter::new(
+                route_repo.clone(),
+                codex,
+                None,
+                state.card_role_cache.clone(),
+                state.track_area_cache.clone(),
+            )),
+        )
+    } else {
+        (
+            Arc::new(ClaudeAdapter::new_with_spawn_hook(
+                route_repo.clone(),
+                codex.clone(),
+                state.card_role_cache.clone(),
+                state.track_area_cache.clone(),
+                hook.clone(),
+            )),
+            Arc::new(ClaudeRestartAdapter::new_with_spawn_hook(
+                route_repo.clone(),
+                codex,
+                None,
+                state.card_role_cache.clone(),
+                state.track_area_cache.clone(),
+                hook,
+            )),
+        )
+    };
     let completion = OperationCompletionBus::new();
     let runtime = Arc::new(OperationRuntime::new_unchecked(
         operation_repo.clone(),
@@ -931,8 +975,10 @@ async fn post_claude_restart_spawn_failure_restores_terminal_exit_and_marks_runt
     assert_eq!(second_terminal, terminal_id);
 }
 
+/// #2516: a restart of a card whose child is running is not refused; it replaces the child on
+/// the same terminal. `claude_card_endpoint/live_restart.rs` runs the same with real processes.
 #[tokio::test]
-async fn post_claude_restart_returns_409_when_runtime_is_active() {
+async fn post_claude_restart_while_running_replaces_the_child() {
     let _guard = ENV_LOCK.lock().await;
     let boot = boot_success().await;
 
@@ -940,17 +986,19 @@ async fn post_claude_restart_returns_409_when_runtime_is_active() {
         post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
     assert_eq!(create_status, StatusCode::CREATED, "body={created:?}");
     let card_id = created["id"].as_str().unwrap();
+    assert_eq!(runtime_status(&boot.repo, card_id).await, "running");
 
     let (status, response) = post_restart(boot.app.clone(), card_id).await;
-    assert_eq!(status, StatusCode::CONFLICT, "body={response:?}");
-    assert!(
-        response["error"]
-            .as_str()
-            .unwrap()
-            .contains("kill or wait for child exit before restart"),
-        "body={response:?}"
-    );
-    assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 1);
+    assert_eq!(status, StatusCode::OK, "body={response:?}");
+    assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 2);
+    let states: Vec<String> = sqlx::query_scalar(
+        "SELECT state FROM worker_sessions WHERE card_id = ?1 ORDER BY created_at_ms ASC, id ASC",
+    )
+    .bind(card_id)
+    .fetch_all(boot.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(states, ["exited", "running"]);
 }
 
 #[tokio::test]
@@ -1356,3 +1404,7 @@ async fn post_claude_card_idempotency_key_reused_by_other_kind_uses_fresh_operat
 
 #[path = "claude_card_endpoint/keyed.rs"]
 mod keyed;
+#[path = "claude_card_endpoint/live_restart.rs"]
+mod live_restart;
+#[path = "claude_card_endpoint/resume.rs"]
+mod resume;

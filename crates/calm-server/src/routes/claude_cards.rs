@@ -9,7 +9,7 @@ use crate::operation::claude_adapter::{
     normalize_claude_create_request as normalize_claude_create_request_payload,
     prepare_claude_create_request,
 };
-use crate::operation::claude_restart_adapter::ClaudeRestartOperationPayload;
+use crate::operation::claude_restart_adapter::run_claude_restart;
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::codex_cards::shell_single_quote;
 use crate::routes::idempotency_key::{
@@ -149,11 +149,11 @@ pub(crate) fn normalize_claude_create_request(
     tag = "claude",
     params(("id" = String, Path, description = "Claude card id")),
     responses(
-        (status = 200, description = "Claude card restarted through the existing session", body = Card),
+        (status = 200, description = "Claude card restarted on its latest session id; a live child is stopped first (SIGTERM, bounded wait, SIGKILL)", body = Card),
         (status = 403, description = "Card is not a Claude card or lacks resumable Claude metadata", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
-        (status = 409, description = "Claude child is still active; kill or wait for child exit before restart", body = ErrorBody),
-        (status = 500, description = "Daemon spawn failed; rows persist and sweeper handles cleanup", body = ErrorBody),
+        (status = 409, description = "A task worker's checkout is not at its declared head, or its card has no terminal to check it in", body = ErrorBody),
+        (status = 500, description = "The live child would not stop, or the daemon spawn failed; rows persist and sweeper handles cleanup", body = ErrorBody),
     ),
 )]
 pub(crate) async fn restart_claude_card(
@@ -161,31 +161,7 @@ pub(crate) async fn restart_claude_card(
     actor: Actor,
     Path(id): Path<String>,
 ) -> Result<Json<Card>> {
-    let operation_key = new_id();
-    let runtime_id = new_id();
-    let payload_hash = stable_payload_hash(&serde_json::json!({
-        "actor": actor.as_str(),
-        "card_id": &id,
-    }))?;
-    let payload = serde_json::to_value(ClaudeRestartOperationPayload {
-        actor: actor.to_actor_id(),
-        worker_session_id: Some(runtime_id),
-        card_id: id,
-    })?;
-    let op_id = s
-        .operation_runtime
-        .submit(
-            "claude-restart",
-            OperationKey {
-                operation_key,
-                idempotency_key: None,
-                payload_hash,
-            },
-            payload,
-        )
-        .await?;
-    let result = s.operation_runtime.wait(&op_id).await?;
-    match result.outcome {
+    match run_claude_restart(&s.operation_runtime, actor.to_actor_id(), id).await? {
         OperationOutcome::Succeeded { result }
         | OperationOutcome::SucceededViaCollision { result, .. } => {
             let mut card: Card = serde_json::from_value(result)?;

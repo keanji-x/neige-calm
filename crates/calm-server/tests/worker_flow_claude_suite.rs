@@ -8,6 +8,8 @@ mod worker_flow_claude_golden;
 mod worker_flow_claude_hook_transcript;
 #[path = "cases/worker_flow_claude_lazy_create.rs"]
 mod worker_flow_claude_lazy_create;
+#[path = "cases/worker_flow_claude_session_follow.rs"]
+mod worker_flow_claude_session_follow;
 #[path = "cases/worker_flow_claude_tail.rs"]
 mod worker_flow_claude_tail;
 #[path = "cases/worker_flow_claude_tool_completion.rs"]

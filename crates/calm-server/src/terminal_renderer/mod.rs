@@ -33,6 +33,7 @@ pub mod attach_hold_for_test;
 #[cfg(test)]
 pub(crate) mod establishment_test_hook;
 mod output_capture;
+mod respawn;
 pub mod signals;
 mod snapshot;
 pub use signals::{IncomingSignal, SIGNAL_MESSAGE_MAX_CHARS, Signal, SignalRing, SignalsSince};
