@@ -2,6 +2,7 @@
 //! receipt already carries every fact of the request. Pure JSON constructors.
 use super::input_control::ClaimStep;
 use super::screen_diff::ScreenDiff;
+use super::write_leg::Delivered;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -34,6 +35,18 @@ impl WriteReceipts {
             receipts.each(|receipt| receipt["release"] = json!({"status":"requested"}));
         }
         receipts
+    }
+    /// The receipt of `outcome`; a refusal carries its reason.
+    pub(super) fn for_outcome(&self, outcome: &Delivered) -> Value {
+        match outcome {
+            Delivered::Written => self.written.clone(),
+            Delivered::Unknown => self.unknown.clone(),
+            Delivered::Refused(reason) => {
+                let mut refused = self.refused.clone();
+                refused["reason"] = json!(reason);
+                refused
+            }
+        }
     }
     pub(super) fn attach(&mut self, claim: Option<&ClaimStep>) {
         self.each(|receipt| attach_claim(receipt, claim));
@@ -112,8 +125,13 @@ fn acknowledged_receipt(
     drift: Option<&Value>,
     written: bool,
 ) -> Value {
+    let next = if written {
+        "read the application result"
+    } else {
+        "nothing was written; read again"
+    };
     let mut receipt = json!({"terminal_id":terminal,"idempotency_key":idempotency_key,"outcome":if written{"written"}else{"refused"},
-        "application_result":"unverified","next":"read the application result",
+        "application_result":"unverified","next":next,
         "observation_id_used":observation,"output_since_observation":drift.is_some()});
     if let Some(drift) = drift {
         receipt["observation_drift"] = drift.clone();
@@ -159,6 +177,7 @@ mod tests {
         assert_eq!(unknown["output_since_observation"], false);
         assert_eq!(written["next"], "read the application result");
         assert_eq!(refused["output_since_observation"], true);
+        assert_eq!(refused["next"], "nothing was written; read again");
         assert_eq!(refused["observation_drift"], drift);
         assert_eq!(
             unknown_receipt("t1", "r1", observation, Some(&drift))["observation_drift"],
@@ -222,6 +241,12 @@ mod tests {
                 "{receipt}"
             );
         }
+        assert_eq!(
+            receipts.for_outcome(&Delivered::Refused("why".into()))["reason"],
+            "why"
+        );
+        assert_eq!(receipts.for_outcome(&Delivered::Written), receipts.written);
+        assert_eq!(receipts.for_outcome(&Delivered::Unknown), receipts.unknown);
         let mut plain = WriteReceipts::new("t1", "r1", observation, None, None, false);
         plain.attach(Some(&ClaimStep::Held));
         assert!(plain.written.get("steps").is_none());

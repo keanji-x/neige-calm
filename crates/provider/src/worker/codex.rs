@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use calm_exec::{BoundKeys, MessageDelivery, SpawnCtx, SpawnHandle, TuiInput, WorkerProvider};
+use calm_exec::{BoundKeys, SpawnCtx, SpawnHandle, TuiInput, WorkerProvider};
 use calm_types::error::CoreError;
 use calm_types::runtime::TimestampMs;
 use calm_types::worker::{
@@ -98,8 +98,7 @@ impl WorkerProvider for CodexProvider {
     /// A message is one bracketed paste and Enter (a new turn when idle, `turn/steer` while a
     /// turn runs); typed keys interrupt the turn without starting one (#1782).
     fn tui_input(&self) -> TuiInput {
-        TuiInput {
-            message: MessageDelivery::BracketedPasteSubmit,
+        TuiInput::BracketedPasteSubmit {
             keys_while_bound: BoundKeys::Refused,
         }
     }
@@ -574,5 +573,19 @@ mod tests {
             resume_command("t'1", "unix:///tmp/codex'sock"),
             "codex resume 't'\\''1' --remote 'unix:///tmp/codex'\\''sock'"
         );
+    }
+
+    /// Typed keys interrupt a bound codex turn; the worker takes a message instead.
+    #[test]
+    fn codex_declares_message_delivery_and_refuses_bound_keys() {
+        let tui = provider_with(true, None).tui_input();
+        assert_eq!(
+            tui,
+            TuiInput::BracketedPasteSubmit {
+                keys_while_bound: BoundKeys::Refused
+            }
+        );
+        assert!(tui.takes_message());
+        assert_eq!(tui.keys_while_bound(), BoundKeys::Refused);
     }
 }

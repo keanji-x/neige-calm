@@ -12,8 +12,8 @@ use crate::operation::terminal_adapter::{
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::idempotency_key::stable_payload_hash;
 use crate::terminal_interaction::{
-    InputOptions, InputRefused, MessageInvalid, TERMINAL_ROLES, Target, TerminalInteraction,
-    WaitFor, WaitPlan, receipt_summary, summary_line,
+    InputOptions, InputRefused, MessageInvalid, SETTLE_MS_DEFAULT, TERMINAL_ROLES, Target,
+    TerminalInteraction, WaitFor, WaitPlan, receipt_summary, summary_line,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -184,7 +184,8 @@ fn write_failure(error: anyhow::Error) -> RpcError {
 /// [`MESSAGE_REFUSED_OPTIONS`] they are exactly the schema's properties (`schema_tests`).
 const MESSAGE_OPTIONS: &str = "terminal_id, attempt_id, idempotency_key, action, read, wait_ms, \
      wait_for, settle_ms, signal_events, repaint_ms, wait_text, wait_text_absent";
-/// The options action `message` refuses with -32602.
+/// The options action `message` refuses with -32602 unless given at their default (`false`);
+/// `observation_id` has none.
 const MESSAGE_REFUSED_OPTIONS: [&str; 4] = [
     "observation_id",
     "allow_output_since_observation",
@@ -257,10 +258,16 @@ struct WaitArgs {
     wait_text_absent: Option<Vec<String>>,
 }
 impl WaitArgs {
+    /// Whether a wait is asked for. Models echo defaults: the default `wait_for` and the default
+    /// `settle_ms` ask for nothing.
     fn any(&self) -> bool {
         self.wait_ms.is_some()
-            || self.wait_for.is_some()
-            || self.settle_ms.is_some()
+            || self
+                .wait_for
+                .is_some_and(|wait_for| wait_for != WaitFor::default())
+            || self
+                .settle_ms
+                .is_some_and(|settle_ms| settle_ms != SETTLE_MS_DEFAULT)
             || self.signal_events.is_some()
             || self.repaint_ms.is_some()
             || self.wait_text.is_some()
@@ -529,11 +536,12 @@ async fn call(
             let args: Input = parse(args)?;
             let message = args.action["type"].as_str() == Some("message");
             if message {
+                // Models echo defaults: only a value other than the default is refused.
                 let given = [
                     args.observation_id.is_some(),
-                    args.allow_output_since_observation.is_some(),
-                    args.claim.is_some(),
-                    args.release.is_some(),
+                    args.allow_output_since_observation == Some(true),
+                    args.claim == Some(true),
+                    args.release == Some(true),
                 ];
                 let refused = MESSAGE_REFUSED_OPTIONS
                     .into_iter()

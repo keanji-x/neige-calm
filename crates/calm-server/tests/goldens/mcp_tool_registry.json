@@ -974,7 +974,7 @@
   },
   {
     "name": "neige_terminal_input",
-    "description_sha256": "f10ff49ee481ad2d0271c016aa64fe1621e04c77021cb5ed397fc2f56a677b72",
+    "description_sha256": "1f6ce6152634b3bb6b7c43015047f98ddac905bcd89c7ba0a77ab11ee9c88d6e",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

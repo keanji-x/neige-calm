@@ -103,7 +103,7 @@ impl Resolved {
             Some(TaskStatus::Running) => refused(
                 "worker_ended",
                 format!(
-                    "the worker of attempt {attempt} has ended ({}); nothing was sent. \
+                    "the worker of attempt {attempt} has ended ({}); this call wrote nothing. \
                      Declare a new task.",
                     self.session_state.as_db_str()
                 ),
@@ -121,10 +121,22 @@ impl Resolved {
             }
         })
     }
+    /// The write rule as an error: the typed refusal on a task worker, the untyped one on a
+    /// task-less terminal whose session ended.
+    pub(super) fn ensure_write_allowed(&self) -> Result<()> {
+        if let Some(refusal) = self.write_refusal() {
+            return Err(refusal.into());
+        }
+        ensure!(
+            self.write_allowed,
+            "task or worker session is not running; terminal control refused"
+        );
+        Ok(())
+    }
     /// Whether typed keys and a control claim are accepted: a task worker whose provider refuses
     /// keys while bound takes only `message`.
     pub(super) fn keys_refused(&self, tui: TuiInput) -> Option<InputRefused> {
-        (self.binding.task.is_some() && tui.keys_while_bound == BoundKeys::Refused).then(|| {
+        (self.binding.task.is_some() && tui.keys_while_bound() == BoundKeys::Refused).then(|| {
             InputRefused {
                 refusal: "worker_keys_refused",
                 message: WORKER_KEYS_REFUSED.replace("{provider}", self.provider.as_db_str()),
@@ -320,13 +332,7 @@ impl TerminalInteraction {
             "terminal task/session binding changed; show and read again"
         );
         if write {
-            if let Some(refusal) = current.write_refusal() {
-                return Err(refusal.into());
-            }
-            ensure!(
-                current.write_allowed,
-                "task or worker session is not running; terminal control refused"
-            );
+            current.ensure_write_allowed()?;
         }
         Ok(current)
     }
@@ -339,12 +345,10 @@ impl TerminalInteraction {
             )
         })
     }
-    /// The per-action pre-check of every typed-keys path (input, claim), before any connection,
-    /// claim or byte: the write rule's typed refusal first, then the provider's keys refusal.
+    /// The new-write check of every typed-keys path (input, claim), before any claim or byte: the
+    /// write rule first, then the provider's keys refusal.
     pub(super) fn ensure_keys_accepted(&self, resolved: &Resolved) -> Result<()> {
-        if let Some(refusal) = resolved.write_refusal() {
-            return Err(refusal.into());
-        }
+        resolved.ensure_write_allowed()?;
         match resolved.keys_refused(self.tui_input(resolved)?) {
             Some(refused) => Err(refused.into()),
             None => Ok(()),

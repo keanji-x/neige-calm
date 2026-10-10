@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use calm_exec::{BoundKeys, MessageDelivery, SpawnCtx, TuiInput, WorkerProvider};
+use calm_exec::{BoundKeys, SpawnCtx, TuiInput, WorkerProvider};
 use calm_types::error::CoreError;
 use calm_types::worker::{ExitEvidence, ExitInterpretation, Liveness, SessionMode, WorkerSession};
 
@@ -34,8 +34,7 @@ impl WorkerProvider for ClaudeProvider {
     /// A message is one bracketed paste and Enter (a new turn when idle, queued while a turn
     /// runs); the CLI also takes typed keys.
     fn tui_input(&self) -> TuiInput {
-        TuiInput {
-            message: MessageDelivery::BracketedPasteSubmit,
+        TuiInput::BracketedPasteSubmit {
             keys_while_bound: BoundKeys::Accepted,
         }
     }
@@ -108,5 +107,18 @@ mod tests {
                 reason: "claude worker exited with code 2".into()
             }
         );
+    }
+
+    #[test]
+    fn claude_declares_message_delivery_and_accepts_bound_keys() {
+        let tui = ClaudeProvider::new("/tmp/fake-supervisor.sock").tui_input();
+        assert_eq!(
+            tui,
+            TuiInput::BracketedPasteSubmit {
+                keys_while_bound: BoundKeys::Accepted
+            }
+        );
+        assert!(tui.takes_message());
+        assert_eq!(tui.keys_while_bound(), BoundKeys::Accepted);
     }
 }

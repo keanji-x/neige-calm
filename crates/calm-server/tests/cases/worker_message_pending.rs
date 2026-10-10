@@ -1,7 +1,7 @@
 //! #2493: an unresolved write fences the next one on the caller's connection, whichever path
-//! (`message` or typed `input`) made it. A write held past its delivery budget, or whose request
-//! was cancelled after it was queued, lands exactly once when admission resumes, and nothing new
-//! is written until its outcome is known.
+//! (`message` or typed `input`) made it and whichever writes next. A write held past its delivery
+//! budget, or whose request was cancelled after it was queued, lands exactly once when admission
+//! resumes, and nothing new is written until its outcome is known.
 use super::task_terminal::stop;
 use super::terminal_support::Harness;
 use super::worker_message::{
@@ -178,6 +178,21 @@ async fn message_after_unknown_input_is_refused() {
     assert_eq!(typed["outcome"], "unknown", "{typed}");
     let next = message(&h, json!({"attempt_id":f.worker.task}), "next", "next").await;
     assert_refusal(&next, -32403, None, UNRESOLVED);
+    // Typed input on a fresh observation is fenced by the same unresolved write.
+    let fresh = h
+        .ok(
+            "neige_terminal_read",
+            json!({"attempt_id":f.worker.task,"wait_ms":50}),
+        )
+        .await;
+    let typed_next = h
+        .call(
+            "neige_terminal_input",
+            json!({"attempt_id":f.worker.task,"observation_id":fresh["observation_id"],
+                "idempotency_key":"typed-next","action":{"type":"text","text":"more"}}),
+        )
+        .await;
+    assert_refusal(&typed_next, -32403, None, UNRESOLVED);
     release_then_next_lands(&h, &f, &held, b"keys").await;
     stop(&h, &f.worker).await;
 }

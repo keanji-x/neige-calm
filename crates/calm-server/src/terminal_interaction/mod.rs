@@ -36,6 +36,7 @@ mod text_conditions;
 mod text_wait;
 mod wait;
 mod wait_plan;
+mod write_leg;
 use client::{Client, LatestObservation};
 pub(crate) use target::Binding;
 #[cfg(test)]
@@ -87,6 +88,8 @@ pub struct TerminalInteraction {
     claim_window_seam: StdMutex<Option<ClaimWindowSeam>>,
     #[cfg(feature = "fixtures")]
     message_write_seam: StdMutex<Option<ClaimWindowSeam>>,
+    #[cfg(feature = "fixtures")]
+    enqueue_seam: StdMutex<Option<ClaimWindowSeam>>,
 }
 struct Observation {
     binding: String,
@@ -115,6 +118,8 @@ impl TerminalInteraction {
             claim_window_seam: StdMutex::new(None),
             #[cfg(feature = "fixtures")]
             message_write_seam: StdMutex::new(None),
+            #[cfg(feature = "fixtures")]
+            enqueue_seam: StdMutex::new(None),
         }
     }
     /// The caller's own Track, after proving its session is live and its card still holds the
@@ -394,8 +399,8 @@ impl TerminalInteraction {
     ) -> Result<Value> {
         readback.validate()?;
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
+        // The write rule and the keys rule; `client` re-proves the binding.
         self.ensure_keys_accepted(&resolved)?;
-        Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, true).await?;
         let client = self.client(identity, &resolved.binding).await?;
         let terminal = resolved.binding.terminal_id.as_str();
         let _serial = client.serial.lock().await;
@@ -562,16 +567,10 @@ impl TerminalInteraction {
         }
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
         let terminal = resolved.binding.terminal_id.as_str();
+        // A claim takes the write rule and the keys rule; `client` re-proves the binding.
         if action == "claim" {
             self.ensure_keys_accepted(&resolved)?;
         }
-        Self::check_binding(
-            self.repo.as_ref(),
-            identity,
-            &resolved.binding,
-            action == "claim",
-        )
-        .await?;
         let client = self.client(identity, &resolved.binding).await?;
         let _serial = client.serial.lock().await;
         let signal_seq = client.entry.signals.last_seq();

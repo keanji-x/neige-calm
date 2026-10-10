@@ -93,10 +93,13 @@ pub struct Client {
     pub connection: Uuid,
     pub entry: Arc<RendererEntry>,
     pub screen: Arc<StdMutex<ScreenState>>,
-    pub serial: Mutex<()>,
+    /// One action at a time per connection; owned by the guard a write admission returns.
+    pub serial: Arc<Mutex<()>>,
     /// Inputs currently waiting for `serial`. Test observability only.
     serial_waiters: AtomicUsize,
-    pub requests: Mutex<std::collections::HashMap<String, (String, serde_json::Value)>>,
+    /// The idempotency cache. A std mutex, never held across an await: a write reserves its
+    /// sequence, caches `unknown` and enqueues its input with no await in between.
+    pub requests: StdMutex<std::collections::HashMap<String, (String, serde_json::Value)>>,
     pub last_used: Arc<StdMutex<std::time::Instant>>,
     pub latest_observation: StdMutex<Option<LatestObservation>>,
     /// The kernel client of a `message` whose write is not settled, with its input sequence
@@ -132,6 +135,20 @@ pub enum InputRole {
     /// Input as an Observer through `kernel_originated_input`: never claims or takes control; its
     /// scope's control predicate still admits each physical write (the `message` client, #2493).
     Kernel,
+}
+
+/// A reserved place for one input in the pump's command channel: sending through it never waits.
+pub struct InputSlot<'a>(mpsc::Permit<'a, PumpCommand>);
+impl InputSlot<'_> {
+    /// Enqueue one input request with its write shape, so a `submit` reaches the PTY as text, then
+    /// the CR.
+    pub fn send(self, data: Vec<u8>, input_seq: u64, shape: WriteShape) {
+        self.0.send(PumpCommand::Input {
+            data,
+            input_seq,
+            shape,
+        });
+    }
 }
 
 impl Client {
@@ -266,9 +283,9 @@ impl Client {
             connection: Uuid::new_v4(),
             entry,
             screen,
-            serial: Mutex::new(()),
+            serial: Arc::new(Mutex::new(())),
             serial_waiters: AtomicUsize::new(0),
-            requests: Mutex::new(std::collections::HashMap::new()),
+            requests: StdMutex::new(std::collections::HashMap::new()),
             last_used,
             latest_observation: StdMutex::new(None),
             delivery: StdMutex::new(None),
@@ -347,16 +364,10 @@ impl Client {
     pub async fn send(&self, message: ClientMsg) -> Result<()> {
         self.incoming.send(message).await.map_err(Into::into)
     }
-    /// One input request with its write shape, so a `submit` reaches the PTY as text, then the CR.
-    pub async fn send_input(&self, data: Vec<u8>, input_seq: u64, shape: WriteShape) -> Result<()> {
-        self.commands
-            .send(PumpCommand::Input {
-                data,
-                input_seq,
-                shape,
-            })
-            .await
-            .map_err(Into::into)
+    /// A slot in the pump's command channel. Waiting for it changes nothing; an error means the
+    /// pump is gone and no input can reach it.
+    pub async fn input_slot(&self) -> Result<InputSlot<'_>> {
+        Ok(InputSlot(self.commands.reserve().await?))
     }
     /// Ask the pump to claim control only if no other client holds it (decided under the
     /// owner-registry lock); a grant is additionally delivered as an `OwnerChanged` (`grants`).
