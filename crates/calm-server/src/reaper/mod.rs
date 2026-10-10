@@ -15,7 +15,8 @@ use crate::git_candidate::delivery::AttemptOutcome;
 use crate::ids::ActorId;
 use crate::model::now_ms;
 use crate::operation::workspace_lease::{
-    ReleaseDelivery, release_workspace_lease_for_card_repo, release_workspace_lease_for_card_tx,
+    ReleaseDelivery, release_workspace_lease_for_attempt_repo,
+    release_workspace_lease_for_attempt_tx,
 };
 use crate::provider_registry::WorkerProviderRegistry;
 use crate::scheduler::{is_race_lost, race_lost_err};
@@ -379,16 +380,13 @@ pub(crate) async fn converge_dead_worker(
     session: &WorkerSession,
     reason: &str,
 ) -> Result<()> {
-    let Some(op_id) = session.spawn_op_id.as_deref() else {
-        release_reaped_worker_workspace_lease(repo, events, session).await?;
-        return Ok(());
-    };
-    let Some(task_id) = repo.operation_idempotency_key_by_id(op_id).await? else {
-        release_reaped_worker_workspace_lease(repo, events, session).await?;
+    // #2493: the attempt this session serves is its binding. An unbound session holds no lease.
+    let binding = calm_truth::db::RepoRead::session_binding(repo, session.id.as_str()).await?;
+    let Some(task_id) = binding.and_then(|binding| binding.attempt_id) else {
         return Ok(());
     };
     let Some(track) = repo.track_get(session.track_id.as_str()).await? else {
-        release_reaped_worker_workspace_lease(repo, events, session).await?;
+        release_reaped_worker_workspace_lease(repo, events, &task_id).await?;
         return Ok(());
     };
 
@@ -399,9 +397,9 @@ pub(crate) async fn converge_dead_worker(
     let track_id = track.id.clone();
     // The kernel `TaskFailed` carries the provider's interpreted reason rather than the raw `-1` probe sentinel.
     let reason = reason.to_string();
-    let card_id = session.card_id.clone();
+    let attempt_id = task_id.clone();
     let result = write_with_actor_events_typed::<(), _>(repo, None, events, write, move |tx| {
-        let card_id = card_id.clone();
+        let task_id = attempt_id.clone();
         Box::pin(async move {
             // The `spawn-failed` classifier is knowingly wrong here (a reaped worker died at RUNTIME); correcting the vocabulary has its own consumers (`is_deferred_self_report`). The reason tail at least stops the row from lying silently.
             let rows = task_fail_from_worker_tx(
@@ -428,16 +426,14 @@ pub(crate) async fn converge_dead_worker(
             )];
             // #1830 S2 D7: the dead worker's lease is released, and its attempt committed as
             // `failed`, in this fail transaction.
-            if let Some(card_id) = card_id.as_ref() {
-                events.extend(
-                    release_workspace_lease_for_card_tx(
-                        tx,
-                        card_id.as_str(),
-                        ReleaseDelivery::Commit(AttemptOutcome::Failed),
-                    )
-                    .await?,
-                );
-            }
+            events.extend(
+                release_workspace_lease_for_attempt_tx(
+                    tx,
+                    &task_id,
+                    ReleaseDelivery::Commit(AttemptOutcome::Failed),
+                )
+                .await?,
+            );
             Ok(((), events))
         })
     })
@@ -445,7 +441,7 @@ pub(crate) async fn converge_dead_worker(
     match result {
         Ok(_) => Ok(()),
         Err(e) if is_race_lost(&e) => {
-            release_reaped_worker_workspace_lease(repo, events, session).await?;
+            release_reaped_worker_workspace_lease(repo, events, &task_id).await?;
             Ok(())
         }
         Err(e) => Err(e),
@@ -455,17 +451,15 @@ pub(crate) async fn converge_dead_worker(
 async fn release_reaped_worker_workspace_lease(
     repo: &dyn Repo,
     events: &EventBus,
-    session: &WorkerSession,
+    attempt_id: &str,
 ) -> Result<()> {
-    if let Some(card_id) = session.card_id.as_ref() {
-        release_workspace_lease_for_card_repo(
-            repo,
-            events,
-            card_id.as_str(),
-            ReleaseDelivery::CommitAsTaskEnded,
-        )
-        .await?;
-    }
+    release_workspace_lease_for_attempt_repo(
+        repo,
+        events,
+        attempt_id,
+        ReleaseDelivery::CommitAsTaskEnded,
+    )
+    .await?;
     Ok(())
 }
 

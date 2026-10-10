@@ -17,7 +17,7 @@ pub(crate) struct WorkerWorktreeFacts {
     /// otherwise (a pre-S2 per-card lease).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
-    /// `commit_sha` of the latest `worktree.committed` event scoped to the worker card.
+    /// `commit_sha` of the latest `worktree.committed` event scoped to the lease's worker card.
     /// A FAILED auto-commit changes nothing here (the previous sha, or the absence, stays).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_commit: Option<String>,
@@ -44,31 +44,31 @@ pub(crate) async fn workspace_lease_by_id_tx(
     row.map(row_to_workspace_lease).transpose()
 }
 
-/// The latest `workspace_leases` row of `card_id`, in any state (the read surface after the
+/// The latest `workspace_leases` row of `attempt_id`, in any state (the read surface after the
 /// worker released it), the row `worker_worktree_facts_tx` derives its facts from. `None` when the
-/// card never held a lease.
-pub(crate) async fn latest_workspace_lease_for_card_tx(
+/// attempt never held a lease.
+pub(crate) async fn latest_workspace_lease_for_attempt_tx(
     tx: &mut Tx<'_>,
-    card_id: &str,
+    attempt_id: &str,
 ) -> Result<Option<super::WorkspaceLease>> {
     let sql = format!(
         "SELECT {WORKSPACE_LEASE_COLUMNS} FROM workspace_leases \
-         WHERE card_id = ?1 ORDER BY created_at_ms DESC, lease_id DESC LIMIT 1"
+         WHERE attempt_id = ?1 ORDER BY created_at_ms DESC, lease_id DESC LIMIT 1"
     );
     let row = sqlx::query(&sql)
-        .bind(card_id)
+        .bind(attempt_id)
         .fetch_optional(&mut **tx)
         .await?;
     row.map(row_to_workspace_lease).transpose()
 }
 
-/// The latest `workspace_leases` row for `worker_card_id` (any state) joined with the latest
-/// `worktree.committed` event. `None` when the card never held a lease.
+/// The attempt's latest `workspace_leases` row (any state) joined with the latest
+/// `worktree.committed` event of the lease's card. `None` when the attempt never held a lease.
 pub(crate) async fn worker_worktree_facts_tx(
     tx: &mut Tx<'_>,
-    worker_card_id: &str,
+    attempt_id: &str,
 ) -> Result<Option<WorkerWorktreeFacts>> {
-    let Some(lease) = latest_workspace_lease_for_card_tx(tx, worker_card_id).await? else {
+    let Some(lease) = latest_workspace_lease_for_attempt_tx(tx, attempt_id).await? else {
         return Ok(None);
     };
     let committed: Option<String> = sqlx::query_scalar(
@@ -77,7 +77,7 @@ pub(crate) async fn worker_worktree_facts_tx(
            ORDER BY id DESC
            LIMIT 1"#,
     )
-    .bind(worker_card_id)
+    .bind(&lease.card_id)
     .fetch_optional(&mut **tx)
     .await?;
     let committed = committed

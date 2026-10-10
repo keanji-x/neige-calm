@@ -48,6 +48,8 @@ pub struct TrackRow {
 pub struct TaskRow {
     pub key: String,
     pub status: String,
+    /// The card of the worker session the attempt is bound to (#2493 history: whether or not that
+    /// session still lives).
     pub worker_card_id: Option<String>,
     pub child_track_id: Option<String>,
     pub finished_at_ms: Option<i64>,
@@ -65,7 +67,7 @@ pub struct SessionRow {
     pub created_at_ms: i64,
     /// `json_extract(handle_state_json, '$.mode')` — `Some("harness")` for the planner / assistant harness rows.
     pub mode: Option<String>,
-    /// `EXISTS (tasks.worker_card_id = card)` over EVERY attempt — the "never bound to a task" arm negated.
+    /// A session of the card is bound to ANY attempt of the track — the "never bound to a task" arm negated.
     pub task_bound: bool,
     /// The PTY the session observes through — the renderer registry's key. `NULL` for a harness
     /// row (no PTY) and after the orphan arm deleted the terminal row (FK `ON DELETE SET NULL`).
@@ -117,11 +119,14 @@ pub(crate) async fn track_row(pool: &SqlitePool, track_id: &str) -> Result<Optio
     }))
 }
 
-/// W — the current attempt of every task of the track (superseded attempts are not in `current_tasks`).
+/// W — the current attempt of every task of the track (superseded attempts are not in
+/// `current_tasks`), with the card its worker session is bound to.
 pub(crate) async fn current_tasks(pool: &SqlitePool, track_id: &str) -> Result<Vec<TaskRow>> {
     let rows = sqlx::query(
-        "SELECT key, status, worker_card_id, child_track_id, finished_at_ms, updated_at_ms \
-           FROM current_tasks WHERE track_id = ?1 ORDER BY key",
+        "SELECT ct.key, ct.status, b.card_id AS worker_card_id, ct.child_track_id, \
+                ct.finished_at_ms, ct.updated_at_ms \
+           FROM current_tasks ct LEFT JOIN worker_session_binding b ON b.attempt_id = ct.id \
+          WHERE ct.track_id = ?1 ORDER BY ct.key",
     )
     .bind(track_id)
     .fetch_all(pool)
@@ -139,11 +144,12 @@ pub(crate) async fn current_tasks(pool: &SqlitePool, track_id: &str) -> Result<V
         .collect())
 }
 
-/// Does ANY attempt row of the track name this card as its worker? Spliced into S0 twice (the
+/// Is a session of this card bound to ANY attempt of the track? Spliced into S0 twice (the
 /// eligibility arm and the `task_bound` column) so the two stay one predicate.
 fn task_bound_exists_sql(card_expr: &str) -> String {
     format!(
-        "EXISTS (SELECT 1 FROM tasks t WHERE t.track_id = ?1 AND t.worker_card_id = {card_expr})"
+        "EXISTS (SELECT 1 FROM worker_session_binding b JOIN tasks t ON t.id = b.attempt_id \
+                  WHERE t.track_id = ?1 AND b.card_id = {card_expr})"
     )
 }
 
@@ -164,8 +170,9 @@ pub async fn eligible_sessions(pool: &SqlitePool, track_id: &str) -> Result<Vec<
            LEFT JOIN terminals te ON te.id = ws.terminal_run_id \
           WHERE c.track_id = ?1 \
             AND ( json_extract(ws.handle_state_json, '$.mode') = 'harness' \
-               OR EXISTS (SELECT 1 FROM current_tasks ct \
-                           WHERE ct.track_id = ?1 AND ct.worker_card_id = c.id) \
+               OR EXISTS (SELECT 1 FROM worker_session_binding b \
+                           JOIN current_tasks ct ON ct.id = b.attempt_id \
+                           WHERE ct.track_id = ?1 AND b.card_id = c.id) \
                OR NOT {task_bound} ) \
           ORDER BY ws.id",
         task_bound = task_bound_exists_sql("c.id"),

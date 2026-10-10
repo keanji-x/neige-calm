@@ -7,11 +7,9 @@ use crate::db::{write_with_actor_events_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::extract::{Json, JsonBody, Path, Query};
-use crate::git_candidate::delivery::AttemptOutcome;
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::model::{Card, CardPatch, HarnessItem, new_id};
 use crate::operation::card_create_adapter::{CARD_CREATE, CardCreateOperationPayload};
-use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_tx};
 use crate::operation::{OperationId, OperationKey};
 use crate::per_card_lock::lock_key;
 use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
@@ -629,15 +627,7 @@ pub(crate) async fn delete_card(
                 // #1830 S2 D7: after the best-effort interrupt above, the attempt is committed as
                 // `interrupted` in this delete transaction.
                 let mut events =
-                    crate::scheduler::fail_tasks_for_deleted_card_tx(tx, &card).await?;
-                events.extend(
-                    release_workspace_lease_for_card_tx(
-                        tx,
-                        card_id.as_ref(),
-                        ReleaseDelivery::Commit(AttemptOutcome::Interrupted),
-                    )
-                    .await?,
-                );
+                    crate::scheduler::settle_attempt_for_deleted_card_tx(tx, &card).await?;
                 card_delete_tx(tx, card_id.as_ref(), write_for_tx.role_cache()).await?;
                 events.push((
                     delete_actor,

@@ -71,8 +71,9 @@ pub const COMPLETED_TRACK_LIVE_SESSIONS_SQL: &str = "SELECT ws.id, ws.provider, 
        JOIN terminals te ON te.id = ws.terminal_run_id AND te.exit_code IS NULL AND te.signal_killed = 0 \
       WHERE ws.state = 'running' \
         AND t.closed_at IS NOT NULL AND ws.created_at_ms <= t.closed_at \
-        AND NOT EXISTS (SELECT 1 FROM current_tasks ct WHERE ct.track_id = t.id AND ct.worker_card_id = ws.card_id \
-                          AND ct.status IN ('dispatched','running','verifying'))";
+        AND NOT EXISTS (SELECT 1 FROM worker_session_binding b JOIN current_tasks ct ON ct.id = b.attempt_id \
+                         WHERE b.card_id = ws.card_id AND ct.track_id = t.id \
+                           AND ct.status IN ('dispatched','running','verifying'))";
 
 /// Spawn the sweeper task. Subscribes to no events; purely time-driven.
 pub fn spawn(state: AppState) {

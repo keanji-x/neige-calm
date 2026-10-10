@@ -586,14 +586,10 @@ async fn plan_list(
                     entry["status"] = json!(current.status);
                     entry["blocking_reason"] = json!(current.blocking_reason);
                     // Absent (no key) when the attempt never held a lease.
-                    let worktree_facts = match task
-                        .as_ref()
-                        .and_then(|task| task.worker_card_id.as_deref())
-                    {
-                        Some(worker_card_id) => {
+                    let worktree_facts = match task.as_ref() {
+                        Some(task) => {
                             crate::operation::workspace_lease::facts::worker_worktree_facts_tx(
-                                tx,
-                                worker_card_id,
+                                tx, &task.id,
                             )
                             .await?
                         }

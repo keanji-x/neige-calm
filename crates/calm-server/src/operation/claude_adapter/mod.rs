@@ -840,8 +840,19 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         )
         .await?;
 
-        let (lease, lease_event) =
-            acquire_workspace_lease_tx(tx, &card_id, card.track_id.as_str(), &op.id, &plan).await?;
+        // #2493: the attempt is bound to the session this transaction created, before anything
+        // else names it.
+        crate::db::sqlite::bind_attempt_tx(tx, &payload.idempotency_key, &runtime_id, &card_id)
+            .await?;
+        let (lease, lease_event) = acquire_workspace_lease_tx(
+            tx,
+            &card_id,
+            card.track_id.as_str(),
+            &op.id,
+            &payload.idempotency_key,
+            &plan,
+        )
+        .await?;
 
         if let Some(existing_map) = card.payload.as_object() {
             let mut merged = existing_map.clone();

@@ -99,11 +99,20 @@ async fn task_gate(
     let (_, track) =
         crate::mcp_server::tools::track_file::resolve_track_for_identity(&ctx, &identity).await?;
     let card_id = identity.card_id.clone();
+    let session_id = identity.session_id.clone();
     let track_id = track.id.to_string();
     let admit_attempt = attempt_id.clone();
     let admitted = crate::db::write_in_tx_typed(ctx.repo.as_ref(), move |tx| {
         Box::pin(async move {
-            admit_run_tx(tx, &admit_attempt, &card_id, &track_id, commit_message).await
+            admit_run_tx(
+                tx,
+                &admit_attempt,
+                &card_id,
+                &session_id,
+                &track_id,
+                commit_message,
+            )
+            .await
         })
     })
     .await

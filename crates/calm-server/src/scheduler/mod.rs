@@ -14,7 +14,7 @@ pub use running_worker::{
     PLANNER_CANCELED, WORKER_IDLE_PROBE_TIMEOUT, WORKER_IDLE_TURN_GRACE, WORKER_TURN_ENDED,
     WorkerIdleClock, WorkerIdleWake,
 };
-pub(crate) use worker_failure::{fail_tasks_for_deleted_card_tx, fail_worker_task_tx};
+pub(crate) use worker_failure::{fail_worker_task_tx, settle_attempt_for_deleted_card_tx};
 pub(crate) use worker_liveness::LivenessExpiry;
 pub use worker_liveness::WorkerLiveness;
 
@@ -51,7 +51,8 @@ use crate::operation::task_verify_adapter::{
 };
 use crate::operation::terminal_adapter::TerminalWorkerOperationPayload;
 use crate::operation::workspace_lease::{
-    ReleaseDelivery, release_workspace_lease_for_card_repo, release_workspace_lease_for_card_tx,
+    ReleaseDelivery, release_workspace_lease_for_attempt_repo,
+    release_workspace_lease_for_attempt_tx,
 };
 use crate::operation::{OperationKey, OperationOutcome, OperationRuntime, Tx};
 use crate::per_card_lock::PerCardLocks;
@@ -88,13 +89,13 @@ pub(crate) struct TimeoutCleanupMark {
     pub(crate) released: Vec<(ActorId, EventScope, Event)>,
 }
 
-/// Mark the card's live worker session for the sweep's reap (`sweep_timeout_worker_cleanups`),
-/// after the caller flipped the task terminal in `tx`. When no live session is left to mark (a
-/// Claude PTY that died is `exited`), no worker is left to kill: the lease is released here, in
-/// the caller's transaction, and the attempt committed as its terminal status says (#1830 S2 D7).
+/// Mark the live worker session bound to `task_id` (#2493) for the sweep's reap
+/// (`sweep_timeout_worker_cleanups`), after the caller flipped the task terminal in `tx`. When no
+/// live session is left to mark (a Claude PTY that died is `exited`), no worker is left to kill:
+/// the attempt's lease is released here, in the caller's transaction, and the attempt committed
+/// as its terminal status says (#1830 S2 D7).
 pub(crate) async fn mark_running_timeout_cleanup_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    card_id: &str,
     task_id: &str,
     now: i64,
     reason: WorkerCleanupReason,
@@ -112,17 +113,18 @@ pub(crate) async fn mark_running_timeout_cleanup_tx(
                  json(?1)
                ),
                updated_at_ms = ?2
-           WHERE card_id = ?3
-             AND state IN ('starting','running','idle','turn_pending')"#,
+           WHERE id IN (SELECT session_id FROM worker_session_binding
+                         WHERE attempt_id = ?3 AND session_active)"#,
     )
     .bind(marker)
     .bind(now)
-    .bind(card_id)
+    .bind(task_id)
     .execute(&mut **tx)
     .await?
     .rows_affected();
     let released = if rows == 0 {
-        release_workspace_lease_for_card_tx(tx, card_id, ReleaseDelivery::CommitAsTaskEnded).await?
+        release_workspace_lease_for_attempt_tx(tx, task_id, ReleaseDelivery::CommitAsTaskEnded)
+            .await?
     } else {
         Vec::new()
     };
@@ -260,6 +262,9 @@ impl Drop for InflightGuard {
 struct TimeoutCleanupSession {
     session_id: String,
     card_id: String,
+    /// The attempt the marker was written for (`$.timeout_cleanup.task_id`, written with every
+    /// marker).
+    attempt_id: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -1393,13 +1398,9 @@ impl Scheduler {
         outcome: OperationOutcome,
     ) -> Result<()> {
         match outcome {
-            OperationOutcome::Succeeded { result }
-            | OperationOutcome::SucceededViaCollision { result, .. } => {
-                // Guarded `dispatched → running` + `worker_card_id` stamp; a missing id leaves the
-                // stamp to the report tx's COALESCE.
-                let worker_card_id = result.get("id").and_then(Value::as_str).map(str::to_string);
-                self.mark_running(&task.id, worker_card_id.as_deref())
-                    .await?;
+            OperationOutcome::Succeeded { .. } | OperationOutcome::SucceededViaCollision { .. } => {
+                // Guarded `dispatched → running`; the worker was bound when the spawn prepared.
+                self.mark_running(&task.id).await?;
                 // A terminal task resumed by the boot sweep may already carry a recorded exit;
                 // reconcile now instead of waiting for the next sweep. A just-spawned terminal no-ops.
                 if task.kind == TaskKind::Terminal {
@@ -1430,19 +1431,14 @@ impl Scheduler {
 
     /// Guarded running stamp, no event: 0 rows = a fast worker report already advanced
     /// the row — by design, not an error.
-    async fn mark_running(&self, task_id: &str, worker_card_id: Option<&str>) -> Result<()> {
+    async fn mark_running(&self, task_id: &str) -> Result<()> {
         let pool = self
             .repo
             .sqlite_pool()
             .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
         let mut tx = begin_immediate_tx(&pool).await?;
-        let rows = mark_acknowledged_running_tx(
-            &mut tx,
-            task_id,
-            worker_card_id,
-            self.worker_liveness.cap_ms(),
-        )
-        .await?;
+        let rows =
+            mark_acknowledged_running_tx(&mut tx, task_id, self.worker_liveness.cap_ms()).await?;
         tx.commit().await?;
         if rows == 0 {
             tracing::debug!(
@@ -1575,9 +1571,8 @@ impl Scheduler {
                     self.reconcile_running_terminal(task).await;
                 }
                 TaskStatus::Running if task_has_running_liveness_deadline(&task) => {
-                    let card_id = self.worker_card_id_for_task(&task).await;
                     let facts = match self
-                        .running_liveness_facts(&task.id, card_id.as_deref())
+                        .running_liveness_facts(&task.id, task.worker_card_id.as_deref())
                         .await
                     {
                         Ok(Some(facts)) => facts,
@@ -1651,8 +1646,8 @@ impl Scheduler {
         let Some(pool) = self.repo.sqlite_pool() else {
             return;
         };
-        let worker_rows = match sqlx::query_as::<_, (String, String)>(
-            r#"SELECT id, card_id
+        let worker_rows = match sqlx::query_as::<_, (String, String, Option<String>)>(
+            r#"SELECT id, card_id, json_extract(handle_state_json, '$.timeout_cleanup.task_id')
                FROM worker_sessions
                WHERE provider IN ('codex', 'claude')
                  AND card_id IS NOT NULL
@@ -1682,10 +1677,11 @@ impl Scheduler {
             return;
         };
 
-        for (session_id, card_id) in worker_rows {
+        for (session_id, card_id, attempt_id) in worker_rows {
             let cleanup = TimeoutCleanupSession {
                 session_id,
                 card_id,
+                attempt_id,
             };
             if let Err(e) = runtime.fail_running_worker_card(&cleanup.card_id).await {
                 tracing::warn!(
@@ -1696,12 +1692,20 @@ impl Scheduler {
                 );
                 continue;
             }
-            // #1830 S2 D7: the worker is stopped, so its attempt is committed now, as its
-            // terminal `tasks.status` says (`failed` for a timeout, `canceled` for a cancel).
-            if let Err(e) = release_workspace_lease_for_card_repo(
+            // #1830 S2 D7: the worker is stopped, so the marker's attempt is committed now, as
+            // its terminal `tasks.status` says (`failed` for a timeout, `canceled` for a cancel).
+            let Some(attempt_id) = cleanup.attempt_id.as_deref() else {
+                tracing::warn!(
+                    session_id = %cleanup.session_id,
+                    card_id = %cleanup.card_id,
+                    "scheduler sweep: timed-out worker cleanup marker names no attempt; marker retained"
+                );
+                continue;
+            };
+            if let Err(e) = release_workspace_lease_for_attempt_repo(
                 self.repo.as_ref(),
                 &self.events,
-                &cleanup.card_id,
+                attempt_id,
                 ReleaseDelivery::CommitAsTaskEnded,
             )
             .await
@@ -1749,21 +1753,6 @@ impl Scheduler {
         Ok(())
     }
 
-    async fn worker_card_id_for_task(&self, task: &Task) -> Option<String> {
-        if let Some(card_id) = task.worker_card_id.as_ref() {
-            return Some(card_id.clone());
-        }
-        let (operation_kind, _) = build_worker_payload(task).ok()?;
-        self.operation_runtime
-            .upgrade()?
-            .find_by_kind_and_idempotency(operation_kind, &task.id)
-            .await
-            .ok()
-            .flatten()
-            .filter(|op| op.target_type == "card")
-            .and_then(|op| op.target_id)
-    }
-
     /// Sweep `dispatched` arm: the claim landed but the spawn outcome was never reconciled.
     /// `drive_spawn` covers every sub-case via submit-dedupe + `wait()` + guarded writes.
     async fn resume_dispatched(self: &Arc<Self>, task: Task) {
@@ -1807,24 +1796,22 @@ impl Scheduler {
     /// Sweep `running`-terminal arm: a recorded exit gets the SAME guarded completion tx as
     /// the live exit hook; first writer wins via the status guard.
     async fn reconcile_running_terminal(&self, task: Task) {
-        let worker_card_id = match &task.worker_card_id {
-            Some(id) => Some(id.clone()),
-            // Crash between op success and the running stamp can leave the card unstamped;
-            // recover it from the operation row (idempotency-key convention).
-            None => match self.operation_runtime.upgrade() {
-                Some(runtime) => runtime
-                    .find_by_kind_and_idempotency("terminal-worker", &task.id)
-                    .await
-                    .ok()
-                    .flatten()
-                    .and_then(|op| op.target_id),
-                None => None,
-            },
+        // #2493: the attempt's binding, written when its spawn prepared.
+        let binding = match calm_truth::db::RepoRead::attempt_binding(self.repo.as_ref(), &task.id)
+            .await
+        {
+            Ok(binding) => binding,
+            Err(e) => {
+                tracing::warn!(task_id = %task.id, error = %e, "scheduler sweep: attempt binding read failed");
+                return;
+            }
         };
-        let Some(card_id) = worker_card_id else {
+        let Some((session_id, card_id)) =
+            binding.and_then(|binding| Some((binding.session_id, binding.card_id?)))
+        else {
             tracing::debug!(
                 task_id = %task.id,
-                "scheduler sweep: running terminal task has no resolvable worker card; leaving row"
+                "scheduler sweep: running terminal task has no bound worker session; leaving row"
             );
             return;
         };
@@ -1854,7 +1841,7 @@ impl Scheduler {
             &self.write,
             &task.id,
             &task.track_id,
-            &card_id,
+            &session_id,
             terminal.exit_code,
             terminal.signal_killed,
             &terminal.pty_output,
@@ -2031,9 +2018,8 @@ impl TerminalTaskHook {
         })
     }
 
-    /// Live exit path: resolve terminal → card → payload `idempotency_key` to a plan-task row
-    /// and run the shared guarded completion tx. The payload walk only FINDS the candidate;
-    /// ownership is proven inside the tx (card payloads are patchable, so they are not proof).
+    /// Live exit path: resolve terminal → card → the attempt its worker session is bound to
+    /// (#2493) and run the shared guarded completion tx, pinned to that session.
     pub async fn on_terminal_exit(
         &self,
         terminal_id: &str,
@@ -2051,19 +2037,21 @@ impl TerminalTaskHook {
             }
         };
         let card_id = terminal.card_id.clone();
-        let card = match self.repo.card_get(card_id.as_str()).await {
-            Ok(Some(card)) => card,
-            Ok(None) => return,
+        let binding = match calm_truth::db::RepoRead::card_binding(
+            self.repo.as_ref(),
+            card_id.as_str(),
+        )
+        .await
+        {
+            Ok(binding) => binding,
             Err(e) => {
-                tracing::warn!(terminal_id, error = %e, "terminal task hook: card_get failed");
+                tracing::warn!(terminal_id, error = %e, "terminal task hook: card binding read failed");
                 return;
             }
         };
-        let Some(task_id) = card
-            .payload
-            .get("idempotency_key")
-            .and_then(Value::as_str)
-            .map(str::to_string)
+        // An unbound card is a plain terminal, not a task's worker.
+        let Some((task_id, session_id)) =
+            binding.and_then(|binding| Some((binding.attempt_id?, binding.session_id)))
         else {
             return;
         };
@@ -2089,7 +2077,7 @@ impl TerminalTaskHook {
             &self.write,
             &task.id,
             &task.track_id,
-            card_id.as_str(),
+            &session_id,
             exit_code,
             signal_killed,
             pty_output,
@@ -2117,7 +2105,7 @@ pub async fn complete_terminal_task(
     write: &WriteContext,
     task_id: &str,
     track_id: &str,
-    worker_card_id: &str,
+    worker_session_id: &str,
     exit_code: Option<i32>,
     signal_killed: bool,
     pty_output: &str,
@@ -2133,19 +2121,14 @@ pub async fn complete_terminal_task(
     let success = !signal_killed && exit_code == Some(0);
     let task_id = task_id.to_string();
     let track_id_str = track_id.to_string();
-    let worker_card_id = worker_card_id.to_string();
+    let worker_session_id = worker_session_id.to_string();
     let pty_output = pty_output.to_string();
     let result = write_with_actor_events_typed::<(), _>(repo, None, events, write, move |tx| {
         Box::pin(async move {
             let now = now_ms();
-            // The payload `idempotency_key` is mutable via `PATCH /api/cards/{id}`, so it is NOT
-            // proof of ownership: only the card the worker-spawn op actually created may flip an
-            // UNSTAMPED row; a forged-payload card fails both sides → 0 rows → no event.
-            let owns_key =
-                crate::db::sqlite::worker_op_targets_card_tx(tx, &task_id, &worker_card_id).await?;
-            let reporter = TaskReporter::Card {
-                card_id: worker_card_id.as_str(),
-                owns_key,
+            // Only the worker session the attempt is bound to may flip it (#2493).
+            let reporter = TaskReporter::Session {
+                session_id: worker_session_id.as_str(),
             };
             // A gated terminal task's clean exit is still a self-report: the row goes to `verifying`.
             let (rows, event) = if success {
@@ -2233,16 +2216,8 @@ mod tests;
 pub(crate) async fn mark_acknowledged_running_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     task_id: &str,
-    worker_card_id: Option<&str>,
     timeout_ms: i64,
 ) -> Result<u64> {
     let now = now_ms();
-    task_mark_running_tx(
-        tx,
-        task_id,
-        worker_card_id,
-        now,
-        now.saturating_add(timeout_ms),
-    )
-    .await
+    task_mark_running_tx(tx, task_id, now, now.saturating_add(timeout_ms)).await
 }

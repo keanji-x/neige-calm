@@ -126,25 +126,25 @@ pub async fn task_cancel_tx(tx: &mut Transaction<'_, Sqlite>, id: &str, now: i64
     Ok(res.rows_affected())
 }
 
-/// `running → canceled` for the Planner's in-flight cancel (#1785). The card guard pins the
-/// worker the caller marks for reaping; `dispatched` is excluded because its card may be unbound.
-/// Returns rows moved (`0` = the row left `running` or changed worker; the caller re-reads).
+/// `running → canceled` for the Planner's in-flight cancel (#1785). The session guard pins the
+/// worker the caller marks for reaping (#2493). Returns rows moved (`0` = the row left `running`
+/// or changed worker; the caller re-reads).
 pub async fn task_cancel_running_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
-    worker_card_id: &str,
+    worker_session_id: &str,
     status_detail: &str,
     now: i64,
 ) -> Result<u64> {
     let res = sqlx::query(
         r#"UPDATE tasks
            SET status = 'canceled', status_detail = ?1, updated_at_ms = ?2, finished_at_ms = ?2
-           WHERE id = ?3 AND status = 'running' AND worker_card_id = ?4"#,
+           WHERE id = ?3 AND status = 'running' AND worker_session_id = ?4"#,
     )
     .bind(status_detail)
     .bind(now)
     .bind(id)
-    .bind(worker_card_id)
+    .bind(worker_session_id)
     .execute(&mut **tx)
     .await?;
     Ok(res.rows_affected())
@@ -240,25 +240,22 @@ mod claim_sql_tests {
     }
 }
 
-/// Guarded on `dispatched` so a fast worker's report is never regressed;
-/// `worker_card_id` is COALESCE-stamped — whichever side lands first wins.
+/// Guarded on `dispatched` so a fast worker's report is never regressed. The worker card and
+/// session were bound when the spawn operation prepared (#2493 `bind_attempt_tx`).
 pub async fn task_mark_running_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
-    worker_card_id: Option<&str>,
     now: i64,
     running_deadline_ms: i64,
 ) -> Result<u64> {
     let res = sqlx::query(
         r#"UPDATE tasks
            SET status = 'running',
-               worker_card_id = COALESCE(worker_card_id, ?1),
-               running_deadline_ms = ?2,
-               running_started_at_ms = ?3,
-               updated_at_ms = ?3
-           WHERE id = ?4 AND status = 'dispatched'"#,
+               running_deadline_ms = ?1,
+               running_started_at_ms = ?2,
+               updated_at_ms = ?2
+           WHERE id = ?3 AND status = 'dispatched'"#,
     )
-    .bind(worker_card_id)
     .bind(running_deadline_ms)
     .bind(now)
     .bind(id)
@@ -267,79 +264,21 @@ pub async fn task_mark_running_tx(
     Ok(res.rows_affected())
 }
 
-/// Ownership proof for the unstamped-row window: the scheduler-created
-/// worker-spawn op (actor `KernelDispatcher`, `idempotency_key` = task id)
-/// records its created card as the op target in the same tx, and `operations`
-/// has no client-reachable write path — unlike card payloads. `false` in the
-/// crash window between the claim and the op insert.
-pub async fn worker_op_targets_card_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    task_id: &str,
-    card_id: &str,
-) -> Result<bool> {
-    let owns: bool = sqlx::query_scalar(&format!(
-        "SELECT EXISTS(SELECT 1 {WORKER_SPAWN_OPS_OF_CARD} AND idempotency_key = ?2)"
-    ))
-    .bind(card_id)
-    .bind(task_id)
-    .fetch_one(&mut **tx)
-    .await?;
-    Ok(owns)
-}
-
-/// The scheduler's worker-spawn ops that created card `?1` (see [`worker_op_targets_card_tx`]).
-const WORKER_SPAWN_OPS_OF_CARD: &str = "FROM operations \
-     WHERE kind IN ('codex-worker', 'terminal-worker', 'claude-worker') \
-       AND target_type = 'card' AND target_id = ?1 \
-       AND json_extract(payload_json, '$.actor.kind') = 'KernelDispatcher'";
-
-/// Whether a scheduler worker-spawn op created `card_id`: a task worker's card, by the same op
-/// proof as [`worker_op_targets_card_tx`], never the card's (editable) payload.
-pub async fn card_is_worker_spawn_target_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    card_id: &str,
-) -> Result<bool> {
-    let spawned: bool = sqlx::query_scalar(&format!(
-        "SELECT EXISTS(SELECT 1 {WORKER_SPAWN_OPS_OF_CARD})"
-    ))
-    .bind(card_id)
-    .fetch_one(&mut **tx)
-    .await?;
-    Ok(spawned)
-}
-
-/// #1933: the `head` declared by the attempt whose worker-spawn op created `card_id`, found
-/// through the same op proof as [`worker_op_targets_card_tx`], never the card's (editable)
-/// payload. `None` for any other card, or an attempt with no head.
-pub async fn worker_card_declared_head_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    card_id: &str,
-) -> Result<Option<String>> {
-    let head: Option<Option<String>> = sqlx::query_scalar(&format!(
-        "SELECT head FROM tasks WHERE id IN (SELECT idempotency_key {WORKER_SPAWN_OPS_OF_CARD})"
-    ))
-    .bind(card_id)
-    .fetch_optional(&mut **tx)
-    .await?;
-    Ok(head.flatten())
-}
-
-/// Who is asserting a worker-report flip. An UNSTAMPED `dispatched` row needs
-/// the op-target proof, not the reporting card's (forgeable) payload.
+/// Who is asserting a worker-report flip.
 #[derive(Clone, Copy, Debug)]
 pub enum TaskReporter<'a> {
-    /// Kernel-internal caller that owns the row by construction; bypasses the card guard.
+    /// Kernel-internal caller that owns the row by construction; bypasses the worker guard.
     Kernel,
-    /// `owns_key` must be [`worker_op_targets_card_tx`] for the REPORTING card.
-    Card { card_id: &'a str, owns_key: bool },
+    /// The worker session the attempt is bound to (#2493): the flip matches only that binding.
+    Session { session_id: &'a str },
 }
 
 impl<'a> TaskReporter<'a> {
-    /// `(card_id bind, owns_key bind)` for the shared SQL guard shape.
-    fn binds(self) -> (Option<&'a str>, bool) {
+    /// The `worker_session_id` bind of the shared SQL guard; `None` for the kernel.
+    fn session_bind(self) -> Option<&'a str> {
         match self {
-            TaskReporter::Kernel => (None, true),
-            TaskReporter::Card { card_id, owns_key } => (Some(card_id), owns_key),
+            TaskReporter::Kernel => None,
+            TaskReporter::Session { session_id } => Some(session_id),
         }
     }
 }
@@ -347,8 +286,8 @@ impl<'a> TaskReporter<'a> {
 /// `dispatched/running → done`, run inside the emit tx. `dispatched` is
 /// included because a fast worker can report before the scheduler's `wait()`
 /// returns; `gate_json IS NULL` because a gated row goes to `verifying`, never
-/// straight to `done`. `track_id` plus the two-sided card guard keep a sibling
-/// worker from ever terminalizing another task's row.
+/// straight to `done`. `track_id` plus the session guard keep a sibling worker from ever
+/// terminalizing another task's row.
 pub async fn task_complete_from_worker_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
@@ -356,25 +295,22 @@ pub async fn task_complete_from_worker_tx(
     reporter: TaskReporter<'_>,
     now: i64,
 ) -> Result<u64> {
-    let (worker_card_id, owns_key) = reporter.binds();
+    let worker_session_id = reporter.session_bind();
     let res = sqlx::query(
         r#"UPDATE tasks
            SET status = 'done',
                status_detail = NULL,
-               worker_card_id = COALESCE(worker_card_id, ?1),
                updated_at_ms = ?2,
                finished_at_ms = ?2
            WHERE id = ?3 AND track_id = ?4
              AND status IN ('dispatched', 'running')
              AND gate_json IS NULL
-             AND (?1 IS NULL OR worker_card_id = ?1
-                  OR (worker_card_id IS NULL AND ?5))"#,
+             AND (?1 IS NULL OR worker_session_id = ?1)"#,
     )
-    .bind(worker_card_id)
+    .bind(worker_session_id)
     .bind(now)
     .bind(id)
     .bind(track_id)
-    .bind(owns_key)
     .execute(&mut **tx)
     .await?;
     Ok(res.rows_affected())
@@ -397,24 +333,21 @@ pub async fn task_start_verifying_from_worker_tx(
     reporter: TaskReporter<'_>,
     now: i64,
 ) -> Result<u64> {
-    let (worker_card_id, owns_key) = reporter.binds();
+    let worker_session_id = reporter.session_bind();
     let res = sqlx::query(
         r#"UPDATE tasks
            SET status = 'verifying',
                status_detail = NULL,
-               worker_card_id = COALESCE(worker_card_id, ?1),
                updated_at_ms = ?2
            WHERE id = ?3 AND track_id = ?4
              AND status IN ('dispatched', 'running')
              AND gate_json IS NOT NULL
-             AND (?1 IS NULL OR worker_card_id = ?1
-                  OR (worker_card_id IS NULL AND ?5))"#,
+             AND (?1 IS NULL OR worker_session_id = ?1)"#,
     )
-    .bind(worker_card_id)
+    .bind(worker_session_id)
     .bind(now)
     .bind(id)
     .bind(track_id)
-    .bind(owns_key)
     .execute(&mut **tx)
     .await?;
     Ok(res.rows_affected())
@@ -611,25 +544,22 @@ pub async fn task_fail_from_worker_tx(
     status_detail: &str,
     now: i64,
 ) -> Result<u64> {
-    let (worker_card_id, owns_key) = reporter.binds();
+    let worker_session_id = reporter.session_bind();
     let res = sqlx::query(
         r#"UPDATE tasks
            SET status = 'failed',
                status_detail = ?1,
-               worker_card_id = COALESCE(worker_card_id, ?2),
                updated_at_ms = ?3,
                finished_at_ms = ?3
            WHERE id = ?4 AND track_id = ?5
              AND status IN ('dispatched', 'running')
-             AND (?2 IS NULL OR worker_card_id = ?2
-                  OR (worker_card_id IS NULL AND ?6))"#,
+             AND (?2 IS NULL OR worker_session_id = ?2)"#,
     )
     .bind(status_detail)
-    .bind(worker_card_id)
+    .bind(worker_session_id)
     .bind(now)
     .bind(id)
     .bind(track_id)
-    .bind(owns_key)
     .execute(&mut **tx)
     .await?;
     Ok(res.rows_affected())

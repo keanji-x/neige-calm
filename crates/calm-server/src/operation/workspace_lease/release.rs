@@ -4,9 +4,8 @@
 //! attempt (completed, failed or stopped) is committed in the track's checkout and the next
 //! attempt starts from that commit.
 //!
-//! The attempt is the lease owner op's `idempotency_key`, else the task whose `worker_card_id`
-//! is the lease card (a fixture lease has no owner op; compensation has no card stamp, so it
-//! relies on the first).
+//! The attempt is the lease row's own `attempt_id` (#2493): every release of an ending attempt
+//! finds its lease by that attempt, never by the card.
 
 use sqlx::{Row, SqlitePool};
 
@@ -49,19 +48,20 @@ pub(crate) enum ReleaseDelivery {
 pub(crate) const BOOT_RECLAIM_REASON: &str =
     "the machine rebooted while the worker ran; its lease is released";
 
-/// The card's latest active lease, released as `delivery` says. Nothing when the card holds none.
-pub(crate) async fn release_workspace_lease_for_card_tx(
+/// The attempt's latest active lease, released as `delivery` says. Nothing when the attempt holds
+/// none.
+pub(crate) async fn release_workspace_lease_for_attempt_tx(
     tx: &mut Tx<'_>,
-    card_id: &str,
+    attempt_id: &str,
     delivery: ReleaseDelivery,
 ) -> Result<Vec<(ActorId, EventScope, Event)>> {
     let sql = format!(
         "SELECT {WORKSPACE_LEASE_COLUMNS} FROM workspace_leases \
-         WHERE card_id = ?1 AND state IN ('held','releasing') \
+         WHERE attempt_id = ?1 AND state IN ('held','releasing') \
          ORDER BY created_at_ms DESC, lease_id DESC LIMIT 1"
     );
     let row = sqlx::query(&sql)
-        .bind(card_id)
+        .bind(attempt_id)
         .fetch_optional(&mut **tx)
         .await?;
     let Some(row) = row else {
@@ -71,20 +71,20 @@ pub(crate) async fn release_workspace_lease_for_card_tx(
     release_lease_tx(tx, &lease, delivery).await
 }
 
-/// [`release_workspace_lease_for_card_tx`] in a transaction of its own; `true` when a lease was
-/// released.
-pub(crate) async fn release_workspace_lease_for_card_repo(
+/// [`release_workspace_lease_for_attempt_tx`] in a transaction of its own; `true` when a lease
+/// was released.
+pub(crate) async fn release_workspace_lease_for_attempt_repo(
     repo: &dyn RepoEventWrite,
     events: &EventBus,
-    card_id: &str,
+    attempt_id: &str,
     delivery: ReleaseDelivery,
 ) -> Result<bool> {
-    let card_id = card_id.to_string();
+    let attempt_id = attempt_id.to_string();
     let envelopes = write_in_tx_typed(repo, move |tx| {
-        let card_id = card_id.clone();
+        let attempt_id = attempt_id.clone();
         let delivery = delivery.clone();
         Box::pin(async move {
-            let events = release_workspace_lease_for_card_tx(tx, &card_id, delivery).await?;
+            let events = release_workspace_lease_for_attempt_tx(tx, &attempt_id, delivery).await?;
             append_workspace_events_tx(tx, events).await
         })
     })
@@ -160,27 +160,13 @@ async fn release_lease_tx(
     Ok(events)
 }
 
-/// The attempt a lease belongs to (module docs).
+/// The attempt a lease belongs to: its own `attempt_id` (#2493), when that attempt has a `tasks`
+/// row (a fixture lease's attempt may have none).
 async fn lease_attempt_tx(tx: &mut Tx<'_>, lease: &WorkspaceLease) -> Result<Option<String>> {
-    let by_owner: Option<String> = sqlx::query_scalar(
-        "SELECT t.id FROM workspace_leases wl \
-         JOIN operations o ON o.id = wl.lease_owner \
-         JOIN tasks t ON t.id = o.idempotency_key \
-         WHERE wl.lease_id = ?1",
-    )
-    .bind(&lease.lease_id)
-    .fetch_optional(&mut **tx)
-    .await?;
-    if by_owner.is_some() {
-        return Ok(by_owner);
-    }
-    Ok(sqlx::query_scalar(
-        "SELECT id FROM tasks WHERE worker_card_id = ?1 \
-         ORDER BY created_at_ms DESC, id DESC LIMIT 1",
-    )
-    .bind(&lease.card_id)
-    .fetch_optional(&mut **tx)
-    .await?)
+    Ok(sqlx::query_scalar("SELECT id FROM tasks WHERE id = ?1")
+        .bind(&lease.attempt_id)
+        .fetch_optional(&mut **tx)
+        .await?)
 }
 
 /// How an attempt whose `tasks` row is terminal ended.

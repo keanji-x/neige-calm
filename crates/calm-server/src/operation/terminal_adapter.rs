@@ -665,6 +665,14 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             false,
         )
         .await?;
+        // #2493: the attempt is bound to the session this transaction created.
+        crate::db::sqlite::bind_attempt_tx(
+            tx,
+            &payload.idempotency_key,
+            &runtime_id,
+            card.id.as_ref(),
+        )
+        .await?;
 
         if let Some(existing_map) = card.payload.as_object() {
             let mut merged = existing_map.clone();

@@ -316,7 +316,15 @@ impl<'a> TrackFsView<'a> {
                 TrackFsError::Internal(format!("track_file: canceled_task_attempts: {e}"))
             })?;
 
-        let runs = project_runs(self.write, cards, events, canceled);
+        let bindings = self
+            .repo
+            .track_card_bindings(track.id.as_str())
+            .await
+            .map_err(|e| TrackFsError::Internal(format!("track_file: card bindings: {e}")))?
+            .into_iter()
+            .collect();
+
+        let runs = project_runs(self.write, cards, &bindings, events, canceled);
         for run in &runs {
             if is_reserved_run_key(&run.attempt_id) {
                 tracing::error!(
@@ -499,9 +507,11 @@ pub(crate) struct RunProjection {
     pub(crate) verdict_event: Option<RunEventProjection>,
 }
 
+/// `bindings` maps a worker card to the attempt its session is bound to (#2493).
 fn project_runs(
     write: &WriteContext,
     cards: Vec<Card>,
+    bindings: &BTreeMap<String, String>,
     events: Vec<TrackEvent>,
     canceled: Vec<CanceledTaskAttempt>,
 ) -> Vec<RunProjection> {
@@ -515,9 +525,9 @@ fn project_runs(
         if write.verify_role(&card.id) != Some(CardRole::Worker) {
             continue;
         }
-        if let Some(key) = idempotency_key_from_payload(&card.payload) {
-            keys.insert(key.to_string());
-            worker_cards.entry(key.to_string()).or_insert(card);
+        if let Some(key) = bindings.get(card.id.as_str()) {
+            keys.insert(key.clone());
+            worker_cards.entry(key.clone()).or_insert(card);
         }
     }
 
@@ -732,10 +742,6 @@ fn verdict_from_event(event: &RunEventProjection) -> Option<RunVerdictProjection
         reason,
         at: event.at,
     })
-}
-
-fn idempotency_key_from_payload(payload: &Value) -> Option<&str> {
-    payload.get("idempotency_key").and_then(Value::as_str)
 }
 
 fn run_kind_from_card(card: &Card) -> Option<&'static str> {

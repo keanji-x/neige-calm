@@ -130,8 +130,8 @@ fn turn_ended_past_grace(
 pub(super) enum RunningWorkerFailure {
     /// The sweep saw this window outlived; the fail tx re-judges it on fresh facts.
     LivenessTimeout(LivenessExpiry),
-    /// The live read ran against this card's thread, so the fail CAS is pinned to it.
-    TurnEnded { card_id: String, end: TurnEnd },
+    /// The live read ran against this worker session's thread, so the fail CAS is pinned to it.
+    TurnEnded { session_id: String, end: TurnEnd },
 }
 
 impl RunningWorkerFailure {
@@ -163,31 +163,33 @@ impl RunningWorkerFailure {
         }
     }
 
-    fn guard_card_id(&self) -> Option<&str> {
+    fn guard_session_id(&self) -> Option<&str> {
         match self {
             Self::LivenessTimeout(_) => None,
-            Self::TurnEnded { card_id, .. } => Some(card_id),
+            Self::TurnEnded { session_id, .. } => Some(session_id),
         }
     }
 }
 
-/// The candidate's thread: the card's latest codex session, only while its persisted status is
-/// `idle` or `systemError` (the liveness feeder's spelling for a thread whose turn failed). Each
-/// execution gets a fresh card and thread, so this thread is this execution's.
-async fn idle_candidate_thread(pool: &sqlx::SqlitePool, card_id: &str) -> Result<Option<String>> {
-    let latest: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT thread_id, last_thread_status FROM worker_sessions \
-         WHERE card_id = ?1 AND provider = 'codex' \
-         ORDER BY created_at_ms DESC, id DESC LIMIT 1",
+/// The candidate's `(session, thread)`: the codex worker session the attempt is bound to (#2493),
+/// only while its persisted status is `idle` or `systemError` (the liveness feeder's spelling for
+/// a thread whose turn failed).
+async fn idle_candidate_thread(
+    pool: &sqlx::SqlitePool,
+    attempt_id: &str,
+) -> Result<Option<(String, String)>> {
+    let bound: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT id, thread_id, last_thread_status FROM worker_sessions \
+         WHERE id = (SELECT worker_session_id FROM tasks WHERE id = ?1) AND provider = 'codex'",
     )
-    .bind(card_id)
+    .bind(attempt_id)
     .fetch_optional(pool)
     .await?;
-    Ok(match latest {
-        Some((Some(thread_id), Some(status)))
+    Ok(match bound {
+        Some((session_id, Some(thread_id), Some(status)))
             if matches!(status.as_str(), "idle" | "systemError") =>
         {
-            Some(thread_id)
+            Some((session_id, thread_id))
         }
         _ => None,
     })
@@ -210,9 +212,6 @@ impl Scheduler {
         if task.kind != TaskKind::Codex {
             return;
         }
-        let Some(card_id) = task.worker_card_id.clone() else {
-            return;
-        };
         let Some(guard) = InflightGuard::acquire(&self.idle_checks, &task.id) else {
             return;
         };
@@ -220,16 +219,16 @@ impl Scheduler {
         let task = task.clone();
         tokio::spawn(async move {
             let _guard = guard;
-            this.check_worker_idle(task, card_id).await;
+            this.check_worker_idle(task).await;
         });
     }
 
-    async fn check_worker_idle(self: &Arc<Self>, task: Task, card_id: String) {
+    async fn check_worker_idle(self: &Arc<Self>, task: Task) {
         let Some(pool) = self.repo.sqlite_pool() else {
             return;
         };
-        let thread_id = match idle_candidate_thread(&pool, &card_id).await {
-            Ok(Some(thread_id)) => thread_id,
+        let (session_id, thread_id) = match idle_candidate_thread(&pool, &task.id).await {
+            Ok(Some(candidate)) => candidate,
             Ok(None) => return,
             Err(error) => {
                 tracing::warn!(task_id = %task.id, %error, "scheduler sweep: idle candidate read failed");
@@ -262,7 +261,7 @@ impl Scheduler {
         ) else {
             return;
         };
-        self.fail_running_worker(task, RunningWorkerFailure::TurnEnded { card_id, end })
+        self.fail_running_worker(task, RunningWorkerFailure::TurnEnded { session_id, end })
             .await;
     }
 
@@ -291,10 +290,6 @@ impl Scheduler {
             }
         };
 
-        let cleanup_card_id = match failure.guard_card_id() {
-            Some(card_id) => Some(card_id.to_string()),
-            None => self.worker_card_id_for_task(&task).await,
-        };
         #[cfg(feature = "fixtures")]
         if matches!(failure, RunningWorkerFailure::LivenessTimeout(_)) {
             let hook = self
@@ -309,7 +304,7 @@ impl Scheduler {
         }
 
         match self
-            .fail_task_liveness_timeout(&task, &track, &failure, cleanup_card_id.as_deref())
+            .fail_task_liveness_timeout(&task, &track, &failure)
             .await
         {
             Ok(true) => {
@@ -327,15 +322,14 @@ impl Scheduler {
     }
 
     /// Kernel `dispatched/running → failed(<failure detail>)` plus `task.failed` and the cleanup
-    /// marker in one tx. `Ok(false)` = another writer moved the row first, or, for a liveness
-    /// timeout, the worker's facts in this tx no longer show it expired (progress landed after
-    /// the sweep read them).
+    /// marker of the attempt's worker session in one tx. `Ok(false)` = another writer moved the
+    /// row first, or, for a liveness timeout, the worker's facts in this tx no longer show it
+    /// expired (progress landed after the sweep read them).
     pub(super) async fn fail_task_liveness_timeout(
         &self,
         task: &Task,
         track: &Track,
         failure: &RunningWorkerFailure,
-        timeout_cleanup_card_id: Option<&str>,
     ) -> Result<bool> {
         let scope = EventScope::Track {
             track: track.id.clone(),
@@ -348,8 +342,9 @@ impl Scheduler {
         let liveness_recheck = matches!(failure, RunningWorkerFailure::LivenessTimeout(_))
             .then(|| (self.worker_liveness, self.liveness_floor()));
         let cleanup_reason = failure.cleanup_reason();
-        let guard_card_id = failure.guard_card_id().map(str::to_string);
-        let timeout_cleanup_card_id = timeout_cleanup_card_id.map(str::to_string);
+        let guard_session_id = failure.guard_session_id().map(str::to_string);
+        // The attempt's own card: its transcript cursors are the worker's progress.
+        let progress_card_id = task.worker_card_id.clone();
         let result = write_with_actor_events_typed::<(), _>(
             self.repo.as_ref(),
             None,
@@ -359,12 +354,9 @@ impl Scheduler {
                 Box::pin(async move {
                     let now = now_ms();
                     let reason = if let Some((liveness, floor_ms)) = liveness_recheck {
-                        let facts = task_running_liveness_tx(
-                            tx,
-                            &task_id,
-                            timeout_cleanup_card_id.as_deref(),
-                        )
-                        .await?;
+                        let facts =
+                            task_running_liveness_tx(tx, &task_id, progress_card_id.as_deref())
+                                .await?;
                         match facts.and_then(|facts| liveness.expiry(&facts, now, floor_ms)) {
                             Some(expiry) => expiry.reason(),
                             None => return Err(race_lost_err()),
@@ -372,11 +364,8 @@ impl Scheduler {
                     } else {
                         reason
                     };
-                    let reporter = match guard_card_id.as_deref() {
-                        Some(card_id) => TaskReporter::Card {
-                            card_id,
-                            owns_key: false,
-                        },
+                    let reporter = match guard_session_id.as_deref() {
+                        Some(session_id) => TaskReporter::Session { session_id },
                         None => TaskReporter::Kernel,
                     };
                     let rows = task_fail_from_worker_tx(
@@ -391,25 +380,16 @@ impl Scheduler {
                     if rows == 0 {
                         return Err(race_lost_err());
                     }
-                    let mut released = Vec::new();
-                    if let Some(card_id) = timeout_cleanup_card_id.as_deref() {
-                        let mark = super::mark_running_timeout_cleanup_tx(
-                            tx,
-                            card_id,
-                            &task_id,
-                            now,
-                            cleanup_reason,
-                        )
-                        .await?;
-                        if mark.marked == 0 {
-                            tracing::warn!(
-                                task_id = %task_id,
-                                card_id,
-                                "scheduler sweep: no live worker session to mark; the failed worker is not reaped"
-                            );
-                        }
-                        released = mark.released;
+                    let mark =
+                        super::mark_running_timeout_cleanup_tx(tx, &task_id, now, cleanup_reason)
+                            .await?;
+                    if mark.marked == 0 {
+                        tracing::warn!(
+                            task_id = %task_id,
+                            "scheduler sweep: no live worker session to mark; the failed worker is not reaped"
+                        );
                     }
+                    let released = mark.released;
                     let mut events = vec![(
                         ActorId::KernelDispatcher,
                         scope.clone(),

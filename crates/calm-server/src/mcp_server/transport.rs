@@ -1036,9 +1036,18 @@ async fn resolve_forge_cwd(
     match identity.role {
         CardRole::Planner => Ok(track_cwd),
         CardRole::Worker => {
+            // #2493: the lease of the attempt this worker session runs now.
+            let binding = ctx
+                .repo
+                .worker_binding(crate::db::sqlite::WorkerOf::Session(&identity.session_id))
+                .await
+                .map_err(|e| RpcError::internal(format!("worker binding lookup: {e}")))?;
+            let crate::db::sqlite::WorkerBinding::Live { attempt_id, .. } = binding else {
+                return Err(RpcError::invalid_params("no held workspace lease"));
+            };
             let lease = ctx
                 .repo
-                .workspace_lease_for_card(&identity.card_id)
+                .workspace_lease_for_attempt(&attempt_id)
                 .await
                 .map_err(|e| RpcError::internal(format!("workspace lease lookup: {e}")))?
                 .ok_or_else(|| RpcError::invalid_params("no held workspace lease"))?;

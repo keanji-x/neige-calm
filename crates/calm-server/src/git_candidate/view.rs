@@ -17,7 +17,7 @@ use crate::operation::gate_ops::{GateOpKind, gate_op_outcome_tx, gate_ops_of_att
 use crate::operation::task_gate_run::finalize::terminal_result;
 use crate::operation::task_verify_adapter::{TASK_VERIFY_KIND, TaskGateResult, gate_attempt_key};
 use crate::operation::workspace_lease::facts::{
-    WorkerWorktreeFacts, latest_workspace_lease_for_card_tx,
+    WorkerWorktreeFacts, latest_workspace_lease_for_attempt_tx,
 };
 use crate::operation::workspace_lease::{DeliveryPolicy, WorkspaceLease};
 
@@ -296,19 +296,16 @@ pub(crate) fn candidate_binding(
     }
 }
 
-/// `neige_task_ls.candidate` for one current attempt: the lease row of its worker card (the
-/// same latest row `facts` was derived from), the attempt's latest delivery row and candidate
+/// `neige_task_ls.candidate` for one current attempt: the attempt's lease row (the same latest
+/// row `facts` was derived from), the attempt's latest delivery row and candidate
 /// row for a kernel lease, then the pure derivations. `facts` is the entry's `worktree`
-/// facts, read by the caller from the same card.
+/// facts, read by the caller for the same attempt.
 pub(crate) async fn candidate_view_tx(
     tx: &mut Tx<'_>,
     task: &Task,
     facts: Option<&WorkerWorktreeFacts>,
 ) -> Result<CandidateBinding> {
-    let lease = match task.worker_card_id.as_deref() {
-        Some(card_id) => latest_workspace_lease_for_card_tx(tx, card_id).await?,
-        None => None,
-    };
+    let lease = latest_workspace_lease_for_attempt_tx(tx, &task.id).await?;
     let bound = match lease.as_ref() {
         Some(lease) if lease.delivery_policy == Some(DeliveryPolicy::Kernel) => {
             let delivery = delivery_latest_for_attempt_tx(tx, &task.id).await?;

@@ -127,10 +127,9 @@ was such a stub and is now real — `trackTaskVerdictsQueryOptions` in
 the TASKS panel went live without a line of new invalidation policy.
 
 **Events are not sufficient for that panel, and the gap is on the kernel side.**
-`scheduler::mark_running` stamps `worker_card_id` with no event at all —
-`task.dispatched` fired before the spawn (column still NULL) and every
-`worker_session.*` a worker adapter emits is emitted during the spawn, also before the
-stamp. Between spawn and completion a terminal worker therefore emits nothing
+`scheduler::mark_running` flips the row to `running` with no event at all —
+`task.dispatched` fired before the spawn, and every event of the spawn (whose prepare
+binds `worker_card_id`, #2493) precedes the flip. Between spawn and completion a terminal worker therefore emits nothing
 that reaches this key, and an agent worker emits only hooks, which are excluded
 above for cost. The panel closes that window with a bounded refresh timer on the
 query itself, not with a new event or a re-included hook; see `hasLiveTaskRun`

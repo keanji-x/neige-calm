@@ -175,9 +175,33 @@ pub trait RepoRead: Send + Sync + 'static {
     async fn task_get(&self, id: &str) -> Result<Option<Task>>;
     /// Current execution only; None also covers a withdrawn pending projection.
     async fn task_current_get(&self, track_id: &str, key: &str) -> Result<Option<Task>>;
-    /// Historical membership matters too: a recovered/withdrawn execution's
-    /// worker card must not become an unowned manual terminal by omission.
-    async fn task_for_worker_card(&self, card_id: &str) -> Result<Option<Task>>;
+    /// #2493 authority: what `of`'s active worker session may act for now
+    /// ([`crate::db::sqlite::worker_binding_tx`]).
+    async fn worker_binding(
+        &self,
+        of: crate::db::sqlite::WorkerOf<'_>,
+    ) -> Result<crate::db::sqlite::WorkerBinding>;
+    /// #2493 history: the session's binding whatever its state ([`crate::db::sqlite::session_binding_tx`]).
+    async fn session_binding(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<crate::db::sqlite::SessionBinding>>;
+    /// #2493 history: the session the attempt is bound to, whatever its state
+    /// ([`crate::db::sqlite::attempt_binding_tx`]).
+    async fn attempt_binding(
+        &self,
+        attempt_id: &str,
+    ) -> Result<Option<crate::db::sqlite::SessionBinding>>;
+    /// #2493 history: the card's bound session whatever its state ([`crate::db::sqlite::card_binding_tx`]).
+    async fn card_binding(
+        &self,
+        card_id: &str,
+    ) -> Result<Option<crate::db::sqlite::SessionBinding>>;
+    /// #2493 history: whether an unbound session still belongs to task execution
+    /// ([`crate::db::sqlite::unbound_session_belongs_to_a_task_tx`]).
+    async fn unbound_session_belongs_to_a_task(&self, session_id: &str) -> Result<bool>;
+    /// #2493 history: `(card_id, attempt_id)` of every bound worker session of the track.
+    async fn track_card_bindings(&self, track_id: &str) -> Result<Vec<(String, String)>>;
     /// All surviving execution rows, oldest generation first.
     async fn task_history_by_key(&self, track_id: &str, key: &str) -> Result<Vec<Task>>;
     /// Every canceled execution of the track's tasks, current or superseded; the runs views' record
@@ -199,8 +223,6 @@ pub trait RepoRead: Send + Sync + 'static {
     async fn task_contexts_inflight_fresh(&self) -> Result<Vec<TaskContextRow>>;
     /// Recovery sweep source for non-terminal rows that already carry stale.
     async fn task_contexts_inflight_stale(&self) -> Result<Vec<TaskContextRow>>;
-    /// `worker_sessions.spawn_op_id` resolves to `operations.idempotency_key`, the immutable task id the worker operation was submitted with.
-    async fn operation_idempotency_key_by_id(&self, op_id: &str) -> Result<Option<String>>;
 
     async fn cards_by_track(&self, track_id: &str) -> Result<Vec<Card>>;
     async fn track_report_cards_by_area(&self, area_id: &str) -> Result<Vec<Card>>;
@@ -299,8 +321,9 @@ pub trait RepoRead: Send + Sync + 'static {
         session_id: &str,
     ) -> Result<Option<SessionCardIdentity>>;
 
-    /// The newest workspace lease held by a card; `releasing` leases are excluded because they may already be mid-teardown.
-    async fn workspace_lease_for_card(&self, card_id: &str) -> Result<Option<WorkspaceLease>>;
+    /// The newest workspace lease an attempt holds; `releasing` leases are excluded because they may already be mid-teardown.
+    async fn workspace_lease_for_attempt(&self, attempt_id: &str)
+    -> Result<Option<WorkspaceLease>>;
 
     /// Look up the active worker session bound to a presented MCP token's hash; the caller then runs `verify_token`.
     /// Terminal or stale rows (`failed`, `exited`, `superseded`) deliberately collapse to `None`.

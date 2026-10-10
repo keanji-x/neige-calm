@@ -74,6 +74,9 @@ mod track_recipe;
 mod track_tree;
 mod track_workspace;
 mod transcript_turn_input;
+mod worker_binding;
+#[cfg(test)]
+mod worker_binding_tests;
 pub use transcript_turn_input::transcript_latest_turn_input_tx;
 
 pub use area::{
@@ -136,13 +139,13 @@ pub use session_row::{
 pub(crate) use session_row::{derive_session_identity, worker_session_from_row};
 pub use task::{
     CanceledTaskAttempt, SuccessReportFlip, TASK_STATUS_DETAIL_DELIVERY_FAILED, TaskReporter,
-    canceled_task_attempts_by_track, card_is_worker_spawn_target_tx, require_track_exists_tx,
-    status_detail_class, status_detail_with_reason, task_apply_gate_result_tx,
-    task_cancel_running_tx, task_cancel_tx, task_claim_pending_tx, task_complete_from_worker_tx,
-    task_fail_delivery_tx, task_fail_from_worker_tx, task_gate_attempt_bump_tx, task_get_tx,
-    task_mark_running_tx, task_mark_sub_track_running_tx, task_report_success_from_worker_tx,
+    canceled_task_attempts_by_track, require_track_exists_tx, status_detail_class,
+    status_detail_with_reason, task_apply_gate_result_tx, task_cancel_running_tx, task_cancel_tx,
+    task_claim_pending_tx, task_complete_from_worker_tx, task_fail_delivery_tx,
+    task_fail_from_worker_tx, task_gate_attempt_bump_tx, task_get_tx, task_mark_running_tx,
+    task_mark_sub_track_running_tx, task_report_success_from_worker_tx,
     task_start_verifying_from_worker_tx, task_update_pending_tx, tasks_by_track_tx,
-    track_require_task_gates_tx, worker_card_declared_head_tx, worker_op_targets_card_tx,
+    track_require_task_gates_tx,
 };
 pub use task_attempt::{
     task_attempt_current_by_track_pool, task_attempt_current_by_track_tx,
@@ -159,6 +162,11 @@ pub use task_projection::{
     task_delete_pending_tx,
 };
 pub use task_regate::task_regate_tx;
+pub use worker_binding::{
+    SessionBinding, WorkerBinding, WorkerOf, attempt_binding_tx, bind_attempt_tx, card_binding_tx,
+    card_bindings_tx, run_card_ids_tx, run_key_of_card_tx, session_binding_tx,
+    track_card_bindings_tx, unbound_session_belongs_to_a_task_tx, worker_binding_tx,
+};
 #[cfg(any(test, feature = "fixtures"))]
 pub use worker_flow_capture::worker_flow_cursor_set_for_test;
 // The request-fingerprint enum is exported with its binding: route code must

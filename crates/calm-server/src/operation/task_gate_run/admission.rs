@@ -6,7 +6,10 @@
 use calm_types::task_execution::TaskAccess;
 
 use super::{GATE_RUNS_PER_ATTEMPT, TASK_GATE_RUN_KIND, TaskGateRunPayload, gate_run_key};
-use crate::db::sqlite::{task_attempt_current_tx, task_get_tx};
+use crate::db::sqlite::{
+    WorkerBinding, WorkerOf, attempt_binding_tx, task_attempt_current_tx, task_get_tx,
+    worker_binding_tx,
+};
 use crate::error::{CalmError, Result};
 use crate::git_candidate::commit_message::CommitMessage;
 use crate::model::{TaskStatus, new_id};
@@ -15,7 +18,7 @@ use crate::operation::gate_ops::{
     AttemptGateOps, GateOpKind, classify_gate_ops, gate_ops_of_attempt_tx,
 };
 use crate::operation::repo_sqlite::insert_pending_row;
-use crate::operation::workspace_lease::facts::latest_workspace_lease_for_card_tx;
+use crate::operation::workspace_lease::facts::latest_workspace_lease_for_attempt_tx;
 use crate::operation::workspace_lease::{DeliveryPolicy, worker_branch_tx};
 use crate::operation::{OperationKey, Tx};
 use crate::routes::idempotency_key::stable_payload_hash;
@@ -46,7 +49,18 @@ pub(super) async fn run_target_tx(
         ))
     };
     let task = task_get_tx(tx, attempt_id).await?.ok_or_else(not_yours)?;
-    if task.track_id != track_id || task.worker_card_id.as_deref() != Some(card_id) {
+    // #2493: the attempt is Live and running in a session of `card_id`.
+    let live_running = matches!(
+        worker_binding_tx(tx, WorkerOf::Attempt(attempt_id)).await?,
+        WorkerBinding::Live {
+            status: TaskStatus::Running,
+            ..
+        }
+    );
+    let bound_card = attempt_binding_tx(tx, attempt_id)
+        .await?
+        .and_then(|binding| binding.card_id);
+    if task.track_id != track_id || !live_running || bound_card.as_deref() != Some(card_id) {
         return Err(not_yours());
     }
     let current = task_attempt_current_tx(tx, &task.track_id, &task.key).await?;
@@ -69,7 +83,7 @@ pub(super) async fn run_target_tx(
     if task.access == TaskAccess::ReadOnly {
         return Err(no_kernel_commit());
     }
-    let lease = latest_workspace_lease_for_card_tx(tx, card_id)
+    let lease = latest_workspace_lease_for_attempt_tx(tx, attempt_id)
         .await?
         .filter(|lease| lease.delivery_policy == Some(DeliveryPolicy::Kernel))
         .ok_or_else(no_kernel_commit)?;
@@ -101,16 +115,27 @@ pub(crate) enum Admitted {
     Joined { key: String, run: i64, used: i64 },
 }
 
-/// D3/D5/D10 in one transaction. Refusals: not the caller's running attempt, a stale context, no
-/// gate, no kernel commit (`BadRequest` / `Conflict` as [`run_target_tx`] and the stale fence say);
-/// an earlier gate op whose processes are not proven stopped; the cap. None writes a row.
+/// D3/D5/D10 in one transaction. Refusals: not the caller's running attempt (the calling worker
+/// session's Live binding, #2493), a stale context, no gate, no kernel commit (`BadRequest` /
+/// `Conflict` as [`run_target_tx`] and the stale fence say); an earlier gate op whose processes are
+/// not proven stopped; the cap. None writes a row.
 pub(crate) async fn admit_run_tx(
     tx: &mut Tx<'_>,
     attempt_id: &str,
     card_id: &str,
+    session_id: &str,
     track_id: &str,
     commit_message: Option<CommitMessage>,
 ) -> Result<Admitted> {
+    let runs_it = matches!(
+        worker_binding_tx(tx, WorkerOf::Session(session_id)).await?,
+        WorkerBinding::Live { attempt_id: bound, status: TaskStatus::Running, .. } if bound == attempt_id
+    );
+    if !runs_it {
+        return Err(CalmError::BadRequest(format!(
+            "a gate run needs the running attempt you were handed; {attempt_id} is not one"
+        )));
+    }
     run_target_tx(tx, attempt_id, card_id, track_id).await?;
     crate::operation::refuse_if_context_stale(tx, Some(attempt_id)).await?;
     let ops = gate_ops_of_attempt_tx(tx, attempt_id).await?;

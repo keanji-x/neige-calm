@@ -187,27 +187,32 @@ impl TerminalInteraction {
                 && session.track_id == card.track_id,
             "terminal does not belong to the card's current worker session"
         );
-        let operation_task = match session.spawn_op_id.as_deref() {
-            Some(op) => Some(
-                repo.operation_idempotency_key_by_id(op)
-                    .await?
-                    .ok_or_else(|| anyhow::anyhow!("worker operation binding unavailable"))?,
-            ),
-            None => None,
-        };
+        // #2493 history: the attempt this session is bound to, whatever the session's state.
+        let bound = calm_truth::db::RepoRead::session_binding(repo, session.id.as_str())
+            .await?
+            .and_then(|binding| binding.attempt_id);
         let task = if let Some(task) = requested_task {
             Some(task)
-        } else if let Some(id) = operation_task.as_deref() {
+        } else if let Some(id) = bound.as_deref() {
             Some(Self::current_task(repo, track, id).await?)
         } else {
-            repo.task_for_worker_card(card.id.as_str()).await?
+            // A card that ran an attempt is never a plain terminal, whatever session it has now.
+            ensure!(
+                !calm_truth::db::RepoRead::unbound_session_belongs_to_a_task(
+                    repo,
+                    session.id.as_str()
+                )
+                .await?,
+                "worker card/session is not owned by this task execution"
+            );
+            None
         };
         let task = match task {
             Some(task) => {
                 let latest = Self::current_task(repo, track, &task.id).await?;
                 ensure!(
-                    latest.worker_card_id.as_deref() == Some(card.id.as_str())
-                        && operation_task.as_deref() == Some(latest.id.as_str()),
+                    bound.as_deref() == Some(latest.id.as_str())
+                        && latest.worker_card_id.as_deref() == Some(card.id.as_str()),
                     "worker card/session is not owned by this task execution"
                 );
                 let expected = match latest.kind {
@@ -225,11 +230,21 @@ impl TerminalInteraction {
         };
         let codex_task_worker = card.kind == "codex" && task.is_some();
         let session_active = session.state.is_active_authority();
-        let controllable = session_active
-            && !codex_task_worker
-            && task
-                .as_ref()
-                .is_none_or(|task| task.status == TaskStatus::Running);
+        // #2493 authority: a Live `running` attempt, or a plain terminal with no attempt.
+        let authority = calm_truth::db::RepoRead::worker_binding(
+            repo,
+            crate::db::sqlite::WorkerOf::Session(session.id.as_str()),
+        )
+        .await?;
+        let controllable = !codex_task_worker
+            && match authority {
+                crate::db::sqlite::WorkerBinding::Live { status, .. } => {
+                    status == TaskStatus::Running
+                }
+                crate::db::sqlite::WorkerBinding::Unbound { .. } => true,
+                crate::db::sqlite::WorkerBinding::Parked { .. }
+                | crate::db::sqlite::WorkerBinding::NoSession => false,
+            };
         Ok(Resolved {
             binding: Binding {
                 terminal_id: terminal.id,

@@ -50,17 +50,12 @@ pub(crate) async fn observation(
                     ..
                 }
             );
-            let retained_path = match task.worker_card_id.as_deref() {
-                Some(_) if workspace_missing => None,
-                Some(worker_card_id) => {
-                    crate::operation::workspace_lease::facts::worker_worktree_facts_tx(
-                        tx,
-                        worker_card_id,
-                    )
+            let retained_path = if workspace_missing {
+                None
+            } else {
+                crate::operation::workspace_lease::facts::worker_worktree_facts_tx(tx, &task.id)
                     .await?
                     .map(|facts| facts.path)
-                }
-                None => None,
             };
             Ok(Some(Observation::TaskGitDeliverySettled {
                 key: task.key,

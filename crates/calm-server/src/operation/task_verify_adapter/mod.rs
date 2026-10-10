@@ -373,15 +373,14 @@ impl ProviderAdapter for TaskVerifyAdapter {
         let cwd = if let Some(cwd) = gate.cwd.as_ref().filter(|c| !c.trim().is_empty()) {
             cwd.clone()
         } else if let Some(card_id) = task.worker_card_id.as_deref() {
-            // A missing lease is an infrastructure defect, never a reason to inspect the Track.
-            let worker_cwd: Option<String> = sqlx::query_scalar(
-                "SELECT path FROM workspace_leases WHERE card_id = ?1 AND track_id = ?2 \
-                 ORDER BY created_at_ms DESC, lease_id DESC LIMIT 1",
-            )
-            .bind(card_id)
-            .bind(&task.track_id)
-            .fetch_optional(&mut **tx)
-            .await?;
+            // The attempt's own lease (#2493). A missing lease is an infrastructure defect, never
+            // a reason to inspect the Track.
+            let worker_cwd =
+                crate::operation::workspace_lease::facts::latest_workspace_lease_for_attempt_tx(
+                    tx, &task.id,
+                )
+                .await?
+                .map(|lease| lease.path);
             if let Some(cwd) = worker_cwd {
                 cwd
             } else if task.kind == crate::model::TaskKind::Terminal {

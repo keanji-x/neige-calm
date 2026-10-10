@@ -95,7 +95,8 @@ fn refused_for(key: &str, current: &Task, running_refusal: Refusal) -> CalmError
 }
 
 /// Cancel the current execution `current` (read in this tx) if it is a running Track worker the
-/// sweep can reap: CAS `running → canceled` pinned to its card, plus the card's cleanup marker.
+/// sweep can reap: CAS `running → canceled` pinned to its worker session (#2493), plus that
+/// session's cleanup marker.
 /// Returns rows moved — `0` means a concurrent cancel already canceled it (the caller's idempotent
 /// path) — and the lease events when no live session was left to mark and the lease was released
 /// here. Any other state the CAS did not move is refused with its current status.
@@ -107,11 +108,14 @@ pub(super) async fn cancel_running_in_tx(
     if !task_has_running_liveness_deadline(current) {
         return Err(refused_for(key, current, Refusal::Route));
     }
-    let Some(card_id) = current.worker_card_id.as_deref() else {
+    let Some(session_id) = crate::db::sqlite::attempt_binding_tx(tx, &current.id)
+        .await?
+        .map(|binding| binding.session_id)
+    else {
         return Err(refused_for(key, current, Refusal::Unbound));
     };
     let now = now_ms();
-    let rows = task_cancel_running_tx(tx, &current.id, card_id, PLANNER_CANCELED, now).await?;
+    let rows = task_cancel_running_tx(tx, &current.id, &session_id, PLANNER_CANCELED, now).await?;
     if rows == 0 {
         let status = task_get_tx(tx, &current.id)
             .await?
@@ -121,18 +125,13 @@ pub(super) async fn cancel_running_in_tx(
         }
         return Err(refused(key, status, Refusal::for_status(status)));
     }
-    let mark = mark_running_timeout_cleanup_tx(
-        tx,
-        card_id,
-        &current.id,
-        now,
-        WorkerCleanupReason::PlannerCanceled,
-    )
-    .await?;
+    let mark =
+        mark_running_timeout_cleanup_tx(tx, &current.id, now, WorkerCleanupReason::PlannerCanceled)
+            .await?;
     if mark.marked == 0 {
         tracing::warn!(
             task_id = %current.id,
-            card_id,
+            session_id,
             "neige_task_cancel: no live worker session to mark; the canceled worker is not reaped"
         );
     }

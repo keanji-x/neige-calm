@@ -70,7 +70,7 @@ pub async fn checkout_occupancy(
         "SELECT DISTINCT wl.access_mode FROM workspace_leases wl \
          LEFT JOIN operations o ON o.id = wl.lease_owner \
          WHERE wl.track_id = ?1 AND wl.state IN ('held','releasing') \
-         AND o.idempotency_key IS NOT ?2 \
+         AND wl.attempt_id IS NOT ?2 \
          AND o.phase IS NOT 'stuck'",
     )
     .bind(track_id)

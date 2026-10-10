@@ -293,18 +293,29 @@ impl RepoRead for SqlxRepo {
         super::task::tasks_in_scheduler_order(&mut *self.pool.acquire().await?, track_id).await
     }
 
-    async fn task_for_worker_card(&self, card_id: &str) -> Result<Option<Task>> {
-        let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE worker_card_id=?1 LIMIT 2");
-        let mut tasks = sqlx::query_as::<_, Task>(&sql)
-            .bind(card_id)
-            .fetch_all(&self.pool)
-            .await?;
-        if tasks.len() > 1 {
-            return Err(CalmError::Conflict(
-                "ambiguous task ownership for worker card",
-            ));
-        }
-        Ok(tasks.pop())
+    async fn worker_binding(&self, of: super::WorkerOf<'_>) -> Result<super::WorkerBinding> {
+        super::worker_binding_tx(&mut *self.pool.acquire().await?, of).await
+    }
+
+    async fn session_binding(&self, session_id: &str) -> Result<Option<super::SessionBinding>> {
+        super::session_binding_tx(&mut *self.pool.acquire().await?, session_id).await
+    }
+
+    async fn attempt_binding(&self, attempt_id: &str) -> Result<Option<super::SessionBinding>> {
+        super::attempt_binding_tx(&mut *self.pool.acquire().await?, attempt_id).await
+    }
+
+    async fn card_binding(&self, card_id: &str) -> Result<Option<super::SessionBinding>> {
+        super::card_binding_tx(&mut *self.pool.acquire().await?, card_id).await
+    }
+
+    async fn unbound_session_belongs_to_a_task(&self, session_id: &str) -> Result<bool> {
+        super::unbound_session_belongs_to_a_task_tx(&mut *self.pool.acquire().await?, session_id)
+            .await
+    }
+
+    async fn track_card_bindings(&self, track_id: &str) -> Result<Vec<(String, String)>> {
+        super::track_card_bindings_tx(&mut *self.pool.acquire().await?, track_id).await
     }
 
     async fn task_current_get(&self, track_id: &str, key: &str) -> Result<Option<Task>> {
@@ -454,15 +465,6 @@ impl RepoRead for SqlxRepo {
                 },
             )
             .collect())
-    }
-
-    async fn operation_idempotency_key_by_id(&self, op_id: &str) -> Result<Option<String>> {
-        let row: Option<Option<String>> =
-            sqlx::query_scalar("SELECT idempotency_key FROM operations WHERE id = ?1")
-                .bind(op_id)
-                .fetch_optional(&self.pool)
-                .await?;
-        Ok(row.flatten())
     }
 
     async fn cards_by_track(&self, track_id: &str) -> Result<Vec<Card>> {
@@ -967,16 +969,19 @@ impl RepoRead for SqlxRepo {
         }
     }
 
-    async fn workspace_lease_for_card(&self, card_id: &str) -> Result<Option<WorkspaceLease>> {
+    async fn workspace_lease_for_attempt(
+        &self,
+        attempt_id: &str,
+    ) -> Result<Option<WorkspaceLease>> {
         let row = sqlx::query(
             r#"SELECT lease_id, card_id, track_id, path, state
                FROM workspace_leases
-               WHERE card_id = ?1
+               WHERE attempt_id = ?1
                  AND state = 'held'
                ORDER BY created_at_ms DESC, lease_id DESC
                LIMIT 1"#,
         )
-        .bind(card_id)
+        .bind(attempt_id)
         .fetch_optional(&self.pool)
         .await?;
         row.map(|row| {

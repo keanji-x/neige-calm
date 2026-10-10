@@ -1,5 +1,7 @@
 //! Terminal report admission, under the same write transaction as its effects.
-use crate::db::sqlite::{TaskReporter, status_detail_class, task_get_tx};
+use crate::db::sqlite::{
+    WorkerBinding, WorkerOf, status_detail_class, task_get_tx, worker_binding_tx,
+};
 use crate::error::{CalmError, Result};
 use crate::event::{ArtifactRef, Event};
 use crate::git_candidate::commit_message::DeliveryMessage;
@@ -10,46 +12,46 @@ use crate::operation::workspace_lease::ReleaseDelivery;
 pub(super) const REPEATED: &str = "worker report: recorded outcome already admitted";
 
 /// Returns true only for an already-recorded report of the same outcome.
-/// An operation binding is immutable; card payload fields are not authority.
+/// The reporting session's binding (#2493) is the authority; card payload fields are not.
 pub(super) async fn admit_worker_report_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     task_id: &str,
     track_id: &str,
-    reporter: TaskReporter<'_>,
+    card_id: &str,
+    session_id: &str,
     success: bool,
 ) -> Result<bool> {
-    let TaskReporter::Card { card_id, owns_key } = reporter else {
-        return Err(CalmError::Forbidden("worker report requires a card".into()));
+    // The MCP identity is active at its handshake (only active tokens resolve); a report racing
+    // the session's end is refused (NoSession below), as intended. `Live` and `Parked` both name the one attempt this session serves: a terminal
+    // attempt answers a repeated report below; `Unbound` is a worker with no attempt.
+    let bound = match worker_binding_tx(tx, WorkerOf::Session(session_id)).await? {
+        WorkerBinding::Live { attempt_id, .. }
+        | WorkerBinding::Parked {
+            last_attempt_id: attempt_id,
+            ..
+        } => Some(attempt_id),
+        WorkerBinding::Unbound { .. } => None,
+        WorkerBinding::NoSession => {
+            return Err(CalmError::Forbidden(format!(
+                "worker session {session_id} has ended; report rejected"
+            )));
+        }
     };
-    let scheduled_keys: Vec<String> = sqlx::query_scalar(
-        "SELECT idempotency_key FROM operations WHERE target_type = 'card' \
-         AND target_id = ?1 AND kind IN ('codex-worker', 'claude-worker', 'terminal-worker') \
-         AND json_extract(payload_json, '$.actor.kind') = 'KernelDispatcher' \
-         AND idempotency_key IS NOT NULL \
-         UNION SELECT id FROM tasks WHERE worker_card_id = ?1",
-    )
-    .bind(card_id)
-    .fetch_all(&mut **tx)
-    .await?;
-    if let Some(expected) = scheduled_keys.iter().find(|key| key.as_str() != task_id) {
+    if let Some(expected) = bound.as_deref().filter(|bound| *bound != task_id) {
         return Err(CalmError::Conflict(format!(
             "worker card {card_id} belongs to attempt_id {expected}; report with that attempt_id"
         )));
     }
     let Some(row) = task_get_tx(tx, task_id).await? else {
-        // Pre-scheduler workers have no plan row. A scheduled worker must
-        // never silently take this legacy path after a key/row mismatch.
-        return if !scheduled_keys.is_empty() {
+        // Pre-scheduler workers have no plan row. A bound worker must never silently take this
+        // legacy path after a key/row mismatch.
+        return if bound.is_some() {
             Err(CalmError::NotFound(format!("task {task_id}")))
         } else {
             Ok(false)
         };
     };
-    let owns = row
-        .worker_card_id
-        .as_deref()
-        .map_or(owns_key, |id| id == card_id);
-    if row.track_id != track_id || !owns {
+    if row.track_id != track_id || bound.is_none() {
         return Err(CalmError::Forbidden(format!(
             "task {task_id} is not owned by reporting card {card_id}; report rejected"
         )));

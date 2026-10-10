@@ -1,5 +1,7 @@
 use crate::db::TrackEvent;
-use crate::db::sqlite::{CanceledTaskAttempt, canceled_task_attempts_by_track};
+use crate::db::sqlite::{
+    CanceledTaskAttempt, canceled_task_attempts_by_track, track_card_bindings_tx,
+};
 use crate::error::Result;
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, TrackId};
@@ -82,15 +84,20 @@ pub(super) async fn project_runs_tx(
             .map(|attempt| (attempt.attempt_id.clone(), attempt))
             .collect();
 
+    // #2493: a run's worker card is the card whose session the attempt is bound to.
+    let bindings: BTreeMap<String, String> = track_card_bindings_tx(tx, track_id.as_str())
+        .await?
+        .into_iter()
+        .collect();
     let mut keys = BTreeSet::new();
     let mut worker_cards = BTreeMap::new();
     for card in cards.iter().cloned() {
         if card.role != "worker" {
             continue;
         }
-        if let Some(key) = idempotency_key_from_payload(&card.card.payload) {
-            keys.insert(key.to_string());
-            worker_cards.entry(key.to_string()).or_insert(card.card);
+        if let Some(key) = bindings.get(card.card.id.as_str()) {
+            keys.insert(key.clone());
+            worker_cards.entry(key.clone()).or_insert(card.card);
         }
     }
 
@@ -388,12 +395,14 @@ async fn worker_card_for_run_key_tx(
            FROM cards
            WHERE track_id = ?1
              AND role = 'worker'
-             AND json_extract(payload, '$.idempotency_key') = ?2
+             AND id IN (SELECT value FROM json_each(?2))
            ORDER BY sort ASC, id ASC
            "#,
     )
     .bind(track_id.as_str())
-    .bind(key)
+    .bind(serde_json::to_string(
+        &crate::db::sqlite::run_card_ids_tx(tx, track_id.as_str(), key).await?,
+    )?)
     .fetch_all(&mut **tx)
     .await?;
     for row in rows {
@@ -434,7 +443,7 @@ async fn run_events_for_key_tx(
                'task.completed',
                'task.failed'
              )
-             AND json_extract(payload, '$.idempotency_key') = ?2
+             AND json_extract(events.payload, '$.idempotency_key') = ?2
            ORDER BY id ASC"#,
     )
     .bind(track_id.as_str())
@@ -531,10 +540,6 @@ fn verdict_from_event(event: &RunEventProjection) -> Option<RunVerdictProjection
         reason,
         at: event.at,
     })
-}
-
-pub(super) fn idempotency_key_from_payload(payload: &Value) -> Option<&str> {
-    payload.get("idempotency_key").and_then(Value::as_str)
 }
 
 fn run_key_is_visible(key: &str) -> bool {

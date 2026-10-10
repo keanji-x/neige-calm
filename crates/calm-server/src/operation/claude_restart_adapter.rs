@@ -7,20 +7,16 @@ use serde_json::{Value, json};
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    append_decision_event_in_tx, card_is_worker_spawn_target_tx, session_complete_tx,
+    append_decision_event_in_tx, card_binding_tx, session_complete_tx,
     session_projection_active_for_card_tx, session_set_status_tx, session_start_runtime_tx,
-    terminal_create_tx, terminal_get_by_card_tx, worker_card_declared_head_tx,
+    terminal_create_tx, terminal_get_by_card_tx,
 };
 use crate::db::write_with_events_typed;
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, CardId, TrackId};
-use crate::mcp_server::McpServer;
 use crate::model::new_id;
-use crate::operation::claude_adapter::{CLAUDE_PHASES, build_claude_env, worker_mcp};
-use crate::operation::workspace_lease::worker::{
-    record_declared_head, verify_declared_head, verify_recorded_head,
-};
+use crate::operation::claude_adapter::{CLAUDE_PHASES, build_claude_env};
 use crate::routes::cards::{card_scope, card_scope_tx};
 use crate::routes::claude_cards::{build_claude_settings_json, claude_hook_command};
 use crate::routes::codex_cards::shell_single_quote;
@@ -52,8 +48,6 @@ type SpawnHook = Arc<
 pub struct ClaudeRestartAdapter {
     repo: Arc<dyn crate::db::RouteRepo>,
     codex: Arc<CodexClient>,
-    /// A task worker's card restarts with the kernel MCP server, as it first started.
-    mcp_server: Option<Arc<McpServer>>,
     card_role_cache: CardRoleCache,
     track_area_cache: TrackAreaCache,
     #[cfg(feature = "fixtures")]
@@ -64,14 +58,12 @@ impl ClaudeRestartAdapter {
     pub fn new(
         repo: Arc<dyn crate::db::RouteRepo>,
         codex: Arc<CodexClient>,
-        mcp_server: Option<Arc<McpServer>>,
         card_role_cache: CardRoleCache,
         track_area_cache: TrackAreaCache,
     ) -> Self {
         Self {
             repo,
             codex,
-            mcp_server,
             card_role_cache,
             track_area_cache,
             #[cfg(feature = "fixtures")]
@@ -83,7 +75,6 @@ impl ClaudeRestartAdapter {
     pub fn new_with_spawn_hook(
         repo: Arc<dyn crate::db::RouteRepo>,
         codex: Arc<CodexClient>,
-        mcp_server: Option<Arc<McpServer>>,
         card_role_cache: CardRoleCache,
         track_area_cache: TrackAreaCache,
         spawn_hook: SpawnHook,
@@ -91,7 +82,6 @@ impl ClaudeRestartAdapter {
         Self {
             repo,
             codex,
-            mcp_server,
             card_role_cache,
             track_area_cache,
             spawn_hook: Some(spawn_hook),
@@ -147,18 +137,14 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             )));
         }
 
-        // #1933: a resumed reader is refused before anything is written while its checkout is not
-        // at its declared head; the spawn checks again for a re-drive.
-        let declared_head = worker_card_declared_head_tx(tx, &card_id).await?;
-        if let Some(head) = declared_head.as_deref() {
-            let term = terminal_get_by_card_tx(tx, &card_id)
-                .await?
-                .ok_or_else(|| {
-                    CalmError::Conflict(format!(
-                        "refused: worker card {card_id} has no terminal to check its declared head in"
-                    ))
-                })?;
-            verify_declared_head(Path::new(&term.cwd), head)?;
+        // #2493: a restart starts a new session for the card, and a session serves one attempt; a
+        // task worker's card is never restarted, nothing is written.
+        if let Some(bound) = card_binding_tx(tx, &card_id).await? {
+            let last = bound.attempt_id.unwrap_or_default();
+            return Err(CalmError::Conflict(format!(
+                "claude-restart: card {card_id} runs task attempts (last {last}); declare a new \
+                 task for a fresh worker"
+            )));
         }
         let claude_session_id = resolve_claude_session_for_card(self.repo.as_ref(), &card_id)
             .await?
@@ -186,20 +172,12 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             session_complete_tx(tx, &active.id, WorkerSessionState::Exited).await?;
         }
 
-        let mut command_line = format!(
+        let command_line = format!(
             "{} --allow-dangerously-skip-permissions --settings {} --resume {}",
             shell_single_quote(&self.codex.claude_bin),
             shell_single_quote(&settings_path),
             shell_single_quote(&claude_session_id),
         );
-        // A task worker's card gets the MCP servers it first started with (#2470).
-        let mcp_config = if card_is_worker_spawn_target_tx(tx, &card_id).await? {
-            let path = worker_mcp::mcp_config_path(Path::new(&settings_path))?;
-            command_line.push_str(&worker_mcp::mcp_flags(&path));
-            Some(path)
-        } else {
-            None
-        };
         let env = build_claude_env(self.repo.as_ref(), &self.codex, &card_id).await?;
         let term = match terminal_get_by_card_tx(tx, &card_id).await? {
             Some(term) => term,
@@ -279,7 +257,6 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             "settings_path": settings_path,
             "claude_session_id": claude_session_id,
             "command_line": command_line,
-            "mcp_config_path": mcp_config,
             "cwd": term.cwd,
             "env": env,
             "prev_exit_code": prev_exit_code,
@@ -287,7 +264,6 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             "prev_pty_output": prev_pty_output,
             "prev_pty_output_truncated": prev_pty_output_truncated,
         });
-        record_declared_head(&mut output.data, declared_head.as_deref());
         output.post_commit_events.push(BroadcastEnvelope {
             id: runtime_event_id,
             event_version: SYNC_EVENT_VERSION,
@@ -314,26 +290,12 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
         let card_id = output.output_string("card_id", "claude restart")?;
-        let worker_session_id = output.output_string("runtime_id", "claude restart")?;
         let terminal_id = output.output_string("terminal_id", "claude restart")?;
         let settings_path = PathBuf::from(output.output_string("settings_path", "claude restart")?);
         let settings_dir = settings_path_parent(&settings_path)?;
         let command_line = output.output_string("command_line", "claude restart")?;
         let cwd = output.output_string("cwd", "claude restart")?;
-        let mut env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
-        // #1933: a resumed reader starts only while its checkout is still at its declared head.
-        verify_recorded_head(output, "claude restart")?;
-        let kernel_mcp = match output.output_optional_string("mcp_config_path", "claude restart")? {
-            Some(path) => Some((
-                self.mcp_server.as_deref().ok_or_else(|| {
-                    CalmError::Internal(
-                        "MCP server is not running; claude worker cannot restart".into(),
-                    )
-                })?,
-                PathBuf::from(path),
-            )),
-            None => None,
-        };
+        let env = output.data.get("env").cloned().unwrap_or_else(|| json!({}));
 
         ctx.repo.terminal_clear_exit_for_spawn(&terminal_id).await?;
         ctx.terminal_renderer.drop_entry(&terminal_id).await;
@@ -355,17 +317,6 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         );
         std::fs::write(&settings_path, build_claude_settings_json(&hook_command))
             .map_err(|e| CalmError::Internal(format!("write claude settings.json: {e}")))?;
-        if let Some((mcp_server, mcp_config)) = &kernel_mcp {
-            worker_mcp::wire(
-                ctx,
-                mcp_server,
-                &card_id,
-                &worker_session_id,
-                mcp_config,
-                &mut env,
-            )
-            .await?;
-        }
 
         #[cfg(feature = "fixtures")]
         let handle = if let Some(hook) = &self.spawn_hook {

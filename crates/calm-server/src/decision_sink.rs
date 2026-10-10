@@ -11,7 +11,7 @@ pub use crate::git_candidate::commit_message::{CommitMessage, DeliveryMessage};
 use crate::ids::{AreaId, CardId, TrackId};
 use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
 use crate::model::{Card, CardRole, Track};
-use crate::operation::workspace_lease::release_workspace_lease_for_card_tx;
+use crate::operation::workspace_lease::release_workspace_lease_for_attempt_tx;
 use crate::recorder_shadow::{
     RecorderShadowDecisionKind, RecorderShadowDivergence, RecorderShadowProbe, emit_divergence,
 };
@@ -96,6 +96,7 @@ impl CardDecisionSink {
         };
         let track_id = track.id.clone();
         let worker_card_id_for_tx = card_id_str.clone();
+        let worker_session_id_for_tx = identity.session_id.clone();
 
         let write_result = write_with_actor_events_typed::<(), _>(
             self.repo.as_ref(),
@@ -108,6 +109,7 @@ impl CardDecisionSink {
                 let scope = scope.clone();
                 let track_id = track_id.clone();
                 let worker_card_id = worker_card_id_for_tx.clone();
+                let worker_session_id = worker_session_id_for_tx.clone();
                 Box::pin(async move {
                     // Admission, task CAS and report event share one transaction; same-outcome repeats roll back as idempotent success.
                     let now = crate::model::now_ms();
@@ -118,21 +120,17 @@ impl CardDecisionSink {
                         WorkerTaskReport::Failed { reason, .. } => Some(reason.clone()),
                     };
                     let success = failure_reason.is_none();
-                    // Unstamped-row ownership proof: the REPORTING card must be the card the task's worker-spawn operation created. The card payload's `idempotency_key` is NOT proof — payloads are patchable via `PATCH /api/cards/{id}`.
-                    let reporter = crate::db::sqlite::TaskReporter::Card {
-                        card_id: worker_card_id.as_str(),
-                        owns_key: crate::db::sqlite::worker_op_targets_card_tx(
-                            tx,
-                            &task_id,
-                            &worker_card_id,
-                        )
-                        .await?,
+                    // #2493: the reporting worker session is the authority; the attempt it is bound
+                    // to is the only one it may report.
+                    let reporter = crate::db::sqlite::TaskReporter::Session {
+                        session_id: worker_session_id.as_str(),
                     };
                     if worker_report::admit_worker_report_tx(
                         tx,
                         &task_id,
                         track_id.as_str(),
-                        reporter,
+                        worker_card_id.as_str(),
+                        worker_session_id.as_str(),
                         success,
                     )
                     .await?
@@ -181,10 +179,11 @@ impl CardDecisionSink {
                     // (commit the track's checkout as this attempt ended, with the worker's message on a
                     // completion that carries one) lands with it when the card's lease is a
                     // kernel-delivery lease. A REPEATED report never reaches here, so a second report
-                    // never writes a second row; a crash can no longer leave the lease `held`.
-                    let released = release_workspace_lease_for_card_tx(
+                    // never writes a second row; a crash can no longer leave the lease `held`. The
+                    // lease is the reported attempt's own (#2493).
+                    let released = release_workspace_lease_for_attempt_tx(
                         tx,
-                        &worker_card_id,
+                        &task_id,
                         report.release_delivery(),
                     )
                     .await?;
@@ -679,6 +678,7 @@ mod tests {
             worker_card.id.as_str(),
             track.id.as_str(),
             "op-worker-report-preserve",
+            "worker-report-preserve",
             &plan,
         )
         .await

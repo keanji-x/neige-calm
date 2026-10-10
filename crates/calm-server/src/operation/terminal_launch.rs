@@ -95,7 +95,8 @@ pub(crate) async fn resolve(
         if rows.len() > 1 { return Err(CalmError::Conflict("terminal has conflicting worker operation ownership".into())); }
         let Some((op_id, phase, owner, output)) = rows.into_iter().next() else {
             if launch.is_some() { return Err(CalmError::Conflict("task launch operation does not own this terminal".into())); }
-            let task_owned: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tasks WHERE worker_card_id=?1)")
+            // #2493: task-owned = a session of the card is bound to an attempt.
+            let task_owned: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM worker_session_binding WHERE card_id=?1 AND attempt_id IS NOT NULL)")
                 .bind(&card).fetch_one(&mut **tx).await?;
             return Ok(if task_owned { TerminalStart::AttachOnly(sock) } else { TerminalStart::Unbound });
         };

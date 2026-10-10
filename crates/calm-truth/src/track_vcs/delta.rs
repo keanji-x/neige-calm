@@ -6,7 +6,7 @@ use serde_json::Value;
 use sqlx::{Row, Sqlite, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::runs::{idempotency_key_from_payload, project_run_by_key_tx, project_runs_tx};
+use super::runs::{project_run_by_key_tx, project_runs_tx};
 use super::snapshot::{
     card_in_track_tx, card_meta_json, card_payload_json, card_runtime_json, cards_for_track_tx,
     cards_index_json, content_json, content_markdown, conversation_markdown,
@@ -349,7 +349,6 @@ async fn run_key_for_worker_card_tx(
 ) -> Result<Option<String>> {
     let row = sqlx::query(
         r#"SELECT id,
-                  json_extract(payload, '$.idempotency_key') AS idempotency_key,
                   EXISTS (
                     SELECT 1
                     FROM events
@@ -360,8 +359,7 @@ async fn run_key_for_worker_card_tx(
            FROM cards
            WHERE id = ?1
              AND track_id = ?2
-             AND role = 'worker'
-             AND json_extract(payload, '$.idempotency_key') IS NOT NULL"#,
+             AND role = 'worker'"#,
     )
     .bind(card_id)
     .bind(track_id.as_str())
@@ -372,11 +370,11 @@ async fn run_key_for_worker_card_tx(
     };
     let id: String = row.try_get("id")?;
     let announced: i64 = row.try_get("vcs_announced")?;
-    if visibility.includes(&id, announced != 0) {
-        Ok(Some(row.try_get("idempotency_key")?))
-    } else {
-        Ok(None)
+    if !visibility.includes(&id, announced != 0) {
+        return Ok(None);
     }
+    // #2493: the card's run is the attempt its worker session is bound to.
+    crate::db::sqlite::run_key_of_card_tx(tx, track_id.as_str(), &id).await
 }
 
 async fn run_key_for_worker_card_in_index_tx(
@@ -406,9 +404,6 @@ pub(super) fn paths_changed_by_event(event: &Event, track_id: &TrackId) -> PathD
             delta.add("index.md");
             delta.add("cards/index.json");
             delta.add("report.md");
-            if let Some(key) = idempotency_key_from_payload(&card.payload) {
-                delta.add_run_key(key);
-            }
             delta.add_run_card_id(card.id.as_str());
         }
         Event::CardDeleted { id, .. } => {

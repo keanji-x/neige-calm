@@ -42,43 +42,51 @@ pub(crate) async fn fail_worker_task_tx(
     )])
 }
 
-/// Settle active executions whose owning card is about to be deleted. The caller
-/// commits these kernel events together with the card deletion and lease release.
-pub(crate) async fn fail_tasks_for_deleted_card_tx(
+/// Settle the attempts whose worker card is about to be deleted (#2493): the attempts the card's
+/// sessions are bound to, resolved once before anything moves (the failures below would hide a
+/// `dispatched`/`running` one from a later read). Each such attempt that is still
+/// `dispatched`/`running` is failed, and each bound attempt's lease is released and committed as
+/// `interrupted` (whatever its status: a timed-out worker's lease is held until its cleanup reaps
+/// it, and that cleanup marker leaves with the card's sessions). The caller commits these kernel
+/// events with the card deletion.
+pub(crate) async fn settle_attempt_for_deleted_card_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     card: &crate::model::Card,
 ) -> Result<Vec<(ActorId, EventScope, Event)>> {
-    let ids: Vec<String> = sqlx::query_scalar(
-        "SELECT id FROM tasks WHERE (worker_card_id = ?1 OR worker_card_id IS NULL) AND track_id = ?2 \
-         AND status IN ('dispatched', 'running') ORDER BY id",
-    )
-    .bind(card.id.as_str())
-    .bind(card.track_id.as_str())
-    .fetch_all(&mut **tx)
-    .await?;
-    if ids.is_empty() {
-        return Ok(Vec::new());
-    }
-    let track = track_find_tx(tx, card.track_id.as_str())
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("track {}", card.track_id)))?;
+    let bound = crate::db::sqlite::card_bindings_tx(tx, card.id.as_str()).await?;
     let mut events = Vec::new();
-    for id in ids {
-        let task = task_get_tx(tx, &id)
-            .await?
-            .ok_or_else(|| CalmError::NotFound(format!("task {id}")))?;
-        if task.worker_card_id.is_none()
-            && !crate::db::sqlite::worker_op_targets_card_tx(tx, &task.id, card.id.as_str()).await?
-        {
+    for binding in bound {
+        let Some(attempt_id) = binding.attempt_id else {
             continue;
+        };
+        if matches!(
+            binding.attempt_status,
+            Some(TaskStatus::Dispatched | TaskStatus::Running)
+        ) {
+            let task = task_get_tx(tx, &attempt_id)
+                .await?
+                .ok_or_else(|| CalmError::NotFound(format!("task {attempt_id}")))?;
+            let track = track_find_tx(tx, task.track_id.as_str())
+                .await?
+                .ok_or_else(|| CalmError::NotFound(format!("track {}", task.track_id)))?;
+            events.extend(
+                fail_worker_task_tx(
+                    tx,
+                    &task,
+                    &track,
+                    "worker-card-deleted",
+                    "the execution card was deleted",
+                )
+                .await?,
+            );
         }
         events.extend(
-            fail_worker_task_tx(
+            release_workspace_lease_for_attempt_tx(
                 tx,
-                &task,
-                &track,
-                "worker-card-deleted",
-                "the execution card was deleted",
+                &attempt_id,
+                ReleaseDelivery::Commit(
+                    crate::git_candidate::delivery::AttemptOutcome::Interrupted,
+                ),
             )
             .await?,
         );

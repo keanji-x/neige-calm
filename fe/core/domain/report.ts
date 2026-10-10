@@ -449,8 +449,8 @@ const trackReportReadSchema = z.object({ taskDiagnostics: z.array(z.unknown()).d
 
 /**
  * The `tasks` statuses inside the eventless window: `scheduler::mark_running` flips
- * `dispatched → running` and stamps `worker_card_id` with no event, so only those two need a
- * timer. `pending` and `verifying` are evented on every exit. An allowlist so an unknown
+ * `dispatched → running` with no event (the spawn's prepare bound `worker_card_id` before it),
+ * so only those two need a timer. `pending` and `verifying` are evented on every exit. An allowlist so an unknown
  * status degrades toward silence.
  */
 function eventlessWindowTaskStatuses(): ReadonlySet<string> {

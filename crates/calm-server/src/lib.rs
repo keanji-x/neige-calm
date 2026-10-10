@@ -668,6 +668,9 @@ pub async fn recover_harnesses_after_daemon_boot(
 }
 
 #[cfg(test)]
+mod worker_binding_backfill_tests;
+
+#[cfg(test)]
 mod boot_order_tests {
     /// Boot goes through `SharedCodexAppServer::boot`, which replaces a daemon with a stale env
     /// signature before recovery; a bare `start_or_takeover` would recover Planners onto it (#2087).

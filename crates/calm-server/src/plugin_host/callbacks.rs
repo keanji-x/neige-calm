@@ -17,10 +17,8 @@ use crate::db::sqlite::{
 };
 use crate::db::{RepoRead, RouteRepo, write_with_actor_events_typed, write_with_event_typed};
 use crate::event::{Event, EventBus, EventScope};
-use crate::git_candidate::delivery::AttemptOutcome;
 use crate::ids::{ActorId, CardId};
 use crate::model::{CardPatch, CardRole, NewCard, NewOverlay, new_id};
-use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_tx};
 use crate::session_projection_lookup::project_runtime_into_card_payload;
 use crate::state::WriteContext;
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
@@ -531,15 +529,7 @@ async fn card_delete(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
                     }
                 }
                 let mut events =
-                    crate::scheduler::fail_tasks_for_deleted_card_tx(tx, &card).await?;
-                events.extend(
-                    release_workspace_lease_for_card_tx(
-                        tx,
-                        &card_id,
-                        ReleaseDelivery::Commit(AttemptOutcome::Interrupted),
-                    )
-                    .await?,
-                );
+                    crate::scheduler::settle_attempt_for_deleted_card_tx(tx, &card).await?;
                 card_delete_tx(tx, &card_id, write_for_tx.role_cache()).await?;
                 events.push((
                     actor,
@@ -1324,11 +1314,26 @@ mod tests {
         .unwrap();
         let cid = create["id"].as_str().unwrap().to_string();
         let task_id = format!("{}:delete-worker", h.track_id);
-        sqlx::query("INSERT INTO tasks
-            (id,track_id,key,kind,goal,context_json,status,worker_card_id,declared_by,created_at_ms,updated_at_ms)
-            VALUES (?1,?2,'delete-worker','codex','test','[]','running',?3,'user',1,1)")
-            .bind(&task_id).bind(&h.track_id).bind(&cid)
-            .execute(h.ctx_storage.sqlx_repo.pool()).await.unwrap();
+        let pool = h.ctx_storage.sqlx_repo.pool();
+        sqlx::query(
+            "INSERT INTO tasks
+            (id,track_id,key,kind,goal,context_json,status,declared_by,created_at_ms,updated_at_ms)
+            VALUES (?1,?2,'delete-worker','codex','test','[]','running','user',1,1)",
+        )
+        .bind(&task_id)
+        .bind(&h.track_id)
+        .execute(pool)
+        .await
+        .unwrap();
+        // #2493: the card runs the attempt and holds the attempt's lease.
+        crate::test_seams::bind_task_to_card_for_test(pool, &task_id, &cid)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO workspace_leases
+            (lease_id,card_id,track_id,path,state,lease_owner,created_at_ms,updated_at_ms,attempt_id)
+            VALUES ('lease-delete-worker',?1,?2,'/tmp/neige-plugin-card-delete-lease','held','test',1,1,?3)")
+            .bind(&cid).bind(&h.track_id).bind(&task_id)
+            .execute(pool).await.unwrap();
         let res = dispatch(&h.ctx(), "neige.card.delete", json!({ "card_id": cid }))
             .await
             .unwrap();
@@ -1353,9 +1358,102 @@ mod tests {
                 .unwrap()
                 .starts_with("worker-card-deleted")
         );
-        let failures: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind='task.failed' AND json_extract(payload,'$.idempotency_key')=?1")
+        let failures: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE kind='task.failed' AND json_extract(events.payload,'$.idempotency_key')=?1")
             .bind(&task_id).fetch_one(h.ctx_storage.sqlx_repo.pool()).await.unwrap();
         assert_eq!(failures, 1);
+        let (state, attempt): (String, String) = sqlx::query_as(
+            "SELECT state, attempt_id FROM workspace_leases WHERE lease_id = 'lease-delete-worker'",
+        )
+        .fetch_one(h.ctx_storage.sqlx_repo.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            (state.as_str(), attempt.as_str()),
+            ("released", task_id.as_str()),
+            "the deleted card's attempt, resolved before its failure, has its lease released"
+        );
+    }
+
+    /// #2493 row 16 through the plugin-host entry point: a canceled attempt still holding its
+    /// kernel-delivery lease (cleanup pending) has that lease released, and the attempt committed
+    /// as `interrupted`, when its card is deleted.
+    #[tokio::test]
+    async fn card_delete_after_cancel_releases_the_canceled_attempts_lease() {
+        let h = Harness::new("p1", manifest_with_full_perms("p1")).await;
+        let create = dispatch(
+            &h.ctx(),
+            "neige.card.create",
+            json!({ "track_id": h.track_id, "kind": "plugin:p1:demo" }),
+        )
+        .await
+        .unwrap();
+        let cid = create["id"].as_str().unwrap().to_string();
+        let pool = h.ctx_storage.sqlx_repo.pool();
+        let task_id = format!("{}:canceled-worker", h.track_id);
+        sqlx::query(
+            "INSERT INTO tasks
+            (id,track_id,key,kind,goal,context_json,status,declared_by,created_at_ms,updated_at_ms)
+            VALUES (?1,?2,'canceled-worker','codex','test','[]','running','user',1,1)",
+        )
+        .bind(&task_id)
+        .bind(&h.track_id)
+        .execute(pool)
+        .await
+        .unwrap();
+        crate::test_seams::bind_task_to_card_for_test(pool, &task_id, &cid)
+            .await
+            .unwrap();
+        let lease_dir = tempfile::tempdir().unwrap();
+        crate::test_seams::acquire_based_workspace_lease_for_test(
+            pool,
+            &cid,
+            &h.track_id,
+            "owner-cancel-then-delete",
+            &task_id,
+            lease_dir.path(),
+            "0123456789abcdef0123456789abcdef01234567",
+        )
+        .await
+        .unwrap();
+        sqlx::query("UPDATE tasks SET status = 'canceled', finished_at_ms = 2 WHERE id = ?1")
+            .bind(&task_id)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        dispatch(&h.ctx(), "neige.card.delete", json!({ "card_id": cid }))
+            .await
+            .unwrap();
+
+        let (state, attempt): (String, String) =
+            sqlx::query_as("SELECT state, attempt_id FROM workspace_leases WHERE card_id = ?1")
+                .bind(&cid)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            (state.as_str(), attempt.as_str()),
+            ("released", task_id.as_str())
+        );
+        let (producer, outcome): (String, String) = sqlx::query_as(
+            "SELECT producer_attempt_id, outcome FROM task_git_deliveries WHERE card_id = ?1",
+        )
+        .bind(&cid)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            (producer.as_str(), outcome.as_str()),
+            (task_id.as_str(), "interrupted")
+        );
+        let held: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM workspace_leases WHERE track_id = ?1 AND state IN ('held','releasing')",
+        )
+        .bind(&h.track_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(held, 0, "no lease is stranded on the checkout");
     }
 
     /// The undeletable card is minted via `card_create_with_id_tx` with a plugin-owned kind, so the kind check would let the plugin through and only the `deletable` guard refuses.

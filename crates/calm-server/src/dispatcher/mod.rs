@@ -276,19 +276,21 @@ pub async fn task_event_pushes_planner_for_test(
     task_event_pushes_planner(repo, write, event, actor).await
 }
 
-/// A worker stop hook is a wake only while its tasks row is still `dispatched | running`; past that
-/// the gate result / terminal event is the wake. Returns `true` when the push must be suppressed;
-/// no tasks row or a lookup error → push (fail-open).
+/// A worker stop hook is a wake only while the card's bound attempt (#2493) is still
+/// `dispatched | running`; past that the gate result / terminal event is the wake. Returns `true`
+/// when the push must be suppressed; no bound attempt or a lookup error → push (fail-open).
 pub(crate) async fn is_stale_worker_stop_hook(repo: &dyn crate::db::Repo, event: &Event) -> bool {
     let card_id = match event {
         Event::CodexHook { card_id, .. } | Event::ClaudeHook { card_id, .. } => card_id,
         _ => return false,
     };
-    match repo.task_for_worker_card(card_id.as_str()).await {
-        Ok(Some(task)) => !matches!(
-            task.status,
-            crate::model::TaskStatus::Dispatched | crate::model::TaskStatus::Running
-        ),
+    match calm_truth::db::RepoRead::card_binding(repo, card_id.as_str()).await {
+        Ok(Some(binding)) => binding.attempt_status.is_some_and(|status| {
+            !matches!(
+                status,
+                crate::model::TaskStatus::Dispatched | crate::model::TaskStatus::Running
+            )
+        }),
         Ok(None) => false,
         Err(e) => {
             tracing::warn!(
@@ -390,7 +392,6 @@ fn dispatcher_operation_runtime(
     let claude_restart_adapter = Arc::new(ClaudeRestartAdapter::new(
         route_repo.clone(),
         codex,
-        mcp_server.clone(),
         write.role_cache().clone(),
         write.area_cache().clone(),
     ));

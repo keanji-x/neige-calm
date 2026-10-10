@@ -454,8 +454,8 @@ export function trackPreviewsQueryOptions(transport: ApiTransportPort, trackId: 
 
 /**
  * The track's task verdicts. Its own cache entry: these change on every dispatch and gate result without
- * any card being written. Events alone do not keep it live — `scheduler::mark_running` stamps
- * `worker_card_id` without emitting anything — hence the timer.
+ * any card being written. Events alone do not keep it live — `scheduler::mark_running` flips the row to
+ * `running` without emitting anything (the spawn's prepare bound `worker_card_id` earlier) — hence the timer.
  */
 export function trackTaskVerdictsQueryOptions(
   transport: ApiTransportPort, trackId: string, unauthorized: UnauthorizedChannel,
