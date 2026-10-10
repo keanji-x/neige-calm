@@ -18,6 +18,15 @@ pub struct McpServerConfig<'a> {
     pub env: &'a [(String, String)],
 }
 
+/// The operator's own Codex home, as Codex resolves it: a non-empty `CODEX_HOME`, else
+/// `~/.codex`.
+pub fn host_codex_home() -> Option<PathBuf> {
+    std::env::var_os("CODEX_HOME")
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")))
+}
+
 /// Layout: <data_dir>/codex-home/ — the shared daemon's single CODEX_HOME, no per-card subdir.
 pub struct SharedCodexHome {
     home: PathBuf,
@@ -38,10 +47,9 @@ impl SharedCodexHome {
     }
 
     /// Boot-time seed: if the home does not exist, mkdir and import operator identity and
-    /// model config from the host `~/.codex/`. Never overwrites existing files.
+    /// model config from [`host_codex_home`]. Never overwrites existing files.
     pub fn seed(&self) -> io::Result<()> {
-        let host = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex"));
-        self.seed_from(host.as_deref())
+        self.seed_from(host_codex_home().as_deref())
     }
 
     /// Explicit two-file sanitized import (never a recursive copy): `auth.json`, and
@@ -89,7 +97,7 @@ impl SharedCodexHome {
                         tracing::warn!(
                             host = %host_codex_dir.display(),
                             error = %e,
-                            "host ~/.codex/config.toml is not valid TOML; skipping config import"
+                            "host Codex config.toml is not valid TOML; skipping config import"
                         );
                     }
                 }
@@ -262,11 +270,6 @@ impl SharedCodexHome {
         }
     }
 
-    /// toml_edit round-trip idempotent writer for `<home>/config.toml`.
-    pub fn ensure_config_for_cwd(&self, cwd: &Path) -> io::Result<()> {
-        self.ensure_config(Some(cwd), None)
-    }
-
     /// Bump the kernel entry's `env.NEIGE_MCP_TOOLSET` generation to one past its current value
     /// and return the new value. An absent or unparseable value counts as 0; the counter wraps, which
     /// still yields a value unlike the current one, the only property Codex's entry comparison needs.
@@ -312,11 +315,8 @@ impl SharedCodexHome {
         Ok(generation)
     }
 
-    pub fn ensure_config(
-        &self,
-        cwd: Option<&Path>,
-        mcp_block: Option<&McpServerConfig<'_>>,
-    ) -> io::Result<()> {
+    /// toml_edit round-trip idempotent writer for `<home>/config.toml`.
+    pub fn ensure_config(&self, mcp_block: Option<&McpServerConfig<'_>>) -> io::Result<()> {
         fs::create_dir_all(&self.home)?;
 
         let lock_path = self.home.join(".config.lock");
@@ -343,18 +343,6 @@ impl SharedCodexHome {
             "network_access",
             WORKSPACE_WRITE_NETWORK_ACCESS,
         );
-
-        if let Some(cwd) = cwd {
-            let cwd_str = cwd.to_string_lossy().into_owned();
-            let projects = doc["projects"].or_insert(toml_edit::table());
-            if let Some(projects_table) = projects.as_table_mut() {
-                projects_table.set_implicit(true);
-                let project = projects_table.entry(&cwd_str).or_insert(toml_edit::table());
-                if let Some(project_table) = project.as_table_mut() {
-                    project_table["trust_level"] = toml_edit::value("trusted");
-                }
-            }
-        }
 
         if let Some(shim) = mcp_block {
             let mcp_servers = doc["mcp_servers"].or_insert(toml_edit::table());
@@ -387,25 +375,6 @@ impl SharedCodexHome {
         }
 
         Ok(())
-    }
-
-    /// Returns Codex 0.134/0.135 runtime state files, relative to this home.
-    pub fn codex_runtime_state_files(&self) -> Vec<PathBuf> {
-        [
-            "state_5.sqlite",
-            "logs_2.sqlite",
-            "goals_1.sqlite",
-            "memories_1.sqlite",
-        ]
-        .into_iter()
-        .flat_map(|name| {
-            [
-                PathBuf::from(name),
-                PathBuf::from(format!("{name}-wal")),
-                PathBuf::from(format!("{name}-shm")),
-            ]
-        })
-        .collect()
     }
 }
 
@@ -512,19 +481,41 @@ fn ensure_table_bool(doc: &mut DocumentMut, table: &str, key: &str, value: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2512: Codex reads its home from a non-empty `CODEX_HOME`, else `~/.codex`; the seed
+    /// imports from the same place.
+    #[test]
+    fn seed_imports_from_codex_home_when_it_is_set() {
+        let root = tempfile::tempdir().unwrap();
+        let codex_home = root.path().join("codex-home");
+        let user_home = root.path().join("user");
+        fs::create_dir_all(&codex_home).unwrap();
+        fs::create_dir_all(user_home.join(".codex")).unwrap();
+        fs::write(codex_home.join("auth.json"), "from-codex-home").unwrap();
+        fs::write(user_home.join(".codex/auth.json"), "from-home").unwrap();
+        let seeded = |name: &str, codex_home_value: &Path| {
+            // SAFETY: nextest runs each test in its own process; nothing else reads the env here.
+            unsafe {
+                std::env::set_var("CODEX_HOME", codex_home_value);
+                std::env::set_var("HOME", &user_home);
+            }
+            let home = SharedCodexHome::new(root.path().join(name), root.path().join("legacy"));
+            home.seed().unwrap();
+            fs::read_to_string(home.path().join("auth.json")).unwrap()
+        };
+        assert_eq!(seeded("set", &codex_home), "from-codex-home");
+        assert_eq!(seeded("empty", Path::new("")), "from-home");
+    }
     #[test]
     fn declared_mcp_identity_and_generation_keys_are_authoritative() {
         let root = tempfile::tempdir().unwrap();
         let home = SharedCodexHome::new(root.path().join("home"), root.path().join("legacy"));
         let env = vec![("CUSTOM_GENERATION".to_owned(), "7".to_owned())];
-        home.ensure_config(
-            None,
-            Some(&McpServerConfig {
-                key: "custom_service",
-                command: Path::new("/custom/shim"),
-                env: &env,
-            }),
-        )
+        home.ensure_config(Some(&McpServerConfig {
+            key: "custom_service",
+            command: Path::new("/custom/shim"),
+            env: &env,
+        }))
         .unwrap();
         home.verify_expected_mcp_servers(&["custom_service"])
             .unwrap();

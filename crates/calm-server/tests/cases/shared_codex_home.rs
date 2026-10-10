@@ -1,5 +1,3 @@
-use std::path::{Path, PathBuf};
-
 use calm_server::mcp_server::McpShimConfig;
 use calm_server::shared_codex_home::{EXPECTED_MCP_SERVERS, SharedCodexHome};
 
@@ -21,15 +19,6 @@ mod shared_codex_home {
     fn parsed_config(home: &SharedCodexHome) -> toml::Value {
         let config = read_config(home);
         toml::from_str(&config).expect("config.toml must be valid TOML")
-    }
-
-    fn project_trust_level(config: &toml::Value, cwd: &Path) -> Option<String> {
-        config
-            .get("projects")
-            .and_then(|v| v.get(cwd.to_string_lossy().as_ref()))
-            .and_then(|v| v.get("trust_level"))
-            .and_then(|v| v.as_str())
-            .map(ToOwned::to_owned)
     }
 
     #[test]
@@ -74,8 +63,7 @@ mod shared_codex_home {
         let home = shared_home(&root);
 
         home.seed().expect("seed shared home");
-        home.ensure_config_for_cwd(Path::new("/tmp"))
-            .expect("ensure config");
+        home.ensure_config(None).expect("ensure config");
 
         let config_path = home.path().join("config.toml");
         let mode = std::fs::metadata(&config_path)
@@ -98,16 +86,12 @@ mod shared_codex_home {
     fn shared_config_writer_is_idempotent() {
         let root = tempfile::tempdir().expect("tempdir");
         let home = shared_home(&root);
-        let cwd = root.path().join("work");
 
-        home.ensure_config_for_cwd(&cwd).expect("first write");
-        home.ensure_config_for_cwd(&cwd).expect("second write");
+        home.ensure_config(None).expect("first write");
+        let first = read_config(&home);
+        home.ensure_config(None).expect("second write");
 
-        let config = parsed_config(&home);
-        assert_eq!(
-            project_trust_level(&config, &cwd).as_deref(),
-            Some("trusted")
-        );
+        assert_eq!(read_config(&home), first);
     }
 
     #[test]
@@ -122,8 +106,7 @@ args = ["--bar"]
 "#;
         std::fs::write(home.path().join("config.toml"), existing).expect("write existing config");
 
-        home.ensure_config_for_cwd(&root.path().join("work"))
-            .expect("ensure config");
+        home.ensure_config(None).expect("ensure config");
 
         let config = parsed_config(&home);
         let foo = config
@@ -144,27 +127,6 @@ args = ["--bar"]
         assert_eq!(
             config.get("approval_policy").and_then(|v| v.as_str()),
             Some("never")
-        );
-    }
-
-    #[test]
-    fn shared_config_writer_adds_multiple_project_blocks() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let home = shared_home(&root);
-        let cwd_a = root.path().join("work-a");
-        let cwd_b = root.path().join("work-b");
-
-        home.ensure_config_for_cwd(&cwd_a).expect("write cwd a");
-        home.ensure_config_for_cwd(&cwd_b).expect("write cwd b");
-
-        let config = parsed_config(&home);
-        assert_eq!(
-            project_trust_level(&config, &cwd_a).as_deref(),
-            Some("trusted")
-        );
-        assert_eq!(
-            project_trust_level(&config, &cwd_b).as_deref(),
-            Some("trusted")
         );
     }
 
@@ -266,34 +228,6 @@ args = ["--bar"]
     }
 
     #[test]
-    fn shared_config_writer_fills_existing_project_table_without_duplicate_header() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let home = shared_home(&root);
-        std::fs::create_dir_all(home.path()).expect("mkdir home");
-        let cwd = root.path().join("work");
-        std::fs::write(
-            home.path().join("config.toml"),
-            format!(
-                "[projects.{:?}]\n# user note inside project table\n",
-                cwd.to_string_lossy()
-            ),
-        )
-        .expect("write existing project table");
-
-        home.ensure_config_for_cwd(&cwd).expect("ensure config");
-        home.ensure_config_for_cwd(&cwd)
-            .expect("ensure config again");
-
-        let text = read_config(&home);
-        let config: toml::Value = toml::from_str(&text).expect("must be valid TOML");
-        assert_eq!(
-            project_trust_level(&config, &cwd).as_deref(),
-            Some("trusted")
-        );
-        assert!(text.contains("# user note inside project table\n"));
-    }
-
-    #[test]
     fn shared_config_writer_keeps_existing_top_level_values() {
         let root = tempfile::tempdir().expect("tempdir");
         let home = shared_home(&root);
@@ -304,8 +238,7 @@ args = ["--bar"]
         )
         .expect("write existing config");
 
-        home.ensure_config_for_cwd(&root.path().join("work"))
-            .expect("ensure config");
+        home.ensure_config(None).expect("ensure config");
 
         let config = parsed_config(&home);
         assert_eq!(
@@ -327,32 +260,6 @@ args = ["--bar"]
     }
 
     #[test]
-    fn codex_runtime_state_files_include_memories_1_sqlite() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let home = shared_home(&root);
-        let files = home.codex_runtime_state_files();
-
-        assert!(files.contains(&PathBuf::from("memories_1.sqlite")));
-        assert!(files.contains(&PathBuf::from("memories_1.sqlite-wal")));
-        assert!(files.contains(&PathBuf::from("memories_1.sqlite-shm")));
-    }
-
-    #[test]
-    fn ensure_config_for_cwd_escapes_quotes_and_backslashes() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let home = shared_home(&root);
-        let cwd = root.path().join(r#"has"quote\and\slashes"#);
-
-        home.ensure_config_for_cwd(&cwd).expect("ensure config");
-
-        let config = parsed_config(&home);
-        assert_eq!(
-            project_trust_level(&config, &cwd).as_deref(),
-            Some("trusted")
-        );
-    }
-
-    #[test]
     fn seed_creates_home_directory() {
         let root = tempfile::tempdir().expect("tempdir");
         let home = shared_home(&root);
@@ -363,12 +270,11 @@ args = ["--bar"]
     }
 
     #[test]
-    fn ensure_config_for_cwd_writes_network_access_in_sandbox_block() {
+    fn ensure_config_writes_network_access_in_sandbox_block() {
         let root = tempfile::tempdir().expect("tempdir");
         let home = shared_home(&root);
 
-        home.ensure_config_for_cwd(&root.path().join("work"))
-            .expect("ensure config");
+        home.ensure_config(None).expect("ensure config");
 
         let config = parsed_config(&home);
         assert_eq!(
@@ -378,7 +284,7 @@ args = ["--bar"]
     }
 
     #[test]
-    fn ensure_config_for_cwd_detects_dotted_table_form() {
+    fn ensure_config_detects_dotted_table_form() {
         let root = tempfile::tempdir().expect("tempdir");
         let home = shared_home(&root);
         std::fs::create_dir_all(home.path()).expect("mkdir home");
@@ -388,8 +294,7 @@ args = ["--bar"]
         )
         .expect("write existing config");
 
-        home.ensure_config_for_cwd(&root.path().join("work"))
-            .expect("ensure config");
+        home.ensure_config(None).expect("ensure config");
 
         let text = read_config(&home);
         let parsed: toml::Value = toml::from_str(&text).expect("must remain valid TOML");
@@ -409,7 +314,7 @@ args = ["--bar"]
     }
 
     #[test]
-    fn ensure_config_for_cwd_does_not_false_positive_on_prefix() {
+    fn ensure_config_does_not_false_positive_on_prefix() {
         let root = tempfile::tempdir().expect("tempdir");
         let home = shared_home(&root);
         std::fs::create_dir_all(home.path()).expect("mkdir home");
@@ -419,8 +324,7 @@ args = ["--bar"]
         )
         .expect("write existing config");
 
-        home.ensure_config_for_cwd(&root.path().join("work"))
-            .expect("ensure config");
+        home.ensure_config(None).expect("ensure config");
 
         let text = read_config(&home);
         let parsed: toml::Value = toml::from_str(&text).expect("must be valid TOML");
@@ -431,7 +335,7 @@ args = ["--bar"]
     }
 
     #[test]
-    fn ensure_config_for_cwd_ignores_dotted_key_inside_comment() {
+    fn ensure_config_ignores_dotted_key_inside_comment() {
         let root = tempfile::tempdir().expect("tempdir");
         let home = shared_home(&root);
         std::fs::create_dir_all(home.path()).expect("mkdir home");
@@ -441,8 +345,7 @@ args = ["--bar"]
         )
         .expect("write existing config");
 
-        home.ensure_config_for_cwd(&root.path().join("work"))
-            .expect("ensure config");
+        home.ensure_config(None).expect("ensure config");
 
         let text = read_config(&home);
         let parsed: toml::Value = toml::from_str(&text).expect("must be valid TOML");
@@ -457,7 +360,7 @@ args = ["--bar"]
     }
 
     #[test]
-    fn ensure_config_for_cwd_handles_inline_comment_on_table_header() {
+    fn ensure_config_handles_inline_comment_on_table_header() {
         let root = tempfile::tempdir().expect("tempdir");
         let home = shared_home(&root);
         std::fs::create_dir_all(home.path()).expect("mkdir home");
@@ -467,8 +370,7 @@ args = ["--bar"]
         )
         .expect("write existing config");
 
-        home.ensure_config_for_cwd(&root.path().join("work"))
-            .expect("ensure config");
+        home.ensure_config(None).expect("ensure config");
 
         let text = read_config(&home);
         let parsed: toml::Value = toml::from_str(&text).expect("must be valid TOML");
@@ -491,7 +393,7 @@ args = ["--bar"]
     }
 
     #[test]
-    fn ensure_config_for_cwd_preserves_user_comments() {
+    fn ensure_config_preserves_user_comments() {
         let root = tempfile::tempdir().expect("tempdir");
         let home = shared_home(&root);
         std::fs::create_dir_all(home.path()).expect("mkdir home");
@@ -501,8 +403,7 @@ args = ["--bar"]
         )
         .expect("write existing config");
 
-        home.ensure_config_for_cwd(&root.path().join("work"))
-            .expect("ensure config");
+        home.ensure_config(None).expect("ensure config");
 
         let text = read_config(&home);
         assert!(text.contains("# User says hello"));
@@ -840,7 +741,7 @@ args = ["--bar"]
     }
 
     #[test]
-    fn ensure_config_for_cwd_does_not_overwrite_user_top_level_value() {
+    fn ensure_config_does_not_overwrite_user_top_level_value() {
         let root = tempfile::tempdir().expect("tempdir");
         let home = shared_home(&root);
         std::fs::create_dir_all(home.path()).expect("mkdir home");
@@ -850,8 +751,7 @@ args = ["--bar"]
         )
         .expect("write existing config");
 
-        home.ensure_config_for_cwd(&root.path().join("work"))
-            .expect("ensure config");
+        home.ensure_config(None).expect("ensure config");
 
         let text = read_config(&home);
         let parsed: toml::Value = toml::from_str(&text).expect("must be valid TOML");

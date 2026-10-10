@@ -1,7 +1,6 @@
-//! Confirmed failure, untrusted-generation log report, and an explicit owner retry intent.
+//! Confirmed failure, a report whose login generation is unknown, and an explicit owner retry intent.
 use crate::codex_appserver::Notification;
 use crate::error::{CalmError, Result};
-use provider::codex::AuthenticationFailure;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -11,6 +10,8 @@ use utoipa::ToSchema;
 mod store;
 use store::{Checkpoint, Evidence, Store};
 
+/// The `CodexRefused` text a held request answers with while a sign-in failure is confirmed.
+pub(crate) const SIGN_IN_REFUSAL: &str = "codex_sign_in_required";
 pub(crate) const SIGN_IN_REQUIRED: &str =
     "Codex sign-in needs renewal. Sign in again for this server, then retry.";
 const REPORTED: &str = "Codex reported a sign-in renewal error. This does not confirm that your current sign-in has failed.";
@@ -38,19 +39,12 @@ pub struct AuthenticationNotice {
     /// Opaque durable observation revision; only the owner retry command consumes it.
     pub revision: String,
 }
-#[derive(Clone, Copy)]
-pub(crate) struct AuthenticationStamp {
-    generation: u64,
-    connection_epoch: u64,
-}
 struct State {
     saved: Checkpoint,
     turns: HashMap<(String, String), u64>,
     loaded: bool,
     persisted: Option<Checkpoint>,
     persistence_error: bool,
-    stderr_source: Option<std::fs::File>,
-    connection_key: Option<usize>,
     connection_epoch: u64,
 }
 pub(crate) struct CodexAuthentication {
@@ -63,8 +57,8 @@ impl Default for CodexAuthentication {
     }
 }
 impl CodexAuthentication {
-    pub(crate) fn new(path: PathBuf, home: PathBuf, stderr: PathBuf) -> Self {
-        Self::build(Some(Store::new(path, home, stderr)))
+    pub(crate) fn new(path: PathBuf, home: PathBuf) -> Self {
+        Self::build(Some(Store::new(path, home)))
     }
     fn build(store: Option<Store>) -> Self {
         let result = store
@@ -85,8 +79,6 @@ impl CodexAuthentication {
                 loaded,
                 persisted,
                 persistence_error,
-                stderr_source: None,
-                connection_key: None,
                 connection_epoch: 0,
             }),
             store,
@@ -100,27 +92,19 @@ impl CodexAuthentication {
             .saved
             .generation
     }
-    pub(crate) fn problem(&self) -> Option<AuthenticationFailure> {
+    pub(crate) fn sign_in_failed(&self) -> bool {
         self.state
             .lock()
             .expect("authentication mutex")
             .saved
             .evidence
-            .confirmed()
+            == Evidence::Confirmed
     }
-    pub(crate) fn bind_client(&self, key: usize) -> u64 {
+    pub(crate) fn bind_client(&self) -> u64 {
         let mut state = self.state.lock().expect("authentication mutex");
         state.connection_epoch = state.connection_epoch.wrapping_add(1);
-        state.connection_key = Some(key);
         state.turns.clear();
         state.connection_epoch
-    }
-    pub(crate) fn stamp(&self, key: usize) -> Option<AuthenticationStamp> {
-        let state = self.state.lock().expect("authentication mutex");
-        (state.connection_key == Some(key)).then_some(AuthenticationStamp {
-            generation: state.saved.generation,
-            connection_epoch: state.connection_epoch,
-        })
     }
     pub(crate) fn notice(&self) -> Option<AuthenticationNotice> {
         let state = self.state.lock().expect("authentication mutex");
@@ -129,7 +113,7 @@ impl CodexAuthentication {
                 AuthenticationNoticeKind::StateUnavailable,
                 STATE_UNAVAILABLE,
             )
-        } else if matches!(state.saved.evidence, Evidence::Confirmed { .. }) {
+        } else if state.saved.evidence == Evidence::Confirmed {
             (AuthenticationNoticeKind::SignInRequired, SIGN_IN_REQUIRED)
         } else if matches!(state.saved.evidence, Evidence::RetryRequested { .. }) {
             (AuthenticationNoticeKind::RetryRequested, RETRY_REQUESTED)
@@ -149,47 +133,30 @@ impl CodexAuthentication {
             .filter(|n| n.kind.holds_issuance())
             .map(|n| format!("{} Your message is still queued.", n.text))
     }
+    /// A turn of `generation` fails with Codex's sign-in error, as the daemon reports one.
     #[cfg(test)]
-    pub(crate) fn record(&self, generation: u64, message: &str) {
-        let epoch = self
-            .state
-            .lock()
-            .expect("authentication mutex")
-            .connection_epoch;
-        self.record_stamped(
-            Some(AuthenticationStamp {
-                generation,
-                connection_epoch: epoch,
-            }),
-            message,
+    pub(crate) fn record(&self, generation: u64) {
+        let epoch = {
+            let mut state = self.state.lock().expect("authentication mutex");
+            state
+                .turns
+                .insert(("recorded".into(), "recorded".into()), generation);
+            state.connection_epoch
+        };
+        self.observe_from_connection(
+            epoch,
+            &Notification::TurnCompleted {
+                thread_id: "recorded".into(),
+                turn: serde_json::json!({"id":"recorded","status":"failed",
+                    "error":{"message":"fixture","codexErrorInfo":"unauthorized"}}),
+            },
         );
     }
-    pub(crate) fn record_stamped(&self, stamp: Option<AuthenticationStamp>, message: &str) {
-        let Some(stamp) = stamp else {
-            return;
-        };
-        if let Some(problem) = AuthenticationFailure::from_message(message) {
-            let mut state = self.state.lock().expect("authentication mutex");
-            if !state.loaded {
-                state.saved.reported = true;
-                return;
-            }
-            if stamp.generation == state.saved.generation
-                && stamp.connection_epoch == state.connection_epoch
-                && Self::confirm(&mut state, problem)
-            {
-                self.commit(&mut state);
-            }
+    fn confirm(state: &mut State) {
+        if state.saved.evidence != Evidence::Confirmed {
+            state.saved.evidence = Evidence::Confirmed;
+            state.saved.revision = state.saved.revision.wrapping_add(1);
         }
-    }
-    fn confirm(state: &mut State, failure: AuthenticationFailure) -> bool {
-        let evidence = Evidence::Confirmed { failure };
-        if state.saved.evidence == evidence {
-            return false;
-        }
-        state.saved.evidence = evidence;
-        state.saved.revision = state.saved.revision.wrapping_add(1);
-        true
     }
     /// Owner authorizes a retry, not a credential repair claim. Persist the intent before opening issuance.
     pub(crate) fn request_retry(&self, expected: &str) -> Result<String> {
@@ -207,18 +174,15 @@ impl CodexAuthentication {
                 "Codex sign-in state changed; read its current status before retrying.".into(),
             ));
         }
-        let Some(failure) = state.saved.evidence.confirmed() else {
+        if state.saved.evidence != Evidence::Confirmed {
             return Err(CalmError::Conflict(
                 "There is no confirmed sign-in failure waiting for a retry.".into(),
             ));
-        };
+        }
         let failed_generation = state.saved.generation;
         state.saved.generation = state.saved.generation.wrapping_add(1);
         state.saved.revision = state.saved.revision.wrapping_add(1);
-        state.saved.evidence = Evidence::RetryRequested {
-            failure,
-            failed_generation,
-        };
+        state.saved.evidence = Evidence::RetryRequested { failed_generation };
         self.commit(&mut state);
         if state.persistence_error {
             return Err(CalmError::ServiceUnavailable(STATE_UNAVAILABLE.into()));
@@ -265,17 +229,10 @@ impl CodexAuthentication {
                     && turn.get("status").and_then(serde_json::Value::as_str) == Some("completed")
                     && turn.get("error").is_none_or(serde_json::Value::is_null)
                 {
-                    if let Evidence::RetryRequested {
-                        failure,
-                        failed_generation,
-                    } = state.saved.evidence
-                    {
-                        state.saved.evidence = Evidence::Retried {
-                            failure,
-                            failed_generation,
-                        };
+                    if let Evidence::RetryRequested { failed_generation } = state.saved.evidence {
+                        state.saved.evidence = Evidence::Retried { failed_generation };
                     }
-                    self.clear_report(&mut state);
+                    state.saved.reported = false;
                 }
             }
             Notification::Other { method, params } if method == "error" => {
@@ -302,7 +259,7 @@ impl CodexAuthentication {
                 state.saved.revision = state.saved.revision.wrapping_add(1);
                 state.saved.evidence = Evidence::Clear;
                 state.loaded = true;
-                self.clear_report(&mut state);
+                state.saved.reported = false;
             }
             _ => {}
         }
@@ -310,71 +267,42 @@ impl CodexAuthentication {
             self.commit(&mut state);
         }
     }
-    fn clear_report(&self, state: &mut State) {
-        state.saved.reported = false;
-        if let Some(store) = &self.store {
-            match store.boundary(state.stderr_source.as_ref()) {
-                Ok(cursor) => state.saved.cursor = cursor,
-                Err(e) => {
-                    tracing::warn!(error=%e,"could not establish authentication log boundary")
-                }
-            }
-        }
-    }
     fn observe_error(
         state: &mut State,
         generation: Option<u64>,
         error: Option<&serde_json::Value>,
     ) {
+        let sign_in_failure = error.is_some_and(provider::codex::is_sign_in_failure);
         if !state.loaded {
-            state.saved.reported |= error
-                .and_then(|e| e.get("message"))
-                .and_then(serde_json::Value::as_str)
-                .and_then(AuthenticationFailure::from_message)
-                .is_some();
+            state.saved.reported |= sign_in_failure;
             return;
         }
         let generation = generation.or((state.saved.generation == 0).then_some(0));
         if generation != Some(state.saved.generation) {
             return;
         }
-        if let Some(problem) = error
-            .and_then(|e| e.get("message"))
-            .and_then(serde_json::Value::as_str)
-            .and_then(AuthenticationFailure::from_message)
-        {
-            Self::confirm(state, problem);
+        if sign_in_failure {
+            Self::confirm(state);
         }
     }
-    pub(crate) fn poll(&self, source: Option<std::fs::File>) {
+    /// Restore a checkpoint that could not be read, then commit what is still unsaved.
+    pub(crate) fn poll(&self) {
         let Some(store) = &self.store else {
             return;
         };
         let mut state = self.state.lock().expect("authentication mutex");
-        state.stderr_source = source;
         if !state.loaded {
-            if let Ok(mut saved) = store.load() {
-                state.persisted = Some(saved.clone());
-                state.turns.clear();
-                saved.reported |= state.saved.reported;
-                state.saved = saved;
-                state.loaded = true;
-                state.persistence_error = false;
-            } else {
+            let Ok(mut saved) = store.load() else {
                 return;
-            }
+            };
+            state.persisted = Some(saved.clone());
+            state.turns.clear();
+            saved.reported |= state.saved.reported;
+            state.saved = saved;
+            state.loaded = true;
+            state.persistence_error = false;
         }
-        let source = state
-            .stderr_source
-            .as_ref()
-            .and_then(|f| f.try_clone().ok());
-        match store.scan(&mut state.saved.cursor, source.as_ref()) {
-            Ok(true) => state.saved.reported = true,
-            Ok(false) => {}
-            Err(e) => tracing::warn!(error=%e,"could not read Codex authentication log evidence"),
-        }
-        // The persisted snapshot changes only after an atomic commit. Compare all fields,
-        // including storage-restoration merges and neutral-log read positions.
+        // The persisted snapshot changes only after an atomic commit, including a restoration merge.
         self.commit(&mut state);
     }
     fn commit(&self, state: &mut State) {

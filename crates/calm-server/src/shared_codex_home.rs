@@ -30,14 +30,12 @@ impl SharedCodexHome {
             .into_iter()
             .map(|(key, value)| (key.to_owned(), value))
             .collect::<Vec<_>>();
-        self.0.ensure_config(
-            None,
-            Some(&provider::codex::shared::home::McpServerConfig {
+        self.0
+            .ensure_config(Some(&provider::codex::shared::home::McpServerConfig {
                 key: MCP_SERVER_KEY,
                 command: &shim.shim_bin,
                 env: &env,
-            }),
-        )
+            }))
     }
     pub fn bump_mcp_toolset(&self) -> io::Result<u64> {
         self.0.bump_mcp_toolset(MCP_SERVER_KEY, MCP_TOOLSET_ENV)

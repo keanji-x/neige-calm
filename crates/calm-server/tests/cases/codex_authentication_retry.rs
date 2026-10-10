@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 const URI: &str = "/api/agent-providers/codex/retry";
 fn fail(boot: &Boot) {
-    boot.state.shared_codex_appserver.emit_notification_for_test(Notification::Other {method:"error".into(),params:json!({"error":{"message":"Your access token could not be refreshed because your refresh token was already used."}})});
+    boot.state.shared_codex_appserver.emit_notification_for_test(Notification::Other {method:"error".into(),params:json!({"error":{"message":"Your access token could not be refreshed because your refresh token was already used.","codexErrorInfo":"unauthorized"}})});
 }
 fn protected(boot: &Boot) -> (axum::Router, String) {
     let auth = AuthState::new(AuthConfig {

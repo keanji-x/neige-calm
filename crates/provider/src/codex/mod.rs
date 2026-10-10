@@ -10,7 +10,7 @@ mod approvals;
 mod authentication;
 pub mod error;
 pub use approvals::{ApprovalRoute, ApprovalRoutes, TurnApprovals};
-pub use authentication::AuthenticationFailure;
+pub use authentication::is_sign_in_failure;
 mod types;
 pub use types::*;
 mod client_transport;
@@ -548,15 +548,15 @@ impl CodexAppServer {
 
     /// `thread/revert {threadId, beforeTurnId}` — replace the thread's durable history with the
     /// prefix before `before_turn_id`. Local file changes are not reverted. The vendored protocol
-    /// calls this `thread/rollback`, which the pinned binary rejects.
+    /// calls this `thread/rollback`, which the pinned binary rejects. Its response body
+    /// (`{thread, …Cursor}`) is not read.
     pub async fn thread_revert(&self, thread_id: &str, before_turn_id: &str) -> Result<()> {
-        thread_revert_outcome(
-            self.request(
-                "thread/revert",
-                json!({ "threadId": thread_id, "beforeTurnId": before_turn_id }),
-            )
-            .await,
+        self.request::<Value>(
+            "thread/revert",
+            json!({ "threadId": thread_id, "beforeTurnId": before_turn_id }),
         )
+        .await?;
+        Ok(())
     }
 
     /// `turn/interrupt` — cancel a running turn.

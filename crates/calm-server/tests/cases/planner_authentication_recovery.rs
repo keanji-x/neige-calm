@@ -9,7 +9,7 @@ use serde_json::json;
 use std::time::Duration;
 
 fn fail(boot: &Boot) {
-    boot.daemon.emit_notification_for_test(Notification::Other {method:"error".into(),params:json!({"error":{"message":"Your access token could not be refreshed because your refresh token was already used."}})});
+    boot.daemon.emit_notification_for_test(Notification::Other {method:"error".into(),params:json!({"error":{"message":"Your access token could not be refreshed because your refresh token was already used.","codexErrorInfo":"unauthorized"}})});
 }
 fn login(boot: &Boot) {
     boot.daemon.emit_notification_for_test(Notification::Other {

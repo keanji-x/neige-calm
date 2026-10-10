@@ -122,23 +122,6 @@ impl TurnStartResult {
     }
 }
 
-/// Classify a `thread/revert` round-trip; its response body (`{thread, …Cursor}`) is not read.
-/// Codex answers a second revert of the same turn with a JSON-RPC error whose message starts
-/// `turn not found`; that is the revert already applied, so it is `Ok` too.
-pub fn thread_revert_outcome(response: Result<Value>) -> Result<()> {
-    match response {
-        Ok(_) => Ok(()),
-        Err(Error::Refused(message))
-            if message
-                .strip_prefix("thread/revert failed: ")
-                .is_some_and(|rpc| rpc.starts_with("turn not found")) =>
-        {
-            Ok(())
-        }
-        Err(error) => Err(error),
-    }
-}
-
 /// `turn/steer` result — `{ "turnId": "…" }`.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]

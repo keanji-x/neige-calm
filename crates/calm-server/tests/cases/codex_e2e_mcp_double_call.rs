@@ -7,7 +7,6 @@
 
 use crate::support;
 
-use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -53,10 +52,10 @@ fn cfg(root: &std::path::Path, codex_bin: &str) -> Config {
 
 fn seed_auth_only(home: &SharedCodexHome) {
     home.seed_from(None).expect("seed empty shared CODEX_HOME");
-    let Some(host_home) = std::env::var_os("HOME") else {
+    let Some(host) = provider::codex::shared::home::host_codex_home() else {
         return;
     };
-    let src = Path::new(&host_home).join(".codex").join("auth.json");
+    let src = host.join("auth.json");
     if !src.exists() {
         return;
     }
@@ -241,8 +240,6 @@ async fn codex_mcp_double_call_both_complete() {
         cfg.data_dir_resolved().join("codex-homes"),
     ));
     seed_auth_only(&home);
-    home.ensure_config_for_cwd(Path::new(TEST_CWD))
-        .expect("trust test cwd in shared CODEX_HOME");
     home.ensure_daemon_mcp_config(&mcp_server.shim_config, &daemon_token)
         .expect("write shared daemon MCP config");
 

@@ -56,8 +56,14 @@ pub struct BackendRewind(RewindArm);
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case")]
 enum RewindArm {
-    /// `thread/revert {threadId, beforeTurnId}` before the next `turn/start`.
-    Codex { before_turn_id: String },
+    /// `thread/revert {threadId, beforeTurnId}` before the next `turn/start`, unless `reverted`
+    /// records that it already went through (#2512). Additive and defaulted, written only when
+    /// set, so a rolled-back binary still reads the snapshot: it ignores the key and reverts again.
+    Codex {
+        before_turn_id: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        reverted: bool,
+    },
     /// `--resume-session-at` / `--resume-drops-turn` on the next spawn.
     Claude { resume_at: Uuid, drops_turn: Uuid },
 }
@@ -183,6 +189,7 @@ impl PlannerBackend {
             )),
             Arm::Codex(..) => Ok(BackendRewind(RewindArm::Codex {
                 before_turn_id: target.turn_id.to_string(),
+                reverted: false,
             })),
             Arm::Claude(session) => {
                 let truncation = crate::claude_planner::rewind::truncation(
@@ -222,7 +229,7 @@ impl PlannerBackend {
         permission: PlannerPermissionMode,
         client_id: &str,
         claim: &[crate::harness::QueueEntry],
-        rewind: Option<&BackendRewind>,
+        rewind: Option<&mut BackendRewind>,
     ) -> std::result::Result<TurnId, TurnStartFailure> {
         if let Some(reader) = self.issuance_hold() {
             return Err(TurnStartFailure::AwaitingRecovery {
@@ -230,7 +237,6 @@ impl PlannerBackend {
                 reader,
             });
         }
-        let rewind = rewind.map(|rewind| &rewind.0);
         match &self.0 {
             Arm::Acp(session) => {
                 if rewind.is_some() {
@@ -241,10 +247,17 @@ impl PlannerBackend {
                     .await
             }
             Arm::Codex(daemon, approvals) => {
-                match rewind {
-                    None => {}
-                    Some(RewindArm::Codex { before_turn_id }) => {
-                        revert_codex_thread(daemon, thread_id, before_turn_id).await?
+                match rewind.map(|rewind| &mut rewind.0) {
+                    None | Some(RewindArm::Codex { reverted: true, .. }) => {}
+                    Some(RewindArm::Codex {
+                        before_turn_id,
+                        reverted,
+                    }) => {
+                        revert_codex_thread(daemon, thread_id, before_turn_id).await?;
+                        // The caller keeps this if the start below fails, so its retry does not
+                        // ask Codex again: Codex answers `turn not found` alike for a reverted
+                        // turn and a wrong one.
+                        *reverted = true;
                     }
                     Some(RewindArm::Claude { .. }) => return Err(mismatched_rewind()),
                 }
@@ -263,7 +276,7 @@ impl PlannerBackend {
                     .map_err(codex_turn_start_failure)
             }
             Arm::Claude(session) => {
-                let truncation = match rewind {
+                let truncation = match rewind.map(|rewind| &rewind.0) {
                     None => None,
                     Some(RewindArm::Claude {
                         resume_at,
@@ -506,11 +519,9 @@ impl PlannerEvents {
 fn codex_turn_start_failure(error: CalmError) -> TurnStartFailure {
     match error {
         CalmError::CodexRefused(message) => {
-            if let Some(failure) = provider::codex::AuthenticationFailure::from_message(&message)
-                .or_else(|| provider::codex::AuthenticationFailure::from_code(&message))
-            {
+            if message == crate::codex_authentication::SIGN_IN_REFUSAL {
                 TurnStartFailure::AwaitingRecovery {
-                    error: CalmError::CodexRefused(failure.code().into()),
+                    error: CalmError::CodexRefused(message),
                     reader: format!(
                         "{} Your message is still queued.",
                         crate::codex_authentication::SIGN_IN_REQUIRED
@@ -542,8 +553,8 @@ fn mismatched_rewind() -> TurnStartFailure {
     }
 }
 
-/// `thread/revert` before the turn that follows a rewind. A turn the thread no longer has was
-/// reverted by an earlier attempt, so that answer lets the turn start.
+/// `thread/revert` before the turn that follows a rewind. Any refusal, `turn not found` included,
+/// keeps the turn from starting: only the kernel's own record says a revert already went through.
 async fn revert_codex_thread(
     daemon: &SharedCodexAppServer,
     thread_id: &str,
@@ -587,5 +598,72 @@ pub(crate) async fn interrupt_codex_thread(
         && let Err(e) = daemon.turn_interrupt(thread_id, turn_id).await
     {
         on_error(CodexInterruptStep::FallbackTurn(turn_id), e);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// `RewindArm` as the binary before #2512 reads it, kept as that release's shape.
+    #[derive(Debug, PartialEq, Deserialize)]
+    #[serde(tag = "provider", rename_all = "snake_case")]
+    enum PreviousReader {
+        Codex { before_turn_id: String },
+        Claude { resume_at: Uuid, drops_turn: Uuid },
+    }
+
+    /// A rolled-back binary still reads a cut this one wrote, and an unapplied cut keeps its old shape.
+    #[test]
+    fn a_recorded_revert_stays_readable_by_the_previous_binary() {
+        let unapplied = BackendRewind(RewindArm::Codex {
+            before_turn_id: "turn-2".into(),
+            reverted: false,
+        });
+        let applied = BackendRewind(RewindArm::Codex {
+            before_turn_id: "turn-2".into(),
+            reverted: true,
+        });
+        assert_eq!(
+            serde_json::to_value(&unapplied).unwrap(),
+            json!({"provider": "codex", "before_turn_id": "turn-2"})
+        );
+        let written = serde_json::to_value(&applied).unwrap();
+        assert_eq!(
+            serde_json::from_value::<PreviousReader>(written.clone()).unwrap(),
+            PreviousReader::Codex {
+                before_turn_id: "turn-2".into()
+            }
+        );
+        assert_eq!(
+            serde_json::from_value::<BackendRewind>(written).unwrap(),
+            applied
+        );
+        assert_eq!(
+            serde_json::from_value::<BackendRewind>(
+                json!({"provider": "codex", "before_turn_id": "turn-2"})
+            )
+            .unwrap(),
+            unapplied
+        );
+    }
+
+    /// A sign-in hold that lands after `issuance_hold()` reaches `turn/start` as the daemon's refusal
+    /// code: it awaits recovery like the hold itself, never the "change the model" refusal.
+    #[test]
+    fn the_sign_in_refusal_awaits_recovery_and_other_refusals_stay_refusals() {
+        assert!(matches!(
+            codex_turn_start_failure(CalmError::CodexRefused(
+                crate::codex_authentication::SIGN_IN_REFUSAL.into()
+            )),
+            TurnStartFailure::AwaitingRecovery { .. }
+        ));
+        assert!(matches!(
+            codex_turn_start_failure(CalmError::CodexRefused(
+                "turn/start failed: unknown model".into()
+            )),
+            TurnStartFailure::Refused { .. }
+        ));
     }
 }
