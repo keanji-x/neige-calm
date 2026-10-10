@@ -430,7 +430,7 @@ fn window_kind() -> Value {
             "required": ["src"],
             "additionalProperties": false,
             "properties": {
-                "src": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": report_blocks::window::WINDOW_SRC_PATTERN, "description": "Same-origin `/api/plugins/{id}/ws/{path}` from the serving plugin's tool; no dot segment, query, fragment or host." },
+                "src": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": report_blocks::window::WINDOW_SRC_PATTERN, "description": "`/api/plugins/{id}/ws/{path}` from the serving plugin's tool; path segments are `[A-Za-z0-9_-]+`." },
                 "title": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS },
                 "height": { "type": "number", "minimum": 120, "maximum": 2000, "description": "Viewer height in px (default chosen by the renderer)." }
             }

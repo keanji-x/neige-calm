@@ -78,10 +78,15 @@ export class WindowStreamSession {
     this.endSocket();
   }
 
+  /** Whether the canvas shows a frame of the open session: the only time input is taken. */
+  isLive(): boolean {
+    return this.live && this.socket !== null && this.socket.readyState === OPEN;
+  }
+
   /** Sends input only while the canvas shows a frame of the open session. */
   send(input: WindowInput): boolean {
     const socket = this.socket;
-    if (!this.live || socket === null || socket.readyState !== OPEN) return false;
+    if (!this.isLive() || socket === null) return false;
     socket.send(encodeWindowInput(input));
     return true;
   }
@@ -129,9 +134,14 @@ export class WindowStreamSession {
   private decodeLatest(frame: WindowFrame, generation: number): void {
     this.decoding = true;
     this.ports.decode(frame).then((bitmap) => {
-      if (generation !== this.generation || this.stopped) { bitmap.close(); return; }
-      this.ports.draw(bitmap, frame);
-      bitmap.close();
+      try {
+        if (generation !== this.generation || this.stopped) return;
+        this.ports.draw(bitmap, frame);
+      } catch {
+        return;
+      } finally {
+        bitmap.close();
+      }
       this.attempt = 0;
       if (!this.live) {
         this.live = true;

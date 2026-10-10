@@ -713,12 +713,12 @@ fn is_preview_key(key: &str) -> bool {
         && key.chars().all(|c| head(c) || c == '_' || c == '-')
 }
 
-pub(super) const SAME_ORIGIN_PATH_RULE: &str = "same-origin path starting with `/` (no scheme, no \
+const SAME_ORIGIN_PATH_RULE: &str = "same-origin path starting with `/` (no scheme, no \
      `//host`, no backslashes, no control characters — the WHATWG URL parser strips \
      tab/newline/C0 controls before parsing, so `/\\host` or `/\\n/host` would normalize to a \
      protocol-relative URL; percent-encoded forms like `/%0A` are fine)";
 
-pub(super) fn is_same_origin_path(path: &str) -> bool {
+fn is_same_origin_path(path: &str) -> bool {
     path.starts_with('/')
         && !path.starts_with("//")
         && !path.contains('\\')

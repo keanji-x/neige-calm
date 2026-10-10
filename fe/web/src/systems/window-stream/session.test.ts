@@ -30,7 +30,7 @@ const HELLO = { type: 'hello', version: 1, codec: 'jpeg', width: 4, height: 2, t
 
 type Bitmap = ImageBitmap & { marker: number; closed: boolean };
 
-function harness() {
+function harness(options: Readonly<{ drawThrows?: boolean }> = {}) {
   const sockets: FakeSocket[] = [];
   const decodes: Array<{ frame: WindowFrame; resolve: () => void }> = [];
   const drawn: number[] = [];
@@ -44,7 +44,10 @@ function harness() {
         close() { closedBitmaps.push(marker); } } as unknown as Bitmap;
       decodes.push({ frame, resolve: () => resolve(bitmap) });
     }),
-    draw: (bitmap) => { drawn.push((bitmap as Bitmap).marker); },
+    draw: (bitmap) => {
+      if (options.drawThrows === true) throw new Error('canvas gone');
+      drawn.push((bitmap as Bitmap).marker);
+    },
     view: (view) => { views.push(view); },
   });
   const settle = async () => { for (let i = 0; i < 5; i += 1) await Promise.resolve(); };
@@ -124,6 +127,23 @@ describe('WindowStreamSession', () => {
     expect(h.closedBitmaps).toEqual([1, 2]);
     expect(h.session.send({ type: 'pointer', x: 1, y: 1 })).toBe(false);
     expect(h.views.at(-1)?.status).toBe('unavailable');
+  });
+
+  it('closes the bitmap and keeps decoding when drawing throws, without going live', async () => {
+    const h = harness({ drawThrows: true });
+    h.session.start();
+    const socket = h.sockets[0];
+    socket.text(HELLO);
+    socket.frame(4, 2, 1);
+    socket.frame(4, 2, 2);
+    h.decodes[0].resolve();
+    await h.settle();
+    expect(h.closedBitmaps).toEqual([1]);
+    expect(h.decodes).toHaveLength(2);
+    h.decodes[1].resolve();
+    await h.settle();
+    expect(h.closedBitmaps).toEqual([1, 2]);
+    expect(h.views.at(-1)?.status).toBe('connecting');
   });
 
   it('treats a hello it cannot decode as unavailable', () => {

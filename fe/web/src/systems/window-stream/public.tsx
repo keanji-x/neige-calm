@@ -2,12 +2,12 @@ import { useEffect } from 'react';
 
 import { useState } from '../../ui/state/public.ts';
 
-import { toWindowPoint, toWindowWheel, type WindowFrame } from '../../../../core/domain/window-stream.ts';
+import { buttonChanges, toWindowPoint, toWindowWheel, type WindowFrame } from '../../../../core/domain/window-stream.ts';
 import {
   WindowStreamSession, windowStreamUrl, type WindowSocket, type WindowStreamStatus, type WindowStreamView,
 } from './session.ts';
 
-export type { WindowStreamStatus } from './session.ts';
+export type { WindowSocket, WindowStreamStatus } from './session.ts';
 
 export type WindowStreamOptions = Readonly<{
   /** Opens the socket; the default is the browser's `WebSocket`. */
@@ -48,66 +48,79 @@ export function useWindowStream(src: string, options: WindowStreamOptions = {}):
   useEffect(() => {
     if (canvas === null) return undefined;
     setView({ status: 'connecting', windowTitle: null });
+    const heldKeys = new Set<string>();
+    let heldButtons = 0;
+    /* Held input belongs to one session: when it ends there is no socket to release it on, and the
+       next session must not hear a stale release. */
+    const forget = () => { heldKeys.clear(); heldButtons = 0; };
     const session = new WindowStreamSession(windowStreamUrl(src, window.location), {
       openSocket: openSocket ?? ((url) => new WebSocket(url)),
       decode: decodeJpeg,
       draw: (bitmap, frame) => drawInto(canvas, bitmap, frame),
-      view: setView,
+      view: (next) => {
+        if (next.status !== 'live') forget();
+        setView(next);
+      },
     });
-    const held = new Set<string>();
     const size = () => ({ width: canvas.width, height: canvas.height });
+    const buttonsTo = (mask: number) => {
+      for (const input of buttonChanges(heldButtons, mask)) session.send(input);
+      heldButtons = mask;
+    };
+    const releaseButtons = () => buttonsTo(0);
+    const releaseAll = () => {
+      for (const code of heldKeys) session.send({ type: 'key', code, pressed: false });
+      heldKeys.clear();
+      releaseButtons();
+    };
+    /* Every pointer event carries the full `buttons` mask; a chord's second button arrives on `pointermove`. */
     const pointer = (event: PointerEvent) => {
+      if (!session.isLive()) return;
       const { x, y } = toWindowPoint(event.clientX, event.clientY, canvas.getBoundingClientRect(), size());
       session.send({ type: 'pointer', x, y });
+      buttonsTo(event.buttons);
     };
     const press = (event: PointerEvent) => {
       canvas.focus();
-      canvas.setPointerCapture(event.pointerId);
+      if (!session.isLive()) return;
       event.preventDefault();
+      try { canvas.setPointerCapture(event.pointerId); } catch { /* the pointer is no longer active */ }
       pointer(event);
-      session.send({ type: 'button', button: event.button, pressed: true });
-    };
-    const release = (event: PointerEvent) => {
-      pointer(event);
-      session.send({ type: 'button', button: event.button, pressed: false });
     };
     const wheel = (event: WheelEvent) => {
+      if (!session.isLive()) return;
       event.preventDefault();
       const { dx, dy } = toWindowWheel(event, canvas.getBoundingClientRect(), size());
       session.send({ type: 'wheel', dx, dy });
     };
+    /* Keys are taken only while live: a dead block must not trap Tab or swallow page keys. */
     const key = (pressed: boolean) => (event: KeyboardEvent) => {
+      if (!session.isLive()) return;
       event.preventDefault();
       if (event.repeat || event.code === '') return;
-      if (pressed) held.add(event.code); else held.delete(event.code);
+      if (pressed) heldKeys.add(event.code); else heldKeys.delete(event.code);
       session.send({ type: 'key', code: event.code, pressed });
     };
     const keyDown = key(true);
     const keyUp = key(false);
-    const blur = () => {
-      for (const code of held) session.send({ type: 'key', code, pressed: false });
-      held.clear();
-    };
-    const menu = (event: Event) => event.preventDefault();
-    canvas.addEventListener('pointermove', pointer);
-    canvas.addEventListener('pointerdown', press);
-    canvas.addEventListener('pointerup', release);
-    canvas.addEventListener('wheel', wheel, { passive: false });
-    canvas.addEventListener('keydown', keyDown);
-    canvas.addEventListener('keyup', keyUp);
-    canvas.addEventListener('blur', blur);
-    canvas.addEventListener('contextmenu', menu);
+    const menu = (event: Event) => { if (session.isLive()) event.preventDefault(); };
+    const listeners: ReadonlyArray<readonly [string, EventListener, AddEventListenerOptions?]> = [
+      ['pointermove', pointer as EventListener],
+      ['pointerdown', press as EventListener],
+      ['pointerup', pointer as EventListener],
+      ['pointercancel', releaseButtons],
+      ['lostpointercapture', releaseButtons],
+      ['blur', releaseAll],
+      ['wheel', wheel as EventListener, { passive: false }],
+      ['keydown', keyDown as EventListener],
+      ['keyup', keyUp as EventListener],
+      ['contextmenu', menu],
+    ];
+    for (const [type, listener, options] of listeners) canvas.addEventListener(type, listener, options);
     session.start();
     return () => {
       session.stop();
-      canvas.removeEventListener('pointermove', pointer);
-      canvas.removeEventListener('pointerdown', press);
-      canvas.removeEventListener('pointerup', release);
-      canvas.removeEventListener('wheel', wheel);
-      canvas.removeEventListener('keydown', keyDown);
-      canvas.removeEventListener('keyup', keyUp);
-      canvas.removeEventListener('blur', blur);
-      canvas.removeEventListener('contextmenu', menu);
+      for (const [type, listener] of listeners) canvas.removeEventListener(type, listener);
     };
   }, [canvas, src, openSocket]);
 

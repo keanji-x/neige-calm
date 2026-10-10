@@ -45,3 +45,5 @@ utoipa = "5"
 
 [dev-dependencies]
 proptest = "1"
+# #2530: runs the published `window` src pattern against the shared fixture.
+regex = "1.12.3"

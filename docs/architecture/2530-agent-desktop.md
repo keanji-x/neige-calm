@@ -110,10 +110,11 @@ three additions are generic, so later plugins can use them.
 
 ### 2.3 Kernel addition 2: `window` Report block
 
-- Payload `{src, title?, height?}`. `src` is a same-origin path under `/api/plugins/{id}/ws/`, validated
-  like the `app` block's `src` (`crates/calm-types/src/report_blocks/kinds.rs:674-684`), and
-  refused if it contains a dot segment, encoded or not (`/../`, `%2e`), because the browser
-  normalizes it. The kind
+- Payload `{src, title?, height?}`. `src` must match one allowlist pattern,
+  `^/api/plugins/<plugin id>/ws/<seg>(/<seg>)*$` with each `<seg>` `[A-Za-z0-9_-]+`, so it holds
+  no byte the browser's URL parser strips, decodes or resolves (dots, `%`, spaces, U+2028, `?`,
+  `#`). The kernel and the frontend use the pattern verbatim, pinned by
+  `test-data/window-src-v1.json`. The kind
   means "a live window that speaks window-stream protocol v1 at `src`". It names no plugin.
 - The fe viewer (`fe/web/src/systems/window-stream/`) opens `ws(s)://<location.host><src>`, so the
   session cookie and origin rules of the page apply. It draws frames on a canvas scaled to fit,

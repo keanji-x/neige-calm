@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  FRAME_HEADER_BYTES, decodeWindowFrame, decodeWindowServerText, encodeWindowInput, toWindowPoint,
+  FRAME_HEADER_BYTES, buttonChanges, decodeWindowFrame, decodeWindowServerText, encodeWindowInput, toWindowPoint,
   toWindowWheel, windowStreamRetryDelay,
 } from './window-stream.js';
 
@@ -92,6 +92,30 @@ describe('canvas to window pixels', () => {
     expect(toWindowWheel({ deltaX: 0, deltaY: 60, deltaMode: 0 }, box, size)).toEqual({ dx: 0, dy: 120 });
     expect(toWindowWheel({ deltaX: 1, deltaY: 3, deltaMode: 1 }, box, size)).toEqual({ dx: 32, dy: 96 });
     expect(toWindowWheel({ deltaX: 0, deltaY: 1, deltaMode: 2 }, box, size)).toEqual({ dx: 0, dy: 800 });
+  });
+
+  it('scrolls a page as one window height or width, whatever the canvas box', () => {
+    // A letterboxed box: 1000 CSS px wide is 2000 window px at scale 0.5, but a page is the window's 1280.
+    const box = { left: 0, top: 0, width: 1000, height: 400 };
+    expect(toWindowWheel({ deltaX: 1, deltaY: 2, deltaMode: 2 }, box, size)).toEqual({ dx: 1280, dy: 1600 });
+  });
+});
+
+describe('buttonChanges', () => {
+  it('turns chorded `buttons` masks into one message per changed button', () => {
+    // Press left, press right, release left, release right: 0 → 1 → 3 → 2 → 0.
+    expect([[0, 1], [1, 3], [3, 2], [2, 0]].flatMap(([from = 0, to = 0]) => buttonChanges(from, to))).toEqual([
+      { type: 'button', button: 0, pressed: true },
+      { type: 'button', button: 2, pressed: true },
+      { type: 'button', button: 0, pressed: false },
+      { type: 'button', button: 2, pressed: false },
+    ]);
+  });
+
+  it('maps every `buttons` bit to its `MouseEvent.button` index', () => {
+    expect(buttonChanges(0, 0b11111).map((input) => input.type === 'button' && input.button)).toEqual([0, 2, 1, 3, 4]);
+    expect(buttonChanges(0b11111, 0).every((input) => input.type === 'button' && !input.pressed)).toBe(true);
+    expect(buttonChanges(5, 5)).toEqual([]);
   });
 });
 

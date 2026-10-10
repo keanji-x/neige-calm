@@ -2,7 +2,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { userEvent } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
 
-import type { WindowSocket } from '../../../systems/window-stream/session.ts';
+import type { WindowSocket } from '../../../systems/window-stream/public.tsx';
 import { ReportWindowBlock } from './public.tsx';
 import '../../../styles/entry.css';
 
@@ -124,4 +124,99 @@ it('draws v1 frames live, sends input as v1 JSON, and dims the last frame under 
   await new Promise((resolve) => setTimeout(resolve, 200));
   expect(isGreen(centrePixel(canvas))).toBe(true);
   expect(getComputedStyle(canvas).opacity).toBe('0.3');
+});
+
+function buttonsSent(socket: ServerSocket): unknown[] {
+  return socket.received.filter((m) => (m as { type: string }).type === 'button');
+}
+
+function pointer(canvas: HTMLCanvasElement, type: string, button: number, buttons: number): void {
+  const box = canvas.getBoundingClientRect();
+  canvas.dispatchEvent(new PointerEvent(type, {
+    bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', button, buttons,
+    clientX: box.left + box.width / 2, clientY: box.top + box.height / 2,
+  }));
+}
+
+function prevented(canvas: HTMLCanvasElement, event: Event): boolean {
+  canvas.dispatchEvent(event);
+  return event.defaultPrevented;
+}
+
+const keyDown = () => new KeyboardEvent('keydown', { bubbles: true, cancelable: true, code: 'Tab', key: 'Tab' });
+const wheel = () => new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 120 });
+
+async function mountLive(): Promise<{ sockets: ServerSocket[]; canvas: HTMLCanvasElement; red: Uint8Array }> {
+  const sockets: ServerSocket[] = [];
+  const openSocket = (url: string) => { const socket = new ServerSocket(url); sockets.push(socket); return socket; };
+  const red = await jpeg('#ff0000');
+  render(<ReportWindowBlock payload={{ src: '/api/plugins/test/ws/s', title: 'Browser' }} stream={{ openSocket }} />);
+  await expect.poll(() => sockets.length).toBe(1);
+  const canvas = screen.getByLabelText(/^Browser: live window/);
+  if (!(canvas instanceof HTMLCanvasElement)) throw new Error('the viewer renders a canvas');
+  canvas.focus();
+  return { sockets, canvas, red };
+}
+
+async function goLive(sockets: ServerSocket[], index: number, frame: Uint8Array): Promise<void> {
+  sockets[index].hello();
+  sockets[index].frame(frame);
+  await expect.poll(() => screen.queryByRole('status')).toBeNull();
+}
+
+it('swallows keys and wheel only while live', async () => {
+  const { sockets, canvas, red } = await mountLive();
+  // Not live yet: Tab and the page's scroll keep working.
+  expect(prevented(canvas, keyDown())).toBe(false);
+  expect(prevented(canvas, wheel())).toBe(false);
+  await goLive(sockets, 0, red);
+  expect(prevented(canvas, keyDown())).toBe(true);
+  expect(prevented(canvas, wheel())).toBe(true);
+  sockets[0].text({ type: 'closed' });
+  await expect.poll(() => screen.queryByRole('status')?.textContent).toBe('unavailable');
+  expect(prevented(canvas, keyDown())).toBe(false);
+  expect(prevented(canvas, wheel())).toBe(false);
+});
+
+it('sends chorded buttons one change at a time and releases held buttons', async () => {
+  const { sockets, canvas, red } = await mountLive();
+  await goLive(sockets, 0, red);
+
+  // Press left, press right, release left, release right: browsers report the chord on pointermove.
+  pointer(canvas, 'pointerdown', 0, 1);
+  pointer(canvas, 'pointermove', 2, 3);
+  pointer(canvas, 'pointermove', 0, 2);
+  pointer(canvas, 'pointerup', 2, 0);
+  expect(buttonsSent(sockets[0])).toEqual([
+    { type: 'button', button: 0, pressed: true },
+    { type: 'button', button: 2, pressed: true },
+    { type: 'button', button: 0, pressed: false },
+    { type: 'button', button: 2, pressed: false },
+  ]);
+
+  // A cancelled pointer, a lost capture and a blur each release whatever is held.
+  for (const end of [
+    () => pointer(canvas, 'pointercancel', 0, 0),
+    () => canvas.dispatchEvent(new PointerEvent('lostpointercapture', { pointerId: 1 })),
+    () => canvas.blur(),
+  ]) {
+    sockets[0].received.length = 0;
+    canvas.focus();
+    pointer(canvas, 'pointerdown', 1, 4);
+    end();
+    expect(buttonsSent(sockets[0])).toEqual([
+      { type: 'button', button: 1, pressed: true },
+      { type: 'button', button: 1, pressed: false },
+    ]);
+  }
+
+  // A button held when the session ends is forgotten: the next session never hears a stale release.
+  canvas.focus();
+  pointer(canvas, 'pointerdown', 0, 1);
+  sockets[0].text({ type: 'closed' });
+  await expect.poll(() => screen.queryByRole('status')?.textContent).toBe('unavailable');
+  await expect.poll(() => sockets.length, { timeout: 3000 }).toBe(2);
+  await goLive(sockets, 1, red);
+  pointer(canvas, 'pointerup', 0, 0);
+  expect(buttonsSent(sockets[1])).toEqual([]);
 });

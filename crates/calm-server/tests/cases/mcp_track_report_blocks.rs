@@ -1236,7 +1236,7 @@ async fn upsert_preview_block_round_trips_its_payload() {
 }
 
 #[tokio::test]
-async fn upsert_window_block_round_trips_and_refuses_a_dot_segment() {
+async fn upsert_window_block_round_trips_and_refuses_a_src_off_the_allowlist() {
     let boot = boot().await;
     let payload = json!({ "src": "/api/plugins/desktop/ws/apps/chrome/stream", "title": "Chrome" });
     upsert_block(
@@ -1255,9 +1255,9 @@ async fn upsert_window_block_round_trips_and_refuses_a_dot_segment() {
         json!({ "kind": "window", "payload": { "src": "/api/plugins/desktop/ws/%2e%2e/x" } }),
     )
     .await
-    .expect_err("dot segment");
+    .expect_err("encoded dot segment");
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
-    assert!(err.message.contains("dot segment"), "{err:?}");
+    assert!(err.message.contains("src: required path"), "{err:?}");
     assert_eq!(current_payload(&boot).await, stored);
 }
 

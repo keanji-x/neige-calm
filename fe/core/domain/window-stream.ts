@@ -116,14 +116,34 @@ const DOM_DELTA_LINE = 1;
 const DOM_DELTA_PAGE = 2;
 const LINE_HEIGHT_PX = 16;
 
-/** A wheel event's deltas as window pixels: lines and pages become CSS pixels, then scale like a point. */
+/**
+ * A wheel event's deltas as window pixels. Pixels and lines (16 CSS px) scale like a point; a page
+ * is one window width or height, whatever the canvas box.
+ */
 export function toWindowWheel(
   delta: Readonly<{ deltaX: number; deltaY: number; deltaMode: number }>, box: CanvasBox, size: WindowSize,
 ): Readonly<{ dx: number; dy: number }> {
+  if (delta.deltaMode === DOM_DELTA_PAGE) return { dx: delta.deltaX * size.width, dy: delta.deltaY * size.height };
   const { scale } = fitted(box, size);
-  const unitX = delta.deltaMode === DOM_DELTA_LINE ? LINE_HEIGHT_PX : delta.deltaMode === DOM_DELTA_PAGE ? box.width : 1;
-  const unitY = delta.deltaMode === DOM_DELTA_LINE ? LINE_HEIGHT_PX : delta.deltaMode === DOM_DELTA_PAGE ? box.height : 1;
-  return { dx: (delta.deltaX * unitX) / scale, dy: (delta.deltaY * unitY) / scale };
+  const unit = delta.deltaMode === DOM_DELTA_LINE ? LINE_HEIGHT_PX : 1;
+  return { dx: (delta.deltaX * unit) / scale, dy: (delta.deltaY * unit) / scale };
+}
+
+/** `PointerEvent.buttons` bits, in bit order, with the `MouseEvent.button` index each one is. */
+const BUTTON_BITS = Object.freeze([
+  Object.freeze([0b00001, 0]), Object.freeze([0b00010, 2]), Object.freeze([0b00100, 1]),
+  Object.freeze([0b01000, 3]), Object.freeze([0b10000, 4]),
+] as const);
+
+/**
+ * The `button` messages that take the window from one `buttons` mask to the next, one per changed
+ * button. Browsers report a second button of a chord on `pointermove`, not `pointerdown`, so the
+ * mask is the only complete record of what is held.
+ */
+export function buttonChanges(previous: number, next: number): WindowInput[] {
+  return BUTTON_BITS
+    .filter(([bit]) => (previous & bit) !== (next & bit))
+    .map(([bit, button]) => ({ type: 'button', button, pressed: (next & bit) !== 0 }));
 }
 
 const FIRST_RETRY_MS = 500;

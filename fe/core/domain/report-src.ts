@@ -1,5 +1,6 @@
-// The `src`/`path` rules of the blocks that load a same-origin URL. The bounds mirror the kernel's
-// validators in `calm_types::report_blocks`, so a payload the kernel accepts is exactly one this renders.
+// The `src`/`path` rules of the report blocks that load a URL on this origin: `app` and `preview`
+// take any same-origin path (the renderer re-checks the origin); `window` takes only the kernel's
+// allowlisted plugin socket path. A payload the kernel accepts is exactly one this renders.
 
 import { z } from 'zod';
 import { max2048CodePoints } from './report-table.js';
@@ -22,13 +23,18 @@ export function sameOriginPath() {
 }
 
 /**
- * The `window` block's `src` (#2530): `/api/plugins/{plugin id}/ws/{path}` with a non-empty path,
- * no query, no fragment, and no dot segment in any spelling (`.`, `..`, `%2e`, `.%2E`, …), because
- * the browser resolves dot segments away before it opens the socket. The kernel's
- * `WINDOW_SRC_PATTERN` is this expression.
+ * The `window` block's `src` rule (#2530), verbatim the kernel's `WINDOW_SRC_PATTERN`
+ * (`calm_types::report_blocks::window`); `test-data/window-src-v1.json` pins both to the same cases.
+ * An allowlist: every segment is `[A-Za-z0-9_-]+`, so nothing in it is a byte the browser's URL
+ * parser strips, decodes or resolves (spaces, U+2028, dots, `%`, backslash, `?`, `#`).
  */
-const WINDOW_SRC_PATTERN = /^(?!.*\/(?:\.|%2[eE]){1,2}(?:\/|$))\/api\/plugins\/[a-z0-9][a-z0-9.-]{1,63}\/ws\/[^?#\\]+$/;
+export const WINDOW_SRC_PATTERN = '^/api/plugins/[a-z0-9][a-z0-9.-]{1,63}/ws/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*$';
+
+/** A fresh matcher of [`WINDOW_SRC_PATTERN`]: no flags, so `$` is the end of the input. */
+export function windowSrcRegex(): RegExp {
+  return new RegExp(WINDOW_SRC_PATTERN);
+}
 
 export function windowStreamSrc() {
-  return sameOriginPath().regex(WINDOW_SRC_PATTERN, { message: 'must be a plugin window-stream path' });
+  return max2048CodePoints(z.string().regex(windowSrcRegex(), { message: 'must be a plugin window-stream path' }));
 }
