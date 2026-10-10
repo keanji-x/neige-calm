@@ -21,6 +21,7 @@ import { type ReportLinkPreviewResources } from '../link-preview/public.tsx';
 import { ReportDetails } from './details.tsx';
 import { revealReportAnchor } from '../anchor/public.ts';
 import { ReportAppBlock } from '../app/public.tsx';
+import { ReportWindowBlock } from '../window/public.tsx';
 import { ReportCandlesBlock } from '../candles/public.tsx';
 import { ReportPreviewBlock, type PreviewViewportStore } from '../preview/public.tsx';
 import { ReportSeriesBlock } from '../series/public.tsx';
@@ -271,6 +272,7 @@ function BlockBody({
     case 'app': return <ReportAppBlock payload={block.payload} />;
     case 'preview': return <ReportPreviewBlock payload={block.payload} resolve={resolvePreview}
       viewports={previewViewports} />;
+    case 'window': return <ReportWindowBlock payload={block.payload} />;
     case 'unsupported':
       return (
         <div className={styles.unsupported} role="note">

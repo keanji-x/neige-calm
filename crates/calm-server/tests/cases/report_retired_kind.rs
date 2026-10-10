@@ -16,7 +16,7 @@ const RETIRED_KIND: &str = "view.live";
 fn unknown_kind_text() -> String {
     format!(
         "unknown block kind `{RETIRED_KIND}` — known data kinds: chart.candles, chart.series, \
-         table, app, task, preview, view"
+         table, app, task, preview, view, window"
     )
 }
 

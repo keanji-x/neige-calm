@@ -262,7 +262,12 @@ pub(super) fn kinds_table() -> Value {
     kinds["kinds"]
         .as_array_mut()
         .expect("kinds array literal")
-        .extend([task_kind(), preview_kind(), native_view_kind()]);
+        .extend([
+            task_kind(),
+            preview_kind(),
+            native_view_kind(),
+            window_kind(),
+        ]);
     kinds
 }
 
@@ -413,6 +418,24 @@ fn preview_kind() -> Value {
              offline or not-registered placeholder until a dev server \
              is registered under that key and answering, and is \
              viewable over LAN http only."
+    })
+}
+
+/// Keep this schema in sync with `report_blocks::validate_payload`'s window validation.
+fn window_kind() -> Value {
+    json!({
+        "kind": "window",
+        "schema": {
+            "type": "object",
+            "required": ["src"],
+            "additionalProperties": false,
+            "properties": {
+                "src": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": report_blocks::window::WINDOW_SRC_PATTERN, "description": "`/api/plugins/{id}/ws/{path}` from the serving plugin's tool; path segments are `[A-Za-z0-9_-]+`." },
+                "title": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS },
+                "height": { "type": "number", "minimum": 120, "maximum": 2000, "description": "Viewer height in px (default chosen by the renderer)." }
+            }
+        },
+        "usage": include_str!("../../../../prompts/report-kinds/window.md").trim_end()
     })
 }
 

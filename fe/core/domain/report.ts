@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { max2048CodePoints, inlineTableBlockPayloadSchema } from './report-table.js';
 import { isCalendarDate } from './report-date.js';
 import { nativeViewPayloadSchema, type NativeViewPayload } from './report-view.js';
+import { sameOriginPath, windowStreamSrc } from './report-src.js';
 export { inlineTableBlockPayloadSchema } from './report-table.js';
 export { isCalendarDate } from './report-date.js';
 
@@ -87,23 +88,6 @@ export const tableBlockPayloadSchema = z.union([
   inlineTableBlockPayloadSchema,
 ]);
 
-/**
- * A same-origin absolute path: a leading `/`, not `//`, and no backslashes (browsers normalize `\`
- * to `/` inside a URL). The `app` renderer re-asserts the origin: two checks for the one block that
- * loads someone else's markup.
- */
-function sameOriginPath() {
-  return max2048CodePoints(z.string()
-  .regex(/^\/(?!\/)[^\\]*$/, { message: 'must be a same-origin absolute path' })
-  .refine((value) => {
-    for (let index = 0; index < value.length; index += 1) {
-      const code = value.charCodeAt(index);
-      if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) return false;
-    }
-    return true;
-  }, { message: 'must not contain control characters' }));
-}
-
 export const appBlockPayloadSchema = z.strictObject({
   src: sameOriginPath(),
   title: max2048CodePoints(z.string()).nullish(),
@@ -120,6 +104,13 @@ export const previewBlockPayloadSchema = z.strictObject({
   key: z.string().regex(PREVIEW_KEY_PATTERN),
   title: max2048CodePoints(z.string()).nullish(),
   path: sameOriginPath().nullish(),
+  height: z.number().min(120).max(2000).nullish(),
+});
+
+/** `window` (#2530): a live window that speaks window-stream protocol v1 at `src`; it names no plugin. */
+export const windowBlockPayloadSchema = z.strictObject({
+  src: windowStreamSrc(),
+  title: max2048CodePoints(z.string()).nullish(),
   height: z.number().min(120).max(2000).nullish(),
 });
 
@@ -210,6 +201,7 @@ export function isLiveTablePayload(payload: TableBlockPayload): payload is LiveT
 export type AppBlockPayload = z.infer<typeof appBlockPayloadSchema>;
 export type TaskBlockPayload = z.infer<typeof taskBlockPayloadSchema>;
 export type PreviewBlockPayload = z.infer<typeof previewBlockPayloadSchema>;
+export type WindowBlockPayload = z.infer<typeof windowBlockPayloadSchema>;
 
 /**
  * A block, discriminated by `kind`, with `unsupported` as the closed default. `rev` is carried
@@ -225,6 +217,7 @@ export type ReportBlock =
   | Readonly<{ id: string; kind: 'app'; payload: AppBlockPayload }>
   | Readonly<{ id: string; kind: 'task'; payload: TaskBlockPayload }>
   | Readonly<{ id: string; kind: 'preview'; payload: PreviewBlockPayload }>
+  | Readonly<{ id: string; kind: 'window'; payload: WindowBlockPayload }>
   | Readonly<{ id: string; kind: 'unsupported'; declaredKind: string }>;
 
 const blockWireSchema = z.object({
@@ -246,6 +239,7 @@ function payloadSchemaFor(kind: string): z.ZodType | null {
     case 'app': return appBlockPayloadSchema;
     case 'task': return taskBlockPayloadSchema;
     case 'preview': return previewBlockPayloadSchema;
+    case 'window': return windowBlockPayloadSchema;
     default: return null;
   }
 }

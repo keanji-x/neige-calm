@@ -197,7 +197,8 @@ async fn kinds_returns_all_supported_schemas() {
             "app",
             "task",
             "preview",
-            "view"
+            "view",
+            "window"
         ]
     );
     for kind in kinds {
@@ -359,6 +360,14 @@ async fn kinds_returns_all_supported_schemas() {
             .pointer("/schema/properties/height/minimum")
             .and_then(Value::as_u64),
         Some(120),
+    );
+    let window = &kinds[8];
+    assert_eq!(window.pointer("/schema/required").unwrap(), &json!(["src"]));
+    assert_eq!(
+        window.pointer("/schema/properties/src/pattern"),
+        Some(&json!(
+            calm_types::report_blocks::window::WINDOW_SRC_PATTERN
+        ))
     );
     let task = &kinds[5];
     assert_eq!(
@@ -1224,6 +1233,32 @@ async fn upsert_preview_block_round_trips_its_payload() {
     let stored = current_payload(&boot).await;
     let fence = calm_types::report_blocks::render_fence("preview", &payload);
     assert_eq!(stored.body, format!("{}{fence}", seed_body()));
+}
+
+#[tokio::test]
+async fn upsert_window_block_round_trips_and_refuses_a_src_off_the_allowlist() {
+    let boot = boot().await;
+    let payload = json!({ "src": "/api/plugins/desktop/ws/apps/chrome/stream", "title": "Chrome" });
+    upsert_block(
+        &boot,
+        planner_identity(&boot),
+        json!({ "kind": "window", "payload": payload }),
+    )
+    .await
+    .expect("window upsert succeeds");
+    let stored = current_payload(&boot).await;
+    let fence = calm_types::report_blocks::render_fence("window", &payload);
+    assert_eq!(stored.body, format!("{}{fence}", seed_body()));
+    let err = upsert_block(
+        &boot,
+        planner_identity(&boot),
+        json!({ "kind": "window", "payload": { "src": "/api/plugins/desktop/ws/%2e%2e/x" } }),
+    )
+    .await
+    .expect_err("encoded dot segment");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert!(err.message.contains("src: required path"), "{err:?}");
+    assert_eq!(current_payload(&boot).await, stored);
 }
 
 #[tokio::test]
