@@ -144,7 +144,6 @@ pub async fn wire(
         events,
         write,
         Arc::new(CodexClient::new_stub()),
-        daemon.clone(),
         renderer.clone(),
         None,
         harness.clone(),

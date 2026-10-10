@@ -39,7 +39,6 @@ pub fn spawn_dispatcher_with_harness(fx: &Fixture) -> Dispatcher {
         fx.events.clone(),
         fx.write.clone(),
         fx.codex.clone(),
-        fx.daemon.clone(),
         fx.renderer.clone(),
         Some(fx.server.clone()),
         fx.harness.clone(),

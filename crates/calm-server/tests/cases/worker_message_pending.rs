@@ -54,16 +54,56 @@ async fn release_then_next_lands(h: &Harness, f: &Fixture, held: &Held, first: &
 async fn message_held_past_its_budget_lands_once_and_fences_the_next() {
     let h = Harness::start().await;
     let f = running(&h, "claude", true, false).await;
+    // Control for the typed input below, claimed before admission is held.
+    h.ok(
+        "neige_terminal_control",
+        json!({"attempt_id":f.worker.task,"action":"claim"}),
+    )
+    .await;
     let (held, _entered) = hold_next_message_write(&h);
     let reply = message(&h, json!({"attempt_id":f.worker.task}), "held", "held").await;
     assert!(reply.get("error").is_none(), "{reply}");
     assert_eq!(reply["result"]["structuredContent"]["outcome"], "unknown");
     let next = message(&h, json!({"attempt_id":f.worker.task}), "next", "next").await;
     assert_refusal(&next, -32403, None, UNRESOLVED);
+    // Typed input on a fresh observation is fenced by the same unresolved message.
+    let typed = |key: &'static str| {
+        let h = &h;
+        let task = f.worker.task.clone();
+        async move {
+            let view = h
+                .ok(
+                    "neige_terminal_read",
+                    json!({"attempt_id":task,"wait_ms":50}),
+                )
+                .await;
+            h.call(
+                "neige_terminal_input",
+                json!({"attempt_id":task,"observation_id":view["observation_id"],
+                    "idempotency_key":key,"action":{"type":"text","text":"keys"}}),
+            )
+            .await
+        }
+    };
+    assert_refusal(&typed("fenced").await, -32403, None, UNRESOLVED);
     // The same key still replays its receipt.
     let replay = message(&h, json!({"attempt_id":f.worker.task}), "held", "held").await;
     assert_eq!(replay["result"]["structuredContent"]["outcome"], "unknown");
     release_then_next_lands(&h, &f, &held, &expected(&f.worker.task, "held")).await;
+    // Settled: typed input writes again, and only now.
+    let written_keys = typed("keys").await;
+    assert_eq!(
+        written_keys["result"]["structuredContent"]["outcome"], "written",
+        "{written_keys}"
+    );
+    assert_eq!(
+        wait_for_reads(&f.log, 3).await,
+        vec![
+            expected(&f.worker.task, "held"),
+            expected(&f.worker.task, "after"),
+            b"keys".to_vec()
+        ]
+    );
     stop(&h, &f.worker).await;
 }
 

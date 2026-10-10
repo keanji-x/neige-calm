@@ -337,7 +337,6 @@ pub(super) fn spawn_dispatcher(
         boot.ctx.events.clone(),
         boot.ctx.write.clone(),
         Arc::new(CodexClient::new_stub()),
-        daemon,
         terminal_renderer,
         None,
         harness.clone(),
