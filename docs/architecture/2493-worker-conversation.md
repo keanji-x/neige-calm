@@ -216,13 +216,13 @@ grep` for `spawn_op_id` reads, `worker_op_targets`, `WORKER_SPAWN_OPS`,
 implemented in `provider::worker`, registered in `calm-server/src/provider_registry.rs:28-58`:
 
 ```rust
-pub struct TuiInput { pub message: MessageDelivery, pub keys_while_bound: BoundKeys }
-pub enum MessageDelivery { BracketedPasteSubmit, Unsupported }
+pub enum TuiInput { BracketedPasteSubmit { keys_while_bound: BoundKeys }, KeysOnly }
 pub enum BoundKeys { Accepted, Refused }
 ```
 
-Codex `{BracketedPasteSubmit, Refused}`, Claude `{BracketedPasteSubmit, Accepted}`, terminal and
-managed `{Unsupported, Accepted}`. No dialog check: Codex task threads run `approval_policy:
+Codex `BracketedPasteSubmit { Refused }`, Claude `BracketedPasteSubmit { Accepted }`, terminal and
+managed `KeysOnly`. Keys are refused only beside a message delivery (#2528), so a keys-refused
+worker always takes `message`. No dialog check: Codex task threads run `approval_policy:
 "never"` (`shared_codex_appserver.rs:956`), `waitingOnUserInput` is unobserved, and Claude has no
 sound signal (KNOWN GAP). `keys_while_bound` replaces
 `card.kind == "codex"` (`target.rs:216`). Narrowing: the first release serves the existing
@@ -256,7 +256,7 @@ returns `Refused(reason)` (proven before any byte, including a handshake closed 
 **Preconditions,** checked before the write; a refusal writes nothing:
 
 1. `may_write_tx(session, attempt)` = Allowed (§2).
-2. `message ≠ Unsupported` for the session's provider.
+2. The session's provider declares a message delivery (not `KeysOnly`).
 3. Terminal live and readable: renderer entry present, `observable()`, not exited (as
    `neige_terminal_show`'s `available`, `target.rs:268-279`), and DECSET 2004 bracketed paste on
    (`MODE_BRACKETPASTE` in `InputSurface.modes`, `calm-terminal-view/src/lib.rs:59-67`). This is the
@@ -314,7 +314,7 @@ validator beside `validate_task_start` (`task_execution.rs:138-178`), the block 
 (`track_report_blocks/contracts.rs:377-382`), projection (`task_projection.rs:874-878`,
 `:1643-1686`), column `tasks.continues TEXT NULL`, `neige_task_ls` (`plan/list.rs:102`), CLI
 render. Allowed kinds: the closed set {codex, claude} in calm-types, pinned by a calm-server test
-to the task kinds whose provider declares `message ≠ Unsupported`. Rejected: `depends_on` (requires
+to the task kinds whose provider declares a message delivery. Rejected: `depends_on` (requires
 `done`; a gate-red predecessor is `failed`), `resume` (Claude's meaning).
 
 | Stage | Rule | Where |

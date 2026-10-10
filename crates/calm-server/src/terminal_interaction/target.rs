@@ -124,7 +124,7 @@ impl Resolved {
     /// Whether typed keys and a control claim are accepted: a task worker whose provider refuses
     /// keys while bound takes only `message`.
     pub(super) fn keys_refused(&self, tui: TuiInput) -> Option<InputRefused> {
-        (self.binding.task.is_some() && tui.keys_while_bound == BoundKeys::Refused).then(|| {
+        (self.binding.task.is_some() && tui.keys_while_bound() == BoundKeys::Refused).then(|| {
             InputRefused {
                 refusal: "worker_keys_refused",
                 message: WORKER_KEYS_REFUSED.replace("{provider}", self.provider.as_db_str()),

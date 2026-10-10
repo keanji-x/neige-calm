@@ -33,16 +33,6 @@ impl SpawnCtx {
     }
 }
 
-/// How the kernel may put a message into this provider's terminal UI (#2493).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MessageDelivery {
-    /// One bracketed paste of the message, then Enter: a new turn when idle, a steer or a queued
-    /// message while a turn runs.
-    BracketedPasteSubmit,
-    /// The terminal runs no agent conversation that takes a message.
-    Unsupported,
-}
-
 /// Whether typed keys (`text`, `submit`, `key`, `sequence`, a control claim) are accepted while
 /// the terminal serves a task attempt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,11 +42,31 @@ pub enum BoundKeys {
     Refused,
 }
 
-/// The terminal-input declaration of a worker provider (#2493).
+/// The terminal-input declaration of a worker provider (#2493): how the kernel may put a message
+/// into its terminal UI, and whether typed keys are accepted while bound. Keys are refused only
+/// beside a message delivery, so a bound worker always keeps one way to take input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TuiInput {
-    pub message: MessageDelivery,
-    pub keys_while_bound: BoundKeys,
+pub enum TuiInput {
+    /// One bracketed paste of the message, then Enter: a new turn when idle, a steer or a queued
+    /// message while a turn runs.
+    BracketedPasteSubmit { keys_while_bound: BoundKeys },
+    /// The terminal runs no agent conversation that takes a message; typed keys are accepted.
+    KeysOnly,
+}
+
+impl TuiInput {
+    /// Whether the kernel can deliver a message.
+    pub fn takes_message(self) -> bool {
+        matches!(self, Self::BracketedPasteSubmit { .. })
+    }
+
+    /// Whether typed keys are accepted while the terminal serves a task attempt.
+    pub fn keys_while_bound(self) -> BoundKeys {
+        match self {
+            Self::BracketedPasteSubmit { keys_while_bound } => keys_while_bound,
+            Self::KeysOnly => BoundKeys::Accepted,
+        }
+    }
 }
 
 /// Owns a worker session after spawn: liveness, exit interpretation, and resume.

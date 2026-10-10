@@ -7,7 +7,7 @@ use super::operations::cache;
 use super::target::{InputRefused, Resolved, refused};
 use super::*;
 use crate::terminal_renderer::{RendererEntry, WriteShape};
-use calm_exec::{MessageDelivery, TuiInput};
+use calm_exec::TuiInput;
 
 /// Cap on the header, its newline and the text (the probe's 7,999-byte paste arrived byte-exact
 /// on both TUIs).
@@ -72,7 +72,7 @@ pub fn encode_message(attempt_id: &str, text: &str) -> Result<Vec<u8>, MessageIn
 /// The message rule, before the write and again when the writer admits it: a task worker whose
 /// provider declares message delivery, under the shared write rule ([`Resolved::write_refusal`]).
 fn message_refusal(resolved: &Resolved, tui: TuiInput, providers: &str) -> Option<InputRefused> {
-    if resolved.binding.task.is_none() || tui.message == MessageDelivery::Unsupported {
+    if resolved.binding.task.is_none() || !tui.takes_message() {
         return Some(refused(
             "message_unsupported",
             format!(
@@ -116,7 +116,7 @@ impl TerminalInteraction {
         self.providers
             .tui_inputs()
             .into_iter()
-            .filter(|(_, tui)| tui.message != MessageDelivery::Unsupported)
+            .filter(|(_, tui)| tui.takes_message())
             .map(|(kind, _)| kind.as_db_str())
             .collect::<Vec<_>>()
             .join(", ")

@@ -97,10 +97,7 @@ impl WorkerProvider for FakeProvider {
     }
 
     fn tui_input(&self) -> calm_exec::TuiInput {
-        calm_exec::TuiInput {
-            message: calm_exec::MessageDelivery::Unsupported,
-            keys_while_bound: calm_exec::BoundKeys::Accepted,
-        }
+        calm_exec::TuiInput::KeysOnly
     }
 
     async fn probe_liveness(

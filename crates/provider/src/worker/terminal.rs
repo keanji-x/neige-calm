@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use calm_exec::{BoundKeys, MessageDelivery, SpawnCtx, TuiInput, WorkerProvider};
+use calm_exec::{SpawnCtx, TuiInput, WorkerProvider};
 use calm_types::error::CoreError;
 use calm_types::worker::{
     ExitEvidence, ExitInterpretation, ExitSource, Liveness, SessionMode, WorkerSession,
@@ -34,10 +34,7 @@ impl WorkerProvider for TerminalProvider {
 
     /// No agent conversation to message; typed keys are accepted.
     fn tui_input(&self) -> TuiInput {
-        TuiInput {
-            message: MessageDelivery::Unsupported,
-            keys_while_bound: BoundKeys::Accepted,
-        }
+        TuiInput::KeysOnly
     }
 
     async fn probe_liveness(
@@ -150,5 +147,14 @@ mod tests {
         assert!(!reason.contains("-1"));
         assert!(reason.contains("outcome unknown"));
         assert!(reason.contains("supervisor probe"));
+    }
+
+    /// No message delivery, so keys are accepted: `TuiInput` cannot refuse keys without one.
+    #[test]
+    fn terminal_declares_keys_only() {
+        let tui = TerminalProvider::new("/tmp/fake-supervisor.sock").tui_input();
+        assert_eq!(tui, TuiInput::KeysOnly);
+        assert!(!tui.takes_message());
+        assert_eq!(tui.keys_while_bound(), calm_exec::BoundKeys::Accepted);
     }
 }
