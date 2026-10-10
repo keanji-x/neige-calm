@@ -5,6 +5,7 @@ import { agentProviderSchema } from '../api/schemas.js';
 import { groupPanelRows } from './panel-groups.js';
 import { cardActivityOf, cardActivityState, type CardActivity } from '../domain/activity.js';
 import { boundedStatusDetail, type ReportTaskRow } from '../domain/report.js';
+import { attemptStatusLabel } from '../domain/task-recovery.js';
 import type { CardWire } from '../domain/track.js';
 import type { PanelRow, RowAction, RowBadge, RowModuleView, RowStatus, TrackPageView } from './panel.js';
 
@@ -65,6 +66,38 @@ function taskWorkerCardId(task: ReportTaskRow): string | null {
   return task.execution === undefined ? task.workerCardId : task.execution.workerCardId;
 }
 
+/** The current attempt's status: the loaded execution history when there is one, else the report's verdict. */
+function taskCurrentStatus(task: ReportTaskRow): string | null {
+  return task.execution?.status ?? task.status;
+}
+
+/**
+ * The attempt statuses whose worker the kernel refuses agent input as `worker_parked`
+ * (`terminal_interaction/target.rs` `Resolved::write_refusal`). An allowlist, so an unknown status stays silent.
+ */
+const PARKED_ATTEMPT_STATUSES: readonly string[] = Object.freeze(['verifying', 'done', 'failed', 'canceled']);
+
+/**
+ * The one-line state each task worker card shows while its current attempt is parked, keyed by worker card.
+ * A display only: a person's keys still reach the terminal (#2526). A card a task names with any other status
+ * (running, or still starting) gets none, and so does a card no task names — a plain or Planner-opened terminal.
+ */
+export function parkedWorkerNotices(tasks: readonly ReportTaskRow[]): ReadonlyMap<string, string> {
+  const notices = new Map<string, string>();
+  const unparked = new Set<string>();
+  for (const task of tasks) {
+    const cardId = taskWorkerCardId(task);
+    const status = taskCurrentStatus(task);
+    if (cardId === null || status === null) continue;
+    if (!PARKED_ATTEMPT_STATUSES.includes(status)) unparked.add(cardId);
+    else if (!notices.has(cardId)) {
+      notices.set(cardId, `${attemptStatusLabel(status)} — this attempt has ended; input typed here belongs to no task.`);
+    }
+  }
+  for (const cardId of unparked) notices.delete(cardId);
+  return notices;
+}
+
 /**
  * The Tasks module. `declaration` and `status` are read independently — precedence is
  * `deriveReportTasks`' ruling upstream. The worker control needs `kind !== null`, a worker card AND
@@ -73,7 +106,7 @@ function taskWorkerCardId(task: ReportTaskRow): string | null {
  */
 function taskRow(task: ReportTaskRow, activity: TrackPageActivity, openableCards: ReadonlySet<string>): PanelRow {
   const workerCardId = taskWorkerCardId(task);
-  const currentStatus = task.execution?.status ?? task.status;
+  const currentStatus = taskCurrentStatus(task);
   const badges: RowBadge[] = task.execution === undefined && task.declaration !== null
     ? [{ id: 'declaration', text: task.declaration, struck: task.state === 'withdrawn' }]
     : [];
