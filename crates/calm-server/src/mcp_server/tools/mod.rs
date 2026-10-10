@@ -193,7 +193,8 @@ mod tests {
         // measured 30,884.
         // #2493: action `message` (schema +10, description +44) was paid for by restated wait
         // argument names (open) and schema facts (read); the measured 30,860 is the cap.
-        const SURFACE_MAX_BYTES: usize = 30_860;
+        // #2528: the input replay contract, written once, saved 11 bytes; the cap is 30,849.
+        const SURFACE_MAX_BYTES: usize = 30_849;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);
