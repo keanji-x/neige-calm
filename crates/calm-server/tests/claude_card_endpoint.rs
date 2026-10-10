@@ -513,6 +513,12 @@ async fn post_claude_card_no_prompt_succeeds_through_saga() {
     let term = boot.repo.terminal_get(terminal_id).await.unwrap().unwrap();
     assert_eq!(term.cwd, "/workspace");
     assert!(!term.program.contains(" -- '"));
+    // #2521: the kernel names a mode for task workers only; an owner card keeps bypass selectable.
+    assert!(
+        term.program
+            .contains(" --allow-dangerously-skip-permissions ")
+    );
+    assert!(!term.program.contains("--permission-mode"));
 }
 
 #[tokio::test]
@@ -618,6 +624,15 @@ async fn post_claude_restart_after_exit_reuses_terminal_and_resumes_session() {
         !restart_call.program.contains("--strict-mcp-config")
             && !restart_call.program.contains("--mcp-config"),
         "an owner's Claude card keeps the owner's MCP servers: {}",
+        restart_call.program
+    );
+    // #2521: and its own permission mode, with bypass selectable.
+    assert!(
+        restart_call
+            .program
+            .contains(" --allow-dangerously-skip-permissions ")
+            && !restart_call.program.contains("--permission-mode"),
+        "{}",
         restart_call.program
     );
     assert!(restart_call.env.get("NEIGE_MCP_TOKEN").is_none());
