@@ -196,6 +196,7 @@ impl Harness {
             .set(Arc::new(TerminalInteraction::new(
                 repo.clone(),
                 state.terminal_renderer.clone(),
+                state.dispatcher.provider_registry(),
             )))
             .ok()
             .unwrap();

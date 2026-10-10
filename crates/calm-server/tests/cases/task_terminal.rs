@@ -207,7 +207,7 @@ async fn each_task_kind_resolves_and_observes_and_writable_kinds_input_their_own
             );
         }
         if kind == "codex" {
-            // A codex task Worker is read-only (#1784; codex_worker_terminal_input).
+            // A codex task Worker takes only `message` (#1784, #2493; worker_message).
             stop(&h, &w).await;
             continue;
         }

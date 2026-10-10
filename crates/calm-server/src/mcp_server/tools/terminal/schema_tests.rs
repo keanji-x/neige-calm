@@ -246,7 +246,7 @@ fn input_schema_lists_only_live_actions() {
     assert_eq!(
         live,
         [
-            json!({"enum":["text","submit"]}),
+            json!({"enum":["text","submit","message"]}),
             json!({"const":"key"}),
             json!({"const":"sequence"}),
         ],
@@ -255,7 +255,7 @@ fn input_schema_lists_only_live_actions() {
     for (action, kind, properties, mandatory) in [
         (
             &actions[0],
-            json!(["text", "submit"]),
+            json!(["text", "submit", "message"]),
             vec!["type", "text"],
             vec!["type", "text"],
         ),

@@ -1,6 +1,8 @@
 //! Resolve the real execution binding; never follow a replacement implicitly.
 use super::*;
 use crate::model::{Task, TaskKind, TaskStatus};
+use calm_exec::{BoundKeys, TuiInput};
+use calm_types::worker::{WorkerProviderKind, WorkerSessionState};
 use serde::Serialize;
 
 #[derive(Clone, Debug)]
@@ -44,38 +46,45 @@ impl Binding {
             .expect("serializable terminal binding")
     }
 }
-/// Typing into a codex task Worker's remote TUI interrupts its turn and starts no replacement
-/// turn (#1782), so an agent's input and claim on that card are refused (#1784).
-const CODEX_TASK_WORKER_INPUT_REFUSED: &str =
-    include_str!("../../prompts/terminal/codex-task-worker-input-refused.md");
+/// Typed keys into a task worker whose provider refuses them while bound (a codex remote TUI
+/// interrupts its turn and starts none, #1782); `{provider}` is the worker's provider.
+const WORKER_KEYS_REFUSED: &str = include_str!("../../prompts/terminal/worker-keys-refused.md");
 
-/// The typed refusal behind [`CODEX_TASK_WORKER_INPUT_REFUSED`].
+/// A refusal decided before any connection, claim or byte: `data.refusal` names it (#2493).
 #[derive(Debug)]
-pub struct CodexTaskWorkerInputRefused;
-impl std::fmt::Display for CodexTaskWorkerInputRefused {
+pub struct InputRefused {
+    pub refusal: &'static str,
+    pub message: String,
+}
+impl std::fmt::Display for InputRefused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(CODEX_TASK_WORKER_INPUT_REFUSED)
+        f.write_str(&self.message)
     }
 }
-impl std::error::Error for CodexTaskWorkerInputRefused {}
+impl std::error::Error for InputRefused {}
 
 pub(crate) struct Resolved {
     pub binding: Binding,
-    pub controllable: bool,
+    /// The write rule: the card's current worker session holds live authority and its task (if
+    /// any) is running. Per-action rules (typed keys, `message`) come on top of it.
+    pub write_allowed: bool,
     /// The card's current worker session still holds live authority (not exited or failed).
     pub session_active: bool,
+    pub session_state: WorkerSessionState,
+    pub provider: WorkerProviderKind,
     pub task_status: Option<TaskStatus>,
     pub card_kind: String,
-    /// A codex card bound to a task execution: observable, never writable.
-    pub codex_task_worker: bool,
 }
 impl Resolved {
-    /// Checked before any connection or claim, so a refused input writes no byte.
-    pub(super) fn ensure_accepts_input(&self) -> Result<()> {
-        if self.codex_task_worker {
-            return Err(CodexTaskWorkerInputRefused.into());
-        }
-        Ok(())
+    /// Whether typed keys and a control claim are accepted: a task worker whose provider refuses
+    /// keys while bound takes only `message`.
+    pub(super) fn keys_refused(&self, tui: TuiInput) -> Option<InputRefused> {
+        (self.binding.task.is_some() && tui.keys_while_bound == BoundKeys::Refused).then(|| {
+            InputRefused {
+                refusal: "worker_keys_refused",
+                message: WORKER_KEYS_REFUSED.replace("{provider}", self.provider.as_db_str()),
+            }
+        })
     }
 }
 
@@ -223,10 +232,8 @@ impl TerminalInteraction {
             }
             None => None,
         };
-        let codex_task_worker = card.kind == "codex" && task.is_some();
         let session_active = session.state.is_active_authority();
-        let controllable = session_active
-            && !codex_task_worker
+        let write_allowed = session_active
             && task
                 .as_ref()
                 .is_none_or(|task| task.status == TaskStatus::Running);
@@ -240,11 +247,12 @@ impl TerminalInteraction {
                     task_key: task.key.clone(),
                 }),
             },
-            controllable,
+            write_allowed,
             session_active,
+            session_state: session.state,
+            provider: session.provider,
             task_status: task.map(|task| task.status),
             card_kind: card.kind,
-            codex_task_worker,
         })
     }
     /// Re-resolve `expected.terminal_id` and return the current resolution
@@ -266,14 +274,32 @@ impl TerminalInteraction {
             &current.binding == expected,
             "terminal task/session binding changed; show and read again"
         );
-        if write {
-            current.ensure_accepts_input()?;
-        }
         ensure!(
-            !write || current.controllable,
+            !write || current.write_allowed,
             "task or worker session is not running; terminal control refused"
         );
         Ok(current)
+    }
+    /// The provider's input declaration for a resolved terminal.
+    pub(super) fn tui_input(&self, resolved: &Resolved) -> Result<TuiInput> {
+        self.providers.tui_input(resolved.provider).ok_or_else(|| {
+            anyhow::anyhow!(
+                "worker provider {} is not registered",
+                resolved.provider.as_db_str()
+            )
+        })
+    }
+    /// The per-action pre-check of every typed-keys path (input, claim), before any connection,
+    /// claim or byte.
+    pub(super) fn ensure_keys_accepted(&self, resolved: &Resolved) -> Result<()> {
+        match resolved.keys_refused(self.tui_input(resolved)?) {
+            Some(refused) => Err(refused.into()),
+            None => Ok(()),
+        }
+    }
+    /// What `show` and `read` report as `controllable`: the write rule and typed keys accepted.
+    pub(super) fn keys_controllable(&self, resolved: &Resolved) -> Result<bool> {
+        Ok(resolved.write_allowed && resolved.keys_refused(self.tui_input(resolved)?).is_none())
     }
     pub async fn resolve(&self, identity: &ToolCallIdentity, target: &Target) -> Result<Value> {
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
@@ -281,14 +307,14 @@ impl TerminalInteraction {
         let entry = self.renderer.get(&resolved.binding.terminal_id);
         let available = entry.as_ref().is_some_and(|entry| entry.observable());
         result["available"] = json!(available);
-        result["controllable"] = json!(available && resolved.controllable);
+        result["controllable"] = json!(available && self.keys_controllable(&resolved)?);
         result["card_kind"] = json!(resolved.card_kind);
         result["task_status"] = json!(resolved.task_status);
         if !available {
             result["reason"] = json!("no live observable terminal view; no session was started");
         }
-        if resolved.codex_task_worker {
-            result["input_refused"] = json!(CODEX_TASK_WORKER_INPUT_REFUSED);
+        if let Some(refused) = resolved.keys_refused(self.tui_input(&resolved)?) {
+            result["input_refused"] = json!(refused.message);
         }
         Ok(result)
     }

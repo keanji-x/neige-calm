@@ -500,6 +500,8 @@ pub struct Dispatcher {
     operation_runtime: Arc<OperationRuntime>,
     scheduler: Arc<Scheduler>,
     context_monitor: Arc<TaskContextMonitor>,
+    /// The worker providers the reaper consults; also the terminal tools' input declarations.
+    provider_registry: WorkerProviderRegistry,
     /// Slow periodic reconcile sweep (`NEIGE_SCHEDULER_RECONCILE_SECS`, default 300).
     #[allow(dead_code)]
     reconcile_handle: JoinHandle<()>,
@@ -560,6 +562,10 @@ impl Dispatcher {
 
     pub fn scheduler(&self) -> Arc<Scheduler> {
         Arc::clone(&self.scheduler)
+    }
+
+    pub fn provider_registry(&self) -> WorkerProviderRegistry {
+        self.provider_registry.clone()
     }
 
     pub fn context_monitor(&self) -> Arc<TaskContextMonitor> {
@@ -823,7 +829,7 @@ impl Dispatcher {
         );
         let reaper = Arc::new(Reaper::new(
             repo.clone(),
-            provider_registry,
+            provider_registry.clone(),
             events.clone(),
             write.clone(),
         ));
@@ -953,6 +959,7 @@ impl Dispatcher {
             operation_runtime,
             scheduler,
             context_monitor,
+            provider_registry,
             reconcile_handle,
             reaper_handle,
             liveness_feeder_handle,

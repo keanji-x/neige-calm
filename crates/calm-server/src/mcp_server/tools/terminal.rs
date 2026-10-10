@@ -12,7 +12,7 @@ use crate::operation::terminal_adapter::{
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::routes::idempotency_key::stable_payload_hash;
 use crate::terminal_interaction::{
-    CodexTaskWorkerInputRefused, InputOptions, TERMINAL_ROLES, Target, TerminalInteraction,
+    InputOptions, InputRefused, MessageInvalid, TERMINAL_ROLES, Target, TerminalInteraction,
     WaitFor, WaitPlan, receipt_summary, summary_line,
 };
 use serde::Deserialize;
@@ -51,7 +51,7 @@ pub fn register_into(registry: &mut ToolRegistry) {
             include_str!("../../../prompts/tools/neige_terminal_input.md").trim_end(),
             json!({"terminal_id":{"type":"string"},"attempt_id":{"type":"string"},"observation_id":{"type":"string","format":"uuid"},"idempotency_key":{"type":"string","minLength":1,"maxLength":128},"read":{"type":"boolean","default":false},"wait_ms":{"type":"integer","minimum":0,"maximum":20000},"wait_for":{"type":"string","enum":["elapsed","change","signal","text"],"default":"elapsed"},"signal_events":{"type":"array","minItems":1,"items":{"type":"string"}},"wait_text":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"wait_text_absent":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","minLength":1,"maxLength":200}},"settle_ms":{"type":"integer","minimum":0,"maximum":2000,"default":150},"repaint_ms":{"type":"integer","minimum":0,"maximum":5000},"allow_output_since_observation":{"type":"boolean","default":false},"claim":{"type":"boolean","default":false},"release":{"type":"boolean","default":false},
             "action":{"anyOf":[
-                {"type":"object","required":["type","text"],"additionalProperties":false,"properties":{"type":{"enum":["text","submit"]},"text":{"type":"string","minLength":1,"maxLength":16384}}},
+                {"type":"object","required":["type","text"],"additionalProperties":false,"properties":{"type":{"enum":["text","submit","message"]},"text":{"type":"string","minLength":1,"maxLength":16384}}},
                 {"type":"object","required":["type","key"],"additionalProperties":false,"properties":{"type":{"const":"key"},"key":{"type":"string"},"repeat":{"type":"integer","minimum":1,"maximum":32,"default":1}}},
                 {"type":"object","required":["type","steps"],"additionalProperties":false,"properties":{"type":{"const":"sequence"},"steps":{"type":"array","minItems":2,"maxItems":8,"items":{"type":"object"}}}}
             ]}}),
@@ -148,12 +148,9 @@ struct Input {
     repaint_ms: Option<u64>,
     wait_text: Option<Vec<String>>,
     wait_text_absent: Option<Vec<String>>,
-    #[serde(default)]
-    allow_output_since_observation: bool,
-    #[serde(default)]
-    claim: bool,
-    #[serde(default)]
-    release: bool,
+    allow_output_since_observation: Option<bool>,
+    claim: Option<bool>,
+    release: Option<bool>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -171,17 +168,21 @@ fn parse<T: serde::de::DeserializeOwned>(args: Value) -> Result<T, RpcError> {
 fn failure(error: impl std::fmt::Display) -> RpcError {
     RpcError::forbidden(error.to_string())
 }
-/// A write refused because the card is a codex task Worker carries a machine-readable `data.refusal`.
+/// A typed input refusal carries its machine-readable `data.refusal`; invalid message text is
+/// `-32602`.
 fn write_failure(error: anyhow::Error) -> RpcError {
+    if let Some(invalid) = error.downcast_ref::<MessageInvalid>() {
+        return RpcError::invalid_params(invalid.to_string());
+    }
     let mut rpc = failure(&error);
-    if error
-        .downcast_ref::<CodexTaskWorkerInputRefused>()
-        .is_some()
-    {
-        rpc.data = Some(json!({"refusal":"codex_task_worker_input"}));
+    if let Some(refused) = error.downcast_ref::<InputRefused>() {
+        rpc.data = Some(json!({"refusal":refused.refusal}));
     }
     rpc
 }
+/// The options of `neige_terminal_input` that action `message` takes; the rest are refused.
+const MESSAGE_OPTIONS: &str = "terminal_id, attempt_id, idempotency_key, action, read, wait_ms, \
+     wait_for, settle_ms, signal_events, repaint_ms, wait_text, wait_text_absent";
 fn observation_result(metadata: Value) -> ToolResult {
     let summary = observation_summary(&metadata);
     ToolResult::structured_with_summary(metadata, summary)
@@ -518,6 +519,27 @@ async fn call(
         }
         "neige_terminal_input" => {
             let args: Input = parse(args)?;
+            let message = args.action["type"].as_str() == Some("message");
+            if message {
+                let refused = [
+                    ("observation_id", args.observation_id.is_some()),
+                    (
+                        "allow_output_since_observation",
+                        args.allow_output_since_observation.is_some(),
+                    ),
+                    ("claim", args.claim.is_some()),
+                    ("release", args.release.is_some()),
+                ]
+                .into_iter()
+                .filter_map(|(name, given)| given.then_some(name))
+                .collect::<Vec<_>>();
+                if !refused.is_empty() {
+                    return Err(RpcError::invalid_params(format!(
+                        "action \"message\" does not take {}; valid: {MESSAGE_OPTIONS}",
+                        refused.join(", ")
+                    )));
+                }
+            }
             let readback = action_observation(
                 args.read,
                 WaitArgs {
@@ -531,21 +553,37 @@ async fn call(
                 },
                 false,
             )?;
-            service
-                .input(
-                    &identity,
-                    &target(args.terminal_id, args.attempt_id)?,
-                    args.observation_id,
-                    &args.idempotency_key,
-                    args.action,
-                    InputOptions {
-                        allow_output_since_observation: args.allow_output_since_observation,
-                        claim: args.claim,
-                        release: args.release,
-                    },
-                    readback,
-                )
-                .await
+            let target = target(args.terminal_id, args.attempt_id)?;
+            let receipt = if message {
+                service
+                    .message(
+                        &identity,
+                        &target,
+                        &args.idempotency_key,
+                        args.action,
+                        readback,
+                    )
+                    .await
+            } else {
+                service
+                    .input(
+                        &identity,
+                        &target,
+                        args.observation_id,
+                        &args.idempotency_key,
+                        args.action,
+                        InputOptions {
+                            allow_output_since_observation: args
+                                .allow_output_since_observation
+                                .unwrap_or(false),
+                            claim: args.claim.unwrap_or(false),
+                            release: args.release.unwrap_or(false),
+                        },
+                        readback,
+                    )
+                    .await
+            };
+            receipt
                 .map(|receipt| receipt_result("input", receipt))
                 .map_err(write_failure)
         }

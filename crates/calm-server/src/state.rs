@@ -1295,15 +1295,6 @@ impl AppState {
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
         let terminal_renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
         terminal_renderer.set_hook_settings_dir(codex.terminal_hook_settings_dir.clone());
-        mcp_server
-            .terminal_interaction
-            .set(Arc::new(
-                crate::terminal_interaction::TerminalInteraction::new(
-                    route_repo.clone(),
-                    terminal_renderer.clone(),
-                ),
-            ))
-            .map_err(|_| anyhow::anyhow!("terminal interaction already initialized"))?;
         let harness = HarnessRegistry::new();
         let activity_wake = crate::track_activity::spawn(
             repo.clone(),
@@ -1408,6 +1399,18 @@ impl AppState {
         let _ = mcp_context
             .scheduler_poke
             .set(Arc::new(dispatcher.scheduler()));
+        // The terminal tools read each worker provider's input declaration (#2493), so they are
+        // bound once the Dispatcher's provider registry exists.
+        mcp_server
+            .terminal_interaction
+            .set(Arc::new(
+                crate::terminal_interaction::TerminalInteraction::new(
+                    route_repo.clone(),
+                    terminal_renderer.clone(),
+                    dispatcher.provider_registry(),
+                ),
+            ))
+            .map_err(|_| anyhow::anyhow!("terminal interaction already initialized"))?;
 
         // Per-plugin errors are logged inside `autospawn_enabled`; one broken plugin never blocks boot.
         plugin.reconcile_builtins().await?;

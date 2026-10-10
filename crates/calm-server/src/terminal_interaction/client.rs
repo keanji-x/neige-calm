@@ -120,11 +120,22 @@ impl Drop for Client {
         self.reader.abort();
     }
 }
+/// How a kernel client's input is admitted by the session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputRole {
+    /// Input needs control, claimed like any other client (the Planner's observation client).
+    Claimed,
+    /// Input as an Observer through `kernel_originated_input`: never claims or takes control; its
+    /// scope's control predicate still admits each physical write (the `message` client, #2493).
+    Kernel,
+}
+
 impl Client {
     pub async fn attach(
         entry: Arc<RendererEntry>,
         scope: ClientInputScope,
         binding: super::Binding,
+        input: InputRole,
     ) -> Result<Self> {
         let id = Uuid::new_v4();
         let size = entry
@@ -183,7 +194,7 @@ impl Client {
                     supports_scrollback: true,
                     supports_sixel: false,
                     supports_images: false,
-                    kernel_originated_input: false,
+                    kernel_originated_input: input == InputRole::Kernel,
                 },
             })
             .await?;

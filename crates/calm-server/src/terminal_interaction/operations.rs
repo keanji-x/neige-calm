@@ -58,7 +58,7 @@ impl TerminalInteraction {
             "invalid input idempotency_key"
         );
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
-        resolved.ensure_accepts_input()?;
+        self.ensure_keys_accepted(&resolved)?;
         let terminal = resolved.binding.terminal_id.as_str();
         let client = self.client(identity, &resolved.binding).await?;
         // One action at a time per connection, readback wait included; other connections are not serialized.
@@ -225,7 +225,7 @@ impl TerminalInteraction {
     }
     /// The revision and signal seq right now (a replayed receipt's readback
     /// baseline); `None` when the projection is unavailable.
-    fn current_baseline(client: &Client) -> Option<ReadbackBaseline> {
+    pub(super) fn current_baseline(client: &Client) -> Option<ReadbackBaseline> {
         let signal_seq = client.entry.signals.last_seq();
         client
             .entry
