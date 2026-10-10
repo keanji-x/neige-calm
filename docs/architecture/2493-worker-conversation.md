@@ -284,8 +284,8 @@ and one write leg (`terminal_interaction/write_leg.rs`, #2527/#2528): the replay
 binding is proven and before every new-write check; `unknown` is cached before the send and kept,
 `written` is kept, and a refusal proven before any byte (including a send the pump never received)
 is not kept, so the same key is decided anew.
-`observation_id`, `allow_output_since_observation`, `claim`, `release` get `-32602` listing the
-valid options, as `detach` refuses `read` (`mcp_server/tools/terminal.rs:270-279`); the shared
+`observation_id`, and `allow_output_since_observation`, `claim`, `release` at `true`, get `-32602`
+listing the valid options (an echoed default `false` is accepted, #2528), as `detach` refuses `read` (`mcp_server/tools/terminal.rs:270-279`); the shared
 target, replay and readback still justify one tool rather than a new verb. Schema
 (`terminal.rs:49-58`): `["text","submit"]` → `["text","submit","message"]`; one description
 sentence (1,331 of 2,048 B); PR-2 measures `SURFACE_MAX_BYTES` 30,884

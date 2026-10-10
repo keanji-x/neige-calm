@@ -594,7 +594,7 @@ async fn message_refuses_observation_and_control_options() {
     for (option, value) in [
         ("observation_id", view["observation_id"].clone()),
         ("allow_output_since_observation", json!(true)),
-        ("claim", json!(false)),
+        ("claim", json!(true)),
         ("release", json!(true)),
     ] {
         let mut args = json!({"attempt_id":f.worker.task,"idempotency_key":option,
@@ -610,6 +610,58 @@ async fn message_refuses_observation_and_control_options() {
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(reads(&f.log).is_empty());
+    stop(&h, &f.worker).await;
+}
+
+/// Models echo defaults: `message` takes `claim`, `release` and `allow_output_since_observation`
+/// at `false`, and the wait arguments at their defaults without `read`; a non-default value is
+/// still refused.
+#[tokio::test]
+async fn message_accepts_echoed_defaults() {
+    let h = Harness::start().await;
+    let f = running(&h, "claude", true, false).await;
+    let echoed = json!({"attempt_id":f.worker.task,"idempotency_key":"echo",
+        "action":{"type":"message","text":"x"},"claim":false,"release":false,
+        "allow_output_since_observation":false,"read":false,"wait_for":"elapsed","settle_ms":150});
+    written(&h.call("neige_terminal_input", echoed).await);
+    assert_eq!(
+        wait_for_reads(&f.log, 1).await,
+        vec![expected(&f.worker.task, "x")]
+    );
+    for option in ["claim", "release", "allow_output_since_observation"] {
+        let mut args = json!({"attempt_id":f.worker.task,"idempotency_key":option,
+            "action":{"type":"message","text":"y"}});
+        args[option] = json!(true);
+        assert_refusal(
+            &h.call("neige_terminal_input", args).await,
+            -32602,
+            None,
+            &format!("action \"message\" does not take {option}; valid:"),
+        );
+    }
+    // The sibling wait carriers take the same echoed defaults.
+    let read = h
+        .ok(
+            "neige_terminal_read",
+            json!({"attempt_id":f.worker.task,"wait_for":"elapsed","settle_ms":150}),
+        )
+        .await;
+    assert_eq!(read["terminal_id"], f.worker.terminal);
+    h.ok(
+        "neige_terminal_control",
+        json!({"attempt_id":f.worker.task,"action":"release","read":false,
+            "wait_for":"elapsed","settle_ms":150}),
+    )
+    .await;
+    let unrequested = h
+        .call(
+            "neige_terminal_control",
+            json!({"attempt_id":f.worker.task,"action":"release","settle_ms":151}),
+        )
+        .await;
+    assert_refusal(&unrequested, -32602, None, "need read=true");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(reads(&f.log).len(), 1);
     stop(&h, &f.worker).await;
 }
 

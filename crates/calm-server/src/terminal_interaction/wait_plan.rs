@@ -90,8 +90,9 @@ impl WaitPlan {
             settle_ms.is_none_or(|settle| settle <= SETTLE_MS_MAX),
             "settle_ms must be 0..{SETTLE_MS_MAX}"
         );
+        // Models echo defaults: the default settle is no request for a settle.
         ensure!(
-            settle_ms.is_none()
+            settle_ms.is_none_or(|settle| settle == SETTLE_MS_DEFAULT)
                 || matches!(mode, WaitFor::Change | WaitFor::Signal | WaitFor::Text),
             "settle_ms requires wait_for=change, wait_for=signal or wait_for=text"
         );
