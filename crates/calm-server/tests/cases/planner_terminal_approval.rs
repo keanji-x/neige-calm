@@ -27,7 +27,7 @@ pub(super) fn start_payload(
 }
 
 #[tokio::test]
-async fn assistant_thread_does_not_receive_planner_terminal_policy() {
+async fn assistant_thread_receives_only_the_terminal_control_and_input_policy() {
     let _guard = ENV_LOCK.lock().await;
     let tmp = TempDir::new().unwrap();
     let capture = tmp.path().join("requests.ndjson");
@@ -64,5 +64,19 @@ async fn assistant_thread_does_not_receive_planner_terminal_policy() {
             .pointer("/params/config/shell_environment_policy/set/NEIGE_MCP_TOKEN")
             .is_some()
     );
-    assert!(start.pointer("/params/config/mcp_servers").is_none());
+    // #2492: an Assistant drives existing task workers but opens no card, so it is delegated
+    // exactly the two terminal writes it may call, never `neige_terminal_open`.
+    assert_eq!(
+        start.pointer("/params/config/mcp_servers/neige/tools"),
+        Some(&json!({
+            "neige_terminal_control": {"approval_mode":"approve"},
+            "neige_terminal_input": {"approval_mode":"approve"}
+        })),
+        "an Assistant must delegate only the Terminal writes its role may call"
+    );
+    assert!(
+        start
+            .pointer("/params/config/mcp_servers/neige/default_tools_approval_mode")
+            .is_none()
+    );
 }
