@@ -272,7 +272,13 @@ where
 /// percent-decoding: `calm%2Dsession` is a different cookie that any page on another port of this
 /// host can set (HttpOnly on the real one does not stop it), so it must never count as calm's.
 pub(crate) fn is_session_cookie(pair: &str) -> bool {
-    pair.split_once('=').map_or(pair, |(name, _)| name).trim() == SESSION_COOKIE
+    cookie_name(pair) == SESSION_COOKIE
+}
+
+/// The trimmed name of a `name=value` pair; the whole pair when it has no `=`. Case-sensitive, as
+/// browsers keep cookie names: `CALM-SESSION` is a different cookie that auth never reads.
+pub(crate) fn cookie_name(pair: &str) -> &str {
+    pair.split_once('=').map_or(pair, |(name, _)| name).trim()
 }
 
 /// Every `calm-session` value across all Cookie headers. All of them, because a planted duplicate

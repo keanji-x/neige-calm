@@ -156,6 +156,8 @@ plugin generates never run on calm's origin.
 The route answers 400 to a request that is not a WebSocket upgrade, 404 when no
 installed plugin with that id declares a socket, and 503 while the plugin is
 not running (not enabled, starting, stopping or crashed) or its socket does not
-answer. Every open tunnel closes when the plugin's run ends: stop, disable,
+answer. A plugin that answers with anything but `101` gets a bare 502 sent in
+its place, without its headers or body. Plugins receive no `Forwarded` or
+`X-Forwarded-*` headers, and must not trust `Host` or `Origin`. Every open tunnel closes when the plugin's run ends: stop, disable,
 reload, restart or crash. Any local process of the kernel's user can still
 connect to the socket directly; the route adds no isolation from same-user code.

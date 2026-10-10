@@ -183,6 +183,10 @@ async fn plugin_server(path: &Path) -> Arc<AtomicUsize> {
             "calm-session=PWN; Path=/",
             "__Host-calm-session=Z; Path=/; Secure",
             "calm%2Dsession=E; Path=/",
+            // Nameless: a browser stores the value `calm-session=N` and sends it back as is.
+            "=calm-session=N; Path=/",
+            // Cookie names are case-sensitive; auth never reads this one, so it passes.
+            "CALM-SESSION=C",
             "ok=1",
         ] {
             resp.headers_mut()
@@ -190,8 +194,22 @@ async fn plugin_server(path: &Path) -> Arc<AtomicUsize> {
         }
         resp
     };
+    // Reports every forwarding header it received.
+    let forwarded = |ws: WebSocketUpgrade, headers: HeaderMap| async move {
+        let mut names: Vec<_> = headers
+            .keys()
+            .map(|name| name.as_str().to_owned())
+            .filter(|name| name == "forwarded" || name.starts_with("x-forwarded-"))
+            .collect();
+        names.sort();
+        let seen = format!("forwarded=[{}]", names.join(","));
+        ws.on_upgrade(|mut socket| async move {
+            let _ = socket.send(WsMessage::text(seen)).await;
+        })
+    };
     let app = axum::Router::new()
         .route("/set-cookie", get(set_cookie))
+        .route("/forwarded", get(forwarded))
         .fallback(report);
     let listener = UnixListener::bind(path).unwrap().tap_io(move |_| {
         counter.fetch_add(1, Ordering::SeqCst);
@@ -354,7 +372,7 @@ async fn a_set_cookie_for_calm_session_from_the_plugin_is_dropped() {
         .await
         .unwrap();
     let set: Vec<_> = resp.headers().get_all(header::SET_COOKIE).iter().collect();
-    assert_eq!(set, ["ok=1"]);
+    assert_eq!(set, ["CALM-SESSION=C", "ok=1"]);
 }
 
 #[tokio::test]
@@ -418,4 +436,98 @@ async fn stop_disable_restart_and_crash_close_open_tunnels() {
     let mut socket = open_tunnel(&stack).await;
     plugin.disable(SOCKET_PLUGIN).await.unwrap();
     assert_tunnel_closed(&mut socket, "disable").await;
+}
+
+#[tokio::test]
+async fn client_forwarding_headers_never_reach_the_plugin() {
+    let stack = stack(routes::application_router).await;
+    plugin_server(&stack.socket_path).await;
+    stack.state.plugin.spawn(SOCKET_PLUGIN).await.unwrap();
+    let mut request = format!(
+        "ws://{}/api/plugins/{SOCKET_PLUGIN}/ws/forwarded",
+        stack.addr
+    )
+    .into_client_request()
+    .unwrap();
+    let headers = request.headers_mut();
+    headers.insert("cookie", stack.session.parse().unwrap());
+    for (name, value) in [
+        ("forwarded", "for=6.6.6.6;host=evil"),
+        ("x-forwarded-for", "6.6.6.6"),
+        ("x-forwarded-host", "evil"),
+        ("x-forwarded-proto", "https"),
+    ] {
+        headers.insert(name, value.parse().unwrap());
+    }
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    let first = next_frame(&mut socket).await.unwrap().unwrap();
+    assert_eq!(first, Message::text("forwarded=[]"));
+}
+
+/// A plugin that answers an upgrade with a page instead of `101` must not serve it on calm's
+/// origin: the client gets a bare 502, and the plugin's connection is dropped at once.
+#[tokio::test]
+async fn a_plugin_answer_that_is_not_101_is_a_bare_502_and_its_connection_closes() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let stack = stack(routes::application_router).await;
+    std::fs::create_dir_all(stack.socket_path.parent().unwrap()).unwrap();
+    let listener = UnixListener::bind(&stack.socket_path).unwrap();
+    let (closed_tx, closed_rx) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(socket.read_u8().await.unwrap());
+        }
+        let page = b"HTTP/1.1 200 OK\r\ncontent-type: text/html\r\n\
+                     set-cookie: plug=1; Path=/\r\ntransfer-encoding: chunked\r\n\r\n";
+        socket.write_all(page).await.unwrap();
+        // An endless body: a chunk every 10 ms until the kernel stops reading.
+        while socket.write_all(b"7\r\n<p>x</p\r\n").await.is_ok() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let _ = closed_tx.send(());
+    });
+    stack.state.plugin.spawn(SOCKET_PLUGIN).await.unwrap();
+
+    let stream = TcpStream::connect(stack.addr).await.unwrap();
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .unwrap();
+    tokio::spawn(conn);
+    let request = axum::http::Request::get(format!("/api/plugins/{SOCKET_PLUGIN}/ws/page"))
+        .header(header::HOST, stack.addr.to_string())
+        .header(header::COOKIE, &stack.session)
+        .header(header::CONNECTION, "upgrade")
+        .header(header::UPGRADE, "websocket")
+        .header("sec-websocket-version", "13")
+        .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .body(Body::empty())
+        .unwrap();
+    let resp = sender.send_request(request).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+    for name in [
+        header::SET_COOKIE,
+        header::CONTENT_TYPE,
+        header::TRANSFER_ENCODING,
+    ] {
+        assert!(
+            !resp.headers().contains_key(&name),
+            "{name}: {:?}",
+            resp.headers()
+        );
+    }
+    let body = tokio::time::timeout(
+        Duration::from_secs(5),
+        http_body_util::BodyExt::collect(resp.into_body()),
+    )
+    .await
+    .expect("the 502 has a finite body")
+    .unwrap()
+    .to_bytes();
+    assert!(body.is_empty(), "{body:?}");
+    tokio::time::timeout(Duration::from_secs(5), closed_rx)
+        .await
+        .expect("the plugin's connection must close")
+        .unwrap();
 }

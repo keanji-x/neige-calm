@@ -124,6 +124,20 @@ async fn upstream() -> (u16, Arc<AtomicUsize>) {
                 }
             })
     };
+    // #2530 E3a: a nameless cookie whose value is `calm-session=…` is calm's session to a browser.
+    let set_cookie_nameless = || async {
+        let mut headers = HeaderMap::new();
+        for cookie in [
+            "=calm-session=N; Path=/",
+            " = calm-session=M",
+            "=__Host-calm-session=H; Secure",
+            "CALM-SESSION=C",
+            "=other=1",
+        ] {
+            headers.append(header::SET_COOKIE, cookie.parse().unwrap());
+        }
+        headers
+    };
     // #2530 E3a: the 101 answering an upgrade tries to set calm's session as well.
     let ws_set_cookie = move |ws: WebSocketUpgrade, headers: HeaderMap| async move {
         let cookie = format!("cookie={}", field(&headers, header::COOKIE));
@@ -141,7 +155,8 @@ async fn upstream() -> (u16, Arc<AtomicUsize>) {
         .route("/set-cookie", get(set_cookie))
         .route("/redirect", get(redirect))
         .route("/ws", get(ws))
-        .route("/ws-set-cookie", get(ws_set_cookie));
+        .route("/ws-set-cookie", get(ws_set_cookie))
+        .route("/set-cookie-nameless", get(set_cookie_nameless));
     let listener = listener.tap_io(move |_| {
         counter.fetch_add(1, Ordering::SeqCst);
     });
@@ -477,4 +492,19 @@ async fn an_upgrade_carries_no_calm_session_either_way() {
     assert_eq!(set, ["ok=1"]);
     let first = next_frame(&mut socket).await.unwrap().unwrap();
     assert_eq!(first, Message::text("cookie=XSRF-TOKEN=abc"));
+}
+
+/// #2530 E3a: a nameless `Set-Cookie` (`=calm-session=…`) cannot set calm's session either; a
+/// case variant is a different cookie, the way `auth` reads the request side.
+#[tokio::test]
+async fn a_nameless_set_cookie_cannot_set_calm_session() {
+    let (target, _) = upstream().await;
+    let gw = gateway_for(Some(target)).await;
+    let resp = send(
+        gw.port,
+        get_req(gw.port, "/set-cookie-nameless", &[("cookie", &gw.session)]),
+    )
+    .await;
+    let set: Vec<_> = resp.headers().get_all(header::SET_COOKIE).iter().collect();
+    assert_eq!(set, ["CALM-SESSION=C", "=other=1"]);
 }

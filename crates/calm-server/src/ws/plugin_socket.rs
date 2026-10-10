@@ -10,6 +10,10 @@
 //! - 404 `not_found`: no installed plugin with this id declares an `http_socket`.
 //! - 503 `service_unavailable`: the plugin is not serving (not enabled, starting, stopping or
 //!   crashed), or its socket does not answer the upgrade.
+//! - 502, with no headers or body of the plugin's: the plugin answered with anything but `101`.
+//!
+//! The plugin receives no `Forwarded` or `X-Forwarded-*` header; `Host` and `Origin` are the
+//! client's and must not be trusted.
 //!
 //! Every tunnel closes when the plugin's run stops serving: stop, disable, reload, restart, crash.
 
@@ -19,8 +23,8 @@ use crate::plugin_host::SocketUnavailable;
 use crate::reverse_proxy::{self, Target};
 use crate::state::AppState;
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, Uri, header};
-use axum::response::Response;
+use axum::http::{HeaderMap, HeaderName, StatusCode, Uri, header};
+use axum::response::{IntoResponse, Response};
 use axum::{Router, routing::get};
 use std::time::Duration;
 
@@ -52,12 +56,38 @@ async fn upgrade(
     *req.uri_mut() = upstream_uri(req.uri())
         .ok_or_else(|| CalmError::BadRequest("malformed plugin socket path".into()))?;
     let target = Target::Unix(socket.path);
-    reverse_proxy::forward(req, &target, UPGRADE_TIMEOUT, vec![socket.serving], |_| {})
-        .await
-        .map_err(|error| {
-            tracing::debug!(plugin_id = %id, ?error, "plugin socket did not answer");
-            CalmError::ServiceUnavailable(format!("plugin `{id}` did not answer on its socket"))
-        })
+    let resp = reverse_proxy::forward(
+        req,
+        &target,
+        UPGRADE_TIMEOUT,
+        vec![socket.serving],
+        strip_client_forwarding,
+    )
+    .await
+    .map_err(|error| {
+        tracing::debug!(plugin_id = %id, ?error, "plugin socket did not answer");
+        CalmError::ServiceUnavailable(format!("plugin `{id}` did not answer on its socket"))
+    })?;
+    if resp.status() != StatusCode::SWITCHING_PROTOCOLS {
+        // Anything but a switch would be a plugin page on calm's origin. Dropping `resp` here
+        // drops its body and, with it, the plugin connection; nothing of it reaches the client.
+        tracing::debug!(plugin_id = %id, status = %resp.status(), "plugin refused the upgrade");
+        return Ok(StatusCode::BAD_GATEWAY.into_response());
+    }
+    Ok(resp)
+}
+
+/// A client may send any `Forwarded` or `X-Forwarded-*` value; none of them reaches a plugin.
+fn strip_client_forwarding(req: &mut Request) {
+    let headers = req.headers_mut();
+    let forged: Vec<HeaderName> = headers
+        .keys()
+        .filter(|name| *name == header::FORWARDED || name.as_str().starts_with("x-forwarded-"))
+        .cloned()
+        .collect();
+    for name in forged {
+        headers.remove(name);
+    }
 }
 
 fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
@@ -71,6 +101,8 @@ fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
 /// `/api/plugins/<id>/ws/<rest>?<query>` → `/<rest>?<query>`, taken from the raw request so the
 /// rest keeps its percent-encoding.
 fn upstream_uri(uri: &Uri) -> Option<Uri> {
+    // `nth(5)` is tied to the route shape in `router`: "", "api", "plugins", "{id}", "ws", rest.
+    // The router merges (never nests) this route, so `uri` is the full request path.
     let rest = uri.path().splitn(6, '/').nth(5)?;
     let path_and_query = match uri.query() {
         Some(query) => format!("/{rest}?{query}"),

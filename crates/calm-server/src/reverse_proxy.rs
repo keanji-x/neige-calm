@@ -3,7 +3,7 @@
 //! its cancellation tokens fires. Every caller gets the same cookie fence: calm's session cookie
 //! never leaves for the upstream, and an upstream can never set it.
 
-use crate::auth::{SESSION_COOKIE, is_session_cookie};
+use crate::auth::{SESSION_COOKIE, cookie_name, is_session_cookie};
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::uri::PathAndQuery;
@@ -11,6 +11,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, Version, h
 use axum::response::Response;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
+use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -72,21 +73,35 @@ pub async fn forward(
     let switching = resp.status() == StatusCode::SWITCHING_PROTOCOLS;
     if switching && let Some(client) = client_upgrade {
         let upstream = hyper::upgrade::on(&mut resp);
-        tokio::spawn(async move {
-            let Ok((client, upstream)) = tokio::try_join!(client, upstream) else {
-                return;
-            };
-            let (mut client, mut upstream) = (TokioIo::new(client), TokioIo::new(upstream));
-            let mut closed: FuturesUnordered<_> =
-                closes_on.iter().map(CancellationToken::cancelled).collect();
-            tokio::select! {
-                _ = closed.next() => {}
-                _ = tokio::io::copy_bidirectional(&mut client, &mut upstream) => {}
-            }
-        });
+        tokio::spawn(tunnel(client, upstream, closes_on));
     }
     rewrite_response(resp.headers_mut(), switching);
     Ok(resp.map(Body::new))
+}
+
+/// Joins both upgraded halves into a byte tunnel that lives until either side closes or a token
+/// in `closes_on` is cancelled.
+async fn tunnel(
+    client: impl Future<Output = hyper::Result<Upgraded>>,
+    upstream: impl Future<Output = hyper::Result<Upgraded>>,
+    closes_on: Vec<CancellationToken>,
+) {
+    let mut closed: FuturesUnordered<_> =
+        closes_on.iter().map(CancellationToken::cancelled).collect();
+    // Raced against the tokens too: a half that never completes its upgrade must not hold the
+    // other one open past cancellation.
+    let joined = tokio::select! {
+        _ = closed.next() => return,
+        joined = async { tokio::try_join!(client, upstream) } => joined,
+    };
+    let Ok((client, upstream)) = joined else {
+        return;
+    };
+    let (mut client, mut upstream) = (TokioIo::new(client), TokioIo::new(upstream));
+    tokio::select! {
+        _ = closed.next() => {}
+        _ = tokio::io::copy_bidirectional(&mut client, &mut upstream) => {}
+    }
 }
 
 async fn send(
@@ -202,21 +217,27 @@ fn strip_session_cookie(headers: &mut HeaderMap) {
     }
 }
 
-fn cookie_name(pair: &str) -> &str {
-    pair.split_once('=').map_or(pair, |(name, _)| name).trim()
-}
-
 /// An upstream must not set calm's session, raw or percent-encoded (`calm%2Dsession`), in any of
-/// the cookie-prefix spellings.
+/// the cookie-prefix spellings. A nameless cookie (`=calm-session=X`) counts too: a browser stores
+/// it by its value and sends that back as `calm-session=X`.
 fn sets_calm_session(set_cookie: &str) -> bool {
-    let raw = cookie_name(set_cookie);
-    [raw.to_owned(), percent_decode(raw)].iter().any(|name| {
-        let name = name
-            .strip_prefix("__Host-")
-            .or_else(|| name.strip_prefix("__Secure-"))
-            .unwrap_or(name);
-        name == SESSION_COOKIE
-    })
+    let pair = set_cookie.split(';').next().unwrap_or_default();
+    let mut names = vec![cookie_name(pair)];
+    if names[0].is_empty()
+        && let Some((_, value)) = pair.split_once('=')
+    {
+        names.push(cookie_name(value));
+    }
+    names
+        .iter()
+        .flat_map(|raw| [raw.to_string(), percent_decode(raw)])
+        .any(|name| {
+            let name = name
+                .strip_prefix("__Host-")
+                .or_else(|| name.strip_prefix("__Secure-"))
+                .unwrap_or(&name);
+            name == SESSION_COOKIE
+        })
 }
 
 fn percent_decode(raw: &str) -> String {
@@ -254,5 +275,29 @@ fn rewrite_response(headers: &mut HeaderMap, switching: bool) {
     headers.remove(header::SET_COOKIE);
     for cookie in cookies {
         headers.append(header::SET_COOKIE, cookie);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An upgrade half that never completes (a client that never finishes its upgrade) must not
+    /// keep the other half alive past cancellation.
+    #[tokio::test]
+    async fn cancellation_releases_a_tunnel_whose_upgrade_never_completes() {
+        let (held, released) = tokio::sync::oneshot::channel::<()>();
+        let upstream = async move {
+            let _held = held;
+            std::future::pending::<hyper::Result<Upgraded>>().await
+        };
+        let stop = CancellationToken::new();
+        let task = tokio::spawn(tunnel(std::future::pending(), upstream, vec![stop.clone()]));
+        stop.cancel();
+        tokio::time::timeout(Duration::from_secs(5), released)
+            .await
+            .expect("cancellation must drop the pending upstream half")
+            .unwrap_err();
+        task.await.unwrap();
     }
 }
