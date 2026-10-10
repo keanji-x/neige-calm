@@ -17,7 +17,10 @@ use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::McpServer;
 use crate::model::new_id;
-use crate::operation::claude_adapter::{CLAUDE_PHASES, build_claude_env, worker_mcp};
+use crate::operation::claude_adapter::{
+    CLAUDE_CARD_PERMISSION_FLAGS, CLAUDE_PHASES, CLAUDE_WORKER_PERMISSION_FLAGS, build_claude_env,
+    worker_mcp,
+};
 use crate::operation::workspace_lease::worker::{
     record_declared_head, verify_declared_head, verify_recorded_head,
 };
@@ -186,14 +189,21 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             session_complete_tx(tx, &active.id, WorkerSessionState::Exited).await?;
         }
 
+        // A task worker's card gets the permission mode (#2521) and the MCP servers (#2470) it
+        // first started with.
+        let is_worker = card_is_worker_spawn_target_tx(tx, &card_id).await?;
         let mut command_line = format!(
-            "{} --allow-dangerously-skip-permissions --settings {} --resume {}",
+            "{} {} --settings {} --resume {}",
             shell_single_quote(&self.codex.claude_bin),
+            if is_worker {
+                CLAUDE_WORKER_PERMISSION_FLAGS
+            } else {
+                CLAUDE_CARD_PERMISSION_FLAGS
+            },
             shell_single_quote(&settings_path),
             shell_single_quote(&claude_session_id),
         );
-        // A task worker's card gets the MCP servers it first started with (#2470).
-        let mcp_config = if card_is_worker_spawn_target_tx(tx, &card_id).await? {
+        let mcp_config = if is_worker {
             let path = worker_mcp::mcp_config_path(Path::new(&settings_path))?;
             command_line.push_str(&worker_mcp::mcp_flags(&path));
             Some(path)

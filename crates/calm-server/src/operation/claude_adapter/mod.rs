@@ -252,6 +252,14 @@ pub struct PreparedClaudeCreateRequest {
     pub env: Value,
 }
 
+/// An owner-opened Claude card can switch itself to bypass in-session (#672).
+pub(crate) const CLAUDE_CARD_PERMISSION_FLAGS: &str = "--allow-dangerously-skip-permissions";
+
+/// A task worker runs unattended, so the kernel names its permission mode rather than leaving it
+/// to the owner's own Claude settings (#2521). It is not offered bypass: that flag shows a
+/// blocking warning dialog at startup.
+pub(crate) const CLAUDE_WORKER_PERMISSION_FLAGS: &str = "--permission-mode auto";
+
 pub fn normalize_claude_create_request(
     input: ClaudeCreateRequestInput,
 ) -> Result<NormalizedClaudeCreateRequest> {
@@ -305,7 +313,7 @@ pub async fn prepare_claude_create_request(
         .to_string();
     let env = build_claude_env(repo, codex, &card_id).await?;
     let mut command_line = format!(
-        "{} --allow-dangerously-skip-permissions --settings {} --session-id {}",
+        "{} {CLAUDE_CARD_PERMISSION_FLAGS} --settings {} --session-id {}",
         shell_single_quote(&codex.claude_bin),
         shell_single_quote(&settings_path),
         shell_single_quote(&claude_session_id),
@@ -376,7 +384,7 @@ fn build_claude_worker_command_line(
         track_id,
     );
     let mut command_line = format!(
-        "{} --allow-dangerously-skip-permissions --settings {} --session-id {} --append-system-prompt {}",
+        "{} {CLAUDE_WORKER_PERMISSION_FLAGS} --settings {} --session-id {} --append-system-prompt {}",
         shell_single_quote(claude_bin),
         shell_single_quote(&settings_path.to_string_lossy()),
         shell_single_quote(claude_session_id),

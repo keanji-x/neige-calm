@@ -1,6 +1,7 @@
 //! #2470: a Claude task worker's session has the kernel MCP server alone, authenticated as its
 //! own Worker card, at its first spawn and at a restart of its card. #2509: its tools run without
-//! a permission prompt, and the task prompt routes the gate through them.
+//! a permission prompt, and the task prompt routes the gate through them. #2521: the kernel, not
+//! the owner's Claude settings, puts it in auto mode, with no bypass warning dialog to block it.
 use super::*;
 use crate::mcp_server::wiring::claude_mcp_config_json;
 
@@ -60,6 +61,30 @@ fn strict_mcp_config(argv: &[String]) -> PathBuf {
     configs.into_iter().next().unwrap()
 }
 
+/// The worker's mode is named by the kernel, once, before `--`: auto, and bypass not offered.
+fn assert_unattended_permission_mode(argv: &[String]) {
+    let options = &argv[..argv
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(argv.len())];
+    let modes: Vec<_> = options
+        .iter()
+        .enumerate()
+        .filter(|(_, arg)| arg.starts_with("--permission-mode"))
+        .map(|(at, arg)| {
+            assert_eq!(arg, "--permission-mode", "{argv:?}");
+            options[at + 1].as_str()
+        })
+        .collect();
+    assert_eq!(modes, ["auto"], "{argv:?}");
+    assert!(
+        !options
+            .iter()
+            .any(|arg| arg.contains("dangerously-skip-permissions")),
+        "{argv:?}"
+    );
+}
+
 #[test]
 fn claude_worker_command_line_makes_its_card_config_the_only_mcp_config() {
     // A settings dir the shell would split or unquote unless the path is quoted whole.
@@ -77,6 +102,7 @@ fn claude_worker_command_line_makes_its_card_config_the_only_mcp_config() {
         strict_mcp_config(&argv),
         Path::new("/tmp/claude worker's dir/mcp.json")
     );
+    assert_unattended_permission_mode(&argv);
     assert_eq!(argv.last().unwrap(), "Goal:\ndo the work", "{argv:?}");
 }
 
@@ -253,6 +279,7 @@ async fn claude_worker_spawn_has_only_the_kernel_mcp_server_as_its_worker_card()
 
     let spawned = spawned.lock().await.clone();
     assert_eq!(spawned.len(), 1);
+    assert_unattended_permission_mode(&shell_argv(&spawned[0].0));
     assert_kernel_mcp_only(
         &harness,
         &mcp_server,
@@ -446,6 +473,7 @@ async fn claude_restart_of_a_worker_card_has_only_the_kernel_mcp_server() {
         "a restart resumes: {}",
         spawned[0].0
     );
+    assert_unattended_permission_mode(&shell_argv(&spawned[0].0));
     assert_eq!(
         strict_mcp_config(&shell_argv(&spawned[0].0)),
         worker_mcp::mcp_config_path(Path::new(&r.settings_path)).unwrap(),
