@@ -149,15 +149,13 @@ the delegation matters for the `never` and `ask` tiers and for Workers.
   race with boot autospawn and crash backoff; a call to a plugin that is not running is still
   refused by routing (`transport.rs:562-564`). Codex merges config layers key by key, so the
   per-thread terminal map and this map combine.
-- **v1 reach: threads that start, or cold-resume, after the refresh.** A loaded thread keeps
-  the user config it started with: an MCP reload rebuilds only the server connections, and loaded
-  threads ignore resume config (`codex_mcp_toolset.rs:16-19`,
-  `shared_codex_appserver.rs:3419-3420`; in Codex, `core/src/session/mcp.rs` and
-  `core/src/session/turn_context.rs`). So a Planner thread loaded before the owner enables the
-  plugin lists the write tools but has no delegated grant: under `never` its calls are refused,
-  under `ask` they are asked (KNOWN GAP). Hot-reloading loaded threads
-  (Codex `config/batchWrite` with `reloadUserConfig: true`) is a later, separate kernel→Codex
-  call, not part of v1.
+- **Reach.** The kernel promises the grant to threads that start, or cold-resume, after the refresh.
+  The E3c probe on the production Codex binary (0.159.2) found that loaded threads pick it up too,
+  in both directions, at the refresh's existing `config/mcpServer/reload`. That reload re-reads the
+  shared entry's `tools` map, and threads keep their per-thread terminal grants. Writing the file
+  alone changes nothing. The design first assumed loaded threads kept their start-time map, and the
+  probe disproved it. A loaded thread that misses that reload keeps its old grant until its next
+  reload or start. The kernel adds no hot-reload of its own.
 - **Grant scope.** The shared entry is read by every Codex thread, so the grant covers every role
   that the kernel serves plugin tools to: the Planner and Workers (`transport.rs:57`). This is
   stated, not hidden: Claude-backed agents already allow every `mcp__neige` tool in every mode
@@ -167,11 +165,14 @@ the delegation matters for the `never` and `ask` tiers and for Workers.
   `card_mcp_thread_start_config` is not touched.
 - **Authority.** The owner's install and enable is the grant. The kernel stays the live role,
   scope and running-state authority for every call.
-- **Probe (E3c), against the production Codex binary** with a fake model: a thread started after
-  enable calls a delegated tool without approval and still has its terminal grants; a thread
-  started after disable is asked (or refused under `never`).
-- Effect: the desktop's two write tools are usable by Codex agents whose thread started after the
-  owner enabled the plugin. The three views are `readOnlyHint: true` and need nothing.
+- **Probe (E3c), against the production Codex binary** with a fake model:
+  - a thread started after enable calls a delegated tool without approval and still has its terminal grants;
+  - a non-delegated write tool is asked, or refused under `never`;
+  - a thread started after disable is asked, or refused under `never`.
+
+  This probe also produced the finding on reach above.
+- Effect: the desktop's two write tools are usable by Codex agents once the owner has enabled
+  the plugin. The three views are `readOnlyHint: true` and need nothing.
 
 ## 3. Interfaces (proposals, settled in each slice's PR)
 
@@ -388,9 +389,10 @@ probes, recorded in each PR.
 - **Tool scope.** The plugin keeps the default scope, so its tools appear on every unbound Track
   for the Planner and Workers, and the delegation covers both (§2.4). Narrowing to bound Tracks is
   one manifest field (`agent_tools_scope: "bound-track"`, `manifest.rs:138-145`).
-- **Approval grant reaches only new threads.** A Codex thread loaded before the owner enables
-  the plugin lists the two write tools without the delegated grant until it starts again: refused
-  under `never`, asked under `ask` (§2.4).
+- **Approval reach rests on the Codex reload.** Loaded threads pick up a grant change at the
+  refresh's `config/mcpServer/reload` (observed on Codex 0.159.2, §2.4). The kernel promises it only
+  for threads that start after the refresh, so a future Codex that stops re-reading the map on
+  reload would bring the gap back.
 - **Outbound from pages.** Pages that Chrome loads run script on the host and can try loopback
   services, such as unauthenticated dev servers behind preview ports. Only Chrome's Local Network
   Access checks stand between them, and `window_input` can click through their prompts. A launch
@@ -398,8 +400,8 @@ probes, recorded in each PR.
 - **Prompt injection.** Page text reaches models, and delegated writes are never asked, also
   when the Planner runs in the `ask` tier (the tier sets only the turn's policy,
   `provider/src/codex/approvals.rs:39-55`). Dropping `"approval": "delegated"` from the manifest
-  makes Codex ask (`ask`) or refuse (`never`) in threads started afterwards; loaded threads keep
-  their grant. The immediate off switch is disabling the plugin: routing then refuses every call.
+  makes Codex ask (`ask`) or refuse (`never`) after the next refresh. On Codex 0.159.2 this also
+  applies to loaded threads. The immediate off switch is disabling the plugin: routing then refuses every call.
 - **Abrupt stop loses the last cookies.** Plugin stop is SIGKILL, and Chrome commits cookies to
   disk in batches, so a login made seconds before a stop can be lost.
 - **Shared seat.** Human and agent input interleave; last input wins.
