@@ -258,13 +258,13 @@ struct WaitArgs {
     wait_text_absent: Option<Vec<String>>,
 }
 impl WaitArgs {
-    /// Whether a wait is asked for. Models echo defaults: `wait_for:"elapsed"` and the default
+    /// Whether a wait is asked for. Models echo defaults: the default `wait_for` and the default
     /// `settle_ms` ask for nothing.
     fn any(&self) -> bool {
         self.wait_ms.is_some()
             || self
                 .wait_for
-                .is_some_and(|wait_for| wait_for != WaitFor::Elapsed)
+                .is_some_and(|wait_for| wait_for != WaitFor::default())
             || self
                 .settle_ms
                 .is_some_and(|settle_ms| settle_ms != SETTLE_MS_DEFAULT)

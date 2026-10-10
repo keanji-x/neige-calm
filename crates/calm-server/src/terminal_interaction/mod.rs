@@ -399,8 +399,8 @@ impl TerminalInteraction {
     ) -> Result<Value> {
         readback.validate()?;
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
+        // The write rule and the keys rule; `client` re-proves the binding.
         self.ensure_keys_accepted(&resolved)?;
-        Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, true).await?;
         let client = self.client(identity, &resolved.binding).await?;
         let terminal = resolved.binding.terminal_id.as_str();
         let _serial = client.serial.lock().await;
@@ -567,16 +567,10 @@ impl TerminalInteraction {
         }
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
         let terminal = resolved.binding.terminal_id.as_str();
+        // A claim takes the write rule and the keys rule; `client` re-proves the binding.
         if action == "claim" {
             self.ensure_keys_accepted(&resolved)?;
         }
-        Self::check_binding(
-            self.repo.as_ref(),
-            identity,
-            &resolved.binding,
-            action == "claim",
-        )
-        .await?;
         let client = self.client(identity, &resolved.binding).await?;
         let _serial = client.serial.lock().await;
         let signal_seq = client.entry.signals.last_seq();
