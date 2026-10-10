@@ -23,6 +23,7 @@ members = [
     "crates/e2e-egress-proxy",
     "crates/compositor",
     "crates/window-stream",
+    "crates/chrome-control",
 ]
 
 [workspace.dependencies]

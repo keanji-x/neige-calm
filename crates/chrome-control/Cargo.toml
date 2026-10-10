@@ -1,0 +1,32 @@
+[package]
+name = "chrome-control"
+version = "0.1.0"
+edition = "2024"
+
+# Test fixtures: a fake Chrome that speaks a tiny CDP over fds 3/4, and an
+# owner process that launches it through `Chrome::launch` so a test can
+# SIGKILL the owner. Neither is a product binary.
+[[bin]]
+name = "chrome-control-fake-chrome"
+path = "tests/fixtures/fake-chrome/main.rs"
+test = false
+
+[[bin]]
+name = "chrome-control-test-owner"
+path = "tests/fixtures/owner/main.rs"
+test = false
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "net", "rt", "sync", "time"] }
+tracing = "0.1"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# probe example: a real Wayland display for a real Chrome.
+compositor = { path = "../compositor" }
+png = "0.18"
+tempfile = "3"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
