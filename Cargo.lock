@@ -741,6 +741,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "chrome-control"
+version = "0.1.0"
+dependencies = [
+ "compositor",
+ "futures-util",
+ "libc",
+ "png",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
