@@ -60,6 +60,8 @@ export type BoardHostItem = Readonly<{
   deletable?: boolean;
   /** The kernel's activity verdict, or `null` when the board has no overlay to read. */
   activity: CardActivity | null;
+  /** The composer's one-line state for the card, or `null`; see `CardComponentProps.notice`. */
+  notice: string | null;
 }>;
 
 function cardWithTitle(item: BoardHostItem): RegisteredCard {
@@ -270,5 +272,5 @@ function BoardCell({ host, item, focused, visible, onRemove }: {
       </div>
     );
   }
-  return <Component card={cardRef.current} host={capabilities} onRemove={onRemove} activity={item.activity} />;
+  return <Component card={cardRef.current} host={capabilities} onRemove={onRemove} activity={item.activity} notice={item.notice} />;
 }

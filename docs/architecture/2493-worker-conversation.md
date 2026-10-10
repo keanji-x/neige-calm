@@ -453,7 +453,8 @@ Codex-only; the TUI path gives up delivery without a viewer, `codex_adapter/mod.
 2. **Decided:** a human typing into a Parked worker in the browser stays allowed (§4). The safety
    boundary is the workspace: the gate samples HEAD and dirty state against its candidate
    (`gate-target-mismatch`, `task_verify_adapter/target.rs` `reasons()`), and the next prepare
-   refuses a dirty tree (`ensure_clean_tree`). The Planner's parked refusal is guidance.
+   refuses a dirty tree (`ensure_clean_tree`). The Planner's parked refusal is guidance. The
+   worker card states the parked attempt above the terminal and refuses nothing (#2526).
 3. **Confirm:** `Unbound` as a fourth state (§2); the 8,000-byte cap, which refuses 2 of 264
    rendered prompts on 4140 (max 9,213 B).
 

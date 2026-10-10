@@ -59,7 +59,7 @@ function mountTerminal(status: 'running' | 'starting' = 'running', width?: numbe
   });
   if (card === null) throw new Error('Missing terminal');
   return render(<div style={{ width }}><BoardHost host={createCardHost(registry, { recovery })} items={[
-    { card, title: 'Terminal', originalIndex: 0, deletable: true, activity: null },
+    { card, title: 'Terminal', originalIndex: 0, deletable: true, activity: null, notice: null },
   ]} visible activeCardId="card-1" onRemoveCard={() => {}} /></div>);
 }
 

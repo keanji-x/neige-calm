@@ -35,6 +35,7 @@ import {
   type Track, type TrackActivity, type TrackDetailWire,
 } from '../../../../core/domain/track.ts';
 import { cardActivityOf, type CardActivity } from '../../../../core/domain/activity.ts';
+import { parkedWorkerNotices } from '../../../../core/view/track-page.ts';
 import type {
   BoardHostItem, CardAddMenuEntry, CardHost, CardRegistry,
 } from '../../systems/cards/public.js';
@@ -1083,6 +1084,11 @@ function TrackRouteBody({
       .sort((left, right) => left.originalIndex - right.originalIndex)
       .map((slot) => slot.wire);
   }, [cardRegistry, cards]);
+  const tasks = useCurrentTaskRows(track.id, joinedTasks);
+  /* From the task rows the TASKS module draws, so a worker card and its row read one attempt status.
+   * `tasks` is a new array every render: keyed by content, so the board's items keep their identity. */
+  const noticeKey = JSON.stringify([...parkedWorkerNotices(tasks)]);
+  const notices = useMemo(() => new Map(JSON.parse(noticeKey) as [string, string][]), [noticeKey]);
   const gridItems: readonly BoardHostItem[] = useMemo(() => {
     const { visible } = partitionTrackCards(cardRegistry, cards);
     return [...visible]
@@ -1099,8 +1105,9 @@ function TrackRouteBody({
         deletable: slot.wire.deletable,
         /* The kernel's verdict for the card, from the same overlay the CARDS row reads. */
         activity: cardActivityOf(track, slot.card.id),
+        notice: notices.get(slot.card.id) ?? null,
       }));
-  }, [cardRegistry, cards, track]);
+  }, [cardRegistry, cards, track, notices]);
   const inputNotifications = useMemo(
     () => trackNotifications(track.attentionItems),
     [track.attentionItems],
@@ -1121,7 +1128,6 @@ function TrackRouteBody({
    * draws. A worker card whose kind no entry claims is `unknown` and its `?card=`
    * is bounced; its task keeps its `workerCardId` regardless, because the TASKS
    * row looks its activity verdict up by that id. */
-  const tasks = useCurrentTaskRows(track.id, joinedTasks);
   const openableCards = useMemo(() => new Set(gridItems.map((item) => item.card.id)), [gridItems]);
   const knownCard = requestedCardId !== null
     && gridItems.some((item) => item.card.id === requestedCardId);
