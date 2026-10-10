@@ -1,0 +1,20 @@
+[package]
+name = "window-stream"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+jpeg-encoder = { version = "0.7", features = ["simd"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+jpeg-decoder = { version = "0.3", default-features = false }
+tokio = { version = "1", features = ["macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
+# examples/dev.rs only: the loopback harness (removed in #2530 E3b).
+axum = { version = "0.8", features = ["ws"] }
+compositor = { path = "../compositor" }
