@@ -6,7 +6,8 @@
 //!   otherwise dropped.
 //! - EOF, a read or write error, or [`Cdp::close`] fails every pending call
 //!   with [`Error::Exited`] and refuses new ones.
-//! - Every call has a timeout.
+//! - Every call has a timeout, and a call whose future is dropped forgets its
+//!   pending entry.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -50,6 +51,8 @@ impl Closer {
     }
 }
 
+/// A handle to the connection; clones share it.
+#[derive(Clone)]
 pub(crate) struct Cdp {
     state: Closer,
     outgoing: mpsc::UnboundedSender<Vec<u8>>,
@@ -108,6 +111,11 @@ impl Cdp {
             state.pending.insert(id, reply);
             id
         };
+        // Removes the entry however this call ends, including by being dropped.
+        let _pending = Pending {
+            state: &self.state,
+            id,
+        };
         let mut message = json!({ "id": id, "method": method, "params": params });
         if let Some(session) = session {
             message["sessionId"] = session.into();
@@ -115,17 +123,13 @@ impl Cdp {
         let mut bytes = message.to_string().into_bytes();
         bytes.push(0);
         if self.outgoing.send(bytes).is_err() {
-            self.lock().pending.remove(&id);
             return Err(Error::Exited);
         }
         match tokio::time::timeout(timeout, answer).await {
-            Err(_) => {
-                self.lock().pending.remove(&id);
-                Err(Error::Timeout {
-                    what: format!("CDP {method}"),
-                    after: timeout,
-                })
-            }
+            Err(_) => Err(Error::Timeout {
+                what: format!("CDP {method}"),
+                after: timeout,
+            }),
             Ok(Err(_)) => Err(Error::Exited),
             Ok(Ok(Ok(result))) => Ok(result),
             Ok(Ok(Err(message))) => Err(Error::Cdp {
@@ -137,6 +141,18 @@ impl Cdp {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.state.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+struct Pending<'a> {
+    state: &'a Closer,
+    id: u64,
+}
+
+impl Drop for Pending<'_> {
+    fn drop(&mut self) {
+        let mut state = self.state.0.lock().unwrap_or_else(PoisonError::into_inner);
+        state.pending.remove(&self.id);
     }
 }
 
@@ -315,6 +331,18 @@ pub(crate) mod tests {
         let after = cdp.call("A.three", json!({}), None, LONG).await;
         assert!(matches!(after, Err(Error::Exited)), "{after:?}");
         assert!(matches!(cdp.subscribe(), Err(Error::Exited)));
+    }
+
+    #[tokio::test]
+    async fn a_dropped_call_forgets_its_pending_entry() {
+        let (cdp, mut peer) = connected();
+        let call = cdp.call("A.slow", json!({}), None, LONG);
+        let (dropped, _) = tokio::join!(
+            tokio::time::timeout(Duration::from_millis(50), call),
+            peer.recv()
+        );
+        assert!(dropped.is_err(), "the call was dropped while pending");
+        assert_eq!(cdp.lock().pending.len(), 0);
     }
 
     #[tokio::test]

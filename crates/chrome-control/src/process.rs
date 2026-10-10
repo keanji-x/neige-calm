@@ -127,6 +127,18 @@ impl ChildProcess {
         }
     }
 
+    /// Sends `signal` to the browser process alone. It is unreaped while
+    /// `self` lives, so its pid still names it.
+    pub(crate) fn signal_leader(&self, signal: libc::c_int) {
+        if self.lost.load(Ordering::SeqCst) {
+            return;
+        }
+        // SAFETY: kill has no memory effects. ESRCH cannot happen for an unreaped child.
+        if unsafe { libc::kill(self.pid as libc::pid_t, signal) } != 0 {
+            tracing::debug!(pid = self.pid, signal, error = %io::Error::last_os_error(), "kill");
+        }
+    }
+
     /// Resolves when the browser process has exited.
     pub(crate) async fn exited(&self) -> Result<ExitStatus> {
         let mut exit = self.exit.clone();
@@ -173,8 +185,10 @@ fn wait_without_reaping(pid: u32) -> io::Result<ExitStatus> {
             // Re-encode as a wait(2) status word for ExitStatus.
             let raw = match info.si_code {
                 libc::CLD_EXITED => (status & 0xff) << 8,
+                libc::CLD_KILLED => status,
                 libc::CLD_DUMPED => status | 0x80,
-                _ => status,
+                // WEXITED reports only the three codes above.
+                other => return Err(io::Error::other(format!("waitid si_code {other}"))),
             };
             return Ok(ExitStatus::from_raw(raw));
         }

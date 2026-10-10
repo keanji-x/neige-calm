@@ -2,8 +2,9 @@
 //!
 //! CDP targets carry no window identity, so "the page the owner sees" is the
 //! page target whose `document.visibilityState` is `"visible"`. Every
-//! operation attaches flat sessions for the duration of the call and detaches
-//! them afterwards; no session state outlives a call.
+//! operation attaches flat sessions for its own duration only. They are
+//! detached from a spawned task when the operation ends, also when its future
+//! is dropped, so no session outlives the call that made it.
 
 use std::time::Duration;
 
@@ -17,6 +18,24 @@ use crate::{Error, Result};
 
 /// Timeout for each single CDP call.
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+/// Timeout for attaching to one page and reading its visibility. A page that
+/// misses it (a busy or hung renderer) has unknown visibility.
+const VISIBILITY_TIMEOUT: Duration = Duration::from_secs(2);
+/// Upper bound of the part of a `navigate` timeout kept for reading the url
+/// and title after the load wait.
+const READ_RESERVE: Duration = Duration::from_secs(2);
+
+/// Whether a page is the one the owner sees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Visibility {
+    /// `document.visibilityState == "visible"`.
+    Visible,
+    /// Any other visibility state.
+    Hidden,
+    /// The page could not be attached or did not answer in time.
+    Unknown,
+}
 
 /// A page target.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -24,8 +43,7 @@ pub struct PageInfo {
     pub target_id: String,
     pub url: String,
     pub title: String,
-    /// `document.visibilityState == "visible"`.
-    pub visible: bool,
+    pub visibility: Visibility,
 }
 
 /// The visible page after [`crate::Chrome::navigate`].
@@ -33,7 +51,8 @@ pub struct PageInfo {
 pub struct Navigated {
     pub url: String,
     pub title: String,
-    /// `false` when the timeout passed before the new document's load event.
+    /// `false` when the new document's load event had not come when the load
+    /// wait ended.
     pub loaded: bool,
 }
 
@@ -52,65 +71,125 @@ pub struct PageText {
     pub text: String,
 }
 
-struct Attached {
+/// Sessions attached by one operation. Dropping it detaches them from a
+/// spawned task, so a dropped operation future still cleans up.
+struct Sessions {
+    cdp: Cdp,
+    ids: Vec<String>,
+}
+
+impl Sessions {
+    fn new(cdp: &Cdp) -> Self {
+        Self {
+            cdp: cdp.clone(),
+            ids: Vec::new(),
+        }
+    }
+}
+
+impl Drop for Sessions {
+    fn drop(&mut self) {
+        let ids = std::mem::take(&mut self.ids);
+        if ids.is_empty() {
+            return;
+        }
+        // Without a runtime the browser itself is going away with its sessions.
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let cdp = self.cdp.clone();
+        runtime.spawn(async move {
+            for id in ids {
+                let params = json!({ "sessionId": id });
+                if let Err(error) = cdp
+                    .call("Target.detachFromTarget", params, None, CALL_TIMEOUT)
+                    .await
+                {
+                    tracing::debug!(%error, session = %id, "detach failed");
+                }
+            }
+        });
+    }
+}
+
+/// A page and, when attaching worked, its session.
+struct Probed {
     info: PageInfo,
-    session: String,
+    session: Option<String>,
 }
 
 pub(crate) async fn list(cdp: &Cdp) -> Result<Vec<PageInfo>> {
-    let attached = attach_all(cdp).await?;
-    detach(cdp, &attached).await;
-    Ok(attached.into_iter().map(|page| page.info).collect())
+    let mut sessions = Sessions::new(cdp);
+    let pages = probe_all(cdp, &mut sessions).await?;
+    Ok(pages.into_iter().map(|page| page.info).collect())
 }
 
+/// Navigates the visible page. `timeout` bounds the whole call: the load wait
+/// ends early enough to leave a reserve for reading the url and title.
 pub(crate) async fn navigate(cdp: &Cdp, url: &str, timeout: Duration) -> Result<Navigated> {
-    let page = attach_visible(cdp).await?;
-    let result = navigate_in(cdp, &page.session, url, timeout).await;
-    detach(cdp, std::slice::from_ref(&page)).await;
-    result
+    let started = Instant::now();
+    let reserve = (timeout / 5).min(READ_RESERVE);
+    let load_deadline = started + timeout - reserve;
+    let mut sessions = Sessions::new(cdp);
+    let work = async {
+        let session = visible_session(cdp, &mut sessions).await?;
+        navigate_in(cdp, &session, url, load_deadline).await
+    };
+    tokio::time::timeout(timeout, work)
+        .await
+        .unwrap_or(Err(Error::Timeout {
+            what: format!("navigate to {url}"),
+            after: timeout,
+        }))
 }
 
 pub(crate) async fn read(cdp: &Cdp) -> Result<PageText> {
-    let page = attach_visible(cdp).await?;
-    let result = evaluate(
+    let mut sessions = Sessions::new(cdp);
+    let session = visible_session(cdp, &mut sessions).await?;
+    let text = evaluate(
         cdp,
-        &page.session,
+        &session,
         "({url: location.href, title: document.title, \
           text: document.body ? document.body.innerText : ''})",
+        CALL_TIMEOUT,
     )
-    .await;
-    detach(cdp, std::slice::from_ref(&page)).await;
-    parse(result?)
+    .await?;
+    parse(text)
 }
 
-/// The index of the one visible page, or the typed refusal naming the candidates.
+/// The index of the one visible page, or the typed refusal naming the
+/// candidates: every page when none is visible; the visible pages and those of
+/// unknown visibility when several are visible. Pages of unknown visibility do
+/// not block a single visible page.
 pub(crate) fn select_visible(pages: &[PageInfo]) -> Result<usize> {
-    let visible: Vec<usize> = (0..pages.len()).filter(|&i| pages[i].visible).collect();
+    let visible: Vec<usize> = (0..pages.len())
+        .filter(|&i| pages[i].visibility == Visibility::Visible)
+        .collect();
     match visible.as_slice() {
         [one] => Ok(*one),
         [] => Err(Error::NoVisiblePage {
             pages: pages.to_vec(),
         }),
-        many => Err(Error::AmbiguousPage {
-            pages: many.iter().map(|&i| pages[i].clone()).collect(),
+        _ => Err(Error::AmbiguousPage {
+            pages: pages
+                .iter()
+                .filter(|page| page.visibility != Visibility::Hidden)
+                .cloned()
+                .collect(),
         }),
     }
 }
 
-async fn attach_visible(cdp: &Cdp) -> Result<Attached> {
-    let mut attached = attach_all(cdp).await?;
-    let infos: Vec<PageInfo> = attached.iter().map(|page| page.info.clone()).collect();
-    match select_visible(&infos) {
-        Ok(index) => {
-            let page = attached.swap_remove(index);
-            detach(cdp, &attached).await;
-            Ok(page)
-        }
-        Err(error) => {
-            detach(cdp, &attached).await;
-            Err(error)
-        }
-    }
+/// The session of the one visible page; every session stays in `sessions`.
+async fn visible_session(cdp: &Cdp, sessions: &mut Sessions) -> Result<String> {
+    let pages = probe_all(cdp, sessions).await?;
+    let infos: Vec<PageInfo> = pages.iter().map(|page| page.info.clone()).collect();
+    let index = select_visible(&infos)?;
+    // A visible page answered its check, so it has a session.
+    pages[index]
+        .session
+        .clone()
+        .ok_or_else(|| unexpected("visible page without a session", &Value::Null))
 }
 
 #[derive(Deserialize)]
@@ -129,87 +208,81 @@ struct TargetInfo {
     title: String,
 }
 
-async fn attach_all(cdp: &Cdp) -> Result<Vec<Attached>> {
-    let targets: Targets = parse(
-        cdp.call("Target.getTargets", json!({}), None, CALL_TIMEOUT)
-            .await?,
-    )?;
-    let mut attached = Vec::new();
-    for target in targets.infos.into_iter().filter(|t| t.kind == "page") {
-        match attach_one(cdp, target).await {
-            Ok(page) => attached.push(page),
-            Err(error) => {
-                detach(cdp, &attached).await;
-                return Err(error);
-            }
-        }
-    }
-    Ok(attached)
-}
-
-async fn attach_one(cdp: &Cdp, target: TargetInfo) -> Result<Attached> {
+/// Every page target with its visibility. Attached sessions go into `sessions`.
+async fn probe_all(cdp: &Cdp, sessions: &mut Sessions) -> Result<Vec<Probed>> {
     let reply = cdp
-        .call(
-            "Target.attachToTarget",
-            json!({ "targetId": target.id, "flatten": true }),
-            None,
-            CALL_TIMEOUT,
-        )
+        .call("Target.getTargets", json!({}), None, CALL_TIMEOUT)
         .await?;
-    let session = reply
-        .get("sessionId")
-        .and_then(Value::as_str)
-        .ok_or_else(|| unexpected("Target.attachToTarget", &reply))?
-        .to_owned();
-    let page = Attached {
-        info: PageInfo {
+    let targets: Targets = parse(reply)?;
+    let mut pages = Vec::new();
+    for target in targets.infos.into_iter().filter(|t| t.kind == "page") {
+        let session = match attach(cdp, &target.id).await {
+            Ok(session) => {
+                sessions.ids.push(session.clone());
+                Some(session)
+            }
+            Err(Error::Exited) => return Err(Error::Exited),
+            Err(error) => {
+                tracing::debug!(%error, target = %target.id, "attach failed");
+                None
+            }
+        };
+        let visibility = match &session {
+            None => Visibility::Unknown,
+            Some(session) => {
+                let state = "document.visibilityState";
+                match evaluate(cdp, session, state, VISIBILITY_TIMEOUT).await {
+                    Ok(state) if state == "visible" => Visibility::Visible,
+                    Ok(_) => Visibility::Hidden,
+                    Err(Error::Exited) => return Err(Error::Exited),
+                    Err(error) => {
+                        tracing::debug!(%error, target = %target.id, "visibility unknown");
+                        Visibility::Unknown
+                    }
+                }
+            }
+        };
+        let info = PageInfo {
             target_id: target.id,
             url: target.url,
             title: target.title,
-            visible: false,
-        },
-        session,
-    };
-    match evaluate(cdp, &page.session, "document.visibilityState").await {
-        Ok(state) => Ok(Attached {
-            info: PageInfo {
-                visible: state == "visible",
-                ..page.info
-            },
-            session: page.session,
-        }),
-        Err(error) => {
-            detach(cdp, std::slice::from_ref(&page)).await;
-            Err(error)
-        }
+            visibility,
+        };
+        pages.push(Probed { info, session });
     }
+    Ok(pages)
 }
 
-async fn detach(cdp: &Cdp, pages: &[Attached]) {
-    for page in pages {
-        let params = json!({ "sessionId": page.session });
-        if let Err(error) = cdp
-            .call("Target.detachFromTarget", params, None, CALL_TIMEOUT)
-            .await
-        {
-            tracing::debug!(%error, target = %page.info.target_id, "detach failed");
-        }
-    }
+async fn attach(cdp: &Cdp, target: &str) -> Result<String> {
+    let params = json!({ "targetId": target, "flatten": true });
+    let reply = cdp
+        .call("Target.attachToTarget", params, None, VISIBILITY_TIMEOUT)
+        .await?;
+    reply
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| unexpected("Target.attachToTarget", &reply))
 }
 
-async fn navigate_in(cdp: &Cdp, session: &str, url: &str, timeout: Duration) -> Result<Navigated> {
-    let deadline = Instant::now() + timeout;
+async fn navigate_in(
+    cdp: &Cdp,
+    session: &str,
+    url: &str,
+    load_deadline: Instant,
+) -> Result<Navigated> {
     let session_call =
         |method: &'static str, params: Value| cdp.call(method, params, Some(session), CALL_TIMEOUT);
     session_call("Page.enable", json!({})).await?;
     session_call("Page.setLifecycleEventsEnabled", json!({ "enabled": true })).await?;
     let mut events = cdp.subscribe()?;
+    let until_deadline = load_deadline.saturating_duration_since(Instant::now());
     let loaded = match cdp
         .call(
             "Page.navigate",
             json!({ "url": url }),
             Some(session),
-            timeout,
+            until_deadline,
         )
         .await
     {
@@ -225,7 +298,7 @@ async fn navigate_in(cdp: &Cdp, session: &str, url: &str, timeout: Duration) -> 
             match reply.get("loaderId").and_then(Value::as_str) {
                 // A same-document navigation has no new document to load.
                 None => true,
-                Some(loader) => wait_for_load(&mut events, session, loader, deadline).await?,
+                Some(loader) => wait_for_load(&mut events, session, loader, load_deadline).await?,
             }
         }
     };
@@ -233,6 +306,7 @@ async fn navigate_in(cdp: &Cdp, session: &str, url: &str, timeout: Duration) -> 
         cdp,
         session,
         "({url: location.href, title: document.title})",
+        CALL_TIMEOUT,
     )
     .await?;
     let Location { url, title } = parse(now)?;
@@ -266,13 +340,13 @@ async fn wait_for_load(
     }
 }
 
-async fn evaluate(cdp: &Cdp, session: &str, expression: &str) -> Result<Value> {
+async fn evaluate(cdp: &Cdp, session: &str, expression: &str, timeout: Duration) -> Result<Value> {
     let mut reply = cdp
         .call(
             "Runtime.evaluate",
             json!({ "expression": expression, "returnByValue": true }),
             Some(session),
-            CALL_TIMEOUT,
+            timeout,
         )
         .await?;
     if let Some(exception) = reply.get("exceptionDetails") {

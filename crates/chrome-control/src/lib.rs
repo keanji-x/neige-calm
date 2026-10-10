@@ -26,4 +26,4 @@ mod process;
 pub use chrome::Chrome;
 pub use error::{Error, Result};
 pub use launch::{LaunchConfig, WaylandEnv};
-pub use page::{Navigated, PageInfo, PageText};
+pub use page::{Navigated, PageInfo, PageText, Visibility};

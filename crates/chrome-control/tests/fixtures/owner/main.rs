@@ -3,8 +3,11 @@
 //!
 //! Usage: `chrome-control-test-owner <binary> <profile> <home> <display> <runtime-dir>`
 //!
-//! Launches through `Chrome::launch`, prints `browser <pid>`, then waits. A
-//! `stop` line on stdin stops the browser and prints `stopped <status>`.
+//! Before launching it opens `<profile>/owner-inherited-marker` without
+//! close-on-exec on fd 50 or above, as a careless host process might. It launches through
+//! `Chrome::launch`, prints `browser <pid>`, then waits. A `stop` line on stdin
+//! stops the browser and prints `stopped <status>`; stdin EOF drops the handle
+//! (killing the browser's group) and exits.
 #[cfg(target_os = "linux")]
 fn main() {
     owner::main();
@@ -34,6 +37,17 @@ mod owner {
             },
             size: (800, 600),
         };
+        let marker = std::path::Path::new(profile).join("owner-inherited-marker");
+        std::fs::write(&marker, b"").unwrap();
+        let marker = std::ffi::CString::new(marker.into_os_string().into_encoded_bytes()).unwrap();
+        // Kept at fd 50 or above, away from the 3 and 4 that the CDP pipes take
+        // over in the browser. SAFETY: plain fd calls; the descriptor stays
+        // open, without close-on-exec, for the owner's lifetime.
+        unsafe {
+            let fd = libc::open(marker.as_ptr(), libc::O_RDONLY);
+            assert!(fd >= 0 && libc::fcntl(fd, libc::F_DUPFD, 50) >= 50);
+            libc::close(fd);
+        }
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -54,9 +68,7 @@ mod owner {
                 return;
             }
         }
-        // stdin closed: keep owning the browser until killed.
-        loop {
-            std::thread::park();
-        }
+        // stdin closed: the test that started us is gone. Returning drops the
+        // handle, which kills the browser's group.
     }
 }

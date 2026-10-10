@@ -17,7 +17,7 @@
 //!
 //! `probe owner <chrome> <profile> <home> <display> <runtime-dir>` is the
 //! internal owner process: it launches Chrome, prints `browser <pid>` and
-//! waits to be killed.
+//! holds it until it is killed or its stdin closes.
 #[cfg(target_os = "linux")]
 fn main() -> probe::Res<()> {
     probe::main()
@@ -330,6 +330,7 @@ mod probe {
             .arg(&setup.home)
             .arg(setup.compositor.wayland_socket())
             .arg(&setup.run_dir)
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()?;
         let mut line = String::new();
@@ -364,9 +365,10 @@ mod probe {
             .build()?;
         let chrome = runtime.block_on(Chrome::launch(config))?;
         println!("browser {}", chrome.pid());
-        loop {
-            std::thread::park();
-        }
+        // Hold the browser until the probe kills us or closes our stdin.
+        for _ in std::io::stdin().lines() {}
+        drop(chrome);
+        Ok(())
     }
 
     #[derive(Debug, Clone)]

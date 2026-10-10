@@ -3,7 +3,7 @@
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -27,10 +27,11 @@ pub struct WaylandEnv {
 pub struct LaunchConfig {
     /// The Chrome executable.
     pub binary: PathBuf,
-    /// `--user-data-dir`: the persistent profile. Created (0700) if missing.
+    /// `--user-data-dir`: the persistent profile. Created if missing and set
+    /// to 0700 on every launch.
     pub profile_dir: PathBuf,
     /// `HOME` of the browser, so its crash database and NSS state stay out of
-    /// the caller's home. Created (0700) if missing.
+    /// the caller's home. Created if missing and set to 0700 on every launch.
     pub home_dir: PathBuf,
     pub wayland: WaylandEnv,
     /// `--window-size` in pixels.
@@ -46,8 +47,11 @@ const INHERITED_PREFIX: &str = "LC_";
 const CDP_COMMANDS_FD: RawFd = 3;
 const CDP_RESPONSES_FD: RawFd = 4;
 /// Child-side pipe ends are parked at or above this number until `pre_exec`
-/// moves them onto 3 and 4, so they can never collide with those targets.
+/// moves them onto 3 and 4, so the first `dup2` can never clobber the source
+/// of the second.
 const PARKED_FD_MIN: RawFd = 10;
+/// Every descriptor from here up is close-on-exec in the browser.
+const FIRST_UNSHARED_FD: libc::c_uint = 5;
 
 fn arguments(config: &LaunchConfig) -> Vec<OsString> {
     let mut profile = OsString::from("--user-data-dir=");
@@ -120,11 +124,14 @@ pub(crate) async fn spawn(config: &LaunchConfig) -> Result<Spawned> {
         binary: config.binary.clone(),
         source,
     };
+    // Private even when the directory already existed with a wider mode. A
+    // directory we do not own cannot be chmodded, so launch refuses it.
     for dir in [&config.profile_dir, &config.home_dir] {
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(dir)
+            .and_then(|()| std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)))
             .map_err(spawn_error)?;
     }
     let (child_commands, commands) = cdp_pipe().map_err(spawn_error)?;
@@ -148,20 +155,15 @@ pub(crate) async fn spawn(config: &LaunchConfig) -> Result<Spawned> {
             if libc::getppid() != parent {
                 return Err(io::Error::from_raw_os_error(libc::ECHILD));
             }
-            // Whatever already sits on 3 or 4 (std's close-on-exec error pipe can)
-            // stays open under another number until exec.
-            for target in [CDP_COMMANDS_FD, CDP_RESPONSES_FD] {
-                if libc::fcntl(target, libc::F_GETFD) != -1
-                    && libc::fcntl(target, libc::F_DUPFD_CLOEXEC, PARKED_FD_MIN) == -1
-                {
-                    return Err(io::Error::last_os_error());
-                }
-            }
+            // dup2 replaces whatever sits on 3 and 4. std's exec-error pipe lands
+            // there only when the caller left those numbers free; an exec
+            // failure then shows as an early exit instead of a spawn error.
             if libc::dup2(commands_fd, CDP_COMMANDS_FD) == -1
                 || libc::dup2(responses_fd, CDP_RESPONSES_FD) == -1
             {
                 return Err(io::Error::last_os_error());
             }
+            close_above_on_exec(FIRST_UNSHARED_FD);
             Ok(())
         });
     }
@@ -173,6 +175,40 @@ pub(crate) async fn spawn(config: &LaunchConfig) -> Result<Spawned> {
         commands,
         responses,
     })
+}
+
+/// Marks every descriptor from `first` up close-on-exec, so nothing the
+/// caller leaked without that flag reaches the browser. Runs between fork and
+/// exec: system calls only.
+fn close_above_on_exec(first: libc::c_uint) {
+    // SAFETY: close_range only changes descriptor flags.
+    let done = unsafe {
+        libc::syscall(
+            libc::SYS_close_range,
+            first,
+            libc::c_uint::MAX,
+            libc::CLOSE_RANGE_CLOEXEC,
+        )
+    } == 0;
+    if done {
+        return;
+    }
+    // Kernels before 5.11 (ENOSYS, or EINVAL for the flag): one fcntl per number.
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit fills the struct; fcntl on a closed number fails harmlessly.
+    unsafe {
+        let last = if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) == 0 {
+            limit.rlim_cur.min(1 << 20) as libc::c_int
+        } else {
+            1 << 16
+        };
+        for fd in first as libc::c_int..last {
+            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+        }
+    }
 }
 
 /// A close-on-exec pipe as (read end, write end).
@@ -234,11 +270,5 @@ mod tests {
                 "--window-size=1280,800",
             ]
         );
-        for arg in args {
-            assert!(
-                !arg.starts_with("--enable-automation") && !arg.starts_with("--headless"),
-                "{arg}"
-            );
-        }
     }
 }

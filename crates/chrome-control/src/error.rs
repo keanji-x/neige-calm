@@ -28,10 +28,12 @@ pub enum Error {
     /// Waiting for the browser process failed; something else reaped it.
     #[error("waiting for Chrome failed: {0}")]
     Wait(String),
-    /// No page target reports `document.visibilityState == "visible"`.
+    /// No page target reports `document.visibilityState == "visible"`; names
+    /// every page, including those of unknown visibility.
     #[error("no visible page; pages: {pages:?}")]
     NoVisiblePage { pages: Vec<PageInfo> },
-    /// More than one page is visible (a second window or a popup).
+    /// More than one page is visible (a second window or a popup); names the
+    /// visible pages and those of unknown visibility.
     #[error("more than one visible page: {pages:?}")]
     AmbiguousPage { pages: Vec<PageInfo> },
     /// Chrome answered a CDP call with an error, or a script threw.

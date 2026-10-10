@@ -16,8 +16,9 @@ use crate::{Error, Result};
 const LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long launch waits for the exit status after the CDP pipe closed.
 const EXIT_GRACE: Duration = Duration::from_secs(5);
-/// Time between SIGTERM and SIGKILL in [`Chrome::stop`].
-const STOP_GRACE: Duration = Duration::from_secs(1);
+/// How long [`Chrome::stop`] waits for the browser after SIGTERM: time for an
+/// orderly shutdown in which the network service flushes cookies to disk.
+const STOP_GRACE: Duration = Duration::from_secs(5);
 
 /// Exit codes of a browser that found its profile held by another browser
 /// before it answered on the CDP pipe:
@@ -32,7 +33,7 @@ const PROFILE_BUSY_EXIT_CODES: [i32; 2] = [0, 21];
 /// A running Chrome that this handle owns.
 ///
 /// Dropping the handle SIGKILLs the browser's process group; [`Chrome::stop`]
-/// stops it with SIGTERM first. If the owning process dies, SIGKILL included,
+/// asks the browser to shut down first. If the owning process dies, SIGKILL included,
 /// the browser process gets SIGKILL from `PR_SET_PDEATHSIG`.
 pub struct Chrome {
     // Field order: the CDP pipe closes before the group is killed.
@@ -80,12 +81,16 @@ impl Chrome {
     }
 
     /// Navigates the one visible page and returns its url and title after the
-    /// new document's load event, or when `timeout` passes (`loaded: false`).
+    /// new document's load event, or `loaded: false` when the load did not come
+    /// in time. `timeout` bounds the whole call; when even the url and title
+    /// cannot be read within it, the result is [`Error::Timeout`].
     pub async fn navigate(&self, url: &str, timeout: Duration) -> Result<Navigated> {
         page::navigate(&self.cdp, url, timeout).await
     }
 
-    /// Url, title and `document.body.innerText` of the one visible page.
+    /// Url, title and `document.body.innerText` of the one visible page. Pages
+    /// whose visibility cannot be read within two seconds count as unknown and
+    /// do not block a single visible page.
     pub async fn read_page(&self) -> Result<PageText> {
         page::read(&self.cdp).await
     }
@@ -95,11 +100,12 @@ impl Chrome {
         self.process.exited().await
     }
 
-    /// Sends SIGTERM to the browser's process group, waits up to one second
-    /// for the browser to exit, then sends SIGKILL to the group (which also
-    /// ends helpers still in it) and returns the browser's exit status.
+    /// Sends SIGTERM to the browser process alone, so Chrome shuts down in
+    /// order (its network service flushes cookies), waits up to five seconds
+    /// for it to exit, then sends SIGKILL to the whole group, which ends any
+    /// helper still in it, and returns the browser's exit status.
     pub async fn stop(self) -> Result<ExitStatus> {
-        self.process.signal_group(libc::SIGTERM);
+        self.process.signal_leader(libc::SIGTERM);
         let _ = tokio::time::timeout(STOP_GRACE, self.process.exited()).await;
         self.process.signal_group(libc::SIGKILL);
         self.process.exited().await

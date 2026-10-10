@@ -238,6 +238,132 @@ async fn stop_ends_the_browser_group() {
     );
 }
 
+/// `stop()` sends SIGTERM to the browser alone, so Chrome shuts down in order;
+/// only then does SIGKILL reach the rest of the group.
+#[tokio::test]
+async fn stop_sends_sigterm_to_the_browser_only() {
+    let dirs = dirs("helpers");
+    let chrome = Chrome::launch(config(&dirs)).await.unwrap();
+    let (in_group, _own_group, _session) = helpers(&dirs.profile);
+    chrome.stop().await.unwrap();
+    assert!(in_group.dies_within(DEATH_BOUND));
+    assert!(
+        !dirs.profile.join("in-group-helper-sigterm").exists(),
+        "stop sent SIGTERM to the whole group, not to the browser alone"
+    );
+}
+
+/// A browser that does not exit on SIGTERM gets the full grace period (time
+/// to flush cookies), then SIGKILL.
+#[tokio::test]
+async fn stop_gives_the_browser_five_seconds_before_sigkill() {
+    let dirs = dirs("ignore-term");
+    let chrome = Chrome::launch(config(&dirs)).await.unwrap();
+    let started = Instant::now();
+    let status = chrome.stop().await.unwrap();
+    let took = started.elapsed();
+    assert_eq!(
+        std::os::unix::process::ExitStatusExt::signal(&status),
+        Some(libc::SIGKILL)
+    );
+    assert!(
+        took >= Duration::from_millis(4900) && took < Duration::from_secs(8),
+        "stop took {took:?}"
+    );
+}
+
+/// An owner whose stdin closes (its test panicked, its host went away) exits,
+/// and its browser goes with it.
+#[test]
+fn owner_exits_when_its_stdin_closes() {
+    let dirs = dirs("serve");
+    let (mut owner, browser) = start_owner(&dirs, &[]);
+    let browser = Proc::of(browser);
+    drop(owner.stdin.take());
+    let deadline = Instant::now() + DEATH_BOUND;
+    let mut exited = false;
+    while !exited && Instant::now() < deadline {
+        exited = owner.try_wait().unwrap().is_some();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    if !exited {
+        owner.kill().unwrap();
+        owner.wait().unwrap();
+    }
+    assert!(exited, "the owner kept running after its stdin closed");
+    assert!(browser.dies_within(DEATH_BOUND));
+}
+
+/// PR_SET_PDEATHSIG fires when the forking thread exits, so the fork must not
+/// happen on the caller's (possibly short-lived) thread.
+#[test]
+fn a_browser_outlives_the_thread_that_launched_it() {
+    let dirs = dirs("serve");
+    let config = config(&dirs);
+    let (chrome, browser) = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let chrome = runtime.block_on(Chrome::launch(config)).unwrap();
+        let browser = Proc::of(chrome.pid() as i32);
+        (chrome, browser)
+    })
+    .join()
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(800));
+    assert!(
+        browser.alive(),
+        "the browser died with the thread that launched it"
+    );
+    drop(chrome);
+}
+
+/// Descriptors the owner leaked without close-on-exec stay out of the
+/// browser; the CDP pipes on 3 and 4 are there.
+#[test]
+fn owner_descriptors_do_not_reach_the_browser() {
+    let dirs = dirs("serve");
+    let (mut owner, browser) = start_owner(&dirs, &[]);
+    let fds: BTreeMap<i32, PathBuf> = std::fs::read_dir(format!("/proc/{browser}/fd"))
+        .unwrap()
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let fd = entry.file_name().to_str()?.parse().ok()?;
+            Some((fd, std::fs::read_link(entry.path()).ok()?))
+        })
+        .collect();
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+    let marker = dirs.profile.join("owner-inherited-marker");
+    assert!(!fds.values().any(|target| *target == marker), "{fds:?}");
+    for fd in [3, 4] {
+        let target = fds.get(&fd).map(|t| t.to_string_lossy().into_owned());
+        assert!(
+            target.as_deref().is_some_and(|t| t.starts_with("pipe:")),
+            "{fds:?}"
+        );
+    }
+}
+
+/// The profile and home are private (0700), also when they already exist
+/// with a wider mode.
+#[tokio::test]
+async fn profile_and_home_are_made_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let dirs = dirs("serve");
+    std::fs::create_dir(&dirs.home).unwrap();
+    for dir in [&dirs.profile, &dirs.home] {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let chrome = Chrome::launch(config(&dirs)).await.unwrap();
+    for dir in [&dirs.profile, &dirs.home] {
+        let mode = std::fs::metadata(dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "{}", dir.display());
+    }
+    chrome.stop().await.unwrap();
+}
+
 /// The owner's `stop` path (what `desktop` runs on stdin EOF) ends the browser.
 #[test]
 fn owner_stop_line_stops_the_browser() {

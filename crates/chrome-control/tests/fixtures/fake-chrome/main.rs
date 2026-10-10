@@ -7,11 +7,16 @@
 //!   a group of its own, one starts a new session. Their pids go to
 //!   `<user-data-dir>/fake-chrome-helpers` as `in_group own_group session`.
 //!   Then serve.
+//!   The in-group helper records a SIGTERM by creating
+//!   `<user-data-dir>/in-group-helper-sigterm` before it exits.
+//! - `ignore-term`: ignore SIGTERM, then serve.
 //! - `exit:<code>`: exit at once with `code` (a hand-off to a profile holder).
 //!
 //! Unlike Chrome, it does not exit when the CDP pipe closes, so tests observe
-//! `PR_SET_PDEATHSIG` and group signals rather than pipe EOF. Every process
-//! here ends by itself after `LIFETIME`, so a failing test leaves nothing for long.
+//! `PR_SET_PDEATHSIG` and group signals rather than pipe EOF. The browser
+//! process ends by itself `LIFETIME` after its CDP pipe closes, and each helper
+//! `LIFETIME` after it starts, so a failing test leaves nothing for long once
+//! its owner is gone.
 #[cfg(target_os = "linux")]
 fn main() {
     fake::main();
@@ -22,13 +27,27 @@ fn main() {}
 
 #[cfg(target_os = "linux")]
 mod fake {
+    use std::ffi::CString;
     use std::fs::{self, File};
     use std::io::{BufRead, BufReader, Write};
     use std::os::fd::FromRawFd;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicPtr, Ordering};
     use std::time::Duration;
 
     const LIFETIME: Duration = Duration::from_secs(20);
+
+    /// Path the in-group helper creates when SIGTERM reaches it.
+    static SIGTERM_MARKER: AtomicPtr<libc::c_char> = AtomicPtr::new(std::ptr::null_mut());
+
+    extern "C" fn record_sigterm(_: libc::c_int) {
+        // SAFETY: open and _exit are async-signal-safe; the path is a leaked CString.
+        unsafe {
+            let path = SIGTERM_MARKER.load(Ordering::SeqCst);
+            libc::open(path, libc::O_CREAT | libc::O_WRONLY, 0o600);
+            libc::_exit(0);
+        }
+    }
 
     pub fn main() {
         let profile = std::env::args()
@@ -39,9 +58,27 @@ mod fake {
         if let Some(code) = mode.strip_prefix("exit:") {
             std::process::exit(code.parse().expect("exit code"));
         }
+        if mode == "ignore-term" {
+            // SAFETY: plain signal disposition change.
+            unsafe { libc::signal(libc::SIGTERM, libc::SIG_IGN) };
+        }
         if mode == "helpers" {
+            let marker = profile.join("in-group-helper-sigterm");
+            let marker = CString::new(marker.into_os_string().into_encoded_bytes()).unwrap();
+            SIGTERM_MARKER.store(marker.into_raw(), Ordering::SeqCst);
+            // The in-group helper inherits the handler from its first instruction;
+            // the browser restores the default right after the fork.
+            // SAFETY: plain signal disposition changes.
+            unsafe {
+                libc::signal(
+                    libc::SIGTERM,
+                    record_sigterm as extern "C" fn(libc::c_int) as libc::sighandler_t,
+                )
+            };
+            let in_group = helper(|| {});
+            unsafe { libc::signal(libc::SIGTERM, libc::SIG_DFL) };
             let pids = [
-                helper(|| {}),
+                in_group,
                 // SAFETY: plain system calls in the forked child.
                 helper(|| unsafe {
                     libc::setpgid(0, 0);
