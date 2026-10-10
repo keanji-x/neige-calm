@@ -17,6 +17,7 @@ pub mod areas;
 pub mod cards;
 pub mod claude;
 pub mod claude_cards;
+pub mod claude_version;
 pub mod codex;
 pub mod codex_cards;
 pub mod conversations_shared;
@@ -90,6 +91,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(daily_planner::router())
         .merge(today_summary::router())
         .merge(claude_cards::router())
+        .merge(claude_version::router())
         .merge(codex_cards::router())
         .merge(fs::router())
         .merge(github_preview::router())

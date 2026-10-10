@@ -224,7 +224,26 @@ pub(crate) fn runtime_view_from_runtime(runtime: &WorkerSessionProjection) -> Ca
         source: (runtime.kind == WorkerSessionKind::SharedPlanner).then(|| "shared".to_string()),
         thread_status: projected_thread_status(runtime).map(ToOwned::to_owned),
         last_turn_completed_ms: runtime.last_turn_completed_ms,
+        claude_version: claude_running_version(runtime).map(ToOwned::to_owned),
     }
+}
+
+/// The key of a Claude card runtime's `handle_state_json` that holds the first token
+/// `claude --version` printed when its child was started (#2516). A Claude card runtime carries no
+/// harness snapshot, so this is the only key its document has.
+pub const CLAUDE_VERSION_STATE_KEY: &str = "claude_version";
+
+/// The Claude version a Claude card runtime's child was started on, when one was recorded.
+pub fn claude_running_version(runtime: &WorkerSessionProjection) -> Option<&str> {
+    if runtime.kind != WorkerSessionKind::ClaudeCard {
+        return None;
+    }
+    runtime
+        .handle_state_json
+        .as_ref()?
+        .get(CLAUDE_VERSION_STATE_KEY)
+        .and_then(Value::as_str)
+        .filter(|version| !version.is_empty())
 }
 
 fn projected_thread_status(runtime: &WorkerSessionProjection) -> Option<&'static str> {
@@ -283,4 +302,66 @@ fn runtime_marks_shared(runtime: &WorkerSessionProjection) -> bool {
 
 fn non_empty(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+mod claude_version_projection_tests {
+    use super::*;
+    use crate::ids::{CardId, TrackId};
+    use serde_json::json;
+
+    fn runtime(kind: WorkerSessionKind, state: Option<Value>) -> WorkerSessionProjection {
+        WorkerSessionProjection {
+            id: "ws-1".into(),
+            card_id: "card-1".into(),
+            kind,
+            agent_provider: Some(AgentProvider::Claude),
+            status: WorkerSessionState::Running,
+            terminal_run_id: Some("term-1".into()),
+            thread_id: None,
+            session_id: Some("session-1".into()),
+            active_turn_id: None,
+            handle_state_json: state,
+            created_at_ms: 1,
+            updated_at_ms: 2,
+            completed_at_ms: None,
+            last_turn_completed_ms: None,
+        }
+    }
+
+    fn projected(runtime: &WorkerSessionProjection) -> Option<String> {
+        let mut card = Card {
+            id: CardId::from("card-1"),
+            track_id: TrackId::from("track-1"),
+            kind: "claude".into(),
+            sort: 0.0,
+            payload: json!({}),
+            title: None,
+            runtime: None,
+            deletable: true,
+            created_at: 0,
+            updated_at: 0,
+        };
+        project_runtime_fields(&mut card, runtime);
+        card.runtime.expect("projected runtime").claude_version
+    }
+
+    /// #2516: a card's projection carries the version its Claude child started on.
+    #[test]
+    fn a_claude_card_projection_carries_its_running_version() {
+        let recorded = Some(json!({ CLAUDE_VERSION_STATE_KEY: "2.1.259" }));
+        assert_eq!(
+            projected(&runtime(WorkerSessionKind::ClaudeCard, recorded.clone())).as_deref(),
+            Some("2.1.259")
+        );
+        assert_eq!(
+            projected(&runtime(WorkerSessionKind::ClaudeCard, None)),
+            None
+        );
+        // Only a Claude card's runtime has that document; another runtime's state is not read so.
+        assert_eq!(
+            projected(&runtime(WorkerSessionKind::CodexCard, recorded)),
+            None
+        );
+    }
 }

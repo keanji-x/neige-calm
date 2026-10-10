@@ -3755,6 +3755,71 @@
         }
       }
     },
+    "/api/claude/installed-version": {
+      "get": {
+        "tags": [
+          "claude"
+        ],
+        "summary": "The installed Claude version as the server last saw it: refreshed at boot, every 10 minutes,\nafter a Claude card's Update, and by the refresh route. Never runs the CLI; `version` is null\nuntil one run has answered.",
+        "operationId": "get_claude_installed_version",
+        "responses": {
+          "200": {
+            "description": "The cached answer of `claude --version`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaudeInstalledVersion"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`: no valid session cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/claude/installed-version/refresh": {
+      "post": {
+        "tags": [
+          "claude"
+        ],
+        "summary": "Run `claude --version` again and keep its answer, unless the last such run was less than a\nminute ago. Answers once the run has finished (or was skipped), so a read after it sees the\nanswer; a failed run keeps the last version.",
+        "operationId": "refresh_claude_installed_version",
+        "responses": {
+          "204": {
+            "description": "Refreshed, or skipped within a minute of the last refresh"
+          },
+          "401": {
+            "description": "`unauthorized`: no valid session cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`forbidden`: a write whose `Origin` is not one of this server's origins.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/fs/gitdiff": {
       "get": {
         "tags": [
@@ -12720,6 +12785,13 @@
           "status"
         ],
         "properties": {
+          "claude_version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A Claude card's child: the first token `claude --version` printed when it was started\n(#2516). Absent on other runtimes, and when that run gave no answer."
+          },
           "kind": {
             "$ref": "#/components/schemas/WorkerSessionKind"
           },
@@ -12838,6 +12910,21 @@
               "$ref": "#/components/schemas/ReasoningEffortOption"
             },
             "description": "The efforts a selection of this model may carry: Codex's options, or the Claude CLI's\n`supportedEffortLevels` (empty when it declares none, and then only `null` is accepted)."
+          }
+        }
+      },
+      "ClaudeInstalledVersion": {
+        "type": "object",
+        "description": "`GET /api/claude/installed-version` (#2516): the first token the server's last\n`claude --version` run printed; null until a run has answered.",
+        "required": [
+          "version"
+        ],
+        "properties": {
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -14489,7 +14576,7 @@
               "string",
               "null"
             ],
-            "description": "Working directory Claude runs in. Empty string or missing -> `$HOME`\n(then `cwd` of server)."
+            "description": "Working directory Claude runs in. Empty string or missing -> the track's\nworkspace (its worktree on an attached track)."
           },
           "icon_bg": {
             "type": [

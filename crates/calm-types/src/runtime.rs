@@ -44,6 +44,15 @@ impl AgentProvider {
     }
 }
 
+/// `GET /api/claude/installed-version` (#2516): the first token the server's last
+/// `claude --version` run printed; null until a run has answered.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct ClaudeInstalledVersion {
+    #[schema(required = true)]
+    pub version: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct WorkerSessionProjection {

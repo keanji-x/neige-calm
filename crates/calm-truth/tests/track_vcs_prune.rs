@@ -184,16 +184,27 @@ async fn insert_active_session(
     suffix: &str,
     handle_state_json: Option<&str>,
 ) {
+    insert_active_provider_session(pool, track_id, suffix, "codex", handle_state_json).await;
+}
+
+async fn insert_active_provider_session(
+    pool: &SqlitePool,
+    track_id: &TrackId,
+    suffix: &str,
+    provider: &str,
+    handle_state_json: Option<&str>,
+) {
     let now = now_ms();
     sqlx::query(
         r#"INSERT INTO worker_sessions (
                id, track_id, provider, mode, contract, state, handle_state_json,
                created_at_ms, updated_at_ms
            )
-           VALUES (?1, ?2, 'codex', 'resumable', 'executor', 'running', ?3, ?4, ?5)"#,
+           VALUES (?1, ?2, ?3, 'resumable', 'executor', 'running', ?4, ?5, ?6)"#,
     )
     .bind(format!("session-{suffix}"))
     .bind(track_id.as_str())
+    .bind(provider)
     .bind(handle_state_json)
     .bind(now)
     .bind(now)
@@ -947,6 +958,40 @@ async fn parseable_rejected_active_snapshots_keep_all_commits() {
             );
         }
     }
+}
+
+/// #2516: a Claude card's runtime records the Claude version its child started on; that document
+/// is no harness snapshot and must not hold a track's history back. The same document on any
+/// other runtime still does.
+#[tokio::test]
+async fn a_claude_card_runtime_version_document_does_not_block_prune() {
+    let version = json!({ "claude_version": "2.1.280" }).to_string();
+
+    let claude = fixture_with_commits(5).await;
+    insert_active_provider_session(
+        claude.pool(),
+        &claude.track_id,
+        "claude",
+        "claude",
+        Some(&version),
+    )
+    .await;
+    let deleted = prune_once(claude.pool(), &claude.track_id, 1).await;
+    assert!(deleted > 0, "an active Claude card held the prune back");
+    assert!(commit_exists(claude.pool(), &claude.commits[4].hash).await);
+    assert!(!commit_exists(claude.pool(), &claude.commits[0].hash).await);
+
+    let codex = fixture_with_commits(5).await;
+    insert_active_provider_session(
+        codex.pool(),
+        &codex.track_id,
+        "codex",
+        "codex",
+        Some(&version),
+    )
+    .await;
+    assert_eq!(prune_once(codex.pool(), &codex.track_id, 1).await, 0);
+    assert_eq!(commit_count(codex.pool(), &codex.track_id).await, 5);
 }
 
 #[tokio::test]

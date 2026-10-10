@@ -3029,7 +3029,7 @@ fn claude_payload(boot: &Boot, track_id: &str, prompt: Option<&str>) -> Value {
             track_id: track_id.to_string(),
             title: None,
             sort: Some(1.0),
-            cwd: "/workspace".into(),
+            cwd: Some("/workspace".into()),
             prompt: prompt.map(ToOwned::to_owned),
             icon_bg: None,
             icon_fg: None,

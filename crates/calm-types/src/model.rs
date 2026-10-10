@@ -317,6 +317,11 @@ pub struct CardRuntimeView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub last_turn_completed_ms: Option<i64>,
+    /// A Claude card's child: the first token `claude --version` printed when it was started
+    /// (#2516). Absent on other runtimes, and when that run gave no answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub claude_version: Option<String>,
 }
 
 #[cfg(test)]

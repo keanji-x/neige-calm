@@ -31,7 +31,7 @@ use crate::routes::cards::card_scope;
 use crate::routes::claude_cards::{
     build_claude_settings_json, build_claude_worker_settings_json, claude_hook_command,
 };
-use crate::routes::codex_cards::{default_cwd, normalize_optional_css_color, shell_single_quote};
+use crate::routes::codex_cards::{normalize_optional_css_color, shell_single_quote};
 use crate::routes::settings::load_settings;
 use crate::routes::theme::RequestTheme;
 use crate::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
@@ -220,7 +220,9 @@ pub struct NormalizedClaudeCreateRequest {
     pub title: Option<String>,
     #[serde(default)]
     pub sort: Option<f64>,
-    pub cwd: String,
+    /// The cwd the caller named; `None` runs Claude in the track's workspace, resolved by prepare.
+    #[serde(default)]
+    pub cwd: Option<String>,
     #[serde(default)]
     pub prompt: Option<String>,
     #[serde(default)]
@@ -237,7 +239,9 @@ pub struct PreparedClaudeCreateRequest {
     pub title: Option<String>,
     #[serde(default)]
     pub sort: Option<f64>,
-    pub cwd: String,
+    /// As in [`NormalizedClaudeCreateRequest::cwd`]; resolved inside the create's transaction.
+    #[serde(default)]
+    pub cwd: Option<String>,
     #[serde(default)]
     pub prompt: Option<String>,
     #[serde(default)]
@@ -270,13 +274,9 @@ pub fn normalize_claude_create_request(
             "cwd must not contain ASCII control characters".into(),
         ));
     }
-    let cwd = input
-        .cwd
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(default_cwd);
+    // An empty cwd is resolved by prepare, not here: a default materialized into the request would
+    // enter `stable_payload_hash`, as for a terminal card.
+    let cwd = crate::operation::terminal_adapter::explicit_terminal_cwd(input.cwd);
     let prompt = input
         .prompt
         .as_deref()
@@ -428,7 +428,12 @@ impl ProviderAdapter for ClaudeAdapter {
 
     async fn validate(&self, input: &Value) -> Result<()> {
         let payload: ClaudeCreateOperationPayload = serde_json::from_value(input.clone())?;
-        if payload.request.cwd.chars().any(|c| c.is_ascii_control()) {
+        if payload
+            .request
+            .cwd
+            .as_deref()
+            .is_some_and(|cwd| cwd.chars().any(|c| c.is_ascii_control()))
+        {
             return Err(CalmError::BadRequest(
                 "cwd must not contain ASCII control characters".into(),
             ));
@@ -463,6 +468,14 @@ impl ProviderAdapter for ClaudeAdapter {
         let request = payload.request;
         let card_id = request.card_id.clone();
         let track_id = request.track_id.clone();
+        // Named cwd, else the track's workspace (its worktree on an attached track), read in this
+        // transaction as a terminal card's is (#2516).
+        let cwd = crate::operation::terminal_adapter::terminal_cwd_or_track_workspace(
+            tx,
+            &track_id,
+            request.cwd.clone(),
+        )
+        .await?;
         let scope = card_scope(
             self.repo.as_ref(),
             CardId::from(card_id.clone()),
@@ -477,7 +490,7 @@ impl ProviderAdapter for ClaudeAdapter {
             request.title.clone(),
             request.sort,
             request.command_line.clone(),
-            request.cwd.clone(),
+            cwd.clone(),
             request.env.clone(),
             request.prompt.clone(),
             request.icon_bg.clone(),
@@ -521,7 +534,7 @@ impl ProviderAdapter for ClaudeAdapter {
             "settings_path": request.settings_path,
             "claude_session_id": request.claude_session_id,
             "command_line": request.command_line,
-            "cwd": request.cwd,
+            "cwd": cwd,
             "env": request.env,
         });
         output.post_commit_events.push(BroadcastEnvelope {
@@ -583,6 +596,12 @@ impl ProviderAdapter for ClaudeAdapter {
         );
         std::fs::write(&settings_path, build_claude_settings_json(&hook_command))
             .map_err(|e| CalmError::Internal(format!("write claude settings.json: {e}")))?;
+        crate::claude_version::record_running_version(
+            ctx.repo.as_ref(),
+            &self.codex.claude_bin,
+            &card_id,
+        )
+        .await;
 
         #[cfg(feature = "fixtures")]
         let handle = if let Some(hook) = &self.spawn_hook {
@@ -1077,6 +1096,13 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             &mut env,
         )
         .await?;
+
+        crate::claude_version::record_running_version(
+            ctx.repo.as_ref(),
+            &self.codex.claude_bin,
+            &card_id,
+        )
+        .await;
 
         let launch = super::task_launch::TaskLaunch::new(
             &payload.idempotency_key,

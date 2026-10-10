@@ -345,6 +345,8 @@ enum ActiveLastSeenHeads {
     SkipPrune,
 }
 
+/// A Claude card's runtime (provider `claude`, contract `executor`) is skipped: it never holds a
+/// harness snapshot, and its document records the Claude version its child started on (#2516).
 async fn active_diff_endpoint_commits_tx(
     tx: &mut Transaction<'_, Sqlite>,
     track_id: &TrackId,
@@ -354,6 +356,7 @@ async fn active_diff_endpoint_commits_tx(
            FROM worker_sessions
            WHERE track_id = ?1
              AND state IN ('starting', 'running', 'idle', 'turn_pending')
+             AND NOT (provider = 'claude' AND contract = 'executor')
            ORDER BY created_at_ms ASC, id ASC"#,
     )
     .bind(track_id.as_str())

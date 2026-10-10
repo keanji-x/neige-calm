@@ -1408,3 +1408,7 @@ mod keyed;
 mod live_restart;
 #[path = "claude_card_endpoint/resume.rs"]
 mod resume;
+#[path = "claude_card_endpoint/version.rs"]
+mod version;
+#[path = "claude_card_endpoint/workspace_cwd.rs"]
+mod workspace_cwd;

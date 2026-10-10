@@ -128,8 +128,8 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(
         v["apiVersion"].as_str().unwrap(),
-        "27",
-        "#2441: the permission-mode route accepts `full`"
+        "28",
+        "#2516: the Claude installed-version routes are new"
     );
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),

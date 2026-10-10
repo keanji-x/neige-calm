@@ -551,6 +551,8 @@ pub(crate) mod claude_code_env;
 pub mod claude_planner;
 /// #2516: Update of a Claude card: stop a live child, then resume its latest session.
 pub mod claude_update;
+/// #2516: the Claude version a card's child started on, and the installed version's cache.
+pub mod claude_version;
 pub mod codex_appserver;
 pub mod codex_mcp_toolset;
 pub mod config;

@@ -49,6 +49,9 @@ async fn main() -> anyhow::Result<()> {
     // #1817: one availability check per Planner provider, off the boot path; a provider that
     // cannot run is a warning, never a boot failure. The handle is detached on purpose.
     drop(calm_server::agent_providers::spawn_boot_check(&state));
+    // #2516: the installed Claude version, read at boot and every 10 minutes, off the boot path.
+    // The handle is detached on purpose.
+    drop(calm_server::claude_version::spawn_periodic_refresh(&state));
 
     let stale_terminals = calm_server::reconcile_supervisor_on_boot(&state).await;
 

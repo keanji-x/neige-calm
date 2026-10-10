@@ -76,7 +76,11 @@ pub async fn update_claude_card(
         }
         wait_exit_recorded(state, &card_id, &term.id).await?;
     }
-    run_claude_restart(&state.operation_runtime, actor, card_id).await
+    let outcome = run_claude_restart(&state.operation_runtime, actor, card_id).await;
+    // An Update is when a newer Claude is likeliest to have just been installed: read it again, in
+    // the background.
+    drop(route.claude_installed_version.spawn_refresh());
+    outcome
 }
 
 async fn has_live_runtime(state: &AppState, card_id: &str) -> Result<bool> {

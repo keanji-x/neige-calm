@@ -45,8 +45,8 @@ pub struct NewClaudeCardBody {
     /// Sort order within the track. `None` defaults to "append to end".
     #[serde(default)]
     pub sort: Option<f64>,
-    /// Working directory Claude runs in. Empty string or missing -> `$HOME`
-    /// (then `cwd` of server).
+    /// Working directory Claude runs in. Empty string or missing -> the track's
+    /// workspace (its worktree on an attached track).
     #[serde(default)]
     pub cwd: Option<String>,
     /// Optional first prompt passed as Claude's positional prompt argument.

@@ -23,4 +23,7 @@
 // older kernel would refuse every answer this bundle sends.
 // Revision 27 (#2441): `PUT /api/cards/{id}/planner/permission-mode` accepts `full`; an older
 // kernel would refuse it.
-pub const REST_API_VERSION: &str = "27";
+// Revision 28 (#2516): `GET /api/claude/installed-version` and
+// `POST /api/claude/installed-version/refresh` are new; a bundle of this revision would get 404 from
+// an older kernel when a Claude card asks which version is installed.
+pub const REST_API_VERSION: &str = "28";

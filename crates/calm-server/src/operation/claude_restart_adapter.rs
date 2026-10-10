@@ -430,6 +430,13 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             .await?;
         }
 
+        crate::claude_version::record_running_version(
+            ctx.repo.as_ref(),
+            &self.codex.claude_bin,
+            &card_id,
+        )
+        .await;
+
         #[cfg(feature = "fixtures")]
         let handle = if let Some(hook) = &self.spawn_hook {
             hook(terminal_id.clone(), command_line, cwd, env).await

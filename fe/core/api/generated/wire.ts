@@ -119,7 +119,18 @@ export type CardRuntimeView = { worker_session_id: string, kind: WorkerSessionKi
 /**
  * When the card's last non-interrupted turn ended, or absent when it has none.
  */
-last_turn_completed_ms?: number, };
+last_turn_completed_ms?: number, 
+/**
+ * A Claude card's child: the first token `claude --version` printed when it was started
+ * (#2516). Absent on other runtimes, and when that run gave no answer.
+ */
+claude_version?: string, };
+
+/**
+ * `GET /api/claude/installed-version` (#2516): the first token the server's last
+ * `claude --version` run printed; null until a run has answered.
+ */
+export type ClaudeInstalledVersion = { version: string | null, };
 
 export type DailyTrackResolved = { date: string, time_zone: string, track_id: string, };
 

@@ -27,14 +27,19 @@ const BUDGET: Duration = Duration::from_secs(120);
 const SESSION_AFTER_CLEAR: &str = "0b8e5d3a-2f41-4c6e-8a97-3c5d1e2f4a6b";
 
 /// `term_delay`: how long the stand-in takes to exit after SIGTERM, as Claude flushing its session.
-fn write_fake_claude(dir: &Path, log: &Path, term_delay: Duration) -> String {
+/// `--version` prints `<dir>/version` (written here as `2.1.259`) and exits, as the CLI does.
+pub(super) fn write_fake_claude(dir: &Path, log: &Path, term_delay: Duration) -> String {
     let bin = dir.join("fake-claude");
+    let version = dir.join("version");
+    std::fs::write(&version, "2.1.259 (Claude Code)\n").unwrap();
+    let version = version.display();
     let log = log.display();
     let delay = term_delay.as_secs();
     std::fs::write(
         &bin,
         format!(
             "#!/bin/sh\n\
+             if [ \"$1\" = --version ]; then cat '{version}'; exit 0; fi\n\
              echo \"start $$ $*\" >> '{log}'\n\
              trap \"echo term $$ >> '{log}'; sleep {delay}; exit 0\" TERM\n\
              sleep 600 &\n\
@@ -47,7 +52,7 @@ fn write_fake_claude(dir: &Path, log: &Path, term_delay: Duration) -> String {
 }
 
 /// `(pid, argv)` of each start, in order.
-fn starts(log: &Path) -> Vec<(i32, String)> {
+pub(super) fn starts(log: &Path) -> Vec<(i32, String)> {
     std::fs::read_to_string(log)
         .unwrap_or_default()
         .lines()
@@ -77,7 +82,7 @@ fn alive(pid: i32) -> bool {
     exists && !zombie
 }
 
-async fn eventually(what: &str, mut condition: impl FnMut() -> bool) {
+pub(super) async fn eventually(what: &str, mut condition: impl FnMut() -> bool) {
     let deadline = tokio::time::Instant::now() + BUDGET;
     while !condition() {
         assert!(tokio::time::Instant::now() < deadline, "timed out: {what}");
@@ -85,17 +90,17 @@ async fn eventually(what: &str, mut condition: impl FnMut() -> bool) {
     }
 }
 
-struct LiveCard {
-    boot: Boot,
+pub(super) struct LiveCard {
+    pub(super) boot: Boot,
     _supervisor: InProcessProcSupervisor,
     _dir: tempfile::TempDir,
-    log: std::path::PathBuf,
-    card_id: String,
-    terminal_id: String,
+    pub(super) log: std::path::PathBuf,
+    pub(super) card_id: String,
+    pub(super) terminal_id: String,
 }
 
 /// A Claude card created through the route, its child running under a real supervisor.
-async fn live_card() -> LiveCard {
+pub(super) async fn live_card() -> LiveCard {
     live_card_exiting_after(Duration::ZERO).await
 }
 

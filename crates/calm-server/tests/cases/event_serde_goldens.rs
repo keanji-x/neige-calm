@@ -248,6 +248,7 @@ golden_test!(
             source: Some("spawn".into()),
             thread_status: Some("active".into()),
             last_turn_completed_ms: None,
+            claude_version: None,
         }),
         deletable: false,
         ..card_min()
@@ -279,6 +280,7 @@ golden_test!(
             source: None,
             thread_status: None,
             last_turn_completed_ms: None,
+            claude_version: None,
         }),
         ..card_min()
     })

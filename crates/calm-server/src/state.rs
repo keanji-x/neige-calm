@@ -154,6 +154,9 @@ pub struct RouteState {
     /// Each Planner provider's last availability check (#1817), read by
     /// `GET /api/agent-providers` and track create.
     pub(crate) provider_availability: Arc<crate::agent_providers::ProviderAvailabilityCache>,
+    /// The installed Claude version (#2516), refreshed in the background and read by the Claude
+    /// card routes; no read runs the CLI.
+    pub claude_installed_version: Arc<crate::claude_version::InstalledClaudeVersion>,
     /// Wakes the activity projector after a write that emits no event (a Dismiss, #1829).
     pub(crate) activity_wake: crate::track_activity::ActivityWake,
 }
@@ -254,6 +257,9 @@ impl BootState {
             claude_planner: self.claude_planner,
             acp_planner: self.acp_planner,
             provider_availability: Arc::default(),
+            claude_installed_version: Arc::new(crate::claude_version::InstalledClaudeVersion::new(
+                self.codex.claude_bin.clone(),
+            )),
             activity_wake: self.activity_wake,
         };
         let worker = WorkerState {
