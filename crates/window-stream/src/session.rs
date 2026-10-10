@@ -157,6 +157,8 @@ where
             }
         }
     };
+    // Unwatch before answering Close, which may wait on a stalled socket.
+    drop(feed);
     if close_received {
         // Answer the viewer's Close; it may already be gone.
         let _ = tokio::time::timeout(CLOSE_ECHO, sink.send(WsMessage::Close)).await;
