@@ -50,7 +50,8 @@ fn gate_head(passed: bool, target: Option<VerifyTarget>) -> String {
     }
     .to_turn_text();
     text.split_once(" Log tail:")
-        .expect("the head sentence precedes the log tail")
+        .or_else(|| text.split_once(" Read the full log at "))
+        .expect("the head sentence precedes the log tail or, on a pass, the log path")
         .0
         .to_string()
 }

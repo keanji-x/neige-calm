@@ -174,27 +174,18 @@ mod tests {
                 .description
                 .clone()
         });
-        let notices = [
-            Observation::TaskCompleted {
-                idempotency_key: "attempt".into(),
-                result: serde_json::json!({}),
+        // Result receipts leave it to this prompt (#2536); the delivery notice still carries it.
+        let notices = [Observation::TaskGitDeliverySettled {
+            key: "review".into(),
+            attempt_id: "attempt".into(),
+            result: calm_types::git_candidate::DeliverySettlement::Candidate {
+                candidate_id: "candidate".into(),
+                commit_sha: "b".repeat(40),
+                base_sha: "b".repeat(40),
+                base_is_ancestor: true,
             },
-            Observation::TaskFailed {
-                idempotency_key: "attempt".into(),
-                error: "failed".into(),
-            },
-            Observation::TaskGitDeliverySettled {
-                key: "review".into(),
-                attempt_id: "attempt".into(),
-                result: calm_types::git_candidate::DeliverySettlement::Candidate {
-                    candidate_id: "candidate".into(),
-                    commit_sha: "b".repeat(40),
-                    base_sha: "b".repeat(40),
-                    base_is_ancestor: true,
-                },
-                retained_path: None,
-            },
-        ];
+            retained_path: None,
+        }];
         for text in std::iter::once(prompt)
             .chain(descriptions)
             .chain(notices.iter().map(Observation::to_turn_text))
