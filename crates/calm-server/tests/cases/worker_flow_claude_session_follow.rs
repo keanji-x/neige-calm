@@ -22,6 +22,8 @@ use support::claude_hooks as hooks;
 use support::worker_flow as wf;
 
 const CWD: &str = "/x/repo";
+/// The id Claude starts on `/clear`: a UUID, as every Claude session id.
+const SESSION_AFTER: &str = "9d2c7b14-6e3a-4f58-b1c0-7a8e2d4f6c39";
 
 fn transcript(root: &Path, session_id: &str, text: &str) -> PathBuf {
     let path = root.join(format!("{session_id}.jsonl"));
@@ -75,7 +77,7 @@ async fn claude_capture_follows_the_new_session_after_clear() {
     let seed = wf::seed_claude_card_and_runtime(&repo, card_id, "session-before", CWD).await;
     let root = tempfile::tempdir().unwrap();
     let before = transcript(root.path(), "session-before", "before clear");
-    let after = transcript(root.path(), "session-after", "after clear");
+    let after = transcript(root.path(), SESSION_AFTER, "after clear");
 
     let events = EventBus::new();
     let driver = WorkerFlowDriver::new_with_source_options_for_test(
@@ -110,7 +112,7 @@ async fn claude_capture_follows_the_new_session_after_clear() {
         &repo,
         events,
         card_id,
-        session_start("session-after", "clear", &after),
+        session_start(SESSION_AFTER, "clear", &after),
     )
     .await;
     wait_for_user_texts(&repo, card_id, &["before clear", "after clear"]).await;

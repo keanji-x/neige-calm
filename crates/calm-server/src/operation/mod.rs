@@ -15,6 +15,7 @@ pub mod card_create_adapter;
 pub mod child_track_adapter;
 pub mod claude_adapter;
 pub mod claude_restart_adapter;
+mod claude_restart_recovery;
 pub mod codex_adapter;
 pub mod forge_action_adapter;
 pub(crate) mod gate_lifecycle;
@@ -314,6 +315,32 @@ impl SpawnCtx {
             program,
             cwd,
             env,
+        )
+        .await?;
+        Ok(SpawnHandle::Terminal {
+            terminal_id: term.id.clone(),
+            renderer_id: entry.terminal_id.clone(),
+        })
+    }
+
+    /// A respawn's spawn on the terminal `fence` holds: always a new renderer, never an entry
+    /// another caller set up (#2516).
+    pub(crate) async fn respawn_terminal(
+        &self,
+        term: &crate::model::Terminal,
+        program: &str,
+        cwd: &str,
+        env: &Value,
+        fence: &crate::terminal_renderer::RespawnFence,
+    ) -> Result<SpawnHandle> {
+        let entry = crate::routes::terminal::respawn_terminal_with_parts(
+            self.daemon.as_ref(),
+            self.terminal_renderer.as_ref(),
+            term,
+            program,
+            cwd,
+            env,
+            fence,
         )
         .await?;
         Ok(SpawnHandle::Terminal {

@@ -1173,7 +1173,8 @@ mod tests {
                 "template_context",
                 "planner_provider",
                 "side_source_card_id",
-                "permission_mode"
+                "permission_mode",
+                "owner_created"
             ]
         );
         let probes = [json!(true), json!({}), json!("declared"), Value::Null];

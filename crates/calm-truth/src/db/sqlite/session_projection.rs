@@ -72,17 +72,36 @@ pub(super) async fn runtime_get_active_for_card_from_pool(
     row.as_ref().map(card_runtime_from_ws_join_row).transpose()
 }
 
-pub(super) async fn runtime_get_projectable_for_card_from_pool(
-    pool: &SqlitePool,
-    card_id: &str,
-) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
-    let sql = format!(
+fn projectable_for_card_sql() -> String {
+    format!(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
            WHERE c.id = ?1
              AND ws.state != 'superseded'
            LIMIT 1"#,
-    );
-    let row = sqlx::query(&sql).bind(card_id).fetch_optional(pool).await?;
+    )
+}
+
+pub(super) async fn runtime_get_projectable_for_card_from_pool(
+    pool: &SqlitePool,
+    card_id: &str,
+) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
+    let row = sqlx::query(&projectable_for_card_sql())
+        .bind(card_id)
+        .fetch_optional(pool)
+        .await?;
+    row.as_ref().map(card_runtime_from_ws_join_row).transpose()
+}
+
+/// [`runtime_get_projectable_for_card_from_pool`] inside a write transaction, for a writer that
+/// must act on the card's runtime as its own transaction sees it.
+pub async fn session_projection_projectable_for_card_tx(
+    tx: &mut WorkerSessionProjectionTx<'_>,
+    card_id: &str,
+) -> WorkerSessionProjectionResult<Option<WorkerSessionProjection>> {
+    let row = sqlx::query(&projectable_for_card_sql())
+        .bind(card_id)
+        .fetch_optional(&mut **tx)
+        .await?;
     row.as_ref().map(card_runtime_from_ws_join_row).transpose()
 }
 

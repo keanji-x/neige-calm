@@ -320,6 +320,17 @@ async fn follow_claude_session_start(
     {
         return Ok(None);
     }
+    // Claude's documented `--session-id` takes a UUID and its CLI refuses anything else, so any
+    // other value is no session a restart could resume.
+    if uuid::Uuid::parse_str(session_id).is_err() {
+        tracing::warn!(
+            target: "hook.ingest.claude_session_not_uuid",
+            card_id = %card_id,
+            session_id = %session_id,
+            "claude SessionStart session_id is not a UUID; not followed"
+        );
+        return Ok(None);
+    }
     let card_id = card_id.to_owned();
     let session_id = session_id.to_owned();
     crate::db::write_in_tx_typed(s.repo.as_ref(), move |tx| {

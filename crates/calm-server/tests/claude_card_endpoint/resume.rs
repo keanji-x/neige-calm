@@ -68,7 +68,7 @@ async fn restart_after_clear_resumes_the_session_the_card_last_started() {
     assert_eq!(status, StatusCode::CREATED, "body={created:?}");
     let card_id = created["id"].as_str().unwrap();
     let minted = created["payload"]["claude_session_id"].as_str().unwrap();
-    let cleared = "session-after-clear";
+    let cleared = "6f1c2a8e-4b7d-4e2a-9c3b-1d5e7f9a0b21";
 
     assert_eq!(
         post_hook(&boot, card_id, session_start(cleared, "clear")).await,
@@ -257,10 +257,11 @@ fn shell_argv(program: &str) -> Vec<String> {
         .collect()
 }
 
-/// The followed id comes from an unauthenticated hook payload: one that reads like an option is
-/// still only the value of `--resume`, never an option of its own.
+/// The hook payload is unauthenticated, and Claude's `--session-id` takes a UUID: an id that is not
+/// one (here one that reads like an option) is not followed, and the restart resumes the card's own
+/// id as one `--resume=<id>` token.
 #[tokio::test]
-async fn a_dash_led_session_id_stays_the_value_of_resume() {
+async fn a_session_start_id_that_is_not_a_uuid_is_not_followed() {
     let _guard = ENV_LOCK.lock().await;
     let calls = Arc::new(tokio::sync::Mutex::new(Vec::<SpawnCall>::new()));
     let calls_for_factory = calls.clone();
@@ -269,16 +270,18 @@ async fn a_dash_led_session_id_stays_the_value_of_resume() {
     let (status, created) = post(boot.app.clone(), &boot.track_id, body(None), None, None).await;
     assert_eq!(status, StatusCode::CREATED, "body={created:?}");
     let card_id = created["id"].as_str().unwrap();
+    let minted = created["payload"]["claude_session_id"].as_str().unwrap();
     assert_eq!(
         post_hook(&boot, card_id, session_start("--version", "clear")).await,
         StatusCode::OK
     );
+    assert_eq!(agent_session_ids(&boot, card_id).await, [minted]);
 
     let (status, restarted) = post_restart(boot.app.clone(), card_id).await;
     assert_eq!(status, StatusCode::OK, "body={restarted:?}");
     let argv = shell_argv(&calls.lock().await.last().unwrap().program);
     assert!(
-        argv.iter().any(|arg| arg == "--resume=--version"),
+        argv.iter().any(|arg| *arg == format!("--resume={minted}")),
         "{argv:?}"
     );
     assert!(!argv.iter().any(|arg| arg == "--version"), "{argv:?}");

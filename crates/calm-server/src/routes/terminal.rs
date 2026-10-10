@@ -75,6 +75,25 @@ pub(crate) async fn spawn_terminal_with_parts(
         .map_err(|error| CalmError::Internal(error.to_string()))
 }
 
+/// [`spawn_terminal_with_parts`] for a respawn holding `fence`: always a new renderer (#2516).
+pub(crate) async fn respawn_terminal_with_parts(
+    daemon: &DaemonClient,
+    renderer: &TerminalRendererRegistry,
+    term: &Terminal,
+    program: &str,
+    cwd: &str,
+    env: &serde_json::Value,
+    fence: &crate::terminal_renderer::RespawnFence,
+) -> Result<Arc<RendererEntry>> {
+    renderer
+        .ensure_respawn(
+            terminal_renderer_config(daemon, term, program, cwd, env).await?,
+            fence,
+        )
+        .await
+        .map_err(|error| CalmError::Internal(error.to_string()))
+}
+
 pub(crate) async fn spawn_task_terminal_with_parts(
     daemon: &DaemonClient,
     renderer: &TerminalRendererRegistry,

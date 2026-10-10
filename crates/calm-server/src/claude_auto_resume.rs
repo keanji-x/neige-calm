@@ -4,17 +4,11 @@
 
 use std::collections::HashSet;
 
-use crate::error::{CalmError, Result};
+use crate::error::Result;
 use crate::ids::ActorId;
 use crate::operation::OperationOutcome;
 use crate::operation::claude_restart_adapter::run_claude_restart;
 use crate::state::AppState;
-
-/// The persisted fact that `POST /api/tracks/{id}/claude-cards` created card `?1`: the
-/// `claude-create` operation names the card it minted in its payload. A task worker's card comes
-/// from a `claude-worker` operation instead.
-const OWNER_CREATED_CLAUDE_CARD_SQL: &str = "SELECT EXISTS(SELECT 1 FROM operations \
-     WHERE kind = 'claude-create' AND json_extract(payload_json, '$.request.card_id') = ?1)";
 
 /// Run off the boot path: the restarts start PTYs, and their Claude hooks need the server
 /// listening. The handle is detached on purpose.
@@ -95,13 +89,16 @@ async fn terminal_still_exited(state: &AppState, terminal_id: &str) -> Result<bo
     if term.exit_code.is_none() && !term.signal_killed {
         return Ok(false);
     }
-    Ok(!state
+    // An undecided probe resumes nothing: the restart could not stop a child it cannot see.
+    Ok(state
         .terminal_renderer
         .child_running(state.daemon.proc_supervisor_sock.as_deref(), terminal_id)
-        .await)
+        .await
+        == Some(false))
 }
 
-/// The card of `terminal_id` when it is a Claude card created through the claude-cards route.
+/// The card of `terminal_id` when it is a Claude card created through the claude-cards route: the
+/// creation-time `OWNER_CREATED_PAYLOAD_KEY` proves it, so a task worker's card never qualifies.
 async fn owner_claude_card_of(state: &AppState, terminal_id: &str) -> Result<Option<String>> {
     let Some(term) = state.repo.terminal_get(terminal_id).await? else {
         return Ok(None);
@@ -110,16 +107,12 @@ async fn owner_claude_card_of(state: &AppState, terminal_id: &str) -> Result<Opt
     let Some(card) = state.repo.card_get(&card_id).await? else {
         return Ok(None);
     };
-    if card.kind != "claude" {
-        return Ok(None);
-    }
-    let pool = state.sqlite_pool().ok_or_else(|| {
-        CalmError::Internal("claude auto-resume requires a sqlite-backed repo".into())
-    })?;
-    let owner_created: bool = sqlx::query_scalar(OWNER_CREATED_CLAUDE_CARD_SQL)
-        .bind(&card_id)
-        .fetch_one(&pool)
-        .await?;
+    let owner_created = card.kind == "claude"
+        && card
+            .payload
+            .get(crate::validation::OWNER_CREATED_PAYLOAD_KEY)
+            .and_then(serde_json::Value::as_bool)
+            == Some(true);
     Ok(owner_created.then_some(card_id))
 }
 

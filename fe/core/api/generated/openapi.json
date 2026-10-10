@@ -12684,7 +12684,7 @@
               "object",
               "null"
             ],
-            "description": "Replaces the stored payload. A payload carrying a server-owned key is refused with 400:\n`terminal_signals`, `template_context`, `planner_provider`, `side_source_card_id`, `permission_mode`. Every kernel-minted server-owned value the card already carries is kept."
+            "description": "Replaces the stored payload. A payload carrying a server-owned key is refused with 400:\n`terminal_signals`, `template_context`, `planner_provider`, `side_source_card_id`, `permission_mode`, `owner_created`. Every kernel-minted server-owned value the card already carries is kept."
           },
           "sort": {
             "type": [

@@ -23,15 +23,20 @@ use super::{
 /// many seconds, and a correct run never waits this long.
 const BUDGET: Duration = Duration::from_secs(120);
 
-fn write_fake_claude(dir: &Path, log: &Path) -> String {
+/// The session id the running child's `/clear` starts; Claude's session ids are UUIDs.
+const SESSION_AFTER_CLEAR: &str = "0b8e5d3a-2f41-4c6e-8a97-3c5d1e2f4a6b";
+
+/// `term_delay`: how long the stand-in takes to exit after SIGTERM, as Claude flushing its session.
+fn write_fake_claude(dir: &Path, log: &Path, term_delay: Duration) -> String {
     let bin = dir.join("fake-claude");
     let log = log.display();
+    let delay = term_delay.as_secs();
     std::fs::write(
         &bin,
         format!(
             "#!/bin/sh\n\
              echo \"start $$ $*\" >> '{log}'\n\
-             trap \"echo term $$ >> '{log}'; exit 0\" TERM\n\
+             trap \"echo term $$ >> '{log}'; sleep {delay}; exit 0\" TERM\n\
              sleep 600 &\n\
              wait\n"
         ),
@@ -86,12 +91,16 @@ struct LiveCard {
 
 /// A Claude card created through the route, its child running under a real supervisor.
 async fn live_card() -> LiveCard {
+    live_card_exiting_after(Duration::ZERO).await
+}
+
+async fn live_card_exiting_after(term_delay: Duration) -> LiveCard {
     let supervisor = InProcessProcSupervisor::start().await.unwrap();
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("claude.log");
     let boot = boot_with_real_claude(RealClaude {
         sock: supervisor.sock().to_path_buf(),
-        claude_bin: write_fake_claude(dir.path(), &log),
+        claude_bin: write_fake_claude(dir.path(), &log, term_delay),
     })
     .await;
     let mut create = body(None);
@@ -152,7 +161,7 @@ async fn restart_of_a_running_card_stops_its_child_and_resumes_the_latest_sessio
                 .body(Body::from(
                     json!({
                         "hook_event_name": "SessionStart",
-                        "session_id": "session-after-clear",
+                        "session_id": SESSION_AFTER_CLEAR,
                         "source": "clear",
                     })
                     .to_string(),
@@ -168,7 +177,9 @@ async fn restart_of_a_running_card_stops_its_child_and_resumes_the_latest_sessio
         .terminal_renderer
         .forget_entry_for_test(&live.terminal_id);
 
-    // A double submit while the child runs: both succeed, one after the other.
+    // A double submit while the child runs: both succeed. The drive interleaves them by phase, so
+    // either each replaces the child in turn, or the first stands down for the second, whose
+    // prepare superseded it.
     let (first, second) = tokio::join!(
         post_restart(boot.app.clone(), &live.card_id),
         post_restart(boot.app.clone(), &live.card_id),
@@ -176,26 +187,27 @@ async fn restart_of_a_running_card_stops_its_child_and_resumes_the_latest_sessio
     assert_eq!(first.0, StatusCode::OK, "body={:?}", first.1);
     assert_eq!(second.0, StatusCode::OK, "body={:?}", second.1);
 
-    eventually("both replacements start", || starts(log).len() == 3).await;
+    eventually(
+        "only the last child runs; every earlier one got SIGTERM",
+        || {
+            let started = starts(log);
+            let Some(((last, _), earlier)) = started.split_last() else {
+                return false;
+            };
+            started.len() >= 2
+                && alive(*last)
+                && !got_sigterm(log, *last)
+                && earlier
+                    .iter()
+                    .all(|(pid, _)| got_sigterm(log, *pid) && !alive(*pid))
+        },
+    )
+    .await;
     let started = starts(log);
-    for (pid, _) in &started[..2] {
-        eventually("a replaced child gets SIGTERM and exits", || {
-            got_sigterm(log, *pid) && !alive(*pid)
-        })
-        .await;
-    }
-    let (last, _) = started[2];
-    assert!(alive(last), "the last replacement runs");
-    assert!(!got_sigterm(log, last));
-    let live_pids: Vec<i32> = started
-        .iter()
-        .map(|(pid, _)| *pid)
-        .filter(|pid| alive(*pid))
-        .collect();
-    assert_eq!(live_pids, [last], "exactly one child runs: {started:?}");
+    assert!(matches!(started.len(), 2 | 3), "{started:?}");
     for (_, argv) in &started[1..] {
         assert!(
-            argv.contains("--resume=session-after-clear"),
+            argv.contains(&format!("--resume={SESSION_AFTER_CLEAR}")),
             "a restart resumes the latest session id: {argv}"
         );
     }
@@ -288,6 +300,41 @@ async fn a_restart_failing_before_its_stop_leaves_the_child_and_its_row_live() {
         runtime_states(boot, &live.card_id).await,
         ["running", "failed"]
     );
+    assert_eq!(terminal_exit(boot, &live.terminal_id).await, (None, false));
+
+    boot.state
+        .terminal_renderer
+        .drop_entry(&live.terminal_id)
+        .await;
+}
+
+/// A WS reconnect while the restart stops the old child (it takes ~2 s to exit after SIGTERM)
+/// sets up no renderer on that child: its exit cannot end the replacement, and the restart gets a
+/// renderer and a child of its own.
+#[tokio::test]
+async fn a_reattach_while_the_restart_stops_the_old_child_does_not_take_its_place() {
+    let _guard = ENV_LOCK.lock().await;
+    let live = live_card_exiting_after(Duration::from_secs(2)).await;
+    let (boot, log) = (&live.boot, &live.log);
+    let (old_pid, _) = starts(log)[0];
+
+    let app = boot.app.clone();
+    let card_id = live.card_id.clone();
+    let restart = tokio::spawn(async move { post_restart(app, &card_id).await });
+    eventually("the old child gets SIGTERM", || got_sigterm(log, old_pid)).await;
+    assert!(alive(old_pid), "the old child is still exiting");
+    calm_server::ws::terminal::resolve_live_renderer_for_test(&boot.state, &live.terminal_id)
+        .await
+        .unwrap();
+
+    let (status, response) = restart.await.unwrap();
+    assert_eq!(status, StatusCode::OK, "body={response:?}");
+    eventually("the replacement starts", || starts(log).len() == 2).await;
+    assert_eq!(
+        runtime_states(boot, &live.card_id).await,
+        ["superseded", "running"]
+    );
+    assert_eq!(response["runtime"]["status"], "running", "{response}");
     assert_eq!(terminal_exit(boot, &live.terminal_id).await, (None, false));
 
     boot.state

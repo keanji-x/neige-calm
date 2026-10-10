@@ -1,6 +1,7 @@
 //! Stopping a terminal's child so the same terminal row can run a replacement (#2516).
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use calm_session::control::ProcSignal;
@@ -22,13 +23,74 @@ const RESPAWN_PROBE_INTERVAL: Duration = Duration::from_millis(50);
 /// What one bounded probe saw.
 enum Probe {
     Running,
-    /// Not running, or no supervisor listening there: nothing to stop.
     Gone,
+    /// The probe failed (no supervisor listening there, a protocol error).
+    Failed,
     /// The supervisor did not answer within the budget.
     Unanswered,
 }
 
+/// Held from a respawn's stop through its spawn: no renderer may be set up for the terminal in
+/// that window but the respawn's own (`ensure_respawn`). A lazy reattach meanwhile is refused,
+/// so no reader can attach to the dying child and end the replacement's runtime with its exit.
+pub(crate) struct RespawnFence {
+    registry: Arc<TerminalRendererRegistry>,
+    terminal_id: String,
+}
+
+impl RespawnFence {
+    pub(crate) fn check(&self, terminal_id: &str) -> anyhow::Result<()> {
+        if self.terminal_id != terminal_id {
+            anyhow::bail!(
+                "respawn fence of terminal {} used for terminal {terminal_id}",
+                self.terminal_id
+            );
+        }
+        Ok(())
+    }
+}
+
+impl Drop for RespawnFence {
+    fn drop(&mut self) {
+        if let Ok(mut fences) = self.registry.respawn_fences.lock() {
+            fences.remove(&self.terminal_id);
+        }
+    }
+}
+
+pub(crate) fn fenced_error(terminal_id: &str) -> anyhow::Error {
+    anyhow::anyhow!("terminal {terminal_id} is being respawned; no renderer is set up meanwhile")
+}
+
+pub(crate) fn stale_entry_error(terminal_id: &str) -> anyhow::Error {
+    anyhow::anyhow!("a renderer still serves terminal {terminal_id}; the respawn does not reuse it")
+}
+
 impl TerminalRendererRegistry {
+    /// Fence `terminal_id` for a respawn; refused while another respawn holds it.
+    pub(crate) fn fence_respawn(self: &Arc<Self>, terminal_id: &str) -> Result<RespawnFence> {
+        let mut fences = self
+            .respawn_fences
+            .lock()
+            .map_err(|_| CalmError::Internal("respawn fence mutex poisoned".into()))?;
+        if !fences.insert(terminal_id.to_owned()) {
+            return Err(CalmError::Conflict(format!(
+                "terminal {terminal_id} is already being respawned"
+            )));
+        }
+        Ok(RespawnFence {
+            registry: Arc::clone(self),
+            terminal_id: terminal_id.to_owned(),
+        })
+    }
+
+    pub(crate) fn respawn_fenced(&self, terminal_id: &str) -> bool {
+        self.respawn_fences
+            .lock()
+            .map(|fences| fences.contains(terminal_id))
+            .unwrap_or(true)
+    }
+
     /// Stop the child of `terminal_id`, live or not and with or without a renderer entry:
     /// SIGTERM, a bounded wait, then SIGKILL to its process group. The entry is detached first,
     /// so its reader persists nothing more; a child that exits before that detach can still end
@@ -39,9 +101,10 @@ impl TerminalRendererRegistry {
     /// probe. Every supervisor exchange is bounded: an unanswered probe refuses the respawn.
     pub(crate) async fn stop_for_respawn(
         &self,
+        fence: &RespawnFence,
         configured_sock: Option<&Path>,
-        terminal_id: &str,
     ) -> Result<()> {
+        let terminal_id = fence.terminal_id.as_str();
         let entry = self
             .entries
             .lock()
@@ -55,9 +118,11 @@ impl TerminalRendererRegistry {
             None => crate::proc_supervisor::resolve_control_sock(configured_sock).await?,
         };
         let proc_id = format!("term:{terminal_id}");
+        // A failed probe (no supervisor listening) has no child to stop: the replacement's own
+        // `EnsureProc` then returns a live child rather than start a second one.
         let was_running = match probe(&sock, terminal_id, SUPERVISOR_EXCHANGE_BUDGET).await {
             Probe::Running => true,
-            Probe::Gone => false,
+            Probe::Gone | Probe::Failed => false,
             Probe::Unanswered => return Err(unanswered(terminal_id)),
         };
         if was_running {
@@ -92,20 +157,21 @@ impl TerminalRendererRegistry {
         Ok(())
     }
 
-    /// Whether `terminal_id` has a running child now, by one bounded probe; an unanswered probe
-    /// counts as not running.
+    /// Whether `terminal_id` has a running child now, by one bounded probe; `None` when the probe
+    /// could not tell (it failed, or the supervisor did not answer).
     pub(crate) async fn child_running(
         &self,
         configured_sock: Option<&Path>,
         terminal_id: &str,
-    ) -> bool {
-        let Some(sock) = self.supervisor_sock_for(configured_sock, terminal_id).await else {
-            return false;
-        };
-        matches!(
-            probe(&sock, terminal_id, SUPERVISOR_EXCHANGE_BUDGET).await,
-            Probe::Running
-        )
+    ) -> Option<bool> {
+        let sock = self
+            .supervisor_sock_for(configured_sock, terminal_id)
+            .await?;
+        match probe(&sock, terminal_id, SUPERVISOR_EXCHANGE_BUDGET).await {
+            Probe::Running => Some(true),
+            Probe::Gone => Some(false),
+            Probe::Failed | Probe::Unanswered => None,
+        }
     }
 
     async fn supervisor_sock_for(
@@ -152,12 +218,8 @@ async fn probe(sock: &Path, terminal_id: &str, budget: Duration) -> Probe {
         Ok(Ok(true)) => Probe::Running,
         Ok(Ok(false)) => Probe::Gone,
         Ok(Err(error)) => {
-            tracing::warn!(
-                terminal_id,
-                %error,
-                "supervisor probe failed before a respawn; treating the terminal as having no child"
-            );
-            Probe::Gone
+            tracing::warn!(terminal_id, %error, "supervisor probe failed");
+            Probe::Failed
         }
         Err(_) => Probe::Unanswered,
     }
@@ -180,7 +242,10 @@ async fn child_gone_within(sock: &Path, terminal_id: &str, budget: Duration) -> 
         if remaining.is_zero() {
             return false;
         }
-        if matches!(probe(sock, terminal_id, remaining).await, Probe::Gone) {
+        if matches!(
+            probe(sock, terminal_id, remaining).await,
+            Probe::Gone | Probe::Failed
+        ) {
             return true;
         }
         tokio::time::sleep(RESPAWN_PROBE_INTERVAL.min(remaining)).await;
@@ -205,10 +270,11 @@ mod tests {
             }
         });
         let registry = TerminalRendererRegistry::new();
+        let fence = registry.fence_respawn("wedged").unwrap();
 
         let stopped = timeout(
             Duration::from_secs(60),
-            registry.stop_for_respawn(Some(&sock), "wedged"),
+            registry.stop_for_respawn(&fence, Some(&sock)),
         )
         .await
         .expect("every supervisor exchange is bounded");

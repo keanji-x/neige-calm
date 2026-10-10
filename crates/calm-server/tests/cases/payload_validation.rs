@@ -283,7 +283,8 @@ async fn post_card_with_a_server_owned_key_is_rejected_for_every_kind() {
             "template_context",
             "planner_provider",
             "side_source_card_id",
-            "permission_mode"
+            "permission_mode",
+            "owner_created"
         ]
     );
     for key in SERVER_OWNED_CARD_PAYLOAD_KEYS {

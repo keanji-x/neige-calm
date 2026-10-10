@@ -34,6 +34,7 @@ pub mod attach_hold_for_test;
 pub(crate) mod establishment_test_hook;
 mod output_capture;
 mod respawn;
+pub(crate) use respawn::RespawnFence;
 pub mod signals;
 mod snapshot;
 pub use signals::{IncomingSignal, SIGNAL_MESSAGE_MAX_CHARS, Signal, SignalRing, SignalsSince};
@@ -300,6 +301,9 @@ pub struct TerminalRendererRegistry {
     /// Installed by [`Self::set_output_wake`] when the projector loop starts; cloned into every
     /// attach reader at spawn.
     output_wake: OutputWake,
+    /// Terminals between a respawn's stop and its spawn (#2516): no renderer may be set up for
+    /// them except the respawn's own. Locked after `entries` when both are held.
+    respawn_fences: StdMutex<std::collections::HashSet<String>>,
 }
 
 impl TerminalRendererRegistry {
@@ -310,6 +314,7 @@ impl TerminalRendererRegistry {
             task_hook: StdMutex::new(None),
             hook_settings_dir: StdMutex::new(None),
             output_wake: Arc::new(StdMutex::new(None)),
+            respawn_fences: StdMutex::new(std::collections::HashSet::new()),
         })
     }
 
@@ -320,6 +325,7 @@ impl TerminalRendererRegistry {
             task_hook: StdMutex::new(None),
             hook_settings_dir: StdMutex::new(None),
             output_wake: Arc::new(StdMutex::new(None)),
+            respawn_fences: StdMutex::new(std::collections::HashSet::new()),
         })
     }
 
@@ -387,7 +393,7 @@ impl TerminalRendererRegistry {
         &self,
         cfg: RendererConfig,
     ) -> Result<Arc<RendererEntry>, RendererSpawnError> {
-        self.ensure_with_launch(cfg, None).await
+        self.ensure_with_launch(cfg, None, None).await
     }
 
     pub(crate) async fn ensure_for_task(
@@ -395,16 +401,39 @@ impl TerminalRendererRegistry {
         cfg: RendererConfig,
         launch: crate::operation::task_launch::TaskLaunch,
     ) -> Result<Arc<RendererEntry>, RendererSpawnError> {
-        self.ensure_with_launch(cfg, Some(launch)).await
+        self.ensure_with_launch(cfg, Some(launch), None).await
+    }
+
+    /// A respawn's own renderer: always a new entry, never one a caller set up before (#2516).
+    pub(crate) async fn ensure_respawn(
+        &self,
+        cfg: RendererConfig,
+        fence: &respawn::RespawnFence,
+    ) -> Result<Arc<RendererEntry>, RendererSpawnError> {
+        self.ensure_with_launch(cfg, None, Some(fence)).await
     }
 
     async fn ensure_with_launch(
         &self,
         cfg: RendererConfig,
         launch: Option<crate::operation::task_launch::TaskLaunch>,
+        respawn: Option<&respawn::RespawnFence>,
     ) -> Result<Arc<RendererEntry>, RendererSpawnError> {
-        if let Some(existing) = self.get(&cfg.terminal_id) {
-            return Ok(existing);
+        match respawn {
+            None if self.respawn_fenced(&cfg.terminal_id) => {
+                return Err(respawn::fenced_error(&cfg.terminal_id).into());
+            }
+            None => {
+                if let Some(existing) = self.get(&cfg.terminal_id) {
+                    return Ok(existing);
+                }
+            }
+            Some(fence) => {
+                fence.check(&cfg.terminal_id)?;
+                if self.get(&cfg.terminal_id).is_some() {
+                    return Err(respawn::stale_entry_error(&cfg.terminal_id).into());
+                }
+            }
         }
 
         let EstablishedRenderer { entry, handoff } = ensure_entry(
@@ -425,6 +454,16 @@ impl TerminalRendererRegistry {
                 .entries
                 .lock()
                 .map_err(|_| anyhow::anyhow!("terminal renderer registry mutex poisoned"))?;
+            // Checked under `entries`: a caller that began before the fence cannot land its entry
+            // inside the fenced window, and a respawn never adopts an entry it did not set up.
+            if respawn.is_none() && self.respawn_fenced(&entry.terminal_id) {
+                entry.abort_tasks();
+                return Err(respawn::fenced_error(&entry.terminal_id).into());
+            }
+            if respawn.is_some() && entries.contains_key(&entry.terminal_id) {
+                entry.abort_tasks();
+                return Err(respawn::stale_entry_error(&entry.terminal_id).into());
+            }
             if let Some(existing) = entries.get(&entry.terminal_id) {
                 entry.abort_tasks();
                 if handoff.is_some()

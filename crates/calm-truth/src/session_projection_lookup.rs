@@ -66,14 +66,32 @@ pub async fn resolve_claude_session_for_card(
     let runtime = repo
         .session_projection_projectable_for_card(&card_id.to_string())
         .await?;
-    if let Some(runtime) = runtime.as_ref()
-        && let Some(session_id) = non_empty(runtime.session_id.as_deref())
-    {
-        return Ok(Some(session_id.to_string()));
+    if let Some(session_id) = claude_session_of_runtime(runtime.as_ref()) {
+        return Ok(Some(session_id));
     }
-
     let card = repo.card_get(card_id).await?;
-    let legacy_session = card.as_ref().and_then(|card| {
+    Ok(legacy_claude_session_of_card(
+        card_id,
+        runtime.as_ref(),
+        card.as_ref(),
+    ))
+}
+
+/// The Claude session the card's projectable runtime carries, if any.
+pub fn claude_session_of_runtime(runtime: Option<&WorkerSessionProjection>) -> Option<String> {
+    runtime
+        .and_then(|runtime| non_empty(runtime.session_id.as_deref()))
+        .map(ToOwned::to_owned)
+}
+
+/// The transitional fallback when the runtime carries no session: the card payload's
+/// `claude_session_id`. Logged, since only a pre-backfill row should reach it.
+pub fn legacy_claude_session_of_card(
+    card_id: &str,
+    runtime: Option<&WorkerSessionProjection>,
+    card: Option<&Card>,
+) -> Option<String> {
+    let legacy_session = card.and_then(|card| {
         card.payload
             .get("claude_session_id")
             .and_then(serde_json::Value::as_str)
@@ -88,7 +106,7 @@ pub async fn resolve_claude_session_for_card(
         legacy_hit = legacy_session.is_some(),
         "runtime Claude session lookup missed; falling back to card payload"
     );
-    Ok(legacy_session)
+    legacy_session
 }
 
 pub async fn merge_active_shared_thread_attribution(

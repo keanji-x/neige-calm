@@ -120,11 +120,12 @@ pub use session_projection::{
     session_mark_queue_harvested_tx, session_mark_superseded_runtime_tx,
     session_projection_active_by_session_tx, session_projection_active_for_card_tx,
     session_projection_active_for_terminal_tx, session_projection_by_id_tx,
-    session_projection_failed_carrier_for_card_tx, session_restore_failed_carrier_runtime_tx,
-    session_restore_from_superseded_runtime_tx, session_set_active_turn_tx,
-    session_set_handle_state_of_any_runtime_tx, session_set_handle_state_of_retired_runtime_tx,
-    session_set_handle_state_tx, session_set_harness_observation_runtime_tx,
-    session_set_status_for_card_tx, session_set_status_tx,
+    session_projection_failed_carrier_for_card_tx, session_projection_projectable_for_card_tx,
+    session_restore_failed_carrier_runtime_tx, session_restore_from_superseded_runtime_tx,
+    session_set_active_turn_tx, session_set_handle_state_of_any_runtime_tx,
+    session_set_handle_state_of_retired_runtime_tx, session_set_handle_state_tx,
+    session_set_harness_observation_runtime_tx, session_set_status_for_card_tx,
+    session_set_status_tx,
 };
 pub use session_row::{
     ClaudePlannerScope, claude_planner_revoke_tx, session_commit_exit_tx,
