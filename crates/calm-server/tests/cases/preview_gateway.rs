@@ -124,11 +124,24 @@ async fn upstream() -> (u16, Arc<AtomicUsize>) {
                 }
             })
     };
+    // #2530 E3a: the 101 answering an upgrade tries to set calm's session as well.
+    let ws_set_cookie = move |ws: WebSocketUpgrade, headers: HeaderMap| async move {
+        let cookie = format!("cookie={}", field(&headers, header::COOKIE));
+        let mut resp = ws.on_upgrade(|mut socket| async move {
+            let _ = socket.send(WsMessage::text(cookie)).await;
+        });
+        for cookie in ["calm-session=PWN; Path=/", "calm%2Dsession=E", "ok=1"] {
+            resp.headers_mut()
+                .append(header::SET_COOKIE, cookie.parse().unwrap());
+        }
+        resp
+    };
     let app = axum::Router::new()
         .route("/echo", get(echo))
         .route("/set-cookie", get(set_cookie))
         .route("/redirect", get(redirect))
-        .route("/ws", get(ws));
+        .route("/ws", get(ws))
+        .route("/ws-set-cookie", get(ws_set_cookie));
     let listener = listener.tap_io(move |_| {
         counter.fetch_add(1, Ordering::SeqCst);
     });
@@ -446,4 +459,22 @@ async fn gateway_shutdown_closes_an_open_tunnel() {
     next_frame(&mut socket).await.unwrap().unwrap();
     gw.stop.cancel();
     assert_tunnel_closed(&mut socket, "gateway shutdown").await;
+}
+
+/// #2530 E3a: the cookie fence moved into `reverse_proxy`; on the gateway's upgrade path calm's
+/// session still never reaches the dev server, and a 101 cannot set it.
+#[tokio::test]
+async fn an_upgrade_carries_no_calm_session_either_way() {
+    let (target, _) = upstream().await;
+    let gw = gateway_for(Some(target)).await;
+    let mut request = format!("ws://127.0.0.1:{}/ws-set-cookie", gw.port)
+        .into_client_request()
+        .unwrap();
+    let jar = format!("calm-session=EVIL; XSRF-TOKEN=abc; {}", gw.session);
+    request.headers_mut().insert("cookie", jar.parse().unwrap());
+    let (mut socket, resp) = tokio_tungstenite::connect_async(request).await.unwrap();
+    let set: Vec<_> = resp.headers().get_all(header::SET_COOKIE).iter().collect();
+    assert_eq!(set, ["ok=1"]);
+    let first = next_frame(&mut socket).await.unwrap().unwrap();
+    assert_eq!(first, Message::text("cookie=XSRF-TOKEN=abc"));
 }

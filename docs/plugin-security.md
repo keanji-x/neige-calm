@@ -138,3 +138,24 @@ runtime enablement. Disabling a component rejects new tool calls; already admitt
 operations follow their existing settlement rules. The selected template's
 saved working method remains intact, but cannot grant access to unavailable
 tools.
+
+## Plugin sockets
+
+Version 6 adds `http_socket`, the file name of a Unix socket an `app` plugin
+serves HTTP on inside its working directory `<plugins_data_dir>/<id>/`. The name
+must be a plain file name: no `/`, `\`, `..` or NUL. Connectors and built-in
+components cannot declare one. The kernel exposes it only as
+`GET /api/plugins/{id}/ws/{*path}`, which accepts WebSocket upgrades only and
+sits behind the same session and per-upgrade `Origin` checks as the other
+WebSocket routes, on the main and the mobile ingress alike. The upgrade reaches
+the socket with the rest of the path and the query; calm's session cookie is
+removed on the way in, and a `Set-Cookie` for it is dropped on the way out, by
+the same proxy the preview gateway uses. Plain HTTP is never proxied, so pages a
+plugin generates never run on calm's origin.
+
+The route answers 400 to a request that is not a WebSocket upgrade, 404 when no
+installed plugin with that id declares a socket, and 503 while the plugin is
+not running (not enabled, starting, stopping or crashed) or its socket does not
+answer. Every open tunnel closes when the plugin's run ends: stop, disable,
+reload, restart or crash. Any local process of the kernel's user can still
+connect to the socket directly; the route adds no isolation from same-user code.

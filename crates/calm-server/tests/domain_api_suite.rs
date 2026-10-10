@@ -63,6 +63,8 @@ mod payload_validation;
 mod planner_permission_mode_creation;
 #[path = "cases/plugin_names_migration.rs"]
 mod plugin_names_migration;
+#[path = "cases/plugin_ws_proxy.rs"]
+mod plugin_ws_proxy;
 #[path = "cases/preview_gateway.rs"]
 mod preview_gateway;
 #[path = "cases/recipe_minted_names_migration.rs"]

@@ -106,6 +106,7 @@ impl<E: ErrorFactory> PluginHost<E> {
                 entry.status = PluginRuntimeStatus::Crashed {
                     reason: combined_reason.clone(),
                 };
+                entry.stop_serving();
                 (
                     entry.crashes_in_window,
                     entry.crash_attempt,

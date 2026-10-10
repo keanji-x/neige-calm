@@ -59,6 +59,7 @@ impl<E: ErrorFactory> PluginHost<E> {
                 return Err(HostError::NotFound(id.to_string()));
             }
             rp.stopping = true;
+            rp.stop_serving();
             let process = rp.process.clone();
             let supervisor = rp.supervisor.take();
             let subs = Arc::clone(&rp.subscriptions);

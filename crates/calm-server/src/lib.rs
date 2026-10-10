@@ -581,6 +581,7 @@ pub mod provider_impls;
 pub mod proxy_env;
 pub(crate) mod recorder_shadow;
 pub mod replay;
+pub mod reverse_proxy;
 pub mod role_gate;
 pub mod routes;
 pub mod scheduler;

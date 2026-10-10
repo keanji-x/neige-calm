@@ -9,6 +9,7 @@ pub mod forge_caller;
 pub mod glob;
 pub mod http_headers;
 pub mod http_mcp;
+pub mod http_socket;
 pub mod manifest;
 pub mod mcp;
 pub mod perms;

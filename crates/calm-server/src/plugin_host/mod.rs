@@ -24,7 +24,7 @@ pub use plugin::host::registry::{PluginRegistry, PluginRegistryBuilder};
 pub use plugin::host::resources::{ResourceError, read_ui_resource};
 pub use plugin::host::{
     BackoffConfig, ConnectorSpawnOrder, LifecycleGuard, PluginHostStatus, PluginRuntimeStatus,
-    connector_bringup_budget,
+    PluginSocket, SocketUnavailable, connector_bringup_budget,
 };
 pub use plugin::http_mcp::{HttpCredential, HttpMcpClient};
 pub use plugin::manifest::{CONFIG_SCHEMA_KEY, ConnectorKind, Manifest};
