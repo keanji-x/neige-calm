@@ -4,7 +4,7 @@ use super::receipts::{
     WriteReceipts, attach_claim, control_unavailable_receipt, merge, stale_receipt,
 };
 use super::screen_diff::{CursorSnapshot, ScreenDiff, row_hashes};
-use super::write_leg::{Admission, remember};
+use super::write_leg::{Admission, WriteRule, remember};
 use super::*;
 use crate::terminal_renderer::WriteShape;
 
@@ -70,7 +70,7 @@ impl TerminalInteraction {
                 &key,
                 &fingerprint,
                 observation_wait.clone(),
-                |resolved| self.ensure_keys_accepted(resolved),
+                WriteRule::Keys,
             )
             .await?
         {

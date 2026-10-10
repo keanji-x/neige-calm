@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use calm_exec::{BoundKeys, SpawnCtx, SpawnHandle, TuiInput, WorkerProvider};
+use calm_exec::{BoundKeys, MessageReady, SpawnCtx, SpawnHandle, TuiInput, WorkerProvider};
 use calm_types::error::CoreError;
 use calm_types::runtime::TimestampMs;
 use calm_types::worker::{
@@ -96,10 +96,12 @@ impl WorkerProvider for CodexProvider {
     }
 
     /// A message is one bracketed paste and Enter (a new turn when idle, `turn/steer` while a
-    /// turn runs); typed keys interrupt the turn without starting one (#1782).
+    /// turn runs); typed keys interrupt the turn without starting one (#1782). The task's first
+    /// turn starts through the app-server before the terminal UI spawns (#2532).
     fn tui_input(&self) -> TuiInput {
         TuiInput::BracketedPasteSubmit {
             keys_while_bound: BoundKeys::Refused,
+            ready: MessageReady::WhenRunning,
         }
     }
 
@@ -582,10 +584,12 @@ mod tests {
         assert_eq!(
             tui,
             TuiInput::BracketedPasteSubmit {
-                keys_while_bound: BoundKeys::Refused
+                keys_while_bound: BoundKeys::Refused,
+                ready: MessageReady::WhenRunning,
             }
         );
         assert!(tui.takes_message());
         assert_eq!(tui.keys_while_bound(), BoundKeys::Refused);
+        assert_eq!(tui.message_ready(), Some(MessageReady::WhenRunning));
     }
 }

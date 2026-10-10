@@ -53,7 +53,9 @@ pub(crate) async fn worker_running(
         .await
         .unwrap();
     let mut tx = h.sql.pool().begin().await.unwrap();
-    let roles = CardRoleCache::new();
+    // The server's own cache, as the production create path writes through it: the hook ingest's
+    // role gate reads the worker card's role and Track from it.
+    let roles = h.state.card_role_cache.clone();
     let theme = calm_server::routes::theme::RequestTheme::default_dark();
     let cwd = h.root.path().to_str().unwrap().to_owned();
     let (_, terminal) = match kind {

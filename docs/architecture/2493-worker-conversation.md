@@ -216,12 +216,16 @@ grep` for `spawn_op_id` reads, `worker_op_targets`, `WORKER_SPAWN_OPS`,
 implemented in `provider::worker`, registered in `calm-server/src/provider_registry.rs:28-58`:
 
 ```rust
-pub enum TuiInput { BracketedPasteSubmit { keys_while_bound: BoundKeys }, KeysOnly }
+pub enum TuiInput { BracketedPasteSubmit { keys_while_bound: BoundKeys, ready: MessageReady }, KeysOnly }
 pub enum BoundKeys { Accepted, Refused }
+pub enum MessageReady { WhenRunning, AfterPromptSubmitted }
 ```
 
-Codex `BracketedPasteSubmit { Refused }`, Claude `BracketedPasteSubmit { Accepted }`, terminal and
-managed `KeysOnly`; keys are refused only beside a message delivery (#2528). No dialog check: Codex
+Codex `BracketedPasteSubmit { Refused, WhenRunning }` (its first turn starts through the
+app-server before the TUI spawns), Claude `BracketedPasteSubmit { Accepted, AfterPromptSubmitted }`
+(the task prompt is a CLI argument Claude submits after its startup screens, so `message` waits for
+that session's first `UserPromptSubmit` hook, read from the persisted `claude.hook` rows, #2532),
+terminal and managed `KeysOnly`; keys are refused only beside a message delivery (#2528). No dialog check: Codex
 task threads run `approval_policy: "never"` (`shared_codex_appserver.rs:956`), `waitingOnUserInput`
 is unobserved, and Claude has no sound signal (KNOWN GAP). `keys_while_bound` replaces
 `card.kind == "codex"` (`target.rs:216`). Narrowing: the first release serves the existing
@@ -293,7 +297,7 @@ Refusals (`-32403` like every terminal runtime failure, agent-commands §9; text
 |---|---|
 | `worker_parked` | `attempt <id> (task <key>) is <status>; its worker takes no input.` + by status: done/failed `Declare a task with "continues": "<key>", or a new task for a fresh worker.`; verifying `Wait for its gate.`; canceled `Declare a new task.` |
 | `worker_ended` | `the worker of attempt <id> has ended (<state>); this call wrote nothing. Declare a new task.` |
-| `worker_starting` | `attempt <id> is dispatched; its worker is starting. Read again, then send.` |
+| `worker_starting` | `attempt <id> is dispatched; its worker is starting. Read again, then send.` Running, but a provider declaring `AfterPromptSubmitted` has no persisted `UserPromptSubmit` hook attributed to this worker session (#2532; `message` only, typed keys stay accepted for the worker watcher): `attempt <id> is running, but its worker has not started its task yet; its agent may still be on a startup screen, which the worker watcher handles. Read its screen or wait, then send again` |
 | `binding_changed` | `terminal <id> now serves attempt <new> (was <old>); show and read again.` (extends today's text, `target.rs:256-257`) |
 | `message_unsupported` | `action "message" needs a task worker whose agent declares it (<providers>); terminal <id> runs <provider>. Use "text" or "submit".` |
 | `worker_keys_refused` (was `codex_task_worker_input`) | `a <provider> task worker takes only action "message"; typed keys interrupt its turn without starting one.` |

@@ -474,6 +474,13 @@ pub trait ServerRepoEventWriteExt: ServerRepoReadExt {
         kinds: &[&str],
         since_id: Option<i64>,
     ) -> Result<Vec<TrackEvent>>;
+    async fn card_hook_seen(
+        &self,
+        event_kind: &str,
+        card_id: &str,
+        actor: &ActorId,
+        hook_kind: &str,
+    ) -> Result<bool>;
     async fn events_earliest_id(&self) -> Result<Option<i64>>;
     async fn events_prune_watermark(&self) -> Result<i64>;
     async fn events_latest_id(&self) -> Result<Option<i64>>;
@@ -581,6 +588,17 @@ where
         since_id: Option<i64>,
     ) -> Result<Vec<TrackEvent>> {
         calm_truth::db::RepoEventWrite::events_for_track(self, track_id, kinds, since_id)
+            .await
+            .map_err(Into::into)
+    }
+    async fn card_hook_seen(
+        &self,
+        event_kind: &str,
+        card_id: &str,
+        actor: &ActorId,
+        hook_kind: &str,
+    ) -> Result<bool> {
+        calm_truth::db::RepoEventWrite::card_hook_seen(self, event_kind, card_id, actor, hook_kind)
             .await
             .map_err(Into::into)
     }

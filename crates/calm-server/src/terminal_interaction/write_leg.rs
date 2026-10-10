@@ -32,6 +32,13 @@ pub(super) struct Admitted {
     pub(super) _serial: OwnedMutexGuard<()>,
 }
 
+/// The write rule a new write passes after the replay: typed keys' or `message`'s.
+#[derive(Clone, Copy)]
+pub(super) enum WriteRule {
+    Keys,
+    Message,
+}
+
 pub(super) enum Admission {
     /// The key's first receipt, with a readback against the current screen.
     Replayed(Value),
@@ -51,9 +58,9 @@ pub(super) enum Delivered {
 
 impl TerminalInteraction {
     /// The one admission order of every write request: arguments, the caller's authorization and
-    /// target, the serial guard, the binding re-proven, the replay, then `new_write` (the action's
-    /// own write rule). With no renderer entry there is no connection and no cache: `new_write`
-    /// still answers first, then the no-receipt refusal.
+    /// target, the serial guard, the binding re-proven, the replay, then `rule` (the action's own
+    /// write rule). With no renderer entry there is no connection and no cache: `rule` still
+    /// answers first, then the no-receipt refusal.
     pub(super) async fn admit_write(
         &self,
         identity: &ToolCallIdentity,
@@ -61,7 +68,7 @@ impl TerminalInteraction {
         key: &str,
         fingerprint: &str,
         observation_wait: Option<WaitPlan>,
-        new_write: impl Fn(&Resolved) -> Result<()>,
+        rule: WriteRule,
     ) -> Result<Admission> {
         if let Some(wait) = &observation_wait {
             wait.validate()?;
@@ -72,7 +79,7 @@ impl TerminalInteraction {
         );
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
         if self.renderer.get(&resolved.binding.terminal_id).is_none() {
-            new_write(&resolved)?;
+            self.new_write_rule(rule, &resolved).await?;
             return Err(refused("terminal_unreadable", NO_RECEIPT.into()).into());
         }
         let client = self.client(identity, &resolved.binding).await?;
@@ -90,12 +97,18 @@ impl TerminalInteraction {
         {
             return Ok(Admission::Replayed(replayed));
         }
-        new_write(&resolved)?;
+        self.new_write_rule(rule, &resolved).await?;
         Ok(Admission::New(Admitted {
             resolved,
             client,
             _serial: serial,
         }))
+    }
+    async fn new_write_rule(&self, rule: WriteRule, resolved: &Resolved) -> Result<()> {
+        match rule {
+            WriteRule::Keys => self.ensure_keys_accepted(resolved),
+            WriteRule::Message => self.message_rule(resolved).await,
+        }
     }
     /// The receipt cached under `key` on this connection, with its readback, or `None` for a new
     /// key. A key reused with other arguments is refused.

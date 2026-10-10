@@ -156,5 +156,6 @@ mod tests {
         assert_eq!(tui, TuiInput::KeysOnly);
         assert!(!tui.takes_message());
         assert_eq!(tui.keys_while_bound(), calm_exec::BoundKeys::Accepted);
+        assert_eq!(tui.message_ready(), None);
     }
 }

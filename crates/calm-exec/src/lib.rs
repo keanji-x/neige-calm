@@ -10,5 +10,5 @@ pub use flow::{
     WorkerFlowItemSink, WorkerFlowSource,
 };
 pub use observation::ObservationSink;
-pub use provider::{BoundKeys, SpawnCtx, SpawnHandle, TuiInput, WorkerProvider};
+pub use provider::{BoundKeys, MessageReady, SpawnCtx, SpawnHandle, TuiInput, WorkerProvider};
 pub use reaction::{AgentReactor, DecisionIntent, DecisionSink};
