@@ -21,6 +21,7 @@ members = [
     "crates/neige-cli",
     "crates/neige-mcp-stdio-shim",
     "crates/e2e-egress-proxy",
+    "crates/compositor",
 ]
 
 [workspace.dependencies]

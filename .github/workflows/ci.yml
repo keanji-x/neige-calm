@@ -180,11 +180,12 @@ jobs:
               ;;
           esac
 
-      - name: install ripgrep for ratchets
+      # libxkbcommon and pixman are link dependencies of the `compositor` crate (clippy below).
+      - name: install ripgrep for ratchets and compositor link libraries
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y ripgrep
+          sudo apt-get install -y ripgrep libxkbcommon-dev libpixman-1-dev
 
       - name: runtimes ratchet selftest
         if: env.RUN_RUST_CHECKS == 'true'
@@ -515,6 +516,12 @@ jobs:
 
       - uses: taiki-e/install-action@nextest
 
+      - name: install compositor link libraries
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libpixman-1-dev
+
       # calm-worker-boundary is not built by the archive (see .config/nextest.toml's archive include).
       - name: cargo nextest archive --workspace --locked
         run: |
@@ -560,7 +567,7 @@ jobs:
             set -e
             rustup toolchain install --no-self-update
             sudo apt-get update
-            sudo apt-get install -y bubblewrap python3
+            sudo apt-get install -y bubblewrap python3 libxkbcommon-dev libpixman-1-dev
             test "$RUNNER_ENVIRONMENT" = github-hosted
             policy=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
             if [ -f "$policy" ]; then
@@ -659,7 +666,7 @@ jobs:
       - name: install isolated provider fixture dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bubblewrap python3
+          sudo apt-get install -y bubblewrap python3 libxkbcommon-dev libpixman-1-dev
           test "$RUNNER_ENVIRONMENT" = github-hosted
           policy=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
           if [ -f "$policy" ]; then
