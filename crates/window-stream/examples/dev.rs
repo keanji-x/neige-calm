@@ -6,8 +6,10 @@
 //! a viewer page at `http://127.0.0.1:<port>/` whose canvas streams Chrome's
 //! most recent open window over `/stream` and sends pointer, wheel and key
 //! input back. Port 0 (the default) picks a free port; the URL is printed.
-//! Chrome's profile is `$TMPDIR/dev-profile` and its `HOME` (crash database,
-//! NSS state) is `$TMPDIR/dev-home`; both are deleted at every start. Stop with
+//! `/stream` refuses upgrades whose `Origin` is not that page's origin.
+//! `TMPDIR` must name a private directory: Chrome's profile is
+//! `$TMPDIR/dev-profile` and its `HOME` (crash database, NSS state) is
+//! `$TMPDIR/dev-home`; both are deleted at every start. Stop with
 //! SIGINT or SIGTERM; Chrome's process group is stopped with it.
 //!
 //! The adapter from the compositor's `FrameWatch` to a `FrameFeed` below is the
@@ -39,7 +41,8 @@ mod dev {
     use axum::Router;
     use axum::extract::State;
     use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-    use axum::response::{Html, IntoResponse};
+    use axum::http::{HeaderMap, StatusCode, header};
+    use axum::response::{Html, IntoResponse, Response};
     use axum::routing::get;
     use compositor::{
         Compositor, Config, DEFAULT_MAX_FPS, DEFAULT_SIZE, FrameWatch, InputEvent, SOCKET_NAME,
@@ -104,11 +107,18 @@ mod dev {
         chrome_pid: i32,
         quality: u8,
         stats: Arc<Mutex<EncodeStats>>,
+        /// The viewer page's origin; the only one `/stream` accepts.
+        origin: Arc<str>,
     }
 
     pub async fn main() -> Res<()> {
         let args = args()?;
-        let tmp = std::env::temp_dir();
+        // No fallback to a shared /tmp path: the profile holds cookies.
+        let tmp =
+            PathBuf::from(std::env::var_os("TMPDIR").ok_or("set TMPDIR to a private directory")?);
+        if !tmp.is_absolute() {
+            return Err("TMPDIR must be an absolute path".into());
+        }
         let run_dir = tmp.join("dev-run");
         fs::create_dir_all(&run_dir)?;
         fs::set_permissions(&run_dir, fs::Permissions::from_mode(0o700))?;
@@ -119,7 +129,10 @@ mod dev {
         for dir in [&profile, &home] {
             let _ = fs::remove_dir_all(dir);
             fs::create_dir_all(dir)?;
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
         }
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", args.port)).await?;
+        let origin: Arc<str> = format!("http://{}", listener.local_addr()?).into();
 
         let (compositor, events) = compositor::start(Config {
             run_dir: run_dir.clone(),
@@ -157,8 +170,9 @@ mod dev {
             chrome_pid: chrome.id() as i32,
             quality: args.quality,
             stats: Arc::default(),
+            origin,
         };
-        let result = serve(app, args.port).await;
+        let result = serve(app, listener).await;
         stop(&mut chrome);
         result
     }
@@ -195,13 +209,12 @@ mod dev {
         Ok(child)
     }
 
-    async fn serve(app: App, port: u16) -> Res<()> {
+    async fn serve(app: App, listener: tokio::net::TcpListener) -> Res<()> {
         let router = Router::new()
             .route("/", get(|| async { Html(PAGE) }))
             .route("/stream", get(stream))
             .with_state(app.clone());
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
-        println!("listening on http://{}/", listener.local_addr()?);
+        println!("listening on {}/", app.origin);
         tokio::spawn(report_stats(app.stats.clone()));
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let shutdown = async move {
@@ -217,21 +230,31 @@ mod dev {
         Ok(())
     }
 
-    async fn stream(State(app): State<App>, upgrade: WebSocketUpgrade) -> impl IntoResponse {
-        upgrade.on_upgrade(move |socket| async move {
-            let source = Arc::new(MainWindow {
-                compositor: app.compositor.clone(),
-                windows: app.windows.clone(),
-                chrome_pid: app.chrome_pid,
-                watched: Mutex::new(None),
-            });
-            let encoder = TimedEncoder {
-                inner: JpegEncoder::new(app.quality),
-                stats: app.stats.clone(),
-            };
-            let summary = serve_viewer(adapt(socket), source, Box::new(encoder)).await;
-            println!("viewer session ended: {summary:?}");
-        })
+    async fn stream(
+        State(app): State<App>,
+        headers: HeaderMap,
+        upgrade: WebSocketUpgrade,
+    ) -> Response {
+        // Another site in the same browser must not drive this window.
+        if headers.get(header::ORIGIN).map(|o| o.as_bytes()) != Some(app.origin.as_bytes()) {
+            return (StatusCode::FORBIDDEN, "cross-origin stream refused").into_response();
+        }
+        upgrade
+            .on_upgrade(move |socket| async move {
+                let source = Arc::new(MainWindow {
+                    compositor: app.compositor.clone(),
+                    windows: app.windows.clone(),
+                    chrome_pid: app.chrome_pid,
+                    watched: Mutex::new(None),
+                });
+                let encoder = TimedEncoder {
+                    inner: JpegEncoder::new(app.quality),
+                    stats: app.stats.clone(),
+                };
+                let summary = serve_viewer(adapt(socket), source, Box::new(encoder)).await;
+                println!("viewer session ended: {summary:?}");
+            })
+            .into_response()
     }
 
     /// axum's socket as the session's `Stream` + `Sink` of `WsMessage`.
@@ -310,6 +333,13 @@ mod dev {
     /// Moves frames from the synchronous `FrameWatch` to the session. Ends when
     /// the window is gone (the channel closes, so the feed returns `None`) or
     /// the viewer left (the feed is dropped); dropping the watch is the unwatch.
+    ///
+    /// Harness only, not a pattern for E4: the `mpsc` between the watch and
+    /// the feed can still hold a frame captured just before the window closed,
+    /// and hand it out after the compositor already reported the window gone.
+    /// E4's `FrameFeed` must read the `FrameWatch` slot directly when it wakes,
+    /// with no queue in between, so a closed window yields `None` and never
+    /// an older frame.
     fn bridge(watch: FrameWatch, tx: mpsc::Sender<Frame>) {
         loop {
             match watch.take_timeout(BRIDGE_POLL) {

@@ -81,11 +81,23 @@ impl FakeSource {
 
     /// Hands frame `number` to every live watcher. Never waits.
     pub fn publish(&self, number: u64) {
+        self.publish_frame(number, true);
+    }
+
+    /// Like [`publish`](Self::publish), but the frame reports no damage.
+    pub fn publish_unchanged(&self, number: u64) {
+        self.publish_frame(number, false);
+    }
+
+    fn publish_frame(&self, number: u64, damaged: bool) {
         for watcher in lock(&self.watchers).iter_mut() {
             let Some(tx) = &watcher.tx else {
                 continue;
             };
-            let frame = numbered_frame(number);
+            let mut frame = numbered_frame(number);
+            if !damaged {
+                frame.damage.clear();
+            }
             let weak = Arc::downgrade(&frame.xrgb8888);
             watcher.queued.fetch_add(1, Ordering::SeqCst);
             if tx.send(frame).is_ok() {
@@ -226,6 +238,8 @@ struct Outbox {
     capacity: usize,
     /// The session's sink, waiting for room.
     sender: Option<Waker>,
+    /// For a flush-gated socket: messages sent but not yet flushed.
+    staged: Option<Vec<WsMessage>>,
     server_gone: bool,
 }
 
@@ -249,12 +263,23 @@ pub struct ClientSocket {
 /// A socket pair whose server side can have `capacity` unread messages in
 /// flight before its sink stops taking more, like a full TCP send buffer.
 pub fn socket_pair(capacity: usize) -> (ServerSocket, ClientSocket) {
+    pair(capacity, None)
+}
+
+/// A socket pair whose sink is always ready and buffers every message until
+/// the session flushes, like tungstenite's write buffer.
+pub fn flush_gated_pair() -> (ServerSocket, ClientSocket) {
+    pair(usize::MAX, Some(Vec::new()))
+}
+
+fn pair(capacity: usize, staged: Option<Vec<WsMessage>>) -> (ServerSocket, ClientSocket) {
     let (tx, rx) = mpsc::unbounded_channel();
     let shared = Arc::new(Shared {
         outbox: Mutex::new(Outbox {
             queue: VecDeque::new(),
             capacity,
             sender: None,
+            staged,
             server_gone: false,
         }),
         arrived: Notify::new(),
@@ -293,12 +318,28 @@ impl Sink<WsMessage> for ServerSocket {
     }
 
     fn start_send(self: Pin<&mut Self>, item: WsMessage) -> Result<(), SocketError> {
-        lock(&self.shared.outbox).queue.push_back(item);
-        self.shared.arrived.notify_one();
+        let mut outbox = lock(&self.shared.outbox);
+        match outbox.staged.as_mut() {
+            Some(staged) => staged.push(item),
+            None => {
+                outbox.queue.push_back(item);
+                self.shared.arrived.notify_one();
+            }
+        }
         Ok(())
     }
 
     fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), SocketError>> {
+        let mut outbox = lock(&self.shared.outbox);
+        let flushed: Vec<WsMessage> = outbox
+            .staged
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default();
+        if !flushed.is_empty() {
+            outbox.queue.extend(flushed);
+            self.shared.arrived.notify_one();
+        }
         Poll::Ready(Ok(()))
     }
 

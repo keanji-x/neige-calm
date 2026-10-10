@@ -25,6 +25,9 @@ pub enum StreamInput {
     },
 }
 
+/// Largest scroll distance one `wheel` message may carry, in window pixels.
+pub const MAX_WHEEL: f64 = 10_000.0;
+
 /// Why a client message produced no input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Ignored {
@@ -54,8 +57,8 @@ pub(crate) fn translate(
             .map(|code| StreamInput::Button { code, pressed })
             .ok_or(Ignored::UnknownButton(button)),
         ClientMessage::Wheel { dx, dy } => Ok(StreamInput::Wheel {
-            dx: finite(dx),
-            dy: finite(dy),
+            dx: finite(dx).clamp(-MAX_WHEEL, MAX_WHEEL),
+            dy: finite(dy).clamp(-MAX_WHEEL, MAX_WHEEL),
         }),
         ClientMessage::Key { code, pressed } => match evdev_key(&code) {
             Some(evdev) => Ok(StreamInput::Key { evdev, pressed }),
@@ -96,8 +99,8 @@ pub fn evdev_key(code: &str) -> Option<u32> {
     if let Some(digit) = code.strip_prefix("Digit") {
         return digit_key(digit);
     }
-    if let Some(n) = code.strip_prefix('F').and_then(|n| n.parse::<u32>().ok()) {
-        return function_key(n);
+    if let Some(n) = code.strip_prefix('F').filter(|n| canonical_number(n)) {
+        return n.parse().ok().and_then(function_key);
     }
     Some(match code {
         "Escape" => 1,
@@ -180,6 +183,11 @@ fn digit_key(digit: &str) -> Option<u32> {
     }
 }
 
+/// Digits only, without a leading zero: `F1`..`F24`, not `F01` or `F+1`.
+fn canonical_number(n: &str) -> bool {
+    !n.is_empty() && !n.starts_with('0') && n.bytes().all(|b| b.is_ascii_digit())
+}
+
 fn function_key(n: u32) -> Option<u32> {
     match n {
         1..=10 => Some(58 + n),   // KEY_F1 = 59
@@ -236,7 +244,8 @@ mod tests {
     #[test]
     fn unknown_codes_have_no_key() {
         for code in [
-            "", "Key", "KeyAA", "Keya", "Digit10", "F0", "F25", "Fn", "Lang1",
+            "", "Key", "KeyAA", "Keya", "Digit10", "F0", "F25", "Fn", "Lang1", "F01", "F+1", "F",
+            "F1 ",
         ] {
             assert_eq!(evdev_key(code), None, "{code:?}");
         }
@@ -259,6 +268,22 @@ mod tests {
         assert_eq!(evdev_button(2), Some(0x111));
         assert_eq!(evdev_button(5), None);
         assert_eq!(evdev_button(-1), None);
+    }
+
+    #[test]
+    fn wheel_is_bounded() {
+        let wheel = |dx, dy| translate(ClientMessage::Wheel { dx, dy }, None);
+        assert_eq!(
+            wheel(1e12, -1e12),
+            Ok(StreamInput::Wheel {
+                dx: MAX_WHEEL,
+                dy: -MAX_WHEEL
+            })
+        );
+        assert_eq!(
+            wheel(0.0, 120.0),
+            Ok(StreamInput::Wheel { dx: 0.0, dy: 120.0 })
+        );
     }
 
     #[test]

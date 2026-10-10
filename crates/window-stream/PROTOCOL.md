@@ -17,12 +17,15 @@ document; its tests pin the JSON and the header bytes below.
 5. When the window goes away, the server sends `closed` and closes the socket.
    `closed` is final: no frame follows it, and a frame that was waiting to be
    sent when the window went away is dropped.
-6. The viewer may close the socket at any time; the server then stops watching
-   the window.
+6. The viewer may close the socket at any time; the server answers a Close
+   with a Close and stops watching the window.
 
 **Latest wins.** The server encodes a frame only when the socket can take the
 next message. Frames that change in between replace each other, so a slow
 viewer sees fewer frames, never old ones, and never delays another viewer.
+A session's memory is bounded by a constant: at most one unsent frame plus
+the one being encoded, that frame's encoded output and the encoder's scratch
+buffer.
 A viewer should draw the same way: when a frame arrives while the previous one
 is still decoding, keep only the newest.
 
@@ -70,9 +73,12 @@ it. A viewer ignores frames with another version or an unknown codec.
 
 Text messages, JSON objects with a `type` field. Coordinates and distances are
 window pixels: scale CSS pixels on the canvas by `width / canvas CSS width`.
-The server clamps pointer coordinates into the window and ignores pointer
-messages that arrive before the first frame. It ignores and counts messages it
-cannot parse, `key` codes it does not know and `button` indices it does not map.
+The server clamps pointer coordinates into the window. It drops pointer
+messages that arrive before it has the window's first frame from its source,
+which is never later than `hello`, so a viewer has nothing to lose by sending
+pointer messages only after `hello`. It bounds each `wheel` distance to
+±10000 pixels. It ignores and counts messages it cannot parse, `key` codes it
+does not know and `button` indices it does not map.
 
 | `type` | Fields | Meaning |
 |---|---|---|
@@ -90,7 +96,7 @@ cannot parse, `key` codes it does not know and `button` indices it does not map.
 
 `code` names a physical key; the server maps it to a Linux evdev code and the
 window sees a US keyboard layout. Known codes: `KeyA`–`KeyZ`, `Digit0`–`Digit9`,
-`F1`–`F24`, `Minus`, `Equal`, `BracketLeft`, `BracketRight`, `Semicolon`,
+`F1`–`F24` (written exactly so, no leading zero), `Minus`, `Equal`, `BracketLeft`, `BracketRight`, `Semicolon`,
 `Quote`, `Backquote`, `Backslash`, `IntlBackslash`, `Comma`, `Period`, `Slash`,
 `Space`, `Enter`, `Tab`, `Backspace`, `Escape`, `CapsLock`, `NumLock`,
 `ScrollLock`, `PrintScreen`, `Pause`, `Insert`, `Delete`, `Home`, `End`,

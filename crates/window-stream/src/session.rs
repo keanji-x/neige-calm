@@ -17,6 +17,8 @@ use crate::protocol::{ClientMessage, FrameHeader, ServerMessage, VERSION};
 
 /// How long a session whose window is gone keeps trying to deliver `closed`.
 const CLOSE_GRACE: Duration = Duration::from_secs(5);
+/// How long a session waits to answer a viewer's Close.
+const CLOSE_ECHO: Duration = Duration::from_secs(1);
 /// Above this many rectangles merged damage collapses to the full frame.
 const MAX_DAMAGE_RECTS: usize = 32;
 
@@ -36,8 +38,13 @@ pub struct SourceError(pub String);
 
 /// One watcher's frames of one window. Dropping the feed ends the watch.
 pub trait FrameFeed: Send {
-    /// The next frame, waiting until there is one. `None` means the window is
-    /// gone, and is final. The future must be cancel safe.
+    /// The next frame, waiting until there is a new one. `None` means the
+    /// window is gone, and is final.
+    ///
+    /// The future must stay pending until a new frame exists: a feed that is
+    /// always ready (for example one that hands out its latest frame again)
+    /// spins the session, because the session's pump loops on this call
+    /// within one poll. The future must be cancel safe.
     fn next(&mut self) -> BoxFuture<'_, Option<Frame>>;
     /// The window title now.
     fn title(&self) -> String;
@@ -81,9 +88,13 @@ pub struct SessionSummary {
 ///
 /// The session watches `source` only while it runs. It encodes a frame only
 /// when the socket can take the next message; frames that arrive meanwhile
-/// replace each other, so it holds at most one unsent frame. It sends `hello`
-/// right before the first frame, and `closed` as its last message once the
-/// feed ends. This function is the only transport entry point.
+/// replace each other. Its memory is bounded by a constant: at most one
+/// unsent frame plus the one being encoded, that frame's encoded output and
+/// the encoder's own scratch (for [`JpegEncoder`](crate::JpegEncoder), a
+/// repacked copy when the stride has padding). It sends `hello` right before
+/// the first frame, and `closed` as its last message once the feed ends. When
+/// the viewer sends Close, the session answers with Close and ends. This
+/// function is the only transport entry point.
 pub async fn serve_viewer<S, E>(
     socket: S,
     source: Arc<dyn WindowSource>,
@@ -110,6 +121,7 @@ where
     };
 
     let latest = Latest::default();
+    let mut close_received = false;
     let end = {
         let pump = async {
             while let Some(frame) = feed.next().await {
@@ -137,11 +149,18 @@ where
                     pump_done = true;
                     grace.as_mut().reset(Instant::now() + CLOSE_GRACE);
                 }
-                end = &mut reader => break end,
+                (end, close) = &mut reader => {
+                    close_received = close;
+                    break end;
+                }
                 () = &mut grace, if pump_done => break SessionEnd::WindowGone,
             }
         }
     };
+    if close_received {
+        // Answer the viewer's Close; it may already be gone.
+        let _ = tokio::time::timeout(CLOSE_ECHO, sink.send(WsMessage::Close)).await;
+    }
     summary.end = end;
     summary
 }
@@ -165,7 +184,7 @@ struct Pending {
 
 impl Latest {
     fn lock(&self) -> MutexGuard<'_, Pending> {
-        self.state.lock().unwrap_or_else(|p| p.into_inner())
+        crate::lock(&self.state)
     }
 
     /// Replaces the unsent frame with `frame`, keeping the damage of both.
@@ -286,7 +305,8 @@ where
                 return SessionEnd::WindowGone;
             }
             Next::Text(text) => {
-                if let Err(e) = sink.feed(WsMessage::Text(text.to_json())).await {
+                // Flushed on its own: the frame that follows may be skipped.
+                if let Err(e) = sink.send(WsMessage::Text(text.to_json())).await {
                     return transport(e);
                 }
                 if let Err(e) = poll_fn(|cx| sink.poll_ready_unpin(cx)).await {
@@ -380,15 +400,15 @@ async fn read<R, E>(
     source: &dyn WindowSource,
     unknown_codes: &mut u64,
     malformed: &mut u64,
-) -> SessionEnd
+) -> (SessionEnd, bool)
 where
     R: Stream<Item = Result<WsMessage, E>> + Unpin,
     E: Display,
 {
     while let Some(message) = stream.next().await {
         let text = match message {
-            Err(e) => return SessionEnd::Transport(e.to_string()),
-            Ok(WsMessage::Close) => return SessionEnd::ViewerLeft,
+            Err(e) => return (SessionEnd::Transport(e.to_string()), false),
+            Ok(WsMessage::Close) => return (SessionEnd::ViewerLeft, true),
             Ok(WsMessage::Binary(_)) => {
                 *malformed += 1;
                 continue;
@@ -420,5 +440,5 @@ where
             Err(Ignored::NoSize) => {}
         }
     }
-    SessionEnd::ViewerLeft
+    (SessionEnd::ViewerLeft, false)
 }

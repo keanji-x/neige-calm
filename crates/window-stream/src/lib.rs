@@ -17,9 +17,14 @@ pub mod protocol;
 mod session;
 mod socket;
 
+/// Locks `m`, recovering the data if a holder panicked.
+pub(crate) fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 pub use encode::{DEFAULT_JPEG_QUALITY, JpegEncoder};
 pub use frame::{Codec, EncodeError, EncodedFrame, Frame, FrameEncoder, Rect};
-pub use input::{StreamInput, evdev_button, evdev_key};
+pub use input::{MAX_WHEEL, StreamInput, evdev_button, evdev_key};
 pub use session::{
     FrameFeed, SessionEnd, SessionSummary, SourceError, WindowSource, WsMessage, serve_viewer,
 };

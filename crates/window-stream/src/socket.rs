@@ -6,10 +6,12 @@
 //! these halves forward readiness unchanged and buffer nothing.
 
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use futures_util::{Sink, Stream};
+
+use crate::lock;
 
 pub(crate) struct ReadHalf<S>(Arc<Mutex<S>>);
 pub(crate) struct WriteHalf<S>(Arc<Mutex<S>>);
@@ -17,10 +19,6 @@ pub(crate) struct WriteHalf<S>(Arc<Mutex<S>>);
 pub(crate) fn split<S>(socket: S) -> (ReadHalf<S>, WriteHalf<S>) {
     let shared = Arc::new(Mutex::new(socket));
     (ReadHalf(shared.clone()), WriteHalf(shared))
-}
-
-fn lock<S>(socket: &Mutex<S>) -> MutexGuard<'_, S> {
-    socket.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 impl<S: Stream + Unpin> Stream for ReadHalf<S> {

@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use support::{CountingEncoder, FakeSource, Received, SIZE, WAIT, eventually, socket_pair};
+use support::{
+    CountingEncoder, FakeSource, Received, SIZE, WAIT, eventually, flush_gated_pair, socket_pair,
+};
 use window_stream::protocol::ServerMessage;
 use window_stream::{
     Codec, JpegEncoder, SessionEnd, SessionSummary, StreamInput, WindowSource, serve_viewer,
@@ -299,6 +301,11 @@ async fn input_messages_reach_the_source() {
     let summary = finished(session).await;
 
     assert_eq!(summary.end, SessionEnd::ViewerLeft);
+    let mut last = None;
+    while let Some(message) = client.expect().await {
+        last = Some(message);
+    }
+    assert_eq!(last, Some(Received::Close), "the session answers Close");
     assert_eq!(summary.unknown_codes, 2, "button 9 and Lang1");
     assert_eq!(summary.malformed_messages, 2);
     assert_eq!(
@@ -328,4 +335,30 @@ async fn input_messages_reach_the_source() {
             },
         ]
     );
+}
+
+/// A title change is flushed even when the frame that follows it is skipped
+/// for having no damage, on a socket that delivers only on flush.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_title_before_an_unchanged_frame_is_flushed() {
+    let source = FakeSource::new("A");
+    let (encoder, _) = CountingEncoder::boxed();
+    let (server, client) = flush_gated_pair();
+    let session = spawn_session(server, &source, encoder);
+    eventually("the session watches", || source.live_watchers() == 1).await;
+    source.publish(1);
+    assert!(is_hello(&client.expect().await));
+    assert_eq!(client.expect().await.and_then(|m| m.number()), Some(1));
+
+    *source.title.lock().unwrap() = "B".into();
+    source.publish_unchanged(2);
+    let title = tokio::time::timeout(Duration::from_secs(2), client.recv())
+        .await
+        .expect("the title was never flushed");
+    assert_eq!(
+        title,
+        Some(Received::Server(ServerMessage::Title { title: "B".into() }))
+    );
+    client.send_close();
+    assert_eq!(finished(session).await.end, SessionEnd::ViewerLeft);
 }
