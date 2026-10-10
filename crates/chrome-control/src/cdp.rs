@@ -11,7 +11,9 @@
 //! - `Target.attachToTarget` is the one call whose late reply still changes
 //!   Chrome's state (it made a session). When its caller has given up, the
 //!   entry stays as a marker, and a late reply that carries a `sessionId` is
-//!   answered with `Target.detachFromTarget` for exactly that session.
+//!   answered with `Target.detachFromTarget` for exactly that session. A reply
+//!   already delivered to a caller that then drops without reading it is not
+//!   detached (#2547).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};

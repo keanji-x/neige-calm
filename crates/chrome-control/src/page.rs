@@ -4,7 +4,8 @@
 //! page target whose `document.visibilityState` is `"visible"`. Every
 //! operation attaches flat sessions for its own duration only. They are
 //! detached from a spawned task when the operation ends, also when its future
-//! is dropped, so no session outlives the call that made it.
+//! is dropped. One race remains: an attach reply already delivered but not
+//! yet read when the future is dropped leaks that session (#2547).
 
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
