@@ -161,3 +161,29 @@ its place, without its headers or body. Plugins receive no `Forwarded` or
 `X-Forwarded-*` headers, and must not trust `Host` or `Origin`. Every open tunnel closes when the plugin's run ends: stop, disable,
 reload, restart or crash. Any local process of the kernel's user can still
 connect to the socket directly; the route adds no isolation from same-user code.
+
+## Delegated tool approval
+
+Version 7 lets an `app` plugin's tool declare `"approval": "delegated"`; any
+other value is refused, and connectors and built-in components cannot declare
+it. The tool's annotations stay truthful. Enabling the plugin is the grant:
+whenever the plugin set changes, and whenever the Codex daemon comes up, the
+kernel rewrites its own entry in the shared Codex home so that its per-tool map
+holds exactly the delegated tools (as `plugin_<id>_<tool>`) of the installed
+and enabled plugins, each with Codex's never-ask approval mode. A disabled or
+uninstalled plugin's tools leave the map, and nothing else in the entry
+changes. A name two enabled tools would mint is never granted. Enabled is not
+running: a stopped or crashed plugin keeps its grant, and routing still refuses
+every call to it while it is not running.
+
+The kernel promises the grant to threads that start or cold-resume after the
+change. Codex 0.159.2 also applies a change to loaded threads when the reload
+that follows each rewrite restarts their connection to the kernel, and keeps
+their per-thread terminal grants; a loaded thread that misses that reload keeps
+the grants it had. Disabling the plugin is the immediate off switch either way,
+because routing then refuses its calls. The map is read by every Codex thread
+on the shared daemon, so the grant covers every role the kernel serves plugin
+tools to: the Planner and Workers. The kernel's own terminal grants are per
+role and travel with each thread's start config; Codex merges the two maps.
+Delegated calls are never asked, also when the Planner runs in its asking
+tier, so a page or document the tool reads can steer them.

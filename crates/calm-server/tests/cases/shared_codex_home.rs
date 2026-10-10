@@ -1,5 +1,6 @@
 use calm_server::mcp_server::McpShimConfig;
 use calm_server::shared_codex_home::{EXPECTED_MCP_SERVERS, SharedCodexHome};
+use std::collections::BTreeSet;
 
 mod shared_codex_home {
     use super::*;
@@ -517,14 +518,14 @@ args = ["--bar"]
 
     /// #2014: the generation counter is one more `env` key of the kernel entry. Every bump changes
     /// it, an unparseable value restarts from 0, the boot-written keys survive it, a boot rewrite
-    /// keeps it, and it never creates an entry Codex cannot start.
+    /// keeps it and the approval grants (#2530), and it never creates an entry Codex cannot start.
     #[test]
     fn mcp_toolset_lives_in_the_kernel_entry_and_needs_one() {
         let root = tempfile::tempdir().expect("tempdir");
         let home = shared_home(&root);
         home.seed_from(None).expect("seed empty");
         std::fs::write(home.path().join("config.toml"), "").expect("write empty config");
-        home.bump_mcp_toolset()
+        home.refresh_mcp_entry(&BTreeSet::new())
             .expect_err("no kernel entry to update");
         assert!(
             parsed_config(&home).get("mcp_servers").is_none(),
@@ -542,12 +543,23 @@ args = ["--bar"]
                 .as_str()
                 .map(str::to_string)
         };
-        assert_eq!(home.bump_mcp_toolset().expect("first bump"), 1);
+        assert_eq!(
+            home.refresh_mcp_entry(&BTreeSet::new())
+                .expect("first bump"),
+            1
+        );
         assert_eq!(toolset(&home).as_deref(), Some("1"));
-        assert_eq!(home.bump_mcp_toolset().expect("second bump"), 2);
+        let delegated = BTreeSet::from(["plugin_x_open".to_string()]);
+        assert_eq!(home.refresh_mcp_entry(&delegated).expect("second bump"), 2);
         assert_eq!(toolset(&home).as_deref(), Some("2"));
         home.ensure_daemon_mcp_config(&shim, "daemon-token")
             .expect("boot rewrite");
+        assert_eq!(
+            parsed_config(&home)["mcp_servers"]["neige"]["tools"]["plugin_x_open"]["approval_mode"]
+                .as_str(),
+            Some("approve"),
+            "a boot rewrite keeps the grants until the next refresh"
+        );
         let env = parsed_config(&home)["mcp_servers"]["neige"]["env"].clone();
         assert_eq!(env["NEIGE_MCP_TOOLSET"].as_str(), Some("2"));
         assert_eq!(env["NEIGE_MCP_DAEMON_TOKEN"].as_str(), Some("daemon-token"));
@@ -565,7 +577,11 @@ args = ["--bar"]
             text.replace("NEIGE_MCP_TOOLSET = \"2\"", "NEIGE_MCP_TOOLSET = \"abc.7\""),
         )
         .unwrap();
-        assert_eq!(home.bump_mcp_toolset().expect("bump over garbage"), 1);
+        assert_eq!(
+            home.refresh_mcp_entry(&BTreeSet::new())
+                .expect("bump over garbage"),
+            1
+        );
     }
 
     #[test]

@@ -1464,6 +1464,7 @@ impl AppState {
         crate::codex_mcp_toolset::CodexMcpToolset {
             home: codex.shared_codex_home.clone(),
             appserver: shared_codex_appserver.clone(),
+            plugins: plugin.clone(),
             debounce: crate::codex_mcp_toolset::DEBOUNCE,
         }
         .start(&events);

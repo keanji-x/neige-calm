@@ -4,7 +4,7 @@ use crate::mcp_server::{
     wiring::{MCP_SERVER_KEY, MCP_TOOLSET_ENV, daemon_shim_env},
 };
 pub use provider::codex::shared::home::ConfigTomlModelDefaults;
-use std::{io, ops::Deref, path::PathBuf};
+use std::{collections::BTreeSet, io, ops::Deref, path::PathBuf};
 pub const EXPECTED_MCP_SERVERS: &[&str] = &[MCP_SERVER_KEY];
 
 pub struct SharedCodexHome(provider::codex::shared::home::SharedCodexHome);
@@ -37,7 +37,12 @@ impl SharedCodexHome {
                 env: &env,
             }))
     }
-    pub fn bump_mcp_toolset(&self) -> io::Result<u64> {
-        self.0.bump_mcp_toolset(MCP_SERVER_KEY, MCP_TOOLSET_ENV)
+    /// The kernel entry's catalog refresh: bump its generation and make its per-tool approval
+    /// map exactly `delegated_tools`, the minted names of the installed and enabled plugins'
+    /// delegated tools. The kernel's per-role terminal grants travel in each thread's start config
+    /// instead (`card_mcp_thread_start_config`), and Codex merges the two maps key by key.
+    pub fn refresh_mcp_entry(&self, delegated_tools: &BTreeSet<String>) -> io::Result<u64> {
+        self.0
+            .refresh_mcp_entry(MCP_SERVER_KEY, MCP_TOOLSET_ENV, delegated_tools)
     }
 }

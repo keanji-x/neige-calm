@@ -22,8 +22,9 @@ pub const MAX_PLANNER_INSTRUCTIONS_BYTES: usize = 2048;
 pub struct Manifest {
     /// `1` — bindings spelled `workflows` (refused now, so only binding-less v1 files load); `2` —
     /// `templates`; `3` — a `config_schema` with non-empty `required`; `4` — Track-bound agent tools;
-    /// `5` — [`Self::planner_instructions`]; `6` — [`Self::http_socket`]. The bump is what makes an
-    /// older kernel refuse the file by version instead of silently ignoring the key.
+    /// `5` — [`Self::planner_instructions`]; `6` — [`Self::http_socket`]; `7` — a tool's
+    /// [`ExposedTool::approval`]. The bump is what makes an older kernel refuse the file by version
+    /// instead of silently ignoring the key.
     pub manifest_version: u32,
 
     /// Reverse-DNS or slug, see `is_valid_plugin_id`. Stable across versions.
@@ -487,6 +488,10 @@ pub struct ExposedTool {
     /// Optional MCP tool annotations (title/readOnlyHint/etc.) surfaced in tools/list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub annotations: Option<Value>,
+    /// `delegated`: the owner's enable grants the agent runtime's approval for this tool
+    /// (`crate::approval`); legal only at `manifest_version` 7 and only for `app` plugins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<crate::approval::ToolApproval>,
 }
 
 /// Track-create handle that names a plugin-owned template id. Extra JSON keys are ignored.
@@ -593,11 +598,11 @@ impl Manifest {
 
     /// Validate an already-deserialized manifest.
     pub fn validate(&self) -> Result<(), ManifestError> {
-        if !(1..=6).contains(&self.manifest_version) {
+        if !(1..=7).contains(&self.manifest_version) {
             return Err(ManifestError::invalid(
                 "manifest_version",
                 format!(
-                    "only manifest_version 1, 2, 3, 4, 5 or 6 is accepted, got {}",
+                    "only manifest_version 1, 2, 3, 4, 5, 6 or 7 is accepted, got {}",
                     self.manifest_version
                 ),
             ));
@@ -646,6 +651,19 @@ impl Manifest {
             }
             crate::http_socket::validate_name(name)
                 .map_err(|reason| ManifestError::invalid("http_socket", reason))?;
+        }
+
+        if self.manifest_version < crate::approval::MIN_MANIFEST_VERSION
+            && let Some(tool) = self.exposes_tools.iter().find(|t| t.approval.is_some())
+        {
+            return Err(ManifestError::invalid(
+                "manifest_version",
+                format!(
+                    "tool `{}` declares `approval`, which requires manifest_version {}",
+                    tool.name,
+                    crate::approval::MIN_MANIFEST_VERSION
+                ),
+            ));
         }
 
         // A manifest that actually declares a binding MUST say 2: a `templates[]` file read by an older
@@ -843,7 +861,10 @@ impl Manifest {
                     "built-in components have no executable, UI resources, sockets, or callback permissions",
                 ));
             }
-            return Ok(());
+            return self.refuse_delegated_approval(
+                "only allowed for `kind: \"app\"` manifests; a built-in component's tools are \
+                 the kernel's own, whose approval the kernel sets",
+            );
         }
         if self.kind.is_app() {
             return Ok(());
@@ -858,6 +879,9 @@ impl Manifest {
                 only_app("has no kernel-supervised process to serve the socket"),
             ));
         }
+        self.refuse_delegated_approval(&only_app(
+            "serves a remote or read-only catalog, not the tools of a kernel-supervised process",
+        ))?;
 
         if self.entrypoint.is_some() {
             return Err(ManifestError::invalid(
@@ -908,6 +932,19 @@ impl Manifest {
             ));
         }
         Ok(())
+    }
+}
+
+impl Manifest {
+    /// `approval` is an `app`-only key: the owner's enable grants it for tools the plugin itself serves.
+    fn refuse_delegated_approval(&self, why: &str) -> Result<(), ManifestError> {
+        match self.exposes_tools.iter().find(|t| t.approval.is_some()) {
+            Some(tool) => Err(ManifestError::invalid(
+                "exposes_tools",
+                format!("tool `{}` declares `approval`, which is {why}", tool.name),
+            )),
+            None => Ok(()),
+        }
     }
 }
 
@@ -2196,7 +2233,7 @@ mod tests {
     #[test]
     fn bad_manifest_version_fails() {
         // Probed on both sides of the accepted range: a single sample above it would stay green under `>= 1`.
-        for version in ["0", "7", "99"] {
+        for version in ["0", "8", "99"] {
             let json = format!(
                 r#"{{
             "manifest_version": {version},

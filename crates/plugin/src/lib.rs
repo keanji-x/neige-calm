@@ -1,4 +1,5 @@
 //! Plugin protocol and execution runtime. The server supplies lifecycle, authorization and storage.
+pub mod approval;
 pub mod auth;
 pub mod child_process;
 pub mod cli_query;

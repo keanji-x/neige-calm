@@ -447,6 +447,7 @@ async fn connect_mcp_http(
 }
 
 mod admission;
+mod approval;
 mod boot;
 mod configuration;
 mod connectors;

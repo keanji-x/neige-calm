@@ -249,6 +249,8 @@ fn push_http_tool(
         kind: None,
         input_schema: tool.get("inputSchema").cloned(),
         annotations: tool.get("annotations").cloned(),
+        // Approval delegation is an `app`-only manifest key.
+        approval: None,
     });
 }
 
@@ -282,6 +284,7 @@ pub fn materialize_cli_tools(plugin_id: &str, block: &CliQueryBlock) -> Vec<Expo
             input_schema: Some(tool.input_schema.clone()),
             // cli-query is read-only by contract, and Codex under `approval_policy: never` refuses every call to a tool without annotations; `report_series::resolver` reads the same `readOnlyHint` to admit a series source.
             annotations: Some(calm_types::plugin::read_only_annotations()),
+            approval: None,
         });
     }
     out

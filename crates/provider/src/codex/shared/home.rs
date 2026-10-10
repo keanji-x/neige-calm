@@ -1,6 +1,7 @@
 //! Shared Codex home: seeds and maintains the shared CODEX_HOME with toml_edit
 //! round-trip config edits.
 
+use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
@@ -270,12 +271,21 @@ impl SharedCodexHome {
         }
     }
 
-    /// Bump the kernel entry's `env.NEIGE_MCP_TOOLSET` generation to one past its current value
-    /// and return the new value. An absent or unparseable value counts as 0; the counter wraps, which
-    /// still yields a value unlike the current one, the only property Codex's entry comparison needs.
-    /// Same lock and atomic writer as every other edit. Refuses when the kernel entry has no
-    /// `command`: a lone `env` table would leave Codex an entry it cannot start.
-    pub fn bump_mcp_toolset(&self, key: &str, toolset_key: &str) -> io::Result<u64> {
+    /// Refresh the application entry `[mcp_servers.<key>]`: bump its `env.<toolset_key>` generation
+    /// to one past its current value, and make its per-tool map `tools` exactly `approved_tools`, each
+    /// with Codex's never-ask approval mode. Returns the new generation. An absent or unparseable
+    /// generation counts as 0; the counter wraps, which still yields a value unlike the current one,
+    /// the only property Codex's entry comparison needs. The entry's `tools` map belongs to this
+    /// writer: a tool outside `approved_tools` and any other per-tool key are removed, and an empty
+    /// set removes the map. Nothing else in the entry changes. Same lock and atomic writer as every
+    /// other edit, so one write carries both. Refuses when the entry has no `command`: a lone `env`
+    /// table would leave Codex an entry it cannot start.
+    pub fn refresh_mcp_entry(
+        &self,
+        key: &str,
+        toolset_key: &str,
+        approved_tools: &BTreeSet<String>,
+    ) -> io::Result<u64> {
         let lock_path = self.home.join(".config.lock");
         let _lock = ConfigLock::acquire(&lock_path)?;
         let cfg_path = self.home.join("config.toml");
@@ -311,6 +321,7 @@ impl SharedCodexHome {
             .unwrap_or(0)
             .wrapping_add(1);
         env_table[toolset_key] = toml_edit::value(generation.to_string());
+        write_approved_tools(kernel, approved_tools);
         write_config_0600(&cfg_path, doc.to_string().as_bytes())?;
         Ok(generation)
     }
@@ -375,6 +386,42 @@ impl SharedCodexHome {
         }
 
         Ok(())
+    }
+}
+
+/// Codex's per-tool `approval_mode` under which it runs an MCP tool call without asking.
+const MCP_TOOL_APPROVE: &str = "approve";
+
+/// Make `entry.tools` exactly `approved`, each `{ approval_mode = "approve" }`, editing in place so
+/// an unchanged set leaves the table's text as it was.
+fn write_approved_tools(entry: &mut toml_edit::Table, approved: &BTreeSet<String>) {
+    if approved.is_empty() {
+        entry.remove("tools");
+        return;
+    }
+    let item = entry.entry("tools").or_insert(toml_edit::table());
+    if !item.is_table() {
+        *item = toml_edit::table();
+    }
+    let Some(tools) = item.as_table_mut() else {
+        return;
+    };
+    tools.set_implicit(true);
+    tools.retain(|name, _| approved.contains(name));
+    for name in approved {
+        let exact = tools
+            .get(name)
+            .and_then(toml_edit::Item::as_table_like)
+            .is_some_and(|tool| {
+                tool.len() == 1
+                    && tool.get("approval_mode").and_then(toml_edit::Item::as_str)
+                        == Some(MCP_TOOL_APPROVE)
+            });
+        if !exact {
+            let mut tool = toml_edit::Table::new();
+            tool["approval_mode"] = toml_edit::value(MCP_TOOL_APPROVE);
+            tools.insert(name, toml_edit::Item::Table(tool));
+        }
     }
 }
 
@@ -506,6 +553,110 @@ mod tests {
         assert_eq!(seeded("set", &codex_home), "from-codex-home");
         assert_eq!(seeded("empty", Path::new("")), "from-home");
     }
+    fn names(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|name| (*name).to_string()).collect()
+    }
+
+    /// A home whose `svc` entry carries keys of its own besides the writer's.
+    fn home_with_entry(root: &Path) -> SharedCodexHome {
+        let home = SharedCodexHome::new(root.join("home"), root.join("legacy"));
+        let env = vec![("SVC_TOKEN".to_owned(), "secret".to_owned())];
+        home.ensure_config(Some(&McpServerConfig {
+            key: "svc",
+            command: Path::new("/svc/shim"),
+            env: &env,
+        }))
+        .unwrap();
+        let cfg = home.path().join("config.toml");
+        let mut text = fs::read_to_string(&cfg).unwrap();
+        text.push_str("\n[mcp_servers.svc.tools.stale]\napproval_mode = \"approve\"\n");
+        text.push_str(
+            "\n[mcp_servers.svc.tools.kept]\napproval_mode = \"prompt\"\nenabled = false\n",
+        );
+        text.push_str("\n[profiles.other]\nmodel = \"m\"\n");
+        let mut doc: DocumentMut = text.parse().unwrap();
+        doc["mcp_servers"]["svc"]["startup_timeout_sec"] = toml_edit::value(30);
+        fs::write(&cfg, doc.to_string()).unwrap();
+        home
+    }
+
+    fn doc(home: &SharedCodexHome) -> DocumentMut {
+        fs::read_to_string(home.path().join("config.toml"))
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+
+    /// The config text with the writer's two fields taken out.
+    fn without_writer_fields(home: &SharedCodexHome) -> String {
+        let mut doc = doc(home);
+        let entry = doc["mcp_servers"]["svc"].as_table_mut().unwrap();
+        entry.remove("tools");
+        entry["env"].as_table_mut().unwrap().remove("GEN");
+        doc.to_string()
+    }
+
+    fn approved(home: &SharedCodexHome) -> BTreeSet<String> {
+        let doc = doc(home);
+        let Some(tools) = doc["mcp_servers"]["svc"].get("tools") else {
+            return BTreeSet::new();
+        };
+        let tools = tools.as_table().unwrap();
+        for (name, tool) in tools.iter() {
+            let tool = tool.as_table().unwrap();
+            assert_eq!(tool.len(), 1, "{name}: only the approval mode");
+            assert_eq!(tool["approval_mode"].as_str(), Some("approve"), "{name}");
+        }
+        tools.iter().map(|(name, _)| name.to_string()).collect()
+    }
+
+    #[test]
+    fn the_tools_map_is_exactly_the_approved_set_and_nothing_else_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home_with_entry(root.path());
+        let rest = without_writer_fields(&home);
+
+        let set = names(&["kept", "plugin_a_open", "plugin_b_input"]);
+        assert_eq!(home.refresh_mcp_entry("svc", "GEN", &set).unwrap(), 1);
+        assert_eq!(approved(&home), set, "stale removed, kept reset, new added");
+        assert_eq!(without_writer_fields(&home), rest);
+        assert_eq!(
+            doc(&home)["mcp_servers"]["svc"]["env"]["GEN"].as_str(),
+            Some("1")
+        );
+
+        let fewer = names(&["plugin_b_input"]);
+        assert_eq!(home.refresh_mcp_entry("svc", "GEN", &fewer).unwrap(), 2);
+        assert_eq!(approved(&home), fewer);
+        assert_eq!(without_writer_fields(&home), rest);
+
+        assert_eq!(
+            home.refresh_mcp_entry("svc", "GEN", &BTreeSet::new())
+                .unwrap(),
+            3
+        );
+        assert!(doc(&home)["mcp_servers"]["svc"].get("tools").is_none());
+        assert_eq!(without_writer_fields(&home), rest);
+        home.verify_expected_mcp_servers(&["svc"]).unwrap();
+    }
+
+    #[test]
+    fn a_refresh_with_an_unchanged_set_changes_only_the_generation() {
+        let root = tempfile::tempdir().unwrap();
+        let home = home_with_entry(root.path());
+        let set = names(&["plugin_a_open", "plugin_b_input"]);
+        home.refresh_mcp_entry("svc", "GEN", &set).unwrap();
+        let first = fs::read_to_string(home.path().join("config.toml")).unwrap();
+        home.refresh_mcp_entry("svc", "GEN", &set).unwrap();
+        let second = fs::read_to_string(home.path().join("config.toml")).unwrap();
+        assert_eq!(
+            second.replace("GEN = \"2\"", "GEN = \"1\""),
+            first,
+            "the same set rewrites nothing but the generation"
+        );
+        assert_eq!(approved(&home), set);
+    }
+
     #[test]
     fn declared_mcp_identity_and_generation_keys_are_authoritative() {
         let root = tempfile::tempdir().unwrap();
@@ -520,7 +671,7 @@ mod tests {
         home.verify_expected_mcp_servers(&["custom_service"])
             .unwrap();
         assert_eq!(
-            home.bump_mcp_toolset("custom_service", "CUSTOM_GENERATION")
+            home.refresh_mcp_entry("custom_service", "CUSTOM_GENERATION", &BTreeSet::new())
                 .unwrap(),
             8
         );

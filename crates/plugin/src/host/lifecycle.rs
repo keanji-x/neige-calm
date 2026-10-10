@@ -220,8 +220,10 @@ impl<E: ErrorFactory> PluginHost<E> {
         self.plugin_row_or_404(id).await
     }
 
-    /// Stop, then flip `enabled = false`. Stop first: `enabled = false` beside a still-running plugin is
-    /// never reconciled, whereas stopped-but-`enabled` is brought back on the next boot.
+    /// Stop, then flip `enabled = false`, then announce `Disabled`. Stop first: `enabled = false` beside a
+    /// still-running plugin is never reconciled, whereas stopped-but-`enabled` is brought back on the next
+    /// boot. Announce last, also for a plugin that was not running: a `plugin.state` follower that reads
+    /// the row (the shared Codex home's approval grants) must find the bit already flipped.
     pub async fn disable(self: &Arc<Self>, id: &str) -> Result<Plugin, E> {
         // The 404 probe stays before the guard: a guard taken first would turn "unknown id AND busy" into a 409.
         self.plugin_row_or_404(id).await?;
@@ -233,12 +235,15 @@ impl<E: ErrorFactory> PluginHost<E> {
         let guard = self
             .try_lock_lifecycle(id)
             .map_err(spawn_error_to_calm::<E>)?;
-        match self.stop_under(&guard).await {
+        match self.end_run_under(&guard).await {
             Ok(()) => {}
             Err(HostError::NotFound(_)) => {}
             Err(e) => return Err(E::internal(format!("stop failed: {e}"))),
         }
-        self.lifecycle_db.set_enabled(id, false).await?;
+        let flipped = self.lifecycle_db.set_enabled(id, false).await;
+        self.emit_state_under(&guard, &super::PluginRuntimeStatus::Disabled)
+            .await;
+        flipped?;
         self.plugin_row_or_404(id).await
     }
 

@@ -9,6 +9,7 @@
 
 #![cfg(unix)]
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,8 +47,8 @@ struct Fx {
     _tmp: TempDir,
 }
 
-/// An `app` plugin over the echo stub exposing `tools`.
-fn write_app(plugins_dir: &Path, id: &str, tools: &[&str]) {
+/// An `app` plugin over the echo stub exposing `tools`, each `(name, delegated)`.
+fn write_app(plugins_dir: &Path, id: &str, tools: &[(&str, bool)]) {
     let dir = plugins_dir.join(id);
     std::fs::create_dir_all(dir.join("bin")).unwrap();
     let stub = dir.join("bin").join("stub");
@@ -56,10 +57,18 @@ fn write_app(plugins_dir: &Path, id: &str, tools: &[&str]) {
     }
     let exposes: Vec<Value> = tools
         .iter()
-        .map(|name| json!({ "name": name, "description": format!("{id} {name}") }))
+        .map(|(name, delegated)| {
+            let mut tool = json!({ "name": name, "description": format!("{id} {name}") });
+            if *delegated {
+                tool["approval"] = json!("delegated");
+                tool["annotations"] = json!({ "readOnlyHint": false, "openWorldHint": true });
+            }
+            tool
+        })
         .collect();
+    let delegates = tools.iter().any(|(_, delegated)| *delegated);
     let manifest = json!({
-        "manifest_version": 1,
+        "manifest_version": if delegates { 7 } else { 1 },
         "id": id,
         "version": "0.1.0",
         "min_kernel_version": "0.0.1",
@@ -72,6 +81,19 @@ fn write_app(plugins_dir: &Path, id: &str, tools: &[&str]) {
 
 /// Installed, disabled plugins `(id, tools)`, and a shared home whose kernel entry boot wrote.
 async fn fixture(plugins: &[(&str, &[&str])]) -> Fx {
+    let plugins: Vec<(&str, Vec<(&str, bool)>)> = plugins
+        .iter()
+        .map(|(id, tools)| (*id, tools.iter().map(|tool| (*tool, false)).collect()))
+        .collect();
+    let plugins: Vec<(&str, &[(&str, bool)])> = plugins
+        .iter()
+        .map(|(id, tools)| (*id, tools.as_slice()))
+        .collect();
+    fixture_with(&plugins).await
+}
+
+/// [`fixture`] with tools `(name, delegated)`.
+async fn fixture_with(plugins: &[(&str, &[(&str, bool)])]) -> Fx {
     let tmp = tempfile::tempdir().unwrap();
     let plugins_dir = tmp.path().join("plugins");
     let data_dir = tmp.path().join("data");
@@ -160,6 +182,7 @@ impl Fx {
         CodexMcpToolset {
             home: self.home.clone(),
             appserver: appserver.clone(),
+            plugins: self.host.clone(),
             debounce: DEBOUNCE,
         }
         .start(followed);
@@ -185,6 +208,38 @@ impl Fx {
             .get("NEIGE_MCP_TOOLSET")?
             .as_str()
             .map(str::to_string)
+    }
+
+    /// The kernel entry's approval grants: its `tools` map, each checked to be exactly the
+    /// never-ask approval mode.
+    fn granted(&self) -> BTreeSet<String> {
+        let text = std::fs::read_to_string(self.config_path()).unwrap();
+        let config: toml::Value = toml::from_str(&text).unwrap();
+        let Some(tools) = config["mcp_servers"]["neige"].get("tools") else {
+            return BTreeSet::new();
+        };
+        let tools = tools.as_table().unwrap();
+        for (name, tool) in tools {
+            assert_eq!(
+                tool,
+                &toml::Value::Table(toml::toml! { approval_mode = "approve" }),
+                "{name}"
+            );
+        }
+        tools.keys().cloned().collect()
+    }
+
+    /// The kernel entry without the refresh's two fields: what nothing else may change.
+    fn entry_rest(&self) -> toml::Value {
+        let text = std::fs::read_to_string(self.config_path()).unwrap();
+        let mut config: toml::Value = toml::from_str(&text).unwrap();
+        let entry = config["mcp_servers"]["neige"].as_table_mut().unwrap();
+        entry.remove("tools");
+        entry["env"]
+            .as_table_mut()
+            .unwrap()
+            .remove("NEIGE_MCP_TOOLSET");
+        config
     }
 
     /// What a new Codex thread's shim lists now: a daemon-trust `tools/list` with no thread
@@ -473,4 +528,92 @@ async fn a_failed_generation_write_is_retried_at_the_next_plugin_change() {
     fx.forward();
     fx.wait_reloads(1).await;
     assert_eq!(fx.toolset().as_deref(), Some("1"));
+}
+
+fn names(names: &[&str]) -> BTreeSet<String> {
+    names.iter().map(|name| (*name).to_string()).collect()
+}
+
+/// #2530 A11: after every refresh the kernel entry's grants are exactly the delegated tools of the
+/// installed and enabled plugins, and nothing else in the entry changes.
+#[tokio::test]
+async fn the_grants_follow_enable_disable_and_uninstall_exactly() {
+    let fx = fixture_with(&[
+        ("probe", &[("web.fetch", true), ("write", false)]),
+        ("other", &[("input", true)]),
+        ("plain", &[("ls", false)]),
+    ])
+    .await;
+    let rest = fx.entry_rest();
+    fx.start();
+
+    fx.host.enable("probe").await.unwrap();
+    fx.host.enable("plain").await.unwrap();
+    fx.forward();
+    fx.wait_reloads(1).await;
+    assert_eq!(
+        fx.granted(),
+        names(&["plugin_probe_web_fetch"]),
+        "only the enabled plugin's delegated tool; `other` is installed but disabled"
+    );
+    assert_eq!(fx.entry_rest(), rest);
+
+    fx.host.enable("other").await.unwrap();
+    fx.forward();
+    fx.wait_reloads(2).await;
+    assert_eq!(
+        fx.granted(),
+        names(&["plugin_other_input", "plugin_probe_web_fetch"])
+    );
+
+    fx.host.disable("probe").await.unwrap();
+    fx.forward();
+    fx.wait_reloads(3).await;
+    assert_eq!(fx.granted(), names(&["plugin_other_input"]));
+
+    fx.host.uninstall("other").await.unwrap();
+    fx.forward();
+    fx.wait_reloads(4).await;
+    assert_eq!(fx.granted(), BTreeSet::new());
+    assert_eq!(fx.entry_rest(), rest);
+    fx.home
+        .verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
+        .expect("the grants live inside the kernel entry");
+}
+
+/// Enabled, not running: a stopped plugin keeps its grant (routing refuses its calls), and
+/// disabling it then removes the grant although no process stopped.
+#[tokio::test]
+async fn disabling_a_plugin_that_is_not_running_removes_its_grant() {
+    let fx = fixture_with(&[("probe", &[("web.fetch", true)])]).await;
+    fx.start();
+    fx.host.enable("probe").await.unwrap();
+    fx.host.stop("probe").await.unwrap();
+    fx.forward();
+    fx.wait_reloads(1).await;
+    assert_eq!(fx.granted(), names(&["plugin_probe_web_fetch"]));
+
+    fx.host.disable("probe").await.unwrap();
+    fx.forward();
+    fx.wait_reloads(2).await;
+    assert_eq!(fx.granted(), BTreeSet::new());
+}
+
+/// A daemon Running refresh writes the same grants, so a calm-server restart re-derives them.
+#[tokio::test]
+async fn a_daemon_running_refresh_writes_the_grants_and_repeats_them_unchanged() {
+    let fx = fixture_with(&[("probe", &[("web.fetch", true), ("write", false)])]).await;
+    fx.host.enable("probe").await.unwrap();
+    fx.start();
+    fx.appserver.publish_readiness_for_test(1, true);
+    fx.wait_reloads(1).await;
+    assert_eq!(fx.granted(), names(&["plugin_probe_web_fetch"]));
+    let first = fx.entry_rest();
+
+    fx.appserver.publish_readiness_for_test(1, false);
+    fx.appserver.publish_readiness_for_test(2, true);
+    fx.wait_reloads(2).await;
+    assert_eq!(fx.granted(), names(&["plugin_probe_web_fetch"]));
+    assert_eq!(fx.entry_rest(), first);
+    assert_eq!(fx.toolset().as_deref(), Some("2"));
 }

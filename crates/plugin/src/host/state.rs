@@ -43,6 +43,18 @@ impl<E: ErrorFactory> PluginHost<E> {
         self: &Arc<Self>,
         guard: &LifecycleGuard,
     ) -> Result<(), HostError> {
+        self.end_run_under(guard).await?;
+        self.emit_state_under(guard, &PluginRuntimeStatus::Disabled)
+            .await;
+        Ok(())
+    }
+
+    /// [`Self::stop_under`] without announcing `Disabled`, for a caller that announces it itself
+    /// under the same guard once its own write has landed.
+    pub(super) async fn end_run_under(
+        self: &Arc<Self>,
+        guard: &LifecycleGuard,
+    ) -> Result<(), HostError> {
         let id = guard.id();
         let (process, supervisor, subs) = {
             let mut table = self.lock_table();
@@ -97,14 +109,13 @@ impl<E: ErrorFactory> PluginHost<E> {
             }
         }
 
-        // Removing the entry and announcing `Disabled` is ONE serialized step, or `reaffirm_running` can slip a stale `Running` between them.
+        // Removing the entry and announcing `Disabled` is ONE serialized step (the caller's guard spans
+        // both), or `reaffirm_running` can slip a stale `Running` between them.
         // Locked after the slow child teardown so it never spans a SIGTERM grace.
         {
             let mut table = self.lock_table();
             table.live.remove(id);
         }
-        self.emit_state_under(guard, &PluginRuntimeStatus::Disabled)
-            .await;
         Ok(())
     }
 

@@ -696,6 +696,7 @@ mod tests {
             kind: None,
             input_schema: None,
             annotations: None,
+            approval: None,
         }
     }
 

@@ -27,6 +27,17 @@
 //! Known residual: a thread that lists during a plugin gap but is not yet loaded when the reload
 //! arrives keeps its list; the debounce window makes that gap narrow.
 //!
+//! The same write carries the plugin approval grants (#2530): the entry's per-tool `tools` map is
+//! exactly the delegated tools (manifest v7 `"approval": "delegated"`) of the installed and enabled
+//! plugins, each `approval_mode = "approve"`, read from the plugin host at refresh time. Codex merges
+//! it with the per-role terminal map a thread's start config carries. The kernel promises the grants
+//! to threads that start or cold-resume after the refresh. Codex 0.159.2 also applies them to a
+//! loaded thread when the reload below restarts its kernel server, since the map is part of the
+//! server entry the reload re-reads, and the per-thread terminal map survives that (both probed
+//! with a fake model, #2530 E3c); a reload that does not reach the daemon leaves loaded threads as
+//! they were. A refresh whose plugin-row read fails writes nothing, so no generation without its
+//! grants is ever published.
+//!
 //! Writes take the shared home's `.config.lock`, as every calm writer does. Codex's own config
 //! writes (`config/value/write`, `config/batchWrite`, neither of which calm sends) do not.
 //!
@@ -41,6 +52,7 @@ use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::sync::watch;
 
 use crate::event::{BroadcastEnvelope, Event, EventBus};
+use crate::plugin_host::PluginHost;
 use crate::shared_codex_appserver::{DaemonReadiness, McpServerReload, SharedCodexAppServer};
 use crate::shared_codex_home::SharedCodexHome;
 
@@ -52,6 +64,8 @@ pub const DEBOUNCE: Duration = Duration::from_secs(1);
 pub struct CodexMcpToolset {
     pub home: Arc<SharedCodexHome>,
     pub appserver: Arc<SharedCodexAppServer>,
+    /// The authority on which plugins are installed and enabled, and what their manifests delegate.
+    pub plugins: Arc<PluginHost>,
     pub debounce: Duration,
 }
 
@@ -109,18 +123,28 @@ impl CodexMcpToolset {
         }
     }
 
-    /// Bump the entry's generation, then ask the daemon to reload MCP. The write comes first: a
-    /// reload over an unchanged entry restarts nothing.
+    /// Bump the entry's generation and write its approval grants, then ask the daemon to reload MCP.
+    /// The write comes first: a reload over an unchanged entry restarts nothing.
     async fn refresh(&self) {
-        // The bump takes a file lock and fsyncs: off the async workers.
+        let delegated = match self.plugins.approval_delegated_tools().await {
+            Ok(delegated) => delegated,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "plugin rows unreadable, kernel MCP entry left as it was; the next plugin change or daemon Running retries"
+                );
+                return;
+            }
+        };
+        // The write takes a file lock and fsyncs: off the async workers.
         let home = self.home.clone();
-        let bumped = tokio::task::spawn_blocking(move || home.bump_mcp_toolset())
+        let written = tokio::task::spawn_blocking(move || home.refresh_mcp_entry(&delegated))
             .await
             .unwrap_or_else(|join| Err(std::io::Error::other(join)));
-        if let Err(error) = bumped {
+        if let Err(error) = written {
             tracing::warn!(
                 %error,
-                "kernel MCP generation write failed; the next plugin change or daemon Running retries"
+                "kernel MCP entry write failed; the next plugin change or daemon Running retries"
             );
             return;
         }
