@@ -221,10 +221,9 @@ pub enum BoundKeys { Accepted, Refused }
 ```
 
 Codex `BracketedPasteSubmit { Refused }`, Claude `BracketedPasteSubmit { Accepted }`, terminal and
-managed `KeysOnly`. Keys are refused only beside a message delivery (#2528), so a keys-refused
-worker always takes `message`. No dialog check: Codex task threads run `approval_policy:
-"never"` (`shared_codex_appserver.rs:956`), `waitingOnUserInput` is unobserved, and Claude has no
-sound signal (KNOWN GAP). `keys_while_bound` replaces
+managed `KeysOnly`; keys are refused only beside a message delivery (#2528). No dialog check: Codex
+task threads run `approval_policy: "never"` (`shared_codex_appserver.rs:956`), `waitingOnUserInput`
+is unobserved, and Claude has no sound signal (KNOWN GAP). `keys_while_bound` replaces
 `card.kind == "codex"` (`target.rs:216`). Narrowing: the first release serves the existing
 providers; target resolution's card-kind → session-kind map (`target.rs:148,159`) is a follow-up,
 not a one-line change. Documented only: Codex trims surrounding whitespace, Claude turns a tab into
@@ -248,10 +247,10 @@ true` (`calm-session/src/lib.rs:109-113`; today's Planner clients send `false`,
 it only after the scope's `control` predicate (`input_authority.rs:84-99`); the WebSocket bridge
 zeroes the flag for browsers (`ws/terminal.rs:299,396-404`). So `deliver` never claims or takes
 control, has no observation anchor, and today's viewers are unchanged. Its scope `control` is
-`may_write_tx(session, attempt)`, re-run by `WriteAuthority::admit` at the physical write. It
-returns `Refused(reason)` (proven before any byte, including a handshake closed before
-`ServerHello` and `INPUT_REVOKED_BEFORE_WRITE`, `terminal_interaction/client.rs:52`), `Written`, or
-`Unknown` (ack lost, `control_writer.rs:94-125`, `receipts.rs:95-102`).
+`may_write_tx(session, attempt)`, re-run by `WriteAuthority::admit` at the physical write. Typed
+input shares `write_leg.rs` (#2527/#2528): binding, replay, action rule; `write_once` reserves,
+caches `unknown` and enqueues with no await between; `written`/`unknown` (ack lost) stay cached,
+`refused` (before any byte: closed handshake or pump, `INPUT_REVOKED_BEFORE_WRITE`) is not.
 
 **Preconditions,** checked before the write; a refusal writes nothing:
 
@@ -277,16 +276,12 @@ one rule.
 **Surface: action `message` of `neige_terminal_input`** (`input` = "send text or keys to a
 terminal", agent-commands §3; `send` is mail only). Options: the target (`attempt_id`, or a
 `terminal_id` resolving to a Live worker), `idempotency_key` (a replay returns the first receipt
-from the caller connection's cache) and `read` with its wait arguments.
-It uses (or creates, as `read` does) the caller's observation client for that cache and the
-readback; `deliver` only attaches the writer. Typed input and `message` share one admission order
-and one write leg (`terminal_interaction/write_leg.rs`, #2527/#2528): the replay runs after the
-binding is proven and before every new-write check; `unknown` is cached before the send and kept,
-`written` is kept, and a refusal proven before any byte (including a send the pump never received)
-is not kept, so the same key is decided anew.
-`observation_id`, and `allow_output_since_observation`, `claim`, `release` at `true`, get `-32602`
-listing the valid options (an echoed default `false` is accepted, #2528), as `detach` refuses `read` (`mcp_server/tools/terminal.rs:270-279`); the shared
-target, replay and readback still justify one tool rather than a new verb. Schema
+from the caller connection's cache) and `read` with its wait arguments. It uses (or creates, as
+`read` does) the caller's observation client for that cache and the readback; `deliver` only
+attaches the writer. `observation_id`, and `true` for `allow_output_since_observation`, `claim`,
+`release` (an echoed `false` passes, #2528), get `-32602` listing the valid options, as `detach`
+refuses `read` (`mcp_server/tools/terminal.rs:270-279`); the shared target, replay and readback
+still justify one tool rather than a new verb. Schema
 (`terminal.rs:49-58`): `["text","submit"]` → `["text","submit","message"]`; one description
 sentence (1,331 of 2,048 B); PR-2 measures `SURFACE_MAX_BYTES` 30,884
 (`mcp_server/tools/mod.rs:192-193`), never raising it. CLI: none (MCP-only, agent-commands §2).
@@ -302,7 +297,7 @@ Refusals (`-32403` like every terminal runtime failure, agent-commands §9; text
 | `binding_changed` | `terminal <id> now serves attempt <new> (was <old>); show and read again.` (extends today's text, `target.rs:256-257`) |
 | `message_unsupported` | `action "message" needs a task worker whose agent declares it (<providers>); terminal <id> runs <provider>. Use "text" or "submit".` |
 | `worker_keys_refused` (was `codex_task_worker_input`) | `a <provider> task worker takes only action "message"; typed keys interrupt its turn without starting one.` |
-| `terminal_unreadable` | `the worker's terminal has no live readable view (after a server restart until reattached, #2499), or bracketed paste is off; nothing was sent.` |
+| `terminal_unreadable` | `the worker's terminal has no live readable view (after a server restart until reattached, #2499), or bracketed paste is off; nothing was sent.` With no renderer entry (typed input too): `the worker's terminal has no live view (…), so this connection holds no receipt to replay: this call wrote nothing, and the outcome of an earlier write under this idempotency_key is unknown to the kernel. Read the task and terminal state before sending again` |
 | `-32602` | invalid text (`U+001B at byte 12; only printable characters, newline and tab`), over the cap, or an option `message` does not take (`valid: attempt_id, terminal_id, idempotency_key, read, wait_*`) |
 
 #1787 becomes "codex Live worker: `message` only"; guide item 2 becomes "correct codex/claude workers

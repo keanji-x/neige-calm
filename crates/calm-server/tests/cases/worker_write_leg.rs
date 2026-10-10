@@ -8,6 +8,11 @@ use super::terminal_support::Harness;
 use super::worker_message::{
     Fixture, assert_refusal, expected, message, reads, running, set_status, wait_for_reads, written,
 };
+use calm_server::db::prelude::*;
+use calm_server::mcp_server::registry::ToolCallIdentity;
+use calm_server::model::CardRole;
+use calm_server::session_projection_repo::AgentProvider;
+use calm_server::terminal_interaction::{InputOptions, Target};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -178,4 +183,149 @@ async fn replay_without_renderer_entry_has_no_receipt() {
     ] {
         assert_refusal(&reply, -32403, Some("terminal_unreadable"), NO_RECEIPT);
     }
+}
+
+/// The Planner's identity, for calls that must be cancelled in process.
+async fn planner(h: &Harness) -> ToolCallIdentity {
+    let card = h
+        .sql
+        .card_identity_get_by_session(&h.session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    ToolCallIdentity {
+        card_id: card.card_id.to_string(),
+        role: CardRole::Planner,
+        provider: AgentProvider::Codex,
+        session_id: h.session_id.clone(),
+        track_id: Some(h.track.clone()),
+        area_id: h.area_id.clone(),
+        thread_id: "card-bound".into(),
+    }
+}
+
+/// Park the next write at the enqueue seam (before its slot in the writer's channel) and cancel
+/// its request there.
+async fn cancel_before_enqueue(
+    h: &Harness,
+    call: impl std::future::Future<Output = anyhow::Result<Value>>,
+) {
+    let (entered, entered_rx) = tokio::sync::oneshot::channel();
+    h.interaction()
+        .set_enqueue_seam(Box::new(move |_terminal: String| {
+            Box::pin(async move {
+                let _ = entered.send(());
+                std::future::pending::<()>().await;
+            })
+        }));
+    tokio::select! {
+        result = call => panic!("the parked write must not settle: {result:?}"),
+        _ = entered_rx => {}
+    }
+}
+
+/// A request cancelled before its write is enqueued changed nothing, for either kind: no
+/// reservation, no retained delivery, no cached receipt. The same key then writes exactly once,
+/// and nothing is fenced.
+#[tokio::test]
+async fn write_cancelled_before_enqueue_leaves_no_fence() {
+    let h = Harness::start().await;
+    let identity = planner(&h).await;
+    let service = h.interaction();
+    // Typed input.
+    let f = running(&h, "claude", true, false).await;
+    let view = claimed_view(&h, &f).await;
+    let observation = view["observation_id"].as_str().unwrap().parse().unwrap();
+    let target = Target::Attempt(f.worker.task.clone());
+    cancel_before_enqueue(
+        &h,
+        service.input(
+            &identity,
+            &target,
+            Some(observation),
+            "typed",
+            json!({"type":"text","text":"keys"}),
+            InputOptions::default(),
+            None,
+        ),
+    )
+    .await;
+    assert!(!service.input_pending(&f.worker.terminal).await);
+    written(&typed(&h, &f, &view, "typed", "keys").await);
+    assert_eq!(wait_for_reads(&f.log, 1).await, vec![b"keys".to_vec()]);
+    stop(&h, &f.worker).await;
+    // `message`: the kernel writer attached, then the request was cancelled.
+    let f = running(&h, "codex", true, false).await;
+    let target = Target::Attempt(f.worker.task.clone());
+    cancel_before_enqueue(
+        &h,
+        service.message(
+            &identity,
+            &target,
+            "m",
+            json!({"type":"message","text":"x"}),
+            None,
+        ),
+    )
+    .await;
+    written(&message(&h, json!({"attempt_id":f.worker.task}), "m", "x").await);
+    written(&message(&h, json!({"attempt_id":f.worker.task}), "next", "y").await);
+    assert_eq!(
+        wait_for_reads(&f.log, 2).await,
+        vec![expected(&f.worker.task, "x"), expected(&f.worker.task, "y")]
+    );
+    stop(&h, &f.worker).await;
+}
+
+/// A typed write cancelled once enqueued keeps `unknown` cached and the fence up: the same key
+/// replays `unknown`, a new key is fenced, and the write lands exactly once when admission resumes.
+#[tokio::test]
+async fn typed_write_cancelled_after_enqueue_fences_the_next() {
+    let h = Harness::start().await;
+    let identity = planner(&h).await;
+    let service = h.interaction();
+    let f = running(&h, "claude", true, false).await;
+    let view = claimed_view(&h, &f).await;
+    let observation = view["observation_id"].as_str().unwrap().parse().unwrap();
+    let entry = h.state.terminal_renderer.get(&f.worker.terminal).unwrap();
+    let held = entry.handle.input_barrier.hold_for_test().await;
+    let target = Target::Attempt(f.worker.task.clone());
+    let call = service.input(
+        &identity,
+        &target,
+        Some(observation),
+        "typed",
+        json!({"type":"text","text":"keys"}),
+        InputOptions::default(),
+        None,
+    );
+    let enqueued = async {
+        let start = Instant::now();
+        while !service.input_pending(&f.worker.terminal).await {
+            assert!(start.elapsed() < Duration::from_secs(10), "never enqueued");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // Let the pump hand the write to the writer, which waits for admission.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    tokio::select! {
+        result = call => panic!("the held write must not settle: {result:?}"),
+        () = enqueued => {}
+    }
+    let replay = typed(&h, &f, &view, "typed", "keys").await;
+    assert_eq!(
+        replay["result"]["structuredContent"]["outcome"], "unknown",
+        "{replay}"
+    );
+    assert_refusal(
+        &typed(&h, &f, &view, "next", "more").await,
+        -32403,
+        None,
+        "prior input outcome unknown",
+    );
+    drop(held);
+    assert_eq!(wait_for_reads(&f.log, 1).await, vec![b"keys".to_vec()]);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(reads(&f.log), vec![b"keys".to_vec()], "landed exactly once");
+    stop(&h, &f.worker).await;
 }

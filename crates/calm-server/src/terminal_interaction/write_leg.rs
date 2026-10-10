@@ -108,7 +108,10 @@ impl TerminalInteraction {
         observation_wait: Option<WaitPlan>,
     ) -> Result<Option<Value>> {
         let cached = {
-            let requests = client.requests.lock().await;
+            let requests = client
+                .requests
+                .lock()
+                .map_err(|_| anyhow::anyhow!("terminal client poisoned"))?;
             if let Some((prior, result)) = requests.get(key) {
                 ensure!(
                     prior == fingerprint,
@@ -166,58 +169,64 @@ impl TerminalInteraction {
     }
 }
 
-/// The one write leg: reserve the writer's next input sequence (and retain a kernel writer on the
-/// caller's connection), cache the `unknown` receipt, send one ordered write, await its outcome
-/// within [`WRITE_BUDGET`], classify it and apply the cache rule ([`remember`]). `holder` is the
-/// caller's connection (cache and fence); `writer` is `None` when the holder writes. An unresolved
-/// write keeps the fence up (`pending`, or the retained delivery) until its ack or refusal is
-/// seen, also across a cancelled request.
-pub(super) async fn write_once(
-    holder: &Client,
-    writer: Option<Arc<Client>>,
-    key: &str,
-    fingerprint: &str,
-    bytes: Vec<u8>,
-    shape: WriteShape,
-    receipt: impl Fn(&Delivered) -> Value,
-) -> Result<(Delivered, Value)> {
-    let client = writer.as_deref().unwrap_or(holder);
-    let sequence = {
-        let mut state = client
-            .screen
-            .lock()
-            .map_err(|_| anyhow::anyhow!("terminal state poisoned"))?;
-        let sequence = state
-            .ack
-            .max(state.refused)
-            .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("input sequence exhausted"))?;
-        state.pending = Some(sequence);
-        sequence
-    };
-    if let Some(writer) = &writer {
-        *holder
-            .delivery
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((writer.clone(), sequence));
-    }
-    cache(holder, key, fingerprint, &receipt(&Delivered::Unknown)).await;
-    let outcome = if client.send_input(bytes, sequence, shape).await.is_err() {
-        // A closed channel hands the command back: the pump never received the input.
-        if let Ok(mut state) = client.screen.lock()
-            && state.pending == Some(sequence)
-        {
-            state.pending = None;
+impl TerminalInteraction {
+    /// The one write leg: wait for a slot in the writer's command channel, then, with no await in
+    /// between, reserve the writer's next input sequence (and retain a kernel writer on the
+    /// caller's connection), cache the `unknown` receipt and enqueue the write; await its outcome
+    /// within [`WRITE_BUDGET`], classify it and apply the cache rule ([`remember`]). `holder` is
+    /// the caller's connection (cache and fence); `writer` is `None` when the holder writes. A
+    /// request cancelled before the enqueue changed nothing; one cancelled after it leaves
+    /// `unknown` cached and the fence (`pending`, or the retained delivery) up until the ack or
+    /// refusal is seen.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn write_once(
+        &self,
+        holder: &Client,
+        writer: Option<Arc<Client>>,
+        key: &str,
+        fingerprint: &str,
+        bytes: Vec<u8>,
+        shape: WriteShape,
+        receipt: impl Fn(&Delivered) -> Value,
+    ) -> Result<(Delivered, Value)> {
+        let client = writer.as_deref().unwrap_or(holder);
+        #[cfg(feature = "fixtures")]
+        self.run_enqueue_seam(&client.binding.terminal_id).await;
+        let Ok(slot) = client.input_slot().await else {
+            // The pump is gone: no input can reach it, and nothing was reserved or cached.
+            let outcome = Delivered::Refused("terminal disconnected before the write".into());
+            let result = receipt(&outcome);
+            return Ok((outcome, result));
+        };
+        let sequence = {
+            let mut state = client
+                .screen
+                .lock()
+                .map_err(|_| anyhow::anyhow!("terminal state poisoned"))?;
+            let sequence = state
+                .ack
+                .max(state.refused)
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("input sequence exhausted"))?;
+            state.pending = Some(sequence);
+            sequence
+        };
+        if let Some(writer) = &writer {
+            *holder
+                .delivery
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                Some((writer.clone(), sequence));
         }
-        Delivered::Refused("terminal disconnected before the write".into())
-    } else {
+        cache(holder, key, fingerprint, &receipt(&Delivered::Unknown));
+        slot.send(bytes, sequence, shape);
         let settled = client
             .wait(
                 |state| state.ack >= sequence || state.refused >= sequence,
                 WRITE_BUDGET,
             )
             .await;
-        match (settled, client.screen.lock()) {
+        let outcome = match (settled, client.screen.lock()) {
             (Ok(()), Ok(state)) if state.ack >= sequence => Delivered::Written,
             (Ok(()), Ok(state)) => Delivered::Refused(
                 state
@@ -226,19 +235,38 @@ pub(super) async fn write_once(
                     .unwrap_or_else(|| "terminal input refused".into()),
             ),
             _ => Delivered::Unknown,
+        };
+        if writer.is_some() && outcome != Delivered::Unknown {
+            holder.delivery_release();
         }
-    };
-    if writer.is_some() && outcome != Delivered::Unknown {
-        holder.delivery_release();
+        let result = receipt(&outcome);
+        remember(holder, key, fingerprint, &outcome, &result);
+        Ok((outcome, result))
     }
-    let result = receipt(&outcome);
-    remember(holder, key, fingerprint, &outcome, &result).await;
-    Ok((outcome, result))
+    /// Test seam: runs in [`Self::write_once`] before it waits for the writer's channel slot,
+    /// given the terminal id, so a test can cancel a request before its write is enqueued.
+    /// Consumed once.
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub fn set_enqueue_seam(&self, seam: ClaimWindowSeam) {
+        *self.enqueue_seam.lock().unwrap_or_else(|e| e.into_inner()) = Some(seam);
+    }
+    #[cfg(feature = "fixtures")]
+    async fn run_enqueue_seam(&self, terminal_id: &str) {
+        let seam = self
+            .enqueue_seam
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(seam) = seam {
+            seam(terminal_id.to_owned()).await;
+        }
+    }
 }
 
 /// The cache rule: a `written` or `unknown` receipt stays under its key; a proven refusal wrote
 /// nothing, so its key is forgotten and a resend is decided anew.
-pub(super) async fn remember(
+pub(super) fn remember(
     holder: &Client,
     key: &str,
     fingerprint: &str,
@@ -247,16 +275,20 @@ pub(super) async fn remember(
 ) {
     match outcome {
         Delivered::Refused(_) => {
-            holder.requests.lock().await.remove(key);
+            holder
+                .requests
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(key);
         }
-        Delivered::Written | Delivered::Unknown => cache(holder, key, fingerprint, receipt).await,
+        Delivered::Written | Delivered::Unknown => cache(holder, key, fingerprint, receipt),
     }
 }
 
-async fn cache(client: &Client, key: &str, fingerprint: &str, receipt: &Value) {
+fn cache(client: &Client, key: &str, fingerprint: &str, receipt: &Value) {
     client
         .requests
         .lock()
-        .await
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .insert(key.to_owned(), (fingerprint.to_owned(), receipt.clone()));
 }

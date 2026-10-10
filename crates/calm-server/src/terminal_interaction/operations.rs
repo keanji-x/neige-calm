@@ -4,7 +4,7 @@ use super::receipts::{
     WriteReceipts, attach_claim, control_unavailable_receipt, merge, stale_receipt,
 };
 use super::screen_diff::{CursorSnapshot, ScreenDiff, row_hashes};
-use super::write_leg::{Admission, remember, write_once};
+use super::write_leg::{Admission, remember};
 use super::*;
 use crate::terminal_renderer::WriteShape;
 
@@ -173,8 +173,8 @@ impl TerminalInteraction {
             options.release,
         );
         receipts.attach(claim.as_ref());
-        let (outcome, mut result) =
-            write_once(client, None, &key, &fingerprint, bytes, shape, |outcome| {
+        let (outcome, mut result) = self
+            .write_once(client, None, &key, &fingerprint, bytes, shape, |outcome| {
                 receipts.for_outcome(outcome)
             })
             .await?;
@@ -182,7 +182,7 @@ impl TerminalInteraction {
         // cancelled here leaves `requested` in the cached receipt and a replay never releases.
         if options.release {
             result["release"] = self.release(client).await.to_json();
-            remember(client, &key, &fingerprint, &outcome, &result).await;
+            remember(client, &key, &fingerprint, &outcome, &result);
         }
         Ok(self
             .with_observation(

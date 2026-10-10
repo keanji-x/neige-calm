@@ -88,6 +88,8 @@ pub struct TerminalInteraction {
     claim_window_seam: StdMutex<Option<ClaimWindowSeam>>,
     #[cfg(feature = "fixtures")]
     message_write_seam: StdMutex<Option<ClaimWindowSeam>>,
+    #[cfg(feature = "fixtures")]
+    enqueue_seam: StdMutex<Option<ClaimWindowSeam>>,
 }
 struct Observation {
     binding: String,
@@ -116,6 +118,8 @@ impl TerminalInteraction {
             claim_window_seam: StdMutex::new(None),
             #[cfg(feature = "fixtures")]
             message_write_seam: StdMutex::new(None),
+            #[cfg(feature = "fixtures")]
+            enqueue_seam: StdMutex::new(None),
         }
     }
     /// The caller's own Track, after proving its session is live and its card still holds the

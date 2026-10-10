@@ -5,7 +5,7 @@
 //! replay contract and the write leg are typed input's ([`super::write_leg`]).
 use super::client::InputRole;
 use super::target::{InputRefused, Resolved, refused};
-use super::write_leg::{Admission, Delivered, write_once};
+use super::write_leg::{Admission, Delivered};
 use super::*;
 use crate::terminal_renderer::{RendererEntry, WriteShape};
 use calm_exec::TuiInput;
@@ -205,7 +205,7 @@ impl TerminalInteraction {
         let baseline = Self::current_baseline(client);
         let result = match self.deliver(identity, resolved, entry).await {
             Ok(writer) => {
-                write_once(
+                self.write_once(
                     client,
                     Some(writer),
                     &key,
