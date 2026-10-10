@@ -399,7 +399,10 @@ impl WorkerFlowDriver {
         match tasks.get(&runtime.card_id) {
             Some(task)
                 if task.worker_session_id == runtime.id
-                    && task.agent_session_id == runtime.session_id
+                    // A Claude transcript is per session id (#2516); a Codex source keys on its
+                    // runtime alone.
+                    && (!matches!(source_kind, FlowSourceKind::Claude)
+                        || task.agent_session_id == runtime.session_id)
                     && !task.stop.is_cancelled() =>
             {
                 return Ok(());

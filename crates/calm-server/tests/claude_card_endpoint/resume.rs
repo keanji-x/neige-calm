@@ -271,11 +271,23 @@ async fn a_session_start_id_that_is_not_a_uuid_is_not_followed() {
     assert_eq!(status, StatusCode::CREATED, "body={created:?}");
     let card_id = created["id"].as_str().unwrap();
     let minted = created["payload"]["claude_session_id"].as_str().unwrap();
-    assert_eq!(
-        post_hook(&boot, card_id, session_start("--version", "clear")).await,
-        StatusCode::OK
-    );
-    assert_eq!(agent_session_ids(&boot, card_id).await, [minted]);
+    // An option-shaped id, and the non-canonical spellings `Uuid::parse_str` would also accept.
+    for session_id in [
+        "--version",
+        "{6f1c2a8e-4b7d-4e2a-9c3b-1d5e7f9a0b21}",
+        "urn:uuid:6f1c2a8e-4b7d-4e2a-9c3b-1d5e7f9a0b21",
+        "6f1c2a8e4b7d4e2a9c3b1d5e7f9a0b21",
+    ] {
+        assert_eq!(
+            post_hook(&boot, card_id, session_start(session_id, "clear")).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            agent_session_ids(&boot, card_id).await,
+            [minted],
+            "{session_id}"
+        );
+    }
     // Exited first: no child runs under a spawn hook for the Update to stop.
     boot.repo
         .session_projection_complete_for_card(card_id, WorkerSessionState::Exited)

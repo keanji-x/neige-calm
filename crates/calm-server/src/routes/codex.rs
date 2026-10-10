@@ -322,7 +322,13 @@ async fn follow_claude_session_start(
     }
     // Claude's documented `--session-id` takes a UUID and its CLI refuses anything else, so any
     // other value is no session a restart could resume.
-    if uuid::Uuid::parse_str(session_id).is_err() {
+    // Only the canonical hyphenated form, as Claude prints its ids; `parse_str` also takes braced,
+    // `urn:` and simple-hex spellings.
+    if !uuid::Uuid::parse_str(session_id).is_ok_and(|uuid| {
+        uuid.hyphenated()
+            .to_string()
+            .eq_ignore_ascii_case(session_id)
+    }) {
         tracing::warn!(
             target: "hook.ingest.claude_session_not_uuid",
             card_id = %card_id,

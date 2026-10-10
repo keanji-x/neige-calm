@@ -1,5 +1,5 @@
-//! `/api/cards/:id/terminal` — read-side helpers for terminal cards, plus the
-//! `spawn_terminal_for` seam card creation and WS lazy reattach use.
+//! `/api/cards/:id/terminal` — read-side helpers for terminal cards, plus the spawn seam card
+//! creation uses and the attach-only seam WS lazy reattach uses.
 
 use crate::db::RouteRepo;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -53,8 +53,8 @@ pub(crate) async fn attach_terminal_for(
         .map_err(|error| CalmError::Internal(error.to_string()))
 }
 
-/// Lower-level seam over `spawn_terminal_for` taking the constituent parts instead of
-/// the full `AppState`; used by the dispatcher, which doesn't own an `AppState`.
+/// Start a terminal's program from its constituent parts rather than the full `AppState`; used by
+/// the operation spawns and the dispatcher, which doesn't own an `AppState`.
 pub(crate) async fn spawn_terminal_with_parts(
     daemon: &DaemonClient,
     renderer: &TerminalRendererRegistry,

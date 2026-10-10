@@ -110,12 +110,7 @@ async fn owner_claude_card_of(state: &AppState, terminal_id: &str) -> Result<Opt
     let Some(card) = state.repo.card_get(&card_id).await? else {
         return Ok(None);
     };
-    let owner_created = card.kind == "claude"
-        && card
-            .payload
-            .get(crate::validation::OWNER_CREATED_PAYLOAD_KEY)
-            .and_then(serde_json::Value::as_bool)
-            == Some(true);
+    let owner_created = crate::claude_update::card_is_owner_created(&card);
     Ok(owner_created.then_some(card_id))
 }
 

@@ -1,4 +1,5 @@
-//! #2516: Update of a Claude card. A live child is stopped through the kernel's terminal reap,
+//! #2516: Update of a Claude card. An owner-created card's live child is stopped through the
+//! kernel's terminal reap,
 //! then, once its exit is recorded and the card has no active runtime, the card is restarted
 //! with the same `claude-restart` that resumes a card whose child is gone. One sequence per card
 //! at a time.
@@ -10,8 +11,7 @@ use axum::extract::FromRef;
 use crate::error::{CalmError, Result};
 use crate::ids::ActorId;
 use crate::operation::OperationOutcome;
-use crate::operation::claude_restart_adapter::run_claude_restart;
-use crate::session_projection_repo::WorkerSessionState;
+use crate::operation::claude_restart_adapter::{claude_runtime_is_live, run_claude_restart};
 use crate::state::{AppState, RouteState};
 
 /// An anti-hang bound, not a latency contract: the reap persists the exit before it returns, so
@@ -40,7 +40,9 @@ pub async fn update_claude_card(
             "card {card_id} is not a Claude card"
         )));
     }
-    if has_live_runtime(state, &card_id).await? {
+    // Only an owner-created card has its live child stopped: any other Claude card (a Planner
+    // task worker's) keeps the dead-child restart, which refuses a live child.
+    if card_is_owner_created(&card) && has_live_runtime(state, &card_id).await? {
         let term = state
             .repo
             .terminal_get_by_card(&card_id)
@@ -59,12 +61,18 @@ async fn has_live_runtime(state: &AppState, card_id: &str) -> Result<bool> {
         .repo
         .session_projection_active_for_card(&card_id.to_string())
         .await?
-        .is_some_and(|runtime| {
-            matches!(
-                runtime.status,
-                WorkerSessionState::Starting | WorkerSessionState::Running
-            )
-        }))
+        .is_some_and(|runtime| claude_runtime_is_live(runtime.status)))
+}
+
+/// A Claude card the owner created through the claude-cards route: its creation-time
+/// `OWNER_CREATED_PAYLOAD_KEY` proves it; a task worker's card never carries it.
+pub(crate) fn card_is_owner_created(card: &crate::model::Card) -> bool {
+    card.kind == "claude"
+        && card
+            .payload
+            .get(crate::validation::OWNER_CREATED_PAYLOAD_KEY)
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
 }
 
 async fn wait_exit_recorded(state: &AppState, card_id: &str, terminal_id: &str) -> Result<()> {

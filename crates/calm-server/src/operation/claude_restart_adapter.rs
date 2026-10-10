@@ -115,6 +115,15 @@ pub struct ClaudeRestartOperationPayload {
     pub card_id: String,
 }
 
+/// Whether a Claude runtime still has a child: Claude runtimes reach only Starting/Running while
+/// live; Idle/TurnPending are not part of the Claude state machine.
+pub(crate) fn claude_runtime_is_live(status: WorkerSessionState) -> bool {
+    matches!(
+        status,
+        WorkerSessionState::Starting | WorkerSessionState::Running
+    )
+}
+
 /// One unkeyed `claude-restart` of `card_id`, submitted and awaited: the restart of a card whose
 /// child is gone, shared by the card's Update route and the boot auto-resume (#2516).
 pub async fn run_claude_restart(
@@ -212,11 +221,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             .map(ToOwned::to_owned)
             .ok_or_else(|| CalmError::Forbidden("Claude card has no settings_path".into()))?;
         if let Some(active) = session_projection_active_for_card_tx(tx, &card_id).await? {
-            // Claude runtimes only reach Starting/Running here; Idle/TurnPending are not part of the Claude state machine.
-            if matches!(
-                active.status,
-                WorkerSessionState::Starting | WorkerSessionState::Running
-            ) {
+            if claude_runtime_is_live(active.status) {
                 return Err(CalmError::Conflict(
                     "kill or wait for child exit before restart".into(),
                 ));

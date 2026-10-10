@@ -300,3 +300,47 @@ async fn a_viewer_reattach_never_starts_the_terminal_program() {
     assert_eq!(with_session_id, 1, "{:?}", starts(log));
     assert_eq!(starts(log).len(), 1, "{:?}", starts(log));
 }
+
+/// An Update of a running Claude card that is not owner-created (a Planner task worker's: no
+/// `owner_created` marker, and a `tasks` row names it) keeps the dead-child restart's refusal:
+/// 409, and the child runs on untouched. Its Planner owns that worker.
+#[tokio::test]
+async fn update_of_a_running_task_worker_card_is_refused_and_leaves_its_child() {
+    let _guard = ENV_LOCK.lock().await;
+    let live = live_card().await;
+    let (boot, log) = (&live.boot, &live.log);
+    let (pid, _) = starts(log)[0];
+    // A task worker's card never carries the creation-time marker; drop the one the route
+    // stamped, below the API (which keeps it sticky), and make a task own the card.
+    sqlx::query("UPDATE cards SET payload = json_remove(payload, '$.owner_created') WHERE id = ?1")
+        .bind(&live.card_id)
+        .execute(boot.repo.pool())
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO tasks (id, track_id, key, kind, goal, context_json, depends_on_json, status, \
+           worker_card_id, created_at_ms, updated_at_ms) \
+         VALUES (?1, ?2, 'worker', 'claude', 'work', 'null', '[]', 'running', ?3, 1, 1)",
+    )
+    .bind(format!("{}:worker", boot.track_id))
+    .bind(&boot.track_id)
+    .bind(&live.card_id)
+    .execute(boot.repo.pool())
+    .await
+    .unwrap();
+
+    let (status, response) = post_restart(boot.app.clone(), &live.card_id).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={response:?}");
+    assert!(
+        alive(pid) && !got_sigterm(log, pid),
+        "the worker's child runs on"
+    );
+    assert_eq!(starts(log).len(), 1);
+    assert_eq!(runtime_states(boot, &live.card_id).await, ["running"]);
+    assert_eq!(terminal_exit(boot, &live.terminal_id).await, (None, false));
+
+    boot.state
+        .terminal_renderer
+        .drop_entry(&live.terminal_id)
+        .await;
+}
