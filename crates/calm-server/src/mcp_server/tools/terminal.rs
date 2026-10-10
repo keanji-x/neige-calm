@@ -180,9 +180,17 @@ fn write_failure(error: anyhow::Error) -> RpcError {
     }
     rpc
 }
-/// The options of `neige_terminal_input` that action `message` takes; the rest are refused.
+/// The options of `neige_terminal_input` that action `message` takes; with
+/// [`MESSAGE_REFUSED_OPTIONS`] they are exactly the schema's properties (`schema_tests`).
 const MESSAGE_OPTIONS: &str = "terminal_id, attempt_id, idempotency_key, action, read, wait_ms, \
      wait_for, settle_ms, signal_events, repaint_ms, wait_text, wait_text_absent";
+/// The options action `message` refuses with -32602.
+const MESSAGE_REFUSED_OPTIONS: [&str; 4] = [
+    "observation_id",
+    "allow_output_since_observation",
+    "claim",
+    "release",
+];
 fn observation_result(metadata: Value) -> ToolResult {
     let summary = observation_summary(&metadata);
     ToolResult::structured_with_summary(metadata, summary)
@@ -521,18 +529,17 @@ async fn call(
             let args: Input = parse(args)?;
             let message = args.action["type"].as_str() == Some("message");
             if message {
-                let refused = [
-                    ("observation_id", args.observation_id.is_some()),
-                    (
-                        "allow_output_since_observation",
-                        args.allow_output_since_observation.is_some(),
-                    ),
-                    ("claim", args.claim.is_some()),
-                    ("release", args.release.is_some()),
-                ]
-                .into_iter()
-                .filter_map(|(name, given)| given.then_some(name))
-                .collect::<Vec<_>>();
+                let given = [
+                    args.observation_id.is_some(),
+                    args.allow_output_since_observation.is_some(),
+                    args.claim.is_some(),
+                    args.release.is_some(),
+                ];
+                let refused = MESSAGE_REFUSED_OPTIONS
+                    .into_iter()
+                    .zip(given)
+                    .filter_map(|(name, given)| given.then_some(name))
+                    .collect::<Vec<_>>();
                 if !refused.is_empty() {
                     return Err(RpcError::invalid_params(format!(
                         "action \"message\" does not take {}; valid: {MESSAGE_OPTIONS}",
