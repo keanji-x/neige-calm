@@ -30,8 +30,9 @@ stops when the plugin stops:
 
 - stdin EOF (the kernel went away) or SIGTERM: `desktop` asks Chrome over CDP
   to close (`Browser.close`), as closing its last window does, so Chrome
-  writes its cookies; if it has not exited after five seconds it gets SIGTERM,
-  and two seconds later its process group gets SIGKILL;
+  writes its cookies (a page whose main thread is busy can still lose its
+  last one); if it has not exited after five seconds it gets SIGTERM, and two
+  seconds later its process group gets SIGKILL;
 - a SIGKILL of `desktop`, which is what the kernel's plugin stop, disable,
   reload and server restart send: Chrome dies through `PR_SET_PDEATHSIG` and
   its helpers exit with it. Nothing is written in order then, so cookies set
@@ -188,12 +189,15 @@ The MVP's last acceptance is manual, on the owner's own account:
 
    ```sh
    B=$(pgrep -o -f -- "--user-data-dir=$PLUGINS_DATA/desktop/profiles/chrome")
-   ps -o pid=,args= -g "$B" | cut -c1-100 > /tmp/a4-group.txt          # browser, zygotes, renderers…
+   pgrep -a -g "$B" | cut -c1-100 > /tmp/a4-group.txt    # process group: browser, zygotes, renderers…
    pgrep -af "chrome_crashpad_handler.*$PLUGINS_DATA/desktop/home" > /tmp/a4-crashpad.txt
+   wc -l /tmp/a4-group.txt /tmp/a4-crashpad.txt          # both must be non-empty
    ```
 
    Disable the plugin (`POST /api/plugins/desktop/disable`), wait 5 seconds,
-   and run `ps -g "$B"` and the `pgrep` again: neither may print a process.
+   and run both `pgrep` commands again: neither may print a process. (`pgrep
+   -g` selects a process group; `ps -g` would select a session and record
+   nothing.)
 
 Record the result in the PR.
 
@@ -220,13 +224,21 @@ Record the result in the PR.
   `window_input` can click through their prompts.
 - **Prompt injection.** Page text reaches models. Disabling the plugin is the
   immediate off switch.
-- **Abrupt stop loses the last cookies.** The kernel stops a plugin with
+- **A stop can lose the last cookies.** The kernel stops a plugin with
   SIGKILL, so a login made seconds before a plugin stop, reload or server
-  restart can be lost; only stdin EOF and SIGTERM close Chrome in order.
-- **Abrupt stop loses the tabs.** After a SIGKILL Chrome would ask "Restore
-  pages?" in a bubble over the page; `--hide-crash-restore-bubble` hides it
-  (checked on Chrome for Testing 151, no extra flag bar), and the tabs are not
-  restored.
+  restart can be lost; only stdin EOF and SIGTERM close Chrome in order, and
+  even then a page whose main thread is busy can lose its last cookie. Wait
+  60 seconds after a login before any stop.
+- **The last session comes back.** On the next launch, after an orderly stop
+  or a SIGKILL alike, Chrome restores the last session: its windows and tabs
+  reopen and their pages load again, which repeats whatever a page's GET does
+  (`--hide-crash-restore-bubble` only hides the "Restore pages?" bubble). A
+  session left with a popup open comes back with two windows, and `page_*`
+  refuse with `-32409` until one is closed.
+- **Window churn ends sessions.** Every window the app opens or closes ends
+  the viewers' sessions so they reconnect to the newest window; a page that
+  keeps opening and closing popups makes the Report block reconnect over and
+  over, and the viewer backs off up to 10 seconds between empty sessions.
 - **Shared seat.** The owner's and the agents' input interleave; the last
   input wins.
 - **Model image receipt unverified.** Whether Codex or Claude pass the
@@ -240,5 +252,6 @@ Record the result in the PR.
 - Non-ASCII input and IME (use `page_open` for URLs), clipboard, audio, file
   chooser dialogs, downloads UI, notifications, resizing and HiDPI, popups
   larger than their window (clipped).
-- A server restart or deploy restarts Chrome and loses open tabs (logins stay).
+- A server restart or deploy restarts Chrome; the last session is restored
+  (see above) and logins stay.
 - Chrome install and updates are manual. Linux only.

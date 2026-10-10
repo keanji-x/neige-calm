@@ -193,7 +193,11 @@ pub(crate) const CUT_JS: &str = "const cut = (s, n) => { s = String(s); if (s.le
      return c >= 0xD800 && c <= 0xDBFF ? t.slice(0, -1) : t; };";
 
 /// The page-side read. Every string the page controls is cut inside the
-/// page, so an unbounded title, url or body never crosses the CDP pipe.
+/// page, which bounds what a well-behaved page sends over the CDP pipe. The
+/// script runs in the page's own world, so a page that overrides
+/// `String.prototype.slice` or a prototype getter can still send it unbounded
+/// strings; the cut in [`read`] bounds every result either way. Running these
+/// reads in an isolated world is tracked in #2561.
 pub(crate) fn read_expression(max_text_units: u32) -> String {
     format!(
         "(() => {{ {CUT_JS} const all = document.body ? document.body.innerText : ''; \

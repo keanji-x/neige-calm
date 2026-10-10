@@ -338,7 +338,7 @@ unavailable app or window is an error (-32503 / -32404), never a stale result.
 | Chrome exits (owner closed the last window, or a crash) | the app becomes not running; viewers get `closed`; the next demand relaunches it |
 | `desktop` crashes or is killed | PDEATHSIG kills Chrome's browser process and its helpers exit; the kernel cancels tunnels and respawns `desktop` with backoff; viewers reconnect |
 | Plugin disabled or stopped | the kernel SIGKILLs `desktop` (`kill_on_drop`); the same chain as a crash, without respawn; the kernel cancels tunnels |
-| calm-server graceful restart or deploy | plugin children die with it (`kill_on_drop`); Chrome restarts on next demand with logins intact and tabs lost (KNOWN GAP) |
+| calm-server graceful restart or deploy | plugin children die with it (`kill_on_drop`); Chrome restarts on next demand with logins intact and its last session restored, pages reloaded (KNOWN GAP) |
 | calm-server dies abruptly | `desktop` survives (`KillMode=process`), reads stdin EOF and stops Chrome's group, then exits; the next calm-server spawns a new `desktop` |
 
 ## 5. Accepts
@@ -407,6 +407,9 @@ probes, recorded in each PR.
   the model. E4 checks this; text tools alone satisfy the MVP.
 - Non-ASCII input and IME, clipboard, audio, file chooser dialogs (no portal), downloads UI,
   notifications, resize and HiDPI, and popups larger than their window (clipped).
-- A server restart or deploy restarts Chrome and loses open tabs.
+- A server restart or deploy restarts Chrome. Chrome restores its last session on every relaunch
+  (E4 measured it after an orderly stop and after SIGKILL): the pages load again, repeating their
+  GET side effects, and a session left with a popup open returns with two windows, so `page_*`
+  refuse (-32409) until one is closed.
 - Chrome install and updates are manual (runbook).
 - Linux only.
