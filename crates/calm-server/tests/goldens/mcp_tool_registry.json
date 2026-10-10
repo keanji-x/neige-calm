@@ -877,7 +877,7 @@
   },
   {
     "name": "neige_terminal_control",
-    "description_sha256": "f6bc238fdf5bdf6b95eb969b9a8ef386ae8f41f8096c15b56c99f961d7e88185",
+    "description_sha256": "29982f036e56bc933424e0a1eeb82c3cdea5eb93722867d7bccbb3ab5ebb9b8e",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -974,7 +974,7 @@
   },
   {
     "name": "neige_terminal_input",
-    "description_sha256": "ba071f83646b427fe0e048bd769bcc1058dda4b9398347b2e764568bb8525a8d",
+    "description_sha256": "f10ff49ee481ad2d0271c016aa64fe1621e04c77021cb5ed397fc2f56a677b72",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -991,7 +991,8 @@
                 "type": {
                   "enum": [
                     "text",
-                    "submit"
+                    "submit",
+                    "message"
                   ]
                 }
               },
@@ -1153,7 +1154,7 @@
   },
   {
     "name": "neige_terminal_open",
-    "description_sha256": "f85dc260d2a53aa6cabc6d3143ed76710c5cc6681224b7d7e72ca95cdf6abf92",
+    "description_sha256": "10f7f2805b93e0f55ea22ec7d3488368149ede8e49bcdcf509fa9263358299a4",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1248,7 +1249,7 @@
   },
   {
     "name": "neige_terminal_read",
-    "description_sha256": "80d23b45300434498860c93cd7eb4c9a3923db023434436085f3e6e6b627162d",
+    "description_sha256": "045dbd81b2b49dc130b96f07d47b73cb12f12a9a34b3555cfdc7e4eceb7a42e4",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1336,7 +1337,7 @@
   },
   {
     "name": "neige_terminal_show",
-    "description_sha256": "e7848e0703fdfa7cd171a93f3cae43c8965271868f199a2b52b60c1eadb2cc86",
+    "description_sha256": "16f79da04acfc62c1b2d55989b82f6aaf074f9e43b6df7648d17e8df3978f70f",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
