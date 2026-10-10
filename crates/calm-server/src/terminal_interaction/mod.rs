@@ -56,8 +56,9 @@ pub(crate) struct ReadbackBaseline {
 pub const SIGNALS_PER_OBSERVATION: usize = 20;
 
 /// The card roles the terminal tools serve (#2492): the Track's Planner and its Assistants, under
-/// the same checks and inside their own Track only. Opening a terminal card stays the Planner's
-/// (`neige_terminal_open`): the role gate keeps an Assistant's writes to its own card.
+/// the same checks and inside their own Track only. An Assistant reaches task workers only
+/// (`resolve_target`), and opening a terminal card stays the Planner's (`neige_terminal_open`):
+/// the role gate keeps an Assistant's writes to its own card.
 pub const TERMINAL_ROLES: &[CardRole] = &[CardRole::Planner, CardRole::Assistant];
 
 /// Reason of an `open claim:true` whose granted claim was taken over before this connection observed the grant.

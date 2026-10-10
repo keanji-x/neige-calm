@@ -1,13 +1,14 @@
 //! #2492: every Assistant of a Track reaches that Track's task workers through the terminal tools,
 //! under the Planner's checks: same Track only, codex task workers read-only, a finished task not
-//! writable, and no terminal card of its own. Driven over the production MCP socket.
-use super::task_terminal::{ECHO_WORKER, Worker, stop, worker_running};
+//! writable, and no terminal card of its own. Unlike the Planner it reaches task workers only: a
+//! manual Terminal card or a task-less agent card is refused. Driven over the production MCP socket.
+use super::task_terminal::{ECHO_WORKER, Worker, spawn_viewer, stop, worker_running};
 use super::terminal_support::Harness;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    card_mcp_token_set_tx, card_with_codex_create_tx, card_with_terminal_create_tx,
-    session_mcp_token_set_tx,
+    card_mcp_token_set_tx, card_with_claude_create_tx, card_with_codex_create_tx,
+    card_with_terminal_create_tx, session_mcp_token_set_tx,
 };
 use calm_server::model::{CardRole, NewTrack, new_id, now_ms};
 use serde_json::{Value, json};
@@ -297,4 +298,83 @@ async fn an_assistant_opens_no_terminal_card() {
         "{open}"
     );
     assert_eq!(h.sql.cards_by_track(&h.track).await.unwrap().len(), cards);
+}
+
+/// A same-Track claude Worker card that no task owns, as the owner opens one; returns its terminal.
+async fn manual_claude_card(h: &Harness) -> String {
+    let mut tx = h.sql.pool().begin().await.unwrap();
+    let (_, terminal) = card_with_claude_create_tx(
+        &mut tx,
+        new_id(),
+        &new_id(),
+        h.track.clone().into(),
+        None,
+        None,
+        "/bin/sh".into(),
+        h.root.path().to_str().unwrap().to_owned(),
+        json!({}),
+        None,
+        None,
+        None,
+        "unused-settings".into(),
+        new_id(),
+        CardRole::Worker,
+        true,
+        &CardRoleCache::new(),
+        calm_server::routes::theme::RequestTheme::default_dark(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    terminal.id
+}
+
+/// The Planner drives a manual Terminal card or a task-less claude Worker card
+/// (`manual_codex_and_claude_workers_are_controllable_without_a_task`); an Assistant reaches
+/// neither, even with a live view: they run outside its sandbox.
+#[tokio::test]
+async fn an_assistant_reaches_no_terminal_without_a_current_task() {
+    let h = Harness::start().await;
+    let (_, _, assistant) = agent_token(&h, &h.track, CardRole::Assistant).await;
+    for terminal in [
+        terminal_card(&h, &h.track).await,
+        manual_claude_card(&h).await,
+    ] {
+        spawn_viewer(&h, &terminal).await;
+        let shown = h
+            .ok("neige_terminal_show", json!({"terminal_id":terminal}))
+            .await;
+        assert_eq!(shown["task"], Value::Null);
+        assert_eq!(shown["available"], true, "the Planner control: {shown}");
+        assert_eq!(shown["controllable"], true, "the Planner control: {shown}");
+        let planner_view = h.observe_text(&terminal, "WORKER_READY").await;
+        for (tool, args) in [
+            ("neige_terminal_show", json!({"terminal_id":terminal})),
+            (
+                "neige_terminal_read",
+                json!({"terminal_id":terminal,"wait_ms":30}),
+            ),
+            (
+                "neige_terminal_control",
+                json!({"terminal_id":terminal,"action":"claim"}),
+            ),
+            (
+                "neige_terminal_input",
+                json!({"terminal_id":terminal,"observation_id":planner_view["observation_id"],
+                    "idempotency_key":"manual","claim":true,
+                    "action":{"type":"text","text":"x"}}),
+            ),
+        ] {
+            let refused = h.call_with_token(&assistant, tool, args).await;
+            assert_eq!(refused["error"]["code"], -32403, "{tool}: {refused}");
+            assert!(
+                refused["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("an Assistant reaches only task workers"),
+                "{tool}: {refused}"
+            );
+        }
+        h.state.terminal_renderer.drop_entry(&terminal).await;
+    }
 }

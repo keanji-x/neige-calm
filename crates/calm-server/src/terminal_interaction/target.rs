@@ -96,13 +96,22 @@ impl TerminalInteraction {
         );
         Ok(task)
     }
+    /// The one resolution every caller-facing path takes: show, read, control, input and the
+    /// queued write's re-check (`check_binding`). An Assistant reaches only a terminal bound to a
+    /// current task attempt (#2492): a manual Terminal card or a task-less agent card runs outside
+    /// its sandbox, and the watcher needs task workers only.
     pub(super) async fn resolve_target(
         repo: &dyn RouteRepo,
         identity: &ToolCallIdentity,
         target: &Target,
     ) -> Result<Resolved> {
         let track = Self::authorize(repo, identity).await?;
-        Self::resolve_in_track(repo, &track, target).await
+        let resolved = Self::resolve_in_track(repo, &track, target).await?;
+        ensure!(
+            identity.role != CardRole::Assistant || resolved.binding.task.is_some(),
+            "an Assistant reaches only task workers; this terminal is bound to no current task"
+        );
+        Ok(resolved)
     }
     /// What a caller of `track` resolves for `target`, minus the caller's identity check: the one
     /// same-Track rule of the terminal tools, the quiet-worker detector (it hands the watcher only

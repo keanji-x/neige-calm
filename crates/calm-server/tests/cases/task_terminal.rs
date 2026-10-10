@@ -143,7 +143,7 @@ pub(crate) async fn worker_running(
         terminal: terminal.id,
     }
 }
-async fn spawn_viewer(h: &Harness, terminal: &str) {
+pub(crate) async fn spawn_viewer(h: &Harness, terminal: &str) {
     spawn_viewer_running(h, terminal, ECHO_WORKER).await;
 }
 async fn spawn_viewer_running(h: &Harness, terminal: &str, script: &str) {

@@ -3,8 +3,12 @@
 The application entry point is an MCP tool set for the Track's Planner and, since
 #2492, its Assistants (the worker watcher among them). Both pass the same caller
 check (`TerminalInteraction::authorize`: live session, unchanged card role and
-Track) and resolve targets inside their own Track only. Opening a Terminal card
-stays the Planner's: the role gate keeps an Assistant's writes to its own card.
+Track) and resolve targets inside their own Track only. An Assistant reaches
+task workers only: every caller-facing resolution (`resolve_target`, which the
+queued write's re-check shares) refuses it a manual Terminal card or a Codex or
+Claude card bound to no current task attempt, since those run outside its
+sandbox. Opening a Terminal card stays the Planner's: the role gate keeps an
+Assistant's writes to its own card.
 Each role's Codex thread is delegated approval for exactly the terminal writes it
 may call (`mcp_server/wiring.rs`).
 
@@ -351,7 +355,8 @@ Resolve, observe, control and input accept exactly one of `terminal_id` or
 `calm.plan.list`, not the logical task key. It resolves the task's actual Worker
 card and current worker session in the authenticated caller's Track. Terminal,
 Codex and Claude Worker cards are supported; Planner and Assistant cards are
-excluded. Manual Codex/Claude Worker cards may be addressed by Terminal ID.
+excluded. Manual Codex/Claude Worker cards may be addressed by Terminal ID by the
+Planner; an Assistant caller reaches only a card bound to a current task (#2492).
 
 Both selectors validate task ownership, including historical card membership,
 spawn-operation identity and the current execution allocation. A recovered task
