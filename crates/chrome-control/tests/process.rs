@@ -46,6 +46,7 @@ fn config(dirs: &Dirs) -> LaunchConfig {
             runtime_dir: dirs.runtime.clone(),
         },
         size: (800, 600),
+        proxy_server: None,
     }
 }
 

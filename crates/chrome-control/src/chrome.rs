@@ -94,14 +94,16 @@ impl Chrome {
         page::navigate(&self.cdp, url, timeout).await
     }
 
-    /// Url, title and `document.body.innerText` of the one visible page.
+    /// Url, title and `document.body.innerText` of the one visible page, the
+    /// text cut inside the page to at most `max_text_units` UTF-16 code units
+    /// (`PageText::text_truncated` says whether it was).
     ///
     /// Every page's visibility is checked side by side, each with a two-second
     /// limit. A page that does not answer (a JS dialog, a busy main thread) may
     /// be visible, so beside it even a single visible page is ambiguous:
     /// [`Error::AmbiguousPage`] names the visible and unanswered pages.
-    pub async fn read_page(&self) -> Result<PageText> {
-        page::read(&self.cdp).await
+    pub async fn read_page(&self, max_text_units: u32) -> Result<PageText> {
+        page::read(&self.cdp, max_text_units).await
     }
 
     /// Resolves when the browser process has exited.

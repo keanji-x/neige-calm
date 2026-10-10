@@ -15,7 +15,9 @@
 //! - (d) a relaunch on the same profile right after the owner's SIGKILL;
 //! - (f, alert) a cross-site popup held up by `alert()` beside its visible
 //!   opener: `AmbiguousPage` (served by a loopback HTTP server in the probe);
-//! - (e) a second launch while the first holds the profile: `ProfileBusy`.
+//! - (e) a second launch while the first holds the profile: `ProfileBusy`;
+//! - (g) `read_page` with small limits: the text is cut in the page, never
+//!   inside a surrogate pair.
 //!
 //! `probe owner <chrome> <profile> <home> <display> <runtime-dir>` is the
 //! internal owner process: it launches Chrome, prints `browser <pid>` and
@@ -49,6 +51,11 @@ mod probe {
     const NAV_TIMEOUT: Duration = Duration::from_secs(20);
     const SURVIVAL_WAIT: Duration = Duration::from_secs(5);
     const BTN_LEFT: u32 = 0x110;
+    /// `read_page` text limit for the ordinary reads (UTF-16 code units).
+    const TEXT_LIMIT: u32 = 100_000;
+    /// (g): nine ASCII letters, then U+1F600 (two code units, cut by a limit of 10).
+    const CUT_PAGE: &str =
+        "data:text/html;charset=utf-8,<title>cut</title><body>abcdefghi%F0%9F%98%80tail</body>";
 
     const FILE_PAGE: &str = "<!doctype html><title>file page</title><body><h1>Hello from a file</h1>\
         <p>chrome-control probe</p></body>";
@@ -98,6 +105,7 @@ mod probe {
                     runtime_dir: self.run_dir.clone(),
                 },
                 size: DEFAULT_SIZE,
+                proxy_server: None,
             }
         }
     }
@@ -135,6 +143,18 @@ mod probe {
         let first = Chrome::launch(setup.config()).await?;
         println!("launched pid {} in {:?}", first.pid(), started.elapsed());
         println!("pages at start: {:#?}", first.pages().await?);
+        println!("\n== (g) read_page cuts the text inside the page");
+        first.navigate(CUT_PAGE, NAV_TIMEOUT).await?;
+        for limit in [10, 11, 12, 1_000] {
+            match first.read_page(limit).await {
+                Ok(text) => println!(
+                    "read_page({limit}) -> {:?} truncated={}",
+                    text.text, text.text_truncated
+                ),
+                Err(error) => println!("read_page({limit}) -> ERROR {error}"),
+            }
+        }
+
         let page = setup.out.join("page.html");
         fs::write(&page, FILE_PAGE)?;
         for url in [
@@ -151,7 +171,7 @@ mod probe {
                 ),
                 Err(error) => println!("navigate {:.60} -> ERROR {error}", url),
             }
-            match first.read_page().await {
+            match first.read_page(TEXT_LIMIT).await {
                 Ok(text) => println!("read_page -> {text:?}"),
                 Err(error) => println!("read_page -> ERROR {error}"),
             }
@@ -238,7 +258,7 @@ mod probe {
             "navigate -> {:?}",
             chrome.navigate("about:blank", NAV_TIMEOUT).await
         );
-        println!("read_page -> {:?}", chrome.read_page().await);
+        println!("read_page -> {:?}", chrome.read_page(TEXT_LIMIT).await);
         Ok(())
     }
 
@@ -325,7 +345,7 @@ mod probe {
         let started = Instant::now();
         println!(
             "read_page -> {:?} in {:?}",
-            chrome.read_page().await,
+            chrome.read_page(TEXT_LIMIT).await,
             started.elapsed()
         );
         let started = Instant::now();
@@ -443,6 +463,7 @@ mod probe {
                 runtime_dir: runtime_dir.into(),
             },
             size: DEFAULT_SIZE,
+            proxy_server: None,
         };
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()

@@ -36,6 +36,10 @@ pub struct LaunchConfig {
     pub wayland: WaylandEnv,
     /// `--window-size` in pixels.
     pub size: (u32, u32),
+    /// `--proxy-server`, for a host that reaches the web only through a
+    /// proxy: the browser's environment is an allowlist, so the caller's
+    /// `https_proxy` never reaches it. `None` connects directly.
+    pub proxy_server: Option<String>,
 }
 
 /// Variables copied from the caller's environment when present. Everything
@@ -56,7 +60,7 @@ const FIRST_UNSHARED_FD: libc::c_uint = 5;
 fn arguments(config: &LaunchConfig) -> Vec<OsString> {
     let mut profile = OsString::from("--user-data-dir=");
     profile.push(&config.profile_dir);
-    vec![
+    let mut args: Vec<OsString> = vec![
         "--ozone-platform=wayland".into(),
         profile,
         "--remote-debugging-pipe".into(),
@@ -66,7 +70,11 @@ fn arguments(config: &LaunchConfig) -> Vec<OsString> {
         // the owner's own logins from being flagged as automation.
         "--disable-blink-features=AutomationControlled".into(),
         format!("--window-size={},{}", config.size.0, config.size.1).into(),
-    ]
+    ];
+    if let Some(proxy) = &config.proxy_server {
+        args.push(format!("--proxy-server={proxy}").into());
+    }
+    args
 }
 
 /// The browser command without its fd set-up: binary, arguments, the
@@ -247,6 +255,7 @@ mod tests {
                 runtime_dir: "/run/desktop".into(),
             },
             size: (1280, 800),
+            proxy_server: None,
         }
     }
 
@@ -270,5 +279,26 @@ mod tests {
                 "--window-size=1280,800",
             ]
         );
+    }
+
+    #[test]
+    fn a_proxy_is_one_more_argument_and_never_an_environment_variable() {
+        let mut config = config();
+        config.proxy_server = Some("http://127.0.0.1:2080".into());
+        let command = command(&config);
+        let args: Vec<&str> = command
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect();
+        assert_eq!(args.last(), Some(&"--proxy-server=http://127.0.0.1:2080"));
+        assert_eq!(args.len(), 8);
+        let env = environment(
+            [
+                ("https_proxy".into(), "http://evil:1".into()),
+                ("PATH".into(), "/bin".into()),
+            ],
+            &config,
+        );
+        assert!(env.iter().all(|(key, _)| key != "https_proxy"));
     }
 }

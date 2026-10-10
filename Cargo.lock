@@ -1111,6 +1111,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "desktop"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64",
+ "chrome-control",
+ "compositor",
+ "futures-util",
+ "jpeg-decoder",
+ "libc",
+ "plugin",
+ "png",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite 0.29.0",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "wayland-client",
+ "wayland-protocols",
+ "window-stream",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

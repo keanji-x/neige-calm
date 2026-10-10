@@ -24,6 +24,7 @@ members = [
     "crates/compositor",
     "crates/window-stream",
     "crates/chrome-control",
+    "plugins/desktop",
 ]
 
 [workspace.dependencies]

@@ -165,7 +165,8 @@ impl Script {
                         }
                     }
                     "Runtime.evaluate" => json!({ "result": { "type": "object", "value": {
-                        "url": "https://after.test/", "title": "after", "text": "body text" } } }),
+                        "url": "https://after.test/", "title": "after", "text": "body text",
+                        "text_truncated": expression.contains("> 9 ?") } } }),
                     "Page.navigate" => {
                         let reply = json!({ "frameId": "F", "loaderId": "L-new" });
                         peer.send(json!({ "id": id, "result": reply })).await;
@@ -189,6 +190,8 @@ impl Script {
 }
 
 const SHORT: Duration = Duration::from_secs(1);
+/// `read` text limit for tests that do not look at the cut.
+const LIMIT: u32 = 100_000;
 
 #[tokio::test]
 async fn navigate_targets_the_visible_page_and_waits_for_its_load() {
@@ -268,7 +271,7 @@ async fn read_refuses_two_visible_pages_and_names_both() {
     let (cdp, peer) = connected();
     let script = Script::new(&[("one", "visible"), ("two", "visible"), ("bg", "hidden")]);
     let server = script.serve(peer);
-    let result = read(&cdp).await;
+    let result = read(&cdp, LIMIT).await;
     assert_eq!(script.wait_for("Target.detachFromTarget", 3).await, 3);
     server.abort();
     match result {
@@ -285,10 +288,30 @@ async fn read_returns_the_visible_page_text() {
     let (cdp, peer) = connected();
     let script = Script::new(&[("only", "visible")]);
     let server = script.serve(peer);
-    let text = read(&cdp).await.unwrap();
+    let text = read(&cdp, LIMIT).await.unwrap();
     server.abort();
     assert_eq!(text.text, "body text");
     assert_eq!(text.url, "https://after.test/");
+    assert!(!text.text_truncated);
+}
+
+/// The limit reaches the page's own script, and the page's verdict comes back.
+#[tokio::test]
+async fn read_sends_its_limit_into_the_page_and_reports_the_cut() {
+    let (cdp, peer) = connected();
+    let script = Script::new(&[("only", "visible")]);
+    let server = script.serve(peer);
+    let text = read(&cdp, 9).await.unwrap();
+    server.abort();
+    assert!(text.text_truncated);
+}
+
+#[test]
+fn the_read_expression_cuts_in_the_page_and_never_splits_a_surrogate_pair() {
+    let expression = super::read_expression(100_000);
+    assert!(expression.contains("all.length > 100000 ? all.slice(0, 100000) : all"));
+    assert!(expression.contains("last >= 0xD800 && last <= 0xDBFF"));
+    assert!(expression.contains("text_truncated: text.length < all.length"));
 }
 
 fn ids(pages: &[PageInfo]) -> Vec<&str> {
@@ -302,7 +325,7 @@ async fn a_visible_page_beside_an_unanswered_one_is_ambiguous() {
     let (cdp, peer) = connected();
     let script = Script::new(&[("shown", "visible"), ("stuck", "silent")]);
     let server = script.serve(peer);
-    let result = tokio::time::timeout(Duration::from_secs(5), read(&cdp))
+    let result = tokio::time::timeout(Duration::from_secs(5), read(&cdp, LIMIT))
         .await
         .expect("one stuck page must not stall the read");
     server.abort();
@@ -351,7 +374,7 @@ async fn no_visible_page_names_the_unknown_pages() {
     let (cdp, peer) = connected();
     let script = Script::new(&[("bg", "hidden"), ("stuck", "silent")]);
     let server = script.serve(peer);
-    let result = tokio::time::timeout(Duration::from_secs(5), read(&cdp))
+    let result = tokio::time::timeout(Duration::from_secs(5), read(&cdp, LIMIT))
         .await
         .expect("one stuck page must not stall the read");
     server.abort();
@@ -367,7 +390,7 @@ async fn ambiguous_pages_include_the_unknown_ones() {
     let (cdp, peer) = connected();
     let script = Script::new(&[("one", "visible"), ("stuck", "silent"), ("two", "visible")]);
     let server = script.serve(peer);
-    let result = tokio::time::timeout(Duration::from_secs(5), read(&cdp))
+    let result = tokio::time::timeout(Duration::from_secs(5), read(&cdp, LIMIT))
         .await
         .expect("one stuck page must not stall the read");
     server.abort();
@@ -401,7 +424,7 @@ async fn a_dropped_read_detaches_its_sessions() {
     let script = Script::new(&[("shown", "visible")]).silent(&["Runtime.evaluate"]);
     let server = script.serve(peer);
     assert!(
-        tokio::time::timeout(Duration::from_millis(300), read(&cdp))
+        tokio::time::timeout(Duration::from_millis(300), read(&cdp, LIMIT))
             .await
             .is_err()
     );

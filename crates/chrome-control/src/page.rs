@@ -73,8 +73,11 @@ struct Location {
 pub struct PageText {
     pub url: String,
     pub title: String,
-    /// `document.body.innerText` (empty when the document has no body).
+    /// `document.body.innerText` (empty when the document has no body), cut
+    /// in the page to the caller's limit.
     pub text: String,
+    /// Whether `text` was cut.
+    pub text_truncated: bool,
 }
 
 /// Sessions attached by one operation. Dropping it detaches them from a
@@ -155,18 +158,33 @@ pub(crate) async fn navigate(cdp: &Cdp, url: &str, timeout: Duration) -> Result<
         }))
 }
 
-pub(crate) async fn read(cdp: &Cdp) -> Result<PageText> {
+pub(crate) async fn read(cdp: &Cdp, max_text_units: u32) -> Result<PageText> {
     let sessions = Sessions::new(cdp);
     let session = visible_session(cdp, &sessions).await?;
     let text = evaluate(
         cdp,
         &session,
-        "({url: location.href, title: document.title, \
-          text: document.body ? document.body.innerText : ''})",
+        &read_expression(max_text_units),
         CALL_TIMEOUT,
     )
     .await?;
     parse(text)
+}
+
+/// The page-side read. The text is cut inside the page, so an unbounded body
+/// never crosses the CDP pipe. The limit counts UTF-16 code units; a cut that
+/// would split a surrogate pair drops its high half, so the reply stays valid
+/// JSON.
+pub(crate) fn read_expression(max_text_units: u32) -> String {
+    format!(
+        "(() => {{ const all = document.body ? document.body.innerText : ''; \
+         let text = all.length > {max_text_units} ? all.slice(0, {max_text_units}) : all; \
+         const last = text.length ? text.charCodeAt(text.length - 1) : 0; \
+         if (text.length < all.length && last >= 0xD800 && last <= 0xDBFF) \
+         {{ text = text.slice(0, -1); }} \
+         return {{url: location.href, title: document.title, text, \
+         text_truncated: text.length < all.length}}; }})()"
+    )
 }
 
 /// The index of the one visible page, or the typed refusal naming the

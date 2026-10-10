@@ -53,15 +53,28 @@ impl FrameWatch {
 
     /// Like [`try_take`](Self::try_take), but waits up to `timeout` for a frame.
     pub fn take_timeout(&self, timeout: Duration) -> Result<Option<Frame>> {
+        let mut slot = self.wait_slot(timeout);
+        take(&mut slot, self.window)
+    }
+
+    /// Waits up to `timeout` until [`try_take`](Self::try_take) has something
+    /// to return (a frame, or the error of a closed window) and takes nothing.
+    /// Returns whether it has. An async caller can wait for this wakeup on a
+    /// blocking thread and then take the slot itself, so a caller dropped
+    /// mid-wait loses no frame.
+    pub fn wait(&self, timeout: Duration) -> bool {
+        let slot = self.wait_slot(timeout);
+        slot.closed || slot.pending.is_some()
+    }
+
+    /// The slot once it holds a frame or the window closed, or at `timeout`.
+    fn wait_slot(&self, timeout: Duration) -> MutexGuard<'_, Slot> {
         let deadline = Instant::now() + timeout;
         let mut slot = self.shared.lock();
-        loop {
-            if slot.closed || slot.pending.is_some() {
-                return take(&mut slot, self.window);
-            }
+        while !(slot.closed || slot.pending.is_some()) {
             let now = Instant::now();
             if now >= deadline {
-                return Ok(None);
+                break;
             }
             slot = self
                 .shared
@@ -70,6 +83,7 @@ impl FrameWatch {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .0;
         }
+        slot
     }
 }
 
@@ -172,6 +186,27 @@ mod tests {
             watch.take_timeout(Duration::from_millis(1)),
             Err(Error::WindowGone(_))
         ));
+    }
+
+    #[test]
+    fn wait_reports_a_frame_or_a_close_and_takes_nothing() {
+        let (watch, weak) = FrameWatch::new(WindowId(3));
+        let shared = weak.upgrade().unwrap();
+        assert!(!watch.wait(Duration::from_millis(1)));
+        let publisher = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            shared.publish(frame(vec![rect(0)]));
+            shared
+        });
+        assert!(watch.wait(Duration::from_secs(5)));
+        let shared = publisher.join().unwrap();
+        // The frame is still there for the take.
+        assert!(watch.wait(Duration::from_millis(1)));
+        assert_eq!(watch.try_take().unwrap().unwrap().damage, vec![rect(0)]);
+        assert!(!watch.wait(Duration::from_millis(1)));
+        shared.close();
+        assert!(watch.wait(Duration::from_millis(1)));
+        assert!(matches!(watch.try_take(), Err(Error::WindowGone(_))));
     }
 
     #[test]
