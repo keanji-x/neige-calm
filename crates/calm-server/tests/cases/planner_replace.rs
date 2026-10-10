@@ -324,6 +324,10 @@ async fn a_turn_start_that_fails_after_the_revert_retries_without_reverting_agai
         boot.harness.refused_issuances_for_test() == 1
     })
     .await;
+    assert_eq!(
+        stored_snapshot(&boot).await["pending_rewind"],
+        json!({ "provider": "codex", "before_turn_id": TURN_B, "reverted": true })
+    );
     boot.daemon.clear_turn_start_failure_for_test();
     boot.harness.retry_issuance_now().await;
     wait_for("the next turn", || async {
@@ -335,6 +339,33 @@ async fn a_turn_start_that_fails_after_the_revert_retries_without_reverting_agai
         stored_snapshot(&boot).await["pending_rewind"].is_null()
     })
     .await;
+}
+
+/// The record of a revert that went through is durable: a harness restarted from the snapshot a
+/// failed start left starts the queued turn without reverting again (#2512).
+#[tokio::test]
+async fn a_recorded_revert_survives_a_restart() {
+    let boot = two_turns().await;
+    boot.daemon.fail_turn_start_for_test();
+    let (status, body) = replace(&boot, TURN_B, "edited").await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    wait_for("the refusal", || async {
+        boot.harness.refused_issuances_for_test() == 1
+    })
+    .await;
+    let stored = stored_snapshot(&boot).await;
+    let restarted = boot_with_issuance(
+        calm_server::harness::HarnessSnapshot::from_value_strict(stored),
+        Issuance::Live,
+    )
+    .await;
+    wait_for("the queued turn", || async {
+        restarted.daemon.turn_start_count_for_test() == 1
+    })
+    .await;
+    assert!(restarted.daemon.reverted_threads_for_test().is_empty());
+    let started = restarted.daemon.started_turns_for_test();
+    assert!(format!("{started:?}").contains("edited"), "{started:?}");
 }
 
 /// The removal, the message and the key are one commit: the snapshot that holds the cut holds the

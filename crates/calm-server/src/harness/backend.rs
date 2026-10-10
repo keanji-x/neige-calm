@@ -56,10 +56,14 @@ pub struct BackendRewind(RewindArm);
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case")]
 enum RewindArm {
-    /// `thread/revert {threadId, beforeTurnId}` before the next `turn/start`.
-    Codex { before_turn_id: String },
-    /// That revert went through; the next `turn/start` sends none (#2512).
-    CodexReverted { before_turn_id: String },
+    /// `thread/revert {threadId, beforeTurnId}` before the next `turn/start`, unless `reverted`
+    /// records that it already went through (#2512). Additive and defaulted, written only when
+    /// set, so a rolled-back binary still reads the snapshot: it ignores the key and reverts again.
+    Codex {
+        before_turn_id: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        reverted: bool,
+    },
     /// `--resume-session-at` / `--resume-drops-turn` on the next spawn.
     Claude { resume_at: Uuid, drops_turn: Uuid },
 }
@@ -185,6 +189,7 @@ impl PlannerBackend {
             )),
             Arm::Codex(..) => Ok(BackendRewind(RewindArm::Codex {
                 before_turn_id: target.turn_id.to_string(),
+                reverted: false,
             })),
             Arm::Claude(session) => {
                 let truncation = crate::claude_planner::rewind::truncation(
@@ -224,7 +229,7 @@ impl PlannerBackend {
         permission: PlannerPermissionMode,
         client_id: &str,
         claim: &[crate::harness::QueueEntry],
-        mut rewind: Option<&mut BackendRewind>,
+        rewind: Option<&mut BackendRewind>,
     ) -> std::result::Result<TurnId, TurnStartFailure> {
         if let Some(reader) = self.issuance_hold() {
             return Err(TurnStartFailure::AwaitingRecovery {
@@ -242,20 +247,19 @@ impl PlannerBackend {
                     .await
             }
             Arm::Codex(daemon, approvals) => {
-                if let Some(rewind) = rewind.as_deref_mut() {
-                    match &rewind.0 {
-                        RewindArm::Codex { before_turn_id } => {
-                            revert_codex_thread(daemon, thread_id, before_turn_id).await?;
-                            // The caller keeps this if the start below fails, so its retry does
-                            // not ask Codex again: Codex answers `turn not found` alike for a
-                            // reverted turn and a wrong one.
-                            rewind.0 = RewindArm::CodexReverted {
-                                before_turn_id: before_turn_id.clone(),
-                            };
-                        }
-                        RewindArm::CodexReverted { .. } => {}
-                        RewindArm::Claude { .. } => return Err(mismatched_rewind()),
+                match rewind.map(|rewind| &mut rewind.0) {
+                    None | Some(RewindArm::Codex { reverted: true, .. }) => {}
+                    Some(RewindArm::Codex {
+                        before_turn_id,
+                        reverted,
+                    }) => {
+                        revert_codex_thread(daemon, thread_id, before_turn_id).await?;
+                        // The caller keeps this if the start below fails, so its retry does not
+                        // ask Codex again: Codex answers `turn not found` alike for a reverted
+                        // turn and a wrong one.
+                        *reverted = true;
                     }
+                    Some(RewindArm::Claude { .. }) => return Err(mismatched_rewind()),
                 }
                 // Before `turn/start`, so the turn's first approval already has somewhere to go.
                 approvals.route(daemon, thread_id);
@@ -281,9 +285,7 @@ impl PlannerBackend {
                         at: *resume_at,
                         drops_turn: *drops_turn,
                     }),
-                    Some(RewindArm::Codex { .. } | RewindArm::CodexReverted { .. }) => {
-                        return Err(mismatched_rewind());
-                    }
+                    Some(RewindArm::Codex { .. }) => return Err(mismatched_rewind()),
                 };
                 session
                     .turn_start(
@@ -598,3 +600,7 @@ pub(crate) async fn interrupt_codex_thread(
         on_error(CodexInterruptStep::FallbackTurn(turn_id), e);
     }
 }
+
+#[cfg(test)]
+#[path = "backend_rewind_tests.rs"]
+mod rewind_tests;
