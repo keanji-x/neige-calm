@@ -491,7 +491,11 @@ async fn input_queued_behind_a_readback_rechecks_write_authority_under_the_seria
         .as_str()
         .unwrap_or_else(|| panic!("queued input must be refused, got {queued}"));
     assert!(
-        message.contains("task or worker session is not running; terminal control refused"),
+        message.contains("is done; its worker takes no input"),
+        "{queued}"
+    );
+    assert_eq!(
+        queued["error"]["data"]["refusal"], "worker_parked",
         "{queued}"
     );
     assert!(!h.interaction().input_pending(&w.terminal).await);

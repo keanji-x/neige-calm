@@ -62,6 +62,9 @@ impl std::fmt::Display for InputRefused {
     }
 }
 impl std::error::Error for InputRefused {}
+pub(super) fn refused(refusal: &'static str, message: String) -> InputRefused {
+    InputRefused { refusal, message }
+}
 
 pub(crate) struct Resolved {
     pub binding: Binding,
@@ -76,6 +79,48 @@ pub(crate) struct Resolved {
     pub card_kind: String,
 }
 impl Resolved {
+    /// The write rule's refusal on a task worker (#2493): every agent write path (`text`,
+    /// `submit`, `key`, `sequence`, a claim, `message`) refuses a worker whose task is not running,
+    /// or whose session ended, with this one typed refusal. `None` while writes are allowed and
+    /// for a task-less terminal (its ended session keeps the untyped refusal).
+    pub(super) fn write_refusal(&self) -> Option<InputRefused> {
+        if self.write_allowed {
+            return None;
+        }
+        let task = self.binding.task.as_ref()?;
+        let attempt = &task.attempt_id;
+        let parked = |next: &str| {
+            let status = self.task_status.map_or("unknown", TaskStatus::wire_label);
+            refused(
+                "worker_parked",
+                format!(
+                    "attempt {attempt} (task {}) is {status}; its worker takes no input. {next}",
+                    task.task_key
+                ),
+            )
+        };
+        Some(match self.task_status {
+            Some(TaskStatus::Running) => refused(
+                "worker_ended",
+                format!(
+                    "the worker of attempt {attempt} has ended ({}); nothing was sent. \
+                     Declare a new task.",
+                    self.session_state.as_db_str()
+                ),
+            ),
+            Some(TaskStatus::Pending | TaskStatus::Dispatched) => refused(
+                "worker_starting",
+                format!(
+                    "attempt {attempt} is dispatched; its worker is starting. Read again, then send."
+                ),
+            ),
+            Some(TaskStatus::Verifying) => parked("Wait for its gate."),
+            Some(TaskStatus::Canceled) => parked("Declare a new task."),
+            Some(TaskStatus::Done | TaskStatus::Failed) | None => {
+                parked("Declare a new task for a fresh worker.")
+            }
+        })
+    }
     /// Whether typed keys and a control claim are accepted: a task worker whose provider refuses
     /// keys while bound takes only `message`.
     pub(super) fn keys_refused(&self, tui: TuiInput) -> Option<InputRefused> {
@@ -274,10 +319,15 @@ impl TerminalInteraction {
             &current.binding == expected,
             "terminal task/session binding changed; show and read again"
         );
-        ensure!(
-            !write || current.write_allowed,
-            "task or worker session is not running; terminal control refused"
-        );
+        if write {
+            if let Some(refusal) = current.write_refusal() {
+                return Err(refusal.into());
+            }
+            ensure!(
+                current.write_allowed,
+                "task or worker session is not running; terminal control refused"
+            );
+        }
         Ok(current)
     }
     /// The provider's input declaration for a resolved terminal.
@@ -290,8 +340,11 @@ impl TerminalInteraction {
         })
     }
     /// The per-action pre-check of every typed-keys path (input, claim), before any connection,
-    /// claim or byte.
+    /// claim or byte: the write rule's typed refusal first, then the provider's keys refusal.
     pub(super) fn ensure_keys_accepted(&self, resolved: &Resolved) -> Result<()> {
+        if let Some(refusal) = resolved.write_refusal() {
+            return Err(refusal.into());
+        }
         match resolved.keys_refused(self.tui_input(resolved)?) {
             Some(refused) => Err(refused.into()),
             None => Ok(()),

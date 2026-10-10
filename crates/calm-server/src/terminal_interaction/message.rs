@@ -3,9 +3,9 @@
 //! writes as an Observer (`kernel_originated_input`), so it never claims or takes control; its
 //! scope re-runs the message rule and the terminal checks when the writer admits the write.
 use super::client::InputRole;
-use super::target::{InputRefused, Resolved};
+use super::operations::cache;
+use super::target::{InputRefused, Resolved, refused};
 use super::*;
-use crate::model::TaskStatus;
 use crate::terminal_renderer::{RendererEntry, WriteShape};
 use calm_exec::{MessageDelivery, TuiInput};
 
@@ -69,19 +69,10 @@ pub fn encode_message(attempt_id: &str, text: &str) -> Result<Vec<u8>, MessageIn
     Ok(bytes)
 }
 
-fn refused(refusal: &'static str, message: String) -> InputRefused {
-    InputRefused { refusal, message }
-}
-
 /// The message rule, before the write and again when the writer admits it: a task worker whose
-/// provider declares message delivery, under the write rule (session live, task running).
+/// provider declares message delivery, under the shared write rule ([`Resolved::write_refusal`]).
 fn message_refusal(resolved: &Resolved, tui: TuiInput, providers: &str) -> Option<InputRefused> {
-    let Some(task) = resolved
-        .binding
-        .task
-        .as_ref()
-        .filter(|_| tui.message != MessageDelivery::Unsupported)
-    else {
+    if resolved.binding.task.is_none() || tui.message == MessageDelivery::Unsupported {
         return Some(refused(
             "message_unsupported",
             format!(
@@ -91,43 +82,8 @@ fn message_refusal(resolved: &Resolved, tui: TuiInput, providers: &str) -> Optio
                 resolved.provider.as_db_str()
             ),
         ));
-    };
-    if resolved.write_allowed {
-        return None;
     }
-    let attempt = &task.attempt_id;
-    let status = resolved.task_status;
-    let parked = |next: &str| {
-        let status = status.map_or("unknown", TaskStatus::wire_label);
-        refused(
-            "worker_parked",
-            format!(
-                "attempt {attempt} (task {}) is {status}; its worker takes no input. {next}",
-                task.task_key
-            ),
-        )
-    };
-    Some(match status {
-        Some(TaskStatus::Running) => refused(
-            "worker_ended",
-            format!(
-                "the worker of attempt {attempt} has ended ({}); nothing was sent. \
-                 Declare a new task.",
-                resolved.session_state.as_db_str()
-            ),
-        ),
-        Some(TaskStatus::Pending | TaskStatus::Dispatched) => refused(
-            "worker_starting",
-            format!(
-                "attempt {attempt} is dispatched; its worker is starting. Read again, then send."
-            ),
-        ),
-        Some(TaskStatus::Verifying) => parked("Wait for its gate."),
-        Some(TaskStatus::Canceled) => parked("Declare a new task."),
-        Some(TaskStatus::Done | TaskStatus::Failed) | None => {
-            parked("Declare a new task for a fresh worker.")
-        }
-    })
+    resolved.write_refusal()
 }
 
 /// Readable (the model view captures, as `observable`), not exited, and bracketed paste on: what
@@ -204,12 +160,48 @@ impl TerminalInteraction {
         }
         .ok_or_else(|| MessageInvalid("message action accepts only type/text".into()))?;
         validate_message_text(text)?;
-        ensure!(
-            identity.role == CardRole::Planner,
-            "action \"message\" is the Planner's; its header names the Planner"
-        );
+        if identity.role != CardRole::Planner {
+            return Err(refused(
+                "assistant_no_message",
+                "action \"message\" is the Planner's; its header names the Planner".into(),
+            )
+            .into());
+        }
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
-        self.message_precheck(&resolved)?;
+        if self.renderer.get(&resolved.binding.terminal_id).is_none() {
+            // No live entry, so no connection and no receipt to replay: refused as new.
+            self.message_precheck(&resolved)?;
+            anyhow::bail!("terminal unavailable");
+        }
+        let client = self.client(identity, &resolved.binding).await?;
+        let _serial = {
+            let _queued = client.queued_for_serial();
+            client.serial.lock().await
+        };
+        let resolved =
+            Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
+        let key = idempotency_key.to_owned();
+        let fingerprint =
+            crate::routes::idempotency_key::stable_payload_hash(&json!({"action":action}))?;
+        // A replay returns its receipt before any new-write check: the worker may have reported or
+        // left paste mode since the original write.
+        if let Some(replayed) = self
+            .replay(
+                identity,
+                &client,
+                &key,
+                &fingerprint,
+                observation_wait.clone(),
+            )
+            .await?
+        {
+            return Ok(replayed);
+        }
+        let entry = self.message_precheck(&resolved)?;
+        ensure!(
+            Arc::ptr_eq(&entry, &client.entry),
+            "terminal generation changed; read again"
+        );
         let attempt = resolved
             .binding
             .task
@@ -217,48 +209,13 @@ impl TerminalInteraction {
             .map(|task| task.attempt_id.clone())
             .ok_or_else(|| anyhow::anyhow!("message target is bound to no task"))?;
         let bytes = encode_message(&attempt, text)?;
-        let client = self.client(identity, &resolved.binding).await?;
-        let _serial = {
-            let _queued = client.queued_for_serial();
-            client.serial.lock().await
-        };
-        // Decided again under the serial lock, as `input` does, before the replay cache.
-        let resolved =
-            Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
-        let entry = self.message_precheck(&resolved)?;
-        ensure!(
-            Arc::ptr_eq(&entry, &client.entry),
-            "terminal generation changed; read again"
-        );
-        let key = idempotency_key.to_owned();
-        let fingerprint =
-            crate::routes::idempotency_key::stable_payload_hash(&json!({"action":action}))?;
-        {
-            let requests = client.requests.lock().await;
-            if let Some((prior, receipt)) = requests.get(&key) {
-                ensure!(
-                    prior == &fingerprint,
-                    "input idempotency_key reused with different arguments"
-                );
-                let receipt = receipt.clone();
-                drop(requests);
-                let current = Self::current_baseline(&client);
-                return Ok(self
-                    .with_observation(identity, &client, receipt, observation_wait, current)
-                    .await);
-            }
-            ensure!(
-                requests.len() < 4096,
-                "terminal connection receipt limit reached; detach and read on a fresh connection"
-            );
-        }
         let receipt = |outcome: &str| {
             json!({"terminal_id":resolved.binding.terminal_id,"idempotency_key":idempotency_key,
                 "attempt_id":attempt,"outcome":outcome,"application_result":"unverified"})
         };
         let baseline = Self::current_baseline(&client);
         // Cached before the write: a call cancelled mid-write replays as unknown, never writes again.
-        cache_receipt(&client, &key, &fingerprint, receipt("unknown")).await;
+        cache(&client, &key, &fingerprint, &receipt("unknown")).await;
         let result = match self.deliver(identity, &resolved, entry, bytes).await {
             Delivered::Written => {
                 let mut written = receipt("written");
@@ -273,7 +230,7 @@ impl TerminalInteraction {
             }
             Delivered::Unknown => receipt("unknown"),
         };
-        cache_receipt(&client, &key, &fingerprint, result.clone()).await;
+        cache(&client, &key, &fingerprint, &result).await;
         Ok(self
             .with_observation(identity, &client, result, observation_wait, baseline)
             .await)
@@ -399,14 +356,6 @@ impl TerminalInteraction {
             seam(terminal_id.to_owned()).await;
         }
     }
-}
-
-async fn cache_receipt(client: &Client, key: &str, fingerprint: &str, receipt: Value) {
-    client
-        .requests
-        .lock()
-        .await
-        .insert(key.to_owned(), (fingerprint.to_owned(), receipt));
 }
 
 #[cfg(test)]

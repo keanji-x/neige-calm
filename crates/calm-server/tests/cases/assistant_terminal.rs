@@ -267,6 +267,10 @@ async fn an_assistant_reads_but_never_types_into_a_codex_task_worker_or_a_finish
             .contains("action \"message\" is the Planner's"),
         "{message}"
     );
+    assert_eq!(
+        message["error"]["data"]["refusal"], "assistant_no_message",
+        "{message}"
+    );
 
     let finished = worker_running(&h, "claude", &h.track, Some(ECHO_WORKER)).await;
     let before = ok_as(
