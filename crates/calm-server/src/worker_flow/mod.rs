@@ -292,7 +292,9 @@ impl WorkerFlowDriver {
             },
             // #2516: a Claude `/clear` or `/resume` starts a new session id, and a new transcript,
             // in the same runtime; ingest has already moved the runtime to the id this hook reports.
-            Event::ClaudeHook { card_id, kind, .. } if kind == "hook.claude.session_start" => {
+            Event::ClaudeHook { card_id, kind, .. }
+                if kind == crate::routes::codex::CLAUDE_SESSION_START_HOOK_KIND =>
+            {
                 self.attach_active_runtime_of_card(card_id.as_str(), "claude-session-start")
                     .await;
             }

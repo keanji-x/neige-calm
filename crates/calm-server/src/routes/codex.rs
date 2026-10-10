@@ -28,6 +28,11 @@ pub struct IngestQuery {
     pub card_id: Option<CardId>,
 }
 
+const CLAUDE_HOOK_KIND_PREFIX: &str = "hook.claude";
+/// The event kind a Claude `SessionStart` hook is ingested as: [`HookProvider::Claude`]'s prefix
+/// and the snake-cased event name (#2516).
+pub(crate) const CLAUDE_SESSION_START_HOOK_KIND: &str = "hook.claude.session_start";
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum HookProvider {
     Codex,
@@ -38,7 +43,7 @@ impl HookProvider {
     fn kind_prefix(self) -> &'static str {
         match self {
             Self::Codex => "hook.codex",
-            Self::Claude => "hook.claude",
+            Self::Claude => CLAUDE_HOOK_KIND_PREFIX,
         }
     }
 
@@ -491,6 +496,18 @@ mod tests {
                  the kernel expects this hook but codex CLI never fires it.",
             );
         }
+    }
+
+    #[test]
+    fn claude_session_start_kind_is_the_ingest_composition() {
+        assert_eq!(
+            format!(
+                "{}.{}",
+                HookProvider::Claude.kind_prefix(),
+                to_snake_case("SessionStart")
+            ),
+            CLAUDE_SESSION_START_HOOK_KIND
+        );
     }
 
     #[test]

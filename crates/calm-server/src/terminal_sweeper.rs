@@ -273,7 +273,30 @@ where
 /// then the reap (TERM, bounded wait, KILL), whose reader persists the exit and ends an ephemeral
 /// runtime. `false` when no renderer could be obtained: no running child to stop.
 pub(crate) async fn reap_live_terminal(state: &AppState, term: &Terminal) -> Result<bool> {
-    match crate::ws::terminal::resolve_live_renderer_from_terminal(state, term.clone()).await? {
+    let live =
+        crate::ws::terminal::resolve_live_renderer_from_terminal(state, term.clone()).await?;
+    reap_resolved(state, term, live).await
+}
+
+/// [`reap_live_terminal`] for a caller holding the terminal's track entry in
+/// `track_delete_locks` (`track_id`) across the stop: no viewer can reattach meanwhile.
+pub(crate) async fn reap_live_terminal_under_track_fence(
+    state: &AppState,
+    term: &Terminal,
+    track_id: &str,
+) -> Result<bool> {
+    let live =
+        crate::ws::terminal::resolve_live_renderer_under_track_fence(state, term.clone(), track_id)
+            .await?;
+    reap_resolved(state, term, live).await
+}
+
+async fn reap_resolved(
+    state: &AppState,
+    term: &Terminal,
+    live: crate::ws::terminal::LiveRenderer,
+) -> Result<bool> {
+    match live {
         crate::ws::terminal::LiveRenderer::Alive(_) => {
             reap_terminal_artifacts_with_renderer(Some(state.terminal_renderer.as_ref()), term)
                 .await;

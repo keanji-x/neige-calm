@@ -115,6 +115,19 @@ pub(crate) async fn resolve_live_renderer_from_terminal(
     let _track_delete_guard =
         crate::per_card_lock::lock_key(s.track_delete_locks(), initial_card.track_id.as_str())
             .await;
+    resolve_live_renderer_under_track_fence(s, term, initial_card.track_id.as_str()).await
+}
+
+/// [`resolve_live_renderer_from_terminal`] for a caller that already holds the terminal's track
+/// entry in `track_delete_locks` (`track_id`): the same reattach, without taking it again.
+pub(crate) async fn resolve_live_renderer_under_track_fence(
+    s: &AppState,
+    term: Terminal,
+    track_id: &str,
+) -> Result<LiveRenderer> {
+    if let Some(entry) = s.terminal_renderer.get(&term.id) {
+        return Ok(LiveRenderer::Alive(entry));
+    }
     let term = s
         .repo
         .terminal_get(term.id.as_str())
@@ -125,12 +138,9 @@ pub(crate) async fn resolve_live_renderer_from_terminal(
         .card_get(term.card_id.as_str())
         .await?
         .ok_or_else(|| crate::error::CalmError::NotFound(format!("card {}", term.card_id)))?;
-    if card.track_id != initial_card.track_id
-        || s.repo.track_get(card.track_id.as_str()).await?.is_none()
-    {
+    if card.track_id.as_str() != track_id || s.repo.track_get(track_id).await?.is_none() {
         return Err(crate::error::CalmError::NotFound(format!(
-            "track {}",
-            initial_card.track_id
+            "track {track_id}"
         )));
     }
 

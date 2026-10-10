@@ -148,10 +148,10 @@ pub(crate) fn normalize_claude_create_request(
     tag = "claude",
     params(("id" = String, Path, description = "Claude card id")),
     responses(
-        (status = 200, description = "Update: a live child is stopped and its exit recorded, then the card resumes its latest session", body = Card),
+        (status = 200, description = "Resumes the latest session; only an owner-created card has its live child stopped first, exit recorded", body = Card),
         (status = 403, description = "Card is not a Claude card or lacks resumable Claude metadata", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
-        (status = 409, description = "The stopped child's exit was not recorded in time (card left as it is), or a task worker's checkout check failed", body = ErrorBody),
+        (status = 409, description = "A live child on a card not owner-created (kill or wait), a task-owned terminal, or an exit not recorded in time", body = ErrorBody),
         (status = 500, description = "Daemon spawn failed; rows persist and sweeper handles cleanup", body = ErrorBody),
     ),
 )]

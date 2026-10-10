@@ -73,6 +73,36 @@ pub(crate) enum TerminalStart {
     AttachOnly(PathBuf),
 }
 
+/// The worker operations that own card `?1`'s terminal launch.
+const WORKER_OPS_OF_CARD: &str = "FROM operations WHERE target_type='card' AND target_id=?1 \
+     AND kind IN ('codex-worker','claude-worker','terminal-worker')";
+
+async fn task_owned_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    card_id: &str,
+) -> Result<bool> {
+    Ok(
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tasks WHERE worker_card_id=?1)")
+            .bind(card_id)
+            .fetch_one(&mut **tx)
+            .await?,
+    )
+}
+
+/// Whether a spawn with no task launch of its own starts `card_id`'s terminal: neither a worker
+/// operation nor a task owns it, so [`resolve`] answers `Unbound`; otherwise it only attaches.
+pub(crate) async fn card_launch_unbound_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    card_id: &str,
+) -> Result<bool> {
+    let worker_owned: bool =
+        sqlx::query_scalar(&format!("SELECT EXISTS(SELECT 1 {WORKER_OPS_OF_CARD})"))
+            .bind(card_id)
+            .fetch_one(&mut **tx)
+            .await?;
+    Ok(!worker_owned && !task_owned_tx(tx, card_id).await?)
+}
+
 pub(crate) async fn resolve(
     repo: &dyn RouteRepo,
     terminal_id: &str,
@@ -89,15 +119,13 @@ pub(crate) async fn resolve(
         let card: String = sqlx::query_scalar("SELECT card_id FROM terminals WHERE id=?1")
             .bind(&terminal_id).fetch_optional(&mut **tx).await?
             .ok_or_else(|| CalmError::NotFound(format!("terminal {terminal_id}")))?;
-        let rows: Vec<(String,String,Option<String>,String)> = sqlx::query_as(
-            "SELECT id,phase,lease_owner,tx_output_json FROM operations WHERE target_type='card' AND target_id=?1 AND kind IN ('codex-worker','claude-worker','terminal-worker') LIMIT 2"
-        ).bind(&card).fetch_all(&mut **tx).await?;
+        let rows: Vec<(String,String,Option<String>,String)> = sqlx::query_as(&format!(
+            "SELECT id,phase,lease_owner,tx_output_json {WORKER_OPS_OF_CARD} LIMIT 2"
+        )).bind(&card).fetch_all(&mut **tx).await?;
         if rows.len() > 1 { return Err(CalmError::Conflict("terminal has conflicting worker operation ownership".into())); }
         let Some((op_id, phase, owner, output)) = rows.into_iter().next() else {
             if launch.is_some() { return Err(CalmError::Conflict("task launch operation does not own this terminal".into())); }
-            let task_owned: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tasks WHERE worker_card_id=?1)")
-                .bind(&card).fetch_one(&mut **tx).await?;
-            return Ok(if task_owned { TerminalStart::AttachOnly(sock) } else { TerminalStart::Unbound });
+            return Ok(if task_owned_tx(tx, &card).await? { TerminalStart::AttachOnly(sock) } else { TerminalStart::Unbound });
         };
         let output: Value = serde_json::from_str(&output)?;
         match RequestState::read(&output["data"])? {

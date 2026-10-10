@@ -344,3 +344,94 @@ async fn update_of_a_running_task_worker_card_is_refused_and_leaves_its_child() 
         .drop_entry(&live.terminal_id)
         .await;
 }
+
+/// An Update that cannot restart the card stops nothing: here an owner-created card's payload is
+/// replaced through the API without its `settings_path` (its `owner_created` marker is kept), so
+/// the restart's own check refuses it before the running child is touched.
+#[tokio::test]
+async fn update_that_cannot_restart_the_card_leaves_its_child_running() {
+    let _guard = ENV_LOCK.lock().await;
+    let live = live_card().await;
+    let (boot, log) = (&live.boot, &live.log);
+    let (pid, _) = starts(log)[0];
+    let patched = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/cards/{}", live.card_id))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "payload": { "schemaVersion": 1, "icon_bg": "#fff" } }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (patch_status, patched) = response_json(patched).await;
+    assert_eq!(patch_status, StatusCode::OK, "body={patched:?}");
+    assert_eq!(patched["payload"]["owner_created"], true, "{patched}");
+    assert!(
+        patched["payload"].get("settings_path").is_none(),
+        "{patched}"
+    );
+
+    let (status, response) = post_restart(boot.app.clone(), &live.card_id).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={response:?}");
+    assert!(
+        response["error"]
+            .as_str()
+            .unwrap()
+            .contains("no settings_path"),
+        "body={response:?}"
+    );
+    assert!(alive(pid) && !got_sigterm(log, pid), "the child runs on");
+    assert_eq!(starts(log).len(), 1);
+    assert_eq!(runtime_states(boot, &live.card_id).await, ["running"]);
+    assert_eq!(terminal_exit(boot, &live.terminal_id).await, (None, false));
+
+    boot.state
+        .terminal_renderer
+        .drop_entry(&live.terminal_id)
+        .await;
+}
+
+/// An owner-created card whose terminal a task owns would only be reattached by the restart, so
+/// its Update refuses before the stop and the child runs on.
+#[tokio::test]
+async fn update_of_an_owner_card_whose_terminal_a_task_owns_leaves_its_child_running() {
+    let _guard = ENV_LOCK.lock().await;
+    let live = live_card().await;
+    let (boot, log) = (&live.boot, &live.log);
+    let (pid, _) = starts(log)[0];
+    sqlx::query(
+        "INSERT INTO tasks (id, track_id, key, kind, goal, context_json, depends_on_json, status, \
+           worker_card_id, created_at_ms, updated_at_ms) \
+         VALUES (?1, ?2, 'owned', 'claude', 'work', 'null', '[]', 'running', ?3, 1, 1)",
+    )
+    .bind(format!("{}:owned", boot.track_id))
+    .bind(&boot.track_id)
+    .bind(&live.card_id)
+    .execute(boot.repo.pool())
+    .await
+    .unwrap();
+
+    let (status, response) = post_restart(boot.app.clone(), &live.card_id).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={response:?}");
+    assert!(
+        response["error"]
+            .as_str()
+            .unwrap()
+            .contains("a task owns its terminal"),
+        "body={response:?}"
+    );
+    assert!(alive(pid) && !got_sigterm(log, pid), "the child runs on");
+    assert_eq!(starts(log).len(), 1);
+    assert_eq!(runtime_states(boot, &live.card_id).await, ["running"]);
+
+    boot.state
+        .terminal_renderer
+        .drop_entry(&live.terminal_id)
+        .await;
+}
