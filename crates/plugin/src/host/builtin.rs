@@ -74,6 +74,7 @@ impl<E: crate::ports::ErrorFactory> PluginHost<E> {
                     supervisor: None,
                     router: None,
                     subscriptions: Arc::new(Mutex::new(Vec::new())),
+                    http_socket: None,
                 },
             );
         }

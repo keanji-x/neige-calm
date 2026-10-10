@@ -17,6 +17,11 @@ use super::manifest::Manifest;
 const STDERR_RING_CAP: usize = 1024;
 const STDERR_LINE_CLAMP: usize = 4096;
 
+/// The plugin's working directory, `<plugins_data_dir>/<id>/`: its cwd and `NEIGE_PLUGIN_DATA_DIR`.
+pub fn work_dir(plugins_data_dir: &Path, id: &str) -> std::path::PathBuf {
+    plugins_data_dir.join(id)
+}
+
 pub struct PluginProcess {
     pub id: String,
 
@@ -53,7 +58,7 @@ impl PluginProcess {
             )))
         })?;
 
-        let plugin_data_dir = plugins_data_dir.join(&manifest.id);
+        let plugin_data_dir = work_dir(plugins_data_dir, &manifest.id);
         if !plugin_data_dir.exists() {
             std::fs::create_dir_all(&plugin_data_dir).map_err(ProcessError::Spawn)?;
         }

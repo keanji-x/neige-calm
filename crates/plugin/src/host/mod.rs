@@ -127,6 +127,18 @@ struct RunningPlugin {
     router: Option<tokio::task::JoinHandle<()>>,
     /// `neige.event.subscribe` bridge tasks; `stop()` aborts them all before killing the process.
     subscriptions: Arc<Mutex<Vec<SubscriptionRecord>>>,
+    /// The manifest's `http_socket` for THIS run; `None` when it declares none or is not an `app`.
+    http_socket: Option<socket::RunSocket>,
+}
+
+impl RunningPlugin {
+    /// This run stops serving: `stop` set `stopping`, or the supervisor recorded `Crashed`. Every
+    /// connection handed out through [`PluginHost::http_socket`] for this run is told to close.
+    fn stop_serving(&self) {
+        if let Some(socket) = &self.http_socket {
+            socket.serving.cancel();
+        }
+    }
 }
 
 /// All plugin runtime state under ONE std mutex so admission is atomic; never held across an `.await`.
@@ -439,6 +451,8 @@ mod boot;
 mod configuration;
 mod connectors;
 mod core;
+mod socket;
+pub use socket::{PluginSocket, SocketUnavailable};
 mod spawn_app;
 mod state;
 mod supervision;

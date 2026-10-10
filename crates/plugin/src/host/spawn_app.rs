@@ -153,6 +153,10 @@ impl<E: ErrorFactory> PluginHost<E> {
                     supervisor: Some(supervisor),
                     router: Some(router),
                     subscriptions,
+                    http_socket: socket::RunSocket::declared(
+                        manifest,
+                        &process::work_dir(&self.plugins_data_dir, id),
+                    ),
                 },
             );
         }

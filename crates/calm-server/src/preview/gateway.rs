@@ -1,5 +1,6 @@
 //! One listener per pool port; every request is reverse-proxied to that port's registered
-//! `127.0.0.1` target. Bodies stream both ways; an upgrade (vite HMR) becomes a byte tunnel.
+//! `127.0.0.1` target through [`crate::reverse_proxy`]. Bodies stream both ways; an upgrade (vite
+//! HMR) becomes a byte tunnel.
 //!
 //! The pool is reachable from the LAN and `Host` is rewritten to loopback (which defeats a dev
 //! server's own DNS-rebinding checks), so every request must carry calm's session first; an
@@ -8,34 +9,19 @@
 //! proxy. An open tunnel outlives logout, as calm's own WS routes do.
 
 use super::PreviewRegistry;
-use crate::auth::{AuthState, SESSION_COOKIE, is_session_cookie, resolve_principal};
-use axum::body::Body;
+use crate::auth::{AuthState, resolve_principal};
+use crate::reverse_proxy::{self, Target, Upstream};
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::uri::PathAndQuery;
-use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, Version, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
-use hyper_util::rt::TokioIo;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
-/// A dev server that does not accept within this is reported offline.
-pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 /// Wait for response headers; generous because vite's first on-demand compile can be slow.
 pub const RESPONSE_TIMEOUT: Duration = Duration::from_secs(60);
-
-const HOP_BY_HOP: [HeaderName; 8] = [
-    header::CONNECTION,
-    HeaderName::from_static("keep-alive"),
-    header::PROXY_AUTHENTICATE,
-    header::PROXY_AUTHORIZATION,
-    header::TE,
-    header::TRAILER,
-    header::TRANSFER_ENCODING,
-    header::UPGRADE,
-];
 
 #[derive(Clone)]
 struct Gateway {
@@ -108,7 +94,7 @@ pub fn serve_with_response_timeout(
 async fn proxy(
     State(gw): State<Gateway>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    mut req: Request,
+    req: Request,
 ) -> Response {
     if resolve_principal(&gw.auth, req.headers()).is_none() {
         return page(
@@ -122,10 +108,18 @@ async fn proxy(
         return (StatusCode::NOT_FOUND, body).into_response();
     };
     let target = entry.target_port;
-    let upgrade = is_upgrade(req.headers());
-    let client_upgrade = upgrade.then(|| hyper::upgrade::on(&mut req));
-    let own_host = rewrite_request(&mut req, target, peer);
-    let mut resp = match forward(req, target, gw.response_timeout).await {
+    let mut own_host = None;
+    // Tied to the registration and the gateway: unregister, re-target or shutdown closes a tunnel.
+    let closes_on = vec![entry.tunnels.clone(), gw.shutdown.clone()];
+    let forwarded = reverse_proxy::forward(
+        req,
+        &Target::Tcp(target),
+        gw.response_timeout,
+        closes_on,
+        |req| own_host = rewrite_request(req, target, peer),
+    )
+    .await;
+    let mut resp = match forwarded {
         Ok(resp) => resp,
         Err(Upstream::Timeout) => {
             let text = format!("The dev server on 127.0.0.1:{target} sent no response in time.");
@@ -136,54 +130,8 @@ async fn proxy(
             return offline(target);
         }
     };
-    let switching = resp.status() == StatusCode::SWITCHING_PROTOCOLS;
-    if switching && let Some(client) = client_upgrade {
-        let upstream = hyper::upgrade::on(&mut resp);
-        // Tied to the registration and the gateway: unregister, re-target or shutdown closes it.
-        let (registration, shutdown) = (entry.tunnels.clone(), gw.shutdown.clone());
-        tokio::spawn(async move {
-            let Ok((client, upstream)) = tokio::try_join!(client, upstream) else {
-                return;
-            };
-            let (mut client, mut upstream) = (TokioIo::new(client), TokioIo::new(upstream));
-            tokio::select! {
-                _ = registration.cancelled() => {}
-                _ = shutdown.cancelled() => {}
-                _ = tokio::io::copy_bidirectional(&mut client, &mut upstream) => {}
-            }
-        });
-    }
-    rewrite_response(resp.headers_mut(), target, own_host.as_deref(), switching);
-    resp.map(Body::new)
-}
-
-enum Upstream {
-    Offline(anyhow::Error),
-    Timeout,
-}
-
-async fn forward(
-    req: Request,
-    target: u16,
-    response_timeout: Duration,
-) -> Result<axum::http::Response<hyper::body::Incoming>, Upstream> {
-    let offline = |e: anyhow::Error| Upstream::Offline(e);
-    let stream = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(("127.0.0.1", target)))
-        .await
-        .map_err(|e| offline(e.into()))?
-        .map_err(|e| offline(e.into()))?;
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
-        .await
-        .map_err(|e| offline(e.into()))?;
-    tokio::spawn(async move {
-        if let Err(error) = conn.with_upgrades().await {
-            tracing::debug!(target, %error, "preview upstream connection ended");
-        }
-    });
-    tokio::time::timeout(response_timeout, sender.send_request(req))
-        .await
-        .map_err(|_| Upstream::Timeout)?
-        .map_err(|e| offline(e.into()))
+    rewrite_location(resp.headers_mut(), target, own_host.as_deref());
+    resp
 }
 
 fn page(status: StatusCode, title: &str, text: &str) -> Response {
@@ -201,48 +149,10 @@ fn offline(target: u16) -> Response {
     (StatusCode::BAD_GATEWAY, Html(html)).into_response()
 }
 
-fn is_upgrade(headers: &HeaderMap) -> bool {
-    headers.contains_key(header::UPGRADE)
-        && header_tokens(headers, header::CONNECTION, ',')
-            .any(|t| t.eq_ignore_ascii_case("upgrade"))
-}
-
-fn header_tokens(headers: &HeaderMap, name: HeaderName, sep: char) -> impl Iterator<Item = &str> {
-    headers
-        .get_all(name)
-        .into_iter()
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(move |v| v.split(sep))
-        .map(str::trim)
-}
-
-/// Removes hop-by-hop headers, including those `Connection` names; an upgrade keeps its pair.
-fn strip_hop_by_hop(headers: &mut HeaderMap, keep_upgrade: bool) {
-    let named: Vec<HeaderName> = header_tokens(headers, header::CONNECTION, ',')
-        .filter_map(|t| HeaderName::from_bytes(t.as_bytes()).ok())
-        .collect();
-    for name in named.iter().chain(HOP_BY_HOP.iter()) {
-        if !(keep_upgrade && name == header::UPGRADE) {
-            headers.remove(name);
-        }
-    }
-    if keep_upgrade {
-        headers.insert(header::CONNECTION, HeaderValue::from_static("upgrade"));
-    }
-}
-
-/// Returns the browser-facing `Host`, which [`rewrite_response`] needs for `Location`.
+/// The preview's own rewrites, after the proxy's hop-by-hop strip and before its cookie fence.
+/// Returns the browser-facing `Host`, which [`rewrite_location`] needs.
 fn rewrite_request(req: &mut Request, target: u16, peer: SocketAddr) -> Option<String> {
-    let path = req
-        .uri()
-        .path_and_query()
-        .cloned()
-        .unwrap_or_else(|| PathAndQuery::from_static("/"));
-    *req.uri_mut() = Uri::from(path);
-    *req.version_mut() = Version::HTTP_11;
-    let upgrade = is_upgrade(req.headers());
     let headers = req.headers_mut();
-    strip_hop_by_hop(headers, upgrade);
     let target_origin = format!("http://127.0.0.1:{target}");
     let own_host = headers
         .get(header::HOST)
@@ -286,74 +196,10 @@ fn rewrite_request(req: &mut Request, target: u16, peer: SocketAddr) -> Option<S
     if let Ok(value) = HeaderValue::from_str(&format!("127.0.0.1:{target}")) {
         headers.insert(header::HOST, value);
     }
-    // Browser cookies ignore ports: calm's session is in this jar and must never leave. Every
-    // other cookie is shared by all previews, which are the owner's own dev servers.
-    let kept = header_tokens(headers, header::COOKIE, ';')
-        .filter(|c| !c.is_empty() && !is_session_cookie(c))
-        .collect::<Vec<_>>()
-        .join("; ");
-    headers.remove(header::COOKIE);
-    if !kept.is_empty()
-        && let Ok(value) = HeaderValue::from_str(&kept)
-    {
-        headers.insert(header::COOKIE, value);
-    }
     own_host
 }
 
-fn cookie_name(pair: &str) -> &str {
-    pair.split_once('=').map_or(pair, |(name, _)| name).trim()
-}
-
-/// A dev server must not set calm's session, raw or percent-encoded (`calm%2Dsession`), in any of
-/// the cookie-prefix spellings.
-fn sets_calm_session(set_cookie: &str) -> bool {
-    let raw = cookie_name(set_cookie);
-    [raw.to_owned(), percent_decode(raw)].iter().any(|name| {
-        let name = name
-            .strip_prefix("__Host-")
-            .or_else(|| name.strip_prefix("__Secure-"))
-            .unwrap_or(name);
-        name == SESSION_COOKIE
-    })
-}
-
-fn percent_decode(raw: &str) -> String {
-    let bytes = raw.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let hex = bytes
-            .get(i + 1..i + 3)
-            .filter(|h| h.iter().all(u8::is_ascii_hexdigit))
-            .and_then(|h| std::str::from_utf8(h).ok());
-        match (bytes[i], hex.and_then(|h| u8::from_str_radix(h, 16).ok())) {
-            (b'%', Some(byte)) => {
-                out.push(byte);
-                i += 3;
-            }
-            (byte, _) => {
-                out.push(byte);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn rewrite_response(headers: &mut HeaderMap, target: u16, own_host: Option<&str>, switching: bool) {
-    strip_hop_by_hop(headers, switching);
-    let cookies: Vec<HeaderValue> = headers
-        .get_all(header::SET_COOKIE)
-        .into_iter()
-        // Fail closed: a Set-Cookie that is not visible ASCII cannot be checked, so it drops.
-        .filter(|v| v.to_str().is_ok_and(|s| !sets_calm_session(s)))
-        .cloned()
-        .collect();
-    headers.remove(header::SET_COOKIE);
-    for cookie in cookies {
-        headers.append(header::SET_COOKIE, cookie);
-    }
+fn rewrite_location(headers: &mut HeaderMap, target: u16, own_host: Option<&str>) {
     // Absolute on the preview origin, never relative: `//evil/x` as a path would otherwise
     // become a network-path reference (an open redirect).
     let Some(own_host) = own_host else { return };

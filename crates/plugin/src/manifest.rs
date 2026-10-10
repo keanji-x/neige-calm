@@ -22,8 +22,8 @@ pub const MAX_PLANNER_INSTRUCTIONS_BYTES: usize = 2048;
 pub struct Manifest {
     /// `1` — bindings spelled `workflows` (refused now, so only binding-less v1 files load); `2` —
     /// `templates`; `3` — a `config_schema` with non-empty `required`; `4` — Track-bound agent tools;
-    /// `5` — [`Self::planner_instructions`]. The bump is what makes an older kernel refuse the file by
-    /// version instead of silently ignoring the key.
+    /// `5` — [`Self::planner_instructions`]; `6` — [`Self::http_socket`]. The bump is what makes an
+    /// older kernel refuse the file by version instead of silently ignoring the key.
     pub manifest_version: u32,
 
     /// Reverse-DNS or slug, see `is_valid_plugin_id`. Stable across versions.
@@ -50,6 +50,11 @@ pub struct Manifest {
     /// at `manifest_version` 5. Documentation only: it never enables or authorizes a tool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planner_instructions: Option<String>,
+
+    /// The file name of a Unix socket the plugin serves HTTP on, inside its working directory
+    /// (`crate::http_socket`); legal only at `manifest_version` 6 and only for `app` plugins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_socket: Option<String>,
 
     /// Remote streamable-HTTP MCP server config. Present iff `kind == McpHttp`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -588,11 +593,11 @@ impl Manifest {
 
     /// Validate an already-deserialized manifest.
     pub fn validate(&self) -> Result<(), ManifestError> {
-        if !(1..=5).contains(&self.manifest_version) {
+        if !(1..=6).contains(&self.manifest_version) {
             return Err(ManifestError::invalid(
                 "manifest_version",
                 format!(
-                    "only manifest_version 1, 2, 3, 4 or 5 is accepted, got {}",
+                    "only manifest_version 1, 2, 3, 4, 5 or 6 is accepted, got {}",
                     self.manifest_version
                 ),
             ));
@@ -627,6 +632,20 @@ impl Manifest {
                     ),
                 ));
             }
+        }
+
+        if let Some(name) = &self.http_socket {
+            if self.manifest_version < crate::http_socket::MIN_MANIFEST_VERSION {
+                return Err(ManifestError::invalid(
+                    "manifest_version",
+                    format!(
+                        "`http_socket` requires manifest_version {}",
+                        crate::http_socket::MIN_MANIFEST_VERSION
+                    ),
+                ));
+            }
+            crate::http_socket::validate_name(name)
+                .map_err(|reason| ManifestError::invalid("http_socket", reason))?;
         }
 
         // A manifest that actually declares a binding MUST say 2: a `templates[]` file read by an older
@@ -817,10 +836,11 @@ impl Manifest {
             if self.entrypoint.is_some()
                 || !self.views.is_empty()
                 || !self.permissions.grants_nothing()
+                || self.http_socket.is_some()
             {
                 return Err(ManifestError::invalid(
                     "builtin",
-                    "built-in components have no executable, UI resources, or callback permissions",
+                    "built-in components have no executable, UI resources, sockets, or callback permissions",
                 ));
             }
             return Ok(());
@@ -832,6 +852,12 @@ impl Manifest {
         let only_app = |what: &str| {
             format!("only allowed for `kind: \"app\"` manifests; `kind: \"{kind}\"` {what}")
         };
+        if self.http_socket.is_some() {
+            return Err(ManifestError::invalid(
+                "http_socket",
+                only_app("has no kernel-supervised process to serve the socket"),
+            ));
+        }
 
         if self.entrypoint.is_some() {
             return Err(ManifestError::invalid(
@@ -2170,7 +2196,7 @@ mod tests {
     #[test]
     fn bad_manifest_version_fails() {
         // Probed on both sides of the accepted range: a single sample above it would stay green under `>= 1`.
-        for version in ["0", "6", "99"] {
+        for version in ["0", "7", "99"] {
             let json = format!(
                 r#"{{
             "manifest_version": {version},
