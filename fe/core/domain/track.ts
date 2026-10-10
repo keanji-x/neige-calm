@@ -680,6 +680,27 @@ export function createCodexCardOperation(
   };
 }
 
+/** `theme` is required as for Codex. No `cwd`: the kernel runs the card in the track's workspace, as for a terminal (#2516). */
+export type NewClaudeCardBody = Readonly<{
+  theme: ThemeRgb;
+  title?: string | null;
+}>;
+
+/** `POST /api/tracks/:id/claude-cards` (#2516), keyed per add-card intent like the terminal create. */
+export function createClaudeCardOperation(
+  trackId: string,
+  body: NewClaudeCardBody,
+  idempotencyKey: string,
+): ApiOperation<CardWire> {
+  return {
+    method: 'POST',
+    path: `/api/tracks/${encodeURIComponent(trackId)}/claude-cards`,
+    body,
+    headers: { 'Idempotency-Key': idempotencyKey },
+    responseSchema: cardWireSchema,
+  };
+}
+
 /** `POST /api/tracks/:id/cards` — direct create for kinds that own no runtime; worker kinds have atomic endpoints of their own. */
 export type NewCardBody = Readonly<{
   kind: string;

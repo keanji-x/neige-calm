@@ -16,7 +16,7 @@ function builtinMenu() {
 describe('cardAddMenuEntries', () => {
   it('offers exactly the built-ins that declared an add-panel entry', () => {
     expect(builtinMenu().map((entry) => [entry.type, entry.label]))
-      .toEqual([['terminal', 'terminal'], ['codex', 'codex'], ['file-viewer', 'file']]);
+      .toEqual([['terminal', 'terminal'], ['codex', 'codex'], ['claude', 'claude'], ['file-viewer', 'file']]);
   });
 
   it('keeps registration order, so terminal precedes codex as the built-in order says', () => {

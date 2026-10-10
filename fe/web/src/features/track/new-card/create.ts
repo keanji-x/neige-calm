@@ -4,7 +4,7 @@
 import { ApiError, classifyFailure, NotSentError } from '../../../../../core/domain/failure-class.ts';
 import {
   CARD_CREATE_FAILURES, cardCreateText, readKeyedCreateFailure,
-  type CardWire, type NewCardBody, type NewCodexCardBody, type NewTerminalCardBody, type ThemeRgb,
+  type CardWire, type NewCardBody, type NewClaudeCardBody, type NewCodexCardBody, type NewTerminalCardBody, type ThemeRgb,
 } from '../../../../../core/domain/track.ts';
 import type { CardAddMenuEntry, CardRegistry } from '../../../systems/cards/public.js';
 import type { NewCardValues } from './public.tsx';
@@ -14,12 +14,16 @@ export type CardDraft = Readonly<{ entry: CardAddMenuEntry; values: NewCardValue
 
 /** One draft's body on its kind's endpoint, built once per intent: an atomic worker endpoint, or the generic create. */
 export type KeyedCardBody = Readonly<
-  { kind: 'terminal'; body: NewTerminalCardBody } | { kind: 'codex'; body: NewCodexCardBody } | { kind: 'generic'; body: NewCardBody }
+  | { kind: 'terminal'; body: NewTerminalCardBody }
+  | { kind: 'codex'; body: NewCodexCardBody }
+  | { kind: 'claude'; body: NewClaudeCardBody }
+  | { kind: 'generic'; body: NewCardBody }
 >;
 
 export type CardCreatePort = Readonly<{
   createTerminal: (body: NewTerminalCardBody, idempotencyKey: string) => Promise<CardWire>;
   createCodex: (body: NewCodexCardBody, idempotencyKey: string) => Promise<CardWire>;
+  createClaude: (body: NewClaudeCardBody, idempotencyKey: string) => Promise<CardWire>;
   createCard: (body: NewCardBody, idempotencyKey: string) => Promise<CardWire>;
 }>;
 
@@ -38,13 +42,15 @@ export function sameCardDraft(held: CardDraft, next: CardDraft): boolean {
 }
 
 /**
- * A draft's body: terminal and Codex on their atomic endpoints, any other kind through the generic create with the
- * entry's claimed kind; `null` for a kind the registry cannot create.
+ * A draft's body: terminal, Codex and Claude on their atomic endpoints, any other kind through the generic create with
+ * the entry's claimed kind; `null` for a kind the registry cannot create. Terminal and Claude send no `cwd`: the kernel
+ * runs them in the track's workspace.
  */
 export function keyedCardBodyOf({ entry, values }: CardDraft, theme: ThemeRgb, registry: CardRegistry): KeyedCardBody | null {
   const title = givenValue(values, 'title');
   const titled = title === undefined ? {} : { title };
   if (entry.type === 'terminal') return { kind: 'terminal', body: { theme, ...titled } };
+  if (entry.type === 'claude') return { kind: 'claude', body: { theme, ...titled } };
   if (entry.type === 'codex') {
     const cwd = givenValue(values, 'cwd');
     return { kind: 'codex', body: { theme, ...titled, ...(cwd === undefined ? {} : { cwd }) } };
@@ -62,6 +68,7 @@ export function sendCardCreate(
   if (keyed === null) throw new Error(`CardCreateUnsupported(${entry.type})`);
   const { key, body } = keyed;
   if (body.kind === 'terminal') return port.createTerminal(body.body, key);
+  if (body.kind === 'claude') return port.createClaude(body.body, key);
   return body.kind === 'codex' ? port.createCodex(body.body, key) : port.createCard(body.body, key);
 }
 

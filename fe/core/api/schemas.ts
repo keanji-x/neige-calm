@@ -115,6 +115,8 @@ export const cardRuntimeViewSchema = z.object({
   thread_status: z.string().optional(),
   // Persisted Card snapshots and cards without a completed turn omit it.
   last_turn_completed_ms: z.number().optional(),
+  // #2516: a Claude card's child records the version it started on; every other runtime omits it.
+  claude_version: z.string().optional(),
 });
 export type CardRuntimeView = z.infer<typeof cardRuntimeViewSchema>;
 

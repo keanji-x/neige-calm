@@ -1,7 +1,8 @@
 import type { RecoveryAccess } from '../../../../core/domain/recovery/access.ts';
 import type { CardFilesPort } from '../../../../core/domain/fs.ts';
+import type { ClaudeCardPort } from '../../../../core/domain/claude-card.ts';
 
-export type { CardFilesPort };
+export type { CardFilesPort, ClaudeCardPort };
 
 export interface CardRecord {
   readonly id: string;
@@ -56,6 +57,8 @@ export interface CardHostCapabilities {
   /** Filesystem reads injected by `app/composition`, or `null`; a card that needs them must render a reason rather than throw. */
   readonly files: CardFilesPort | null;
   readonly recovery: RecoveryAccess | null;
+  /** A Claude card's installed-version read and restart (#2516), injected by `app/composition`, or `null`: without it a Claude card offers no Update or Resume. */
+  readonly claude: ClaudeCardPort | null;
   emit(command: CardRuntimeCommand): void;
 }
 

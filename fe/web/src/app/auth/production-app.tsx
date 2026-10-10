@@ -26,6 +26,7 @@ import { AppProviders, WEB_COMPAT_VERSION, type ProviderRuntime } from '../provi
 import { logoutOperation, runOperation, serverVersionOperation } from '../providers/queries.ts';
 import { createFetchTransport } from '../providers/transport.ts';
 import { createCardFilesPort } from '../providers/directory.ts';
+import { createClaudeCardPort } from '../providers/claude-card.ts';
 import { createAppRouter } from '../router/public.tsx';
 import { createUiPreferences } from '../providers/ui-preferences.tsx';
 import { createRecentFileHistory } from '../providers/recent-files.ts';
@@ -80,7 +81,11 @@ export function mountProductionApp(root: HTMLElement, browser: Readonly<{
   const registry = createCardRegistry();
   bootCards(registry);
   // Built from this app's transport and 401 channel so a card's read hits the same session handling as every other read.
-  const host = createCardHost(registry, { files: createCardFilesPort(transport, unauthorized), ...(__NC_BUNDLED__ ? { recovery: access } : {}) });
+  const host = createCardHost(registry, {
+    files: createCardFilesPort(transport, unauthorized),
+    claude: createClaudeCardPort(transport, unauthorized, client),
+    ...(__NC_BUNDLED__ ? { recovery: access } : {}),
+  });
   const runtime: ProviderRuntime = {
     fetchVersion: () => runOperation(probe, serverVersionOperation(), unauthorized),
     reload: browser.reload, deleteDatabase: browser.deleteDatabase,

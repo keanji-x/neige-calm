@@ -7,6 +7,7 @@ import type {
   CardController,
   CardFilesPort,
   CardGeometry,
+  ClaudeCardPort,
   CardHostCapabilities,
   CardLifecycleWriter,
   CardRuntimeCommand,
@@ -49,6 +50,8 @@ export interface CardHostOptions {
    */
   files?: CardFilesPort;
   recovery?: RecoveryAccess;
+  /** A Claude card's Update and Resume (#2516); omitted, Claude cards offer neither. */
+  claude?: ClaudeCardPort;
 }
 
 function connectController(
@@ -143,6 +146,7 @@ export function createCardHost(registry: CardRegistry, options: CardHostOptions 
         slots,
         files: options.files ?? null,
         recovery: options.recovery ?? null,
+        claude: options.claude ?? null,
         emit(command: CardRuntimeCommand) {
           if (command.type === 'refresh') writer.bumpRefresh();
         },

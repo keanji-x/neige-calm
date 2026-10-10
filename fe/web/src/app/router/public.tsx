@@ -1184,6 +1184,7 @@ function TrackRouteBody({
   const cardCreatePort: CardCreatePort = {
     createTerminal: (body, key) => trackMutations.createTerminal(track.id, body, key),
     createCodex: (body, key) => trackMutations.createCodex(track.id, body, key),
+    createClaude: (body, key) => trackMutations.createClaude(track.id, body, key),
     createCard: (body, key) => trackMutations.createCard(track.id, body, key),
   };
 

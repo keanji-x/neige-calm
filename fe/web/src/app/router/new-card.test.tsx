@@ -123,6 +123,20 @@ afterEach(() => {
 });
 
 describe('adding a card from the CARDS module', () => {
+  /* #2516: the add menu creates a Claude card on its own atomic route, keyed per intent, in the track's workspace. */
+  it('creates a Claude card through the claude-cards route, sending no cwd', async () => {
+    const { posts } = setup();
+    await pickKind('claude');
+    await waitFor(() => { expect(posts()).toHaveLength(1); });
+    const [post] = posts();
+    expect(post?.path).toBe('/api/tracks/w1/claude-cards');
+    expect(post?.headers?.['Idempotency-Key']).toMatch(/^[0-9a-f-]{36}$/);
+    expect(post?.body).toHaveProperty('theme');
+    expect(post?.body).not.toHaveProperty('cwd');
+    // A fieldless kind creates on the pick: no dialog.
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
   it('says so on screen when a fieldless kind fails to create', async () => {
     setup({ createFails: true });
     await pickKind('terminal');

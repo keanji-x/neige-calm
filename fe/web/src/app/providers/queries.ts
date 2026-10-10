@@ -45,12 +45,12 @@ import {
   type TodayLaunchpadEnsureWire, type TodayLaunchpadWire, type TodayReportResetWire,
 } from '../../../../core/domain/today.ts';
 import {
-  createCardOperation, createCodexCardOperation, createTerminalCardOperation, createTrackOperation,
+  createCardOperation, createClaudeCardOperation, createCodexCardOperation, createTerminalCardOperation, createTrackOperation,
   createTrackRecipeOperation, deleteCardOperation, deleteTrackOperation, deleteTrackRecipeOperation,
   overlaysByKindOperation, recipeSaveAttempts, recipeSaveLanded, toTrack, updateTrackOperation, updateTrackRecipeOperation,
   sortAreaTracksByRecent, trackActivityFrom, trackDetailOperation, trackRecipeOperation, trackRecipesOperation, trackTemplatesOperation,
   tracksInAreaOperation,
-  type CardWire, type NewCardBody, type NewCodexCardBody, type NewTerminalCardBody,
+  type CardWire, type NewCardBody, type NewClaudeCardBody, type NewCodexCardBody, type NewTerminalCardBody,
   type NewTrackBody, type OverlayWire,
   type Track, type TrackDetailWire, type TrackPatchBody, type TrackRecipe, type TrackTemplate,
 } from '../../../../core/domain/track.ts';
@@ -827,6 +827,7 @@ export type TrackMutations = Readonly<{
   setPinned: (trackId: string, areaId: string, pinned: boolean, nowMs: number) => Promise<Track>;
   createTerminal: (trackId: string, body: NewTerminalCardBody, idempotencyKey: string) => Promise<CardWire>;
   createCodex: (trackId: string, body: NewCodexCardBody, idempotencyKey: string) => Promise<CardWire>;
+  createClaude: (trackId: string, body: NewClaudeCardBody, idempotencyKey: string) => Promise<CardWire>;
   createCard: (trackId: string, body: NewCardBody, idempotencyKey: string) => Promise<CardWire>;
   removeCard: (trackId: string, cardId: string, signal?: AbortSignal) => Promise<void>;
   remove: (trackId: string, areaId: string, signal?: AbortSignal) => Promise<void>;
@@ -899,6 +900,11 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
       runOperation(transport, createCodexCardOperation(trackId, body, key), unauthorized),
     onSuccess: addCardToDetail,
   });
+  const createClaude = useRecoveryMutation(transport, {
+    mutationFn: ({ trackId, body, key }: { trackId: string; body: NewClaudeCardBody; key: string }, transport: ApiTransportPort) =>
+      runOperation(transport, createClaudeCardOperation(trackId, body, key), unauthorized),
+    onSuccess: addCardToDetail,
+  });
   const createCard = useRecoveryMutation(transport, {
     mutationFn: ({ trackId, body, key }: { trackId: string; body: NewCardBody; key: string }, transport: ApiTransportPort) =>
       runOperation(transport, createCardOperation(trackId, body, key), unauthorized),
@@ -947,6 +953,7 @@ export function useTrackMutations(transport: ApiTransportPort, unauthorized: Una
     patch: patchTrack,
     createTerminal: async (trackId, body, key) => createTerminal.mutateAsync({ trackId, body, key }),
     createCodex: async (trackId, body, key) => createCodex.mutateAsync({ trackId, body, key }),
+    createClaude: async (trackId, body, key) => createClaude.mutateAsync({ trackId, body, key }),
     createCard: async (trackId, body, key) => createCard.mutateAsync({ trackId, body, key }),
     removeCard: async (trackId, cardId, signal) => {
       await removeCard.mutateAsync({ trackId, cardId, signal });

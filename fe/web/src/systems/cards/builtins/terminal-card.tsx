@@ -1,4 +1,4 @@
-import { Suspense, useCallback, useEffect } from 'react';
+import { Suspense, useCallback, useEffect, type ReactNode } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 
 import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
@@ -10,7 +10,9 @@ import { CardHead } from '../ui/card-head.tsx';
 import type { WorkerSessionState } from '../../../../../core/api/schemas.js';
 import { activityLabelOf, cardActivityState, type CardActivity } from '../../../../../core/domain/activity.js';
 
-export function TerminalCardView({ card, host, onRemove, activity, notice, fallbackTitle = 'terminal' }: {
+export function TerminalCardView({
+  card, host, onRemove, activity, notice, fallbackTitle = 'terminal', headActions = null, attachKey = null,
+}: {
   card: {
     readonly id: string;
     readonly title: string | null;
@@ -27,19 +29,23 @@ export function TerminalCardView({ card, host, onRemove, activity, notice, fallb
   notice: string | null;
   /** Claude and codex worker cards share this renderer and must not announce themselves as "terminal". */
   fallbackTitle?: string;
+  /** The head's own actions, at its right end beside the status (a Claude card's Update or Resume). */
+  headActions?: ReactNode;
+  /** A new value mounts a fresh terminal attach: a restarted child on the same terminal (a Claude card's new runtime). */
+  attachKey?: string | null;
 }) {
   const [visible, setVisible] = useState(() => host.lifecycle.getSnapshot().visible);
   useEffect(() => host.lifecycle.subscribe(() => {
     setVisible(host.lifecycle.getSnapshot().visible);
   }), [host]);
   const [connection, setConnection] = useState<Readonly<{
-    terminalId: string | null; status: TerminalConnectionStatus;
-  }>>({ terminalId: card.terminalId, status: 'connecting' });
+    terminalId: string | null; attachKey: string | null; status: TerminalConnectionStatus;
+  }>>({ terminalId: card.terminalId, attachKey, status: 'connecting' });
   const terminalId = card.terminalId;
   const onStatusChange = useCallback((status: TerminalConnectionStatus) => {
-    setConnection({ terminalId, status });
-  }, [terminalId]);
-  const status = connection.terminalId === terminalId ? connection.status : 'connecting';
+    setConnection({ terminalId, attachKey, status });
+  }, [terminalId, attachKey]);
+  const status = connection.terminalId === terminalId && connection.attachKey === attachKey ? connection.status : 'connecting';
   const attached = card.terminalId !== null;
   const ended = status === 'exited' || card.sessionState === 'exited' || card.sessionState === 'failed' || card.sessionState === 'superseded';
   const message = card.sessionState === 'failed' ? 'Session failed.'
@@ -61,11 +67,12 @@ export function TerminalCardView({ card, host, onRemove, activity, notice, fallb
       <CardHead
         className="card-drag-handle"
         title={card.title || fallbackTitle}
-        status={activity === null && statusText === null ? undefined : <>
+        status={activity === null && statusText === null && headActions === null ? undefined : <>
           {activity !== null && (
             <ActivityIndicator state={cardActivityState(activity)} spoken={activityLabelOf(cardActivityState(activity))} />
           )}
           {statusText !== null && <span role="status">{statusText}</span>}
+          {headActions}
         </>}
         onClose={onRemove}
         closeAriaLabel={`Delete card ${card.title || fallbackTitle}`}
@@ -83,7 +90,7 @@ export function TerminalCardView({ card, host, onRemove, activity, notice, fallb
         {attached
           ? (
             <Suspense fallback={<div className="term-line">Loading terminal…</div>}>
-              <TerminalSurface recovery={host.recovery} card={card} visible={visible} onStatusChange={onStatusChange} />
+              <TerminalSurface key={attachKey ?? ''} recovery={host.recovery} card={card} visible={visible} onStatusChange={onStatusChange} />
             </Suspense>
           )
           : <div className="term-line">{ended ? 'No terminal session available.' : message}</div>}

@@ -16,18 +16,35 @@ describe('CLAUDE_CARD_ENTRY', () => {
   it('resolves kernel claude cards, including before terminal_id is projected', () => {
     expect(CLAUDE_CARD_ENTRY.fromKernel?.({
       id: 'c1', kind: 'claude', payload: { terminal_id: 't1' },
-    })).toEqual({ type: 'claude', id: 'c1', title: null, terminalId: 't1', sessionState: null, cwd: null, gateCwd: null });
+    })).toEqual({
+      type: 'claude', id: 'c1', title: null, terminalId: 't1', sessionState: null, cwd: null, gateCwd: null,
+      ownerCreated: false, workerSessionId: null, runningVersion: null,
+    });
     // The kernel projects `terminal_id` on read; a card observed between mint and projection resolves with a null terminal rather than not at all.
     expect(CLAUDE_CARD_ENTRY.fromKernel?.({
       id: 'c2', kind: 'claude', payload: { goal: 'do the thing' },
-    })).toEqual({ type: 'claude', id: 'c2', title: null, terminalId: null, sessionState: null, cwd: null, gateCwd: null });
+    })).toEqual({
+      type: 'claude', id: 'c2', title: null, terminalId: null, sessionState: null, cwd: null, gateCwd: null,
+      ownerCreated: false, workerSessionId: null, runningVersion: null,
+    });
     expect(CLAUDE_CARD_ENTRY.fromKernel?.({
       id: 'c3', kind: 'terminal', payload: { terminal_id: 't1' },
     })).toBeNull();
   });
 
-  it('is kernel-minted-only — worker cards come from a task row, not a gesture', () => {
-    expect(CLAUDE_CARD_ENTRY.create).toEqual({ mode: 'kernel-minted-only' });
+  it('reads the owner marker, the runtime and the version its child started on', () => {
+    expect(CLAUDE_CARD_ENTRY.fromKernel?.({
+      id: 'c4', kind: 'claude', payload: { owner_created: true },
+      runtime: { worker_session_id: 'rt-2', kind: 'claude', status: 'running', terminal_id: 't4', claude_version: '2.1.259' },
+    })).toMatchObject({ ownerCreated: true, workerSessionId: 'rt-2', runningVersion: '2.1.259', terminalId: 't4', sessionState: 'running' });
+    // Only the kernel's own `true` marks an owner card; a task worker's card carries none.
+    expect(CLAUDE_CARD_ENTRY.fromKernel?.({ id: 'c5', kind: 'claude', payload: { owner_created: 'true' } })?.ownerCreated)
+      .toBe(false);
+  });
+
+  it('is created atomically from the add menu, through the track route rather than here (#2516)', () => {
+    expect(CLAUDE_CARD_ENTRY.create.mode).toBe('atomic');
+    expect(CLAUDE_CARD_ENTRY.addPanel).toEqual({ label: 'claude' });
   });
 
   it('registers as a surface-owning built-in', () => {
