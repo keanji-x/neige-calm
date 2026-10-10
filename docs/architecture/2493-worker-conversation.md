@@ -277,9 +277,13 @@ one rule.
 **Surface: action `message` of `neige_terminal_input`** (`input` = "send text or keys to a
 terminal", agent-commands §3; `send` is mail only). Options: the target (`attempt_id`, or a
 `terminal_id` resolving to a Live worker), `idempotency_key` (a replay returns the first receipt
-from the caller connection's cache, `operations.rs:80-103`) and `read` with its wait arguments.
+from the caller connection's cache) and `read` with its wait arguments.
 It uses (or creates, as `read` does) the caller's observation client for that cache and the
-readback; `deliver` is only the write leg.
+readback; `deliver` only attaches the writer. Typed input and `message` share one admission order
+and one write leg (`terminal_interaction/write_leg.rs`, #2527/#2528): the replay runs after the
+binding is proven and before every new-write check; `unknown` is cached before the send and kept,
+`written` is kept, and a refusal proven before any byte (including a send the pump never received)
+is not kept, so the same key is decided anew.
 `observation_id`, `allow_output_since_observation`, `claim`, `release` get `-32602` listing the
 valid options, as `detach` refuses `read` (`mcp_server/tools/terminal.rs:270-279`); the shared
 target, replay and readback still justify one tool rather than a new verb. Schema
@@ -293,7 +297,7 @@ Refusals (`-32403` like every terminal runtime failure, agent-commands §9; text
 | `data.refusal` | Text |
 |---|---|
 | `worker_parked` | `attempt <id> (task <key>) is <status>; its worker takes no input.` + by status: done/failed `Declare a task with "continues": "<key>", or a new task for a fresh worker.`; verifying `Wait for its gate.`; canceled `Declare a new task.` |
-| `worker_ended` | `the worker of attempt <id> has ended (<state>); nothing was sent. Declare a new task.` |
+| `worker_ended` | `the worker of attempt <id> has ended (<state>); this call wrote nothing. Declare a new task.` |
 | `worker_starting` | `attempt <id> is dispatched; its worker is starting. Read again, then send.` |
 | `binding_changed` | `terminal <id> now serves attempt <new> (was <old>); show and read again.` (extends today's text, `target.rs:256-257`) |
 | `message_unsupported` | `action "message" needs a task worker whose agent declares it (<providers>); terminal <id> runs <provider>. Use "text" or "submit".` |

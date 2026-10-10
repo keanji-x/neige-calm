@@ -457,7 +457,7 @@ async fn terminal_without_readable_view_refuses_message() {
         &reply,
         -32403,
         Some("terminal_unreadable"),
-        "has no live readable view",
+        "the worker's terminal has no live view (after a server restart until reattached, #2499)",
     );
     assert!(h.state.terminal_renderer.get(&worker.terminal).is_none());
 }
@@ -626,7 +626,7 @@ async fn message_to_ended_worker_is_refused() {
         .unwrap();
     let reply = message(&h, json!({"attempt_id":f.worker.task}), "m", "x").await;
     let text = format!(
-        "the worker of attempt {} has ended (exited); nothing was sent. Declare a new task.",
+        "the worker of attempt {} has ended (exited); this call wrote nothing. Declare a new task.",
         f.worker.task
     );
     assert_refusal(&reply, -32403, Some("worker_ended"), &text);

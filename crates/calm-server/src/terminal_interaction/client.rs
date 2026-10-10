@@ -93,7 +93,8 @@ pub struct Client {
     pub connection: Uuid,
     pub entry: Arc<RendererEntry>,
     pub screen: Arc<StdMutex<ScreenState>>,
-    pub serial: Mutex<()>,
+    /// One action at a time per connection; owned by the guard a write admission returns.
+    pub serial: Arc<Mutex<()>>,
     /// Inputs currently waiting for `serial`. Test observability only.
     serial_waiters: AtomicUsize,
     pub requests: Mutex<std::collections::HashMap<String, (String, serde_json::Value)>>,
@@ -266,7 +267,7 @@ impl Client {
             connection: Uuid::new_v4(),
             entry,
             screen,
-            serial: Mutex::new(()),
+            serial: Arc::new(Mutex::new(())),
             serial_waiters: AtomicUsize::new(0),
             requests: Mutex::new(std::collections::HashMap::new()),
             last_used,

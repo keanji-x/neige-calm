@@ -4,6 +4,7 @@ use super::receipts::{
     WriteReceipts, attach_claim, control_unavailable_receipt, merge, stale_receipt,
 };
 use super::screen_diff::{CursorSnapshot, ScreenDiff, row_hashes};
+use super::write_leg::{Admission, remember, write_once};
 use super::*;
 use crate::terminal_renderer::WriteShape;
 
@@ -38,7 +39,8 @@ const OBSERVATION_EXPIRED: &str = "observation belongs to another connection or 
 
 impl TerminalInteraction {
     /// `observation` is the caller's argument; `None` selects this connection's latest. The order
-    /// under the serial guard is fixed: fences → claim → pre-write capture → write → release → readback.
+    /// under the serial guard is fixed: binding → replay → write rule → fences → claim → pre-write
+    /// capture → write → release → readback ([`Self::admit_write`]).
     #[allow(clippy::too_many_arguments)]
     pub async fn input(
         &self,
@@ -50,25 +52,6 @@ impl TerminalInteraction {
         options: InputOptions,
         observation_wait: Option<WaitPlan>,
     ) -> Result<Value> {
-        if let Some(wait) = &observation_wait {
-            wait.validate()?;
-        }
-        ensure!(
-            !idempotency_key.is_empty() && idempotency_key.len() <= 128,
-            "invalid input idempotency_key"
-        );
-        let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
-        self.ensure_keys_accepted(&resolved)?;
-        let terminal = resolved.binding.terminal_id.as_str();
-        let client = self.client(identity, &resolved.binding).await?;
-        // One action at a time per connection, readback wait included; other connections are not serialized.
-        let _serial = {
-            let _queued = client.queued_for_serial();
-            client.serial.lock().await
-        };
-        // Write authority is decided under the serial lock: a task that finished during the queue
-        // must not be answered with stale_observation although write authority is gone.
-        Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, true).await?;
         let key = idempotency_key.to_owned();
         // The fingerprint hashes the arguments as given (null when omitted) so a replayed
         // idempotency_key returns the same receipt and never claims, releases or writes again.
@@ -77,18 +60,25 @@ impl TerminalInteraction {
             "allow_output_since_observation":options.allow_output_since_observation,
             "claim":options.claim,"release":options.release
         }))?;
-        if let Some(replayed) = self
-            .replay(
+        // The write rule is decided under the serial guard, after the replay: a task that finished
+        // while this request queued is refused (never answered stale_observation), and a key it
+        // wrote still replays.
+        let admitted = match self
+            .admit_write(
                 identity,
-                &client,
+                target,
                 &key,
                 &fingerprint,
                 observation_wait.clone(),
+                |resolved| self.ensure_keys_accepted(resolved),
             )
             .await?
         {
-            return Ok(replayed);
-        }
+            Admission::Replayed(replayed) => return Ok(replayed),
+            Admission::New(admitted) => admitted,
+        };
+        let (resolved, client) = (&admitted.resolved, &admitted.client);
+        let terminal = resolved.binding.terminal_id.as_str();
         let observation = match observation {
             Some(id) => id,
             None => client
@@ -102,8 +92,8 @@ impl TerminalInteraction {
                     )
                 })?,
         };
-        let saved = self.saved_observation(identity, &resolved, &client, observation)?;
-        Self::ensure_writable(&client)?;
+        let saved = self.saved_observation(identity, resolved, client, observation)?;
+        Self::ensure_writable(client)?;
         // The checks that need no live screen come first, so a claim is never granted on a
         // request that errors anyway.
         ensure!(
@@ -113,7 +103,7 @@ impl TerminalInteraction {
         encode(&action, &saved.surface)?;
         // 2. Claim: decided before the pre-write capture, since a granted claim changes what the control fence compares.
         let claim = match options.claim {
-            true => Some(self.claim_for_input(&client, saved.control).await?),
+            true => Some(self.claim_for_input(client, saved.control).await?),
             false => None,
         };
         if let Some(ClaimStep::Unavailable { status, reason }) = &claim {
@@ -121,13 +111,13 @@ impl TerminalInteraction {
             let receipt =
                 control_unavailable_receipt(terminal, idempotency_key, observation, status, reason);
             return Ok(self
-                .with_observation(identity, &client, receipt, Some(WaitPlan::default()), None)
+                .with_observation(identity, client, receipt, Some(WaitPlan::default()), None)
                 .await);
         }
         // 3. Pre-write capture and the remaining fences. An RPC error carries no receipt: every
         // error from here on says that the caller now holds the control it claimed.
         let fence = self
-            .pre_write_fences(&client, &saved, &action, options, claim.as_ref())
+            .pre_write_fences(client, &saved, &action, options, claim.as_ref())
             .map_err(|error| note_claim(error, claim.as_ref()))?;
         let Ready {
             bytes,
@@ -147,7 +137,7 @@ impl TerminalInteraction {
                     CONTROL_TAKEN_BY_ANOTHER_CLIENT,
                 );
                 return Ok(self
-                    .with_observation(identity, &client, receipt, Some(WaitPlan::default()), None)
+                    .with_observation(identity, client, receipt, Some(WaitPlan::default()), None)
                     .await);
             }
             Fence::Stale { current, diff } => {
@@ -162,7 +152,7 @@ impl TerminalInteraction {
                 );
                 attach_claim(&mut receipt, claim.as_ref());
                 return Ok(self
-                    .with_observation(identity, &client, receipt, Some(WaitPlan::default()), None)
+                    .with_observation(identity, client, receipt, Some(WaitPlan::default()), None)
                     .await);
             }
         };
@@ -183,25 +173,21 @@ impl TerminalInteraction {
             options.release,
         );
         receipts.attach(claim.as_ref());
-        let mut result = write_action(
-            &client,
-            key.clone(),
-            fingerprint.clone(),
-            bytes,
-            shape,
-            receipts,
-        )
-        .await?;
+        let (outcome, mut result) =
+            write_once(client, None, &key, &fingerprint, bytes, shape, |outcome| {
+                receipts.for_outcome(outcome)
+            })
+            .await?;
         // 5. Release: after the write's outcome is known and cached; never clears `pending`. A call
         // cancelled here leaves `requested` in the cached receipt and a replay never releases.
         if options.release {
-            result["release"] = self.release(&client).await.to_json();
-            cache(&client, &key, &fingerprint, &result).await;
+            result["release"] = self.release(client).await.to_json();
+            remember(client, &key, &fingerprint, &outcome, &result).await;
         }
         Ok(self
             .with_observation(
                 identity,
-                &client,
+                client,
                 result,
                 observation_wait,
                 Some(ReadbackBaseline {
@@ -210,61 +196,6 @@ impl TerminalInteraction {
                 }),
             )
             .await)
-    }
-    /// The receipt cached under `key` on this connection, with its readback, or `None` for a new
-    /// key. A key reused with other arguments is refused. Runs under the connection's serial
-    /// guard after the caller's binding is proven. `message` calls it before any new-write check;
-    /// `input` keeps its order: the write check (`check_binding(write)`) first.
-    pub(super) async fn replay(
-        &self,
-        identity: &ToolCallIdentity,
-        client: &Arc<Client>,
-        key: &str,
-        fingerprint: &str,
-        observation_wait: Option<WaitPlan>,
-    ) -> Result<Option<Value>> {
-        let cached = {
-            let requests = client.requests.lock().await;
-            if let Some((prior, result)) = requests.get(key) {
-                ensure!(
-                    prior == fingerprint,
-                    "input idempotency_key reused with different arguments"
-                );
-                Some(result.clone())
-            } else {
-                ensure!(
-                    requests.len() < 4096,
-                    "terminal connection receipt limit reached; detach and read on a fresh connection"
-                );
-                None
-            }
-        };
-        let Some(receipt) = cached else {
-            return Ok(None);
-        };
-        // A replayed receipt's readback compares against the CURRENT state, not the state before
-        // the original write.
-        let current = Self::current_baseline(client);
-        Ok(Some(
-            self.with_observation(identity, client, receipt, observation_wait, current)
-                .await,
-        ))
-    }
-    /// The revision and signal seq right now (a replayed receipt's readback
-    /// baseline); `None` when the projection is unavailable.
-    pub(super) fn current_baseline(client: &Client) -> Option<ReadbackBaseline> {
-        let signal_seq = client.entry.signals.last_seq();
-        client
-            .entry
-            .handle
-            .model_view
-            .lock()
-            .ok()
-            .and_then(|view| view.capture(0).ok())
-            .map(|(_, revision)| ReadbackBaseline {
-                revision,
-                signal_seq,
-            })
     }
     fn saved_observation(
         &self,
@@ -294,20 +225,6 @@ impl TerminalInteraction {
             row_hashes: saved.row_hashes.clone(),
             created: saved.created,
         })
-    }
-    /// The connection's pending-write fence, shared by `input` and `message`: no new write while
-    /// an earlier one (typed input or a retained message delivery) has no known outcome.
-    pub(super) fn ensure_writable(client: &Client) -> Result<()> {
-        let delivery_unresolved = client.delivery_unresolved();
-        let state = client
-            .screen
-            .lock()
-            .map_err(|_| anyhow::anyhow!("terminal state poisoned"))?;
-        ensure!(
-            state.available && !state.exited && state.pending.is_none() && !delivery_unresolved,
-            "terminal unavailable or prior input outcome unknown"
-        );
-        Ok(())
     }
     /// The fences that read the live screen: availability and age again (the claim may have
     /// taken seconds), control, surface, action, revision.
@@ -428,58 +345,6 @@ struct Ready {
     /// A moved revision admitted by `allow_output_since_observation`: the row comparison.
     tolerated: Option<ScreenDiff>,
 }
-/// Reserve the next input sequence, cache the unknown receipt, send one ordered write and await
-/// its ack. Cancellation preserves Unknown and blocks all subsequent writes until the matching ack/refusal is observed.
-async fn write_action(
-    client: &Client,
-    key: String,
-    fingerprint: String,
-    bytes: Vec<u8>,
-    shape: WriteShape,
-    receipts: WriteReceipts,
-) -> Result<Value> {
-    let sequence = {
-        let mut state = client.screen.lock().unwrap();
-        let sequence = state
-            .ack
-            .max(state.refused)
-            .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("input sequence exhausted"))?;
-        state.pending = Some(sequence);
-        sequence
-    };
-    cache(client, &key, &fingerprint, &receipts.unknown).await;
-    let result = if client.send_input(bytes, sequence, shape).await.is_err() {
-        receipts.unknown
-    } else {
-        match client
-            .wait(
-                |state| state.ack >= sequence || state.refused >= sequence,
-                Duration::from_secs(7),
-            )
-            .await
-        {
-            Ok(()) => {
-                if client.screen.lock().unwrap().ack >= sequence {
-                    receipts.written
-                } else {
-                    receipts.refused
-                }
-            }
-            Err(_) => receipts.unknown,
-        }
-    };
-    cache(client, &key, &fingerprint, &result).await;
-    Ok(result)
-}
-pub(super) async fn cache(client: &Client, key: &str, fingerprint: &str, receipt: &Value) {
-    client
-        .requests
-        .lock()
-        .await
-        .insert(key.to_owned(), (fingerprint.to_owned(), receipt.clone()));
-}
-
 #[cfg(test)]
 mod fence_tests {
     use super::*;

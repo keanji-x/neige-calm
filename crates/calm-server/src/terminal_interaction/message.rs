@@ -1,10 +1,11 @@
 //! `message` (#2493): one bracketed paste of a fixed kernel header and the Planner's text, then
-//! Enter, into a running task worker's agent TUI. The write leg is a kernel-private client that
+//! Enter, into a running task worker's agent TUI. Its writer is a kernel-private client that
 //! writes as an Observer (`kernel_originated_input`), so it never claims or takes control; its
-//! scope re-runs the message rule and the terminal checks when the writer admits the write.
+//! scope re-runs the message rule and the terminal checks when the writer admits the write. The
+//! replay contract and the write leg are typed input's ([`super::write_leg`]).
 use super::client::InputRole;
-use super::operations::cache;
 use super::target::{InputRefused, Resolved, refused};
+use super::write_leg::{Admission, Delivered, write_once};
 use super::*;
 use crate::terminal_renderer::{RendererEntry, WriteShape};
 use calm_exec::TuiInput;
@@ -100,16 +101,6 @@ fn terminal_takes_paste(entry: &RendererEntry) -> bool {
 const TERMINAL_UNREADABLE: &str = "the worker's terminal has no live readable view (after a server \
      restart until reattached, #2499), or bracketed paste is off; nothing was sent";
 
-/// How the one write ended.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Delivered {
-    /// Proven before any byte reached the PTY.
-    Refused(String),
-    Written,
-    /// The bytes may have reached the PTY; the acknowledgement was lost.
-    Unknown,
-}
-
 impl TerminalInteraction {
     /// The providers whose workers take a message, for the `message_unsupported` text.
     fn message_providers(&self) -> String {
@@ -121,18 +112,15 @@ impl TerminalInteraction {
             .collect::<Vec<_>>()
             .join(", ")
     }
-    /// The message rule and the terminal check, decided before any connection or byte.
-    fn message_precheck(&self, resolved: &Resolved) -> Result<Arc<RendererEntry>> {
-        if let Some(refusal) = message_refusal(
+    /// The message rule (a new write's check), from the provider's declaration.
+    fn message_rule(&self, resolved: &Resolved) -> Result<()> {
+        match message_refusal(
             resolved,
             self.tui_input(resolved)?,
             &self.message_providers(),
         ) {
-            return Err(refusal.into());
-        }
-        match self.renderer.get(&resolved.binding.terminal_id) {
-            Some(entry) if terminal_takes_paste(&entry) => Ok(entry),
-            _ => Err(refused("terminal_unreadable", TERMINAL_UNREADABLE.into()).into()),
+            Some(refusal) => Err(refusal.into()),
+            None => Ok(()),
         }
     }
     /// `neige_terminal_input` action `message`: the caller's observation client keeps the
@@ -145,13 +133,6 @@ impl TerminalInteraction {
         action: Value,
         observation_wait: Option<WaitPlan>,
     ) -> Result<Value> {
-        if let Some(wait) = &observation_wait {
-            wait.validate()?;
-        }
-        ensure!(
-            !idempotency_key.is_empty() && idempotency_key.len() <= 128,
-            "invalid input idempotency_key"
-        );
         let text = match action.as_object() {
             Some(object) if object.len() == 2 && object.contains_key("text") => {
                 action["text"].as_str()
@@ -167,38 +148,31 @@ impl TerminalInteraction {
             )
             .into());
         }
-        let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
-        if self.renderer.get(&resolved.binding.terminal_id).is_none() {
-            // No live entry, so no connection and no receipt to replay: refused as new.
-            self.message_precheck(&resolved)?;
-            anyhow::bail!("terminal unavailable");
-        }
-        let client = self.client(identity, &resolved.binding).await?;
-        let _serial = {
-            let _queued = client.queued_for_serial();
-            client.serial.lock().await
-        };
-        let resolved =
-            Self::check_binding(self.repo.as_ref(), identity, &resolved.binding, false).await?;
         let key = idempotency_key.to_owned();
         let fingerprint =
             crate::routes::idempotency_key::stable_payload_hash(&json!({"action":action}))?;
-        // A replay returns its receipt before any new-write check: the worker may have reported or
-        // left paste mode since the original write.
-        if let Some(replayed) = self
-            .replay(
+        // A replay returns its receipt before the message rule and the terminal check: the worker
+        // may have reported or left paste mode since the original write.
+        let admitted = match self
+            .admit_write(
                 identity,
-                &client,
+                target,
                 &key,
                 &fingerprint,
                 observation_wait.clone(),
+                |resolved| self.message_rule(resolved),
             )
             .await?
         {
-            return Ok(replayed);
-        }
-        Self::ensure_writable(&client)?;
-        let entry = self.message_precheck(&resolved)?;
+            Admission::Replayed(replayed) => return Ok(replayed),
+            Admission::New(admitted) => admitted,
+        };
+        let (resolved, client) = (&admitted.resolved, &admitted.client);
+        Self::ensure_writable(client)?;
+        let entry = match self.renderer.get(&resolved.binding.terminal_id) {
+            Some(entry) if terminal_takes_paste(&entry) => entry,
+            _ => return Err(refused("terminal_unreadable", TERMINAL_UNREADABLE.into()).into()),
+        };
         ensure!(
             Arc::ptr_eq(&entry, &client.entry),
             "terminal generation changed; read again"
@@ -210,108 +184,67 @@ impl TerminalInteraction {
             .map(|task| task.attempt_id.clone())
             .ok_or_else(|| anyhow::anyhow!("message target is bound to no task"))?;
         let bytes = encode_message(&attempt, text)?;
-        let receipt = |outcome: &str| {
-            json!({"terminal_id":resolved.binding.terminal_id,"idempotency_key":idempotency_key,
-                "attempt_id":attempt,"outcome":outcome,"application_result":"unverified"})
-        };
-        let baseline = Self::current_baseline(&client);
-        // Cached before the write: a call cancelled mid-write replays as unknown, never writes again.
-        cache(&client, &key, &fingerprint, &receipt("unknown")).await;
-        let result = match self
-            .deliver(identity, &resolved, entry, bytes, &client)
-            .await
-        {
-            Delivered::Written => {
-                let mut written = receipt("written");
-                written["next"] = json!("read the application result");
-                written
+        let receipt = |outcome: &Delivered| {
+            let mut receipt = json!({"terminal_id":resolved.binding.terminal_id,
+                "idempotency_key":idempotency_key,"attempt_id":attempt,
+                "application_result":"unverified"});
+            match outcome {
+                Delivered::Written => {
+                    receipt["outcome"] = json!("written");
+                    receipt["next"] = json!("read the application result");
+                }
+                Delivered::Refused(reason) => {
+                    receipt["outcome"] = json!("refused");
+                    receipt["reason"] = json!(reason);
+                    receipt["next"] = json!("nothing was written; show and read again");
+                }
+                Delivered::Unknown => receipt["outcome"] = json!("unknown"),
             }
-            Delivered::Refused(reason) => {
-                // Proven unwritten: nothing stays cached, so a resend of the key tries again (as
-                // `control_unavailable`).
-                client.requests.lock().await.remove(&key);
-                let mut refused = receipt("refused");
-                refused["reason"] = json!(reason);
-                refused["next"] = json!("nothing was written; show and read again");
-                return Ok(self
-                    .with_observation(identity, &client, refused, observation_wait, baseline)
-                    .await);
-            }
-            Delivered::Unknown => receipt("unknown"),
+            receipt
         };
-        cache(&client, &key, &fingerprint, &result).await;
+        let baseline = Self::current_baseline(client);
+        let result = match self.deliver(identity, resolved, entry).await {
+            Ok(writer) => {
+                write_once(
+                    client,
+                    Some(writer),
+                    &key,
+                    &fingerprint,
+                    bytes,
+                    WriteShape::Verbatim,
+                    receipt,
+                )
+                .await?
+                .1
+            }
+            // Refused before a connection existed: nothing was reserved or cached.
+            Err(reason) => receipt(&Delivered::Refused(reason)),
+        };
         Ok(self
-            .with_observation(identity, &client, result, observation_wait, baseline)
+            .with_observation(identity, client, result, observation_wait, baseline)
             .await)
     }
-    /// The write leg: a kernel-private client that writes `bytes` once as an Observer. Its scope
+    /// The write leg's writer: a kernel-private client that writes once as an Observer. Its scope
     /// admits the physical write only while the message rule and the terminal check still hold.
-    /// `holder` is the caller's connection: it retains the kernel client until the write settles,
-    /// so its pending-write fence holds across a lost acknowledgement or a cancelled request.
+    /// An `Err` is a refusal proven before any input was sent (closed or refused before
+    /// `ServerHello`).
     pub(crate) async fn deliver(
         &self,
         identity: &ToolCallIdentity,
         resolved: &Resolved,
         entry: Arc<RendererEntry>,
-        bytes: Vec<u8>,
-        holder: &Client,
-    ) -> Delivered {
-        let tui = match self.tui_input(resolved) {
-            Ok(tui) => tui,
-            Err(error) => return Delivered::Refused(error.to_string()),
-        };
+    ) -> Result<Arc<Client>, String> {
+        let tui = self
+            .tui_input(resolved)
+            .map_err(|error| error.to_string())?;
         let scope = self.message_scope(identity, &resolved.binding, tui, entry.clone());
-        let client =
-            match Client::attach(entry, scope, resolved.binding.clone(), InputRole::Kernel).await {
-                Ok(client) => client,
-                // Closed or refused before `ServerHello`: no input was ever sent.
-                Err(error) => return Delivered::Refused(error.to_string()),
-            };
+        let client = Client::attach(entry, scope, resolved.binding.clone(), InputRole::Kernel)
+            .await
+            .map_err(|error| error.to_string())?;
         #[cfg(feature = "fixtures")]
         self.run_message_write_seam(&resolved.binding.terminal_id)
             .await;
-        let client = Arc::new(client);
-        let sequence = 1;
-        if let Ok(mut state) = client.screen.lock() {
-            state.pending = Some(sequence);
-        }
-        // Retained before the input is sent: a cancelled request or a lost acknowledgement leaves
-        // the fence up until this client sees the write's outcome.
-        *holder
-            .delivery
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((client.clone(), sequence));
-        if client
-            .send_input(bytes, sequence, WriteShape::Verbatim)
-            .await
-            .is_err()
-        {
-            // The pump never received the input.
-            holder.delivery_release();
-            return Delivered::Refused("terminal disconnected before the write".into());
-        }
-        let settled = client
-            .wait(
-                |state| state.ack >= sequence || state.refused >= sequence,
-                Duration::from_secs(7),
-            )
-            .await;
-        let Ok(state) = client.screen.lock() else {
-            return Delivered::Unknown;
-        };
-        if settled.is_ok() {
-            holder.delivery_release();
-        }
-        match settled {
-            Ok(()) if state.ack >= sequence => Delivered::Written,
-            Ok(()) => Delivered::Refused(
-                state
-                    .last_protocol_error
-                    .clone()
-                    .unwrap_or_else(|| "terminal input refused".into()),
-            ),
-            Err(_) => Delivered::Unknown,
-        }
+        Ok(Arc::new(client))
     }
     /// Observe: the caller's binding. Control (each physical write): the binding, the message
     /// rule and the terminal check, read fresh.

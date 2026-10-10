@@ -36,6 +36,7 @@ mod text_conditions;
 mod text_wait;
 mod wait;
 mod wait_plan;
+mod write_leg;
 use client::{Client, LatestObservation};
 pub(crate) use target::Binding;
 #[cfg(test)]
