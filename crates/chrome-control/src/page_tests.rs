@@ -16,9 +16,22 @@ fn page(id: &str, visibility: Visibility) -> PageInfo {
 }
 
 #[test]
-fn exactly_one_visible_page_is_selected_even_beside_unknown_pages() {
-    let pages = [page("a", Hidden), page("b", Visible), page("c", Unknown)];
+fn exactly_one_visible_page_beside_hidden_ones_is_selected() {
+    let pages = [page("a", Hidden), page("b", Visible), page("c", Hidden)];
     assert_eq!(select_visible(&pages).unwrap(), 1);
+}
+
+/// A page that did not answer may be a visible window held up by a dialog, so
+/// one visible page beside it is not known to be the only one.
+#[test]
+fn one_visible_page_beside_an_unknown_one_is_ambiguous() {
+    let pages = [page("a", Hidden), page("b", Visible), page("c", Unknown)];
+    match select_visible(&pages) {
+        Err(Error::AmbiguousPage { pages: named }) => {
+            assert_eq!(named, [pages[1].clone(), pages[2].clone()]);
+        }
+        other => panic!("expected AmbiguousPage, got {other:?}"),
+    }
 }
 
 #[test]
@@ -282,19 +295,54 @@ fn ids(pages: &[PageInfo]) -> Vec<&str> {
     pages.iter().map(|p| p.target_id.as_str()).collect()
 }
 
-/// A background page that never answers its visibility check does not block
-/// the one visible page.
+/// A page that never answers its visibility check (an `alert()` in a popup)
+/// may be visible: beside a visible page the read refuses and names both.
 #[tokio::test]
-async fn an_unanswered_visibility_check_does_not_block_the_visible_page() {
+async fn a_visible_page_beside_an_unanswered_one_is_ambiguous() {
     let (cdp, peer) = connected();
     let script = Script::new(&[("shown", "visible"), ("stuck", "silent")]);
     let server = script.serve(peer);
-    let text = tokio::time::timeout(Duration::from_secs(5), read(&cdp))
+    let result = tokio::time::timeout(Duration::from_secs(5), read(&cdp))
         .await
-        .expect("one stuck page must not stall the read")
+        .expect("one stuck page must not stall the read");
+    server.abort();
+    match result {
+        Err(Error::AmbiguousPage { pages }) => assert_eq!(ids(&pages), ["shown", "stuck"]),
+        other => panic!("expected AmbiguousPage, got {other:?}"),
+    }
+}
+
+/// Visibility checks run side by side: three hung pages cost one check timeout.
+#[tokio::test]
+async fn unanswered_pages_are_probed_in_parallel() {
+    let (cdp, peer) = connected();
+    let script = Script::new(&[("a", "silent"), ("b", "silent"), ("c", "silent")]);
+    let server = script.serve(peer);
+    let started = tokio::time::Instant::now();
+    let pages = tokio::time::timeout(Duration::from_secs(15), list(&cdp))
+        .await
+        .expect("list is bounded")
+        .unwrap();
+    let took = started.elapsed();
+    server.abort();
+    assert!(pages.iter().all(|p| p.visibility == Unknown), "{pages:?}");
+    assert!(
+        took < Duration::from_secs(5),
+        "three hung pages took {took:?}"
+    );
+}
+
+/// `Duration::MAX` means no time limit, not an overflow.
+#[tokio::test]
+async fn navigate_without_a_time_limit() {
+    let (cdp, peer) = connected();
+    let script = Script::new(&[("shown", "visible")]);
+    let server = script.serve(peer);
+    let navigated = navigate(&cdp, "https://after.test/", Duration::MAX)
+        .await
         .unwrap();
     server.abort();
-    assert_eq!(text.text, "body text");
+    assert!(navigated.loaded, "{navigated:?}");
 }
 
 /// With no visible page, the refusal names the pages of unknown visibility too.

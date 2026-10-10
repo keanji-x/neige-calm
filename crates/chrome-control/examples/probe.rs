@@ -13,6 +13,8 @@
 //!   which of them survive 5 s after `stop()` and after SIGKILL of an owner
 //!   process; measured only, never signalled;
 //! - (d) a relaunch on the same profile right after the owner's SIGKILL;
+//! - (f, alert) a cross-site popup held up by `alert()` beside its visible
+//!   opener: `AmbiguousPage` (served by a loopback HTTP server in the probe);
 //! - (e) a second launch while the first holds the profile: `ProfileBusy`.
 //!
 //! `probe owner <chrome> <profile> <home> <display> <runtime-dir>` is the
@@ -199,6 +201,9 @@ mod probe {
             Err(error) => println!("relaunched navigate -> ERROR {error}"),
         }
 
+        println!("\n== (f, alert) a cross-site popup that shows alert()");
+        alert_popup(&setup, &second).await?;
+
         println!("\n== (e) restart overlap: a second launch while the first holds the profile");
         let windows_before = setup.compositor.windows()?.len();
         let started = Instant::now();
@@ -225,43 +230,7 @@ mod probe {
     async fn two_windows(setup: &Setup, chrome: &Chrome) -> Res<()> {
         let navigated = chrome.navigate(POPUP_PAGE, NAV_TIMEOUT).await?;
         println!("opener: {navigated:?}");
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        let pid = chrome.pid() as i32;
-        let window = setup
-            .compositor
-            .windows()?
-            .into_iter()
-            .find(|w| w.pid == pid)
-            .ok_or("no Chrome window on the compositor")?;
-        let (x, y) = (
-            f64::from(window.size.0) / 2.0,
-            f64::from(window.size.1) / 2.0,
-        );
-        setup
-            .compositor
-            .input(window.id, vec![InputEvent::Motion { x, y }])?;
-        for pressed in [true, false] {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            let button = InputEvent::Button {
-                code: BTN_LEFT,
-                pressed,
-            };
-            setup.compositor.input(window.id, vec![button])?;
-        }
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while setup
-            .compositor
-            .windows()?
-            .iter()
-            .filter(|w| w.pid == pid)
-            .count()
-            < 2
-        {
-            if Instant::now() > deadline {
-                return Err("the popup window never opened".into());
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        click_for_a_new_window(setup, chrome).await?;
         tokio::time::sleep(Duration::from_secs(1)).await;
         println!("compositor windows: {:#?}", setup.compositor.windows()?);
         println!("pages: {:#?}", chrome.pages().await?);
@@ -298,6 +267,121 @@ mod probe {
         encoder.set_color(png::ColorType::Rgb);
         encoder.set_depth(png::BitDepth::Eight);
         encoder.write_header()?.write_image_data(&rgb)?;
+        Ok(())
+    }
+
+    /// Clicks the middle of the browser's newest window and waits until one
+    /// more window of the browser is open.
+    async fn click_for_a_new_window(setup: &Setup, chrome: &Chrome) -> Res<()> {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let pid = chrome.pid() as i32;
+        let mine = || -> Res<Vec<compositor::WindowInfo>> {
+            let windows = setup.compositor.windows()?;
+            Ok(windows.into_iter().filter(|w| w.pid == pid).collect())
+        };
+        let before = mine()?;
+        let window = before.last().ok_or("no Chrome window on the compositor")?;
+        let (x, y) = (
+            f64::from(window.size.0) / 2.0,
+            f64::from(window.size.1) / 2.0,
+        );
+        setup
+            .compositor
+            .input(window.id, vec![InputEvent::Motion { x, y }])?;
+        for pressed in [true, false] {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let button = InputEvent::Button {
+                code: BTN_LEFT,
+                pressed,
+            };
+            setup.compositor.input(window.id, vec![button])?;
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while mine()?.len() <= before.len() {
+            if Instant::now() > deadline {
+                return Err("the popup window never opened".into());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        Ok(())
+    }
+
+    /// (f, alert) A cross-site popup that shows `alert()`: its renderer is held
+    /// up, so its visibility is unknown and the opener alone is not known to be
+    /// the visible page. The opener is served from `localhost` and the popup
+    /// from `127.0.0.1`, so they run in different renderer processes.
+    async fn alert_popup(setup: &Setup, chrome: &Chrome) -> Res<()> {
+        let port = serve_alert_pages()?;
+        let opener = format!("http://localhost:{port}/opener.html");
+        println!("opener: {:?}", chrome.navigate(&opener, NAV_TIMEOUT).await?);
+        click_for_a_new_window(setup, chrome).await?;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let started = Instant::now();
+        println!(
+            "pages: {:#?} in {:?}",
+            chrome.pages().await?,
+            started.elapsed()
+        );
+        let started = Instant::now();
+        println!(
+            "read_page -> {:?} in {:?}",
+            chrome.read_page().await,
+            started.elapsed()
+        );
+        let started = Instant::now();
+        let navigated = chrome.navigate("about:blank", NAV_TIMEOUT).await;
+        println!("navigate -> {navigated:?} in {:?}", started.elapsed());
+        Ok(())
+    }
+
+    /// A loopback HTTP server for [`alert_popup`]; returns its port.
+    fn serve_alert_pages() -> Res<u16> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let _ = answer(stream, port);
+            }
+        });
+        Ok(port)
+    }
+
+    fn answer(mut stream: std::net::TcpStream, port: u16) -> Res<()> {
+        use std::io::{Read, Write};
+        let mut request = Vec::new();
+        let mut chunk = [0u8; 1024];
+        while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+            let read = stream.read(&mut chunk)?;
+            if read == 0 {
+                return Ok(());
+            }
+            request.extend_from_slice(&chunk[..read]);
+        }
+        let request = String::from_utf8_lossy(&request);
+        let path = request.split_whitespace().nth(1).unwrap_or("/");
+        let body = match path {
+            "/opener.html" => format!(
+                "<!doctype html><title>alert opener</title><body style='margin:0'>\
+                 <button style='width:100vw;height:100vh;font-size:40px' onclick=\"window.open(\
+                 'http://127.0.0.1:{port}/alert.html', 'alertpop', 'popup,width=400,height=300')\">\
+                 open alert popup</button></body>"
+            ),
+            "/alert.html" => "<!doctype html><title>alert popup</title><body>popup\
+                <script>alert('hello from the popup')</script></body>"
+                .to_owned(),
+            _ => String::new(),
+        };
+        let status = if body.is_empty() {
+            "404 Not Found"
+        } else {
+            "200 OK"
+        };
+        write!(
+            stream,
+            "HTTP/1.1 {status}\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\
+             Connection: close\r\n\r\n{body}",
+            body.len()
+        )?;
         Ok(())
     }
 

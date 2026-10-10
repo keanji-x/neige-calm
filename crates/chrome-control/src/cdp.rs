@@ -8,6 +8,10 @@
 //!   with [`Error::Exited`] and refuses new ones.
 //! - Every call has a timeout, and a call whose future is dropped forgets its
 //!   pending entry.
+//! - `Target.attachToTarget` is the one call whose late reply still changes
+//!   Chrome's state (it made a session). When its caller has given up, the
+//!   entry stays as a marker, and a late reply that carries a `sessionId` is
+//!   answered with `Target.detachFromTarget` for exactly that session.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -31,9 +35,22 @@ pub(crate) struct Event {
 
 type Reply = std::result::Result<Value, String>;
 
+/// The call that creates a session in Chrome.
+const ATTACH: &str = "Target.attachToTarget";
+
+enum Slot {
+    /// A caller waits for the reply. `detach_late`: the call is an attach.
+    Waiting {
+        reply: oneshot::Sender<Reply>,
+        detach_late: bool,
+    },
+    /// The attach's caller gave up; detach the session if the reply brings one.
+    DetachLate,
+}
+
 struct State {
     next_id: u64,
-    pending: HashMap<u64, oneshot::Sender<Reply>>,
+    pending: HashMap<u64, Slot>,
     /// `None` once closed.
     events: Option<broadcast::Sender<Event>>,
 }
@@ -73,7 +90,7 @@ impl Cdp {
         })));
         let (outgoing, queue) = mpsc::unbounded_channel();
         tokio::spawn(write_loop(writer, queue, state.clone()));
-        tokio::spawn(read_loop(reader, state.clone()));
+        tokio::spawn(read_loop(reader, state.clone(), outgoing.downgrade()));
         Self { state, outgoing }
     }
 
@@ -100,7 +117,7 @@ impl Cdp {
         session: Option<&str>,
         timeout: Duration,
     ) -> Result<Value> {
-        let (reply, answer) = oneshot::channel();
+        let (reply, mut answer) = oneshot::channel();
         let id = {
             let mut state = self.lock();
             if state.events.is_none() {
@@ -108,10 +125,13 @@ impl Cdp {
             }
             let id = state.next_id;
             state.next_id += 1;
-            state.pending.insert(id, reply);
+            let detach_late = method == ATTACH;
+            state
+                .pending
+                .insert(id, Slot::Waiting { reply, detach_late });
             id
         };
-        // Removes the entry however this call ends, including by being dropped.
+        // Clears the entry however this call ends, including by being dropped.
         let _pending = Pending {
             state: &self.state,
             id,
@@ -125,14 +145,18 @@ impl Cdp {
         if self.outgoing.send(bytes).is_err() {
             return Err(Error::Exited);
         }
-        match tokio::time::timeout(timeout, answer).await {
-            Err(_) => Err(Error::Timeout {
+        let outcome = match tokio::time::timeout(timeout, &mut answer).await {
+            Ok(outcome) => outcome.map_err(|_| Error::Exited),
+            // A reply that landed as the timer fired still counts.
+            Err(_) => answer.try_recv().map_err(|_| Error::Timeout {
                 what: format!("CDP {method}"),
                 after: timeout,
             }),
-            Ok(Err(_)) => Err(Error::Exited),
-            Ok(Ok(Ok(result))) => Ok(result),
-            Ok(Ok(Err(message))) => Err(Error::Cdp {
+        };
+        match outcome {
+            Err(error) => Err(error),
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(message)) => Err(Error::Cdp {
                 method: method.into(),
                 message,
             }),
@@ -152,7 +176,12 @@ struct Pending<'a> {
 impl Drop for Pending<'_> {
     fn drop(&mut self) {
         let mut state = self.state.0.lock().unwrap_or_else(PoisonError::into_inner);
-        state.pending.remove(&self.id);
+        // Still waiting means the caller gave up before the reply came.
+        if let Some(Slot::Waiting { detach_late, .. }) = state.pending.remove(&self.id)
+            && detach_late
+        {
+            state.pending.insert(self.id, Slot::DetachLate);
+        }
     }
 }
 
@@ -170,7 +199,13 @@ async fn write_loop<W: AsyncWrite + Unpin>(
     }
 }
 
-async fn read_loop<R: AsyncRead + Unpin>(reader: R, state: Closer) {
+/// `outgoing` is weak so the reader never keeps the writer (and with it the
+/// browser's command pipe) open after every `Cdp` handle is gone.
+async fn read_loop<R: AsyncRead + Unpin>(
+    reader: R,
+    state: Closer,
+    outgoing: mpsc::WeakUnboundedSender<Vec<u8>>,
+) {
     let mut reader = BufReader::new(reader);
     let mut buffer = Vec::new();
     loop {
@@ -178,7 +213,7 @@ async fn read_loop<R: AsyncRead + Unpin>(reader: R, state: Closer) {
         match reader.read_until(0, &mut buffer).await {
             Ok(0) => break,
             Ok(_) if buffer.last() != Some(&0) => break, // EOF inside a message
-            Ok(_) => dispatch(&buffer[..buffer.len() - 1], &state),
+            Ok(_) => dispatch(&buffer[..buffer.len() - 1], &state, &outgoing),
             Err(error) => {
                 tracing::debug!(%error, "CDP read failed");
                 break;
@@ -188,7 +223,7 @@ async fn read_loop<R: AsyncRead + Unpin>(reader: R, state: Closer) {
     state.close();
 }
 
-fn dispatch(bytes: &[u8], state: &Closer) {
+fn dispatch(bytes: &[u8], state: &Closer, outgoing: &mpsc::WeakUnboundedSender<Vec<u8>>) {
     let mut message: Value = match serde_json::from_slice(bytes) {
         Ok(message) => message,
         Err(error) => {
@@ -198,7 +233,7 @@ fn dispatch(bytes: &[u8], state: &Closer) {
     };
     let mut state = state.0.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(id) = message.get("id").and_then(Value::as_u64) {
-        let Some(reply) = state.pending.remove(&id) else {
+        let Some(slot) = state.pending.remove(&id) else {
             return; // the caller timed out
         };
         let outcome = match message.get_mut("error") {
@@ -211,7 +246,21 @@ fn dispatch(bytes: &[u8], state: &Closer) {
                 .map(Value::take)
                 .unwrap_or(Value::Null)),
         };
-        let _ = reply.send(outcome);
+        match slot {
+            Slot::Waiting { reply, detach_late } => {
+                // The caller may have given up after its entry was taken.
+                if let Err(Ok(result)) = reply.send(outcome)
+                    && detach_late
+                {
+                    detach_session(&mut state, outgoing, &result);
+                }
+            }
+            Slot::DetachLate => {
+                if let Ok(result) = outcome {
+                    detach_session(&mut state, outgoing, &result);
+                }
+            }
+        }
     } else if let (Some(method), Some(events)) = (
         message.get("method").and_then(Value::as_str),
         state.events.as_ref(),
@@ -228,6 +277,28 @@ fn dispatch(bytes: &[u8], state: &Closer) {
                 .unwrap_or(Value::Null),
         });
     }
+}
+
+/// Sends `Target.detachFromTarget` for the session in an attach `result`. Its
+/// reply has no pending entry and is dropped.
+fn detach_session(
+    state: &mut State,
+    outgoing: &mpsc::WeakUnboundedSender<Vec<u8>>,
+    result: &Value,
+) {
+    let (Some(session), Some(outgoing)) = (
+        result.get("sessionId").and_then(Value::as_str),
+        outgoing.upgrade(),
+    ) else {
+        return;
+    };
+    let id = state.next_id;
+    state.next_id += 1;
+    let message = json!({ "id": id, "method": "Target.detachFromTarget",
+        "params": { "sessionId": session } });
+    let mut bytes = message.to_string().into_bytes();
+    bytes.push(0);
+    let _ = outgoing.send(bytes);
 }
 
 #[cfg(test)]
@@ -343,6 +414,35 @@ pub(crate) mod tests {
         );
         assert!(dropped.is_err(), "the call was dropped while pending");
         assert_eq!(cdp.lock().pending.len(), 0);
+    }
+
+    /// An attach whose caller gave up still creates a session in Chrome when
+    /// its reply comes late; the client detaches exactly that session.
+    #[tokio::test]
+    async fn a_late_attach_reply_is_detached() {
+        let (cdp, mut peer) = connected();
+        let params = json!({ "targetId": "T", "flatten": true });
+        let attach = cdp.call(
+            "Target.attachToTarget",
+            params,
+            None,
+            Duration::from_millis(50),
+        );
+        let server = async {
+            let request = peer.recv().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            peer.send(json!({ "id": request["id"], "result": { "sessionId": "S-late" } }))
+                .await;
+            tokio::time::timeout(Duration::from_secs(1), peer.recv())
+                .await
+                .ok()
+                .flatten()
+        };
+        let (result, next) = tokio::join!(attach, server);
+        assert!(matches!(result, Err(Error::Timeout { .. })), "{result:?}");
+        let next = next.expect("no detach for the late session");
+        assert_eq!(next["method"], "Target.detachFromTarget");
+        assert_eq!(next["params"]["sessionId"], "S-late");
     }
 
     #[tokio::test]

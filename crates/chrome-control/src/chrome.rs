@@ -75,22 +75,31 @@ impl Chrome {
         self.process.pid()
     }
 
-    /// Every page target with its visibility.
+    /// Every page target with its visibility (`Unknown` when the page did not
+    /// answer within two seconds).
     pub async fn pages(&self) -> Result<Vec<PageInfo>> {
         page::list(&self.cdp).await
     }
 
     /// Navigates the one visible page and returns its url and title after the
     /// new document's load event, or `loaded: false` when the load did not come
-    /// in time. `timeout` bounds the whole call; when even the url and title
-    /// cannot be read within it, the result is [`Error::Timeout`].
+    /// in time. `timeout` bounds the whole call (`Duration::MAX`: no limit);
+    /// when even the url and title cannot be read within it, the result is
+    /// [`Error::Timeout`].
+    ///
+    /// `loaded: false` and `Timeout` do not mean nothing happened: when finding
+    /// the visible page used up most of the budget, `Page.navigate` may still
+    /// have been sent, and the navigation may go on after this returns.
     pub async fn navigate(&self, url: &str, timeout: Duration) -> Result<Navigated> {
         page::navigate(&self.cdp, url, timeout).await
     }
 
-    /// Url, title and `document.body.innerText` of the one visible page. Pages
-    /// whose visibility cannot be read within two seconds count as unknown and
-    /// do not block a single visible page.
+    /// Url, title and `document.body.innerText` of the one visible page.
+    ///
+    /// Every page's visibility is checked side by side, each with a two-second
+    /// limit. A page that does not answer (a JS dialog, a busy main thread) may
+    /// be visible, so beside it even a single visible page is ambiguous:
+    /// [`Error::AmbiguousPage`] names the visible and unanswered pages.
     pub async fn read_page(&self) -> Result<PageText> {
         page::read(&self.cdp).await
     }

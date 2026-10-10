@@ -32,7 +32,8 @@ pub enum Error {
     /// every page, including those of unknown visibility.
     #[error("no visible page; pages: {pages:?}")]
     NoVisiblePage { pages: Vec<PageInfo> },
-    /// More than one page is visible (a second window or a popup); names the
+    /// More than one page may be visible: several are (a second window or a
+    /// popup), or one is beside a page of unknown visibility. Names the
     /// visible pages and those of unknown visibility.
     #[error("more than one visible page: {pages:?}")]
     AmbiguousPage { pages: Vec<PageInfo> },
