@@ -471,6 +471,12 @@ jobs:
       - name: terminology ratchet discriminates (#1316 S0)
         run: ./scripts/gate-1316-terminology-ratchet.sh --selftest
 
+      - name: worker binding inference scan (#2493 S1)
+        run: ./scripts/gate-2493-worker-binding-inference.sh
+
+      - name: worker binding inference scan discriminates (#2493 S1)
+        run: ./scripts/gate-2493-worker-binding-inference.sh --selftest
+
       - name: prose ratchet (#1635 S6)
         run: ./scripts/gate-prose-ratchet.sh
 
