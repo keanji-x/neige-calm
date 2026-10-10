@@ -1,6 +1,6 @@
 # #2530 — Agent desktop: a headless compositor that streams app windows into Reports
 
-Status: design, L2 round 5 (round 1: teardown ownership, honest tool annotations; rounds 2–3: the approval carrier, narrowed to thread start; round 4: start-up reaping deleted; round 5: crashpad handlers). Issue: #2530. Code references are to `d4f1ba067`.
+Status: design, converged after six L2 rounds (two channels; round 6 approved by both). Issue: #2530. Code references are to `d4f1ba067`.
 
 ## 0. Outcome
 
@@ -128,7 +128,8 @@ Tool annotations stay truthful (`plugins/market/README.md:33-44`). `page_open` a
 approval, and under approval policy `never` such a call fails (same README). The kernel already
 solves this for its own terminal tools: the annotations stay honest, and the kernel delegates
 approval for exactly its write tools, per role, in the Codex thread config
-(`mcp_server/wiring.rs:78-93`; pinned by `terminal_policy_keeps_truthful_annotations_and_exact_write_inventory`).
+(`mcp_server/wiring.rs:78-93`; pinned by
+`terminal_policy_keeps_truthful_annotations_and_exact_write_inventory`).
 
 Codex asks for approval for any MCP tool that is not `readOnlyHint: true`, unless it is both
 `destructiveHint: false` and `openWorldHint: false` (`requires_mcp_tool_approval`,
@@ -151,7 +152,8 @@ the delegation matters for the `never` and `ask` tiers and for Workers.
   threads ignore resume config (`codex_mcp_toolset.rs:16-19`,
   `shared_codex_appserver.rs:3419-3420`; in Codex, `core/src/session/mcp.rs` and
   `core/src/session/turn_context.rs`). So a Planner thread loaded before the owner enables the
-  plugin lists the write tools but has no delegated grant: under `never` its calls are refused, under `ask` they are asked (KNOWN GAP). Hot-reloading loaded threads
+  plugin lists the write tools but has no delegated grant: under `never` its calls are refused,
+  under `ask` they are asked (KNOWN GAP). Hot-reloading loaded threads
   (Codex `config/batchWrite` with `reloadUserConfig: true`) is a later, separate kernel→Codex
   call, not part of v1.
 - **Grant scope.** The shared entry is read by every Codex thread, so the grant covers every role
@@ -262,16 +264,18 @@ pub async fn serve_viewer<S: WebSocketStream>(ws: S, source: Arc<dyn WindowSourc
      processes, which double-fork into their own sessions under the user's systemd (observed in
      the E0 probe), so neither a group stop nor parent links reach them. This is Chrome's own
      behaviour, not ours, so E2 measures it (A4). If the crashpad handlers do not exit, E2 finds
-     and records a launch switch that stops Chrome from starting them; the kernel group-stop
+     and records a launch switch that stops Chrome from starting them, on the binary the runbook
+     installs (the candidate, `--disable-crashpad-for-testing`, is a testing switch); if none
+     works, A4 fails and the design returns for revision; the kernel group-stop
      contingency below would not reach them.
   There is deliberately no start-up reaping of earlier runs: a recorded pid, group or session id
   can be reused by an unrelated process after the owner dies or the host reboots, and a
   command-line match is not ownership. Relaunching on the same profile needs no reaping either:
   Chrome's `SingletonLock` names the browser process, which mechanism 1 has killed, and Chrome
-  takes over a lock whose holder is gone. Stale sockets (`http.sock`, the Wayland socket) are
-  unlinked only after a connect to them fails.
+  takes over a lock whose holder is gone. A stale `http.sock` is unlinked only after a
+  connect to it fails.
 - **Restart overlap.** A plugin restart spawns the new `desktop` while the old one's SIGKILL is
-  still in flight (`host/state.rs:83-85,118-128`). A live old socket or a live old
+  still in flight (`host/state.rs:83-85,118-128`). A live old `http.sock` or a live old
   `SingletonLock` holder is therefore a transient condition that the new `desktop` retries with
   a bound. A Chrome launch that hands its command line to a live holder and exits is detected by
   its exit, never awaited on the CDP pipe.
@@ -279,7 +283,8 @@ pub async fn serve_viewer<S: WebSocketStream>(ws: S, source: Arc<dyn WindowSourc
   those paths it stops the group of the Chrome child it still holds (not yet reaped, so its id
   cannot have been reused) in order: SIGTERM, then SIGKILL after one second.
 - **Contingency.** If E2 shows Chrome helpers outliving their browser process, or a relaunch
-  refused by the profile lock, Chrome stays in `desktop`'s process group, and the kernel spawns app plugins as group
+  refused by the profile lock, Chrome stays in `desktop`'s process group, and the kernel spawns
+  app plugins as group
   leaders and stops them by group (`child_process.rs:31-47` has the helper). That is a generic
   kernel change added to E3a at L2. A separate pre-existing defect makes every app-plugin stop a
   SIGKILL (stop finds the child already moved to the supervisor); it is filed as #2535, and
@@ -295,8 +300,10 @@ pub async fn serve_viewer<S: WebSocketStream>(ws: S, source: Arc<dyn WindowSourc
   `size` (optional, default 1280×800), `max_fps` (optional, default 15). The binary is not
   bundled; installing Chrome is a runbook step (`dpkg -x` of the Google Chrome stable package, or
   Chrome for Testing), not code.
-- **Layout under `<plugins_data_dir>/desktop/`:** `run/` (0700: Wayland socket),
-  `http.sock` (0600), `profiles/chrome/`.
+- **Layout under `<plugins_data_dir>/desktop/`** (0700): `run/` (the Wayland socket, named per
+  `desktop` process so a restart never meets an old one), `http.sock` (0600, a fixed name because
+  the kernel proxy dials it), `profiles/chrome/`, and `home/` (Chrome's crash database and NSS
+  state; minidumps can hold page memory and cookies).
 - **`http.sock`** serves one route: `GET /apps/{app}/stream`, a WebSocket that launches the app
   if it is not running and then serves its main window.
 - **Tools** (minted `plugin_desktop_<tool>`, names per `docs/conventions/agent-commands.md` §6).
@@ -376,7 +383,8 @@ probes, recorded in each PR.
   for the Planner and Workers, and the delegation covers both (§2.4). Narrowing to bound Tracks is
   one manifest field (`agent_tools_scope: "bound-track"`, `manifest.rs:138-145`).
 - **Approval grant reaches only new threads.** A Codex thread loaded before the owner enables
-  the plugin lists the two write tools without the delegated grant until it starts again: refused under `never`, asked under `ask` (§2.4).
+  the plugin lists the two write tools without the delegated grant until it starts again: refused
+  under `never`, asked under `ask` (§2.4).
 - **Outbound from pages.** Pages that Chrome loads run script on the host and can try loopback
   services, such as unauthenticated dev servers behind preview ports. Only Chrome's Local Network
   Access checks stand between them, and `window_input` can click through their prompts. A launch
