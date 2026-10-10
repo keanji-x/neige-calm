@@ -55,6 +55,11 @@ const SOCKET_MODE: u32 = 0o600;
 /// Bounds a pathological stalled connect; a timeout falls through to the stale-file reclaim path, same as `ECONNREFUSED`.
 const LIVE_LISTENER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 const PLUGIN_TOOL_ROLES: &[CardRole] = &[CardRole::Planner, CardRole::Worker];
+/// Kernel tools an unattributed shared-daemon `tools/list` shows: a Codex thread keeps the catalog
+/// it listed before it had a `threadId`, and any of these roles may run on that daemon (#2533).
+/// Listing is not a grant; `tools/call` still enforces each tool's `roles`.
+const SHARED_DAEMON_LISTING_ROLES: &[CardRole] =
+    &[CardRole::Planner, CardRole::Worker, CardRole::Assistant];
 
 #[derive(Clone, Debug)]
 pub struct McpShimConfig {
@@ -388,7 +393,7 @@ async fn bootstrap_tool_descriptors(
     ctx: &Arc<AppContext>,
     registry: &ToolRegistry,
 ) -> Vec<ToolDescriptor> {
-    let mut descriptors = registry.descriptors_listed_for_any(PLUGIN_TOOL_ROLES);
+    let mut descriptors = registry.descriptors_listed_for_any(SHARED_DAEMON_LISTING_ROLES);
     extend_plugin_tool_descriptors(
         ctx,
         &mut descriptors,

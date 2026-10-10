@@ -37,7 +37,8 @@ impl TrackPluginScope {
 }
 
 /// Discovery context is not a call grant. A daemon bootstrap catalog must cover tools
-/// that any later bound Planner/Worker may need; a known unbound Track stays restricted.
+/// that any later bound Planner, Worker or Assistant may need; a known unbound Track stays
+/// restricted.
 pub(crate) enum ToolDiscoveryScope<'a> {
     Bootstrap,
     Track(&'a TrackPluginScope),
