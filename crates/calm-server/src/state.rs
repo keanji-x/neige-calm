@@ -1319,6 +1319,23 @@ impl AppState {
             repo.clone(),
             Some(pending_codex_threads.clone()),
         );
+        // One provider registry: the Dispatcher's reaper and the terminal tools' input declarations
+        // (#2493).
+        let provider_registry = crate::provider_registry::WorkerProviderRegistry::for_daemon(
+            &daemon,
+            shared_codex_appserver.clone(),
+            harness.clone(),
+        );
+        mcp_server
+            .terminal_interaction
+            .set(Arc::new(
+                crate::terminal_interaction::TerminalInteraction::new(
+                    route_repo.clone(),
+                    terminal_renderer.clone(),
+                    provider_registry.clone(),
+                ),
+            ))
+            .map_err(|_| anyhow::anyhow!("terminal interaction already initialized"))?;
         let plugin = Arc::new(PluginHost::new_full(
             Arc::new(registry),
             repo.clone(),
@@ -1376,41 +1393,28 @@ impl AppState {
         // Spawned between role-cache seed and plugin autospawn so the bus has a
         // `*.Requested`-aware listener before plugins start emitting.
         let planner_recovery_locks = crate::per_card_lock::new_per_card_locks();
-        let dispatcher = Arc::new(
-            crate::dispatcher::Dispatcher::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
-                repo.clone(),
-                events.clone(),
-                write.clone(),
-                codex.clone(),
-                daemon.clone(),
-                terminal_renderer.clone(),
-                Some(mcp_server.clone()),
-                harness.clone(),
-                shared_codex_appserver.clone(),
-                operation_runtime.clone(),
-                planner_recovery_locks.clone(),
-                crate::dispatcher::Dispatcher::permits_from_env(8),
-                gate_logs_dir.clone(),
-                cfg.worker_liveness(),
-            ),
-        );
+        let dispatcher = Arc::new(crate::dispatcher::Dispatcher::spawn_with_provider_registry(
+            repo.clone(),
+            events.clone(),
+            write.clone(),
+            codex.clone(),
+            daemon.clone(),
+            terminal_renderer.clone(),
+            Some(mcp_server.clone()),
+            harness.clone(),
+            shared_codex_appserver.clone(),
+            operation_runtime.clone(),
+            planner_recovery_locks.clone(),
+            crate::dispatcher::Dispatcher::permits_from_env(8),
+            gate_logs_dir.clone(),
+            cfg.worker_liveness(),
+            provider_registry,
+        ));
         // The MCP tools' late-bound scheduler trigger (a running-task cancel reaps its worker):
         // bound once the Dispatcher's scheduler exists.
         let _ = mcp_context
             .scheduler_poke
             .set(Arc::new(dispatcher.scheduler()));
-        // The terminal tools read each worker provider's input declaration (#2493), so they are
-        // bound once the Dispatcher's provider registry exists.
-        mcp_server
-            .terminal_interaction
-            .set(Arc::new(
-                crate::terminal_interaction::TerminalInteraction::new(
-                    route_repo.clone(),
-                    terminal_renderer.clone(),
-                    dispatcher.provider_registry(),
-                ),
-            ))
-            .map_err(|_| anyhow::anyhow!("terminal interaction already initialized"))?;
 
         // Per-plugin errors are logged inside `autospawn_enabled`; one broken plugin never blocks boot.
         plugin.reconcile_builtins().await?;

@@ -57,6 +57,19 @@ impl WorkerProviderRegistry {
         ])
     }
 
+    /// The registry for `daemon`'s proc supervisor: the one constructor the Dispatcher and the
+    /// terminal tools share.
+    pub fn for_daemon(
+        daemon: &crate::state::DaemonClient,
+        shared_codex_appserver: Arc<SharedCodexAppServer>,
+        harness: crate::harness::HarnessRegistry,
+    ) -> Self {
+        let supervisor_sock = daemon.proc_supervisor_sock.clone().unwrap_or_else(|| {
+            std::env::temp_dir().join("neige-reaper-missing-proc-supervisor.sock")
+        });
+        Self::new(supervisor_sock, shared_codex_appserver, harness)
+    }
+
     pub fn from_entries<I>(entries: I) -> Self
     where
         I: IntoIterator<Item = (WorkerProviderKind, Arc<dyn WorkerProvider>)>,

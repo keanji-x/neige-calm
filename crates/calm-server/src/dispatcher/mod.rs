@@ -53,12 +53,6 @@ const DEFAULT_PERMITS: usize = 8;
 pub(crate) const PLANNER_WAKE_AUTHORS: &[EditAuthor] =
     &[EditAuthor::User, EditAuthor::Plugin, EditAuthor::Assistant];
 
-fn supervisor_sock_for_provider_registry(daemon: &DaemonClient) -> PathBuf {
-    daemon
-        .proc_supervisor_sock
-        .clone()
-        .unwrap_or_else(|| std::env::temp_dir().join("neige-reaper-missing-proc-supervisor.sock"))
-}
 /// The event kinds `event_warrants_planner_push_with_role` can answer `true` for — exactly the
 /// rows the boot catch-up reads back from the events table.
 pub(crate) const PLANNER_CATCH_UP_KINDS: &[&str] = &[
@@ -779,8 +773,51 @@ impl Dispatcher {
         repo: Arc<dyn Repo>,
         events: EventBus,
         write: WriteContext,
-        _codex: Arc<CodexClient>,
+        codex: Arc<CodexClient>,
         daemon: Arc<DaemonClient>,
+        terminal_renderer: Arc<TerminalRendererRegistry>,
+        mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
+        harness: HarnessRegistry,
+        shared_codex_appserver: Arc<SharedCodexAppServer>,
+        operation_runtime: Arc<OperationRuntime>,
+        planner_recovery_locks: crate::per_card_lock::PerCardLocks,
+        permits: usize,
+        gate_logs_dir: PathBuf,
+        worker_liveness: crate::scheduler::WorkerLiveness,
+    ) -> Self {
+        let provider_registry = WorkerProviderRegistry::for_daemon(
+            &daemon,
+            shared_codex_appserver.clone(),
+            harness.clone(),
+        );
+        Self::spawn_with_provider_registry(
+            repo,
+            events,
+            write,
+            codex,
+            daemon,
+            terminal_renderer,
+            mcp_server,
+            harness,
+            shared_codex_appserver,
+            operation_runtime,
+            planner_recovery_locks,
+            permits,
+            gate_logs_dir,
+            worker_liveness,
+            provider_registry,
+        )
+    }
+
+    /// [`Self::spawn_with_terminal_renderer_and_harness_and_operation_runtime`] with the provider
+    /// registry `AppState` also hands the terminal tools (#2493).
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_with_provider_registry(
+        repo: Arc<dyn Repo>,
+        events: EventBus,
+        write: WriteContext,
+        _codex: Arc<CodexClient>,
+        _daemon: Arc<DaemonClient>,
         terminal_renderer: Arc<TerminalRendererRegistry>,
         _mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
         harness: HarnessRegistry,
@@ -790,6 +827,7 @@ impl Dispatcher {
         permits: usize,
         gate_logs_dir: PathBuf,
         worker_liveness: crate::scheduler::WorkerLiveness,
+        provider_registry: WorkerProviderRegistry,
     ) -> Self {
         let permits = if permits == 0 {
             DEFAULT_PERMITS
@@ -818,15 +856,8 @@ impl Dispatcher {
             write.clone(),
             scheduler.context_metrics(),
         ));
-        // Take the feeder's notification subscription BEFORE `shared_codex_appserver` is moved
-        // into the provider registry.
         let liveness_feeder_rx = shared_codex_appserver.subscribe_notifications();
         let liveness_feeder_repo = repo.clone();
-        let provider_registry = WorkerProviderRegistry::new(
-            supervisor_sock_for_provider_registry(&daemon),
-            shared_codex_appserver,
-            harness.clone(),
-        );
         let reaper = Arc::new(Reaper::new(
             repo.clone(),
             provider_registry.clone(),
