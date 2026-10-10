@@ -304,7 +304,7 @@ Refusals (`-32403` like every terminal runtime failure, agent-commands §9; text
 #1787 becomes "codex Live worker: `message` only"; guide item 2 becomes "correct codex/claude workers
 via `message`" (guides 7,484 of 7,500). **Feature B** = this action; the readback confirms, the #2507
 quiet wake catches a stuck worker. Receipts: `written`, `unknown`, or physical-write `refused` with its
-reason; pre-write refusals are -32403 with `data.refusal`.
+reason; the typed policy refusals above are -32403 with `data.refusal`.
 
 ## 5. Continuation (feature A)
 
