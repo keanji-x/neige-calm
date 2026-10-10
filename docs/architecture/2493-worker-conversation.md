@@ -9,7 +9,8 @@ Without continuation one session serves one attempt, so today's target resolutio
 (`terminal_interaction/target.rs` `resolve_target`/`check_binding`: binding equality, session
 active, task `running`) is the write rule wherever §4 says `may_write_tx`. Refusal codes are §4's
 minus `binding_changed` (today's text stays); `worker_parked` names no `continues`; the keys refusal
-is `worker_keys_refused`; a task-less terminal is `message_unsupported`; only the Planner messages.
+is `worker_keys_refused`; a task-less terminal is `message_unsupported`; only the Planner messages
+(`assistant_no_message`). `text`/`submit`/`key`/claim on a task worker share `message`'s typed write refusal.
 
 **A, continuation:** after a task ends (done or failed) the *same* worker (card, conversation, MCP
 token) takes the next round. **B, message:** the Planner adds a line to a running worker. **S1**
@@ -299,8 +300,8 @@ Refusals (`-32403` like every terminal runtime failure, agent-commands §9; text
 | `terminal_unreadable` | `the worker's terminal has no live readable view (after a server restart until reattached, #2499), or bracketed paste is off; nothing was sent.` |
 | `-32602` | invalid text (`U+001B at byte 12; only printable characters, newline and tab`), over the cap, or an option `message` does not take (`valid: attempt_id, terminal_id, idempotency_key, read, wait_*`) |
 
-#1787 becomes "codex Live worker: `message` only"; `prompts/guides/terminal.md` item 2 (line 6; guides use 8,175 of `GUIDES_TOTAL_MAX_BYTES` 8,200,
-`planner_card.rs:405`, so the rewrite is net ≤ 0 B) becomes "send
+#1787 becomes "codex Live worker: `message` only"; `prompts/guides/terminal.md` item 2 (line 6; guides used 7,499 of `GUIDES_TOTAL_MAX_BYTES` 7,500,
+`every_guide_fits_its_byte_budget`, so the rewrite is net ≤ 0 B; shipped at 7,495) becomes "send
 `message` by `attempt_id`". **Feature B** = this action; confirmation is the readback, a stuck
 worker is caught by the #2507 quiet wake. No receipts.
 

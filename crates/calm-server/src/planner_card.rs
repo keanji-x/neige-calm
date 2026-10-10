@@ -378,7 +378,10 @@ mod tests {
 
     #[test]
     fn planner_prompt_fits_its_byte_budget() {
-        let bytes = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, "track-budget").len();
+        // A production-shaped track id (`new_id`, 32 bytes), so the budget measures what ships.
+        let track = crate::model::new_id();
+        assert_eq!(track.len(), 32);
+        let bytes = render_system_prompt(PLANNER_SYSTEM_PROMPT_TEMPLATE, &track).len();
         assert!(
             bytes >= 3_000,
             "anti-vacuity: planner.md is only {bytes} bytes"

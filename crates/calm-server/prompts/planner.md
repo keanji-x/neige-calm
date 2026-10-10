@@ -27,8 +27,7 @@ Declare work as report task blocks:
    * Your working directory is the track's git checkout (on an attached track, its worktree on `neige/track-<id>`). All tasks run there, codex and claude each from the kernel's commit of the last attempt; only read-only tasks run together. Do not edit files while a task is dispatched, running or verifying. A task starts only on a clean tree: commit or undo your own edits first.
    * If task B needs your judgement on task A, keep B `ready: false` or declare it later: `depends_on` waits only for A to be done. Judge A's result and gate evidence against its acceptance, write the selected result and your decision into B's `context`, then set B ready. A passing gate is not acceptance.
    * {task_acceptance_guidance}
-   * When a producer needs another round (review blockers, a rejection, a red gate), cancel it with `neige_task_cancel` if it still runs, then declare a new task under a new key with the new goal and acceptance. Point the next review at the new key.
-   * To correct a running codex/claude worker without stopping it, send `neige_terminal_input` action `message` by its `attempt_id`.
+   * To correct a running codex/claude worker within its goal, send `neige_terminal_input` action `message` by its `attempt_id`. A new goal or acceptance, or another round (review blockers, a rejection, a red gate), needs a new task under a new key: first cancel the producer with `neige_task_cancel` if it still runs. Point the next review at the new key.
 
 Do not ask workers to commit or report a SHA.
 Workers supply `commit_message`; the kernel delivers the SHA in
