@@ -326,6 +326,12 @@ pub(super) fn spawn_dispatcher(
     terminal_renderer: Arc<TerminalRendererRegistry>,
     daemon: Arc<DaemonClient>,
 ) -> Dispatcher {
+    let shared = SharedCodexAppServer::new_stub(boot.repo.clone());
+    let providers = calm_server::provider_registry::WorkerProviderRegistry::for_daemon(
+        &daemon,
+        shared.clone(),
+        harness.clone(),
+    );
     Dispatcher::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
         boot.repo.clone(),
         boot.ctx.events.clone(),
@@ -335,12 +341,13 @@ pub(super) fn spawn_dispatcher(
         terminal_renderer,
         None,
         harness.clone(),
-        SharedCodexAppServer::new_stub(boot.repo.clone()),
+        shared,
         runtime.clone(),
         calm_server::per_card_lock::new_per_card_locks(),
         4,
         boot.ctx.gate_logs_dir.clone(),
         calm_server::scheduler::WorkerLiveness::DEFAULT,
+        providers,
     )
 }
 

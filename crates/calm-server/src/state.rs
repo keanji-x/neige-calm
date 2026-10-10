@@ -943,6 +943,11 @@ impl AppState {
                 Dispatcher::permits_from_env(8),
                 TaskVerifyAdapter::default_gate_logs_dir(),
                 crate::scheduler::WorkerLiveness::DEFAULT,
+                crate::provider_registry::WorkerProviderRegistry::for_daemon(
+                    &daemon,
+                    shared_codex_appserver.clone(),
+                    harness.clone(),
+                ),
             ),
         );
         let worker_flow = WorkerFlowDriver::from_state_parts(
@@ -1393,7 +1398,7 @@ impl AppState {
         // Spawned between role-cache seed and plugin autospawn so the bus has a
         // `*.Requested`-aware listener before plugins start emitting.
         let planner_recovery_locks = crate::per_card_lock::new_per_card_locks();
-        let dispatcher = Arc::new(crate::dispatcher::Dispatcher::spawn_with_provider_registry(
+        let dispatcher = Arc::new(crate::dispatcher::Dispatcher::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
             repo.clone(),
             events.clone(),
             write.clone(),

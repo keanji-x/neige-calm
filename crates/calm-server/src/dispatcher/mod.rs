@@ -663,6 +663,12 @@ impl Dispatcher {
             plugin,
             workspace_root,
         );
+        let harness = HarnessRegistry::new();
+        let provider_registry = WorkerProviderRegistry::for_daemon(
+            &daemon,
+            shared_codex_appserver.clone(),
+            harness.clone(),
+        );
         Self::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
             repo,
             events,
@@ -671,7 +677,7 @@ impl Dispatcher {
             daemon,
             terminal_renderer,
             mcp_server,
-            HarnessRegistry::new(),
+            harness.clone(),
             shared_codex_appserver,
             operation_runtime,
             // No `RouteState` shares this dispatcher's runtime, so its scheduler fences child
@@ -680,6 +686,7 @@ impl Dispatcher {
             permits,
             crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
             crate::scheduler::WorkerLiveness::DEFAULT,
+            provider_registry,
         )
     }
 
@@ -696,6 +703,12 @@ impl Dispatcher {
         operation_runtime: Arc<OperationRuntime>,
         permits: usize,
     ) -> Self {
+        let harness = HarnessRegistry::new();
+        let provider_registry = WorkerProviderRegistry::for_daemon(
+            &daemon,
+            shared_codex_appserver.clone(),
+            harness.clone(),
+        );
         Self::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
             repo,
             events,
@@ -704,7 +717,7 @@ impl Dispatcher {
             daemon,
             terminal_renderer,
             mcp_server,
-            HarnessRegistry::new(),
+            harness.clone(),
             shared_codex_appserver,
             operation_runtime,
             // No `RouteState` shares this dispatcher's runtime, so its scheduler fences child
@@ -713,6 +726,7 @@ impl Dispatcher {
             permits,
             crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
             crate::scheduler::WorkerLiveness::DEFAULT,
+            provider_registry,
         )
     }
 
@@ -745,6 +759,11 @@ impl Dispatcher {
             plugin,
             workspace_root,
         );
+        let provider_registry = WorkerProviderRegistry::for_daemon(
+            &daemon,
+            shared_codex_appserver.clone(),
+            harness.clone(),
+        );
         Self::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
             repo,
             events,
@@ -762,6 +781,7 @@ impl Dispatcher {
             permits,
             crate::operation::task_verify_adapter::TaskVerifyAdapter::default_gate_logs_dir(),
             crate::scheduler::WorkerLiveness::DEFAULT,
+            provider_registry,
         )
     }
 
@@ -770,49 +790,6 @@ impl Dispatcher {
     /// takes its card's fence there.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_with_terminal_renderer_and_harness_and_operation_runtime(
-        repo: Arc<dyn Repo>,
-        events: EventBus,
-        write: WriteContext,
-        codex: Arc<CodexClient>,
-        daemon: Arc<DaemonClient>,
-        terminal_renderer: Arc<TerminalRendererRegistry>,
-        mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
-        harness: HarnessRegistry,
-        shared_codex_appserver: Arc<SharedCodexAppServer>,
-        operation_runtime: Arc<OperationRuntime>,
-        planner_recovery_locks: crate::per_card_lock::PerCardLocks,
-        permits: usize,
-        gate_logs_dir: PathBuf,
-        worker_liveness: crate::scheduler::WorkerLiveness,
-    ) -> Self {
-        let provider_registry = WorkerProviderRegistry::for_daemon(
-            &daemon,
-            shared_codex_appserver.clone(),
-            harness.clone(),
-        );
-        Self::spawn_with_provider_registry(
-            repo,
-            events,
-            write,
-            codex,
-            daemon,
-            terminal_renderer,
-            mcp_server,
-            harness,
-            shared_codex_appserver,
-            operation_runtime,
-            planner_recovery_locks,
-            permits,
-            gate_logs_dir,
-            worker_liveness,
-            provider_registry,
-        )
-    }
-
-    /// [`Self::spawn_with_terminal_renderer_and_harness_and_operation_runtime`] with the provider
-    /// registry `AppState` also hands the terminal tools (#2493).
-    #[allow(clippy::too_many_arguments)]
-    pub fn spawn_with_provider_registry(
         repo: Arc<dyn Repo>,
         events: EventBus,
         write: WriteContext,

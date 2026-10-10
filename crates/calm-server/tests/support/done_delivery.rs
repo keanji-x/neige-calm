@@ -154,6 +154,11 @@ pub async fn wire(
         1,
         gate_logs.to_path_buf(),
         calm_server::scheduler::WorkerLiveness::DEFAULT,
+        calm_server::provider_registry::WorkerProviderRegistry::for_daemon(
+            &daemon,
+            shared.clone(),
+            harness.clone(),
+        ),
     );
     Wiring {
         runtime,

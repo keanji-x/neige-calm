@@ -49,6 +49,11 @@ pub fn spawn_dispatcher_with_harness(fx: &Fixture) -> Dispatcher {
         4,
         std::env::temp_dir().join("neige-test-gate-logs"),
         calm_server::scheduler::WorkerLiveness::DEFAULT,
+        calm_server::provider_registry::WorkerProviderRegistry::for_daemon(
+            &fx.daemon,
+            fx.shared.clone(),
+            fx.harness.clone(),
+        ),
     )
 }
 
