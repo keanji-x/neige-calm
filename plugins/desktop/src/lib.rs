@@ -29,6 +29,7 @@ pub mod stream;
 pub mod tools;
 pub mod windows;
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -199,6 +200,10 @@ async fn start(
         ChromeSetup {
             binary: config.chrome_binary.clone(),
             bwrap: config.bwrap_binary.clone(),
+            data_dir: layout.work.clone(),
+            user_home: std::env::var_os("HOME")
+                .filter(|home| !home.is_empty())
+                .map(PathBuf::from),
             profile_dir: layout.profile.clone(),
             home_dir: layout.home.clone(),
             wayland_socket: compositor.wayland_socket().to_path_buf(),

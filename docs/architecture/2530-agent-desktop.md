@@ -266,43 +266,50 @@ pub async fn serve_viewer<S: WebSocketStream>(ws: S, source: Arc<dyn WindowSourc
   which owns the child, and drops it with `kill_on_drop`, i.e. SIGKILL (`host/state.rs:81-95`,
   `host/spawn_app.rs:121-133`, `process.rs:79-80`). And a production calm-server that dies
   abruptly leaves its children running (`KillMode=process`). So teardown cannot depend on
-  `desktop` being asked to stop. It rests on two mechanisms:
-  1. `chrome-control` spawns Chrome in its own process group with `PR_SET_PDEATHSIG(SIGKILL)`, from a
-     dedicated launcher thread that lives as long as the process (PDEATHSIG fires when the
-     forking *thread* exits, so never from a tokio blocking thread; precedent
-     `neige-app/src/tailnet/mod.rs:189`). Whenever `desktop` dies, SIGKILL included, the
-     browser process dies.
-  2. Chrome's helper processes exit when their browser process is gone: the zygote, renderers,
-     GPU and utility processes (in the browser's group), and the two `chrome_crashpad_handler`
-     processes, which double-fork into their own sessions under the user's systemd (observed in
-     the E0 probe), so neither a group stop nor parent links reach them. This is Chrome's own
-     behaviour, not ours, so E2 measures it (A4). If the crashpad handlers do not exit, E2 finds
-     and records a launch switch that stops Chrome from starting them, on the binary the runbook
-     installs (the candidate, `--disable-crashpad-for-testing`, is a testing switch); if none
-     works, A4 fails and the design returns for revision; the kernel group-stop
-     contingency below would not reach them.
+  `desktop` being asked to stop. Since #2565 S1 Chrome runs inside a bwrap sandbox
+  (`crates/sandbox`, chrome-control's generic `LaunchConfig::wrapper`), and teardown rests on
+  that chain:
+  1. `chrome-control` spawns the launched process, now bwrap, in its own process group with
+     `PR_SET_PDEATHSIG(SIGKILL)`, from a dedicated launcher thread that lives as long as the
+     process (PDEATHSIG fires when the forking *thread* exits, so never from a tokio blocking
+     thread; precedent `neige-app/src/tailnet/mod.rs:189`). Whenever `desktop` dies, SIGKILL
+     included, bwrap dies.
+  2. bwrap's `--die-with-parent` kills the sandbox's init (bwrap's pid 1) when bwrap dies, and
+     the kernel then kills every process left in the sandbox's pid namespace: the browser, its
+     zygotes, renderers, GPU and utility processes, and both `chrome_crashpad_handler`
+     processes. Before the sandbox the crashpad handlers double-forked out of reach of group and
+     parent links; now they reparent to the sandbox's init and stay inside the namespace, so
+     teardown no longer depends on Chrome's own helper behaviour. The A4 measurement records the
+     sandbox's descendants plus every process in their pid namespaces.
+  bwrap starts Chrome in a new session, so the process group that chrome-control signals holds
+  bwrap alone; signalling it ends the sandbox through mechanism 2.
   There is deliberately no start-up reaping of earlier runs: a recorded pid, group or session id
   can be reused by an unrelated process after the owner dies or the host reboots, and a
-  command-line match is not ownership. Relaunching on the same profile needs no reaping either:
-  Chrome's `SingletonLock` names the browser process, which mechanism 1 has killed, and Chrome
-  takes over a lock whose holder is gone. A stale `http.sock` is unlinked only after a
-  connect to it fails.
+  command-line match is not ownership. A stale `http.sock` is unlinked only after a connect to
+  it fails.
+- **One profile, one Chrome.** Chrome's `SingletonLock` no longer protects the profile across
+  sandboxes: Chrome is pid 2 in every sandbox and each sandbox has a private `/tmp`, so a second
+  sandboxed Chrome finds the lock's holder "alive" under its own pid, cannot reach the holder's
+  singleton socket, and takes the lock over (both #2566 reviewers reproduced this). Exclusivity
+  rests on `desktop` instead: the `http.sock` liveness gate keeps a new `desktop` from starting
+  while an old one still answers, and the old one's sandbox ends with it (about 50 ms in review
+  measurements) before the new one can launch Chrome on demand. `chrome-control` still reports
+  `ProfileBusy` for an unwrapped browser that hands off to a live holder, but it cannot fire
+  through the sandbox, so `desktop` no longer retries on it.
 - **Restart overlap.** A plugin restart spawns the new `desktop` while the old one's SIGKILL is
-  still in flight (`host/state.rs:83-85,118-128`). A live old `http.sock` or a live old
-  `SingletonLock` holder is therefore a transient condition that the new `desktop` retries with
-  a bound. A Chrome launch that hands its command line to a live holder and exits is detected by
-  its exit, never awaited on the CDP pipe.
+  still in flight (`host/state.rs:83-85,118-128`). A live old `http.sock` is therefore a
+  transient condition that the new `desktop` retries with a bound.
 - `desktop` exits on stdin EOF (the kernel side of the MCP pipe is gone) and on SIGTERM. On
-  those paths it stops the group of the Chrome child it still holds (not yet reaped, so its id
-  cannot have been reused) in order: CDP `Browser.close` (E4: SIGTERM alone exits before cookies
-  are written), then SIGTERM to the browser after 5 s, then the group's SIGKILL after 2 s more.
-- **Contingency.** If E2 shows Chrome helpers outliving their browser process, or a relaunch
-  refused by the profile lock, Chrome stays in `desktop`'s process group, and the kernel spawns
-  app plugins as group
-  leaders and stops them by group (`child_process.rs:31-47` has the helper). That is a generic
-  kernel change added to E3a at L2. A separate pre-existing defect makes every app-plugin stop a
-  SIGKILL (stop finds the child already moved to the supervisor); it is filed as #2535, and
-  fixing it would give `desktop` a graceful stop.
+  those paths it stops the sandbox it still holds (not yet reaped, so its id cannot have been
+  reused) in order: CDP `Browser.close`, which reaches Chrome through the sandbox (E4: SIGTERM
+  alone exits before cookies are written), then after 5 s SIGTERM, which reaches bwrap and ends
+  the whole sandbox at once, then the group's SIGKILL after 2 s more.
+- **Contingency** (from before the sandbox, kept for the record). If E2 had shown Chrome helpers
+  outliving their browser process, Chrome would have stayed in `desktop`'s process group, and the
+  kernel would spawn app plugins as group leaders and stop them by group
+  (`child_process.rs:31-47` has the helper). A separate pre-existing defect makes every
+  app-plugin stop a SIGKILL (stop finds the child already moved to the supervisor); it is filed
+  as #2535, and fixing it would give `desktop` a graceful stop.
 - CDP runs over pipe fds 3 and 4 with NUL-delimited JSON. No TCP port exists, so no other local
   process can reach the debugger through the network.
 - Calls in version 1: list page targets, find the visible one, `Page.navigate` and wait for load
@@ -311,6 +318,7 @@ pub async fn serve_viewer<S: WebSocketStream>(ws: S, source: Arc<dyn WindowSourc
 ### 3.4 `desktop` plugin
 
 - **Config** (`config_schema`, typed, delivered in the handshake): `chrome_binary` (required path),
+  `bwrap_binary` (default `/usr/bin/bwrap`, #2565),
   `width`/`height` (optional, default 1280×800; two integers, as the schema subset has no object
   type), `max_fps` (optional, default 15), `proxy_server` (optional, Chrome's proxy). The binary is not
   bundled; installing Chrome is a runbook step (`dpkg -x` of the Google Chrome stable package, or
@@ -345,10 +353,10 @@ unavailable app or window is an error (-32503 / -32404), never a stale result.
 | Owner enables the plugin | the kernel spawns `desktop`; it starts the compositor, binds `http.sock` and answers the handshake. Chrome is not launched yet |
 | First stream connect or `page_open` | Chrome is launched with the profile; a viewer waits for the main window (with a timeout, then `closed`) |
 | Chrome exits (owner closed the last window, or a crash) | the app becomes not running; viewers get `closed`; the next demand relaunches it |
-| `desktop` crashes or is killed | PDEATHSIG kills Chrome's browser process and its helpers exit; the kernel cancels tunnels and respawns `desktop` with backoff; viewers reconnect |
+| `desktop` crashes or is killed | PDEATHSIG kills bwrap, `--die-with-parent` kills the sandbox's init, and the pid namespace takes Chrome and every helper with it; the kernel cancels tunnels and respawns `desktop` with backoff; viewers reconnect |
 | Plugin disabled or stopped | the kernel SIGKILLs `desktop` (`kill_on_drop`); the same chain as a crash, without respawn; the kernel cancels tunnels |
 | calm-server graceful restart or deploy | plugin children die with it (`kill_on_drop`); Chrome restarts on next demand with logins intact and its last session restored, pages reloaded (KNOWN GAP) |
-| calm-server dies abruptly | `desktop` survives (`KillMode=process`), reads stdin EOF and stops Chrome's group, then exits; the next calm-server spawns a new `desktop` |
+| calm-server dies abruptly | `desktop` survives (`KillMode=process`), reads stdin EOF and stops Chrome's sandbox, then exits; the next calm-server spawns a new `desktop` |
 
 ## 5. Accepts
 
@@ -357,7 +365,7 @@ unavailable app or window is an error (-32503 / -32404), never a stale result.
 | A1 | The browser is reachable only through the session-gated route: no TCP listener from `desktop` or Chrome; CDP over a pipe; `http.sock` 0600 inside a 0700 tree | E4: `ss -lntp` before/after shows no new listener; permission check in a test |
 | A2 | The proxy refuses requests without a session, refuses cross-origin upgrades, strips `calm-session`, returns 503 when the plugin is not running, and cancels tunnels on stop | E3a route tests through the real router; mutation-verify the session and origin checks |
 | A3 | Chrome's environment is exactly the allowlist | E2 test reads `/proc/<pid>/environ` of the launched child |
-| A4 | No orphan: after SIGKILL of `desktop`, its stdin EOF, or SIGKILL of calm-server, no process of that launch survives 5 s. The test records the set while Chrome runs, before the kill: the descendants by parent links plus the crashpad handlers named by the children's `--crashpad-handler-pid` and their `--monitor-self` peer (measurement only, never used to signal), and a relaunch on the same profile succeeds. `desktop` never signals a process it did not spawn | E2 process test (SIGKILL, EOF); E4 with the real plugin host stop and a calm-server SIGKILL |
+| A4 | No orphan: after SIGKILL of `desktop`, its stdin EOF, or SIGKILL of calm-server, no process of that launch survives 5 s. The test records the set while Chrome runs, before the kill: the descendants by parent links plus the crashpad handlers named by the children's `--crashpad-handler-pid` and their `--monitor-self` peer (measurement only, never used to signal); since #2565 S1, the sandbox's descendants plus every process in their pid namespaces, as `--crashpad-handler-pid` then names an inner pid. A relaunch on the same profile succeeds. `desktop` never signals a process it did not spawn | E2 process test (SIGKILL, EOF); E4 with the real plugin host stop and a calm-server SIGKILL |
 | A5 | A frame contains only its window's surface tree and popups | E0 test with two test clients in distinct colours |
 | A6 | Nothing is encoded without a viewer; unwatched windows get 1 Hz frame callbacks | E1 counter test |
 | A7 | A slow viewer does not block the compositor or a second viewer; memory is bounded by one frame per session | E1 test with a stalled socket |

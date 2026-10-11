@@ -81,6 +81,23 @@ gets its own user, mount, pid, IPC, UTS and cgroup namespaces, a new session,
 and `PATH=/usr/bin`; it shares the host's network (see the known gaps).
 Chrome's own sandbox still runs inside it.
 
+Two host channels remain visible inside:
+
+- Chrome inherits `desktop`'s stderr, so `file:///dev/stderr` (or
+  `/proc/self/fd/2`) reads it. Under the kernel that is a pipe and reads
+  nothing, but when `desktop` runs with stderr redirected to a file (a manual
+  run), that host file is readable.
+- `/proc` belongs to the sandbox's pid namespace, so no host process is
+  listed, but host-wide files such as `/proc/net/*` exist (they read empty
+  through `file://`).
+
+**One profile, one Chrome.** Chrome's own profile lock does not work across
+sandboxes: Chrome is pid 2 in each, with a private `/tmp`, so a second
+sandboxed Chrome takes the lock over instead of handing off. What keeps two
+Chromes off the profile is `desktop`: a new process waits until the old
+`http.sock` stops answering, and the old sandbox dies with the old process.
+Never run two `desktop` processes on one data directory by hand.
+
 Keep Chrome in a directory of its own: everything beside `chrome_binary` is
 visible to Chrome.
 
@@ -244,7 +261,7 @@ The MVP's last acceptance is manual, on the owner's own account:
    ```
 
    Disable the plugin (`POST /api/plugins/desktop/disable`), wait 5 seconds,
-   and run `ps -o pid=,args= -p "$(paste -sd, /tmp/a4-sandbox.txt)"`: it may
+   and run `ps -o pid=,args= -p "$(paste -sd, /tmp/a4-sandbox.txt)"`: it must
    print no process.
 
 Record the result in the PR.
@@ -281,10 +298,15 @@ Record the result in the PR.
 - **Accounts.** A steered agent acts as the owner on every site the profile
   is logged in to (X, Google). The sandbox does not cover that; it needs
   approval prompts or tool scoping.
-- **Network.** The sandbox shares the host's network (#2565 S2 narrows it).
-  Pages can try loopback and LAN services, the kernel's API included; only
-  Chrome's Local Network Access checks stand between them, and `window_input`
-  can click through their prompts.
+- **Network.** The sandbox shares the host's network namespace until #2565 S2.
+  Pages and typed URLs reach all of loopback TCP (the kernel's API included)
+  and the LAN; only Chrome's Local Network Access
+  checks stand between them, and `window_input` can click through their
+  prompts. Sharing the network namespace also shares the host's abstract Unix
+  sockets, which no mount hides: on the 4140 host, root's Xvfb
+  (`@/tmp/.X11-unix/X99`, which needs an X cookie Chrome does not have) and
+  exim's `@/var/spool/exim4/exim_daemon_notify`. Chrome's own code is what
+  would connect to them; pages cannot open Unix sockets.
 - **Prompt injection.** Page text reaches models. Disabling the plugin is the
   immediate off switch.
 - **A stop can lose the last cookies.** The kernel stops a plugin with

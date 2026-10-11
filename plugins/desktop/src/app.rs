@@ -17,12 +17,6 @@ use sandbox::{Etc, Policy};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
-/// Launch attempts while a live Chrome still holds the profile (a restart
-/// overlapping the old process's kill). Each refused attempt opens a window
-/// in that holder, so the bound stays small and the backoff short.
-pub const LAUNCH_ATTEMPTS: u32 = 5;
-pub const LAUNCH_BACKOFF: Duration = Duration::from_millis(300);
-
 /// What a request to the app can fail with.
 #[derive(Debug)]
 pub enum AppError {
@@ -87,6 +81,11 @@ pub const INSIDE_PATH: &str = "/usr/bin";
 pub struct ChromeSetup {
     pub binary: PathBuf,
     pub bwrap: PathBuf,
+    /// The plugin's data directory, and the plugin process's `HOME` when it
+    /// has one: Chrome's install directory may not contain either, since the
+    /// sandbox shows that directory to Chrome.
+    pub data_dir: PathBuf,
+    pub user_home: Option<PathBuf>,
     pub profile_dir: PathBuf,
     pub home_dir: PathBuf,
     pub wayland_socket: PathBuf,
@@ -116,6 +115,19 @@ impl ChromeSetup {
         let (Some(chrome_dir), Some(name)) = (binary.parent(), binary.file_name()) else {
             return Err(format!("chrome_binary {} names no file", binary.display()));
         };
+        for held in std::iter::once(&self.data_dir).chain(&self.user_home) {
+            // Compared as real paths; one that cannot be resolved is compared as given.
+            let held = std::fs::canonicalize(held).unwrap_or_else(|_| held.clone());
+            if held.starts_with(chrome_dir) {
+                return Err(format!(
+                    "chrome_binary {} lies in {}, which holds {}: the sandbox shows that \
+                     directory to Chrome. Install Chrome in a directory of its own",
+                    self.binary.display(),
+                    chrome_dir.display(),
+                    held.display()
+                ));
+            }
+        }
         let socket = self
             .wayland_socket
             .file_name()
@@ -333,14 +345,13 @@ async fn ensure(
     if let Some(browser) = chrome.as_ref() {
         return Ok(browser.pid());
     }
+    // No retry on `ProfileBusy`: inside the sandbox Chrome is pid 2 with a
+    // private /tmp, so it takes over a lock left by another sandbox instead
+    // of handing off to it. Only the `http.sock` gate keeps two desktops,
+    // and so two Chromes, off one profile (README, "One profile").
     let config = setup.launch_config().map_err(AppError::Sandbox)?;
-    let launch = launch_with_retry(
-        || Chrome::launch(config.clone()),
-        LAUNCH_ATTEMPTS,
-        LAUNCH_BACKOFF,
-    );
     let browser = tokio::select! {
-        launched = launch => launched.map_err(AppError::Chrome)?,
+        launched = Chrome::launch(config) => launched.map_err(AppError::Chrome)?,
         () = shutdown.cancelled() => return Err(AppError::ShuttingDown),
     };
     let pid = browser.pid();
@@ -350,92 +361,10 @@ async fn ensure(
     Ok(pid)
 }
 
-/// Calls `launch` until it does not report a busy profile, at most `attempts`
-/// times, `backoff` apart.
-pub async fn launch_with_retry<T, F, Fut>(
-    mut launch: F,
-    attempts: u32,
-    backoff: Duration,
-) -> chrome_control::Result<T>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = chrome_control::Result<T>>,
-{
-    let mut attempt = 1;
-    loop {
-        match launch().await {
-            Err(chrome_control::Error::ProfileBusy { profile, status }) if attempt < attempts => {
-                tracing::info!(attempt, profile = %profile.display(), %status,
-                    "the profile is still held; retrying the launch");
-                attempt += 1;
-                tokio::time::sleep(backoff).await;
-            }
-            result => return result,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::OsString;
-    use std::os::unix::process::ExitStatusExt;
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    fn busy() -> chrome_control::Error {
-        chrome_control::Error::ProfileBusy {
-            profile: "/p".into(),
-            status: std::process::ExitStatus::from_raw(0),
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_busy_profile_is_retried_a_bounded_number_of_times() {
-        let calls = AtomicU32::new(0);
-        let result: chrome_control::Result<()> = launch_with_retry(
-            || {
-                calls.fetch_add(1, Ordering::SeqCst);
-                async { Err(busy()) }
-            },
-            LAUNCH_ATTEMPTS,
-            LAUNCH_BACKOFF,
-        )
-        .await;
-        assert!(matches!(
-            result,
-            Err(chrome_control::Error::ProfileBusy { .. })
-        ));
-        assert_eq!(calls.load(Ordering::SeqCst), LAUNCH_ATTEMPTS);
-        assert_eq!(LAUNCH_ATTEMPTS, 5);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn the_retry_stops_at_success_and_never_retries_other_errors() {
-        let calls = AtomicU32::new(0);
-        let result = launch_with_retry(
-            || {
-                let n = calls.fetch_add(1, Ordering::SeqCst);
-                async move { if n < 2 { Err(busy()) } else { Ok(n) } }
-            },
-            LAUNCH_ATTEMPTS,
-            LAUNCH_BACKOFF,
-        )
-        .await;
-        assert_eq!(result.unwrap(), 2);
-
-        let calls = AtomicU32::new(0);
-        let result: chrome_control::Result<()> = launch_with_retry(
-            || {
-                calls.fetch_add(1, Ordering::SeqCst);
-                async { Err(chrome_control::Error::Exited) }
-            },
-            LAUNCH_ATTEMPTS,
-            LAUNCH_BACKOFF,
-        )
-        .await;
-        assert!(matches!(result, Err(chrome_control::Error::Exited)));
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
 
     /// Chrome sees fixed paths, and the sandbox binds exactly its install
     /// (resolved through a link), profile, home and Wayland socket.
@@ -455,6 +384,8 @@ mod tests {
         let setup = ChromeSetup {
             binary: link,
             bwrap: "/usr/bin/bwrap".into(),
+            data_dir: tmp.path().join("data"),
+            user_home: Some(tmp.path().join("user")),
             profile_dir: profile.clone(),
             home_dir: home.clone(),
             wayland_socket: socket.clone(),
@@ -507,6 +438,55 @@ mod tests {
             .count();
         assert_eq!(host_paths, 4, "nothing else of the host: {args:?}");
         assert_eq!(args.last().map(OsString::as_os_str), Some("--".as_ref()));
+    }
+
+    /// Chrome's install directory is shown to Chrome, so one that holds the
+    /// plugin's data or the user's home is refused, before any launch.
+    #[test]
+    fn an_install_directory_holding_the_data_or_home_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let run = tmp.path().join("run");
+        std::fs::create_dir(&run).unwrap();
+        let socket = run.join("wayland-0");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let home = tmp.path().join("user");
+        let data = home.join("plugins/desktop");
+        std::fs::create_dir_all(&data).unwrap();
+        let setup = |binary: PathBuf, user_home: Option<PathBuf>| ChromeSetup {
+            binary,
+            bwrap: "/usr/bin/bwrap".into(),
+            data_dir: data.clone(),
+            user_home,
+            profile_dir: data.join("profiles/chrome"),
+            home_dir: data.join("home"),
+            wayland_socket: socket.clone(),
+            size: (1280, 800),
+            proxy_server: None,
+        };
+        // In the home itself, in an ancestor of the data dir, and at the root.
+        std::fs::write(home.join("chrome"), b"").unwrap();
+        std::fs::write(home.join("plugins/chrome"), b"").unwrap();
+        for binary in [home.join("chrome"), home.join("plugins/chrome")] {
+            for user_home in [Some(home.clone()), None] {
+                let err = setup(binary.clone(), user_home)
+                    .launch_config()
+                    .unwrap_err();
+                assert!(err.contains("directory of its own"), "{err}");
+            }
+        }
+        // The data dir is outside this install; a home below it is not.
+        let elsewhere = tmp.path().join("opt");
+        std::fs::create_dir_all(elsewhere.join("me")).unwrap();
+        std::fs::write(elsewhere.join("chrome"), b"").unwrap();
+        assert!(
+            setup(elsewhere.join("chrome"), None)
+                .launch_config()
+                .is_ok()
+        );
+        let err = setup(elsewhere.join("chrome"), Some(elsewhere.join("me")))
+            .launch_config()
+            .unwrap_err();
+        assert!(err.contains("directory of its own"), "{err}");
     }
 
     #[test]

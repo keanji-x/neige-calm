@@ -26,7 +26,11 @@ fn a_typed_file_url_reads_no_host_directory() {
     std::fs::create_dir(&outside).unwrap();
     let sentinel = "sentinel-the-sandbox-must-hide.txt";
     std::fs::write(outside.join(sentinel), b"secret").unwrap();
-    let mut plugin = Plugin::spawn(&tmp.path().join("desktop"));
+    // An English UI, so a listing is titled "Index of".
+    let mut plugin = Plugin::spawn_env(
+        &tmp.path().join("desktop"),
+        &[("LANG", "C"), ("LC_ALL", "C")],
+    );
     assert!(plugin.initialize(&chrome).get("result").is_some());
     // Starts Chrome. Nothing listens on the discard port, so the load fails.
     let _ = plugin.tool("page_open", json!({ "url": "http://127.0.0.1:9/" }));

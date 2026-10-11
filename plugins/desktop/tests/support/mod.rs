@@ -48,16 +48,22 @@ impl Plugin {
     /// Spawns `desktop` the way the plugin host does: cwd and
     /// `NEIGE_PLUGIN_DATA_DIR` are the work dir, which already exists.
     pub fn spawn(data: &Path) -> Self {
-        Self::spawn_with(data, Stdio::inherit(), "debug")
+        Self::spawn_with(data, Stdio::inherit(), "debug", &[])
+    }
+
+    /// With `env` added to the environment the test runs in (Chrome keeps
+    /// `LANG` and `LC_*` from it).
+    pub fn spawn_env(data: &Path, env: &[(&str, &str)]) -> Self {
+        Self::spawn_with(data, Stdio::inherit(), "debug", env)
     }
 
     /// With stderr on a pipe the test holds, as the plugin host does: dropping
     /// [`Plugin::stderr`] closes it like a kernel that died.
     pub fn spawn_kernel_like(data: &Path) -> Self {
-        Self::spawn_with(data, Stdio::piped(), "info")
+        Self::spawn_with(data, Stdio::piped(), "info", &[])
     }
 
-    fn spawn_with(data: &Path, stderr: Stdio, log: &str) -> Self {
+    fn spawn_with(data: &Path, stderr: Stdio, log: &str, env: &[(&str, &str)]) -> Self {
         std::fs::create_dir_all(data).unwrap();
         let mut child = Command::new(DESKTOP)
             .current_dir(data)
@@ -65,6 +71,7 @@ impl Plugin {
             .env("NEIGE_PLUGIN_DATA_DIR", data)
             .env("NEIGE_PLUGIN_TOKEN", "tok-123")
             .env("DESKTOP_LOG", log)
+            .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(stderr)
