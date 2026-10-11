@@ -173,8 +173,11 @@ the delegation matters for the `never` and `ask` tiers and for Workers.
   This probe also produced the finding on reach above.
 - **Fail closed.** An enable refused after it turned the bit on announces `Disabled`, a refresh
   that cannot read the plugin rows writes an empty map, boot's rewrite of the entry drops the map
-  until the daemon-Running refresh, and a name another enabled tool or a compiled built-in native
-  also claims is never granted. Forge actions cannot declare the key.
+  from the file until the daemon-Running refresh, and a name another enabled tool or a compiled
+  built-in native also claims is never granted. Forge actions cannot declare the key. The file is
+  what new threads read. Loaded threads of a Codex daemon that survived a server restart keep their
+  in-memory grants until that refresh's reload, and a plugin reload runs the new code under the old
+  grant for up to one debounce.
 - Effect: the desktop's two write tools are usable without a prompt by Codex threads that start
   after the refresh that follows the owner's enable. The three views are `readOnlyHint: true` and
   need nothing.

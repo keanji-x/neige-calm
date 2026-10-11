@@ -39,8 +39,10 @@
 //! Every path fails closed. A refresh whose plugin-row read fails publishes its generation with no
 //! grants at all, and the next readable refresh restores them; a written generation therefore never
 //! carries a grant the plugin rows did not vouch for at that refresh. Boot's rewrite of the entry
-//! drops the map, so a restart never carries a grant to changed plugin code; the daemon's Running
-//! refresh writes it again.
+//! drops the map from the file, so a thread that starts after a restart gets no grant until the
+//! daemon's Running refresh writes it again. Loaded threads of a daemon that survived the restart
+//! keep the grants they hold in memory until that refresh's reload, and a plugin reload serves the
+//! new code under the old grant for up to one debounce, until its refresh.
 //!
 //! Writes take the shared home's `.config.lock`, as every calm writer does. Codex's own config
 //! writes (`config/value/write`, `config/batchWrite`, neither of which calm sends) do not.

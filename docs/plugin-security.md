@@ -177,15 +177,19 @@ compiled tool already serves, is never granted. Enabled is not running: a
 stopped or crashed plugin keeps its grant, and routing still refuses every call
 to it while it is not running. Revocation fails closed: an enable refused after
 it turned the plugin on announces the plugin disabled again, a rewrite that
-cannot read the plugin records grants nothing, and a server restart drops every
-grant until the Codex daemon is up and the map is rewritten.
+cannot read the plugin records grants nothing, and a server restart removes
+every grant from the file until the Codex daemon is up and the map is
+rewritten. The file is what new threads read: loaded threads of a Codex daemon
+that survived the restart keep their grants until that rewrite's reload, and a
+plugin reload runs the new code under the old grant for up to one debounce.
 
-The kernel promises the grant to threads that start after the change. Codex 0.159.2 also applies a change to loaded threads when the reload
-that follows each rewrite restarts their connection to the kernel, and keeps
-their per-thread terminal grants; a loaded thread that misses that reload keeps
-the grants it had. Removing the key from the manifest takes effect when the
-plugin is reloaded or the server restarts. Disabling the plugin is the
-immediate off switch either way, because routing then refuses its calls. The map is read by every Codex thread
+The kernel promises the grant to threads that start after the change. Codex
+0.159.2 also applies a change to loaded threads when the reload that follows
+each rewrite restarts their connection to the kernel, and keeps their
+per-thread terminal grants; a loaded thread that misses that reload keeps the
+grants it had. Removing the key from the manifest takes effect when the plugin
+is reloaded or the server restarts. Disabling the plugin is the immediate off
+switch either way, because routing then refuses its calls. The map is read by every Codex thread
 on the shared daemon, so the grant covers every role the kernel serves plugin
 tools to: the Planner and Workers. The kernel's own terminal grants are per
 role and travel with each thread's start config; Codex merges the two maps.
