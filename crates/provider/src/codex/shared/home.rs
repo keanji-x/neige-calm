@@ -367,7 +367,7 @@ impl SharedCodexHome {
                     kernel_table["command"] =
                         toml_edit::value(shim.command.to_string_lossy().to_string());
                     kernel_table["args"] = toml_edit::value(toml_edit::Array::new());
-                    // Approval grants are [`Self::refresh_mcp_entry`]'s alone, and a boot never carries
+                    // Approval grants are [`Self::refresh_mcp_entry`]'s alone, and the file never carries
                     // one across a restart: the plugin behind a granted name may have changed meanwhile.
                     kernel_table.remove("tools");
                     let env = kernel_table.entry("env").or_insert(toml_edit::table());

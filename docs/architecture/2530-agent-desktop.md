@@ -417,7 +417,7 @@ probes, recorded in each PR.
   the model. E4 checks this; text tools alone satisfy the MVP.
 - Non-ASCII input and IME, clipboard, audio, file chooser dialogs (no portal), downloads UI,
   notifications, resize and HiDPI, and popups larger than their window (clipped).
-- A server restart or deploy restarts Chrome. Chrome restores its last session on every relaunch
+- A server restart or deploy restarts Chrome. Chrome usually restores its last session on relaunch
   (E4 measured it after an orderly stop and after SIGKILL): the pages load again, repeating their
   GET side effects, and a session left with a popup open returns with two windows, so `page_*`
   refuse (-32409) until one is closed.

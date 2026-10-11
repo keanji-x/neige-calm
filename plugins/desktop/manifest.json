@@ -1,5 +1,5 @@
 {
-  "manifest_version": 6,
+  "manifest_version": 7,
   "id": "desktop",
   "version": "0.1.0",
   "min_kernel_version": "0.0.1",
@@ -88,7 +88,8 @@
         "readOnlyHint": false,
         "destructiveHint": true,
         "openWorldHint": true
-      }
+      },
+      "approval": "delegated"
     },
     {
       "name": "page_open",
@@ -109,7 +110,8 @@
         "readOnlyHint": false,
         "destructiveHint": true,
         "openWorldHint": true
-      }
+      },
+      "approval": "delegated"
     },
     {
       "name": "page_cat",
