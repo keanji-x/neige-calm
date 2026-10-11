@@ -169,14 +169,22 @@ fn failure(error: impl std::fmt::Display) -> RpcError {
     RpcError::forbidden(error.to_string())
 }
 /// A typed refusal carries its machine-readable `data.refusal` on every terminal tool that takes a
-/// target (#2554); invalid message text is `-32602`.
+/// target (#2554), and a starting worker's what it waits for and how long the call waited (#2571);
+/// invalid message text is `-32602`.
 fn target_failure(error: anyhow::Error) -> RpcError {
     if let Some(invalid) = error.downcast_ref::<MessageInvalid>() {
         return RpcError::invalid_params(invalid.to_string());
     }
     let mut rpc = failure(&error);
     if let Some(refused) = error.downcast_ref::<InputRefused>() {
-        rpc.data = Some(json!({"refusal":refused.refusal}));
+        let mut data = json!({"refusal":refused.refusal});
+        if let Some(starting) = &refused.starting {
+            data["waiting_for"] = json!(starting.waiting_for);
+            if let Some(waited) = starting.waited_ms {
+                data["waited_ms"] = json!(waited);
+            }
+        }
+        rpc.data = Some(data);
     }
     rpc
 }
