@@ -252,6 +252,9 @@ pub struct PreparedClaudeCreateRequest {
     pub card_id: String,
     pub claude_session_id: String,
     pub settings_path: String,
+    /// The binary `command_line` runs, as `resolve_claude_bin` found it; its `--version` is what
+    /// the card's runtime records (#2516).
+    pub claude_bin: String,
     pub command_line: String,
     pub env: Value,
 }
@@ -312,11 +315,12 @@ pub async fn prepare_claude_create_request(
         .to_string_lossy()
         .to_string();
     let env = build_claude_env(repo, codex, &card_id).await?;
+    let claude_bin = crate::claude_version::resolve_claude_bin(&codex.claude_bin);
     // `exec`: Claude is the PTY's process-group leader, so a stop's SIGTERM grace waits on Claude
     // itself, not on the wrapping shell (#2516). An id rides as one `--flag=value` token.
     let mut command_line = format!(
         "exec {} {CLAUDE_CARD_PERMISSION_FLAGS} --settings {} --session-id={}",
-        shell_single_quote(&codex.claude_bin),
+        shell_single_quote(&claude_bin),
         shell_single_quote(&settings_path),
         shell_single_quote(&claude_session_id),
     );
@@ -337,6 +341,7 @@ pub async fn prepare_claude_create_request(
         card_id,
         claude_session_id,
         settings_path,
+        claude_bin,
         command_line,
         env,
     })
@@ -533,6 +538,7 @@ impl ProviderAdapter for ClaudeAdapter {
             "terminal_id": term.id,
             "settings_path": request.settings_path,
             "claude_session_id": request.claude_session_id,
+            "claude_bin": request.claude_bin,
             "command_line": request.command_line,
             "cwd": cwd,
             "env": request.env,
@@ -596,10 +602,12 @@ impl ProviderAdapter for ClaudeAdapter {
         );
         std::fs::write(&settings_path, build_claude_settings_json(&hook_command))
             .map_err(|e| CalmError::Internal(format!("write claude settings.json: {e}")))?;
-        crate::claude_version::record_running_version(
+        let worker_session_id = output.output_string("runtime_id", "claude")?;
+        crate::claude_version::record_running_version_of_output(
             ctx.repo.as_ref(),
-            &self.codex.claude_bin,
+            output,
             &card_id,
+            &worker_session_id,
         )
         .await;
 
@@ -834,8 +842,9 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             self.gate_run_wait,
         )
         .await?;
+        let claude_bin = crate::claude_version::resolve_claude_bin(&self.codex.claude_bin);
         let command_line = build_claude_worker_command_line(
-            &self.codex.claude_bin,
+            &claude_bin,
             &settings_path,
             &claude_session_id,
             track_id.as_str(),
@@ -918,6 +927,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             "terminal_launch": super::terminal_launch::fresh_state(),
             "settings_dir": settings_dir,
             "claude_session_id": claude_session_id,
+            "claude_bin": claude_bin,
             "command_line": command_line,
             "cwd": cwd,
             "lease_id": lease.lease_id,
@@ -953,7 +963,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         ctx: &SpawnCtx,
     ) -> Result<SpawnOutcome> {
         let card_id = output.output_string("card_id", "claude worker")?;
-        let runtime_id = output.output_string("runtime_id", "claude worker")?;
+        let worker_session_id = output.output_string("runtime_id", "claude worker")?;
         let terminal_id = output.output_string("terminal_id", "claude worker")?;
         let track_id = TrackId::from(output.output_string("track_id", "claude worker")?);
         let settings_path = PathBuf::from(output.output_string("settings_path", "claude worker")?);
@@ -1091,16 +1101,17 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             ctx,
             mcp_server,
             &card_id,
-            &runtime_id,
+            &worker_session_id,
             &worker_mcp::mcp_config_path(&settings_path)?,
             &mut env,
         )
         .await?;
 
-        crate::claude_version::record_running_version(
+        crate::claude_version::record_running_version_of_output(
             ctx.repo.as_ref(),
-            &self.codex.claude_bin,
+            output,
             &card_id,
+            &worker_session_id,
         )
         .await;
 

@@ -230,7 +230,8 @@ pub(crate) fn runtime_view_from_runtime(runtime: &WorkerSessionProjection) -> Ca
 
 /// The key of a Claude card runtime's `handle_state_json` that holds the first token
 /// `claude --version` printed when its child was started (#2516). A Claude card runtime carries no
-/// harness snapshot, so this is the only key its document has.
+/// harness snapshot; its document may also hold the scheduler's `timeout_cleanup` marker (a task
+/// worker's), which the version write keeps.
 pub const CLAUDE_VERSION_STATE_KEY: &str = "claude_version";
 
 /// The Claude version a Claude card runtime's child was started on, when one was recorded.

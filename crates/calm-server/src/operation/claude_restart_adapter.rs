@@ -245,9 +245,10 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         // from a hook payload, so it must stay the option's value, never be read as another
         // option (#2516).
         let is_worker = card_is_worker_spawn_target_tx(tx, &card_id).await?;
+        let claude_bin = crate::claude_version::resolve_claude_bin(&self.codex.claude_bin);
         let mut command_line = format!(
             "exec {} {} --settings {} --resume={}",
-            shell_single_quote(&self.codex.claude_bin),
+            shell_single_quote(&claude_bin),
             if is_worker {
                 CLAUDE_WORKER_PERMISSION_FLAGS
             } else {
@@ -341,6 +342,7 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             "terminal_id": term.id,
             "settings_path": settings_path,
             "claude_session_id": claude_session_id,
+            "claude_bin": claude_bin,
             "command_line": command_line,
             "mcp_config_path": mcp_config,
             "cwd": term.cwd,
@@ -430,10 +432,11 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             .await?;
         }
 
-        crate::claude_version::record_running_version(
+        crate::claude_version::record_running_version_of_output(
             ctx.repo.as_ref(),
-            &self.codex.claude_bin,
+            output,
             &card_id,
+            &worker_session_id,
         )
         .await;
 

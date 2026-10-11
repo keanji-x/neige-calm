@@ -3037,6 +3037,7 @@ fn claude_payload(boot: &Boot, track_id: &str, prompt: Option<&str>) -> Value {
             card_id: card_id.clone(),
             claude_session_id,
             settings_path,
+            claude_bin: "/bin/true".into(),
             command_line,
             env: json!({
                 "NEIGE_CARD_ID": card_id,

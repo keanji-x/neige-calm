@@ -149,6 +149,26 @@ describe('Claude card Update and Resume', () => {
     expect(action('c1')?.textContent).toBe('Resume');
   });
 
+  it('makes one refresh and one read per wake, however many cards listen', async () => {
+    const port = fakePort(['2.1.259', '2.1.280']);
+    board(port, [
+      { id: 'a', owner: true, status: 'running', version: '2.1.259' },
+      { id: 'b', owner: true, status: 'running', version: '2.1.259' },
+      { id: 'c', owner: true, status: 'exited', version: '2.1.259' },
+    ]);
+    await waitFor(() => expect(action('c')?.textContent).toBe('Resume'));
+    expect(port.installedVersion).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+      window.dispatchEvent(new Event('focus'));
+    });
+    await waitFor(() => expect(action('a')?.textContent).toBe('Update'));
+    expect(action('b')?.textContent).toBe('Update');
+    expect(port.refreshInstalledVersion).toHaveBeenCalledTimes(1);
+    expect(port.installedVersion).toHaveBeenCalledTimes(2);
+  });
+
   it('asks the server to read the CLI again when the page regains focus, then shows Update from its answer', async () => {
     const port = fakePort(['2.1.259', '2.1.280']);
     board(port, [{ id: 'c1', owner: true, status: 'running', version: '2.1.259' }]);

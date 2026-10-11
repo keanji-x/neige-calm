@@ -22,8 +22,38 @@ pub const REFRESH_PERIOD: Duration = Duration::from_secs(10 * 60);
 /// On-demand refreshes (a page regaining focus) run at most once per this interval.
 pub const ON_DEMAND_MIN_INTERVAL: Duration = Duration::from_secs(60);
 
-/// The first token `<claude_bin> --version` prints, or why there is none. The child gets only
-/// `PATH` (a bare `claude` resolves as the card's shell resolves it) and `HOME`.
+/// `claude_bin` as a Claude card runs it and as the probes read it: a name without a `/` is looked up
+/// once here, in the kernel-led PATH a card's shell starts from (the kernel's bin dir, then this
+/// process's PATH), and the path found is what both the card's command line and `--version` run.
+/// Without that, the card's shell would search the proc supervisor's PATH, which this process cannot
+/// see and which can differ from its own. Only the PATH entry is joined; no link is followed. A name
+/// found nowhere is returned as it is, so the spawn fails as it did before.
+pub fn resolve_claude_bin(claude_bin: &str) -> String {
+    if claude_bin.contains('/') {
+        return claude_bin.to_string();
+    }
+    match crate::kernel_bin_path::kernel_led_path() {
+        Ok(kernel_path) => resolve_in(claude_bin, &kernel_path.path),
+        Err(_) => claude_bin.to_string(),
+    }
+}
+
+fn resolve_in(claude_bin: &str, path: &std::ffi::OsStr) -> String {
+    std::env::split_paths(path)
+        .map(|dir| dir.join(claude_bin))
+        .find(|candidate| is_executable_file(candidate))
+        .and_then(|found| found.to_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| claude_bin.to_string())
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}
+
+/// The first token `<claude_bin> --version` prints, or why there is none. `claude_bin` is a
+/// [`resolve_claude_bin`] answer; the child gets only `PATH` and `HOME`.
 pub async fn probe(claude_bin: &str) -> Result<String, String> {
     let env: Vec<(String, OsString)> = ["PATH", "HOME"]
         .into_iter()
@@ -43,13 +73,15 @@ pub async fn probe(claude_bin: &str) -> Result<String, String> {
         .ok_or_else(|| format!("`{claude_bin} --version` printed nothing"))
 }
 
-/// Record on Claude card `card_id`'s active runtime the version its child is about to start on.
-/// Run just before the spawn, so the status write that follows it carries the value to readers.
-/// A probe or write failure is logged and records nothing: the spawn never waits on it to fail.
+/// Record on Claude card runtime `worker_session_id` the version of `claude_bin` (the binary its
+/// command line runs) just before its child starts, so the status write that follows carries the
+/// value to readers. The spawn waits for this probe, at most `VERSION_TIMEOUT`; a probe or write
+/// failure is logged, records nothing and does not fail the spawn.
 pub async fn record_running_version(
     repo: &dyn crate::db::RouteRepo,
     claude_bin: &str,
     card_id: &str,
+    worker_session_id: &str,
 ) {
     let version = match probe(claude_bin).await {
         Ok(version) => version,
@@ -58,34 +90,49 @@ pub async fn record_running_version(
             return;
         }
     };
-    let card = card_id.to_string();
+    let id = worker_session_id.to_string();
     let written = crate::db::write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
-            let Some(active) =
-                crate::db::sqlite::session_projection_active_for_card_tx(tx, &card).await?
-            else {
-                return Ok(false);
-            };
-            let mut state = match active.handle_state_json {
+            let mut state = match crate::db::sqlite::session_handle_state_by_id_tx(tx, &id).await? {
                 Some(Value::Object(state)) => state,
                 _ => Map::new(),
             };
             state.insert(CLAUDE_VERSION_STATE_KEY.into(), Value::String(version));
-            Ok(crate::db::sqlite::session_set_handle_state_tx(
-                tx,
-                &active.id,
-                Some(Value::Object(state)),
+            Ok(
+                crate::db::sqlite::session_set_handle_state_tx(tx, &id, Some(Value::Object(state)))
+                    .await?,
             )
-            .await?)
         })
     })
     .await;
     match written {
         Ok(true) => {}
-        Ok(false) => tracing::warn!(card_id, "claude version not recorded: no active runtime"),
+        Ok(false) => tracing::warn!(
+            card_id,
+            "claude version not recorded: the runtime has ended"
+        ),
         Err(error) => {
             tracing::warn!(card_id, %error, "claude version not recorded for this child");
         }
+    }
+}
+
+/// [`record_running_version`] for a spawn whose prepare stored the resolved binary as `claude_bin`
+/// in its output. An operation prepared before that key existed records nothing.
+pub async fn record_running_version_of_output(
+    repo: &dyn crate::db::RouteRepo,
+    output: &crate::operation::TxOutput,
+    card_id: &str,
+    worker_session_id: &str,
+) {
+    match output.data.get("claude_bin").and_then(Value::as_str) {
+        Some(claude_bin) => {
+            record_running_version(repo, claude_bin, card_id, worker_session_id).await;
+        }
+        None => tracing::warn!(
+            card_id,
+            "claude version not recorded: the spawn names no binary"
+        ),
     }
 }
 
@@ -118,7 +165,7 @@ impl InstalledClaudeVersion {
     /// Run `--version` now and keep its answer; a failure keeps the last one.
     pub async fn refresh(&self) {
         let _serial = self.refresh_serial.lock().await;
-        match probe(&self.claude_bin).await {
+        match probe(&resolve_claude_bin(&self.claude_bin)).await {
             Ok(version) => *self.version.lock().expect("installed version lock") = Some(version),
             Err(error) => {
                 tracing::warn!(%error, "installed claude version not refreshed; keeping the last one")
@@ -214,6 +261,18 @@ mod tests {
         answer(dir.path(), "2.1.280 (Claude Code)", 0);
         cache.refresh().await;
         assert_eq!(cache.installed().as_deref(), Some("2.1.280"));
+    }
+
+    #[test]
+    fn a_bare_name_resolves_to_the_first_executable_on_the_path_and_a_path_is_kept() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        std::fs::write(first.path().join("claude"), "not executable").unwrap();
+        let bin = stand_in(second.path());
+        let path = std::env::join_paths([first.path(), second.path()]).unwrap();
+        assert_eq!(resolve_in("claude", &path), bin.display().to_string());
+        assert_eq!(resolve_in("no-such-claude", &path), "no-such-claude");
+        assert_eq!(resolve_claude_bin("/opt/claude"), "/opt/claude");
     }
 
     /// The time seam is the `now` the route passes in: no sleeps.

@@ -34,10 +34,15 @@ export type ClaudeCard = Readonly<{
 /** Lowercase to match the terminal card's own `'terminal'` fallback; `LetterAvatar` lowercases the title itself before picking the avatar colour. */
 const CLAUDE_FALLBACK_TITLE = 'claude';
 
-/** One server answer every Claude card shares; refetched after an on-demand refresh, never on its own. */
+/** One server answer every Claude card shares. */
 const INSTALLED_VERSION_KEY = Object.freeze(['claude', 'installed-version'] as const);
-/** One on-demand refresh at a time across the cards: concurrent wakes join the one in flight. */
-const REFRESH_KEY = Object.freeze(['claude', 'installed-version', 'refresh'] as const);
+/** One wake's refresh-then-read across all the cards: a card that wakes while it runs joins it. */
+const WAKE_KEY = Object.freeze(['claude', 'installed-version', 'wake'] as const);
+/**
+ * The server reads the CLI every 10 minutes on its own; a page that stays focused re-reads its cached answer as often.
+ * The read runs no CLI.
+ */
+const INSTALLED_VERSION_REREAD_MS = 10 * 60 * 1000;
 
 const ACTION_LABEL = Object.freeze({ update: 'Update', resume: 'Resume' } satisfies Record<ClaudeCardAction, string>);
 const PENDING_LABEL = Object.freeze({ update: 'Updating…', resume: 'Resuming…' } satisfies Record<ClaudeCardAction, string>);
@@ -55,21 +60,26 @@ export function ClaudeCardView(props: CardComponentProps<ClaudeCard>) {
   });
 }
 
-/** The page regained focus or became visible: ask the server to read the CLI again, then read its answer. */
+/**
+ * The page regained focus or became visible: ask the server to read the CLI again, then read its answer. Every card
+ * listens, and one event reaches them all at once: the whole sequence is one shared fetch, so a wake is one refresh and
+ * one read however many cards there are.
+ */
 function useRefreshOnWake(port: ClaudeCardPort): void {
   const client = useQueryClient();
   useEffect(() => {
     const wake = () => {
       if (document.visibilityState === 'hidden') return;
       void client.fetchQuery({
-        queryKey: REFRESH_KEY,
-        queryFn: async () => { await port.refreshInstalledVersion(); return null; },
+        queryKey: WAKE_KEY,
+        queryFn: async () => {
+          await port.refreshInstalledVersion();
+          await client.invalidateQueries({ queryKey: INSTALLED_VERSION_KEY, exact: true });
+          return null;
+        },
         staleTime: 0,
         retry: false,
-      }).then(
-        () => client.invalidateQueries({ queryKey: INSTALLED_VERSION_KEY, exact: true }),
-        () => undefined,
-      );
+      }).catch(() => undefined);
     };
     window.addEventListener('focus', wake);
     document.addEventListener('visibilitychange', wake);
@@ -85,6 +95,7 @@ function ClaudeCardActions({ card, port }: { card: ClaudeCard; port: ClaudeCardP
     queryKey: INSTALLED_VERSION_KEY,
     queryFn: ({ signal }) => port.installedVersion(signal),
     staleTime: Infinity, retry: false, refetchOnWindowFocus: false,
+    refetchInterval: INSTALLED_VERSION_REREAD_MS,
   });
   useRefreshOnWake(port);
   const feedback = useOperationFeedback();
