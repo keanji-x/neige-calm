@@ -13,8 +13,9 @@ pub enum Error {
         source: std::io::Error,
     },
     /// A live Chrome holds the profile's `SingletonLock`: the new process
-    /// handed its command line to that holder and exited.
-    #[error("the profile {profile} is held by another running Chrome (exit {status})")]
+    /// handed its command line to that holder and exited. Reported only for
+    /// a launch without a wrapper, whose exit code is Chrome's own.
+    #[error("the profile {profile} is held by another running Chrome ({status})")]
     ProfileBusy {
         profile: PathBuf,
         status: ExitStatus,

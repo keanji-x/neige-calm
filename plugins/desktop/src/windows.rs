@@ -180,13 +180,22 @@ impl Windows {
 }
 
 /// `pid` and its ancestors, nearest first, up to but not including init.
+/// The walk stops at a "parent" that started after its child: the real
+/// parent exited between the two reads and its pid was reused.
 fn lineage(pid: i32) -> Vec<Proc> {
-    let mut chain = Vec::new();
+    lineage_from(pid, stat)
+}
+
+fn lineage_from(pid: i32, stat: impl Fn(u32) -> Option<(u32, u64)>) -> Vec<Proc> {
+    let mut chain: Vec<Proc> = Vec::new();
     let mut next = u32::try_from(pid).ok();
     while let Some(pid) = next.filter(|&p| p > 1 && chain.len() < MAX_LINEAGE) {
         let Some((parent, start)) = stat(pid) else {
             break;
         };
+        if chain.last().is_some_and(|child| start > child.start) {
+            break;
+        }
         chain.push(Proc { pid, start });
         next = Some(parent);
     }
@@ -289,6 +298,74 @@ mod tests {
             .collect();
         assert_eq!(owned, [true, false]);
         assert!(windows.list(None).iter().all(|(_, owned)| !owned));
+    }
+
+    /// `start` is the start time (field 22), not the parent pid or the thread
+    /// count: two children of one parent, started apart, differ in it.
+    #[test]
+    fn a_process_identity_carries_its_start_time() {
+        let spawn = || {
+            std::process::Command::new("sleep")
+                .arg("30")
+                .spawn()
+                .unwrap()
+        };
+        let mut first = spawn();
+        std::thread::sleep(Duration::from_millis(50));
+        let mut second = spawn();
+        let (a, b) = (Proc::of(first.id()), Proc::of(second.id()));
+        let parent = stat(first.id()).map(|(ppid, _)| ppid);
+        for child in [&mut first, &mut second] {
+            child.kill().unwrap();
+            child.wait().unwrap();
+        }
+        let (a, b) = (a.unwrap(), b.unwrap());
+        assert!(a.start > 0 && a.start < b.start, "{a:?} {b:?}");
+        assert_eq!(parent, Some(std::process::id()));
+        // Neither the parent pid nor the thread count (one for `sleep`).
+        assert!(
+            a.start != u64::from(std::process::id()) && a.start != 1,
+            "{a:?}"
+        );
+    }
+
+    /// A parent pid read after the real parent exited can name a newer
+    /// process: the walk stops there instead of recording it.
+    #[test]
+    fn the_walk_stops_at_a_parent_younger_than_its_child() {
+        // pid -> (ppid, start): 30's real parent 20 exited, and 20 now names
+        // a process started after 30.
+        let table = |pid: u32| match pid {
+            30 => Some((20, 500)),
+            20 => Some((10, 900)),
+            10 => Some((1, 100)),
+            _ => None,
+        };
+        assert_eq!(
+            lineage_from(30, table),
+            [Proc {
+                pid: 30,
+                start: 500
+            }]
+        );
+        let honest = |pid: u32| match pid {
+            30 => Some((20, 500)),
+            20 => Some((1, 400)),
+            _ => None,
+        };
+        assert_eq!(
+            lineage_from(30, honest),
+            [
+                Proc {
+                    pid: 30,
+                    start: 500
+                },
+                Proc {
+                    pid: 20,
+                    start: 400
+                }
+            ]
+        );
     }
 
     /// A window whose recorded ancestor has exited is not the app's when a

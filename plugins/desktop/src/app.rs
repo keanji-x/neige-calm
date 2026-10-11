@@ -94,25 +94,14 @@ pub struct ChromeSetup {
 }
 
 impl ChromeSetup {
-    /// Chrome's launch inside a bwrap sandbox that shows it only the
-    /// directory holding its binary (read-only), its profile and home
-    /// (read-write), the compositor's Wayland socket, and the sandbox's
-    /// system base and `/etc` allowlist. It shares the host's network.
-    /// `PATH` inside is `/usr/bin`; the rest of the environment is
-    /// chrome-control's allowlist.
-    ///
-    /// The profile and home are made private (0700) first, created if
-    /// missing: bwrap binds only paths that exist.
-    fn launch_config(&self) -> Result<LaunchConfig, String> {
-        for dir in [&self.profile_dir, &self.home_dir] {
-            crate::layout::private_dir(dir)
-                .map_err(|e| format!("prepare {}: {e}", dir.display()))?;
-        }
-        // The real binary, so its directory holds Chrome's files rather than
-        // a link to them.
+    /// The real Chrome binary (links resolved), so its directory holds
+    /// Chrome's files rather than a link to them. That directory is shown to
+    /// Chrome, so it may not be, or contain, the plugin's data directory or
+    /// `user_home`. Checked at `initialize` and again at every launch.
+    pub fn install(&self) -> Result<PathBuf, String> {
         let binary = std::fs::canonicalize(&self.binary)
             .map_err(|e| format!("chrome_binary {}: {e}", self.binary.display()))?;
-        let (Some(chrome_dir), Some(name)) = (binary.parent(), binary.file_name()) else {
+        let Some(chrome_dir) = binary.parent().filter(|_| binary.file_name().is_some()) else {
             return Err(format!("chrome_binary {} names no file", binary.display()));
         };
         for held in std::iter::once(&self.data_dir).chain(&self.user_home) {
@@ -128,6 +117,27 @@ impl ChromeSetup {
                 ));
             }
         }
+        Ok(binary)
+    }
+
+    /// Chrome's launch inside a bwrap sandbox that shows it only the
+    /// directory holding its binary (read-only), its profile and home
+    /// (read-write), the compositor's Wayland socket, and the sandbox's
+    /// system base and `/etc` allowlist. It shares the host's network.
+    /// `PATH` inside is `/usr/bin`; the rest of the environment is
+    /// chrome-control's allowlist.
+    ///
+    /// The profile and home are made private (0700) first, created if
+    /// missing: bwrap binds only paths that exist.
+    fn launch_config(&self) -> Result<LaunchConfig, String> {
+        for dir in [&self.profile_dir, &self.home_dir] {
+            crate::layout::private_dir(dir)
+                .map_err(|e| format!("prepare {}: {e}", dir.display()))?;
+        }
+        let binary = self.install()?;
+        let (Some(chrome_dir), Some(name)) = (binary.parent(), binary.file_name()) else {
+            unreachable!("install() returns a file with a parent directory");
+        };
         let socket = self
             .wayland_socket
             .file_name()
@@ -251,10 +261,10 @@ async fn run(
             () = shutdown.cancelled() => break,
             status = exited(&chrome) => {
                 tracing::info!(?status, "Chrome exited; the app is not running");
-                // Dropping a handle whose browser exited reaps it; its group
-                // is gone with it.
-                chrome = None;
+                // Unpublish the pid first: dropping the handle reaps the
+                // process, after which its pid may name another one.
                 state.send_replace(AppState { pid: None });
+                chrome = None;
             }
             request = inbox.recv() => match request {
                 None => break,
@@ -463,7 +473,7 @@ mod tests {
             size: (1280, 800),
             proxy_server: None,
         };
-        // In the home itself, in an ancestor of the data dir, and at the root.
+        // In the home itself, and in an ancestor of the data dir.
         std::fs::write(home.join("chrome"), b"").unwrap();
         std::fs::write(home.join("plugins/chrome"), b"").unwrap();
         for binary in [home.join("chrome"), home.join("plugins/chrome")] {
