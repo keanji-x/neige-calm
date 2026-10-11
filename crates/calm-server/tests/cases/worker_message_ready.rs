@@ -11,7 +11,7 @@ use super::worker_message::{
     wait_for_reads, written,
 };
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The Claude worker's `UserPromptSubmit` hook for its own session, through the production ingest
 /// route: what Claude posts once it submits the task prompt.
@@ -40,13 +40,20 @@ pub(crate) async fn agent_session(h: &Harness, worker: &Worker) -> String {
 
 fn not_started(attempt: &str) -> String {
     format!(
-        "attempt {attempt} is running, but its worker has not started its task yet; its agent may \
-         still be on a startup screen, which the worker watcher handles. Read its screen or wait, \
-         then send again"
+        "attempt {attempt} is running, but its worker has not started its task: its agent is \
+         likely held on a startup screen, which the worker watcher clears and reports to you. Send \
+         again after its report"
     )
 }
 
+/// A refusal is answered once the call waited for the worker's start: keep that wait short.
+fn short_start_wait(h: &Harness) {
+    h.interaction()
+        .set_message_start_wait(Duration::from_millis(300));
+}
+
 async fn assert_not_started(h: &Harness, f: &Fixture, key: &str) {
+    short_start_wait(h);
     let reply = message(h, json!({"attempt_id":f.worker.task}), key, "x").await;
     assert_refusal(
         &reply,
@@ -64,7 +71,12 @@ async fn post_hook(h: &Harness, worker: &Worker, body: Value) -> axum::http::Sta
 async fn message_to_claude_worker_before_prompt_submit_is_refused() {
     let h = Harness::start().await;
     let f = unstarted(&h, "claude", true, false).await;
+    let sent = Instant::now();
     assert_not_started(&h, &f, "early").await;
+    assert!(
+        sent.elapsed() >= Duration::from_millis(300),
+        "refused after the wait"
+    );
     // By terminal id too: one rule per resolution.
     let reply = message(&h, json!({"terminal_id":f.worker.terminal}), "early-t", "x").await;
     assert_refusal(&reply, -32403, Some("worker_starting"), "has not started");
@@ -107,6 +119,33 @@ async fn message_to_claude_worker_after_prompt_submit_is_written() {
         wait_for_reads(&f.log, 1).await,
         vec![expected(&f.worker.task, text)],
         "only the message reached the PTY"
+    );
+    stop(&h, &f.worker).await;
+}
+
+/// #2554: a message to a starting worker waits inside the call and is written once the worker
+/// starts; the Planner does not guess when to send again.
+#[tokio::test]
+async fn message_waits_for_its_worker_to_start() {
+    let h = Harness::start().await;
+    let f = unstarted(&h, "claude", true, false).await;
+    let text = "narrow the scope to the parser";
+    let delay = Duration::from_millis(800);
+    let sent = Instant::now();
+    let (reply, ()) = tokio::join!(
+        message(&h, json!({"attempt_id":f.worker.task}), "m", text),
+        async {
+            tokio::time::sleep(delay).await;
+            assert!(reads(&f.log).is_empty(), "{:?}", reads(&f.log));
+            prompt_submitted(&h, &f.worker).await;
+        }
+    );
+    written(&reply);
+    assert!(sent.elapsed() >= delay, "{:?}", sent.elapsed());
+    assert_eq!(
+        wait_for_reads(&f.log, 1).await,
+        vec![expected(&f.worker.task, text)],
+        "written once, after the start"
     );
     stop(&h, &f.worker).await;
 }

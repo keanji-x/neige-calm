@@ -12,7 +12,7 @@ use calm_server::model::TaskStatus;
 use calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR;
 
 use crate::git_delivery::Fx;
-use crate::mcp_track_report::{planner_identity, upsert_block};
+use crate::mcp_track_report::{call_tool, planner_identity, upsert_block};
 use crate::task_recovery::{current, declare};
 use crate::track_worker_cwd::{
     Started, candidate_commit, declare_task, delivery_outcome, lease_state, wait_running,
@@ -161,6 +161,88 @@ async fn a_reader_waits_for_a_running_writer_and_its_delivery() {
     assert_eq!(
         crate::git_delivery::git(&reader.cwd, &["rev-parse", "HEAD"]),
         commit
+    );
+}
+
+/// #2554, the 4140 case: a writer waiting for the checkout has no worker yet. The Planner's message
+/// and read by its attempt are refused with `task_pending` and the scheduler's reason, and its task
+/// block still takes the edit the refusal points to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_task_waiting_for_the_checkout_refuses_terminal_tools_with_its_reason() {
+    let w = world().await;
+    let fx = &w.fx;
+    let providers = calm_server::provider_registry::WorkerProviderRegistry::for_daemon(
+        &std::sync::Arc::new(calm_server::state::DaemonClient::new_stub()),
+        w.shared.clone(),
+        fx.harness.clone(),
+    );
+    fx.boot
+        .ctx
+        .terminal_interaction
+        .set(std::sync::Arc::new(
+            calm_server::terminal_interaction::TerminalInteraction::new(
+                fx.boot.ctx.repo.clone(),
+                calm_server::terminal_renderer::TerminalRendererRegistry::new(),
+                providers,
+            ),
+        ))
+        .unwrap_or_else(|_| panic!("terminal interaction already set"));
+    // The terminal tools authorize the caller by its card's live session, as a running Planner's.
+    let planner = planner_identity(&fx.boot);
+    sqlx::query("UPDATE cards SET session_id=?1 WHERE id=?2")
+        .bind(&planner.session_id)
+        .bind(&planner.card_id)
+        .execute(&fx.pool())
+        .await
+        .unwrap();
+    declare_task(fx, "w1", json!({})).await;
+    wait_running(fx, "w1").await;
+    let mut w2 = json!({
+        "key": "w2", "kind": "codex", "goal": "work on w2",
+        "declared_by": PLANNER_DECLARATION_AUTHOR, "ready": true, "no_gate_reason": "fixture",
+    });
+    let (block, _) = declare(&fx.boot, w2.clone()).await;
+    assert_eq!(pending_message(fx, "w2").await, IN_USE);
+    let attempt = current(&fx.boot, "w2").await.id;
+    let text = format!(
+        "attempt {attempt} (task w2) has not started ({IN_USE}); it has no worker yet. To change \
+         what it will do, edit its task block: its worker starts with it"
+    );
+    for (tool, args) in [
+        (
+            "neige_terminal_input",
+            json!({"attempt_id":attempt,"idempotency_key":"m",
+                "action":{"type":"message","text":"narrow the scope"}}),
+        ),
+        (
+            "neige_terminal_read",
+            json!({"attempt_id":attempt,"wait_ms":50}),
+        ),
+    ] {
+        let error = call_tool(&fx.boot, tool, planner.clone(), args)
+            .await
+            .expect_err(tool);
+        assert_eq!(error.code, -32403, "{tool}: {error:?}");
+        assert_eq!(error.message, format!("{tool}: {text}"));
+        assert_eq!(
+            error.data,
+            Some(json!({"refusal":"task_pending"})),
+            "{tool}"
+        );
+    }
+    // The edit the refusal points to: the same block, a new goal, taken while still pending.
+    w2["goal"] = json!("narrow the scope");
+    upsert_block(
+        &fx.boot,
+        planner,
+        json!({"id": block, "kind": "task", "payload": w2}),
+    )
+    .await
+    .unwrap();
+    let edited = current(&fx.boot, "w2").await;
+    assert_eq!(
+        (edited.id, edited.status, edited.goal.as_str()),
+        (attempt, TaskStatus::Pending, "narrow the scope")
     );
 }
 

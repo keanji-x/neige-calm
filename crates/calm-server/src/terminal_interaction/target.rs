@@ -2,6 +2,7 @@
 use super::*;
 use crate::model::{Task, TaskKind, TaskStatus};
 use calm_exec::{BoundKeys, TuiInput};
+use calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE;
 use calm_types::worker::{WorkerProviderKind, WorkerSessionState};
 use serde::Serialize;
 
@@ -66,6 +67,45 @@ pub(super) fn refused(refusal: &'static str, message: String) -> InputRefused {
     InputRefused { refusal, message }
 }
 
+/// What a task's lifecycle answers a terminal tool whose task has no worker taking input (#2493,
+/// #2554): one table whether or not a worker terminal resolved, decided from the task row alone.
+/// `blocking` is a pending task's reason, the one `neige_task_ls` shows, when it was read.
+pub(super) fn lifecycle_refusal(
+    task: &TaskBinding,
+    status: Option<TaskStatus>,
+    blocking: Option<&str>,
+) -> InputRefused {
+    let (attempt, key) = (&task.attempt_id, &task.task_key);
+    let label = status.map_or("unknown", TaskStatus::wire_label);
+    let parked = |next: &str| {
+        refused(
+            "worker_parked",
+            format!("attempt {attempt} (task {key}) is {label}; its worker takes no input. {next}"),
+        )
+    };
+    match status {
+        // A pending row still takes declaration edits; one that races its dispatch is reported
+        // `declaration_changed_in_flight`.
+        Some(TaskStatus::Pending) => refused(
+            "task_pending",
+            format!(
+                "attempt {attempt} (task {key}) has not started{}; it has no worker yet. \
+                 To change what it will do, edit its task block: its worker starts with it",
+                blocking.map_or(String::new(), |reason| format!(" ({reason})"))
+            ),
+        ),
+        Some(TaskStatus::Dispatched | TaskStatus::Running) => refused(
+            "worker_starting",
+            format!("attempt {attempt} is {label}; its worker is starting. Read again, then send."),
+        ),
+        Some(TaskStatus::Verifying) => parked("Wait for its gate."),
+        Some(TaskStatus::Canceled) => parked("Declare a new task."),
+        Some(TaskStatus::Done | TaskStatus::Failed) | None => {
+            parked("Declare a new task for a fresh worker.")
+        }
+    }
+}
+
 pub(crate) struct Resolved {
     pub binding: Binding,
     /// The write rule: the card's current worker session holds live authority and its task (if
@@ -81,44 +121,24 @@ pub(crate) struct Resolved {
 impl Resolved {
     /// The write rule's refusal on a task worker (#2493): every agent write path (`text`,
     /// `submit`, `key`, `sequence`, a claim, `message`) refuses a worker whose task is not running,
-    /// or whose session ended, with this one typed refusal. `None` while writes are allowed and
-    /// for a task-less terminal (its ended session keeps the untyped refusal).
+    /// or whose session ended, with one typed refusal. `None` while writes are allowed and for a
+    /// task-less terminal (its ended session keeps the untyped refusal).
     pub(super) fn write_refusal(&self) -> Option<InputRefused> {
         if self.write_allowed {
             return None;
         }
         let task = self.binding.task.as_ref()?;
-        let attempt = &task.attempt_id;
-        let parked = |next: &str| {
-            let status = self.task_status.map_or("unknown", TaskStatus::wire_label);
-            refused(
-                "worker_parked",
-                format!(
-                    "attempt {attempt} (task {}) is {status}; its worker takes no input. {next}",
-                    task.task_key
-                ),
-            )
-        };
         Some(match self.task_status {
             Some(TaskStatus::Running) => refused(
                 "worker_ended",
                 format!(
-                    "the worker of attempt {attempt} has ended ({}); this call wrote nothing. \
+                    "the worker of attempt {} has ended ({}); this call wrote nothing. \
                      Declare a new task.",
+                    task.attempt_id,
                     self.session_state.as_db_str()
                 ),
             ),
-            Some(TaskStatus::Pending | TaskStatus::Dispatched) => refused(
-                "worker_starting",
-                format!(
-                    "attempt {attempt} is dispatched; its worker is starting. Read again, then send."
-                ),
-            ),
-            Some(TaskStatus::Verifying) => parked("Wait for its gate."),
-            Some(TaskStatus::Canceled) => parked("Declare a new task."),
-            Some(TaskStatus::Done | TaskStatus::Failed) | None => {
-                parked("Declare a new task for a fresh worker.")
-            }
+            status => lifecycle_refusal(task, status, None),
         })
     }
     /// The write rule as an error: the typed refusal on a task worker, the untyped one on a
@@ -162,6 +182,38 @@ impl TerminalInteraction {
         );
         Ok(task)
     }
+    /// The worker card of an attempt, or the refusal its task row gives before any terminal lookup
+    /// (#2554): a pending task, a task that runs as a child Track, or one whose worker card is not
+    /// stamped yet (the scheduler stamps it when the task runs).
+    async fn attempt_worker_card<'t>(
+        repo: &dyn RouteRepo,
+        track: &str,
+        task: &'t Task,
+    ) -> Result<&'t str> {
+        let binding = TaskBinding {
+            attempt_id: task.id.clone(),
+            task_key: task.key.clone(),
+        };
+        let refusal = if task.status == TaskStatus::Pending {
+            let view = crate::task_recovery::task_recovery_view(repo, track, &task.key).await?;
+            let blocking = view.current.and_then(|current| current.blocking_reason);
+            lifecycle_refusal(&binding, Some(task.status), blocking.as_deref())
+        } else if task.spawn == TASK_CHILD_TRACK_ROUTE {
+            refused(
+                "task_in_child_track",
+                format!(
+                    "attempt {} (task {}) runs as a child Track; its workers belong to that \
+                     Track, not to yours",
+                    task.id, task.key
+                ),
+            )
+        } else if let Some(card) = task.worker_card_id.as_deref() {
+            return Ok(card);
+        } else {
+            lifecycle_refusal(&binding, Some(task.status), None)
+        };
+        Err(refusal.into())
+    }
     /// The one resolution every caller-facing path takes: show, read, control, input and the
     /// queued write's re-check (`check_binding`). An Assistant reaches only a terminal bound to a
     /// current task attempt (#2492): a manual Terminal card or a task-less agent card runs outside
@@ -187,31 +239,23 @@ impl TerminalInteraction {
         track: &str,
         target: &Target,
     ) -> Result<Resolved> {
-        let requested_task = match target {
-            Target::Attempt(id) => Some(Self::current_task(repo, track, id).await?),
-            Target::Terminal(_) => None,
-        };
-        let terminal = match target {
-            Target::Terminal(id) => repo.terminal_get(id).await?,
-            Target::Attempt(_) => {
-                let card = requested_task
-                    .as_ref()
-                    .and_then(|task| task.worker_card_id.as_ref())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "task has no worker terminal yet (or runs in a child Track)"
-                        )
-                    })?;
-                repo.terminal_get_by_card(card).await?
+        let (requested_task, terminal) = match target {
+            Target::Attempt(id) => {
+                let task = Self::current_task(repo, track, id).await?;
+                let card = Self::attempt_worker_card(repo, track, &task).await?;
+                let terminal = repo.terminal_get_by_card(card).await?;
+                (Some(task), terminal)
             }
-        }
-        // An existing row is gone only with its card or because the sweeper reaped residue; an
-        // exited Terminal-card terminal stays.
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "terminal not found: unknown id, deleted with its card, or reaped as residue"
-            )
-        })?;
+            Target::Terminal(id) => (None, repo.terminal_get(id).await?),
+        };
+        let terminal = terminal
+            // An existing row is gone only with its card or because the sweeper reaped residue; an
+            // exited Terminal-card terminal stays.
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "terminal not found: unknown id, deleted with its card, or reaped as residue"
+                )
+            })?;
         let card = repo
             .card_get(terminal.card_id.as_str())
             .await?

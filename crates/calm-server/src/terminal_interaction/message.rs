@@ -4,7 +4,9 @@
 //! scope re-runs the message rule and the terminal checks when the writer admits the write. The
 //! replay contract and the write leg are typed input's ([`super::write_leg`]). A worker takes a
 //! message only from when its provider declares it ready ([`MessageReady`], #2532); typed keys
-//! keep their own rule, since the worker watcher answers a startup screen with them.
+//! keep their own rule, since the worker watcher answers a startup screen with them. A message to
+//! a starting worker waits for it inside the call (#2554): the kernel holds the readiness fact, so
+//! the Planner never has to guess when to send again.
 use super::client::InputRole;
 use super::target::{InputRefused, Resolved, refused};
 use super::write_leg::{Admission, Delivered, WriteRule};
@@ -120,10 +122,25 @@ async fn message_check(
 }
 
 /// A running worker whose agent has not submitted its task prompt: Enter may answer a startup
-/// screen instead (a folder-trust dialog's "No, exit", #2532).
-const NOT_STARTED: &str = "attempt {attempt} is running, but its worker has not started its task \
-     yet; its agent may still be on a startup screen, which the worker watcher handles. Read its \
-     screen or wait, then send again";
+/// screen instead (a folder-trust dialog's "No, exit", #2532). Answered once the call waited
+/// [`START_WAIT`] for it, so the agent is likely held on a startup screen.
+const NOT_STARTED: &str = "attempt {attempt} is running, but its worker has not started its task: \
+     its agent is likely held on a startup screen, which the worker watcher clears and reports to \
+     you. Send again after its report";
+
+/// How long a message waits for a starting worker. On 4140 a task ran within 1.7 s of its
+/// dispatch, and a Claude worker with no startup screen submitted its task prompt 1.3–3.1 s after
+/// it ran (#2554); a startup screen holds it until the worker watcher acts (60 s of quiet).
+const START_WAIT: Duration = Duration::from_secs(10);
+/// How often the waiting call re-runs its admission.
+const START_POLL: Duration = Duration::from_millis(200);
+
+/// A refusal the worker's start lifts: the waiting call tries again.
+fn starting(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<InputRefused>()
+        .is_some_and(|refused| refused.refusal == "worker_starting")
+}
 
 /// Readable (the model view captures, as `observable`), not exited, and bracketed paste on: what
 /// the write needs from the terminal.
@@ -194,19 +211,27 @@ impl TerminalInteraction {
             crate::routes::idempotency_key::stable_payload_hash(&json!({"action":action}))?;
         // A replay returns its receipt before the message rule and the terminal check: the worker
         // may have reported or left paste mode since the original write.
-        let admitted = match self
-            .admit_write(
-                identity,
-                target,
-                &key,
-                &fingerprint,
-                observation_wait.clone(),
-                WriteRule::Message,
-            )
-            .await?
-        {
-            Admission::Replayed(replayed) => return Ok(replayed),
-            Admission::New(admitted) => admitted,
+        // A starting worker is waited for: each try re-runs the whole admission, replay first.
+        let deadline = Instant::now() + self.start_wait();
+        let admitted = loop {
+            match self
+                .admit_write(
+                    identity,
+                    target,
+                    &key,
+                    &fingerprint,
+                    observation_wait.clone(),
+                    WriteRule::Message,
+                )
+                .await
+            {
+                Ok(Admission::Replayed(replayed)) => return Ok(replayed),
+                Ok(Admission::New(admitted)) => break admitted,
+                Err(error) if starting(&error) && Instant::now() < deadline => {
+                    tokio::time::sleep(START_POLL).await;
+                }
+                Err(error) => return Err(error),
+            }
         };
         let (resolved, client) = (&admitted.resolved, &admitted.client);
         Self::ensure_writable(client)?;
@@ -232,7 +257,10 @@ impl TerminalInteraction {
             match outcome {
                 Delivered::Written => {
                     receipt["outcome"] = json!("written");
-                    receipt["next"] = json!("read the application result");
+                    receipt["next"] = json!(
+                        "the worker takes it in its current or next turn; its screen \
+                         (neige_terminal_read) and its report show what it did"
+                    );
                 }
                 Delivered::Refused(reason) => {
                     receipt["outcome"] = json!("refused");
@@ -264,6 +292,27 @@ impl TerminalInteraction {
         Ok(self
             .with_observation(identity, client, result, observation_wait, baseline)
             .await)
+    }
+    /// How long a message waits for a starting worker ([`START_WAIT`]; a test may shorten it).
+    fn start_wait(&self) -> Duration {
+        #[cfg(feature = "fixtures")]
+        if let Some(wait) = *self
+            .message_start_wait
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+        {
+            return wait;
+        }
+        START_WAIT
+    }
+    /// Test seam: how long a message waits for a starting worker.
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub fn set_message_start_wait(&self, wait: Duration) {
+        *self
+            .message_start_wait
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(wait);
     }
     /// The write leg's writer: a kernel-private client that writes once as an Observer. Its scope
     /// admits the physical write only while the message rule and the terminal check still hold.

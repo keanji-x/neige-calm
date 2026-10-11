@@ -297,7 +297,9 @@ Refusals (`-32403` like every terminal runtime failure, agent-commands §9; text
 |---|---|
 | `worker_parked` | `attempt <id> (task <key>) is <status>; its worker takes no input.` + by status: done/failed `Declare a task with "continues": "<key>", or a new task for a fresh worker.`; verifying `Wait for its gate.`; canceled `Declare a new task.` |
 | `worker_ended` | `the worker of attempt <id> has ended (<state>); this call wrote nothing. Declare a new task.` |
-| `worker_starting` | `attempt <id> is dispatched; its worker is starting. Read again, then send.` Running, but a provider declaring `AfterPromptSubmitted` has no persisted `UserPromptSubmit` hook attributed to this worker session (#2532; `message` only, typed keys stay accepted for the worker watcher): `attempt <id> is running, but its worker has not started its task yet; its agent may still be on a startup screen, which the worker watcher handles. Read its screen or wait, then send again` |
+| `worker_starting` | `attempt <id> is <dispatched\|running>; its worker is starting. Read again, then send.` (a dispatched task, or one whose worker card is not stamped yet). Running, but a provider declaring `AfterPromptSubmitted` has no persisted `UserPromptSubmit` hook attributed to this worker session (#2532; `message` only, typed keys stay accepted for the worker watcher): `attempt <id> is running, but its worker has not started its task: its agent is likely held on a startup screen, which the worker watcher clears and reports to you. Send again after its report`. `message` answers either only after waiting up to 10 s inside the call for the worker to start (#2554) |
+| `task_pending` (#2554) | `attempt <id> (task <key>) has not started (<neige_task_ls blocking_reason>); it has no worker yet. To change what it will do, edit its task block: its worker starts with it` |
+| `task_in_child_track` (#2554) | `attempt <id> (task <key>) runs as a child Track; its workers belong to that Track, not to yours` |
 | `binding_changed` | `terminal <id> now serves attempt <new> (was <old>); show and read again.` (extends today's text, `target.rs:256-257`) |
 | `message_unsupported` | `action "message" needs a task worker whose agent declares it (<providers>); terminal <id> runs <provider>. Use "text" or "submit".` |
 | `worker_keys_refused` (was `codex_task_worker_input`) | `a <provider> task worker takes only action "message"; typed keys interrupt its turn without starting one.` |
@@ -307,7 +309,9 @@ Refusals (`-32403` like every terminal runtime failure, agent-commands §9; text
 #1787 becomes "codex Live worker: `message` only"; guide item 2 becomes "correct codex/claude workers
 via `message`" (guides 7,484 of 7,500). **Feature B** = this action; the readback confirms, the #2507
 quiet wake catches a stuck worker. Receipts: `written`, `unknown`, or physical-write `refused` with its
-reason; the typed policy refusals above are -32403 with `data.refusal`.
+reason; the typed policy refusals above are -32403 with `data.refusal`. Since #2554 an attempt with no
+worker card is answered from its task row before any terminal lookup, on `show`, `read`, `control`
+and `input` alike.
 
 ## 5. Continuation (feature A)
 

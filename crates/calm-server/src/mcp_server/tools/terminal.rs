@@ -168,9 +168,9 @@ fn parse<T: serde::de::DeserializeOwned>(args: Value) -> Result<T, RpcError> {
 fn failure(error: impl std::fmt::Display) -> RpcError {
     RpcError::forbidden(error.to_string())
 }
-/// A typed input refusal carries its machine-readable `data.refusal`; invalid message text is
-/// `-32602`.
-fn write_failure(error: anyhow::Error) -> RpcError {
+/// A typed refusal carries its machine-readable `data.refusal` on every terminal tool that takes a
+/// target (#2554); invalid message text is `-32602`.
+fn target_failure(error: anyhow::Error) -> RpcError {
     if let Some(invalid) = error.downcast_ref::<MessageInvalid>() {
         return RpcError::invalid_params(invalid.to_string());
     }
@@ -339,7 +339,7 @@ async fn call(
             let resolved = service
                 .resolve(&identity, &target(args.terminal_id, args.attempt_id)?)
                 .await
-                .map_err(failure)?;
+                .map_err(target_failure)?;
             let summary = format!(
                 "terminal {} resolved available {} controllable {}; details in structuredContent",
                 resolved["terminal_id"].as_str().unwrap_or("null"),
@@ -503,7 +503,7 @@ async fn call(
                     wait,
                 )
                 .await
-                .map_err(failure)?;
+                .map_err(target_failure)?;
             Ok(observation_result(metadata))
         }
         "neige_terminal_control" => {
@@ -530,7 +530,7 @@ async fn call(
                 )
                 .await
                 .map(|receipt| receipt_result(&args.action, receipt))
-                .map_err(write_failure)
+                .map_err(target_failure)
         }
         "neige_terminal_input" => {
             let args: Input = parse(args)?;
@@ -600,7 +600,7 @@ async fn call(
             };
             receipt
                 .map(|receipt| receipt_result("input", receipt))
-                .map_err(write_failure)
+                .map_err(target_failure)
         }
         _ => Err(RpcError::invalid_params("unknown terminal tool")),
     }
