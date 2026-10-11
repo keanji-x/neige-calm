@@ -18,8 +18,10 @@ use tokio::net::UnixListener;
 /// The manifest's `http_socket`.
 pub const HTTP_SOCKET: &str = "http.sock";
 /// How often, and how far apart, binding retries while an older `desktop`
-/// still answers on `http.sock` (a restart overlaps the old process's kill).
-pub const BIND_ATTEMPTS: u32 = 20;
+/// still answers on `http.sock`: a restart overlapping the old process's
+/// kill, or an old process stopping Chrome in order, which keeps answering
+/// until Chrome is gone. Together longer than that stop (`STOP_WAIT`).
+pub const BIND_ATTEMPTS: u32 = 48;
 pub const BIND_BACKOFF: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone)]
@@ -145,6 +147,12 @@ mod tests {
 
     fn mode(path: &Path) -> u32 {
         std::fs::metadata(path).unwrap().mode() & 0o777
+    }
+
+    /// A new desktop keeps waiting through an old one's whole orderly stop.
+    #[test]
+    fn binding_outwaits_an_orderly_stop() {
+        assert!(BIND_BACKOFF * BIND_ATTEMPTS > crate::STOP_WAIT);
     }
 
     #[test]

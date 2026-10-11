@@ -94,12 +94,28 @@ Two host channels remain visible inside:
 **One profile, one Chrome.** Chrome's own profile lock does not work across
 sandboxes: Chrome is pid 2 in each, with a private `/tmp`, so a second
 sandboxed Chrome takes the lock over instead of handing off. What keeps two
-Chromes off the profile is `desktop`: a new process waits until the old
-`http.sock` stops answering, and the old sandbox dies with the old process.
+Chromes off the profile is `desktop`'s `http.sock`: a new process does not
+bind it, and so does not start, while it still answers (it waits up to 12 s,
+longer than an orderly stop, then fails its start). How long the old one
+keeps answering depends on how it stops:
+
+- stdin EOF or SIGTERM: until `Chrome::stop` has returned. When Chrome closed
+  on request its sandbox is empty by then; when the stop had to signal the
+  sandbox, the kernel finishes emptying it within milliseconds (1.8 ms
+  measured), long before a new `desktop` has even answered its `initialize`;
+- SIGKILL (the kernel's plugin stop, disable and reload): until the process
+  dies; its sandbox is gone about 50 ms later. A new `desktop` first answers
+  its `initialize` and launches Chrome only on the next demand, so an overlap
+  needs that demand within those milliseconds. It is unlikely, not excluded.
+
 Never run two `desktop` processes on one data directory by hand.
 
 Keep Chrome in a directory of its own: everything beside `chrome_binary` is
-visible to Chrome.
+visible to Chrome. The plugin refuses a `chrome_binary` whose directory is or
+contains its data directory or the service user's `HOME`: `initialize` fails
+with "Install Chrome in a directory of its own", and every launch checks it
+again. Those two are the only directories it checks; any other files beside
+Chrome are shown to it.
 
 Requirements:
 
@@ -111,7 +127,8 @@ Requirements:
   lets bwrap create them);
 - a merged-`/usr` host (`/bin`, `/lib` and `/lib64` link into `/usr`).
 
-It fails closed. Without an executable `bwrap_binary` the plugin refuses its
+It fails closed. Without an executable `bwrap_binary`, or with a
+`chrome_binary` in a refused directory (above), the plugin refuses its
 `initialize`, so the kernel reports it failed to start. A sandbox that cannot
 start (no user namespaces, for example) makes `page_open` and the stream fail
 with "Chrome exited during launch"; Chrome never runs in its place.

@@ -499,3 +499,21 @@ async fn a_missing_wrapper_is_a_spawn_error_naming_it() {
         other => panic!("expected Spawn, got {:?}", other.map(|c| c.pid())),
     }
 }
+
+/// Behind a wrapper the exit code is the wrapper's, which proves no handoff
+/// to a profile holder: an early exit 0 or 21 is `LaunchExited`.
+#[tokio::test]
+async fn a_wrapped_early_exit_is_never_profile_busy() {
+    for code in [0, 21] {
+        let dirs = dirs(&format!("exit:{code}"));
+        let mut config = config(&dirs);
+        config.wrapper = Some(Wrapper {
+            program: "/usr/bin/env".into(),
+            args: Vec::new(),
+        });
+        match Chrome::launch(config).await {
+            Err(Error::LaunchExited { status }) => assert_eq!(status.code(), Some(code)),
+            other => panic!("expected LaunchExited, got {:?}", other.map(|c| c.pid())),
+        }
+    }
+}

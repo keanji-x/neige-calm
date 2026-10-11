@@ -103,6 +103,21 @@ fn without_bwrap_the_plugin_does_not_start() {
     assert!(!status.success(), "{status}");
 }
 
+/// A Chrome install whose directory holds the plugin's data dir fails the
+/// plugin start: the sandbox would show that directory to Chrome.
+#[test]
+fn an_install_directory_holding_the_data_dir_fails_initialize() {
+    let tmp = tmp();
+    let chrome = tmp.path().join("chrome");
+    std::fs::write(&chrome, b"").unwrap();
+    let mut plugin = Plugin::spawn(&tmp.path().join("desktop"));
+    let reply = plugin.initialize(chrome.to_str().unwrap());
+    let message = reply["error"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("directory of its own"), "{reply}");
+    let status = plugin.wait_exit(Duration::from_secs(5)).expect("exits");
+    assert!(!status.success(), "{status}");
+}
+
 /// A sandbox that cannot start is an error for the caller; the browser never
 /// runs in its place.
 #[test]
@@ -153,6 +168,32 @@ fn every_sandbox_process_ends_with_a_killed_desktop() {
             .iter()
             .all(|&(pid, start)| start_time(pid) != Some(start))
     });
+}
+
+/// Chrome's profile lock does not hold across sandboxes, so `http.sock` is
+/// the gate: a desktop stopping in order keeps answering on it until its
+/// Chrome is gone, and a new desktop on the same data dir neither binds nor
+/// launches before then. The fake does not close on `Browser.close`, so the
+/// old stop takes its full close grace (5 s).
+#[test]
+fn a_new_desktop_waits_until_the_stopping_one_has_ended_its_chrome() {
+    let tmp = tmp();
+    let data = tmp.path().join("desktop");
+    let mut old = Plugin::spawn(&data);
+    old.initialize(FAKE_CHROME);
+    let fake = launch_fake(&mut old);
+    let stopping = std::time::Instant::now();
+    old.close_stdin();
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(alive(fake), "the old Chrome is still stopping");
+
+    let mut new = Plugin::spawn(&data);
+    let reply = new.initialize(FAKE_CHROME);
+    let waited = stopping.elapsed();
+    assert!(reply.get("result").is_some(), "{reply}");
+    assert!(!alive(fake), "a new desktop started beside a live Chrome");
+    assert!(waited >= Duration::from_secs(4), "{waited:?}");
+    assert!(old.wait_exit(Duration::from_secs(5)).is_some());
 }
 
 /// The start time of a live, non-zombie `pid`.

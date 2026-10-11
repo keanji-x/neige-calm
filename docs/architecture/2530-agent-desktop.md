@@ -291,11 +291,22 @@ pub async fn serve_viewer<S: WebSocketStream>(ws: S, source: Arc<dyn WindowSourc
   sandboxes: Chrome is pid 2 in every sandbox and each sandbox has a private `/tmp`, so a second
   sandboxed Chrome finds the lock's holder "alive" under its own pid, cannot reach the holder's
   singleton socket, and takes the lock over (both #2566 reviewers reproduced this). Exclusivity
-  rests on `desktop` instead: the `http.sock` liveness gate keeps a new `desktop` from starting
-  while an old one still answers, and the old one's sandbox ends with it (about 50 ms in review
-  measurements) before the new one can launch Chrome on demand. `chrome-control` still reports
-  `ProfileBusy` for an unwrapped browser that hands off to a live holder, but it cannot fire
-  through the sandbox, so `desktop` no longer retries on it.
+  rests on `desktop`'s `http.sock` liveness gate: a new `desktop` does not bind, and so does not
+  start, while an old one still answers (`BIND_ATTEMPTS` × `BIND_BACKOFF` = 12 s, longer than
+  `STOP_WAIT`; then its start fails). Per stop path:
+  - stdin EOF and SIGTERM: the socket server is ended only after the app task, so the socket
+    answers until `Chrome::stop` has returned. After an orderly close the sandbox is empty by
+    then (bwrap exits only after its init, and the init's exit empties the namespace). When the
+    stop had to signal bwrap, the namespace finishes dying just after: 1.8 ms after the refusal
+    in the #2566 overlap probe with a SIGSTOPped browser, against 23 ms for a new `desktop` to
+    answer `initialize`, which still launches nothing before a demand.
+  - SIGKILL (the kernel's plugin stop, disable, reload): the socket refuses when the process
+    dies, and its sandbox is gone about 50 ms later (review measurement). A new `desktop`
+    answers `initialize` first and launches Chrome only on demand, so an overlap needs a demand
+    inside that window: unlikely, not excluded by construction.
+  `chrome-control` reports `ProfileBusy` only for an unwrapped launch; behind a wrapper an early
+  exit is `LaunchExited`, as the exit code is the wrapper's. So it cannot fire through the
+  sandbox, and `desktop` does not retry on it.
 - **Restart overlap.** A plugin restart spawns the new `desktop` while the old one's SIGKILL is
   still in flight (`host/state.rs:83-85,118-128`). A live old `http.sock` is therefore a
   transient condition that the new `desktop` retries with a bound.

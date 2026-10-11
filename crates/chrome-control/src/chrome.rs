@@ -53,6 +53,11 @@ impl Chrome {
     /// that holder and exits; this returns [`Error::ProfileBusy`] at once,
     /// detected from the exit, without retrying: each attempt would open a
     /// window in the holder, so the caller owns the retry bound.
+    ///
+    /// Only an unwrapped launch reports `ProfileBusy`. Behind a
+    /// [`Wrapper`](crate::Wrapper) the exit code is the wrapper's, which
+    /// proves no handoff (a sandbox can also hide the holder), so an early
+    /// exit there is always [`Error::LaunchExited`].
     pub async fn launch(config: LaunchConfig) -> Result<Chrome> {
         let spawned = launch::spawn(&config).await?;
         let cdp = Cdp::start(spawned.responses, spawned.commands);
@@ -69,7 +74,10 @@ impl Chrome {
             .await
         {
             Ok(_) => Ok(Chrome { cdp, process }),
-            Err(Error::Exited) => Err(launch_exit(&process, config.profile_dir).await),
+            Err(Error::Exited) => {
+                let busy_profile = config.wrapper.is_none().then_some(config.profile_dir);
+                Err(launch_exit(&process, busy_profile).await)
+            }
             Err(error) => Err(error),
         }
     }
@@ -144,20 +152,24 @@ impl Chrome {
     }
 }
 
-/// Classifies a browser that closed its CDP pipe during launch.
-async fn launch_exit(process: &ChildProcess, profile: PathBuf) -> Error {
-    match tokio::time::timeout(EXIT_GRACE, process.exited()).await {
-        Ok(Ok(status))
-            if status
-                .code()
-                .is_some_and(|c| PROFILE_BUSY_EXIT_CODES.contains(&c)) =>
-        {
-            Error::ProfileBusy { profile, status }
-        }
-        Ok(Ok(status)) => Error::LaunchExited { status },
-        Ok(Err(error)) => error,
+/// Classifies a browser that closed its CDP pipe during launch. `profile`
+/// is `Some` only for an unwrapped launch, the one whose exit code is
+/// Chrome's own.
+async fn launch_exit(process: &ChildProcess, profile: Option<PathBuf>) -> Error {
+    let busy = |status: &ExitStatus| {
+        status
+            .code()
+            .is_some_and(|c| PROFILE_BUSY_EXIT_CODES.contains(&c))
+    };
+    match (
+        tokio::time::timeout(EXIT_GRACE, process.exited()).await,
+        profile,
+    ) {
+        (Ok(Ok(status)), Some(profile)) if busy(&status) => Error::ProfileBusy { profile, status },
+        (Ok(Ok(status)), _) => Error::LaunchExited { status },
+        (Ok(Err(error)), _) => error,
         // The pipe closed but the process lives on; dropping it kills the group.
-        Err(_) => Error::Exited,
+        (Err(_), _) => Error::Exited,
     }
 }
 

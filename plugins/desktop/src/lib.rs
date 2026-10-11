@@ -54,8 +54,8 @@ pub struct Desktop {
 }
 
 /// How long the exit path waits for the app task, which stops Chrome with a
-/// 5 s grace before its group's SIGKILL.
-const STOP_WAIT: Duration = Duration::from_secs(10);
+/// 5 s close grace and a 2 s SIGTERM grace before its group's SIGKILL.
+pub const STOP_WAIT: Duration = Duration::from_secs(10);
 
 /// The process entry point.
 pub fn main() -> ExitCode {
@@ -99,6 +99,9 @@ struct Started {
     desktop: Arc<Desktop>,
     layout: Layout,
     app_task: tokio::task::JoinHandle<()>,
+    /// Ends the `http.sock` server. Cancelled only after the app task, so the
+    /// socket answers, and a new `desktop` waits, until Chrome is gone.
+    serving: CancellationToken,
 }
 
 async fn run(env: PluginEnv) -> ExitCode {
@@ -165,6 +168,9 @@ async fn run(env: PluginEnv) -> ExitCode {
     {
         tracing::warn!("Chrome did not stop within {STOP_WAIT:?}");
     }
+    // Only now may a new desktop bind `http.sock` and launch Chrome on the
+    // same profile: Chrome's own profile lock does not hold across sandboxes.
+    started.serving.cancel();
     let _ = std::fs::remove_dir_all(&started.layout.run);
     ExitCode::SUCCESS
 }
@@ -196,29 +202,33 @@ async fn start(
     )
     .await
     .map_err(|e| format!("bind {}: {e}", layout.http_socket.display()))?;
-    let (app, app_task) = ChromeApp::spawn(
-        ChromeSetup {
-            binary: config.chrome_binary.clone(),
-            bwrap: config.bwrap_binary.clone(),
-            data_dir: layout.work.clone(),
-            user_home: std::env::var_os("HOME")
-                .filter(|home| !home.is_empty())
-                .map(PathBuf::from),
-            profile_dir: layout.profile.clone(),
-            home_dir: layout.home.clone(),
-            wayland_socket: compositor.wayland_socket().to_path_buf(),
-            size: config.size,
-            proxy_server: config.proxy_server.clone(),
-        },
-        shutdown.clone(),
-    );
+    let setup = ChromeSetup {
+        binary: config.chrome_binary.clone(),
+        bwrap: config.bwrap_binary.clone(),
+        data_dir: layout.work.clone(),
+        user_home: std::env::var_os("HOME")
+            .filter(|home| !home.is_empty())
+            .map(PathBuf::from),
+        profile_dir: layout.profile.clone(),
+        home_dir: layout.home.clone(),
+        wayland_socket: compositor.wayland_socket().to_path_buf(),
+        size: config.size,
+        proxy_server: config.proxy_server.clone(),
+    };
+    // A Chrome install that would show Chrome the data dir or HOME fails the
+    // start. A binary that does not resolve yet is reported by its launch.
+    if std::fs::canonicalize(&setup.binary).is_ok() {
+        setup.install()?;
+    }
+    let (app, app_task) = ChromeApp::spawn(setup, shutdown.clone());
     let desktop = Arc::new(Desktop {
         env: env.clone(),
         compositor,
         windows,
         app,
     });
-    tokio::spawn(stream::serve(listener, desktop.clone(), shutdown.clone()));
+    let serving = CancellationToken::new();
+    tokio::spawn(stream::serve(listener, desktop.clone(), serving.clone()));
     tracing::info!(
         id = %env.id,
         socket = %layout.http_socket.display(),
@@ -227,6 +237,7 @@ async fn start(
         "desktop started"
     );
     Ok(Started {
+        serving,
         desktop,
         layout,
         app_task,
