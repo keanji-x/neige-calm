@@ -9,7 +9,7 @@
 //! the Planner never has to guess when to send again.
 use super::client::InputRole;
 use super::target::{InputRefused, Resolved, WORKER_STARTING, refused};
-use super::write_leg::{Admission, Delivered, WriteRule};
+use super::write_leg::{Admission, Delivered, WriteRule, WriteTarget};
 use super::*;
 use crate::terminal_renderer::{RendererEntry, WriteShape};
 use calm_exec::{MessageReady, TuiInput};
@@ -214,17 +214,16 @@ impl TerminalInteraction {
         // A starting worker is waited for: each try re-runs the whole admission, replay first, on
         // the binding the first resolved try found.
         let deadline = Instant::now() + self.start_wait();
-        let mut pinned = None;
+        let mut write_target = WriteTarget::new(target);
         let admitted = loop {
             match self
                 .admit_write(
                     identity,
-                    target,
+                    &mut write_target,
                     &key,
                     &fingerprint,
                     observation_wait.clone(),
                     WriteRule::Message,
-                    &mut pinned,
                 )
                 .await
             {

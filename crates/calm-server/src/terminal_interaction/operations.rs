@@ -4,7 +4,7 @@ use super::receipts::{
     WriteReceipts, attach_claim, control_unavailable_receipt, merge, stale_receipt,
 };
 use super::screen_diff::{CursorSnapshot, ScreenDiff, row_hashes};
-use super::write_leg::{Admission, WriteRule, remember};
+use super::write_leg::{Admission, WriteRule, WriteTarget, remember};
 use super::*;
 use crate::terminal_renderer::WriteShape;
 
@@ -66,12 +66,11 @@ impl TerminalInteraction {
         let admitted = match self
             .admit_write(
                 identity,
-                target,
+                &mut WriteTarget::new(target),
                 &key,
                 &fingerprint,
                 observation_wait.clone(),
                 WriteRule::Keys,
-                &mut None,
             )
             .await?
         {

@@ -9,7 +9,7 @@
 //! bytes are sent, then `written` or `unknown`. A refusal proven before any byte reached the PTY is
 //! not kept: the same key is decided anew, like `stale_observation` and `control_unavailable`.
 use super::client::Client;
-use super::target::{Resolved, refused};
+use super::target::{BINDING_CHANGED, Resolved, refused};
 use super::*;
 use crate::terminal_renderer::WriteShape;
 use tokio::sync::OwnedMutexGuard;
@@ -30,6 +30,21 @@ pub(super) struct Admitted {
     pub(super) client: Arc<Client>,
     /// Held until the request returns: one action at a time per connection, readback included.
     pub(super) _serial: OwnedMutexGuard<()>,
+}
+
+/// What a write request targets, and the binding its first resolved admission found: a request
+/// admitted again (a message waiting for its worker) writes only there.
+pub(super) struct WriteTarget<'a> {
+    pub(super) target: &'a Target,
+    pinned: Option<Binding>,
+}
+impl<'a> WriteTarget<'a> {
+    pub(super) fn new(target: &'a Target) -> Self {
+        Self {
+            target,
+            pinned: None,
+        }
+    }
 }
 
 /// The write rule a new write passes after the replay: typed keys' or `message`'s.
@@ -60,17 +75,16 @@ impl TerminalInteraction {
     /// The one admission order of every write request: arguments, the caller's authorization and
     /// target, the serial guard, the binding re-proven, the replay, then `rule` (the action's own
     /// write rule). With no renderer entry there is no connection and no cache: `rule` still
-    /// answers first, then the no-receipt refusal. `pinned` is the binding the request first
-    /// resolved to: a request admitted again (a message waiting for its worker) writes only there.
+    /// answers first, then the no-receipt refusal. A [`WriteTarget`] admitted again must resolve to
+    /// the binding it first resolved to.
     pub(super) async fn admit_write(
         &self,
         identity: &ToolCallIdentity,
-        target: &Target,
+        target: &mut WriteTarget<'_>,
         key: &str,
         fingerprint: &str,
         observation_wait: Option<WaitPlan>,
         rule: WriteRule,
-        pinned: &mut Option<Binding>,
     ) -> Result<Admission> {
         if let Some(wait) = &observation_wait {
             wait.validate()?;
@@ -79,10 +93,10 @@ impl TerminalInteraction {
             !key.is_empty() && key.len() <= 128,
             "invalid input idempotency_key"
         );
-        let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
-        match pinned {
-            Some(first) => ensure!(*first == resolved.binding, target::BINDING_CHANGED),
-            None => *pinned = Some(resolved.binding.clone()),
+        let resolved = Self::resolve_target(self.repo.as_ref(), identity, target.target).await?;
+        match &target.pinned {
+            Some(first) => ensure!(*first == resolved.binding, BINDING_CHANGED),
+            None => target.pinned = Some(resolved.binding.clone()),
         }
         if self.renderer.get(&resolved.binding.terminal_id).is_none() {
             self.new_write_rule(rule, &resolved).await?;
