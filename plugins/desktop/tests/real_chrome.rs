@@ -35,6 +35,11 @@ fn a_typed_file_url_reads_no_host_directory() {
     // Starts Chrome. Nothing listens on the discard port, so the load fails.
     let _ = plugin.tool("page_open", json!({ "url": "http://127.0.0.1:9/" }));
     let window = chrome_window(&mut plugin);
+    // Let the window draw before typing, as an agent's `window_cat` does: keys
+    // sent to a window Chrome has not focused yet are lost.
+    plugin
+        .tool("window_cat", json!({ "window_id": window }))
+        .unwrap();
 
     let mut dirs: Vec<PathBuf> = vec![outside.clone()];
     let home = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
@@ -45,17 +50,22 @@ fn a_typed_file_url_reads_no_host_directory() {
     }
     for dir in &dirs {
         let url = format!("file://{}/", dir.display());
-        let typed = plugin
-            .tool(
-                "window_input",
-                json!({ "window_id": window, "events": [
-                    { "type": "key", "keys": "ctrl+l" },
-                    { "type": "text", "text": format!("{url}\n") },
-                ] }),
-            )
-            .unwrap();
-        assert_eq!(typed["structuredContent"], json!({ "ok": true }));
-        let page = page_at(&mut plugin, &url);
+        // Typed again when the address bar missed it; three tries.
+        let page = (0..3)
+            .find_map(|_| {
+                let typed = plugin
+                    .tool(
+                        "window_input",
+                        json!({ "window_id": window, "events": [
+                            { "type": "key", "keys": "ctrl+l" },
+                            { "type": "text", "text": format!("{url}\n") },
+                        ] }),
+                    )
+                    .unwrap();
+                assert_eq!(typed["structuredContent"], json!({ "ok": true }));
+                page_at(&mut plugin, &url)
+            })
+            .unwrap_or_else(|| panic!("{url} never showed"));
         let text = page["text"].as_str().unwrap();
         eprintln!("{url}: title {:?}, text {:?}", page["title"], text);
         assert!(!text.contains("Index of"), "{url} listed: {text}");
@@ -85,18 +95,22 @@ fn chrome_window(plugin: &mut Plugin) -> u64 {
 
 /// `page_cat` once the visible tab shows `url`: a listing at that url, or
 /// Chrome's error page (`chrome-error://chromewebdata/`) titled with it.
-fn page_at(plugin: &mut Plugin, url: &str) -> Value {
-    let deadline = Instant::now() + Duration::from_secs(20);
+/// `None` when it does not within 7 s.
+fn page_at(plugin: &mut Plugin, url: &str) -> Option<Value> {
+    let deadline = Instant::now() + Duration::from_secs(7);
     loop {
         let page = plugin.tool("page_cat", json!({}));
         if let Ok(page) = &page {
             let page = &page["structuredContent"];
             let shown = page["url"] == url || page["title"] == url;
             if shown && !page["text"].as_str().unwrap_or_default().is_empty() {
-                return page.clone();
+                return Some(page.clone());
             }
         }
-        assert!(Instant::now() < deadline, "{url} never showed: {page:?}");
+        if Instant::now() >= deadline {
+            eprintln!("{url} not shown yet: {page:?}");
+            return None;
+        }
         std::thread::sleep(Duration::from_millis(300));
     }
 }
