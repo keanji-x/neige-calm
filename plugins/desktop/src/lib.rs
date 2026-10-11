@@ -7,10 +7,15 @@
 //! `http_socket`, which the kernel's session-gated WebSocket route dials. It
 //! opens no TCP port, and Chrome talks CDP over a pipe.
 //!
+//! Chrome always runs inside a bubblewrap sandbox (`sandbox`), which shows it
+//! only its profile, its home, its install, system libraries and the Wayland
+//! socket; without bwrap the plugin does not start.
+//!
 //! Lifecycle: `initialize` starts the compositor and binds `http.sock`;
 //! Chrome starts on the first demand. Stdin EOF (the kernel is gone) and
 //! SIGTERM stop Chrome (`Chrome::stop`) and end the process; a SIGKILL ends
-//! Chrome through its `PR_SET_PDEATHSIG`.
+//! the sandbox through bwrap's `PR_SET_PDEATHSIG`, and the sandbox's pid
+//! namespace takes Chrome with it.
 #![cfg(target_os = "linux")]
 
 pub mod app;
@@ -171,6 +176,7 @@ async fn start(
     shutdown: &CancellationToken,
 ) -> Result<Started, String> {
     let config = DesktopConfig::from_values(mcp::config_values(params)?)?;
+    app::require_bwrap(&config.bwrap_binary)?;
     let layout = Layout::new(&env.data_dir);
     layout
         .prepare()
@@ -192,6 +198,7 @@ async fn start(
     let (app, app_task) = ChromeApp::spawn(
         ChromeSetup {
             binary: config.chrome_binary.clone(),
+            bwrap: config.bwrap_binary.clone(),
             profile_dir: layout.profile.clone(),
             home_dir: layout.home.clone(),
             wayland_socket: compositor.wayland_socket().to_path_buf(),

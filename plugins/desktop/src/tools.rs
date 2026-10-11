@@ -110,10 +110,10 @@ fn window_ls(desktop: &Desktop) -> Value {
     let pid = desktop.app.state().pid;
     let windows: Vec<Value> = desktop
         .windows
-        .list()
+        .list(pid)
         .into_iter()
-        .map(|w| {
-            let app = (u32::try_from(w.pid).ok() == pid && pid.is_some()).then_some(CHROME);
+        .map(|(w, owned)| {
+            let app = owned.then_some(CHROME);
             json!({
                 "window_id": w.id.0,
                 "app": app,
@@ -401,7 +401,7 @@ pub(crate) fn compositor_error(tool: &str, error: compositor::Error) -> ToolErro
 pub(crate) fn app_error(tool: &str, error: AppError) -> ToolError {
     use chrome_control::Error as E;
     match error {
-        AppError::NotRunning | AppError::ShuttingDown => {
+        AppError::NotRunning | AppError::ShuttingDown | AppError::Sandbox(_) => {
             ToolError::new(UNAVAILABLE, tool, &error)
         }
         AppError::Chrome(E::NoVisiblePage { pages }) => ToolError::new(

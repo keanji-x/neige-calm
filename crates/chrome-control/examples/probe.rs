@@ -106,6 +106,7 @@ mod probe {
                 },
                 size: DEFAULT_SIZE,
                 proxy_server: None,
+                wrapper: None,
             }
         }
     }
@@ -464,6 +465,7 @@ mod probe {
             },
             size: DEFAULT_SIZE,
             proxy_server: None,
+            wrapper: None,
         };
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()

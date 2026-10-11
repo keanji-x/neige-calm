@@ -37,6 +37,7 @@ mod owner {
             },
             size: (800, 600),
             proxy_server: None,
+            wrapper: None,
         };
         let marker = std::path::Path::new(profile).join("owner-inherited-marker");
         std::fs::write(&marker, b"").unwrap();

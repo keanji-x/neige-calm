@@ -5,7 +5,7 @@ use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use tokio::net::unix::pipe;
@@ -22,16 +22,36 @@ pub struct WaylandEnv {
     pub runtime_dir: PathBuf,
 }
 
-/// How to launch one browser. All fields are required.
+/// A program the browser runs inside, such as a sandbox: the launch runs
+/// `program` with `args`, then the browser's binary and its arguments.
+///
+/// The wrapper is the launched process: it gets the CDP pipes on fds 3 and 4
+/// (not close-on-exec, so they pass on to the browser), the environment
+/// allowlist, the process group and `PR_SET_PDEATHSIG(SIGKILL)`, and its exit
+/// is the browser's exit. It must end the browser when it dies itself and
+/// pass on the browser's exit status, as `bwrap --die-with-parent
+/// --unshare-pid` does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Wrapper {
+    pub program: PathBuf,
+    pub args: Vec<OsString>,
+}
+
+/// How to launch one browser.
+///
+/// The paths the browser receives (`binary`, `profile_dir`, `home_dir` and
+/// `wayland`) are as the browser sees them: host paths without a wrapper,
+/// paths inside it with one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchConfig {
     /// The Chrome executable.
     pub binary: PathBuf,
-    /// `--user-data-dir`: the persistent profile. Created if missing and set
-    /// to 0700 on every launch.
+    /// `--user-data-dir`: the persistent profile. Without a wrapper, launch
+    /// creates it if missing and sets it to 0700 every time.
     pub profile_dir: PathBuf,
     /// `HOME` of the browser, so its crash database and NSS state stay out of
-    /// the caller's home. Created if missing and set to 0700 on every launch.
+    /// the caller's home. Without a wrapper, launch creates it if missing and
+    /// sets it to 0700 every time.
     pub home_dir: PathBuf,
     pub wayland: WaylandEnv,
     /// `--window-size` in pixels.
@@ -40,6 +60,9 @@ pub struct LaunchConfig {
     /// proxy: the browser's environment is an allowlist, so the caller's
     /// `https_proxy` never reaches it. `None` connects directly.
     pub proxy_server: Option<String>,
+    /// `None` runs `binary` directly. With a wrapper, the directories behind
+    /// the paths are the caller's to prepare: launch does not touch them.
+    pub wrapper: Option<Wrapper>,
 }
 
 /// Variables copied from the caller's environment when present. Everything
@@ -80,10 +103,21 @@ fn arguments(config: &LaunchConfig) -> Vec<OsString> {
     args
 }
 
-/// The browser command without its fd set-up: binary, arguments, the
-/// allowlisted environment, stdio and a process group of its own.
+/// The program the launch executes: the wrapper's, or the browser's.
+fn program(config: &LaunchConfig) -> &Path {
+    match &config.wrapper {
+        Some(wrapper) => &wrapper.program,
+        None => &config.binary,
+    }
+}
+
+/// The browser command without its fd set-up: the wrapper if any, binary,
+/// arguments, the allowlisted environment, stdio and a process group of its own.
 fn command(config: &LaunchConfig) -> Command {
-    let mut command = Command::new(&config.binary);
+    let mut command = Command::new(program(config));
+    if let Some(wrapper) = &config.wrapper {
+        command.args(&wrapper.args).arg(&config.binary);
+    }
     command
         .args(arguments(config))
         .env_clear()
@@ -132,18 +166,23 @@ pub(crate) struct Spawned {
 /// Starts the browser in its own process group with `PR_SET_PDEATHSIG(SIGKILL)`.
 pub(crate) async fn spawn(config: &LaunchConfig) -> Result<Spawned> {
     let spawn_error = |source: io::Error| Error::Spawn {
-        binary: config.binary.clone(),
+        program: program(config).to_path_buf(),
         source,
     };
     // Private even when the directory already existed with a wider mode. A
-    // directory we do not own cannot be chmodded, so launch refuses it.
-    for dir in [&config.profile_dir, &config.home_dir] {
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir)
-            .and_then(|()| std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)))
-            .map_err(spawn_error)?;
+    // directory we do not own cannot be chmodded, so launch refuses it. Paths
+    // inside a wrapper are not host paths: the caller prepares those.
+    if config.wrapper.is_none() {
+        for dir in [&config.profile_dir, &config.home_dir] {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)
+                .and_then(|()| {
+                    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+                })
+                .map_err(spawn_error)?;
+        }
     }
     let (child_commands, commands) = cdp_pipe().map_err(spawn_error)?;
     let (responses, child_responses) = cdp_pipe().map_err(spawn_error)?;
@@ -259,6 +298,7 @@ mod tests {
             },
             size: (1280, 800),
             proxy_server: None,
+            wrapper: None,
         }
     }
 
@@ -304,5 +344,21 @@ mod tests {
             &config,
         );
         assert!(env.iter().all(|(key, _)| key != "https_proxy"));
+    }
+
+    #[test]
+    fn a_wrapper_goes_in_front_of_the_unchanged_browser_command() {
+        let direct = command(&config());
+        let mut wrapped = config();
+        wrapped.wrapper = Some(Wrapper {
+            program: "/usr/bin/bwrap".into(),
+            args: vec!["--unshare-all".into(), "--".into()],
+        });
+        let wrapped = command(&wrapped);
+        assert_eq!(wrapped.get_program(), "/usr/bin/bwrap");
+        let args: Vec<&OsStr> = wrapped.get_args().collect();
+        assert_eq!(args[..3], ["--unshare-all", "--", "/opt/chrome/chrome"]);
+        assert!(args[3..].iter().copied().eq(direct.get_args()));
+        assert!(wrapped.get_envs().eq(direct.get_envs()));
     }
 }

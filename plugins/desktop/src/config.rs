@@ -53,6 +53,8 @@ pub fn stream_path(app: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopConfig {
     pub chrome_binary: PathBuf,
+    /// bubblewrap, which Chrome always runs inside.
+    pub bwrap_binary: PathBuf,
     /// Output size; every window is maximized to it.
     pub size: (u32, u32),
     pub max_fps: u32,
@@ -70,15 +72,8 @@ impl DesktopConfig {
     /// so a missing one is a manifest or kernel defect, not something to
     /// default here. `proxy_server` has no default and may be absent.
     pub fn from_values(values: &Map<String, Value>) -> Result<Self, String> {
-        let chrome_binary = match values.get("chrome_binary") {
-            Some(Value::String(path)) if PathBuf::from(path).is_absolute() => PathBuf::from(path),
-            Some(other) => {
-                return Err(format!(
-                    "config chrome_binary must be an absolute path, got {other}"
-                ));
-            }
-            None => return Err("config chrome_binary is missing".into()),
-        };
+        let chrome_binary = absolute_path(values, "chrome_binary")?;
+        let bwrap_binary = absolute_path(values, "bwrap_binary")?;
         let width = integer(values, "width", WIDTH)?;
         let height = integer(values, "height", HEIGHT)?;
         let max_fps = integer(values, "max_fps", MAX_FPS)?;
@@ -95,6 +90,7 @@ impl DesktopConfig {
         };
         Ok(Self {
             chrome_binary,
+            bwrap_binary,
             size: (width, height),
             max_fps,
             proxy_server,
@@ -123,6 +119,16 @@ fn is_proxy_server(proxy: &str) -> bool {
     ["http", "https", "socks4", "socks5"].contains(&scheme)
         && host_ok
         && port.parse::<u16>().is_ok_and(|p| p > 0)
+}
+
+fn absolute_path(values: &Map<String, Value>, key: &str) -> Result<PathBuf, String> {
+    match values.get(key) {
+        Some(Value::String(path)) if PathBuf::from(path).is_absolute() => Ok(PathBuf::from(path)),
+        Some(other) => Err(format!(
+            "config {key} must be an absolute path, got {other}"
+        )),
+        None => Err(format!("config {key} is missing")),
+    }
 }
 
 fn integer(values: &Map<String, Value>, key: &str, (min, max): (u64, u64)) -> Result<u32, String> {
@@ -156,11 +162,13 @@ mod tests {
 
     #[test]
     fn config_reads_every_key_and_refuses_bad_or_missing_ones() {
-        let good = json!({ "chrome_binary": "/opt/chrome/chrome", "width": 1280, "height": 800, "max_fps": 15 });
+        let good = json!({ "chrome_binary": "/opt/chrome/chrome", "bwrap_binary": "/usr/bin/bwrap",
+                           "width": 1280, "height": 800, "max_fps": 15 });
         assert_eq!(
             DesktopConfig::from_values(&values(good.clone())).unwrap(),
             DesktopConfig {
                 chrome_binary: "/opt/chrome/chrome".into(),
+                bwrap_binary: "/usr/bin/bwrap".into(),
                 size: (1280, 800),
                 max_fps: 15,
                 proxy_server: None,
@@ -169,6 +177,8 @@ mod tests {
         for (key, bad) in [
             ("chrome_binary", json!("chrome")),
             ("chrome_binary", json!(7)),
+            ("bwrap_binary", json!("bwrap")),
+            ("bwrap_binary", json!(null)),
             ("width", json!(0)),
             ("width", json!(1280.5)),
             ("height", json!(10_000)),
@@ -181,7 +191,13 @@ mod tests {
             let err = DesktopConfig::from_values(&values(v)).unwrap_err();
             assert!(err.contains(key), "{key}={bad}: {err}");
         }
-        for key in ["chrome_binary", "width", "height", "max_fps"] {
+        for key in [
+            "chrome_binary",
+            "bwrap_binary",
+            "width",
+            "height",
+            "max_fps",
+        ] {
             let mut v = good.clone();
             v.as_object_mut().unwrap().remove(key);
             let err = DesktopConfig::from_values(&values(v)).unwrap_err();
@@ -192,8 +208,8 @@ mod tests {
     #[test]
     fn a_proxy_is_one_scheme_host_and_port_and_nothing_else() {
         let with = |proxy: &str| {
-            let v = json!({ "chrome_binary": "/c", "width": 1280, "height": 800, "max_fps": 15,
-                            "proxy_server": proxy });
+            let v = json!({ "chrome_binary": "/c", "bwrap_binary": "/b", "width": 1280,
+                            "height": 800, "max_fps": 15, "proxy_server": proxy });
             DesktopConfig::from_values(&values(v)).map(|c| c.proxy_server)
         };
         for good in [

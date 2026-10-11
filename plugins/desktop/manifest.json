@@ -136,6 +136,11 @@
         "type": "string",
         "description": "Absolute path of the Chrome executable: Google Chrome stable unpacked with `dpkg -x`, or Chrome for Testing (see the plugin README). The plugin does not bundle Chrome."
       },
+      "bwrap_binary": {
+        "type": "string",
+        "default": "/usr/bin/bwrap",
+        "description": "Absolute path of bubblewrap (`bwrap`). Chrome always runs inside a bwrap sandbox that shows it only its profile, its own home, the Chrome install, system libraries and fonts; without a working bwrap the plugin does not start and Chrome never runs."
+      },
       "width": {
         "type": "integer",
         "default": 1280,

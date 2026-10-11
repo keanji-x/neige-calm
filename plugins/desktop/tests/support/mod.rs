@@ -19,6 +19,8 @@ use serde_json::{Value, json};
 pub const FAKE_CHROME: &str = env!("CARGO_BIN_EXE_desktop-fake-chrome");
 pub const DESKTOP: &str = env!("CARGO_BIN_EXE_desktop");
 pub const SIZE: (u32, u32) = (640, 480);
+/// The `bwrap_binary` the manifest defaults to.
+pub const BWRAP: &str = "/usr/bin/bwrap";
 /// The fixture's colours, as 0xRRGGBB.
 pub const BLUE: u32 = 0x2050a0;
 pub const RED: u32 = 0xc03020;
@@ -130,6 +132,11 @@ impl Plugin {
     }
 
     pub fn initialize(&mut self, chrome: &str) -> Value {
+        self.initialize_with(chrome, BWRAP)
+    }
+
+    /// `initialize` with the defaults the kernel merges in, and `bwrap`.
+    pub fn initialize_with(&mut self, chrome: &str, bwrap: &str) -> Value {
         self.request(
             "initialize",
             json!({
@@ -139,7 +146,8 @@ impl Plugin {
                 "_meta": {
                     "dev.neige/auth": { "expected_echo": "tok-123" },
                     "dev.neige/config": { "values": {
-                        "chrome_binary": chrome, "width": SIZE.0, "height": SIZE.1, "max_fps": 15 } }
+                        "chrome_binary": chrome, "bwrap_binary": bwrap,
+                        "width": SIZE.0, "height": SIZE.1, "max_fps": 15 } }
                 }
             }),
         )
@@ -183,11 +191,28 @@ impl Plugin {
         }
     }
 
-    /// The fake Chrome's pid, once it has started.
-    pub fn fake_pid(&self) -> u32 {
+    /// The fake Chrome's pid as it sees it, once it has started: inside its
+    /// sandbox, a pid of the sandbox's pid namespace.
+    pub fn fake_inner_pid(&self) -> u32 {
         let file = self.home().join("fake-chrome.pid");
-        wait_for(Duration::from_secs(10), || file.exists());
+        wait_for(Duration::from_secs(10), || {
+            std::fs::read_to_string(&file).is_ok_and(|pid| pid.parse::<u32>().is_ok())
+        });
         std::fs::read_to_string(file).unwrap().parse().unwrap()
+    }
+
+    /// The fake Chrome's pid on the host, once it has started: the process
+    /// below this `desktop` whose innermost pid is the one the fake wrote.
+    pub fn fake_pid(&self) -> u32 {
+        let inner = self.fake_inner_pid();
+        let mut found = None;
+        wait_for(Duration::from_secs(10), || {
+            found = descendants(self.pid())
+                .into_iter()
+                .find(|&pid| innermost_pid(pid) == Some(inner));
+            found.is_some()
+        });
+        found.unwrap()
     }
 
     /// Makes the fake Chrome close its window and exit.
@@ -248,6 +273,56 @@ fn read_frames(mut stdout: ChildStdout, tx: &Sender<Value>, stop: &AtomicBool) {
             }
         }
     }
+}
+
+/// Starts the fake Chrome through `page_open`, which the fake cannot serve;
+/// its host pid.
+pub fn launch_fake(plugin: &mut Plugin) -> u32 {
+    let err = plugin
+        .tool("page_open", json!({ "url": "https://example.com/" }))
+        .unwrap_err();
+    assert_eq!(err["code"], -32409, "{err}");
+    let fake = plugin.fake_pid();
+    assert!(alive(fake));
+    fake
+}
+
+/// `pid`'s pid in its innermost pid namespace (`NSpid`'s last field).
+pub fn innermost_pid(pid: u32) -> Option<u32> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let line = status.lines().find_map(|l| l.strip_prefix("NSpid:"))?;
+    line.split_whitespace().last()?.parse().ok()
+}
+
+/// Every live descendant of `root`, by parent links.
+pub fn descendants(root: u32) -> Vec<u32> {
+    let parents: Vec<(u32, u32)> = std::fs::read_dir("/proc")
+        .unwrap()
+        .flatten()
+        .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+        .filter_map(|pid| {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+            let ppid = stat
+                .rsplit_once(')')?
+                .1
+                .split_whitespace()
+                .nth(1)?
+                .parse()
+                .ok()?;
+            Some((pid, ppid))
+        })
+        .collect();
+    let mut found = Vec::new();
+    let mut frontier = vec![root];
+    while let Some(parent) = frontier.pop() {
+        for &(pid, ppid) in &parents {
+            if ppid == parent {
+                found.push(pid);
+                frontier.push(pid);
+            }
+        }
+    }
+    found
 }
 
 pub fn wait_for(within: Duration, mut done: impl FnMut() -> bool) {

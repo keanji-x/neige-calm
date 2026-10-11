@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use chrome_control::{Chrome, Error, LaunchConfig, WaylandEnv};
+use chrome_control::{Chrome, Error, LaunchConfig, WaylandEnv, Wrapper};
 
 const FAKE_CHROME: &str = env!("CARGO_BIN_EXE_chrome-control-fake-chrome");
 const OWNER: &str = env!("CARGO_BIN_EXE_chrome-control-test-owner");
@@ -47,6 +47,7 @@ fn config(dirs: &Dirs) -> LaunchConfig {
         },
         size: (800, 600),
         proxy_server: None,
+        wrapper: None,
     }
 }
 
@@ -454,7 +455,47 @@ async fn a_missing_binary_is_a_spawn_error() {
     let mut config = config(&dirs);
     config.binary = dirs.home.join("no-such-chrome");
     match Chrome::launch(config).await {
-        Err(Error::Spawn { binary, .. }) => assert!(binary.ends_with("no-such-chrome")),
+        Err(Error::Spawn { program, .. }) => assert!(program.ends_with("no-such-chrome")),
+        other => panic!("expected Spawn, got {:?}", other.map(|c| c.pid())),
+    }
+}
+
+/// A wrapper runs in front of the browser, which still gets the CDP pipes on
+/// fds 3 and 4 and the environment; the paths are the wrapper's side, so
+/// launch leaves them alone (a direct launch would create `home`).
+#[tokio::test]
+async fn a_wrapped_browser_keeps_its_cdp_pipes_and_its_paths_are_left_alone() {
+    let dirs = dirs("serve");
+    let mut config = config(&dirs);
+    config.wrapper = Some(Wrapper {
+        program: "/usr/bin/env".into(),
+        args: vec!["WRAPPED=yes".into()],
+    });
+    let chrome = Chrome::launch(config).await.unwrap();
+    let env = environ(chrome.pid() as i32);
+    assert_eq!(env.get("WRAPPED").map(String::as_str), Some("yes"));
+    assert_eq!(
+        env.get("HOME"),
+        Some(&dirs.home.to_str().unwrap().to_owned())
+    );
+    assert!(
+        !dirs.home.exists(),
+        "launch created a path inside the wrapper"
+    );
+    let status = chrome.stop().await.unwrap();
+    assert_eq!(status.code(), Some(0), "closed over CDP: {status}");
+}
+
+#[tokio::test]
+async fn a_missing_wrapper_is_a_spawn_error_naming_it() {
+    let dirs = dirs("serve");
+    let mut config = config(&dirs);
+    config.wrapper = Some(Wrapper {
+        program: dirs.home.join("no-such-wrapper"),
+        args: Vec::new(),
+    });
+    match Chrome::launch(config).await {
+        Err(Error::Spawn { program, .. }) => assert!(program.ends_with("no-such-wrapper")),
         other => panic!("expected Spawn, got {:?}", other.map(|c| c.pid())),
     }
 }

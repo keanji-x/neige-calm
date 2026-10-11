@@ -26,7 +26,7 @@ The three owner requirements set the shape:
 |---|---|---|---|
 | Display | `compositor` crate | the plugin process | one headless Wayland server; fixed output size; its socket lives in the plugin's private run directory |
 | Window | `compositor` | a client's `xdg_toplevel` | `WindowId` (process-unique counter), title, size, client pid; frames = this window's surface tree plus its popups, nothing else |
-| App | `desktop` plugin | configured; process launched on demand | a named launch recipe (version 1: one app, `chrome`) with a persistent profile directory; its windows are the ones whose client pid is the launched pid |
+| App | `desktop` plugin | configured; process launched on demand | a named launch recipe (version 1: one app, `chrome`) with a persistent profile directory; its windows are the ones whose client is the launched process or one of its descendants (Chrome runs below its bwrap sandbox, #2565) |
 | Viewer | `window-stream` crate | one WebSocket | watches one app's main window: receives frames, sends input |
 | Page | `chrome-control` crate | a CDP page target | the one visible tab (`document.visibilityState == "visible"`); CDP targets carry no Wayland window identity, so when several pages are visible (a second window, an OAuth popup) `page_*` refuses and names them |
 | Report block `window` | calm-types + fe | persisted in the Report | `{src, title?, height?}`: a same-origin path that speaks the window-stream protocol |
@@ -390,10 +390,12 @@ probes, recorded in each PR.
 
 ## 7. KNOWN GAPS
 
-- **Same user, no isolation.** Workers and the Planner run as the same OS user as Chrome. Any
-  local process of that user can read the profile directory, and a Worker's shell can reach
-  `http.sock`. The design keeps the browser off the network and out of service secrets. It
-  creates no boundary against local code of the same user; the owner accepts this for personal use.
+- **Same user.** Workers and the Planner run as the same OS user as Chrome. Since #2565 S1
+  Chrome runs in a bwrap sandbox that shows it only its profile, its home, its install, system
+  libraries and the Wayland socket (`plugins/desktop/README.md`, Sandbox), so a `file://` URL
+  no longer reaches the user's files. The reverse is open: any local process of that user can
+  read the profile directory, and a Worker's shell can reach `http.sock`. There is no boundary
+  against local code of the same user; the owner accepts this for personal use.
 - **Tool scope.** The plugin keeps the default scope, so its tools appear on every unbound Track
   for the Planner and Workers, and the delegation covers both (§2.4). Narrowing to bound Tracks is
   one manifest field (`agent_tools_scope: "bound-track"`, `manifest.rs:138-145`).

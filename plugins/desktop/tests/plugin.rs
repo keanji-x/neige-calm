@@ -420,17 +420,6 @@ async fn until_closed(ws: &mut Ws) {
         .expect("closed within 10 s");
 }
 
-/// Starts the fake Chrome through `page_open`, which the fake cannot serve.
-fn launch_fake(plugin: &mut Plugin) -> u32 {
-    let err = plugin
-        .tool("page_open", json!({ "url": "https://example.com/" }))
-        .unwrap_err();
-    assert_eq!(err["code"], -32409, "{err}");
-    let fake = plugin.fake_pid();
-    assert!(alive(fake));
-    fake
-}
-
 type Ws = tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>;
 
 async fn next_message(ws: &mut Ws) -> Message {

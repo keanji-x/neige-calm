@@ -74,7 +74,8 @@ impl Chrome {
         }
     }
 
-    /// Process id of the browser process (also its process-group id).
+    /// Process id of the launched process (also its process-group id): the
+    /// browser, or its [`Wrapper`](crate::Wrapper) when there is one.
     pub fn pid(&self) -> u32 {
         self.process.pid()
     }

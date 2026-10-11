@@ -12,7 +12,10 @@
 //!   dropping the handle signal that group, and only while the browser is
 //!   unreaped, so its id cannot name another process;
 //! - nothing here signals a process it did not spawn: no pid files, no `/proc`
-//!   scans, no start-up reaping.
+//!   scans, no start-up reaping;
+//! - a [`Wrapper`], such as a sandbox, can run in front of the browser. It is
+//!   then the launched process that all of the above applies to, and it must
+//!   take the browser down with it.
 //!
 //! The crate knows nothing about Wayland internals or Neige.
 #![cfg(target_os = "linux")]
@@ -26,5 +29,5 @@ mod process;
 
 pub use chrome::Chrome;
 pub use error::{Error, Result};
-pub use launch::{LaunchConfig, WaylandEnv};
+pub use launch::{LaunchConfig, WaylandEnv, Wrapper};
 pub use page::{Navigated, PageInfo, PageText, Visibility};

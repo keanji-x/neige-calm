@@ -6,10 +6,10 @@ use crate::PageInfo;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// The browser process could not be started.
-    #[error("cannot start {binary}: {source}")]
+    /// The launched program, the browser or its wrapper, could not be started.
+    #[error("cannot start {program}: {source}")]
     Spawn {
-        binary: PathBuf,
+        program: PathBuf,
         source: std::io::Error,
     },
     /// A live Chrome holds the profile's `SingletonLock`: the new process

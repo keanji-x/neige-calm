@@ -284,6 +284,10 @@ fn the_manifest_matches_the_binary_and_the_kernel_accepts_it() {
     let raw: Value = serde_json::from_str(text).unwrap();
     let config = &raw["config_schema"];
     assert_eq!(config["required"], json!(["chrome_binary"]));
+    assert_eq!(
+        config["properties"]["bwrap_binary"]["default"],
+        "/usr/bin/bwrap"
+    );
     assert_eq!(config["properties"]["width"]["default"], 1280);
     assert_eq!(config["properties"]["height"]["default"], 800);
     assert_eq!(config["properties"]["max_fps"]["default"], 15);
