@@ -315,7 +315,8 @@ async fn message_to_dispatched_attempt_is_refused() {
         .set_message_start_wait(Duration::from_millis(300));
     let reply = message(&h, json!({"attempt_id":f.worker.task}), "early", "x").await;
     let text = format!(
-        "attempt {} is dispatched; its worker is starting. Read again, then send.",
+        "attempt {} is dispatched; its worker is starting and takes no input yet. Send again on a \
+         later wake",
         f.worker.task
     );
     assert_refusal(&reply, -32403, Some("worker_starting"), &text);

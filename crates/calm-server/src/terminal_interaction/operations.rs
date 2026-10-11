@@ -71,6 +71,7 @@ impl TerminalInteraction {
                 &fingerprint,
                 observation_wait.clone(),
                 WriteRule::Keys,
+                &mut None,
             )
             .await?
         {

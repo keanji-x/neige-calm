@@ -60,7 +60,8 @@ impl TerminalInteraction {
     /// The one admission order of every write request: arguments, the caller's authorization and
     /// target, the serial guard, the binding re-proven, the replay, then `rule` (the action's own
     /// write rule). With no renderer entry there is no connection and no cache: `rule` still
-    /// answers first, then the no-receipt refusal.
+    /// answers first, then the no-receipt refusal. `pinned` is the binding the request first
+    /// resolved to: a request admitted again (a message waiting for its worker) writes only there.
     pub(super) async fn admit_write(
         &self,
         identity: &ToolCallIdentity,
@@ -69,6 +70,7 @@ impl TerminalInteraction {
         fingerprint: &str,
         observation_wait: Option<WaitPlan>,
         rule: WriteRule,
+        pinned: &mut Option<Binding>,
     ) -> Result<Admission> {
         if let Some(wait) = &observation_wait {
             wait.validate()?;
@@ -78,6 +80,10 @@ impl TerminalInteraction {
             "invalid input idempotency_key"
         );
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
+        match pinned {
+            Some(first) => ensure!(*first == resolved.binding, target::BINDING_CHANGED),
+            None => *pinned = Some(resolved.binding.clone()),
+        }
         if self.renderer.get(&resolved.binding.terminal_id).is_none() {
             self.new_write_rule(rule, &resolved).await?;
             return Err(refused("terminal_unreadable", NO_RECEIPT.into()).into());

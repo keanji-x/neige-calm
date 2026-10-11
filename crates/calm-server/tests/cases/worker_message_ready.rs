@@ -150,6 +150,105 @@ async fn message_waits_for_its_worker_to_start() {
     stop(&h, &f.worker).await;
 }
 
+/// The common start inside the wait: dispatched with no worker card yet, then running with its card
+/// stamped, then the task prompt submitted; the message is written once, after all three.
+#[tokio::test]
+async fn message_waits_through_dispatch_for_its_worker_card_and_start() {
+    let h = Harness::start().await;
+    let f = unstarted(&h, "claude", true, false).await;
+    sqlx::query("UPDATE tasks SET status='dispatched',worker_card_id=NULL WHERE id=?1")
+        .bind(&f.worker.task)
+        .execute(h.sql.pool())
+        .await
+        .unwrap();
+    let start = async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        sqlx::query("UPDATE tasks SET status='running',worker_card_id=?2 WHERE id=?1")
+            .bind(&f.worker.task)
+            .bind(&f.worker.card)
+            .execute(h.sql.pool())
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(reads(&f.log).is_empty(), "{:?}", reads(&f.log));
+        prompt_submitted(&h, &f.worker).await;
+    };
+    let (reply, ()) = tokio::join!(
+        message(&h, json!({"attempt_id":f.worker.task}), "m", "x"),
+        start
+    );
+    written(&reply);
+    assert_eq!(
+        wait_for_reads(&f.log, 1).await,
+        vec![expected(&f.worker.task, "x")]
+    );
+    stop(&h, &f.worker).await;
+}
+
+/// A waiting message writes only to the binding it first resolved: a worker session that replaces
+/// it on the same terminal meanwhile is refused, and nothing is written.
+#[tokio::test]
+async fn message_waiting_for_a_replaced_worker_session_writes_nothing() {
+    use calm_server::db::prelude::*;
+    use calm_server::db::sqlite::session_supersede_and_start_tx;
+    use calm_server::session_projection_repo::{
+        AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+    };
+    let h = Harness::start().await;
+    h.interaction()
+        .set_message_start_wait(Duration::from_secs(5));
+    let f = unstarted(&h, "claude", true, false).await;
+    let replace = async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let old = h
+            .sql
+            .session_get_by_id(&f.worker.session.clone().into())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut tx = h.sql.pool().begin().await.unwrap();
+        session_supersede_and_start_tx(
+            &mut tx,
+            &f.worker.session,
+            WorkerSessionInit {
+                id: calm_server::model::new_id(),
+                card_id: f.worker.card.clone(),
+                kind: WorkerSessionKind::ClaudeCard,
+                agent_provider: Some(AgentProvider::Claude),
+                status: WorkerSessionState::Running,
+                terminal_run_id: Some(f.worker.terminal.clone()),
+                thread_id: None,
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: None,
+                spawn_op_id: old.spawn_op_id,
+                now_ms: calm_server::model::now_ms(),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    };
+    let sent = Instant::now();
+    let (reply, ()) = tokio::join!(
+        message(&h, json!({"attempt_id":f.worker.task}), "m", "x"),
+        replace
+    );
+    assert_refusal(
+        &reply,
+        -32403,
+        None,
+        "terminal task/session binding changed; show and read again",
+    );
+    assert!(
+        sent.elapsed() < Duration::from_secs(5),
+        "refused before the wait ran out"
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(reads(&f.log).is_empty(), "{:?}", reads(&f.log));
+    stop(&h, &f.worker).await;
+}
+
 /// Only this worker session's own `UserPromptSubmit` starts it: another hook kind, another card's
 /// prompt, or a session the ingest could not attribute to this worker does not.
 #[tokio::test]

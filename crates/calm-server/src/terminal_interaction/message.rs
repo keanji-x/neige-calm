@@ -8,7 +8,7 @@
 //! a starting worker waits for it inside the call (#2554): the kernel holds the readiness fact, so
 //! the Planner never has to guess when to send again.
 use super::client::InputRole;
-use super::target::{InputRefused, Resolved, refused};
+use super::target::{InputRefused, Resolved, WORKER_STARTING, refused};
 use super::write_leg::{Admission, Delivered, WriteRule};
 use super::*;
 use crate::terminal_renderer::{RendererEntry, WriteShape};
@@ -118,7 +118,7 @@ async fn message_check(
         .task
         .as_ref()
         .map_or("", |task| task.attempt_id.as_str());
-    Ok((!started).then(|| refused("worker_starting", NOT_STARTED.replace("{attempt}", attempt))))
+    Ok((!started).then(|| refused(WORKER_STARTING, NOT_STARTED.replace("{attempt}", attempt))))
 }
 
 /// A running worker whose agent has not submitted its task prompt: Enter may answer a startup
@@ -139,7 +139,7 @@ const START_POLL: Duration = Duration::from_millis(200);
 fn starting(error: &anyhow::Error) -> bool {
     error
         .downcast_ref::<InputRefused>()
-        .is_some_and(|refused| refused.refusal == "worker_starting")
+        .is_some_and(|refused| refused.refusal == WORKER_STARTING)
 }
 
 /// Readable (the model view captures, as `observable`), not exited, and bracketed paste on: what
@@ -211,8 +211,10 @@ impl TerminalInteraction {
             crate::routes::idempotency_key::stable_payload_hash(&json!({"action":action}))?;
         // A replay returns its receipt before the message rule and the terminal check: the worker
         // may have reported or left paste mode since the original write.
-        // A starting worker is waited for: each try re-runs the whole admission, replay first.
+        // A starting worker is waited for: each try re-runs the whole admission, replay first, on
+        // the binding the first resolved try found.
         let deadline = Instant::now() + self.start_wait();
+        let mut pinned = None;
         let admitted = loop {
             match self
                 .admit_write(
@@ -222,6 +224,7 @@ impl TerminalInteraction {
                     &fingerprint,
                     observation_wait.clone(),
                     WriteRule::Message,
+                    &mut pinned,
                 )
                 .await
             {

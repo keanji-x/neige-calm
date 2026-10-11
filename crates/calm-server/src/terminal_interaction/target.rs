@@ -51,6 +51,10 @@ impl Binding {
 /// interrupts its turn and starts none, #1782); `{provider}` is the worker's provider.
 const WORKER_KEYS_REFUSED: &str = include_str!("../../prompts/terminal/worker-keys-refused.md");
 
+/// A request's terminal now serves another task or worker session than the one it was resolved to.
+pub(super) const BINDING_CHANGED: &str =
+    "terminal task/session binding changed; show and read again";
+
 /// A refusal decided before any connection, claim or byte: `data.refusal` names it (#2493).
 #[derive(Debug)]
 pub struct InputRefused {
@@ -67,14 +71,12 @@ pub(super) fn refused(refusal: &'static str, message: String) -> InputRefused {
     InputRefused { refusal, message }
 }
 
+/// The refusal a starting worker answers; a message waits while it holds (#2554).
+pub(super) const WORKER_STARTING: &str = "worker_starting";
+
 /// What a task's lifecycle answers a terminal tool whose task has no worker taking input (#2493,
 /// #2554): one table whether or not a worker terminal resolved, decided from the task row alone.
-/// `blocking` is a pending task's reason, the one `neige_task_ls` shows, when it was read.
-pub(super) fn lifecycle_refusal(
-    task: &TaskBinding,
-    status: Option<TaskStatus>,
-    blocking: Option<&str>,
-) -> InputRefused {
+pub(super) fn lifecycle_refusal(task: &TaskBinding, status: Option<TaskStatus>) -> InputRefused {
     let (attempt, key) = (&task.attempt_id, &task.task_key);
     let label = status.map_or("unknown", TaskStatus::wire_label);
     let parked = |next: &str| {
@@ -89,14 +91,17 @@ pub(super) fn lifecycle_refusal(
         Some(TaskStatus::Pending) => refused(
             "task_pending",
             format!(
-                "attempt {attempt} (task {key}) has not started{}; it has no worker yet. \
-                 To change what it will do, edit its task block: its worker starts with it",
-                blocking.map_or(String::new(), |reason| format!(" ({reason})"))
+                "attempt {attempt} (task {key}) has not started, so it has no worker yet; \
+                 neige_task_ls shows why it waits. To change what it will do, edit its task \
+                 block: its worker starts with it"
             ),
         ),
         Some(TaskStatus::Dispatched | TaskStatus::Running) => refused(
-            "worker_starting",
-            format!("attempt {attempt} is {label}; its worker is starting. Read again, then send."),
+            WORKER_STARTING,
+            format!(
+                "attempt {attempt} is {label}; its worker is starting and takes no input yet. Send \
+                 again on a later wake"
+            ),
         ),
         Some(TaskStatus::Verifying) => parked("Wait for its gate."),
         Some(TaskStatus::Canceled) => parked("Declare a new task."),
@@ -138,7 +143,7 @@ impl Resolved {
                     self.session_state.as_db_str()
                 ),
             ),
-            status => lifecycle_refusal(task, status, None),
+            status => lifecycle_refusal(task, status),
         })
     }
     /// The write rule as an error: the typed refusal on a task worker, the untyped one on a
@@ -184,20 +189,15 @@ impl TerminalInteraction {
     }
     /// The worker card of an attempt, or the refusal its task row gives before any terminal lookup
     /// (#2554): a pending task, a task that runs as a child Track, or one whose worker card is not
-    /// stamped yet (the scheduler stamps it when the task runs).
-    async fn attempt_worker_card<'t>(
-        repo: &dyn RouteRepo,
-        track: &str,
-        task: &'t Task,
-    ) -> Result<&'t str> {
+    /// stamped yet (the scheduler stamps it when the task runs). It reads nothing more: the quiet
+    /// detector resolves every non-terminal task through here.
+    fn attempt_worker_card(task: &Task) -> Result<&str> {
         let binding = TaskBinding {
             attempt_id: task.id.clone(),
             task_key: task.key.clone(),
         };
         let refusal = if task.status == TaskStatus::Pending {
-            let view = crate::task_recovery::task_recovery_view(repo, track, &task.key).await?;
-            let blocking = view.current.and_then(|current| current.blocking_reason);
-            lifecycle_refusal(&binding, Some(task.status), blocking.as_deref())
+            lifecycle_refusal(&binding, Some(task.status))
         } else if task.spawn == TASK_CHILD_TRACK_ROUTE {
             refused(
                 "task_in_child_track",
@@ -210,7 +210,7 @@ impl TerminalInteraction {
         } else if let Some(card) = task.worker_card_id.as_deref() {
             return Ok(card);
         } else {
-            lifecycle_refusal(&binding, Some(task.status), None)
+            lifecycle_refusal(&binding, Some(task.status))
         };
         Err(refusal.into())
     }
@@ -242,7 +242,7 @@ impl TerminalInteraction {
         let (requested_task, terminal) = match target {
             Target::Attempt(id) => {
                 let task = Self::current_task(repo, track, id).await?;
-                let card = Self::attempt_worker_card(repo, track, &task).await?;
+                let card = Self::attempt_worker_card(&task)?;
                 let terminal = repo.terminal_get_by_card(card).await?;
                 (Some(task), terminal)
             }
@@ -371,10 +371,7 @@ impl TerminalInteraction {
             &Target::Terminal(expected.terminal_id.clone()),
         )
         .await?;
-        ensure!(
-            &current.binding == expected,
-            "terminal task/session binding changed; show and read again"
-        );
+        ensure!(&current.binding == expected, BINDING_CHANGED);
         if write {
             current.ensure_write_allowed()?;
         }

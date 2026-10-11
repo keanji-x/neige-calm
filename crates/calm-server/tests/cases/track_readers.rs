@@ -165,10 +165,10 @@ async fn a_reader_waits_for_a_running_writer_and_its_delivery() {
 }
 
 /// #2554, the 4140 case: a writer waiting for the checkout has no worker yet. The Planner's message
-/// and read by its attempt are refused with `task_pending` and the scheduler's reason, and its task
-/// block still takes the edit the refusal points to.
+/// and read by its attempt are refused with `task_pending`, and its task block still takes the edit
+/// the refusal points to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_task_waiting_for_the_checkout_refuses_terminal_tools_with_its_reason() {
+async fn a_task_waiting_for_the_checkout_refuses_terminal_tools_and_takes_an_edit() {
     let w = world().await;
     let fx = &w.fx;
     let providers = calm_server::provider_registry::WorkerProviderRegistry::for_daemon(
@@ -205,8 +205,8 @@ async fn a_task_waiting_for_the_checkout_refuses_terminal_tools_with_its_reason(
     assert_eq!(pending_message(fx, "w2").await, IN_USE);
     let attempt = current(&fx.boot, "w2").await.id;
     let text = format!(
-        "attempt {attempt} (task w2) has not started ({IN_USE}); it has no worker yet. To change \
-         what it will do, edit its task block: its worker starts with it"
+        "attempt {attempt} (task w2) has not started, so it has no worker yet; neige_task_ls shows \
+         why it waits. To change what it will do, edit its task block: its worker starts with it"
     );
     for (tool, args) in [
         (
