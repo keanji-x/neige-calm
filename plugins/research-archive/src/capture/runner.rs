@@ -19,6 +19,13 @@
 //! **Deadlines.** No request starts at or after its bound, and a request or
 //! token refresh still in flight at the bound is dropped there
 //! ([`clock::within`]). A retry never waits past the deadline.
+//!
+//! **The first stop latches.** When any worker stops the run (a request
+//! found no usable token, the window closed, a write failed), every other
+//! worker's fetch in flight (its token resolution, rate-limit wait or
+//! request) and every wait between attempts is dropped at once, and no
+//! further attempt starts. So an auth failure is not followed by one more
+//! unpaced token refresh per worker.
 
 use std::{
     collections::VecDeque,
@@ -230,6 +237,9 @@ struct Bounds {
 
 /// The workers' shared state.
 struct Pool<C: Clock> {
+    /// Flips to `true` on the first [`Pool::halt`]; in-flight work waits on
+    /// it ([`Pool::unless_stopped`]).
+    halted: tokio::sync::watch::Sender<bool>,
     clock: Arc<C>,
     source: Arc<LongbridgeSource>,
     recorder: Recorder<C>,
@@ -245,6 +255,17 @@ impl<C: Clock> Pool<C> {
             .lock()
             .expect("the stop lock is never poisoned")
             .get_or_insert(stop);
+        self.halted.send_replace(true);
+    }
+
+    /// `fut`'s output, or `None` when the run is stopped first, in which
+    /// case `fut` is dropped.
+    async fn unless_stopped<F: std::future::Future>(&self, fut: F) -> Option<F::Output> {
+        let mut halted = self.halted.subscribe();
+        tokio::select! {
+            output = fut => Some(output),
+            _ = halted.wait_for(|halted| *halted) => None,
+        }
     }
 
     fn stopped(&self) -> Option<Stop> {
@@ -281,7 +302,8 @@ impl<C: Clock> Pool<C> {
                 return;
             }
             let fetch = self.source.fetch(&endpoint, &work.key);
-            let Some(fetched) = clock::within(&*self.clock, bound, fetch).await else {
+            let bounded = clock::within(&*self.clock, bound, fetch);
+            let Some(Some(fetched)) = self.unless_stopped(bounded).await else {
                 return;
             };
             let recorded = match self
@@ -313,7 +335,13 @@ impl<C: Clock> Pool<C> {
             if wake >= bounds.until {
                 return;
             }
-            self.clock.sleep_until(wake).await;
+            if self
+                .unless_stopped(self.clock.sleep_until(wake))
+                .await
+                .is_none()
+            {
+                return;
+            }
         }
     }
 }
@@ -360,6 +388,7 @@ async fn phases<C: Clock>(ctx: &RunCtx<C>) -> Result<Outcome, Outcome> {
     let run = ctx.plan.run_id;
     let store_err = |what: &str, err: StoreError| fail(what, &err).on(as_of);
     let pool = Arc::new(Pool {
+        halted: tokio::sync::watch::Sender::new(false),
         clock: Arc::clone(&ctx.clock),
         source: Arc::clone(&ctx.source),
         recorder: Recorder {

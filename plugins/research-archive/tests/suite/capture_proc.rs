@@ -18,7 +18,7 @@ use chrono::Days;
 use research_archive::calendar::ny_date;
 use research_archive::clock::{Clock, SystemClock};
 
-use crate::capture_support::{Archive, CLIENT, Knobs, closed_port};
+use crate::archive::{Archive, CLIENT, Knobs, closed_port};
 use crate::fake::{FakeServer, Seen};
 
 /// An archive whose window is open for the rest of today, New York: the
@@ -97,7 +97,8 @@ impl Proc {
             .unwrap()
     }
 
-    /// Write an SDK-shaped token file and `auth import` it.
+    /// Write an SDK-shaped token file and `auth import --force` it: the
+    /// tests store expiring tokens on purpose.
     pub async fn import(&self, access: &str, refresh: Option<&str>, expires_at: u64) -> Output {
         let from = self.archive.root.path().join("sdk-token.json");
         let json = serde_json::to_string_pretty(&serde_json::json!({
@@ -108,8 +109,14 @@ impl Proc {
         }))
         .unwrap();
         std::fs::write(&from, json).unwrap();
-        self.run(&["auth", "import", "--from", from.to_str().unwrap()])
-            .await
+        self.run(&[
+            "auth",
+            "import",
+            "--force",
+            "--from",
+            from.to_str().unwrap(),
+        ])
+        .await
     }
 
     pub fn token_path(&self) -> PathBuf {

@@ -16,8 +16,8 @@ use std::{
 use research_archive::clock::{Clock, SystemClock};
 use research_archive::state::{ExitKind, LastExit};
 
+use crate::archive::Knobs;
 use crate::capture_proc::{Proc, code, text};
-use crate::capture_support::Knobs;
 use crate::fake::{FakeServer, Reply, Seen};
 
 const ACCESS: &str = "CANARY-CAP-ACCESS-6b2e";

@@ -1,6 +1,7 @@
 use std::os::unix::fs::PermissionsExt;
 
 use super::*;
+use crate::files::random_suffix;
 
 const CANARY_ACCESS: &str = "us_m_CANARY-ACCESS-7f3a9c";
 const CANARY_REFRESH: &str = "CANARY-REFRESH-51d0e2";

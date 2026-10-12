@@ -18,7 +18,9 @@
 //!
 //! The process deadline is `min(window_end, start + attempt_timeout)`. The
 //! exit state goes to `last_exit.json` ([`crate::state`]) before the lock is
-//! released, including when the SDK's browser flow ends the process.
+//! released, on every ending after the lock: a token that would need the
+//! SDK's browser flow is an ordinary `AUTH_UNAVAILABLE` return
+//! ([`auth::build_oauth`] stops the flow), not a process exit.
 
 mod runner;
 
@@ -26,14 +28,14 @@ pub use runner::{COUNTED, DEGRADED_BELOW, MAX_IN_FLIGHT, backoff, counts_toward_
 
 use std::{fmt::Display, sync::Arc};
 
-use longbridge::oauth::{OAuth, OAuthError};
+use longbridge::oauth::OAuth;
 
 use crate::auth::{self, DataDirTokenStorage};
 use crate::calendar::{TradingCalendar, fetch::RefreshError};
 use crate::clock::{self, Clock};
 use crate::config::Config;
 use crate::lock::{DataDirLock, LockError};
-use crate::source::LongbridgeSource;
+use crate::source::{LongbridgeSource, Timeouts};
 use crate::state::{ExitKind, LastExit, Outcome};
 use crate::store::PlanRequest;
 use crate::types::{AsOf, Source, UnixMs};
@@ -51,19 +53,6 @@ impl Outcome {
     pub(crate) fn on(mut self, as_of: AsOf) -> Outcome {
         self.as_of = Some(as_of);
         self
-    }
-}
-
-/// A fixed name for an OAuth failure. The SDK's error text is never logged:
-/// it can quote a server message.
-fn oauth_category(err: &OAuthError) -> &'static str {
-    match err {
-        OAuthError::NoTokenAvailable => "no_token_available",
-        OAuthError::NoRefreshToken => "no_refresh_token",
-        OAuthError::RefreshTokenFailed { .. } => "refresh_token_failed",
-        OAuthError::TokenFileWrite { .. } => "token_file_write",
-        OAuthError::BindCallbackFailed { .. } => "bind_callback_failed",
-        _ => "oauth",
     }
 }
 
@@ -189,7 +178,12 @@ impl<C: Clock> Start<'_, C> {
 
         let deadline = plan.window.end().min(self.process_deadline());
         let oauth = self.oauth(deadline, Some(as_of)).await?;
-        let source = LongbridgeSource::new(oauth, &self.config.http_url, self.config.rps);
+        let source = LongbridgeSource::new(
+            oauth,
+            &self.config.http_url,
+            self.config.rps,
+            Timeouts::PRODUCTION,
+        );
         let carry_deadline = clock::after(plan.window.start(), self.config.carry_deadline);
         let outcome = runner::drive(runner::RunCtx {
             clock: Arc::clone(self.clock),
@@ -210,41 +204,35 @@ impl<C: Clock> Start<'_, C> {
     }
 
     /// The shared `OAuth` client, built on first use and bounded by
-    /// `deadline`. A browser flow ends the process with `AUTH_UNAVAILABLE`
-    /// after writing the exit state.
+    /// `deadline`. A token that cannot be used without a browser login, a
+    /// refresh that fails, and a build still running at the deadline are all
+    /// `AUTH_UNAVAILABLE`.
     async fn oauth(&mut self, deadline: UnixMs, as_of: Option<AsOf>) -> Result<OAuth, Outcome> {
         if let Some(oauth) = &self.oauth {
             return Ok(oauth.clone());
         }
-        let unavailable = Outcome {
-            kind: ExitKind::AuthUnavailable,
-            as_of,
-            failure: None,
-        };
         let storage = DataDirTokenStorage::open(self.config.oauth_dir())
             .map_err(|e| fail("opening the token storage", &e))?;
-        let before_exit = {
-            let clock = Arc::clone(self.clock);
-            let data_dir = self.config.data_dir.clone();
-            let outcome = unavailable.clone();
-            move || LastExit::from_outcome(&outcome, clock.now()).write(&data_dir)
-        };
-        let build = auth::build_oauth(&self.config.oauth_client_id, storage, before_exit);
-        match clock::within(&**self.clock, deadline, build).await {
-            Some(Ok(oauth)) => {
+        let left = u64::try_from(deadline.0.saturating_sub(self.clock.now().0)).unwrap_or(0);
+        let built = auth::build_oauth(
+            &self.config.oauth_client_id,
+            storage,
+            std::time::Duration::from_millis(left),
+        )
+        .await;
+        match built {
+            Ok(oauth) => {
                 self.oauth = Some(oauth.clone());
                 Ok(oauth)
             }
-            Some(Err(err)) => {
-                tracing::error!(
-                    category = oauth_category(&err),
-                    "no usable token; run `auth import` or `auth login`"
-                );
-                Err(unavailable)
-            }
-            None => {
-                tracing::error!("the token could not be established before the deadline");
-                Err(unavailable)
+            Err(reason) => {
+                // `reason` is a fixed variant name, never SDK text.
+                tracing::error!(%reason, "no usable token; run `auth import` or `auth login`");
+                Err(Outcome {
+                    kind: ExitKind::AuthUnavailable,
+                    as_of,
+                    failure: None,
+                })
             }
         }
     }

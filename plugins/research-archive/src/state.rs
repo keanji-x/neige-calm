@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::atomic_file;
 use crate::exit;
+use crate::files;
 use crate::types::{AsOf, UnixMs};
 
 /// How a capture ended. Each kind has one exit code.
@@ -140,7 +140,7 @@ impl LastExit {
     /// code still tells systemd.
     pub fn write(&self, data_dir: &Path) {
         let bytes = serde_json::to_vec_pretty(self).expect("an exit state always serializes");
-        if let Err(err) = atomic_file::replace(&Self::path(data_dir), &bytes) {
+        if let Err(err) = files::replace(&Self::path(data_dir), &bytes) {
             tracing::error!(error = %err, "cannot write last_exit.json");
         }
     }

@@ -25,7 +25,6 @@
 //! - [`state`]: `last_exit.json`, how the last start ended;
 //! - [`notify`]: the deduplicated `OnFailure=` alert.
 
-pub mod atomic_file;
 pub mod auth;
 pub mod calendar;
 pub mod capture;

@@ -26,9 +26,9 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::atomic_file;
 use crate::config::Config;
 use crate::exit;
+use crate::files;
 use crate::state::LastExit;
 use crate::types::UnixMs;
 
@@ -141,7 +141,7 @@ pub fn run(config: &Config, unit: &str, now: UnixMs) -> i32 {
             let state = NotifyState { kind, at: now.0 };
             let bytes =
                 serde_json::to_vec_pretty(&state).expect("a notify state always serializes");
-            if let Err(err) = atomic_file::replace(&NotifyState::path(&config.data_dir), &bytes) {
+            if let Err(err) = files::replace(&NotifyState::path(&config.data_dir), &bytes) {
                 tracing::error!(error = %err, "cannot write notify_state.json");
             }
             exit::OK

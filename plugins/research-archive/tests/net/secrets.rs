@@ -1,6 +1,6 @@
 //! I11: no token, refresh token or account string reaches the binary's
 //! output, our logs, the archive file or a `Debug` rendering. The capture
-//! log's part of I11 arrives with the runner (S1-2b).
+//! job's part of I11 is the suite's `capture_secrets`.
 
 use std::{
     fs,

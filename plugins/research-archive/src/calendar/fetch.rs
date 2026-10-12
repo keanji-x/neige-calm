@@ -18,14 +18,14 @@ use longbridge::{Config as SdkConfig, Language, Market, oauth::OAuth, quote::Quo
 
 use super::TradingCalendar;
 use crate::config::Config;
-use crate::source;
 use crate::types::{FailureClass, Response, UnixMs};
+use crate::{sdk_error, source};
 
 /// The longest a refresh may take, connection included.
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Why a refresh failed. Only a fixed code is kept: an SDK error's text can
-/// quote the server's message, which is not ours to log.
+/// Why a refresh failed. It carries only the SDK error's variant name
+/// ([`sdk_error::sdk_kind`]), never its text.
 #[derive(Debug, thiserror::Error)]
 pub enum RefreshError {
     /// The SDK had no usable credentials. The job exits `AUTH_UNAVAILABLE`.
@@ -55,26 +55,25 @@ fn from_time(day: time::Date) -> Option<NaiveDate> {
 }
 
 /// The refresh failure for an SDK error. An HTTP error is an auth failure
-/// exactly when the source's classification calls it `auth_unavailable`,
-/// and its code is the source's `error_class:error_code`, so both share one
-/// table.
-fn refresh_error(err: longbridge::Error) -> RefreshError {
-    let (auth, code) = match err {
-        longbridge::Error::OAuth(_) => (true, "oauth".to_owned()),
-        longbridge::Error::HttpClient(http) => match source::classify(http).response() {
-            Response::Failed { class, error } => (
-                *class == FailureClass::AuthUnavailable,
-                format!("{}:{}", error.class.as_str(), error.code),
-            ),
-            Response::Body(_) => (false, "unexpected_body".to_owned()),
-        },
-        longbridge::Error::WsClient(_) => (false, "quote_websocket".to_owned()),
-        _ => (false, "sdk".to_owned()),
+/// exactly when the source's classification calls it `auth_unavailable`, so
+/// both share one table.
+pub fn refresh_error(err: longbridge::Error) -> RefreshError {
+    let kind = sdk_error::sdk_kind(&err).into_owned();
+    let auth = match err {
+        longbridge::Error::OAuth(_) => true,
+        longbridge::Error::HttpClient(http) => matches!(
+            source::classify(http).response(),
+            Response::Failed {
+                class: FailureClass::AuthUnavailable,
+                ..
+            }
+        ),
+        _ => false,
     };
     if auth {
-        RefreshError::Auth(code)
+        RefreshError::Auth(kind)
     } else {
-        RefreshError::Failed(code)
+        RefreshError::Failed(kind)
     }
 }
 
@@ -130,16 +129,5 @@ mod tests {
             let day = NaiveDate::from_ymd_opt(y, m, d).unwrap();
             assert_eq!(from_time(to_time(day)), Some(day));
         }
-    }
-
-    #[test]
-    fn only_credential_failures_are_auth() {
-        use longbridge::httpclient::HttpClientError as E;
-        let auth = |err| matches!(refresh_error(err), RefreshError::Auth(_));
-        assert!(auth(longbridge::Error::OAuth("expired".into())));
-        assert!(auth(longbridge::Error::HttpClient(E::InvalidAccessToken)));
-        assert!(auth(longbridge::Error::HttpClient(E::OAuth("x".into()))));
-        assert!(!auth(longbridge::Error::HttpClient(E::RequestTimeout)));
-        assert!(!auth(longbridge::Error::UnknownCommand(1)));
     }
 }

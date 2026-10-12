@@ -376,7 +376,9 @@ do nothing and exit `LOCKED`. The capture (S1-2b) takes it first and exits
 **Token.** The archive's own token lives in
 `<data_dir>/oauth/<client_id>.json` (file 0600, written by temp file with
 a random name, fsync and rename; a name that exists is skipped, never
-removed), in the SDK's token-file format. Writable storage creates
+removed), in the SDK's token-file format. That write, `files::replace`, is
+the only one: the calendar cache, `last_exit.json` and `notify_state.json`
+go through it too. Writable storage creates
 `oauth/` as 0700, and sets an existing `oauth/` to 0700; the data dir keeps
 whatever mode it has (it is created 0700 when missing). No command prints or
 logs a token.
@@ -547,6 +549,19 @@ writes under that turn. So `fetched_at` is the wall time the response was
 **recorded**, and a run's clock never goes back, however the in-flight
 requests finish (#2577).
 
+**The first stop latches.** When a worker stops the run (a request found
+no usable token, the window closed, or a write failed), every other
+worker's fetch in flight (its token resolution, rate-limit wait or request)
+and every wait between attempts is dropped at once, and no attempt starts
+after it. An auth failure therefore never triggers one more token refresh
+per worker.
+
+**The browser flow.** A token that the SDK could use only through the
+browser login (none stored, or an expiring one whose refresh fails) stops
+`build_oauth` at the flow's first step: it returns `BrowserFlow`, the
+callback listener is dropped, and the start ends `AUTH_UNAVAILABLE` through
+its normal exit, `last_exit.json` included.
+
 **Burst bound.** The SDK retries a bare HTTP 429 up to five times inside one
 request, outside the limiter. The server throttles with the envelope code
 429002 instead, which the SDK does not retry. The worst burst beyond the
@@ -683,7 +698,8 @@ Two integration binaries:
 | `net::logs` | only our own log target is emitted |
 | `net::secrets` | I11 for the binary's output, our logs, the archive file, `Debug`, and a login callback carrying a canary |
 | `net::dotenv`, `net::scan` | a `.env` in reach is refused and cannot override the pins; no SDK client is built outside the harness |
-| `runner` | on a fake clock: I1, I7, freeze before fetch, resumption, the carry deadline, missed and dangling days, the serialized recorder, a hanging request, the `degraded` threshold |
+| `net::runner` | on a fake clock, under the harness: I1, I7, freeze before fetch, resumption, the carry deadline, missed and dangling days, the serialized recorder, a hanging request, the `degraded` threshold, the first auth failure stopping every worker |
+| `net::calendar` | the calendar refresh's error mapping: only credential failures are `auth`, only variant names kept |
 | `capture_cli` | `capture` as a subprocess: kills during membership and fetch (I4), I12, I9, a hanging token refresh, I10, the calendar refresh |
 | `capture_secrets` | I11 for `capture` and `notify`; the alert's dedupe and environment |
 | `units` | the systemd templates' directives and placeholders |

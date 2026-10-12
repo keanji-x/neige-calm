@@ -9,7 +9,7 @@
 //! `&'static str` these functions return. Every variant is named, so an SDK
 //! upgrade that adds one fails to compile here.
 
-use longbridge::{httpclient::HttpClientError, oauth::OAuthError};
+use longbridge::{httpclient::HttpClientError, oauth::OAuthError, wsclient::WsClientError};
 
 /// The snake_case name of an OAuth error variant.
 pub fn oauth_kind(err: &OAuthError) -> &'static str {
@@ -55,4 +55,40 @@ pub fn http_kind(err: &HttpClientError) -> &'static str {
         HttpClientError::OAuth(_) => "oauth",
         HttpClientError::Sse(_) => "sse",
     }
+}
+
+/// The snake_case name of a quote WebSocket client error variant.
+pub fn ws_kind(err: &WsClientError) -> &'static str {
+    match err {
+        WsClientError::UnexpectedResponse => "unexpected_response",
+        WsClientError::Decode(_) => "decode",
+        WsClientError::ConnectTimeout => "connect_timeout",
+        WsClientError::RequestTimeout => "request_timeout",
+        WsClientError::ConnectionClosed { .. } => "connection_closed",
+        WsClientError::ClientClosed => "client_closed",
+        WsClientError::ResponseError { .. } => "response_error",
+        WsClientError::Cancelled => "cancelled",
+        WsClientError::InvalidUrl(_) => "invalid_url",
+        WsClientError::Websocket(_) => "websocket",
+    }
+}
+
+/// The name of an SDK context error (`QuoteContext`'s): the variant, and for
+/// a client error the client's variant, as `http:<kind>` or `ws:<kind>`.
+pub fn sdk_kind(err: &longbridge::Error) -> std::borrow::Cow<'static, str> {
+    use longbridge::Error as E;
+    let fixed = match err {
+        E::DecodeProtobuf(_) => "decode_protobuf",
+        E::DecodeJSON(_) => "decode_json",
+        E::ParseField { .. } => "parse_field",
+        E::UnknownCommand(_) => "unknown_command",
+        E::InvalidSecuritySymbol { .. } => "invalid_security_symbol",
+        E::UnknownMarket { .. } => "unknown_market",
+        E::UnknownTradeSession { .. } => "unknown_trade_session",
+        E::HttpClient(http) => return format!("http:{}", http_kind(http)).into(),
+        E::WsClient(ws) => return format!("ws:{}", ws_kind(ws)).into(),
+        E::OAuth(_) => "oauth",
+        E::ConversationStreamEnded => "conversation_stream_ended",
+    };
+    fixed.into()
 }

@@ -16,21 +16,19 @@
 //! The SDK runs the browser flow from `OAuthBuilder::build` when storage has
 //! no token, or when a token expiring within five minutes fails to refresh
 //! (`rust/crates/oauth/src/builder.rs:105-153`). [`build_oauth`], which a
-//! capture uses, turns that flow into `exit(AUTH_UNAVAILABLE)`; only
-//! [`login`] lets it run.
+//! capture uses, stops that flow at its first step and returns
+//! [`OAuthUnavailable::BrowserFlow`]; only [`login`] lets it run.
 
 use std::{
-    fmt,
-    fs::{self, File, OpenOptions},
-    io::{self, Write},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
+    fmt, fs, io,
+    os::unix::fs::{DirBuilderExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
 use longbridge::oauth::{OAuth, OAuthBuilder, OAuthError, OAuthResult, StoredToken, TokenStorage};
 use serde::{Deserialize, Serialize};
 
-use crate::{exit, files, sdk_error};
+use crate::{files, sdk_error};
 
 /// A credential string. Formatting never shows it.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -318,18 +316,18 @@ impl DataDirTokenStorage {
         Ok(Some(token))
     }
 
-    /// Persist `token` atomically: a 0600 temp file with a random name in
-    /// the same directory, fsync, rename over the target, fsync the
-    /// directory.
+    /// Persist `token` atomically through [`files::replace`]: a 0600 temp
+    /// file with a random name in the same directory, fsync, rename over the
+    /// target, fsync the directory.
     pub fn save_checked(&self, token: &TokenFile) -> Result<(), TokenFileError> {
-        self.save_with_temp_names(token, std::iter::repeat_with(random_suffix))
+        self.save_with_temp_names(token, std::iter::repeat_with(files::random_suffix))
     }
 
     /// [`save_checked`](Self::save_checked) with the temp-name suffixes
     /// drawn from `suffixes`, so a test can make one collide.
     ///
-    /// A name that exists already is skipped, never touched: only a temp
-    /// file this call created is renamed or removed.
+    /// A name that exists already is skipped, never touched
+    /// ([`files::replace_with_temp_names`]).
     fn save_with_temp_names(
         &self,
         token: &TokenFile,
@@ -349,62 +347,10 @@ impl DataDirTokenStorage {
                 field,
                 problem,
             })?;
-        let io_err = |path: &Path| {
-            let path = path.to_owned();
-            move |source| TokenFileError::Io { path, source }
-        };
-        let mut suffixes = suffixes.into_iter().take(TEMP_ATTEMPTS);
-        let (temp, mut file) = loop {
-            let Some(suffix) = suffixes.next() else {
-                return Err(TokenFileError::Io {
-                    path: self.dir.clone(),
-                    source: io::Error::new(
-                        io::ErrorKind::AlreadyExists,
-                        "no free temp-file name for the token",
-                    ),
-                });
-            };
-            let temp = self
-                .dir
-                .join(format!(".{}.json.tmp-{suffix}", client_id.as_str()));
-            match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&temp)
-            {
-                Ok(file) => break (temp, file),
-                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
-                // Nothing was created, so there is nothing to remove.
-                Err(err) => return Err(io_err(&temp)(err)),
-            }
-        };
-        // From here on `temp` is ours: it is renamed into place or removed.
         let bytes = serde_json::to_vec_pretty(token).expect("a token file always serializes");
-        let written = file
-            .write_all(&bytes)
-            .and_then(|()| file.sync_all())
-            .map_err(io_err(&temp))
-            .and_then(|()| fs::rename(&temp, &target).map_err(io_err(&target)));
-        if let Err(err) = written {
-            let _ = fs::remove_file(&temp);
-            return Err(err);
-        }
-        File::open(&self.dir)
-            .and_then(|dir| dir.sync_all())
-            .map_err(io_err(&self.dir))
+        files::replace_with_temp_names(&target, &bytes, suffixes)
+            .map_err(|files::ReplaceError { path, source }| TokenFileError::Io { path, source })
     }
-}
-
-/// How many temp-file names one save tries before giving up.
-const TEMP_ATTEMPTS: usize = 16;
-
-/// 128 random bits from the OS, as hex: a temp-file suffix no other process
-/// can predict.
-fn random_suffix() -> String {
-    let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes).expect("the OS random source is available");
-    hex::encode(bytes)
 }
 
 impl TokenStorage for DataDirTokenStorage {
@@ -442,6 +388,10 @@ pub enum OAuthUnavailable {
     /// finish within its deadline.
     #[error("timed out")]
     TimedOut,
+    /// The SDK wanted the browser flow: no stored token, or an expiring one
+    /// whose refresh failed. Needs `auth import` or `auth login`.
+    #[error("browser authorization required")]
+    BrowserFlow,
     #[error("{0}")]
     Sdk(&'static str),
 }
@@ -451,30 +401,39 @@ pub enum OAuthUnavailable {
 ///
 /// A valid stored token is loaded without network. An expiring one is
 /// refreshed and saved through `storage`; oauth2's HTTP client has no
-/// timeout of its own, so `deadline` bounds the refresh. When the SDK would
-/// fall back to the browser flow, the process exits with
-/// [`exit::AUTH_UNAVAILABLE`] instead: a capture must never wait on a human.
-/// The SDK binds its callback listener before it calls `open_url`
-/// (`client.rs:125-153`), so this asks for an ephemeral port (0): the
-/// registered port stays free for `auth login`.
+/// timeout of its own, so `deadline` bounds the refresh. When the SDK falls
+/// back to the browser flow, the build stops there and returns
+/// [`OAuthUnavailable::BrowserFlow`]: a capture must never wait on a human.
+/// The SDK binds its callback listener and then calls `open_url`
+/// (`client.rs:125-153`); `open_url` only signals, and the build future,
+/// listener included, is dropped before this returns. The listener asks for
+/// an ephemeral port (0), so the registered port stays free for
+/// `auth login`.
 pub async fn build_oauth(
     client_id: &ClientId,
     storage: DataDirTokenStorage,
     deadline: std::time::Duration,
 ) -> Result<OAuth, OAuthUnavailable> {
+    // `notify_one` keeps a permit when nobody waits yet, so the signal is
+    // never lost.
+    let browser = std::sync::Arc::new(tokio::sync::Notify::new());
+    let signal = browser.clone();
     let build = OAuthBuilder::new(client_id.as_str())
         .callback_port(0)
         .token_storage(storage)
-        .build(|_authorization_url| {
+        .build(move |_authorization_url| {
             tracing::error!(
                 "OAuth browser authorization required; run `auth import` or `auth login`"
             );
-            std::process::exit(exit::AUTH_UNAVAILABLE);
+            signal.notify_one();
         });
-    match tokio::time::timeout(deadline, build).await {
-        Ok(Ok(oauth)) => Ok(oauth),
-        Ok(Err(err)) => Err(OAuthUnavailable::Sdk(sdk_error::oauth_kind(&err))),
-        Err(_elapsed) => Err(OAuthUnavailable::TimedOut),
+    tokio::select! {
+        built = tokio::time::timeout(deadline, build) => match built {
+            Ok(Ok(oauth)) => Ok(oauth),
+            Ok(Err(err)) => Err(OAuthUnavailable::Sdk(sdk_error::oauth_kind(&err))),
+            Err(_elapsed) => Err(OAuthUnavailable::TimedOut),
+        },
+        () = browser.notified() => Err(OAuthUnavailable::BrowserFlow),
     }
 }
 
@@ -598,7 +557,7 @@ pub fn import_token(
         storage,
         force,
         now,
-        std::iter::repeat_with(random_suffix),
+        std::iter::repeat_with(files::random_suffix),
     )
 }
 

@@ -15,8 +15,8 @@ use std::{
 
 use research_archive::types::RunId;
 
+use crate::archive::{Knobs, members};
 use crate::capture_proc::{Proc, code, kill, seen, text, unix_now};
-use crate::capture_support::{Knobs, members};
 use crate::fake::{FakeServer, Reply, Seen};
 use crate::support::raw;
 
@@ -306,6 +306,7 @@ async fn i10_a_second_start_is_busy_without_the_token_or_a_request() {
     assert_eq!(server.seen().len(), 1);
 
     let out = p.import("ap_m_OTHER", None, FAR).await;
+    assert_eq!(code(&out), research_archive::exit::LOCKED);
     assert!(text(&out.stderr).contains("held by another process"));
     assert!(!text(&out.stdout).contains("imported"));
 

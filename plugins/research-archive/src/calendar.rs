@@ -20,7 +20,7 @@ use chrono::{DateTime, Days, NaiveDate, NaiveTime, TimeZone};
 use chrono_tz::America::New_York;
 use serde::{Deserialize, Serialize};
 
-use crate::atomic_file;
+use crate::files;
 use crate::types::{AsOf, UnixMs, Window};
 
 /// The regular session opens at 09:30 New York.
@@ -112,10 +112,20 @@ impl TradingCalendar {
         Ok(Some(calendar))
     }
 
-    /// Write the cache atomically.
+    /// Write the cache atomically ([`files::replace`]), creating its
+    /// directory (mode 0700) when it is missing.
     pub fn save(&self, data_dir: &Path) -> std::io::Result<()> {
+        use std::os::unix::fs::DirBuilderExt;
+        let path = Self::path(data_dir);
+        if let Some(dir) = path.parent() {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)?;
+        }
         let bytes = serde_json::to_vec_pretty(self).expect("a calendar always serializes");
-        atomic_file::replace(&Self::path(data_dir), &bytes)
+        files::replace(&path, &bytes)
+            .map_err(|e| std::io::Error::new(e.source.kind(), e.to_string()))
     }
 
     /// Days ascending and unique inside `[from, to]`; half days are trading
