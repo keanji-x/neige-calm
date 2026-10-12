@@ -421,7 +421,12 @@ source, judges a membership body. A `fetch` runs in this order:
    it does not count toward the attempt cap.
 2. It takes its rate-limit slot, so callers that waited behind a refresh
    are paced, not released together.
-3. It sends within 60 s, the SDK's own retries included.
+3. It sends within 60 s, the SDK's own retries included, through an HTTP
+   client built on a snapshot of that token, which can never refresh. The
+   token is resolved in exactly one place: a token that crosses the SDK's
+   five-minute refresh margin while a fetch waits for its slot is still
+   sent (it is valid until it expires), and the next fetch refreshes in
+   step 1. The snapshot client is cached per token value.
 
 A deadline can drop a refresh that the server has already committed. If
 Longbridge rotates refresh tokens on use, the stored one is then spent and
@@ -430,7 +435,9 @@ the login is lost; `auth login` restores it.
 - **Exact bytes hold for UTF-8.** The SDK reads the body with reqwest's
   `text()`, which replaces invalid UTF-8 with U+FFFD before the envelope is
   parsed. JSON is UTF-8 by specification, so a valid body is kept byte for
-  byte; an invalid one would not be.
+  byte; an invalid one would not be. A `charset` in `Content-Type` is
+  ignored: reqwest transcodes only with its `charset` feature, which
+  nothing in this build enables (a test pins it).
 - **The limiter cannot pace SDK retries.** The SDK retries a bare HTTP 429
   up to five times inside one request, outside the limiter. The server
   throttles with envelope `429002` instead, which the SDK does not retry,
@@ -460,6 +467,16 @@ the login is lost; `auth login` restores it.
 Run `cargo nextest run -p research-archive`. The source and CLI tests use a
 local fake HTTP server and fabricated tokens; none reaches a real host.
 
+Two integration binaries:
+
+- **`suite`** drives the Store and the binary as a subprocess.
+- **`net`** holds every test that builds an SDK `OAuth` or a
+  `LongbridgeSource` in process. Its harness serializes them, refuses a
+  `.env` in reach, and pins the proxies to a local black hole, `NO_PROXY`
+  to loopback, `LONGBRIDGE_ENV` and `LONGBRIDGE_REGION`. A source scan
+  (`net::scan`) fails if any other test, or an unlisted production file,
+  builds one.
+
 | test module | covers |
 |---|---|
 | `guards` | I2, on every table, including the rowid collision |
@@ -469,8 +486,10 @@ local fake HTTP server and fabricated tokens; none reaches a real host.
 | `freeze` | the derived freeze, Store-classified membership bodies, I5, atomicity, carry vs `read_at` |
 | `reads` | I6, the universe, read order and coverage |
 | `send` | every public async method returns a `Send` future |
-| `source` | I3 through the Store, the request of every catalog entry, the classification table |
-| `logs` | only our own log target is emitted |
 | `cli` | the environment guard, the lock (`LOCKED`), `auth import`, `status` and `login` as subprocesses |
-| `secrets` | I11 for the binary's output, our logs, the archive file, `Debug`, and a login callback carrying a canary |
-| `net` (own binary; sets process-wide proxy variables) | a hung token refresh is bounded in `build_oauth` and `fetch` and releases the `OAuth` lock; a hung code exchange ends `login` by its deadline; a `.env` in reach is refused and cannot override the pinned environment |
+| `net::source` | I3 through the Store (also under a misleading charset), the request of every catalog entry, the classification table |
+| `net::crossing` | a token crossing the refresh margin during the slot wait: no refresh inside a send, never `transient` |
+| `net::refresh`, `net::login` | a hung token refresh is bounded and releases the `OAuth` lock; a hung code exchange ends `login` by its deadline |
+| `net::logs` | only our own log target is emitted |
+| `net::secrets` | I11 for the binary's output, our logs, the archive file, `Debug`, and a login callback carrying a canary |
+| `net::dotenv`, `net::scan` | a `.env` in reach is refused and cannot override the pins; no SDK client is built outside the harness |

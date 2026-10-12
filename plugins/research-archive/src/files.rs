@@ -4,17 +4,25 @@
 //! such as `/dev/zero` never ends, so a path a command reads (`--config`,
 //! `auth import --from`, the stored token) must be a regular file of bounded
 //! size. Symlinks are followed: a link to a regular file is fine.
+//!
+//! The file is opened with `O_NONBLOCK`, so even a path swapped to a FIFO
+//! after any earlier check opens at once, and its type is then checked on
+//! the open descriptor (`fstat`). On a regular file `O_NONBLOCK` has no
+//! effect.
 
 use std::{
-    fs::{self, File},
+    fs::{self, OpenOptions},
     io::{self, Read},
+    os::unix::fs::OpenOptionsExt,
     path::Path,
 };
 
 /// The largest config or token file read.
 pub const MAX_FILE_BYTES: u64 = 64 * 1024;
 
-/// Refuse a path that is not a regular file, without opening it.
+/// Refuse a path that is not a regular file, without opening it. A fast,
+/// early check (`auth import` runs it before taking the lock);
+/// [`read_regular`] does not rely on it.
 pub fn require_regular(path: &Path) -> io::Result<()> {
     if fs::metadata(path)?.is_file() {
         Ok(())
@@ -26,11 +34,13 @@ pub fn require_regular(path: &Path) -> io::Result<()> {
     }
 }
 
-/// Read a regular file of at most [`MAX_FILE_BYTES`]. The type is checked
-/// before the open (a FIFO would block it) and again on the opened file.
+/// Read a regular file of at most [`MAX_FILE_BYTES`]: opened without
+/// blocking, then its type checked on the open descriptor.
 pub fn read_regular(path: &Path) -> io::Result<Vec<u8>> {
-    require_regular(path)?;
-    let file = File::open(path)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)?;
     if !file.metadata()?.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -72,6 +82,15 @@ mod tests {
             let err = read_regular(path).unwrap_err();
             assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{path:?}");
         }
+
+        // Opening a FIFO with no writer never blocks.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path = fifo.clone();
+        std::thread::spawn(move || tx.send(read_regular(&path).map_err(|e| e.kind())));
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(5)),
+            Ok(Err(io::ErrorKind::InvalidInput))
+        );
 
         fs::write(&file, vec![b'x'; MAX_FILE_BYTES as usize + 1]).unwrap();
         assert_eq!(

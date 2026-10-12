@@ -19,6 +19,8 @@ pub struct Seen {
     pub path: String,
     pub query: Option<String>,
     pub headers: HeaderMap,
+    /// Wall time of arrival.
+    pub at: std::time::SystemTime,
 }
 
 impl Seen {
@@ -81,6 +83,7 @@ impl FakeServer {
                     path: uri.path().to_owned(),
                     query: uri.query().map(str::to_owned),
                     headers,
+                    at: std::time::SystemTime::now(),
                 };
                 let reply = respond(&request);
                 log.lock().unwrap().push(request);

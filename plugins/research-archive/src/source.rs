@@ -29,17 +29,11 @@
 //! envelope code `429002`, which the SDK does not retry, and probe P1 saw no
 //! bare 429, so in practice every request start is paced.
 
-use std::{
-    future::Future,
-    num::NonZeroU32,
-    pin::Pin,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{num::NonZeroU32, sync::Mutex, time::Duration};
 
 use longbridge::{
     httpclient::{DcRegion as SdkDcRegion, HttpClient, HttpClientConfig, HttpClientError, Method},
-    oauth::{OAuth, OAuthResult},
+    oauth::{OAuth, OAuthBuilder, OAuthError, OAuthResult, StoredToken, TokenStorage},
 };
 use serde::{Serialize, Serializer, ser::SerializeMap};
 
@@ -130,15 +124,6 @@ impl Timeouts {
     };
 }
 
-/// How a fetch resolves the access token before taking its rate-limit slot.
-/// In production it is the source's own `OAuth`; the pacing unit test
-/// substitutes a resolver that blocks the way a refresh holds the `OAuth`
-/// lock, because a successful refresh cannot be faked without the real
-/// OAuth host's TLS certificate.
-type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-
-type ResolveToken = Arc<dyn Fn() -> BoxFuture<'static, OAuthResult<String>> + Send + Sync>;
-
 /// The envelope code of the server's rate limit (probe P1).
 pub const THROTTLE_CODE: i32 = 429_002;
 
@@ -169,40 +154,33 @@ impl Fetched {
 }
 
 /// The catalog source for Longbridge.
+///
+/// **One place resolves the token.** `fetch` asks the shared, refreshing
+/// `OAuth` for the access token under [`Timeouts::token`], then sends through
+/// an `HttpClient` built on a snapshot of that token which can never refresh
+/// ([`snapshot_client`]). The SDK's own token resolution inside `send()`
+/// (`httpclient/src/request.rs:316-331`) therefore reads the snapshot and
+/// returns at once: no refresh can start under [`Timeouts::fetch`], even when
+/// the token crosses the SDK's five-minute margin while the fetch waits for
+/// its rate-limit slot. The snapshot client is cached per token value, so
+/// connections are reused and `HttpClientConfig::from_oauth` (which also
+/// runs `dotenv()`) is paid only when the token changes.
 pub struct LongbridgeSource {
-    http: HttpClient,
-    resolve_token: ResolveToken,
+    oauth: OAuth,
+    http_url: String,
+    snapshot: Mutex<Option<(String, HttpClient)>>,
     limiter: RateLimiter,
     timeouts: Timeouts,
 }
 
 impl LongbridgeSource {
-    /// `oauth` is the process's one shared client; `http_url` is pinned, never
-    /// taken from the environment.
+    /// `oauth` is the process's one shared, refreshing client; `http_url` is
+    /// pinned, never taken from the environment.
     pub fn new(oauth: OAuth, http_url: &str, rps: Rps, timeouts: Timeouts) -> Self {
-        let resolver = oauth.clone();
-        Self::with_resolver(
-            oauth,
-            http_url,
-            rps,
-            timeouts,
-            Arc::new(move || {
-                let oauth = resolver.clone();
-                Box::pin(async move { oauth.access_token().await })
-            }),
-        )
-    }
-
-    fn with_resolver(
-        oauth: OAuth,
-        http_url: &str,
-        rps: Rps,
-        timeouts: Timeouts,
-        resolve_token: ResolveToken,
-    ) -> Self {
         Self {
-            http: HttpClient::new(HttpClientConfig::from_oauth(oauth).http_url(http_url)),
-            resolve_token,
+            oauth,
+            http_url: http_url.to_owned(),
+            snapshot: Mutex::new(None),
             limiter: RateLimiter::new(rps),
             timeouts,
         }
@@ -217,9 +195,10 @@ impl LongbridgeSource {
     ///    pair, so it never counts toward the attempt cap.
     /// 2. **Take a rate-limit slot.** Callers that queued behind a refresh
     ///    (the `OAuth` lock) are paced from here, not released together.
-    /// 3. **Send** within `timeouts.fetch`. The SDK resolves the token again
-    ///    inside `send()`, which is now immediate. Dropping a timed-out
-    ///    future also drops any `OAuth` lock guard it holds.
+    /// 3. **Send** through the snapshot client of that token within
+    ///    `timeouts.fetch`. A token inside the SDK's margin but not yet
+    ///    expired is still sent: the SDK checks expiry only to decide on a
+    ///    refresh (`oauth/src/token.rs:59-66`), never before a request.
     pub async fn fetch(&self, endpoint: &Endpoint, key: &Key) -> Fetched {
         let auth_failure = |code: &str| Fetched {
             response: failed(
@@ -229,16 +208,21 @@ impl LongbridgeSource {
             ),
             retry_after: None,
         };
-        match tokio::time::timeout(self.timeouts.token, (self.resolve_token)()).await {
-            Ok(Ok(_token)) => {}
+        let token = match tokio::time::timeout(self.timeouts.token, self.oauth.access_token()).await
+        {
+            Ok(Ok(token)) => token,
             Ok(Err(err)) => return auth_failure(sdk_error::oauth_kind(&err)),
             Err(_elapsed) => return auth_failure("refresh_timeout"),
-        }
+        };
+        let http = match self.snapshot_for(token).await {
+            Ok(http) => http,
+            Err(err) => return auth_failure(sdk_error::oauth_kind(&err)),
+        };
         self.limiter.acquire().await;
         let method = match endpoint.method {
             catalog::Method::Get => Method::GET,
         };
-        let mut request = self.http.request(method, endpoint.path);
+        let mut request = http.request(method, endpoint.path);
         for (name, value) in endpoint.headers {
             request = request.header(*name, *value);
         }
@@ -267,6 +251,58 @@ impl LongbridgeSource {
             },
         }
     }
+
+    /// The cached snapshot client for `token`, built when the token changed.
+    async fn snapshot_for(&self, token: String) -> OAuthResult<HttpClient> {
+        if let Some((cached, http)) = &*self.snapshot.lock().expect("never poisoned")
+            && *cached == token
+        {
+            return Ok(http.clone());
+        }
+        let http = snapshot_client(self.oauth.client_id(), &token, &self.http_url).await?;
+        *self.snapshot.lock().expect("never poisoned") = Some((token, http.clone()));
+        Ok(http)
+    }
+}
+
+/// Token storage that holds one token and never saves.
+struct Snapshot(StoredToken);
+
+impl TokenStorage for Snapshot {
+    fn load(&self, _client_id: &str) -> Option<StoredToken> {
+        Some(self.0.clone())
+    }
+
+    fn save(&self, _token: &StoredToken) -> OAuthResult<()> {
+        Err(OAuthError::Other("a token snapshot is never saved".into()))
+    }
+}
+
+/// An `HttpClient` that sends `token` and can never refresh it.
+///
+/// Its `OAuth` is built from storage holding `token` with no refresh token
+/// and an expiry of `u64::MAX`, so the SDK loads it without network
+/// (`oauth/src/builder.rs:116-124`), never finds it expiring
+/// (`token.rs:59-66`) and never refreshes (`client.rs:96-112`). The real
+/// expiry is the shared `OAuth`'s concern. Unlike `OAuth::from_token`, which
+/// has an empty client id (`client.rs:68-81`), this keeps the client id the
+/// SDK sends as `X-Api-Key` (`request.rs:326`), so a request carries the
+/// same headers as through the shared client.
+async fn snapshot_client(client_id: &str, token: &str, http_url: &str) -> OAuthResult<HttpClient> {
+    let oauth = OAuthBuilder::new(client_id)
+        .callback_port(0)
+        .token_storage(Snapshot(StoredToken {
+            client_id: client_id.to_owned(),
+            access_token: token.to_owned(),
+            refresh_token: None,
+            expires_at: u64::MAX,
+        }))
+        // Unreachable: the storage always yields a token that never expires.
+        .build(|_| tracing::error!("a token snapshot asked for a browser login"))
+        .await?;
+    Ok(HttpClient::new(
+        HttpClientConfig::from_oauth(oauth).http_url(http_url),
+    ))
 }
 
 /// The endpoint's query pairs in catalog order, the key in its slot.

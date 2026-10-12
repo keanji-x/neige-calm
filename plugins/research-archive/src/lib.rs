@@ -34,8 +34,3 @@ pub mod types;
 
 pub use catalog::{Catalog, Endpoint, EndpointId, KeyKind};
 pub use store::{OpenError, Store, StoreError};
-
-/// The `.env` reach check shared with the integration tests.
-#[cfg(test)]
-#[path = "../tests/common/dotenv_reach.rs"]
-mod dotenv_reach;

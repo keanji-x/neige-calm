@@ -292,26 +292,6 @@ fn summary_shows_expiry_and_refresh_presence_only() {
     );
 }
 
-#[tokio::test]
-async fn build_oauth_loads_a_valid_token_without_saving_or_a_browser() {
-    let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("test-client.json");
-    fs::write(&path, sdk_token_file("test-client", Some(CANARY_REFRESH))).unwrap();
-    let before = fs::read(&path).unwrap();
-
-    crate::dotenv_reach::assert_no_dotenv_reach();
-    let oauth = build_oauth(
-        &client(),
-        DataDirTokenStorage::open(root.path()).unwrap(),
-        std::time::Duration::from_secs(5),
-    )
-    .await
-    .unwrap();
-    assert_eq!(oauth.access_token().await.unwrap(), CANARY_ACCESS);
-    assert!(!format!("{oauth:?}").contains("CANARY"));
-    assert_eq!(fs::read(&path).unwrap(), before);
-}
-
 fn suffixes(names: &[&str]) -> Vec<String> {
     names.iter().map(|n| (*n).to_owned()).collect()
 }
