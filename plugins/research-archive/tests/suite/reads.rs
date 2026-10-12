@@ -1,22 +1,14 @@
 //! The read contract: the point-in-time value (I6), overlapping origins
 //! (I5), the universe at a time, and coverage.
 
-use research_archive::store::PlanRequest;
-use research_archive::types::{FailureClass, Finish, Origin, Outcome, Source, UnixMs, Window};
+use research_archive::types::{FailureClass, Finish, Origin, Response, UnixMs};
 
 use crate::support::{
     as_of, at, constituents, endpoint, failed, fresh, key, observe_and_freeze, ok, plan_request,
 };
 
-fn permanent() -> Outcome {
-    match failed(FailureClass::Permanent) {
-        Outcome::Failed { class, error, .. } => Outcome::Failed {
-            class,
-            error,
-            body: Some(b"{\"code\":404}".to_vec()),
-        },
-        other => other,
-    }
+fn permanent() -> Response {
+    failed(FailureClass::Permanent)
 }
 
 /// Day 1 ok with a full body, day 2 `permanent`, day 3 ok with `body`.
@@ -90,7 +82,7 @@ async fn i6_every_failure_class_is_skipped() {
         .plan_run(&plan_request(1, &["AAPL.US"], &[]))
         .await
         .unwrap();
-    let rec = |t: i64, o: Outcome| {
+    let rec = |t: i64, o: Response| {
         let store = f.store.clone();
         let run = plan.run_id;
         async move {
@@ -109,15 +101,7 @@ async fn i6_every_failure_class_is_skipped() {
         // catalog has none.
         (6, FailureClass::Permanent),
     ] {
-        let outcome = match failed(class) {
-            Outcome::Failed { class, error, .. } => Outcome::Failed {
-                class,
-                error,
-                body: Some(b"not a value".to_vec()),
-            },
-            other => other,
-        };
-        rec(t, outcome).await;
+        rec(t, failed(class)).await;
     }
     let read = f
         .store
@@ -352,62 +336,72 @@ async fn coverage_counts_rows_per_planned_pair() {
     assert_eq!(get("MSFT.US", "valuation"), (0, false));
 }
 
-fn overlapping(n: i64, started_at: UnixMs) -> PlanRequest {
-    PlanRequest {
-        source: Source::Longbridge,
-        as_of: as_of(n),
-        window: Window::new(at(1, 0), at(9, 0)).unwrap(),
-        started_at,
-        config: vec![key("AAPL.US")],
-        indexes: vec![],
+/// Equal `fetched_at` within a run (the clock allows equal times): the
+/// higher attempt wins. Across runs of a source equal times cannot occur:
+/// windows do not overlap, so `fetched_at` order is `as_of` order.
+#[tokio::test]
+async fn read_at_ties_go_to_the_higher_attempt() {
+    let f = fresh().await;
+    let p = f
+        .store
+        .plan_run(&plan_request(1, &["AAPL.US"], &[]))
+        .await
+        .unwrap();
+    let t = at(1, 50);
+    for body in [&b"attempt1"[..], b"attempt2"] {
+        f.store
+            .record_observation(p.run_id, &key("AAPL.US"), endpoint("ratings"), t, &ok(body))
+            .await
+            .unwrap();
     }
+    let read = f
+        .store
+        .read_at(&key("AAPL.US"), endpoint("ratings"), t)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(read.body, b"attempt2");
 }
 
-/// Equal `fetched_at`: the higher run id wins, then the higher attempt.
+/// Across runs the latest day wins, even when run ids do not follow `as_of`
+/// (day 2 planned before day 1).
 #[tokio::test]
-async fn read_at_ties_go_to_the_higher_run_then_attempt() {
+async fn read_at_across_runs_follows_the_days() {
     let f = fresh().await;
-    let r1 = f.store.plan_run(&overlapping(1, at(1, 1))).await.unwrap();
-    let r2 = f.store.plan_run(&overlapping(2, at(1, 1))).await.unwrap();
-    let t = at(1, 50);
-    let rec = |run, body: &'static [u8]| {
-        let store = f.store.clone();
-        async move {
-            store
-                .record_observation(run, &key("AAPL.US"), endpoint("ratings"), t, &ok(body))
-                .await
-                .unwrap()
-        }
-    };
-    // Written in an order that the tie rule must undo.
-    rec(r2.run_id, b"run2-attempt1").await;
-    rec(r1.run_id, b"run1-attempt1").await;
-    rec(r1.run_id, b"run1-attempt2").await;
+    let d2 = f
+        .store
+        .plan_run(&plan_request(2, &["AAPL.US"], &[]))
+        .await
+        .unwrap();
+    let d1 = f
+        .store
+        .plan_run(&plan_request(1, &["AAPL.US"], &[]))
+        .await
+        .unwrap();
+    assert!(d2.run_id < d1.run_id);
+    for (run, n, body) in [(d1.run_id, 1, &b"day1"[..]), (d2.run_id, 2, b"day2")] {
+        f.store
+            .record_observation(
+                run,
+                &key("AAPL.US"),
+                endpoint("ratings"),
+                at(n, 5),
+                &ok(body),
+            )
+            .await
+            .unwrap();
+    }
     let read = |t| {
         let store = f.store.clone();
         async move {
-            store
+            let r = store
                 .read_at(&key("AAPL.US"), endpoint("ratings"), t)
                 .await
                 .unwrap()
-                .unwrap()
+                .unwrap();
+            (r.body, r.as_of)
         }
     };
-    assert_eq!(read(t).await.body, b"run2-attempt1");
-    rec(r2.run_id, b"run2-attempt2").await;
-    assert_eq!(read(t).await.body, b"run2-attempt2");
-    assert_eq!(read(t).await.as_of, as_of(2));
-}
-
-/// Equal `started_at`: the higher run id is the universe.
-#[tokio::test]
-async fn universe_at_ties_go_to_the_higher_run() {
-    let f = fresh().await;
-    let mut second = overlapping(2, at(1, 1));
-    second.config = vec![key("MSFT.US")];
-    let _first = f.store.plan_run(&overlapping(1, at(1, 1))).await.unwrap();
-    let second = f.store.plan_run(&second).await.unwrap();
-    let u = f.store.universe_at(at(1, 1)).await.unwrap().unwrap();
-    assert_eq!(u.run_id, second.run_id);
-    assert_eq!(u.members, [(key("MSFT.US"), Origin::Config)]);
+    assert_eq!(read(at(1, 999)).await, (b"day1".to_vec(), as_of(1)));
+    assert_eq!(read(at(3, 0)).await, (b"day2".to_vec(), as_of(2)));
 }

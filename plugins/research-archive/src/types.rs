@@ -229,8 +229,11 @@ impl Status {
     }
 }
 
-/// Where a failure came from (`observation.error_class`). Every failure row
-/// has one, with a non-empty `error_code` whose meaning depends on it.
+/// Where a failure without a usable body came from (`observation.error_class`).
+/// Every failure row has an error class with a non-empty `error_code` whose
+/// meaning depends on it. The stored set has one more value, which no caller
+/// can state: `incomplete_membership`, derived by the Store from a
+/// constituents body (see [`Response::Body`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorClass {
     /// An OpenAPI envelope with a non-zero code. Code: that code, in decimal
@@ -253,9 +256,6 @@ pub enum ErrorClass {
     DcRegionRestricted,
     /// The SDK could not build the request. Code: the SDK error variant.
     Client,
-    /// An `index_constituents` body that fails the completeness rule. Code:
-    /// `IncompleteMembership::code()`. Always `permanent`.
-    IncompleteMembership,
 }
 
 impl ErrorClass {
@@ -268,7 +268,6 @@ impl ErrorClass {
             ErrorClass::Auth => "auth",
             ErrorClass::DcRegionRestricted => "dc_region_restricted",
             ErrorClass::Client => "client",
-            ErrorClass::IncompleteMembership => "incomplete_membership",
         }
     }
 }
@@ -280,27 +279,32 @@ pub struct ErrorDetail {
     pub code: String,
 }
 
-/// What one attempt produced.
+/// What one attempt produced, as the caller saw it. The caller never
+/// classifies a body: the Store does.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Outcome {
-    /// The envelope's exact `data` bytes. Empty bytes are a valid value.
-    Ok { body: Vec<u8> },
-    /// No observation. `body` keeps bytes worth auditing (for example an
-    /// `index_constituents` body that failed the completeness rule).
+pub enum Response {
+    /// A response body arrived: the envelope's exact `data` bytes (empty
+    /// bytes included). On a security endpoint it is stored as `ok`. On the
+    /// membership endpoint the Store applies
+    /// [`constituents_members`](crate::membership::constituents_members): a
+    /// complete body is `ok`, an incomplete one is `permanent` with
+    /// `error_class = incomplete_membership` and the rule that failed as
+    /// `error_code`, and its bytes are kept either way.
+    Body(Vec<u8>),
+    /// No usable body: a transport, HTTP, envelope, auth or client failure.
+    /// No bytes are stored for it.
     Failed {
         class: FailureClass,
         error: ErrorDetail,
-        body: Option<Vec<u8>>,
     },
 }
 
-impl Outcome {
-    pub fn status(&self) -> Status {
-        match self {
-            Outcome::Ok { .. } => Status::Ok,
-            Outcome::Failed { class, .. } => Status::Failed(*class),
-        }
-    }
+/// What `record_observation` stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Recorded {
+    /// The attempt number within `(run, key, endpoint)`, from 1.
+    pub attempt: u32,
+    pub status: Status,
 }
 
 /// How a run ends by itself (`end_run`). `missed` is only written by

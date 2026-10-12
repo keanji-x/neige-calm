@@ -74,15 +74,12 @@ pub enum StoreError {
         key: Key,
         endpoint: String,
     },
+    #[error("the window overlaps or is out of as_of order with run {with}")]
+    WindowConflict { with: RunId },
     #[error("a plan started at {started_at:?} is outside its window")]
     PlanOutsideWindow { started_at: UnixMs },
     #[error("{at:?} is outside the window of run {run}")]
     OutsideWindow { run: RunId, at: UnixMs },
-    #[error("an ok index_constituents body for {index} is not a membership: {reason}")]
-    IncompleteMembership {
-        index: Key,
-        reason: IncompleteMembership,
-    },
     #[error("{at:?} is before the clock of run {run}, now at {mark:?}")]
     ClockWentBack {
         run: RunId,
@@ -102,14 +99,6 @@ pub enum StoreError {
         index: Key,
         attempt: i64,
         reason: IncompleteMembership,
-    },
-    #[error(
-        "freeze at {frozen_at:?} precedes the observation of {index} fetched at {fetched_at:?}"
-    )]
-    FreezeBeforeObservation {
-        index: Key,
-        frozen_at: UnixMs,
-        fetched_at: UnixMs,
     },
     #[error(
         "run {run} is not complete: frozen {frozen}, {pairs_without_rows} planned pairs have no row"
@@ -195,7 +184,7 @@ impl Store {
         let found_version = schema::user_version(&mut tx).await?;
         let found_schema = schema::read_schema(&mut tx).await?;
         if found_version == 0 && found_schema.is_empty() {
-            sqlx::raw_sql(schema::DDL).execute(&mut *tx).await?;
+            sqlx::Executor::execute(&mut *tx, schema::DDL).await?;
             for e in self.catalog.endpoints() {
                 insert_endpoint(&mut tx, e).await?;
             }

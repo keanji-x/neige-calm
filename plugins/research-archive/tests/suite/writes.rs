@@ -4,7 +4,7 @@
 
 use research_archive::StoreError;
 use research_archive::types::{
-    FailureClass, Finish, Outcome, RunId, RunOutcome, Source, Status, UnixMs,
+    FailureClass, Finish, Response, RunId, RunOutcome, Source, Status, UnixMs,
 };
 
 use crate::support::{
@@ -124,6 +124,9 @@ async fn closed_sets_are_checked_with_default_settings() {
         "INSERT INTO observation VALUES (1, 'AAPL.US', 'consensus', 9, 0, 'permanent', NULL, 'teapot', 'x')",
         "INSERT INTO observation VALUES (1, 'AAPL.US', 'consensus', 9, 0, 'permanent', NULL, 'http_status', 'Not Found')",
         "INSERT INTO observation VALUES (1, 'AAPL.US', 'consensus', 9, 0, 'transient', NULL, 'incomplete_membership', 'zero_total')",
+        // Bytes only for ok and for an incomplete membership body.
+        "INSERT INTO observation VALUES (1, '.SPX.US', 'index_constituents', 9, 0, 'permanent', NULL, 'incomplete_membership', 'zero_total')",
+        "INSERT INTO observation VALUES (1, 'AAPL.US', 'consensus', 9, 0, 'transient', (SELECT MIN(sha256) FROM blob), 'transport', 'x')",
         "INSERT INTO observation VALUES (1, 'AAPL.US', 'consensus', 9, 0, 'permanent', NULL, 'dc_region_restricted', 'x')",
         "INSERT INTO observation VALUES (1, 'AAPL.US', 'consensus', 9, 0, 'region_restricted', NULL, 'auth', 'x')",
         "INSERT INTO observation VALUES (1, 'AAPL.US', 'consensus', 9, 0, 'ok', (SELECT MIN(sha256) FROM blob), 'envelope', '1')",
@@ -150,13 +153,14 @@ async fn attempts_count_per_run_key_and_endpoint() {
         .plan_run(&plan_request(1, &["AAPL.US", "MSFT.US"], &[]))
         .await
         .unwrap();
-    let rec = |k: &'static str, e: &'static str, t: i64, o: Outcome| {
+    let rec = |k: &'static str, e: &'static str, t: i64, o: Response| {
         let store = f.store.clone();
         async move {
             store
                 .record_observation(plan.run_id, &key(k), endpoint(e), at(1, t), &o)
                 .await
                 .unwrap()
+                .attempt
         }
     };
     assert_eq!(
@@ -204,7 +208,7 @@ async fn attempts_count_per_run_key_and_endpoint() {
         )
         .await
         .unwrap();
-    assert_eq!(n, 1);
+    assert_eq!(n.attempt, 1);
 }
 
 #[tokio::test]
@@ -400,8 +404,8 @@ async fn rows_outside_the_window_are_refused() {
             "{t:?}"
         );
     }
-    assert_eq!(rec(window(1).start()).await.unwrap(), 1);
-    assert_eq!(rec(UnixMs(window(1).end().0 - 1)).await.unwrap(), 2);
+    assert_eq!(rec(window(1).start()).await.unwrap().attempt, 1);
+    assert_eq!(rec(UnixMs(window(1).end().0 - 1)).await.unwrap().attempt, 2);
 }
 
 /// `complete` needs every planned index frozen and every planned pair with
@@ -504,7 +508,7 @@ async fn concurrent_writers_keep_attempt_order_equal_to_time_order() {
     let mut refused = 0;
     for task in tasks {
         match task.await.unwrap() {
-            (t, Ok(attempt)) => accepted.push((attempt, t)),
+            (t, Ok(recorded)) => accepted.push((recorded.attempt, t)),
             (t, Err(StoreError::ClockWentBack { at, mark, .. })) => {
                 assert!(at == t && mark > t);
                 refused += 1;
@@ -528,4 +532,65 @@ async fn concurrent_writers_keep_attempt_order_equal_to_time_order() {
     let stored: Vec<(u32, UnixMs)> = rows.iter().map(|(a, t, _)| (*a, *t)).collect();
     assert_eq!(stored, accepted);
     other.close().await;
+}
+
+/// Windows of one source never overlap and follow `as_of` order, so across
+/// runs `fetched_at` order is `as_of` order. Touching windows are fine.
+#[tokio::test]
+async fn windows_never_overlap_and_follow_as_of() {
+    let f = fresh().await;
+    let d1 = f
+        .store
+        .plan_run(&plan_request(1, &["A.US"], &[]))
+        .await
+        .unwrap();
+    let request = |n, start: i64, end: i64| {
+        let mut r = plan_request(n, &["A.US"], &[]);
+        r.window = research_archive::types::Window::new(UnixMs(start), UnixMs(end)).unwrap();
+        r.started_at = UnixMs(start);
+        r
+    };
+    let w1 = window(1);
+    for bad in [
+        // A later day overlapping day 1's end.
+        request(2, w1.end().0 - 1, w1.end().0 + 100),
+        // A later day placed before day 1.
+        request(2, w1.start().0 - 200, w1.start().0 - 100),
+        // An earlier day overlapping day 1's start.
+        request(0, w1.start().0 - 100, w1.start().0 + 1),
+    ] {
+        assert!(
+            matches!(
+                f.store.plan_run(&bad).await,
+                Err(StoreError::WindowConflict { with }) if with == d1.run_id
+            ),
+            "{bad:?}"
+        );
+    }
+    assert!(matches!(
+        f.store
+            .record_missed(
+                Source::Longbridge,
+                as_of(2),
+                research_archive::types::Window::new(UnixMs(w1.end().0 - 1), UnixMs(w1.end().0 + 100))
+                    .unwrap(),
+                UnixMs(w1.end().0 + 100),
+            )
+            .await,
+        Err(StoreError::WindowConflict { with }) if with == d1.run_id
+    ));
+    // Touching windows on both sides.
+    f.store
+        .plan_run(&request(2, w1.end().0, w1.end().0 + 100))
+        .await
+        .unwrap();
+    f.store
+        .record_missed(
+            Source::Longbridge,
+            as_of(0),
+            research_archive::types::Window::new(UnixMs(w1.start().0 - 100), w1.start()).unwrap(),
+            w1.start(),
+        )
+        .await
+        .unwrap();
 }

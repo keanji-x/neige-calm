@@ -14,7 +14,6 @@ use crate::types::{AsOf, Key, Membership, Origin, RunId, Source, UnixMs};
 struct ConstituentsRow {
     run_id: RunId,
     attempt: i64,
-    fetched_at: UnixMs,
     body: Vec<u8>,
 }
 
@@ -25,18 +24,22 @@ impl Store {
     /// - **observed** when this run has an `ok` constituents observation of
     ///   it: the latest by [`LATEST_OK`](super::read::LATEST_OK), the order
     ///   `read_at` uses;
-    /// - else **carried** from the run of the same source with the latest
-    ///   earlier `as_of` that has one (its latest, same order). That row is
-    ///   an original observation by construction, never a carry;
+    /// - else **carried** from the latest `ok` of the runs of the same source
+    ///   with an earlier `as_of`, in the same order. Windows of one source
+    ///   never overlap and follow `as_of` order, so that is the latest
+    ///   earlier day's latest `ok`, and exactly what `read_at` returns at
+    ///   `frozen_at`. That row is an original observation by construction,
+    ///   never a carry;
     /// - else **none**.
     ///
     /// Members are parsed from that body with
     /// [`constituents_members`](crate::membership::constituents_members); a
     /// stored `ok` body that fails it (only possible if a writer bypassed
     /// `record_observation`) refuses the freeze. So does a `frozen_at`
-    /// outside the run's window or before the run's clock (which is at or
-    /// after every observation of the run), and a carried body fetched after
-    /// `frozen_at` (an earlier day's window may overlap this one).
+    /// outside the run's window or before the run's clock. No look-ahead is
+    /// possible: this run's observations are at or before its clock, and an
+    /// earlier day's are before its window end, which is at or before this
+    /// window's start.
     /// One `run_membership` row per index and one `run_key` row (`origin =
     /// index:<sym>`) per member are written. A second freeze is refused
     /// with `AlreadyFrozen`. A run that plans no index has nothing to freeze:
@@ -75,11 +78,11 @@ impl Store {
             };
             let membership = match (own, earlier) {
                 (Some(o), _) => Membership::Observed {
-                    members: members_of(&index, &o, frozen_at)?,
+                    members: members_of(&index, &o)?,
                 },
                 (None, Some(o)) => Membership::Carried {
                     source: o.run_id,
-                    members: members_of(&index, &o, frozen_at)?,
+                    members: members_of(&index, &o)?,
                 },
                 (None, None) => Membership::None,
             };
@@ -117,15 +120,15 @@ enum Scope {
     EarlierThan(Source, AsOf),
 }
 
-/// The latest `ok` observation of `endpoint` for `index` in `scope`: the
-/// latest `as_of`, then [`LATEST_OK`].
+/// The latest `ok` observation of `endpoint` for `index` in `scope`, by
+/// [`LATEST_OK`].
 async fn latest_ok(
     conn: &mut SqliteConnection,
     endpoint: EndpointId,
     index: &Key,
     scope: Scope,
 ) -> Result<Option<ConstituentsRow>> {
-    let select = "SELECT o.run_id, o.attempt, o.fetched_at, b.body
+    let select = "SELECT o.run_id, o.attempt, b.body
          FROM observation o
          JOIN run r ON r.run_id = o.run_id
          JOIN blob b ON b.sha256 = o.sha256
@@ -143,7 +146,7 @@ async fn latest_ok(
         Scope::EarlierThan(source, as_of) => {
             let sql = format!(
                 "{select} AND r.source = ? AND r.as_of < ?
-                 ORDER BY r.as_of DESC, {LATEST_OK} LIMIT 1"
+                 ORDER BY {LATEST_OK} LIMIT 1"
             );
             sqlx::query(&sql)
                 .bind(endpoint.as_str())
@@ -158,25 +161,15 @@ async fn latest_ok(
         Ok(ConstituentsRow {
             run_id: RunId(r.try_get("run_id")?),
             attempt: r.try_get("attempt")?,
-            fetched_at: UnixMs(r.try_get("fetched_at")?),
             body: r.try_get("body")?,
         })
     })
     .transpose()
 }
 
-/// The members in the body of `origin`, refusing bodies that are not a
-/// complete membership and look-ahead. Look-ahead is only reachable for a
-/// carried body: this run's own observations are at or before its clock,
-/// which `frozen_at` has already passed.
-fn members_of(index: &Key, origin: &ConstituentsRow, frozen_at: UnixMs) -> Result<Vec<Key>> {
-    if origin.fetched_at > frozen_at {
-        return Err(StoreError::FreezeBeforeObservation {
-            index: index.clone(),
-            frozen_at,
-            fetched_at: origin.fetched_at,
-        });
-    }
+/// The members in the body of `origin`, refusing a body that is not a
+/// complete membership.
+fn members_of(index: &Key, origin: &ConstituentsRow) -> Result<Vec<Key>> {
     constituents_members(&origin.body).map_err(|reason| StoreError::StoredMembershipInvalid {
         source_run: origin.run_id,
         index: index.clone(),

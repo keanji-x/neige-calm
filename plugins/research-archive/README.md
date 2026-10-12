@@ -66,8 +66,18 @@ The compiled catalog has six security endpoints and one index endpoint:
   body, and `error_class`/`error_code` are NULL. Lost coverage, such as a
   delisted symbol, arrives as an `ok` with empty fields and is stored as is.
 - **`transient`, `throttled`, `auth_unavailable`, `region_restricted` and
-  `permanent`** mean "no observation". These rows may still keep a body for
-  audit.
+  `permanent`** mean "no observation". They keep no bytes, with one
+  exception: a membership body that fails the completeness rule is kept
+  (`permanent` / `incomplete_membership`). A CHECK pins it: `sha256` is set
+  exactly on `ok` rows and `incomplete_membership` rows.
+
+**The caller never classifies a body.** `record_observation` takes either
+`Response::Body` (the envelope's `data` bytes) or `Response::Failed` (a
+failure without a usable body, with its class and detail). The Store
+decides the status of a body: on a security endpoint it is `ok`; on the
+membership endpoint it is `ok` when it is a complete membership and
+`permanent` / `incomplete_membership` otherwise. Bodies of other failures
+(for example an HTTP error page) are not data and are not stored.
 - **There is no `not_found` class.**
 
 **Failure detail.** Every failure row has an `error_class` from a closed set
@@ -82,7 +92,7 @@ The compiled catalog has six security endpoints and one index endpoint:
 | `auth` | the SDK had no usable credentials | the SDK error variant (`invalid_access_token`) |
 | `dc_region_restricted` | the SDK refused locally for the token's data center | the SDK error variant; status is always `region_restricted` |
 | `client` | the SDK could not build the request | the SDK error variant |
-| `incomplete_membership` | an `index_constituents` body that fails the completeness rule | the rule that failed (`zero_total`, `count_mismatch`, …); status is always `permanent` |
+| `incomplete_membership` | derived by the Store, never stated by a caller: an `index_constituents` body that fails the completeness rule | the rule that failed (`zero_total`, `count_mismatch`, …); status is always `permanent`; the body is kept |
 
 ## Index membership
 
@@ -92,36 +102,44 @@ returns every member of an index with at most 1,000 members. A body is a
 `stocks[].symbol` equals both `total` and the length of `stocks`
 (`membership::constituents_members`). A mistyped index symbol (`total = 0`),
 an unpaged answer (20 of 501), a truncated page or an index above the
-`limit` fails it. Such a body is filed as `permanent` /
-`incomplete_membership`; `record_observation` refuses to store it as `ok`.
-So an incomplete response can never freeze an observed universe.
+`limit` fails it. The Store files such a body as `permanent` /
+`incomplete_membership`, so it is never `ok`, and an incomplete response can
+never freeze an observed universe.
 
 **The freeze is derived, not supplied.** `freeze_membership(run_id,
 frozen_at)` takes no membership from its caller; the runner only decides
 when to freeze. For each planned `index-symbol` key, in one transaction:
 
 1. **observed** when this run has an `ok` constituents row for the index (the
-   latest attempt);
-2. else **carried** from the run of the same source with the latest earlier
-   `as_of` that has one (its latest attempt). That row is an original
-   observation by construction, never a carry;
+   latest by `LATEST_OK`);
+2. else **carried** from the latest `ok` row, by `LATEST_OK`, among runs of
+   the same source with an earlier `as_of`. Since windows follow `as_of`
+   order, that is the latest earlier day's latest `ok`, exactly the row
+   `read_at` returns at `frozen_at`. It is an original observation by
+   construction, never a carry. A later day's row is never taken, even if
+   it was written first;
 3. else **none**: no run has an `ok` membership for it.
 
 The members are parsed from that body. The freeze is refused when a stored
 `ok` body fails the completeness rule (only a writer bypassing the Store can
-cause it), when `frozen_at` is outside the run's window or before the run's
-clock, or when a carried body was fetched after `frozen_at` (no
-look-ahead). Any catalog the Store accepts has exactly one index endpoint,
+cause it), or when `frozen_at` is outside the run's window or before the
+run's clock. Look-ahead cannot happen: this run's rows are at or before its
+clock, and an earlier day's rows are before its window end, which is at or
+before this window's start. Any catalog the Store accepts has exactly one index endpoint,
 and that is the membership endpoint.
 
 ## Read contract
 
 `Store::read_at(key, endpoint_id, t)` returns `(body, fetched_at, as_of)`.
 
-- **Which row.** It returns the latest `ok` row with `fetched_at ≤ t`. Ties on
-  `fetched_at` go to the higher `run_id`, then to the higher `attempt`. This
-  "latest ok" order is defined once (`LATEST_OK`) and the freeze uses it
-  too, so a freeze and a read at the same time pick the same body.
+- **Which row.** It returns the latest `ok` row with `fetched_at ≤ t`, by
+  `LATEST_OK`: `fetched_at`, then the higher `run_id`, then the higher
+  `attempt`. Equal `fetched_at` happens only within a run (the clock allows
+  equal times), where the higher attempt wins; across runs of a source the
+  windows do not overlap, so `fetched_at` order is `as_of` order and the
+  `run_id` step never decides. The freeze uses the same order, so a freeze
+  and a read at the same time pick the same body, within a run and across
+  runs.
 - **Failure rows never win.** A failure row hides nothing: a `permanent`
   today leaves yesterday's value as the value.
 - **An empty body is a value.** It means "no coverage at that time", and it is
@@ -134,8 +152,10 @@ and that is the membership endpoint.
 
 Membership comes from `run_key`. `Store::universe_at(t)` works as follows:
 
-1. **Pick the run.** It takes the run with the latest `started_at ≤ t` (ties
-   go to the higher `run_id`). Runs that ended `missed` are skipped, because
+1. **Pick the run.** It takes the run with the latest `started_at ≤ t`.
+   Planned runs of a source cannot share a `started_at` (each lies inside
+   its own window, and windows do not overlap); the higher `run_id` would
+   decide. Runs that ended `missed` are skipped, because
    they have no keys.
 2. **Add the planned keys.** It returns that run's `config` and
    `index-symbol` keys. They are written with the run row, so they are
@@ -180,14 +200,19 @@ that planned it. A runner that records results of concurrent requests takes
   keys. It is idempotent per `(source, as_of)`: when a plan exists, the
   stored plan comes back unchanged, and later config changes do not touch it.
   A new plan's `started_at` must be inside its window.
+- **Windows of one source never overlap and follow `as_of` order.**
+  `plan_run` and `record_missed` refuse (`WindowConflict`) a window that
+  overlaps another run of the source, or whose order contradicts `as_of`
+  order: an earlier day's window must end at or before this one starts, a
+  later day's must start at or after it ends. Windows may touch.
+  Production windows (D 17:30 New York to the next open) never overlap.
 - **`record_observation`** writes the blob and the observation row. It
   numbers the attempt per `(run, key, endpoint)` inside the transaction. It
   refuses a pair that is not planned, a run that has ended, a `fetched_at`
   outside the run's window `[window_start, window_end)` or before its clock,
-  an incomplete `ok` constituents body, and an `error_class` the endpoint
-  cannot produce (`incomplete_membership` only from the membership endpoint,
-  `dc_region_restricted` only from an endpoint with a `dc_restrict`, which
-  today is none).
+  and a `dc_region_restricted` failure from an endpoint without a
+  `dc_restrict` (today, every endpoint). It returns the attempt number and
+  the status it derived.
 - **`freeze_membership`** derives and writes every `run_membership` row and
   the `index:<sym>` keys, all or nothing (see
   [Index membership](#index-membership)).
@@ -291,6 +316,8 @@ Run `cargo nextest run -p research-archive`.
 |---|---|
 | `guards` | I2, on every table, including the rowid collision |
 | `open` | the refusals, and that a refused file is untouched |
-| `writes` | plan atomicity, the window bound, `complete`, the attempt counter (also with two writers) and the CHECKs |
-| `freeze` | the derived freeze, I5, its atomicity and refusals |
-| `reads` | I6, the universe, ties and coverage |
+| `writes` | plan atomicity, the window bound and window order, `complete`, the attempt counter and the CHECKs |
+| `clock` | the monotonic run clock, blob + observation atomicity, error class per endpoint |
+| `freeze` | the derived freeze, Store-classified membership bodies, I5, atomicity, carry vs `read_at` |
+| `reads` | I6, the universe, read order and coverage |
+| `send` | every public async method returns a `Send` future |

@@ -3,7 +3,7 @@
 //! the blob + observation transaction and the error class per endpoint.
 
 use research_archive::StoreError;
-use research_archive::types::{ErrorClass, ErrorDetail, FailureClass, Finish, Outcome, UnixMs};
+use research_archive::types::{ErrorClass, ErrorDetail, FailureClass, Finish, Response, UnixMs};
 
 use crate::support::{at, constituents, endpoint, failed, fresh, key, ok, plan_request, raw};
 
@@ -30,7 +30,11 @@ async fn an_observation_before_the_plan_is_refused() {
     };
     // Inside the window, but before `started_at`.
     clock_went_back(rec(at(1, 5)).await, at(1, 5), at(1, 10));
-    assert_eq!(rec(at(1, 10)).await.unwrap(), 1, "equal to the mark");
+    assert_eq!(
+        rec(at(1, 10)).await.unwrap().attempt,
+        1,
+        "equal to the mark"
+    );
 }
 
 /// The mark is the run's, not the pair's: a later write to any pair of the
@@ -57,7 +61,13 @@ async fn fetched_at_below_a_prior_fetched_at_is_refused() {
                 .await
         }
     };
-    assert_eq!(rec(d1.run_id, "consensus", at(1, 20)).await.unwrap(), 1);
+    assert_eq!(
+        rec(d1.run_id, "consensus", at(1, 20))
+            .await
+            .unwrap()
+            .attempt,
+        1
+    );
     clock_went_back(
         rec(d1.run_id, "ratings", at(1, 19)).await,
         at(1, 19),
@@ -68,14 +78,26 @@ async fn fetched_at_below_a_prior_fetched_at_is_refused() {
         at(1, 19),
         at(1, 20),
     );
-    assert_eq!(rec(d1.run_id, "consensus", at(1, 20)).await.unwrap(), 2);
-    assert_eq!(rec(d1.run_id, "ratings", at(1, 20)).await.unwrap(), 1);
+    assert_eq!(
+        rec(d1.run_id, "consensus", at(1, 20))
+            .await
+            .unwrap()
+            .attempt,
+        2
+    );
+    assert_eq!(
+        rec(d1.run_id, "ratings", at(1, 20)).await.unwrap().attempt,
+        1
+    );
     let d2 = f
         .store
         .plan_run(&plan_request(2, &["AAPL.US"], &[]))
         .await
         .unwrap();
-    assert_eq!(rec(d2.run_id, "consensus", at(2, 5)).await.unwrap(), 1);
+    assert_eq!(
+        rec(d2.run_id, "consensus", at(2, 5)).await.unwrap().attempt,
+        1
+    );
 }
 
 #[tokio::test]
@@ -210,12 +232,13 @@ async fn blob_and_observation_commit_together() {
         )
         .await
         .unwrap();
-    assert_eq!(attempt, 1);
+    assert_eq!(attempt.attempt, 1);
     assert_eq!(count("SELECT COUNT(*) FROM blob").await, 1);
 }
 
-/// `incomplete_membership` only from the membership endpoint;
-/// `dc_region_restricted` only from an endpoint with a `dc_restrict` (none).
+/// `dc_region_restricted` only from an endpoint with a `dc_restrict`, which
+/// no catalog endpoint has today. (`incomplete_membership` is not a caller's
+/// to state: the Store derives it from a body.)
 #[tokio::test]
 async fn the_error_class_must_fit_the_endpoint() {
     let f = fresh().await;
@@ -224,46 +247,65 @@ async fn the_error_class_must_fit_the_endpoint() {
         .plan_run(&plan_request(1, &["AAPL.US"], &[".SPX.US"]))
         .await
         .unwrap();
-    let outcome = |class, error_class, code: &str| Outcome::Failed {
-        class,
+    let restricted = Response::Failed {
+        class: FailureClass::RegionRestricted,
         error: ErrorDetail {
-            class: error_class,
-            code: code.into(),
+            class: ErrorClass::DcRegionRestricted,
+            code: "dc_region_restricted".into(),
         },
-        body: None,
     };
-    let incomplete = outcome(
-        FailureClass::Permanent,
-        ErrorClass::IncompleteMembership,
-        "zero_total",
-    );
-    let restricted = outcome(
-        FailureClass::RegionRestricted,
-        ErrorClass::DcRegionRestricted,
-        "dc_region_restricted",
-    );
-    for (k, e, o) in [
-        ("AAPL.US", "consensus", &incomplete),
-        ("AAPL.US", "consensus", &restricted),
-        (".SPX.US", "index_constituents", &restricted),
-    ] {
+    for (k, e) in [("AAPL.US", "consensus"), (".SPX.US", "index_constituents")] {
         let r = f
             .store
-            .record_observation(p.run_id, &key(k), endpoint(e), at(1, 5), o)
+            .record_observation(p.run_id, &key(k), endpoint(e), at(1, 5), &restricted)
             .await;
         assert!(
             matches!(r, Err(StoreError::ErrorClassForEndpoint { .. })),
             "{e}: {r:?}"
         );
     }
-    f.store
-        .record_observation(
-            p.run_id,
-            &key(".SPX.US"),
-            endpoint("index_constituents"),
-            at(1, 5),
-            &incomplete,
-        )
+}
+
+/// The freeze raises the run's clock: after a carry at t = 50, an
+/// observation of a member or an end before it is refused.
+#[tokio::test]
+async fn the_freeze_raises_the_clock() {
+    let f = fresh().await;
+    let d1 = f
+        .store
+        .plan_run(&plan_request(1, &[], &[".SPX.US"]))
         .await
         .unwrap();
+    crate::support::observe_and_freeze(&f.store, &d1, at(1, 5), &[(".SPX.US", &["MSFT.US"])]).await;
+    let d2 = f
+        .store
+        .plan_run(&plan_request(2, &[], &[".SPX.US"]))
+        .await
+        .unwrap();
+    let frozen = f
+        .store
+        .freeze_membership(d2.run_id, at(2, 50))
+        .await
+        .unwrap();
+    assert_eq!(frozen[0].1.mode(), "carried");
+    clock_went_back(
+        f.store
+            .record_observation(
+                d2.run_id,
+                &key("MSFT.US"),
+                endpoint("consensus"),
+                at(2, 10),
+                &ok(b"m"),
+            )
+            .await,
+        at(2, 10),
+        at(2, 50),
+    );
+    clock_went_back(
+        f.store
+            .end_run(d2.run_id, at(2, 20), Finish::Partial, None)
+            .await,
+        at(2, 20),
+        at(2, 50),
+    );
 }

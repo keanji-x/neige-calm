@@ -6,5 +6,6 @@ mod freeze;
 mod guards;
 mod open;
 mod reads;
+mod send;
 mod support;
 mod writes;

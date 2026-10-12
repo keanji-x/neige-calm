@@ -7,7 +7,7 @@ use chrono::NaiveDate;
 use research_archive::catalog::{Catalog, EndpointId};
 use research_archive::store::{PlanRequest, RunPlan};
 use research_archive::types::{
-    AsOf, ErrorClass, ErrorDetail, FailureClass, Key, Membership, Outcome, Source, UnixMs, Window,
+    AsOf, ErrorClass, ErrorDetail, FailureClass, Key, Membership, Response, Source, UnixMs, Window,
 };
 use research_archive::{Store, StoreError};
 use sqlx::sqlite::SqliteConnectOptions;
@@ -80,10 +80,9 @@ pub fn plan_request(n: i64, config: &[&str], indexes: &[&str]) -> PlanRequest {
     }
 }
 
-pub fn ok(body: &[u8]) -> Outcome {
-    Outcome::Ok {
-        body: body.to_vec(),
-    }
+/// A response body (stored as `ok` unless it is an incomplete membership).
+pub fn ok(body: &[u8]) -> Response {
+    Response::Body(body.to_vec())
 }
 
 /// A complete `index_constituents` body listing `members`.
@@ -101,7 +100,7 @@ pub fn constituents(members: &[&str]) -> Vec<u8> {
 }
 
 /// A failure outcome with a plausible detail for its class.
-pub fn failed(class: FailureClass) -> Outcome {
+pub fn failed(class: FailureClass) -> Response {
     let (error_class, code) = match class {
         FailureClass::Throttled => (ErrorClass::Envelope, "429002"),
         FailureClass::Transient => (ErrorClass::Transport, "request_timeout"),
@@ -109,13 +108,12 @@ pub fn failed(class: FailureClass) -> Outcome {
         FailureClass::RegionRestricted => (ErrorClass::DcRegionRestricted, "dc_region_restricted"),
         FailureClass::Permanent => (ErrorClass::HttpStatus, "404"),
     };
-    Outcome::Failed {
+    Response::Failed {
         class,
         error: ErrorDetail {
             class: error_class,
             code: code.into(),
         },
-        body: None,
     }
 }
 

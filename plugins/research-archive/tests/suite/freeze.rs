@@ -3,9 +3,7 @@
 
 use research_archive::membership::IncompleteMembership;
 use research_archive::store::RunPlan;
-use research_archive::types::{
-    ErrorClass, ErrorDetail, FailureClass, Membership, Origin, Outcome, RunId, UnixMs,
-};
+use research_archive::types::{FailureClass, Membership, Origin, Response, RunId, Status, UnixMs};
 use research_archive::{Store, StoreError};
 use sha2::{Digest, Sha256};
 
@@ -21,7 +19,7 @@ async fn plan(store: &Store, n: i64, config: &[&str], indexes: &[&str]) -> RunPl
         .unwrap()
 }
 
-async fn record(store: &Store, run: RunId, index: &str, t: UnixMs, outcome: Outcome) {
+async fn record(store: &Store, run: RunId, index: &str, t: UnixMs, outcome: Response) {
     store
         .record_observation(
             run,
@@ -170,16 +168,9 @@ async fn none_only_when_no_ok_exists_anywhere() {
         ok(&constituents(&["A.US"])),
     )
     .await;
-    let incomplete = br#"{"total":503,"stocks":[{"symbol":"A.US"}]}"#.to_vec();
-    let filed = Outcome::Failed {
-        class: FailureClass::Permanent,
-        error: ErrorDetail {
-            class: ErrorClass::IncompleteMembership,
-            code: "count_mismatch".into(),
-        },
-        body: Some(incomplete),
-    };
-    record(&f.store, p.run_id, ".SPX.US", at(1, 3), filed).await;
+    // An incomplete body, filed by the Store as `permanent`.
+    let incomplete = br#"{"total":503,"stocks":[{"symbol":"A.US"}]}"#;
+    record(&f.store, p.run_id, ".SPX.US", at(1, 3), ok(incomplete)).await;
     let frozen = f.store.freeze_membership(p.run_id, at(1, 5)).await.unwrap();
     assert_eq!(
         frozen,
@@ -234,32 +225,79 @@ async fn i5_a_two_index_carry_with_an_overlapping_member_succeeds() {
     assert_eq!(aapl.len(), 3, "config, index:.NDX.US and index:.SPX.US");
 }
 
-/// An incomplete body is never an `ok` membership row: `record_observation`
-/// refuses it, and a row written around the Store refuses the freeze.
+/// `(attempt, status, error_class, error_code, body)` of a stored row.
+type StoredRow = (i64, String, Option<String>, Option<String>, Option<Vec<u8>>);
+
+/// The Store, not the caller, decides membership completeness: a complete
+/// constituents body is `ok`; an incomplete one is `permanent` /
+/// `incomplete_membership` with the rule that failed as its code and its
+/// bytes kept. On a security endpoint any body is `ok`.
 #[tokio::test]
-async fn incomplete_ok_bodies_are_refused_at_record_and_at_freeze() {
+async fn the_store_classifies_membership_bodies() {
+    let f = fresh().await;
+    let p = plan(&f.store, 1, &["AAPL.US"], &[".SPX.US"]).await;
+    let rec = |k: &'static str, e: &'static str, t, body: Vec<u8>| {
+        let store = f.store.clone();
+        async move {
+            store
+                .record_observation(p.run_id, &key(k), endpoint(e), at(1, t), &ok(&body))
+                .await
+                .unwrap()
+        }
+    };
+    let zero = br#"{"total":0,"stocks":[]}"#.to_vec();
+    let r = rec(".SPX.US", "index_constituents", 2, zero.clone()).await;
+    assert_eq!(r.status, Status::Failed(FailureClass::Permanent));
+    let complete = constituents(&["MSFT.US"]);
+    let r = rec(".SPX.US", "index_constituents", 3, complete.clone()).await;
+    assert_eq!((r.attempt, r.status), (2, Status::Ok));
+    // A body that is not a membership is just a value on a security endpoint.
+    assert_eq!(
+        rec("AAPL.US", "consensus", 4, zero.clone()).await.status,
+        Status::Ok
+    );
+    let mut conn = raw(&f.path, false).await;
+    let rows: Vec<StoredRow> = sqlx::query_as(
+        "SELECT o.attempt, o.status, o.error_class, o.error_code, b.body
+         FROM observation o LEFT JOIN blob b ON b.sha256 = o.sha256
+         WHERE o.key = '.SPX.US' ORDER BY o.attempt",
+    )
+    .fetch_all(&mut conn)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        [
+            (
+                1,
+                "permanent".into(),
+                Some("incomplete_membership".into()),
+                Some("zero_total".into()),
+                Some(zero)
+            ),
+            (2, "ok".into(), None, None, Some(complete)),
+        ]
+    );
+    // The freeze uses only the ok row.
+    let frozen = f.store.freeze_membership(p.run_id, at(1, 5)).await.unwrap();
+    assert_eq!(frozen[0].1.members(), keys(&["MSFT.US"]));
+}
+
+/// An `ok` constituents row written around the Store that fails the rule
+/// refuses the freeze.
+#[tokio::test]
+async fn a_stored_incomplete_ok_row_refuses_the_freeze() {
     let f = fresh().await;
     let p = plan(&f.store, 1, &[], &[".SPX.US"]).await;
-    let zero = br#"{"total":0,"stocks":[]}"#;
-    let err = f
-        .store
-        .record_observation(
-            p.run_id,
-            &key(".SPX.US"),
-            endpoint("index_constituents"),
-            at(1, 2),
-            &ok(zero),
-        )
-        .await
-        .unwrap_err();
-    assert!(matches!(
-        err,
-        StoreError::IncompleteMembership {
-            reason: IncompleteMembership::ZeroTotal,
-            ..
-        }
-    ));
-    raw_ok_row(&f.path, p.run_id, ".SPX.US", 1, at(1, 3), zero).await;
+    raw_ok_row(
+        &f.path,
+        p.run_id,
+        ".SPX.US",
+        1,
+        at(1, 3),
+        br#"{"total":0,"stocks":[]}"#,
+    )
+    .await;
     let err = f
         .store
         .freeze_membership(p.run_id, at(1, 5))
@@ -467,37 +505,79 @@ async fn freeze_and_read_at_agree_on_the_body() {
     assert_eq!(frozen[0].1.members(), read_members(at(2, 6)).await);
 }
 
-/// Look-ahead across runs: an earlier day's window may overlap this one, so
-/// a carried body fetched after `frozen_at` is refused.
+/// The carry never takes a later day: day 2 already holds an ok when day 1
+/// (planned after it, with the earlier window) freezes.
 #[tokio::test]
-async fn a_carried_body_fetched_after_the_freeze_is_refused() {
+async fn a_carry_never_takes_a_later_day() {
     let f = fresh().await;
-    let overlapping = |n, started_at| research_archive::store::PlanRequest {
-        source: research_archive::types::Source::Longbridge,
-        as_of: crate::support::as_of(n),
-        window: research_archive::types::Window::new(at(1, 0), at(9, 0)).unwrap(),
-        started_at,
-        config: vec![],
-        indexes: keys(&[".SPX.US"]),
-    };
-    let d1 = f.store.plan_run(&overlapping(1, at(1, 1))).await.unwrap();
-    let d2 = f.store.plan_run(&overlapping(2, at(1, 2))).await.unwrap();
+    let d2 = plan(&f.store, 2, &[], &[".SPX.US"]).await;
+    record(
+        &f.store,
+        d2.run_id,
+        ".SPX.US",
+        at(2, 5),
+        ok(&constituents(&["B.US"])),
+    )
+    .await;
+    let d1 = plan(&f.store, 1, &[], &[".SPX.US"]).await;
+    let frozen = f
+        .store
+        .freeze_membership(d1.run_id, at(1, 5))
+        .await
+        .unwrap();
+    assert_eq!(frozen[0].1, Membership::None);
+}
+
+/// Across runs the carry and `read_at` at `frozen_at` agree, also when run
+/// ids do not follow `as_of` (day 2 planned before day 1).
+#[tokio::test]
+async fn carry_and_read_at_agree_across_runs() {
+    let f = fresh().await;
+    let d2 = plan(&f.store, 2, &[], &[".SPX.US"]).await;
+    let d1 = plan(&f.store, 1, &[], &[".SPX.US"]).await;
+    assert!(d2.run_id < d1.run_id);
     record(
         &f.store,
         d1.run_id,
         ".SPX.US",
-        at(1, 50),
+        at(1, 5),
         ok(&constituents(&["A.US"])),
     )
     .await;
-    assert!(matches!(
-        f.store.freeze_membership(d2.run_id, at(1, 40)).await,
-        Err(StoreError::FreezeBeforeObservation { fetched_at, .. }) if fetched_at == at(1, 50)
-    ));
+    record(
+        &f.store,
+        d1.run_id,
+        ".SPX.US",
+        at(1, 6),
+        ok(&constituents(&["A.US", "C.US"])),
+    )
+    .await;
+    record(
+        &f.store,
+        d2.run_id,
+        ".SPX.US",
+        at(2, 5),
+        ok(&constituents(&["B.US"])),
+    )
+    .await;
+    let d3 = plan(&f.store, 3, &[], &[".SPX.US"]).await;
     let frozen = f
         .store
-        .freeze_membership(d2.run_id, at(1, 50))
+        .freeze_membership(d3.run_id, at(3, 5))
         .await
         .unwrap();
-    assert_eq!(frozen[0].1.mode(), "carried");
+    let read = f
+        .store
+        .read_at(&key(".SPX.US"), endpoint("index_constituents"), at(3, 5))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        frozen[0].1,
+        Membership::Carried {
+            source: d2.run_id,
+            members: research_archive::membership::constituents_members(&read.body).unwrap()
+        }
+    );
+    assert_eq!(frozen[0].1.members(), keys(&["B.US"]));
 }

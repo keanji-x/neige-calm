@@ -9,8 +9,31 @@ use super::{Result, Store, StoreError};
 use crate::catalog::EndpointId;
 use crate::membership::constituents_members;
 use crate::types::{
-    AsOf, ErrorClass, Finish, Key, Origin, Outcome, RunId, RunOutcome, Source, UnixMs, Window,
+    AsOf, ErrorClass, FailureClass, Finish, Key, Origin, Recorded, Response, RunId, RunOutcome,
+    Source, Status, UnixMs, Window,
 };
+
+/// How a response is stored: its status, its bytes (if kept) and its
+/// `(error_class, error_code)` (if a failure).
+struct Classified<'r> {
+    status: Status,
+    body: Option<&'r [u8]>,
+    error: Option<(&'static str, String)>,
+}
+
+impl<'r> Classified<'r> {
+    fn ok(body: &'r [u8]) -> Classified<'r> {
+        Classified {
+            status: Status::Ok,
+            body: Some(body),
+            error: None,
+        }
+    }
+}
+
+/// The stored `error_class` of a membership body that fails the
+/// completeness rule. Only the Store writes it; no caller can state it.
+const INCOMPLETE_MEMBERSHIP: &str = "incomplete_membership";
 
 /// The key × endpoint pairs a run plans, as rows `(run_id, key,
 /// endpoint_id)`: each `run_key` row joined to the endpoints of its kind. An
@@ -58,7 +81,10 @@ pub struct RunPlan {
 impl Store {
     /// Writes the `run` row, its `config` keys and its `index-symbol` keys
     /// atomically. Idempotent per `(source, as_of)`: when a run exists for
-    /// the day, its stored plan is returned and nothing is written.
+    /// the day, its stored plan is returned and nothing is written. A new
+    /// plan's `started_at` must be inside its window, and its window must
+    /// not overlap or contradict the `as_of` order of another run of the
+    /// source.
     pub async fn plan_run(&self, req: &PlanRequest) -> Result<RunPlan> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         if let Some(run_id) = find_run(&mut tx, req.source, req.as_of).await? {
@@ -71,6 +97,7 @@ impl Store {
                 started_at: req.started_at,
             });
         }
+        require_window_order(&mut tx, req.source, req.as_of, req.window).await?;
         let run_id = insert_run(&mut tx, req.source, req.as_of, req.window, req.started_at).await?;
         for key in &req.config {
             insert_run_key(&mut tx, run_id, key, &Origin::Config).await?;
@@ -93,49 +120,31 @@ impl Store {
     }
 
     /// Records one attempt: the body's blob (deduplicated by content) and the
-    /// observation row. The attempt number is the next one for `(run, key,
-    /// endpoint)`, computed inside the transaction, and is returned. The
-    /// pair must be planned, the run must not have ended, and `fetched_at`
-    /// must be inside the window and not before the run's clock (see
-    /// [`RunClock`]), so attempt order is time order within a run.
+    /// observation row, and returns the attempt number and the status the
+    /// Store derived. The attempt number is the next one for `(run, key,
+    /// endpoint)`, computed inside the transaction. The pair must be
+    /// planned, the run must not have ended, and `fetched_at` must be inside
+    /// the window and not before the run's clock (see [`RunClock`]), so
+    /// attempt order is time order within a run.
+    ///
+    /// The caller never classifies a body. A body on a security endpoint is
+    /// `ok`; a body on the membership endpoint is `ok` when it is a complete
+    /// membership, else `permanent` / `incomplete_membership` with the rule
+    /// that failed as `error_code`, and the bytes kept for audit. A failure
+    /// without a body keeps no bytes.
     pub async fn record_observation(
         &self,
         run_id: RunId,
         key: &Key,
         endpoint: EndpointId,
         fetched_at: UnixMs,
-        outcome: &Outcome,
-    ) -> Result<u32> {
-        let (body, error) = match outcome {
-            Outcome::Ok { body } => (Some(body), None),
-            Outcome::Failed { body, error, .. } => (body.as_ref(), Some(error)),
-        };
-        let membership = self.catalog.membership();
-        if let Outcome::Ok { body } = outcome
-            && endpoint == membership
-        {
-            constituents_members(body).map_err(|reason| StoreError::IncompleteMembership {
-                index: key.clone(),
-                reason,
-            })?;
-        }
-        if let Some(error) = error {
-            let restricted = self
-                .catalog
-                .get(endpoint.as_str())
-                .is_some_and(|e| e.dc_restrict.is_some());
-            let fits = match error.class {
-                ErrorClass::IncompleteMembership => endpoint == membership,
-                ErrorClass::DcRegionRestricted => restricted,
-                _ => true,
-            };
-            if !fits {
-                return Err(StoreError::ErrorClassForEndpoint {
-                    endpoint: endpoint.as_str().to_owned(),
-                    class: error.class.as_str(),
-                });
-            }
-        }
+        response: &Response,
+    ) -> Result<Recorded> {
+        let Classified {
+            status,
+            body,
+            error,
+        } = self.classify(endpoint, response)?;
         let sha256 = body.map(|b| hex::encode(Sha256::digest(b)));
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let clock = require_open(&mut tx, run_id).await?;
@@ -161,7 +170,7 @@ impl Store {
             // A body already stored is ignored by the `blob_dedup` guard.
             sqlx::query("INSERT INTO blob (sha256, body) VALUES (?, ?)")
                 .bind(sha)
-                .bind(body.as_slice())
+                .bind(body)
                 .execute(&mut *tx)
                 .await?;
         }
@@ -184,14 +193,52 @@ impl Store {
         .bind(endpoint.as_str())
         .bind(attempt)
         .bind(fetched_at.0)
-        .bind(outcome.status().as_str())
+        .bind(status.as_str())
         .bind(sha256)
-        .bind(error.map(|e| e.class.as_str()))
-        .bind(error.map(|e| e.code.as_str()))
+        .bind(error.as_ref().map(|(class, _)| *class))
+        .bind(error.as_ref().map(|(_, code)| code.as_str()))
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        Ok(u32::try_from(attempt).expect("attempt counts stay far below u32::MAX"))
+        Ok(Recorded {
+            attempt: u32::try_from(attempt).expect("attempt counts stay far below u32::MAX"),
+            status,
+        })
+    }
+
+    /// The stored `(status, body, (error_class, error_code))` of a response
+    /// on `endpoint`. The only place a body is classified.
+    fn classify<'r>(&self, endpoint: EndpointId, response: &'r Response) -> Result<Classified<'r>> {
+        match response {
+            Response::Body(body) if endpoint == self.catalog.membership() => {
+                match constituents_members(body) {
+                    Ok(_) => Ok(Classified::ok(body)),
+                    Err(reason) => Ok(Classified {
+                        status: Status::Failed(FailureClass::Permanent),
+                        body: Some(body),
+                        error: Some((INCOMPLETE_MEMBERSHIP, reason.code().to_owned())),
+                    }),
+                }
+            }
+            Response::Body(body) => Ok(Classified::ok(body)),
+            Response::Failed { class, error } => {
+                let restricted = self
+                    .catalog
+                    .get(endpoint.as_str())
+                    .is_some_and(|e| e.dc_restrict.is_some());
+                if error.class == ErrorClass::DcRegionRestricted && !restricted {
+                    return Err(StoreError::ErrorClassForEndpoint {
+                        endpoint: endpoint.as_str().to_owned(),
+                        class: error.class.as_str(),
+                    });
+                }
+                Ok(Classified {
+                    status: Status::Failed(*class),
+                    body: None,
+                    error: Some((error.class.as_str(), error.code.clone())),
+                })
+            }
+        }
     }
 
     /// Ends a run that has not ended, at a `finished_at` not before the
@@ -245,7 +292,8 @@ impl Store {
 
     /// Records a trading day whose window closed with no run: a `run` row
     /// (`started_at = now`, no keys) and its `run_end(missed)`, together.
-    /// Refused while the window is open or when the day already has a run.
+    /// Refused while the window is open, when the day already has a run, or
+    /// when its window conflicts with another run of the source.
     pub async fn record_missed(
         &self,
         source: Source,
@@ -260,6 +308,7 @@ impl Store {
         if let Some(existing) = find_run(&mut tx, source, as_of).await? {
             return Err(StoreError::RunExists(existing));
         }
+        require_window_order(&mut tx, source, as_of, window).await?;
         let run_id = insert_run(&mut tx, source, as_of, window, now).await?;
         insert_run_end(&mut tx, run_id, now, RunOutcome::Missed, None).await?;
         tx.commit().await?;
@@ -279,6 +328,34 @@ async fn find_run(
             .fetch_optional(conn)
             .await?;
     Ok(id.map(RunId))
+}
+
+/// Refuses a window that overlaps, or contradicts the `as_of` order of, any
+/// run of the same source: an earlier day's window must end at or before
+/// this one starts, and a later day's must start at or after this one ends.
+/// So across runs of a source, `fetched_at` order is `as_of` order.
+async fn require_window_order(
+    conn: &mut SqliteConnection,
+    source: Source,
+    as_of: AsOf,
+    window: Window,
+) -> Result<()> {
+    let conflict: Option<i64> = sqlx::query_scalar(
+        "SELECT run_id FROM run
+         WHERE source = ?1
+           AND ((as_of < ?2 AND window_end > ?3) OR (as_of > ?2 AND window_start < ?4))
+         ORDER BY run_id LIMIT 1",
+    )
+    .bind(source.as_str())
+    .bind(as_of.to_string())
+    .bind(window.start().0)
+    .bind(window.end().0)
+    .fetch_optional(conn)
+    .await?;
+    match conflict {
+        Some(id) => Err(StoreError::WindowConflict { with: RunId(id) }),
+        None => Ok(()),
+    }
 }
 
 async fn insert_run(

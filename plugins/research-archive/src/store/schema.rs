@@ -108,6 +108,9 @@ CREATE TABLE observation (
     CHECK (error_class NOT IN ('envelope', 'http_status')
         OR error_code NOT GLOB '*[^0-9-]*'),
     CHECK (error_class <> 'incomplete_membership' OR status = 'permanent'),
+    -- Bytes are kept for an ok body and for a membership body that failed
+    -- the completeness rule, and for nothing else.
+    CHECK ((sha256 IS NOT NULL) = (status = 'ok' OR error_class IS 'incomplete_membership')),
     CHECK ((error_class IS 'dc_region_restricted') = (status = 'region_restricted'))
 ) STRICT, WITHOUT ROWID;
 
@@ -222,7 +225,7 @@ pub(crate) async fn user_version(conn: &mut SqliteConnection) -> Result<i64, sql
 /// the statements, keeps `DDL` the only definition.
 pub(crate) async fn reference() -> Result<(Schema, i64), sqlx::Error> {
     let mut conn = SqliteConnection::connect("sqlite::memory:").await?;
-    sqlx::raw_sql(DDL).execute(&mut conn).await?;
+    sqlx::Executor::execute(&mut conn, DDL).await?;
     let schema = read_schema(&mut conn).await?;
     let version = user_version(&mut conn).await?;
     conn.close().await?;
