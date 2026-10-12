@@ -72,8 +72,8 @@ async fn plan_aborted_midway_leaves_nothing_and_a_retry_succeeds() {
     assert_eq!(plan.config, keys(&["AAPL.US", "MSFT.US"]));
 }
 
-/// `source_run_id` is set if and only if the mode is `carried`, on any
-/// connection.
+/// `source_run_id` is set if and only if the mode is `carried`, also on a
+/// raw connection with default check settings.
 #[tokio::test]
 async fn carried_mode_check() {
     let (_dir, path) = crate::support::populated().await;
@@ -110,7 +110,7 @@ async fn carried_mode_check() {
 }
 
 #[tokio::test]
-async fn closed_sets_are_checked_on_any_connection() {
+async fn closed_sets_are_checked_with_default_settings() {
     let (_dir, path) = crate::support::populated().await;
     let mut conn = raw(&path, false).await;
     for bad in [
@@ -132,6 +132,8 @@ async fn closed_sets_are_checked_on_any_connection() {
         "INSERT INTO run_key VALUES (1, 'X.US', 'watchlist')",
         "INSERT INTO endpoint VALUES ('e', 'GET', '/e', '[]', '[]', NULL, 'fund')",
         "INSERT INTO run VALUES (9, 'longbridge', '2026-02-30', 0, 1, 0)",
+        // `date()` of an impossible day is NULL, which alone would pass a CHECK.
+        "INSERT INTO run VALUES (9, 'longbridge', '2026-99-99', 0, 1, 0)",
         "INSERT INTO run VALUES (9, 'longbridge', '2026-03-01', 1, 1, 0)",
         "INSERT INTO run VALUES (9, 'longbridge', '2026-03-01', 'zero', 1, 0)",
         "INSERT INTO blob VALUES ('ABC', X'')",
@@ -240,7 +242,22 @@ async fn observations_must_be_planned_and_the_run_open() {
         );
     }
     observe_and_freeze(&f.store, &plan, at(1, 2), &[(".SPX.US", &["MSFT.US"])]).await;
-    rec("MSFT.US", "consensus").await.unwrap();
+    // MSFT.US became planned at the freeze (t = 2): an observation stamped
+    // before it is refused, so no value predates the membership behind it.
+    assert!(matches!(
+        rec("MSFT.US", "consensus").await,
+        Err(StoreError::ClockWentBack { at: t, mark, .. }) if t == at(1, 1) && mark == at(1, 2)
+    ));
+    f.store
+        .record_observation(
+            plan.run_id,
+            &key("MSFT.US"),
+            endpoint("consensus"),
+            at(1, 2),
+            &ok(b"x"),
+        )
+        .await
+        .unwrap();
     f.store
         .end_run(
             plan.run_id,
@@ -359,11 +376,10 @@ async fn rows_outside_the_window_are_refused() {
         f.store.plan_run(&early).await,
         Err(StoreError::PlanOutsideWindow { .. })
     ));
-    let plan = f
-        .store
-        .plan_run(&plan_request(1, &["AAPL.US"], &[]))
-        .await
-        .unwrap();
+    // Planned at the window's first instant, so both bounds are reachable.
+    let mut at_start = plan_request(1, &["AAPL.US"], &[]);
+    at_start.started_at = window(1).start();
+    let plan = f.store.plan_run(&at_start).await.unwrap();
     let rec = |t: UnixMs| {
         let store = f.store.clone();
         async move {
@@ -446,11 +462,13 @@ async fn complete_needs_a_frozen_universe_and_a_row_per_pair() {
     );
 }
 
-/// Two Stores on one file, writing the same pair at once: `BEGIN IMMEDIATE`
-/// and the busy timeout serialize them, and the attempts are 1..=n with no
-/// gap or duplicate.
+/// Two Stores on one file, writing one pair at once with a real increasing
+/// clock: each task reads the clock, waits a varying "latency", then
+/// records. `BEGIN IMMEDIATE` and the busy timeout serialize the writes; a
+/// write stamped before the run's clock is refused with `ClockWentBack`.
+/// Every accepted row's attempt order is its time order, with no gap.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn concurrent_writers_number_attempts_without_gaps() {
+async fn concurrent_writers_keep_attempt_order_equal_to_time_order() {
     let f = fresh().await;
     let plan = f
         .store
@@ -458,37 +476,56 @@ async fn concurrent_writers_number_attempts_without_gaps() {
         .await
         .unwrap();
     let other = research_archive::Store::open(&f.path).await.unwrap();
+    let clock = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(100));
     let mut tasks = Vec::new();
-    for i in 0..20 {
+    for i in 0..20u64 {
         let store = if i % 2 == 0 {
             f.store.clone()
         } else {
             other.clone()
         };
+        let clock = clock.clone();
         tasks.push(tokio::spawn(async move {
-            store
+            let t = at(1, clock.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
+            tokio::time::sleep(std::time::Duration::from_millis((i % 4) * 15)).await;
+            let result = store
                 .record_observation(
                     plan.run_id,
                     &key("AAPL.US"),
                     endpoint("consensus"),
-                    at(1, 100 + i),
+                    t,
                     &failed(FailureClass::Throttled),
                 )
-                .await
-                .unwrap()
+                .await;
+            (t, result)
         }));
     }
-    let mut numbers = Vec::new();
-    for t in tasks {
-        numbers.push(t.await.unwrap());
+    let mut accepted = Vec::new();
+    let mut refused = 0;
+    for task in tasks {
+        match task.await.unwrap() {
+            (t, Ok(attempt)) => accepted.push((attempt, t)),
+            (t, Err(StoreError::ClockWentBack { at, mark, .. })) => {
+                assert!(at == t && mark > t);
+                refused += 1;
+            }
+            (_, Err(other)) => panic!("{other}"),
+        }
     }
-    numbers.sort();
-    assert_eq!(numbers, (1..=20).collect::<Vec<u32>>());
+    accepted.sort();
+    let attempts: Vec<u32> = accepted.iter().map(|(a, _)| *a).collect();
+    assert_eq!(attempts, (1..=accepted.len() as u32).collect::<Vec<_>>());
+    assert!(
+        accepted.windows(2).all(|w| w[0].1 <= w[1].1),
+        "{accepted:?}"
+    );
+    assert!(refused > 0, "the varying latency must reorder some writes");
     let rows = f
         .store
         .attempts(plan.run_id, &key("AAPL.US"), endpoint("consensus"))
         .await
         .unwrap();
-    assert_eq!(rows.len(), 20);
+    let stored: Vec<(u32, UnixMs)> = rows.iter().map(|(a, t, _)| (*a, *t)).collect();
+    assert_eq!(stored, accepted);
     other.close().await;
 }

@@ -22,16 +22,21 @@ use sqlx::{Connection, Row, SqliteConnection};
 /// other table is `WITHOUT ROWID`. So an insert that would collide with any
 /// stored row meets the guard first, and a `BEFORE INSERT` trigger runs
 /// before conflict resolution: `INSERT OR REPLACE`, `REPLACE` and
-/// `ON CONFLICT DO UPDATE` cannot delete or rewrite a row, whatever
-/// `recursive_triggers` and `foreign_keys` are. `BEFORE UPDATE` and
-/// `BEFORE DELETE` guards abort every other change. `blob`'s insert guard
-/// ignores a duplicate (content addressing); the others abort.
+/// `ON CONFLICT DO UPDATE` cannot delete or rewrite a row, whether
+/// `recursive_triggers` is on or off. `BEFORE UPDATE` and `BEFORE DELETE`
+/// guards abort every other change. `blob`'s insert guard ignores a
+/// duplicate (content addressing); the others abort.
 ///
-/// The guards cover data statements on any connection. They do not cover
-/// schema statements (`DROP TRIGGER`, `DROP TABLE`, `ALTER TABLE`),
-/// `PRAGMA writable_schema`, or editing the file's bytes; `Store::open`
-/// refuses a file whose schema has drifted, but cannot see rows changed
-/// while a guard was gone.
+/// **What this guarantees.** The guards and the CHECKs hold for ordinary SQL
+/// on a connection with SQLite's default trigger and check settings. They
+/// guard against mistakes and ordinary writers, not against a writer that
+/// turns them off: `SQLITE_DBCONFIG_ENABLE_TRIGGER` off (the CLI's
+/// `.dbconfig enable_trigger off`) lets updates and deletes through,
+/// `PRAGMA ignore_check_constraints = ON` lets closed-set violations in, and
+/// `PRAGMA writable_schema`, schema statements (`DROP TRIGGER`,
+/// `DROP TABLE`, `ALTER TABLE`) and editing the file's bytes are not
+/// covered either. `Store::open` refuses a file whose schema has drifted,
+/// but cannot see rows written while a guard or check was off.
 pub const DDL: &str = r#"
 CREATE TABLE endpoint (
     endpoint_id  TEXT NOT NULL PRIMARY KEY CHECK (length(endpoint_id) > 0),
@@ -53,7 +58,8 @@ CREATE TABLE run (
     run_id       INTEGER NOT NULL PRIMARY KEY,
     source       TEXT NOT NULL,
     as_of        TEXT NOT NULL
-        CHECK (as_of GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND date(as_of) = as_of),
+        CHECK (as_of GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+               AND date(as_of) IS NOT NULL AND date(as_of) = as_of),
     window_start INTEGER NOT NULL,
     window_end   INTEGER NOT NULL CHECK (window_end > window_start),
     started_at   INTEGER NOT NULL,

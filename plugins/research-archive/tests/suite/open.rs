@@ -178,7 +178,7 @@ fn compiled() -> Vec<Endpoint> {
 
 #[tokio::test]
 async fn refuses_a_changed_catalog_row() {
-    let changes: [fn(Endpoint) -> Endpoint; 5] = [
+    let changes: [fn(Endpoint) -> Endpoint; 4] = [
         |e: Endpoint| Endpoint { path: "/v2/x", ..e },
         |e: Endpoint| Endpoint {
             query: &[
@@ -195,10 +195,6 @@ async fn refuses_a_changed_catalog_row() {
             dc_restrict: Some(research_archive::catalog::DcRegion::Us),
             ..e
         },
-        |e: Endpoint| Endpoint {
-            key_kind: KeyKind::Index,
-            ..e
-        },
     ];
     for change in changes {
         let mut catalog = compiled();
@@ -207,6 +203,16 @@ async fn refuses_a_changed_catalog_row() {
         assert_eq!(drift.changed, ["valuation"]);
         assert!(drift.missing.is_empty() && drift.extra.is_empty());
     }
+}
+
+/// A key kind change, kept valid (one index endpoint) by swapping two.
+#[tokio::test]
+async fn refuses_a_changed_key_kind() {
+    let mut catalog = compiled();
+    catalog[5].key_kind = KeyKind::Index;
+    catalog[6].key_kind = KeyKind::Security;
+    let drift = catalog_refusal(catalog).await;
+    assert_eq!(drift.changed, ["valuation", "index_constituents"]);
 }
 
 #[tokio::test]

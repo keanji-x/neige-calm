@@ -364,9 +364,10 @@ async fn freeze_time_is_checked() {
         ok(&constituents(&["A.US"])),
     )
     .await;
+    // Below the run's clock (the observation at t = 20).
     assert!(matches!(
         f.store.freeze_membership(d1.run_id, at(1, 10)).await,
-        Err(StoreError::FreezeBeforeObservation { fetched_at, .. }) if fetched_at == at(1, 20)
+        Err(StoreError::ClockWentBack { mark, .. }) if mark == at(1, 20)
     ));
     let end = crate::support::window(1).end();
     assert!(matches!(
@@ -413,4 +414,90 @@ async fn a_run_without_indexes_has_nothing_to_freeze() {
             .is_empty()
     );
     assert!(mode_row(&f.path, p.run_id).await.is_empty());
+}
+
+/// One "latest ok": in a mixed sequence the freeze picks the body that
+/// `read_at` returns at `frozen_at`, both observed and carried.
+#[tokio::test]
+async fn freeze_and_read_at_agree_on_the_body() {
+    let f = fresh().await;
+    let d1 = plan(&f.store, 1, &[], &[".SPX.US"]).await;
+    for (t, outcome) in [
+        (10, ok(&constituents(&["A.US"]))),
+        (15, failed(FailureClass::Transient)),
+        (20, ok(&constituents(&["A.US", "B.US"]))),
+        (25, failed(FailureClass::Permanent)),
+    ] {
+        record(&f.store, d1.run_id, ".SPX.US", at(1, t), outcome).await;
+    }
+    let read_members = |t| {
+        let store = f.store.clone();
+        async move {
+            let body = store
+                .read_at(&key(".SPX.US"), endpoint("index_constituents"), t)
+                .await
+                .unwrap()
+                .unwrap()
+                .body;
+            research_archive::membership::constituents_members(&body).unwrap()
+        }
+    };
+    let frozen = f
+        .store
+        .freeze_membership(d1.run_id, at(1, 30))
+        .await
+        .unwrap();
+    assert_eq!(frozen[0].1.members(), read_members(at(1, 30)).await);
+    assert_eq!(frozen[0].1.members(), keys(&["A.US", "B.US"]));
+    let d2 = plan(&f.store, 2, &[], &[".SPX.US"]).await;
+    record(
+        &f.store,
+        d2.run_id,
+        ".SPX.US",
+        at(2, 5),
+        failed(FailureClass::Transient),
+    )
+    .await;
+    let frozen = f
+        .store
+        .freeze_membership(d2.run_id, at(2, 6))
+        .await
+        .unwrap();
+    assert_eq!(frozen[0].1.mode(), "carried");
+    assert_eq!(frozen[0].1.members(), read_members(at(2, 6)).await);
+}
+
+/// Look-ahead across runs: an earlier day's window may overlap this one, so
+/// a carried body fetched after `frozen_at` is refused.
+#[tokio::test]
+async fn a_carried_body_fetched_after_the_freeze_is_refused() {
+    let f = fresh().await;
+    let overlapping = |n, started_at| research_archive::store::PlanRequest {
+        source: research_archive::types::Source::Longbridge,
+        as_of: crate::support::as_of(n),
+        window: research_archive::types::Window::new(at(1, 0), at(9, 0)).unwrap(),
+        started_at,
+        config: vec![],
+        indexes: keys(&[".SPX.US"]),
+    };
+    let d1 = f.store.plan_run(&overlapping(1, at(1, 1))).await.unwrap();
+    let d2 = f.store.plan_run(&overlapping(2, at(1, 2))).await.unwrap();
+    record(
+        &f.store,
+        d1.run_id,
+        ".SPX.US",
+        at(1, 50),
+        ok(&constituents(&["A.US"])),
+    )
+    .await;
+    assert!(matches!(
+        f.store.freeze_membership(d2.run_id, at(1, 40)).await,
+        Err(StoreError::FreezeBeforeObservation { fetched_at, .. }) if fetched_at == at(1, 50)
+    ));
+    let frozen = f
+        .store
+        .freeze_membership(d2.run_id, at(1, 50))
+        .await
+        .unwrap();
+    assert_eq!(frozen[0].1.mode(), "carried");
 }

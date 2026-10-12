@@ -156,9 +156,6 @@ fn canonical_json(pairs: &[(&str, Option<&str>)]) -> String {
     serde_json::to_string(pairs).expect("string pairs always serialize")
 }
 
-/// The id of the membership endpoint.
-const MEMBERSHIP: &str = "index_constituents";
-
 const KEY_ONLY: &[(&str, QueryValue)] = &[(KEY_PARAM, QueryValue::Key)];
 
 const COMPILED: &[Endpoint] = &[
@@ -205,7 +202,7 @@ const COMPILED: &[Endpoint] = &[
     // One call returns every member: without paging the endpoint returns 20
     // of `total`, and pages of 100 are inconsistent (probe P5b).
     Endpoint::new(
-        MEMBERSHIP,
+        "index_constituents",
         "/v1/quote/index-constituents",
         &[
             (KEY_PARAM, QueryValue::Key),
@@ -216,31 +213,48 @@ const COMPILED: &[Endpoint] = &[
     ),
 ];
 
-/// A set of endpoints with unique ids, in a fixed order.
+/// A set of endpoints with unique ids, in a fixed order, with exactly one
+/// index endpoint: the membership endpoint.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Catalog {
     endpoints: Vec<Endpoint>,
+    membership: EndpointId,
 }
 
-/// A catalog whose ids are not unique.
+/// A list of endpoints that is not a catalog.
 #[derive(Debug, thiserror::Error)]
-#[error("catalog endpoint id {0} appears more than once")]
-pub struct DuplicateEndpointId(pub &'static str);
+pub enum CatalogError {
+    #[error("catalog endpoint id {0} appears more than once")]
+    DuplicateId(&'static str),
+    #[error("a catalog needs exactly one index endpoint, this one has {0}")]
+    IndexEndpoints(usize),
+}
 
 impl Catalog {
     /// The catalog this binary was built with.
     pub fn compiled() -> Catalog {
-        Catalog::new(COMPILED.to_vec()).expect("the compiled catalog has unique ids")
+        Catalog::new(COMPILED.to_vec()).expect("the compiled catalog is valid")
     }
 
-    pub fn new(endpoints: Vec<Endpoint>) -> Result<Catalog, DuplicateEndpointId> {
+    pub fn new(endpoints: Vec<Endpoint>) -> Result<Catalog, CatalogError> {
         let mut seen = BTreeSet::new();
         for e in &endpoints {
             if !seen.insert(e.id) {
-                return Err(DuplicateEndpointId(e.id.0));
+                return Err(CatalogError::DuplicateId(e.id.0));
             }
         }
-        Ok(Catalog { endpoints })
+        let index: Vec<EndpointId> = endpoints
+            .iter()
+            .filter(|e| e.key_kind == KeyKind::Index)
+            .map(|e| e.id)
+            .collect();
+        match index[..] {
+            [membership] => Ok(Catalog {
+                endpoints,
+                membership,
+            }),
+            _ => Err(CatalogError::IndexEndpoints(index.len())),
+        }
     }
 
     pub fn endpoints(&self) -> &[Endpoint] {
@@ -252,11 +266,11 @@ impl Catalog {
         self.endpoints.iter().find(|e| e.id.0 == id)
     }
 
-    /// The endpoint whose `ok` body is an index's membership
-    /// (`index_constituents`), if the catalog has it. Its bodies must pass
+    /// The one index endpoint, whose `ok` body is an index's membership
+    /// (`index_constituents`). Its bodies must pass
     /// [`crate::membership::constituents_members`].
-    pub fn membership(&self) -> Option<EndpointId> {
-        self.get(MEMBERSHIP).map(|e| e.id)
+    pub fn membership(&self) -> EndpointId {
+        self.membership
     }
 
     /// The entries that apply to keys of `kind`, in catalog order.
@@ -344,11 +358,27 @@ mod tests {
         assert_eq!(catalog.for_kind(KeyKind::Security).count(), 6);
         assert_eq!(catalog.for_kind(KeyKind::Index).count(), 1);
         assert!(catalog.get("missing").is_none());
-        assert_eq!(
-            catalog.membership().map(EndpointId::as_str),
-            Some("index_constituents")
-        );
-        let dup = vec![COMPILED[0], COMPILED[0]];
-        assert!(Catalog::new(dup).is_err());
+        assert_eq!(catalog.membership().as_str(), "index_constituents");
+        let dup = vec![COMPILED[0], COMPILED[0], COMPILED[6]];
+        assert!(matches!(
+            Catalog::new(dup),
+            Err(CatalogError::DuplicateId("consensus"))
+        ));
+        let none = COMPILED[..6].to_vec();
+        assert!(matches!(
+            Catalog::new(none),
+            Err(CatalogError::IndexEndpoints(0))
+        ));
+        let two = vec![
+            COMPILED[6],
+            Endpoint {
+                id: EndpointId("index_v2"),
+                ..COMPILED[6]
+            },
+        ];
+        assert!(matches!(
+            Catalog::new(two),
+            Err(CatalogError::IndexEndpoints(2))
+        ));
     }
 }

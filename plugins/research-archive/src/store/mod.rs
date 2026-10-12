@@ -83,8 +83,17 @@ pub enum StoreError {
         index: Key,
         reason: IncompleteMembership,
     },
-    #[error("the catalog has no membership endpoint, and run {0} plans indexes")]
-    NoMembershipEndpoint(RunId),
+    #[error("{at:?} is before the clock of run {run}, now at {mark:?}")]
+    ClockWentBack {
+        run: RunId,
+        at: UnixMs,
+        mark: UnixMs,
+    },
+    #[error("error class {class} cannot come from endpoint {endpoint}")]
+    ErrorClassForEndpoint {
+        endpoint: String,
+        class: &'static str,
+    },
     #[error(
         "the stored ok constituents body of {index} (run {source_run}, attempt {attempt}) is not a membership: {reason}"
     )]

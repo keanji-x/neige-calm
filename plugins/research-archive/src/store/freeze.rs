@@ -3,6 +3,7 @@
 
 use sqlx::{Row, SqliteConnection};
 
+use super::read::LATEST_OK;
 use super::write::{insert_run_key, load_plan, require_open};
 use super::{Result, Store, StoreError};
 use crate::catalog::EndpointId;
@@ -22,9 +23,10 @@ impl Store {
     /// wrote. For each planned `index-symbol` key, in key order:
     ///
     /// - **observed** when this run has an `ok` constituents observation of
-    ///   it: the latest by attempt;
+    ///   it: the latest by [`LATEST_OK`](super::read::LATEST_OK), the order
+    ///   `read_at` uses;
     /// - else **carried** from the run of the same source with the latest
-    ///   earlier `as_of` that has one (its latest by attempt). That row is
+    ///   earlier `as_of` that has one (its latest, same order). That row is
     ///   an original observation by construction, never a carry;
     /// - else **none**.
     ///
@@ -32,7 +34,9 @@ impl Store {
     /// [`constituents_members`](crate::membership::constituents_members); a
     /// stored `ok` body that fails it (only possible if a writer bypassed
     /// `record_observation`) refuses the freeze. So does a `frozen_at`
-    /// outside the run's window or before the `fetched_at` of a body used.
+    /// outside the run's window or before the run's clock (which is at or
+    /// after every observation of the run), and a carried body fetched after
+    /// `frozen_at` (an earlier day's window may overlap this one).
     /// One `run_membership` row per index and one `run_key` row (`origin =
     /// index:<sym>`) per member are written. A second freeze is refused
     /// with `AlreadyFrozen`. A run that plans no index has nothing to freeze:
@@ -43,13 +47,9 @@ impl Store {
         frozen_at: UnixMs,
     ) -> Result<Vec<(Key, Membership)>> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let window = require_open(&mut tx, run_id).await?;
-        if !window.contains(frozen_at) {
-            return Err(StoreError::OutsideWindow {
-                run: run_id,
-                at: frozen_at,
-            });
-        }
+        let clock = require_open(&mut tx, run_id).await?;
+        clock.inside_window(frozen_at)?;
+        clock.not_before_mark(frozen_at)?;
         let frozen: bool =
             sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM run_membership WHERE run_id = ?)")
                 .bind(run_id.0)
@@ -62,10 +62,7 @@ impl Store {
         if plan.indexes.is_empty() {
             return Ok(Vec::new());
         }
-        let endpoint = self
-            .catalog
-            .membership()
-            .ok_or(StoreError::NoMembershipEndpoint(run_id))?;
+        let endpoint = self.catalog.membership();
         let mut written = Vec::with_capacity(plan.indexes.len());
         for index in plan.indexes {
             let own = latest_ok(&mut tx, endpoint, &index, Scope::Run(run_id)).await?;
@@ -121,7 +118,7 @@ enum Scope {
 }
 
 /// The latest `ok` observation of `endpoint` for `index` in `scope`: the
-/// latest `as_of`, then the highest attempt.
+/// latest `as_of`, then [`LATEST_OK`].
 async fn latest_ok(
     conn: &mut SqliteConnection,
     endpoint: EndpointId,
@@ -135,7 +132,7 @@ async fn latest_ok(
          WHERE o.endpoint_id = ? AND o.key = ? AND o.status = 'ok'";
     let row = match scope {
         Scope::Run(run) => {
-            let sql = format!("{select} AND r.run_id = ? ORDER BY o.attempt DESC LIMIT 1");
+            let sql = format!("{select} AND r.run_id = ? ORDER BY {LATEST_OK} LIMIT 1");
             sqlx::query(&sql)
                 .bind(endpoint.as_str())
                 .bind(index.as_str())
@@ -146,7 +143,7 @@ async fn latest_ok(
         Scope::EarlierThan(source, as_of) => {
             let sql = format!(
                 "{select} AND r.source = ? AND r.as_of < ?
-                 ORDER BY r.as_of DESC, o.attempt DESC LIMIT 1"
+                 ORDER BY r.as_of DESC, {LATEST_OK} LIMIT 1"
             );
             sqlx::query(&sql)
                 .bind(endpoint.as_str())
@@ -168,8 +165,10 @@ async fn latest_ok(
     .transpose()
 }
 
-/// The members in the body of `origin`, refusing look-ahead and bodies that are
-/// not a complete membership.
+/// The members in the body of `origin`, refusing bodies that are not a
+/// complete membership and look-ahead. Look-ahead is only reachable for a
+/// carried body: this run's own observations are at or before its clock,
+/// which `frozen_at` has already passed.
 fn members_of(index: &Key, origin: &ConstituentsRow, frozen_at: UnixMs) -> Result<Vec<Key>> {
     if origin.fetched_at > frozen_at {
         return Err(StoreError::FreezeBeforeObservation {

@@ -8,6 +8,12 @@ use super::{Result, Store};
 use crate::catalog::EndpointId;
 use crate::types::{AsOf, Key, Origin, RunId, Status, UnixMs};
 
+/// The one order of `ok` rows `o`, latest first: by `fetched_at`, then the
+/// higher run id, then the higher attempt. Within a run the clock is
+/// monotonic, so this is also attempt order. `read_at` and the freeze both
+/// use it, so "the latest ok" has one meaning.
+pub(super) const LATEST_OK: &str = "o.fetched_at DESC, o.run_id DESC, o.attempt DESC";
+
 /// The value of a key × endpoint at a time.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PointRead {
@@ -60,15 +66,15 @@ impl Store {
         endpoint: EndpointId,
         t: UnixMs,
     ) -> Result<Option<PointRead>> {
-        let row = sqlx::query(
+        let row = sqlx::query(&format!(
             "SELECT b.body, o.fetched_at, r.as_of
              FROM observation o
              JOIN blob b ON b.sha256 = o.sha256
              JOIN run r ON r.run_id = o.run_id
              WHERE o.key = ? AND o.endpoint_id = ? AND o.status = 'ok' AND o.fetched_at <= ?
-             ORDER BY o.fetched_at DESC, o.run_id DESC, o.attempt DESC
-             LIMIT 1",
-        )
+             ORDER BY {LATEST_OK}
+             LIMIT 1"
+        ))
         .bind(key.as_str())
         .bind(endpoint.as_str())
         .bind(t.0)
@@ -90,7 +96,8 @@ impl Store {
     /// keys count only when that index's `run_membership.frozen_at ≤ t`.
     /// `None` when no such run exists.
     pub async fn universe_at(&self, t: UnixMs) -> Result<Option<Universe>> {
-        let mut conn = self.pool.acquire().await?;
+        // One read transaction: every query sees the same snapshot.
+        let mut conn = self.pool.begin().await?;
         let run = sqlx::query(
             "SELECT r.run_id, r.as_of FROM run r
              WHERE r.started_at <= ?
@@ -135,6 +142,7 @@ impl Store {
         .bind(t.0)
         .fetch_all(&mut *conn)
         .await?;
+        conn.commit().await?;
         Ok(Some(Universe {
             run_id,
             as_of,

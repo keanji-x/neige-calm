@@ -1,4 +1,5 @@
-//! I2: every table is append-only at the file level, on any connection.
+//! I2: every table is append-only at the file level, for ordinary SQL on a
+//! connection with SQLite's default trigger and check settings.
 //!
 //! Each test runs one statement against an existing row of one table on a
 //! raw connection (foreign keys off), first with `recursive_triggers` OFF and

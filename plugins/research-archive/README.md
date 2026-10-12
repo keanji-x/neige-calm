@@ -109,15 +109,19 @@ when to freeze. For each planned `index-symbol` key, in one transaction:
 
 The members are parsed from that body. The freeze is refused when a stored
 `ok` body fails the completeness rule (only a writer bypassing the Store can
-cause it), when `frozen_at` is outside the run's window, or when it precedes
-the `fetched_at` of a body it uses (no look-ahead).
+cause it), when `frozen_at` is outside the run's window or before the run's
+clock, or when a carried body was fetched after `frozen_at` (no
+look-ahead). Any catalog the Store accepts has exactly one index endpoint,
+and that is the membership endpoint.
 
 ## Read contract
 
 `Store::read_at(key, endpoint_id, t)` returns `(body, fetched_at, as_of)`.
 
 - **Which row.** It returns the latest `ok` row with `fetched_at ≤ t`. Ties on
-  `fetched_at` go to the higher `run_id`, then to the higher `attempt`.
+  `fetched_at` go to the higher `run_id`, then to the higher `attempt`. This
+  "latest ok" order is defined once (`LATEST_OK`) and the freeze uses it
+  too, so a freeze and a read at the same time pick the same body.
 - **Failure rows never win.** A failure row hides nothing: a `permanent`
   today leaves yesterday's value as the value.
 - **An empty body is a value.** It means "no coverage at that time", and it is
@@ -161,7 +165,16 @@ freeze commits.
 
 ## Writes
 
-Each write is one `BEGIN IMMEDIATE` transaction:
+Each write is one `BEGIN IMMEDIATE` transaction.
+
+**A run's clock is monotonic.** Its high-water mark is the latest of
+`started_at`, every `frozen_at` and every `fetched_at` of the run. Every
+`fetched_at`, `frozen_at` and `finished_at` written to the run must be at or
+after the mark (equal is allowed); an earlier one is refused with
+`ClockWentBack`. So within a run attempt order is time order, no row
+predates the plan, and an index member's observations come after the freeze
+that planned it. A runner that records results of concurrent requests takes
+`fetched_at` when it records, or a late write is refused.
 
 - **`plan_run`** writes the `run` row and the `config` and `index-symbol`
   keys. It is idempotent per `(source, as_of)`: when a plan exists, the
@@ -170,8 +183,11 @@ Each write is one `BEGIN IMMEDIATE` transaction:
 - **`record_observation`** writes the blob and the observation row. It
   numbers the attempt per `(run, key, endpoint)` inside the transaction. It
   refuses a pair that is not planned, a run that has ended, a `fetched_at`
-  outside the run's window `[window_start, window_end)`, and an incomplete
-  `ok` constituents body.
+  outside the run's window `[window_start, window_end)` or before its clock,
+  an incomplete `ok` constituents body, and an `error_class` the endpoint
+  cannot produce (`incomplete_membership` only from the membership endpoint,
+  `dc_region_restricted` only from an endpoint with a `dc_restrict`, which
+  today is none).
 - **`freeze_membership`** derives and writes every `run_membership` row and
   the `index:<sym>` keys, all or nothing (see
   [Index membership](#index-membership)).
@@ -211,18 +227,26 @@ What follows from the rule:
   conflict resolution, so any insert that would collide with a stored row
   meets its guard first: `INSERT OR REPLACE`, `REPLACE` and
   `INSERT … ON CONFLICT DO UPDATE` cannot delete or rewrite a row.
-- **No pragma matters.** The guards hold with `recursive_triggers` OFF
+- **`recursive_triggers` does not matter.** The guards hold with it OFF
   (SQLite's default, under which a REPLACE deletes without firing delete
-  triggers) and ON, and with foreign keys off.
-- **Data statements on any connection are covered.** The tests run every
-  statement above, plus an explicit rowid collision, against every table on
-  raw connections with foreign keys off and `recursive_triggers` OFF and ON,
-  using the bundled SQLite 3.46.
+  triggers) and ON, and with foreign keys off. The tests run every statement
+  above, plus an explicit rowid collision, against every table on raw
+  connections in both settings, using the bundled SQLite 3.46.
 
-What the guards do not cover: schema statements (`DROP TRIGGER`,
-`DROP TABLE`, `ALTER TABLE`), `PRAGMA writable_schema`, and editing the file's
-bytes. `Store::open` refuses a file whose schema has drifted, but it cannot
-see rows changed while a guard was gone.
+**What this guarantees, and what it does not.** The guards and the CHECKs
+hold for ordinary SQL on a connection with SQLite's default trigger and
+check settings. They guard against mistakes and ordinary writers. They do
+not stop a writer that turns them off:
+
+- `SQLITE_DBCONFIG_ENABLE_TRIGGER` off (the `sqlite3` CLI's
+  `.dbconfig enable_trigger off`) disables the guards, so `UPDATE` and
+  `DELETE` go through.
+- `PRAGMA ignore_check_constraints = ON` lets closed-set violations in.
+- `PRAGMA writable_schema`, schema statements (`DROP TRIGGER`, `DROP TABLE`,
+  `ALTER TABLE`) and editing the file's bytes are not covered either.
+
+`Store::open` refuses a file whose schema has drifted, but it cannot see rows
+written while a guard or check was off.
 
 ## Opening
 
@@ -250,6 +274,10 @@ use one of these:
 - **Copy both files.** Copy `archive.sqlite3` together with its
   `archive.sqlite3-wal` at a moment when no capture
   is running.
+
+Never run `ANALYZE` or `PRAGMA optimize` on the live file: they create
+`sqlite_stat*` tables, which `Store::open` refuses as schema drift. Run them,
+if at all, on a copy.
 
 Then open the file read-only, for example
 `sqlite3 'file:archive.sqlite3?mode=ro'` or `SQLITE_OPEN_READONLY` without

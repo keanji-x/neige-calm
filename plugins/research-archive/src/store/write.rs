@@ -8,7 +8,9 @@ use sqlx::{Row, SqliteConnection};
 use super::{Result, Store, StoreError};
 use crate::catalog::EndpointId;
 use crate::membership::constituents_members;
-use crate::types::{AsOf, Finish, Key, Origin, Outcome, RunId, RunOutcome, Source, UnixMs, Window};
+use crate::types::{
+    AsOf, ErrorClass, Finish, Key, Origin, Outcome, RunId, RunOutcome, Source, UnixMs, Window,
+};
 
 /// The key × endpoint pairs a run plans, as rows `(run_id, key,
 /// endpoint_id)`: each `run_key` row joined to the endpoints of its kind. An
@@ -83,14 +85,19 @@ impl Store {
 
     /// The stored plan of `run_id`.
     pub async fn plan(&self, run_id: RunId) -> Result<RunPlan> {
-        let mut conn = self.pool.acquire().await?;
-        load_plan(&mut conn, run_id, false).await
+        // One read transaction: the run row and its keys from one snapshot.
+        let mut tx = self.pool.begin().await?;
+        let plan = load_plan(&mut tx, run_id, false).await?;
+        tx.commit().await?;
+        Ok(plan)
     }
 
     /// Records one attempt: the body's blob (deduplicated by content) and the
     /// observation row. The attempt number is the next one for `(run, key,
     /// endpoint)`, computed inside the transaction, and is returned. The
-    /// pair must be planned and the run must not have ended.
+    /// pair must be planned, the run must not have ended, and `fetched_at`
+    /// must be inside the window and not before the run's clock (see
+    /// [`RunClock`]), so attempt order is time order within a run.
     pub async fn record_observation(
         &self,
         run_id: RunId,
@@ -103,23 +110,37 @@ impl Store {
             Outcome::Ok { body } => (Some(body), None),
             Outcome::Failed { body, error, .. } => (body.as_ref(), Some(error)),
         };
+        let membership = self.catalog.membership();
         if let Outcome::Ok { body } = outcome
-            && self.catalog.membership() == Some(endpoint)
+            && endpoint == membership
         {
             constituents_members(body).map_err(|reason| StoreError::IncompleteMembership {
                 index: key.clone(),
                 reason,
             })?;
         }
+        if let Some(error) = error {
+            let restricted = self
+                .catalog
+                .get(endpoint.as_str())
+                .is_some_and(|e| e.dc_restrict.is_some());
+            let fits = match error.class {
+                ErrorClass::IncompleteMembership => endpoint == membership,
+                ErrorClass::DcRegionRestricted => restricted,
+                _ => true,
+            };
+            if !fits {
+                return Err(StoreError::ErrorClassForEndpoint {
+                    endpoint: endpoint.as_str().to_owned(),
+                    class: error.class.as_str(),
+                });
+            }
+        }
         let sha256 = body.map(|b| hex::encode(Sha256::digest(b)));
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let window = require_open(&mut tx, run_id).await?;
-        if !window.contains(fetched_at) {
-            return Err(StoreError::OutsideWindow {
-                run: run_id,
-                at: fetched_at,
-            });
-        }
+        let clock = require_open(&mut tx, run_id).await?;
+        clock.inside_window(fetched_at)?;
+        clock.not_before_mark(fetched_at)?;
         let planned: bool = sqlx::query_scalar(&format!(
             "SELECT EXISTS (SELECT 1 FROM ({PLANNED_PAIRS}) p
              WHERE p.run_id = ? AND p.key = ? AND p.endpoint_id = ?)"
@@ -173,7 +194,8 @@ impl Store {
         Ok(u32::try_from(attempt).expect("attempt counts stay far below u32::MAX"))
     }
 
-    /// Ends a run that has not ended. `Complete` needs what the Store can
+    /// Ends a run that has not ended, at a `finished_at` not before the
+    /// run's clock. `Complete` needs what the Store can
     /// check: every planned index frozen and every planned pair with at
     /// least one row. Whether the failures left are final (the attempt cap)
     /// is the runner's call.
@@ -185,7 +207,8 @@ impl Store {
         reason: Option<&str>,
     ) -> Result<()> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        require_open(&mut tx, run_id).await?;
+        let clock = require_open(&mut tx, run_id).await?;
+        clock.not_before_mark(finished_at)?;
         if outcome == Finish::Complete {
             require_complete(&mut tx, run_id).await?;
         }
@@ -315,11 +338,58 @@ async fn insert_run_end(
     Ok(())
 }
 
-/// Refuses a run that does not exist or has ended; returns its window.
-pub(super) async fn require_open(conn: &mut SqliteConnection, run_id: RunId) -> Result<Window> {
+/// An open run's window and clock.
+///
+/// **A run's clock is monotonic.** Its high-water mark is the latest of
+/// `started_at`, every `frozen_at` and every `fetched_at` in the run (an
+/// ended run takes no writes, so `finished_at` never raises it). Every
+/// `fetched_at`, `frozen_at` and `finished_at` written to the run must be
+/// at or after the mark. So within a run, attempt order is time order, no
+/// row predates the plan, and an index member's observations come after the
+/// freeze that planned it.
+pub(super) struct RunClock {
+    pub(super) run_id: RunId,
+    pub(super) window: Window,
+    pub(super) mark: UnixMs,
+}
+
+impl RunClock {
+    /// Refuses `at` before the mark. Equal is allowed.
+    pub(super) fn not_before_mark(&self, at: UnixMs) -> Result<()> {
+        if at < self.mark {
+            Err(StoreError::ClockWentBack {
+                run: self.run_id,
+                at,
+                mark: self.mark,
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Refuses `at` outside `[window_start, window_end)`.
+    pub(super) fn inside_window(&self, at: UnixMs) -> Result<()> {
+        if self.window.contains(at) {
+            Ok(())
+        } else {
+            Err(StoreError::OutsideWindow {
+                run: self.run_id,
+                at,
+            })
+        }
+    }
+}
+
+/// Refuses a run that does not exist or has ended; returns its clock.
+pub(super) async fn require_open(conn: &mut SqliteConnection, run_id: RunId) -> Result<RunClock> {
     let row = sqlx::query(
         "SELECT r.window_start, r.window_end,
-                EXISTS (SELECT 1 FROM run_end e WHERE e.run_id = r.run_id) AS ended
+                EXISTS (SELECT 1 FROM run_end e WHERE e.run_id = r.run_id) AS ended,
+                MAX(r.started_at,
+                    COALESCE((SELECT MAX(o.fetched_at) FROM observation o
+                              WHERE o.run_id = r.run_id), r.started_at),
+                    COALESCE((SELECT MAX(m.frozen_at) FROM run_membership m
+                              WHERE m.run_id = r.run_id), r.started_at)) AS mark
          FROM run r WHERE r.run_id = ?",
     )
     .bind(run_id.0)
@@ -329,10 +399,14 @@ pub(super) async fn require_open(conn: &mut SqliteConnection, run_id: RunId) -> 
     if row.try_get::<bool, _>("ended")? {
         return Err(StoreError::RunEnded(run_id));
     }
-    Ok(Window::new(
-        UnixMs(row.try_get("window_start")?),
-        UnixMs(row.try_get("window_end")?),
-    )?)
+    Ok(RunClock {
+        run_id,
+        window: Window::new(
+            UnixMs(row.try_get("window_start")?),
+            UnixMs(row.try_get("window_end")?),
+        )?,
+        mark: UnixMs(row.try_get("mark")?),
+    })
 }
 
 /// Refuses `complete` for a run with an unfrozen planned index or a planned

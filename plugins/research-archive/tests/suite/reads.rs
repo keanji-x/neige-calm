@@ -105,7 +105,8 @@ async fn i6_every_failure_class_is_skipped() {
         (2, FailureClass::Transient),
         (3, FailureClass::Throttled),
         (4, FailureClass::AuthUnavailable),
-        (5, FailureClass::RegionRestricted),
+        // `region_restricted` needs an endpoint with a `dc_restrict`; the
+        // catalog has none.
         (6, FailureClass::Permanent),
     ] {
         let outcome = match failed(class) {
