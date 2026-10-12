@@ -1,0 +1,340 @@
+//! The compiled endpoint catalog (#2575, "Longbridge endpoint catalog").
+//!
+//! Each entry fixes everything that shapes a request except the key: method,
+//! path, ordered query and headers. Paths and query names come from
+//! `rust/src/fundamental/context.rs` and `rust/src/market/context.rs` at
+//! `longbridge/openapi@v5.2.0`. The archive freezes the catalog in its
+//! `endpoint` table and `Store::open` refuses a file whose rows differ, so a
+//! change to any field of an existing entry gets a new `endpoint_id`.
+
+use std::collections::BTreeSet;
+
+/// Every request carries this language. Pinning it makes the localized
+/// strings in a body part of the endpoint's definition.
+const HEADERS: &[(&str, &str)] = &[("Accept-Language", "en")];
+
+/// The query parameter that carries the key on every catalog endpoint.
+const KEY_PARAM: &str = "symbol";
+
+/// What a key names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum KeyKind {
+    /// An index symbol in dotted form, such as `.SPX.US`.
+    Index,
+    /// A security symbol such as `AAPL.US`.
+    Security,
+}
+
+impl KeyKind {
+    /// The `endpoint.key_kind` value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            KeyKind::Index => "index",
+            KeyKind::Security => "security",
+        }
+    }
+}
+
+/// The HTTP method of an entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Method {
+    Get,
+}
+
+impl Method {
+    /// The `endpoint.method` value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Method::Get => "GET",
+        }
+    }
+}
+
+/// A data center that alone can serve an entry. The SDK refuses such a
+/// request locally when the token's prefix names another one. No current
+/// entry is restricted (the `us_*` endpoints were dropped after probe P4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DcRegion {
+    Us,
+}
+
+impl DcRegion {
+    /// The `endpoint.dc_restrict` value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DcRegion::Us => "us",
+        }
+    }
+}
+
+/// One query pair's value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueryValue {
+    /// The run key (a symbol) is sent here.
+    Key,
+    /// A literal value.
+    Fixed(&'static str),
+}
+
+/// A catalog endpoint id, such as `consensus`. Ids only come from a
+/// [`Catalog`], so every one names a row of the archive's `endpoint` table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EndpointId(&'static str);
+
+impl EndpointId {
+    pub fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
+impl std::fmt::Display for EndpointId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+/// One catalog entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Endpoint {
+    pub id: EndpointId,
+    pub method: Method,
+    pub path: &'static str,
+    /// The query pairs, in the order they are sent.
+    pub query: &'static [(&'static str, QueryValue)],
+    pub headers: &'static [(&'static str, &'static str)],
+    pub dc_restrict: Option<DcRegion>,
+    pub key_kind: KeyKind,
+}
+
+impl Endpoint {
+    /// A GET entry with the pinned headers and no data-center restriction.
+    pub const fn new(
+        id: &'static str,
+        path: &'static str,
+        query: &'static [(&'static str, QueryValue)],
+        key_kind: KeyKind,
+    ) -> Endpoint {
+        Endpoint {
+            id: EndpointId(id),
+            method: Method::Get,
+            path,
+            query,
+            headers: HEADERS,
+            dc_restrict: None,
+            key_kind,
+        }
+    }
+
+    /// The canonical `endpoint.query_json`: a compact JSON array of
+    /// `[name, value]` pairs in send order, where the value `null` stands
+    /// for the run key. Example: `[["symbol",null],["indicator","pe"]]`.
+    pub fn query_json(&self) -> String {
+        let pairs: Vec<(&str, Option<&str>)> = self
+            .query
+            .iter()
+            .map(|(name, value)| match value {
+                QueryValue::Key => (*name, None),
+                QueryValue::Fixed(v) => (*name, Some(*v)),
+            })
+            .collect();
+        canonical_json(&pairs)
+    }
+
+    /// The canonical `endpoint.headers_json`: a compact JSON array of
+    /// `[name, value]` pairs in send order.
+    pub fn headers_json(&self) -> String {
+        let pairs: Vec<(&str, Option<&str>)> =
+            self.headers.iter().map(|(n, v)| (*n, Some(*v))).collect();
+        canonical_json(&pairs)
+    }
+}
+
+/// The one serialization of `query_json` and `headers_json`: serde_json's
+/// compact form (no whitespace, minimal string escapes, UTF-8 kept as is) of
+/// an array of `[name, value]` arrays in order, `None` written as `null`.
+fn canonical_json(pairs: &[(&str, Option<&str>)]) -> String {
+    serde_json::to_string(pairs).expect("string pairs always serialize")
+}
+
+const KEY_ONLY: &[(&str, QueryValue)] = &[(KEY_PARAM, QueryValue::Key)];
+
+const COMPILED: &[Endpoint] = &[
+    Endpoint::new(
+        "consensus",
+        "/v1/quote/financial-consensus-detail",
+        KEY_ONLY,
+        KeyKind::Security,
+    ),
+    Endpoint::new(
+        "forecast_eps",
+        "/v1/quote/forecast-eps",
+        KEY_ONLY,
+        KeyKind::Security,
+    ),
+    Endpoint::new(
+        "rating_latest",
+        "/v1/quote/institution-rating-latest",
+        KEY_ONLY,
+        KeyKind::Security,
+    ),
+    Endpoint::new(
+        "ratings",
+        "/v1/quote/institution-ratings",
+        KEY_ONLY,
+        KeyKind::Security,
+    ),
+    Endpoint::new(
+        "rating_detail",
+        "/v1/quote/institution-ratings/detail",
+        KEY_ONLY,
+        KeyKind::Security,
+    ),
+    Endpoint::new(
+        "valuation",
+        "/v1/quote/valuation",
+        &[
+            (KEY_PARAM, QueryValue::Key),
+            ("indicator", QueryValue::Fixed("pe")),
+            ("range", QueryValue::Fixed("1")),
+        ],
+        KeyKind::Security,
+    ),
+    // One call returns every member: without paging the endpoint returns 20
+    // of `total`, and pages of 100 are inconsistent (probe P5b).
+    Endpoint::new(
+        "index_constituents",
+        "/v1/quote/index-constituents",
+        &[
+            (KEY_PARAM, QueryValue::Key),
+            ("offset", QueryValue::Fixed("0")),
+            ("limit", QueryValue::Fixed("1000")),
+        ],
+        KeyKind::Index,
+    ),
+];
+
+/// A set of endpoints with unique ids, in a fixed order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Catalog {
+    endpoints: Vec<Endpoint>,
+}
+
+/// A catalog whose ids are not unique.
+#[derive(Debug, thiserror::Error)]
+#[error("catalog endpoint id {0} appears more than once")]
+pub struct DuplicateEndpointId(pub &'static str);
+
+impl Catalog {
+    /// The catalog this binary was built with.
+    pub fn compiled() -> Catalog {
+        Catalog::new(COMPILED.to_vec()).expect("the compiled catalog has unique ids")
+    }
+
+    pub fn new(endpoints: Vec<Endpoint>) -> Result<Catalog, DuplicateEndpointId> {
+        let mut seen = BTreeSet::new();
+        for e in &endpoints {
+            if !seen.insert(e.id) {
+                return Err(DuplicateEndpointId(e.id.0));
+            }
+        }
+        Ok(Catalog { endpoints })
+    }
+
+    pub fn endpoints(&self) -> &[Endpoint] {
+        &self.endpoints
+    }
+
+    /// The entry with this id.
+    pub fn get(&self, id: &str) -> Option<&Endpoint> {
+        self.endpoints.iter().find(|e| e.id.0 == id)
+    }
+
+    /// The entries that apply to keys of `kind`, in catalog order.
+    pub fn for_kind(&self, kind: KeyKind) -> impl Iterator<Item = &Endpoint> {
+        self.endpoints.iter().filter(move |e| e.key_kind == kind)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The issue's table, row by row, in the stored (canonical) form.
+    #[test]
+    fn compiled_catalog_matches_the_issue_table_golden() {
+        let rows: Vec<_> = Catalog::compiled()
+            .endpoints()
+            .iter()
+            .map(|e| {
+                (
+                    e.id.as_str(),
+                    e.method.as_str(),
+                    e.path,
+                    e.query_json(),
+                    e.headers_json(),
+                    e.dc_restrict.map(DcRegion::as_str),
+                    e.key_kind.as_str(),
+                )
+            })
+            .collect();
+        let key = r#"[["symbol",null]]"#.to_owned();
+        let en = r#"[["Accept-Language","en"]]"#.to_owned();
+        let security = |id, path| (id, "GET", path, key.clone(), en.clone(), None, "security");
+        assert_eq!(
+            rows,
+            [
+                security("consensus", "/v1/quote/financial-consensus-detail"),
+                security("forecast_eps", "/v1/quote/forecast-eps"),
+                security("rating_latest", "/v1/quote/institution-rating-latest"),
+                security("ratings", "/v1/quote/institution-ratings"),
+                security("rating_detail", "/v1/quote/institution-ratings/detail"),
+                (
+                    "valuation",
+                    "GET",
+                    "/v1/quote/valuation",
+                    r#"[["symbol",null],["indicator","pe"],["range","1"]]"#.to_owned(),
+                    en.clone(),
+                    None,
+                    "security",
+                ),
+                (
+                    "index_constituents",
+                    "GET",
+                    "/v1/quote/index-constituents",
+                    r#"[["symbol",null],["offset","0"],["limit","1000"]]"#.to_owned(),
+                    en.clone(),
+                    None,
+                    "index",
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn canonical_json_escapes_and_orders_deterministically() {
+        const Q: &[(&str, QueryValue)] = &[
+            ("z", QueryValue::Fixed("a\"b\\c")),
+            (KEY_PARAM, QueryValue::Key),
+            ("a", QueryValue::Fixed("é")),
+        ];
+        let e = Endpoint::new("x", "/x", Q, KeyKind::Security);
+        assert_eq!(
+            e.query_json(),
+            r#"[["z","a\"b\\c"],["symbol",null],["a","é"]]"#
+        );
+        assert_eq!(e.query_json(), e.query_json());
+    }
+
+    #[test]
+    fn ids_are_unique_and_lookups_agree() {
+        let catalog = Catalog::compiled();
+        for e in catalog.endpoints() {
+            assert_eq!(catalog.get(e.id.as_str()), Some(e));
+        }
+        assert_eq!(catalog.for_kind(KeyKind::Security).count(), 6);
+        assert_eq!(catalog.for_kind(KeyKind::Index).count(), 1);
+        assert!(catalog.get("missing").is_none());
+        let dup = vec![COMPILED[0], COMPILED[0]];
+        assert!(Catalog::new(dup).is_err());
+    }
+}

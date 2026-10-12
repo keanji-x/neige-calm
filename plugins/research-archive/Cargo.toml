@@ -1,0 +1,24 @@
+[package]
+name = "research-archive"
+version = "0.1.0"
+edition = "2024"
+
+# Point-in-time archive of Longbridge fundamentals (#2575). Its own package,
+# never a side binary of calm-server. S1-1 is the persistence boundary only:
+# the compiled endpoint catalog and the append-only `archive.sqlite3` Store.
+# The capture job (auth, source, runner) arrives in S1-2.
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+hex = "0.4"
+serde_json = "1"
+sha2 = "0.10"
+# The workspace's sqlx (calm-server uses 0.8 with `sqlite`), so the graph keeps
+# one bundled `libsqlite3-sys`. No macros, no migrate: the DDL is one frozen
+# const applied by `Store::open`.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
