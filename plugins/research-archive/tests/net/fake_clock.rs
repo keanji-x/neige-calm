@@ -31,12 +31,17 @@ impl Clock for FakeClock {
         UnixMs(*self.0.lock().unwrap())
     }
 
+    /// Moves the clock to `at`, after 20 ms of real time: a sleeper raced
+    /// against a request in flight (the dispatcher's wait) lets a fast fake
+    /// response land first, so time does not jump under it.
     async fn sleep_until(&self, at: UnixMs) {
-        {
-            let mut now = self.0.lock().unwrap();
-            *now = (*now).max(at.0);
+        if self.now() >= at {
+            tokio::task::yield_now().await;
+            return;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let mut now = self.0.lock().unwrap();
+        *now = (*now).max(at.0);
     }
 }
 

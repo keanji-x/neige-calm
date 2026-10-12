@@ -339,9 +339,10 @@ if at all, on a copy.
 
 ## The binary
 
-`research-archive <command> --config <file>`. Every command first refuses
-a hostile environment, then reads the config, then sets the region, all
-before any thread starts.
+`research-archive <command> --config <file>`. Every command that can build
+an SDK client (`capture` and the `auth` commands) first refuses a hostile
+environment, then reads the config, then sets the region, all before any
+thread starts. `notify` builds none and only reads the config.
 
 **Config.** A TOML file with every field required; unknown fields are
 refused. `research-archive.example.toml` documents each field:
@@ -486,7 +487,8 @@ in the library tests. There is no flag or variable that changes it.
 
 **Start, in this order.**
 
-1. The environment guard and the config (as for every command).
+1. The environment guard and the config (as for the `auth` commands;
+   `notify` skips the guard, see [The alert](#the-alert)).
 2. The data-dir lock. If another process holds it, the start exits `BUSY`
    (0) having opened nothing: no Store, no token, no request.
 3. Open the Store and end every run whose window has closed (`window_end ≤
@@ -506,9 +508,19 @@ and half days of a contiguous date range and the time it was fetched. It is
 refreshed when it is missing, invalid or at least 24 hours old, through
 `QuoteContext::trading_days(Market::US, from, to)` on the quote WebSocket
 (`quote_ws_url`), for today (New York) − 5 days to that + 30 days, the
-span the SDK asks for itself. A refresh merges with the cached range when
-the two touch, so the calendar stays contiguous. A refresh that finds no
-usable token exits `AUTH_UNAVAILABLE`; any other refresh failure is `FATAL`.
+span the SDK asks for itself.
+
+- **Gaps are back-filled.** The history the archive needs starts at the
+  earlier of the cache's first day and the first run's `as_of`. When the
+  cache does not reach today's range (the job was offline), or starts after
+  the first run, the refresh also fetches every missing interval, in ranges
+  of at most 31 days, before it merges. So the calendar stays contiguous and
+  every closed trading day of an outage can be marked `missed`.
+- **Failures.** A refresh that finds no usable token exits
+  `AUTH_UNAVAILABLE`. Any other refresh failure falls back to the old cache
+  with a warning while that cache still tells whether a window is open now
+  (it covers today and the trading days around it); otherwise it is
+  `FATAL`.
 
 **The window of trading day D** runs from D at `window_start` New York
 time to the next trading day at 09:30 New York time, both converted with
@@ -521,27 +533,53 @@ whose window has closed (`window_end ≤ now`) and that has no run gets a
 `missed` run. Days before the first run are never marked.
 
 **Deadlines.** The start's deadline is `min(window_end, start +
-attempt_timeout)`. No request starts at or after its bound, and a request or
-token refresh still in flight at the bound is dropped there. A retry never
-waits past the deadline. Membership retries are also bounded by the carry
-deadline, `window_start + carry_deadline`, except a pair's first attempt.
+attempt_timeout)`. An attempt starts only before its bound, checked when it
+is dispatched and again at the actual request start, after the rate-limit
+slot (`LongbridgeSource::fetch_if`), against the injected clock. A token
+resolution or request still in flight at the bound is dropped there.
+Membership attempts are also bounded by the carry deadline,
+`window_start + carry_deadline`, except an index's first attempt.
+
+**The retry schedule.** Every pair still to be worked waits in one queue,
+keyed by the time it may next be attempted (`src/capture/schedule.rs`). At
+most four requests are in flight; the earliest eligible pairs go first, and
+a pair waiting out its backoff holds no worker.
+
+- A `transient`, `permanent` or `region_restricted` failure counts toward
+  `attempt_cap` and waits 1, 4, 16, then 64 minutes (64 minutes from then
+  on). The example config's cap of 6 spreads a pair's attempts over 149
+  minutes (1 + 4 + 16 + 64 + 64), so a pair is lost only to an outage of
+  about two and a half hours.
+- A `throttled` failure waits its `retry_after` and never counts; neither
+  does an auth pause.
+- The wait survives the end of a start: the next start derives each pair's
+  next time from its last stored attempt.
 
 **Phases.**
 
 1. **Membership.** For each planned index not yet frozen, fetch
-   `index_constituents` until it has an `ok`, its attempt cap is exhausted,
-   the carry deadline passes (after at least one attempt) or the deadline
-   comes. The Store classifies each body.
-2. **Freeze**, when every planned index has an `ok` or an exhausted cap, or
-   the carry deadline has passed: `freeze_membership(run, now)`. The Store
-   derives the modes; the runner only decides when. An attempt timeout before
-   that leaves the run unfrozen, with no per-key fetch, for the next start.
-3. **Fetch.** Every planned pair (`coverage`) without an `ok` and below its
-   cap is attempted, at most four requests in flight, paced by the limiter at
-   `rps`. A `transient` or `permanent` failure counts toward
-   `attempt_cap` and is retried after 1 s, 2 s, 4 s, … (at most 60 s). A
-   `throttled` failure waits its `retry_after` and never counts; neither does
-   an auth pause.
+   `index_constituents` on the schedule. The Store classifies each body.
+2. **Freeze**, exactly when every planned index has an `ok` constituents row,
+   or once `now ≥ carry_deadline`: `freeze_membership(run, now)`. The Store
+   derives the modes; the runner only decides when.
+   - The cap does not settle membership: an index at its cap waits for the
+     carry deadline.
+   - When the carry deadline falls inside this start, the start waits for it.
+   - When this start's deadline comes first, the run is left unfrozen, with
+     no per-key fetch, for the next start (exit 0).
+3. **Fetch**, only after the freeze: every planned pair (`coverage`) without
+   an `ok` and below its cap, on the schedule.
+
+**The end.** A run ends `complete` only when it is frozen and every pair has
+an `ok` or is at its cap; with the schedule above, a capped pair was retried
+over a long span. With work left, a start whose deadline is the window end
+waits for it and ends the run `partial`; any other start leaves it open.
+
+**Config at each start.** The run's planned keys and its frozen index set
+come from its plan and freeze, never from the current config (I12). The
+retry and timing policy (`attempt_cap`, `carry_deadline_minutes`, `rps`,
+`attempt_timeout_minutes`) is read from the config at each start, so a
+change applies to the open run from its next start.
 
 **One serialized recorder.** Every observation, the freeze and the end are
 written by one recorder that takes the timestamp after it has its turn and
@@ -549,18 +587,23 @@ writes under that turn. So `fetched_at` is the wall time the response was
 **recorded**, and a run's clock never goes back, however the in-flight
 requests finish (#2577).
 
-**The first stop latches.** When a worker stops the run (a request found
-no usable token, the window closed, or a write failed), every other
-worker's fetch in flight (its token resolution, rate-limit wait or request)
-and every wait between attempts is dropped at once, and no attempt starts
-after it. An auth failure therefore never triggers one more token refresh
-per worker.
+**The first stop latches.** When an attempt stops the run (a request found
+no usable token, the window closed, or a write failed), every other attempt
+in flight (its token resolution, rate-limit wait or request) is dropped at
+once, and nothing more is dispatched. An auth failure therefore never
+triggers one more token refresh per request.
 
 **The browser flow.** A token that the SDK could use only through the
 browser login (none stored, or an expiring one whose refresh fails) stops
-`build_oauth` at the flow's first step: it returns `BrowserFlow`, the
-callback listener is dropped, and the start ends `AUTH_UNAVAILABLE` through
-its normal exit, `last_exit.json` included.
+`build_oauth` at the flow's first step: it returns `BrowserFlow`, and the
+start ends `AUTH_UNAVAILABLE` through its normal exit, `last_exit.json`
+included. The SDK has already bound its callback listener on an ephemeral
+loopback port (never the registered `callback_port`), and the task serving
+it may outlive the dropped build until the runtime shuts down. In the
+binary that is the process exit, moments later; nothing is sent to it, and
+no browser is ever pointed at it. Likewise, a calendar refresh dropped at
+its deadline leaves the SDK's quote task on the SDK's own runtime until the
+process exits.
 
 **Burst bound.** The SDK retries a bare HTTP 429 up to five times inside one
 request, outside the limiter. The server throttles with the envelope code
@@ -584,10 +627,20 @@ limiter is therefore four requests in flight × 6 = 24 requests within about
 | anything else | 70 (`FATAL`) | `fatal` | left open |
 
 **`last_exit.json`** is written atomically before the lock is released:
-`{code, kind, at, as_of?, failure?}`, where `failure` is the run's most
-frequent counted failure as `error_class:error_code` for
-`complete_with_failures`, `degraded` and `partial`. It holds no token and no server
-text. A start that never took the lock writes none.
+`{code, kind, at, as_of?, failure?, closed_dangling?,
+closed_dangling_failure?}`.
+
+- `failure` is the run's most frequent counted failure as
+  `error_class:error_code`, for `complete_with_failures`, `degraded` and
+  `partial`.
+- `closed_dangling` is the day of a run left open whose window had closed,
+  which this start ended `partial`, with that run's most frequent failure in
+  `closed_dangling_failure`. It is kept whatever the start's own ending:
+  when the start would otherwise exit 0, it exits `PARTIAL` for that day
+  instead (with `failure` from that run); when it exits `FATAL` or
+  `AUTH_UNAVAILABLE`, the dangling run is still on record.
+- It holds no token and no server text. A start that never took the lock
+  writes none.
 
 **A mostly lost day alerts.** A run that ends `complete` with fewer than
 half of its planned pairs having an `ok` (`capture::DEGRADED_BELOW`, 0.5)
@@ -602,11 +655,21 @@ code.
 ## The alert
 
 `research-archive notify --config <file> --failed-unit <unit>` is what the
-capture unit's `OnFailure=` runs. It reads `last_exit.json`; a state that
-is non-zero and at most 15 minutes old names the failure kind, anything
-else is `unknown` (a refused environment, a bad config, a kill by
-`TimeoutStartSec=`). It runs `notify_command` with one more argument, the
-message, for example:
+capture unit's `OnFailure=` runs.
+
+- **No environment guard.** `notify` builds no SDK client, so it does not
+  refuse `LONGBRIDGE_*` variables or a `.env`: it alerts when the capture
+  refused its environment.
+- **It needs the config**, for `notify_command`. With an unreadable or
+  invalid config it cannot alert at all: it logs the error and exits
+  `FATAL`, and the failure is visible only in the journal
+  (`systemctl --user status`).
+- **The kind.** It reads `last_exit.json`; a state that is non-zero and at
+  most 15 minutes old names the failure kind. Anything else is `unknown`: a
+  capture that refused its environment, failed before it took the lock, or
+  was killed by `TimeoutStartSec=` wrote no state.
+
+It runs `notify_command` with one more argument, the message, for example:
 
 ```
 research-archive: research-archive-capture.service failed: auth_unavailable (exit 75) at 2026-10-13T21:30:02+00:00, trading day 2026-10-13
@@ -614,7 +677,9 @@ research-archive: research-archive-capture.service failed: auth_unavailable (exi
 
 It sends only when the kind differs from the last one sent or six hours
 have passed, and records what it sent in `<data_dir>/notify_state.json`
-after the command succeeded. The command runs without a shell, with stdin
+after the command succeeded. A capture whose run completes (`complete` or
+`complete_with_failures`) deletes that file, so the first failure after a
+recovery always alerts. The command runs without a shell, with stdin
 closed, for at most 60 s, and with only these variables from the alert's
 own environment: `PATH`, `HOME`, `LANG`, `TZ`, `XDG_RUNTIME_DIR` and the
 proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, upper and lower
@@ -699,7 +764,9 @@ Two integration binaries:
 | `net::secrets` | I11 for the binary's output, our logs, the archive file, `Debug`, and a login callback carrying a canary |
 | `net::dotenv`, `net::scan` | a `.env` in reach is refused and cannot override the pins; no SDK client is built outside the harness |
 | `net::runner` | on a fake clock, under the harness: I1, I7, freeze before fetch, resumption, the carry deadline, missed and dangling days, the serialized recorder, a hanging request, the `degraded` threshold, the first auth failure stopping every worker |
-| `net::calendar` | the calendar refresh's error mapping: only credential failures are `auth`, only variant names kept |
+| `net::calendar` | the calendar refresh's error mapping, the back-fill of a 40-day outage (every closed day `missed`), the fallback to a cache that still covers now |
+| `net::schedule` | the retry schedule through an outage; membership scenarios A (a blip is retried and `observed`), B (waits for the carry deadline, across starts or within one) and C (a start to the window end waits for the carry deadline, never `partial`); no request starts after the window end however late its rate-limit slot |
+| `net::exit_state` | a dangling run on record through a later failure; a dangling-only `partial` with its failure; a completed run clearing the alert dedupe |
 | `capture_cli` | `capture` as a subprocess: kills during membership and fetch (I4), I12, I9, a hanging token refresh, I10, the calendar refresh |
-| `capture_secrets` | I11 for `capture` and `notify`; the alert's dedupe and environment |
+| `capture_secrets` | I11 for `capture` and `notify`; the alert's dedupe and environment; `notify` alerting when `capture` refused its environment |
 | `units` | the systemd templates' directives and placeholders |

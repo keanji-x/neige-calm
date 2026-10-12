@@ -33,8 +33,10 @@ indexes = [".SPX.US"]
 rps = 2
 
 # Attempts per key x endpoint for transient and permanent failures in one
-# window. Throttles and auth pauses do not count.
-attempt_cap = 5
+# window. Throttles and auth pauses do not count. Retries wait 1, 4, 16, then
+# 64 minutes, so 6 attempts span 149 minutes: a pair is lost only to an
+# outage of about two and a half hours.
+attempt_cap = 6
 
 # The longest one capture invocation runs, in minutes (1-720).
 attempt_timeout_minutes = 25

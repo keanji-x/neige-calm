@@ -75,14 +75,23 @@ impl ExitKind {
     }
 }
 
-/// The capture's result: the kind, the trading day it concerns, and for an
+/// A dangling run this start ended `partial`: its day and its most frequent
+/// counted failure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Dangling {
+    pub as_of: AsOf,
+    pub failure: Option<String>,
+}
+
+/// The capture's result: the kind, the trading day it concerns, for an
 /// ending with failures the most frequent failure as `error_class:error_code`
-/// (for example `envelope:401004`).
+/// (for example `envelope:401004`), and a dangling run closed at the start.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Outcome {
     pub kind: ExitKind,
     pub as_of: Option<AsOf>,
     pub failure: Option<String>,
+    pub closed_dangling: Option<Dangling>,
 }
 
 impl Outcome {
@@ -91,6 +100,7 @@ impl Outcome {
             kind,
             as_of: None,
             failure: None,
+            closed_dangling: None,
         }
     }
 
@@ -99,6 +109,7 @@ impl Outcome {
             kind,
             as_of: Some(as_of),
             failure: None,
+            closed_dangling: None,
         }
     }
 
@@ -119,6 +130,12 @@ pub struct LastExit {
     pub as_of: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<String>,
+    /// The day of a dangling run this start ended `partial`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_dangling: Option<String>,
+    /// That run's most frequent counted failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_dangling_failure: Option<String>,
 }
 
 impl LastExit {
@@ -133,6 +150,14 @@ impl LastExit {
             at: at.0,
             as_of: outcome.as_of.map(|d| d.to_string()),
             failure: outcome.failure.clone(),
+            closed_dangling: outcome
+                .closed_dangling
+                .as_ref()
+                .map(|d| d.as_of.to_string()),
+            closed_dangling_failure: outcome
+                .closed_dangling
+                .as_ref()
+                .and_then(|d| d.failure.clone()),
         }
     }
 
@@ -145,10 +170,11 @@ impl LastExit {
         }
     }
 
-    /// The file, or `None` when it is missing or unreadable (logged).
+    /// The file, or `None` when it is missing or unreadable (logged). Only
+    /// a regular file of bounded size is read ([`files::read_regular`]).
     pub fn read(data_dir: &Path) -> Option<LastExit> {
         let path = Self::path(data_dir);
-        let bytes = match std::fs::read(&path) {
+        let bytes = match files::read_regular(&path) {
             Ok(bytes) => bytes,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
             Err(err) => {
@@ -215,8 +241,24 @@ mod tests {
             at: 42,
             as_of: Some("2026-10-12".into()),
             failure: Some("envelope:401004".into()),
+            closed_dangling: Some("2026-10-09".into()),
+            closed_dangling_failure: Some("http_status:503".into()),
         };
         state.write(dir.path());
         assert_eq!(LastExit::read(dir.path()), Some(state));
+    }
+
+    #[test]
+    fn a_fifo_in_place_of_the_file_is_not_waited_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let made = std::process::Command::new("mkfifo")
+            .arg(LastExit::path(dir.path()))
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path = dir.path().to_owned();
+        std::thread::spawn(move || tx.send(LastExit::read(&path)));
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(None));
     }
 }

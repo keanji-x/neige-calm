@@ -23,7 +23,7 @@ use crate::hermetic;
 use crate::support::{endpoint, key, raw};
 
 /// The test calendar: Thursday 2026-02-26 to Thursday 2026-03-12.
-const DAYS: &[&str] = &[
+pub const DAYS: &[&str] = &[
     "2026-02-27",
     "2026-03-02",
     "2026-03-03",
@@ -35,15 +35,15 @@ const DAYS: &[&str] = &[
 ];
 
 /// Tuesday 2026-03-03's window: 17:30 EST to Wednesday 09:30 EST.
-fn tue_start() -> UnixMs {
+pub fn tue_start() -> UnixMs {
     t("2026-03-03T22:30:00Z")
 }
-fn tue_end() -> UnixMs {
+pub fn tue_end() -> UnixMs {
     t("2026-03-04T14:30:00Z")
 }
 
 /// A body for every security endpoint, and `index` for constituents.
-fn ok_reply(seen: &Seen, index: &[&str]) -> Reply {
+pub fn ok_reply(seen: &Seen, index: &[&str]) -> Reply {
     if seen.path == "/v1/quote/index-constituents" {
         Reply::data(&members(index))
     } else {
@@ -52,20 +52,20 @@ fn ok_reply(seen: &Seen, index: &[&str]) -> Reply {
 }
 
 /// An archive with a far-future token and a calendar fetched at `now`.
-fn archive(url: &str, knobs: &Knobs, now: UnixMs) -> Archive {
+pub fn archive(url: &str, knobs: &Knobs, now: UnixMs) -> Archive {
     let a = Archive::new(url, knobs);
     a.token("ap_m_RUNNER-TOKEN", None, 4_102_444_800);
     a.calendar(now, "2026-02-26", "2026-03-12", DAYS);
     a
 }
 
-async fn capture(a: &Archive, clock: &Arc<FakeClock>) -> Outcome {
+pub async fn capture(a: &Archive, clock: &Arc<FakeClock>) -> Outcome {
     capture::run(&a.config(), Arc::clone(clock)).await
 }
 
 /// `(key, endpoint_id, attempt, fetched_at, status)` of every row, by
 /// `fetched_at` then attempt.
-async fn rows(a: &Archive) -> Vec<(String, String, i64, i64, String)> {
+pub async fn rows(a: &Archive) -> Vec<(String, String, i64, i64, String)> {
     let mut conn = raw(&a.data_dir.join("archive.sqlite3"), false).await;
     sqlx::query_as(
         "SELECT key, endpoint_id, attempt, fetched_at, status FROM observation
@@ -76,7 +76,7 @@ async fn rows(a: &Archive) -> Vec<(String, String, i64, i64, String)> {
     .unwrap()
 }
 
-async fn run_end(a: &Archive, run: i64) -> Option<(String, Option<String>, i64)> {
+pub async fn run_end(a: &Archive, run: i64) -> Option<(String, Option<String>, i64)> {
     let mut conn = raw(&a.data_dir.join("archive.sqlite3"), false).await;
     sqlx::query_as("SELECT outcome, reason, finished_at FROM run_end WHERE run_id = ?")
         .bind(run)
@@ -185,8 +185,8 @@ fn i7_retries_record_every_attempt_and_throttles_do_not_count() {
             rows.iter().map(|r| r.2).collect::<Vec<_>>(),
             ["transient", "ok"]
         );
-        // The retry waited out the 1 s backoff.
-        assert!(rows[1].1.0 - rows[0].1.0 >= 1_000, "{rows:?}");
+        // The retry waited out the 1-minute backoff.
+        assert!(rows[1].1.0 - rows[0].1.0 >= 60_000, "{rows:?}");
         let read = store
             .read_at(&key("AAPL.US"), endpoint("consensus"), clock.now())
             .await
@@ -222,7 +222,7 @@ fn i7_retries_record_every_attempt_and_throttles_do_not_count() {
 #[test]
 fn i1_the_window_closing_ends_the_run_partial_and_nothing_is_fetched_after() {
     hermetic::run(async {
-        let clock = FakeClock::at(UnixMs(tue_end().0 - 1_500));
+        let clock = FakeClock::at(UnixMs(tue_end().0 - 90_000));
         let server = TimedServer::start(clock.clone(), |s, _| match s.path.as_str() {
             "/v1/quote/financial-consensus-detail" => Reply::new(503, "<html>busy</html>"),
             _ => Reply::data(r#"{"v":1}"#),
@@ -246,8 +246,8 @@ fn i1_the_window_closing_ends_the_run_partial_and_nothing_is_fetched_after() {
             .iter()
             .filter(|r| r.path == "/v1/quote/financial-consensus-detail")
             .count();
-        // At -1.5 s and, after the 1 s backoff, at -0.5 s; the next retry would
-        // start after the window end.
+        // At -90 s and, after the 1 min backoff, at -30 s; the next retry (4
+        // min later) would start after the window end.
         assert_eq!(consensus, 2, "{arrivals:?}");
         for r in &arrivals {
             assert!(
@@ -343,7 +343,7 @@ fn the_attempt_timeout_leaves_the_run_open_for_the_next_start() {
         .await;
         let knobs = Knobs {
             attempt_cap: 10,
-            attempt_timeout_minutes: 1,
+            attempt_timeout_minutes: 5,
             ..Knobs::default()
         };
         let a = archive(&server.server.url, &knobs, clock.now());
@@ -351,13 +351,14 @@ fn the_attempt_timeout_leaves_the_run_open_for_the_next_start() {
         assert_eq!(first.kind, ExitKind::Resumable, "{first:?}");
         assert_eq!(first.code(), 0);
         assert!(run_end(&a, 1).await.is_none());
-        // Backoffs 1+2+4+8+16 s fit the minute; the next (32 s) would not.
+        // At 0 and, after the 1 min backoff, at 1 min; the next (4 min
+        // later) would start at the 5-minute deadline.
         let valuation = server
             .arrivals()
             .iter()
             .filter(|r| r.path == "/v1/quote/valuation")
             .count();
-        assert_eq!(valuation, 6);
+        assert_eq!(valuation, 2);
 
         healthy.store(1, Ordering::SeqCst);
         clock.advance(30 * 60_000);
@@ -368,9 +369,10 @@ fn the_attempt_timeout_leaves_the_run_open_for_the_next_start() {
             .attempts(RunId(1), &key("AAPL.US"), endpoint("valuation"))
             .await
             .unwrap();
-        assert_eq!(attempts.len(), 7);
-        // Only valuation was requested again.
-        assert_eq!(server.arrivals().len(), 6 + 5 + 1);
+        assert_eq!(attempts.len(), 3);
+        // Only valuation was requested again, once its stored backoff had
+        // passed.
+        assert_eq!(server.arrivals().len(), 6 + 1 + 1);
     })
 }
 

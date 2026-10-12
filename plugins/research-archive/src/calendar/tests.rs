@@ -197,3 +197,58 @@ fn the_cache_round_trips_and_refuses_bad_files() {
     std::fs::write(TradingCalendar::path(dir.path()), "{").unwrap();
     assert!(TradingCalendar::load(dir.path()).is_err());
 }
+
+#[test]
+fn a_refresh_fetches_every_gap_back_to_the_needed_history_in_sdk_spans() {
+    let now = t("2026-04-13T16:00:00Z");
+    let today = (day("2026-04-08"), day("2026-05-08"));
+    // A fresh daily refresh: the cache reaches today's range.
+    let cache = calendar("2026-04-01", "2026-05-01", &[]);
+    assert_eq!(
+        TradingCalendar::ranges_to_fetch(Some(&cache), Some(day("2026-04-02")), now),
+        [today]
+    );
+    // After an outage: the gap after the cache, then today's range.
+    let cache = calendar("2026-02-25", "2026-03-27", &[]);
+    assert_eq!(
+        TradingCalendar::ranges_to_fetch(Some(&cache), Some(day("2026-03-02")), now),
+        [(day("2026-03-28"), day("2026-04-07")), today]
+    );
+    // A first run before the cache, and a gap longer than one span.
+    let cache = calendar("2026-03-10", "2026-03-12", &[]);
+    assert_eq!(
+        TradingCalendar::ranges_to_fetch(Some(&cache), Some(day("2026-03-01")), now),
+        [
+            (day("2026-03-01"), day("2026-03-09")),
+            (day("2026-03-13"), day("2026-04-07")),
+            today
+        ]
+    );
+    // No cache: back to the first run, cut into 31-day ranges.
+    assert_eq!(
+        TradingCalendar::ranges_to_fetch(None, Some(day("2026-01-01")), now),
+        [
+            (day("2026-01-01"), day("2026-01-31")),
+            (day("2026-02-01"), day("2026-03-03")),
+            (day("2026-03-04"), day("2026-04-03")),
+            (day("2026-04-04"), day("2026-04-07")),
+            today
+        ]
+    );
+    // Nothing to back-fill before the first run.
+    assert_eq!(TradingCalendar::ranges_to_fetch(None, None, now), [today]);
+}
+
+#[test]
+fn combined_pieces_make_one_contiguous_calendar() {
+    let cache = calendar("2026-02-25", "2026-03-27", &["2026-03-02"]);
+    let gap = calendar("2026-03-28", "2026-04-07", &["2026-03-30"]);
+    let today = calendar("2026-04-08", "2026-05-08", &["2026-04-08"]);
+    let all = TradingCalendar::combined(Some(cache), vec![gap, today]);
+    assert_eq!((all.from, all.to), (day("2026-02-25"), day("2026-05-08")));
+    assert_eq!(
+        all.trading_days,
+        [day("2026-03-02"), day("2026-03-30"), day("2026-04-08")]
+    );
+    all.validate().unwrap();
+}

@@ -1,5 +1,9 @@
 //! The calendar refresh through the SDK's quote connection.
 //!
+//! Each range is at most 31 days (`from..=from + 30`), the span the SDK asks
+//! for itself (`rust/src/quote/core.rs:1174-1176`); a longer gap is fetched
+//! as several ranges ([`TradingCalendar::ranges_to_fetch`]).
+//!
 //! `QuoteContext::trading_days(market, begin, end)` returns
 //! `MarketTradingDays { trading_days, half_trading_days }` as `time::Date`s
 //! (`rust/src/quote/context.rs:1310-1344`, `rust/src/quote/types.rs:1338-1343`
@@ -77,26 +81,67 @@ pub fn refresh_error(err: longbridge::Error) -> RefreshError {
     }
 }
 
-/// Fetch the US calendar for the refresh range at `now`.
-pub async fn fetch(
-    oauth: OAuth,
-    config: &Config,
+/// Where trading days come from: the SDK's quote connection in production
+/// ([`QuoteDays`]); the library tests pass their own.
+pub trait TradingDays: Send + Sync {
+    /// The US calendar of each range (`from..=to`), as fetched at `now`.
+    fn fetch(
+        &self,
+        oauth: &OAuth,
+        config: &Config,
+        ranges: &[(NaiveDate, NaiveDate)],
+        now: UnixMs,
+    ) -> impl std::future::Future<Output = Result<Vec<TradingCalendar>, RefreshError>> + Send;
+}
+
+/// The production [`TradingDays`]: one `QuoteContext` on the capture's
+/// `OAuth`, one `trading_days` call per range, each within 60 s.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct QuoteDays;
+
+impl TradingDays for QuoteDays {
+    async fn fetch(
+        &self,
+        oauth: &OAuth,
+        config: &Config,
+        ranges: &[(NaiveDate, NaiveDate)],
+        now: UnixMs,
+    ) -> Result<Vec<TradingCalendar>, RefreshError> {
+        let sdk = SdkConfig::from_oauth(oauth.clone())
+            .http_url(config.http_url.clone())
+            .quote_ws_url(config.quote_ws_url.clone())
+            .language(Language::EN)
+            .dont_print_quote_packages();
+        let (context, _pushes) = QuoteContext::new(Arc::new(sdk));
+        let mut calendars = Vec::with_capacity(ranges.len());
+        for &(from, to) in ranges {
+            let answer = tokio::time::timeout(
+                REFRESH_TIMEOUT,
+                context.trading_days(Market::US, to_time(from), to_time(to)),
+            )
+            .await
+            .map_err(|_| RefreshError::Failed("timeout".to_owned()))?;
+            let days = answer.map_err(refresh_error)?;
+            calendars.push(calendar_of(
+                from,
+                to,
+                days.trading_days,
+                days.half_trading_days,
+                now,
+            )?);
+        }
+        Ok(calendars)
+    }
+}
+
+/// A validated calendar from one answer.
+fn calendar_of(
+    from: NaiveDate,
+    to: NaiveDate,
+    trading: Vec<time::Date>,
+    half: Vec<time::Date>,
     now: UnixMs,
 ) -> Result<TradingCalendar, RefreshError> {
-    let (from, to) = TradingCalendar::refresh_range(now);
-    let sdk = SdkConfig::from_oauth(oauth)
-        .http_url(config.http_url.clone())
-        .quote_ws_url(config.quote_ws_url.clone())
-        .language(Language::EN)
-        .dont_print_quote_packages();
-    let (context, _pushes) = QuoteContext::new(Arc::new(sdk));
-    let answer = tokio::time::timeout(
-        REFRESH_TIMEOUT,
-        context.trading_days(Market::US, to_time(from), to_time(to)),
-    )
-    .await
-    .map_err(|_| RefreshError::Failed("timeout".to_owned()))?;
-    let days = answer.map_err(refresh_error)?;
     let convert = |days: Vec<time::Date>| -> Result<Vec<NaiveDate>, RefreshError> {
         let mut out = days
             .into_iter()
@@ -110,8 +155,8 @@ pub async fn fetch(
         fetched_at: now.0,
         from,
         to,
-        trading_days: convert(days.trading_days)?,
-        half_days: convert(days.half_trading_days)?,
+        trading_days: convert(trading)?,
+        half_days: convert(half)?,
     };
     calendar
         .validate()

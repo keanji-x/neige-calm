@@ -97,7 +97,7 @@ impl TradingCalendar {
     /// The cache, or `None` when the file does not exist.
     pub fn load(data_dir: &Path) -> Result<Option<TradingCalendar>, CacheError> {
         let path = Self::path(data_dir);
-        let bytes = match std::fs::read(&path) {
+        let bytes = match files::read_regular(&path) {
             Ok(bytes) => bytes,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(source) => return Err(CacheError::Read { path, source }),
@@ -165,6 +165,65 @@ impl TradingCalendar {
     pub fn refresh_range(now: UnixMs) -> (NaiveDate, NaiveDate) {
         let from = ny_date(now) - Days::new(REFRESH_BACK_DAYS);
         (from, from + Days::new(REFRESH_SPAN_DAYS))
+    }
+
+    /// The ranges a refresh at `now` fetches, ascending: every gap between
+    /// the history the archive needs and today's range, then today's range
+    /// ([`refresh_range`](Self::refresh_range)). The history starts at the
+    /// earlier of the cache's first day and the first run's `as_of`; days
+    /// the cache already holds are not fetched again. Gaps are cut into
+    /// ranges of at most [`REFRESH_SPAN_DAYS`] + 1 days, the span the SDK
+    /// asks for itself. A long outage therefore still leaves a contiguous
+    /// calendar, so its closed trading days can be marked `missed`.
+    pub fn ranges_to_fetch(
+        cached: Option<&TradingCalendar>,
+        first_run: Option<NaiveDate>,
+        now: UnixMs,
+    ) -> Vec<(NaiveDate, NaiveDate)> {
+        let (from, to) = Self::refresh_range(now);
+        let mut gaps = Vec::new();
+        let history = cached.map(|c| c.from).into_iter().chain(first_run).min();
+        if let Some(start) = history.filter(|h| *h < from) {
+            let before = from - Days::new(1);
+            match cached {
+                None => gaps.push((start, before)),
+                Some(c) => {
+                    if start < c.from {
+                        gaps.push((start, (c.from - Days::new(1)).min(before)));
+                    }
+                    let after = (c.to + Days::new(1)).max(start);
+                    if after <= before {
+                        gaps.push((after, before));
+                    }
+                }
+            }
+        }
+        let mut ranges = Vec::new();
+        for (mut start, end) in gaps {
+            while start <= end {
+                let stop = (start + Days::new(REFRESH_SPAN_DAYS)).min(end);
+                ranges.push((start, stop));
+                start = stop + Days::new(1);
+            }
+        }
+        ranges.push((from, to));
+        ranges
+    }
+
+    /// `pieces` (ascending, as [`ranges_to_fetch`](Self::ranges_to_fetch)
+    /// returns them) merged over `cached`, one at a time.
+    pub fn combined(
+        cached: Option<TradingCalendar>,
+        pieces: Vec<TradingCalendar>,
+    ) -> TradingCalendar {
+        let mut pieces = pieces.into_iter();
+        let first = pieces
+            .next()
+            .expect("a refresh fetches at least today's range");
+        let start = TradingCalendar::merged(cached, first);
+        pieces.fold(start, |acc, piece| {
+            TradingCalendar::merged(Some(acc), piece)
+        })
     }
 
     /// `fresh` combined with what `old` knows outside `fresh`'s range, when

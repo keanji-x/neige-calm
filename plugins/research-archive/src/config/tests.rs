@@ -53,7 +53,7 @@ fn the_example_parses_into_the_typed_config() {
     let indexes: Vec<_> = config.indexes.iter().map(Key::as_str).collect();
     assert_eq!(indexes, [".SPX.US"]);
     assert_eq!(config.rps.get(), 2);
-    assert_eq!(config.attempt_cap, 5);
+    assert_eq!(config.attempt_cap, 6);
     assert_eq!(config.attempt_timeout, Duration::from_secs(25 * 60));
     assert_eq!(config.carry_deadline, Duration::from_secs(60 * 60));
     assert_eq!(

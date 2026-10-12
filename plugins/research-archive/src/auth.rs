@@ -405,10 +405,11 @@ pub enum OAuthUnavailable {
 /// back to the browser flow, the build stops there and returns
 /// [`OAuthUnavailable::BrowserFlow`]: a capture must never wait on a human.
 /// The SDK binds its callback listener and then calls `open_url`
-/// (`client.rs:125-153`); `open_url` only signals, and the build future,
-/// listener included, is dropped before this returns. The listener asks for
-/// an ephemeral port (0), so the registered port stays free for
-/// `auth login`.
+/// (`client.rs:125-153`); `open_url` only signals, and the build future is
+/// dropped before this returns. A task the SDK spawned to serve the
+/// listener may outlive it until the runtime shuts down (in the binary, the
+/// process exit right after). The listener is on an ephemeral loopback port
+/// (0), never the registered one, and no browser is pointed at it.
 pub async fn build_oauth(
     client_id: &ClientId,
     storage: DataDirTokenStorage,

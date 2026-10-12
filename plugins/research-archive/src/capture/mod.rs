@@ -23,20 +23,24 @@
 //! ([`auth::build_oauth`] stops the flow), not a process exit.
 
 mod runner;
+mod schedule;
 
-pub use runner::{COUNTED, DEGRADED_BELOW, MAX_IN_FLIGHT, backoff, counts_toward_cap, degraded};
+pub use runner::{DEGRADED_BELOW, degraded};
+pub use schedule::{COUNTED, MAX_IN_FLIGHT, backoff, counts_toward_cap};
 
 use std::{fmt::Display, sync::Arc};
 
 use longbridge::oauth::OAuth;
 
 use crate::auth::{self, DataDirTokenStorage};
-use crate::calendar::{TradingCalendar, fetch::RefreshError};
+use crate::calendar::TradingCalendar;
+use crate::calendar::fetch::{QuoteDays, RefreshError, TradingDays};
 use crate::clock::{self, Clock};
 use crate::config::Config;
 use crate::lock::{DataDirLock, LockError};
+use crate::notify;
 use crate::source::{LongbridgeSource, Timeouts};
-use crate::state::{ExitKind, LastExit, Outcome};
+use crate::state::{Dangling, ExitKind, LastExit, Outcome};
 use crate::store::PlanRequest;
 use crate::types::{AsOf, Source, UnixMs};
 use crate::{Store, StoreError};
@@ -56,9 +60,19 @@ impl Outcome {
     }
 }
 
-/// One start of the capture job. Returns how it ended; the caller exits
-/// with `outcome.code()`.
+/// One start of the capture job, with the SDK's quote connection as the
+/// calendar source. Returns how it ended; the caller exits with
+/// `outcome.code()`.
 pub async fn run<C: Clock>(config: &Config, clock: Arc<C>) -> Outcome {
+    run_with(config, clock, &QuoteDays).await
+}
+
+/// [`run`] with the trading days from `days`.
+pub async fn run_with<C: Clock, D: TradingDays>(
+    config: &Config,
+    clock: Arc<C>,
+    days: &D,
+) -> Outcome {
     let started = clock.now();
     let lock = match DataDirLock::try_acquire(&config.data_dir) {
         Ok(lock) => lock,
@@ -73,9 +87,11 @@ pub async fn run<C: Clock>(config: &Config, clock: Arc<C>) -> Outcome {
             let start = Start {
                 config,
                 clock: &clock,
+                days,
                 started,
                 store: &store,
                 oauth: None,
+                dangling: None,
             };
             let outcome = start.run().await;
             store.close().await;
@@ -90,25 +106,50 @@ pub async fn run<C: Clock>(config: &Config, clock: Arc<C>) -> Outcome {
         "capture finished"
     );
     LastExit::from_outcome(&outcome, clock.now()).write(&config.data_dir);
+    if matches!(
+        outcome.kind,
+        ExitKind::Complete | ExitKind::CompleteWithFailures
+    ) {
+        // Recovered: the next failure alerts, whatever its kind.
+        notify::clear_sent(&config.data_dir);
+    }
     drop(lock);
     outcome
 }
 
 /// One start, holding the lock and the open Store.
-struct Start<'a, C: Clock> {
+struct Start<'a, C: Clock, D: TradingDays> {
     config: &'a Config,
     clock: &'a Arc<C>,
+    days: &'a D,
     started: UnixMs,
     store: &'a Store,
     /// The one `OAuth` client, once built.
     oauth: Option<OAuth>,
+    /// The latest dangling run this start ended `partial`.
+    dangling: Option<Dangling>,
 }
 
-impl<C: Clock> Start<'_, C> {
+impl<C: Clock, D: TradingDays> Start<'_, C, D> {
     async fn run(mut self) -> Outcome {
-        match self.steps().await {
+        let mut outcome = match self.steps().await {
             Ok(outcome) | Err(outcome) => outcome,
+        };
+        if let Some(dangling) = self.dangling.take() {
+            // A dangling run ended `partial` here is a window that closed
+            // with work left: it alerts even when this start went well, and
+            // stays on record when it did not.
+            if outcome.code() == 0 {
+                outcome = Outcome {
+                    kind: ExitKind::Partial,
+                    as_of: Some(dangling.as_of),
+                    failure: dangling.failure.clone(),
+                    closed_dangling: None,
+                };
+            }
+            outcome.closed_dangling = Some(dangling);
         }
+        outcome
     }
 
     /// `started + attempt_timeout`.
@@ -123,17 +164,24 @@ impl<C: Clock> Start<'_, C> {
             .close_dangling_runs(self.clock.now())
             .await
             .map_err(|e| store_err("closing dangling runs", e))?;
-        let mut dangling_day = None;
         for run in &dangling {
             let plan = self
                 .store
                 .plan(*run)
                 .await
                 .map_err(|e| store_err("reading a dangling run", e))?;
+            let failure = self
+                .store
+                .dominant_failure(*run, &COUNTED)
+                .await
+                .map_err(|e| store_err("reading a dangling run", e))?
+                .map(|(class, code, _)| format!("{class}:{code}"));
             tracing::warn!(as_of = %plan.as_of, "a run whose window closed was left open; ended partial");
-            dangling_day = Some(plan.as_of);
+            self.dangling = Some(Dangling {
+                as_of: plan.as_of,
+                failure,
+            });
         }
-        let dangling_partial = dangling_day.map(|d| Outcome::of(ExitKind::Partial, d));
 
         let calendar = self.calendar().await?;
         let now = self.clock.now();
@@ -143,7 +191,7 @@ impl<C: Clock> Start<'_, C> {
         let Some((as_of, window)) = open else {
             self.mark_missed(&calendar, now).await?;
             tracing::info!("no capture window is open");
-            return Ok(dangling_partial.unwrap_or(Outcome::new(ExitKind::NoWindow)));
+            return Ok(Outcome::new(ExitKind::NoWindow));
         };
 
         let request = PlanRequest {
@@ -158,7 +206,7 @@ impl<C: Clock> Start<'_, C> {
             Ok(plan) => plan,
             Err(StoreError::PlanOutsideWindow { .. }) => {
                 tracing::info!(%as_of, "the window closed before the plan");
-                return Ok(dangling_partial.unwrap_or(Outcome::new(ExitKind::NoWindow)));
+                return Ok(Outcome::new(ExitKind::NoWindow));
             }
             Err(err) => return Err(store_err("planning the run", err).on(as_of)),
         };
@@ -195,12 +243,7 @@ impl<C: Clock> Start<'_, C> {
             attempt_cap: self.config.attempt_cap,
         })
         .await;
-        // A dangling run closed at this start is a window that closed with
-        // work left; it alerts even when this run went well.
-        Ok(match dangling_partial {
-            Some(partial) if outcome.code() == 0 => partial,
-            _ => outcome,
-        })
+        Ok(outcome)
     }
 
     /// The shared `OAuth` client, built on first use and bounded by
@@ -228,17 +271,18 @@ impl<C: Clock> Start<'_, C> {
             Err(reason) => {
                 // `reason` is a fixed variant name, never SDK text.
                 tracing::error!(%reason, "no usable token; run `auth import` or `auth login`");
-                Err(Outcome {
-                    kind: ExitKind::AuthUnavailable,
-                    as_of,
-                    failure: None,
-                })
+                let mut outcome = Outcome::new(ExitKind::AuthUnavailable);
+                outcome.as_of = as_of;
+                Err(outcome)
             }
         }
     }
 
     /// The calendar cache, refreshed first when it is missing, unreadable or
-    /// a day old.
+    /// a day old. A refresh fetches today's range and every gap back to the
+    /// history the archive needs ([`TradingCalendar::ranges_to_fetch`]). A
+    /// refresh that fails for any reason but auth falls back to the cache
+    /// while the cache still tells whether a window is open now.
     async fn calendar(&mut self) -> Result<TradingCalendar, Outcome> {
         let data_dir = &self.config.data_dir;
         let cached = match TradingCalendar::load(data_dir) {
@@ -254,24 +298,39 @@ impl<C: Clock> Start<'_, C> {
         {
             return Ok(cached.clone());
         }
+        let first_run = self
+            .store
+            .first_as_of(Source::Longbridge)
+            .await
+            .map_err(|e| fail("reading the first run", &e))?
+            .map(AsOf::date);
+        let ranges = TradingCalendar::ranges_to_fetch(cached.as_ref(), first_run, now);
         let deadline = self.process_deadline();
         let oauth = self.oauth(deadline, None).await?;
-        let fetch = crate::calendar::fetch::fetch(oauth, self.config, now);
-        let fresh = match clock::within(&**self.clock, deadline, fetch).await {
-            Some(Ok(fresh)) => fresh,
+        let fetch = self.days.fetch(&oauth, self.config, &ranges, now);
+        let failure = match clock::within(&**self.clock, deadline, fetch).await {
+            Some(Ok(pieces)) => {
+                let merged = TradingCalendar::combined(cached, pieces);
+                merged
+                    .save(data_dir)
+                    .map_err(|e| fail("saving the calendar", &e))?;
+                tracing::info!(from = %merged.from, to = %merged.to, ranges = ranges.len(), "calendar refreshed");
+                return Ok(merged);
+            }
             Some(Err(RefreshError::Auth(code))) => {
                 tracing::error!(%code, "the calendar refresh found no usable token");
                 return Err(Outcome::new(ExitKind::AuthUnavailable));
             }
-            Some(Err(err)) => return Err(fail("refreshing the calendar", &err)),
-            None => return Err(fail("refreshing the calendar", &"deadline passed")),
+            Some(Err(err)) => err.to_string(),
+            None => "the deadline passed".to_owned(),
         };
-        let merged = TradingCalendar::merged(cached, fresh);
-        merged
-            .save(data_dir)
-            .map_err(|e| fail("saving the calendar", &e))?;
-        tracing::info!(from = %merged.from, to = %merged.to, "calendar refreshed");
-        Ok(merged)
+        match cached {
+            Some(cached) if cached.window_at(now, self.config.window_start).is_ok() => {
+                tracing::warn!(%failure, "calendar refresh failed; using the cached calendar");
+                Ok(cached)
+            }
+            _ => Err(fail("refreshing the calendar", &failure)),
+        }
     }
 
     /// Mark every trading day after the first run whose window has closed

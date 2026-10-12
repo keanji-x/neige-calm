@@ -115,6 +115,22 @@ pub fn run() -> i32 {
     logging::init();
     let command = cli.command;
 
+    // `notify` builds no SDK client, so the environment guard does not
+    // apply: it must alert even when the capture refused its environment.
+    if let Command::Notify {
+        config,
+        failed_unit,
+    } = &command
+    {
+        return match Config::load(config) {
+            Ok(config) => notify::run(&config, failed_unit, SystemClock.now()),
+            Err(err) => {
+                tracing::error!("{err}");
+                exit::FATAL
+            }
+        };
+    }
+
     let cwd = match std::env::current_dir() {
         Ok(cwd) => cwd,
         Err(err) => {
@@ -142,9 +158,7 @@ pub fn run() -> i32 {
         Command::Auth(AuthCommand::Login { .. }) => login(&config),
         Command::Auth(AuthCommand::Status { .. }) => status(&config),
         Command::Capture { .. } => capture(&config),
-        Command::Notify { failed_unit, .. } => {
-            notify::run(&config, &failed_unit, SystemClock.now())
-        }
+        Command::Notify { .. } => unreachable!("notify returned above"),
     }
 }
 

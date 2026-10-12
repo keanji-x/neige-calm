@@ -17,6 +17,7 @@ mod crossing;
 mod dotenv;
 #[path = "../common/dotenv_reach.rs"]
 mod dotenv_reach;
+mod exit_state;
 mod fake;
 mod fake_clock;
 mod hermetic;
@@ -25,6 +26,7 @@ mod logs;
 mod refresh;
 mod runner;
 mod scan;
+mod schedule;
 mod secrets;
 mod source;
 #[path = "../suite/support.rs"]

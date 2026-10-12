@@ -39,6 +39,8 @@ pub struct Knobs {
     pub indexes: Vec<&'static str>,
     pub attempt_cap: u32,
     pub attempt_timeout_minutes: u32,
+    pub carry_deadline_minutes: u32,
+    pub rps: u32,
     pub window_start: &'static str,
     pub notify_command: Vec<String>,
 }
@@ -50,6 +52,8 @@ impl Default for Knobs {
             indexes: vec![],
             attempt_cap: 3,
             attempt_timeout_minutes: 25,
+            carry_deadline_minutes: 60,
+            rps: 20,
             window_start: "17:30",
             notify_command: vec!["/bin/true".into()],
         }
@@ -97,10 +101,10 @@ quote_ws_url = "wss://127.0.0.1:{}/v2"
 callback_port = {}
 research = [{}]
 indexes = [{}]
-rps = 20
+rps = {}
 attempt_cap = {}
 attempt_timeout_minutes = {}
-carry_deadline_minutes = 60
+carry_deadline_minutes = {}
 window_start = "{}"
 notify_command = [{}]
 "#,
@@ -110,8 +114,10 @@ notify_command = [{}]
             closed_port(),
             quoted(&knobs.research),
             quoted(&knobs.indexes),
+            knobs.rps,
             knobs.attempt_cap,
             knobs.attempt_timeout_minutes,
+            knobs.carry_deadline_minutes,
             knobs.window_start,
             quoted(&knobs.notify_command),
         );

@@ -9,9 +9,15 @@
 //! succeeded.
 //!
 //! The exit state counts for this failure only when it is non-zero and was
-//! written within [`STATE_FRESH_MS`]. A failure that wrote none (a refused
-//! environment, a bad config, a kill by the unit's timeout) is reported as
-//! `unknown`.
+//! written within [`STATE_FRESH_MS`]. A capture that wrote none (one that
+//! refused its environment, or was killed by the unit's timeout) is
+//! reported as `unknown`. A capture whose run completes clears what was
+//! last sent ([`clear_sent`]), so a failure after a recovery always alerts.
+//!
+//! `notify` builds no SDK client, so it does not run the environment guard:
+//! it alerts even when the capture refused its environment. It does need
+//! the config, for `notify_command`: with an unreadable or invalid config it
+//! cannot alert at all, and exits `FATAL`.
 //!
 //! The command runs without a shell, with stdin closed and an environment
 //! built from [`ENV_ALLOWLIST`] alone: the job's own environment is not
@@ -72,9 +78,20 @@ impl NotifyState {
         data_dir.join("notify_state.json")
     }
 
+    /// A regular file of bounded size only ([`files::read_regular`]).
     fn read(data_dir: &Path) -> Option<NotifyState> {
-        let bytes = std::fs::read(Self::path(data_dir)).ok()?;
+        let bytes = files::read_regular(&Self::path(data_dir)).ok()?;
         serde_json::from_slice(&bytes).ok()
+    }
+}
+
+/// Forget what was last sent, so the next failure alerts whatever its kind.
+/// A capture calls this when a run completes.
+pub fn clear_sent(data_dir: &Path) {
+    match std::fs::remove_file(NotifyState::path(data_dir)) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => tracing::warn!(error = %err, "cannot clear notify_state.json"),
     }
 }
 
@@ -105,6 +122,12 @@ pub fn message(unit: &str, last: Option<&LastExit>, now: UnixMs) -> (String, Str
             }
             if let Some(failure) = &l.failure {
                 text.push_str(&format!(", most frequent failure {failure}"));
+            }
+            if let Some(day) = &l.closed_dangling {
+                text.push_str(&format!(", ended the left-open run of {day} partial"));
+                if let Some(failure) = &l.closed_dangling_failure {
+                    text.push_str(&format!(" (most frequent failure {failure})"));
+                }
             }
             (l.kind.as_str().to_owned(), text)
         }
@@ -196,6 +219,8 @@ mod tests {
             at,
             as_of: Some("2026-10-12".into()),
             failure: None,
+            closed_dangling: None,
+            closed_dangling_failure: None,
         }
     }
 

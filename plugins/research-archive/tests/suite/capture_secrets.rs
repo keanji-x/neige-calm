@@ -67,7 +67,8 @@ fn notify_script(root: &Path) -> (PathBuf, PathBuf) {
 
 fn knobs(script: &Path, out: &Path) -> Knobs {
     Knobs {
-        attempt_cap: 2,
+        // One attempt each: a retry would wait a minute of real time.
+        attempt_cap: 1,
         notify_command: vec![script.display().to_string(), out.display().to_string()],
         ..Knobs::default()
     }
@@ -195,6 +196,8 @@ async fn notify_dedupes_by_kind_and_passes_only_allowlisted_variables() {
         at: SystemClock.now().0 - age_ms,
         as_of: Some(p.as_of.clone()),
         failure: (kind == ExitKind::Partial).then(|| "envelope:401004".to_owned()),
+        closed_dangling: None,
+        closed_dangling_failure: None,
     };
     let count = || read(&out.join("count")).len();
 
@@ -247,4 +250,54 @@ async fn notify_dedupes_by_kind_and_passes_only_allowlisted_variables() {
     assert_eq!(count(), 5);
     let last: serde_json::Value = serde_json::from_str(&read(&sent)).unwrap();
     assert_eq!(last["kind"], "unknown");
+}
+
+/// `notify` builds no SDK client and runs no environment guard: with an SDK
+/// variable set and a `.env` in the data dir (the units' working
+/// directory), `capture` refuses to start (`FATAL`, no exit state), and
+/// `notify` in the same environment still runs the alert, as `unknown`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn notify_alerts_when_capture_refused_its_environment() {
+    let server = FakeServer::start(|_| Reply::data("{}")).await;
+    let root = tempfile::tempdir().unwrap();
+    let (script, out) = notify_script(root.path());
+    let p = Proc::new(&server.url, knobs(&script, &out));
+    let data_dir = p.archive.data_dir.clone();
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(
+        data_dir.join(".env"),
+        "LONGBRIDGE_HTTP_URL=http://127.0.0.1:1\n",
+    )
+    .unwrap();
+    let log = root.path().join("sdk.log");
+    let hostile = |args: &[&str]| {
+        let mut command = p.command(args);
+        command
+            .current_dir(&data_dir)
+            .env("LONGBRIDGE_LOG_PATH", &log)
+            .env("PATH", "/usr/bin:/bin");
+        command
+    };
+
+    let mut command = hostile(&["capture"]);
+    let refused = tokio::task::spawn_blocking(move || command.output().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(code(&refused), 70, "{}", text(&refused.stderr));
+    assert!(text(&refused.stderr).contains("refusing to start"));
+    assert!(!data_dir.join("last_exit.json").exists());
+    assert!(server.seen().is_empty());
+
+    let mut command = hostile(&["notify", "--failed-unit", UNIT]);
+    let alert = tokio::task::spawn_blocking(move || command.output().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(code(&alert), 0, "{}", text(&alert.stderr));
+    let messages = read(&out.join("messages"));
+    assert!(
+        messages.contains(&format!("{UNIT} failed: unknown")),
+        "{messages}"
+    );
+    // The SDK variable does not reach the alert command either.
+    assert!(!read(&out.join("env")).contains("LONGBRIDGE_"));
 }
