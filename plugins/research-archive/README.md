@@ -413,8 +413,9 @@ holds the lock at all.
   refresh token, and exits `AUTH_UNAVAILABLE` when the token is unusable.
 
 **Exit codes** (`src/exit.rs`). `OK`, `BUSY` and `NO_WINDOW` are 0;
-`PARTIAL` is 3, `LOCKED` 4, `FATAL` 70 and `AUTH_UNAVAILABLE` 75. The
-capture job's endings are listed under [The capture job](#the-capture-job).
+`PARTIAL` is 3, `LOCKED` 4, `DEGRADED` 5, `FATAL` 70 and `AUTH_UNAVAILABLE`
+75. The capture job's endings are listed under
+[The capture job](#the-capture-job).
 
 **Logs** go to stderr, and only this crate's target is emitted. Every
 third-party target is off: the SDK logs full response bodies at `info` and
@@ -557,7 +558,8 @@ limiter is therefore four requests in flight × 6 = 24 requests within about
 | ending | exit | `last_exit.json` kind | the run |
 |---|---|---|---|
 | every pair `ok` | 0 | `complete` | ended `complete` |
-| every pair `ok` or at its cap, some at the cap | 0 | `complete_with_failures` | ended `complete` |
+| every pair `ok` or at its cap, some at the cap, at least half `ok` | 0 | `complete_with_failures` | ended `complete` |
+| every pair `ok` or at its cap, fewer than half `ok` (`DEGRADED_BELOW` = 0.5) | 5 (`DEGRADED`) | `degraded` | ended `complete` |
 | the day's run had ended | 0 | `already_ended` | unchanged |
 | the attempt timeout, window still open | 0 | `resumable` | left open; the next start resumes it |
 | no window open | 0 | `no_window` | none |
@@ -569,13 +571,18 @@ limiter is therefore four requests in flight × 6 = 24 requests within about
 **`last_exit.json`** is written atomically before the lock is released:
 `{code, kind, at, as_of?, failure?}`, where `failure` is the run's most
 frequent counted failure as `error_class:error_code` for
-`complete_with_failures` and `partial`. It holds no token and no server
+`complete_with_failures`, `degraded` and `partial`. It holds no token and no server
 text. A start that never took the lock writes none.
 
-**Known gap.** A server-side auth rejection inside the envelope (its code
-was never probed) is stored as `permanent`, not `auth_unavailable`, so a
-revoked token exhausts every pair's cap and the run ends
-`complete_with_failures`, exit 0, with `failure` naming the envelope code.
+**A mostly lost day alerts.** A run that ends `complete` with fewer than
+half of its planned pairs having an `ok` (`capture::DEGRADED_BELOW`, 0.5)
+exits `DEGRADED`, so `OnFailure=` fires; at half or more, the losses are
+ordinary (a few delisted symbols answering 2601400, a few capped pairs) and
+the start exits 0 as `complete_with_failures`. This is what catches a
+server-side auth rejection inside the envelope: its code was never probed,
+so it is stored as `permanent`, not `auth_unavailable`, every pair reaches
+its cap, and the run ends `degraded` with `failure` naming the envelope
+code.
 
 ## The alert
 
@@ -676,7 +683,7 @@ Two integration binaries:
 | `net::logs` | only our own log target is emitted |
 | `net::secrets` | I11 for the binary's output, our logs, the archive file, `Debug`, and a login callback carrying a canary |
 | `net::dotenv`, `net::scan` | a `.env` in reach is refused and cannot override the pins; no SDK client is built outside the harness |
-| `runner` | on a fake clock: I1, I7, freeze before fetch, resumption, the carry deadline, missed and dangling days, the serialized recorder, a hanging request |
+| `runner` | on a fake clock: I1, I7, freeze before fetch, resumption, the carry deadline, missed and dangling days, the serialized recorder, a hanging request, the `degraded` threshold |
 | `capture_cli` | `capture` as a subprocess: kills during membership and fetch (I4), I12, I9, a hanging token refresh, I10, the calendar refresh |
 | `capture_secrets` | I11 for `capture` and `notify`; the alert's dedupe and environment |
 | `units` | the systemd templates' directives and placeholders |

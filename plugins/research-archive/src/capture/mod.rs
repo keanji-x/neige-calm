@@ -22,7 +22,7 @@
 
 mod runner;
 
-pub use runner::{COUNTED, MAX_IN_FLIGHT, backoff, counts_toward_cap};
+pub use runner::{COUNTED, DEGRADED_BELOW, MAX_IN_FLIGHT, backoff, counts_toward_cap, degraded};
 
 use std::{fmt::Display, sync::Arc};
 

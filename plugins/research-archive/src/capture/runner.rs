@@ -58,6 +58,17 @@ pub const COUNTED: [Status; 3] = [
     Status::Failed(FailureClass::RegionRestricted),
 ];
 
+/// A run that ends `complete` with fewer than this share of its planned
+/// pairs having an `ok` exits `DEGRADED` (non-zero), so the alert fires.
+/// Ordinary losses (a few delisted symbols, a few capped pairs) stay above
+/// it and exit 0 as `complete_with_failures`.
+pub const DEGRADED_BELOW: f64 = 0.5;
+
+/// Whether `ok` of `planned` pairs is below [`DEGRADED_BELOW`].
+pub fn degraded(ok: usize, planned: usize) -> bool {
+    planned > 0 && (ok as f64) < DEGRADED_BELOW * planned as f64
+}
+
 /// Whether an attempt with `status` counts toward the attempt cap.
 pub fn counts_toward_cap(status: Status) -> bool {
     COUNTED.contains(&status)
@@ -146,6 +157,8 @@ struct Work {
 struct Survey {
     open: Vec<Work>,
     exhausted: usize,
+    /// Selected pairs with an `ok`.
+    ok: usize,
 }
 
 /// The pairs `keep` selects, split into open work and cap-exhausted pairs;
@@ -158,8 +171,13 @@ async fn survey(
 ) -> Result<Survey, StoreError> {
     let mut open = Vec::new();
     let mut exhausted = 0;
+    let mut ok = 0;
     for pair in store.coverage(run).await? {
-        if !keep(&pair) || pair.has_ok {
+        if !keep(&pair) {
+            continue;
+        }
+        if pair.has_ok {
+            ok += 1;
             continue;
         }
         let counted = if pair.attempts == 0 {
@@ -184,7 +202,11 @@ async fn survey(
             });
         }
     }
-    Ok(Survey { open, exhausted })
+    Ok(Survey {
+        open,
+        exhausted,
+        ok,
+    })
 }
 
 /// Why the workers stopped the whole run.
@@ -428,8 +450,11 @@ async fn finish<C: Clock>(
             .end(Finish::Complete, None)
             .await
             .map_err(|e| fail("end_run", &e).on(as_of))?;
+        let planned = survey.ok + survey.exhausted;
         if survey.exhausted == 0 {
             ExitKind::Complete
+        } else if degraded(survey.ok, planned) {
+            ExitKind::Degraded
         } else {
             ExitKind::CompleteWithFailures
         }
@@ -457,6 +482,7 @@ async fn finish<C: Clock>(
     tracing::info!(
         %as_of,
         kind = kind.as_str(),
+        ok = survey.ok,
         exhausted = survey.exhausted,
         open = survey.open.len(),
         failure = outcome.failure.as_deref().unwrap_or(""),
@@ -473,6 +499,15 @@ mod tests {
     fn backoff_doubles_up_to_a_minute() {
         let waits: Vec<_> = (1..=8).map(|n| backoff(n).as_secs()).collect();
         assert_eq!(waits, [1, 2, 4, 8, 16, 32, 60, 60]);
+    }
+
+    #[test]
+    fn degraded_is_strictly_below_half() {
+        assert!(degraded(2, 6));
+        assert!(!degraded(3, 6));
+        assert!(degraded(0, 1));
+        assert!(!degraded(1, 1));
+        assert!(!degraded(0, 0));
     }
 
     #[test]

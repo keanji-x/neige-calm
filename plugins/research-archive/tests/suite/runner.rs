@@ -561,3 +561,58 @@ async fn a_dangling_run_is_ended_partial_and_alerts() {
     // The next start has nothing left to report.
     assert_eq!(capture(&a, &clock).await.kind, ExitKind::NoWindow);
 }
+
+/// A run that ends `complete` with fewer than half of its planned pairs
+/// having an `ok` (here, a token the server rejects inside the envelope on
+/// four of six endpoints) exits `DEGRADED`, naming the dominant failure.
+/// Exactly half is ordinary loss: `complete_with_failures`, exit 0.
+#[tokio::test]
+async fn fewer_than_half_ok_is_degraded_and_half_is_not() {
+    for (failing, kind, code, failure) in [
+        (
+            &[
+                "/v1/quote/financial-consensus-detail",
+                "/v1/quote/forecast-eps",
+                "/v1/quote/institution-rating-latest",
+                "/v1/quote/institution-ratings",
+            ][..],
+            ExitKind::Degraded,
+            research_archive::exit::DEGRADED,
+            "envelope:401004",
+        ),
+        (
+            &[
+                "/v1/quote/financial-consensus-detail",
+                "/v1/quote/forecast-eps",
+                "/v1/quote/institution-rating-latest",
+            ][..],
+            ExitKind::CompleteWithFailures,
+            0,
+            "envelope:401004",
+        ),
+    ] {
+        let clock = FakeClock::at(tue_start());
+        clock.advance(60_000);
+        let failing: Vec<String> = failing.iter().map(|s| (*s).to_owned()).collect();
+        let server = TimedServer::start(clock.clone(), move |s, _| {
+            if failing.contains(&s.path) {
+                Reply::new(200, r#"{"code":401004,"message":"token revoked"}"#)
+            } else {
+                Reply::data(r#"{"v":1}"#)
+            }
+        })
+        .await;
+        let knobs = Knobs {
+            attempt_cap: 1,
+            ..Knobs::default()
+        };
+        let a = archive(&server.server.url, &knobs, clock.now());
+        let outcome = capture(&a, &clock).await;
+        assert_eq!(outcome.kind, kind, "{outcome:?}");
+        assert_eq!(outcome.code(), code);
+        assert_eq!(outcome.failure.as_deref(), Some(failure));
+        assert_eq!(a.last_exit()["kind"], kind.as_str());
+        assert_eq!(a.last_exit()["code"], code);
+        assert_eq!(run_end(&a, 1).await.unwrap().0, "complete");
+    }
+}

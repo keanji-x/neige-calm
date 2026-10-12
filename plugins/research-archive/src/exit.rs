@@ -16,6 +16,10 @@ pub const PARTIAL: i32 = 3;
 /// An operator command (`auth import`, `auth login`) found the archive lock
 /// held and did nothing. The operator retries once the holder is done.
 pub const LOCKED: i32 = 4;
+/// A run ended `complete`, but fewer than half of its planned pairs have an
+/// `ok`: every failure was final, yet the day is mostly lost (a revoked
+/// token rejected inside the envelope looks like this). Needs a look.
+pub const DEGRADED: i32 = 5;
 /// Anything else that stops the command: bad configuration, I/O, a refused
 /// environment (sysexits `EX_SOFTWARE`).
 pub const FATAL: i32 = 70;
@@ -30,7 +34,7 @@ mod tests {
 
     #[test]
     fn alerting_codes_are_distinct_and_non_zero() {
-        let alerting = [PARTIAL, LOCKED, FATAL, AUTH_UNAVAILABLE];
+        let alerting = [PARTIAL, LOCKED, DEGRADED, FATAL, AUTH_UNAVAILABLE];
         for (i, a) in alerting.iter().enumerate() {
             assert_ne!(*a, 0);
             // 1 is a Rust `main` error, 2 a clap usage error, 101 a panic.

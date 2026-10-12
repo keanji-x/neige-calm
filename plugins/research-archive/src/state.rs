@@ -20,6 +20,10 @@ pub enum ExitKind {
     /// The run ended `complete`, but some pairs ended with their attempt cap
     /// exhausted and no `ok`. See `failure` for the most frequent cause.
     CompleteWithFailures,
+    /// The run ended `complete` with fewer than
+    /// [`DEGRADED_BELOW`](crate::capture::DEGRADED_BELOW) of its planned pairs
+    /// having an `ok`. Alerts; see `failure`.
+    Degraded,
     /// The day's run had already ended; nothing to do.
     AlreadyEnded,
     /// The attempt timeout came while the window is still open; the run
@@ -45,6 +49,7 @@ impl ExitKind {
             | ExitKind::CompleteWithFailures
             | ExitKind::AlreadyEnded
             | ExitKind::Resumable => exit::OK,
+            ExitKind::Degraded => exit::DEGRADED,
             ExitKind::NoWindow => exit::NO_WINDOW,
             ExitKind::Busy => exit::BUSY,
             ExitKind::Partial => exit::PARTIAL,
@@ -58,6 +63,7 @@ impl ExitKind {
         match self {
             ExitKind::Complete => "complete",
             ExitKind::CompleteWithFailures => "complete_with_failures",
+            ExitKind::Degraded => "degraded",
             ExitKind::AlreadyEnded => "already_ended",
             ExitKind::Resumable => "resumable",
             ExitKind::NoWindow => "no_window",
@@ -173,6 +179,7 @@ mod tests {
         let all = [
             ExitKind::Complete,
             ExitKind::CompleteWithFailures,
+            ExitKind::Degraded,
             ExitKind::AlreadyEnded,
             ExitKind::Resumable,
             ExitKind::NoWindow,
@@ -190,6 +197,7 @@ mod tests {
         assert_eq!(
             alerting,
             [
+                &ExitKind::Degraded,
                 &ExitKind::Partial,
                 &ExitKind::AuthUnavailable,
                 &ExitKind::Fatal
