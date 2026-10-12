@@ -6,7 +6,7 @@ use sqlx::Row;
 use super::write::PLANNED_PAIRS;
 use super::{Result, Store};
 use crate::catalog::EndpointId;
-use crate::types::{AsOf, Key, Origin, RunId, Status, UnixMs};
+use crate::types::{AsOf, Key, Origin, RunId, Source, Status, UnixMs};
 
 /// The one order of `ok` rows `o`, latest first: by `fetched_at`, then the
 /// higher run id, then the higher attempt. Within a run the clock is
@@ -183,6 +183,50 @@ impl Store {
                 })
             })
             .collect()
+    }
+
+    /// The earliest `as_of` of any run of `source`, or `None` before the
+    /// first run. Gap days are marked `missed` only from there on.
+    pub async fn first_as_of(&self, source: Source) -> Result<Option<AsOf>> {
+        let first: Option<String> =
+            sqlx::query_scalar("SELECT MIN(as_of) FROM run WHERE source = ?")
+                .bind(source.as_str())
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(first.as_deref().map(AsOf::parse).transpose()?)
+    }
+
+    /// The most frequent `(error_class, error_code)` among a run's rows with
+    /// a status in `among`, with its row count (ties to the smaller class,
+    /// then code). `None` when there is none.
+    pub async fn dominant_failure(
+        &self,
+        run_id: RunId,
+        among: &[Status],
+    ) -> Result<Option<(String, String, u32)>> {
+        if among.is_empty() {
+            return Ok(None);
+        }
+        let marks = vec!["?"; among.len()].join(", ");
+        let sql = format!(
+            "SELECT error_class, error_code, COUNT(*) AS n FROM observation
+             WHERE run_id = ? AND error_class IS NOT NULL AND status IN ({marks})
+             GROUP BY error_class, error_code
+             ORDER BY n DESC, error_class, error_code LIMIT 1"
+        );
+        let mut query = sqlx::query(&sql).bind(run_id.0);
+        for status in among {
+            query = query.bind(status.as_str());
+        }
+        let row = query.fetch_optional(&self.pool).await?;
+        row.map(|r| {
+            Ok((
+                r.try_get("error_class")?,
+                r.try_get("error_code")?,
+                u32::try_from(r.try_get::<i64, _>("n")?).expect("a COUNT is never negative"),
+            ))
+        })
+        .transpose()
     }
 
     /// The status of every observation row of a pair in a run, by attempt.

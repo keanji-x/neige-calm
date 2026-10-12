@@ -274,9 +274,18 @@ fn keys(field: &'static str, values: &[String], form: KeyForm) -> Result<Vec<Key
 }
 
 /// `scheme://host[:port]` with nothing after it: the SDK appends the request
-/// path to the string as is (`request.rs:353`).
+/// path to the string as is (`request.rs:353`). Plain `http` is accepted only
+/// for a loopback IP literal, a local test server.
 fn base_url(field: &'static str, value: &str, scheme: &str) -> Result<String, ConfigError> {
-    let url = parse_url(field, value, scheme)?;
+    let loopback = url::Url::parse(value).is_ok_and(|u| {
+        u.scheme() == "http"
+            && match u.host() {
+                Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+                Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+                _ => false,
+            }
+    });
+    let url = parse_url(field, value, if loopback { "http" } else { scheme })?;
     if url.path() != "/" || value.ends_with('/') {
         return Err(invalid(field, "must have no path and no trailing slash"));
     }

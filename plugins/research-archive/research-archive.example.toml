@@ -13,6 +13,7 @@ oauth_client_id = "replace-with-the-client-id"
 access_region = "cn"
 
 # Pinned hosts for the region. https://host with no path, and wss://.
+# (http:// is accepted only for a loopback IP literal: a local test server.)
 http_url = "https://openapi.longbridge.cn"
 quote_ws_url = "wss://openapi-quote.longbridge.cn/v2"
 

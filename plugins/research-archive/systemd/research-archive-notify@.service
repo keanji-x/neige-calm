@@ -1,0 +1,14 @@
+# research-archive alert (#2575): started by OnFailure= of the capture
+# service with the failed unit's name as the instance. A template: install it
+# with the placeholders replaced.
+
+[Unit]
+Description=research-archive alert for %i
+
+[Service]
+Type=oneshot
+WorkingDirectory=@DATA_DIR@
+ExecStart=@BIN@ notify --config @CONFIG@ --failed-unit %i
+TimeoutStartSec=120
+# Only if the notify command needs a proxy: the same operator-owned file.
+#EnvironmentFile=@PROXY_ENV_FILE@

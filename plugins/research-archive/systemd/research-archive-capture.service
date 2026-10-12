@@ -1,0 +1,21 @@
+# research-archive capture (#2575). A template: install it with the
+# placeholders replaced, as the crate README's "Installing the units" shows.
+# Started by research-archive-capture.timer; never enable it directly.
+
+[Unit]
+Description=research-archive capture of Longbridge fundamentals
+OnFailure=research-archive-notify@%n.service
+
+[Service]
+Type=oneshot
+# The data dir. The job refuses to start when a .env file exists here or in
+# any parent directory, and when any of the SDK's own variables is set.
+WorkingDirectory=@DATA_DIR@
+ExecStart=@BIN@ capture --config @CONFIG@
+# The backstop above the job's own deadline (attempt_timeout_minutes). A
+# oneshot service is bounded by TimeoutStartSec=; RuntimeMaxSec= has no
+# effect on Type=oneshot (systemd.service(5)).
+TimeoutStartSec=@TIMEOUT_SEC@
+# Only if this host needs a proxy to reach Longbridge: an operator-owned file
+# holding HTTPS_PROXY/HTTP_PROXY/NO_PROXY lines and nothing else.
+#EnvironmentFile=@PROXY_ENV_FILE@

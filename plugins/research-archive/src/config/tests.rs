@@ -132,6 +132,10 @@ fn keys_must_have_their_form_and_be_unique() {
 fn urls_need_their_scheme_and_shape() {
     for (field, line) in [
         ("http_url", r#"http_url = "http://openapi.longbridge.cn""#),
+        // Plain http is for a loopback IP literal only.
+        ("http_url", r#"http_url = "http://localhost:8080""#),
+        ("http_url", r#"http_url = "http://10.0.0.1:8080""#),
+        ("http_url", r#"http_url = "http://127.0.0.1:8080/""#),
         ("http_url", r#"http_url = "https://openapi.longbridge.cn/""#),
         (
             "http_url",
@@ -158,6 +162,8 @@ fn urls_need_their_scheme_and_shape() {
         assert_eq!(field_of(&refused(&with(field, line))), field, "{line}");
     }
     Config::parse(&with("http_url", r#"http_url = "https://127.0.0.1:8443""#)).unwrap();
+    Config::parse(&with("http_url", r#"http_url = "http://127.0.0.1:8080""#)).unwrap();
+    Config::parse(&with("http_url", r#"http_url = "http://[::1]:8080""#)).unwrap();
 }
 
 #[test]

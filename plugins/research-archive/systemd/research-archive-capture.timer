@@ -1,0 +1,14 @@
+# research-archive capture timer (#2575): a start every 30 minutes. A start
+# outside a capture window exits at once; a start missed while the machine
+# was off runs at boot (Persistent=true).
+
+[Unit]
+Description=research-archive capture every 30 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00,30:00
+Persistent=true
+Unit=research-archive-capture.service
+
+[Install]
+WantedBy=timers.target

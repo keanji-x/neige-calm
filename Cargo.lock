@@ -3563,6 +3563,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chrono",
+ "chrono-tz",
  "clap",
  "getrandom 0.3.4",
  "hex",
@@ -3575,6 +3576,7 @@ dependencies = [
  "sqlx",
  "tempfile",
  "thiserror 2.0.18",
+ "time",
  "tokio",
  "toml",
  "tracing",

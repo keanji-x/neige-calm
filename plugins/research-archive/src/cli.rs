@@ -19,16 +19,20 @@
 //! reading, which is the caller's own pipe.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 
 use crate::auth::{self, DataDirTokenStorage, TokenSummary};
+use crate::capture;
+use crate::clock::{Clock, SystemClock};
 use crate::config::Config;
 use crate::env_guard;
 use crate::exit;
 use crate::files;
 use crate::lock::{DataDirLock, LockError};
 use crate::logging;
+use crate::notify;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -45,6 +49,28 @@ enum Command {
     /// The archive's own Longbridge token.
     #[command(subcommand)]
     Auth(AuthCommand),
+    /// Capture the open window's run, as far as the deadline allows.
+    Capture {
+        #[arg(long)]
+        config: PathBuf,
+    },
+    /// Alert the owner that a unit failed (`OnFailure=`).
+    Notify {
+        #[arg(long)]
+        config: PathBuf,
+        /// The failed unit's name (`%i` of the notify unit).
+        #[arg(long)]
+        failed_unit: String,
+    },
+}
+
+impl Command {
+    fn config(&self) -> &Path {
+        match self {
+            Command::Auth(auth) => auth.config(),
+            Command::Capture { config } | Command::Notify { config, .. } => config,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -87,7 +113,7 @@ impl AuthCommand {
 pub fn run() -> i32 {
     let cli = Cli::parse();
     logging::init();
-    let Command::Auth(command) = cli.command;
+    let command = cli.command;
 
     let cwd = match std::env::current_dir() {
         Ok(cwd) => cwd,
@@ -112,9 +138,33 @@ pub fn run() -> i32 {
     unsafe { env_guard::pin_process_region(config.access_region) };
 
     match command {
-        AuthCommand::Import { from, force, .. } => import(&config, &from, force),
-        AuthCommand::Login { .. } => login(&config),
-        AuthCommand::Status { .. } => status(&config),
+        Command::Auth(AuthCommand::Import { from, force, .. }) => import(&config, &from, force),
+        Command::Auth(AuthCommand::Login { .. }) => login(&config),
+        Command::Auth(AuthCommand::Status { .. }) => status(&config),
+        Command::Capture { .. } => capture(&config),
+        Command::Notify { failed_unit, .. } => {
+            notify::run(&config, &failed_unit, SystemClock.now())
+        }
+    }
+}
+
+/// The async runtime, built after the region is pinned.
+fn runtime() -> Result<tokio::runtime::Runtime, i32> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| {
+            tracing::error!(error = %err, "cannot start the async runtime");
+            exit::FATAL
+        })
+}
+
+fn capture(config: &Config) -> i32 {
+    match runtime() {
+        Ok(runtime) => runtime
+            .block_on(capture::run(config, Arc::new(SystemClock)))
+            .code(),
+        Err(code) => code,
     }
 }
 

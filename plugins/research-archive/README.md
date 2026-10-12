@@ -12,8 +12,10 @@ The package has two layers:
   guard triggers and the catalog check.
 - **Capture job, first half (S1-2a).** The `research-archive` binary with its
   typed config, environment guard, data-dir lock, token storage, `auth`
-  commands and the Longbridge source; see [The binary](#the-binary). The
-  capture runner, the trading calendar and the systemd units arrive in S1-2b.
+  commands and the Longbridge source; see [The binary](#the-binary).
+- **Capture job, second half (S1-2b).** The `capture` command with its
+  trading calendar and run phases, the `notify` alert, and the systemd unit
+  templates; see [The capture job](#the-capture-job).
 
 ## Schema
 
@@ -344,7 +346,8 @@ before any thread starts.
 **Config.** A TOML file with every field required; unknown fields are
 refused. `research-archive.example.toml` documents each field:
 `data_dir` (absolute), `oauth_client_id`, `access_region` (`global` or
-`cn`), `http_url` (`https://host`, no path), `quote_ws_url` (`wss://`),
+`cn`), `http_url` (`https://host`, no path; plain `http://` only for a
+loopback IP literal, a local test server), `quote_ws_url` (`wss://`),
 `callback_port`, `research` (`CODE.MARKET` keys), `indexes` (dotted index
 symbols such as `.SPX.US`), `rps` (1 to 20), `attempt_cap`,
 `attempt_timeout_minutes`, `carry_deadline_minutes`, `window_start`
@@ -410,7 +413,8 @@ holds the lock at all.
   refresh token, and exits `AUTH_UNAVAILABLE` when the token is unusable.
 
 **Exit codes** (`src/exit.rs`). `OK`, `BUSY` and `NO_WINDOW` are 0;
-`PARTIAL` is 3, `LOCKED` 4, `FATAL` 70 and `AUTH_UNAVAILABLE` 75.
+`PARTIAL` is 3, `LOCKED` 4, `FATAL` 70 and `AUTH_UNAVAILABLE` 75. The
+capture job's endings are listed under [The capture job](#the-capture-job).
 
 **Logs** go to stderr, and only this crate's target is emitted. Every
 third-party target is off: the SDK logs full response bodies at `info` and
@@ -469,6 +473,170 @@ the login is lost; `auth login` restores it.
 | the SDK's data-center guard | `region_restricted` | `dc_region_restricted` | `dc_region_restricted` |
 | the SDK could not build the request | `permanent` | `client` | the SDK variant |
 
+## The capture job
+
+`research-archive capture --config <file>` is one start of the job. A
+systemd user timer starts it every 30 minutes; the job itself owns the
+whole lifecycle of a run. Every decision and every stored timestamp comes
+from one clock (`src/clock.rs`): the system clock in the binary, a fake one
+in the library tests. There is no flag or variable that changes it.
+
+**Start, in this order.**
+
+1. The environment guard and the config (as for every command).
+2. The data-dir lock. If another process holds it, the start exits `BUSY`
+   (0) having opened nothing: no Store, no token, no request.
+3. Open the Store and end every run whose window has closed (`window_end ≤
+   now`) and that has no end as `partial`, reason `dangling`.
+4. The calendar (below). A refresh builds the `OAuth` client first.
+5. Find the window open now. With none, mark the missed days (below) and
+   exit `NO_WINDOW` (0), or `PARTIAL` when step 3 ended a run.
+6. Plan the run: `plan_run` for `(longbridge, D)` with the configured
+   research list and indexes. When the day already has a run, the stored
+   plan wins and the current config is not consulted (I12). A run that has
+   ended exits 0.
+7. Build the `OAuth` client (if not built yet) and the source, then run the
+   phases.
+
+**The calendar.** `<data_dir>/calendar/us.json` holds the US trading days
+and half days of a contiguous date range and the time it was fetched. It is
+refreshed when it is missing, invalid or at least 24 hours old, through
+`QuoteContext::trading_days(Market::US, from, to)` on the quote WebSocket
+(`quote_ws_url`), for today (New York) − 5 days to that + 30 days, the
+span the SDK asks for itself. A refresh merges with the cached range when
+the two touch, so the calendar stays contiguous. A refresh that finds no
+usable token exits `AUTH_UNAVAILABLE`; any other refresh failure is `FATAL`.
+
+**The window of trading day D** runs from D at `window_start` New York
+time to the next trading day at 09:30 New York time, both converted with
+`America/New_York`, so daylight saving time is handled. A window is open at
+`t` when `window_start(D) ≤ t < window_end(D)` for the latest trading day D
+whose window has started. Half days do not change the window.
+
+**Missed days.** With no window open, every trading day after the first run
+whose window has closed (`window_end ≤ now`) and that has no run gets a
+`missed` run. Days before the first run are never marked.
+
+**Deadlines.** The start's deadline is `min(window_end, start +
+attempt_timeout)`. No request starts at or after its bound, and a request or
+token refresh still in flight at the bound is dropped there. A retry never
+waits past the deadline. Membership retries are also bounded by the carry
+deadline, `window_start + carry_deadline`, except a pair's first attempt.
+
+**Phases.**
+
+1. **Membership.** For each planned index not yet frozen, fetch
+   `index_constituents` until it has an `ok`, its attempt cap is exhausted,
+   the carry deadline passes (after at least one attempt) or the deadline
+   comes. The Store classifies each body.
+2. **Freeze**, when every planned index has an `ok` or an exhausted cap, or
+   the carry deadline has passed: `freeze_membership(run, now)`. The Store
+   derives the modes; the runner only decides when. An attempt timeout before
+   that leaves the run unfrozen, with no per-key fetch, for the next start.
+3. **Fetch.** Every planned pair (`coverage`) without an `ok` and below its
+   cap is attempted, at most four requests in flight, paced by the limiter at
+   `rps`. A `transient` or `permanent` failure counts toward
+   `attempt_cap` and is retried after 1 s, 2 s, 4 s, … (at most 60 s). A
+   `throttled` failure waits its `retry_after` and never counts; neither does
+   an auth pause.
+
+**One serialized recorder.** Every observation, the freeze and the end are
+written by one recorder that takes the timestamp after it has its turn and
+writes under that turn. So `fetched_at` is the wall time the response was
+**recorded**, and a run's clock never goes back, however the in-flight
+requests finish (#2577).
+
+**Burst bound.** The SDK retries a bare HTTP 429 up to five times inside one
+request, outside the limiter. The server throttles with the envelope code
+429002 instead, which the SDK does not retry. The worst burst beyond the
+limiter is therefore four requests in flight × 6 = 24 requests within about
+3.1 s.
+
+**How a start ends.**
+
+| ending | exit | `last_exit.json` kind | the run |
+|---|---|---|---|
+| every pair `ok` | 0 | `complete` | ended `complete` |
+| every pair `ok` or at its cap, some at the cap | 0 | `complete_with_failures` | ended `complete` |
+| the day's run had ended | 0 | `already_ended` | unchanged |
+| the attempt timeout, window still open | 0 | `resumable` | left open; the next start resumes it |
+| no window open | 0 | `no_window` | none |
+| the lock is held | 0 (`BUSY`) | not written | untouched |
+| the window closed with work left, or a dangling run was ended | 3 (`PARTIAL`) | `partial` | ended `partial` |
+| a request or the calendar refresh found no usable token, or the SDK wanted the browser flow | 75 (`AUTH_UNAVAILABLE`) | `auth_unavailable` | left open; resumes after `auth import`/`login` |
+| anything else | 70 (`FATAL`) | `fatal` | left open |
+
+**`last_exit.json`** is written atomically before the lock is released:
+`{code, kind, at, as_of?, failure?}`, where `failure` is the run's most
+frequent counted failure as `error_class:error_code` for
+`complete_with_failures` and `partial`. It holds no token and no server
+text. A start that never took the lock writes none.
+
+**Known gap.** A server-side auth rejection inside the envelope (its code
+was never probed) is stored as `permanent`, not `auth_unavailable`, so a
+revoked token exhausts every pair's cap and the run ends
+`complete_with_failures`, exit 0, with `failure` naming the envelope code.
+
+## The alert
+
+`research-archive notify --config <file> --failed-unit <unit>` is what the
+capture unit's `OnFailure=` runs. It reads `last_exit.json`; a state that
+is non-zero and at most 15 minutes old names the failure kind, anything
+else is `unknown` (a refused environment, a bad config, a kill by
+`TimeoutStartSec=`). It runs `notify_command` with one more argument, the
+message, for example:
+
+```
+research-archive: research-archive-capture.service failed: auth_unavailable (exit 75) at 2026-10-13T21:30:02+00:00, trading day 2026-10-13
+```
+
+It sends only when the kind differs from the last one sent or six hours
+have passed, and records what it sent in `<data_dir>/notify_state.json`
+after the command succeeded. The command runs without a shell, with stdin
+closed, for at most 60 s, and with only these variables from the alert's
+own environment: `PATH`, `HOME`, `LANG`, `TZ`, `XDG_RUNTIME_DIR` and the
+proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, upper and lower
+case). Nothing else is inherited, and no token data is passed.
+
+## Installing the units
+
+`systemd/` holds three templates: `research-archive-capture.service`,
+`research-archive-capture.timer` and `research-archive-notify@.service`.
+Replace the placeholders and install them as user units:
+
+| placeholder | value |
+|---|---|
+| `@BIN@` | the release binary, absolute |
+| `@CONFIG@` | the TOML config, absolute |
+| `@DATA_DIR@` | the config's `data_dir` (create it with mode 0700 first) |
+| `@TIMEOUT_SEC@` | `TimeoutStartSec=` of the capture: above `attempt_timeout_minutes × 60`, for example that + 300 |
+| `@PROXY_ENV_FILE@` | only if a proxy is needed (below) |
+
+```sh
+units=~/.config/systemd/user
+for f in systemd/*; do
+  sed -e "s|@BIN@|$BIN|g" -e "s|@CONFIG@|$CONFIG|g" \
+      -e "s|@DATA_DIR@|$DATA_DIR|g" -e "s|@TIMEOUT_SEC@|1800|g" \
+      -e "s|@PROXY_ENV_FILE@|$PROXY_ENV_FILE|g" "$f" > "$units/$(basename "$f")"
+done
+systemctl --user daemon-reload
+systemctl --user enable --now research-archive-capture.timer
+```
+
+- **The service is `Type=oneshot`.** Its backstop above the job's own
+  deadline is `TimeoutStartSec=`: `RuntimeMaxSec=` has no effect on a
+  oneshot service (`systemd.service(5)`).
+- **`WorkingDirectory=` is the data dir.** The SDK's dotenv walks up from
+  the working directory, so the job still refuses to start when a `.env`
+  exists in the data dir or any parent.
+- **No unit sets an SDK variable.** The region comes from the config, and the
+  job refuses to start when any `LONGBRIDGE_*`/`LONGPORT_*` variable is set.
+- **A proxy, only if this host needs one.** Uncomment `EnvironmentFile=` in
+  both services and point it at an operator-owned file (mode 0600) holding
+  only `HTTPS_PROXY=`, `HTTP_PROXY=` and `NO_PROXY=` lines.
+
+`systemd-analyze verify` on rendered copies reports no problem.
+
 ## Tests
 
 Run `cargo nextest run -p research-archive`. The source and CLI tests use a
@@ -508,3 +676,7 @@ Two integration binaries:
 | `net::logs` | only our own log target is emitted |
 | `net::secrets` | I11 for the binary's output, our logs, the archive file, `Debug`, and a login callback carrying a canary |
 | `net::dotenv`, `net::scan` | a `.env` in reach is refused and cannot override the pins; no SDK client is built outside the harness |
+| `runner` | on a fake clock: I1, I7, freeze before fetch, resumption, the carry deadline, missed and dangling days, the serialized recorder, a hanging request |
+| `capture_cli` | `capture` as a subprocess: kills during membership and fetch (I4), I12, I9, a hanging token refresh, I10, the calendar refresh |
+| `capture_secrets` | I11 for `capture` and `notify`; the alert's dedupe and environment |
+| `units` | the systemd templates' directives and placeholders |

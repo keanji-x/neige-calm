@@ -7,15 +7,18 @@ edition = "2024"
 # never a side binary of calm-server. S1-1 is the persistence boundary: the
 # compiled endpoint catalog and the append-only `archive.sqlite3` Store.
 # S1-2a adds the typed config, the environment guard, the data-dir lock, the
-# token storage with the `auth` CLI, and the Longbridge source. The capture
-# runner and its systemd units arrive in S1-2b.
+# token storage with the `auth` CLI, and the Longbridge source. S1-2b adds
+# the capture runner, the trading calendar, the alert command and the
+# systemd unit templates.
 
 [[bin]]
 name = "research-archive"
 path = "src/main.rs"
 
 [dependencies]
-chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono = { version = "0.4", default-features = false, features = ["serde", "std"] }
+# New York local time for the capture window (DST included).
+chrono-tz = "0.10"
 clap = { version = "4", features = ["derive"] }
 getrandom = "0.3"
 hex = "0.4"
@@ -30,6 +33,8 @@ sha2 = "0.10"
 # const applied by `Store::open`.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 thiserror = "2"
+# The SDK's date type, for `QuoteContext::trading_days`.
+time = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 toml = "0.8"
 tracing = "0.1"
