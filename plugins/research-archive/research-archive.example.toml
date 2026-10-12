@@ -1,0 +1,51 @@
+# research-archive config (#2575). Every field is required; nothing has a
+# default. Pass it with `--config <file>` to every command.
+
+# Absolute. Holds archive.sqlite3, archive.lock and oauth/<client_id>.json.
+data_dir = "/home/user/.local/share/neige-next/research-archive/data"
+
+# The OAuth client whose token the archive owns. At go-live this is invest's
+# client id; nothing else may use it.
+oauth_client_id = "replace-with-the-client-id"
+
+# `global` (longbridge.com) or `cn` (longbridge.cn). The job sets
+# LONGBRIDGE_REGION from it itself; never set it in the environment.
+access_region = "cn"
+
+# Pinned hosts for the region. https://host with no path, and wss://.
+http_url = "https://openapi.longbridge.cn"
+quote_ws_url = "wss://openapi-quote.longbridge.cn/v2"
+
+# The redirect port registered for the OAuth client (60355 for invest's).
+# Only `auth login` binds it.
+callback_port = 60355
+
+# Security keys, CODE.MARKET.
+research = ["AAPL.US", "MSFT.US", "NVDA.US"]
+
+# Index symbols in dotted form. The membership request asks for
+# limit=1000, so an index with more than 1,000 members never yields a
+# complete membership.
+indexes = [".SPX.US"]
+
+# Request starts per second (1-20). The server throttles even at 2.
+rps = 2
+
+# Attempts per key x endpoint for transient and permanent failures in one
+# window. Throttles and auth pauses do not count.
+attempt_cap = 5
+
+# The longest one capture invocation runs, in minutes (1-720).
+attempt_timeout_minutes = 25
+
+# How long after window_start the membership fetch may keep retrying before
+# the run carries the previous membership, in minutes (1-600).
+carry_deadline_minutes = 60
+
+# The capture window opens at this New York local time on each trading day
+# (HH:MM, at or after 16:00) and closes at the next regular open.
+window_start = "17:30"
+
+# The alert command's argv, run without a shell. The first entry is an
+# absolute path.
+notify_command = ["/usr/local/bin/notify-owner", "research-archive"]

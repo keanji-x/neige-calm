@@ -5,10 +5,15 @@ returns only the current consensus, ratings and valuation, so the archive
 stores every daily snapshot itself. The archive is one SQLite file,
 `archive.sqlite3`. It is append-only, and its format is frozen at release.
 
-This package is the persistence boundary (S1-1). It holds the compiled
-endpoint catalog (`src/catalog.rs`) and the `Store` (`src/store/`), which is
-the only owner of the schema, the guard triggers and the catalog check. The
-capture job that fills the archive arrives in S1-2.
+The package has two layers:
+
+- **Persistence (S1-1).** The compiled endpoint catalog (`src/catalog.rs`)
+  and the `Store` (`src/store/`), which is the only owner of the schema, the
+  guard triggers and the catalog check.
+- **Capture job, first half (S1-2a).** The `research-archive` binary with its
+  typed config, environment guard, data-dir lock, token storage, `auth`
+  commands and the Longbridge source; see [The binary](#the-binary). The
+  capture runner, the trading calendar and the systemd units arrive in S1-2b.
 
 ## Schema
 
@@ -330,9 +335,82 @@ Never run `ANALYZE` or `PRAGMA optimize` on the live file: they create
 `sqlite_stat*` tables, which `Store::open` refuses as schema drift. Run them,
 if at all, on a copy.
 
+## The binary
+
+`research-archive <command> --config <file>`. Every command first refuses
+a hostile environment, then reads the config, then sets the region, all
+before any thread starts.
+
+**Config.** A TOML file with every field required; unknown fields are
+refused. `research-archive.example.toml` documents each field:
+`data_dir` (absolute), `oauth_client_id`, `access_region` (`global` or
+`cn`), `http_url` (`https://host`, no path), `quote_ws_url` (`wss://`),
+`callback_port`, `research` (`CODE.MARKET` keys), `indexes` (dotted index
+symbols such as `.SPX.US`), `rps` (1 to 20), `attempt_cap`,
+`attempt_timeout_minutes`, `carry_deadline_minutes`, `window_start`
+(`HH:MM` New York time, at or after 16:00) and `notify_command` (argv with
+an absolute program). The membership request asks for `limit=1000`, so an
+index with more than 1,000 members never yields a complete membership.
+
+**Environment.** The SDK reads `LONGBRIDGE_*`/`LONGPORT_*` variables and
+loads a `.env` from the working directory or any parent into the process
+environment (`src/env_guard.rs` cites the SDK lines). Any such variable,
+or such a `.env` file, makes the binary exit `FATAL` before it reads the
+config. The binary then sets `LONGBRIDGE_REGION` from `access_region`
+itself, so the SDK never probes the network for the region.
+
+**Lock.** `<data_dir>/archive.lock`, a non-blocking exclusive `flock`.
+`auth import` and `auth login` take it; while another process holds it they
+do nothing and exit `BUSY`.
+
+**Token.** The archive's own token lives in
+`<data_dir>/oauth/<client_id>.json` (directory 0700, file 0600, written by
+temp file, fsync and rename), in the SDK's token-file format. No command
+prints or logs a token.
+
+- `auth import --from <file>` copies a token file the SDK wrote for the
+  configured client id. It refuses a file for another client id and a
+  malformed one (the error names only the JSON category and position), and
+  never writes the source file.
+- `auth login` runs the SDK's browser login on `callback_port`, the redirect
+  port registered for the client, printing the URL on stderr. It is the only
+  path that runs the browser flow; a capture that would need it exits
+  `AUTH_UNAVAILABLE` instead.
+- `auth status` prints the stored token's expiry and whether it has a
+  refresh token.
+
+**Exit codes** (`src/exit.rs`). `OK`, `BUSY` and `NO_WINDOW` are 0;
+`PARTIAL` is 3, `FATAL` 70 and `AUTH_UNAVAILABLE` 75.
+
+**Logs** go to stderr. The SDK's HTTP client logs full bodies at `info`, so
+its `longbridge_httpcli` targets are capped at `warn`.
+
+**Source.** `LongbridgeSource::fetch` sends one catalog request at a paced
+start (`rps`) and returns the Store's `Response`: the envelope's exact
+`data` bytes as `Body`, or `Failed` classified as below. The Store, not the
+source, judges a membership body.
+
+| upstream result | status | `error_class` | `error_code` |
+|---|---|---|---|
+| envelope `429002` | `throttled` (retry after the message's "retry after: Xs", else 1 s) | `envelope` | `429002` |
+| other non-zero envelope code, at any HTTP status | `permanent` | `envelope` | the code |
+| `code: 0` with `data` absent or `null` | `permanent` | `unexpected_response` | `unexpected_response` |
+| HTTP 200 that is not an envelope | `transient` | `unexpected_response` | `deserialize_response_body` |
+| other non-envelope 1xx–3xx | `transient` | `unexpected_response` | `unexpected_http_response` |
+| non-envelope 429, after the SDK's five retries | `throttled` (retry after 1 s) | `http_status` | `429` |
+| non-envelope 401, 403 | `auth_unavailable` | `http_status` | the status |
+| non-envelope 408, 5xx | `transient` | `http_status` | the status |
+| other non-envelope 4xx | `permanent` | `http_status` | the status |
+| request timeout | `transient` | `transport` | `request_timeout` |
+| connection or body error | `transient` | `transport` | `http` |
+| token refresh failed, invalid token | `auth_unavailable` | `auth` | `oauth`, `invalid_access_token`, `invalid_api_key` |
+| the SDK's data-center guard | `region_restricted` | `dc_region_restricted` | `dc_region_restricted` |
+| the SDK could not build the request | `permanent` | `client` | the SDK variant |
+
 ## Tests
 
-Run `cargo nextest run -p research-archive`.
+Run `cargo nextest run -p research-archive`. The source and CLI tests use a
+local fake HTTP server and fabricated tokens; none reaches a real host.
 
 | test module | covers |
 |---|---|
@@ -343,3 +421,7 @@ Run `cargo nextest run -p research-archive`.
 | `freeze` | the derived freeze, Store-classified membership bodies, I5, atomicity, carry vs `read_at` |
 | `reads` | I6, the universe, read order and coverage |
 | `send` | every public async method returns a `Send` future |
+| `source` | I3 through the Store, the request of every catalog entry, the classification table |
+| `logs` | the cap on the SDK's body logging |
+| `cli` | the environment guard, the lock (`BUSY`), `auth import`, `status` and `login` as subprocesses |
+| `secrets` | I11 for the binary's output, our logs, the archive file and `Debug` |

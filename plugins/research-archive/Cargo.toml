@@ -4,13 +4,23 @@ version = "0.1.0"
 edition = "2024"
 
 # Point-in-time archive of Longbridge fundamentals (#2575). Its own package,
-# never a side binary of calm-server. S1-1 is the persistence boundary only:
-# the compiled endpoint catalog and the append-only `archive.sqlite3` Store.
-# The capture job (auth, source, runner) arrives in S1-2.
+# never a side binary of calm-server. S1-1 is the persistence boundary: the
+# compiled endpoint catalog and the append-only `archive.sqlite3` Store.
+# S1-2a adds the typed config, the environment guard, the data-dir lock, the
+# token storage with the `auth` CLI, and the Longbridge source. The capture
+# runner and its systemd units arrive in S1-2b.
+
+[[bin]]
+name = "research-archive"
+path = "src/main.rs"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+clap = { version = "4", features = ["derive"] }
 hex = "0.4"
+# The official SDK at a pinned tag. No features: `blocking` is not used.
+longbridge = { git = "https://github.com/longbridge/openapi", tag = "v5.2.0" }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 # The workspace's sqlx (calm-server uses 0.8 with `sqlite`), so the graph keeps
@@ -18,7 +28,13 @@ sha2 = "0.10"
 # const applied by `Store::open`.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+url = "2"
 
 [dev-dependencies]
+axum = "0.8"
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "test-util", "time"] }
