@@ -6,12 +6,16 @@
 
 /// The command did what it was asked.
 pub const OK: i32 = 0;
-/// Another process holds the archive lock. Not an alert.
+/// `capture` found another process holding the archive lock. Not an alert:
+/// the timer's next tick tries again.
 pub const BUSY: i32 = 0;
 /// No capture window is open now. Not an alert.
 pub const NO_WINDOW: i32 = 0;
 /// A window closed with its run ended `partial`. Needs a look, not a login.
 pub const PARTIAL: i32 = 3;
+/// An operator command (`auth import`, `auth login`) found the archive lock
+/// held and did nothing. The operator retries once the holder is done.
+pub const LOCKED: i32 = 4;
 /// Anything else that stops the command: bad configuration, I/O, a refused
 /// environment (sysexits `EX_SOFTWARE`).
 pub const FATAL: i32 = 70;
@@ -26,7 +30,7 @@ mod tests {
 
     #[test]
     fn alerting_codes_are_distinct_and_non_zero() {
-        let alerting = [PARTIAL, FATAL, AUTH_UNAVAILABLE];
+        let alerting = [PARTIAL, LOCKED, FATAL, AUTH_UNAVAILABLE];
         for (i, a) in alerting.iter().enumerate() {
             assert_ne!(*a, 0);
             // 1 is a Rust `main` error, 2 a clap usage error, 101 a panic.

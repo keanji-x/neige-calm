@@ -4,6 +4,8 @@ use super::*;
 
 const CANARY_ACCESS: &str = "us_m_CANARY-ACCESS-7f3a9c";
 const CANARY_REFRESH: &str = "CANARY-REFRESH-51d0e2";
+/// "Now" for import checks: 2026-10-13.
+const NOW: u64 = 1_791_849_600;
 
 fn client() -> ClientId {
     ClientId::parse("test-client").unwrap()
@@ -191,7 +193,7 @@ fn import_reads_an_sdk_written_file_into_storage() {
     fs::write(&from, sdk_token_file("test-client", Some(CANARY_REFRESH))).unwrap();
     let storage = DataDirTokenStorage::open(root.path().join("oauth")).unwrap();
 
-    let imported = import_token(&from, &client(), &storage).unwrap();
+    let imported = import_token(&from, &client(), &storage, false, NOW).unwrap();
     assert_eq!(
         imported,
         TokenSummary {
@@ -216,7 +218,7 @@ fn import_reads_an_sdk_written_file_into_storage() {
     // A token without a refresh token (`null`) imports too.
     fs::write(&from, sdk_token_file("test-client", None)).unwrap();
     assert!(
-        !import_token(&from, &client(), &storage)
+        !import_token(&from, &client(), &storage, false, NOW)
             .unwrap()
             .has_refresh_token
     );
@@ -230,7 +232,7 @@ fn import_refuses_another_client_or_a_read_only_store_and_writes_nothing() {
     let dir = root.path().join("oauth");
     let storage = DataDirTokenStorage::open(&dir).unwrap();
     assert!(matches!(
-        import_token(&from, &client(), &storage).unwrap_err(),
+        import_token(&from, &client(), &storage, false, NOW).unwrap_err(),
         TokenFileError::ClientIdMismatch { .. }
     ));
     assert!(entries(&dir).is_empty());
@@ -238,7 +240,7 @@ fn import_refuses_another_client_or_a_read_only_store_and_writes_nothing() {
     fs::write(&from, sdk_token_file("test-client", None)).unwrap();
     let read_only = DataDirTokenStorage::read_only(&dir);
     assert!(matches!(
-        import_token(&from, &client(), &read_only).unwrap_err(),
+        import_token(&from, &client(), &read_only, false, NOW).unwrap_err(),
         TokenFileError::ReadOnly { .. }
     ));
     assert!(entries(&dir).is_empty());
@@ -297,10 +299,166 @@ async fn build_oauth_loads_a_valid_token_without_saving_or_a_browser() {
     fs::write(&path, sdk_token_file("test-client", Some(CANARY_REFRESH))).unwrap();
     let before = fs::read(&path).unwrap();
 
-    let oauth = build_oauth(&client(), DataDirTokenStorage::read_only(root.path()))
-        .await
-        .unwrap();
+    let oauth = build_oauth(
+        &client(),
+        DataDirTokenStorage::open(root.path()).unwrap(),
+        std::time::Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
     assert_eq!(oauth.access_token().await.unwrap(), CANARY_ACCESS);
     assert!(!format!("{oauth:?}").contains("CANARY"));
     assert_eq!(fs::read(&path).unwrap(), before);
+}
+
+fn suffixes(names: &[&str]) -> Vec<String> {
+    names.iter().map(|n| (*n).to_owned()).collect()
+}
+
+fn temp_name(suffix: &str) -> String {
+    format!(".test-client.json.tmp-{suffix}")
+}
+
+/// B1: a file that sits at a would-be temp name is skipped, never removed,
+/// and the save goes on under the next name.
+#[test]
+fn a_file_at_a_temp_name_survives_a_save() {
+    let root = tempfile::tempdir().unwrap();
+    let storage = DataDirTokenStorage::open(root.path()).unwrap();
+    let planted = root.path().join(temp_name("aaaa"));
+    fs::write(&planted, "not ours").unwrap();
+
+    storage
+        .save_with_temp_names(&token(1_900_000_000), suffixes(&["aaaa", "bbbb"]))
+        .unwrap();
+    assert_eq!(fs::read_to_string(&planted).unwrap(), "not ours");
+    assert_eq!(
+        entries(root.path()),
+        [temp_name("aaaa"), "test-client.json".to_owned()]
+    );
+    assert_eq!(
+        storage.load_checked(&client()).unwrap().unwrap().expires_at,
+        1_900_000_000
+    );
+}
+
+/// B1: the import source itself at a would-be temp name survives the import.
+#[test]
+fn an_import_source_at_a_temp_name_survives_the_import() {
+    let root = tempfile::tempdir().unwrap();
+    let storage = DataDirTokenStorage::open(root.path()).unwrap();
+    let from = root.path().join(temp_name("aaaa"));
+    let original = sdk_token_file("test-client", Some(CANARY_REFRESH));
+    fs::write(&from, &original).unwrap();
+
+    import_with_temp_names(
+        &from,
+        &client(),
+        &storage,
+        false,
+        NOW,
+        suffixes(&["aaaa", "bbbb"]),
+    )
+    .unwrap();
+    assert_eq!(fs::read_to_string(&from).unwrap(), original);
+    assert_eq!(
+        storage.load_checked(&client()).unwrap().unwrap().expires_at,
+        4_102_444_800
+    );
+}
+
+/// B1: when every name is taken the save fails and touches nothing.
+#[test]
+fn exhausted_temp_names_fail_without_touching_anything() {
+    let root = tempfile::tempdir().unwrap();
+    let storage = DataDirTokenStorage::open(root.path()).unwrap();
+    for suffix in ["aaaa", "bbbb"] {
+        fs::write(root.path().join(temp_name(suffix)), suffix).unwrap();
+    }
+    let err = storage
+        .save_with_temp_names(&token(1), suffixes(&["aaaa", "bbbb"]))
+        .unwrap_err();
+    assert!(matches!(err, TokenFileError::Io { .. }), "{err}");
+    for suffix in ["aaaa", "bbbb"] {
+        assert_eq!(
+            fs::read_to_string(root.path().join(temp_name(suffix))).unwrap(),
+            suffix
+        );
+    }
+    assert!(!storage.path_for(&client()).exists());
+}
+
+#[test]
+fn random_temp_suffixes_are_long_and_distinct() {
+    let a = random_suffix();
+    assert_eq!(a.len(), 32);
+    assert!(a.bytes().all(|b| b.is_ascii_hexdigit()));
+    assert_ne!(a, random_suffix());
+}
+
+/// N4: without `force`, an import does not replace a later-expiring token
+/// and does not store an unusable one.
+#[test]
+fn import_refuses_an_earlier_or_unusable_token_unless_forced() {
+    let root = tempfile::tempdir().unwrap();
+    let storage = DataDirTokenStorage::open(root.path().join("oauth")).unwrap();
+    let from = root.path().join("token");
+    let write = |expires_at: u64, refresh: Option<&str>| {
+        fs::write(
+            &from,
+            serde_json::to_string(&serde_json::json!({
+                "client_id": "test-client",
+                "access_token": CANARY_ACCESS,
+                "refresh_token": refresh,
+                "expires_at": expires_at,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    };
+    let stored = || {
+        storage
+            .load_checked(&client())
+            .unwrap()
+            .map(|t| t.expires_at)
+    };
+
+    write(NOW + 7_200, Some(CANARY_REFRESH));
+    import_token(&from, &client(), &storage, false, NOW).unwrap();
+
+    // An earlier expiry does not replace it; an equal or later one does.
+    write(NOW + 3_600, Some(CANARY_REFRESH));
+    let err = import_token(&from, &client(), &storage, false, NOW).unwrap_err();
+    assert!(
+        matches!(err, TokenFileError::ReplacesLaterToken { .. }),
+        "{err}"
+    );
+    assert!(err.to_string().contains("--force"));
+    assert_eq!(stored(), Some(NOW + 7_200));
+    import_token(&from, &client(), &storage, true, NOW).unwrap();
+    assert_eq!(stored(), Some(NOW + 3_600));
+
+    // Expired, or inside the SDK's refresh margin, with no refresh token.
+    for expires_at in [NOW - 1, NOW + SDK_REFRESH_MARGIN_SECS - 1] {
+        write(expires_at, None);
+        let err = import_token(&from, &client(), &storage, false, NOW).unwrap_err();
+        assert!(matches!(err, TokenFileError::Unusable { .. }), "{err}");
+        assert_eq!(stored(), Some(NOW + 3_600));
+    }
+    // Forced, an unusable token is stored.
+    write(NOW - 1, None);
+    import_token(&from, &client(), &storage, true, NOW).unwrap();
+    assert_eq!(stored(), Some(NOW - 1));
+}
+
+#[test]
+fn usability_follows_the_sdk_refresh_margin() {
+    let at = |expires_at, refresh| TokenSummary {
+        expires_at,
+        has_refresh_token: refresh,
+    };
+    assert!(at(NOW + SDK_REFRESH_MARGIN_SECS, false).usable_at(NOW));
+    assert!(!at(NOW + SDK_REFRESH_MARGIN_SECS - 1, false).usable_at(NOW));
+    assert!(!at(0, false).usable_at(NOW));
+    assert!(at(0, true).usable_at(NOW));
 }

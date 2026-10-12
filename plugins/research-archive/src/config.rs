@@ -70,7 +70,8 @@ pub struct Config {
     pub carry_deadline: Duration,
     /// The window's start on each trading day, New York local time.
     pub window_start: NaiveTime,
-    /// The alert command's argv, run without a shell.
+    /// The alert command's argv, run without a shell. The capture runner
+    /// (S1-2b) runs it with an allowlisted environment, never the job's own.
     pub notify_command: Vec<String>,
 }
 

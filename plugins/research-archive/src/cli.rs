@@ -40,6 +40,10 @@ enum AuthCommand {
         /// The SDK token file to copy. It is only read.
         #[arg(long)]
         from: PathBuf,
+        /// Store the token even if it replaces one that expires later, or is
+        /// unusable (expiring, with no refresh token).
+        #[arg(long)]
+        force: bool,
     },
     /// Run the browser login on the registered callback port.
     Login {
@@ -92,18 +96,19 @@ pub fn run() -> i32 {
     unsafe { env_guard::pin_process_region(config.access_region) };
 
     match command {
-        AuthCommand::Import { from, .. } => import(&config, &from),
+        AuthCommand::Import { from, force, .. } => import(&config, &from, force),
         AuthCommand::Login { .. } => login(&config),
         AuthCommand::Status { .. } => status(&config),
     }
 }
 
-/// Take the data-dir lock, or say why not. `Err` carries the exit code.
+/// Take the data-dir lock for an operator command, or say why not. `Err`
+/// carries the exit code: `LOCKED` while another process holds it.
 fn lock(config: &Config) -> Result<DataDirLock, i32> {
     DataDirLock::try_acquire(&config.data_dir).map_err(|err| match err {
         LockError::Busy(_) => {
-            tracing::warn!("{err}; nothing done");
-            exit::BUSY
+            tracing::error!("{err}; nothing done, retry when it is free");
+            exit::LOCKED
         }
         LockError::Io { .. } => {
             tracing::error!("{err}");
@@ -119,7 +124,7 @@ fn writable_storage(config: &Config) -> Result<DataDirTokenStorage, i32> {
     })
 }
 
-fn import(config: &Config, from: &Path) -> i32 {
+fn import(config: &Config, from: &Path, force: bool) -> i32 {
     let _lock = match lock(config) {
         Ok(lock) => lock,
         Err(code) => return code,
@@ -128,7 +133,13 @@ fn import(config: &Config, from: &Path) -> i32 {
         Ok(storage) => storage,
         Err(code) => return code,
     };
-    match auth::import_token(from, &config.oauth_client_id, &storage) {
+    match auth::import_token(
+        from,
+        &config.oauth_client_id,
+        &storage,
+        force,
+        auth::unix_now(),
+    ) {
         Ok(summary) => {
             println!("imported: {summary}");
             exit::OK
@@ -166,6 +177,8 @@ fn login(config: &Config) -> i32 {
         |url| eprintln!("Open this URL in a browser to authorize the archive:\n{url}"),
     ));
     if let Err(err) = flow {
+        // `err` is a fixed variant name, never the SDK's text: the callback's
+        // `error` parameter is chosen by whoever reaches the port.
         tracing::error!("login failed: {err}");
         return exit::AUTH_UNAVAILABLE;
     }
@@ -186,13 +199,22 @@ fn login(config: &Config) -> i32 {
 }
 
 /// Reads the stored token without the lock: saves replace the file by an
-/// atomic rename, so a read sees the old or the new token, whole.
+/// atomic rename, so a read sees the old or the new token, whole. A token
+/// the SDK could not use without a browser login exits `AUTH_UNAVAILABLE`.
 fn status(config: &Config) -> i32 {
     let storage = DataDirTokenStorage::read_only(config.oauth_dir());
     match storage.load_checked(&config.oauth_client_id) {
         Ok(Some(token)) => {
-            println!("{}", TokenSummary::from(&token));
-            exit::OK
+            let summary = TokenSummary::from(&token);
+            println!("{summary}");
+            if summary.usable_at(auth::unix_now()) {
+                exit::OK
+            } else {
+                tracing::error!(
+                    "the token is expiring or expired and has no refresh token; run `auth login`"
+                );
+                exit::AUTH_UNAVAILABLE
+            }
         }
         Ok(None) => {
             tracing::error!("no token stored; run `auth import` or `auth login`");

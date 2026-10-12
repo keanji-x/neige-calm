@@ -7,7 +7,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use longbridge::oauth::{OAuth, OAuthBuilder, OAuthResult, StoredToken, TokenStorage};
 use research_archive::StoreError;
 use research_archive::catalog::{Catalog, DcRegion, Endpoint, KeyKind, QueryValue};
-use research_archive::source::{Fetched, LongbridgeSource, RETRY_AFTER_FALLBACK, Rps};
+use research_archive::source::{
+    FETCH_TIMEOUT, Fetched, LongbridgeSource, RETRY_AFTER_FALLBACK, Rps,
+};
 use research_archive::store::RunPlan;
 use research_archive::types::{ErrorClass, ErrorDetail, FailureClass, Response, Status, UnixMs};
 
@@ -19,7 +21,7 @@ const TOKEN: &str = "ap_m_CANARY-TOKEN-0b7e";
 const BODY: &str = r#"{"b":1,"a":0.12345678901234567890123}"#;
 
 pub fn source(url: &str, oauth: OAuth) -> LongbridgeSource {
-    LongbridgeSource::new(oauth, url, Rps::new(20).unwrap())
+    LongbridgeSource::new(oauth, url, Rps::new(20).unwrap(), FETCH_TIMEOUT)
 }
 
 fn endpoint(id: &str) -> Endpoint {
@@ -295,9 +297,11 @@ async fn assert_stored(f: &Fixture, plan: &RunPlan, e: &Endpoint, t: UnixMs, fet
     );
 }
 
-/// A non-envelope 429 is retried five times inside the SDK, then throttled.
+/// SDK behaviour, pinned: a non-envelope 429 is retried five times inside
+/// one `send()`, outside our limiter (`request.rs:475-513`), then the attempt
+/// is throttled. The server's real throttle is envelope 429002 (see above).
 #[tokio::test]
-async fn a_bare_429_is_retried_by_the_sdk_then_throttled() {
+async fn sdk_behaviour_a_bare_429_is_retried_five_times_outside_the_limiter() {
     let server = FakeServer::start(|_| Reply::new(429, "slow down")).await;
     let (f, plan) = planned().await;
     let forecast = endpoint("forecast_eps");

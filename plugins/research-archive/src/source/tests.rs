@@ -49,11 +49,13 @@ fn retry_after_is_parsed_from_the_throttle_message() {
         ("please Retry After: 0.8s", ms(800)),
         ("retry after:3s", Duration::from_secs(3)),
         ("retry after: 60s", Duration::from_secs(60)),
-        // No wait, no unit, zero, too long, or garbage: the fallback.
+        // A longer wait is clamped to the maximum.
+        ("retry after: 61s", RETRY_AFTER_MAX),
+        ("retry after: 3600.5s", RETRY_AFTER_MAX),
+        // No wait, no unit, zero, or garbage: the fallback.
         ("rate limit reached", RETRY_AFTER_FALLBACK),
         ("retry after: 0.5", RETRY_AFTER_FALLBACK),
         ("retry after: 0s", RETRY_AFTER_FALLBACK),
-        ("retry after: 61s", RETRY_AFTER_FALLBACK),
         ("retry after: 1.2.3s", RETRY_AFTER_FALLBACK),
         ("", RETRY_AFTER_FALLBACK),
     ] {

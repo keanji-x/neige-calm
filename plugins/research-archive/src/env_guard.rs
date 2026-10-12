@@ -24,6 +24,15 @@
 //! `LONGBRIDGE_REGION` itself from the typed `access_region`
 //! ([`pin_process_region`]) before any thread starts, so the geo probe never
 //! runs.
+//!
+//! Proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and
+//! their lower-case forms) are deliberately honoured, not refused:
+//! production reaches Longbridge through the host proxy. Both reqwest
+//! clients read them by default (reqwest 0.12 for the SDK,
+//! `async_impl/client.rs:419-421`; reqwest 0.11 for oauth2's token
+//! requests, `async_impl/client.rs:255`). TLS uses rustls with the
+//! compiled-in webpki roots, so no `SSL_CERT_FILE` or native-certificate
+//! override is in play.
 
 use std::{
     ffi::OsString,

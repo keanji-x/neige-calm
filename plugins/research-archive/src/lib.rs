@@ -26,6 +26,7 @@ pub mod exit;
 pub mod lock;
 pub mod logging;
 pub mod membership;
+pub mod sdk_error;
 pub mod source;
 pub mod store;
 pub mod types;

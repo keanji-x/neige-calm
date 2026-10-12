@@ -10,7 +10,8 @@
 //! lock file lets two holders lock two different inodes.
 //!
 //! `capture` takes the lock before anything else; `auth import` and
-//! `auth login` take it and refuse with `BUSY` while it is held.
+//! `auth login` take it and exit `LOCKED` while it is held; `capture` exits
+//! `BUSY` (0).
 
 use std::{
     fs::{self, File, OpenOptions, TryLockError},
@@ -31,7 +32,8 @@ pub struct DataDirLock {
 /// Why the lock was not taken.
 #[derive(Debug, thiserror::Error)]
 pub enum LockError {
-    /// Another holder has it. Not an alert: the caller exits `BUSY`.
+    /// Another holder has it: `capture` exits `BUSY`, an operator command
+    /// `LOCKED`.
     #[error("{0} is held by another process")]
     Busy(PathBuf),
     #[error("cannot lock {path}: {source}")]

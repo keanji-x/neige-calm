@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 clap = { version = "4", features = ["derive"] }
+getrandom = "0.3"
 hex = "0.4"
 # The official SDK at a pinned tag. No features: `blocking` is not used.
 longbridge = { git = "https://github.com/longbridge/openapi", tag = "v5.2.0" }

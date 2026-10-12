@@ -21,10 +21,13 @@
 //! - `code: 0` with `data` absent or `null` is `UnexpectedResponse`
 //!   (`request.rs:453`).
 //!
-//! The SDK retries only non-envelope HTTP 429 responses, five times with
-//! 0.1 s doubling backoff inside one `send()` (`request.rs:475-513`). Those
-//! retries bypass [`RateLimiter`]. The throttle the server actually sends is
-//! the envelope code `429002`, which the SDK does not retry (probe P1).
+//! **SDK retries bypass the limiter.** The SDK retries a non-envelope HTTP
+//! 429 itself, up to five times with 0.1 s doubling backoff inside one
+//! `send()` (`request.rs:475-513`). The [`RateLimiter`] paces only the
+//! first start of each `fetch`; it cannot pace those retries, and nothing
+//! here can turn them off. The throttle the server actually sends is the
+//! envelope code `429002`, which the SDK does not retry, and probe P1 saw no
+//! bare 429, so in practice every request start is paced.
 
 use std::{num::NonZeroU32, sync::Mutex, time::Duration};
 
@@ -35,6 +38,7 @@ use longbridge::{
 use serde::{Serialize, Serializer, ser::SerializeMap};
 
 use crate::catalog::{self, Endpoint, QueryValue};
+use crate::sdk_error;
 use crate::types::{ErrorClass, ErrorDetail, FailureClass, Key, Response};
 
 /// Requests per second to one upstream, 1 to 20.
@@ -96,9 +100,13 @@ impl RateLimiter {
 /// The wait after a throttle when the server names none.
 pub const RETRY_AFTER_FALLBACK: Duration = Duration::from_secs(1);
 
-/// The longest server-named wait taken as is; a longer or unparsable one
-/// falls back to [`RETRY_AFTER_FALLBACK`].
+/// The longest server-named wait; a longer one is clamped to it.
 const RETRY_AFTER_MAX: Duration = Duration::from_secs(60);
+
+/// The production bound on one whole `fetch` (see [`LongbridgeSource::new`]):
+/// above the SDK's 30 s request timeout, so it fires only when token
+/// resolution or a token refresh hangs.
+pub const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The envelope code of the server's rate limit (probe P1).
 pub const THROTTLE_CODE: i32 = 429_002;
@@ -133,15 +141,20 @@ impl Fetched {
 pub struct LongbridgeSource {
     http: HttpClient,
     limiter: RateLimiter,
+    fetch_timeout: Duration,
 }
 
 impl LongbridgeSource {
     /// `oauth` is the process's one shared client; `http_url` is pinned, never
-    /// taken from the environment.
-    pub fn new(oauth: OAuth, http_url: &str, rps: Rps) -> Self {
+    /// taken from the environment. `fetch_timeout` bounds one whole `fetch`
+    /// after its rate-limit slot: token resolution, any token refresh, the
+    /// request and the SDK's own retries ([`FETCH_TIMEOUT`] in production).
+    /// It expires as `transient` / `transport` / `request_timeout`.
+    pub fn new(oauth: OAuth, http_url: &str, rps: Rps, fetch_timeout: Duration) -> Self {
         Self {
             http: HttpClient::new(HttpClientConfig::from_oauth(oauth).http_url(http_url)),
             limiter: RateLimiter::new(rps),
+            fetch_timeout,
         }
     }
 
@@ -160,17 +173,28 @@ impl LongbridgeSource {
                 catalog::DcRegion::Us => SdkDcRegion::Us,
             });
         }
-        let result = request
+        let send = request
             .query_params(KeyQuery {
                 key: key.as_str(),
                 query: endpoint.query,
             })
             .response::<String>()
-            .send()
-            .await;
-        match result {
-            Ok(data) => Fetched::body(data),
-            Err(err) => classify(err),
+            .send();
+        // The SDK's own 30 s timeout starts only after the access token is
+        // resolved, and a token refresh (oauth2's reqwest client) has none.
+        // Dropping the future on expiry also drops the `OAuth` lock guard
+        // the refresh holds.
+        match tokio::time::timeout(self.fetch_timeout, send).await {
+            Ok(Ok(data)) => Fetched::body(data),
+            Ok(Err(err)) => classify(err),
+            Err(_elapsed) => Fetched {
+                response: failed(
+                    FailureClass::Transient,
+                    ErrorClass::Transport,
+                    "request_timeout".to_owned(),
+                ),
+                retry_after: None,
+            },
         }
     }
 }
@@ -207,8 +231,9 @@ fn class_for_status(status: u16) -> (FailureClass, ErrorClass) {
 }
 
 /// The wait a throttle message names, as in "rate limit of 1-second
-/// interval has been reached, please retry after: 0.2s" (probe P1), or
-/// [`RETRY_AFTER_FALLBACK`] when it names none or an implausible one.
+/// interval has been reached, please retry after: 0.2s" (probe P1). A wait
+/// over [`RETRY_AFTER_MAX`] is clamped to it; a message that names no
+/// positive wait gives [`RETRY_AFTER_FALLBACK`].
 pub fn parse_retry_after(message: &str) -> Duration {
     const MARKER: &str = "retry after:";
     let lower = message.to_ascii_lowercase();
@@ -223,107 +248,68 @@ pub fn parse_retry_after(message: &str) -> Duration {
             rest[number.len()..].starts_with('s').then_some(number)
         })
         .and_then(|number| number.parse::<f64>().ok())
-        .and_then(|secs| Duration::try_from_secs_f64(secs).ok())
-        .filter(|wait| !wait.is_zero() && *wait <= RETRY_AFTER_MAX)
+        .filter(|secs| secs.is_finite() && *secs > 0.0)
+        .map(|secs| Duration::from_secs_f64(secs.min(RETRY_AFTER_MAX.as_secs_f64())))
         .unwrap_or(RETRY_AFTER_FALLBACK)
 }
 
-/// Map one SDK error to a failure. Every variant is named, so an SDK upgrade
-/// that adds one fails to compile here. The error code is the envelope code
-/// or HTTP status in decimal, or else the SDK variant in snake_case.
-pub fn classify(err: HttpClientError) -> Fetched {
-    let failed = |class, error: ErrorClass, code: String| Response::Failed {
+/// A failure response.
+fn failed(class: FailureClass, error: ErrorClass, code: String) -> Response {
+    Response::Failed {
         class,
         error: ErrorDetail { class: error, code },
-    };
-    let variant = |class, error, name: &str| failed(class, error, name.to_owned());
+    }
+}
+
+/// Map one SDK error to a failure. The error code is the envelope code or
+/// the HTTP status in decimal, or else the SDK variant
+/// ([`sdk_error::http_kind`]). No error text is kept.
+pub fn classify(err: HttpClientError) -> Fetched {
+    use ErrorClass as E;
+    use FailureClass as F;
     let mut retry_after = None;
-    let response = match err {
-        HttpClientError::OpenApi { code, message, .. } if code == THROTTLE_CODE => {
-            retry_after = Some(parse_retry_after(&message));
-            failed(
-                FailureClass::Throttled,
-                ErrorClass::Envelope,
-                code.to_string(),
-            )
+    let response = match &err {
+        HttpClientError::OpenApi { code, message, .. } => {
+            let class = if *code == THROTTLE_CODE {
+                retry_after = Some(parse_retry_after(message));
+                F::Throttled
+            } else {
+                F::Permanent
+            };
+            failed(class, E::Envelope, code.to_string())
         }
-        HttpClientError::OpenApi { code, .. } => failed(
-            FailureClass::Permanent,
-            ErrorClass::Envelope,
-            code.to_string(),
-        ),
         HttpClientError::UnexpectedHttpResponse { status, .. }
         | HttpClientError::BadStatus(status) => {
             let (class, error) = class_for_status(status.as_u16());
-            if class == FailureClass::Throttled {
+            if class == F::Throttled {
                 retry_after = Some(RETRY_AFTER_FALLBACK);
             }
-            match error {
-                ErrorClass::HttpStatus => failed(class, error, status.as_u16().to_string()),
-                _ => variant(class, error, "unexpected_http_response"),
-            }
+            let code = match error {
+                E::HttpStatus => status.as_u16().to_string(),
+                _ => sdk_error::http_kind(&err).to_owned(),
+            };
+            failed(class, error, code)
         }
-        // A 200 whose body is not an envelope: a proxy or gateway page.
-        HttpClientError::DeserializeResponseBody(_) => variant(
-            FailureClass::Transient,
-            ErrorClass::UnexpectedResponse,
-            "deserialize_response_body",
-        ),
-        HttpClientError::UnexpectedResponse => variant(
-            FailureClass::Permanent,
-            ErrorClass::UnexpectedResponse,
-            "unexpected_response",
-        ),
-        HttpClientError::RequestTimeout => variant(
-            FailureClass::Transient,
-            ErrorClass::Transport,
-            "request_timeout",
-        ),
-        HttpClientError::Http(_) => variant(FailureClass::Transient, ErrorClass::Transport, "http"),
-        HttpClientError::DcRegionRestricted { .. } => variant(
-            FailureClass::RegionRestricted,
-            ErrorClass::DcRegionRestricted,
-            "dc_region_restricted",
-        ),
-        HttpClientError::OAuth(_) => {
-            variant(FailureClass::AuthUnavailable, ErrorClass::Auth, "oauth")
+        other => {
+            let (class, error) = match other {
+                // A 200 whose body is not an envelope: a proxy or gateway page.
+                HttpClientError::DeserializeResponseBody(_) => {
+                    (F::Transient, E::UnexpectedResponse)
+                }
+                HttpClientError::UnexpectedResponse => (F::Permanent, E::UnexpectedResponse),
+                HttpClientError::RequestTimeout | HttpClientError::Http(_) => {
+                    (F::Transient, E::Transport)
+                }
+                HttpClientError::DcRegionRestricted { .. } => {
+                    (F::RegionRestricted, E::DcRegionRestricted)
+                }
+                HttpClientError::OAuth(_)
+                | HttpClientError::InvalidAccessToken
+                | HttpClientError::InvalidApiKey => (F::AuthUnavailable, E::Auth),
+                _ => (F::Permanent, E::Client),
+            };
+            failed(class, error, sdk_error::http_kind(other).to_owned())
         }
-        HttpClientError::InvalidAccessToken => variant(
-            FailureClass::AuthUnavailable,
-            ErrorClass::Auth,
-            "invalid_access_token",
-        ),
-        HttpClientError::InvalidApiKey => variant(
-            FailureClass::AuthUnavailable,
-            ErrorClass::Auth,
-            "invalid_api_key",
-        ),
-        HttpClientError::InvalidRequestMethod => variant(
-            FailureClass::Permanent,
-            ErrorClass::Client,
-            "invalid_request_method",
-        ),
-        HttpClientError::MissingEnvVar { .. } => variant(
-            FailureClass::Permanent,
-            ErrorClass::Client,
-            "missing_env_var",
-        ),
-        HttpClientError::SerializeRequestBody(_) => variant(
-            FailureClass::Permanent,
-            ErrorClass::Client,
-            "serialize_request_body",
-        ),
-        HttpClientError::SerializeQueryString(_) => variant(
-            FailureClass::Permanent,
-            ErrorClass::Client,
-            "serialize_query_string",
-        ),
-        HttpClientError::ConnectionLimitExceeded { .. } => variant(
-            FailureClass::Permanent,
-            ErrorClass::Client,
-            "connection_limit_exceeded",
-        ),
-        HttpClientError::Sse(_) => variant(FailureClass::Permanent, ErrorClass::Client, "sse"),
     };
     Fetched {
         response,

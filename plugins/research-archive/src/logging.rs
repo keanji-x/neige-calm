@@ -1,29 +1,36 @@
 //! Tracing setup. Our logs go to stderr; stdout carries only a command's own
 //! output.
 //!
-//! The SDK's HTTP client logs every request URL and every full response body
-//! at `info` under its module targets `longbridge_httpcli::request` and
-//! `longbridge_httpcli::client` (`rust/crates/httpclient/src/request.rs:405-407,450`,
-//! `client.rs:102` at `longbridge/openapi@v5.2.0`). Bodies are archive
-//! content, not log lines, so that crate is capped at `warn`. The cap is fixed
-//! here and not taken from `RUST_LOG`, so no environment can turn the body
-//! logging back on.
+//! **Only this crate's events are emitted.** Every other target is off,
+//! `longbridge*` first among them:
 //!
-//! The SDK's quote and trade contexts log through a per-context subscriber
-//! that is a no-op unless `LONGBRIDGE_LOG_PATH` is set (`rust/src/config.rs:192`),
-//! which [`crate::env_guard`] refuses with every other `LONGBRIDGE_*` variable.
+//! - The SDK's HTTP client logs every request URL and every full response
+//!   body at `info` (`rust/crates/httpclient/src/request.rs:405-407,450` at
+//!   `longbridge/openapi@v5.2.0`). Bodies are archive content, not log
+//!   lines.
+//! - The SDK's OAuth crate logs the browser callback's `error` query
+//!   parameter at `warn` (`rust/crates/oauth/src/callback.rs:94-99`). Anyone
+//!   who can reach the local callback port chooses that text.
+//! - oauth2, reqwest, hyper and poem log upstream text of their own.
+//!
+//! Our code logs the classified outcome instead, and renders SDK errors only
+//! through [`crate::sdk_error`]. The filter is fixed here and not taken from
+//! `RUST_LOG`, so no environment can turn a third-party target back on.
+//!
+//! The SDK's quote and trade contexts also log through a per-context
+//! subscriber that is a no-op unless `LONGBRIDGE_LOG_PATH` is set
+//! (`rust/src/config.rs:192`), which [`crate::env_guard`] refuses with every
+//! other `LONGBRIDGE_*` variable.
 
 use tracing::{Level, Subscriber};
 use tracing_subscriber::{filter::Targets, fmt::MakeWriter, layer::SubscriberExt};
 
-/// The SDK HTTP client's crate target prefix.
-pub const SDK_HTTP_TARGET: &str = "longbridge_httpcli";
+/// This crate's target prefix: the library's module paths and the binary.
+pub const OWN_TARGET: &str = "research_archive";
 
-/// The level filter: `default` for everything, `warn` for the SDK HTTP client.
-pub fn filter(default: Level) -> Targets {
-    Targets::new()
-        .with_default(default)
-        .with_target(SDK_HTTP_TARGET, Level::WARN)
+/// The level filter: `level` for this crate, everything else off.
+pub fn filter(level: Level) -> Targets {
+    Targets::new().with_target(OWN_TARGET, level)
 }
 
 /// A subscriber writing plain lines to `writer` with [`filter`] applied.

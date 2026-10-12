@@ -239,7 +239,7 @@ fn import_refuses_another_client_or_a_malformed_file_and_writes_nothing() {
 }
 
 #[test]
-fn import_and_login_are_busy_while_the_lock_is_held() {
+fn import_and_login_exit_locked_while_the_lock_is_held() {
     let env = Env::new();
     let first = env.sdk_token("first", CLIENT, Some(REFRESH));
     let out = env.run(&["auth", "import", "--from", first.to_str().unwrap()]);
@@ -249,13 +249,19 @@ fn import_and_login_are_busy_while_the_lock_is_held() {
     let held = DataDirLock::try_acquire(&env.data_dir).unwrap();
     let second = env.sdk_token("second", CLIENT, None);
     for args in [
-        &["auth", "import", "--from", second.to_str().unwrap()][..],
+        &[
+            "auth",
+            "import",
+            "--force",
+            "--from",
+            second.to_str().unwrap(),
+        ][..],
         &["auth", "login"][..],
     ] {
         let out = env.run(args);
         assert_eq!(
             out.status.code(),
-            Some(0),
+            Some(4),
             "{args:?}: {}",
             text(&out.stderr)
         );
@@ -267,6 +273,42 @@ fn import_and_login_are_busy_while_the_lock_is_held() {
         assert_eq!(fs::read(env.token_path()).unwrap(), stored, "{args:?}");
     }
     drop(held);
+}
+
+/// `status` exits 75 for a token the SDK cannot use without a browser
+/// login; `import` stores one only with `--force`.
+#[test]
+fn an_unusable_token_is_refused_by_import_and_reported_by_status() {
+    let env = Env::new();
+    let expired = env.root.path().join("expired");
+    fs::write(
+        &expired,
+        serde_json::json!({
+            "client_id": CLIENT,
+            "access_token": ACCESS,
+            "refresh_token": null,
+            "expires_at": 1_000_000_000u64,
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let import = ["auth", "import", "--from", expired.to_str().unwrap()];
+    let out = env.run(&import);
+    assert_eq!(out.status.code(), Some(70));
+    assert!(
+        text(&out.stderr).contains("--force"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert!(!env.token_path().exists());
+
+    let forced = [&import[..], &["--force"]].concat();
+    let out = env.run(&forced);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    let out = env.run(&["auth", "status"]);
+    assert_eq!(out.status.code(), Some(75));
+    assert!(text(&out.stdout).contains("refresh_token=absent"));
+    assert!(text(&out.stderr).contains("auth login"));
 }
 
 /// `auth login` shows the authorization URL on stderr, for the region's

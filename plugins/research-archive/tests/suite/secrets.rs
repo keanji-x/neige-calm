@@ -2,7 +2,15 @@
 //! output, our logs, the archive file or a `Debug` rendering. The capture
 //! log's part of I11 arrives with the runner (S1-2b).
 
-use std::{fs, path::Path};
+use std::{
+    fs,
+    io::{BufRead, BufReader, Read, Write},
+    net::TcpStream,
+    path::Path,
+    process::Stdio,
+    sync::mpsc,
+    time::Duration,
+};
 
 use longbridge::oauth::StoredToken;
 use research_archive::auth::{self, ClientId, DataDirTokenStorage};
@@ -92,8 +100,10 @@ async fn i11_no_secret_reaches_output_logs_archive_or_debug() {
         tracing::subscriber::set_default(logging::subscriber(Level::INFO, move || writer.clone()));
     let config = Config::load(&env.config).unwrap();
     let client = ClientId::parse(CLIENT).unwrap();
-    let storage = DataDirTokenStorage::read_only(config.oauth_dir());
-    let oauth = auth::build_oauth(&client, storage.clone()).await.unwrap();
+    let storage = DataDirTokenStorage::open(config.oauth_dir()).unwrap();
+    let oauth = auth::build_oauth(&client, storage.clone(), Duration::from_secs(5))
+        .await
+        .unwrap();
     let server = FakeServer::start(|seen| match seen.path.as_str() {
         "/v1/quote/financial-consensus-detail" => Reply::data(r#"{"eps":1.5}"#),
         "/v1/quote/forecast-eps" => Reply::new(
@@ -177,4 +187,62 @@ async fn i11_no_secret_reaches_output_logs_archive_or_debug() {
     // Control: the SDK's own type would print the token.
     let sdk: StoredToken = loaded.into();
     assert!(format!("{sdk:?}").contains(ACCESS));
+}
+
+/// I11, the browser callback: whoever reaches the login's callback port
+/// chooses the `error` query parameter, which the SDK logs and embeds in
+/// its error (`oauth/src/callback.rs:41-47,94-99`). A real `auth login` that
+/// receives a callback carrying a canary prints none of it.
+#[test]
+fn i11_login_callback_text_never_reaches_output() {
+    let env = Env::new();
+    let mut child = env
+        .command(&["auth", "login"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let (url_tx, url_rx) = mpsc::channel();
+    let (all_tx, all_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut all = String::new();
+        for line in BufReader::new(stderr).lines() {
+            let Ok(line) = line else { break };
+            if line.starts_with("https://") {
+                let _ = url_tx.send(());
+            }
+            all.push_str(&line);
+            all.push('\n');
+        }
+        let _ = all_tx.send(all);
+    });
+    url_rx
+        .recv_timeout(Duration::from_secs(60))
+        .expect("login printed no URL");
+
+    // The callback, as a browser would send it, with the canary as `error`.
+    let mut callback = TcpStream::connect(("127.0.0.1", env.callback_port)).unwrap();
+    write!(
+        callback,
+        "GET /callback?error={ACCOUNT}%20{ACCESS} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut reply = String::new();
+    let _ = callback.read_to_string(&mut reply);
+    assert!(reply.starts_with("HTTP/1.1 400"), "{reply}");
+
+    let status = child.wait().unwrap();
+    let stderr = all_rx.recv_timeout(Duration::from_secs(60)).unwrap();
+    let mut out = Vec::new();
+    stdout.read_to_end(&mut out).unwrap();
+    assert_eq!(status.code(), Some(75), "{stderr}");
+    assert!(
+        stderr.contains("login failed: authorization_failed"),
+        "{stderr}"
+    );
+    assert_clean("stderr of auth login", stderr.as_bytes());
+    assert_clean("stdout of auth login", &out);
+    assert!(!env.token_path().exists());
 }

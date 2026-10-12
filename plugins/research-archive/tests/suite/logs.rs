@@ -1,4 +1,5 @@
-//! The SDK's HTTP client logs full bodies at `info`; our subscriber caps it.
+//! The SDK's HTTP client logs full bodies at `info`; our subscriber emits
+//! only this crate's target.
 
 use std::{
     io::Write,
@@ -54,19 +55,24 @@ async fn logged(subscriber: impl tracing::Subscriber + Send + Sync + 'static) {
     );
 }
 
+/// Only our own target is emitted, even at `trace`: no SDK, HTTP or
+/// server line.
 #[tokio::test]
-async fn sdk_http_logging_is_capped_below_info() {
+async fn only_our_own_target_is_logged() {
     let capture = Capture::default();
     let writer = capture.clone();
-    logged(logging::subscriber(Level::INFO, move || writer.clone())).await;
+    logged(logging::subscriber(Level::TRACE, move || writer.clone())).await;
     let text = capture.text();
     assert!(text.contains("own line visible"), "{text}");
-    assert!(!text.contains(logging::SDK_HTTP_TARGET), "{text}");
+    for line in text.lines() {
+        assert!(line.contains(logging::OWN_TARGET), "{line}");
+    }
+    assert!(!text.contains("longbridge"), "{text}");
     assert!(!text.contains("CANARY"), "{text}");
 }
 
-/// Control: without the cap the same request logs its body at `info`, so the
-/// test above is not vacuous.
+/// Control: without the filter the same request logs its body at `info`,
+/// so the test above is not vacuous.
 #[tokio::test]
 async fn without_the_cap_the_sdk_logs_the_body() {
     use tracing_subscriber::{filter::Targets, layer::SubscriberExt};

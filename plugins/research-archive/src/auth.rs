@@ -25,13 +25,12 @@ use std::{
     io::{self, Write},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
 };
 
 use longbridge::oauth::{OAuth, OAuthBuilder, OAuthError, OAuthResult, StoredToken, TokenStorage};
 use serde::{Deserialize, Serialize};
 
-use crate::exit;
+use crate::{exit, sdk_error};
 
 /// A credential string. Formatting never shows it.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,6 +169,17 @@ pub enum TokenFileError {
     ClientIdMismatch { path: PathBuf },
     #[error("token storage {dir} is read-only")]
     ReadOnly { dir: PathBuf },
+    #[error(
+        "the stored token expires later ({stored}) than the imported one ({imported}); pass --force to replace it"
+    )]
+    ReplacesLaterToken {
+        stored: TokenSummary,
+        imported: TokenSummary,
+    },
+    #[error(
+        "the imported token is unusable: it has no refresh token and expires within {SDK_REFRESH_MARGIN_SECS} s ({imported}); pass --force to store it anyway"
+    )]
+    Unusable { imported: TokenSummary },
 }
 
 /// Read and parse one token file in the SDK's format.
@@ -204,8 +214,6 @@ pub struct DataDirTokenStorage {
     access: Access,
 }
 
-static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
 impl DataDirTokenStorage {
     /// Writable storage. Creates `dir` with mode 0700 when it is missing.
     pub fn open(dir: impl Into<PathBuf>) -> Result<Self, TokenFileError> {
@@ -224,9 +232,11 @@ impl DataDirTokenStorage {
         })
     }
 
-    /// Storage whose `save` always refuses and never touches the disk. A
-    /// refresh that cannot be persisted then fails the request instead of
-    /// silently diverging from the file.
+    /// Storage whose `save` always refuses and never touches the disk. For
+    /// reading only (`auth status`, tests). Never give it to an `OAuth` that
+    /// can refresh: the SDK redeems the refresh token at the server before it
+    /// calls `save` (`oauth/src/client.rs:108-111`), so the refusal comes
+    /// after the old refresh token may already be spent.
     pub fn read_only(dir: impl Into<PathBuf>) -> Self {
         Self {
             dir: dir.into(),
@@ -256,9 +266,23 @@ impl DataDirTokenStorage {
         Ok(Some(token))
     }
 
-    /// Persist `token` atomically: a 0600 temp file in the same directory,
-    /// fsync, rename over the target, fsync the directory.
+    /// Persist `token` atomically: a 0600 temp file with a random name in
+    /// the same directory, fsync, rename over the target, fsync the
+    /// directory.
     pub fn save_checked(&self, token: &TokenFile) -> Result<(), TokenFileError> {
+        self.save_with_temp_names(token, std::iter::repeat_with(random_suffix))
+    }
+
+    /// [`save_checked`](Self::save_checked) with the temp-name suffixes
+    /// drawn from `suffixes`, so a test can make one collide.
+    ///
+    /// A name that exists already is skipped, never touched: only a temp
+    /// file this call created is renamed or removed.
+    fn save_with_temp_names(
+        &self,
+        token: &TokenFile,
+        suffixes: impl IntoIterator<Item = String>,
+    ) -> Result<(), TokenFileError> {
         if self.access == Access::ReadOnly {
             return Err(TokenFileError::ReadOnly {
                 dir: self.dir.clone(),
@@ -266,28 +290,43 @@ impl DataDirTokenStorage {
         }
         let client_id = ClientId::parse(&token.client_id)?;
         let target = self.path_for(&client_id);
-        let temp = self.dir.join(format!(
-            ".{}.json.tmp-{}-{}",
-            client_id.as_str(),
-            std::process::id(),
-            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
         let io_err = |path: &Path| {
             let path = path.to_owned();
             move |source| TokenFileError::Io { path, source }
         };
-        let bytes = serde_json::to_vec_pretty(token).expect("a token file always serializes");
-        let written = (|| {
-            let mut file = OpenOptions::new()
+        let mut suffixes = suffixes.into_iter().take(TEMP_ATTEMPTS);
+        let (temp, mut file) = loop {
+            let Some(suffix) = suffixes.next() else {
+                return Err(TokenFileError::Io {
+                    path: self.dir.clone(),
+                    source: io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "no free temp-file name for the token",
+                    ),
+                });
+            };
+            let temp = self
+                .dir
+                .join(format!(".{}.json.tmp-{suffix}", client_id.as_str()));
+            match OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .mode(0o600)
-                .open(&temp)?;
-            file.write_all(&bytes)?;
-            file.sync_all()
-        })()
-        .map_err(io_err(&temp))
-        .and_then(|()| fs::rename(&temp, &target).map_err(io_err(&target)));
+                .open(&temp)
+            {
+                Ok(file) => break (temp, file),
+                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+                // Nothing was created, so there is nothing to remove.
+                Err(err) => return Err(io_err(&temp)(err)),
+            }
+        };
+        // From here on `temp` is ours: it is renamed into place or removed.
+        let bytes = serde_json::to_vec_pretty(token).expect("a token file always serializes");
+        let written = file
+            .write_all(&bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(io_err(&temp))
+            .and_then(|()| fs::rename(&temp, &target).map_err(io_err(&target)));
         if let Err(err) = written {
             let _ = fs::remove_file(&temp);
             return Err(err);
@@ -296,6 +335,17 @@ impl DataDirTokenStorage {
             .and_then(|dir| dir.sync_all())
             .map_err(io_err(&self.dir))
     }
+}
+
+/// How many temp-file names one save tries before giving up.
+const TEMP_ATTEMPTS: usize = 16;
+
+/// 128 random bits from the OS, as hex: a temp-file suffix no other process
+/// can predict.
+fn random_suffix() -> String {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).expect("the OS random source is available");
+    hex::encode(bytes)
 }
 
 impl TokenStorage for DataDirTokenStorage {
@@ -325,16 +375,35 @@ impl TokenStorage for DataDirTokenStorage {
     }
 }
 
-/// Build the shared `OAuth` client from `storage`, for a capture.
+/// Why no `OAuth` client could be built. It carries only a fixed variant
+/// name ([`crate::sdk_error`]), never SDK error text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum OAuthUnavailable {
+    /// The build (a token refresh, or the browser flow's wait) did not
+    /// finish within its deadline.
+    #[error("timed out")]
+    TimedOut,
+    #[error("{0}")]
+    Sdk(&'static str),
+}
+
+/// Build the shared `OAuth` client from `storage`, for a capture, within
+/// `deadline`.
 ///
 /// A valid stored token is loaded without network. An expiring one is
-/// refreshed and saved through `storage`. When the SDK would fall back to the
-/// browser flow, the process exits with [`exit::AUTH_UNAVAILABLE`] instead:
-/// a capture must never wait on a human. The SDK binds its callback listener
-/// before it calls `open_url` (`client.rs:125-153`), so this asks for an
-/// ephemeral port (0): the registered port stays free for `auth login`.
-pub async fn build_oauth(client_id: &ClientId, storage: DataDirTokenStorage) -> OAuthResult<OAuth> {
-    OAuthBuilder::new(client_id.as_str())
+/// refreshed and saved through `storage`; oauth2's HTTP client has no
+/// timeout of its own, so `deadline` bounds the refresh. When the SDK would
+/// fall back to the browser flow, the process exits with
+/// [`exit::AUTH_UNAVAILABLE`] instead: a capture must never wait on a human.
+/// The SDK binds its callback listener before it calls `open_url`
+/// (`client.rs:125-153`), so this asks for an ephemeral port (0): the
+/// registered port stays free for `auth login`.
+pub async fn build_oauth(
+    client_id: &ClientId,
+    storage: DataDirTokenStorage,
+    deadline: std::time::Duration,
+) -> Result<OAuth, OAuthUnavailable> {
+    let build = OAuthBuilder::new(client_id.as_str())
         .callback_port(0)
         .token_storage(storage)
         .build(|_authorization_url| {
@@ -342,8 +411,12 @@ pub async fn build_oauth(client_id: &ClientId, storage: DataDirTokenStorage) -> 
                 "OAuth browser authorization required; run `auth import` or `auth login`"
             );
             std::process::exit(exit::AUTH_UNAVAILABLE);
-        })
-        .await
+        });
+    match tokio::time::timeout(deadline, build).await {
+        Ok(Ok(oauth)) => Ok(oauth),
+        Ok(Err(err)) => Err(OAuthUnavailable::Sdk(sdk_error::oauth_kind(&err))),
+        Err(_elapsed) => Err(OAuthUnavailable::TimedOut),
+    }
 }
 
 /// Token storage for [`login`]: it reports no stored token, so the SDK always
@@ -363,19 +436,21 @@ impl TokenStorage for FreshLogin {
 /// Run the SDK's browser login for `client_id` on the registered
 /// `callback_port`, and save the new token through `storage`. `show_url`
 /// receives the authorization URL for the operator. This is the only path
-/// that runs the browser flow.
+/// that runs the browser flow. The SDK gives the browser five minutes
+/// (`oauth/src/callback.rs:12`).
 pub async fn login(
     client_id: &ClientId,
     storage: DataDirTokenStorage,
     callback_port: CallbackPort,
     show_url: impl Fn(&str),
-) -> OAuthResult<()> {
+) -> Result<(), OAuthUnavailable> {
     OAuthBuilder::new(client_id.as_str())
         .callback_port(callback_port.get())
         .token_storage(FreshLogin(storage))
         .build(show_url)
         .await
         .map(drop)
+        .map_err(|err| OAuthUnavailable::Sdk(sdk_error::oauth_kind(&err)))
 }
 
 /// What a stored token is, without the token itself: what `auth import`,
@@ -385,6 +460,19 @@ pub struct TokenSummary {
     /// Unix seconds at which the access token expires.
     pub expires_at: u64,
     pub has_refresh_token: bool,
+}
+
+/// The SDK refreshes a token that expires within this many seconds
+/// (`oauth/src/token.rs:59-66`, `expires_soon`).
+pub const SDK_REFRESH_MARGIN_SECS: u64 = 300;
+
+impl TokenSummary {
+    /// Whether the SDK could use the token at `now` (Unix seconds) without a
+    /// browser login: it has a refresh token, or it is not yet within the
+    /// SDK's refresh margin.
+    pub fn usable_at(&self, now: u64) -> bool {
+        self.has_refresh_token || self.expires_at.saturating_sub(now) >= SDK_REFRESH_MARGIN_SECS
+    }
 }
 
 impl From<&TokenFile> for TokenSummary {
@@ -415,12 +503,43 @@ impl std::fmt::Display for TokenSummary {
     }
 }
 
+/// Unix seconds now, from the wall clock the SDK compares expiry with.
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 /// Import an SDK-written token file into `storage`. The file must belong to
-/// `client_id`.
+/// `client_id`, and is only read.
+///
+/// Unless `force`, the import refuses to replace a stored token that
+/// expires later than the imported one, and refuses a token that is
+/// unusable at `now` (see [`TokenSummary::usable_at`]).
 pub fn import_token(
     from: &Path,
     client_id: &ClientId,
     storage: &DataDirTokenStorage,
+    force: bool,
+    now: u64,
+) -> Result<TokenSummary, TokenFileError> {
+    import_with_temp_names(
+        from,
+        client_id,
+        storage,
+        force,
+        now,
+        std::iter::repeat_with(random_suffix),
+    )
+}
+
+fn import_with_temp_names(
+    from: &Path,
+    client_id: &ClientId,
+    storage: &DataDirTokenStorage,
+    force: bool,
+    now: u64,
+    suffixes: impl IntoIterator<Item = String>,
 ) -> Result<TokenSummary, TokenFileError> {
     let token = parse_token_file(from)?;
     if token.client_id != client_id.as_str() {
@@ -428,8 +547,20 @@ pub fn import_token(
             path: from.to_owned(),
         });
     }
-    storage.save_checked(&token)?;
-    Ok(TokenSummary::from(&token))
+    let imported = TokenSummary::from(&token);
+    if !force {
+        if !imported.usable_at(now) {
+            return Err(TokenFileError::Unusable { imported });
+        }
+        if let Some(stored) = storage.load_checked(client_id)? {
+            let stored = TokenSummary::from(&stored);
+            if stored.expires_at > imported.expires_at {
+                return Err(TokenFileError::ReplacesLaterToken { stored, imported });
+            }
+        }
+    }
+    storage.save_with_temp_names(&token, suffixes)?;
+    Ok(imported)
 }
 
 #[cfg(test)]

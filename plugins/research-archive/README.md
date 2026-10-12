@@ -359,40 +359,63 @@ or such a `.env` file, makes the binary exit `FATAL` before it reads the
 config. The binary then sets `LONGBRIDGE_REGION` from `access_region`
 itself, so the SDK never probes the network for the region.
 
+Proxy variables (`HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, …) are deliberately
+honoured: production reaches Longbridge through the host proxy, and both
+reqwest clients in the SDK read them by default. TLS uses rustls with the
+compiled-in webpki roots, so no `SSL_CERT_FILE` or native-certificate
+override is in play.
+
 **Lock.** `<data_dir>/archive.lock`, a non-blocking exclusive `flock`.
 `auth import` and `auth login` take it; while another process holds it they
-do nothing and exit `BUSY`.
+do nothing and exit `LOCKED`. The capture (S1-2b) takes it first and exits
+`BUSY` (0) when it is held.
 
 **Token.** The archive's own token lives in
 `<data_dir>/oauth/<client_id>.json` (directory 0700, file 0600, written by
-temp file, fsync and rename), in the SDK's token-file format. No command
-prints or logs a token.
+temp file with a random name, fsync and rename; a name that exists is
+skipped, never removed), in the SDK's token-file format. No command prints
+or logs a token.
 
 - `auth import --from <file>` copies a token file the SDK wrote for the
   configured client id. It refuses a file for another client id and a
   malformed one (the error names only the JSON category and position), and
-  never writes the source file.
+  never writes the source file. Without `--force` it also refuses to replace
+  a stored token that expires later, and refuses a token that is unusable:
+  no refresh token and expiring within the SDK's five-minute refresh margin.
 - `auth login` runs the SDK's browser login on `callback_port`, the redirect
   port registered for the client, printing the URL on stderr. It is the only
   path that runs the browser flow; a capture that would need it exits
   `AUTH_UNAVAILABLE` instead.
 - `auth status` prints the stored token's expiry and whether it has a
-  refresh token.
+  refresh token, and exits `AUTH_UNAVAILABLE` when the token is unusable.
 
 **Exit codes** (`src/exit.rs`). `OK`, `BUSY` and `NO_WINDOW` are 0;
-`PARTIAL` is 3, `FATAL` 70 and `AUTH_UNAVAILABLE` 75.
+`PARTIAL` is 3, `LOCKED` 4, `FATAL` 70 and `AUTH_UNAVAILABLE` 75.
 
-**Logs** go to stderr. The SDK's HTTP client logs full bodies at `info`, so
-its `longbridge_httpcli` targets are capped at `warn`.
+**Logs** go to stderr, and only this crate's target is emitted. Every
+third-party target is off: the SDK logs full response bodies at `info` and
+the OAuth callback's attacker-chosen `error` parameter at `warn`. SDK
+errors are rendered only as a fixed variant name (`src/sdk_error.rs`),
+never as their text.
 
 **Source.** `LongbridgeSource::fetch` sends one catalog request at a paced
 start (`rps`) and returns the Store's `Response`: the envelope's exact
 `data` bytes as `Body`, or `Failed` classified as below. The Store, not the
-source, judges a membership body.
+source, judges a membership body. One whole `fetch`, token refresh
+included, is bounded by its fetch timeout (60 s in production).
+
+- **Exact bytes hold for UTF-8.** The SDK reads the body with reqwest's
+  `text()`, which replaces invalid UTF-8 with U+FFFD before the envelope is
+  parsed. JSON is UTF-8 by specification, so a valid body is kept byte for
+  byte; an invalid one would not be.
+- **The limiter cannot pace SDK retries.** The SDK retries a bare HTTP 429
+  up to five times inside one request, outside the limiter. The server
+  throttles with envelope `429002` instead, which the SDK does not retry,
+  and the probe saw no bare 429.
 
 | upstream result | status | `error_class` | `error_code` |
 |---|---|---|---|
-| envelope `429002` | `throttled` (retry after the message's "retry after: Xs", else 1 s) | `envelope` | `429002` |
+| envelope `429002` | `throttled` (retry after the message's "retry after: Xs", at most 60 s, else 1 s) | `envelope` | `429002` |
 | other non-zero envelope code, at any HTTP status | `permanent` | `envelope` | the code |
 | `code: 0` with `data` absent or `null` | `permanent` | `unexpected_response` | `unexpected_response` |
 | HTTP 200 that is not an envelope | `transient` | `unexpected_response` | `deserialize_response_body` |
@@ -401,7 +424,7 @@ source, judges a membership body.
 | non-envelope 401, 403 | `auth_unavailable` | `http_status` | the status |
 | non-envelope 408, 5xx | `transient` | `http_status` | the status |
 | other non-envelope 4xx | `permanent` | `http_status` | the status |
-| request timeout | `transient` | `transport` | `request_timeout` |
+| request timeout, or the fetch timeout | `transient` | `transport` | `request_timeout` |
 | connection or body error | `transient` | `transport` | `http` |
 | token refresh failed, invalid token | `auth_unavailable` | `auth` | `oauth`, `invalid_access_token`, `invalid_api_key` |
 | the SDK's data-center guard | `region_restricted` | `dc_region_restricted` | `dc_region_restricted` |
@@ -422,6 +445,7 @@ local fake HTTP server and fabricated tokens; none reaches a real host.
 | `reads` | I6, the universe, read order and coverage |
 | `send` | every public async method returns a `Send` future |
 | `source` | I3 through the Store, the request of every catalog entry, the classification table |
-| `logs` | the cap on the SDK's body logging |
-| `cli` | the environment guard, the lock (`BUSY`), `auth import`, `status` and `login` as subprocesses |
-| `secrets` | I11 for the binary's output, our logs, the archive file and `Debug` |
+| `logs` | only our own log target is emitted |
+| `cli` | the environment guard, the lock (`LOCKED`), `auth import`, `status` and `login` as subprocesses |
+| `secrets` | I11 for the binary's output, our logs, the archive file, `Debug`, and a login callback carrying a canary |
+| `refresh_hang` (own binary) | a token refresh that never answers is bounded in `build_oauth` and `fetch` |
