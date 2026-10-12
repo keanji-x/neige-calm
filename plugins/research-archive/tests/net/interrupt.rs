@@ -27,7 +27,7 @@ const CONSTITUENTS: &str = "/v1/quote/index-constituents";
 
 /// A server whose constituents hang while `hold` is set.
 async fn server(clock: &Arc<FakeClock>, hold: Arc<AtomicBool>) -> TimedServer {
-    let never = Arc::new(tokio::sync::Notify::new());
+    let never = Arc::new(tokio::sync::Semaphore::new(0));
     TimedServer::start(Arc::clone(clock), move |s, _| {
         if s.path != CONSTITUENTS {
             Reply::data(r#"{"v":1}"#)

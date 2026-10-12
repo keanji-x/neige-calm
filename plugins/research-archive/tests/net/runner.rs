@@ -60,7 +60,7 @@ pub fn archive(url: &str, knobs: &Knobs, now: UnixMs) -> Archive {
 }
 
 pub async fn capture(a: &Archive, clock: &Arc<FakeClock>) -> Outcome {
-    capture::run(&a.config(), Arc::clone(clock)).await
+    capture::run(&a.config(), Arc::clone(clock), None).await
 }
 
 /// `(key, endpoint_id, attempt, fetched_at, status)` of every row, by
@@ -567,7 +567,7 @@ fn concurrent_responses_are_recorded_in_time_order() {
         let clock = FakeClock::at(tue_start());
         clock.advance(60_000);
         let first = Arc::new(AtomicUsize::new(0));
-        let gate = Arc::new(tokio::sync::Notify::new());
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
         let (f, g) = (first.clone(), gate.clone());
         let server = TimedServer::start(clock.clone(), move |_, clock| {
             clock.advance(1_000);
@@ -586,7 +586,7 @@ fn concurrent_responses_are_recorded_in_time_order() {
         let a = archive(&server.server.url, &knobs, clock.now());
         let (outcome, ()) = tokio::join!(capture(&a, &clock), async {
             wait_for_rows(&a, 3).await;
-            gate.notify_one();
+            gate.add_permits(1);
         });
         assert_eq!(outcome.kind, ExitKind::Complete, "{outcome:?}");
         let recorded = rows(&a).await;

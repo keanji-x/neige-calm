@@ -21,7 +21,7 @@ use crate::support::raw;
 const CONSTITUENTS: &str = "/v1/quote/index-constituents";
 
 /// `(index_sym, mode, frozen_at)` of the run's membership rows.
-async fn membership(a: &crate::archive::Archive, run: i64) -> Vec<(String, String, i64)> {
+pub async fn membership(a: &crate::archive::Archive, run: i64) -> Vec<(String, String, i64)> {
     let mut conn = raw(&a.data_dir.join("archive.sqlite3"), false).await;
     sqlx::query_as("SELECT index_sym, mode, frozen_at FROM run_membership WHERE run_id = ?")
         .bind(run)
@@ -30,7 +30,7 @@ async fn membership(a: &crate::archive::Archive, run: i64) -> Vec<(String, Strin
         .unwrap()
 }
 
-fn index_knobs(cap: u32) -> Knobs {
+pub fn index_knobs(cap: u32) -> Knobs {
     Knobs {
         research: vec!["AAPL.US"],
         indexes: vec![".SPX.US"],
@@ -305,7 +305,7 @@ fn a_late_start_freezes_from_stored_rows_before_any_attempt() {
 fn a_resume_after_the_carry_deadline_freezes_at_once_despite_a_hanging_attempt() {
     hermetic::run(async {
         let clock = FakeClock::at(UnixMs(tue_start().0 + 65 * 60_000));
-        let gate = Arc::new(tokio::sync::Notify::new());
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
         let g = gate.clone();
         let server = TimedServer::start(clock.clone(), move |s, _| {
             if s.path == CONSTITUENTS {
@@ -332,7 +332,7 @@ fn a_resume_after_the_carry_deadline_freezes_at_once_despite_a_hanging_attempt()
         let (outcome, ()) = tokio::join!(capture(&a, &clock), async {
             // The six security pairs land while the constituents hang.
             wait_for_rows(&a, 6).await;
-            gate.notify_one();
+            gate.add_permits(1);
         });
         assert_eq!(outcome.kind, ExitKind::Complete, "{outcome:?}");
         let frozen = membership(&a, 1).await;
@@ -363,7 +363,7 @@ fn a_resume_after_the_carry_deadline_freezes_at_once_despite_a_hanging_attempt()
 fn the_auth_latch_comes_before_a_slow_auth_row() {
     hermetic::run(async {
         let clock = FakeClock::at(UnixMs(tue_start().0 + 60_000));
-        let gate = Arc::new(tokio::sync::Notify::new());
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
         let g = gate.clone();
         let server = TimedServer::start(clock.clone(), move |_, _| {
             Reply::new(401, "<html>who</html>").gated(&g)
@@ -383,7 +383,7 @@ fn the_auth_latch_comes_before_a_slow_auth_row() {
                 .execute(&mut lock)
                 .await
                 .unwrap();
-            gate.notify_one();
+            gate.add_permits(1);
             // Bounded: with the latch after the write, the next slot (1 s)
             // would send a sibling here.
             let waited = tokio::time::timeout(Duration::from_millis(2_500), async {
@@ -404,5 +404,110 @@ fn the_auth_latch_comes_before_a_slow_auth_row() {
         let recorded = rows(&a).await;
         assert_eq!(recorded.len(), 1, "{recorded:?}");
         assert_eq!(recorded[0].4, "auth_unavailable");
+    })
+}
+
+/// Codex: the wait a throttle named is not stored, so a start that resumes a
+/// pair whose last row is `throttled` waits the longest wait a server may
+/// name (60 s) from that row, not the 1 s fallback. The first start ends at
+/// its one-minute deadline right after a 60-second throttle; the next start,
+/// 3 s later, does not retry before the 60 s are up.
+#[test]
+fn a_throttle_wait_survives_a_restart() {
+    hermetic::run(async {
+        let start = UnixMs(tue_start().0 + 60_000);
+        let clock = FakeClock::at(start);
+        let throttled = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let th = throttled.clone();
+        let server = TimedServer::start(clock.clone(), move |s, _| {
+            if s.path == "/v1/quote/financial-consensus-detail"
+                && th.swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                Reply::new(
+                    200,
+                    r#"{"code":429002,"message":"please retry after: 60s"}"#,
+                )
+            } else {
+                Reply::data(r#"{"v":1}"#)
+            }
+        })
+        .await;
+        let knobs = Knobs {
+            attempt_timeout_minutes: 1,
+            ..Knobs::default()
+        };
+        let a = archive(&server.server.url, &knobs, clock.now());
+        assert_eq!(capture(&a, &clock).await.kind, ExitKind::Resumable);
+
+        clock.set(UnixMs(start.0 + 3_000));
+        assert_eq!(capture(&a, &clock).await.kind, ExitKind::Complete);
+        let consensus: Vec<_> = server
+            .arrivals()
+            .into_iter()
+            .filter(|r| r.path == "/v1/quote/financial-consensus-detail")
+            .map(|r| r.at.0 - start.0)
+            .collect();
+        assert_eq!(consensus.len(), 2);
+        assert!(consensus[1] >= 60_000, "{consensus:?}");
+    })
+}
+
+/// Two auth failures answered at the same moment: one gate releases both
+/// 401s. The first latches the stop and its row is recorded; the second is
+/// dropped like any sibling.
+#[test]
+fn of_two_simultaneous_auth_failures_only_the_winner_is_recorded() {
+    hermetic::run(async {
+        let clock = FakeClock::at(UnixMs(tue_start().0 + 60_000));
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let g = gate.clone();
+        let server = TimedServer::start(clock.clone(), move |_, _| {
+            Reply::new(401, "<html>who</html>").gated(&g)
+        })
+        .await;
+        let a = archive(&server.server.url, &Knobs::default(), clock.now());
+        let (outcome, ()) = tokio::join!(capture(&a, &clock), async {
+            while server.arrivals().len() < 2 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            gate.add_permits(2);
+        });
+        assert_eq!(outcome.kind, ExitKind::AuthUnavailable, "{outcome:?}");
+        let recorded = rows(&a).await;
+        assert_eq!(recorded.len(), 1, "{recorded:?}");
+        assert_eq!(recorded[0].4, "auth_unavailable");
+    })
+}
+
+/// The auth row that wins the latch cannot be written (the archive's write
+/// lock is held past the Store's 5 s busy timeout): the start is `FATAL`,
+/// not `AUTH_UNAVAILABLE`.
+#[test]
+fn an_auth_row_that_cannot_be_written_is_fatal() {
+    hermetic::run(async {
+        let clock = FakeClock::at(UnixMs(tue_start().0 + 60_000));
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let g = gate.clone();
+        let server = TimedServer::start(clock.clone(), move |_, _| {
+            Reply::new(401, "<html>who</html>").gated(&g)
+        })
+        .await;
+        let a = archive(&server.server.url, &Knobs::default(), clock.now());
+        let (outcome, ()) = tokio::join!(capture(&a, &clock), async {
+            while server.arrivals().is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            let mut lock = raw(&a.data_dir.join("archive.sqlite3"), false).await;
+            sqlx::query("BEGIN IMMEDIATE")
+                .execute(&mut lock)
+                .await
+                .unwrap();
+            gate.add_permits(2);
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            sqlx::query("ROLLBACK").execute(&mut lock).await.unwrap();
+        });
+        assert_eq!(outcome.kind, ExitKind::Fatal, "{outcome:?}");
+        assert!(rows(&a).await.is_empty());
+        assert_eq!(a.last_exit()["kind"], "fatal");
     })
 }

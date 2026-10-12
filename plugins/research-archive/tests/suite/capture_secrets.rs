@@ -97,10 +97,16 @@ async fn i11_capture_output_exit_state_alert_and_archive_hold_no_secret() {
         "/v1/quote/valuation" if s.load(Ordering::SeqCst) == 0 => {
             Reply::new(401, format!(r#"{{"error":"{ACCOUNT}"}}"#))
         }
-        "/v1/quote/forecast-eps" if th.fetch_add(1, Ordering::SeqCst) < 2 => Reply::new(
-            200,
-            format!(r#"{{"code":429002,"message":"member {ACCOUNT} retry after: 0.1s"}}"#),
-        ),
+        // Throttles only after the auth failure: a resumed start waits 60 s
+        // after a stored throttle.
+        "/v1/quote/forecast-eps"
+            if s.load(Ordering::SeqCst) == 1 && th.fetch_add(1, Ordering::SeqCst) < 2 =>
+        {
+            Reply::new(
+                200,
+                format!(r#"{{"code":429002,"message":"member {ACCOUNT} retry after: 0.1s"}}"#),
+            )
+        }
         "/v1/quote/institution-ratings" => {
             Reply::new(500, format!("<html>{ACCOUNT}</html>")).header("x-trace-id", ACCOUNT)
         }
@@ -191,6 +197,7 @@ async fn notify_dedupes_by_kind_and_passes_only_allowlisted_variables() {
     std::fs::create_dir_all(&p.archive.data_dir).unwrap();
     let data_dir = &p.archive.data_dir;
     let state = |kind: ExitKind, age_ms: i64| LastExit {
+        invocation: None,
         code: kind.code(),
         kind,
         at: SystemClock.now().0 - age_ms,
@@ -300,4 +307,49 @@ async fn notify_alerts_when_capture_refused_its_environment() {
     );
     // The SDK variable does not reach the alert command either.
     assert!(!read(&out.join("env")).contains("LONGBRIDGE_"));
+}
+
+/// Under systemd: `capture` records its `$INVOCATION_ID` in the exit state,
+/// and `notify` trusts that state only when `$MONITOR_INVOCATION_ID` (the
+/// failed start's id, which systemd gives `OnFailure=` units) matches it.
+/// Another start's state is `unknown`, however fresh.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn notify_trusts_only_the_failed_starts_own_state() {
+    const THIS: &str = "0123456789abcdef0123456789abcdef";
+    const OTHER: &str = "fedcba9876543210fedcba9876543210";
+    let server = FakeServer::start(|_| Reply::data("{}")).await;
+    let root = tempfile::tempdir().unwrap();
+    let (script, out) = notify_script(root.path());
+    let p = Proc::new(&server.url, knobs(&script, &out));
+
+    // No token: the start exits 75.
+    let mut command = p.command(&["capture"]);
+    command.env("INVOCATION_ID", THIS);
+    let failed = tokio::task::spawn_blocking(move || command.output().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(code(&failed), 75, "{}", text(&failed.stderr));
+    assert_eq!(p.archive.last_exit()["invocation"], THIS);
+
+    let alert = |monitor: &'static str| {
+        let mut command = p.command(&["notify", "--failed-unit", UNIT]);
+        command
+            .env("PATH", "/usr/bin:/bin")
+            .env("MONITOR_INVOCATION_ID", monitor);
+        async move {
+            tokio::task::spawn_blocking(move || command.output().unwrap())
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(code(&alert(OTHER).await), 0);
+    assert!(read(&out.join("messages")).contains("failed: unknown"));
+    assert_eq!(code(&alert(THIS).await), 0);
+    let messages = read(&out.join("messages"));
+    assert!(
+        messages.contains("failed: auth_unavailable (exit 75)"),
+        "{messages}"
+    );
+    // Neither id reaches the alert command.
+    assert!(!read(&out.join("env")).contains("INVOCATION_ID"));
 }

@@ -22,6 +22,7 @@
 //! SDK's browser flow is an ordinary `AUTH_UNAVAILABLE` return
 //! ([`auth::build_oauth`] stops the flow), not a process exit.
 
+mod latch;
 mod runner;
 mod schedule;
 
@@ -40,7 +41,7 @@ use crate::config::Config;
 use crate::lock::{DataDirLock, LockError};
 use crate::notify;
 use crate::source::{LongbridgeSource, Timeouts};
-use crate::state::{Dangling, ExitKind, LastExit, Outcome};
+use crate::state::{Dangling, ExitKind, Invocation, LastExit, Outcome};
 use crate::store::PlanRequest;
 use crate::types::{AsOf, Source, UnixMs};
 use crate::{Store, StoreError};
@@ -63,8 +64,16 @@ impl Outcome {
 /// One start of the capture job, with the SDK's quote connection as the
 /// calendar source. Returns how it ended; the caller exits with
 /// `outcome.code()`.
-pub async fn run<C: Clock>(config: &Config, clock: Arc<C>) -> Outcome {
-    run_with(config, clock, &QuoteDays).await
+///
+/// `invocation` is the systemd invocation id of this start
+/// (`$INVOCATION_ID`), recorded in `last_exit.json` so the alert can tell
+/// this start's state from an earlier one's.
+pub async fn run<C: Clock>(
+    config: &Config,
+    clock: Arc<C>,
+    invocation: Option<Invocation>,
+) -> Outcome {
+    run_with(config, clock, &QuoteDays, invocation).await
 }
 
 /// [`run`] with the trading days from `days`.
@@ -72,6 +81,7 @@ pub async fn run_with<C: Clock, D: TradingDays>(
     config: &Config,
     clock: Arc<C>,
     days: &D,
+    invocation: Option<Invocation>,
 ) -> Outcome {
     let started = clock.now();
     let lock = match DataDirLock::try_acquire(&config.data_dir) {
@@ -83,7 +93,8 @@ pub async fn run_with<C: Clock, D: TradingDays>(
         Err(err) => {
             // Not held, but notify must not read an older start's state.
             let outcome = fail("taking the data-dir lock", &err);
-            LastExit::from_outcome(&outcome, clock.now()).write(&config.data_dir);
+            LastExit::from_outcome(&outcome, clock.now(), invocation.clone())
+                .write(&config.data_dir);
             return outcome;
         }
     };
@@ -111,7 +122,7 @@ pub async fn run_with<C: Clock, D: TradingDays>(
         as_of = outcome.as_of.map(|d| d.to_string()).unwrap_or_default(),
         "capture finished"
     );
-    LastExit::from_outcome(&outcome, clock.now()).write(&config.data_dir);
+    LastExit::from_outcome(&outcome, clock.now(), invocation.clone()).write(&config.data_dir);
     if matches!(
         outcome.kind,
         ExitKind::Complete | ExitKind::CompleteWithFailures
@@ -195,10 +206,15 @@ impl<C: Clock, D: TradingDays> Start<'_, C, D> {
             .window_at(now, self.config.window_start)
             .map_err(|e| fail("finding the window", &e))?;
         let Some((as_of, window)) = open else {
-            self.mark_missed(&calendar, now).await?;
+            let calendar = self.backfill(calendar).await?;
+            self.mark_missed(&calendar, self.clock.now()).await?;
             tracing::info!("no capture window is open");
             return Ok(Outcome::new(ExitKind::NoWindow));
         };
+        // Inside a window the history waits for the next start without one.
+        if self.history_incomplete(&calendar).await? {
+            self.missed_scan_incomplete = true;
+        }
 
         let request = PlanRequest {
             source: Source::Longbridge,
@@ -285,17 +301,11 @@ impl<C: Clock, D: TradingDays> Start<'_, C, D> {
     }
 
     /// The calendar: the cache, refreshed when it is missing, unreadable or a
-    /// day old, then back-filled when it does not reach back to the first
-    /// run.
-    ///
-    /// - **Today first.** The refresh fetches today's range alone and saves
-    ///   it (merged with the cache when the two touch), so a capture never
-    ///   waits on history. It needs a usable token (else
-    ///   `AUTH_UNAVAILABLE`); any other failure falls back to the cache while
-    ///   it still tells whether a window is open now, else `FATAL`.
-    /// - **Then history.** [`TradingCalendar::backfill_ranges`] are fetched
-    ///   and merged. A failure only warns and sets `missed_scan_incomplete`;
-    ///   every later start retries until it succeeds.
+    /// day old. The refresh fetches today's range alone and saves it (merged
+    /// with the cache when the two touch). It needs a usable token (else
+    /// `AUTH_UNAVAILABLE`); any other failure falls back to the cache while
+    /// it still tells whether a window is open now, else `FATAL`. History is
+    /// [`backfill`](Self::backfill)'s, on a start with no window.
     async fn calendar(&mut self) -> Result<TradingCalendar, Outcome> {
         let data_dir = &self.config.data_dir;
         let cached = match TradingCalendar::load(data_dir) {
@@ -307,7 +317,7 @@ impl<C: Clock, D: TradingDays> Start<'_, C, D> {
         };
         let now = self.clock.now();
         let deadline = self.process_deadline();
-        let mut calendar = match cached {
+        let calendar = match cached {
             Some(cached) if !cached.needs_refresh(now) => cached,
             cached => {
                 let today = [TradingCalendar::refresh_range(now)];
@@ -342,6 +352,21 @@ impl<C: Clock, D: TradingDays> Start<'_, C, D> {
                 }
             }
         };
+        Ok(calendar)
+    }
+
+    /// The history back-fill, only on a start with no window open: the
+    /// missed-day scan is about closed days, and a slow history request must
+    /// never take a capture's time. Fetches [`TradingCalendar::backfill_ranges`]
+    /// and merges them; a failure only warns and sets
+    /// `missed_scan_incomplete`, and the next start without a window retries.
+    async fn backfill(
+        &mut self,
+        mut calendar: TradingCalendar,
+    ) -> Result<TradingCalendar, Outcome> {
+        let data_dir = &self.config.data_dir;
+        let now = self.clock.now();
+        let deadline = self.process_deadline();
         let first_run = self
             .store
             .first_as_of(Source::Longbridge)
@@ -381,6 +406,17 @@ impl<C: Clock, D: TradingDays> Start<'_, C, D> {
             }
         }
         Ok(calendar)
+    }
+
+    /// Whether the calendar still lacks history back to the first run.
+    async fn history_incomplete(&self, calendar: &TradingCalendar) -> Result<bool, Outcome> {
+        let first_run = self
+            .store
+            .first_as_of(Source::Longbridge)
+            .await
+            .map_err(|e| fail("reading the first run", &e))?
+            .map(AsOf::date);
+        Ok(!calendar.backfill_ranges(first_run).is_empty())
     }
 
     /// Mark every trading day after the first run whose window has closed

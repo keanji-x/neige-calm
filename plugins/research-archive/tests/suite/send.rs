@@ -33,5 +33,6 @@ async fn store_futures_are_send() {
     assert_send(s.coverage(RunId(1)));
     assert_send(s.attempts(RunId(1), &k, e));
     assert_send(s.first_as_of(Source::Longbridge));
+    assert_send(s.frozen_at(RunId(1)));
     assert_send(s.dominant_failure(RunId(1), &research_archive::capture::COUNTED));
 }

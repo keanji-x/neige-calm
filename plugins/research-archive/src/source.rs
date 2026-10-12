@@ -100,8 +100,10 @@ impl RateLimiter {
 /// The wait after a throttle when the server names none.
 pub const RETRY_AFTER_FALLBACK: Duration = Duration::from_secs(1);
 
-/// The longest server-named wait; a longer one is clamped to it.
-const RETRY_AFTER_MAX: Duration = Duration::from_secs(60);
+/// The longest server-named wait; a longer one is clamped to it. Also the
+/// wait a resumed start gives a pair whose last row is `throttled`: the
+/// named wait is not stored.
+pub const RETRY_AFTER_MAX: Duration = Duration::from_secs(60);
 
 /// The bounds of one `fetch` (see [`LongbridgeSource::fetch`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

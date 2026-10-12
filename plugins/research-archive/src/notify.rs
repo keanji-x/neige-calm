@@ -9,7 +9,10 @@
 //! succeeded.
 //!
 //! The exit state counts for this failure only when it is non-zero and was
-//! written within [`STATE_FRESH_MS`]. A capture that wrote none (one that
+//! written by the failed start itself ([`is_this_failure`]): under systemd,
+//! when its invocation id equals the `$MONITOR_INVOCATION_ID` systemd (251
+//! and later) gives the `OnFailure=` unit; otherwise when it was written
+//! within [`STATE_FRESH_MS`]. A capture that wrote none (one that
 //! refused its environment, or was killed by the unit's timeout) is
 //! reported as `unknown`. A capture whose run completes clears what was
 //! last sent ([`clear_sent`]), so a failure after a recovery always alerts.
@@ -35,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::Config;
 use crate::exit;
 use crate::files;
-use crate::state::LastExit;
+use crate::state::{Invocation, LastExit};
 use crate::types::UnixMs;
 
 /// A notification of the same kind is repeated after six hours.
@@ -104,9 +107,27 @@ pub fn valid_unit(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'@' | b'.' | b'_' | b':' | b'-'))
 }
 
+/// Whether `last` is the failed start's own exit state. Under systemd the
+/// alert unit gets the failed start's invocation id (`monitor`, from
+/// `$MONITOR_INVOCATION_ID`): the state counts only when it carries the
+/// same id. Without one (a manual run), the state counts when it is at most
+/// [`STATE_FRESH_MS`] old. Either way it must be non-zero.
+pub fn is_this_failure(last: &LastExit, monitor: Option<&Invocation>, now: UnixMs) -> bool {
+    let matches = match monitor {
+        Some(id) => last.invocation.as_ref() == Some(id),
+        None => (0..=STATE_FRESH_MS).contains(&(now.0 - last.at)),
+    };
+    last.code != 0 && matches
+}
+
 /// The failure kind and message for `unit` at `now`.
-pub fn message(unit: &str, last: Option<&LastExit>, now: UnixMs) -> (String, String) {
-    let fresh = last.filter(|l| l.code != 0 && (0..=STATE_FRESH_MS).contains(&(now.0 - l.at)));
+pub fn message(
+    unit: &str,
+    last: Option<&LastExit>,
+    monitor: Option<&Invocation>,
+    now: UnixMs,
+) -> (String, String) {
+    let fresh = last.filter(|l| is_this_failure(l, monitor, now));
     match fresh {
         Some(l) => {
             let at = chrono::DateTime::from_timestamp_millis(l.at)
@@ -153,13 +174,13 @@ pub fn due(kind: &str, last: Option<&NotifyState>, now: UnixMs) -> bool {
 }
 
 /// The notify command. Returns the exit code.
-pub fn run(config: &Config, unit: &str, now: UnixMs) -> i32 {
+pub fn run(config: &Config, unit: &str, monitor: Option<&Invocation>, now: UnixMs) -> i32 {
     if !valid_unit(unit) {
         tracing::error!("--failed-unit must be a systemd unit name");
         return exit::FATAL;
     }
     let last = LastExit::read(&config.data_dir);
-    let (kind, text) = message(unit, last.as_ref(), now);
+    let (kind, text) = message(unit, last.as_ref(), monitor, now);
     if !due(&kind, NotifyState::read(&config.data_dir).as_ref(), now) {
         tracing::info!(%kind, "already notified for this failure kind; not repeated");
         return exit::OK;
@@ -220,6 +241,7 @@ mod tests {
 
     fn exit_state(code: i32, kind: ExitKind, at: i64) -> LastExit {
         LastExit {
+            invocation: None,
             code,
             kind,
             at,
@@ -234,7 +256,7 @@ mod tests {
     fn only_a_fresh_failing_state_names_the_kind() {
         let now = UnixMs(100 * 60_000);
         let auth = exit_state(75, ExitKind::AuthUnavailable, now.0 - 1_000);
-        let (kind, text) = message("u.service", Some(&auth), now);
+        let (kind, text) = message("u.service", Some(&auth), None, now);
         assert_eq!(kind, "auth_unavailable");
         assert!(
             text.contains("u.service failed: auth_unavailable (exit 75)"),
@@ -244,7 +266,7 @@ mod tests {
         let stale = exit_state(75, ExitKind::AuthUnavailable, now.0 - STATE_FRESH_MS - 1);
         let ok = exit_state(0, ExitKind::Complete, now.0);
         for last in [None, Some(&stale), Some(&ok)] {
-            assert_eq!(message("u.service", last, now).0, "unknown");
+            assert_eq!(message("u.service", last, None, now).0, "unknown");
         }
     }
 
@@ -271,5 +293,31 @@ mod tests {
         for bad in ["", "a b", "a;b", "a\nb", "a/b"] {
             assert!(!valid_unit(bad), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn under_systemd_only_the_failed_starts_own_state_counts() {
+        let now = UnixMs(100 * 60_000);
+        let this = Invocation::parse("0123456789abcdef0123456789abcdef").unwrap();
+        let other = Invocation::parse("fedcba9876543210fedcba9876543210").unwrap();
+        let mut state = exit_state(75, ExitKind::AuthUnavailable, now.0 - 1_000);
+        // Fresh, but written by another start: not this failure.
+        state.invocation = Some(other);
+        assert!(!is_this_failure(&state, Some(&this), now));
+        assert!(!is_this_failure(
+            &exit_state(75, ExitKind::AuthUnavailable, now.0),
+            Some(&this),
+            now
+        ));
+        // The same start, however old.
+        state.invocation = Some(this.clone());
+        state.at = 0;
+        assert!(is_this_failure(&state, Some(&this), now));
+        // A manual run: the freshness rule.
+        assert!(!is_this_failure(&state, None, now));
+        state.at = now.0 - 1_000;
+        assert!(is_this_failure(&state, None, now));
+        state.code = 0;
+        assert!(!is_this_failure(&state, Some(&this), now));
     }
 }

@@ -36,7 +36,7 @@ pub struct Reply {
     pub headers: Vec<(&'static str, String)>,
     pub body: String,
     pub delay: Option<Duration>,
-    pub gate: Option<Arc<tokio::sync::Notify>>,
+    pub gate: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 impl Reply {
@@ -50,9 +50,10 @@ impl Reply {
         }
     }
 
-    /// Reply only once `gate` is notified (a permit counts: a gate opened
-    /// before the request arrives lets it through at once).
-    pub fn gated(mut self, gate: &Arc<tokio::sync::Notify>) -> Self {
+    /// Reply only once `gate` has a permit for this request: the test opens
+    /// it with `add_permits`, and permits added before the request waits
+    /// still count.
+    pub fn gated(mut self, gate: &Arc<tokio::sync::Semaphore>) -> Self {
         self.gate = Some(Arc::clone(gate));
         self
     }
@@ -98,7 +99,7 @@ impl FakeServer {
                 let reply = respond(&request);
                 log.lock().unwrap().push(request);
                 if let Some(gate) = &reply.gate {
-                    gate.notified().await;
+                    gate.acquire().await.unwrap().forget();
                 }
                 if let Some(delay) = reply.delay {
                     tokio::time::sleep(delay).await;

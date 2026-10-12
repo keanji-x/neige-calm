@@ -185,6 +185,16 @@ impl Store {
             .collect()
     }
 
+    /// When the run's membership was frozen, or `None` while it is not.
+    pub async fn frozen_at(&self, run_id: RunId) -> Result<Option<UnixMs>> {
+        let at: Option<i64> =
+            sqlx::query_scalar("SELECT MIN(frozen_at) FROM run_membership WHERE run_id = ?")
+                .bind(run_id.0)
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(at.map(UnixMs))
+    }
+
     /// The earliest `as_of` of any run of `source`, or `None` before the
     /// first run. Gap days are marked `missed` only from there on.
     pub async fn first_as_of(&self, source: Source) -> Result<Option<AsOf>> {

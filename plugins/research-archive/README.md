@@ -515,12 +515,15 @@ up to 1 MiB (more than a century of days).
   refresh that finds no usable token exits `AUTH_UNAVAILABLE`; any other
   failure falls back to the old cache with a warning while that cache still
   tells whether a window is open now, and is `FATAL` otherwise.
-- **Then history.** When the calendar does not reach back to the first
-  run's `as_of` (the job was offline), the missing days are fetched in ranges
-  of at most 31 days and merged, so every closed trading day of an outage can
-  be marked `missed`. A failed back-fill never blocks the capture: it warns,
-  records `missed_scan_incomplete` in `last_exit.json`, and every later start
-  retries it, whatever the cache's age.
+- **Then history, only when no window is open.** When the calendar does not
+  reach back to the first run's `as_of` (the job was offline), the missing
+  days are fetched in ranges of at most 31 days and merged, so every closed
+  trading day of an outage can be marked `missed`. Missed days are closed
+  days, so this runs only on a start that finds no window open: a start
+  inside a window never spends its time on history. A failed back-fill only
+  warns. As long as the history is incomplete, `last_exit.json` says
+  `missed_scan_incomplete`, and every start without a window retries it,
+  whatever the cache's age.
 - **Half days.** The SDK returns trading days and half days as two lists and
   does not say whether they overlap, so the calendar's trading days are their
   union. A half day has a window like any trading day.
@@ -559,7 +562,14 @@ different rules.
 - **Membership, before the freeze.** Each unfrozen index's constituents is
   retried every 2 minutes (`MEMBERSHIP_RETRY`), a `throttled` one after its
   `retry_after`. The cap does not apply. No retry is scheduled past the
-  carry deadline; the last starts 15 s before it.
+  carry deadline: within a start that spans the carry deadline, the last
+  starts 15 s before it.
+  At the shipped cadence (a start every 30 minutes, each at most 25
+  minutes, a carry deadline 60 minutes after the window start, with the
+  window starting on the hour or half hour), the second start ends 55
+  minutes in and the third begins after the carry deadline and freezes at
+  once: the last constituents attempt is at about +54 minutes, and none is
+  made in the 5 to 6 minutes before the carry deadline.
 - **Coverage, after the freeze** (every planned pair, constituents
   included): a `transient`, `permanent` or `region_restricted` failure counts toward
   `attempt_cap` and waits 1, 4, 16, then 64 minutes (64 minutes from then
@@ -568,8 +578,13 @@ different rules.
   about two and a half hours.
 - A `throttled` failure waits its `retry_after` and never counts; neither
   does an auth pause.
+- After the freeze, only the constituents pair's rows at or after the
+  freeze count toward its cap; its failures before were the membership
+  rule's, so a recovered upstream is still retried.
 - The wait survives the end of a start: the next start derives each pair's
-  next time from its last stored attempt.
+  next time from its last stored attempt. The wait a throttle named is not
+  stored, so a pair whose last row is `throttled` waits the longest wait a
+  server may name, 60 s, from that row.
 
 **Phases.**
 
@@ -608,14 +623,19 @@ writes under that turn. So `fetched_at` is the wall time the response was
 **recorded**, and a run's clock never goes back, however the in-flight
 requests finish (#2577).
 
-**The first stop latches.** When an attempt stops the run (a request found
-no usable token, the window closed, or a write failed), every other attempt
-in flight (its token resolution, rate-limit wait or request) is dropped at
-once, and nothing more is dispatched. An auth failure latches *before* its
-own row is written, so a slow write cannot let the attempts queued on the
-token or the rate-limit slot go on; the auth row is still recorded, and any
-other row already waiting for the recorder is dropped. An auth failure
-therefore never triggers one more token refresh per request.
+**The first stop latches** (`src/capture/latch.rs`). When an attempt stops
+the run (a request found no usable token, the window closed, or a write
+failed), every other attempt in flight (its token resolution, rate-limit
+wait or request) is dropped at once, the stop winning even when the
+attempt's result is ready in the same poll; no request starts after the
+latch (the request-start check asks the latch too); and nothing more is
+dispatched. An auth failure latches *before* its own row is written, so a
+slow write cannot let the attempts queued on the token or the rate-limit
+slot go on. Only the attempt that latched records its auth row; a second
+auth failure, and any other row already waiting for the recorder, is
+dropped. If that auth row cannot be written, the start is `FATAL`, not
+`AUTH_UNAVAILABLE`. An auth failure therefore never triggers one more token
+refresh per request.
 
 **The browser flow.** A token that the SDK could use only through the
 browser login (none stored, or an expiring one whose refresh fails) stops
@@ -651,8 +671,9 @@ limiter is therefore four requests in flight × 6 = 24 requests within about
 | anything else | 70 (`FATAL`) | `fatal` | left open |
 
 **`last_exit.json`** is written atomically before the lock is released:
-`{code, kind, at, as_of?, failure?, closed_dangling?,
-missed_scan_incomplete?}`. A start whose lock fails with an I/O error (not a
+`{invocation?, code, kind, at, as_of?, failure?, closed_dangling?,
+missed_scan_incomplete?}`. `invocation` is the start's systemd
+`$INVOCATION_ID`, when it runs under systemd. A start whose lock fails with an I/O error (not a
 held lock) writes `fatal`, so the alert never reads an older start's state.
 
 - `failure` is the run's most frequent counted failure as
@@ -690,10 +711,15 @@ capture unit's `OnFailure=` runs.
   invalid config it cannot alert at all: it logs the error and exits
   `FATAL`, and the failure is visible only in the journal
   (`systemctl --user status`).
-- **The kind.** It reads `last_exit.json`; a state that is non-zero and at
-  most 15 minutes old names the failure kind. Anything else is `unknown`: a
-  capture that refused its environment, failed before it took the lock, or
-  was killed by `TimeoutStartSec=` wrote no state.
+- **The kind.** It reads `last_exit.json` and trusts it only when it is the
+  failed start's own, non-zero state. Under systemd (251 or later; this host
+  runs 252) the `OnFailure=` unit gets the failed start's id as
+  `$MONITOR_INVOCATION_ID`, and the state counts only when its `invocation`
+  matches. Without that variable (a manual run), a state at most 15 minutes
+  old counts. Anything else is `unknown`: a capture that refused its
+  environment, failed before it took the lock, or was killed by
+  `TimeoutStartSec=` wrote no state of its own. Neither id is passed to the
+  notify command, and the unit templates need no change for them.
 
 It runs `notify_command` with one more argument, the message, for example:
 
@@ -790,10 +816,11 @@ Two integration binaries:
 | `net::secrets` | I11 for the binary's output, our logs, the archive file, `Debug`, and a login callback carrying a canary |
 | `net::dotenv`, `net::scan` | a `.env` in reach is refused and cannot override the pins; no SDK client is built outside the harness |
 | `net::runner` | on a fake clock, under the harness: I1, I7, freeze before fetch, resumption, the carry deadline, missed and dangling days, the serialized recorder, a hanging request, the `degraded` threshold, the first auth failure stopping every worker |
-| `net::calendar` | the calendar refresh's error mapping, the back-fill of a 40-day outage (every closed day `missed`), a failed back-fill that only warns and is retried, the fallback to a cache that still covers now |
-| `net::schedule` | the retry schedule through an outage; membership scenarios A (a blip is retried and `observed`), B (retried every 2 minutes, then a freeze at the carry deadline, across starts or within one) and C (a start to the window end waits for the carry deadline, never `partial`); constituents outages of 22, 25, 40 and 55 minutes `observed`; a late start freezing from stored rows; a resume after the carry deadline not held up by a hanging constituents attempt; the auth latch before a slow auth row; no request starts after the window end however late its rate-limit slot |
+| `net::calendar` | the calendar refresh's error mapping, the back-fill of a 40-day outage (every closed day `missed`), a failed back-fill that only warns and is retried, no back-fill inside a window (a hanging history request does not touch the capture), the fallback to a cache that still covers now |
+| `net::schedule` | the retry schedule through an outage; membership scenarios A (a blip is retried and `observed`), B (retried every 2 minutes, then a freeze at the carry deadline, across starts or within one) and C (a start to the window end waits for the carry deadline, never `partial`); constituents outages of 22, 25, 40 and 55 minutes `observed`; a late start freezing from stored rows; a resume after the carry deadline not held up by a hanging constituents attempt; the auth latch before a slow auth row; of two simultaneous auth failures only the winner recorded; an unwritable auth row `FATAL`; a throttle wait surviving a restart; no request starts after the window end however late its rate-limit slot |
+| `net::membership` | constituents outages at the shipped cadence (25-minute starts every 30 minutes); the freeze not waiting for a retry in flight at the carry deadline; only post-freeze failures counting toward the constituents cap |
 | `net::interrupt` | I4 and I12 in process: a capture interrupted during membership leaves a whole plan and no freeze; the rerun completes with the planned keys and index set |
 | `net::exit_state` | dangling runs on record (all of them) through a later failure; a dangling-only `partial` with its failure; a lock I/O error on record; a completed run clearing the alert dedupe |
 | `capture_cli` | `capture` as a subprocess: a kill during the fetch (I4), I9, a hanging token refresh, I10, the calendar refresh. The membership phase cannot be reached in real time at every hour, so its kill and I12 run in `net::interrupt` |
-| `capture_secrets` | I11 for `capture` and `notify`; the alert's dedupe and environment; `notify` alerting when `capture` refused its environment |
+| `capture_secrets` | I11 for `capture` and `notify`; the alert's dedupe and environment; `notify` alerting when `capture` refused its environment; `notify` trusting only the failed start's own state (`$INVOCATION_ID` / `$MONITOR_INVOCATION_ID`) |
 | `units` | the systemd templates' directives and placeholders |

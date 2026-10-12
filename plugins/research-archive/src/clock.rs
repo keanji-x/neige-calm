@@ -75,7 +75,11 @@ pub async fn within<C: Clock, F: Future>(clock: &C, deadline: UnixMs, fut: F) ->
 /// fires; otherwise it is the clock's own [`Clock::sleep_until`]. With
 /// [`SystemClock`] both are the same wait. A test clock moves on its own
 /// only while nothing is in flight, so time never jumps under an attempt.
+/// A time already past returns at once.
 pub async fn wait_until<C: Clock>(clock: &C, at: UnixMs, busy: bool) {
+    if at <= clock.now() {
+        return;
+    }
     if busy {
         let left = u64::try_from(at.0.saturating_sub(clock.now().0)).unwrap_or(0);
         tokio::time::sleep(Duration::from_millis(left)).await;

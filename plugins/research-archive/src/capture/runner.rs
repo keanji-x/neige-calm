@@ -20,10 +20,11 @@
 //! has an `ok` or is at its cap. With work left, it ends `partial` once the
 //! window closes, and otherwise stays open for the next start.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use super::fail;
-use super::schedule::{COUNTED, Pool, Rule, Span, Stop, survey, work_off};
+use super::latch::{Latch, Stop};
+use super::schedule::{COUNTED, Pool, Rule, Span, survey, work_off};
 use crate::catalog::EndpointId;
 use crate::clock::Clock;
 use crate::source::LongbridgeSource;
@@ -137,7 +138,7 @@ async fn phases<C: Clock>(ctx: &RunCtx<C>) -> Result<Outcome, Outcome> {
     let run = ctx.plan.run_id;
     let store_err = |what: &str, err: StoreError| fail(what, &err).on(as_of);
     let pool = Arc::new(Pool {
-        halted: tokio::sync::watch::Sender::new(false),
+        latch: Arc::new(Latch::new()),
         clock: Arc::clone(&ctx.clock),
         source: Arc::clone(&ctx.source),
         recorder: Recorder {
@@ -148,7 +149,6 @@ async fn phases<C: Clock>(ctx: &RunCtx<C>) -> Result<Outcome, Outcome> {
             turn: tokio::sync::Mutex::new(()),
         },
         catalog: ctx.store.catalog().clone(),
-        stop: Mutex::new(None),
     });
     let span = Span {
         deadline: ctx.deadline,
@@ -185,11 +185,17 @@ async fn finish<C: Clock>(
 ) -> Result<Outcome, Outcome> {
     let as_of = ctx.plan.as_of;
     let window = ctx.plan.window;
+    let frozen_at = ctx
+        .store
+        .frozen_at(ctx.plan.run_id)
+        .await
+        .map_err(|e| fail("survey", &e).on(as_of))?;
     let survey = survey(
         &ctx.store,
         ctx.plan.run_id,
         Rule::Coverage {
             cap: ctx.attempt_cap,
+            since: frozen_at.map(|at| (ctx.store.catalog().membership(), at)),
         },
         ctx.clock.now(),
         |_| true,

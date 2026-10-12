@@ -30,6 +30,13 @@
 //!
 //! **Across starts.** `next_at` is not stored: [`survey`] derives it from
 //! the pair's last stored attempt, so the next start resumes the schedule.
+//! The wait a throttle named is not stored either, so a pair whose last row
+//! is `throttled` waits the longest wait a server may name
+//! ([`RETRY_AFTER_MAX`], 60 s) from that row.
+//!
+//! **The cap after the freeze.** A constituents pair's failures before the
+//! freeze were the membership rule's; only its rows after the freeze count
+//! toward the coverage cap.
 //!
 //! **Requests in flight.** The source's limiter paces request starts at
 //! `rps`. The SDK retries a bare HTTP 429 up to five times inside one
@@ -44,24 +51,23 @@
 //! ([`LongbridgeSource::fetch_if`]). A token resolution or request still in
 //! flight at the deadline is dropped there ([`clock::within`]).
 //!
-//! **The first stop latches.** An attempt that finds no usable token stops
-//! the run *before* it records that row. Every other attempt in flight (its
-//! token resolution, rate-limit wait or request) is dropped at once, nothing
-//! more is dispatched, and a sibling's row still waiting for the recorder is
-//! dropped too: after the latch the recorder writes only the auth row.
+//! **The first stop latches** ([`super::latch`]). An attempt that finds no
+//! usable token stops the run *before* it records that row. Every other
+//! attempt in flight (its token resolution, rate-limit wait or request) is
+//! dropped at once, stop first even when its result is ready in the same
+//! poll; no request starts after the latch; nothing more is dispatched; and a
+//! sibling's row still waiting for the recorder is dropped too. After the
+//! latch the recorder writes only the winner's auth row.
 
-use std::{
-    collections::HashSet,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use tokio::task::JoinSet;
 
+use super::latch::{Latch, Stop};
 use super::runner::{Observed, Recorder};
 use crate::catalog::EndpointId;
 use crate::clock::{self, Clock};
-use crate::source::{LongbridgeSource, RETRY_AFTER_FALLBACK};
+use crate::source::{LongbridgeSource, RETRY_AFTER_FALLBACK, RETRY_AFTER_MAX};
 use crate::store::PairCoverage;
 use crate::types::{FailureClass, Key, Response, RunId, Status, UnixMs};
 use crate::{Store, StoreError};
@@ -124,8 +130,15 @@ pub(super) enum Rule {
     /// Constituents before the freeze: no cap, retried every
     /// [`MEMBERSHIP_RETRY`] up to the carry deadline.
     Membership { carry: UnixMs },
-    /// Every pair after the freeze: the cap and [`backoff`].
-    Coverage { cap: u32 },
+    /// Every pair after the freeze: the cap and [`backoff`]. For the
+    /// membership endpoint only rows at or after the freeze (`since`) count
+    /// toward the cap: its failures before the freeze were the membership
+    /// rule's, so a recovered upstream is still retried. A row stamped in
+    /// the freeze's own millisecond counts, the conservative side.
+    Coverage {
+        cap: u32,
+        since: Option<(EndpointId, UnixMs)>,
+    },
 }
 
 /// Where a run's selected pairs stand.
@@ -175,26 +188,39 @@ pub(super) async fn survey(
         } else {
             store.attempts(run, &pair.key, pair.endpoint).await?
         };
-        let counted = u32::try_from(rows.iter().filter(|r| counts_toward_cap(r.2)).count())
-            .expect("attempt counts stay far below u32::MAX");
+        let after_freeze = |at: UnixMs| match rule {
+            Rule::Coverage {
+                since: Some((endpoint, frozen_at)),
+                ..
+            } if endpoint == pair.endpoint => at >= frozen_at,
+            _ => true,
+        };
+        let counted = u32::try_from(
+            rows.iter()
+                .filter(|r| counts_toward_cap(r.2) && after_freeze(r.1))
+                .count(),
+        )
+        .expect("attempt counts stay far below u32::MAX");
         let throttled = |status: &Status| *status == Status::Failed(FailureClass::Throttled);
         let next_at = match (rule, rows.last()) {
-            (Rule::Coverage { cap }, _) if counted >= cap => {
+            (Rule::Coverage { cap, .. }, _) if counted >= cap => {
                 survey.capped += 1;
                 continue;
             }
             (_, None) => now,
             (Rule::Membership { carry }, Some((_, at, status))) => {
-                let retry_after = throttled(status).then_some(RETRY_AFTER_FALLBACK);
+                // The wait the server named is not stored: assume the
+                // longest one it may name.
+                let retry_after = throttled(status).then_some(RETRY_AFTER_MAX);
                 membership_next(*at, retry_after, carry)
                     .unwrap_or(carry)
                     .max(now)
             }
             (Rule::Coverage { .. }, Some((_, at, status))) => {
                 if counts_toward_cap(*status) {
-                    clock::after(*at, backoff(counted))
+                    clock::after(*at, backoff(counted.max(1)))
                 } else if throttled(status) {
-                    clock::after(*at, RETRY_AFTER_FALLBACK)
+                    clock::after(*at, RETRY_AFTER_MAX)
                 } else {
                     now
                 }
@@ -210,54 +236,13 @@ pub(super) async fn survey(
     Ok(survey)
 }
 
-/// Why an attempt stopped the whole run.
-#[derive(Clone, Debug)]
-pub(super) enum Stop {
-    /// A request found no usable credentials.
-    Auth,
-    /// A response came after the window closed.
-    WindowClosed,
-    /// A Store write failed.
-    Fatal(String),
-}
-
 /// What every attempt shares.
 pub(super) struct Pool<C: Clock> {
-    /// Flips to `true` on the first [`Pool::halt`]; attempts in flight race
-    /// it ([`Pool::unless_stopped`]).
-    pub halted: tokio::sync::watch::Sender<bool>,
+    pub latch: Arc<Latch>,
     pub clock: Arc<C>,
     pub source: Arc<LongbridgeSource>,
     pub recorder: Recorder<C>,
     pub catalog: crate::Catalog,
-    pub stop: Mutex<Option<Stop>>,
-}
-
-impl<C: Clock> Pool<C> {
-    fn halt(&self, stop: Stop) {
-        self.stop
-            .lock()
-            .expect("the stop lock is never poisoned")
-            .get_or_insert(stop);
-        self.halted.send_replace(true);
-    }
-
-    /// `fut`'s output, or `None` when the run is stopped first, in which
-    /// case `fut` is dropped.
-    async fn unless_stopped<F: std::future::Future>(&self, fut: F) -> Option<F::Output> {
-        let mut halted = self.halted.subscribe();
-        tokio::select! {
-            output = fut => Some(output),
-            _ = halted.wait_for(|halted| *halted) => None,
-        }
-    }
-
-    pub fn stopped(&self) -> Option<Stop> {
-        self.stop
-            .lock()
-            .expect("the stop lock is never poisoned")
-            .clone()
-    }
 }
 
 /// What one attempt recorded: its status, and the wait a throttle names.
@@ -275,13 +260,10 @@ async fn attempt<C: Clock>(pool: Arc<Pool<C>>, work: Work, deadline: UnixMs) -> 
         .catalog
         .get(work.endpoint.as_str())
         .expect("a coverage endpoint is a catalog endpoint");
-    let may_send = {
-        let clock = Arc::clone(&pool.clock);
-        move || clock.now() < deadline
-    };
+    let may_send = pool.latch.send_check(Arc::clone(&pool.clock), deadline);
     let fetch = pool.source.fetch_if(&endpoint, &work.key, may_send);
     let bounded = clock::within(&*pool.clock, deadline, fetch);
-    let Some(Some(Some(fetched))) = pool.unless_stopped(bounded).await else {
+    let Some(Some(Some(fetched))) = pool.latch.unless_stopped(bounded).await else {
         return None;
     };
     let auth = matches!(
@@ -291,12 +273,14 @@ async fn attempt<C: Clock>(pool: Arc<Pool<C>>, work: Work, deadline: UnixMs) -> 
             ..
         }
     );
-    if auth {
-        // Latch before the row is written: a slow write must not let the
-        // siblings queued on the token or the rate-limit slot go on.
-        pool.halt(Stop::Auth);
+    // Latch before the row is written: a slow write must not let the
+    // siblings queued on the token or the rate-limit slot go on. Only the
+    // winner of the latch records its auth row.
+    let won = auth && pool.latch.halt(Stop::Auth);
+    if auth && !won {
+        return None;
     }
-    let honour_stop = || !auth && pool.stopped().is_some();
+    let honour_stop = || !won && pool.latch.stopped().is_some();
     let recorded = match pool
         .recorder
         .observe(&work.key, work.endpoint, fetched.response(), honour_stop)
@@ -305,11 +289,11 @@ async fn attempt<C: Clock>(pool: Arc<Pool<C>>, work: Work, deadline: UnixMs) -> 
         Ok(Observed::Recorded(recorded)) => recorded,
         Ok(Observed::Stopped) => return None,
         Ok(Observed::WindowClosed) => {
-            pool.halt(Stop::WindowClosed);
+            pool.latch.halt(Stop::WindowClosed);
             return None;
         }
         Err(err) => {
-            pool.halt(Stop::Fatal(err.to_string()));
+            pool.latch.halt(Stop::Fatal(err.to_string()));
             return None;
         }
     };
@@ -345,12 +329,16 @@ pub(super) async fn work_off<C: Clock>(
 ) -> Result<Worked, StoreError> {
     let membership = pool.catalog.membership();
     let carry = span.carry_deadline;
-    let coverage = Rule::Coverage { cap: span.cap };
+    let mut frozen_at = store.frozen_at(run).await?;
+    let coverage = |frozen_at: Option<UnixMs>| Rule::Coverage {
+        cap: span.cap,
+        since: frozen_at.map(|at| (membership, at)),
+    };
     let mut pending = Vec::new();
     // Indexes without an `ok` constituents row yet.
     let mut unsettled: HashSet<Key> = HashSet::new();
     if frozen {
-        pending = survey(store, run, coverage, pool.clock.now(), |_| true)
+        pending = survey(store, run, coverage(frozen_at), pool.clock.now(), |_| true)
             .await?
             .pending;
     } else if pool.clock.now() < carry {
@@ -367,9 +355,11 @@ pub(super) async fn work_off<C: Clock>(
     }
     let mut in_flight = JoinSet::new();
     let mut flying: HashSet<(Key, EndpointId)> = HashSet::new();
-    let mut halted = pool.halted.subscribe();
+    // Constituents attempts in flight at the freeze: their count toward the
+    // cap restarts when they return.
+    let mut recount: HashSet<(Key, EndpointId)> = HashSet::new();
     loop {
-        if pool.stopped().is_some() {
+        if pool.latch.stopped().is_some() {
             break;
         }
         let now = pool.clock.now();
@@ -377,11 +367,17 @@ pub(super) async fn work_off<C: Clock>(
             // Freeze from the stored rows; attempts in flight are not waited
             // for and continue as coverage work.
             if !pool.recorder.freeze().await? {
-                pool.halt(Stop::WindowClosed);
+                pool.latch.halt(Stop::WindowClosed);
                 break;
             }
             frozen = true;
-            pending = survey(store, run, coverage, now, |_| true)
+            frozen_at = Some(now);
+            recount = flying
+                .iter()
+                .filter(|(_, endpoint)| *endpoint == membership)
+                .cloned()
+                .collect();
+            pending = survey(store, run, coverage(frozen_at), now, |_| true)
                 .await?
                 .pending
                 .into_iter()
@@ -406,7 +402,7 @@ pub(super) async fn work_off<C: Clock>(
             flying.insert(work.id());
             in_flight.spawn(attempt(Arc::clone(pool), work, span.deadline));
         }
-        let freeze_at = (!frozen && carry < span.deadline).then_some(carry);
+        let freeze_at = (!frozen && now < carry && carry < span.deadline).then_some(carry);
         let next_pair = (in_flight.len() < MAX_IN_FLIGHT)
             .then(|| pending.iter().map(|w| w.next_at).min())
             .flatten();
@@ -417,7 +413,7 @@ pub(super) async fn work_off<C: Clock>(
         }
         tokio::select! {
             biased;
-            _ = halted.wait_for(|halted| *halted) => {}
+            () = pool.latch.wait() => {}
             Some(joined) = in_flight.join_next(), if !in_flight.is_empty() => {
                 let attempted = match joined {
                     Ok(attempted) => attempted,
@@ -427,6 +423,9 @@ pub(super) async fn work_off<C: Clock>(
                     continue;
                 };
                 flying.remove(&work.id());
+                if recount.remove(&work.id()) {
+                    work.counted = 0;
+                }
                 let now = pool.clock.now();
                 if counts_toward_cap(status) {
                     work.counted += 1;
@@ -462,7 +461,7 @@ pub(super) async fn work_off<C: Clock>(
     }
     Ok(Worked {
         frozen,
-        stop: pool.stopped(),
+        stop: pool.latch.stopped(),
     })
 }
 

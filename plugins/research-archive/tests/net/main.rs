@@ -24,6 +24,7 @@ mod hermetic;
 mod interrupt;
 mod login;
 mod logs;
+mod membership;
 mod refresh;
 mod runner;
 mod scan;

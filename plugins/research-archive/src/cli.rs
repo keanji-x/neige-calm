@@ -33,6 +33,7 @@ use crate::files;
 use crate::lock::{DataDirLock, LockError};
 use crate::logging;
 use crate::notify;
+use crate::state::Invocation;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -123,7 +124,12 @@ pub fn run() -> i32 {
     } = &command
     {
         return match Config::load(config) {
-            Ok(config) => notify::run(&config, failed_unit, SystemClock.now()),
+            Ok(config) => notify::run(
+                &config,
+                failed_unit,
+                Invocation::from_env("MONITOR_INVOCATION_ID").as_ref(),
+                SystemClock.now(),
+            ),
             Err(err) => {
                 tracing::error!("{err}");
                 exit::FATAL
@@ -176,7 +182,11 @@ fn runtime() -> Result<tokio::runtime::Runtime, i32> {
 fn capture(config: &Config) -> i32 {
     match runtime() {
         Ok(runtime) => runtime
-            .block_on(capture::run(config, Arc::new(SystemClock)))
+            .block_on(capture::run(
+                config,
+                Arc::new(SystemClock),
+                Invocation::from_env("INVOCATION_ID"),
+            ))
             .code(),
         Err(code) => code,
     }

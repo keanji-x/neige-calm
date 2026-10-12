@@ -75,6 +75,45 @@ impl ExitKind {
     }
 }
 
+/// A systemd invocation id (`$INVOCATION_ID`, `$MONITOR_INVOCATION_ID`): 32
+/// lowercase hex digits.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Invocation(String);
+
+impl Invocation {
+    /// `value` when it is an invocation id, else `None`.
+    pub fn parse(value: &str) -> Option<Invocation> {
+        (value.len() == 32
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        .then(|| Invocation(value.to_owned()))
+    }
+
+    /// The id in the variable `name`, if it is set and valid.
+    pub fn from_env(name: &str) -> Option<Invocation> {
+        std::env::var(name)
+            .ok()
+            .as_deref()
+            .and_then(Invocation::parse)
+    }
+}
+
+impl TryFrom<String> for Invocation {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Invocation::parse(&value).ok_or_else(|| "not a systemd invocation id".to_owned())
+    }
+}
+
+impl From<Invocation> for String {
+    fn from(value: Invocation) -> String {
+        value.0
+    }
+}
+
 /// A dangling run this start ended `partial`: its day and its most frequent
 /// counted failure.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -126,6 +165,10 @@ impl Outcome {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LastExit {
+    /// The systemd invocation id of the start that wrote it, when it ran
+    /// under systemd.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invocation: Option<Invocation>,
     pub code: i32,
     pub kind: ExitKind,
     /// Wall time of the exit, Unix ms.
@@ -157,8 +200,9 @@ impl LastExit {
         data_dir.join("last_exit.json")
     }
 
-    pub fn from_outcome(outcome: &Outcome, at: UnixMs) -> LastExit {
+    pub fn from_outcome(outcome: &Outcome, at: UnixMs, invocation: Option<Invocation>) -> LastExit {
         LastExit {
+            invocation,
             code: outcome.code(),
             kind: outcome.kind,
             at: at.0,
@@ -250,7 +294,10 @@ mod tests {
     fn the_file_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(LastExit::read(dir.path()), None);
+        assert_eq!(Invocation::parse("0123456789abcdef0123456789ABCDEF"), None);
+        assert_eq!(Invocation::parse("0123"), None);
         let state = LastExit {
+            invocation: Invocation::parse("0123456789abcdef0123456789abcdef"),
             code: 3,
             kind: ExitKind::Partial,
             at: 42,

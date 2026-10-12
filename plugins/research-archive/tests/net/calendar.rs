@@ -63,12 +63,13 @@ fn only_credential_failures_are_auth_and_only_names_are_kept() {
 
 /// A trading-days source that answers every weekday, records the ranges it
 /// was asked for, and fails every call when `fail`, or the calls whose
-/// index (from 0) is in `fail_calls`.
+/// index (from 0) is in `fail_calls`; a call in `hang_calls` never answers.
 #[derive(Default)]
 pub struct WeekdayDays {
     pub asked: std::sync::Mutex<Vec<Vec<(NaiveDate, NaiveDate)>>>,
     pub fail: bool,
     pub fail_calls: Vec<usize>,
+    pub hang_calls: Vec<usize>,
 }
 
 impl TradingDays for WeekdayDays {
@@ -84,6 +85,9 @@ impl TradingDays for WeekdayDays {
             asked.push(ranges.to_vec());
             asked.len() - 1
         };
+        if self.hang_calls.contains(&call) {
+            std::future::pending::<()>().await;
+        }
         if self.fail || self.fail_calls.contains(&call) {
             return Err(RefreshError::Failed("ws:connect_timeout".into()));
         }
@@ -105,7 +109,7 @@ impl TradingDays for WeekdayDays {
 }
 
 async fn capture_with(a: &Archive, clock: &Arc<FakeClock>, days: &WeekdayDays) -> Outcome {
-    capture::run_with(&a.config(), Arc::clone(clock), days).await
+    capture::run_with(&a.config(), Arc::clone(clock), days, None).await
 }
 
 fn day(s: &str) -> NaiveDate {
@@ -257,5 +261,53 @@ fn a_failed_refresh_uses_a_cache_that_still_covers_now() {
         let outcome = capture_with(&a, &clock, &failing).await;
         assert_eq!(outcome.kind, ExitKind::Fatal, "{outcome:?}");
         assert_eq!(server.arrivals().len(), before);
+    })
+}
+
+/// Codex: the history back-fill runs only on a start with no window open.
+/// The calendar lacks the first run's day and every history request would
+/// hang; a start inside a window does not ask for it, captures with full
+/// coverage, and records that the missed-day scan is incomplete.
+#[test]
+fn a_start_in_a_window_never_waits_on_the_history() {
+    hermetic::run(async {
+        let clock = FakeClock::at(t("2026-03-02T23:00:00Z"));
+        let server = TimedServer::start(clock.clone(), |_, _| Reply::data(r#"{"v":1}"#)).await;
+        let knobs = Knobs {
+            attempt_timeout_minutes: 1,
+            ..Knobs::default()
+        };
+        let a = Archive::new(&server.server.url, &knobs);
+        a.token("ap_m_CALENDAR-TOKEN", None, 4_102_444_800);
+        let days = WeekdayDays::default();
+        assert_eq!(
+            capture_with(&a, &clock, &days).await.kind,
+            ExitKind::Complete
+        );
+
+        // Tuesday's window; the cache now starts after the first run.
+        clock.set(t("2026-03-03T23:00:00Z"));
+        a.calendar(
+            clock.now(),
+            "2026-03-03",
+            "2026-03-12",
+            &["2026-03-03", "2026-03-04", "2026-03-05"],
+        );
+        let hanging = WeekdayDays {
+            hang_calls: vec![0],
+            ..WeekdayDays::default()
+        };
+        let outcome = capture_with(&a, &clock, &hanging).await;
+        assert_eq!(outcome.kind, ExitKind::Complete, "{outcome:?}");
+        assert!(outcome.missed_scan_incomplete);
+        assert!(hanging.asked.lock().unwrap().is_empty());
+        let coverage = a
+            .store()
+            .await
+            .coverage(research_archive::types::RunId(2))
+            .await
+            .unwrap();
+        assert_eq!(coverage.len(), 6);
+        assert!(coverage.iter().all(|p| p.has_ok));
     })
 }
