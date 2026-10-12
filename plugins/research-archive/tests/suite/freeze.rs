@@ -581,3 +581,44 @@ async fn carry_and_read_at_agree_across_runs() {
     );
     assert_eq!(frozen[0].1.members(), keys(&["B.US"]));
 }
+
+/// The freeze is the snapshot at the moment it executes. The clock allows
+/// equal times, so a body recorded at the freeze's millisecond after the
+/// freeze is not part of it, although `read_at` at that millisecond now
+/// returns it.
+#[tokio::test]
+async fn a_row_at_the_freeze_millisecond_after_the_freeze_is_not_part_of_it() {
+    let f = fresh().await;
+    let p = plan(&f.store, 1, &[], &[".SPX.US"]).await;
+    record(
+        &f.store,
+        p.run_id,
+        ".SPX.US",
+        at(1, 10),
+        ok(&constituents(&["A.US"])),
+    )
+    .await;
+    let frozen = f
+        .store
+        .freeze_membership(p.run_id, at(1, 10))
+        .await
+        .unwrap();
+    record(
+        &f.store,
+        p.run_id,
+        ".SPX.US",
+        at(1, 10),
+        ok(&constituents(&["B.US"])),
+    )
+    .await;
+    assert_eq!(frozen[0].1.members(), keys(&["A.US"]));
+    let read = f
+        .store
+        .read_at(&key(".SPX.US"), endpoint("index_constituents"), at(1, 10))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(read.body, constituents(&["B.US"]));
+    let u = f.store.universe_at(at(1, 10)).await.unwrap().unwrap();
+    assert!(u.keys().contains(&key("A.US")) && !u.keys().contains(&key("B.US")));
+}

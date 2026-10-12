@@ -100,9 +100,11 @@ The catalog asks `index_constituents` for `offset=0, limit=1000`, so one call
 returns every member of an index with at most 1,000 members. A body is a
 **complete membership** only when `total > 0` and the number of distinct
 `stocks[].symbol` equals both `total` and the length of `stocks`
-(`membership::constituents_members`). A mistyped index symbol (`total = 0`),
-an unpaged answer (20 of 501), a truncated page or an index above the
-`limit` fails it. The Store files such a body as `permanent` /
+(`membership::constituents_members`). A mistyped index symbol (`total = 0`)
+or a truncated response (an unpaged answer of 20 of 501, a short page, a
+duplicate) fails it. The rule has no size limit of its own: the 1,000 cap
+comes from the request's `limit=1000`, and an index with more members fails
+only because its response then carries fewer symbols than `total`. The Store files such a body as `permanent` /
 `incomplete_membership`, so it is never `ok`, and an incomplete response can
 never freeze an observed universe.
 
@@ -114,8 +116,9 @@ when to freeze. For each planned `index-symbol` key, in one transaction:
    latest by `LATEST_OK`);
 2. else **carried** from the latest `ok` row, by `LATEST_OK`, among runs of
    the same source with an earlier `as_of`. Since windows follow `as_of`
-   order, that is the latest earlier day's latest `ok`, exactly the row
-   `read_at` returns at `frozen_at`. It is an original observation by
+   order, that is the latest earlier day's latest `ok`, the row `read_at`
+   returns at `frozen_at` as of the moment the freeze executes. It is an
+   original observation by
    construction, never a carry. A later day's row is never taken, even if
    it was written first;
 3. else **none**: no run has an `ok` membership for it.
@@ -137,9 +140,12 @@ and that is the membership endpoint.
   `attempt`. Equal `fetched_at` happens only within a run (the clock allows
   equal times), where the higher attempt wins; across runs of a source the
   windows do not overlap, so `fetched_at` order is `as_of` order and the
-  `run_id` step never decides. The freeze uses the same order, so a freeze
-  and a read at the same time pick the same body, within a run and across
-  runs.
+  `run_id` step never decides. The freeze uses the same order, so the
+  freeze takes the body `read_at(frozen_at)` returns **in the snapshot at the
+  moment the freeze executes**, within a run and across runs. The clock
+  allows equal times, so a row recorded at the same millisecond after the
+  freeze is not part of it: record `{A}` at 10, freeze at 10, record `{B}` at
+  10, and the membership is `{A}` while `read_at(10)` now returns `{B}`.
 - **Failure rows never win.** A failure row hides nothing: a `permanent`
   today leaves yesterday's value as the value.
 - **An empty body is a value.** It means "no coverage at that time", and it is
@@ -290,23 +296,36 @@ written while a guard or check was off.
 
 ## Importing read-only
 
-The capture job is the only writer. The file is in WAL mode, so recent
-commits may still be in `archive.sqlite3-wal`. To read a consistent archive,
-use one of these:
+The capture job is the only writer, and the file is in WAL mode: recent
+commits may still be in `archive.sqlite3-wal`, so the main file alone can
+miss them (a copy of the main file taken while a capture held commits in the
+WAL showed none of its rows). Opening the live file with `?mode=ro` is not
+a read-only import either: a WAL reader needs the `-shm` file, so the open
+fails in a read-only directory ("attempt to write a readonly database"),
+and in a writable one it creates `archive.sqlite3-wal` and `-shm` next to
+the archive.
 
-- **Checkpoint first.** The writer (or anyone, while no capture runs) runs
-  `PRAGMA wal_checkpoint(TRUNCATE)`, and then the reader opens the main file.
-- **Copy both files.** Copy `archive.sqlite3` together with its
-  `archive.sqlite3-wal` at a moment when no capture
-  is running.
+Take a snapshot copy, then open the copy:
+
+1. **Snapshot**, either way:
+   - `sqlite3 archive.sqlite3 ".backup copy.sqlite3"`, which is a consistent
+     copy even while a capture runs; or
+   - while no capture runs, `PRAGMA wal_checkpoint(TRUNCATE)` on the live
+     file, then copy `archive.sqlite3` alone.
+2. **Open the copy** with `sqlite3 'file:copy.sqlite3?immutable=1'` (or
+   `SQLITE_OPEN_READONLY` with the `immutable=1` URI parameter). That works in
+   a read-only directory and creates no files. `?mode=ro` on the copy works
+   only in a writable directory, where it creates `-wal`/`-shm` files.
+3. Check `PRAGMA user_version` = 1 before reading.
+
+Verified with the system `sqlite3` 3.40.1 against a Store-created file:
+`?mode=ro` in a mode-555 directory fails; `.backup` (also with a writer
+holding the file open) and checkpoint-then-copy, each opened with
+`immutable=1` in a mode-555 directory, read every row and create no file.
 
 Never run `ANALYZE` or `PRAGMA optimize` on the live file: they create
 `sqlite_stat*` tables, which `Store::open` refuses as schema drift. Run them,
 if at all, on a copy.
-
-Then open the file read-only, for example
-`sqlite3 'file:archive.sqlite3?mode=ro'` or `SQLITE_OPEN_READONLY` without
-create, and check `PRAGMA user_version` = 1 before reading.
 
 ## Tests
 

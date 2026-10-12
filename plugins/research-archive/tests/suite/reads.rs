@@ -405,3 +405,36 @@ async fn read_at_across_runs_follows_the_days() {
     assert_eq!(read(at(1, 999)).await, (b"day1".to_vec(), as_of(1)));
     assert_eq!(read(at(3, 0)).await, (b"day2".to_vec(), as_of(2)));
 }
+
+/// A kept `incomplete_membership` body has bytes but is not a value:
+/// `read_at` returns the earlier `ok` body, not the later incomplete one.
+#[tokio::test]
+async fn read_at_skips_a_kept_incomplete_membership_body() {
+    let f = fresh().await;
+    let p = f
+        .store
+        .plan_run(&plan_request(1, &[], &[".SPX.US"]))
+        .await
+        .unwrap();
+    let complete = constituents(&["AAPL.US"]);
+    let incomplete = br#"{"total":2,"stocks":[{"symbol":"AAPL.US"}]}"#.to_vec();
+    for (t, body) in [(5, &complete), (10, &incomplete)] {
+        f.store
+            .record_observation(
+                p.run_id,
+                &key(".SPX.US"),
+                endpoint("index_constituents"),
+                at(1, t),
+                &ok(body),
+            )
+            .await
+            .unwrap();
+    }
+    let read = f
+        .store
+        .read_at(&key(".SPX.US"), endpoint("index_constituents"), at(1, 20))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((read.body, read.fetched_at), (complete, at(1, 5)));
+}

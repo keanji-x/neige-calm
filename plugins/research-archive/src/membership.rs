@@ -1,7 +1,9 @@
 //! The completeness rule for an `index_constituents` body (#2575, "Run
-//! phases" step 2). One pure function, used by the Store (to refuse an
-//! incomplete `ok` and to read members at the freeze) and by the source
-//! classifier (to file such a body as `permanent`, `incomplete_membership`).
+//! phases" step 2). One pure function. The Store calls it itself: when it
+//! records a membership body (complete is `ok`; incomplete is `permanent` /
+//! `incomplete_membership` with `IncompleteMembership::code()` as the
+//! code), and when it reads members at the freeze. No caller states
+//! `incomplete_membership`; a caller only hands over the body.
 
 use std::collections::BTreeSet;
 
@@ -47,9 +49,11 @@ impl IncompleteMembership {
 /// The members of an `index_constituents` body, sorted, when the body is a
 /// complete membership: `total > 0` (a number or a numeric string), and the
 /// number of distinct `stocks[].symbol` equals both `total` and the length
-/// of `stocks`. A mistyped index (`total = 0`) or a truncated page (`total`
-/// above the `limit=1000` the catalog asks for, or above what came back) is
-/// never a membership.
+/// of `stocks`. A mistyped index (`total = 0`) or a truncated response (the
+/// count of symbols differs from `total`) is never a membership. The rule
+/// has no size limit of its own: the 1,000 cap comes from the request's
+/// `limit=1000`, and an index with more members is refused only because the
+/// response then carries fewer symbols than `total`.
 pub fn constituents_members(body: &[u8]) -> Result<Vec<Key>, IncompleteMembership> {
     let value: Value = serde_json::from_slice(body).map_err(|_| IncompleteMembership::NotJson)?;
     let object = value.as_object().ok_or(IncompleteMembership::NotJson)?;
