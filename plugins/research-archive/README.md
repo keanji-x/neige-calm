@@ -300,10 +300,12 @@ The capture job is the only writer, and the file is in WAL mode: recent
 commits may still be in `archive.sqlite3-wal`, so the main file alone can
 miss them (a copy of the main file taken while a capture held commits in the
 WAL showed none of its rows). Opening the live file with `?mode=ro` is not
-a read-only import either: a WAL reader needs the `-shm` file, so the open
-fails in a read-only directory ("attempt to write a readonly database"),
-and in a writable one it creates `archive.sqlite3-wal` and `-shm` next to
-the archive.
+a read-only import either: a WAL reader needs the `-shm` file. When the
+`-wal`/`-shm` files do not exist, the open fails in a read-only directory
+("attempt to write a readonly database") and in a writable one creates them
+next to the archive. (SQLite 3.22+ can read a WAL file in a read-only
+directory when readable `-wal` and `-shm` files already exist; this recipe
+does not rely on that.)
 
 Take a snapshot copy, then open the copy:
 
@@ -314,12 +316,13 @@ Take a snapshot copy, then open the copy:
      file, then copy `archive.sqlite3` alone.
 2. **Open the copy** with `sqlite3 'file:copy.sqlite3?immutable=1'` (or
    `SQLITE_OPEN_READONLY` with the `immutable=1` URI parameter). That works in
-   a read-only directory and creates no files. `?mode=ro` on the copy works
-   only in a writable directory, where it creates `-wal`/`-shm` files.
+   a read-only directory and creates no files. `?mode=ro` on a copy without
+   `-wal`/`-shm` files works only in a writable directory, where it creates
+   them.
 3. Check `PRAGMA user_version` = 1 before reading.
 
 Verified with the system `sqlite3` 3.40.1 against a Store-created file:
-`?mode=ro` in a mode-555 directory fails; `.backup` (also with a writer
+`?mode=ro` on a copy without sidecars in a mode-555 directory fails; `.backup` (also with a writer
 holding the file open) and checkpoint-then-copy, each opened with
 `immutable=1` in a mode-555 directory, read every row and create no file.
 
