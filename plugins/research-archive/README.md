@@ -484,6 +484,9 @@ Two integration binaries:
   (`net::scan`) fails if any other test code names the SDK or builds a
   client: every file under `tests/` but `tests/net/`, every `src/**/tests.rs`
   and every `#[cfg(test)]` item in `src/`. Production code is not scanned.
+  Its patterns are regexes over whole files, comments included. The scan
+  catches a test that builds an SDK client accidentally placed outside the
+  hermetic harness; it is not a defence against deliberate evasion.
 - **Harness note.** `hermetic::pinned` sets process-wide environment once;
   its `SAFETY` argument assumes nextest's one-process-per-test model. Under
   `cargo test` the binary's tests share a process and are serialized by a

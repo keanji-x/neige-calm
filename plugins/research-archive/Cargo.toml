@@ -38,5 +38,6 @@ url = "2"
 
 [dev-dependencies]
 axum = "0.8"
+regex = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "test-util", "time"] }
