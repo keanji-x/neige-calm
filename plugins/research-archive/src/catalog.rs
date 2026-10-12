@@ -156,6 +156,9 @@ fn canonical_json(pairs: &[(&str, Option<&str>)]) -> String {
     serde_json::to_string(pairs).expect("string pairs always serialize")
 }
 
+/// The id of the membership endpoint.
+const MEMBERSHIP: &str = "index_constituents";
+
 const KEY_ONLY: &[(&str, QueryValue)] = &[(KEY_PARAM, QueryValue::Key)];
 
 const COMPILED: &[Endpoint] = &[
@@ -202,7 +205,7 @@ const COMPILED: &[Endpoint] = &[
     // One call returns every member: without paging the endpoint returns 20
     // of `total`, and pages of 100 are inconsistent (probe P5b).
     Endpoint::new(
-        "index_constituents",
+        MEMBERSHIP,
         "/v1/quote/index-constituents",
         &[
             (KEY_PARAM, QueryValue::Key),
@@ -247,6 +250,13 @@ impl Catalog {
     /// The entry with this id.
     pub fn get(&self, id: &str) -> Option<&Endpoint> {
         self.endpoints.iter().find(|e| e.id.0 == id)
+    }
+
+    /// The endpoint whose `ok` body is an index's membership
+    /// (`index_constituents`), if the catalog has it. Its bodies must pass
+    /// [`crate::membership::constituents_members`].
+    pub fn membership(&self) -> Option<EndpointId> {
+        self.get(MEMBERSHIP).map(|e| e.id)
     }
 
     /// The entries that apply to keys of `kind`, in catalog order.
@@ -334,6 +344,10 @@ mod tests {
         assert_eq!(catalog.for_kind(KeyKind::Security).count(), 6);
         assert_eq!(catalog.for_kind(KeyKind::Index).count(), 1);
         assert!(catalog.get("missing").is_none());
+        assert_eq!(
+            catalog.membership().map(EndpointId::as_str),
+            Some("index_constituents")
+        );
         let dup = vec![COMPILED[0], COMPILED[0]];
         assert!(Catalog::new(dup).is_err());
     }

@@ -14,7 +14,9 @@ capture job that fills the archive arrives in S1-2.
 
 The DDL is the const `store::schema::DDL`, and `PRAGMA user_version = 1`.
 Every table is `STRICT`, so readers need SQLite 3.37 or later. Required
-columns are `NOT NULL`.
+columns are `NOT NULL`. `run` and `run_end` key on `INTEGER PRIMARY KEY`
+(the rowid itself); every other table is `WITHOUT ROWID` (see
+[Append-only guarantee](#append-only-guarantee)).
 
 | table | columns | notes |
 |---|---|---|
@@ -23,7 +25,7 @@ columns are `NOT NULL`.
 | `run` | `run_id` PK, `source`, `as_of`, `window_start`, `window_end`, `started_at`; UNIQUE (`source`, `as_of`) | Holds one run per source and trading day. |
 | `run_key` | (`run_id`, `key`, `origin`) PK | `origin` is `config`, `index-symbol` or `index:<sym>`. |
 | `run_membership` | (`run_id`, `index_sym`) PK, `mode`, `source_run_id` NULL, `frozen_at` | `mode` ∈ `observed`, `carried`, `none`. `source_run_id` is set if and only if `mode = carried`. |
-| `observation` | (`run_id`, `key`, `endpoint_id`, `attempt`) PK, `fetched_at`, `status`, `sha256` NULL, `error_class` NULL, `error_code` NULL | Every attempt is a row. `attempt` starts at 1. |
+| `observation` | (`run_id`, `key`, `endpoint_id`, `attempt`) PK, `fetched_at`, `status`, `sha256` NULL, `error_class` NULL, `error_code` NULL | Every attempt is a row. `attempt` starts at 1. `error_class` and `error_code` are both NULL on `ok` rows and both set on failure rows. |
 | `run_end` | `run_id` PK, `finished_at`, `outcome`, `reason` NULL | `outcome` ∈ `complete`, `partial`, `missed`. |
 
 The partial index `observation_ok_by_key (key, endpoint_id, fetched_at) WHERE
@@ -65,9 +67,50 @@ The compiled catalog has six security endpoints and one index endpoint:
   delisted symbol, arrives as an `ok` with empty fields and is stored as is.
 - **`transient`, `throttled`, `auth_unavailable`, `region_restricted` and
   `permanent`** mean "no observation". These rows may still keep a body for
-  audit. For example, an `index_constituents` body that fails the membership
-  check is stored as `permanent` with `error_code = incomplete_membership`.
+  audit.
 - **There is no `not_found` class.**
+
+**Failure detail.** Every failure row has an `error_class` from a closed set
+(a CHECK) and a non-empty `error_code` whose meaning depends on it:
+
+| `error_class` | when | `error_code` |
+|---|---|---|
+| `envelope` | an OpenAPI envelope with a non-zero code | the envelope code, in decimal (`429002`) |
+| `http_status` | a non-success HTTP status outside an envelope | the status, in decimal (`503`) |
+| `transport` | no HTTP response: a timeout or a connection error | the SDK error variant, snake_case (`request_timeout`) |
+| `unexpected_response` | a response that is not a usable envelope | the SDK error variant |
+| `auth` | the SDK had no usable credentials | the SDK error variant (`invalid_access_token`) |
+| `dc_region_restricted` | the SDK refused locally for the token's data center | the SDK error variant; status is always `region_restricted` |
+| `client` | the SDK could not build the request | the SDK error variant |
+| `incomplete_membership` | an `index_constituents` body that fails the completeness rule | the rule that failed (`zero_total`, `count_mismatch`, …); status is always `permanent` |
+
+## Index membership
+
+The catalog asks `index_constituents` for `offset=0, limit=1000`, so one call
+returns every member of an index with at most 1,000 members. A body is a
+**complete membership** only when `total > 0` and the number of distinct
+`stocks[].symbol` equals both `total` and the length of `stocks`
+(`membership::constituents_members`). A mistyped index symbol (`total = 0`),
+an unpaged answer (20 of 501), a truncated page or an index above the
+`limit` fails it. Such a body is filed as `permanent` /
+`incomplete_membership`; `record_observation` refuses to store it as `ok`.
+So an incomplete response can never freeze an observed universe.
+
+**The freeze is derived, not supplied.** `freeze_membership(run_id,
+frozen_at)` takes no membership from its caller; the runner only decides
+when to freeze. For each planned `index-symbol` key, in one transaction:
+
+1. **observed** when this run has an `ok` constituents row for the index (the
+   latest attempt);
+2. else **carried** from the run of the same source with the latest earlier
+   `as_of` that has one (its latest attempt). That row is an original
+   observation by construction, never a carry;
+3. else **none**: no run has an `ok` membership for it.
+
+The members are parsed from that body. The freeze is refused when a stored
+`ok` body fails the completeness rule (only a writer bypassing the Store can
+cause it), when `frozen_at` is outside the run's window, or when it precedes
+the `fetched_at` of a body it uses (no look-ahead).
 
 ## Read contract
 
@@ -123,17 +166,21 @@ Each write is one `BEGIN IMMEDIATE` transaction:
 - **`plan_run`** writes the `run` row and the `config` and `index-symbol`
   keys. It is idempotent per `(source, as_of)`: when a plan exists, the
   stored plan comes back unchanged, and later config changes do not touch it.
+  A new plan's `started_at` must be inside its window.
 - **`record_observation`** writes the blob and the observation row. It
   numbers the attempt per `(run, key, endpoint)` inside the transaction. It
-  refuses a pair that is not planned and a run that has ended.
-- **`freeze_membership`** writes every `run_membership` row and the
-  `index:<sym>` keys, all or nothing.
-  - It must name exactly the planned indexes.
-  - `observed` needs an `ok` constituents row in this run. `carried` needs
-    one in the earlier source run, never in the run itself.
+  refuses a pair that is not planned, a run that has ended, a `fetched_at`
+  outside the run's window `[window_start, window_end)`, and an incomplete
+  `ok` constituents body.
+- **`freeze_membership`** derives and writes every `run_membership` row and
+  the `index:<sym>` keys, all or nothing (see
+  [Index membership](#index-membership)).
   - **A second freeze is refused** with `AlreadyFrozen` and writes nothing. A
     run is frozen exactly when it has a `run_membership` row.
-- **`end_run`** writes `complete` or `partial`.
+  - A run that plans no index has nothing to freeze; the call writes nothing.
+- **`end_run`** writes `complete` or `partial`. `complete` is refused unless
+  every planned index is frozen and every planned pair has at least one row;
+  whether the remaining failures are final is the runner's call.
 - **`close_dangling_runs(now)`** writes `partial` (reason `dangling`) for
   every run with `window_end ≤ now` and no `run_end`.
 - **`record_missed`** writes a keyless run row and its `run_end(missed)`,
@@ -146,31 +193,51 @@ Every table has three guard triggers:
 
 - **`BEFORE UPDATE`** raises `ABORT`.
 - **`BEFORE DELETE`** raises `ABORT`.
-- **`BEFORE INSERT`** fires when the primary-key or UNIQUE row exists. It
-  raises `IGNORE` for `blob`, which deduplicates bodies, and `ABORT` for
-  every other table.
+- **`BEFORE INSERT`** fires when a row with the same PRIMARY KEY or UNIQUE
+  value exists. It raises `IGNORE` for `blob`, which deduplicates bodies,
+  and `ABORT` for every other table.
 
-The guards work without any pragma:
+**The rule: no table has a uniqueness surface its guard does not check.**
+Each insert guard checks every PRIMARY KEY and UNIQUE constraint, and no
+table has an implicit rowid: `run` and `run_end` key on the rowid itself
+(`INTEGER PRIMARY KEY`), and every other table is `WITHOUT ROWID`. An
+implicit rowid would be a second key the guard does not see:
+`INSERT OR REPLACE … (rowid, …)` with a stored row's rowid and a fresh
+primary key would delete that row.
 
-- **Insert guards cover replace and upsert.** A `BEFORE INSERT` trigger runs
-  before conflict resolution, so it also stops `INSERT OR REPLACE` and
-  `INSERT … ON CONFLICT DO UPDATE`.
-- **`recursive_triggers` does not matter.** The guards hold with it OFF
+What follows from the rule:
+
+- **Replace and upsert are covered.** A `BEFORE INSERT` trigger runs before
+  conflict resolution, so any insert that would collide with a stored row
+  meets its guard first: `INSERT OR REPLACE`, `REPLACE` and
+  `INSERT … ON CONFLICT DO UPDATE` cannot delete or rewrite a row.
+- **No pragma matters.** The guards hold with `recursive_triggers` OFF
   (SQLite's default, under which a REPLACE deletes without firing delete
-  triggers) and with it ON.
-- **Any connection is covered.** The tests run the guards on raw connections
-  with foreign keys off, using the bundled SQLite 3.46. The guards also hold
-  on the system `sqlite3` 3.40.1 CLI.
+  triggers) and ON, and with foreign keys off.
+- **Data statements on any connection are covered.** The tests run every
+  statement above, plus an explicit rowid collision, against every table on
+  raw connections with foreign keys off and `recursive_triggers` OFF and ON,
+  using the bundled SQLite 3.46.
 
-`Store::open` refuses an existing file on any of these mismatches:
+What the guards do not cover: schema statements (`DROP TRIGGER`,
+`DROP TABLE`, `ALTER TABLE`), `PRAGMA writable_schema`, and editing the file's
+bytes. `Store::open` refuses a file whose schema has drifted, but it cannot
+see rows changed while a guard was gone.
 
-- **`user_version`** differs from this build's.
-- **Schema drift.** Any table, index or trigger is missing, extra, or differs
-  in its stored SQL text from what `DDL` produces.
-- **Catalog drift.** A stored `endpoint` row is missing, extra or changed
-  compared with the compiled catalog.
+## Opening
 
-A new, empty file gets the schema and the catalog in one transaction.
+`Store::open(path)` checks the file against the compiled catalog.
+
+- **A missing or empty file** gets the schema and the catalog in one
+  transaction, so the first capture creates the archive.
+- **An existing file** is refused on any of these mismatches:
+  - **`user_version`** differs from this build's.
+  - **Schema drift.** Any table, index or trigger is missing, extra, or
+    differs in its stored SQL text from what `DDL` produces.
+  - **Catalog drift.** A stored `endpoint` row is missing, extra or changed
+    compared with the compiled catalog.
+- **A refused file is left as it was.** The WAL journal mode is set only
+  after the check (or the creation) succeeds.
 
 ## Importing read-only
 
@@ -194,7 +261,8 @@ Run `cargo nextest run -p research-archive`.
 
 | test module | covers |
 |---|---|
-| `guards` | I2, on every table |
-| `open` | the refusals |
-| `writes` | plan and freeze atomicity, the attempt counter and the CHECKs |
-| `reads` | I5, I6, the universe and coverage |
+| `guards` | I2, on every table, including the rowid collision |
+| `open` | the refusals, and that a refused file is untouched |
+| `writes` | plan atomicity, the window bound, `complete`, the attempt counter (also with two writers) and the CHECKs |
+| `freeze` | the derived freeze, I5, its atomicity and refusals |
+| `reads` | I6, the universe, ties and coverage |

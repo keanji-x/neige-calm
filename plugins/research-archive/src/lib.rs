@@ -5,6 +5,7 @@
 //! schema, the read contract and how to import the file read-only.
 
 pub mod catalog;
+pub mod membership;
 pub mod store;
 pub mod types;
 

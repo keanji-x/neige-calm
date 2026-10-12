@@ -13,12 +13,25 @@ use sqlx::{Connection, Row, SqliteConnection};
 ///
 /// Timestamps are integer Unix milliseconds UTC; `as_of` is an ISO date.
 /// Every table is `STRICT` (SQLite 3.37 or later), so a column holds only
-/// its declared type. Every table has a `BEFORE UPDATE` and a `BEFORE DELETE`
-/// guard that aborts, and a `BEFORE INSERT` guard that fires when the
-/// primary-key (or UNIQUE) row exists: `blob` ignores the insert, every other
-/// table aborts. A `BEFORE INSERT` trigger runs before conflict resolution,
-/// so the guard also stops `INSERT OR REPLACE` and `ON CONFLICT DO UPDATE`
-/// whatever `recursive_triggers` is.
+/// its declared type.
+///
+/// **Append-only rule: no table has a uniqueness surface its guard does not
+/// check.** Each table's `BEFORE INSERT` guard checks every PRIMARY KEY and
+/// UNIQUE constraint, and no table has an implicit rowid: `run` and
+/// `run_end` key on `INTEGER PRIMARY KEY` (the rowid itself), and every
+/// other table is `WITHOUT ROWID`. So an insert that would collide with any
+/// stored row meets the guard first, and a `BEFORE INSERT` trigger runs
+/// before conflict resolution: `INSERT OR REPLACE`, `REPLACE` and
+/// `ON CONFLICT DO UPDATE` cannot delete or rewrite a row, whatever
+/// `recursive_triggers` and `foreign_keys` are. `BEFORE UPDATE` and
+/// `BEFORE DELETE` guards abort every other change. `blob`'s insert guard
+/// ignores a duplicate (content addressing); the others abort.
+///
+/// The guards cover data statements on any connection. They do not cover
+/// schema statements (`DROP TRIGGER`, `DROP TABLE`, `ALTER TABLE`),
+/// `PRAGMA writable_schema`, or editing the file's bytes; `Store::open`
+/// refuses a file whose schema has drifted, but cannot see rows changed
+/// while a guard was gone.
 pub const DDL: &str = r#"
 CREATE TABLE endpoint (
     endpoint_id  TEXT NOT NULL PRIMARY KEY CHECK (length(endpoint_id) > 0),
@@ -28,13 +41,13 @@ CREATE TABLE endpoint (
     headers_json TEXT NOT NULL,
     dc_restrict  TEXT,
     key_kind     TEXT NOT NULL CHECK (key_kind IN ('index', 'security'))
-) STRICT;
+) STRICT, WITHOUT ROWID;
 
 CREATE TABLE blob (
     sha256 TEXT NOT NULL PRIMARY KEY
         CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
     body   BLOB NOT NULL
-) STRICT;
+) STRICT, WITHOUT ROWID;
 
 CREATE TABLE run (
     run_id       INTEGER NOT NULL PRIMARY KEY,
@@ -55,7 +68,7 @@ CREATE TABLE run_key (
         OR (substr(origin, 1, 6) = 'index:' AND length(origin) > 6)
     ),
     PRIMARY KEY (run_id, key, origin)
-) STRICT;
+) STRICT, WITHOUT ROWID;
 
 CREATE TABLE run_membership (
     run_id        INTEGER NOT NULL REFERENCES run (run_id),
@@ -65,7 +78,7 @@ CREATE TABLE run_membership (
     frozen_at     INTEGER NOT NULL,
     PRIMARY KEY (run_id, index_sym),
     CHECK ((mode = 'carried') = (source_run_id IS NOT NULL))
-) STRICT;
+) STRICT, WITHOUT ROWID;
 
 CREATE TABLE observation (
     run_id      INTEGER NOT NULL REFERENCES run (run_id),
@@ -77,11 +90,20 @@ CREATE TABLE observation (
         'ok', 'transient', 'throttled', 'auth_unavailable', 'region_restricted', 'permanent'
     )),
     sha256      TEXT REFERENCES blob (sha256),
-    error_class TEXT,
-    error_code  TEXT,
+    error_class TEXT CHECK (error_class IN (
+        'envelope', 'http_status', 'transport', 'unexpected_response', 'auth',
+        'dc_region_restricted', 'client', 'incomplete_membership'
+    )),
+    error_code  TEXT CHECK (length(error_code) > 0),
     PRIMARY KEY (run_id, key, endpoint_id, attempt),
-    CHECK (status <> 'ok' OR (sha256 IS NOT NULL AND error_class IS NULL AND error_code IS NULL))
-) STRICT;
+    CHECK (CASE WHEN status = 'ok'
+        THEN sha256 IS NOT NULL AND error_class IS NULL AND error_code IS NULL
+        ELSE error_class IS NOT NULL AND error_code IS NOT NULL END),
+    CHECK (error_class NOT IN ('envelope', 'http_status')
+        OR error_code NOT GLOB '*[^0-9-]*'),
+    CHECK (error_class <> 'incomplete_membership' OR status = 'permanent'),
+    CHECK ((error_class IS 'dc_region_restricted') = (status = 'region_restricted'))
+) STRICT, WITHOUT ROWID;
 
 CREATE INDEX observation_ok_by_key ON observation (key, endpoint_id, fetched_at)
     WHERE status = 'ok';

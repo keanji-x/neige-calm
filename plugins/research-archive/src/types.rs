@@ -87,6 +87,11 @@ impl Window {
     pub fn end(self) -> UnixMs {
         self.end
     }
+
+    /// Whether `t` is inside: `start ≤ t < end`.
+    pub fn contains(self, t: UnixMs) -> bool {
+        self.start <= t && t < self.end
+    }
 }
 
 /// The upstream a run captures. Only Longbridge exists; Wisburg is deferred.
@@ -224,18 +229,68 @@ impl Status {
     }
 }
 
+/// Where a failure came from (`observation.error_class`). Every failure row
+/// has one, with a non-empty `error_code` whose meaning depends on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ErrorClass {
+    /// An OpenAPI envelope with a non-zero code. Code: that code, in decimal
+    /// (for example `429002`).
+    Envelope,
+    /// A non-success HTTP status outside an envelope. Code: the status, in
+    /// decimal.
+    HttpStatus,
+    /// No HTTP response: a timeout or a connection error. Code: the SDK
+    /// error variant in snake_case (for example `request_timeout`).
+    Transport,
+    /// A response that is not a usable envelope (no `data`, or not JSON).
+    /// Code: the SDK error variant.
+    UnexpectedResponse,
+    /// The SDK had no usable credentials. Code: the SDK error variant (for
+    /// example `invalid_access_token`).
+    Auth,
+    /// The SDK refused locally: the token's data center cannot serve the
+    /// endpoint. Code: the SDK error variant. Always `region_restricted`.
+    DcRegionRestricted,
+    /// The SDK could not build the request. Code: the SDK error variant.
+    Client,
+    /// An `index_constituents` body that fails the completeness rule. Code:
+    /// `IncompleteMembership::code()`. Always `permanent`.
+    IncompleteMembership,
+}
+
+impl ErrorClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ErrorClass::Envelope => "envelope",
+            ErrorClass::HttpStatus => "http_status",
+            ErrorClass::Transport => "transport",
+            ErrorClass::UnexpectedResponse => "unexpected_response",
+            ErrorClass::Auth => "auth",
+            ErrorClass::DcRegionRestricted => "dc_region_restricted",
+            ErrorClass::Client => "client",
+            ErrorClass::IncompleteMembership => "incomplete_membership",
+        }
+    }
+}
+
+/// A failure's `(error_class, error_code)`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ErrorDetail {
+    pub class: ErrorClass,
+    pub code: String,
+}
+
 /// What one attempt produced.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
     /// The envelope's exact `data` bytes. Empty bytes are a valid value.
     Ok { body: Vec<u8> },
     /// No observation. `body` keeps bytes worth auditing (for example an
-    /// `index_constituents` body that failed the membership check).
+    /// `index_constituents` body that failed the completeness rule).
     Failed {
         class: FailureClass,
+        error: ErrorDetail,
         body: Option<Vec<u8>>,
-        error_class: Option<String>,
-        error_code: Option<String>,
     },
 }
 
@@ -292,15 +347,17 @@ impl From<Finish> for RunOutcome {
     }
 }
 
-/// One planned index's frozen membership (`run_membership`).
+/// One planned index's frozen membership (`run_membership`), as the Store
+/// derived it at the freeze.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Membership {
-    /// Members from this run's own `ok` constituents observation.
+    /// Members from this run's latest `ok` constituents observation.
     Observed { members: Vec<Key> },
-    /// Members carried from `source`, the run holding the original `ok`
-    /// constituents observation (never an earlier carry).
+    /// Members from `source`'s latest `ok` constituents observation: the run
+    /// with the latest earlier `as_of` that has one. That observation is the
+    /// original, never a carry.
     Carried { source: RunId, members: Vec<Key> },
-    /// No `ok` membership exists anywhere yet.
+    /// No earlier or current run has an `ok` constituents observation.
     None,
 }
 

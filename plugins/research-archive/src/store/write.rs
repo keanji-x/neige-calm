@@ -7,9 +7,8 @@ use sqlx::{Row, SqliteConnection};
 
 use super::{Result, Store, StoreError};
 use crate::catalog::EndpointId;
-use crate::types::{
-    AsOf, Finish, Key, Membership, Origin, Outcome, RunId, RunOutcome, Source, UnixMs, Window,
-};
+use crate::membership::constituents_members;
+use crate::types::{AsOf, Finish, Key, Origin, Outcome, RunId, RunOutcome, Source, UnixMs, Window};
 
 /// The key × endpoint pairs a run plans, as rows `(run_id, key,
 /// endpoint_id)`: each `run_key` row joined to the endpoints of its kind. An
@@ -65,6 +64,11 @@ impl Store {
             tx.commit().await?;
             return Ok(plan);
         }
+        if !req.window.contains(req.started_at) {
+            return Err(StoreError::PlanOutsideWindow {
+                started_at: req.started_at,
+            });
+        }
         let run_id = insert_run(&mut tx, req.source, req.as_of, req.window, req.started_at).await?;
         for key in &req.config {
             insert_run_key(&mut tx, run_id, key, &Origin::Config).await?;
@@ -95,18 +99,27 @@ impl Store {
         fetched_at: UnixMs,
         outcome: &Outcome,
     ) -> Result<u32> {
-        let (body, error_class, error_code) = match outcome {
-            Outcome::Ok { body } => (Some(body), None, None),
-            Outcome::Failed {
-                body,
-                error_class,
-                error_code,
-                ..
-            } => (body.as_ref(), error_class.as_deref(), error_code.as_deref()),
+        let (body, error) = match outcome {
+            Outcome::Ok { body } => (Some(body), None),
+            Outcome::Failed { body, error, .. } => (body.as_ref(), Some(error)),
         };
+        if let Outcome::Ok { body } = outcome
+            && self.catalog.membership() == Some(endpoint)
+        {
+            constituents_members(body).map_err(|reason| StoreError::IncompleteMembership {
+                index: key.clone(),
+                reason,
+            })?;
+        }
         let sha256 = body.map(|b| hex::encode(Sha256::digest(b)));
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        require_open(&mut tx, run_id).await?;
+        let window = require_open(&mut tx, run_id).await?;
+        if !window.contains(fetched_at) {
+            return Err(StoreError::OutsideWindow {
+                run: run_id,
+                at: fetched_at,
+            });
+        }
         let planned: bool = sqlx::query_scalar(&format!(
             "SELECT EXISTS (SELECT 1 FROM ({PLANNED_PAIRS}) p
              WHERE p.run_id = ? AND p.key = ? AND p.endpoint_id = ?)"
@@ -152,93 +165,18 @@ impl Store {
         .bind(fetched_at.0)
         .bind(outcome.status().as_str())
         .bind(sha256)
-        .bind(error_class)
-        .bind(error_code)
+        .bind(error.map(|e| e.class.as_str()))
+        .bind(error.map(|e| e.code.as_str()))
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
         Ok(u32::try_from(attempt).expect("attempt counts stay far below u32::MAX"))
     }
 
-    /// Freezes the run's universe: one `run_membership` row per planned
-    /// index, plus each member as a `run_key` row with `origin =
-    /// index:<sym>`, all or nothing. `indexes` must name exactly the planned
-    /// index symbols. An `observed` index needs an `ok` constituents
-    /// observation in this run; a `carried` one needs it in `source`, an
-    /// earlier run (lower id). A second freeze of a run is refused with
-    /// `AlreadyFrozen` and writes nothing. A run that plans no index has
-    /// nothing to freeze: the call succeeds and writes nothing.
-    pub async fn freeze_membership(
-        &self,
-        run_id: RunId,
-        frozen_at: UnixMs,
-        indexes: &[(Key, Membership)],
-    ) -> Result<()> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        require_open(&mut tx, run_id).await?;
-        let frozen: bool =
-            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM run_membership WHERE run_id = ?)")
-                .bind(run_id.0)
-                .fetch_one(&mut *tx)
-                .await?;
-        if frozen {
-            return Err(StoreError::AlreadyFrozen(run_id));
-        }
-        let planned = load_plan(&mut tx, run_id, false).await?.indexes;
-        let mut given: Vec<Key> = indexes.iter().map(|(k, _)| k.clone()).collect();
-        given.sort();
-        if given != planned {
-            return Err(StoreError::FreezeIndexes {
-                run: run_id,
-                planned,
-                given,
-            });
-        }
-        for (index, membership) in indexes {
-            let source = match membership {
-                Membership::Observed { .. } => Some(run_id),
-                Membership::Carried { source, .. } if *source >= run_id => {
-                    return Err(StoreError::CarryNotEarlier {
-                        run: run_id,
-                        index: index.clone(),
-                    });
-                }
-                Membership::Carried { source, .. } => Some(*source),
-                Membership::None => None,
-            };
-            if let Some(source) = source
-                && !has_ok_constituents(&mut tx, source, index).await?
-            {
-                return Err(StoreError::NoMembershipObservation {
-                    source_run: source,
-                    index: index.clone(),
-                });
-            }
-            let carried_from = match membership {
-                Membership::Carried { source, .. } => Some(source.0),
-                _ => None,
-            };
-            sqlx::query(
-                "INSERT INTO run_membership (run_id, index_sym, mode, source_run_id, frozen_at)
-                 VALUES (?, ?, ?, ?, ?)",
-            )
-            .bind(run_id.0)
-            .bind(index.as_str())
-            .bind(membership.mode())
-            .bind(carried_from)
-            .bind(frozen_at.0)
-            .execute(&mut *tx)
-            .await?;
-            let origin = Origin::Index(index.clone());
-            for member in membership.members() {
-                insert_run_key(&mut tx, run_id, member, &origin).await?;
-            }
-        }
-        tx.commit().await?;
-        Ok(())
-    }
-
-    /// Ends a run that has not ended.
+    /// Ends a run that has not ended. `Complete` needs what the Store can
+    /// check: every planned index frozen and every planned pair with at
+    /// least one row. Whether the failures left are final (the attempt cap)
+    /// is the runner's call.
     pub async fn end_run(
         &self,
         run_id: RunId,
@@ -248,6 +186,9 @@ impl Store {
     ) -> Result<()> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         require_open(&mut tx, run_id).await?;
+        if outcome == Finish::Complete {
+            require_complete(&mut tx, run_id).await?;
+        }
         insert_run_end(&mut tx, run_id, finished_at, outcome.into(), reason).await?;
         tx.commit().await?;
         Ok(())
@@ -342,7 +283,7 @@ async fn insert_run(
     Ok(RunId(id))
 }
 
-async fn insert_run_key(
+pub(super) async fn insert_run_key(
     conn: &mut SqliteConnection,
     run_id: RunId,
     key: &Key,
@@ -374,40 +315,56 @@ async fn insert_run_end(
     Ok(())
 }
 
-/// Refuses a run that does not exist or has ended.
-async fn require_open(conn: &mut SqliteConnection, run_id: RunId) -> Result<()> {
+/// Refuses a run that does not exist or has ended; returns its window.
+pub(super) async fn require_open(conn: &mut SqliteConnection, run_id: RunId) -> Result<Window> {
     let row = sqlx::query(
-        "SELECT (SELECT COUNT(*) FROM run WHERE run_id = ?1) AS exists_,
-                (SELECT COUNT(*) FROM run_end WHERE run_id = ?1) AS ended",
+        "SELECT r.window_start, r.window_end,
+                EXISTS (SELECT 1 FROM run_end e WHERE e.run_id = r.run_id) AS ended
+         FROM run r WHERE r.run_id = ?",
     )
+    .bind(run_id.0)
+    .fetch_optional(conn)
+    .await?
+    .ok_or(StoreError::UnknownRun(run_id))?;
+    if row.try_get::<bool, _>("ended")? {
+        return Err(StoreError::RunEnded(run_id));
+    }
+    Ok(Window::new(
+        UnixMs(row.try_get("window_start")?),
+        UnixMs(row.try_get("window_end")?),
+    )?)
+}
+
+/// Refuses `complete` for a run with an unfrozen planned index or a planned
+/// pair without any row.
+async fn require_complete(conn: &mut SqliteConnection, run_id: RunId) -> Result<()> {
+    let row = sqlx::query(&format!(
+        "SELECT
+            NOT EXISTS (SELECT 1 FROM run_key k
+                        WHERE k.run_id = ?1 AND k.origin = 'index-symbol'
+                          AND NOT EXISTS (SELECT 1 FROM run_membership m
+                                          WHERE m.run_id = k.run_id AND m.index_sym = k.key))
+                AS frozen,
+            (SELECT COUNT(*) FROM ({PLANNED_PAIRS}) p
+             WHERE p.run_id = ?1
+               AND NOT EXISTS (SELECT 1 FROM observation o
+                               WHERE o.run_id = p.run_id AND o.key = p.key
+                                 AND o.endpoint_id = p.endpoint_id)) AS missing"
+    ))
     .bind(run_id.0)
     .fetch_one(conn)
     .await?;
-    if row.try_get::<i64, _>("exists_")? == 0 {
-        return Err(StoreError::UnknownRun(run_id));
+    let frozen: bool = row.try_get("frozen")?;
+    let missing: i64 = row.try_get("missing")?;
+    if frozen && missing == 0 {
+        Ok(())
+    } else {
+        Err(StoreError::NotComplete {
+            run: run_id,
+            frozen,
+            pairs_without_rows: usize::try_from(missing).expect("a COUNT is never negative"),
+        })
     }
-    if row.try_get::<i64, _>("ended")? > 0 {
-        return Err(StoreError::RunEnded(run_id));
-    }
-    Ok(())
-}
-
-/// Whether `run_id` holds an `ok` observation of an index endpoint for `index`.
-async fn has_ok_constituents(
-    conn: &mut SqliteConnection,
-    run_id: RunId,
-    index: &Key,
-) -> Result<bool> {
-    Ok(sqlx::query_scalar(
-        "SELECT EXISTS (
-            SELECT 1 FROM observation o JOIN endpoint e ON e.endpoint_id = o.endpoint_id
-            WHERE o.run_id = ? AND o.key = ? AND o.status = 'ok' AND e.key_kind = 'index'
-        )",
-    )
-    .bind(run_id.0)
-    .bind(index.as_str())
-    .fetch_one(conn)
-    .await?)
 }
 
 pub(super) async fn load_plan(

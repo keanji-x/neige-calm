@@ -7,8 +7,8 @@ use research_archive::{OpenError, Store};
 
 use crate::support::{dump, fresh, populated, raw};
 
-async fn reopen(path: &std::path::Path, catalog: &Catalog) -> Result<Store, OpenError> {
-    Store::open(path, catalog).await
+async fn reopen(path: &std::path::Path) -> Result<Store, OpenError> {
+    Store::open(path).await
 }
 
 #[tokio::test]
@@ -26,24 +26,25 @@ async fn new_file_gets_the_catalog_and_reopens_untouched() {
         .await
         .unwrap();
     assert_eq!(mode, "wal");
-    let ids: Vec<String> = sqlx::query_scalar("SELECT endpoint_id FROM endpoint ORDER BY rowid")
-        .fetch_all(&mut conn)
-        .await
-        .unwrap();
+    let ids: Vec<String> =
+        sqlx::query_scalar("SELECT endpoint_id FROM endpoint ORDER BY endpoint_id")
+            .fetch_all(&mut conn)
+            .await
+            .unwrap();
     assert_eq!(
         ids,
         [
             "consensus",
             "forecast_eps",
+            "index_constituents",
+            "rating_detail",
             "rating_latest",
             "ratings",
-            "rating_detail",
             "valuation",
-            "index_constituents"
         ]
     );
     drop(conn);
-    let store = reopen(&path, &Catalog::compiled()).await.unwrap();
+    let store = reopen(&path).await.unwrap();
     store.close().await;
     let mut conn = raw(&path, false).await;
     assert_eq!(dump(&mut conn).await, before);
@@ -58,7 +59,7 @@ async fn refuses_a_wrong_user_version() {
         .await
         .unwrap();
     drop(conn);
-    match reopen(&path, &Catalog::compiled()).await {
+    match reopen(&path).await {
         Err(OpenError::UserVersion {
             found: 2,
             expected: 1,
@@ -67,24 +68,44 @@ async fn refuses_a_wrong_user_version() {
     }
 }
 
+/// A refused file is left exactly as it was: same bytes, still in its own
+/// journal mode, no WAL file.
 #[tokio::test]
-async fn refuses_a_foreign_database() {
+async fn refuses_a_foreign_database_without_touching_it() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("other.sqlite3");
     std::fs::File::create(&path).unwrap();
     let mut conn = raw(&path, false).await;
-    sqlx::query("CREATE TABLE t (x)")
+    sqlx::raw_sql("CREATE TABLE t (x); INSERT INTO t VALUES (1);")
         .execute(&mut conn)
         .await
         .unwrap();
     drop(conn);
+    let before = std::fs::read(&path).unwrap();
     assert!(matches!(
-        reopen(&path, &Catalog::compiled()).await,
+        reopen(&path).await,
         Err(OpenError::UserVersion {
             found: 0,
             expected: 1
         })
     ));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert!(!dir.path().join("other.sqlite3-wal").exists());
+    let mut conn = raw(&path, false).await;
+    let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(mode, "delete");
+}
+
+#[tokio::test]
+async fn a_missing_file_is_created() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("new.sqlite3");
+    Store::open(&path).await.unwrap().close().await;
+    assert!(path.exists());
+    reopen(&path).await.unwrap().close().await;
 }
 
 async fn schema_refusal(sql: &str) -> research_archive::store::SchemaDrift {
@@ -92,7 +113,7 @@ async fn schema_refusal(sql: &str) -> research_archive::store::SchemaDrift {
     let mut conn = raw(&path, false).await;
     sqlx::raw_sql(sql).execute(&mut conn).await.unwrap();
     drop(conn);
-    match reopen(&path, &Catalog::compiled()).await {
+    match reopen(&path).await {
         Err(OpenError::Schema(drift)) => drift,
         other => panic!("{sql}: {other:?}"),
     }
@@ -145,7 +166,7 @@ async fn ddl_text_is_what_the_file_keeps() {
 
 async fn catalog_refusal(catalog: Vec<Endpoint>) -> research_archive::store::CatalogDrift {
     let (_dir, path) = populated().await;
-    match reopen(&path, &Catalog::new(catalog).unwrap()).await {
+    match Store::open_with_catalog(&path, &Catalog::new(catalog).unwrap()).await {
         Err(OpenError::Catalog(drift)) => drift,
         other => panic!("{other:?}"),
     }

@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use chrono::NaiveDate;
 use research_archive::catalog::{Catalog, EndpointId};
 use research_archive::store::{PlanRequest, RunPlan};
-use research_archive::types::{AsOf, Key, Membership, Outcome, Source, UnixMs, Window};
+use research_archive::types::{
+    AsOf, ErrorClass, ErrorDetail, FailureClass, Key, Membership, Outcome, Source, UnixMs, Window,
+};
 use research_archive::{Store, StoreError};
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{ConnectOptions, Row, SqliteConnection};
@@ -32,7 +34,7 @@ pub struct Fixture {
 pub async fn fresh() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("archive.sqlite3");
-    let store = Store::open(&path, &Catalog::compiled()).await.unwrap();
+    let store = Store::open(&path).await.unwrap();
     Fixture {
         _dir: dir,
         path,
@@ -84,15 +86,47 @@ pub fn ok(body: &[u8]) -> Outcome {
     }
 }
 
-/// Records an `ok` constituents observation and freezes `index` as observed
-/// with `members`. Panics on failure.
+/// A complete `index_constituents` body listing `members`.
+pub fn constituents(members: &[&str]) -> Vec<u8> {
+    let stocks: Vec<String> = members
+        .iter()
+        .map(|m| format!("{{\"symbol\":\"{m}\"}}"))
+        .collect();
+    format!(
+        "{{\"total\":{},\"stocks\":[{}]}}",
+        members.len(),
+        stocks.join(",")
+    )
+    .into_bytes()
+}
+
+/// A failure outcome with a plausible detail for its class.
+pub fn failed(class: FailureClass) -> Outcome {
+    let (error_class, code) = match class {
+        FailureClass::Throttled => (ErrorClass::Envelope, "429002"),
+        FailureClass::Transient => (ErrorClass::Transport, "request_timeout"),
+        FailureClass::AuthUnavailable => (ErrorClass::Auth, "invalid_access_token"),
+        FailureClass::RegionRestricted => (ErrorClass::DcRegionRestricted, "dc_region_restricted"),
+        FailureClass::Permanent => (ErrorClass::HttpStatus, "404"),
+    };
+    Outcome::Failed {
+        class,
+        error: ErrorDetail {
+            class: error_class,
+            code: code.into(),
+        },
+        body: None,
+    }
+}
+
+/// Records an `ok` constituents observation per index at `frozen_at`, then
+/// freezes the run at `frozen_at`. Panics on failure.
 pub async fn observe_and_freeze(
     store: &Store,
     plan: &RunPlan,
     frozen_at: UnixMs,
     indexes: &[(&str, &[&str])],
-) {
-    let mut frozen = Vec::new();
+) -> Vec<(Key, Membership)> {
     for (index, members) in indexes {
         store
             .record_observation(
@@ -100,26 +134,20 @@ pub async fn observe_and_freeze(
                 &key(index),
                 endpoint("index_constituents"),
                 frozen_at,
-                &ok(format!("{{\"index\":\"{index}\"}}").as_bytes()),
+                &ok(&constituents(members)),
             )
             .await
             .unwrap();
-        frozen.push((
-            key(index),
-            Membership::Observed {
-                members: keys(members),
-            },
-        ));
     }
     store
-        .freeze_membership(plan.run_id, frozen_at, &frozen)
+        .freeze_membership(plan.run_id, frozen_at)
         .await
-        .unwrap();
+        .unwrap()
 }
 
 /// A closed archive with at least one row in every table: day 1 plans
 /// `AAPL.US` and `.SPX.US`, freezes `.SPX.US` = {AAPL.US, MSFT.US}, records
-/// one consensus body, and ends `complete`.
+/// one consensus body, and ends `partial`.
 pub async fn populated() -> (tempfile::TempDir, PathBuf) {
     let f = fresh().await;
     let plan = f
@@ -148,8 +176,8 @@ pub async fn populated() -> (tempfile::TempDir, PathBuf) {
         .end_run(
             plan.run_id,
             at(1, 30),
-            research_archive::types::Finish::Complete,
-            None,
+            research_archive::types::Finish::Partial,
+            Some("window closed"),
         )
         .await
         .unwrap();
@@ -186,8 +214,9 @@ pub async fn raw(path: &Path, recursive_triggers: bool) -> SqliteConnection {
     conn
 }
 
-/// Every row of every table, with its rowid, as SQL literals (`quote()`), so
-/// two dumps are equal only when the stored bytes are.
+/// Every row of every table as SQL literals (`quote()`), sorted, so two
+/// dumps are equal only when the stored bytes are. No table has a hidden
+/// rowid: `run` and `run_end` key on it, the rest are `WITHOUT ROWID`.
 pub async fn dump(conn: &mut SqliteConnection) -> Vec<String> {
     let mut out = Vec::new();
     for table in TABLES {
@@ -199,13 +228,14 @@ pub async fn dump(conn: &mut SqliteConnection) -> Vec<String> {
             .map(|r| format!("quote({})", r.get::<String, _>("name")))
             .collect();
         let sql = format!(
-            "SELECT '{table}|' || quote(rowid) || '|' || {} FROM {table} ORDER BY rowid",
+            "SELECT '{table}|' || {} FROM {table}",
             cols.join(" || '|' || ")
         );
-        let rows: Vec<String> = sqlx::query_scalar(&sql)
+        let mut rows: Vec<String> = sqlx::query_scalar(&sql)
             .fetch_all(&mut *conn)
             .await
             .unwrap();
+        rows.sort();
         out.extend(rows);
     }
     out

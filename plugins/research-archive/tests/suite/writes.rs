@@ -1,24 +1,16 @@
-//! The Store's writes: plan and freeze atomicity (I4 at the Store level),
-//! idempotent plans, the attempt counter, run ends and missed days.
+//! The Store's writes: plan atomicity (I4 at the Store level), idempotent
+//! plans, the window bound, the attempt counter, run ends and missed days.
+//! The freeze has its own module.
 
 use research_archive::StoreError;
 use research_archive::types::{
-    FailureClass, Finish, Membership, Outcome, RunId, RunOutcome, Source, Status, UnixMs,
+    FailureClass, Finish, Outcome, RunId, RunOutcome, Source, Status, UnixMs,
 };
 
 use crate::support::{
-    as_of, at, dump, endpoint, fresh, key, keys, observe_and_freeze, ok, plan_request, raw,
-    sqlite_message, window,
+    as_of, at, constituents, endpoint, failed, fresh, key, keys, observe_and_freeze, ok,
+    plan_request, raw, sqlite_message, window,
 };
-
-fn failed(class: FailureClass) -> Outcome {
-    Outcome::Failed {
-        class,
-        body: None,
-        error_class: Some("envelope".into()),
-        error_code: Some("429002".into()),
-    }
-}
 
 #[tokio::test]
 async fn plan_is_idempotent_per_source_and_day() {
@@ -71,170 +63,13 @@ async fn plan_aborted_midway_leaves_nothing_and_a_retry_succeeds() {
         assert_eq!(n, 0, "{table}");
     }
     drop(conn);
-    let store = research_archive::Store::open(&f.path, &research_archive::Catalog::compiled())
-        .await
-        .unwrap();
+    let store = research_archive::Store::open(&f.path).await.unwrap();
     let plan = store
         .plan_run(&plan_request(1, &["AAPL.US", "MSFT.US"], &[".SPX.US"]))
         .await
         .unwrap();
     assert!(plan.created);
     assert_eq!(plan.config, keys(&["AAPL.US", "MSFT.US"]));
-}
-
-#[tokio::test]
-async fn freeze_aborted_midway_leaves_nothing_and_a_retry_succeeds() {
-    let f = fresh().await;
-    let plan = f
-        .store
-        .plan_run(&plan_request(1, &["AAPL.US"], &[".NDX.US", ".SPX.US"]))
-        .await
-        .unwrap();
-    for index in [".NDX.US", ".SPX.US"] {
-        f.store
-            .record_observation(
-                plan.run_id,
-                &key(index),
-                endpoint("index_constituents"),
-                at(1, 5),
-                &ok(index.as_bytes()),
-            )
-            .await
-            .unwrap();
-    }
-    f.store.close().await;
-    let before = dump(&mut raw(&f.path, false).await).await;
-    let store = research_archive::Store::open(&f.path, &research_archive::Catalog::compiled())
-        .await
-        .unwrap();
-    // `.NDX.US` and its members are written, then `.SPX.US`'s duplicate
-    // member aborts the whole freeze.
-    let bad = [
-        (
-            key(".NDX.US"),
-            Membership::Observed {
-                members: keys(&["AAPL.US", "NVDA.US"]),
-            },
-        ),
-        (
-            key(".SPX.US"),
-            Membership::Observed {
-                members: keys(&["MSFT.US", "MSFT.US"]),
-            },
-        ),
-    ];
-    let err = store
-        .freeze_membership(plan.run_id, at(1, 6), &bad)
-        .await
-        .unwrap_err();
-    assert!(sqlite_message(&err).contains("run_key row exists"), "{err}");
-    assert!(!store.plan(plan.run_id).await.unwrap().frozen);
-    store.clone().close().await;
-    assert_eq!(dump(&mut raw(&f.path, false).await).await, before);
-
-    let store = research_archive::Store::open(&f.path, &research_archive::Catalog::compiled())
-        .await
-        .unwrap();
-    let good = [
-        (bad[0].0.clone(), bad[0].1.clone()),
-        (
-            key(".SPX.US"),
-            Membership::Observed {
-                members: keys(&["MSFT.US"]),
-            },
-        ),
-    ];
-    store
-        .freeze_membership(plan.run_id, at(1, 7), &good)
-        .await
-        .unwrap();
-    assert!(store.plan(plan.run_id).await.unwrap().frozen);
-}
-
-#[tokio::test]
-async fn a_second_freeze_is_refused_and_writes_nothing() {
-    let f = fresh().await;
-    let plan = f
-        .store
-        .plan_run(&plan_request(1, &[], &[".SPX.US"]))
-        .await
-        .unwrap();
-    observe_and_freeze(&f.store, &plan, at(1, 5), &[(".SPX.US", &["AAPL.US"])]).await;
-    let again = [(
-        key(".SPX.US"),
-        Membership::Observed {
-            members: keys(&["MSFT.US"]),
-        },
-    )];
-    assert!(matches!(
-        f.store.freeze_membership(plan.run_id, at(1, 6), &again).await,
-        Err(StoreError::AlreadyFrozen(id)) if id == plan.run_id
-    ));
-    let u = f.store.universe_at(at(1, 100)).await.unwrap().unwrap();
-    assert!(u.keys().contains(&key("AAPL.US")) && !u.keys().contains(&key("MSFT.US")));
-}
-
-#[tokio::test]
-async fn freeze_checks_the_indexes_and_their_sources() {
-    let f = fresh().await;
-    let day1 = f
-        .store
-        .plan_run(&plan_request(1, &[], &[".SPX.US"]))
-        .await
-        .unwrap();
-    observe_and_freeze(&f.store, &day1, at(1, 5), &[(".SPX.US", &["AAPL.US"])]).await;
-    let day2 = f
-        .store
-        .plan_run(&plan_request(2, &[], &[".SPX.US"]))
-        .await
-        .unwrap();
-    let freeze = |m: Membership| [(key(".SPX.US"), m)];
-    let observed = Membership::Observed {
-        members: keys(&["AAPL.US"]),
-    };
-    // No ok constituents in this run yet.
-    assert!(matches!(
-        f.store.freeze_membership(day2.run_id, at(2, 5), &freeze(observed)).await,
-        Err(StoreError::NoMembershipObservation { source_run, .. }) if source_run == day2.run_id
-    ));
-    // A carry must name an earlier run.
-    for source in [day2.run_id, RunId(day2.run_id.0 + 1)] {
-        let carry = Membership::Carried {
-            source,
-            members: keys(&["AAPL.US"]),
-        };
-        assert!(matches!(
-            f.store
-                .freeze_membership(day2.run_id, at(2, 5), &freeze(carry))
-                .await,
-            Err(StoreError::CarryNotEarlier { .. })
-        ));
-    }
-    // The index set must be exactly the plan's.
-    let wrong = [(key(".NDX.US"), Membership::None)];
-    assert!(matches!(
-        f.store
-            .freeze_membership(day2.run_id, at(2, 5), &wrong)
-            .await,
-        Err(StoreError::FreezeIndexes { .. })
-    ));
-    let carried = Membership::Carried {
-        source: day1.run_id,
-        members: keys(&["AAPL.US"]),
-    };
-    f.store
-        .freeze_membership(day2.run_id, at(2, 5), &freeze(carried))
-        .await
-        .unwrap();
-    f.store.close().await;
-    let mut conn = raw(&f.path, false).await;
-    let row: (String, Option<i64>) =
-        sqlx::query_as("SELECT mode, source_run_id FROM run_membership WHERE run_id = ?")
-            .bind(day2.run_id.0)
-            .fetch_one(&mut conn)
-            .await
-            .unwrap();
-    assert_eq!(row, ("carried".to_owned(), Some(day1.run_id.0)));
 }
 
 /// `source_run_id` is set if and only if the mode is `carried`, on any
@@ -281,7 +116,17 @@ async fn closed_sets_are_checked_on_any_connection() {
     for bad in [
         "INSERT INTO observation VALUES (1, 'AAPL.US', 'consensus', 9, 0, 'not_found', NULL, NULL, NULL)",
         "INSERT INTO observation VALUES (1, 'AAPL.US', 'consensus', 9, 0, 'ok', NULL, NULL, NULL)",
-        "INSERT INTO observation VALUES (1, 'AAPL.US', 'consensus', 0, 0, 'permanent', NULL, NULL, NULL)",
+        "INSERT INTO observation VALUES (1, 'AAPL.US', 'consensus', 0, 0, 'permanent', NULL, 'http_status', '404')",
+        // A failure needs its class and code; ok has neither.
+        "INSERT INTO observation VALUES (1, 'AAPL.US', 'consensus', 9, 0, 'permanent', NULL, NULL, NULL)",
+        "INSERT INTO observation VALUES (1, 'AAPL.US', 'consensus', 9, 0, 'permanent', NULL, 'http_status', NULL)",
+        "INSERT INTO observation VALUES (1, 'AAPL.US', 'consensus', 9, 0, 'permanent', NULL, 'http_status', '')",
+        "INSERT INTO observation VALUES (1, 'AAPL.US', 'consensus', 9, 0, 'permanent', NULL, 'teapot', 'x')",
+        "INSERT INTO observation VALUES (1, 'AAPL.US', 'consensus', 9, 0, 'permanent', NULL, 'http_status', 'Not Found')",
+        "INSERT INTO observation VALUES (1, 'AAPL.US', 'consensus', 9, 0, 'transient', NULL, 'incomplete_membership', 'zero_total')",
+        "INSERT INTO observation VALUES (1, 'AAPL.US', 'consensus', 9, 0, 'permanent', NULL, 'dc_region_restricted', 'x')",
+        "INSERT INTO observation VALUES (1, 'AAPL.US', 'consensus', 9, 0, 'region_restricted', NULL, 'auth', 'x')",
+        "INSERT INTO observation VALUES (1, 'AAPL.US', 'consensus', 9, 0, 'ok', (SELECT MIN(sha256) FROM blob), 'envelope', '1')",
         "INSERT INTO run_end VALUES (9, 0, 'aborted', NULL)",
         "INSERT INTO run_key VALUES (1, 'X.US', 'index:')",
         "INSERT INTO run_key VALUES (1, 'X.US', 'watchlist')",
@@ -338,7 +183,7 @@ async fn attempts_count_per_run_key_and_endpoint() {
     );
     // The next run starts again at 1.
     f.store
-        .end_run(plan.run_id, at(1, 9), Finish::Complete, None)
+        .end_run(plan.run_id, at(1, 9), Finish::Partial, None)
         .await
         .unwrap();
     let day2 = f
@@ -370,9 +215,14 @@ async fn observations_must_be_planned_and_the_run_open() {
         .unwrap();
     let rec = |k: &'static str, e: &'static str| {
         let store = f.store.clone();
+        let body = if e == "index_constituents" {
+            constituents(&["A.US"])
+        } else {
+            b"x".to_vec()
+        };
         async move {
             store
-                .record_observation(plan.run_id, &key(k), endpoint(e), at(1, 1), &ok(b"x"))
+                .record_observation(plan.run_id, &key(k), endpoint(e), at(1, 1), &ok(&body))
                 .await
         }
     };
@@ -411,7 +261,7 @@ async fn observations_must_be_planned_and_the_run_open() {
         Err(StoreError::RunEnded(_))
     ));
     assert!(matches!(
-        f.store.freeze_membership(plan.run_id, at(1, 4), &[]).await,
+        f.store.freeze_membership(plan.run_id, at(1, 4)).await,
         Err(StoreError::RunEnded(_))
     ));
     assert!(matches!(
@@ -445,7 +295,7 @@ async fn dangling_runs_close_as_partial_once_their_window_has_closed() {
         .await
         .unwrap();
     f.store
-        .end_run(d1.run_id, at(1, 9), Finish::Complete, None)
+        .end_run(d1.run_id, at(1, 9), Finish::Partial, None)
         .await
         .unwrap();
     // Day 2's window has closed; day 3's has not (its end is the bound).
@@ -460,7 +310,7 @@ async fn dangling_runs_close_as_partial_once_their_window_has_closed() {
     assert!(f.store.close_dangling_runs(now).await.unwrap().is_empty());
     assert_eq!(
         f.store.plan(d1.run_id).await.unwrap().ended,
-        Some(RunOutcome::Complete)
+        Some(RunOutcome::Partial)
     );
     assert_eq!(
         f.store.plan(d2.run_id).await.unwrap().ended,
@@ -497,4 +347,148 @@ async fn missed_days_need_a_closed_window_and_no_run() {
         .await
         .unwrap();
     assert!(!again.created && again.run_id == missed && again.ended == Some(RunOutcome::Missed));
+}
+
+/// I1 at the single owner: no row outside its run's window.
+#[tokio::test]
+async fn rows_outside_the_window_are_refused() {
+    let f = fresh().await;
+    let mut early = plan_request(1, &["AAPL.US"], &[]);
+    early.started_at = UnixMs(window(1).start().0 - 1);
+    assert!(matches!(
+        f.store.plan_run(&early).await,
+        Err(StoreError::PlanOutsideWindow { .. })
+    ));
+    let plan = f
+        .store
+        .plan_run(&plan_request(1, &["AAPL.US"], &[]))
+        .await
+        .unwrap();
+    let rec = |t: UnixMs| {
+        let store = f.store.clone();
+        async move {
+            store
+                .record_observation(
+                    plan.run_id,
+                    &key("AAPL.US"),
+                    endpoint("ratings"),
+                    t,
+                    &ok(b"r"),
+                )
+                .await
+        }
+    };
+    for t in [UnixMs(window(1).start().0 - 1), window(1).end()] {
+        assert!(
+            matches!(rec(t).await, Err(StoreError::OutsideWindow { at, .. }) if at == t),
+            "{t:?}"
+        );
+    }
+    assert_eq!(rec(window(1).start()).await.unwrap(), 1);
+    assert_eq!(rec(UnixMs(window(1).end().0 - 1)).await.unwrap(), 2);
+}
+
+/// `complete` needs every planned index frozen and every planned pair with
+/// a row; `partial` needs nothing.
+#[tokio::test]
+async fn complete_needs_a_frozen_universe_and_a_row_per_pair() {
+    let f = fresh().await;
+    let plan = f
+        .store
+        .plan_run(&plan_request(1, &["AAPL.US"], &[".SPX.US"]))
+        .await
+        .unwrap();
+    let complete = || {
+        let store = f.store.clone();
+        async move {
+            store
+                .end_run(plan.run_id, at(1, 500), Finish::Complete, None)
+                .await
+        }
+    };
+    assert!(matches!(
+        complete().await,
+        Err(StoreError::NotComplete {
+            frozen: false,
+            pairs_without_rows: 7,
+            ..
+        })
+    ));
+    observe_and_freeze(&f.store, &plan, at(1, 10), &[(".SPX.US", &["MSFT.US"])]).await;
+    // AAPL.US and MSFT.US × 6 security endpoints are still empty.
+    assert!(matches!(
+        complete().await,
+        Err(StoreError::NotComplete {
+            frozen: true,
+            pairs_without_rows: 12,
+            ..
+        })
+    ));
+    let catalog = research_archive::Catalog::compiled();
+    for e in catalog.for_kind(research_archive::KeyKind::Security) {
+        for k in ["AAPL.US", "MSFT.US"] {
+            f.store
+                .record_observation(
+                    plan.run_id,
+                    &key(k),
+                    e.id,
+                    at(1, 20),
+                    &failed(FailureClass::Permanent),
+                )
+                .await
+                .unwrap();
+        }
+    }
+    complete().await.unwrap();
+    assert_eq!(
+        f.store.plan(plan.run_id).await.unwrap().ended,
+        Some(RunOutcome::Complete)
+    );
+}
+
+/// Two Stores on one file, writing the same pair at once: `BEGIN IMMEDIATE`
+/// and the busy timeout serialize them, and the attempts are 1..=n with no
+/// gap or duplicate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_writers_number_attempts_without_gaps() {
+    let f = fresh().await;
+    let plan = f
+        .store
+        .plan_run(&plan_request(1, &["AAPL.US"], &[]))
+        .await
+        .unwrap();
+    let other = research_archive::Store::open(&f.path).await.unwrap();
+    let mut tasks = Vec::new();
+    for i in 0..20 {
+        let store = if i % 2 == 0 {
+            f.store.clone()
+        } else {
+            other.clone()
+        };
+        tasks.push(tokio::spawn(async move {
+            store
+                .record_observation(
+                    plan.run_id,
+                    &key("AAPL.US"),
+                    endpoint("consensus"),
+                    at(1, 100 + i),
+                    &failed(FailureClass::Throttled),
+                )
+                .await
+                .unwrap()
+        }));
+    }
+    let mut numbers = Vec::new();
+    for t in tasks {
+        numbers.push(t.await.unwrap());
+    }
+    numbers.sort();
+    assert_eq!(numbers, (1..=20).collect::<Vec<u32>>());
+    let rows = f
+        .store
+        .attempts(plan.run_id, &key("AAPL.US"), endpoint("consensus"))
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 20);
+    other.close().await;
 }

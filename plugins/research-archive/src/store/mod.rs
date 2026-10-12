@@ -1,6 +1,7 @@
 //! `Store`: the single owner of `archive.sqlite3`: its schema, guard
 //! triggers and catalog check, and every write the capture job makes.
 
+mod freeze;
 mod read;
 pub mod schema;
 mod write;
@@ -8,13 +9,12 @@ mod write;
 use std::path::Path;
 use std::time::Duration;
 
-use sqlx::sqlite::{
-    SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
-};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Row, SqliteConnection};
 
 use crate::catalog::{Catalog, Endpoint, EndpointId};
-use crate::types::{InvalidValue, Key, RunId};
+use crate::membership::IncompleteMembership;
+use crate::types::{InvalidValue, Key, RunId, UnixMs};
 pub use read::{PairCoverage, PointRead, Universe};
 pub use schema::SchemaDrift;
 pub use write::{PlanRequest, RunPlan};
@@ -30,6 +30,8 @@ pub enum OpenError {
     Schema(SchemaDrift),
     #[error("archive endpoint catalog differs from the compiled catalog: {0}")]
     Catalog(CatalogDrift),
+    #[error("the archive did not switch to WAL; journal mode is {0}")]
+    JournalMode(String),
 }
 
 /// How the stored `endpoint` rows differ from the compiled catalog.
@@ -72,16 +74,42 @@ pub enum StoreError {
         key: Key,
         endpoint: String,
     },
-    #[error("freeze of run {run} names indexes {given:?}, the plan has {planned:?}")]
-    FreezeIndexes {
-        run: RunId,
-        planned: Vec<Key>,
-        given: Vec<Key>,
+    #[error("a plan started at {started_at:?} is outside its window")]
+    PlanOutsideWindow { started_at: UnixMs },
+    #[error("{at:?} is outside the window of run {run}")]
+    OutsideWindow { run: RunId, at: UnixMs },
+    #[error("an ok index_constituents body for {index} is not a membership: {reason}")]
+    IncompleteMembership {
+        index: Key,
+        reason: IncompleteMembership,
     },
-    #[error("run {source_run} holds no ok constituents observation for {index}")]
-    NoMembershipObservation { source_run: RunId, index: Key },
-    #[error("a carry of {index} into run {run} must point to an earlier run")]
-    CarryNotEarlier { run: RunId, index: Key },
+    #[error("the catalog has no membership endpoint, and run {0} plans indexes")]
+    NoMembershipEndpoint(RunId),
+    #[error(
+        "the stored ok constituents body of {index} (run {source_run}, attempt {attempt}) is not a membership: {reason}"
+    )]
+    StoredMembershipInvalid {
+        source_run: RunId,
+        index: Key,
+        attempt: i64,
+        reason: IncompleteMembership,
+    },
+    #[error(
+        "freeze at {frozen_at:?} precedes the observation of {index} fetched at {fetched_at:?}"
+    )]
+    FreezeBeforeObservation {
+        index: Key,
+        frozen_at: UnixMs,
+        fetched_at: UnixMs,
+    },
+    #[error(
+        "run {run} is not complete: frozen {frozen}, {pairs_without_rows} planned pairs have no row"
+    )]
+    NotComplete {
+        run: RunId,
+        frozen: bool,
+        pairs_without_rows: usize,
+    },
     #[error("run {0} already exists for this source and day")]
     RunExists(RunId),
     #[error("the window of a missed day must have closed")]
@@ -98,15 +126,29 @@ pub struct Store {
 }
 
 impl Store {
-    /// Opens `path` in WAL mode. A new (empty) file gets the schema and the
-    /// catalog in one transaction. An existing file is refused unless its
-    /// `user_version`, its whole schema (every table, index and guard
-    /// trigger, by SQL text) and its `endpoint` rows match this build.
-    pub async fn open(path: &Path, catalog: &Catalog) -> std::result::Result<Store, OpenError> {
+    /// Opens the archive at `path` against the compiled catalog.
+    ///
+    /// A missing file is created, and a new (empty) file gets the schema and
+    /// the catalog in one transaction: the first capture creates the
+    /// archive. An existing file is refused unless its `user_version`, its
+    /// whole schema (every table, index and guard trigger, by SQL text) and
+    /// its `endpoint` rows match this build. A refused file is left as it
+    /// was: the WAL journal mode is set only after the check passes.
+    pub async fn open(path: &Path) -> std::result::Result<Store, OpenError> {
+        Store::open_with_catalog(path, &Catalog::compiled()).await
+    }
+
+    /// `open` against another catalog. Only the catalog-drift tests use it.
+    #[doc(hidden)]
+    pub async fn open_with_catalog(
+        path: &Path,
+        catalog: &Catalog,
+    ) -> std::result::Result<Store, OpenError> {
+        // No `journal_mode` here: setting it would rewrite a file we may
+        // refuse. `foreign_keys` and `synchronous` are per connection.
         let options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Full)
             .foreign_keys(true)
             .busy_timeout(Duration::from_secs(5));
@@ -149,7 +191,7 @@ impl Store {
                 insert_endpoint(&mut tx, e).await?;
             }
             tx.commit().await?;
-            return Ok(());
+            return self.enable_wal().await;
         }
         if found_version != expected_version {
             return Err(OpenError::UserVersion {
@@ -164,7 +206,19 @@ impl Store {
             return Err(OpenError::Catalog(drift));
         }
         tx.commit().await?;
-        Ok(())
+        self.enable_wal().await
+    }
+
+    /// Switches the accepted file to WAL (persistent in the file).
+    async fn enable_wal(&self) -> std::result::Result<(), OpenError> {
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode = WAL")
+            .fetch_one(&self.pool)
+            .await?;
+        if mode == "wal" {
+            Ok(())
+        } else {
+            Err(OpenError::JournalMode(mode))
+        }
     }
 
     async fn catalog_drift(
