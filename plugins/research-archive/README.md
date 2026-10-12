@@ -383,8 +383,11 @@ token, and the refresh token when present, must be non-empty visible ASCII,
 which the SDK can send. A token that fails is refused by `auth import`,
 reported by `auth status` (exit 75), and never written. Errors name the
 field, never the value. `--config`, `--from` and the stored token must be
-regular files of at most 64 KiB; a FIFO or a device is refused before it is
-opened, and `auth import` checks `--from` before it takes the lock.
+regular files of at most 64 KiB. Each is opened with `O_NONBLOCK`, so a FIFO
+cannot block the open, and its type is then checked on the open file
+(`fstat`): a FIFO, a device or a directory is refused. `auth import` also
+checks `--from` with `stat` before it takes the lock, so a wrong path never
+holds the lock at all.
 
 - `auth import --from <file>` copies a token file the SDK wrote for the
   configured client id. It refuses a file for another client id and a
@@ -398,7 +401,11 @@ opened, and `auth import` checks `--from` before it takes the lock.
   `AUTH_UNAVAILABLE` instead. The whole login ends within six minutes (the
   SDK's five-minute wait for the browser plus a minute for the code
   exchange, which has no timeout of its own); past that it exits
-  `AUTH_UNAVAILABLE`, has saved nothing, and has released the lock.
+  `AUTH_UNAVAILABLE`, has saved nothing, and has released the lock. On a
+  headless host the browser runs elsewhere and redirects to
+  `localhost:<callback_port>`, so forward that port to the server first, for
+  example `ssh -L <callback_port>:localhost:<callback_port> <host>`, then
+  open the printed URL on the machine running ssh.
 - `auth status` prints the stored token's expiry and whether it has a
   refresh token, and exits `AUTH_UNAVAILABLE` when the token is unusable.
 
@@ -474,8 +481,13 @@ Two integration binaries:
   `LongbridgeSource` in process. Its harness serializes them, refuses a
   `.env` in reach, and pins the proxies to a local black hole, `NO_PROXY`
   to loopback, `LONGBRIDGE_ENV` and `LONGBRIDGE_REGION`. A source scan
-  (`net::scan`) fails if any other test, or an unlisted production file,
-  builds one.
+  (`net::scan`) fails if any other test code names the SDK or builds a
+  client: every file under `tests/` but `tests/net/`, every `src/**/tests.rs`
+  and every `#[cfg(test)]` item in `src/`. Production code is not scanned.
+- **Harness note.** `hermetic::pinned` sets process-wide environment once;
+  its `SAFETY` argument assumes nextest's one-process-per-test model. Under
+  `cargo test` the binary's tests share a process and are serialized by a
+  lock, but they do not isolate the environment from each other.
 
 | test module | covers |
 |---|---|

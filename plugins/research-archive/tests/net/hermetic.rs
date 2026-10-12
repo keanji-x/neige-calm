@@ -79,9 +79,11 @@ static PROXY: OnceLock<Proxy> = OnceLock::new();
 pub fn pinned() -> &'static Proxy {
     PROXY.get_or_init(|| {
         let proxy = start_proxy();
-        // SAFETY: the only other thread is the proxy, which never touches
-        // the environment; callers hold `SERIAL`, and no runtime exists yet
-        // in this process.
+        // SAFETY: assumes nextest's one-process-per-test model: this runs
+        // once, first, in a process whose only other thread is the proxy,
+        // which never touches the environment, and before any runtime.
+        // Under `cargo test`, other tests of this binary wait on `SERIAL`
+        // and read no environment meanwhile.
         unsafe {
             for var in [
                 "HTTP_PROXY",

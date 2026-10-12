@@ -58,6 +58,11 @@ fn a_margin_crossing_during_the_slot_wait_never_refreshes_inside_send() {
         }
         let seen = server.seen();
         assert_eq!(seen.len(), 4);
+        // The snapshot client keeps the client id the SDK sends as
+        // `X-Api-Key`, as the shared client would.
+        for request in &seen {
+            assert_eq!(request.header("x-api-key"), Some(CLIENT));
+        }
         let last = seen.iter().map(|s| s.at).max().unwrap();
         let last_secs = last.duration_since(UNIX_EPOCH).unwrap().as_secs();
         assert!(
