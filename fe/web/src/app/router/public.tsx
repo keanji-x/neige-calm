@@ -566,6 +566,9 @@ function useConversationPane(
               onSideConversation={!hasSideConversation || !composerView.historyReady ? undefined : sideQuestion}
               onSend={sendText}
               allowEmptyText={composerAttachments.items.length > 0}
+              onFiles={!composerView.attachmentsSupported || composerAttachments.busy || composerAttachments.atCapacity ? undefined : (files) => {
+                for (const file of files) void composerAttachments.attach(file);
+              }}
               /* The queue lives inside the composer, above the field: these messages have
                                not reached the model, so they are not part of the conversation behind it. */
               drawer={(

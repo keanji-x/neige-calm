@@ -204,3 +204,62 @@ it('an old card upload cannot release the new card upload busy state', async () 
   await act(async () => { pending[1](() => uploaded(1)); await Promise.resolve(); });
   expect(latest?.busy).toBe(false); expect(latest?.ids).toEqual([uploaded(1).attachmentId]);
 });
+
+
+it('serializes a batch and admits only eight images before React commits', async () => {
+  let count = 0;
+  const upload = vi.fn<UploadAttachment>().mockImplementation(async () => {
+    await Promise.resolve();
+    return () => uploaded(count++);
+  });
+  render(<Harness upload={upload} />);
+  await act(async () => {
+    const attach = latest!.attach;
+    await Promise.all(Array.from({ length: 10 }, (_, index) => attach(png(`shot-${index}.png`))));
+  });
+  expect(upload).toHaveBeenCalledTimes(8);
+  expect(latest?.ids).toEqual(Array.from({ length: 8 }, (_, index) => uploaded(index).attachmentId));
+  expect(latest?.error).toBe('A message can carry at most 8 images.');
+  expect(latest?.busy).toBe(false);
+});
+
+it('keeps every queued image and its upload in the originating card after a switch', async () => {
+  const pending: ((value: () => UploadAttachmentResponse) => void)[] = [];
+  const upload = vi.fn<UploadAttachment>().mockImplementation(async (readBytes) => {
+    await readBytes();
+    return new Promise(resolve => pending.push(resolve));
+  });
+  const mounted = render(<Harness upload={upload} card="card-1" />);
+  let batch: Promise<void[]>;
+  await act(async () => {
+    const attach = latest!.attach;
+    batch = Promise.all([attach(png('first.png')), attach(png('second.png'))]);
+    await Promise.resolve();
+  });
+  expect(upload).toHaveBeenCalledTimes(2);
+  expect(pending).toHaveLength(1);
+  mounted.rerender(<Harness upload={upload} card="card-2" />);
+  await act(async () => { pending[0](() => uploaded(0)); await Promise.resolve(); });
+  expect(upload).toHaveBeenCalledTimes(2);
+  expect(latest?.busy).toBe(false);
+  expect(latest?.ids).toEqual([]);
+  await act(async () => { pending[1](() => uploaded(1)); await batch; });
+  expect(held['card-1']?.map(item => item.id)).toEqual([uploaded(0).attachmentId, uploaded(1).attachmentId]);
+  mounted.rerender(<Harness upload={upload} card="card-1" />);
+  expect(latest?.busy).toBe(false);
+  expect(latest?.ids).toEqual([uploaded(0).attachmentId, uploaded(1).attachmentId]);
+});
+
+it('continues a queued batch after an upload refusal', async () => {
+  const upload = vi.fn<UploadAttachment>().mockRejectedValueOnce(new Error('budget refusal'))
+    .mockResolvedValueOnce(() => uploaded(1));
+  render(<Harness upload={upload} />);
+  await act(async () => {
+    const attach = latest!.attach;
+    await Promise.all([attach(png('first.png')), attach(png('second.png'))]);
+  });
+  expect(upload).toHaveBeenCalledTimes(2);
+  expect(latest?.ids).toEqual([uploaded(1).attachmentId]);
+  expect(latest?.error).toBe('budget refusal');
+  expect(latest?.busy).toBe(false);
+});

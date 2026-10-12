@@ -77,34 +77,57 @@ export function usePlannerAttachments(
   store: AttachmentStore,
 ): PlannerAttachments {
   const { items, update, editUpload } = store;
-  /* Read inside `attach`: closing over a render's `items` would let two quick picks both see an empty list and both pass the cap. */
-  const live = useRef<readonly PlannerAttachment[]>(items);
-  live.current = items;
+  /* Each card keeps its own lane, including while another card is open. A batch can
+   * reserve all its slots synchronously; byte reading happens in upload order. */
+  const lanes = useRef(new Map<string, { items: readonly PlannerAttachment[]; tail: Promise<void> | null; reserved: number }>());
+  let lane = lanes.current.get(cardId);
+  if (lane === undefined) {
+    lane = { items, tail: null, reserved: 0 };
+    lanes.current.set(cardId, lane);
+  }
+  lane.items = items;
 
-  const attach = useCallback(async (file: File) => {
-    /* A picked image's bytes live under its card's directory and the server refuses it anywhere else, so its answer belongs to this card even if the reader has moved on. */
+  const attach = useCallback((file: File): Promise<void> => {
     const target = cardId;
     const refuse = (refusal: string) => editUpload(target, (current) => ({ ...current, refusal }));
     const refused = refusalFor(file.type);
-    if (refused !== null) { refuse(refused); return; }
-    if (live.current.length >= MAX_ATTACHMENTS_PER_MESSAGE) {
+    if (refused !== null) { refuse(refused); return Promise.resolve(); }
+    if (lane.items.length + lane.reserved >= MAX_ATTACHMENTS_PER_MESSAGE) {
       refuse(TOO_MANY_IMAGES);
-      return;
+      return Promise.resolve();
     }
+    lane.reserved += 1;
     editUpload(target, (current) => ({ inFlight: current.inFlight + 1, refusal: null }));
-    try {
-      const consume = await upload(async () => new Uint8Array(await file.arrayBuffer()), file.type);
-      const uploaded = consume();
-      update(target, (current) => [...current, {
-        id: uploaded.attachmentId, contentType: uploaded.contentType,
-        size: uploaded.size, url: uploaded.url,
-      }]);
-    } catch (cause) {
-      refuse(cause instanceof Error ? cause.message : 'The image could not be uploaded.');
-    } finally {
-      editUpload(target, (current) => ({ ...current, inFlight: Math.max(0, current.inFlight - 1) }));
-    }
-  }, [cardId, editUpload, update, upload]);
+    const previous = lane.tail;
+    /* Call the provider now: it captures recovery admission before calling the reader.
+     * Only byte reading waits for the previous upload, never permission capture. */
+    const pending = (async () => {
+      try {
+        const consume = await upload(async () => {
+          if (previous !== null) await previous;
+          return new Uint8Array(await file.arrayBuffer());
+        }, file.type);
+        if (previous !== null) await previous;
+        const uploaded = consume();
+        const item = {
+          id: uploaded.attachmentId, contentType: uploaded.contentType,
+          size: uploaded.size, url: uploaded.url,
+        };
+        lane.items = [...lane.items, item];
+        update(target, (current) => [...current, item]);
+      } catch (cause) {
+        refuse(cause instanceof Error ? cause.message : 'The image could not be uploaded.');
+      } finally {
+        lane.reserved -= 1;
+        editUpload(target, (current) => ({ ...current, inFlight: Math.max(0, current.inFlight - 1) }));
+      }
+    })();
+    /* A refused admission can finish before its predecessor. Keep that predecessor
+     * in the lane so the next reader cannot skip an upload still in flight. */
+    lane.tail = Promise.all([previous, pending]).then(() => undefined);
+
+    return pending;
+  }, [cardId, editUpload, lane, update, upload]);
 
   /* Removing one before sending is a local forget; the server reclaims orphans after their TTL. */
   const remove = useCallback((id: string) => {

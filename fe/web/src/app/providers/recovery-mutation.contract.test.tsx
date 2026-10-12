@@ -124,7 +124,7 @@ it('releasing an old plugin lease preserves a newer pending intent on the same r
 });
 
 
-it('does not upload an old picked file after its asynchronous read crosses a recovery generation', async () => {
+it.each([1, 2])('does not upload %i old picked files after their asynchronous read crosses a recovery generation', async (count) => {
   vi.stubGlobal('__NC_BUNDLED__', true);
   const access = new RecoveryAccess(); access.change('connected');
   const send = vi.fn(() => Promise.resolve({ status: 200, statusText: 'OK', body: {
@@ -140,7 +140,11 @@ it('does not upload an old picked file after its asynchronous read crosses a rec
   let read!: (bytes: ArrayBuffer) => void;
   const file = new File([], 'picked.png', { type: 'image/png' });
   Object.defineProperty(file, 'arrayBuffer', { value: () => new Promise<ArrayBuffer>(resolve => { read = resolve; }) });
-  let done!: Promise<void>; act(() => { done = result.current.attach(file); });
+  let done!: Promise<void[]>;
+  act(() => {
+    done = Promise.all([result.current.attach(file), ...Array.from({ length: count - 1 }, () =>
+      result.current.attach(new File([new Uint8Array([1])], 'queued.png', { type: 'image/png' })))]);
+  });
   act(() => { access.invalidate('recovering'); access.change('connected'); read(new Uint8Array([1]).buffer); });
   await act(() => done);
   expect(send).not.toHaveBeenCalled(); expect(result.current.items).toHaveLength(0);

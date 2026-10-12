@@ -466,7 +466,7 @@ export const SIDE_CONVERSATION_COMMAND = Object.freeze({ id: 'side-conversation'
 export function ChatComposer({
   onSend, onStop, onCompact, onNewConversation, onSideConversation, showSideCommand = true, disabled = false, sendWaiting = false, editing, focusOnMount = false, focusRequest = 0,
   draft: controlledDraft, footerActions, sendAdornment,
-  drawer, headerActions, allowEmptyText = false, mentionTrigger, layout = 'standard',
+  drawer, headerActions, allowEmptyText = false, mentionTrigger, onFiles, layout = 'standard',
 }: {
   /** Hand over the words, or return `false` when they were not taken and stay in the field. Words of a send taken
    * and later given back return through the caller's `draft`; the composer has no second way to restore them. */
@@ -503,6 +503,8 @@ export function ChatComposer({
   headerActions?: ReactNode;
   /** Whether a send with no words is a real send (an attached image); a prop because the drawer is an opaque node. */
   allowEmptyText?: boolean;
+  /** Files dropped or pasted into the field; the caller owns attachment admission and upload. */
+  onFiles?: (files: File[]) => void;
   /** The `@` menu (`useMentionTrigger`), present only where a Planner reads what is sent; the caller keeps it stable. */
   mentionTrigger?: ChatComposerTrigger;
 }) {
@@ -713,6 +715,7 @@ export function ChatComposer({
             <div className={layout === 'mobile' ? mobileStyles.input : undefined}><ChatComposerInput
               /* Longer drafts scroll inside the editor, leaving room for a shared pane's recovery strip and Send. */
               maxRows={3}
+              onFiles={disabled ? undefined : onFiles}
               label="Message"
               placeholder={layout === 'mobile' ? '说说你想做什么…' : 'Say something'}
               /* No triggers where there is neither a command nor a mention: otherwise the field becomes an `aria-expanded="false"` combobox that can never expand. */

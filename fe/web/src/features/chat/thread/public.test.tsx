@@ -1371,3 +1371,20 @@ it('selects compact as an operation, without sending a chat message', async () =
   expect(onSend).not.toHaveBeenCalled();
   expect(fieldText(messageField())).toBe('');
 });
+
+
+it.each(['drop', 'paste'] as const)('accepts files from %s only while the composer is enabled', (source) => {
+  const onFiles = vi.fn();
+  const mounted = render(<ChatComposer onSend={vi.fn()} onFiles={onFiles} disabled />);
+  const file = new File(['image'], 'shot.png', { type: 'image/png' });
+  const dispatch = () => {
+    const field = screen.getByRole('textbox', { name: 'Message' });
+    if (source === 'drop') fireEvent.drop(field, { dataTransfer: { files: [file], types: ['Files'] } });
+    else fireEvent.paste(field, { clipboardData: { files: [file], getData: () => '' } });
+  };
+  dispatch();
+  expect(onFiles).not.toHaveBeenCalled();
+  mounted.rerender(<ChatComposer onSend={vi.fn()} onFiles={onFiles} />);
+  dispatch();
+  expect(onFiles).toHaveBeenCalledExactlyOnceWith([file]);
+});

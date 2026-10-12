@@ -1450,13 +1450,13 @@ describe('track conversations', () => {
    * was in what the retry put on the wire. */
   const ATTACHMENT_ID = '0189bc3f-2b1a-4c7d-9e4f-1a2b3c4d5e6f.png';
 
-  function withAttachments(onInput: (attempt: number) => ApiTransportResponse | undefined) {
+  function withAttachments(onInput: (attempt: number) => ApiTransportResponse | undefined, supported = true) {
     let attempts = 0;
     return setup((request) => {
       if (request.path.endsWith('/planner/run')) {
         return ok({
           card_id: pathCardId(request.path), worker_session_id: 'r', phase: 'idle', model: null, reasoning_effort: null,
-          permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: null, attachments_supported: true, running_turn: null,
+          permission_mode: pathCardId(request.path) === PLANNER_CARD.id ? 'never' : null, blocked_reason: null, attachments_supported: supported, running_turn: null,
         });
       }
       if (request.path.endsWith('/planner/attachments')) {
@@ -1483,6 +1483,37 @@ describe('track conversations', () => {
       await Promise.resolve();
     });
   }
+
+  it.each(['drop', 'paste'] as const)('uploads an image from %s and sends its attachment id', async (source) => {
+    const { requests } = withAttachments(() => undefined);
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    const file = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'shot.png', { type: 'image/png' });
+    await act(async () => {
+      if (source === 'drop') fireEvent.drop(messageField(), { dataTransfer: { files: [file], types: ['Files'] } });
+      else fireEvent.paste(messageField(), { clipboardData: { files: [file], getData: () => '' } });
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(requests.filter(request => request.path.endsWith('/planner/attachments'))).toHaveLength(1));
+    await waitFor(() => expect(document.querySelectorAll('[data-nc-attachments] img')).toHaveLength(1));
+    await write('Look at this screenshot');
+    await waitFor(() => expect(inputBodies(requests)).toHaveLength(1));
+    expect(inputBodies(requests)[0]).toMatchObject({ attachments: [ATTACHMENT_ID] });
+  });
+
+  it.each(['drop', 'paste'] as const)('does not upload from %s when attachments are unavailable', async (source) => {
+    const { requests } = withAttachments(() => undefined, false);
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await waitFor(() => expect(messageField().getAttribute('contenteditable')).toBe('true'));
+    const file = new File(['image'], 'shot.png', { type: 'image/png' });
+    await act(async () => {
+      if (source === 'drop') fireEvent.drop(messageField(), { dataTransfer: { files: [file], types: ['Files'] } });
+      else fireEvent.paste(messageField(), { clipboardData: { files: [file], getData: () => '' } });
+      await Promise.resolve();
+    });
+    expect(requests.filter(request => request.path.endsWith('/planner/attachments'))).toHaveLength(0);
+    expect(document.querySelector('[data-nc-attachments]')).toBeNull();
+  });
 
   function inputBodies(requests: readonly ApiRequest[]) {
     return requests.filter((request) => request.path.endsWith('/planner/input'))

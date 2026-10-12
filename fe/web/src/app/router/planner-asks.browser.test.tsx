@@ -129,6 +129,26 @@ it('keeps attachments in the composer with questions in their own Astryx drawer'
   expect((await ask.findElement()).closest('[data-nc-composer]')).not.toBeNull();
 });
 
+it.each(['drop', 'paste'] as const)('attaches a clipboard or dragged image through %s in the real conversation', async (source) => {
+  await page.viewport(1280, 800);
+  const { requests } = setup('light');
+  await page.getByRole('button', { name: /Conversation Planner/ }).click();
+  const field = await page.getByRole('combobox', { name: 'Message' }).findElement();
+  await page.getByRole('combobox', { name: 'Message' }).click();
+  const transfer = new DataTransfer();
+  transfer.items.add(new File([await (await fetch(PIXEL)).arrayBuffer()], 'screenshot.png', { type: 'image/png' }));
+  const event = source === 'drop'
+    ? new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer })
+    : new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: transfer });
+  field.dispatchEvent(event);
+  expect(event.defaultPrevented).toBe(true);
+  await expect.poll(() => requests.filter(request => request.path.endsWith('/planner/attachments')).length).toBe(1);
+  await expect.element(page.getByRole('button', { name: 'Remove Image 1', exact: true })).toBeVisible();
+  await expect.poll(() => document.querySelector<HTMLImageElement>('[data-nc-attachments] img')?.naturalWidth).toBe(1);
+  expect(requests.find(request => request.path.endsWith('/planner/attachments'))?.headers?.['content-type']).toBe('image/png');
+  expect(field.textContent).toBe('');
+});
+
 it.each([
   [4, false, 1280, 720], [4, false, 390, 844],
   [8, true, 1280, 720], [8, true, 390, 844], [8, true, 844, 390],
