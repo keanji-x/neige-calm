@@ -1,6 +1,12 @@
-//! `research-archive capture` as a subprocess, in real time: kills mid-run
-//! (I4, I12), auth that cannot be established (I9), the lock (I10) and the
-//! calendar refresh. Fabricated tokens only.
+//! `research-archive capture` as a subprocess, in real time: a kill during
+//! the fetch (I4), auth that cannot be established (I9), the lock (I10)
+//! and the calendar refresh. Fabricated tokens only.
+//!
+//! The membership phase cannot be reached in real time at every hour: a
+//! window starts at 16:00 New York time or later and the carry deadline is
+//! at most 600 minutes after it, so from about 10:00 to 16:00 New York time
+//! every window's carry deadline has passed. The kill during membership
+//! (I4) and I12 therefore run in process on a fake clock (`net::interrupt`).
 
 use std::{
     io::{BufRead, BufReader, Write},
@@ -24,7 +30,8 @@ const TOKEN: &str = "ap_m_PROC-TOKEN-0c1d";
 const FAR: u64 = 4_102_444_800;
 const CONSTITUENTS: &str = "/v1/quote/index-constituents";
 
-/// Members for any index; a delay on `slow_path` while `slow` is set.
+/// Members for any index; a delay on `slow_path` (every path for `*`) while
+/// `slow` is set.
 async fn server(slow: Arc<AtomicBool>, slow_path: &'static str) -> FakeServer {
     FakeServer::start(move |s: &Seen| {
         let reply = if s.path == CONSTITUENTS {
@@ -32,7 +39,7 @@ async fn server(slow: Arc<AtomicBool>, slow_path: &'static str) -> FakeServer {
         } else {
             Reply::data(r#"{"v":1}"#)
         };
-        if s.path == slow_path && slow.load(Ordering::SeqCst) {
+        if (slow_path == "*" || s.path == slow_path) && slow.load(Ordering::SeqCst) {
             reply.after(Duration::from_secs(120))
         } else {
             reply
@@ -74,47 +81,6 @@ fn pairs(rows: &[(&str, &str)]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// I4: SIGKILL while the membership request is in flight. The plan is
-/// whole, nothing is frozen, no per-key request was sent, and a rerun
-/// completes the same run.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn i4_a_kill_during_membership_leaves_a_whole_plan_and_a_rerun_completes() {
-    let slow = Arc::new(AtomicBool::new(true));
-    let server = server(slow.clone(), CONSTITUENTS).await;
-    let p = Proc::new(&server.url, index_knobs());
-    assert_eq!(code(&p.import(TOKEN, None, FAR).await), 0);
-    let child = p.spawn_capture();
-    seen(&server, |s| s.path == CONSTITUENTS).await;
-    kill(child).await;
-
-    let (keys, frozen, end) = universe(&p).await;
-    assert_eq!(
-        keys,
-        pairs(&[(".SPX.US", "index-symbol"), ("AAPL.US", "config")])
-    );
-    assert!(frozen.is_empty());
-    assert_eq!(end, None);
-    assert!(server.seen().iter().all(|s| s.path == CONSTITUENTS));
-
-    slow.store(false, Ordering::SeqCst);
-    let out = p.capture().await;
-    assert_eq!(code(&out), 0, "{}", text(&out.stderr));
-    let (keys, frozen, end) = universe(&p).await;
-    assert_eq!(frozen, pairs(&[(".SPX.US", "observed")]));
-    assert_eq!(
-        keys,
-        pairs(&[
-            (".SPX.US", "index-symbol"),
-            ("AAPL.US", "config"),
-            ("AAPL.US", "index:.SPX.US"),
-            ("MSFT.US", "index:.SPX.US"),
-        ])
-    );
-    assert_eq!(end.as_deref(), Some("complete"));
-    assert_eq!(p.archive.last_exit()["kind"], "complete");
-    assert_eq!(p.archive.last_exit()["as_of"], p.as_of.as_str());
-}
-
 /// I4: SIGKILL while a per-key request is in flight. The freeze is whole,
 /// the run is open, and a rerun completes it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -128,8 +94,10 @@ async fn i4_a_kill_during_fetch_leaves_a_whole_freeze_and_a_rerun_completes() {
     kill(child).await;
 
     let (keys, frozen, end) = universe(&p).await;
-    assert_eq!(frozen, pairs(&[(".SPX.US", "observed")]));
-    assert_eq!(keys.len(), 4, "{keys:?}");
+    // The carry deadline of the real-time window has passed, so the start
+    // froze at once from the stored rows: `none`, no members.
+    assert_eq!(frozen, pairs(&[(".SPX.US", "none")]));
+    assert_eq!(keys.len(), 2, "{keys:?}");
     assert_eq!(end, None);
 
     slow.store(false, Ordering::SeqCst);
@@ -138,48 +106,8 @@ async fn i4_a_kill_during_fetch_leaves_a_whole_freeze_and_a_rerun_completes() {
     let (_, _, end) = universe(&p).await;
     assert_eq!(end.as_deref(), Some("complete"));
     let coverage = p.archive.store().await.coverage(RunId(1)).await.unwrap();
-    assert_eq!(coverage.len(), 13);
+    assert_eq!(coverage.len(), 7);
     assert!(coverage.iter().all(|c| c.has_ok));
-}
-
-/// I12: kill during membership, change the research list and the index
-/// list, resume: the run keeps its planned keys and freezes only its
-/// planned index, and nothing new is requested.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn i12_a_resumed_run_keeps_its_planned_keys_and_indexes() {
-    let slow = Arc::new(AtomicBool::new(true));
-    let server = server(slow.clone(), CONSTITUENTS).await;
-    let p = Proc::new(&server.url, index_knobs());
-    assert_eq!(code(&p.import(TOKEN, None, FAR).await), 0);
-    let child = p.spawn_capture();
-    seen(&server, |s| s.path == CONSTITUENTS).await;
-    kill(child).await;
-
-    p.archive.write_config(&Knobs {
-        research: vec!["NVDA.US"],
-        indexes: vec![".DJI.US"],
-        window_start: "16:00",
-        ..Knobs::default()
-    });
-    slow.store(false, Ordering::SeqCst);
-    let out = p.capture().await;
-    assert_eq!(code(&out), 0, "{}", text(&out.stderr));
-    let plan = p.archive.store().await.plan(RunId(1)).await.unwrap();
-    let names = |keys: &[research_archive::types::Key]| -> Vec<String> {
-        keys.iter().map(ToString::to_string).collect()
-    };
-    assert_eq!(names(&plan.config), ["AAPL.US"]);
-    assert_eq!(names(&plan.indexes), [".SPX.US"]);
-    let (_, frozen, end) = universe(&p).await;
-    assert_eq!(frozen, pairs(&[(".SPX.US", "observed")]));
-    assert_eq!(end.as_deref(), Some("complete"));
-    for s in server.seen() {
-        let query = s.query.unwrap_or_default();
-        assert!(
-            !query.contains("NVDA.US") && !query.contains(".DJI.US"),
-            "{query}"
-        );
-    }
 }
 
 /// I9: a token inside the SDK's five-minute margin with no refresh token
@@ -289,11 +217,17 @@ async fn a_hanging_token_refresh_is_dropped_at_the_deadline() {
 /// runs: a second process that tried to load it would fail to and exit 75.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn i10_a_second_start_is_busy_without_the_token_or_a_request() {
-    let server = server(Arc::new(AtomicBool::new(true)), CONSTITUENTS).await;
-    let p = Proc::new(&server.url, index_knobs());
+    // Every request hangs, so the first capture holds its four slots.
+    let server = server(Arc::new(AtomicBool::new(true)), "*").await;
+    let p = Proc::new(&server.url, Knobs::default());
     assert_eq!(code(&p.import(TOKEN, None, FAR).await), 0);
     let first = p.spawn_capture();
-    seen(&server, |s| s.path == CONSTITUENTS).await;
+    let in_flight = research_archive::capture::MAX_IN_FLIGHT;
+    let started = Instant::now();
+    while server.seen().len() < in_flight {
+        assert!(started.elapsed() < Duration::from_secs(30));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     let token = p.token_path();
     let bytes = std::fs::read(&token).unwrap();
     let meta = std::fs::metadata(&token).unwrap();
@@ -303,7 +237,7 @@ async fn i10_a_second_start_is_busy_without_the_token_or_a_request() {
     let stderr = text(&out.stderr);
     assert_eq!(code(&out), 0, "{stderr}");
     assert!(stderr.contains("held by another process"), "{stderr}");
-    assert_eq!(server.seen().len(), 1);
+    assert_eq!(server.seen().len(), in_flight);
 
     let out = p.import("ap_m_OTHER", None, FAR).await;
     assert_eq!(code(&out), research_archive::exit::LOCKED);
@@ -318,7 +252,7 @@ async fn i10_a_second_start_is_busy_without_the_token_or_a_request() {
         (after.ino(), after.mtime_nsec()),
         (meta.ino(), meta.mtime_nsec())
     );
-    assert_eq!(server.seen().len(), 1);
+    assert_eq!(server.seen().len(), in_flight);
 }
 
 /// A day-old calendar needs a refresh, which needs the token: with none

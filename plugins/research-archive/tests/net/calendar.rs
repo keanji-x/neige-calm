@@ -62,11 +62,13 @@ fn only_credential_failures_are_auth_and_only_names_are_kept() {
 }
 
 /// A trading-days source that answers every weekday, records the ranges it
-/// was asked for, and fails when told to.
+/// was asked for, and fails every call when `fail`, or the calls whose
+/// index (from 0) is in `fail_calls`.
 #[derive(Default)]
 pub struct WeekdayDays {
     pub asked: std::sync::Mutex<Vec<Vec<(NaiveDate, NaiveDate)>>>,
     pub fail: bool,
+    pub fail_calls: Vec<usize>,
 }
 
 impl TradingDays for WeekdayDays {
@@ -77,8 +79,12 @@ impl TradingDays for WeekdayDays {
         ranges: &[(NaiveDate, NaiveDate)],
         now: UnixMs,
     ) -> Result<Vec<TradingCalendar>, RefreshError> {
-        self.asked.lock().unwrap().push(ranges.to_vec());
-        if self.fail {
+        let call = {
+            let mut asked = self.asked.lock().unwrap();
+            asked.push(ranges.to_vec());
+            asked.len() - 1
+        };
+        if self.fail || self.fail_calls.contains(&call) {
             return Err(RefreshError::Failed("ws:connect_timeout".into()));
         }
         Ok(ranges
@@ -106,8 +112,8 @@ fn day(s: &str) -> NaiveDate {
     NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
 }
 
-/// After a run, the job is offline 40 days. The next start's refresh fetches
-/// the gap between the old cache and today's range too, in ranges the SDK
+/// After a run, the job is offline 40 days. The next start fetches today's
+/// range first, then the history back to the first run, in ranges the SDK
 /// accepts, so every trading day in the gap whose window has closed is
 /// marked `missed`.
 #[test]
@@ -132,11 +138,13 @@ fn a_40_day_outage_marks_every_closed_day_missed() {
         clock.set(t("2026-04-13T16:00:00Z"));
         let outcome = capture_with(&a, &clock, &days).await;
         assert_eq!(outcome.kind, ExitKind::NoWindow, "{outcome:?}");
+        let asked = days.asked.lock().unwrap().clone();
+        assert_eq!(asked[1], [(day("2026-04-08"), day("2026-05-08"))]);
         assert_eq!(
-            days.asked.lock().unwrap()[1],
+            asked[2],
             [
-                (day("2026-03-28"), day("2026-04-07")),
-                (day("2026-04-08"), day("2026-05-08")),
+                (day("2026-03-02"), day("2026-04-01")),
+                (day("2026-04-02"), day("2026-04-07")),
             ]
         );
         let mut conn = raw(&a.data_dir.join("archive.sqlite3"), false).await;
@@ -158,9 +166,65 @@ fn a_40_day_outage_marks_every_closed_day_missed() {
         let cache = TradingCalendar::load(&a.data_dir).unwrap().unwrap();
         assert_eq!(
             (cache.from, cache.to),
-            (day("2026-02-25"), day("2026-05-08"))
+            (day("2026-03-02"), day("2026-05-08"))
         );
+        assert!(a.last_exit().get("missed_scan_incomplete").is_none());
     })
+}
+
+/// The same outage, but the history back-fill fails. Today's range was
+/// fetched and saved first, so the start is not blocked: it marks what the
+/// calendar covers, records `missed_scan_incomplete`, and the next start
+/// retries the back-fill and marks the rest.
+#[test]
+fn a_failed_backfill_only_warns_and_is_retried() {
+    hermetic::run(async {
+        let clock = FakeClock::at(t("2026-03-02T23:00:00Z"));
+        let server = TimedServer::start(clock.clone(), |_, _| Reply::data(r#"{"v":1}"#)).await;
+        let a = Archive::new(&server.server.url, &Knobs::default());
+        a.token("ap_m_CALENDAR-TOKEN", None, 4_102_444_800);
+        let days = WeekdayDays {
+            fail_calls: vec![2],
+            ..WeekdayDays::default()
+        };
+        assert_eq!(
+            capture_with(&a, &clock, &days).await.kind,
+            ExitKind::Complete
+        );
+
+        clock.set(t("2026-04-13T16:00:00Z"));
+        let outcome = capture_with(&a, &clock, &days).await;
+        assert_eq!(outcome.kind, ExitKind::NoWindow, "{outcome:?}");
+        assert!(outcome.missed_scan_incomplete);
+        assert_eq!(a.last_exit()["missed_scan_incomplete"], true);
+        let cache = TradingCalendar::load(&a.data_dir).unwrap().unwrap();
+        assert_eq!(
+            (cache.from, cache.to),
+            (day("2026-04-08"), day("2026-05-08"))
+        );
+        assert_eq!(missed(&a).await, ["2026-04-08", "2026-04-09", "2026-04-10"]);
+
+        // The next start, an hour later: the cache is fresh, the back-fill
+        // is retried and the rest of the gap is marked.
+        clock.set(t("2026-04-13T17:00:00Z"));
+        let outcome = capture_with(&a, &clock, &days).await;
+        assert_eq!(outcome.kind, ExitKind::NoWindow, "{outcome:?}");
+        assert!(!outcome.missed_scan_incomplete);
+        assert_eq!(days.asked.lock().unwrap().len(), 4);
+        assert_eq!(missed(&a).await.len(), 29);
+    })
+}
+
+/// The days marked `missed`, ascending.
+async fn missed(a: &Archive) -> Vec<String> {
+    let mut conn = raw(&a.data_dir.join("archive.sqlite3"), false).await;
+    sqlx::query_scalar(
+        "SELECT r.as_of FROM run r JOIN run_end e ON e.run_id = r.run_id
+         WHERE e.outcome = 'missed' ORDER BY r.as_of",
+    )
+    .fetch_all(&mut conn)
+    .await
+    .unwrap()
 }
 
 /// A refresh that fails (not for auth) falls back to the day-old cache

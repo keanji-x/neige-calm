@@ -80,7 +80,12 @@ pub async fn run_with<C: Clock, D: TradingDays>(
             tracing::warn!("{err}; nothing done");
             return Outcome::new(ExitKind::Busy);
         }
-        Err(err) => return fail("taking the data-dir lock", &err),
+        Err(err) => {
+            // Not held, but notify must not read an older start's state.
+            let outcome = fail("taking the data-dir lock", &err);
+            LastExit::from_outcome(&outcome, clock.now()).write(&config.data_dir);
+            return outcome;
+        }
     };
     let outcome = match Store::open(&config.archive_path()).await {
         Ok(store) => {
@@ -91,7 +96,8 @@ pub async fn run_with<C: Clock, D: TradingDays>(
                 started,
                 store: &store,
                 oauth: None,
-                dangling: None,
+                dangling: Vec::new(),
+                missed_scan_incomplete: false,
             };
             let outcome = start.run().await;
             store.close().await;
@@ -126,8 +132,10 @@ struct Start<'a, C: Clock, D: TradingDays> {
     store: &'a Store,
     /// The one `OAuth` client, once built.
     oauth: Option<OAuth>,
-    /// The latest dangling run this start ended `partial`.
-    dangling: Option<Dangling>,
+    /// Every dangling run this start ended `partial`, oldest first.
+    dangling: Vec<Dangling>,
+    /// The calendar back-fill failed.
+    missed_scan_incomplete: bool,
 }
 
 impl<C: Clock, D: TradingDays> Start<'_, C, D> {
@@ -135,20 +143,18 @@ impl<C: Clock, D: TradingDays> Start<'_, C, D> {
         let mut outcome = match self.steps().await {
             Ok(outcome) | Err(outcome) => outcome,
         };
-        if let Some(dangling) = self.dangling.take() {
+        if let Some(latest) = self.dangling.last() {
             // A dangling run ended `partial` here is a window that closed
             // with work left: it alerts even when this start went well, and
             // stays on record when it did not.
             if outcome.code() == 0 {
-                outcome = Outcome {
-                    kind: ExitKind::Partial,
-                    as_of: Some(dangling.as_of),
-                    failure: dangling.failure.clone(),
-                    closed_dangling: None,
-                };
+                let mut partial = Outcome::of(ExitKind::Partial, latest.as_of);
+                partial.failure = latest.failure.clone();
+                outcome = partial;
             }
-            outcome.closed_dangling = Some(dangling);
         }
+        outcome.closed_dangling = std::mem::take(&mut self.dangling);
+        outcome.missed_scan_incomplete = self.missed_scan_incomplete;
         outcome
     }
 
@@ -177,7 +183,7 @@ impl<C: Clock, D: TradingDays> Start<'_, C, D> {
                 .map_err(|e| store_err("reading a dangling run", e))?
                 .map(|(class, code, _)| format!("{class}:{code}"));
             tracing::warn!(as_of = %plan.as_of, "a run whose window closed was left open; ended partial");
-            self.dangling = Some(Dangling {
+            self.dangling.push(Dangling {
                 as_of: plan.as_of,
                 failure,
             });
@@ -278,11 +284,18 @@ impl<C: Clock, D: TradingDays> Start<'_, C, D> {
         }
     }
 
-    /// The calendar cache, refreshed first when it is missing, unreadable or
-    /// a day old. A refresh fetches today's range and every gap back to the
-    /// history the archive needs ([`TradingCalendar::ranges_to_fetch`]). A
-    /// refresh that fails for any reason but auth falls back to the cache
-    /// while the cache still tells whether a window is open now.
+    /// The calendar: the cache, refreshed when it is missing, unreadable or a
+    /// day old, then back-filled when it does not reach back to the first
+    /// run.
+    ///
+    /// - **Today first.** The refresh fetches today's range alone and saves
+    ///   it (merged with the cache when the two touch), so a capture never
+    ///   waits on history. It needs a usable token (else
+    ///   `AUTH_UNAVAILABLE`); any other failure falls back to the cache while
+    ///   it still tells whether a window is open now, else `FATAL`.
+    /// - **Then history.** [`TradingCalendar::backfill_ranges`] are fetched
+    ///   and merged. A failure only warns and sets `missed_scan_incomplete`;
+    ///   every later start retries until it succeeds.
     async fn calendar(&mut self) -> Result<TradingCalendar, Outcome> {
         let data_dir = &self.config.data_dir;
         let cached = match TradingCalendar::load(data_dir) {
@@ -293,44 +306,81 @@ impl<C: Clock, D: TradingDays> Start<'_, C, D> {
             }
         };
         let now = self.clock.now();
-        if let Some(cached) = &cached
-            && !cached.needs_refresh(now)
-        {
-            return Ok(cached.clone());
-        }
+        let deadline = self.process_deadline();
+        let mut calendar = match cached {
+            Some(cached) if !cached.needs_refresh(now) => cached,
+            cached => {
+                let today = [TradingCalendar::refresh_range(now)];
+                let oauth = self.oauth(deadline, None).await?;
+                let fetch = self.days.fetch(&oauth, self.config, &today, now);
+                let failure = match clock::within(&**self.clock, deadline, fetch).await {
+                    Some(Ok(pieces)) => {
+                        let fresh = TradingCalendar::combined(pieces);
+                        let merged = TradingCalendar::merged(cached.clone(), fresh);
+                        merged
+                            .save(data_dir)
+                            .map_err(|e| fail("saving the calendar", &e))?;
+                        tracing::info!(from = %merged.from, to = %merged.to, "calendar refreshed");
+                        Ok(merged)
+                    }
+                    Some(Err(RefreshError::Auth(code))) => {
+                        tracing::error!(%code, "the calendar refresh found no usable token");
+                        return Err(Outcome::new(ExitKind::AuthUnavailable));
+                    }
+                    Some(Err(err)) => Err(err.to_string()),
+                    None => Err("the deadline passed".to_owned()),
+                };
+                match (failure, cached) {
+                    (Ok(merged), _) => merged,
+                    (Err(failure), Some(cached))
+                        if cached.window_at(now, self.config.window_start).is_ok() =>
+                    {
+                        tracing::warn!(%failure, "calendar refresh failed; using the cached calendar");
+                        cached
+                    }
+                    (Err(failure), _) => return Err(fail("refreshing the calendar", &failure)),
+                }
+            }
+        };
         let first_run = self
             .store
             .first_as_of(Source::Longbridge)
             .await
             .map_err(|e| fail("reading the first run", &e))?
             .map(AsOf::date);
-        let ranges = TradingCalendar::ranges_to_fetch(cached.as_ref(), first_run, now);
-        let deadline = self.process_deadline();
-        let oauth = self.oauth(deadline, None).await?;
-        let fetch = self.days.fetch(&oauth, self.config, &ranges, now);
-        let failure = match clock::within(&**self.clock, deadline, fetch).await {
-            Some(Ok(pieces)) => {
-                let merged = TradingCalendar::combined(cached, pieces);
-                merged
-                    .save(data_dir)
-                    .map_err(|e| fail("saving the calendar", &e))?;
-                tracing::info!(from = %merged.from, to = %merged.to, ranges = ranges.len(), "calendar refreshed");
-                return Ok(merged);
-            }
-            Some(Err(RefreshError::Auth(code))) => {
-                tracing::error!(%code, "the calendar refresh found no usable token");
-                return Err(Outcome::new(ExitKind::AuthUnavailable));
-            }
-            Some(Err(err)) => err.to_string(),
-            None => "the deadline passed".to_owned(),
-        };
-        match cached {
-            Some(cached) if cached.window_at(now, self.config.window_start).is_ok() => {
-                tracing::warn!(%failure, "calendar refresh failed; using the cached calendar");
-                Ok(cached)
-            }
-            _ => Err(fail("refreshing the calendar", &failure)),
+        let history = calendar.backfill_ranges(first_run);
+        if history.is_empty() {
+            return Ok(calendar);
         }
+        let backfilled = match self.oauth(deadline, None).await {
+            Ok(oauth) => {
+                let fetch = self.days.fetch(&oauth, self.config, &history, now);
+                match clock::within(&**self.clock, deadline, fetch).await {
+                    Some(Ok(mut pieces)) => {
+                        pieces.push(calendar.clone());
+                        let combined = TradingCalendar::combined(pieces);
+                        combined
+                            .save(data_dir)
+                            .map(|()| combined)
+                            .map_err(|e| e.to_string())
+                    }
+                    Some(Err(err)) => Err(err.to_string()),
+                    None => Err("the deadline passed".to_owned()),
+                }
+            }
+            Err(_) => Err("no usable token".to_owned()),
+        };
+        match backfilled {
+            Ok(combined) => {
+                tracing::info!(from = %combined.from, ranges = history.len(), "calendar back-filled");
+                calendar = combined;
+            }
+            Err(failure) => {
+                tracing::warn!(%failure, "calendar back-fill failed; the missed-day scan is incomplete");
+                self.missed_scan_incomplete = true;
+            }
+        }
+        Ok(calendar)
     }
 
     /// Mark every trading day after the first run whose window has closed

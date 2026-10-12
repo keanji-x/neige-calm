@@ -1,18 +1,32 @@
-//! The retry schedule: one queue of unsettled pairs keyed by the time each
-//! may next be attempted.
+//! The retry schedule: one dispatcher over the run's unsettled pairs, each
+//! keyed by the time it may next be attempted, and the freeze between the
+//! membership and the coverage work.
 //!
 //! **One queue, no per-pair sleeps.** Every pair still to be worked carries
 //! `next_at`. The dispatcher starts the earliest eligible pairs, at most
-//! [`MAX_IN_FLIGHT`] at once, and otherwise waits for an attempt to finish
-//! or for the earliest `next_at`. A pair that waits out its backoff holds no
-//! worker, so one slow pair never delays the others.
+//! [`MAX_IN_FLIGHT`] at once, and otherwise waits for an attempt to finish,
+//! for the earliest `next_at` or for the carry deadline
+//! ([`clock::wait_until`]). A pair that waits holds no worker.
 //!
-//! **Minute-scale backoff.** A counted failure (`transient`, `permanent`,
-//! `region_restricted`) waits [`backoff`]: 1, 4, 16, then 64 minutes, so a
-//! cap of 6 attempts spans 1 + 4 + 16 + 64 + 64 = 149 minutes. A `throttled`
-//! failure waits the server's `retry_after` and never counts. The window is
-//! about 16 hours, so a pair's attempts are spread over a real outage
-//! instead of being spent in seconds.
+//! **Two rules.**
+//! - *Membership, before the freeze:* each unfrozen index's constituents is
+//!   retried every [`MEMBERSHIP_RETRY`] (a `throttled` one after its
+//!   `retry_after`), whatever the attempt cap. No retry is scheduled past
+//!   the carry deadline: the last is clamped to [`MEMBERSHIP_LAST_LEAD`]
+//!   before it.
+//! - *Coverage, after the freeze:* a counted failure (`transient`,
+//!   `permanent`, `region_restricted`) waits [`backoff`] (1, 4, 16, then 64
+//!   minutes) and counts toward `attempt_cap`; a cap of 6 spreads a pair's
+//!   attempts over 149 minutes. A `throttled` failure waits its
+//!   `retry_after` and never counts. Every planned pair follows it,
+//!   constituents included.
+//!
+//! **The freeze** comes when every planned index has an `ok` constituents
+//! row, or once `now ≥ carry_deadline` (at once when a start begins after
+//! it). It never waits for a constituents attempt still in flight: that
+//! attempt, and every later one, is ordinary coverage work, and its result
+//! changes nothing in the frozen universe. No coverage pair is attempted
+//! before the freeze.
 //!
 //! **Across starts.** `next_at` is not stored: [`survey`] derives it from
 //! the pair's last stored attempt, so the next start resumes the schedule.
@@ -24,33 +38,42 @@
 //! which the SDK does not retry. The worst burst beyond the limiter is
 //! `MAX_IN_FLIGHT × 6` requests within about 3.1 s.
 //!
-//! **Deadlines.** An attempt starts only while `now` is before its bound,
+//! **Deadlines.** An attempt starts only before the start's deadline,
 //! checked when it is dispatched and again by the source at the actual
-//! request start, after the rate-limit slot ([`LongbridgeSource::fetch_if`]).
-//! A token resolution or request still in flight at the bound is dropped
-//! there ([`clock::within`]).
+//! request start, after the rate-limit slot
+//! ([`LongbridgeSource::fetch_if`]). A token resolution or request still in
+//! flight at the deadline is dropped there ([`clock::within`]).
 //!
-//! **The first stop latches.** When an attempt stops the run (no usable
-//! token, the window closed, a write failed), every other attempt in flight
-//! is dropped at once and nothing more is dispatched.
+//! **The first stop latches.** An attempt that finds no usable token stops
+//! the run *before* it records that row. Every other attempt in flight (its
+//! token resolution, rate-limit wait or request) is dropped at once, nothing
+//! more is dispatched, and a sibling's row still waiting for the recorder is
+//! dropped too: after the latch the recorder writes only the auth row.
 
 use std::{
+    collections::HashSet,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use tokio::task::JoinSet;
 
-use super::runner::Recorder;
+use super::runner::{Observed, Recorder};
 use crate::catalog::EndpointId;
 use crate::clock::{self, Clock};
 use crate::source::{LongbridgeSource, RETRY_AFTER_FALLBACK};
 use crate::store::PairCoverage;
-use crate::types::{FailureClass, Key, RunId, Status, UnixMs};
+use crate::types::{FailureClass, Key, Response, RunId, Status, UnixMs};
 use crate::{Store, StoreError};
 
 /// Requests in flight at once.
 pub const MAX_IN_FLIGHT: usize = 4;
+
+/// The interval between constituents attempts before the carry deadline.
+pub const MEMBERSHIP_RETRY: Duration = Duration::from_secs(2 * 60);
+
+/// The last constituents retry starts this long before the carry deadline.
+pub const MEMBERSHIP_LAST_LEAD: Duration = Duration::from_secs(15);
 
 /// The first wait after a counted failure.
 const BACKOFF_BASE: Duration = Duration::from_secs(60);
@@ -83,12 +106,26 @@ pub fn counts_toward_cap(status: Status) -> bool {
 pub(super) struct Work {
     key: Key,
     endpoint: EndpointId,
-    /// Rows of any status so far.
-    rows: u32,
     /// Rows that count toward the cap.
     counted: u32,
     /// The earliest time of the next attempt.
     next_at: UnixMs,
+}
+
+impl Work {
+    fn id(&self) -> (Key, EndpointId) {
+        (self.key.clone(), self.endpoint)
+    }
+}
+
+/// Which rule a survey applies.
+#[derive(Clone, Copy)]
+pub(super) enum Rule {
+    /// Constituents before the freeze: no cap, retried every
+    /// [`MEMBERSHIP_RETRY`] up to the carry deadline.
+    Membership { carry: UnixMs },
+    /// Every pair after the freeze: the cap and [`backoff`].
+    Coverage { cap: u32 },
 }
 
 /// Where a run's selected pairs stand.
@@ -101,21 +138,22 @@ pub(super) struct Survey {
     pub ok: usize,
 }
 
-impl Survey {
-    /// Every selected pair has an `ok`.
-    pub fn all_ok(&self) -> bool {
-        self.pending.is_empty() && self.capped == 0
-    }
+/// The next attempt of a membership pair before the freeze, after a failure
+/// at `at` (`retry_after` for a throttle): `None` when it would fall at or
+/// past the clamp before the carry deadline.
+fn membership_next(at: UnixMs, retry_after: Option<Duration>, carry: UnixMs) -> Option<UnixMs> {
+    let wanted = clock::after(at, retry_after.unwrap_or(MEMBERSHIP_RETRY));
+    let lead = i64::try_from(MEMBERSHIP_LAST_LEAD.as_millis()).expect("15 s fits");
+    let next = wanted.min(UnixMs(carry.0 - lead));
+    (next > at).then_some(next)
 }
 
-/// The pairs `keep` selects, split by where they stand. A pending pair's
-/// `next_at` follows from its last stored attempt: after a counted failure,
-/// that attempt's time plus [`backoff`]; after a throttle, plus
-/// [`RETRY_AFTER_FALLBACK`]; otherwise `now`.
+/// The pairs `keep` selects, split by where they stand under `rule`. A
+/// pending pair's `next_at` follows from its last stored attempt.
 pub(super) async fn survey(
     store: &Store,
     run: RunId,
-    cap: u32,
+    rule: Rule,
     now: UnixMs,
     keep: impl Fn(&PairCoverage) -> bool,
 ) -> Result<Survey, StoreError> {
@@ -139,23 +177,32 @@ pub(super) async fn survey(
         };
         let counted = u32::try_from(rows.iter().filter(|r| counts_toward_cap(r.2)).count())
             .expect("attempt counts stay far below u32::MAX");
-        if counted >= cap {
-            survey.capped += 1;
-            continue;
-        }
-        let next_at = match rows.last() {
-            Some((_, at, status)) if counts_toward_cap(*status) => {
-                clock::after(*at, backoff(counted))
+        let throttled = |status: &Status| *status == Status::Failed(FailureClass::Throttled);
+        let next_at = match (rule, rows.last()) {
+            (Rule::Coverage { cap }, _) if counted >= cap => {
+                survey.capped += 1;
+                continue;
             }
-            Some((_, at, Status::Failed(FailureClass::Throttled))) => {
-                clock::after(*at, RETRY_AFTER_FALLBACK)
+            (_, None) => now,
+            (Rule::Membership { carry }, Some((_, at, status))) => {
+                let retry_after = throttled(status).then_some(RETRY_AFTER_FALLBACK);
+                membership_next(*at, retry_after, carry)
+                    .unwrap_or(carry)
+                    .max(now)
             }
-            _ => now,
+            (Rule::Coverage { .. }, Some((_, at, status))) => {
+                if counts_toward_cap(*status) {
+                    clock::after(*at, backoff(counted))
+                } else if throttled(status) {
+                    clock::after(*at, RETRY_AFTER_FALLBACK)
+                } else {
+                    now
+                }
+            }
         };
         survey.pending.push(Work {
             key: pair.key,
             endpoint: pair.endpoint,
-            rows: pair.attempts,
             counted,
             next_at,
         });
@@ -174,25 +221,6 @@ pub(super) enum Stop {
     Fatal(String),
 }
 
-/// How long pairs may be attempted in one phase: an attempt starts only
-/// before `until`, except a pair's first attempt, which may start until
-/// `first_until`.
-#[derive(Clone, Copy)]
-pub(super) struct Bounds {
-    pub until: UnixMs,
-    pub first_until: UnixMs,
-}
-
-impl Bounds {
-    fn of(self, work: &Work) -> UnixMs {
-        if work.rows == 0 {
-            self.first_until
-        } else {
-            self.until
-        }
-    }
-}
-
 /// What every attempt shares.
 pub(super) struct Pool<C: Clock> {
     /// Flips to `true` on the first [`Pool::halt`]; attempts in flight race
@@ -202,7 +230,6 @@ pub(super) struct Pool<C: Clock> {
     pub source: Arc<LongbridgeSource>,
     pub recorder: Recorder<C>,
     pub catalog: crate::Catalog,
-    pub cap: u32,
     pub stop: Mutex<Option<Stop>>,
 }
 
@@ -233,32 +260,51 @@ impl<C: Clock> Pool<C> {
     }
 }
 
-/// One attempt of `work`, started before `bound`. Returns the pair again
-/// with its next eligible time when it is to be retried; `None` when it is
-/// settled (`ok`, or at the cap), out of time, or the run stopped.
-async fn attempt<C: Clock>(pool: Arc<Pool<C>>, mut work: Work, bound: UnixMs) -> Option<Work> {
+/// What one attempt recorded: its status, and the wait a throttle names.
+struct Attempted {
+    work: Work,
+    status: Status,
+    retry_after: Option<Duration>,
+}
+
+/// One attempt of `work`, started before `deadline`. `None` when nothing
+/// was recorded: the run stopped, the deadline cut it off, or the deadline
+/// passed before the request could start.
+async fn attempt<C: Clock>(pool: Arc<Pool<C>>, work: Work, deadline: UnixMs) -> Option<Attempted> {
     let endpoint = *pool
         .catalog
         .get(work.endpoint.as_str())
         .expect("a coverage endpoint is a catalog endpoint");
     let may_send = {
         let clock = Arc::clone(&pool.clock);
-        move || clock.now() < bound
+        move || clock.now() < deadline
     };
     let fetch = pool.source.fetch_if(&endpoint, &work.key, may_send);
-    let bounded = clock::within(&*pool.clock, bound, fetch);
-    // Stopped, cut off at the bound, or too late at the request start:
-    // nothing was received, so nothing is recorded.
+    let bounded = clock::within(&*pool.clock, deadline, fetch);
     let Some(Some(Some(fetched))) = pool.unless_stopped(bounded).await else {
         return None;
     };
+    let auth = matches!(
+        fetched.response(),
+        Response::Failed {
+            class: FailureClass::AuthUnavailable,
+            ..
+        }
+    );
+    if auth {
+        // Latch before the row is written: a slow write must not let the
+        // siblings queued on the token or the rate-limit slot go on.
+        pool.halt(Stop::Auth);
+    }
+    let honour_stop = || !auth && pool.stopped().is_some();
     let recorded = match pool
         .recorder
-        .observe(&work.key, work.endpoint, fetched.response())
+        .observe(&work.key, work.endpoint, fetched.response(), honour_stop)
         .await
     {
-        Ok(Some(recorded)) => recorded,
-        Ok(None) => {
+        Ok(Observed::Recorded(recorded)) => recorded,
+        Ok(Observed::Stopped) => return None,
+        Ok(Observed::WindowClosed) => {
             pool.halt(Stop::WindowClosed);
             return None;
         }
@@ -267,46 +313,87 @@ async fn attempt<C: Clock>(pool: Arc<Pool<C>>, mut work: Work, bound: UnixMs) ->
             return None;
         }
     };
-    work.rows += 1;
-    let now = pool.clock.now();
-    match recorded.status {
-        Status::Ok => None,
-        Status::Failed(FailureClass::AuthUnavailable) => {
-            pool.halt(Stop::Auth);
-            None
-        }
-        Status::Failed(FailureClass::Throttled) => {
-            let wait = fetched.retry_after().unwrap_or(RETRY_AFTER_FALLBACK);
-            work.next_at = clock::after(now, wait);
-            Some(work)
-        }
-        status => {
-            debug_assert!(counts_toward_cap(status));
-            work.counted += 1;
-            if work.counted >= pool.cap {
-                return None;
-            }
-            work.next_at = clock::after(now, backoff(work.counted));
-            Some(work)
-        }
-    }
+    Some(Attempted {
+        work,
+        status: recorded.status,
+        retry_after: fetched.retry_after(),
+    })
 }
 
-/// Work `pending` until every pair is settled or past its bound, or the run
-/// stops. Returns why it stopped, if it did.
+/// The bounds of one start.
+#[derive(Clone, Copy)]
+pub(super) struct Span {
+    pub deadline: UnixMs,
+    pub carry_deadline: UnixMs,
+    pub cap: u32,
+}
+
+/// What [`work_off`] left.
+pub(super) struct Worked {
+    pub frozen: bool,
+    pub stop: Option<Stop>,
+}
+
+/// Work the run until every pair is settled or past the deadline, or the
+/// run stops: membership first (unless `frozen`), the freeze, then coverage.
 pub(super) async fn work_off<C: Clock>(
     pool: &Arc<Pool<C>>,
-    mut pending: Vec<Work>,
-    bounds: Bounds,
-) -> Option<Stop> {
+    store: &Store,
+    run: RunId,
+    mut frozen: bool,
+    span: Span,
+) -> Result<Worked, StoreError> {
+    let membership = pool.catalog.membership();
+    let carry = span.carry_deadline;
+    let coverage = Rule::Coverage { cap: span.cap };
+    let mut pending = Vec::new();
+    // Indexes without an `ok` constituents row yet.
+    let mut unsettled: HashSet<Key> = HashSet::new();
+    if frozen {
+        pending = survey(store, run, coverage, pool.clock.now(), |_| true)
+            .await?
+            .pending;
+    } else if pool.clock.now() < carry {
+        let indexes = survey(
+            store,
+            run,
+            Rule::Membership { carry },
+            pool.clock.now(),
+            |p| p.endpoint == membership,
+        )
+        .await?;
+        unsettled = indexes.pending.iter().map(|w| w.key.clone()).collect();
+        pending = indexes.pending;
+    }
     let mut in_flight = JoinSet::new();
+    let mut flying: HashSet<(Key, EndpointId)> = HashSet::new();
     let mut halted = pool.halted.subscribe();
     loop {
         if pool.stopped().is_some() {
             break;
         }
         let now = pool.clock.now();
-        pending.retain(|w| w.next_at.max(now) < bounds.of(w));
+        if !frozen && (unsettled.is_empty() || now >= carry) {
+            // Freeze from the stored rows; attempts in flight are not waited
+            // for and continue as coverage work.
+            if !pool.recorder.freeze().await? {
+                pool.halt(Stop::WindowClosed);
+                break;
+            }
+            frozen = true;
+            pending = survey(store, run, coverage, now, |_| true)
+                .await?
+                .pending
+                .into_iter()
+                .filter(|w| !flying.contains(&w.id()))
+                .collect();
+        }
+        let bound = if frozen {
+            span.deadline
+        } else {
+            span.deadline.min(carry)
+        };
+        pending.retain(|w| w.next_at.max(now) < bound);
         while in_flight.len() < MAX_IN_FLIGHT {
             let earliest = pending
                 .iter()
@@ -316,25 +403,56 @@ pub(super) async fn work_off<C: Clock>(
                 .map(|(i, _)| i);
             let Some(i) = earliest else { break };
             let work = pending.remove(i);
-            let bound = bounds.of(&work);
-            in_flight.spawn(attempt(Arc::clone(pool), work, bound));
+            flying.insert(work.id());
+            in_flight.spawn(attempt(Arc::clone(pool), work, span.deadline));
         }
-        if in_flight.is_empty() && pending.is_empty() {
-            break;
-        }
-        // Wake for the earliest pending pair only when a slot is free.
-        let wake = (in_flight.len() < MAX_IN_FLIGHT)
+        let freeze_at = (!frozen && carry < span.deadline).then_some(carry);
+        let next_pair = (in_flight.len() < MAX_IN_FLIGHT)
             .then(|| pending.iter().map(|w| w.next_at).min())
             .flatten();
+        let wake = [freeze_at, next_pair].into_iter().flatten().min();
+        let busy = !in_flight.is_empty();
+        if in_flight.is_empty() && wake.is_none() {
+            break;
+        }
         tokio::select! {
             biased;
             _ = halted.wait_for(|halted| *halted) => {}
-            Some(joined) = in_flight.join_next(), if !in_flight.is_empty() => match joined {
-                Ok(Some(work)) => pending.push(work),
-                Ok(None) => {}
-                Err(err) => std::panic::resume_unwind(err.into_panic()),
+            Some(joined) = in_flight.join_next(), if !in_flight.is_empty() => {
+                let attempted = match joined {
+                    Ok(attempted) => attempted,
+                    Err(err) => std::panic::resume_unwind(err.into_panic()),
+                };
+                let Some(Attempted { mut work, status, retry_after }) = attempted else {
+                    continue;
+                };
+                flying.remove(&work.id());
+                let now = pool.clock.now();
+                if counts_toward_cap(status) {
+                    work.counted += 1;
+                }
+                let next = match status {
+                    Status::Ok => {
+                        unsettled.remove(&work.key);
+                        None
+                    }
+                    Status::Failed(FailureClass::AuthUnavailable) => None,
+                    _ if !frozen && work.endpoint == membership => {
+                        membership_next(now, retry_after, carry)
+                    }
+                    Status::Failed(FailureClass::Throttled) => Some(clock::after(
+                        now,
+                        retry_after.unwrap_or(RETRY_AFTER_FALLBACK),
+                    )),
+                    _ if work.counted >= span.cap => None,
+                    _ => Some(clock::after(now, backoff(work.counted))),
+                };
+                if let Some(next_at) = next {
+                    work.next_at = next_at;
+                    pending.push(work);
+                }
             },
-            () = pool.clock.sleep_until(wake.unwrap_or(now)), if wake.is_some() => {}
+            () = clock::wait_until(&*pool.clock, wake.unwrap_or(now), busy), if wake.is_some() => {}
         }
     }
     while let Some(joined) = in_flight.join_next().await {
@@ -342,7 +460,10 @@ pub(super) async fn work_off<C: Clock>(
             std::panic::resume_unwind(err.into_panic());
         }
     }
-    pool.stopped()
+    Ok(Worked {
+        frozen,
+        stop: pool.stopped(),
+    })
 }
 
 #[cfg(test)]
@@ -356,6 +477,23 @@ mod tests {
         // The example config's cap of 6 spreads its attempts over 149 min.
         let span: u64 = (1..6).map(|n| backoff(n).as_secs() / 60).sum();
         assert_eq!(span, 149);
+    }
+
+    #[test]
+    fn membership_retries_stop_short_of_the_carry_deadline() {
+        let carry = UnixMs(60 * 60_000);
+        let at = |min: i64| UnixMs(min * 60_000);
+        assert_eq!(membership_next(at(10), None, carry), Some(at(12)));
+        assert_eq!(
+            membership_next(at(10), Some(Duration::from_millis(200)), carry),
+            Some(UnixMs(at(10).0 + 200))
+        );
+        // Clamped to 15 s before the carry deadline, then no more.
+        assert_eq!(
+            membership_next(at(59), None, carry),
+            Some(UnixMs(carry.0 - 15_000))
+        );
+        assert_eq!(membership_next(UnixMs(carry.0 - 15_000), None, carry), None);
     }
 
     #[test]

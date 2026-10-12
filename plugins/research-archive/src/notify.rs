@@ -123,11 +123,17 @@ pub fn message(unit: &str, last: Option<&LastExit>, now: UnixMs) -> (String, Str
             if let Some(failure) = &l.failure {
                 text.push_str(&format!(", most frequent failure {failure}"));
             }
-            if let Some(day) = &l.closed_dangling {
-                text.push_str(&format!(", ended the left-open run of {day} partial"));
-                if let Some(failure) = &l.closed_dangling_failure {
+            for dangling in &l.closed_dangling {
+                text.push_str(&format!(
+                    ", ended the left-open run of {} partial",
+                    dangling.as_of
+                ));
+                if let Some(failure) = &dangling.failure {
                     text.push_str(&format!(" (most frequent failure {failure})"));
                 }
+            }
+            if l.missed_scan_incomplete {
+                text.push_str(", the missed-day scan is incomplete (calendar back-fill failed)");
             }
             (l.kind.as_str().to_owned(), text)
         }
@@ -219,8 +225,8 @@ mod tests {
             at,
             as_of: Some("2026-10-12".into()),
             failure: None,
-            closed_dangling: None,
-            closed_dangling_failure: None,
+            closed_dangling: Vec::new(),
+            missed_scan_incomplete: false,
         }
     }
 

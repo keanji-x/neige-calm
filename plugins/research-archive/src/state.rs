@@ -85,13 +85,15 @@ pub struct Dangling {
 
 /// The capture's result: the kind, the trading day it concerns, for an
 /// ending with failures the most frequent failure as `error_class:error_code`
-/// (for example `envelope:401004`), and a dangling run closed at the start.
+/// (for example `envelope:401004`), every dangling run closed at the start,
+/// and whether the missed-day scan lacked part of the calendar.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Outcome {
     pub kind: ExitKind,
     pub as_of: Option<AsOf>,
     pub failure: Option<String>,
-    pub closed_dangling: Option<Dangling>,
+    pub closed_dangling: Vec<Dangling>,
+    pub missed_scan_incomplete: bool,
 }
 
 impl Outcome {
@@ -100,7 +102,8 @@ impl Outcome {
             kind,
             as_of: None,
             failure: None,
-            closed_dangling: None,
+            closed_dangling: Vec::new(),
+            missed_scan_incomplete: false,
         }
     }
 
@@ -109,7 +112,8 @@ impl Outcome {
             kind,
             as_of: Some(as_of),
             failure: None,
-            closed_dangling: None,
+            closed_dangling: Vec::new(),
+            missed_scan_incomplete: false,
         }
     }
 
@@ -130,12 +134,22 @@ pub struct LastExit {
     pub as_of: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<String>,
-    /// The day of a dangling run this start ended `partial`.
+    /// Every dangling run this start ended `partial`, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub closed_dangling: Vec<ClosedDangling>,
+    /// The calendar back-fill failed, so days of a gap may not be marked
+    /// `missed` yet; a later start retries it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub missed_scan_incomplete: bool,
+}
+
+/// A dangling run in the file: its day and most frequent counted failure.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClosedDangling {
+    pub as_of: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub closed_dangling: Option<String>,
-    /// That run's most frequent counted failure.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub closed_dangling_failure: Option<String>,
+    pub failure: Option<String>,
 }
 
 impl LastExit {
@@ -152,12 +166,13 @@ impl LastExit {
             failure: outcome.failure.clone(),
             closed_dangling: outcome
                 .closed_dangling
-                .as_ref()
-                .map(|d| d.as_of.to_string()),
-            closed_dangling_failure: outcome
-                .closed_dangling
-                .as_ref()
-                .and_then(|d| d.failure.clone()),
+                .iter()
+                .map(|d| ClosedDangling {
+                    as_of: d.as_of.to_string(),
+                    failure: d.failure.clone(),
+                })
+                .collect(),
+            missed_scan_incomplete: outcome.missed_scan_incomplete,
         }
     }
 
@@ -241,8 +256,17 @@ mod tests {
             at: 42,
             as_of: Some("2026-10-12".into()),
             failure: Some("envelope:401004".into()),
-            closed_dangling: Some("2026-10-09".into()),
-            closed_dangling_failure: Some("http_status:503".into()),
+            closed_dangling: vec![
+                ClosedDangling {
+                    as_of: "2026-10-08".into(),
+                    failure: None,
+                },
+                ClosedDangling {
+                    as_of: "2026-10-09".into(),
+                    failure: Some("http_status:503".into()),
+                },
+            ],
+            missed_scan_incomplete: true,
         };
         state.write(dir.path());
         assert_eq!(LastExit::read(dir.path()), Some(state));

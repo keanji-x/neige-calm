@@ -21,6 +21,7 @@ mod exit_state;
 mod fake;
 mod fake_clock;
 mod hermetic;
+mod interrupt;
 mod login;
 mod logs;
 mod refresh;

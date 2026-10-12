@@ -37,6 +37,10 @@ const REFRESH_BACK_DAYS: u64 = 5;
 /// span itself (`rust/src/quote/core.rs:1174-1176` at v5.2.0).
 const REFRESH_SPAN_DAYS: u64 = 30;
 
+/// The largest cache file read: 1 MiB. A day takes about 20 bytes of the
+/// pretty-printed file, so this holds more than a century of trading days.
+pub const CACHE_MAX_BYTES: u64 = 1024 * 1024;
+
 /// The cache file, as stored.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -46,9 +50,10 @@ pub struct TradingCalendar {
     /// The first and last day the calendar answers for, inclusive.
     pub from: NaiveDate,
     pub to: NaiveDate,
-    /// US trading days in `[from, to]`, ascending.
+    /// US trading days in `[from, to]`, ascending, half days included.
     pub trading_days: Vec<NaiveDate>,
-    /// US half trading days in `[from, to]`, ascending; each is a trading day.
+    /// US half trading days in `[from, to]`, ascending. A refresh adds each
+    /// to `trading_days` too; the window does not depend on them.
     pub half_days: Vec<NaiveDate>,
 }
 
@@ -97,7 +102,7 @@ impl TradingCalendar {
     /// The cache, or `None` when the file does not exist.
     pub fn load(data_dir: &Path) -> Result<Option<TradingCalendar>, CacheError> {
         let path = Self::path(data_dir);
-        let bytes = match files::read_regular(&path) {
+        let bytes = match files::read_regular_at_most(&path, CACHE_MAX_BYTES) {
             Ok(bytes) => bytes,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(source) => return Err(CacheError::Read { path, source }),
@@ -128,8 +133,7 @@ impl TradingCalendar {
             .map_err(|e| std::io::Error::new(e.source.kind(), e.to_string()))
     }
 
-    /// Days ascending and unique inside `[from, to]`; half days are trading
-    /// days.
+    /// Days ascending and unique inside `[from, to]`.
     pub fn validate(&self) -> Result<(), String> {
         if self.from > self.to {
             return Err(format!("from {} is after to {}", self.from, self.to));
@@ -144,13 +148,6 @@ impl TradingCalendar {
             if days.iter().any(|d| *d < self.from || *d > self.to) {
                 return Err(format!("{name} has a day outside [from, to]"));
             }
-        }
-        if let Some(d) = self
-            .half_days
-            .iter()
-            .find(|d| self.trading_days.binary_search(d).is_err())
-        {
-            return Err(format!("half day {d} is not a trading day"));
         }
         Ok(())
     }
@@ -167,61 +164,34 @@ impl TradingCalendar {
         (from, from + Days::new(REFRESH_SPAN_DAYS))
     }
 
-    /// The ranges a refresh at `now` fetches, ascending: every gap between
-    /// the history the archive needs and today's range, then today's range
-    /// ([`refresh_range`](Self::refresh_range)). The history starts at the
-    /// earlier of the cache's first day and the first run's `as_of`; days
-    /// the cache already holds are not fetched again. Gaps are cut into
+    /// The ranges a back-fill fetches, ascending: the days from the first
+    /// run's `as_of` up to the day before this calendar starts, cut into
     /// ranges of at most [`REFRESH_SPAN_DAYS`] + 1 days, the span the SDK
-    /// asks for itself. A long outage therefore still leaves a contiguous
-    /// calendar, so its closed trading days can be marked `missed`.
-    pub fn ranges_to_fetch(
-        cached: Option<&TradingCalendar>,
-        first_run: Option<NaiveDate>,
-        now: UnixMs,
-    ) -> Vec<(NaiveDate, NaiveDate)> {
-        let (from, to) = Self::refresh_range(now);
-        let mut gaps = Vec::new();
-        let history = cached.map(|c| c.from).into_iter().chain(first_run).min();
-        if let Some(start) = history.filter(|h| *h < from) {
-            let before = from - Days::new(1);
-            match cached {
-                None => gaps.push((start, before)),
-                Some(c) => {
-                    if start < c.from {
-                        gaps.push((start, (c.from - Days::new(1)).min(before)));
-                    }
-                    let after = (c.to + Days::new(1)).max(start);
-                    if after <= before {
-                        gaps.push((after, before));
-                    }
-                }
-            }
-        }
+    /// asks for itself. Empty when the calendar reaches back to the first
+    /// run, or there is none: missed days are marked only from the first
+    /// run on, so no earlier history is needed.
+    pub fn backfill_ranges(&self, first_run: Option<NaiveDate>) -> Vec<(NaiveDate, NaiveDate)> {
         let mut ranges = Vec::new();
-        for (mut start, end) in gaps {
-            while start <= end {
-                let stop = (start + Days::new(REFRESH_SPAN_DAYS)).min(end);
-                ranges.push((start, stop));
-                start = stop + Days::new(1);
-            }
+        let Some(mut start) = first_run.filter(|d| *d < self.from) else {
+            return ranges;
+        };
+        let end = self.from - Days::new(1);
+        while start <= end {
+            let stop = (start + Days::new(REFRESH_SPAN_DAYS)).min(end);
+            ranges.push((start, stop));
+            start = stop + Days::new(1);
         }
-        ranges.push((from, to));
         ranges
     }
 
-    /// `pieces` (ascending, as [`ranges_to_fetch`](Self::ranges_to_fetch)
-    /// returns them) merged over `cached`, one at a time.
-    pub fn combined(
-        cached: Option<TradingCalendar>,
-        pieces: Vec<TradingCalendar>,
-    ) -> TradingCalendar {
+    /// `pieces` merged into one calendar, oldest first; each must touch the
+    /// next, as a calendar and its [`backfill_ranges`](Self::backfill_ranges)
+    /// do.
+    pub fn combined(mut pieces: Vec<TradingCalendar>) -> TradingCalendar {
+        pieces.sort_by_key(|p| p.from);
         let mut pieces = pieces.into_iter();
-        let first = pieces
-            .next()
-            .expect("a refresh fetches at least today's range");
-        let start = TradingCalendar::merged(cached, first);
-        pieces.fold(start, |acc, piece| {
+        let first = pieces.next().expect("at least one piece");
+        pieces.fold(first, |acc, piece| {
             TradingCalendar::merged(Some(acc), piece)
         })
     }

@@ -504,23 +504,26 @@ in the library tests. There is no flag or variable that changes it.
    phases.
 
 **The calendar.** `<data_dir>/calendar/us.json` holds the US trading days
-and half days of a contiguous date range and the time it was fetched. It is
-refreshed when it is missing, invalid or at least 24 hours old, through
-`QuoteContext::trading_days(Market::US, from, to)` on the quote WebSocket
-(`quote_ws_url`), for today (New York) − 5 days to that + 30 days, the
-span the SDK asks for itself.
+and half days of a contiguous date range and the time it was fetched, read
+up to 1 MiB (more than a century of days).
 
-- **Gaps are back-filled.** The history the archive needs starts at the
-  earlier of the cache's first day and the first run's `as_of`. When the
-  cache does not reach today's range (the job was offline), or starts after
-  the first run, the refresh also fetches every missing interval, in ranges
-  of at most 31 days, before it merges. So the calendar stays contiguous and
-  every closed trading day of an outage can be marked `missed`.
-- **Failures.** A refresh that finds no usable token exits
-  `AUTH_UNAVAILABLE`. Any other refresh failure falls back to the old cache
-  with a warning while that cache still tells whether a window is open now
-  (it covers today and the trading days around it); otherwise it is
-  `FATAL`.
+- **Today first.** When the cache is missing, invalid or at least 24 hours
+  old, today's range alone, today (New York) − 5 days to that + 30 days
+  (the span the SDK asks for itself), is fetched through
+  `QuoteContext::trading_days(Market::US, from, to)` on the quote WebSocket
+  (`quote_ws_url`), merged with the cache when the two touch, and saved. A
+  refresh that finds no usable token exits `AUTH_UNAVAILABLE`; any other
+  failure falls back to the old cache with a warning while that cache still
+  tells whether a window is open now, and is `FATAL` otherwise.
+- **Then history.** When the calendar does not reach back to the first
+  run's `as_of` (the job was offline), the missing days are fetched in ranges
+  of at most 31 days and merged, so every closed trading day of an outage can
+  be marked `missed`. A failed back-fill never blocks the capture: it warns,
+  records `missed_scan_incomplete` in `last_exit.json`, and every later start
+  retries it, whatever the cache's age.
+- **Half days.** The SDK returns trading days and half days as two lists and
+  does not say whether they overlap, so the calendar's trading days are their
+  union. A half day has a window like any trading day.
 
 **The window of trading day D** runs from D at `window_start` New York
 time to the next trading day at 09:30 New York time, both converted with
@@ -533,19 +536,32 @@ whose window has closed (`window_end ≤ now`) and that has no run gets a
 `missed` run. Days before the first run are never marked.
 
 **Deadlines.** The start's deadline is `min(window_end, start +
-attempt_timeout)`. An attempt starts only before its bound, checked when it
-is dispatched and again at the actual request start, after the rate-limit
-slot (`LongbridgeSource::fetch_if`), against the injected clock. A token
-resolution or request still in flight at the bound is dropped there.
-Membership attempts are also bounded by the carry deadline,
-`window_start + carry_deadline`, except an index's first attempt.
+attempt_timeout)`. An attempt starts only before it, checked when it is
+dispatched and again at the actual request start, after the rate-limit slot
+(`LongbridgeSource::fetch_if`), against the injected clock. A token
+resolution or request still in flight at the deadline is dropped there.
+
+The I1 fence relies on the clock and the runtime's timer agreeing: in
+production the clock is the system wall clock, so the timer that drops an
+in-flight request (`clock::within`) expires at the deadline, and the SDK's
+own retries of a bare HTTP 429 inside that request are cut there too. A
+forward step of the wall clock (an NTP correction) after the timer was set
+shifts when it fires relative to the wall clock; the send-time check and the
+recorder's window check still refuse a request start or a row past the
+window end.
 
 **The retry schedule.** Every pair still to be worked waits in one queue,
 keyed by the time it may next be attempted (`src/capture/schedule.rs`). At
 most four requests are in flight; the earliest eligible pairs go first, and
-a pair waiting out its backoff holds no worker.
+a pair waiting out its backoff holds no worker. Membership and coverage have
+different rules.
 
-- A `transient`, `permanent` or `region_restricted` failure counts toward
+- **Membership, before the freeze.** Each unfrozen index's constituents is
+  retried every 2 minutes (`MEMBERSHIP_RETRY`), a `throttled` one after its
+  `retry_after`. The cap does not apply. No retry is scheduled past the
+  carry deadline; the last starts 15 s before it.
+- **Coverage, after the freeze** (every planned pair, constituents
+  included): a `transient`, `permanent` or `region_restricted` failure counts toward
   `attempt_cap` and waits 1, 4, 16, then 64 minutes (64 minutes from then
   on). The example config's cap of 6 spreads a pair's attempts over 149
   minutes (1 + 4 + 16 + 64 + 64), so a pair is lost only to an outage of
@@ -558,17 +574,22 @@ a pair waiting out its backoff holds no worker.
 **Phases.**
 
 1. **Membership.** For each planned index not yet frozen, fetch
-   `index_constituents` on the schedule. The Store classifies each body.
+   `index_constituents` on the membership rule. The Store classifies each
+   body.
 2. **Freeze**, exactly when every planned index has an `ok` constituents row,
-   or once `now ≥ carry_deadline`: `freeze_membership(run, now)`. The Store
-   derives the modes; the runner only decides when.
-   - The cap does not settle membership: an index at its cap waits for the
-     carry deadline.
+   or once `now ≥ carry_deadline`: `freeze_membership(run, now)` from the
+   stored rows (`observed` with an `ok` of this run, else `carried` or
+   `none`). The Store derives the modes; the runner only decides when.
+   - A start that begins after the carry deadline freezes at once, before any
+     attempt.
    - When the carry deadline falls inside this start, the start waits for it.
+     A constituents attempt still in flight then is not waited for: it, and
+     every later one, is coverage work, and changes nothing in the frozen
+     universe.
    - When this start's deadline comes first, the run is left unfrozen, with
      no per-key fetch, for the next start (exit 0).
 3. **Fetch**, only after the freeze: every planned pair (`coverage`) without
-   an `ok` and below its cap, on the schedule.
+   an `ok` and below its cap, on the coverage rule.
 
 **The end.** A run ends `complete` only when it is frozen and every pair has
 an `ok` or is at its cap; with the schedule above, a capped pair was retried
@@ -590,8 +611,11 @@ requests finish (#2577).
 **The first stop latches.** When an attempt stops the run (a request found
 no usable token, the window closed, or a write failed), every other attempt
 in flight (its token resolution, rate-limit wait or request) is dropped at
-once, and nothing more is dispatched. An auth failure therefore never
-triggers one more token refresh per request.
+once, and nothing more is dispatched. An auth failure latches *before* its
+own row is written, so a slow write cannot let the attempts queued on the
+token or the rate-limit slot go on; the auth row is still recorded, and any
+other row already waiting for the recorder is dropped. An auth failure
+therefore never triggers one more token refresh per request.
 
 **The browser flow.** A token that the SDK could use only through the
 browser login (none stored, or an expiring one whose refresh fails) stops
@@ -628,17 +652,19 @@ limiter is therefore four requests in flight × 6 = 24 requests within about
 
 **`last_exit.json`** is written atomically before the lock is released:
 `{code, kind, at, as_of?, failure?, closed_dangling?,
-closed_dangling_failure?}`.
+missed_scan_incomplete?}`. A start whose lock fails with an I/O error (not a
+held lock) writes `fatal`, so the alert never reads an older start's state.
 
 - `failure` is the run's most frequent counted failure as
   `error_class:error_code`, for `complete_with_failures`, `degraded` and
   `partial`.
-- `closed_dangling` is the day of a run left open whose window had closed,
-  which this start ended `partial`, with that run's most frequent failure in
-  `closed_dangling_failure`. It is kept whatever the start's own ending:
-  when the start would otherwise exit 0, it exits `PARTIAL` for that day
-  instead (with `failure` from that run); when it exits `FATAL` or
-  `AUTH_UNAVAILABLE`, the dangling run is still on record.
+- `closed_dangling` lists every run left open whose window had closed and
+  that this start ended `partial`, oldest first, as `{as_of, failure?}`. It
+  is kept whatever the start's own ending: when the start would otherwise
+  exit 0, it exits `PARTIAL` for the latest such day instead (with `failure`
+  from that run); when it exits `FATAL` or `AUTH_UNAVAILABLE`, the dangling
+  runs are still on record.
+- `missed_scan_incomplete` is `true` when the calendar back-fill failed.
 - It holds no token and no server text. A start that never took the lock
   writes none.
 
@@ -764,9 +790,10 @@ Two integration binaries:
 | `net::secrets` | I11 for the binary's output, our logs, the archive file, `Debug`, and a login callback carrying a canary |
 | `net::dotenv`, `net::scan` | a `.env` in reach is refused and cannot override the pins; no SDK client is built outside the harness |
 | `net::runner` | on a fake clock, under the harness: I1, I7, freeze before fetch, resumption, the carry deadline, missed and dangling days, the serialized recorder, a hanging request, the `degraded` threshold, the first auth failure stopping every worker |
-| `net::calendar` | the calendar refresh's error mapping, the back-fill of a 40-day outage (every closed day `missed`), the fallback to a cache that still covers now |
-| `net::schedule` | the retry schedule through an outage; membership scenarios A (a blip is retried and `observed`), B (waits for the carry deadline, across starts or within one) and C (a start to the window end waits for the carry deadline, never `partial`); no request starts after the window end however late its rate-limit slot |
-| `net::exit_state` | a dangling run on record through a later failure; a dangling-only `partial` with its failure; a completed run clearing the alert dedupe |
-| `capture_cli` | `capture` as a subprocess: kills during membership and fetch (I4), I12, I9, a hanging token refresh, I10, the calendar refresh |
+| `net::calendar` | the calendar refresh's error mapping, the back-fill of a 40-day outage (every closed day `missed`), a failed back-fill that only warns and is retried, the fallback to a cache that still covers now |
+| `net::schedule` | the retry schedule through an outage; membership scenarios A (a blip is retried and `observed`), B (retried every 2 minutes, then a freeze at the carry deadline, across starts or within one) and C (a start to the window end waits for the carry deadline, never `partial`); constituents outages of 22, 25, 40 and 55 minutes `observed`; a late start freezing from stored rows; a resume after the carry deadline not held up by a hanging constituents attempt; the auth latch before a slow auth row; no request starts after the window end however late its rate-limit slot |
+| `net::interrupt` | I4 and I12 in process: a capture interrupted during membership leaves a whole plan and no freeze; the rerun completes with the planned keys and index set |
+| `net::exit_state` | dangling runs on record (all of them) through a later failure; a dangling-only `partial` with its failure; a lock I/O error on record; a completed run clearing the alert dedupe |
+| `capture_cli` | `capture` as a subprocess: a kill during the fetch (I4), I9, a hanging token refresh, I10, the calendar refresh. The membership phase cannot be reached in real time at every hour, so its kill and I12 run in `net::interrupt` |
 | `capture_secrets` | I11 for `capture` and `notify`; the alert's dedupe and environment; `notify` alerting when `capture` refused its environment |
 | `units` | the systemd templates' directives and placeholders |

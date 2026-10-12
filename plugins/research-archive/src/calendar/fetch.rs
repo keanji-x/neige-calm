@@ -2,7 +2,7 @@
 //!
 //! Each range is at most 31 days (`from..=from + 30`), the span the SDK asks
 //! for itself (`rust/src/quote/core.rs:1174-1176`); a longer gap is fetched
-//! as several ranges ([`TradingCalendar::ranges_to_fetch`]).
+//! as several ranges ([`TradingCalendar::backfill_ranges`]).
 //!
 //! `QuoteContext::trading_days(market, begin, end)` returns
 //! `MarketTradingDays { trading_days, half_trading_days }` as `time::Date`s
@@ -134,8 +134,12 @@ impl TradingDays for QuoteDays {
     }
 }
 
-/// A validated calendar from one answer.
-fn calendar_of(
+/// A validated calendar from one answer. The trading days are
+/// `trading_days ∪ half_trading_days`: the SDK returns the two lists
+/// separately and does not say whether a half day also appears in the full
+/// list (the invest bridge treats them as possibly disjoint), so a half day
+/// is a trading day either way.
+pub fn calendar_of(
     from: NaiveDate,
     to: NaiveDate,
     trading: Vec<time::Date>,
@@ -151,12 +155,17 @@ fn calendar_of(
         out.dedup();
         Ok(out)
     };
+    let half_days = convert(half)?;
+    let mut trading_days = convert(trading)?;
+    trading_days.extend(half_days.iter().copied());
+    trading_days.sort();
+    trading_days.dedup();
     let calendar = TradingCalendar {
         fetched_at: now.0,
         from,
         to,
-        trading_days: convert(trading)?,
-        half_days: convert(half)?,
+        trading_days,
+        half_days,
     };
     calendar
         .validate()
@@ -167,6 +176,34 @@ fn calendar_of(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Thanksgiving week 2026: Thursday the 26th is closed, Friday the 27th
+    /// is a half day. Whether the upstream lists the half day among the
+    /// trading days or only among the half days, it is a trading day: the
+    /// window of Wednesday the 25th ends Friday at 09:30, and Friday has a
+    /// window of its own.
+    #[test]
+    fn a_half_day_is_a_trading_day_whether_listed_apart_or_not() {
+        let d = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        let (from, to) = (d("2026-11-23"), d("2026-12-04"));
+        let full = ["2026-11-23", "2026-11-24", "2026-11-25", "2026-11-30"];
+        let disjoint: Vec<_> = full.iter().map(|s| to_time(d(s))).collect();
+        let mut inclusive = disjoint.clone();
+        inclusive.push(to_time(d("2026-11-27")));
+        let half = vec![to_time(d("2026-11-27"))];
+        let window_start = chrono::NaiveTime::from_hms_opt(17, 30, 0).unwrap();
+        for trading in [disjoint, inclusive] {
+            let calendar = calendar_of(from, to, trading, half.clone(), UnixMs(0)).unwrap();
+            assert!(calendar.trading_days.contains(&d("2026-11-27")));
+            assert_eq!(calendar.half_days, [d("2026-11-27")]);
+            let wednesday = calendar.window_of(d("2026-11-25"), window_start).unwrap();
+            assert_eq!(
+                wednesday.end(),
+                super::super::ny_instant(d("2026-11-27"), super::super::regular_open()).unwrap()
+            );
+            assert!(calendar.window_of(d("2026-11-27"), window_start).is_some());
+        }
+    }
 
     #[test]
     fn dates_convert_both_ways() {

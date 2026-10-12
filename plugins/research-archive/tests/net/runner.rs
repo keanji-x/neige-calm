@@ -295,21 +295,34 @@ fn a_response_after_the_window_end_is_not_recorded() {
 }
 
 /// A request that hangs is dropped at the deadline instead of holding the
-/// run past it.
+/// run past it. The first start leaves one pair failed and the run open;
+/// the second, two seconds before the window end, finds only that pair and
+/// it hangs.
 #[test]
 fn a_hanging_request_is_dropped_at_the_deadline() {
     hermetic::run(async {
-        let clock = FakeClock::at(UnixMs(tue_end().0 - 2_000));
-        let server = TimedServer::start(clock.clone(), |s, _| {
-            let reply = Reply::data(r#"{"v":1}"#);
-            if s.path == "/v1/quote/forecast-eps" {
-                reply.after(Duration::from_secs(3_600))
-            } else {
-                reply
+        let clock = FakeClock::at(UnixMs(tue_start().0 + 60_000));
+        let hanging = Arc::new(AtomicUsize::new(0));
+        let h = hanging.clone();
+        let server = TimedServer::start(clock.clone(), move |s, _| {
+            match (s.path.as_str(), h.load(Ordering::SeqCst)) {
+                ("/v1/quote/forecast-eps", 0) => Reply::new(503, "<html>busy</html>"),
+                ("/v1/quote/forecast-eps", _) => {
+                    Reply::data(r#"{"v":1}"#).after(Duration::from_secs(3_600))
+                }
+                _ => Reply::data(r#"{"v":1}"#),
             }
         })
         .await;
-        let a = archive(&server.server.url, &Knobs::default(), clock.now());
+        let knobs = Knobs {
+            attempt_timeout_minutes: 1,
+            ..Knobs::default()
+        };
+        let a = archive(&server.server.url, &knobs, clock.now());
+        assert_eq!(capture(&a, &clock).await.kind, ExitKind::Resumable);
+
+        hanging.store(1, Ordering::SeqCst);
+        clock.set(UnixMs(tue_end().0 - 2_000));
         let started = Instant::now();
         let outcome = capture(&a, &clock).await;
         assert!(
@@ -319,9 +332,49 @@ fn a_hanging_request_is_dropped_at_the_deadline() {
         );
         assert_eq!(outcome.kind, ExitKind::Partial, "{outcome:?}");
         let recorded = rows(&a).await;
-        assert_eq!(recorded.len(), 5, "{recorded:?}");
-        assert!(recorded.iter().all(|r| r.1 != "forecast_eps"));
+        assert_eq!(recorded.len(), 6, "{recorded:?}");
+        let forecast: Vec<_> = recorded.iter().filter(|r| r.1 == "forecast_eps").collect();
+        assert_eq!(forecast.len(), 1);
+        assert_eq!(forecast[0].4, "transient");
+        let forecasts = server
+            .arrivals()
+            .iter()
+            .filter(|r| r.path == "/v1/quote/forecast-eps")
+            .count();
+        assert_eq!(forecasts, 2);
     })
+}
+
+/// Wait until the archive holds at least `n` observation rows. Reads the
+/// file read-only; before the capture has created it, there are none.
+pub async fn wait_for_rows(a: &Archive, n: i64) {
+    use sqlx::ConnectOptions;
+    let path = a.data_dir.join("archive.sqlite3");
+    let count = || async {
+        if !path.exists() {
+            return 0;
+        }
+        let Ok(mut conn) = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&path)
+            .read_only(true)
+            .connect()
+            .await
+        else {
+            return 0;
+        };
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM observation")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap_or(0)
+    };
+    let started = Instant::now();
+    while count().await < n {
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "never {n} rows"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
 }
 
 /// The attempt timeout leaves the run open while the window is; the next
@@ -506,19 +559,21 @@ fn missed_days_are_marked_after_the_first_run_once_closed() {
 /// #2577 item 2: concurrent responses are stamped when recorded, so a slow
 /// response recorded after faster ones is not refused as `ClockWentBack`
 /// and attempt order is time order. Every arrival moves the fake clock one
-/// second, and the first request answers last.
+/// second, and the first request is answered only once three later ones
+/// are recorded.
 #[test]
 fn concurrent_responses_are_recorded_in_time_order() {
     hermetic::run(async {
         let clock = FakeClock::at(tue_start());
         clock.advance(60_000);
         let first = Arc::new(AtomicUsize::new(0));
-        let f = first.clone();
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let (f, g) = (first.clone(), gate.clone());
         let server = TimedServer::start(clock.clone(), move |_, clock| {
             clock.advance(1_000);
             let reply = Reply::data(r#"{"v":1}"#);
             if f.fetch_add(1, Ordering::SeqCst) == 0 {
-                reply.after(Duration::from_millis(400))
+                reply.gated(&g)
             } else {
                 reply
             }
@@ -529,7 +584,10 @@ fn concurrent_responses_are_recorded_in_time_order() {
             ..Knobs::default()
         };
         let a = archive(&server.server.url, &knobs, clock.now());
-        let outcome = capture(&a, &clock).await;
+        let (outcome, ()) = tokio::join!(capture(&a, &clock), async {
+            wait_for_rows(&a, 3).await;
+            gate.notify_one();
+        });
         assert_eq!(outcome.kind, ExitKind::Complete, "{outcome:?}");
         let recorded = rows(&a).await;
         assert_eq!(recorded.len(), 12);

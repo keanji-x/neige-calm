@@ -10,13 +10,11 @@
 //! freeze and the end take their timestamps the same way.
 //!
 //! **The freeze.** Membership is frozen when every planned index has an
-//! `ok` constituents row, or once `now ≥ carry_deadline`. Before the carry
-//! deadline the constituents keep being retried on the schedule; the cap
-//! only limits counted attempts, and an index at its cap waits for the
-//! carry deadline. When the carry deadline falls inside this start, the
-//! start waits for it; when this start's deadline comes first, the run is
-//! left unfrozen for the next start. No per-key fetch starts before the
-//! freeze.
+//! `ok` constituents row, or once `now ≥ carry_deadline`, and before any
+//! per-key fetch. The membership and coverage rules, and how the freeze
+//! treats an attempt still in flight, are in [`super::schedule`]. When this
+//! start's deadline comes before the carry deadline, the run is left
+//! unfrozen for the next start.
 //!
 //! **The end.** A run ends `complete` only when it is frozen and every pair
 //! has an `ok` or is at its cap. With work left, it ends `partial` once the
@@ -25,12 +23,12 @@
 use std::sync::{Arc, Mutex};
 
 use super::fail;
-use super::schedule::{Bounds, COUNTED, Pool, Stop, survey, work_off};
+use super::schedule::{COUNTED, Pool, Rule, Span, Stop, survey, work_off};
 use crate::catalog::EndpointId;
 use crate::clock::Clock;
 use crate::source::LongbridgeSource;
 use crate::state::{ExitKind, Outcome};
-use crate::store::{PairCoverage, RunPlan};
+use crate::store::RunPlan;
 use crate::types::{Finish, Key, Recorded, Response, RunId, UnixMs, Window};
 use crate::{Store, StoreError};
 
@@ -67,28 +65,42 @@ pub(super) struct Recorder<C: Clock> {
     turn: tokio::sync::Mutex<()>,
 }
 
+/// What [`Recorder::observe`] did.
+pub(super) enum Observed {
+    Recorded(Recorded),
+    /// The window has closed: nothing was written.
+    WindowClosed,
+    /// The run stopped while the row waited for its turn: nothing was
+    /// written.
+    Stopped,
+}
+
 impl<C: Clock> Recorder<C> {
-    /// Record a response, stamped now. `None` when the window has closed:
-    /// nothing is written.
+    /// Record a response, stamped now, unless `stopped()` says the run has
+    /// stopped by the time it is this row's turn.
     pub(super) async fn observe(
         &self,
         key: &Key,
         endpoint: EndpointId,
         response: &Response,
-    ) -> Result<Option<Recorded>, StoreError> {
+        stopped: impl Fn() -> bool,
+    ) -> Result<Observed, StoreError> {
         let _turn = self.turn.lock().await;
+        if stopped() {
+            return Ok(Observed::Stopped);
+        }
         let at = self.clock.now();
         if !self.window.contains(at) {
-            return Ok(None);
+            return Ok(Observed::WindowClosed);
         }
         self.store
             .record_observation(self.run, key, endpoint, at, response)
             .await
-            .map(Some)
+            .map(Observed::Recorded)
     }
 
     /// Freeze the membership now. `false` when the window has closed.
-    async fn freeze(&self) -> Result<bool, StoreError> {
+    pub(super) async fn freeze(&self) -> Result<bool, StoreError> {
         let _turn = self.turn.lock().await;
         let at = self.clock.now();
         if !self.window.contains(at) {
@@ -136,77 +148,31 @@ async fn phases<C: Clock>(ctx: &RunCtx<C>) -> Result<Outcome, Outcome> {
             turn: tokio::sync::Mutex::new(()),
         },
         catalog: ctx.store.catalog().clone(),
-        cap: ctx.attempt_cap,
         stop: Mutex::new(None),
     });
-    let stopped = |stop: Stop| match stop {
-        Stop::Auth => {
+    let span = Span {
+        deadline: ctx.deadline,
+        carry_deadline: ctx.carry_deadline,
+        cap: ctx.attempt_cap,
+    };
+    let frozen = ctx.plan.frozen || ctx.plan.indexes.is_empty();
+    tracing::info!(%as_of, frozen, "working the run");
+    let worked = work_off(&pool, &ctx.store, run, frozen, span)
+        .await
+        .map_err(|e| store_err("working the run", e))?;
+    match worked.stop {
+        Some(Stop::Auth) => {
             tracing::error!(%as_of, "a request found no usable token; the run stays open");
-            Err(Outcome::of(ExitKind::AuthUnavailable, as_of))
+            return Err(Outcome::of(ExitKind::AuthUnavailable, as_of));
         }
-        Stop::Fatal(err) => {
+        Some(Stop::Fatal(err)) => {
             tracing::error!(%as_of, error = %err, "recording failed; the run stays open");
-            Err(Outcome::of(ExitKind::Fatal, as_of))
+            return Err(Outcome::of(ExitKind::Fatal, as_of));
         }
         // The end below finds the window closed.
-        Stop::WindowClosed => Ok(()),
-    };
-    let membership = ctx.store.catalog().membership();
-    let mut frozen = ctx.plan.frozen || ctx.plan.indexes.is_empty();
-    if !frozen {
-        let only_membership = move |p: &PairCoverage| p.endpoint == membership;
-        let indexes = survey(
-            &ctx.store,
-            run,
-            ctx.attempt_cap,
-            ctx.clock.now(),
-            only_membership,
-        )
-        .await
-        .map_err(|e| store_err("survey", e))?;
-        tracing::info!(%as_of, indexes = indexes.pending.len(), "membership phase");
-        let bounds = Bounds {
-            until: ctx.deadline.min(ctx.carry_deadline),
-            first_until: ctx.deadline,
-        };
-        if let Some(stop) = work_off(&pool, indexes.pending, bounds).await {
-            stopped(stop)?;
-        }
-        let all_ok = survey(
-            &ctx.store,
-            run,
-            ctx.attempt_cap,
-            ctx.clock.now(),
-            only_membership,
-        )
-        .await
-        .map_err(|e| store_err("survey", e))?
-        .all_ok();
-        if pool.stopped().is_none() && !all_ok && ctx.carry_deadline < ctx.deadline {
-            // The carry deadline falls inside this start: wait for it.
-            ctx.clock.sleep_until(ctx.carry_deadline).await;
-        }
-        if pool.stopped().is_none() && (all_ok || ctx.clock.now() >= ctx.carry_deadline) {
-            frozen = pool
-                .recorder
-                .freeze()
-                .await
-                .map_err(|e| store_err("freeze", e))?;
-        }
+        Some(Stop::WindowClosed) | None => {}
     }
-    if frozen && pool.stopped().is_none() {
-        let pairs = survey(&ctx.store, run, ctx.attempt_cap, ctx.clock.now(), |_| true)
-            .await
-            .map_err(|e| store_err("survey", e))?;
-        tracing::info!(%as_of, pairs = pairs.pending.len(), "fetch phase");
-        let bounds = Bounds {
-            until: ctx.deadline,
-            first_until: ctx.deadline,
-        };
-        if let Some(stop) = work_off(&pool, pairs.pending, bounds).await {
-            stopped(stop)?;
-        }
-    }
+    let frozen = worked.frozen;
     finish(ctx, &pool.recorder, frozen).await
 }
 
@@ -222,7 +188,9 @@ async fn finish<C: Clock>(
     let survey = survey(
         &ctx.store,
         ctx.plan.run_id,
-        ctx.attempt_cap,
+        Rule::Coverage {
+            cap: ctx.attempt_cap,
+        },
         ctx.clock.now(),
         |_| true,
     )

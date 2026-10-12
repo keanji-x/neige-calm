@@ -196,8 +196,8 @@ async fn notify_dedupes_by_kind_and_passes_only_allowlisted_variables() {
         at: SystemClock.now().0 - age_ms,
         as_of: Some(p.as_of.clone()),
         failure: (kind == ExitKind::Partial).then(|| "envelope:401004".to_owned()),
-        closed_dangling: None,
-        closed_dangling_failure: None,
+        closed_dangling: Vec::new(),
+        missed_scan_incomplete: false,
     };
     let count = || read(&out.join("count")).len();
 

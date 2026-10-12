@@ -68,3 +68,17 @@ pub async fn within<C: Clock, F: Future>(clock: &C, deadline: UnixMs, fut: F) ->
         }
     }
 }
+
+/// Wait until `at`. With `busy` (work is in flight that may yet change what
+/// happens next), the wait runs on the runtime's timer for `at - now`, as
+/// [`within`] does, and the clock is brought to `at` only when that timer
+/// fires; otherwise it is the clock's own [`Clock::sleep_until`]. With
+/// [`SystemClock`] both are the same wait. A test clock moves on its own
+/// only while nothing is in flight, so time never jumps under an attempt.
+pub async fn wait_until<C: Clock>(clock: &C, at: UnixMs, busy: bool) {
+    if busy {
+        let left = u64::try_from(at.0.saturating_sub(clock.now().0)).unwrap_or(0);
+        tokio::time::sleep(Duration::from_millis(left)).await;
+    }
+    clock.sleep_until(at).await;
+}

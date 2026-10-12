@@ -42,6 +42,12 @@ pub fn require_regular(path: &Path) -> io::Result<()> {
 /// Read a regular file of at most [`MAX_FILE_BYTES`]: opened without
 /// blocking, then its type checked on the open descriptor.
 pub fn read_regular(path: &Path) -> io::Result<Vec<u8>> {
+    read_regular_at_most(path, MAX_FILE_BYTES)
+}
+
+/// [`read_regular`] with its own size bound, for a file that grows (the
+/// calendar cache).
+pub fn read_regular_at_most(path: &Path, max_bytes: u64) -> io::Result<Vec<u8>> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
@@ -53,11 +59,11 @@ pub fn read_regular(path: &Path) -> io::Result<Vec<u8>> {
         ));
     }
     let mut bytes = Vec::new();
-    file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_FILE_BYTES {
+    file.take(max_bytes + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("larger than {MAX_FILE_BYTES} bytes"),
+            format!("larger than {max_bytes} bytes"),
         ));
     }
     Ok(bytes)
