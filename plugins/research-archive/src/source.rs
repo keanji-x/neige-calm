@@ -29,11 +29,17 @@
 //! envelope code `429002`, which the SDK does not retry, and probe P1 saw no
 //! bare 429, so in practice every request start is paced.
 
-use std::{num::NonZeroU32, sync::Mutex, time::Duration};
+use std::{
+    future::Future,
+    num::NonZeroU32,
+    pin::Pin,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use longbridge::{
     httpclient::{DcRegion as SdkDcRegion, HttpClient, HttpClientConfig, HttpClientError, Method},
-    oauth::OAuth,
+    oauth::{OAuth, OAuthResult},
 };
 use serde::{Serialize, Serializer, ser::SerializeMap};
 
@@ -103,10 +109,35 @@ pub const RETRY_AFTER_FALLBACK: Duration = Duration::from_secs(1);
 /// The longest server-named wait; a longer one is clamped to it.
 const RETRY_AFTER_MAX: Duration = Duration::from_secs(60);
 
-/// The production bound on one whole `fetch` (see [`LongbridgeSource::new`]):
-/// above the SDK's 30 s request timeout, so it fires only when token
-/// resolution or a token refresh hangs.
-pub const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
+/// The bounds of one `fetch` (see [`LongbridgeSource::fetch`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Timeouts {
+    /// Resolving the access token, a refresh included. oauth2's HTTP client
+    /// has no timeout of its own. Expiry is `auth_unavailable` / `auth` /
+    /// `refresh_timeout`.
+    pub token: Duration,
+    /// The request after its rate-limit slot, the SDK's retries included.
+    /// Expiry is `transient` / `transport` / `request_timeout`.
+    pub fetch: Duration,
+}
+
+impl Timeouts {
+    /// Production bounds. `fetch` is above the SDK's own 30 s request
+    /// timeout, so it fires only if the SDK itself hangs.
+    pub const PRODUCTION: Timeouts = Timeouts {
+        token: Duration::from_secs(30),
+        fetch: Duration::from_secs(60),
+    };
+}
+
+/// How a fetch resolves the access token before taking its rate-limit slot.
+/// In production it is the source's own `OAuth`; the pacing unit test
+/// substitutes a resolver that blocks the way a refresh holds the `OAuth`
+/// lock, because a successful refresh cannot be faked without the real
+/// OAuth host's TLS certificate.
+type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+type ResolveToken = Arc<dyn Fn() -> BoxFuture<'static, OAuthResult<String>> + Send + Sync>;
 
 /// The envelope code of the server's rate limit (probe P1).
 pub const THROTTLE_CODE: i32 = 429_002;
@@ -140,26 +171,69 @@ impl Fetched {
 /// The catalog source for Longbridge.
 pub struct LongbridgeSource {
     http: HttpClient,
+    resolve_token: ResolveToken,
     limiter: RateLimiter,
-    fetch_timeout: Duration,
+    timeouts: Timeouts,
 }
 
 impl LongbridgeSource {
     /// `oauth` is the process's one shared client; `http_url` is pinned, never
-    /// taken from the environment. `fetch_timeout` bounds one whole `fetch`
-    /// after its rate-limit slot: token resolution, any token refresh, the
-    /// request and the SDK's own retries ([`FETCH_TIMEOUT`] in production).
-    /// It expires as `transient` / `transport` / `request_timeout`.
-    pub fn new(oauth: OAuth, http_url: &str, rps: Rps, fetch_timeout: Duration) -> Self {
+    /// taken from the environment.
+    pub fn new(oauth: OAuth, http_url: &str, rps: Rps, timeouts: Timeouts) -> Self {
+        let resolver = oauth.clone();
+        Self::with_resolver(
+            oauth,
+            http_url,
+            rps,
+            timeouts,
+            Arc::new(move || {
+                let oauth = resolver.clone();
+                Box::pin(async move { oauth.access_token().await })
+            }),
+        )
+    }
+
+    fn with_resolver(
+        oauth: OAuth,
+        http_url: &str,
+        rps: Rps,
+        timeouts: Timeouts,
+        resolve_token: ResolveToken,
+    ) -> Self {
         Self {
             http: HttpClient::new(HttpClientConfig::from_oauth(oauth).http_url(http_url)),
+            resolve_token,
             limiter: RateLimiter::new(rps),
-            fetch_timeout,
+            timeouts,
         }
     }
 
-    /// Perform `endpoint` for `key` once, after waiting for a rate-limit slot.
+    /// Perform `endpoint` for `key` once, in this order:
+    ///
+    /// 1. **Resolve the access token**, a refresh included, within
+    ///    `timeouts.token`. A failure is `auth_unavailable` / `auth` / the
+    ///    OAuth error kind, or `refresh_timeout`; it takes no rate-limit slot
+    ///    and sends nothing. Like every auth pause it is not a failure of the
+    ///    pair, so it never counts toward the attempt cap.
+    /// 2. **Take a rate-limit slot.** Callers that queued behind a refresh
+    ///    (the `OAuth` lock) are paced from here, not released together.
+    /// 3. **Send** within `timeouts.fetch`. The SDK resolves the token again
+    ///    inside `send()`, which is now immediate. Dropping a timed-out
+    ///    future also drops any `OAuth` lock guard it holds.
     pub async fn fetch(&self, endpoint: &Endpoint, key: &Key) -> Fetched {
+        let auth_failure = |code: &str| Fetched {
+            response: failed(
+                FailureClass::AuthUnavailable,
+                ErrorClass::Auth,
+                code.to_owned(),
+            ),
+            retry_after: None,
+        };
+        match tokio::time::timeout(self.timeouts.token, (self.resolve_token)()).await {
+            Ok(Ok(_token)) => {}
+            Ok(Err(err)) => return auth_failure(sdk_error::oauth_kind(&err)),
+            Err(_elapsed) => return auth_failure("refresh_timeout"),
+        }
         self.limiter.acquire().await;
         let method = match endpoint.method {
             catalog::Method::Get => Method::GET,
@@ -180,11 +254,7 @@ impl LongbridgeSource {
             })
             .response::<String>()
             .send();
-        // The SDK's own 30 s timeout starts only after the access token is
-        // resolved, and a token refresh (oauth2's reqwest client) has none.
-        // Dropping the future on expiry also drops the `OAuth` lock guard
-        // the refresh holds.
-        match tokio::time::timeout(self.fetch_timeout, send).await {
+        match tokio::time::timeout(self.timeouts.fetch, send).await {
             Ok(Ok(data)) => Fetched::body(data),
             Ok(Err(err)) => classify(err),
             Err(_elapsed) => Fetched {

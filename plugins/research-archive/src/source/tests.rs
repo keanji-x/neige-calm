@@ -94,3 +94,81 @@ fn non_envelope_statuses_map_onto_the_stored_classes() {
         );
     }
 }
+
+/// B3: callers that queue behind a slow token resolution are paced after
+/// it, not released together. The production `fetch` runs against a local
+/// server that records when each request arrives. The token step is the
+/// one substitution: a successful refresh cannot be faked without the real
+/// OAuth host's TLS certificate, so the resolver models the `OAuth` lock a
+/// refresh holds (`oauth/src/client.rs:93-112`): every call takes one shared
+/// lock, and the first holds it for a second. The HTTP client's own token
+/// is `OAuth::from_token`, so the SDK's resolution inside `send()` is
+/// immediate, as it is after a real refresh.
+#[tokio::test]
+async fn fetches_queued_behind_a_token_refresh_are_paced() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Instant;
+
+    let arrivals = Arc::new(Mutex::new(Vec::<Instant>::new()));
+    let log = arrivals.clone();
+    let app = axum::Router::new().fallback(move || {
+        let log = log.clone();
+        async move {
+            log.lock().unwrap().push(Instant::now());
+            r#"{"code":0,"message":"","data":{}}"#
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    let first = Arc::new(AtomicBool::new(true));
+    let resolver: ResolveToken = Arc::new(move || {
+        let (lock, first) = (lock.clone(), first.clone());
+        Box::pin(async move {
+            let _held = lock.lock().await;
+            if first.swap(false, Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            Ok("ap_fresh".to_owned())
+        })
+    });
+    let rps = Rps::new(4).unwrap();
+    crate::dotenv_reach::assert_no_dotenv_reach();
+    let source = LongbridgeSource::with_resolver(
+        OAuth::from_token("ap_fresh"),
+        &url,
+        rps,
+        Timeouts::PRODUCTION,
+        resolver,
+    );
+    let endpoint = *crate::catalog::Catalog::compiled().get("ratings").unwrap();
+    let key = Key::new("AAPL.US").unwrap();
+    let (a, b, c, d) = tokio::join!(
+        source.fetch(&endpoint, &key),
+        source.fetch(&endpoint, &key),
+        source.fetch(&endpoint, &key),
+        source.fetch(&endpoint, &key),
+    );
+    for fetched in [a, b, c, d] {
+        assert_eq!(fetched.response(), &Response::Body(b"{}".to_vec()));
+    }
+    let mut times = arrivals.lock().unwrap().clone();
+    times.sort();
+    assert_eq!(times.len(), 4);
+    let gaps: Vec<Duration> = times.windows(2).map(|w| w[1] - w[0]).collect();
+    // The interval is 250 ms; 50 ms absorbs scheduling jitter. Released
+    // together, the gaps would be about 0.
+    for gap in &gaps {
+        assert!(*gap >= Duration::from_millis(200), "{gaps:?}");
+    }
+}
+
+#[test]
+fn production_bounds_are_finite_and_ordered() {
+    let t = Timeouts::PRODUCTION;
+    assert!(t.token > Duration::ZERO && t.token <= Duration::from_secs(60));
+    // Above the SDK's own 30 s request timeout.
+    assert!(t.fetch > Duration::from_secs(30) && t.fetch <= Duration::from_secs(120));
+}

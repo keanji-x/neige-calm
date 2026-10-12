@@ -23,14 +23,14 @@ use std::{
     fmt,
     fs::{self, File, OpenOptions},
     io::{self, Write},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
+    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
 use longbridge::oauth::{OAuth, OAuthBuilder, OAuthError, OAuthResult, StoredToken, TokenStorage};
 use serde::{Deserialize, Serialize};
 
-use crate::{exit, sdk_error};
+use crate::{exit, files, sdk_error};
 
 /// A credential string. Formatting never shows it.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,6 +169,12 @@ pub enum TokenFileError {
     ClientIdMismatch { path: PathBuf },
     #[error("token storage {dir} is read-only")]
     ReadOnly { dir: PathBuf },
+    #[error("token file {path}: `{field}` is {problem}")]
+    Invalid {
+        path: PathBuf,
+        field: &'static str,
+        problem: &'static str,
+    },
     #[error(
         "the stored token expires later ({stored}) than the imported one ({imported}); pass --force to replace it"
     )]
@@ -183,12 +189,15 @@ pub enum TokenFileError {
 }
 
 /// Read and parse one token file in the SDK's format.
+///
+/// The path must be a regular file of bounded size ([`files::read_regular`]),
+/// and the token must pass [`TokenFile::validate`].
 pub fn parse_token_file(path: &Path) -> Result<TokenFile, TokenFileError> {
-    let bytes = fs::read(path).map_err(|source| TokenFileError::Io {
+    let bytes = files::read_regular(path).map_err(|source| TokenFileError::Io {
         path: path.to_owned(),
         source,
     })?;
-    serde_json::from_slice(&bytes).map_err(|e| TokenFileError::Parse {
+    let token: TokenFile = serde_json::from_slice(&bytes).map_err(|e| TokenFileError::Parse {
         path: path.to_owned(),
         category: match e.classify() {
             serde_json::error::Category::Io => "io",
@@ -198,7 +207,45 @@ pub fn parse_token_file(path: &Path) -> Result<TokenFile, TokenFileError> {
         },
         line: e.line(),
         column: e.column(),
-    })
+    })?;
+    token
+        .validate()
+        .map_err(|(field, problem)| TokenFileError::Invalid {
+            path: path.to_owned(),
+            field,
+            problem,
+        })?;
+    Ok(token)
+}
+
+/// Whether a credential can be sent at all: non-empty, and only visible
+/// ASCII (`!` to `~`). That is stricter than an HTTP header value, which the
+/// SDK builds from the access token (`Bearer <token>`,
+/// `httpclient/src/request.rs:348-349`) and refuses locally otherwise.
+fn credential_problem(value: &Secret) -> Option<&'static str> {
+    if value.0.is_empty() {
+        Some("empty")
+    } else if !value.0.bytes().all(|b| b.is_ascii_graphic()) {
+        Some("not visible ASCII")
+    } else {
+        None
+    }
+}
+
+impl TokenFile {
+    /// The one check of a token's contents, for every read and write: the
+    /// access token, and the refresh token when present, must be sendable
+    /// ([`credential_problem`]). `Err` names the field and the problem,
+    /// never the value.
+    pub fn validate(&self) -> Result<(), (&'static str, &'static str)> {
+        if let Some(problem) = credential_problem(&self.access_token) {
+            return Err(("access_token", problem));
+        }
+        if let Some(problem) = self.refresh_token.as_ref().and_then(credential_problem) {
+            return Err(("refresh_token", problem));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -216,16 +263,21 @@ pub struct DataDirTokenStorage {
 
 impl DataDirTokenStorage {
     /// Writable storage. Creates `dir` with mode 0700 when it is missing.
+    ///
+    /// An existing `dir` is tightened to 0700; its parents (the data dir)
+    /// keep their mode.
     pub fn open(dir: impl Into<PathBuf>) -> Result<Self, TokenFileError> {
         let dir = dir.into();
+        let io_err = |source| TokenFileError::Io {
+            path: dir.clone(),
+            source,
+        };
         fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(&dir)
-            .map_err(|source| TokenFileError::Io {
-                path: dir.clone(),
-                source,
-            })?;
+            .map_err(io_err)?;
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).map_err(io_err)?;
         Ok(Self {
             dir,
             access: Access::ReadWrite,
@@ -290,6 +342,13 @@ impl DataDirTokenStorage {
         }
         let client_id = ClientId::parse(&token.client_id)?;
         let target = self.path_for(&client_id);
+        token
+            .validate()
+            .map_err(|(field, problem)| TokenFileError::Invalid {
+                path: target.clone(),
+                field,
+                problem,
+            })?;
         let io_err = |path: &Path| {
             let path = path.to_owned();
             move |source| TokenFileError::Io { path, source }
@@ -433,24 +492,34 @@ impl TokenStorage for FreshLogin {
     }
 }
 
+/// How long `auth login` may take in all: the SDK's five-minute wait for the
+/// browser callback (`oauth/src/callback.rs:12`) plus a margin for the code
+/// exchange, which oauth2's HTTP client does not bound
+/// (`oauth2-4.4.2/src/reqwest.rs:96-108` builds it without a timeout).
+pub const LOGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300 + 60);
+
 /// Run the SDK's browser login for `client_id` on the registered
 /// `callback_port`, and save the new token through `storage`. `show_url`
 /// receives the authorization URL for the operator. This is the only path
-/// that runs the browser flow. The SDK gives the browser five minutes
-/// (`oauth/src/callback.rs:12`).
+/// that runs the browser flow. The whole login, the code exchange included,
+/// ends by `deadline` ([`LOGIN_TIMEOUT`] for the CLI); a login cut off there
+/// has saved nothing, since the SDK saves only after the exchange.
 pub async fn login(
     client_id: &ClientId,
     storage: DataDirTokenStorage,
     callback_port: CallbackPort,
     show_url: impl Fn(&str),
+    deadline: std::time::Duration,
 ) -> Result<(), OAuthUnavailable> {
-    OAuthBuilder::new(client_id.as_str())
+    let build = OAuthBuilder::new(client_id.as_str())
         .callback_port(callback_port.get())
         .token_storage(FreshLogin(storage))
-        .build(show_url)
-        .await
-        .map(drop)
-        .map_err(|err| OAuthUnavailable::Sdk(sdk_error::oauth_kind(&err)))
+        .build(show_url);
+    match tokio::time::timeout(deadline, build).await {
+        Ok(Ok(_oauth)) => Ok(()),
+        Ok(Err(err)) => Err(OAuthUnavailable::Sdk(sdk_error::oauth_kind(&err))),
+        Err(_elapsed) => Err(OAuthUnavailable::TimedOut),
+    }
 }
 
 /// What a stored token is, without the token itself: what `auth import`,

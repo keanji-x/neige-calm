@@ -5,6 +5,8 @@
 
 mod cli;
 mod clock;
+#[path = "../common/dotenv_reach.rs"]
+mod dotenv_reach;
 mod fake;
 mod freeze;
 mod guards;

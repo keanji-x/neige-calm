@@ -299,6 +299,7 @@ async fn build_oauth_loads_a_valid_token_without_saving_or_a_browser() {
     fs::write(&path, sdk_token_file("test-client", Some(CANARY_REFRESH))).unwrap();
     let before = fs::read(&path).unwrap();
 
+    crate::dotenv_reach::assert_no_dotenv_reach();
     let oauth = build_oauth(
         &client(),
         DataDirTokenStorage::open(root.path()).unwrap(),
@@ -461,4 +462,105 @@ fn usability_follows_the_sdk_refresh_margin() {
     assert!(!at(NOW + SDK_REFRESH_MARGIN_SECS - 1, false).usable_at(NOW));
     assert!(!at(0, false).usable_at(NOW));
     assert!(at(0, true).usable_at(NOW));
+}
+
+/// B2: one check of token contents, on import, on load and on save. The
+/// error names the field, never the value.
+#[test]
+fn unusable_token_contents_are_refused_everywhere() {
+    let root = tempfile::tempdir().unwrap();
+    let storage = DataDirTokenStorage::open(root.path().join("oauth")).unwrap();
+    let from = root.path().join("token");
+    let cases: [(&str, serde_json::Value, serde_json::Value, &str, &str); 5] = [
+        (
+            "newline in access",
+            format!("ap_{CANARY_ACCESS}\nx").into(),
+            CANARY_REFRESH.into(),
+            "access_token",
+            "not visible ASCII",
+        ),
+        (
+            "empty access",
+            "".into(),
+            CANARY_REFRESH.into(),
+            "access_token",
+            "empty",
+        ),
+        (
+            "space in access",
+            format!("ap {CANARY_ACCESS}").into(),
+            serde_json::Value::Null,
+            "access_token",
+            "not visible ASCII",
+        ),
+        (
+            "empty refresh",
+            CANARY_ACCESS.into(),
+            "".into(),
+            "refresh_token",
+            "empty",
+        ),
+        (
+            "non-ASCII refresh",
+            CANARY_ACCESS.into(),
+            format!("{CANARY_REFRESH}é").into(),
+            "refresh_token",
+            "not visible ASCII",
+        ),
+    ];
+    for (name, access, refresh, field, problem) in cases {
+        let json = serde_json::json!({
+            "client_id": "test-client",
+            "access_token": access,
+            "refresh_token": refresh,
+            "expires_at": 4_102_444_800u64,
+        })
+        .to_string();
+        let check = |err: TokenFileError| {
+            match &err {
+                TokenFileError::Invalid {
+                    field: f,
+                    problem: p,
+                    ..
+                } => {
+                    assert_eq!((*f, *p), (field, problem), "{name}");
+                }
+                other => panic!("{name}: {other}"),
+            }
+            assert!(!err.to_string().contains("CANARY"), "{name}: {err}");
+            assert!(!format!("{err:?}").contains("CANARY"), "{name}");
+        };
+        // Import.
+        fs::write(&from, &json).unwrap();
+        check(import_token(&from, &client(), &storage, true, NOW).unwrap_err());
+        assert!(storage.load_checked(&client()).unwrap().is_none(), "{name}");
+        // Load (what `auth status` and the SDK read).
+        fs::write(storage.path_for(&client()), &json).unwrap();
+        check(storage.load_checked(&client()).unwrap_err());
+        assert!(
+            TokenStorage::load(&storage, "test-client").is_none(),
+            "{name}"
+        );
+        fs::remove_file(storage.path_for(&client())).unwrap();
+        // Save (what a refresh writes).
+        let token: TokenFile = serde_json::from_str(&json).unwrap();
+        check(storage.save_checked(&token).unwrap_err());
+        assert!(!storage.path_for(&client()).exists(), "{name}");
+    }
+}
+
+/// N2: writable storage tightens an existing `oauth/` to 0700 and leaves
+/// the data dir as it was.
+#[test]
+fn open_tightens_the_oauth_dir_but_not_the_data_dir() {
+    let root = tempfile::tempdir().unwrap();
+    let data = root.path().join("data");
+    let oauth = data.join("oauth");
+    fs::create_dir_all(&oauth).unwrap();
+    for dir in [&data, &oauth] {
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    DataDirTokenStorage::open(&oauth).unwrap();
+    assert_eq!(mode(&oauth), 0o700);
+    assert_eq!(mode(&data), 0o755);
 }

@@ -2,6 +2,21 @@
 //! checks the environment, reads the config, pins the region while the
 //! process is still single-threaded, then runs one command and returns its
 //! exit code.
+//!
+//! **Every wait is bounded.** The blocking steps of each command:
+//!
+//! - all: `stat` of the cwd's ancestors; the config read, a regular file of
+//!   at most 64 KiB ([`files::read_regular`]);
+//! - `import`: the `--from` type check before the lock, a non-blocking
+//!   `flock`, the bounded read of the source and of a stored token, and a
+//!   local write, fsync and rename;
+//! - `login`: the non-blocking `flock`, then one `block_on` of
+//!   [`auth::login`] under [`auth::LOGIN_TIMEOUT`] (the browser wait and the
+//!   code exchange), then the bounded read of the saved token;
+//! - `status`: the bounded read of the stored token.
+//!
+//! Writes to stdout and stderr can block only on a reader that stops
+//! reading, which is the caller's own pipe.
 
 use std::path::{Path, PathBuf};
 
@@ -11,6 +26,7 @@ use crate::auth::{self, DataDirTokenStorage, TokenSummary};
 use crate::config::Config;
 use crate::env_guard;
 use crate::exit;
+use crate::files;
 use crate::lock::{DataDirLock, LockError};
 use crate::logging;
 
@@ -125,6 +141,11 @@ fn writable_storage(config: &Config) -> Result<DataDirTokenStorage, i32> {
 }
 
 fn import(config: &Config, from: &Path, force: bool) -> i32 {
+    // Before the lock: reading a FIFO or a device would hold it forever.
+    if let Err(err) = files::require_regular(from) {
+        tracing::error!("cannot import {}: {err}", from.display());
+        return exit::FATAL;
+    }
     let _lock = match lock(config) {
         Ok(lock) => lock,
         Err(code) => return code,
@@ -175,6 +196,7 @@ fn login(config: &Config) -> i32 {
         storage.clone(),
         config.callback_port,
         |url| eprintln!("Open this URL in a browser to authorize the archive:\n{url}"),
+        auth::LOGIN_TIMEOUT,
     ));
     if let Err(err) = flow {
         // `err` is a fixed variant name, never the SDK's text: the callback's

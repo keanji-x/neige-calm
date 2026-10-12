@@ -100,6 +100,7 @@ async fn i11_no_secret_reaches_output_logs_archive_or_debug() {
         tracing::subscriber::set_default(logging::subscriber(Level::INFO, move || writer.clone()));
     let config = Config::load(&env.config).unwrap();
     let client = ClientId::parse(CLIENT).unwrap();
+    crate::dotenv_reach::assert_no_dotenv_reach();
     let storage = DataDirTokenStorage::open(config.oauth_dir()).unwrap();
     let oauth = auth::build_oauth(&client, storage.clone(), Duration::from_secs(5))
         .await

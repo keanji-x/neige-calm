@@ -7,9 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use longbridge::oauth::{OAuth, OAuthBuilder, OAuthResult, StoredToken, TokenStorage};
 use research_archive::StoreError;
 use research_archive::catalog::{Catalog, DcRegion, Endpoint, KeyKind, QueryValue};
-use research_archive::source::{
-    FETCH_TIMEOUT, Fetched, LongbridgeSource, RETRY_AFTER_FALLBACK, Rps,
-};
+use research_archive::source::{Fetched, LongbridgeSource, RETRY_AFTER_FALLBACK, Rps, Timeouts};
 use research_archive::store::RunPlan;
 use research_archive::types::{ErrorClass, ErrorDetail, FailureClass, Response, Status, UnixMs};
 
@@ -21,7 +19,8 @@ const TOKEN: &str = "ap_m_CANARY-TOKEN-0b7e";
 const BODY: &str = r#"{"b":1,"a":0.12345678901234567890123}"#;
 
 pub fn source(url: &str, oauth: OAuth) -> LongbridgeSource {
-    LongbridgeSource::new(oauth, url, Rps::new(20).unwrap(), FETCH_TIMEOUT)
+    crate::dotenv_reach::assert_no_dotenv_reach();
+    LongbridgeSource::new(oauth, url, Rps::new(20).unwrap(), Timeouts::PRODUCTION)
 }
 
 fn endpoint(id: &str) -> Endpoint {
@@ -486,6 +485,7 @@ async fn a_failed_token_refresh_is_auth_unavailable() {
         refresh_token: None,
         expires_at: now + 302,
     };
+    crate::dotenv_reach::assert_no_dotenv_reach();
     let oauth = OAuthBuilder::new("test-client")
         .callback_port(occupied.local_addr().unwrap().port())
         .token_storage(Memory(token))
@@ -501,7 +501,11 @@ async fn a_failed_token_refresh_is_auth_unavailable() {
         .await;
     assert_eq!(
         fetched.response(),
-        &failed(FailureClass::AuthUnavailable, ErrorClass::Auth, "oauth")
+        &failed(
+            FailureClass::AuthUnavailable,
+            ErrorClass::Auth,
+            "no_refresh_token"
+        )
     );
     assert!(server.seen().is_empty());
     assert_stored(&f, &plan, &ratings, at(1, 10), &fetched).await;

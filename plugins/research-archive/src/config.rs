@@ -98,11 +98,19 @@ fn invalid(field: &'static str, reason: impl Into<String>) -> ConfigError {
 }
 
 impl Config {
-    /// Read and validate the config at `path`.
+    /// Read and validate the config at `path`, a regular file of bounded
+    /// size ([`crate::files::read_regular`]).
     pub fn load(path: &Path) -> Result<Config, ConfigError> {
-        let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
+        let read_err = |source| ConfigError::Read {
             path: path.to_owned(),
             source,
+        };
+        let bytes = crate::files::read_regular(path).map_err(read_err)?;
+        let text = String::from_utf8(bytes).map_err(|_| {
+            read_err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "not UTF-8",
+            ))
         })?;
         Config::parse(&text).map_err(|err| match err {
             ConfigError::Parse { message, .. } => ConfigError::Parse {

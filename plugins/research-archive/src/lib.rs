@@ -23,6 +23,7 @@ pub mod cli;
 pub mod config;
 pub mod env_guard;
 pub mod exit;
+pub mod files;
 pub mod lock;
 pub mod logging;
 pub mod membership;
@@ -33,3 +34,8 @@ pub mod types;
 
 pub use catalog::{Catalog, Endpoint, EndpointId, KeyKind};
 pub use store::{OpenError, Store, StoreError};
+
+/// The `.env` reach check shared with the integration tests.
+#[cfg(test)]
+#[path = "../tests/common/dotenv_reach.rs"]
+mod dotenv_reach;

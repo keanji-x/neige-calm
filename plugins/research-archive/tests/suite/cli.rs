@@ -275,6 +275,79 @@ fn import_and_login_exit_locked_while_the_lock_is_held() {
     drop(held);
 }
 
+/// B1: `import --from` refuses a FIFO, a device or a directory before it
+/// takes the lock, so it can neither block on the read nor hold the lock.
+#[test]
+fn import_refuses_a_non_regular_source_before_the_lock() {
+    let env = Env::new();
+    let fifo = env.root.path().join("fifo");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let held = DataDirLock::try_acquire(&env.data_dir).unwrap();
+    for from in [fifo.as_path(), Path::new("/dev/zero"), env.root.path()] {
+        let out = env.run(&["auth", "import", "--from", from.to_str().unwrap()]);
+        assert_eq!(
+            out.status.code(),
+            Some(70),
+            "{from:?}: {}",
+            text(&out.stderr)
+        );
+        assert!(text(&out.stderr).contains("not a regular file"), "{from:?}");
+    }
+    drop(held);
+    assert!(!env.token_path().exists());
+}
+
+/// B2: a token whose contents cannot be sent is refused on import, and a
+/// stored one makes `status` exit 75. Neither echoes the value.
+#[test]
+fn unsendable_token_contents_are_refused_by_import_and_status() {
+    let env = Env::new();
+    for (access, refresh, field) in [
+        (
+            "ap_CANARY\nline",
+            serde_json::json!(REFRESH),
+            "access_token",
+        ),
+        (ACCESS, serde_json::json!(""), "refresh_token"),
+    ] {
+        let json = serde_json::json!({
+            "client_id": CLIENT,
+            "access_token": access,
+            "refresh_token": refresh,
+            "expires_at": 4_102_444_800u64,
+        })
+        .to_string();
+        let from = env.root.path().join("bad");
+        fs::write(&from, &json).unwrap();
+        let out = env.run(&[
+            "auth",
+            "import",
+            "--force",
+            "--from",
+            from.to_str().unwrap(),
+        ]);
+        assert_eq!(out.status.code(), Some(70), "{field}");
+        let stderr = text(&out.stderr);
+        assert!(stderr.contains(&format!("`{field}` is")), "{stderr}");
+        assert!(!stderr.contains("CANARY"), "{stderr}");
+        assert!(!env.token_path().exists());
+
+        fs::create_dir_all(env.token_path().parent().unwrap()).unwrap();
+        fs::write(env.token_path(), &json).unwrap();
+        let out = env.run(&["auth", "status"]);
+        assert_eq!(out.status.code(), Some(75), "{field}");
+        assert!(text(&out.stdout).is_empty());
+        assert!(!text(&out.stderr).contains("CANARY"));
+        fs::remove_file(env.token_path()).unwrap();
+    }
+}
+
 /// `status` exits 75 for a token the SDK cannot use without a browser
 /// login; `import` stores one only with `--force`.
 #[test]

@@ -371,10 +371,20 @@ do nothing and exit `LOCKED`. The capture (S1-2b) takes it first and exits
 `BUSY` (0) when it is held.
 
 **Token.** The archive's own token lives in
-`<data_dir>/oauth/<client_id>.json` (directory 0700, file 0600, written by
-temp file with a random name, fsync and rename; a name that exists is
-skipped, never removed), in the SDK's token-file format. No command prints
-or logs a token.
+`<data_dir>/oauth/<client_id>.json` (file 0600, written by temp file with
+a random name, fsync and rename; a name that exists is skipped, never
+removed), in the SDK's token-file format. Writable storage creates
+`oauth/` as 0700, and sets an existing `oauth/` to 0700; the data dir keeps
+whatever mode it has (it is created 0700 when missing). No command prints or
+logs a token.
+
+Every read and write checks the token's contents the same way: the access
+token, and the refresh token when present, must be non-empty visible ASCII,
+which the SDK can send. A token that fails is refused by `auth import`,
+reported by `auth status` (exit 75), and never written. Errors name the
+field, never the value. `--config`, `--from` and the stored token must be
+regular files of at most 64 KiB; a FIFO or a device is refused before it is
+opened, and `auth import` checks `--from` before it takes the lock.
 
 - `auth import --from <file>` copies a token file the SDK wrote for the
   configured client id. It refuses a file for another client id and a
@@ -385,7 +395,10 @@ or logs a token.
 - `auth login` runs the SDK's browser login on `callback_port`, the redirect
   port registered for the client, printing the URL on stderr. It is the only
   path that runs the browser flow; a capture that would need it exits
-  `AUTH_UNAVAILABLE` instead.
+  `AUTH_UNAVAILABLE` instead. The whole login ends within six minutes (the
+  SDK's five-minute wait for the browser plus a minute for the code
+  exchange, which has no timeout of its own); past that it exits
+  `AUTH_UNAVAILABLE`, has saved nothing, and has released the lock.
 - `auth status` prints the stored token's expiry and whether it has a
   refresh token, and exits `AUTH_UNAVAILABLE` when the token is unusable.
 
@@ -401,8 +414,18 @@ never as their text.
 **Source.** `LongbridgeSource::fetch` sends one catalog request at a paced
 start (`rps`) and returns the Store's `Response`: the envelope's exact
 `data` bytes as `Body`, or `Failed` classified as below. The Store, not the
-source, judges a membership body. One whole `fetch`, token refresh
-included, is bounded by its fetch timeout (60 s in production).
+source, judges a membership body. A `fetch` runs in this order:
+
+1. It resolves the access token, a refresh included, within 30 s. A
+   failure is `auth_unavailable` and sends nothing; like every auth pause
+   it does not count toward the attempt cap.
+2. It takes its rate-limit slot, so callers that waited behind a refresh
+   are paced, not released together.
+3. It sends within 60 s, the SDK's own retries included.
+
+A deadline can drop a refresh that the server has already committed. If
+Longbridge rotates refresh tokens on use, the stored one is then spent and
+the login is lost; `auth login` restores it.
 
 - **Exact bytes hold for UTF-8.** The SDK reads the body with reqwest's
   `text()`, which replaces invalid UTF-8 with U+FFFD before the envelope is
@@ -426,7 +449,9 @@ included, is bounded by its fetch timeout (60 s in production).
 | other non-envelope 4xx | `permanent` | `http_status` | the status |
 | request timeout, or the fetch timeout | `transient` | `transport` | `request_timeout` |
 | connection or body error | `transient` | `transport` | `http` |
-| token refresh failed, invalid token | `auth_unavailable` | `auth` | `oauth`, `invalid_access_token`, `invalid_api_key` |
+| token resolution failed, before any request | `auth_unavailable` | `auth` | the OAuth error variant (`no_refresh_token`, `refresh_token_failed`, …) |
+| token resolution past its 30 s bound | `auth_unavailable` | `auth` | `refresh_timeout` |
+| the SDK's own token or key check inside the request | `auth_unavailable` | `auth` | `oauth`, `invalid_access_token`, `invalid_api_key` |
 | the SDK's data-center guard | `region_restricted` | `dc_region_restricted` | `dc_region_restricted` |
 | the SDK could not build the request | `permanent` | `client` | the SDK variant |
 
@@ -448,4 +473,4 @@ local fake HTTP server and fabricated tokens; none reaches a real host.
 | `logs` | only our own log target is emitted |
 | `cli` | the environment guard, the lock (`LOCKED`), `auth import`, `status` and `login` as subprocesses |
 | `secrets` | I11 for the binary's output, our logs, the archive file, `Debug`, and a login callback carrying a canary |
-| `refresh_hang` (own binary) | a token refresh that never answers is bounded in `build_oauth` and `fetch` |
+| `net` (own binary; sets process-wide proxy variables) | a hung token refresh is bounded in `build_oauth` and `fetch` and releases the `OAuth` lock; a hung code exchange ends `login` by its deadline; a `.env` in reach is refused and cannot override the pinned environment |
