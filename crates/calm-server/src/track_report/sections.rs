@@ -75,12 +75,18 @@ pub(super) fn apply_replace_section(
     doc_anchor: DocAnchor,
 ) -> Result<(Vec<ReportBlock>, Vec<String>, bool), CalmError> {
     let current = snapshot(doc)?;
-    let (span, section, checked) = match locate_read(&current, name, read)? {
-        Some(found) => (found.span.clone(), found.member_blocks(&current), false),
+    let (section, span, members, checked) = match locate_read(&current, name, read)? {
+        Some(found) => (
+            found.member_blocks(&current),
+            found.span,
+            found.members,
+            false,
+        ),
         None => {
             let at = declared_position(&current, name)?;
             // Creating a section places it among the others: a whole-document edit.
-            (at..at, Vec::new(), check_doc_anchor(doc, doc_anchor, true)?)
+            let checked = check_doc_anchor(doc, doc_anchor, true)?;
+            (Vec::new(), at..at, Vec::new(), checked)
         }
     };
     let marked = strip_markers_and_split(markdown);
@@ -100,17 +106,7 @@ pub(super) fn apply_replace_section(
              other H1 line"
         )));
     }
-    if let Some(outside) = marked
-        .hints
-        .iter()
-        .flatten()
-        .find(|id| !section.iter().any(|block| &block.id == *id))
-    {
-        return Err(CalmError::BadRequest(format!(
-            "marker `<!-- neige:{outside} -->` names a block outside section `{name}`; a section \
-             replace may pin only that section's own blocks"
-        )));
-    }
+    // Before the marker check: a task copied with its marker gets the `upsert` hint.
     if let Some(kind) = marked
         .slices
         .iter()
@@ -123,14 +119,20 @@ pub(super) fn apply_replace_section(
              section — create or change it with an `upsert` op (no position), read it by id"
         )));
     }
+    if let Some(outside) = marked
+        .hints
+        .iter()
+        .flatten()
+        .find(|id| !section.iter().any(|block| &block.id == *id))
+    {
+        return Err(CalmError::BadRequest(format!(
+            "marker `<!-- neige:{outside} -->` names a block outside section `{name}`; a section \
+             replace may pin only that section's own blocks"
+        )));
+    }
     validate_body_fences(&marked.cleaned)?;
     let replaced = doc
-        .replace_section_members(
-            span,
-            |block| in_sections(&block.kind),
-            &marked.slices,
-            &marked.hints,
-        )
+        .replace_section_members(span, &members, &marked.slices, &marked.hints)
         .map_err(block_op_internal)?;
     let before = section.iter().map(|b| b.id.clone()).collect();
     Ok((replaced, before, checked))

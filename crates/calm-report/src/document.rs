@@ -240,14 +240,14 @@ impl ReportDoc {
         self.apply_aligned_blocks(&current, &aligned)
     }
 
-    /// [`Self::update_with_hints`] bounded to the blocks of `span` that `member` accepts (#1877
-    /// section replace): only those are matched against `slices`. Every other block is kept as it
-    /// is, the non-members of `span` (#2598: task blocks) move after the replaced blocks, and the
-    /// summary is untouched. Returns the blocks that now stand in the members' place.
+    /// [`Self::update_with_hints`] bounded to the `members` of `span` (#1877 section replace; a
+    /// [`crate::sections::Section`]'s indices): only those are matched against `slices`. Every other
+    /// block is kept as it is, the non-members of `span` (#2598: task blocks) move after the replaced
+    /// blocks, and the summary is untouched. Returns the blocks that now stand in the members' place.
     pub fn replace_section_members(
         &mut self,
         span: std::ops::Range<usize>,
-        member: impl Fn(&ReportBlock) -> bool,
+        members: &[usize],
         slices: &[BlockSlice],
         hints: &[Option<String>],
     ) -> Result<Vec<ReportBlock>> {
@@ -257,10 +257,20 @@ impl ReportDoc {
             "replace_section_members: {span:?} out of range (len {})",
             current.len()
         );
+        ensure!(
+            members.iter().all(|index| span.contains(index)),
+            "replace_section_members: members {members:?} outside {span:?}"
+        );
         let (before, rest) = current.split_at(span.start);
-        let (spanned, after) = rest.split_at(span.len());
-        let (old, kept): (Vec<ReportBlock>, Vec<ReportBlock>) =
-            spanned.iter().cloned().partition(|block| member(block));
+        let after = &rest[span.len()..];
+        let (old, kept): (Vec<usize>, Vec<usize>) =
+            span.clone().partition(|index| members.contains(index));
+        let [old, kept] = [old, kept].map(|indices| {
+            indices
+                .into_iter()
+                .map(|index| current[index].clone())
+                .collect::<Vec<ReportBlock>>()
+        });
         let reserved: HashSet<String> = before
             .iter()
             .chain(&kept)

@@ -510,18 +510,20 @@ fn replace_dropping_data_blocks_keeps_matching_prose_ids() {
 /// its id, rev and text and moves after the replaced blocks.
 #[test]
 fn replace_section_members_keeps_task_blocks_byte_identical() {
-    use calm_types::report_blocks::in_sections;
     let task = render_fence("task", &json!({ "key": "k" }));
     let body = format!("# A\n\nalpha\n{task}## A1\n\nx\n# B\n\nb\n");
     let mut doc = ReportDoc::from_payload(&TrackReportPayload::new("s", body));
     let before = doc.blocks_snapshot().unwrap();
     assert_eq!(before[1].kind, "task", "premise: the task sits inside A");
+    let section = crate::sections::find_section(&before, "A")
+        .unwrap()
+        .expect("section A");
 
     let slices = split_body("# A\n\nalpha2\n\n## A2\n\ny\n");
     let replaced = doc
         .replace_section_members(
-            0..3,
-            |block| in_sections(&block.kind),
+            section.span.clone(),
+            &section.members,
             &slices,
             &[None, None],
         )
