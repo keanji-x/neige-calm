@@ -14,6 +14,7 @@ import { createContext, useContext, useEffect, useRef, useCallback, useLayoutEff
 
 import { useUiPreferences } from '../providers/ui-preferences.tsx';
 import { useReadReceipts } from '../providers/read-receipts.tsx';
+import { MARK_UNREAD_TEXT, READ_RECEIPT_FAILURES } from '../../../../core/domain/read-receipts.ts';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT, trackDisplayTitle, userVisibleTracks } from '../../../../core/domain/track.ts';
@@ -442,7 +443,7 @@ export function AppShell({
                   areaPinned: preferences.areaTrackPinned(track.areaId, track.id),
                   onSetPinned: (id, next) => { void pinFeedback.run(trackMutations.setPinned(id, track.areaId, next, nowMs ?? Date.now()), writeFailureText(TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT.pin)); },
                   onSetAreaPinned: (id, next) => preferences.setAreaTrackPinned(track.areaId, id, next),
-                  onMarkUnread: (id) => receipts.markUnread('track', id),
+                  onMarkUnread: (id) => { void pinFeedback.run(receipts.markUnread('track', id), writeFailureText(READ_RECEIPT_FAILURES, MARK_UNREAD_TEXT)); },
                 })}
                 isUnread={isUnread}
                 onOpenTrack={(trackId) => {

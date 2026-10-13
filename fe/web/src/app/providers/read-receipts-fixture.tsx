@@ -54,10 +54,14 @@ export function createReadReceiptsKernel({ baselineMs = Number.MAX_SAFE_INTEGER,
       readGate = new Promise<void>((resolve) => { release = resolve; });
       return () => { readGate = null; release(); };
     },
-    /** Holds every write from now on; `release` commits the oldest held one. */
+    /** Holds every write from now on; `release` commits the oldest held one, `releaseLatest` the newest (a reordering network). */
     holdWrites() {
       holdingWrites = true;
-      return { held: () => writeGates.length, release: () => { writeGates.shift()?.(); } };
+      return {
+        held: () => writeGates.length,
+        release: () => { writeGates.shift()?.(); },
+        releaseLatest: () => { writeGates.pop()?.(); },
+      };
     },
     posts: () => requests.filter((request) => request.method === 'POST'),
     stored: (kind: ReadReceiptKind, targetId: string) => stored.get(`${kind}:${targetId}`),

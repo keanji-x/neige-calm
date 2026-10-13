@@ -3,6 +3,7 @@
 
 import { z } from 'zod';
 import type { ApiOperation } from '../api/types.js';
+import type { FailureTable, WriteClass, WriteText } from './failure-class.js';
 import type {
   ReadReceipt as ReadReceiptWire, ReadReceiptKind as ReadReceiptKindWire, ReadReceipts as ReadReceiptsWire,
 } from '../api/generated/wire.js';
@@ -85,3 +86,19 @@ export function markReadOperation(kind: ReadReceiptKind, targetId: string, readT
 export function markUnreadOperation(kind: ReadReceiptKind, targetId: string): ApiOperation<ReadReceipt> {
   return { method: 'POST', path: `${receiptPath(kind, targetId)}/unread`, responseSchema: readReceiptSchema };
 }
+
+/**
+ * What a failed receipt write says. 400 (an unknown kind or instant), 403 (not the user) and 422 refuse it before
+ * anything is stored; anything else may have stored it. Idempotent, so a retry is always safe.
+ */
+export const READ_RECEIPT_FAILURES: FailureTable<WriteClass> = Object.freeze({
+  rules: Object.freeze([
+    Object.freeze({ status: Object.freeze([400, 403, 422]), is: 'refused' as const }),
+  ]),
+  unauthorized: 'refused',
+  otherwise: 'unknown',
+});
+
+export const MARK_UNREAD_TEXT: WriteText = Object.freeze({
+  refused: 'The track was not marked unread.', unknown: 'Marking the track unread is unconfirmed.',
+});

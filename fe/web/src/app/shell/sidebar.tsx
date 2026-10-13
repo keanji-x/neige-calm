@@ -19,6 +19,7 @@ import {
 } from '../../ui/operation-feedback/public.tsx';
 import { useUiPreferences } from '../providers/ui-preferences.tsx';
 import { useReadReceipts } from '../providers/read-receipts.tsx';
+import { MARK_UNREAD_TEXT, READ_RECEIPT_FAILURES } from '../../../../core/domain/read-receipts.ts';
 import { TypedDeleteBody, useTypedConfirm } from '../../ui/typed-confirm/public.tsx';
 import type { NavTarget } from '../router/navigation.ts';
 import { routeParamFromPath } from '../router/navigation.ts';
@@ -183,7 +184,7 @@ export function Sidebar({
       areaPinned: preferences.areaTrackPinned(track.areaId, track.id),
       onSetPinned: setPinned,
       onSetAreaPinned: (id: string, next: boolean) => preferences.setAreaTrackPinned(track.areaId, id, next),
-      onMarkUnread: (id: string) => receipts.markUnread('track', id),
+      onMarkUnread: (id: string) => { void writeFeedback.run(receipts.markUnread('track', id), writeFailureText(READ_RECEIPT_FAILURES, MARK_UNREAD_TEXT)); },
     }),
   };
 

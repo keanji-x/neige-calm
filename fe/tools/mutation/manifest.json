@@ -1360,7 +1360,7 @@
       "oracle:INV-APP-118"
     ],
     "target": "web/src/app/providers/read-receipts.tsx",
-    "patch": "diff --git a/web/src/app/providers/read-receipts.tsx b/web/src/app/providers/read-receipts.tsx\n--- a/web/src/app/providers/read-receipts.tsx\n+++ b/web/src/app/providers/read-receipts.tsx\n@@ -61,6 +61,7 @@\n     // A read in flight may predate this write, the first read included: an invalidation would reuse it, so cancel.\n     await cancelReads();\n     client.setQueryData<ReadState>(queryKey, (state) => state === undefined ? state : optimistic(state));\n+    return; // MUT-2596-1: the write stays in this page and never reaches the kernel.\n     const receipt = await runOperation(channel.transport, operation, channel.unauthorized);\n     client.setQueryData<ReadState>(queryKey, (state) => state === undefined ? state : withReceipt(state, receipt));\n   } catch {\n",
+    "patch": "diff --git a/web/src/app/providers/read-receipts.tsx b/web/src/app/providers/read-receipts.tsx\n--- a/web/src/app/providers/read-receipts.tsx\n+++ b/web/src/app/providers/read-receipts.tsx\n@@ -75,6 +75,7 @@\n     await cancelReads();\n     client.setQueryData<ReadState>(queryKey, (state) => state === undefined ? state : intent.optimistic(state));\n     await previous;\n+    return; // MUT-2596-1: the write stays in this page and never reaches the kernel.\n     const receipt = await runOperation(admitted, intent.operation, channel.unauthorized);\n     // A later write of the same target keeps its own optimistic state until it answers.\n     if (ledger.tails.get(key) === tail) {\n",
     "expected_red": [
       "marks unread optimistically, posts it, and refetches",
       "puts the kernel state back when a write fails",
@@ -1381,11 +1381,15 @@
       "clears manual unread when reopening the current Track through mobile navigation",
       "retains unread when a selected Track detail cannot be loaded",
       "acknowledges a repeated desktop selection only in the rendered Track view",
-      "uses the three-dot Track menu with keyboard and keeps actions separate from navigation"
+      "uses the three-dot Track menu with keyboard and keeps actions separate from navigation",
+      "acknowledges the open target on a bundled cold start once the workspace is connected",
+      "acknowledges the open target once a bundled resume admits writes again",
+      "sends one target’s writes in order, even over a network that answers out of order"
     ],
     "selection_paths": [
       "web/src/app/providers/read-state-refresh.browser.test.tsx",
       "web/src/app/providers/read-receipts.test.tsx",
+      "web/src/app/providers/read-receipts-recovery.test.tsx",
       "web/src/app/shell/sidebar.test.tsx",
       "web/src/app/router/track-conversation.test.tsx",
       "web/src/app/shell/mobile.browser.test.tsx",
@@ -1399,7 +1403,7 @@
       "oracle:INV-APP-118"
     ],
     "target": "web/src/app/providers/read-receipts.tsx",
-    "patch": "diff --git a/web/src/app/providers/read-receipts.tsx b/web/src/app/providers/read-receipts.tsx\n--- a/web/src/app/providers/read-receipts.tsx\n+++ b/web/src/app/providers/read-receipts.tsx\n@@ -91,7 +91,7 @@\n   return useMemo<ReadReceipts>(() => ({\n     ...writes,\n     ready: data !== undefined,\n-    isUnread: (kind, id, activityAt) => data !== undefined && isUnread(data, kind, id, activityAt),\n+    isUnread: (kind, id, activityAt) => isUnread(data ?? toReadState({ baselineMs: 0, receipts: [] }), kind, id, activityAt), // MUT-2596-2: no verdict reads as a baseline of zero.\n   }), [data, writes]);\n }\n \n",
+    "patch": "diff --git a/web/src/app/providers/read-receipts.tsx b/web/src/app/providers/read-receipts.tsx\n--- a/web/src/app/providers/read-receipts.tsx\n+++ b/web/src/app/providers/read-receipts.tsx\n@@ -122,7 +122,7 @@\n   return useMemo<ReadReceipts>(() => ({\n     ...writes,\n     ready: data !== undefined,\n-    isUnread: (kind, id, activityAt) => data !== undefined && isUnread(data, kind, id, activityAt),\n+    isUnread: (kind, id, activityAt) => isUnread(data ?? toReadState({ baselineMs: 0, receipts: [] }), kind, id, activityAt), // MUT-2596-2: no verdict reads as a baseline of zero.\n   }), [data, writes]);\n }\n \n",
     "expected_red": [
       "reads nothing as unread until the kernel answers, then applies its baseline and receipts",
       "reads the track receipt against the activity high-water mark, not updatedAt"
