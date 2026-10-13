@@ -1,3 +1,5 @@
+import { isHtmlPagePath } from '../../../../core/domain/report-html.ts';
+
 const IMAGE_EXTENSIONS = Object.freeze([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.svg',
 ] as const);
@@ -12,8 +14,7 @@ export function isMarkdownPath(path: string): boolean {
   return lower.endsWith('.md') || lower.endsWith('.markdown');
 }
 
-/** A page the Report renders in its sandboxed frame (`.html` / `.htm`); the card browser shows it as source. */
+/** A page the Report frames, by the html block's one page rule (`core/domain/report-html.ts`); the card browser shows it as source. */
 export function isHtmlPath(path: string): boolean {
-  const lower = path.toLowerCase();
-  return lower.endsWith('.html') || lower.endsWith('.htm');
+  return isHtmlPagePath(path);
 }

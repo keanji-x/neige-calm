@@ -14,11 +14,12 @@ pub(super) const HTML_PAGE_CSP: &str = "sandbox allow-scripts; default-src 'none
      script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; \
      media-src data: blob:; form-action 'none'; base-uri 'none'";
 
-/// `.html` / `.htm`, case-insensitive.
+/// The `html` block's page-name rule, so every path the block accepts is one this route serves as
+/// a page. A name that is not UTF-8 is not a page.
 pub(super) fn is_html_page(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm"))
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(calm_types::report_blocks::html::is_html_page_name)
 }
 
 /// The cap is the text read cap: the frontend reads the page as text first, and shows the frame

@@ -14,8 +14,8 @@ use super::kinds::{
 };
 
 const HTML_PATH_RULE: &str = "workspace-relative path to a `.html`/`.htm` file with a name \
-     before the extension (no leading `/`, no scheme, no `..` segment, no `\\`, `?`, `#` or control \
-     characters)";
+     before the extension (no leading `/`, no scheme, no `..` segment, no surrounding whitespace, \
+     no `\\`, `?`, `#` or control characters)";
 
 pub(super) fn validate_html(map: &Map<String, Value>, errors: &mut Vec<String>) {
     reject_unknown(map, &["path", "title", "height"], errors);
@@ -29,16 +29,20 @@ pub(super) fn validate_html(map: &Map<String, Value>, errors: &mut Vec<String>) 
     optional_height(map, errors);
 }
 
-/// The `html` block's `path` rule. Lengths are checked by the caller's string cap.
+/// The `html` block's `path` rule. Lengths are checked by the caller's string cap. The Track
+/// workspace read trims its path before opening it, so a path with surrounding whitespace would
+/// name a different file than the block shows: it is refused, and what is validated is exactly
+/// what the route opens.
 pub fn is_report_html_path(path: &str) -> bool {
     !path.is_empty()
+        && path.trim() == path
         && !path.starts_with('/')
         && !has_scheme(path)
         && !path
             .chars()
             .any(|c| matches!(c, '\\' | '?' | '#') || is_url_hostile_char(c))
         && !path.split('/').any(|segment| segment == "..")
-        && has_html_extension(path)
+        && is_html_page_name(path)
 }
 
 /// `^[A-Za-z][A-Za-z0-9+.-]*:` — anything a URL parser would read as a scheme.
@@ -51,9 +55,10 @@ fn has_scheme(path: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
 }
 
-/// The last segment is `{stem}.html` or `{stem}.htm` with a non-empty stem: a bare `.html` is a
-/// dotfile with no extension, which the raw route does not serve as a page.
-fn has_html_extension(path: &str) -> bool {
+/// The one page-name rule, shared by this validator and the raw route that serves pages: the last
+/// segment is `{stem}.html` or `{stem}.htm`, case-insensitive, with a non-empty stem. A bare
+/// `.html` is a dotfile, not a page.
+pub fn is_html_page_name(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
     [".html", ".htm"]
         .iter()

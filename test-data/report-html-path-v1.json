@@ -61,6 +61,13 @@
     ".htm",
     "docs/.html",
     "docs/.HTM",
-    "docs/.html/.htm"
+    "docs/.html/.htm",
+    " .html",
+    " /docs/overview.html",
+    "docs/a.html ",
+    "\tdocs/a.html",
+    " docs/a.html",
+    "docs/a.html\u3000",
+    "\u00a0docs/a.html"
   ]
 }

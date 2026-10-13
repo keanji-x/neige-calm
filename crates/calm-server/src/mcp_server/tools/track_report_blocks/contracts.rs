@@ -449,7 +449,7 @@ fn html_kind() -> Value {
             "required": ["path"],
             "additionalProperties": false,
             "properties": {
-                "path": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "description": "Workspace-relative `.html`/`.htm` path: no leading `/`, scheme, `..` segment, `\\`, `?`, `#` or control characters." },
+                "path": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "description": "Workspace-relative `{name}.html`/`.htm` path: no leading `/`, scheme, `..` segment, surrounding whitespace, `\\`, `?`, `#` or control characters." },
                 "title": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS },
                 "height": { "type": "number", "minimum": 120, "maximum": 2000, "description": "Frame height in px (default chosen by the renderer)." }
             }

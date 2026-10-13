@@ -20,20 +20,37 @@ function hasHostileChar(path: string): boolean {
   return false;
 }
 
-/** The last segment is `{stem}.html` or `{stem}.htm` with a non-empty stem; a bare `.html` is a dotfile, not a page. */
-function hasHtmlName(path: string): boolean {
+/**
+ * The one page-name rule (the kernel's `is_html_page_name`): the last segment is `{stem}.html` or
+ * `{stem}.htm`, case-insensitive, with a non-empty stem. A bare `.html` is a dotfile, not a page.
+ */
+export function isHtmlPageName(path: string): boolean {
   const name = (path.split('/').at(-1) ?? '').toLowerCase();
   return ['.html', '.htm'].some((extension) => name.length > extension.length && name.endsWith(extension));
 }
 
-/** Relative, no `..` segment, no scheme, `\`, `?`, `#` or control character, and a `{stem}.html`/`.htm` name. */
+/** Unicode `White_Space`, the set Rust's `str::trim` strips (the kernel trims a workspace path before opening it). */
+const SURROUNDING_WHITE_SPACE = /^\p{White_Space}|\p{White_Space}$/u;
+
+/**
+ * A path the Track raw route serves as a page exactly as named: a page name, and no surrounding
+ * whitespace (the route trims it, so such a path would name a different file).
+ */
+export function isHtmlPagePath(path: string): boolean {
+  return !SURROUNDING_WHITE_SPACE.test(path) && isHtmlPageName(path);
+}
+
+/**
+ * Relative, no `..` segment, no surrounding whitespace, no scheme, `\`, `?`, `#` or control
+ * character, and a `{stem}.html`/`.htm` name.
+ */
 export function isReportHtmlPath(path: string): boolean {
   return path !== ''
     && !path.startsWith('/')
     && !SCHEME.test(path)
     && !hasHostileChar(path)
     && !path.split('/').includes('..')
-    && hasHtmlName(path);
+    && isHtmlPagePath(path);
 }
 
 export const htmlBlockPayloadSchema = z.strictObject({
