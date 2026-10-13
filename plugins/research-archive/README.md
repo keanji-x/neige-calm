@@ -826,25 +826,51 @@ reach.
 |---|---|---|
 | `data_dir` | required | absolute path of the capture's data dir (its config's `data_dir`) |
 | `poll_seconds` | 60 | seconds between status reads for watching Tracks (10 to 3600) |
-| `stale_after_minutes` | 90 | minutes after the last recorded exit at which the timer counts as stopped (60 to 2880) |
+| `stale_after_minutes` | 90 | minutes after the last recorded exit at which the timer counts as stopped (60 to 2880); see below |
 
-A missing or out-of-range key fails every tool call with the reason.
+A missing or out-of-range key fails every tool call with the reason. The
+plugin checks the ranges itself: the kernel's `config_schema` subset has no
+`minimum`/`maximum`. `stale_after_minutes` must exceed 30 (the timer's
+interval) plus the capture's `attempt_timeout_minutes`, with a margin: a
+start can hold the lock that long, and a start that finds the lock held
+records nothing. The default 90 fits an `attempt_timeout_minutes` up to
+about 45.
 
 **Tools.**
 
 - `status` answers `ok`, `attention` or `failing`, every finding, the last
-  exit and the last 7 runs with their pair counts (ok, failed, not tried,
-  planned) and frozen membership. `failing`: the last start exited with an
-  alerting code (`partial`, `degraded`, `auth_unavailable`, `fatal`),
-  `last_exit.json` is missing or older than `stale_after_minutes`, or the
-  archive is missing or refused. `attention`: a recent day was missed or
-  ended `partial`, the last run ended complete with failures, the latest
-  universe is not `observed`, or the missed-day scan was incomplete.
+  exit and the last 7 runs with their pair counts (ok, tried with no ok, not
+  tried, planned) and frozen membership. One source per fact:
+  - **The runs** record data loss for good. The latest ended run decides:
+    `partial`, or `complete` but degraded (fewer than
+    [`DEGRADED_BELOW`](src/types.rs) of its pairs `ok`, the capture's own
+    `DEGRADED` rule), is `failing`; `complete` with pairs that have no `ok`
+    is `attention`. An earlier recent run's loss is `attention`, and so is a
+    `missed` day anywhere. An open run is not judged. So a lost day stays
+    `failing` until a later day ends.
+  - **`last_exit.json`** tells only what the runs cannot: it is `failing`
+    when it is missing or older than `stale_after_minutes`, or when the last
+    start had no usable token (`auth_unavailable`) or stopped on `fatal`;
+    an incomplete missed-day scan is `attention`. The capture overwrites
+    the file on every start, so a `partial` or `degraded` exit read from it
+    would turn healthy 30 minutes later.
+  - An archive that is missing or refused is `failing`.
+
+  No finding names the exit's time (the staleness finding names it, as it
+  is fixed while stale), so the findings change only when the state does.
+  The tool's text adds when the last start ended and when it checked.
 - `watch {on}` acts on the calling Track, which the kernel names in
   `params._meta["dev.neige/track"].id`. `on: true` stores `watch/<track>` in
   the plugin's KV; the poller then pushes the `archive.status` table overlay
   to that Track, and later only when the table changes. `on: false` deletes
   the key and the overlay.
+
+  A Track deleted while watching keeps its `watch/<track>` key: the plugin
+  is not told of the deletion. Each change of the table is still pushed to
+  it, and the kernel's `neige.overlay.set` stores it without checking that
+  the Track exists, until the key is removed (`watch` with `on: false`
+  names only the calling Track, so by clearing the plugin's KV). Each key
+  is about 40 bytes of the 16 KiB quota.
 
 The manifest's `planner_instructions` tell the Planner to ask the owner with
 `neige_user_ask` on `failing` (again only when the reasons change) and to
@@ -860,7 +886,8 @@ alert anywhere.
 ````
 
 The table has one row per recent run, and the verdict with its findings in
-the caption (capped at the block's 2048 characters).
+the caption (capped at the block's 2048 characters). It holds no check or
+exit time, so it is pushed only when the status changes.
 
 **Install.** Build the binary and stage the manifest next to it:
 

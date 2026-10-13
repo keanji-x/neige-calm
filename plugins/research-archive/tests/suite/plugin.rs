@@ -272,9 +272,45 @@ async fn status_answers_with_the_health() {
     assert_eq!(result["structuredContent"]["health"], "failing");
     let text = result["content"][0]["text"].as_str().unwrap();
     assert!(
-        text.starts_with("FAILING · the last capture start for 2026-01-02 ended auth_unavailable"),
+        text.starts_with(
+            "FAILING · the last capture start ended auth_unavailable (exit 75), trading day \
+             2026-01-02. The token is unusable"
+        ),
         "{text}"
     );
+    // The tool's text, unlike the table, names when.
+    assert!(
+        text.contains(" · last capture start: auth_unavailable at ")
+            && text.contains(" · checked "),
+        "{text}"
+    );
+}
+
+/// The kernel's own parser accepts the manifest, and mints the names the
+/// planner instructions use.
+#[test]
+fn the_kernel_accepts_the_manifest() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("manifest.json");
+    let manifest = plugin::manifest::Manifest::parse(&std::fs::read_to_string(path).unwrap())
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(manifest.manifest_version, 5);
+    let names: Vec<String> = manifest
+        .exposes_tools
+        .iter()
+        .map(|t| plugin::results::registry_name(&manifest.id, &t.name))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "plugin_research_archive_status",
+            "plugin_research_archive_watch"
+        ]
+    );
+    assert_eq!(manifest.permissions.overlays_write, ["track"]);
+    let instructions = manifest.planner_instructions.as_deref().unwrap();
+    for name in &names {
+        assert!(instructions.contains(name.as_str()), "{name}");
+    }
 }
 
 #[tokio::test]

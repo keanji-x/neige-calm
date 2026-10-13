@@ -21,7 +21,7 @@ pub fn table(status: &ArchiveStatus) -> Value {
             { "key": "as_of", "label": "Trading day" },
             { "key": "outcome", "label": "Outcome" },
             { "key": "ok", "label": "OK", "align": "right" },
-            { "key": "failed", "label": "Failed", "align": "right" },
+            { "key": "failed", "label": "Tried, no ok", "align": "right" },
             { "key": "untried", "label": "Not tried", "align": "right" },
             { "key": "planned", "label": "Planned", "align": "right" },
             { "key": "membership", "label": "Membership" },
@@ -50,7 +50,9 @@ fn row(run: &RunStatus) -> Value {
     })
 }
 
-/// The verdict, its reasons and the last start, in one paragraph.
+/// The verdict and its reasons, in one paragraph. No time: the findings
+/// change only when the state does, so neither does the table, which is
+/// pushed only then.
 pub fn headline(status: &ArchiveStatus) -> String {
     let verdict = match status.health {
         Health::Ok => "Healthy",
@@ -61,6 +63,13 @@ pub fn headline(status: &ArchiveStatus) -> String {
     for finding in &status.findings {
         text.push_str(&format!(" · {}", finding.text));
     }
+    text
+}
+
+/// The `status` tool's text: the headline, then when the last start ended
+/// and when this was checked.
+pub fn answer(status: &ArchiveStatus) -> String {
+    let mut text = headline(status);
     if let Some(last) = &status.last_exit {
         text.push_str(&format!(
             " · last capture start: {} at {}",
@@ -68,8 +77,7 @@ pub fn headline(status: &ArchiveStatus) -> String {
             time(last.at)
         ));
     }
-    // No check time: the table changes only when the status does, so the
-    // overlay is pushed only then.
+    text.push_str(&format!(" · checked {}", time(status.checked_at)));
     text
 }
 

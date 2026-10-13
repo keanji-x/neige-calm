@@ -12,7 +12,7 @@
   "exposes_tools": [
     {
       "name": "status",
-      "description": "The archive's health now: ok, attention or failing, every reason, how the last capture start ended, and the last 7 runs with their pair counts (ok, failed, not tried, planned) and index membership. failing: the last start exited with an alert (partial, degraded, auth_unavailable, fatal), no start has recorded its exit for longer than the configured bound, or the archive cannot be read. attention: a recent day was missed or ended partial, a run ended complete with failures, the latest universe is not observed, or the missed-day scan was incomplete. Reads local files only.",
+      "description": "The archive's health now: ok, attention or failing, every reason, how the last capture start ended, and the last 7 runs with their pair counts (ok, tried with no ok, not tried, planned) and index membership. failing: the latest ended run is partial or degraded (fewer than half its pairs ok); the last start had no usable token or stopped on a fatal error; no start has recorded its exit for longer than the configured bound; or the archive cannot be read. attention: an earlier recent run was partial or degraded, a recent day was missed, a run ended complete with pairs that have no ok, the latest universe is not observed, or the missed-day scan was incomplete. Reads local files only.",
       "input_schema": {
         "type": "object",
         "properties": {},
@@ -69,7 +69,7 @@
       "stale_after_minutes": {
         "type": "integer",
         "default": 90,
-        "description": "Minutes after the last recorded capture exit at which the status says the timer is not starting the capture (60 to 2880). The timer starts it every 30 minutes, and a start can hold the lock up to its attempt timeout."
+        "description": "Minutes after the last recorded capture exit at which the status says the timer is not starting the capture (60 to 2880). It must exceed 30 (the timer's interval) plus the capture's attempt_timeout_minutes, with a margin: a start can hold the lock that long, and a start that finds the lock held records nothing. The default 90 fits attempt_timeout_minutes up to about 45."
       }
     },
     "required": [

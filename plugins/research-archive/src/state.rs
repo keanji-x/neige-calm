@@ -21,7 +21,7 @@ pub enum ExitKind {
     /// exhausted and no `ok`. See `failure` for the most frequent cause.
     CompleteWithFailures,
     /// The run ended `complete` with fewer than
-    /// [`DEGRADED_BELOW`](crate::capture::DEGRADED_BELOW) of its planned pairs
+    /// [`DEGRADED_BELOW`](crate::types::DEGRADED_BELOW) of its planned pairs
     /// having an `ok`. Alerts; see `failure`.
     Degraded,
     /// The day's run had already ended; nothing to do.
@@ -227,6 +227,20 @@ impl LastExit {
         if let Err(err) = files::replace(&Self::path(data_dir), &bytes) {
             tracing::error!(error = %err, "cannot write last_exit.json");
         }
+    }
+
+    /// The exit in words, without its time: `kind (exit code)`, then the
+    /// trading day and the most frequent failure when present. The alert and
+    /// the status both start from it.
+    pub fn describe(&self) -> String {
+        let mut text = format!("{} (exit {})", self.kind.as_str(), self.code);
+        if let Some(as_of) = &self.as_of {
+            text.push_str(&format!(", trading day {as_of}"));
+        }
+        if let Some(failure) = &self.failure {
+            text.push_str(&format!(", most frequent failure {failure}"));
+        }
+        text
     }
 
     /// The file, or `None` when it is missing or unreadable (logged). Only

@@ -211,13 +211,8 @@ fn tools_call_reply(
     match name {
         "status" => {
             let status = read_status(rt, &cfg);
-            let text = format!(
-                "{} · checked {}",
-                view::headline(&status),
-                status::time(status.checked_at)
-            );
             text_result(
-                text,
+                view::answer(&status),
                 serde_json::to_value(&status).expect("a status serializes"),
             )
         }

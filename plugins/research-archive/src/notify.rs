@@ -133,17 +133,7 @@ pub fn message(
             let at = chrono::DateTime::from_timestamp_millis(l.at)
                 .map(|t| t.to_rfc3339())
                 .unwrap_or_default();
-            let mut text = format!(
-                "research-archive: {unit} failed: {} (exit {}) at {at}",
-                l.kind.as_str(),
-                l.code
-            );
-            if let Some(as_of) = &l.as_of {
-                text.push_str(&format!(", trading day {as_of}"));
-            }
-            if let Some(failure) = &l.failure {
-                text.push_str(&format!(", most frequent failure {failure}"));
-            }
+            let mut text = format!("research-archive: {unit} failed: {}, at {at}", l.describe());
             for dangling in &l.closed_dangling {
                 text.push_str(&format!(
                     ", ended the left-open run of {} partial",

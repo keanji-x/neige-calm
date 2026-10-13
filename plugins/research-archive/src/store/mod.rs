@@ -393,3 +393,28 @@ async fn insert_endpoint(conn: &mut SqliteConnection, e: &Endpoint) -> sqlx::Res
     .await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pool itself refuses writes: the API offering none is not the only
+    /// fence.
+    #[tokio::test]
+    async fn the_read_only_connection_refuses_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = Store::path(dir.path());
+        Store::open(&path).await.unwrap().close().await;
+        let reader = ReadOnlyStore::open(&path).await.unwrap();
+        let err = sqlx::query("CREATE TABLE intruder (x)")
+            .execute(&reader.store.pool)
+            .await
+            .unwrap_err();
+        let sqlx::Error::Database(db) = &err else {
+            panic!("{err:?}");
+        };
+        // SQLITE_READONLY, 8: "attempt to write a readonly database".
+        assert_eq!(db.code().as_deref(), Some("8"), "{db}");
+        reader.close().await;
+    }
+}

@@ -30,19 +30,8 @@ use crate::clock::Clock;
 use crate::source::LongbridgeSource;
 use crate::state::{ExitKind, Outcome};
 use crate::store::RunPlan;
-use crate::types::{Finish, Key, Recorded, Response, RunId, UnixMs, Window};
+use crate::types::{Finish, Key, Recorded, Response, RunId, UnixMs, Window, degraded};
 use crate::{Store, StoreError};
-
-/// A run that ends `complete` with fewer than this share of its planned
-/// pairs having an `ok` exits `DEGRADED` (non-zero), so the alert fires.
-/// Ordinary losses (a few delisted symbols, a few capped pairs) stay above
-/// it and exit 0 as `complete_with_failures`.
-pub const DEGRADED_BELOW: f64 = 0.5;
-
-/// Whether `ok` of `planned` pairs is below [`DEGRADED_BELOW`].
-pub fn degraded(ok: usize, planned: usize) -> bool {
-    planned > 0 && (ok as f64) < DEGRADED_BELOW * planned as f64
-}
 
 /// What the runner needs about one open run.
 pub(super) struct RunCtx<C: Clock> {
@@ -246,18 +235,4 @@ async fn finish<C: Clock>(
         "run ended"
     );
     Ok(outcome)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn degraded_is_strictly_below_half() {
-        assert!(degraded(2, 6));
-        assert!(!degraded(3, 6));
-        assert!(degraded(0, 1));
-        assert!(!degraded(1, 1));
-        assert!(!degraded(0, 0));
-    }
 }

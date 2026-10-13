@@ -3570,6 +3570,7 @@ dependencies = [
  "hex",
  "libc",
  "longbridge",
+ "plugin",
  "regex",
  "serde",
  "serde_json",

@@ -26,7 +26,6 @@ mod latch;
 mod runner;
 mod schedule;
 
-pub use runner::{DEGRADED_BELOW, degraded};
 pub use schedule::{COUNTED, MAX_IN_FLIGHT, backoff, counts_toward_cap};
 
 use std::{fmt::Display, sync::Arc, time::Duration};

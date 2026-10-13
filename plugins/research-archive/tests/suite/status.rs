@@ -4,12 +4,15 @@
 use std::path::Path;
 
 use research_archive::Store;
-use research_archive::state::{ClosedDangling, ExitKind, LastExit};
+use research_archive::catalog::{Catalog, KeyKind};
+use research_archive::plugin::view;
+use research_archive::state::{ExitKind, LastExit};
 use research_archive::status::{self, ArchiveStatus, Health, Policy};
-use research_archive::types::{Finish, Source, UnixMs};
+use research_archive::types::{FailureClass, Finish, Source, UnixMs};
 
 use crate::support::{
-    as_of, at, complete_day, endpoint, key, ok, plan_request, populated, raw, window,
+    as_of, at, complete_day, endpoint, failed, key, observe_and_freeze, ok, plan_request,
+    populated, raw, window,
 };
 
 const MINUTE: i64 = 60_000;
@@ -117,8 +120,10 @@ async fn an_old_exit_means_the_timer_stopped() {
     );
 }
 
+/// Of the exits, only those the archive cannot show fail: no token, or a
+/// fatal error. A day's loss is read from its run, never from the exit.
 #[tokio::test]
-async fn every_alerting_exit_fails_and_no_other_does() {
+async fn only_an_exit_the_rows_cannot_show_fails() {
     let dir = healthy_dir().await;
     let all = [
         ExitKind::Complete,
@@ -136,11 +141,7 @@ async fn every_alerting_exit_fails_and_no_other_does() {
         exit(kind, NOW.0 - MINUTE).write(dir.path());
         let status = read(dir.path()).await;
         let expected = match kind {
-            ExitKind::Degraded
-            | ExitKind::Partial
-            | ExitKind::AuthUnavailable
-            | ExitKind::Fatal => Health::Failing,
-            ExitKind::CompleteWithFailures => Health::Attention,
+            ExitKind::AuthUnavailable | ExitKind::Fatal => Health::Failing,
             _ => Health::Ok,
         };
         assert_eq!(status.health, expected, "{kind:?}: {:?}", status.findings);
@@ -149,31 +150,155 @@ async fn every_alerting_exit_fails_and_no_other_does() {
     let mut auth = exit(ExitKind::AuthUnavailable, NOW.0 - MINUTE);
     auth.failure = Some("auth:invalid_access_token".into());
     auth.write(dir.path());
-    let text = &read(dir.path()).await.findings[0].text;
-    assert!(text.contains("ended auth_unavailable (exit 75)"), "{text}");
-    assert!(
-        text.contains("most frequent failure auth:invalid_access_token"),
-        "{text}"
+    assert_eq!(
+        texts(&read(dir.path()).await),
+        [(
+            Health::Failing,
+            "the last capture start ended auth_unavailable (exit 75), trading day 2026-01-02, \
+             most frequent failure auth:invalid_access_token. The token is unusable: run \
+             `research-archive auth login` on the host."
+        )]
     );
-    assert!(text.contains("research-archive auth login"), "{text}");
+}
 
-    let mut partial = exit(ExitKind::Partial, NOW.0 - MINUTE);
-    partial.closed_dangling = vec![
-        ClosedDangling {
-            as_of: "2026-01-01".into(),
-            failure: Some("http_status:503".into()),
-        },
-        ClosedDangling {
-            as_of: "2026-01-02".into(),
-            failure: None,
-        },
-    ];
-    partial.write(dir.path());
-    let text = &read(dir.path()).await.findings[0].text;
-    assert!(
-        text.contains("runs closed partial at start: 2026-01-01 (http_status:503), 2026-01-02"),
-        "{text}"
+/// Ends day `n` (`AAPL.US` configured, `.SPX.US` = {AAPL.US, MSFT.US}: 13
+/// pairs) as `finish`, with the index pair and the first `oks` of the 12
+/// security pairs `ok` and the rest failed.
+async fn end_day(dir: &Path, n: i64, oks: usize, finish: Finish) {
+    let store = Store::open(&Store::path(dir)).await.unwrap();
+    let plan = store
+        .plan_run(&plan_request(n, &["AAPL.US"], &[".SPX.US"]))
+        .await
+        .unwrap();
+    observe_and_freeze(
+        &store,
+        &plan,
+        at(n, 10),
+        &[(".SPX.US", &["AAPL.US", "MSFT.US"])],
+    )
+    .await;
+    let mut t = 20;
+    for security in ["AAPL.US", "MSFT.US"] {
+        for e in Catalog::compiled().for_kind(KeyKind::Security) {
+            let response = if t - 20 < oks as i64 {
+                ok(b"{}")
+            } else {
+                failed(FailureClass::Permanent)
+            };
+            store
+                .record_observation(plan.run_id, &key(security), e.id, at(n, t), &response)
+                .await
+                .unwrap();
+            t += 1;
+        }
+    }
+    store
+        .end_run(plan.run_id, at(n, 10_000), finish, None)
+        .await
+        .unwrap();
+    store.close().await;
+}
+
+const LOST: &str = ". Data of that day is lost for good; check `journalctl --user -u \
+                    research-archive-capture` for the cause";
+
+#[tokio::test]
+async fn a_degraded_day_fails_until_a_later_day_completes() {
+    let dir = healthy_dir().await;
+    // 4 of 13 pairs ok: below half.
+    end_day(dir.path(), 2, 3, Finish::Complete).await;
+    let degraded = "2026-01-03 ended degraded: only 4 of 13 pairs have an ok";
+    // The capture's own exit, then later starts that overwrite it.
+    for kind in [
+        ExitKind::Degraded,
+        ExitKind::NoWindow,
+        ExitKind::AlreadyEnded,
+    ] {
+        exit(kind, NOW.0 - MINUTE).write(dir.path());
+        let status = read(dir.path()).await;
+        assert_eq!(
+            texts(&status),
+            [(Health::Failing, format!("{degraded}{LOST}").as_str())],
+            "{kind:?}"
+        );
+    }
+    // A later day ends complete: the loss stays on record, as attention.
+    complete_day_n(dir.path(), 3).await;
+    assert_eq!(
+        texts(&read(dir.path()).await),
+        [(Health::Attention, degraded)]
     );
+}
+
+#[tokio::test]
+async fn a_partial_latest_day_fails_until_a_later_day_completes() {
+    let dir = healthy_dir().await;
+    end_day(dir.path(), 2, 2, Finish::Partial).await;
+    exit(ExitKind::NoWindow, NOW.0 - MINUTE).write(dir.path());
+    let partial = "2026-01-03 ended partial: 10 of 13 pairs have no ok";
+    assert_eq!(
+        texts(&read(dir.path()).await),
+        [(Health::Failing, format!("{partial}{LOST}").as_str())]
+    );
+    // An open run is not judged: the partial day is still the latest ended.
+    let store = Store::open(&Store::path(dir.path())).await.unwrap();
+    store
+        .plan_run(&plan_request(3, &["AAPL.US"], &[".SPX.US"]))
+        .await
+        .unwrap();
+    store.close().await;
+    assert_eq!(read(dir.path()).await.health, Health::Failing);
+
+    complete_day_n(dir.path(), 4).await;
+    let status = read(dir.path()).await;
+    assert_eq!(texts(&status), [(Health::Attention, partial)]);
+}
+
+#[tokio::test]
+async fn complete_with_failures_needs_attention_from_the_rows() {
+    let dir = healthy_dir().await;
+    end_day(dir.path(), 2, 11, Finish::Complete).await;
+    // The exit says nothing of it: the rows do.
+    exit(ExitKind::Complete, NOW.0 - MINUTE).write(dir.path());
+    let status = read(dir.path()).await;
+    assert_eq!(
+        texts(&status),
+        [(
+            Health::Attention,
+            "2026-01-03 ended complete with failures: 1 of 13 pairs used up their attempts \
+             with no ok"
+        )]
+    );
+    assert_eq!(
+        (status.runs[0].pairs_ok, status.runs[0].pairs_failed),
+        (12, 1)
+    );
+}
+
+/// The findings and the table name no time that moves with every start, so
+/// a Planner asking "when the reasons change" and the overlay's change-only
+/// push see a change only when there is one.
+#[tokio::test]
+async fn the_status_does_not_move_with_the_exit_time() {
+    let dir = healthy_dir().await;
+    end_day(dir.path(), 2, 3, Finish::Complete).await;
+    let mut seen = Vec::new();
+    for at in [NOW.0 - MINUTE, NOW.0 - 2 * MINUTE] {
+        let mut last = exit(ExitKind::AuthUnavailable, at);
+        last.missed_scan_incomplete = true;
+        last.write(dir.path());
+        let status = read(dir.path()).await;
+        assert_eq!(status.findings.len(), 3, "{:?}", status.findings);
+        seen.push((status.findings.clone(), view::table(&status)));
+    }
+    assert_eq!(seen[0], seen[1]);
+}
+
+/// [`complete_day`] on a closed archive in `dir`.
+async fn complete_day_n(dir: &Path, n: i64) {
+    let store = Store::open(&Store::path(dir)).await.unwrap();
+    complete_day(&store, n, &["AAPL.US"], ".SPX.US", &["AAPL.US", "MSFT.US"]).await;
+    store.close().await;
 }
 
 #[tokio::test]

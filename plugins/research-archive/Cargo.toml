@@ -50,6 +50,8 @@ url = "2"
 axum = "0.8"
 # The report `table` block's validator, for the overlay the plugin pushes.
 calm-types = { path = "../../crates/calm-types" }
+# The kernel's manifest parser and tool-name minting, for `manifest.json`.
+plugin = { path = "../../crates/plugin" }
 regex = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "test-util", "time"] }

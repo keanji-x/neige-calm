@@ -12,10 +12,9 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::exit;
 use crate::state::{ExitKind, LastExit};
 use crate::store::{PairCoverage, ReadOnlyStore, RunSummary, Store, StoreError};
-use crate::types::{MembershipMode, RunOutcome, Source, UnixMs};
+use crate::types::{MembershipMode, RunOutcome, Source, UnixMs, degraded};
 
 /// How many runs, latest first, the status shows and checks.
 pub const RECENT_RUNS: u32 = 7;
@@ -126,6 +125,14 @@ pub async fn read(data_dir: &Path, now: UnixMs, policy: Policy) -> ArchiveStatus
     }
 }
 
+/// What only `last_exit.json` can tell: whether starts still happen, a
+/// start stopped before it could record anything in the archive (no token,
+/// or a fatal error), and an incomplete missed-day scan. Data loss is read
+/// from the runs instead ([`run_findings`]): the capture overwrites the file
+/// on every start, so a lost day would read healthy 30 minutes later.
+///
+/// No text names the exit's time, so the findings change only when the
+/// state does; the staleness finding names it, as it is fixed while stale.
 fn exit_findings(last: Option<&LastExit>, now: UnixMs, policy: Policy, out: &mut Vec<Finding>) {
     let Some(last) = last else {
         out.push(Finding {
@@ -147,46 +154,13 @@ fn exit_findings(last: Option<&LastExit>, now: UnixMs, policy: Policy, out: &mut
             ),
         });
     }
-    let day = last
-        .as_of
-        .as_deref()
-        .map_or(String::new(), |d| format!(" for {d}"));
-    let failure = last
-        .failure
-        .as_deref()
-        .map_or(String::new(), |f| format!(", most frequent failure {f}"));
-    // The exit code is the alert rule `OnFailure=` already applies: a
-    // non-zero code needs a human.
-    if last.kind.code() != exit::OK {
-        let dangling: Vec<String> = last
-            .closed_dangling
-            .iter()
-            .map(|d| match &d.failure {
-                Some(f) => format!("{} ({f})", d.as_of),
-                None => d.as_of.clone(),
-            })
-            .collect();
-        let dangling = if dangling.is_empty() {
-            String::new()
-        } else {
-            format!("; runs closed partial at start: {}", dangling.join(", "))
-        };
+    if matches!(last.kind, ExitKind::AuthUnavailable | ExitKind::Fatal) {
         out.push(Finding {
             health: Health::Failing,
             text: format!(
-                "the last capture start{day} ended {} (exit {}) at {}{failure}{dangling}. {}",
-                last.kind.as_str(),
-                last.code,
-                time(last.at),
-                remedy(last.kind),
-            ),
-        });
-    } else if last.kind == ExitKind::CompleteWithFailures {
-        out.push(Finding {
-            health: Health::Attention,
-            text: format!(
-                "the run{day} ended complete with failures: some pairs used up their attempts \
-                 with no ok{failure}"
+                "the last capture start ended {}. {}",
+                last.describe(),
+                remedy(last.kind)
             ),
         });
     }
@@ -205,10 +179,6 @@ fn remedy(kind: ExitKind) -> &'static str {
     match kind {
         ExitKind::AuthUnavailable => {
             "The token is unusable: run `research-archive auth login` on the host."
-        }
-        ExitKind::Partial | ExitKind::Degraded => {
-            "Data of that day is lost for good; check `journalctl --user -u \
-             research-archive-capture` for the cause."
         }
         _ => "Check `journalctl --user -u research-archive-capture` on the host.",
     }
@@ -265,23 +235,56 @@ fn run_status(run: &RunSummary, coverage: &[PairCoverage]) -> RunStatus {
     }
 }
 
+/// Data loss, from the runs, which keep it for good. The latest ended run
+/// decides: `partial` or degraded is `failing` until a later day ends
+/// `complete`; complete with failures is `attention`. An older run's loss,
+/// and a missed day anywhere, is `attention`. An open run is not judged.
 fn run_findings(runs: &[(RunSummary, RunStatus)], out: &mut Vec<Finding>) {
-    for (run, status) in runs {
-        match run.end.as_ref().map(|e| e.outcome) {
-            Some(RunOutcome::Missed) => out.push(Finding {
+    let latest_ended = runs.iter().position(|(run, _)| run.end.is_some());
+    for (i, (run, status)) in runs.iter().enumerate() {
+        let Some(end) = &run.end else { continue };
+        let latest = Some(i) == latest_ended;
+        let lost = |text: String| Finding {
+            health: if latest {
+                Health::Failing
+            } else {
+                Health::Attention
+            },
+            text: if latest {
+                format!(
+                    "{text}. Data of that day is lost for good; check `journalctl --user -u \
+                     research-archive-capture` for the cause"
+                )
+            } else {
+                text
+            },
+        };
+        let (ok, planned) = (status.pairs_ok, status.pairs_planned);
+        match end.outcome {
+            RunOutcome::Missed => out.push(Finding {
                 health: Health::Attention,
                 text: format!("{} was missed: no capture ran during its window", run.as_of),
             }),
-            Some(RunOutcome::Partial) => out.push(Finding {
+            RunOutcome::Partial => out.push(lost(format!(
+                "{} ended partial: {} of {planned} pairs have no ok",
+                run.as_of,
+                planned - ok
+            ))),
+            RunOutcome::Complete if degraded(ok as usize, planned as usize) => {
+                out.push(lost(format!(
+                    "{} ended degraded: only {ok} of {planned} pairs have an ok",
+                    run.as_of
+                )))
+            }
+            RunOutcome::Complete if status.pairs_failed > 0 => out.push(Finding {
                 health: Health::Attention,
                 text: format!(
-                    "{} ended partial: {} of {} pairs have no ok",
-                    run.as_of,
-                    status.pairs_planned - status.pairs_ok,
-                    status.pairs_planned
+                    "{} ended complete with failures: {} of {planned} pairs used up their \
+                     attempts with no ok",
+                    run.as_of, status.pairs_failed
                 ),
             }),
-            Some(RunOutcome::Complete) | None => {}
+            RunOutcome::Complete => {}
         }
     }
     // Only the latest run's universe matters for what is captured next.
