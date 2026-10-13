@@ -460,12 +460,14 @@ the login is lost; `auth login` restores it.
   nothing in this build enables (a test pins it).
 - **The limiter cannot pace SDK retries.** The SDK retries a bare HTTP 429
   up to five times inside one request, outside the limiter. The server
-  throttles with envelope `429002` instead, which the SDK does not retry,
-  and the probe saw no bare 429.
+  throttles with `429xxx` envelope codes instead (`429002`, and `429003`
+  seen in production), which the SDK does not retry, and the probe saw no
+  bare 429.
 
 | upstream result | status | `error_class` | `error_code` |
 |---|---|---|---|
-| envelope `429002` | `throttled` (retry after the message's "retry after: Xs", at most 60 s, else 1 s) | `envelope` | `429002` |
+| envelope `429002` (the 1-second interval limit) | `throttled` (retry after the message's "retry after: Xs", at most 60 s, else 1 s) | `envelope` | `429002` |
+| any other envelope code `429000`–`429999` (`429001` per IP, `429003`, …) | `throttled` (retry after the message's "retry after: Xs", at most 60 s, else 60 s: the interval is unknown) | `envelope` | the code |
 | other non-zero envelope code, at any HTTP status | `permanent` | `envelope` | the code |
 | `code: 0` with `data` absent or `null` | `permanent` | `unexpected_response` | `unexpected_response` |
 | HTTP 200 that is not an envelope | `transient` | `unexpected_response` | `deserialize_response_body` |
@@ -665,8 +667,8 @@ its deadline leaves the SDK's quote task on the SDK's own runtime until the
 process exits.
 
 **Burst bound.** The SDK retries a bare HTTP 429 up to five times inside one
-request, outside the limiter. The server throttles with the envelope code
-429002 instead, which the SDK does not retry. The worst burst beyond the
+request, outside the limiter. The server throttles with `429xxx` envelope
+codes instead, which the SDK does not retry. The worst burst beyond the
 limiter is therefore four requests in flight × 6 = 24 requests within about
 3.1 s.
 

@@ -41,7 +41,7 @@
 //! **Requests in flight.** The source's limiter paces request starts at
 //! `rps`. The SDK retries a bare HTTP 429 up to five times inside one
 //! request, outside the limiter (`rust/crates/httpclient/src/request.rs:475-513`
-//! at v5.2.0); the server throttles with the envelope code 429002 instead,
+//! at v5.2.0); the server throttles with `429xxx` envelope codes instead,
 //! which the SDK does not retry. The worst burst beyond the limiter is
 //! `MAX_IN_FLIGHT × 6` requests within about 3.1 s.
 //!

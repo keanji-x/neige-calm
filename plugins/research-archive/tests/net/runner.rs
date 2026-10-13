@@ -215,6 +215,50 @@ fn i7_retries_record_every_attempt_and_throttles_do_not_count() {
     })
 }
 
+/// Production (#2582): `ratings` answered envelope 429003. Every 429xxx is a
+/// throttle: it never counts toward the cap, here 1, and one that names no
+/// wait is retried after the longest wait a server may name (60 s).
+#[test]
+fn a_429003_throttle_is_retried_without_burning_the_cap() {
+    hermetic::run(async {
+        let clock = FakeClock::at(tue_start());
+        clock.advance(60_000);
+        let ratings = Arc::new(AtomicUsize::new(0));
+        let r = ratings.clone();
+        let server = TimedServer::start(clock.clone(), move |s, _| match s.path.as_str() {
+            "/v1/quote/institution-ratings" => match r.fetch_add(1, Ordering::SeqCst) {
+                0..=1 => Reply::new(200, r#"{"code":429003,"message":"api request is limited"}"#),
+                _ => Reply::data(r#"{"v":1}"#),
+            },
+            _ => Reply::data(r#"{"v":1}"#),
+        })
+        .await;
+        let knobs = Knobs {
+            attempt_cap: 1,
+            ..Knobs::default()
+        };
+        let a = archive(&server.server.url, &knobs, clock.now());
+        let outcome = capture(&a, &clock).await;
+        assert_eq!(outcome.kind, ExitKind::Complete, "{outcome:?}");
+
+        let rows: Vec<_> = a
+            .store()
+            .await
+            .attempts(RunId(1), &key("AAPL.US"), endpoint("ratings"))
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.iter().map(|r| r.2.as_str()).collect::<Vec<_>>(),
+            ["throttled", "throttled", "ok"]
+        );
+        assert!(
+            rows.windows(2).all(|w| w[1].1.0 - w[0].1.0 >= 60_000),
+            "{rows:?}"
+        );
+        assert_eq!(run_end(&a, 1).await.unwrap().0, "complete");
+    })
+}
+
 /// I1: no catalog request outside the window, and no back-fill after it
 /// closes. A pair whose retry would start after the window end is left,
 /// the run ends `partial` at the window end, and the next start, after the

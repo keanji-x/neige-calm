@@ -25,9 +25,10 @@
 //! 429 itself, up to five times with 0.1 s doubling backoff inside one
 //! `send()` (`request.rs:475-513`). The [`RateLimiter`] paces only the
 //! first start of each `fetch`; it cannot pace those retries, and nothing
-//! here can turn them off. The throttle the server actually sends is the
-//! envelope code `429002`, which the SDK does not retry, and probe P1 saw no
-//! bare 429, so in practice every request start is paced.
+//! here can turn them off. The server throttles with envelope codes in the
+//! `429xxx` family instead ([`THROTTLE_CODES`]: `429002` per probe P1,
+//! `429003` in production), which the SDK does not retry, and probe P1 saw
+//! no bare 429, so in practice every request start is paced.
 
 use std::{num::NonZeroU32, sync::Mutex, time::Duration};
 
@@ -97,7 +98,9 @@ impl RateLimiter {
     }
 }
 
-/// The wait after a throttle when the server names none.
+/// The wait after a throttle of the 1-second interval limit
+/// ([`INTERVAL_THROTTLE_CODE`]) or a bare HTTP 429 when the server names
+/// none.
 pub const RETRY_AFTER_FALLBACK: Duration = Duration::from_secs(1);
 
 /// The longest server-named wait; a longer one is clamped to it. Also the
@@ -126,8 +129,14 @@ impl Timeouts {
     };
 }
 
-/// The envelope code of the server's rate limit (probe P1).
-pub const THROTTLE_CODE: i32 = 429_002;
+/// The envelope codes of the server's rate limits: the whole `429xxx`
+/// family. The published error codes list `429001` (per IP) and `429002`
+/// (per API); production has also sent `429003`.
+pub const THROTTLE_CODES: std::ops::RangeInclusive<i32> = 429_000..=429_999;
+
+/// The throttle of the 1-second interval limit (probe P1), the one family
+/// member whose interval is known.
+pub const INTERVAL_THROTTLE_CODE: i32 = 429_002;
 
 /// One attempt's result: the Store's [`Response`], plus how long to wait
 /// before retrying when it was throttled. The wait is not stored.
@@ -359,11 +368,29 @@ fn class_for_status(status: u16) -> (FailureClass, ErrorClass) {
     }
 }
 
+/// The wait before retrying an envelope `code` with `message`, or `None`
+/// when the code is no throttle ([`THROTTLE_CODES`]). The wait the message
+/// names comes first ([`parse_retry_after`]). Otherwise
+/// [`INTERVAL_THROTTLE_CODE`] waits [`RETRY_AFTER_FALLBACK`], its 1-second
+/// interval; any other throttle's interval is unknown and may be longer, so
+/// it waits [`RETRY_AFTER_MAX`], the longest wait a server may name.
+pub fn throttle_wait(code: i32, message: &str) -> Option<Duration> {
+    if !THROTTLE_CODES.contains(&code) {
+        return None;
+    }
+    let unnamed = if code == INTERVAL_THROTTLE_CODE {
+        RETRY_AFTER_FALLBACK
+    } else {
+        RETRY_AFTER_MAX
+    };
+    Some(parse_retry_after(message).unwrap_or(unnamed))
+}
+
 /// The wait a throttle message names, as in "rate limit of 1-second
 /// interval has been reached, please retry after: 0.2s" (probe P1). A wait
 /// over [`RETRY_AFTER_MAX`] is clamped to it; a message that names no
-/// positive wait gives [`RETRY_AFTER_FALLBACK`].
-pub fn parse_retry_after(message: &str) -> Duration {
+/// positive wait gives `None`.
+pub fn parse_retry_after(message: &str) -> Option<Duration> {
     const MARKER: &str = "retry after:";
     let lower = message.to_ascii_lowercase();
     lower
@@ -379,7 +406,6 @@ pub fn parse_retry_after(message: &str) -> Duration {
         .and_then(|number| number.parse::<f64>().ok())
         .filter(|secs| secs.is_finite() && *secs > 0.0)
         .map(|secs| Duration::from_secs_f64(secs.min(RETRY_AFTER_MAX.as_secs_f64())))
-        .unwrap_or(RETRY_AFTER_FALLBACK)
 }
 
 /// A failure response.
@@ -399,8 +425,8 @@ pub fn classify(err: HttpClientError) -> Fetched {
     let mut retry_after = None;
     let response = match &err {
         HttpClientError::OpenApi { code, message, .. } => {
-            let class = if *code == THROTTLE_CODE {
-                retry_after = Some(parse_retry_after(message));
+            retry_after = throttle_wait(*code, message);
+            let class = if retry_after.is_some() {
                 F::Throttled
             } else {
                 F::Permanent
