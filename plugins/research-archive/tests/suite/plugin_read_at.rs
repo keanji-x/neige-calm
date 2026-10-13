@@ -380,7 +380,22 @@ async fn bad_arguments_are_refused_before_any_read() {
         ),
         (
             json!({ "at": "2026-10-13T16:00:00Z", "reads": [read("NVDA.US", "consensus", "list")] }),
-            "reads[0].pointer \"list\" is not a JSON pointer",
+            "reads[0].pointer \"list\" is not an RFC 6901 JSON pointer",
+        ),
+        (
+            json!({ "at": "2026-10-13T16:00:00Z", "reads": [read("NVDA.US", "consensus", "/a~2b")] }),
+            "reads[0].pointer \"/a~2b\" is not an RFC 6901 JSON pointer",
+        ),
+        (
+            json!({ "at": "2026-10-13T16:00:00Z", "reads": [read("NVDA.US", "consensus", "/a~")] }),
+            "reads[0].pointer \"/a~\" is not an RFC 6901 JSON pointer",
+        ),
+        (
+            json!({
+                "at": "2026-10-13T16:00:00Z",
+                "reads": [{ "symbol": "NVDA.US", "endpoint": "consensus", "pointer": "", "extra": 1 }],
+            }),
+            "unknown field `extra`",
         ),
         (
             json!({ "at": "2026-10-13T16:00:00Z", "reads": [read("NV DA", "consensus", "")] }),

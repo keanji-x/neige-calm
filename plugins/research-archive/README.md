@@ -890,27 +890,25 @@ about 45.
   | `no_value` | the pair was planned in some run, but no `ok` row is at or before `at` | none |
   | `not_archived` | no run ever planned the pair (`PLANNED_PAIRS`; an index symbol is planned only for the index endpoint) | none |
 
-  The archive starts on 2026-10-12, so an earlier `at` gives `no_value`. A
-  stored body that is not JSON fails the call naming the read; the capture
-  stores the envelope's `data` JSON as is, so it never happens. The answer
-  (`{at, reads}`, as compact JSON in the text and the same object in
-  `structuredContent`) is capped at 48 KiB: over it the call fails with each
-  read's size, and nothing is truncated.
+  The first data was fetched 2026-10-13 (UTC), for trading day 2026-10-12;
+  visibility is by `fetched_at`, so an earlier `at` gives `no_value`
+  (`not_archived` for a pair never planned). A stored body that is not JSON
+  fails the call naming the read; the capture stores the envelope's `data`
+  JSON as is, so it never happens. A pointer with a `~` not followed by `0`
+  or `1` is refused with the arguments. The answer (`{at, reads}`, as
+  compact JSON in the text and the same object in `structuredContent`) is
+  capped at 40 KiB: over it the call fails with each read's size, and
+  nothing is truncated. Codex binds the cap: it shows the model only
+  `structuredContent` and middle-truncates a tool output over 10,000 tokens
+  × 1.2 × 4 bytes ≈ 48,000 bytes, so 40 KiB keeps a margin (Claude Code's
+  MCP cap, 25,000 tokens, is higher).
 
   Bodies are large: in production consensus averages about 20 KB,
   forecast_eps 26 KB (up to 271 KB), rating_detail 51 KB and valuation 14 KB,
-  as valuation and rating_detail carry the vendor's own long time series. Their
-  top-level shapes (the SDK's types at v5.2.0, and NVDA.US in production),
-  for picking pointers:
-
-  | endpoint | shape |
-  |---|---|
-  | `consensus` | `{list[{fiscal_year, fiscal_period, period_text, details[{key, name, estimate, actual, …}]}], current_index, currency, opt_periods, current_period}` |
-  | `forecast_eps` | `{items[{forecast_eps_median, _mean, _lowest, _highest, institution_total, institution_up, institution_down, forecast_start_date, forecast_end_date}]}` |
-  | `rating_latest` | `{evaluate{buy, over, hold, under, sell, no_opinion, total, start_date, end_date}, target{highest_price, lowest_price, prev_close, start_date, end_date}, industry_*}` |
-  | `ratings` | `{evaluate{strong_buy, buy, hold, sell, under, date}, recommend, target, change, ccy_symbol, updated_at}` |
-  | `rating_detail` | `{evaluate{list[{strong_buy, buy, hold, sell, under, no_opinion, date}]}, target{updated_at, prediction_accuracy, data_percent, list[{timestamp, price, meet, avg_target, min_target, max_target, date}]}, ccy_symbol}` |
-  | `valuation` | `{metrics{pe{low, median, high, desc, list[…]}}, range}` |
+  as valuation and rating_detail carry the vendor's own long time series. The
+  top-level shape of each endpoint's body, for picking pointers, is in the
+  tool's description in `manifest.json` (the SDK's types at v5.2.0, checked
+  against NVDA.US in production), where the Planner reads it.
 
 The manifest's `planner_instructions` tell the Planner to ask the owner with
 `neige_user_ask` on `failing` (again only when the reasons change) and to

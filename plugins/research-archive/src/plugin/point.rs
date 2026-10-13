@@ -22,8 +22,15 @@ use crate::types::{Key, UnixMs};
 pub const MAX_READS: usize = 12;
 
 /// The cap on the answer: the serialized JSON the tool's text carries (its
-/// `structuredContent` is the same object).
-pub const MAX_ANSWER_BYTES: usize = 48 * 1024;
+/// `structuredContent` is the same object). Codex shows the model only
+/// `structuredContent` and middle-truncates a tool output over its budget of
+/// 10,000 tokens × 1.2 × 4 bytes ≈ 48,000 bytes; 40 KiB keeps a margin under
+/// it. Claude Code's MCP cap (25,000 tokens) is higher, so Codex binds.
+pub const MAX_ANSWER_BYTES: usize = 40 * 1024;
+const _: () = assert!(
+    MAX_ANSWER_BYTES < 48_000,
+    "under Codex's tool-output budget"
+);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -94,10 +101,10 @@ pub fn parse(args: &Value) -> Result<Request, String> {
                         ids.join(", ")
                     )
                 })?;
-            if !(r.pointer.is_empty() || r.pointer.starts_with('/')) {
+            if !is_pointer(&r.pointer) {
                 return Err(format!(
-                    "reads[{i}].pointer {:?} is not a JSON pointer: use \"\" for the whole \
-                     body or start with /",
+                    "reads[{i}].pointer {:?} is not an RFC 6901 JSON pointer: use \"\" for \
+                     the whole body or start with /, and escape ~ as ~0 and / as ~1",
                     r.pointer
                 ));
             }
@@ -112,6 +119,16 @@ pub fn parse(args: &Value) -> Result<Request, String> {
         at: UnixMs(at.timestamp_millis()),
         reads,
     })
+}
+
+/// Whether `p` is an RFC 6901 pointer: empty, or `/`-led, with every `~`
+/// followed by `0` or `1`.
+fn is_pointer(p: &str) -> bool {
+    let escapes_ok = p
+        .split('~')
+        .skip(1)
+        .all(|rest| rest.starts_with('0') || rest.starts_with('1'));
+    (p.is_empty() || p.starts_with('/')) && escapes_ok
 }
 
 /// What one read asked for, echoed in its answer.
