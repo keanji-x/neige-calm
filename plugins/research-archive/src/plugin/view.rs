@@ -66,7 +66,7 @@ pub fn headline(status: &ArchiveStatus) -> String {
     text
 }
 
-/// The `status` tool's text: the headline, then when the last start ended
+/// The `archive_status` tool's text: the headline, then when the last start ended
 /// and when this was checked.
 pub fn answer(status: &ArchiveStatus) -> String {
     let mut text = headline(status);

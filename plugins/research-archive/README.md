@@ -838,7 +838,7 @@ about 45.
 
 **Tools.**
 
-- `status` answers `ok`, `attention` or `failing`, every finding, the last
+- `archive_status` answers `ok`, `attention` or `failing`, every finding, the last
   exit and the last 7 runs with their pair counts (ok, tried with no ok, not
   tried, planned) and frozen membership. One source per fact:
   - **The runs** record data loss for good. A run that ended `partial`, or
@@ -860,7 +860,7 @@ about 45.
   No finding names the exit's time (the staleness finding names it, as it
   is fixed while stale), so the findings change only when the state does.
   The tool's text adds when the last start ended and when it checked.
-- `watch {on}` acts on the calling Track, which the kernel names in
+- `archive_watch {on}` acts on the calling Track, which the kernel names in
   `params._meta["dev.neige/track"].id`. `on: true` stores `watch/<track>` in
   the plugin's KV; the poller then pushes the `archive.status` table overlay
   to that Track, and later only when the table changes. `on: false` deletes
@@ -869,7 +869,7 @@ about 45.
   A Track deleted while watching keeps its `watch/<track>` key: the plugin
   is not told of the deletion. Each change of the table is still pushed to
   it, and the kernel's `neige.overlay.set` stores it without checking that
-  the Track exists, until the key is removed (`watch` with `on: false`
+  the Track exists, until the key is removed (`archive_watch` with `on: false`
   names only the calling Track, so by clearing the plugin's KV). Each key
   is about 40 bytes of the 16 KiB quota.
 
@@ -963,4 +963,4 @@ Two integration binaries:
 | `units` | the systemd templates' directives and placeholders |
 | `read_only` | `ReadOnlyStore`: never creates or changes the file, refuses what `Store::open` refuses, reads while the capture writes |
 | `status` | the health rules over a real archive and `last_exit.json` |
-| `plugin` | the plugin binary against a fake kernel: `status`, `watch` and its overlay pushes (only on change), the config, re-`initialize`, the lock held during reads, and the source scan of what it reaches |
+| `plugin` | the plugin binary against a fake kernel: `archive_status`, `archive_watch` and its overlay pushes (only on change), the config, re-`initialize`, the lock held during reads, and the source scan of what it reaches |

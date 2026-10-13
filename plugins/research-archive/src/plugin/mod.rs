@@ -1,6 +1,7 @@
 //! The read-only Neige plugin (#2575 S1b): serves the archive's
-//! [`status`](crate::status) as the `status` tool, and keeps it live as the
-//! `archive.status` table overlay on every Track that asked to `watch` it.
+//! [`status`](crate::status) as the `archive_status` tool, and keeps it live as the
+//! `archive.status` table overlay on every Track that asked to
+//! `archive_watch` it.
 //!
 //! It reads only what [`status::read`] reads. It holds no archive lock,
 //! reads no token and calls no Longbridge host; the capture job stays the
@@ -85,7 +86,7 @@ fn current(config: &Shared) -> Result<Config, String> {
 }
 
 /// The tables last pushed, by Track. One lock serializes every overlay
-/// change: the poller's pass and a `watch` call, so an unwatched Track
+/// change: the poller's pass and an `archive_watch` call, so an unwatched Track
 /// never gets its table back from a pass that listed it just before.
 static PUBLISHED: Mutex<Option<HashMap<String, Value>>> = Mutex::new(None);
 
@@ -209,19 +210,21 @@ fn tools_call_reply(
         Err(e) => return tool_error(format!("research-archive is not configured: {e}")),
     };
     match name {
-        "status" => {
+        "archive_status" => {
             let status = read_status(rt, &cfg);
             text_result(
                 view::answer(&status),
                 serde_json::to_value(&status).expect("a status serializes"),
             )
         }
-        "watch" => {
+        "archive_watch" => {
             let Some(on) = args.get("on").and_then(Value::as_bool) else {
                 return tool_error("`on` must be true or false");
             };
             let Some(track) = track_from_call(frame) else {
-                return tool_error("watch acts on the calling Track, and this call has none");
+                return tool_error(
+                    "archive_watch acts on the calling Track, and this call has none",
+                );
             };
             match set_watch(rpc, &track, on) {
                 Ok(()) => {
@@ -303,7 +306,7 @@ pub fn main() {
     // One worker for tool calls: not the read loop, because a tool's
     // callbacks are answered on the stdin that loop reads.
     let (tool_calls, tool_queue) = mpsc::channel::<Value>();
-    // A `watch` wakes the poller. The sender lives as long as the process,
+    // An `archive_watch` wakes the poller. The sender lives as long as the process,
     // so the poller's wait never sees a disconnect and spins.
     let (wake_tx, wake_rx) = mpsc::channel::<()>();
     let mut wake_rx = Some(wake_rx);
@@ -383,7 +386,7 @@ pub fn main() {
                                 }
                                 Err(_) => Duration::from_secs(POLL_SECONDS.1),
                             };
-                            // Wake early on a `watch`; drain a burst into one pass.
+                            // Wake early on an `archive_watch`; drain a burst into one pass.
                             let _ = wake_rx.recv_timeout(poll);
                             while wake_rx.try_recv().is_ok() {}
                         }

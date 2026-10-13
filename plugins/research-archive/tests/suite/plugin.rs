@@ -257,7 +257,7 @@ fn caption(table: Option<&Value>) -> &str {
 async fn status_answers_with_the_health() {
     let dir = healthy_dir().await;
     let mut kernel = Kernel::spawn(config(dir.path()));
-    let result = kernel.call_tool("status", json!({}), None);
+    let result = kernel.call_tool("archive_status", json!({}), None);
     assert_eq!(result.get("isError"), None, "{result}");
     assert_eq!(result["structuredContent"]["health"], "ok");
     assert_eq!(result["structuredContent"]["runs"][0]["pairs_ok"], 13);
@@ -268,7 +268,7 @@ async fn status_answers_with_the_health() {
     );
 
     last_exit(dir.path(), ExitKind::AuthUnavailable);
-    let result = kernel.call_tool("status", json!({}), None);
+    let result = kernel.call_tool("archive_status", json!({}), None);
     assert_eq!(result["structuredContent"]["health"], "failing");
     let text = result["content"][0]["text"].as_str().unwrap();
     assert!(
@@ -302,8 +302,8 @@ fn the_kernel_accepts_the_manifest() {
     assert_eq!(
         names,
         [
-            "plugin_research_archive_status",
-            "plugin_research_archive_watch"
+            "plugin_research_archive_archive_status",
+            "plugin_research_archive_archive_watch"
         ]
     );
     assert_eq!(manifest.permissions.overlays_write, ["track"]);
@@ -318,7 +318,7 @@ async fn a_watching_track_gets_the_live_table_until_it_stops() {
     let dir = healthy_dir().await;
     let mut kernel = Kernel::spawn(config(dir.path()));
 
-    let result = kernel.call_tool("watch", json!({ "on": true }), Some(TRACK));
+    let result = kernel.call_tool("archive_watch", json!({ "on": true }), Some(TRACK));
     assert_eq!(result.get("isError"), None, "{result}");
     assert_eq!(
         kernel.kv.keys().collect::<Vec<_>>(),
@@ -335,7 +335,7 @@ async fn a_watching_track_gets_the_live_table_until_it_stops() {
     kernel.until_overlay(TRACK, |t| caption(t).starts_with("FAILING"));
     let sets = kernel.sets(TRACK);
 
-    let result = kernel.call_tool("watch", json!({ "on": false }), Some(TRACK));
+    let result = kernel.call_tool("archive_watch", json!({ "on": false }), Some(TRACK));
     assert_eq!(result.get("isError"), None, "{result}");
     assert!(kernel.kv.is_empty() && kernel.overlays.is_empty());
     // A later change is not pushed to it: wait out one poll.
@@ -350,14 +350,14 @@ async fn a_pass_pushes_only_the_tables_that_changed() {
     const OTHER: &str = "fedcba9876543210fedcba9876543210";
     let dir = healthy_dir().await;
     let mut kernel = Kernel::spawn(config(dir.path()));
-    kernel.call_tool("watch", json!({ "on": true }), Some(TRACK));
+    kernel.call_tool("archive_watch", json!({ "on": true }), Some(TRACK));
     kernel.until_overlay(TRACK, |t| t.is_some());
-    // A second watch wakes the poller for a pass over both Tracks.
-    kernel.call_tool("watch", json!({ "on": true }), Some(OTHER));
+    // A second archive_watch wakes the poller for a pass over both Tracks.
+    kernel.call_tool("archive_watch", json!({ "on": true }), Some(OTHER));
     kernel.until_overlay(OTHER, |t| t.is_some());
-    // `watch` waits for a running pass: once this returns, that pass is over.
+    // `archive_watch` waits for a running pass: once this returns, that pass is over.
     let never = "00000000000000000000000000000000";
-    kernel.call_tool("watch", json!({ "on": false }), Some(never));
+    kernel.call_tool("archive_watch", json!({ "on": false }), Some(never));
     assert_eq!((kernel.sets(TRACK), kernel.sets(OTHER)), (1, 1));
     assert_eq!(
         kernel.overlays[&(TRACK.to_owned(), OVERLAY.to_owned())],
@@ -369,7 +369,7 @@ async fn a_pass_pushes_only_the_tables_that_changed() {
 async fn watch_needs_a_track_and_a_flag() {
     let dir = healthy_dir().await;
     let mut kernel = Kernel::spawn(config(dir.path()));
-    let result = kernel.call_tool("watch", json!({ "on": true }), None);
+    let result = kernel.call_tool("archive_watch", json!({ "on": true }), None);
     assert_eq!(result["isError"], true);
     assert!(
         result["content"][0]["text"]
@@ -377,7 +377,7 @@ async fn watch_needs_a_track_and_a_flag() {
             .unwrap()
             .contains("has none")
     );
-    let result = kernel.call_tool("watch", json!({}), Some(TRACK));
+    let result = kernel.call_tool("archive_watch", json!({}), Some(TRACK));
     assert_eq!(result["isError"], true);
     assert!(kernel.kv.is_empty());
 }
@@ -400,7 +400,7 @@ async fn a_bad_config_answers_every_tool_with_the_reason() {
         ),
     ] {
         let mut kernel = Kernel::spawn(bad);
-        let result = kernel.call_tool("status", json!({}), None);
+        let result = kernel.call_tool("archive_status", json!({}), None);
         assert_eq!(result["isError"], true);
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains(reason), "{text}");
@@ -416,13 +416,13 @@ async fn a_second_initialize_replaces_the_config() {
         "initialize",
         json!({ "_meta": { "dev.neige/config": { "values": { "data_dir": "relative" } } } }),
     );
-    let result = kernel.call_tool("status", json!({}), None);
+    let result = kernel.call_tool("archive_status", json!({}), None);
     assert_eq!(result["isError"], true, "{result}");
     kernel.request(
         "initialize",
         json!({ "_meta": { "dev.neige/config": { "values": config(empty.path()) } } }),
     );
-    let result = kernel.call_tool("status", json!({}), None);
+    let result = kernel.call_tool("archive_status", json!({}), None);
     assert_eq!(result["structuredContent"]["health"], "failing", "{result}");
     assert!(
         result["structuredContent"]["runs"]
@@ -461,9 +461,9 @@ async fn reads_while_the_capture_holds_the_lock_and_changes_nothing() {
     assert!(before.iter().any(|(name, ..)| name == "archive.lock"));
 
     let mut kernel = Kernel::spawn(config(dir.path()));
-    let result = kernel.call_tool("status", json!({}), None);
+    let result = kernel.call_tool("archive_status", json!({}), None);
     assert_eq!(result["structuredContent"]["health"], "ok", "{result}");
-    kernel.call_tool("watch", json!({ "on": true }), Some(TRACK));
+    kernel.call_tool("archive_watch", json!({ "on": true }), Some(TRACK));
     kernel.until_overlay(TRACK, |t| caption(t).starts_with("Healthy"));
     drop(kernel);
 
