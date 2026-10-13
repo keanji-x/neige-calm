@@ -1,0 +1,80 @@
+{
+  "manifest_version": 5,
+  "id": "research-archive",
+  "version": "0.1.0",
+  "min_kernel_version": "0.0.1",
+  "display_name": "Research archive",
+  "description": "Read-only status of the point-in-time Longbridge archive (#2575). The capture runs outside Neige as a systemd timer; this plugin only reads the archive and the capture's last exit, never the token, and never calls Longbridge.",
+  "entrypoint": {
+    "command": "bin/research-archive-plugin"
+  },
+  "planner_instructions": "research-archive reports the health of the Longbridge archive capture, a systemd timer outside Neige; nothing here captures or changes the archive. plugin_research_archive_status answers ok, attention or failing, with every reason and the recent runs. failing means a person has to act on the host: ask the owner with neige_user_ask, one question quoting the reasons, and ask again only when the reasons change. attention means data was lost or is weaker than planned: say so in the Report, without asking. plugin_research_archive_watch with on: true keeps this Track's live archive.status table, which the Report shows with a table block whose source is neige://plugin/research-archive/archive.status; on: false removes it.",
+  "exposes_tools": [
+    {
+      "name": "status",
+      "description": "The archive's health now: ok, attention or failing, every reason, how the last capture start ended, and the last 7 runs with their pair counts (ok, failed, not tried, planned) and index membership. failing: the last start exited with an alert (partial, degraded, auth_unavailable, fatal), no start has recorded its exit for longer than the configured bound, or the archive cannot be read. attention: a recent day was missed or ended partial, a run ended complete with failures, the latest universe is not observed, or the missed-day scan was incomplete. Reads local files only.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Archive status",
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "watch",
+      "description": "Start (on: true) or stop (on: false) keeping the live archive.status table on the calling Track. The table refreshes on the plugin's own poll, only when the status changes; stopping deletes it from this Track.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "on": {
+            "type": "boolean",
+            "description": "true to show the table on this Track, false to remove it"
+          }
+        },
+        "required": [
+          "on"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Watch archive status",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    }
+  ],
+  "permissions": {
+    "overlays_write": [
+      "track"
+    ],
+    "kv_quota_bytes": 16384
+  },
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "data_dir": {
+        "type": "string",
+        "description": "Absolute path of the capture job's data dir (its config's data_dir). The plugin reads archive.sqlite3 read-only and last_exit.json there, and nothing else."
+      },
+      "poll_seconds": {
+        "type": "integer",
+        "default": 60,
+        "description": "Seconds between status reads for watching Tracks (10 to 3600)."
+      },
+      "stale_after_minutes": {
+        "type": "integer",
+        "default": 90,
+        "description": "Minutes after the last recorded capture exit at which the status says the timer is not starting the capture (60 to 2880). The timer starts it every 30 minutes, and a start can hold the lock up to its attempt timeout."
+      }
+    },
+    "required": [
+      "data_dir"
+    ],
+    "additionalProperties": false
+  }
+}

@@ -6,7 +6,9 @@ use sqlx::Row;
 use super::write::PLANNED_PAIRS;
 use super::{Result, Store};
 use crate::catalog::EndpointId;
-use crate::types::{AsOf, Key, Origin, RunId, Source, Status, UnixMs};
+use crate::types::{
+    AsOf, Key, MembershipMode, Origin, RunId, RunOutcome, Source, Status, UnixMs, Window,
+};
 
 /// The one order of `ok` rows `o`, latest first: by `fetched_at`, then the
 /// higher run id, then the higher attempt. Within a run the clock is
@@ -55,7 +57,95 @@ pub struct PairCoverage {
     pub has_ok: bool,
 }
 
+/// How a run ended: its `run_end` row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunEnd {
+    pub finished_at: UnixMs,
+    pub outcome: RunOutcome,
+    pub reason: Option<String>,
+}
+
+/// One planned index's frozen membership: its `run_membership` row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrozenIndex {
+    pub index: Key,
+    pub mode: MembershipMode,
+    pub frozen_at: UnixMs,
+}
+
+/// A run's own rows, without its observations.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunSummary {
+    pub run_id: RunId,
+    pub as_of: AsOf,
+    pub window: Window,
+    pub started_at: UnixMs,
+    /// `None` while the run is open.
+    pub end: Option<RunEnd>,
+    /// The frozen indexes, by index; empty before the freeze.
+    pub frozen: Vec<FrozenIndex>,
+}
+
 impl Store {
+    /// The `limit` runs of `source` with the latest `as_of`, latest first.
+    pub async fn recent_runs(&self, source: Source, limit: u32) -> Result<Vec<RunSummary>> {
+        // One read transaction: every query sees the same snapshot.
+        let mut conn = self.pool.begin().await?;
+        let rows = sqlx::query(
+            "SELECT r.run_id, r.as_of, r.window_start, r.window_end, r.started_at,
+                    e.finished_at, e.outcome, e.reason
+             FROM run r LEFT JOIN run_end e ON e.run_id = r.run_id
+             WHERE r.source = ?
+             ORDER BY r.as_of DESC LIMIT ?",
+        )
+        .bind(source.as_str())
+        .bind(i64::from(limit))
+        .fetch_all(&mut *conn)
+        .await?;
+        let mut runs = Vec::with_capacity(rows.len());
+        for r in &rows {
+            let run_id = RunId(r.try_get("run_id")?);
+            let outcome: Option<String> = r.try_get("outcome")?;
+            let end = match outcome {
+                None => None,
+                Some(outcome) => Some(RunEnd {
+                    finished_at: UnixMs(r.try_get("finished_at")?),
+                    outcome: RunOutcome::parse(&outcome)?,
+                    reason: r.try_get("reason")?,
+                }),
+            };
+            let frozen = sqlx::query(
+                "SELECT index_sym, mode, frozen_at FROM run_membership
+                 WHERE run_id = ? ORDER BY index_sym",
+            )
+            .bind(run_id.0)
+            .fetch_all(&mut *conn)
+            .await?
+            .iter()
+            .map(|m| {
+                Ok(FrozenIndex {
+                    index: Key::new(m.try_get::<String, _>("index_sym")?)?,
+                    mode: MembershipMode::parse(&m.try_get::<String, _>("mode")?)?,
+                    frozen_at: UnixMs(m.try_get("frozen_at")?),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+            runs.push(RunSummary {
+                run_id,
+                as_of: AsOf::parse(&r.try_get::<String, _>("as_of")?)?,
+                window: Window::new(
+                    UnixMs(r.try_get("window_start")?),
+                    UnixMs(r.try_get("window_end")?),
+                )?,
+                started_at: UnixMs(r.try_get("started_at")?),
+                end,
+                frozen,
+            });
+        }
+        conn.commit().await?;
+        Ok(runs)
+    }
+
     /// The latest `ok` observation of `key` × `endpoint` with `fetched_at ≤
     /// t`, as `(body, fetched_at, as_of)`. Failure rows never win; a later
     /// `ok` with an empty body wins over an earlier full one. Ties on

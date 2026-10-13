@@ -368,10 +368,14 @@ pub enum Membership {
 impl Membership {
     /// The `run_membership.mode` value.
     pub fn mode(&self) -> &'static str {
+        self.kind().as_str()
+    }
+
+    pub fn kind(&self) -> MembershipMode {
         match self {
-            Membership::Observed { .. } => "observed",
-            Membership::Carried { .. } => "carried",
-            Membership::None => "none",
+            Membership::Observed { .. } => MembershipMode::Observed,
+            Membership::Carried { .. } => MembershipMode::Carried,
+            Membership::None => MembershipMode::None,
         }
     }
 
@@ -379,6 +383,33 @@ impl Membership {
         match self {
             Membership::Observed { members } | Membership::Carried { members, .. } => members,
             Membership::None => &[],
+        }
+    }
+}
+
+/// `run_membership.mode`: how a frozen index membership was derived.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MembershipMode {
+    Observed,
+    Carried,
+    None,
+}
+
+impl MembershipMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MembershipMode::Observed => "observed",
+            MembershipMode::Carried => "carried",
+            MembershipMode::None => "none",
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<MembershipMode, InvalidValue> {
+        match s {
+            "observed" => Ok(MembershipMode::Observed),
+            "carried" => Ok(MembershipMode::Carried),
+            "none" => Ok(MembershipMode::None),
+            other => Err(invalid("mode", other)),
         }
     }
 }
@@ -421,6 +452,10 @@ mod tests {
         for s in ["complete", "partial", "missed"] {
             assert_eq!(RunOutcome::parse(s).unwrap().as_str(), s);
         }
+        for s in ["observed", "carried", "none"] {
+            assert_eq!(MembershipMode::parse(s).unwrap().as_str(), s);
+        }
+        assert!(MembershipMode::parse("Observed").is_err());
         assert!(Key::new("").is_err());
         assert!(Key::new("A B").is_err());
         assert!(Window::new(UnixMs(2), UnixMs(2)).is_err());

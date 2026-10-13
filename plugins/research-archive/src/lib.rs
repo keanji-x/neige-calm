@@ -24,6 +24,11 @@
 //! - [`clock`]: the injected clock every decision and timestamp uses;
 //! - [`state`]: `last_exit.json`, how the last start ended;
 //! - [`notify`]: the deduplicated `OnFailure=` alert.
+//!
+//! S1b adds the read-only side, for Neige:
+//!
+//! - [`status`]: the archive's health from the archive and `last_exit.json`;
+//! - [`plugin`]: the Neige plugin that serves it as a tool and a live table.
 
 pub mod auth;
 pub mod calendar;
@@ -39,11 +44,13 @@ pub mod lock;
 pub mod logging;
 pub mod membership;
 pub mod notify;
+pub mod plugin;
 pub mod sdk_error;
 pub mod source;
 pub mod state;
+pub mod status;
 pub mod store;
 pub mod types;
 
 pub use catalog::{Catalog, Endpoint, EndpointId, KeyKind};
-pub use store::{OpenError, Store, StoreError};
+pub use store::{OpenError, ReadOnlyStore, Store, StoreError};

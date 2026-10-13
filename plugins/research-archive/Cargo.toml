@@ -9,11 +9,16 @@ edition = "2024"
 # S1-2a adds the typed config, the environment guard, the data-dir lock, the
 # token storage with the `auth` CLI, and the Longbridge source. S1-2b adds
 # the capture runner, the trading calendar, the alert command and the
-# systemd unit templates.
+# systemd unit templates. S1b adds the read-only status plugin.
 
 [[bin]]
 name = "research-archive"
 path = "src/main.rs"
+
+# The read-only Neige plugin (S1b): `manifest.json`'s entrypoint.
+[[bin]]
+name = "research-archive-plugin"
+path = "src/plugin_main.rs"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["serde", "std"] }
@@ -43,6 +48,8 @@ url = "2"
 
 [dev-dependencies]
 axum = "0.8"
+# The report `table` block's validator, for the overlay the plugin pushes.
+calm-types = { path = "../../crates/calm-types" }
 regex = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "test-util", "time"] }

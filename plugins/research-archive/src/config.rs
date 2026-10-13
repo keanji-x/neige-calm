@@ -132,7 +132,7 @@ impl Config {
 
     /// `<data_dir>/archive.sqlite3`.
     pub fn archive_path(&self) -> PathBuf {
-        self.data_dir.join("archive.sqlite3")
+        crate::store::Store::path(&self.data_dir)
     }
 
     /// `<data_dir>/oauth`, the token storage directory.

@@ -6,7 +6,7 @@ mod read;
 pub mod schema;
 mod write;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteSynchronous};
@@ -14,8 +14,8 @@ use sqlx::{Row, SqliteConnection};
 
 use crate::catalog::{Catalog, Endpoint, EndpointId};
 use crate::membership::IncompleteMembership;
-use crate::types::{InvalidValue, Key, RunId, UnixMs};
-pub use read::{PairCoverage, PointRead, Universe};
+use crate::types::{InvalidValue, Key, RunId, Source, UnixMs};
+pub use read::{FrozenIndex, PairCoverage, PointRead, RunEnd, RunSummary, Universe};
 pub use schema::SchemaDrift;
 pub use write::{PlanRequest, RunPlan};
 
@@ -124,6 +124,11 @@ pub struct Store {
 }
 
 impl Store {
+    /// `<data_dir>/archive.sqlite3`, where the capture job keeps the archive.
+    pub fn path(data_dir: &Path) -> PathBuf {
+        data_dir.join("archive.sqlite3")
+    }
+
     /// Opens the archive at `path` against the compiled catalog.
     ///
     /// A missing file is created, and a new (empty) file gets the schema and
@@ -191,6 +196,26 @@ impl Store {
             tx.commit().await?;
             return self.enable_wal().await;
         }
+        self.check_matches(
+            &mut tx,
+            (expected_schema, expected_version),
+            found_version,
+            found_schema,
+        )
+        .await?;
+        tx.commit().await?;
+        self.enable_wal().await
+    }
+
+    /// Refuses a file whose `user_version`, whole schema or `endpoint` rows
+    /// differ from this build. The one check behind both opens.
+    async fn check_matches(
+        &self,
+        conn: &mut SqliteConnection,
+        (expected_schema, expected_version): (schema::Schema, i64),
+        found_version: i64,
+        found_schema: schema::Schema,
+    ) -> std::result::Result<(), OpenError> {
         if found_version != expected_version {
             return Err(OpenError::UserVersion {
                 found: found_version,
@@ -200,11 +225,10 @@ impl Store {
         if let Some(drift) = SchemaDrift::between(&expected_schema, &found_schema) {
             return Err(OpenError::Schema(drift));
         }
-        if let Some(drift) = self.catalog_drift(&mut tx).await? {
+        if let Some(drift) = self.catalog_drift(conn).await? {
             return Err(OpenError::Catalog(drift));
         }
-        tx.commit().await?;
-        self.enable_wal().await
+        Ok(())
     }
 
     /// Switches the accepted file to WAL (persistent in the file).
@@ -268,6 +292,72 @@ impl Store {
                 value: stored.to_owned(),
             })
         })
+    }
+}
+
+/// The archive opened read-only, for a reader that is not the capture job:
+/// the status plugin. It has the Store's reads and none of its writes.
+///
+/// The file is opened `SQLITE_OPEN_READONLY` and never created: a missing
+/// file is an error, not an empty archive. Nothing changes the file: no
+/// schema, no catalog rows, no journal mode. A reader of a WAL file may
+/// create the `-wal` and `-shm` sidecars when they are missing (SQLite
+/// 3.22 and later), which needs a writable directory. The same checks as
+/// [`Store::open`] refuse a file of another version, schema or catalog.
+#[derive(Clone, Debug)]
+pub struct ReadOnlyStore {
+    store: Store,
+}
+
+impl ReadOnlyStore {
+    pub async fn open(path: &Path) -> std::result::Result<ReadOnlyStore, OpenError> {
+        let options = SqliteConnectOptions::new()
+            .filename(path)
+            .read_only(true)
+            .create_if_missing(false)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await?;
+        let store = Store {
+            pool,
+            catalog: Catalog::compiled(),
+        };
+        match ReadOnlyStore::check(&store).await {
+            Ok(()) => Ok(ReadOnlyStore { store }),
+            Err(e) => {
+                store.pool.close().await;
+                Err(e)
+            }
+        }
+    }
+
+    async fn check(store: &Store) -> std::result::Result<(), OpenError> {
+        let expected = schema::reference().await?;
+        // A deferred transaction: one snapshot, and no write lock.
+        let mut tx = store.pool.begin().await?;
+        let found_version = schema::user_version(&mut tx).await?;
+        let found_schema = schema::read_schema(&mut tx).await?;
+        store
+            .check_matches(&mut tx, expected, found_version, found_schema)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn close(self) {
+        self.store.close().await;
+    }
+
+    /// See [`Store::recent_runs`].
+    pub async fn recent_runs(&self, source: Source, limit: u32) -> Result<Vec<RunSummary>> {
+        self.store.recent_runs(source, limit).await
+    }
+
+    /// See [`Store::coverage`].
+    pub async fn coverage(&self, run_id: RunId) -> Result<Vec<PairCoverage>> {
+        self.store.coverage(run_id).await
     }
 }
 

@@ -4,10 +4,11 @@
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
-use research_archive::catalog::{Catalog, EndpointId};
+use research_archive::catalog::{Catalog, EndpointId, KeyKind};
 use research_archive::store::{PlanRequest, RunPlan};
 use research_archive::types::{
-    AsOf, ErrorClass, ErrorDetail, FailureClass, Key, Membership, Response, Source, UnixMs, Window,
+    AsOf, ErrorClass, ErrorDetail, FailureClass, Finish, Key, Membership, Response, RunId, Source,
+    UnixMs, Window,
 };
 use research_archive::{Store, StoreError};
 use sqlx::sqlite::SqliteConnectOptions;
@@ -141,6 +142,41 @@ pub async fn observe_and_freeze(
         .freeze_membership(plan.run_id, frozen_at)
         .await
         .unwrap()
+}
+
+/// Day `n` planned with `config` and the index `index`, its membership
+/// observed as `members` and frozen at `at(n, 10)`, every planned pair given
+/// an `ok`, and the run ended `complete`.
+pub async fn complete_day(
+    store: &Store,
+    n: i64,
+    config: &[&str],
+    index: &str,
+    members: &[&str],
+) -> RunId {
+    let plan = store
+        .plan_run(&plan_request(n, config, &[index]))
+        .await
+        .unwrap();
+    observe_and_freeze(store, &plan, at(n, 10), &[(index, members)]).await;
+    let mut securities: Vec<&str> = config.iter().chain(members).copied().collect();
+    securities.sort();
+    securities.dedup();
+    let mut t = 20;
+    for security in securities {
+        for e in Catalog::compiled().for_kind(KeyKind::Security) {
+            store
+                .record_observation(plan.run_id, &key(security), e.id, at(n, t), &ok(b"{}"))
+                .await
+                .unwrap();
+            t += 1;
+        }
+    }
+    store
+        .end_run(plan.run_id, at(n, 10_000), Finish::Complete, None)
+        .await
+        .unwrap();
+    plan.run_id
 }
 
 /// A closed archive with at least one row in every table: day 1 plans
