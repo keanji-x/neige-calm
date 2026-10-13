@@ -19,7 +19,7 @@ use crate::support::complete_day;
 const TRACK: &str = "0123456789abcdef0123456789abcdef";
 const OVERLAY: &str = "archive.status";
 
-struct Kernel {
+pub(crate) struct Kernel {
     child: Child,
     stdin: ChildStdin,
     frames: mpsc::Receiver<Value>,
@@ -32,7 +32,7 @@ struct Kernel {
 }
 
 impl Kernel {
-    fn spawn(config: Value) -> Kernel {
+    pub(crate) fn spawn(config: Value) -> Kernel {
         let mut child = Command::new(env!("CARGO_BIN_EXE_research-archive-plugin"))
             .env_clear()
             .stdin(Stdio::piped())
@@ -91,7 +91,7 @@ impl Kernel {
         self.serve_until(|frame| frame.get("method").is_none() && frame["id"] == json!(id))
     }
 
-    fn call_tool(&mut self, name: &str, arguments: Value, track: Option<&str>) -> Value {
+    pub(crate) fn call_tool(&mut self, name: &str, arguments: Value, track: Option<&str>) -> Value {
         let mut params = json!({ "name": name, "arguments": arguments });
         if let Some(track) = track {
             params["_meta"] = json!({ "dev.neige/track": { "id": track } });
@@ -206,7 +206,7 @@ impl Drop for Kernel {
     }
 }
 
-fn config(dir: &Path) -> Value {
+pub(crate) fn config(dir: &Path) -> Value {
     json!({
         "data_dir": dir.to_str().unwrap(),
         "poll_seconds": 10,
@@ -309,6 +309,7 @@ fn the_kernel_accepts_the_manifest() {
         names,
         [
             "plugin_archive_capture_status",
+            "plugin_archive_read_at",
             "plugin_archive_capture_watch"
         ]
     );
@@ -469,6 +470,13 @@ async fn reads_while_the_capture_holds_the_lock_and_changes_nothing() {
     let mut kernel = Kernel::spawn(config(dir.path()));
     let result = kernel.call_tool("capture_status", json!({}), None);
     assert_eq!(result["structuredContent"]["health"], "ok", "{result}");
+    let read = json!({ "symbol": "AAPL.US", "endpoint": "consensus", "pointer": "" });
+    let at = json!({ "at": "1970-01-03T00:00:00Z", "reads": [read] });
+    let result = kernel.call_tool("read_at", at, None);
+    assert_eq!(
+        result["structuredContent"]["reads"][0]["result"], "value",
+        "{result}"
+    );
     kernel.call_tool("capture_watch", json!({ "on": true }), Some(TRACK));
     kernel.until_overlay(TRACK, |t| caption(t).starts_with("Healthy"));
     drop(kernel);

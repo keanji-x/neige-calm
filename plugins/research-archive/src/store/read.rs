@@ -180,6 +180,20 @@ impl Store {
         .transpose()
     }
 
+    /// Whether any run ever planned `key` × `endpoint` ([`PLANNED_PAIRS`]):
+    /// what tells a pair the archive never covered from one with no `ok` by
+    /// a time.
+    pub async fn ever_planned(&self, key: &Key, endpoint: EndpointId) -> Result<bool> {
+        Ok(sqlx::query_scalar(&format!(
+            "SELECT EXISTS (SELECT 1 FROM ({PLANNED_PAIRS}) p
+             WHERE p.key = ? AND p.endpoint_id = ?)"
+        ))
+        .bind(key.as_str())
+        .bind(endpoint.as_str())
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     /// The universe at `t`: the run with the latest `started_at ≤ t` (ties
     /// to the higher run id) that is not a `missed` day. Its `config` and
     /// `index-symbol` keys were written with the run row; its `index:<sym>`

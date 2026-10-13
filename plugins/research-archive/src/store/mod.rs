@@ -296,7 +296,7 @@ impl Store {
 }
 
 /// The archive opened read-only, for a reader that is not the capture job:
-/// the status plugin. It has the Store's reads and none of its writes.
+/// the plugin. It has the Store's reads and none of its writes.
 ///
 /// The file is opened `SQLITE_OPEN_READONLY` and never created: a missing
 /// file is an error, not an empty archive. Nothing changes the file: no
@@ -353,6 +353,21 @@ impl ReadOnlyStore {
     /// See [`Store::recent_runs`].
     pub async fn recent_runs(&self, source: Source, limit: u32) -> Result<Vec<RunSummary>> {
         self.store.recent_runs(source, limit).await
+    }
+
+    /// See [`Store::read_at`].
+    pub async fn read_at(
+        &self,
+        key: &Key,
+        endpoint: EndpointId,
+        t: UnixMs,
+    ) -> Result<Option<PointRead>> {
+        self.store.read_at(key, endpoint, t).await
+    }
+
+    /// See [`Store::ever_planned`].
+    pub async fn ever_planned(&self, key: &Key, endpoint: EndpointId) -> Result<bool> {
+        self.store.ever_planned(key, endpoint).await
     }
 
     /// See [`Store::coverage`].

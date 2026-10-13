@@ -1,13 +1,16 @@
 //! The read-only Neige plugin (#2575 S1b): serves the archive's
 //! [`status`](crate::status) as the `capture_status` tool, and keeps it live as the
 //! `archive.status` table overlay on every Track that asked to
-//! `capture_watch` it.
+//! `capture_watch` it. The `read_at` tool ([`point`], #2597) reads archived
+//! values as they stood at a past moment.
 //!
-//! It reads only what [`status::read`] reads. It holds no archive lock,
+//! It reads only what [`status::read`] and [`point::answer`] read: the
+//! archive, read-only, and `last_exit.json`. It holds no archive lock,
 //! reads no token and calls no Longbridge host; the capture job stays the
 //! systemd timer's. Its config is the data dir and two intervals, from the
 //! kernel's handshake.
 
+pub mod point;
 mod rpc;
 pub mod view;
 
@@ -245,6 +248,13 @@ fn tools_call_reply(
                 Err(e) => tool_error(e),
             }
         }
+        "read_at" => match point::parse(&args) {
+            Ok(request) => match rt.block_on(point::answer(&cfg.data_dir, &request)) {
+                Ok(payload) => text_result(payload.to_string(), payload),
+                Err(e) => tool_error(e),
+            },
+            Err(e) => tool_error(e),
+        },
         other => tool_error(format!("unknown tool `{other}`")),
     }
 }

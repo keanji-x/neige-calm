@@ -20,6 +20,7 @@ mod freeze;
 mod guards;
 mod open;
 mod plugin;
+mod plugin_read_at;
 mod read_only;
 mod reads;
 mod send;
