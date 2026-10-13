@@ -4,6 +4,8 @@ import { parseReportLink, type ReportLinkTarget } from '../../../../../core/doma
 import { parseReportFileLink, reportFilePathRelativeToRoot, type ReportFileLinkTarget } from '../../../../../core/domain/report-file.ts';
 import { parseReportSourceLink, type ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
 import { reportDocumentReferenceRepository, reportReferenceRepository, reportTextReferences, qualifiedReportFileReference, type ReferenceRepository } from '../../../../../core/domain/report-references.ts';
+import { isImagePath, useReportFileResource } from '../../../systems/fs-viewers/public.tsx';
+import type { WorkspaceFilePort } from '../../../../../core/domain/fs.ts';
 import { ReadOnlyCode } from '../../../ui/code/public.tsx';
 import { ReportLinkPreview, ReportSourceLinkPreview, externalPreviewUrl, type ReportLinkPreviewResources, type PreviewDestination } from '../link-preview/public.tsx';
 import styles from './document.module.css';
@@ -185,16 +187,49 @@ function Inline({ node, ...context }: { node: SafeInline } & BlockContext): Reac
       return <del><Inlines nodes={node.children} {...context} /></del>;
     case 'break':
       return <br />;
-    case 'link':
     case 'image': {
-      const image = node.type === 'image';
-      const label = image ? node.alt || 'Image' : inlineLabel(node.children);
-      const body = image ? <span className={styles.imageAlt}>{node.alt || 'Image'}</span>
-        : <Inlines nodes={node.children} {...context} inLink />;
+      const label = node.alt || 'Image';
+      const body = <span className={styles.imageAlt}>{label}</span>;
+      if (context.destinationMode === 'inert') return body;
+      const target = parseReportFileLink(node.destination);
+      const path = target !== null && context.fileRoot !== undefined
+        ? reportFilePathRelativeToRoot(context.fileRoot, target, context.fileBasePath) : null;
+      if (path !== null && isImagePath(path) && context.linkPreview !== undefined) {
+        return <WorkspaceImage key={`${context.linkPreview.trackId}:${path}`} path={path} label={label}
+          files={context.linkPreview.files} context={context} />;
+      }
+      if (externalPreviewUrl(node.destination) !== null) {
+        return context.inLink ? body : <Destination destination={node.destination} label={label} body={body} image context={context} />;
+      }
+      return <UnavailableImage label={label} />;
+    }
+    case 'link': {
+      const label = inlineLabel(node.children);
+      const body = <Inlines nodes={node.children} {...context} inLink />;
       if (context.inLink) return body;
-      return <Destination destination={node.destination} label={label} body={body} image={image} context={context} />;
+      return <Destination destination={node.destination} label={label} body={body} context={context} />;
     }
   }
+}
+
+function UnavailableImage({ label }: { label: string }) {
+  return <span className={styles.imageAlt}>{label} — Image unavailable</span>;
+}
+
+function WorkspaceImage({ path, label, files, context }: {
+  path: string; label: string; files: WorkspaceFilePort; context: BlockContext;
+}) {
+  const resource = useReportFileResource(path, files);
+  if (resource.kind === 'error') return <UnavailableImage label={label} />;
+  if (resource.kind !== 'image') return <span className={styles.imageAlt}>{label}</span>;
+  const image = <img className={styles.image} src={resource.url} alt={label} loading="lazy"
+    onLoad={resource.onLoad} onError={resource.onError} />;
+  if (context.inLink) return image;
+  if (context.onOpenFileLink !== undefined) {
+    return <button type="button" className={styles.imageButton} title={path}
+      onClick={() => context.onOpenFileLink?.({ path })}>{image}</button>;
+  }
+  return <Destination destination={path} label={label} body={image} image context={{ ...context, fileBasePath: '' }} />;
 }
 
 function Destination({ destination, label, body, image = false, context }: {

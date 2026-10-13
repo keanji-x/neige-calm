@@ -11,6 +11,8 @@ import type { PaneSearchAdapter, PaneTheme } from './code-pane.tsx';
 import { isImagePath } from './file-kind.ts';
 import { FileReadError } from './read-error.tsx';
 
+export { isImagePath } from './file-kind.ts';
+
 export { FileReadError } from './read-error.tsx';
 
 export { useReportFileResource } from './report-file-resource.ts';

@@ -13,6 +13,8 @@ A `track.report_edited` diff lists block/line changes, including `task` blocks' 
 
 Link every created/modified Markdown file in the Report, e.g. `[Notes](docs/notes.md)`, previewable from the track workspace root. Verify targets exist inside it; update/deduplicate links in existing sections under the maintenance contract. Planner maintains links after delivery; workers supply paths and paste-ready links in `result`/`artifacts`, never write the Report. Assistants use existing Report tools. Workspace files are not `neige://source` citations; virtual `report.md` is not a disk file.
 
+Workspace images referenced with `![alt](path)` render inline. Save diagrams and screenshots as workspace image files and reference them this way.
+
 ## Sources
 
 On first reading material you will cite, capture it with `neige_source_capture`; cite only captured sources.

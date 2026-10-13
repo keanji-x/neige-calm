@@ -700,4 +700,8 @@
     .h2 { font-size: max(var(--text-md), 1rem); }
     .h1::after, .referenceHead::after { display: none; }
   }
+
+  /* Inline evidence keeps its intrinsic ratio within the reading column. */
+  .image { max-width: 100%; height: auto; vertical-align: middle; }
+  .imageButton { display: inline-block; max-width: 100%; padding: 0; border: 0; background: transparent; cursor: pointer; }
 }

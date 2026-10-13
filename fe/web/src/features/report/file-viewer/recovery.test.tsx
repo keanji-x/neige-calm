@@ -25,3 +25,18 @@ it('remounts a failed report image for a fresh load', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
   expect(await screen.findByRole('img')).not.toBe(image);
 });
+
+it('renders Markdown images relative to its file directory through the Track port', async () => {
+  const report = { summary: '', body: '', blocks: null };
+  const readFile = vi.fn().mockResolvedValue({ path: 'docs/note.md', size: 30, text: '![Figure](../images/figure.svg)', truncated: false });
+  const rawUrl = vi.fn((path: string) => `/track-raw/${path}`);
+  const files = { readFile, rawUrl };
+  const openFile = vi.fn();
+  render(<ReportFileViewer path="docs/note.md" files={files} fileRoot="/repo" wide onClose={() => {}}
+    onOpenFileLink={openFile} linkPreview={{ trackId: 'track', report, files }} />);
+  const image = await screen.findByRole('img', { name: 'Figure' });
+  expect(image.getAttribute('src')).toBe('/track-raw/images/figure.svg');
+  fireEvent.click(image);
+  expect(openFile).toHaveBeenCalledWith({ path: 'images/figure.svg' });
+  expect(readFile.mock.calls).toEqual([['docs/note.md']]);
+});
