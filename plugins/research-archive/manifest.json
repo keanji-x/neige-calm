@@ -1,6 +1,6 @@
 {
   "manifest_version": 5,
-  "id": "research-archive",
+  "id": "archive",
   "version": "0.1.0",
   "min_kernel_version": "0.0.1",
   "display_name": "Research archive",
@@ -8,10 +8,10 @@
   "entrypoint": {
     "command": "bin/research-archive-plugin"
   },
-  "planner_instructions": "research-archive reports the health of the Longbridge archive capture, a systemd timer outside Neige; nothing here captures or changes the archive. plugin_research_archive_archive_status answers ok, attention or failing, with every reason and the recent runs. failing means a person has to act on the host (a lost day stays failing until a later day ends complete): ask the owner with neige_user_ask, one question quoting the reasons, and ask again only when the reasons change. attention means data was lost or is weaker than planned: say so in the Report, without asking. plugin_research_archive_archive_watch with on: true keeps this Track's live archive.status table, which the Report shows with a table block whose source is neige://plugin/research-archive/archive.status; on: false removes it.",
+  "planner_instructions": "The archive plugin reports the health of the Longbridge archive capture, a systemd timer outside Neige; nothing here captures or changes the archive. plugin_archive_capture_status answers ok, attention or failing, with every reason and the recent runs. failing means a person has to act on the host (a lost day stays failing until a later day ends complete): ask the owner with neige_user_ask, one question quoting the reasons, and ask again only when the reasons change. attention means data was lost or is weaker than planned: say so in the Report, without asking. plugin_archive_capture_watch with on: true keeps this Track's live archive.status table, which the Report shows with a table block whose source is neige://plugin/archive/archive.status; on: false removes it.",
   "exposes_tools": [
     {
-      "name": "archive_status",
+      "name": "capture_status",
       "description": "The archive's health now: ok, attention or failing, every reason, how the last capture start ended, and the last 7 runs with their pair counts (ok, tried with no ok, not tried, planned) and index membership. failing: a recent run ended partial or degraded (fewer than half its pairs ok) and no later day has ended complete since, missed days included; the last start had no usable token or stopped on a fatal error; no start has recorded its exit for longer than the configured bound; or the archive cannot be read. attention: a partial or degraded run that a later complete day followed, a recent day was missed, a run ended complete with pairs that have no ok, the latest universe is not observed, or the missed-day scan was incomplete. Reads local files only.",
       "input_schema": {
         "type": "object",
@@ -25,7 +25,7 @@
       }
     },
     {
-      "name": "archive_watch",
+      "name": "capture_watch",
       "description": "Start (on: true) or stop (on: false) keeping the live archive.status table on the calling Track. The table refreshes on the plugin's own poll, only when the status changes; stopping deletes it from this Track.",
       "input_schema": {
         "type": "object",

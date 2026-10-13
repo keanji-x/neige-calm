@@ -801,7 +801,8 @@ systemctl --user enable --now research-archive-capture.timer
 
 ## Status plugin (S1b)
 
-`research-archive-plugin` is a Neige plugin (`manifest.json`) that reports
+`research-archive-plugin` is a Neige plugin (`manifest.json`, plugin id
+`archive`: an installable id is one word, `^[a-z0-9]{2,32}$`) that reports
 the archive's health to Planners and Reports. The capture stays the systemd
 timer's; the plugin captures nothing and changes nothing.
 
@@ -820,7 +821,7 @@ no host. It works while a capture holds the lock and writes. A source scan
 (`plugin::the_plugin_reaches_only_the_read_side`) pins the modules it can
 reach.
 
-**Configuration** (`PATCH /api/plugins/research-archive/config`):
+**Configuration** (`PATCH /api/plugins/archive/config`):
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -838,7 +839,7 @@ about 45.
 
 **Tools.**
 
-- `archive_status` answers `ok`, `attention` or `failing`, every finding, the last
+- `capture_status` answers `ok`, `attention` or `failing`, every finding, the last
   exit and the last 7 runs with their pair counts (ok, tried with no ok, not
   tried, planned) and frozen membership. One source per fact:
   - **The runs** record data loss for good. A run that ended `partial`, or
@@ -860,7 +861,7 @@ about 45.
   No finding names the exit's time (the staleness finding names it, as it
   is fixed while stale), so the findings change only when the state does.
   The tool's text adds when the last start ended and when it checked.
-- `archive_watch {on}` acts on the calling Track, which the kernel names in
+- `capture_watch {on}` acts on the calling Track, which the kernel names in
   `params._meta["dev.neige/track"].id`. `on: true` stores `watch/<track>` in
   the plugin's KV; the poller then pushes the `archive.status` table overlay
   to that Track, and later only when the table changes. `on: false` deletes
@@ -869,7 +870,7 @@ about 45.
   A Track deleted while watching keeps its `watch/<track>` key: the plugin
   is not told of the deletion. Each change of the table is still pushed to
   it, and the kernel's `neige.overlay.set` stores it without checking that
-  the Track exists, until the key is removed (`archive_watch` with `on: false`
+  the Track exists, until the key is removed (`capture_watch` with `on: false`
   names only the calling Track, so by clearing the plugin's KV). Each key
   is about 40 bytes of the 16 KiB quota.
 
@@ -882,7 +883,7 @@ alert anywhere.
 
 ````markdown
 ```neige-block table
-{ "source": "neige://plugin/research-archive/archive.status" }
+{ "source": "neige://plugin/archive/archive.status" }
 ```
 ````
 
@@ -894,7 +895,7 @@ exit time, so it is pushed only when the status changes.
 
 ```sh
 cargo build --release --locked -p research-archive --bin research-archive-plugin
-dir=<plugins_dir>/research-archive
+dir=<plugins_dir>/archive
 mkdir -p "$dir/bin"
 cp plugins/research-archive/manifest.json "$dir/"
 cp "${CARGO_TARGET_DIR:-target}/release/research-archive-plugin" "$dir/bin/"
@@ -905,12 +906,12 @@ Then, against the server:
 ```sh
 curl -X POST "$CALM/api/plugins/install" -H 'content-type: application/json' \
   -d "{\"source\":{\"kind\":\"local_path\",\"path\":\"$dir\"}}"
-curl -X PATCH "$CALM/api/plugins/research-archive/config" -H 'content-type: application/json' \
+curl -X PATCH "$CALM/api/plugins/archive/config" -H 'content-type: application/json' \
   -d '{"data_dir":"<the capture config'"'"'s data_dir>"}'
-curl -X POST "$CALM/api/plugins/research-archive/enable"
+curl -X POST "$CALM/api/plugins/archive/enable"
 ```
 
-A config change takes effect after `POST /api/plugins/research-archive/reload`.
+A config change takes effect after `POST /api/plugins/archive/reload`.
 
 ## Tests
 
@@ -963,4 +964,4 @@ Two integration binaries:
 | `units` | the systemd templates' directives and placeholders |
 | `read_only` | `ReadOnlyStore`: never creates or changes the file, refuses what `Store::open` refuses, reads while the capture writes |
 | `status` | the health rules over a real archive and `last_exit.json` |
-| `plugin` | the plugin binary against a fake kernel: `archive_status`, `archive_watch` and its overlay pushes (only on change), the config, re-`initialize`, the lock held during reads, and the source scan of what it reaches |
+| `plugin` | the plugin binary against a fake kernel: `capture_status`, `capture_watch` and its overlay pushes (only on change), the config, re-`initialize`, the lock held during reads, and the source scan of what it reaches |

@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use crate::status::{ArchiveStatus, Health, RunStatus, time};
 
 /// The overlay kind a Report names as
-/// `neige://plugin/research-archive/archive.status`.
+/// `neige://plugin/archive/archive.status`.
 pub const OVERLAY_KIND: &str = "archive.status";
 
 /// The report `table` block's cap on one string, in characters.
@@ -66,7 +66,7 @@ pub fn headline(status: &ArchiveStatus) -> String {
     text
 }
 
-/// The `archive_status` tool's text: the headline, then when the last start ended
+/// The `capture_status` tool's text: the headline, then when the last start ended
 /// and when this was checked.
 pub fn answer(status: &ArchiveStatus) -> String {
     let mut text = headline(status);
