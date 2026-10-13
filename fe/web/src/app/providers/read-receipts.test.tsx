@@ -1,3 +1,4 @@
+import { onlineManager } from '@tanstack/react-query';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -5,7 +6,7 @@ import type { ApiTransportResponse } from '../../../../core/api/types.ts';
 import { useReadReceipt, useReadReceipts } from './read-receipts.tsx';
 import { createReadReceiptsKernel, readReceiptsFixture, type ReadReceiptsKernel } from './read-receipts-fixture.tsx';
 
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); onlineManager.setOnline(true); });
 
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
 
@@ -198,4 +199,40 @@ it('sends one target’s writes in order, even over a network that answers out o
   ]);
   expect(fake.stored('track', 't')?.manualUnread).toBe(false);
   await screen.findByText('t: read');
+});
+
+/* #2596 fix round 3: an acknowledgement is owed until the kernel stored it. */
+it('acknowledges a target opened offline once the browser is back online', async () => {
+  const fake = createReadReceiptsKernel({ baselineMs: 100 });
+  const view = mount(fake, <Verdict id="t" at={150} />);
+  await screen.findByText('t: unread');
+  act(() => onlineManager.setOnline(false));
+  function Open() { useReadReceipt('track', 't', 150); return <Verdict id="t" at={150} />; }
+  view.rerender(<Open />);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(fake.posts()).toEqual([]);
+  // Back online, with no navigation and no visibility change: the acknowledgement goes out before any read answers.
+  const release = fake.holdReads();
+  act(() => onlineManager.setOnline(true));
+  await waitFor(() => expect(fake.posts().map((request) => [request.path, request.body])).toEqual([
+    ['/api/read-receipts/track/t/read', { readThroughMs: 150 }],
+  ]));
+  act(() => release());
+  await screen.findByText('t: read');
+});
+
+it('keeps a failed acknowledgement owed until the next receipts read', async () => {
+  const fake = createReadReceiptsKernel({ baselineMs: 100, fail: true });
+  function Open() { useReadReceipt('track', 't', 150); return <Verdict id="t" at={150} />; }
+  mount(fake, <Open />);
+  await waitFor(() => expect(fake.posts()).toHaveLength(1));
+  await screen.findByText('t: unread');
+  // The read-back after the failed write is no new chance: nothing loops.
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(fake.posts()).toHaveLength(1);
+  fake.failWrites(false);
+  act(() => { window.dispatchEvent(new Event('visibilitychange')); });
+  await waitFor(() => expect(fake.posts()).toHaveLength(2));
+  await screen.findByText('t: read');
+  expect(fake.stored('track', 't')).toMatchObject({ readThroughMs: 150, manualUnread: false });
 });

@@ -13,7 +13,7 @@ import { createRecoveryTransports } from '../../systems/recovery/transport.ts';
 import { RecoveryGate } from '../auth/recovery-gate.tsx';
 import { Sidebar } from '../shell/sidebar.tsx';
 import { WEB_COMPAT_VERSION } from './public.tsx';
-import { ReadReceiptsProvider, useReadReceipt, useReadReceipts } from './read-receipts.tsx';
+import { ReadReceiptsProvider, useReadReceipt, useReadReceipts, type ReadReceipts } from './read-receipts.tsx';
 import { createReadReceiptsKernel, type ReadReceiptsKernel } from './read-receipts-fixture.tsx';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
@@ -112,4 +112,27 @@ it('says a mark unread refused during recovery like any other write, and changes
   expect(kernel.posts()).toEqual([]);
   // Nothing flipped: no row of the track reads unread.
   expect(screen.getAllByRole('button', { name: /^Track Task/ }).every((row) => row.getAttribute('aria-describedby') === null)).toBe(true);
+});
+
+it('keeps a manual unread of the open target across a bundled event-stream reconnect', async () => {
+  const kernel = createReadReceiptsKernel({ baselineMs: 100 });
+  let receipts!: ReadReceipts;
+  function OpenWithActions() { receipts = useReadReceipts(); return <Open at={150} />; }
+  const app = bundled(kernel, <OpenWithActions />);
+  await app.connect();
+  await waitFor(() => expect(kernel.stored('track', 't')?.readThroughMs).toBe(150));
+  await screen.findByText('t: read');
+  await act(async () => { await receipts.markUnread('track', 't'); });
+  await waitFor(() => expect(kernel.stored('track', 't')?.manualUnread).toBe(true));
+  const reads = kernel.posts().filter((request) => request.path.endsWith('/read')).length;
+  // The event stream drops and comes back: the session resyncs, then is connected again.
+  act(() => app.access.invalidate('syncing'));
+  act(() => app.access.change('connected'));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  // And a later receipts read: every flush trigger finds nothing owed for the target.
+  act(() => { window.dispatchEvent(new Event('visibilitychange')); });
+  await waitFor(() => expect(kernel.requests.at(-1)?.method).toBe('GET'));
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(kernel.stored('track', 't')?.manualUnread).toBe(true);
+  expect(kernel.posts().filter((request) => request.path.endsWith('/read'))).toHaveLength(reads);
 });

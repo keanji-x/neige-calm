@@ -14,11 +14,12 @@ const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 
  * everything has been read. `writeDelayMs` holds each write's answer. `holdReads` makes reads answer what
  * was stored when they arrived, only once released; `holdWrites` keeps each write uncommitted until released.
  */
-export function createReadReceiptsKernel({ baselineMs = Number.MAX_SAFE_INTEGER, receipts = [], fail = false, writeDelayMs = 0 }: Readonly<{
+export function createReadReceiptsKernel({ baselineMs = Number.MAX_SAFE_INTEGER, receipts = [], fail: failing = false, writeDelayMs = 0 }: Readonly<{
   baselineMs?: number; receipts?: readonly ReadReceipt[]; fail?: boolean; writeDelayMs?: number;
 }> = {}) {
   const stored = new Map<string, ReadReceipt>(receipts.map((receipt) => [`${receipt.kind}:${receipt.targetId}`, receipt]));
   const requests: ApiRequest[] = [];
+  let fail = failing;
   let readGate: Promise<void> | null = null;
   let holdingWrites = false;
   const writeGates: Array<() => void> = [];
@@ -48,6 +49,8 @@ export function createReadReceiptsKernel({ baselineMs = Number.MAX_SAFE_INTEGER,
   } };
   return {
     reply, transport, requests,
+    /** From now on every write answers 500 (`true`) or is stored (`false`). */
+    failWrites(value: boolean) { fail = value; },
     /** Holds every read from now on; the returned function releases them and stops holding. */
     holdReads(): () => void {
       let release!: () => void;
