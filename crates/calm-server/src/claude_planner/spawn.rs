@@ -119,6 +119,14 @@ pub enum SessionStart {
     Resume,
 }
 
+/// What a turn spawn's one user line is: the person's prompt, or `/compact` (a manual context
+/// compaction). Only a compaction may run the CLI's commands, `/compact` among them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpawnPurpose {
+    Turn,
+    Compaction,
+}
+
 /// The stream-json print mode every `claude -p` this module starts runs in.
 const PRINT_MODE: [&str; 6] = [
     "-p",
@@ -171,10 +179,13 @@ pub(crate) fn truncation_check_argv(thread: Uuid, truncation: &ResumeTruncation)
 /// judges the model and refuses one it cannot run. `None` passes the flag not at all, so the CLI
 /// runs its default. `truncation` rides right after `--resume <thread>`; a new session has nothing
 /// to cut. `mode` is the card's permission mode, read at this spawn (#2348); every mode loads the
-/// project setting source, which is also where `CLAUDE.md` and `AGENTS.md` come from.
+/// project setting source, which is also where `CLAUDE.md` and `AGENTS.md` come from. A turn runs
+/// with `--disable-slash-commands`; a compaction runs without it, since the flag disables every
+/// command, built-in `/compact` included.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn argv(
     thread: Uuid,
+    purpose: SpawnPurpose,
     start: SessionStart,
     truncation: Option<&ResumeTruncation>,
     selection: &TurnModelSelection,
@@ -207,14 +218,12 @@ pub(crate) fn argv(
     if let Some(effort) = &selection.effort {
         args.push(format!("--effort={effort}").into());
     }
-    for arg in [
-        "--setting-sources",
-        "project",
-        "--disable-slash-commands",
-        "--tools",
-        TOOLS,
-        "--strict-mcp-config",
-    ] {
+    args.push("--setting-sources".into());
+    args.push("project".into());
+    if purpose == SpawnPurpose::Turn {
+        args.push("--disable-slash-commands".into());
+    }
+    for arg in ["--tools", TOOLS, "--strict-mcp-config"] {
         args.push(arg.into());
     }
     args.push("--mcp-config".into());

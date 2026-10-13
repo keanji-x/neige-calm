@@ -195,6 +195,7 @@ fn every_line_of_every_recorded_fixture_decodes() {
 fn variant(record: &Record) -> &'static str {
     match record {
         Record::SystemInit(_) => "SystemInit",
+        Record::CompactBoundary => "CompactBoundary",
         Record::UserReplay { .. } => "UserReplay",
         Record::UserText { .. } => "UserText",
         Record::UserToolResults { .. } => "UserToolResults",

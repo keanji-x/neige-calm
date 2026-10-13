@@ -8,7 +8,9 @@ use uuid::Uuid;
 use crate::planner_model::TurnModelSelection;
 use crate::planner_permission_mode::PlannerPermissionMode;
 
-use super::spawn::{EnvInputs, SessionStart, argv, base_env, passthrough_keys, settings_json};
+use super::spawn::{
+    EnvInputs, SessionStart, SpawnPurpose, argv, base_env, passthrough_keys, settings_json,
+};
 
 const THREAD: &str = "5d0b2694-9ccc-4543-ab84-611aa4287dbe";
 
@@ -26,8 +28,19 @@ fn args_in(
     selection: &TurnModelSelection,
     cwd: &str,
 ) -> Vec<String> {
+    args_for(SpawnPurpose::Turn, mode, start, selection, cwd)
+}
+
+fn args_for(
+    purpose: SpawnPurpose,
+    mode: PlannerPermissionMode,
+    start: SessionStart,
+    selection: &TurnModelSelection,
+    cwd: &str,
+) -> Vec<String> {
     argv(
         Uuid::parse_str(THREAD).unwrap(),
+        purpose,
         start,
         None,
         selection,
@@ -91,6 +104,39 @@ fn argv_is_exactly_the_spawn_contract() {
             "{flag} must not be passed"
         );
     }
+}
+
+/// A compaction spawn is a turn spawn that may run `/compact`: the same argv without
+/// `--disable-slash-commands`, which disables every command, built-in ones included.
+#[test]
+fn a_compaction_spawn_is_the_turn_argv_without_disable_slash_commands() {
+    let selection = TurnModelSelection {
+        model: Some("opus[1m]".into()),
+        effort: Some("high".into()),
+    };
+    let turn = args_in(
+        PlannerPermissionMode::Never,
+        SessionStart::Resume,
+        &selection,
+        "/ws/track",
+    );
+    let mut expected = turn.clone();
+    expected.retain(|arg| arg != "--disable-slash-commands");
+    assert_eq!(
+        expected.len() + 1,
+        turn.len(),
+        "premise: a turn disables them"
+    );
+    assert_eq!(
+        args_for(
+            SpawnPurpose::Compaction,
+            PlannerPermissionMode::Never,
+            SessionStart::Resume,
+            &selection,
+            "/ws/track",
+        ),
+        expected
+    );
 }
 
 /// #1810, #1822: a chosen model rides verbatim as the one token `--model=<value>` right after the
@@ -333,6 +379,7 @@ fn a_workspace_that_would_split_a_rule_is_refused() {
     {
         let result = argv(
             Uuid::parse_str(THREAD).unwrap(),
+            SpawnPurpose::Turn,
             SessionStart::New,
             None,
             &TurnModelSelection::inherit(),

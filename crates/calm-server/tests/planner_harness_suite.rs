@@ -6,6 +6,8 @@ mod claude_planner_approvals;
 mod claude_planner_availability;
 #[path = "cases/claude_planner_catalog.rs"]
 mod claude_planner_catalog;
+#[path = "cases/claude_planner_compact.rs"]
+mod claude_planner_compact;
 #[path = "cases/claude_planner_create_retry.rs"]
 mod claude_planner_create_retry;
 #[path = "cases/claude_planner_credentials.rs"]

@@ -265,6 +265,7 @@ impl TurnTranslator {
                 .into_iter()
                 .collect(),
             Record::UserReplay { .. }
+            | Record::CompactBoundary
             | Record::UserText { .. }
             | Record::ControlResponseIn { .. }
             | Record::ControlRequestIn { .. }

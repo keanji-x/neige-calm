@@ -8,6 +8,7 @@
 #        auth (optional; the `auth status --json` answer, default logged-in),
 #        catalog (optional; the `initialize` answer, default ok)
 #   in (#1923): check (optional; a rewind dry run's refusal reason)
+#   scenarios `compact`, `compact-no-boundary`: a manual compaction's `/compact` spawn
 #   out: spawns, pid, argv, env, pwd, stdin, instructions, orphan, emitted, streamed, mcp_reply,
 #        checks, check-argv,
 #        auth-pid, auth-env, auth-calls, init-calls, init-pid, init-argv, init-env, init-cwd,
@@ -118,9 +119,14 @@ pwd > "$D/pwd"
 SID=""
 PF=""
 MODEL=""
+# The pinned CLI lists no command and no skill under `--disable-slash-commands`, and its built-in
+# `compact` plus the bundled skills without it (recorded in the provider's stream fixtures).
+COMMANDS='["compact","context"]'
+SKILLS='["dataviz"]'
 while [ $# -gt 0 ]; do
   case "$1" in
     --session-id|--resume) SID="$2"; shift ;;
+    --disable-slash-commands) COMMANDS='[]'; SKILLS='[]' ;;
     --append-system-prompt-file) PF="$2"; shift ;;
     --model=*) MODEL="${1#--model=}" ;;
   esac
@@ -147,10 +153,10 @@ fi
 
 INIT='{"type":"system","subtype":"init","session_id":"%s","claude_code_version":"2.1.280",'
 INIT+='"model":"claude-haiku-4-5","capabilities":["interrupt_receipt_v1"],'
-SKILLS='[]'
 # A skill fails the init check after the CLI has already named (and created) the session.
 if [ "$SCENARIO" = "bad-init" ]; then SKILLS='["dataviz"]'; fi
-INIT+='"mcp_servers":[{"name":"neige","status":"connected"}],"skills":'"$SKILLS"','
+INIT+='"mcp_servers":[{"name":"neige","status":"connected"}],"slash_commands":'"$COMMANDS"','
+INIT+='"skills":'"$SKILLS"','
 INIT+='"plugins":[{"name":"telemetry","source":"telemetry@builtin"}]}\n'
 # `slow-bind` names the session a second late and then works for seven more seconds, so a test
 # can hold the database across the bind of `agent_session_id` and release it before the result.
@@ -336,6 +342,19 @@ PY
       fi
       echo "$SUCCESS"
     fi
+    cat > /dev/null
+    exit 0 ;;
+  compact|compact-no-boundary)
+    # A manual compaction: the one line must be `/compact`; the CLI answers with its boundary
+    # (left out by `compact-no-boundary`), its own command output, and a result without usage.
+    [ "$(jq -c '.message.content' <<< "$LINE")" = '[{"type":"text","text":"/compact"}]' ] || {
+      echo "fake claude: expected the /compact line" >&2; exit 7; }
+    echo '{"type":"system","subtype":"status","status":"compacting","session_id":"'"$SID"'"}'
+    if [ "$SCENARIO" = compact ]; then
+      echo '{"type":"system","subtype":"compact_boundary","session_id":"'"$SID"'","uuid":"'"$(cat /proc/sys/kernel/random/uuid)"'","compact_metadata":{"trigger":"manual","pre_tokens":1234}}'
+    fi
+    echo '{"type":"user","uuid":"'"$(cat /proc/sys/kernel/random/uuid)"'","message":{"role":"user","content":"<local-command-stdout>Compacted </local-command-stdout>"}}'
+    echo '{"type":"result","subtype":"success","is_error":false,"result":"","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"iterations":[]},"modelUsage":{},"terminal_reason":"completed"}'
     cat > /dev/null
     exit 0 ;;
   interrupt-result-line)

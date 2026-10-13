@@ -54,7 +54,7 @@ pub(super) async fn handle_compact(inner: &Arc<Inner>) -> Result<()> {
             });
         }
     }
-    match inner.backend.compact_start(&thread).await {
+    match inner.backend.compact_start(&thread, inner.as_ref()).await {
         Ok(()) => Ok(()),
         Err(error) => {
             *inner.state.lock().await = if matches!(

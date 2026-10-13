@@ -2,10 +2,12 @@
 
 use uuid::Uuid;
 
+use super::compact::{NO_BOUNDARY, result_event};
 use super::driver::{TerminalEvent, decide, init_check};
+use super::spawn::SpawnPurpose;
 use crate::claude_planner::protocol::{McpStatus, PluginRef, SystemInit};
-use crate::claude_planner::session::TerminalCause;
 use crate::claude_planner::translate::TurnOutcome;
+use crate::claude_planner::turn_slot::TerminalCause;
 
 fn success(is_error: bool) -> TerminalEvent {
     TerminalEvent::ResultSuccess {
@@ -75,6 +77,7 @@ fn init(thread: Uuid) -> SystemInit {
             name: "neige".into(),
             status: "connected".into(),
         }],
+        slash_commands: vec![],
         skills: vec![],
         plugins: vec![PluginRef {
             name: "telemetry".into(),
@@ -89,7 +92,10 @@ type Deviate = fn(&mut SystemInit);
 #[test]
 fn every_init_check_refuses_its_own_deviation() {
     let thread = Uuid::new_v4();
-    assert_eq!(init_check(&init(thread), thread, "2.1.280"), Ok(()));
+    assert_eq!(
+        init_check(&init(thread), thread, "2.1.280", SpawnPurpose::Turn),
+        Ok(())
+    );
     let deviations: Vec<(&str, Deviate)> = vec![
         ("version", |i| i.claude_code_version = "2.1.281".into()),
         ("session", |i| i.session_id = Uuid::new_v4()),
@@ -101,7 +107,72 @@ fn every_init_check_refuses_its_own_deviation() {
     for (name, deviate) in deviations {
         let mut record = init(thread);
         deviate(&mut record);
-        assert!(init_check(&record, thread, "2.1.280").is_err(), "{name}");
+        assert!(
+            init_check(&record, thread, "2.1.280", SpawnPurpose::Turn).is_err(),
+            "{name}"
+        );
+    }
+}
+
+/// A compaction runs with the CLI's commands, so its skills load with them: in place of the turn's
+/// no-skills check it needs `compact` listed, and every other check still holds.
+#[test]
+fn a_compaction_init_needs_the_compact_command_in_place_of_no_skills() {
+    let thread = Uuid::new_v4();
+    let check = |deviate: Deviate| {
+        let mut record = init(thread);
+        record.slash_commands = vec!["context".into(), "compact".into()];
+        record.skills = vec!["dataviz".into()];
+        deviate(&mut record);
+        init_check(&record, thread, "2.1.280", SpawnPurpose::Compaction)
+    };
+    assert_eq!(check(|_| {}), Ok(()));
+    assert_eq!(
+        check(|i| i.slash_commands.retain(|c| c != "compact")),
+        Err("claude lists no /compact command".into())
+    );
+    let deviations: Vec<(&str, Deviate)> = vec![
+        ("version", |i| i.claude_code_version = "2.1.281".into()),
+        ("session", |i| i.session_id = Uuid::new_v4()),
+        ("capability", |i| i.capabilities.clear()),
+        ("neige", |i| i.mcp_servers[0].status = "failed".into()),
+        ("plugin", |i| i.plugins[0].source = "x@market".into()),
+    ];
+    for (name, deviate) in deviations {
+        assert!(check(deviate).is_err(), "{name}");
+    }
+    let mut turn = init(thread);
+    turn.slash_commands = vec!["compact".into()];
+    turn.skills = vec!["dataviz".into()];
+    assert!(
+        init_check(&turn, thread, "2.1.280", SpawnPurpose::Turn).is_err(),
+        "a turn still refuses skills"
+    );
+}
+
+/// `/compact` that answered without a boundary did not compact: its success fails the compaction,
+/// and every other ending is decided as a turn's is.
+#[test]
+fn a_compaction_success_counts_only_after_its_boundary() {
+    let ok = success(false);
+    assert_eq!(result_event(ok.clone(), true), ok);
+    assert_eq!(
+        decide(None, &result_event(ok.clone(), false)),
+        failed(NO_BOUNDARY)
+    );
+    assert_eq!(
+        decide(
+            Some(&TerminalCause::Interrupted),
+            &result_event(ok.clone(), false)
+        ),
+        TurnOutcome::Interrupted
+    );
+    for other in [
+        success(true),
+        TerminalEvent::ResultError { errors: vec![] },
+        TerminalEvent::Stopped,
+    ] {
+        assert_eq!(result_event(other.clone(), false), other);
     }
 }
 

@@ -329,11 +329,32 @@ impl PlannerBackend {
         }
     }
 
-    pub async fn compact_start(&self, thread_id: &str) -> Result<()> {
+    /// A manual context compaction. Codex compacts its thread; a Claude Planner spawns `/compact`
+    /// on the card's model, read from `source` as a turn's is. A refusal is a `BadRequest`, which
+    /// leaves the conversation as it was.
+    pub(crate) async fn compact_start(
+        &self,
+        thread_id: &str,
+        source: &impl SelectionSource,
+    ) -> Result<()> {
         match &self.0 {
             Arm::Codex(daemon, _) => daemon.thread_compact_start(thread_id).await,
-            Arm::Claude(_) | Arm::Acp(_) => Err(CalmError::BadRequest(
-                "Manual context compaction is available for Codex conversations.".into(),
+            Arm::Claude(session) => {
+                let selection = self.resolve_selection(source).await.map_err(|refusal| {
+                    CalmError::BadRequest(if refusal.reader.is_empty() {
+                        refusal.log
+                    } else {
+                        refusal.reader
+                    })
+                })?;
+                session
+                    .compact_start(thread_id, &selection)
+                    .await
+                    .map(drop)
+                    .map_err(crate::claude_planner::compact::submission_error)
+            }
+            Arm::Acp(_) => Err(CalmError::BadRequest(
+                "Manual context compaction is available for Codex and Claude conversations.".into(),
             )),
         }
     }

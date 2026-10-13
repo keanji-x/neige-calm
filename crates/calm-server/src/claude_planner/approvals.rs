@@ -14,7 +14,7 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 
 use super::protocol::ControlResponseOut;
-use super::session::TurnSlot;
+use super::turn_slot::TurnSlot;
 use crate::event::AskQuestion;
 use crate::harness::held_requests::{
     ConnectionId, HeldRequestMessage, HeldRequestSender, HeldResponder, RequestKey,

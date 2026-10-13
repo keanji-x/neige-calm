@@ -34,6 +34,10 @@ pub enum ProtocolError {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Record {
     SystemInit(SystemInit),
+    /// `system/compact_boundary`: the CLI compacted the session's context, whether a `/compact`
+    /// line asked for it or the CLI compacted on its own. The Agent SDK documents the record, not
+    /// its metadata, so none is read.
+    CompactBoundary,
     /// The CLI's echo of a line we wrote (`isReplay: true`), carrying the line's `uuid`.
     UserReplay {
         uuid: Uuid,
@@ -83,6 +87,8 @@ pub struct SystemInit {
     pub model: String,
     pub capabilities: Vec<String>,
     pub mcp_servers: Vec<McpStatus>,
+    /// The commands a user line may run; empty under `--disable-slash-commands`.
+    pub slash_commands: Vec<String>,
     pub skills: Vec<String>,
     pub plugins: Vec<PluginRef>,
 }
@@ -315,6 +321,7 @@ pub fn decode(line: &str) -> Result<Record, ProtocolError> {
         .map(str::to_string);
     match (kind.as_str(), subtype.as_deref()) {
         ("system", Some("init")) => Ok(Record::SystemInit(shape("system/init", value)?)),
+        ("system", Some("compact_boundary")) => Ok(Record::CompactBoundary),
         ("system", Some(other)) => Ok(Record::Ignored {
             kind: format!("system/{other}"),
         }),
@@ -637,7 +644,22 @@ impl Base64Image {
     }
 }
 
+/// The built-in command whose user line compacts the session's context (Agent SDK: `/compact` is
+/// an ordinary input); the CLI answers it with a `system/compact_boundary` before its result.
+pub const COMPACT_COMMAND: &str = "compact";
+
 impl UserLine {
+    /// The one line of a compaction spawn: `/compact` as its only text block.
+    pub fn compact(session_id: Uuid, uuid: Uuid) -> Self {
+        Self::new(
+            session_id,
+            uuid,
+            vec![UserLineContent::Text {
+                text: format!("/{COMPACT_COMMAND}"),
+            }],
+        )
+    }
+
     pub fn new(session_id: Uuid, uuid: Uuid, content: Vec<UserLineContent>) -> Self {
         Self {
             kind: "user",

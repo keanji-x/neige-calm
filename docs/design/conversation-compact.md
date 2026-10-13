@@ -15,3 +15,13 @@ Owner change request: core/api adds `compacting` to its runtime phase schema and
 Review repair: maintenance Item and PlanUpdated events are excluded from conversational transcript by the owning harness lifecycle, so compaction does not create a foreign-turn suffix that prevents editing the latest user message. The REST regression runs existing real send/echo/completion paths, compaction with an actual maintenance item, then replacement. It reproduced 409 before the fix. No provider item-type or application identity is special-cased.
 
 Issue: #2301. Rebased assembly uses app/conversations/store and the committed callback contract introduced on main; Planner route admission consumes planner_cards and typed extractors.
+
+## Claude Planner
+
+`PlannerBackend::compact_start` spawns one `claude -p --resume <thread>` through the Claude session's turn path (seal checks, `--version`, marker `stop`, instructions file, settlement) on the card's model and under `never`. Its single user line is `/compact`: the Agent SDK documents slash commands as ordinary inputs and `system/compact_boundary` as the record a compaction emits. The CLI reference says `--disable-slash-commands` disables all skills and commands, and the recorded 2.1.280 init lists no command under it, so only the compaction spawn omits the flag. Its init check requires `compact` in `slash_commands` in place of the turn's no-skills check; the Skill tool stays off through `--tools`.
+
+The spawn emits only `TurnStarted` and `TurnCompleted` for its minted turn id, so the harness's `Compacting` → `CompactionRunning` → `TurnCompleted` handling is unchanged. It forwards no item, delta or usage reading and stores no outcome row, so it is neither a transcript turn nor a rewind anchor, and `last_turn_id` stays the person's turn. A success result counts only after a `compact_boundary`; otherwise the compaction fails and the harness wedges, as for Codex. A refusal made before any spawn (no session yet, unpinned CLI, unresolvable model) is a `BadRequest`, which restores the previous phase.
+
+A later turn resumes the compacted session as usual. A rewind still cuts at the last record of the person's turn before the removed one. When a compaction lies between them, that anchor precedes the boundary, so an accepted cut restores the uncompacted history up to the anchor, which still matches the transcript. The existing dry run (`--resume-session-at` / `--resume-drops-turn`) lets the CLI judge that cut first; a refusal is a 409 and changes nothing.
+
+The web composer still offers `/compact` only when `scopeProvider === 'codex'` (`fe/web/src/app/router/public.tsx`); exposing it for Claude is a separate frontend change.

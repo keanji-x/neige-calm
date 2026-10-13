@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use super::protocol::decode;
 use super::rewind::{anchor, truncation};
-use super::spawn::{ResumeTruncation, SessionStart, argv, truncation_check_argv};
+use super::spawn::{ResumeTruncation, SessionStart, SpawnPurpose, argv, truncation_check_argv};
 use super::translate::{ToolNames, TurnContext, TurnOutcome, TurnTranslator};
 use crate::db::TranscriptRow;
 use crate::harness::planner_event::PlannerEventKind;
@@ -235,6 +235,7 @@ fn the_dry_run_and_the_next_spawn_carry_the_cut() {
     let spawn = |start, cut: Option<&ResumeTruncation>| {
         argv(
             thread,
+            SpawnPurpose::Turn,
             start,
             cut,
             &TurnModelSelection::inherit(),

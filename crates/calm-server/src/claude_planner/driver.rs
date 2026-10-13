@@ -13,12 +13,11 @@ use uuid::Uuid;
 
 use super::approvals::{Approvals, NO_APPROVAL_SURFACE, write_response};
 use super::protocol::{ControlResponseOut, ControlResponseOutBody, Record, SystemInit, decode};
-use super::session::{
-    FinishedTurn, Shared, TerminalCause, TurnSlot, WRITE_TIMEOUT, deadline_reached,
-};
-use super::spawn::InstructionsFile;
+use super::session::{FinishedTurn, Shared};
+use super::spawn::{InstructionsFile, SpawnPurpose};
 use super::stop::{STOP_BOUND, stop_by};
 use super::translate::{TurnOutcome, TurnTranslator};
+use super::turn_slot::{TerminalCause, TurnSlot, WRITE_TIMEOUT, deadline_reached};
 use crate::error::CalmError;
 use crate::harness::planner_event::{PlannerEvent, PlannerEventKind};
 use crate::mcp_server::wiring::MCP_SERVER_KEY;
@@ -46,6 +45,8 @@ pub(crate) struct TurnRun {
     pub(crate) translator: TurnTranslator,
     pub(crate) instructions: InstructionsFile,
     pub(crate) thread: Uuid,
+    /// A compaction forwards only its start and completion and records no outcome (`compact`).
+    pub(crate) purpose: SpawnPurpose,
     /// The row's `agent_session_id` is not persisted yet: the first init naming the thread binds
     /// it (a `--session-id` spawn, or a `--resume` spawn after a bind that failed).
     pub(crate) bind: bool,
@@ -118,8 +119,14 @@ pub(crate) fn decide(cause: Option<&TerminalCause>, event: &TerminalEvent) -> Tu
     }
 }
 
-/// The init checks of every spawn (§5.2), the second line of defence after `--version`.
-pub(crate) fn init_check(init: &SystemInit, thread: Uuid, version: &str) -> Result<(), String> {
+/// The init checks of every spawn (§5.2), the second line of defence after `--version`; a
+/// compaction makes its own command check in place of the no-skills one.
+pub(crate) fn init_check(
+    init: &SystemInit,
+    thread: Uuid,
+    version: &str,
+    purpose: SpawnPurpose,
+) -> Result<(), String> {
     if init.claude_code_version != version {
         return Err(format!(
             "claude reports version {}, the config pins {version}",
@@ -146,8 +153,12 @@ pub(crate) fn init_check(init: &SystemInit, thread: Uuid, version: &str) -> Resu
     {
         return Err("the neige MCP server is not connected".into());
     }
-    if !init.skills.is_empty() {
-        return Err(format!("claude loaded skills {:?}", init.skills));
+    match purpose {
+        SpawnPurpose::Turn if !init.skills.is_empty() => {
+            return Err(format!("claude loaded skills {:?}", init.skills));
+        }
+        SpawnPurpose::Turn => {}
+        SpawnPurpose::Compaction => super::compact::init_check(init)?,
     }
     if let Some(plugin) = init
         .plugins
@@ -181,6 +192,7 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) {
         mut translator,
         instructions,
         thread,
+        purpose,
         bind,
         version,
         approvals,
@@ -196,9 +208,11 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) {
         answering: true,
         translator: &mut translator,
         thread,
+        purpose,
         bind,
         version: &version,
         approvals: &approvals,
+        compacted: false,
         bound: false,
         row_bound: false,
         total_tokens: None,
@@ -235,6 +249,12 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) {
             }
         }
     };
+    let ending = match (purpose, ending) {
+        (SpawnPurpose::Compaction, Ending::Result(event)) => {
+            Ending::Result(super::compact::result_event(event, reading.compacted))
+        }
+        (_, ending) => ending,
+    };
     let finished = FinishedTurn {
         named_session: reading.bound,
         row_bound: reading.row_bound,
@@ -248,6 +268,7 @@ pub(crate) async fn drive(shared: Arc<Shared>, run: TurnRun) {
             translator,
             instructions,
             thread,
+            purpose,
             finished,
             stderr_tail,
         },
@@ -269,10 +290,13 @@ struct Reading<'a> {
     answering: bool,
     translator: &'a mut TurnTranslator,
     thread: Uuid,
+    purpose: SpawnPurpose,
     /// See [`TurnRun::bind`].
     bind: bool,
     version: &'a str,
     approvals: &'a Approvals,
+    /// A `system/compact_boundary` was read.
+    compacted: bool,
     /// A `system/init` named this thread's session.
     bound: bool,
     /// The bind of `agent_session_id` was persisted during this turn.
@@ -306,12 +330,13 @@ impl Reading<'_> {
                     }
                     self.bound = true;
                 }
-                if let Err(check) = init_check(init, self.thread, self.version) {
+                if let Err(check) = init_check(init, self.thread, self.version, self.purpose) {
                     self.slot
                         .record(TerminalCause::Failed(format!("check: {check}")));
                     return Some(Ending::Stopped);
                 }
             }
+            Record::CompactBoundary => self.compacted = true,
             Record::Ignored { kind } => {
                 tracing::debug!(kind, "claude planner: ignored stream record");
             }
@@ -338,7 +363,9 @@ impl Reading<'_> {
             .translate_line(line, &record, crate::model::now_ms())
         {
             self.total_tokens = usage_total(&event).or(self.total_tokens);
-            let _ = self.shared.events.send(event);
+            if self.purpose == SpawnPurpose::Turn {
+                let _ = self.shared.events.send(event);
+            }
         }
         match record {
             Record::ResultSuccess(success) => Some(Ending::Result(TerminalEvent::ResultSuccess {
@@ -513,12 +540,14 @@ struct SettleInput {
     translator: TurnTranslator,
     instructions: InstructionsFile,
     thread: Uuid,
+    purpose: SpawnPurpose,
     finished: FinishedTurn,
     stderr_tail: Arc<Mutex<String>>,
 }
 
 /// record → close stdin → bounded wait for the direct child (not on the stop path) → `stop` →
-/// remove the instructions file → close open items → `TurnCompleted`.
+/// remove the instructions file → close open items → `TurnCompleted`. A compaction records no
+/// outcome and closes no items: it is no turn of the transcript.
 /// Every await here is bounded by its own timeout and, once a stop is armed, by the slot's
 /// `settle_by`, so `TurnCompleted` goes out by then whatever the CLI does. A bound that passes
 /// is logged and settlement moves on: an unrecorded outcome is left to boot recovery, and a stop
@@ -530,6 +559,7 @@ async fn settle(shared: &Shared, input: SettleInput, ending: Ending) {
         mut translator,
         instructions,
         thread,
+        purpose,
         finished,
         stderr_tail,
     } = input;
@@ -564,33 +594,8 @@ async fn settle(shared: &Shared, input: SettleInput, ending: Ending) {
         unreachable!("turn_completed builds TurnCompleted");
     };
     let turn_id = turn["id"].as_str().unwrap_or_default().to_string();
-    let recorded = slot
-        .bounded(
-            RECORD_TIMEOUT,
-            crate::harness::turn_outcome::record(
-                params.repo.as_ref(),
-                &params.worker_session_id,
-                &params.card_id,
-                &params.track_id,
-                &thread.to_string(),
-                &turn_id,
-                turn,
-            ),
-        )
-        .await;
-    match recorded {
-        Some(Ok(_)) => {}
-        Some(Err(error)) => tracing::warn!(
-            worker_session_id = %params.worker_session_id,
-            turn_id,
-            %error,
-            "claude planner: turn outcome not recorded"
-        ),
-        None => tracing::warn!(
-            worker_session_id = %params.worker_session_id,
-            turn_id,
-            "claude planner: turn outcome not recorded by its bound; boot recovery records it"
-        ),
+    if purpose == SpawnPurpose::Turn {
+        record_outcome(shared, &slot, &thread.to_string(), &turn_id, turn).await;
     }
     if let Some(mut stdin) = slot.bounded(WRITE_TIMEOUT, slot.stdin.lock()).await {
         stdin.take();
@@ -624,7 +629,10 @@ async fn settle(shared: &Shared, input: SettleInput, ending: Ending) {
     let _ = child.start_kill();
     let _ = slot.bounded(REAP_WAIT, child.wait()).await;
     drop(instructions);
-    let closes = translator.close_open(crate::model::now_ms());
+    let closes = match purpose {
+        SpawnPurpose::Turn => translator.close_open(crate::model::now_ms()),
+        SpawnPurpose::Compaction => Vec::new(),
+    };
     // Fixtures only; like the rest of settlement it runs after `stop`, but it is NOT bounded by
     // `settle_by`: a test holding it holds `TurnCompleted`.
     #[cfg(feature = "fixtures")]
@@ -642,4 +650,43 @@ async fn settle(shared: &Shared, input: SettleInput, ending: Ending) {
     }
     shared.finish_turn(finished, closes.into_iter().chain([completed]));
     slot.settled.send_replace(true);
+}
+
+/// Record the turn's outcome durably, bounded like every settlement await.
+async fn record_outcome(
+    shared: &Shared,
+    slot: &TurnSlot,
+    thread: &str,
+    turn_id: &str,
+    turn: &serde_json::Value,
+) {
+    let params = &shared.params;
+    let recorded = slot
+        .bounded(
+            RECORD_TIMEOUT,
+            crate::harness::turn_outcome::record(
+                params.repo.as_ref(),
+                &params.worker_session_id,
+                &params.card_id,
+                &params.track_id,
+                thread,
+                turn_id,
+                turn,
+            ),
+        )
+        .await;
+    match recorded {
+        Some(Ok(_)) => {}
+        Some(Err(error)) => tracing::warn!(
+            worker_session_id = %params.worker_session_id,
+            turn_id,
+            %error,
+            "claude planner: turn outcome not recorded"
+        ),
+        None => tracing::warn!(
+            worker_session_id = %params.worker_session_id,
+            turn_id,
+            "claude planner: turn outcome not recorded by its bound; boot recovery records it"
+        ),
+    }
 }
