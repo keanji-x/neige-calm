@@ -1386,7 +1386,6 @@ function TrackRouteBody({
         resolveSeries={resolveSeries}
         resolvePreview={resolvePreview}
         previewViewports={previewViewports}
-        files={reportFiles}
         taskVerdicts={verdicts}
         taskRows={tasks}
         renderTaskExecution={(task, expanded) => <TaskRecovery

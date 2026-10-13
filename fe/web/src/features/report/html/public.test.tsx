@@ -27,11 +27,12 @@ function htmlBlock(payload: Extract<ReportBlock, { kind: 'html' }>['payload']): 
   return { id: 'b-html', kind: 'html', payload };
 }
 
-/** Through the document, the block's one production entry. */
+/** Through the document, the block's one production entry; the Track file port arrives on `linkPreview`, as for prose images. */
 function renderBlock(payload: Extract<ReportBlock, { kind: 'html' }>['payload'], port?: WorkspaceFilePort,
   onOpenFileLink?: (target: { path: string }) => void) {
-  return render(<ReportDocument report={{ summary: '', body: '', blocks: [htmlBlock(payload)] }} empty={null}
-    files={port} onOpenFileLink={onOpenFileLink} />);
+  const report = { summary: '', body: '', blocks: [htmlBlock(payload)] };
+  return render(<ReportDocument report={report} empty={null}
+    linkPreview={port === undefined ? undefined : { files: port, trackId: 't1', report }} onOpenFileLink={onOpenFileLink} />);
 }
 
 describe('ReportHtmlBlock', () => {
@@ -86,7 +87,7 @@ describe('ReportHtmlBlock', () => {
     expect(container.querySelector('figcaption')?.textContent).toContain('Architecture');
   });
 
-  it('says the view carries no workspace when it has no file port', () => {
+  it('says the view carries no workspace and mounts no frame without linkPreview', () => {
     const { container } = renderBlock({ path: PATH });
     expect(screen.getByRole('note').textContent).toBe('This view does not carry workspace files.');
     expect(container.querySelector('iframe')).toBeNull();

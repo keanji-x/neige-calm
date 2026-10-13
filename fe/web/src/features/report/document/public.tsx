@@ -16,7 +16,6 @@ import {
   type ReportFileLinkTarget,
 } from '../../../../../core/domain/report-file.ts';
 import type { SeriesResolution } from '../../../../../core/domain/report-series.ts';
-import type { WorkspaceFilePort } from '../../../../../core/domain/fs.ts';
 import { type ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
 import { type ReportLinkPreviewResources } from '../link-preview/public.tsx';
 import { ReportDetails } from './details.tsx';
@@ -70,14 +69,12 @@ export type ReportDocumentProps = Readonly<{
   resolvePreview?: (key: string) => PreviewResolution;
   /** Where preview blocks remember the reader's device choice, by block key (the app scopes it per track). Absent ⇒ not remembered. */
   previewViewports?: PreviewViewportStore;
-  /** The Track workspace an `html` block's page is read from. Absent ⇒ html blocks say the view carries no workspace. */
-  files?: WorkspaceFilePort;
 }>;
 
 /** Agent-authored destinations become admitted preview controls. Navigation stays behind typed callbacks or explicit external activation. */
 export function ReportDocument({
   report, empty, rail, byline, backlinkCounts, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, linkPreview,
-  resolveOverlay, resolveSeries, resolvePreview, previewViewports, files,
+  resolveOverlay, resolveSeries, resolvePreview, previewViewports,
   arrivalAnchorId, taskVerdicts, taskRows, renderTaskExecution,
 }: ReportDocumentProps) {
   const compactViewport = useCompactViewport();
@@ -138,7 +135,6 @@ export function ReportDocument({
                   resolveSeries={resolveSeries}
                   resolvePreview={resolvePreview}
                   previewViewports={previewViewports}
-                  files={files}
                 />
               ))}
               {processBlocks.length > 0 && (
@@ -200,7 +196,7 @@ function ReportReference({ blocks, backlinkCounts, tasks, renderTaskExecution, .
 /** One block, plus the sidenote that belongs to it. */
 function BlockSlot({
   block, backlinks, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, linkPreview, referenceRepository, resolveOverlay, resolveSeries,
-  resolvePreview, previewViewports, files,
+  resolvePreview, previewViewports,
 }: {
   referenceRepository: ReferenceRepository | null;
   block: ReportBlock;
@@ -215,7 +211,6 @@ function BlockSlot({
   resolveSeries?: ReportDocumentProps['resolveSeries'];
   resolvePreview?: ReportDocumentProps['resolvePreview'];
   previewViewports?: PreviewViewportStore;
-  files?: WorkspaceFilePort;
 }) {
   return (
     <div className={styles.row}>
@@ -235,7 +230,7 @@ function BlockSlot({
               onOpenFileLink={onOpenFileLink} fileRoot={fileRoot} fileBasePath={fileBasePath}
               onOpenSourceLink={onOpenSourceLink} linkPreview={linkPreview}
               resolveOverlay={resolveOverlay} resolveSeries={resolveSeries} resolvePreview={resolvePreview}
-              previewViewports={previewViewports} files={files} />}
+              previewViewports={previewViewports} />}
       </div>
       {backlinks > 0 && (
         <span className={styles.sidenote} title={`${backlinks} report${backlinks === 1 ? '' : 's'} cite this block`}>
@@ -248,7 +243,7 @@ function BlockSlot({
 
 /** One bad block may not cost the page: an unknown kind or an unparsable payload degrades to one line. */
 function BlockBody({
-  block, task, renderTaskExecution, referenceRepository, onOpenLink, onOpenFileLink, fileRoot, fileBasePath, onOpenSourceLink, linkPreview, resolveOverlay, resolveSeries, resolvePreview, previewViewports, files,
+  block, task, renderTaskExecution, referenceRepository, onOpenLink, onOpenFileLink, fileRoot, fileBasePath, onOpenSourceLink, linkPreview, resolveOverlay, resolveSeries, resolvePreview, previewViewports,
 }: {
   referenceRepository: ReferenceRepository | null;
   onOpenLink?: (target: ReportLinkTarget) => void;
@@ -263,7 +258,6 @@ function BlockBody({
   resolveSeries?: ReportDocumentProps['resolveSeries'];
   resolvePreview?: ReportDocumentProps['resolvePreview'];
   previewViewports?: PreviewViewportStore;
-  files?: WorkspaceFilePort;
 }): ReactNode {
   const textContext = { referenceRepository, onOpenLink, onOpenFileLink, onOpenSourceLink, fileRoot, fileBasePath, linkPreview };
   const renderText = (text: string) => <PlainReportText text={text} context={textContext} />;
@@ -280,7 +274,8 @@ function BlockBody({
     case 'preview': return <ReportPreviewBlock payload={block.payload} resolve={resolvePreview}
       viewports={previewViewports} />;
     case 'window': return <ReportWindowBlock payload={block.payload} />;
-    case 'html': return <ReportHtmlBlock payload={block.payload} files={files}
+    /* The page is read through the same Track file port as prose links and images. */
+    case 'html': return <ReportHtmlBlock payload={block.payload} files={linkPreview?.files}
       onOpen={onOpenFileLink === undefined ? undefined : (path) => { onOpenFileLink({ path }); }} />;
     case 'unsupported':
       return (
