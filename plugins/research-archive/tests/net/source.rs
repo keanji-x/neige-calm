@@ -376,7 +376,8 @@ async fn assert_stored(f: &Fixture, plan: &RunPlan, e: &Endpoint, t: UnixMs, fet
 
 /// SDK behaviour, pinned: a non-envelope 429 is retried five times inside
 /// one `send()`, outside our limiter (`request.rs:475-513`), then the attempt
-/// is throttled. The server's real throttle is envelope 429002 (see above).
+/// is throttled. The server throttles with `429xxx` envelope codes instead,
+/// which the SDK does not retry (see above).
 #[test]
 fn sdk_behaviour_a_bare_429_is_retried_five_times_outside_the_limiter() {
     hermetic::run(async {
