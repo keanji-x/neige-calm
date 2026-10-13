@@ -236,3 +236,47 @@ it('keeps a failed acknowledgement owed until the next receipts read', async () 
   await screen.findByText('t: read');
   expect(fake.stored('track', 't')).toMatchObject({ readThroughMs: 150, manualUnread: false });
 });
+
+/* #2596 fix round 4: an owed acknowledgement is one record, and the provider's own read-back is one fetch. */
+it('keeps an acknowledgement recorded after a manual unread, behind an earlier one still in flight', async () => {
+  const fake = createReadReceiptsKernel({ baselineMs: 100 });
+  const writes = fake.holdWrites();
+  let receipts!: ReturnType<typeof useReadReceipts>;
+  function Open({ opened }: { opened: number }) {
+    receipts = useReadReceipts();
+    useReadReceipt('track', 't', 150, true, opened);
+    return <Verdict id="t" at={150} />;
+  }
+  const view = mount(fake, <Open opened={1} />);
+  await waitFor(() => expect(writes.held()).toBe(1));
+  act(() => { void receipts.markUnread('track', 't'); });
+  view.rerender(<Open opened={2} />);
+  for (let write = 0; write < 3; write += 1) {
+    await waitFor(() => expect(writes.held()).toBeGreaterThan(0));
+    act(() => writes.release());
+  }
+  await waitFor(() => expect(fake.requests.at(-1)?.method).toBe('GET'));
+  expect(fake.posts().map((request) => request.path)).toEqual([
+    '/api/read-receipts/track/t/read', '/api/read-receipts/track/t/unread', '/api/read-receipts/track/t/read',
+  ]);
+  expect(fake.stored('track', 't')).toMatchObject({ readThroughMs: 150, manualUnread: false });
+  await screen.findByText('t: read');
+});
+
+it('does not let a failed read-back swallow the next receipts read', async () => {
+  const fake = createReadReceiptsKernel({ baselineMs: 100 });
+  const view = mount(fake, <Verdict id="t" at={150} />);
+  await screen.findByText('t: unread');
+  fake.failWrites(true);
+  fake.failReads(true);
+  function Open() { useReadReceipt('track', 't', 150); return <Verdict id="t" at={150} />; }
+  view.rerender(<Open />);
+  await waitFor(() => expect(fake.posts()).toHaveLength(1));
+  await waitFor(() => expect(fake.requests.at(-1)?.method).toBe('GET'));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  fake.failWrites(false);
+  fake.failReads(false);
+  act(() => { window.dispatchEvent(new Event('visibilitychange')); });
+  await waitFor(() => expect(fake.posts()).toHaveLength(2));
+  await screen.findByText('t: read');
+});

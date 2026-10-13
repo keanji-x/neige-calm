@@ -49,7 +49,8 @@ async function write(
     ledger.pending -= 1;
     // A read started while this write was in flight may predate its commit. The last write to settle reads again.
     await cancelReads();
-    if (ledger.pending === 0) { ledger.reconciling = true; void client.invalidateQueries({ queryKey }); }
+    // Its own read-back is no flush trigger (a failing write would loop on it), for exactly that fetch: success or not.
+    if (ledger.pending === 0) { ledger.reconciling = true; void client.invalidateQueries({ queryKey }).finally(() => { ledger.reconciling = false; }); }
   }
 }
 
@@ -67,25 +68,28 @@ export function ReadReceiptsProvider({ transport, unauthorized, children }: Read
 }>) {
   const client = useQueryClient();
   const [{ ledger, owed, sending }] = useState(() => ({ ledger: { pending: 0, tails: new Map<string, Promise<void>>(), reconciling: false } satisfies WriteLedger,
-    owed: new Map<string, Owed>(), sending: new Map<string, number>() }));
+    owed: new Map<string, Owed>(), sending: new Map<string, Owed>() }));
   const mutation = useRecoveryMutation(transport, { mutationFn: (intent: WriteIntent, admitted: ApiTransportPort) =>
     write(client, ledger, admitted, unauthorized, intent) });
   const send = useRef(mutation.mutateAsync);
   send.current = mutation.mutateAsync;
+  // An owed acknowledgement is its record: a send settles only the record it sent, never a later one at the same instant.
   const flush = useMemo(() => () => {
-    for (const [key, { kind, id, at }] of owed) {
-      if (sending.get(key) === at) continue;
-      sending.set(key, at);
+    for (const [key, record] of owed) {
+      if (sending.get(key) === record) continue;
+      sending.set(key, record);
+      const { kind, id, at } = record;
       const intent = { kind, id, operation: markReadOperation(kind, id, at), optimistic: (state: ReadState) => withMarkedRead(state, kind, id, at) };
-      void send.current(intent).then(() => { if (owed.get(key)?.at === at) owed.delete(key); }, () => undefined)
-        .finally(() => { if (sending.get(key) === at) sending.delete(key); });
+      void send.current(intent).then(() => { if (owed.get(key) === record) owed.delete(key); }, () => undefined)
+        .finally(() => { if (sending.get(key) === record) sending.delete(key); });
     }
   }, [owed, sending]);
   const channel = useMemo<ReceiptChannel>(() => ({
     transport, unauthorized,
     markRead(kind, id, activityAt) {
       const key = receiptKey(kind, id);
-      owed.set(key, { kind, id, at: Math.max(owed.get(key)?.at ?? 0, activityAt ?? 0) });
+      const at = Math.max(owed.get(key)?.at ?? 0, activityAt ?? 0);
+      if (owed.get(key)?.at !== at) owed.set(key, { kind, id, at });
       flush();
     },
     markUnread(kind, id) {
@@ -97,8 +101,9 @@ export function ReadReceiptsProvider({ transport, unauthorized, children }: Read
   const connected = useConnectionStatus()?.connected === true;
   useEffect(() => { if (connected) flush(); }, [connected, flush]);
   useEffect(() => client.getQueryCache().subscribe((event) => {
-    if (event.type !== 'updated' || event.action.type !== 'success' || event.query.queryHash !== hashKey(queryKeys.readReceipts())) return;
-    if (ledger.reconciling) { ledger.reconciling = false; return; } // Its own read-back: a failing write would loop on it.
+    // A receipts fetch that succeeded: `setQueryData` dispatches a `manual` success, which is no read at all.
+    if (event.type !== 'updated' || event.action.type !== 'success' || event.action.manual === true
+      || event.query.queryHash !== hashKey(queryKeys.readReceipts()) || ledger.reconciling) return;
     flush();
   }), [client, ledger, flush]);
   return <ReadReceiptsContext.Provider value={channel}>{children}</ReadReceiptsContext.Provider>;
@@ -120,9 +125,14 @@ export type ReadReceipts = Readonly<{
   ready: boolean;
 }>;
 
-export function useReadReceipts(): ReadReceipts {
+function useReceiptChannel(): ReceiptChannel {
   const channel = useContext(ReadReceiptsContext);
   if (channel === null) throw new Error('useReadReceipts needs a ReadReceiptsProvider');
+  return channel;
+}
+
+export function useReadReceipts(): ReadReceipts {
+  const channel = useReceiptChannel();
   const { data } = useQuery(readReceiptsQueryOptions(channel.transport, channel.unauthorized));
   return useMemo<ReadReceipts>(() => ({
     markRead: channel.markRead, markUnread: channel.markUnread, ready: data !== undefined,
@@ -135,7 +145,7 @@ export function useReadReceipts(): ReadReceipts {
  * selection) and when the tab becomes visible, only while visible. Not on the receipts' data (that would undo a manual unread).
  */
 export function useReadReceipt(kind: ReadReceiptKind, id: string | null, activityAt: number | null, enabled = true, openedAt?: number) {
-  const { markRead } = useReadReceipts();
+  const { markRead } = useReceiptChannel();
   useEffect(() => {
     if (id === null || !enabled) return;
     const record = () => {

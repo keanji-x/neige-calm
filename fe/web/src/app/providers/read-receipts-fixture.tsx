@@ -20,6 +20,7 @@ export function createReadReceiptsKernel({ baselineMs = Number.MAX_SAFE_INTEGER,
   const stored = new Map<string, ReadReceipt>(receipts.map((receipt) => [`${receipt.kind}:${receipt.targetId}`, receipt]));
   const requests: ApiRequest[] = [];
   let fail = failing;
+  let failRead = false;
   let readGate: Promise<void> | null = null;
   let holdingWrites = false;
   const writeGates: Array<() => void> = [];
@@ -27,6 +28,7 @@ export function createReadReceiptsKernel({ baselineMs = Number.MAX_SAFE_INTEGER,
     if (!request.path.startsWith('/api/read-receipts')) return undefined;
     requests.push(request);
     if (request.method === 'GET') {
+      if (failRead) return { status: 500, statusText: 'Error', body: { error: 'unavailable', code: 'internal' } };
       const snapshot = { baselineMs, receipts: [...stored.values()] };
       if (readGate !== null) await readGate;
       return ok(snapshot);
@@ -51,6 +53,8 @@ export function createReadReceiptsKernel({ baselineMs = Number.MAX_SAFE_INTEGER,
     reply, transport, requests,
     /** From now on every write answers 500 (`true`) or is stored (`false`). */
     failWrites(value: boolean) { fail = value; },
+    /** From now on every read answers 500 (`true`) or the stored receipts (`false`). */
+    failReads(value: boolean) { failRead = value; },
     /** Holds every read from now on; the returned function releases them and stops holding. */
     holdReads(): () => void {
       let release!: () => void;

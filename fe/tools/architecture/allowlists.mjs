@@ -9,7 +9,7 @@ export const moduleRuntimeStateAllowlist = Object.freeze(moduleRuntimeStateExcep
 export const createContextExceptions = Object.freeze([
   Object.freeze({ path: 'web/src/systems/github-links/public.tsx', reason: 'The GitHub citation system receives the app-owned authenticated read port without coupling chat and report feature domains.' }),
   Object.freeze({ path: 'web/src/app/providers/connection-status.tsx', reason: 'The app-scoped provider exposes live event-stream observations or the recovery owner’s status to the shell without owning socket lifecycle or authorization.' }),
-  Object.freeze({ path: 'web/src/app/providers/read-receipts.tsx', reason: 'The app-scoped provider hands the shell and route outlet the app transport for the kernel-owned read receipts (#2596); it keeps no browser state.' }),
+  Object.freeze({ path: 'web/src/app/providers/read-receipts.tsx', reason: 'The app-scoped provider hands the shell and route outlet the app transport for the kernel-owned read receipts (#2596); it keeps no browser storage.' }),
   Object.freeze({ path: 'web/src/app/providers/ui-preferences.tsx', reason: 'The app-scoped provider injects browser-local display preferences into the shell and route outlet without persisting conversation contents.' }),
   Object.freeze({ path: 'web/src/app/router/track-view-state.tsx', reason: 'The router-lifetime provider remembers per-Track view state without keeping inactive resource hosts alive or persisting user data.' }),
   Object.freeze({ path: 'web/src/app/router/new-track-drafts.tsx', reason: 'The shell-lifetime Track draft provider retains per-Area text, exact request identity and pending leases across route navigation without persisted user data.' }),

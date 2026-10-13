@@ -1387,7 +1387,9 @@
       "sends one target’s writes in order, even over a network that answers out of order",
       "keeps a manual unread of the open target across a bundled event-stream reconnect",
       "acknowledges a target opened offline once the browser is back online",
-      "keeps a failed acknowledgement owed until the next receipts read"
+      "keeps a failed acknowledgement owed until the next receipts read",
+      "keeps an acknowledgement recorded after a manual unread, behind an earlier one still in flight",
+      "does not let a failed read-back swallow the next receipts read"
     ],
     "selection_paths": [
       "web/src/app/providers/read-state-refresh.browser.test.tsx",
@@ -1406,7 +1408,7 @@
       "oracle:INV-APP-118"
     ],
     "target": "web/src/app/providers/read-receipts.tsx",
-    "patch": "diff --git a/web/src/app/providers/read-receipts.tsx b/web/src/app/providers/read-receipts.tsx\n--- a/web/src/app/providers/read-receipts.tsx\n+++ b/web/src/app/providers/read-receipts.tsx\n@@ -126,7 +126,7 @@\n   const { data } = useQuery(readReceiptsQueryOptions(channel.transport, channel.unauthorized));\n   return useMemo<ReadReceipts>(() => ({\n     markRead: channel.markRead, markUnread: channel.markUnread, ready: data !== undefined,\n-    isUnread: (kind, id, activityAt) => data !== undefined && isUnread(data, kind, id, activityAt),\n+    isUnread: (kind, id, activityAt) => isUnread(data ?? toReadState({ baselineMs: 0, receipts: [] }), kind, id, activityAt), // MUT-2596-2: no verdict reads as a baseline of zero.\n   }), [data, channel]);\n }\n \n",
+    "patch": "diff --git a/web/src/app/providers/read-receipts.tsx b/web/src/app/providers/read-receipts.tsx\n--- a/web/src/app/providers/read-receipts.tsx\n+++ b/web/src/app/providers/read-receipts.tsx\n@@ -136,7 +136,7 @@\n   const { data } = useQuery(readReceiptsQueryOptions(channel.transport, channel.unauthorized));\n   return useMemo<ReadReceipts>(() => ({\n     markRead: channel.markRead, markUnread: channel.markUnread, ready: data !== undefined,\n-    isUnread: (kind, id, activityAt) => data !== undefined && isUnread(data, kind, id, activityAt),\n+    isUnread: (kind, id, activityAt) => isUnread(data ?? toReadState({ baselineMs: 0, receipts: [] }), kind, id, activityAt), // MUT-2596-2: no verdict reads as a baseline of zero.\n   }), [data, channel]);\n }\n \n",
     "expected_red": [
       "reads nothing as unread until the kernel answers, then applies its baseline and receipts",
       "reads the track receipt against the activity high-water mark, not updatedAt"
