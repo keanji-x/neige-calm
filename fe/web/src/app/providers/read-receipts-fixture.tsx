@@ -24,6 +24,8 @@ export function createReadReceiptsKernel({ baselineMs = Number.MAX_SAFE_INTEGER,
   let readGate: Promise<void> | null = null;
   let holdingWrites = false;
   const writeGates: Array<() => void> = [];
+  let holdingAnswers = false;
+  const answerGates: Array<() => void> = [];
   const reply = async (request: ApiRequest): Promise<ApiTransportResponse | undefined> => {
     if (!request.path.startsWith('/api/read-receipts')) return undefined;
     requests.push(request);
@@ -43,6 +45,7 @@ export function createReadReceiptsKernel({ baselineMs = Number.MAX_SAFE_INTEGER,
       ? { kind: kind as ReadReceiptKind, targetId, readThroughMs: (request.body as { readThroughMs: number }).readThroughMs, manualUnread: false }
       : { kind: kind as ReadReceiptKind, targetId, readThroughMs: stored.get(key)?.readThroughMs ?? 0, manualUnread: true };
     stored.set(key, receipt);
+    if (holdingAnswers) await new Promise<void>((resolve) => { answerGates.push(resolve); });
     return ok(receipt);
   };
   const transport: ApiTransportPort = { send: async (request) => {
@@ -51,6 +54,13 @@ export function createReadReceiptsKernel({ baselineMs = Number.MAX_SAFE_INTEGER,
   } };
   return {
     reply, transport, requests,
+    /** Holds the answer of every write from now on, after it is stored; `release` answers the oldest held one. */
+    holdAnswers() {
+      holdingAnswers = true;
+      return { held: () => answerGates.length, release: () => { answerGates.shift()?.(); } };
+    },
+    /** Another device's write: stored as given, outside this reader's transport. */
+    store(receipt: ReadReceipt) { stored.set(`${receipt.kind}:${receipt.targetId}`, receipt); },
     /** From now on every write answers 500 (`true`) or is stored (`false`). */
     failWrites(value: boolean) { fail = value; },
     /** From now on every read answers 500 (`true`) or the stored receipts (`false`). */

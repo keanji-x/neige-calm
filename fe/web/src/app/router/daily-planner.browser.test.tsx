@@ -210,7 +210,7 @@ it.each([1000, 768, 600])('keeps both conversation composers reachable with a si
     areaCreateIdempotency: true, conversationCreateModel: true, conversationSide: true, kernelVersion: '0.1.0',
     apiVersion: '23', syncEventVersion: 26, mcpProtocolVersion: '2024-11-05', pluginMcpProtocolVersion: '2025-11-25',
     webCompatVersion: 44, minWebCompatVersion: 44, supervisorControlVersion: 1, buildSha: 'fixture',
-    dbInstanceId: 'fixture-instance', databaseId: 'fixture-database', nowMs: Date.parse('2026-10-04T09:00:00+08:00'),
+    dbInstanceId: 'fixture-instance', databaseId: 'fixture-database',
   } } : undefined });
   await page.getByText('Prioritize the release.', { exact: false }).findElement();
   await page.getByRole('radio', { name: 'Month', exact: true }).click();
@@ -243,7 +243,7 @@ it.each([768, 600])('keeps both inputs inside their cards when the parent footer
       areaCreateIdempotency: true, conversationCreateModel: true, conversationSide: true, kernelVersion: '0.1.0',
       apiVersion: '23', syncEventVersion: 26, mcpProtocolVersion: '2024-11-05', pluginMcpProtocolVersion: '2025-11-25',
       webCompatVersion: 44, minWebCompatVersion: 44, supervisorControlVersion: 1, buildSha: 'fixture',
-      dbInstanceId: 'fixture-instance', databaseId: 'fixture-database', nowMs: Date.parse('2026-10-04T09:00:00+08:00'),
+      dbInstanceId: 'fixture-instance', databaseId: 'fixture-database',
     } };
     if (request.path.endsWith('/planner/run')) return { status: 200, statusText: 'OK', body: {
       card_id: 'daily-planner', worker_session_id: 'runtime', phase: wedged ? 'wedged' : 'idle', model: null,

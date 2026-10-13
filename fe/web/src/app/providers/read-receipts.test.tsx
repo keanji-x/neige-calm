@@ -280,3 +280,80 @@ it('does not let a failed read-back swallow the next receipts read', async () =>
   await waitFor(() => expect(fake.posts()).toHaveLength(2));
   await screen.findByText('t: read');
 });
+
+/* #2596 fix round 5: every reader-visible event owes its own acknowledgement, and no fired trigger is lost. */
+it('acknowledges a reopen at the same instant after another device marked it unread while the first answer was held', async () => {
+  const fake = createReadReceiptsKernel({ baselineMs: 100 });
+  const answers = fake.holdAnswers();
+  function Open({ opened }: { opened: number }) { useReadReceipt('track', 't', 150, true, opened); return <Verdict id="t" at={150} />; }
+  const view = mount(fake, <Open opened={1} />);
+  await waitFor(() => expect(answers.held()).toBe(1));
+  expect(fake.stored('track', 't')).toMatchObject({ readThroughMs: 150, manualUnread: false });
+  fake.store({ kind: 'track', targetId: 't', readThroughMs: 150, manualUnread: true });
+  view.rerender(<Open opened={2} />);
+  act(() => answers.release());
+  await waitFor(() => expect(fake.posts()).toHaveLength(2));
+  await waitFor(() => expect(answers.held()).toBe(1));
+  act(() => answers.release());
+  await waitFor(() => expect(fake.requests.at(-1)?.method).toBe('GET'));
+  expect(fake.stored('track', 't')).toMatchObject({ readThroughMs: 150, manualUnread: false });
+  await screen.findByText('t: read');
+});
+
+it('sends once more after a failed attempt when a trigger fired while it was in flight', async () => {
+  const fake = createReadReceiptsKernel({ baselineMs: 100, fail: true });
+  const writes = fake.holdWrites();
+  function Open() { useReadReceipt('track', 't', 150); return <Verdict id="t" at={150} />; }
+  mount(fake, <Open />);
+  await waitFor(() => expect(writes.held()).toBe(1));
+  // A receipts read lands while the acknowledgement is in flight: a trigger its flush has to skip.
+  const reads = fake.requests.filter((request) => request.method === 'GET').length;
+  act(() => { window.dispatchEvent(new Event('visibilitychange')); });
+  await waitFor(() => expect(fake.requests.filter((request) => request.method === 'GET').length).toBeGreaterThan(reads));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  act(() => writes.release());
+  await waitFor(() => expect(writes.held()).toBe(1));
+  fake.failWrites(false);
+  act(() => writes.release());
+  await waitFor(() => expect(fake.stored('track', 't')).toMatchObject({ readThroughMs: 150, manualUnread: false }));
+  expect(fake.posts()).toHaveLength(2);
+  await screen.findByText('t: read');
+});
+
+it('keeps a newer acknowledgement owed when an older one commits and the newer one fails', async () => {
+  const fake = createReadReceiptsKernel({ baselineMs: 100 });
+  const writes = fake.holdWrites();
+  function Open({ at }: { at: number }) { useReadReceipt('track', 't', at); return <Verdict id="t" at={at} />; }
+  const view = mount(fake, <Open at={150} />);
+  await waitFor(() => expect(writes.held()).toBe(1));
+  view.rerender(<Open at={160} />);
+  act(() => writes.release());
+  await waitFor(() => expect(fake.stored('track', 't')?.readThroughMs).toBe(150));
+  await waitFor(() => expect(writes.held()).toBe(1));
+  fake.failWrites(true);
+  act(() => writes.release());
+  await waitFor(() => expect(fake.requests.at(-1)?.method).toBe('GET'));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  fake.failWrites(false);
+  act(() => { window.dispatchEvent(new Event('visibilitychange')); });
+  await waitFor(() => expect(writes.held()).toBe(1));
+  act(() => writes.release());
+  await waitFor(() => expect(fake.stored('track', 't')?.readThroughMs).toBe(160));
+  await screen.findByText('t: read');
+});
+
+it('replays a missed trigger for its own target only, so two failing targets do not keep replaying each other', async () => {
+  const fake = createReadReceiptsKernel({ baselineMs: 100, fail: true, writeDelayMs: 20 });
+  function Open() {
+    useReadReceipt('track', 't', 150);
+    useReadReceipt('conversation', 'c', 150);
+    return <Verdict id="t" at={150} />;
+  }
+  mount(fake, <Open />);
+  await waitFor(() => expect(fake.posts().length).toBeGreaterThanOrEqual(2));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const settled = fake.posts().length;
+  expect(settled).toBeLessThanOrEqual(3);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  expect(fake.posts()).toHaveLength(settled);
+});

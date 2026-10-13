@@ -67,29 +67,37 @@ export function ReadReceiptsProvider({ transport, unauthorized, children }: Read
   transport: ApiTransportPort; unauthorized: UnauthorizedChannel; children: ReactNode;
 }>) {
   const client = useQueryClient();
-  const [{ ledger, owed, sending }] = useState(() => ({ ledger: { pending: 0, tails: new Map<string, Promise<void>>(), reconciling: false } satisfies WriteLedger,
-    owed: new Map<string, Owed>(), sending: new Map<string, Owed>() }));
+  const [{ ledger, owed, sending, missed }] = useState(() => ({ ledger: { pending: 0, tails: new Map<string, Promise<void>>(), reconciling: false } satisfies WriteLedger,
+    owed: new Map<string, Owed>(), sending: new Map<string, Owed>(), missed: new Set<string>() }));
   const mutation = useRecoveryMutation(transport, { mutationFn: (intent: WriteIntent, admitted: ApiTransportPort) =>
     write(client, ledger, admitted, unauthorized, intent) });
   const send = useRef(mutation.mutateAsync);
   send.current = mutation.mutateAsync;
-  // An owed acknowledgement is its record: a send settles only the record it sent, never a later one at the same instant.
-  const flush = useMemo(() => () => {
-    for (const [key, record] of owed) {
-      if (sending.get(key) === record) continue;
+  // An owed acknowledgement is its record: a send settles only the record it sent, never a later one. A trigger that
+  // finds the record still in flight is remembered, and that key alone is sent once more when the send settles: a
+  // replay is no trigger for other keys, so two failing targets cannot keep replaying each other.
+  const flush = useMemo(() => {
+    const flushKey = (key: string) => {
+      const record = owed.get(key);
+      if (record === undefined) return;
+      if (sending.get(key) === record) { missed.add(key); return; }
       sending.set(key, record);
       const { kind, id, at } = record;
       const intent = { kind, id, operation: markReadOperation(kind, id, at), optimistic: (state: ReadState) => withMarkedRead(state, kind, id, at) };
-      void send.current(intent).then(() => { if (owed.get(key) === record) owed.delete(key); }, () => undefined)
-        .finally(() => { if (sending.get(key) === record) sending.delete(key); });
-    }
-  }, [owed, sending]);
+      void send.current(intent).then(() => { if (owed.get(key) === record) owed.delete(key); }, () => undefined).finally(() => {
+        if (sending.get(key) !== record) return;
+        sending.delete(key);
+        if (missed.delete(key)) flushKey(key);
+      });
+    };
+    return () => { for (const key of [...owed.keys()]) flushKey(key); };
+  }, [owed, sending, missed]);
   const channel = useMemo<ReceiptChannel>(() => ({
     transport, unauthorized,
     markRead(kind, id, activityAt) {
+      // Every reader-visible event owes its own acknowledgement, even at an unchanged instant.
       const key = receiptKey(kind, id);
-      const at = Math.max(owed.get(key)?.at ?? 0, activityAt ?? 0);
-      if (owed.get(key)?.at !== at) owed.set(key, { kind, id, at });
+      owed.set(key, { kind, id, at: Math.max(owed.get(key)?.at ?? 0, activityAt ?? 0) });
       flush();
     },
     markUnread(kind, id) {
@@ -101,7 +109,8 @@ export function ReadReceiptsProvider({ transport, unauthorized, children }: Read
   const connected = useConnectionStatus()?.connected === true;
   useEffect(() => { if (connected) flush(); }, [connected, flush]);
   useEffect(() => client.getQueryCache().subscribe((event) => {
-    // A receipts fetch that succeeded: `setQueryData` dispatches a `manual` success, which is no read at all.
+    // A receipts fetch that succeeded. `setQueryData` (this provider's own optimistic and answered writes) dispatches a
+    // `manual` success, which is no read: counting it, every send would see itself in flight and replay after failing.
     if (event.type !== 'updated' || event.action.type !== 'success' || event.action.manual === true
       || event.query.queryHash !== hashKey(queryKeys.readReceipts()) || ledger.reconciling) return;
     flush();
