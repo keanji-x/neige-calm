@@ -151,10 +151,10 @@ async fn i9_an_unusable_token_exits_75_and_a_fresh_import_recovers() {
 }
 
 /// A token refresh that hangs (the OAuth host reached through a proxy that
-/// never answers) is dropped at the run deadline, and the start exits
-/// `AUTH_UNAVAILABLE` instead of hanging. Hermetic: the refresh goes to the
-/// local listener as `HTTPS_PROXY`. Takes the minimum attempt timeout, one
-/// minute.
+/// never answers) is dropped at the auth bound (`capture::AUTH_BOUND`, 30 s,
+/// within the one-minute deadline), and the start exits `AUTH_UNAVAILABLE`
+/// instead of holding the lock. Hermetic: the refresh goes to the local
+/// listener as `HTTPS_PROXY`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_hanging_token_refresh_is_dropped_at_the_deadline() {
     let server = server(Arc::new(AtomicBool::new(false)), "").await;
@@ -196,7 +196,7 @@ async fn a_hanging_token_refresh_is_dropped_at_the_deadline() {
     let elapsed = started.elapsed();
     assert_eq!(code(&out), 75, "{}", text(&out.stderr));
     assert!(
-        elapsed >= Duration::from_secs(55) && elapsed < Duration::from_secs(90),
+        elapsed >= Duration::from_secs(25) && elapsed < Duration::from_secs(50),
         "{elapsed:?}: {}",
         text(&out.stderr)
     );

@@ -351,9 +351,11 @@ refused. `research-archive.example.toml` documents each field:
 loopback IP literal, a local test server), `quote_ws_url` (`wss://`),
 `callback_port`, `research` (`CODE.MARKET` keys), `indexes` (dotted index
 symbols such as `.SPX.US`), `rps` (1 to 20), `attempt_cap`,
-`attempt_timeout_minutes`, `carry_deadline_minutes`, `window_start`
-(`HH:MM` New York time, at or after 16:00) and `notify_command` (argv with
-an absolute program). The membership request asks for `limit=1000`, so an
+`attempt_timeout_minutes`, `carry_deadline_minutes` (which must end before
+the shortest window `window_start` can open: to 09:30 New York the next
+day, one hour less across the spring DST change; 899 minutes at most for
+17:30, capped at 600), `window_start` (`HH:MM` New York time, at or after
+16:00) and `notify_command` (argv with an absolute program). The membership request asks for `limit=1000`, so an
 index with more than 1,000 members never yields a complete membership.
 
 **Environment.** The SDK reads `LONGBRIDGE_*`/`LONGPORT_*` variables and
@@ -544,14 +546,14 @@ dispatched and again at the actual request start, after the rate-limit slot
 (`LongbridgeSource::fetch_if`), against the injected clock. A token
 resolution or request still in flight at the deadline is dropped there.
 
-The I1 fence relies on the clock and the runtime's timer agreeing: in
-production the clock is the system wall clock, so the timer that drops an
-in-flight request (`clock::within`) expires at the deadline, and the SDK's
-own retries of a bare HTTP 429 inside that request are cut there too. A
-forward step of the wall clock (an NTP correction) after the timer was set
-shifts when it fires relative to the wall clock; the send-time check and the
-recorder's window check still refuse a request start or a row past the
-window end.
+The deadline is the clock's, not a timer fixed when a request starts:
+`clock::within` follows the wall clock in steps of at most 250 ms
+(`clock::WALL_STEP`), so an in-flight request, together with the SDK's own
+retries of a bare HTTP 429 inside it, is dropped within one step of the
+deadline, even when the wall clock steps forward (suspend, NTP) while it
+waits. Every other wait on the system clock follows it the same way. The
+send-time check and the recorder's window check still refuse a request
+start or a row past the window end.
 
 **The retry schedule.** Every pair still to be worked waits in one queue,
 keyed by the time it may next be attempted (`src/capture/schedule.rs`). At
@@ -631,10 +633,13 @@ attempt's result is ready in the same poll; no request starts after the
 latch (the request-start check asks the latch too); and nothing more is
 dispatched. An auth failure latches *before* its own row is written, so a
 slow write cannot let the attempts queued on the token or the rate-limit
-slot go on. Only the attempt that latched records its auth row; a second
-auth failure, and any other row already waiting for the recorder, is
-dropped. If that auth row cannot be written, the start is `FATAL`, not
-`AUTH_UNAVAILABLE`. An auth failure therefore never triggers one more token
+slot go on. Only the attempt that latched records its auth row; a later
+auth failure is dropped. Other responses that have already arrived are
+recorded: the latch governs sending, not data received. If the auth row
+cannot be written, the start is `FATAL`, not `AUTH_UNAVAILABLE`. Building
+the `OAuth` client (a token refresh included) is bounded by
+`capture::AUTH_BOUND` (30 s) within the start's deadline, so a hanging
+refresh does not hold the lock for the whole start. An auth failure therefore never triggers one more token
 refresh per request.
 
 **The browser flow.** A token that the SDK could use only through the
@@ -729,9 +734,9 @@ research-archive: research-archive-capture.service failed: auth_unavailable (exi
 
 It sends only when the kind differs from the last one sent or six hours
 have passed, and records what it sent in `<data_dir>/notify_state.json`
-after the command succeeded. A capture whose run completes (`complete` or
-`complete_with_failures`) deletes that file, so the first failure after a
-recovery always alerts. The command runs without a shell, with stdin
+after the command succeeded. A capture that works again (`complete`,
+`complete_with_failures`, or `resumable`) deletes that file, so the first
+failure after a recovery always alerts. The command runs without a shell, with stdin
 closed, for at most 60 s, and with only these variables from the alert's
 own environment: `PATH`, `HOME`, `LANG`, `TZ`, `XDG_RUNTIME_DIR` and the
 proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, upper and lower
@@ -765,9 +770,11 @@ systemctl --user enable --now research-archive-capture.timer
 - **The service is `Type=oneshot`.** Its backstop above the job's own
   deadline is `TimeoutStartSec=`: `RuntimeMaxSec=` has no effect on a
   oneshot service (`systemd.service(5)`).
-- **`WorkingDirectory=` is the data dir.** The SDK's dotenv walks up from
-  the working directory, so the job still refuses to start when a `.env`
-  exists in the data dir or any parent.
+- **The capture's `WorkingDirectory=` is the data dir.** The SDK's dotenv
+  walks up from the working directory, so the job still refuses to start
+  when a `.env` exists in the data dir or any parent. The notify unit runs
+  in `/`: it builds no SDK client, and a missing data dir must not keep it
+  from alerting (`unknown`).
 - **No unit sets an SDK variable.** The region comes from the config, and the
   job refuses to start when any `LONGBRIDGE_*`/`LONGPORT_*` variable is set.
 - **A proxy, only if this host needs one.** Uncomment `EnvironmentFile=` in
@@ -820,7 +827,8 @@ Two integration binaries:
 | `net::schedule` | the retry schedule through an outage; membership scenarios A (a blip is retried and `observed`), B (retried every 2 minutes, then a freeze at the carry deadline, across starts or within one) and C (a start to the window end waits for the carry deadline, never `partial`); constituents outages of 22, 25, 40 and 55 minutes `observed`; a late start freezing from stored rows; a resume after the carry deadline not held up by a hanging constituents attempt; the auth latch before a slow auth row; of two simultaneous auth failures only the winner recorded; an unwritable auth row `FATAL`; a throttle wait surviving a restart; no request starts after the window end however late its rate-limit slot |
 | `net::membership` | constituents outages at the shipped cadence (25-minute starts every 30 minutes); the freeze not waiting for a retry in flight at the carry deadline; only post-freeze failures counting toward the constituents cap |
 | `net::interrupt` | I4 and I12 in process: a capture interrupted during membership leaves a whole plan and no freeze; the rerun completes with the planned keys and index set |
-| `net::exit_state` | dangling runs on record (all of them) through a later failure; a dangling-only `partial` with its failure; a lock I/O error on record; a completed run clearing the alert dedupe |
+| `net::exit_state` | dangling runs on record (all of them) through a later failure; a dangling-only `partial` with its failure; a lock I/O error on record; a completed or resumable start clearing the alert dedupe |
+| `net::deadline` | a clock jump past the window end stopping the SDK's in-request retries within a step; stamps taken under the recorder's turn with parallel workers and a jittery clock |
 | `capture_cli` | `capture` as a subprocess: a kill during the fetch (I4), I9, a hanging token refresh, I10, the calendar refresh. The membership phase cannot be reached in real time at every hour, so its kill and I12 run in `net::interrupt` |
 | `capture_secrets` | I11 for `capture` and `notify`; the alert's dedupe and environment; `notify` alerting when `capture` refused its environment; `notify` trusting only the failed start's own state (`$INVOCATION_ID` / `$MONITOR_INVOCATION_ID`) |
 | `units` | the systemd templates' directives and placeholders |

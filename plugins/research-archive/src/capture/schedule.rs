@@ -55,9 +55,11 @@
 //! usable token stops the run *before* it records that row. Every other
 //! attempt in flight (its token resolution, rate-limit wait or request) is
 //! dropped at once, stop first even when its result is ready in the same
-//! poll; no request starts after the latch; nothing more is dispatched; and a
-//! sibling's row still waiting for the recorder is dropped too. After the
-//! latch the recorder writes only the winner's auth row.
+//! poll; no request starts after the latch; and nothing more is dispatched.
+//! The latch governs sending: a response that has already arrived is still
+//! recorded. The one exception keeps a single auth row: only the attempt
+//! that latched an auth stop records its auth failure; a later one is
+//! dropped.
 
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
@@ -280,14 +282,12 @@ async fn attempt<C: Clock>(pool: Arc<Pool<C>>, work: Work, deadline: UnixMs) -> 
     if auth && !won {
         return None;
     }
-    let honour_stop = || !won && pool.latch.stopped().is_some();
     let recorded = match pool
         .recorder
-        .observe(&work.key, work.endpoint, fetched.response(), honour_stop)
+        .observe(&work.key, work.endpoint, fetched.response())
         .await
     {
         Ok(Observed::Recorded(recorded)) => recorded,
-        Ok(Observed::Stopped) => return None,
         Ok(Observed::WindowClosed) => {
             pool.latch.halt(Stop::WindowClosed);
             return None;
@@ -366,18 +366,18 @@ pub(super) async fn work_off<C: Clock>(
         if !frozen && (unsettled.is_empty() || now >= carry) {
             // Freeze from the stored rows; attempts in flight are not waited
             // for and continue as coverage work.
-            if !pool.recorder.freeze().await? {
+            let Some(stamp) = pool.recorder.freeze().await? else {
                 pool.latch.halt(Stop::WindowClosed);
                 break;
-            }
+            };
             frozen = true;
-            frozen_at = Some(now);
+            frozen_at = Some(stamp);
             recount = flying
                 .iter()
                 .filter(|(_, endpoint)| *endpoint == membership)
                 .cloned()
                 .collect();
-            pending = survey(store, run, coverage(frozen_at), now, |_| true)
+            pending = survey(store, run, coverage(frozen_at), stamp, |_| true)
                 .await?
                 .pending
                 .into_iter()

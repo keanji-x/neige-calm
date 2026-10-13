@@ -125,7 +125,7 @@ fn the_notify_service_passes_the_failed_unit() {
     let lines = directives(&render(&template("research-archive-notify@.service")));
     for expected in [
         "Type=oneshot",
-        "WorkingDirectory=/opt/ra/data",
+        "WorkingDirectory=/",
         "ExecStart=/opt/ra/bin/research-archive notify --config /opt/ra/research-archive.toml --failed-unit %i",
     ] {
         assert!(

@@ -107,6 +107,31 @@ fn a_completed_run_clears_the_alert_dedupe() {
     })
 }
 
+/// A start that works the run and leaves it open for the next one
+/// (`resumable`) is working again too: it clears the dedupe.
+#[test]
+fn a_resumable_start_clears_the_alert_dedupe() {
+    hermetic::run(async {
+        let clock = FakeClock::at(UnixMs(tue_start().0 + 60_000));
+        let server = TimedServer::start(clock.clone(), |s, _| match s.path.as_str() {
+            "/v1/quote/valuation" => Reply::new(503, "<html>busy</html>"),
+            _ => Reply::data(r#"{"v":1}"#),
+        })
+        .await;
+        let knobs = Knobs {
+            attempt_cap: 100,
+            attempt_timeout_minutes: 1,
+            ..Knobs::default()
+        };
+        let a = archive(&server.server.url, &knobs, clock.now());
+        let sent = a.data_dir.join("notify_state.json");
+        std::fs::create_dir_all(&a.data_dir).unwrap();
+        std::fs::write(&sent, r#"{"kind":"auth_unavailable","at":1}"#).unwrap();
+        assert_eq!(capture(&a, &clock).await.kind, ExitKind::Resumable);
+        assert!(!sent.exists());
+    })
+}
+
 /// Two runs left open (planned, never worked) are both ended `partial` by
 /// the next start, and both are on record, oldest first; the start exits
 /// `PARTIAL` for the latest.

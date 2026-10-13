@@ -29,7 +29,7 @@ mod schedule;
 pub use runner::{DEGRADED_BELOW, degraded};
 pub use schedule::{COUNTED, MAX_IN_FLIGHT, backoff, counts_toward_cap};
 
-use std::{fmt::Display, sync::Arc};
+use std::{fmt::Display, sync::Arc, time::Duration};
 
 use longbridge::oauth::OAuth;
 
@@ -45,6 +45,11 @@ use crate::state::{Dangling, ExitKind, Invocation, LastExit, Outcome};
 use crate::store::PlanRequest;
 use crate::types::{AsOf, Source, UnixMs};
 use crate::{Store, StoreError};
+
+/// The longest building the `OAuth` client may take in a start (a token
+/// refresh included), within the start's deadline: the source's own bound on
+/// a token resolution ([`Timeouts::PRODUCTION`]`.token`).
+pub const AUTH_BOUND: Duration = Timeouts::PRODUCTION.token;
 
 /// A `Fatal` outcome, logging `what` failed and why. `err` is never an SDK
 /// error: those are reduced to a category first.
@@ -125,9 +130,9 @@ pub async fn run_with<C: Clock, D: TradingDays>(
     LastExit::from_outcome(&outcome, clock.now(), invocation.clone()).write(&config.data_dir);
     if matches!(
         outcome.kind,
-        ExitKind::Complete | ExitKind::CompleteWithFailures
+        ExitKind::Complete | ExitKind::CompleteWithFailures | ExitKind::Resumable
     ) {
-        // Recovered: the next failure alerts, whatever its kind.
+        // Working again: the next failure alerts, whatever its kind.
         notify::clear_sent(&config.data_dir);
     }
     drop(lock);
@@ -278,13 +283,11 @@ impl<C: Clock, D: TradingDays> Start<'_, C, D> {
         }
         let storage = DataDirTokenStorage::open(self.config.oauth_dir())
             .map_err(|e| fail("opening the token storage", &e))?;
+        // Bounded by the auth bound and the start's deadline: a refresh
+        // that hangs must not hold the lock for the whole start.
         let left = u64::try_from(deadline.0.saturating_sub(self.clock.now().0)).unwrap_or(0);
-        let built = auth::build_oauth(
-            &self.config.oauth_client_id,
-            storage,
-            std::time::Duration::from_millis(left),
-        )
-        .await;
+        let bound = Duration::from_millis(left).min(AUTH_BOUND);
+        let built = auth::build_oauth(&self.config.oauth_client_id, storage, bound).await;
         match built {
             Ok(oauth) => {
                 self.oauth = Some(oauth.clone());

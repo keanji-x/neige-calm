@@ -7,7 +7,10 @@ Description=research-archive alert for %i
 
 [Service]
 Type=oneshot
-WorkingDirectory=@DATA_DIR@
+# Not the data dir: a missing data dir must not keep the alert from
+# running (it then reports `unknown`). notify builds no SDK client, so the
+# working directory's .env does not matter to it.
+WorkingDirectory=/
 ExecStart=@BIN@ notify --config @CONFIG@ --failed-unit %i
 TimeoutStartSec=120
 # Only if the notify command needs a proxy: the same operator-owned file.

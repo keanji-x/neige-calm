@@ -14,6 +14,7 @@ mod calendar;
 #[allow(dead_code)]
 mod cli_env;
 mod crossing;
+mod deadline;
 mod dotenv;
 #[path = "../common/dotenv_reach.rs"]
 mod dotenv_reach;

@@ -42,7 +42,9 @@ attempt_cap = 6
 attempt_timeout_minutes = 25
 
 # How long after window_start the membership fetch may keep retrying before
-# the run carries the previous membership, in minutes (1-600).
+# the run carries the previous membership, in minutes (1-600). It must end
+# before the shortest window: window_start to 09:30 New York the next day,
+# minus an hour for the spring DST change (900 for 17:30).
 carry_deadline_minutes = 60
 
 # The capture window opens at this New York local time on each trading day

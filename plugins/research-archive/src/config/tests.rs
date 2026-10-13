@@ -190,3 +190,27 @@ fn scalar_fields_are_range_checked() {
         ConfigError::Parse { .. }
     ));
 }
+
+/// The carry deadline must fall inside the shortest window the start time
+/// allows: 17:30 to 09:30 the next day is 16 hours, 15 across the spring
+/// DST change; 23:59 to 09:30 is 9 h 31 min, 8 h 31 min (511 minutes).
+#[test]
+fn the_carry_deadline_ends_before_the_shortest_window() {
+    let at = |ws: &str, carry: u32| {
+        with("window_start", &format!("window_start = \"{ws}\"")).replace(
+            "carry_deadline_minutes = 60",
+            &format!("carry_deadline_minutes = {carry}"),
+        )
+    };
+    assert_eq!(
+        shortest_window_minutes(NaiveTime::from_hms_opt(17, 30, 0).unwrap()),
+        15 * 60
+    );
+    Config::parse(&at("17:30", 600)).unwrap();
+    Config::parse(&at("23:59", 510)).unwrap();
+    for (ws, carry) in [("23:59", 511), ("23:59", 600)] {
+        let err = refused(&at(ws, carry));
+        assert_eq!(field_of(&err), "carry_deadline_minutes", "{ws} {carry}");
+        assert!(err.to_string().contains("at most 510"), "{err}");
+    }
+}

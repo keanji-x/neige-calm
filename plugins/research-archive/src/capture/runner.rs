@@ -71,25 +71,19 @@ pub(super) enum Observed {
     Recorded(Recorded),
     /// The window has closed: nothing was written.
     WindowClosed,
-    /// The run stopped while the row waited for its turn: nothing was
-    /// written.
-    Stopped,
 }
 
 impl<C: Clock> Recorder<C> {
-    /// Record a response, stamped now, unless `stopped()` says the run has
-    /// stopped by the time it is this row's turn.
+    /// Record a response that has arrived, stamped when it has its turn.
+    /// A response that arrived is recorded even after the run stopped: the
+    /// stop governs sending, not data already received.
     pub(super) async fn observe(
         &self,
         key: &Key,
         endpoint: EndpointId,
         response: &Response,
-        stopped: impl Fn() -> bool,
     ) -> Result<Observed, StoreError> {
         let _turn = self.turn.lock().await;
-        if stopped() {
-            return Ok(Observed::Stopped);
-        }
         let at = self.clock.now();
         if !self.window.contains(at) {
             return Ok(Observed::WindowClosed);
@@ -100,12 +94,13 @@ impl<C: Clock> Recorder<C> {
             .map(Observed::Recorded)
     }
 
-    /// Freeze the membership now. `false` when the window has closed.
-    pub(super) async fn freeze(&self) -> Result<bool, StoreError> {
+    /// Freeze the membership now. Returns the freeze's stamp, or `None` when
+    /// the window has closed.
+    pub(super) async fn freeze(&self) -> Result<Option<UnixMs>, StoreError> {
         let _turn = self.turn.lock().await;
         let at = self.clock.now();
         if !self.window.contains(at) {
-            return Ok(false);
+            return Ok(None);
         }
         let frozen = self.store.freeze_membership(self.run, at).await?;
         for (index, membership) in &frozen {
@@ -116,7 +111,7 @@ impl<C: Clock> Recorder<C> {
                 "membership frozen"
             );
         }
-        Ok(true)
+        Ok(Some(at))
     }
 
     async fn end(&self, finish: Finish, reason: Option<&str>) -> Result<(), StoreError> {

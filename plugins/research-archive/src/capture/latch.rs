@@ -3,7 +3,8 @@
 //!
 //! - **One winner.** [`Latch::halt`] tells its caller whether it latched the
 //!   stop. Only the winner of an auth stop records its auth row; a later
-//!   auth failure is dropped like any other sibling.
+//!   auth failure is dropped. Other responses that have already arrived are
+//!   recorded: the latch governs sending, not data received.
 //! - **Stop first.** [`Latch::unless_stopped`] races a future against the
 //!   stop with the stop branch first, so a sibling whose response or
 //!   rate-limit slot is ready in the same poll as the latch is dropped.
