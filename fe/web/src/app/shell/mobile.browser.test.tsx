@@ -14,7 +14,7 @@ import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../.
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from '../router/public.tsx';
-import { createUiPreferences, type UiPreferences } from '../providers/ui-preferences.tsx';
+import { createReadReceiptsKernel, type ReadReceiptsKernel } from '../providers/read-receipts-fixture.tsx';
 import { bootTestCardRuntime } from '../router/test-card-runtime.ts';
 
 afterEach(cleanup);
@@ -76,10 +76,12 @@ const REVIEW_CARD = {
 
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
 
-function setup(path: string, areaName = AREA.name, onRequest: (request: ApiRequest) => void = () => undefined, uiPreferences?: UiPreferences) {
+function setup(path: string, areaName = AREA.name, onRequest: (request: ApiRequest) => void = () => undefined, receipts?: ReadReceiptsKernel) {
   const transport: ApiTransportPort = {
-    send(request) {
+    async send(request) {
       onRequest(request);
+      const receipt = await receipts?.reply(request);
+      if (receipt !== undefined) return receipt;
       if (request.path.endsWith('/planner/run')) return Promise.resolve(ok({ card_id: 'card-review', worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, running_turn: null }));
       if (request.path === '/api/settings') return Promise.resolve(ok({ settings: {} }));
       if (request.path === '/api/areas') return Promise.resolve(ok([{ ...AREA, name: areaName }, OTHER_AREA]));
@@ -102,7 +104,6 @@ function setup(path: string, areaName = AREA.name, onRequest: (request: ApiReque
     client,
     cards: bootTestCardRuntime(),
     onSignOut: vi.fn(),
-    uiPreferences,
   });
   router.update({ history: createMemoryHistory({ initialEntries: [path] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
@@ -619,47 +620,45 @@ describe('Track mobile presentation', () => {
 
 it('clears manual unread when reopening the current Track through mobile navigation', async () => {
   await page.viewport(390, 844);
-  const preferences = createUiPreferences();
-  preferences.setReadScope('db', 1_000);
-  const router = setup('/track/w1', AREA.name, () => undefined, preferences);
+  const receipts = createReadReceiptsKernel({ baselineMs: 1_000 });
+  const router = setup('/track/w1', AREA.name, () => undefined, receipts);
   await openTrackNavigation();
   await page.getByRole('button', { name: 'Actions for track Responsive mobile UI', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Mark as unread', exact: true }).click();
-  expect(preferences.isUnread('track', 'w1', 0)).toBe(true);
+  await expect.poll(() => receipts.stored('track', 'w1')?.manualUnread).toBe(true);
   await page.getByRole('button', { name: 'Responsive mobile UI', exact: true }).click();
   await expect.poll(() => document.querySelector('main')?.hasAttribute('inert')).toBe(false);
   expect(router.state.location.pathname).toBe('/track/w1');
-  expect(preferences.isUnread('track', 'w1', 0)).toBe(false);
+  await expect.poll(() => receipts.stored('track', 'w1')?.manualUnread).toBe(false);
 });
 
 
 it('retains unread when a selected Track detail cannot be loaded', async () => {
   await page.viewport(1400, 900);
-  const preferences = createUiPreferences();
-  preferences.setReadScope('db', 1_000);
-  setup('/track/w1', AREA.name, () => undefined, preferences);
+  const receipts = createReadReceiptsKernel({ baselineMs: 1_000 });
+  setup('/track/w1', AREA.name, () => undefined, receipts);
   await page.getByRole('button', { name: 'Track Remote access', exact: true }).hover();
   await page.getByRole('button', { name: 'Actions for track Remote access', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Mark as unread', exact: true }).click();
-  expect(preferences.isUnread('track', 'w2', 0)).toBe(true);
+  await expect.poll(() => receipts.stored('track', 'w2')?.manualUnread).toBe(true);
   await page.getByRole('button', { name: 'Track Remote access', exact: true }).click();
   await expect.element(page.getByRole('alert')).toBeVisible();
-  expect(preferences.isUnread('track', 'w2', 0)).toBe(true);
+  expect(receipts.stored('track', 'w2')?.manualUnread).toBe(true);
+  expect(receipts.posts().map((request) => request.path)).toEqual(['/api/read-receipts/track/w2/unread']);
 });
 
 
 it('acknowledges a repeated desktop selection only in the rendered Track view', async () => {
   await page.viewport(1400, 900);
-  const preferences = createUiPreferences();
-  preferences.setReadScope('db', 1_000);
-  setup('/track/w1', AREA.name, () => undefined, preferences);
+  const receipts = createReadReceiptsKernel({ baselineMs: 1_000 });
+  setup('/track/w1', AREA.name, () => undefined, receipts);
   const group = page.getByRole('group', { name: 'area Product', exact: true });
   await group.getByRole('button', { name: 'Track Responsive mobile UI', exact: true }).hover();
   await group.getByRole('button', { name: 'Actions for track Responsive mobile UI', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Mark as unread', exact: true }).click();
-  expect(preferences.isUnread('track', 'w1', 0)).toBe(true);
+  await expect.poll(() => receipts.stored('track', 'w1')?.manualUnread).toBe(true);
   await group.getByRole('button', { name: 'Track Responsive mobile UI', exact: true }).click();
-  await expect.poll(() => preferences.isUnread('track', 'w1', 0)).toBe(false);
+  await expect.poll(() => receipts.stored('track', 'w1')?.manualUnread).toBe(false);
 });
 
 

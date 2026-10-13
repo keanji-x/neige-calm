@@ -8,6 +8,7 @@ import type { Area } from '../../../../core/domain/area.ts';
 import { NEUTRAL_ACTIVITY, type Track } from '../../../../core/domain/track.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { Sidebar } from './sidebar.tsx';
+import { readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';
 
 afterEach(() => { cleanup(); delete document.documentElement.dataset.theme; });
 
@@ -34,7 +35,7 @@ function track(overrides: Partial<Track> = {}): Track {
 
 function renderSidebar(props: Partial<Parameters<typeof Sidebar>[0]> = {}) {
   const tracks = props.tracks ?? [];
-  return render(
+  return render(readReceiptsFixture().wrap(
     <ThemeProvider storage={memoryStorage()}>
       <Sidebar
         areas={props.areas ?? [area()]}
@@ -55,7 +56,7 @@ function renderSidebar(props: Partial<Parameters<typeof Sidebar>[0]> = {}) {
         onSignOut={props.onSignOut ?? vi.fn()}
       />
     </ThemeProvider>,
-  );
+  ));
 }
 
 describe('INV-SIDEBAR-007 three sections, and pinning is not relocation', () => {

@@ -38,6 +38,7 @@ mod planner_input_idempotency;
 #[cfg(test)]
 mod planner_input_idempotency_tests;
 mod read;
+mod read_receipt;
 mod session_conversation;
 mod transcript_projection;
 mod worker_flow_capture;

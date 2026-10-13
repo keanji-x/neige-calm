@@ -413,6 +413,11 @@ export type HarnessPhaseTag = "pending_thread_start" | "idle" | "issuing_turn" |
  */
 export type HarnessQueueChange = "edited" | "deleted" | "steered" | "restored" | "dropped";
 
+/**
+ * `POST /api/read-receipts/{kind}/{target_id}/read`: the activity instant the reader has seen.
+ */
+export type MarkReadRequest = { readThroughMs: number, };
+
 export type McpCheckResult = { tools: Array<string>, };
 
 /**
@@ -503,6 +508,23 @@ export type ProposalOp = { "op": "upsert_block", block_id?: string, temp_id?: st
  * `provenance realpath=<path> common_dir=<path> registered=<0|1>`.
  */
 export type ProvenanceSample = { realpath: string, common_dir: string, registered: boolean, };
+
+/**
+ * One target's receipt. `readThroughMs` only rises; `manualUnread` is the reader's explicit
+ * "mark unread", cleared by the next mark read.
+ */
+export type ReadReceipt = { kind: ReadReceiptKind, targetId: string, readThroughMs: number, manualUnread: boolean, };
+
+/**
+ * What a receipt is about: a track, or one conversation. A closed set, checked by the table too.
+ */
+export type ReadReceiptKind = "track" | "conversation";
+
+/**
+ * `GET /api/read-receipts`: the cutover baseline (activity at or before it is read) and every
+ * stored receipt.
+ */
+export type ReadReceipts = { baselineMs: number, receipts: Array<ReadReceipt>, };
 
 /**
  * A derived, addressable slice of a track report.

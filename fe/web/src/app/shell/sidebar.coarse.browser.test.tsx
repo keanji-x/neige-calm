@@ -6,6 +6,9 @@ import type { Area } from '../../../../core/domain/area.ts';
 import '../../styles/entry.css';
 import { ThemeProvider } from '../theme/public.tsx';
 import { Sidebar } from './sidebar.tsx';
+import { readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';
+
+const receipts = readReceiptsFixture();
 
 afterEach(cleanup);
 
@@ -22,7 +25,7 @@ it('keeps Area actions reachable on a wide no-hover touch display', () => {
     cwd: '/tmp', agentCwd: '/tmp', pinnedAt, closedAt: null, createdAt: 1, updatedAt: 1,
     ...NEUTRAL_ACTIVITY,
   }));
-  render(
+  render(receipts.wrap(
     <ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
       <Sidebar
         areas={[area]}
@@ -43,7 +46,7 @@ it('keeps Area actions reachable on a wide no-hover touch display', () => {
         onToggleCollapsed={vi.fn()}
       />
     </ThemeProvider>,
-  );
+  ));
 
   const actions = document.querySelector<HTMLElement>('[aria-label="Area actions for Work"]');
   expect(actions).not.toBeNull();

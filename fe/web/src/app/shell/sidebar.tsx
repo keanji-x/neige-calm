@@ -18,6 +18,7 @@ import {
   OperationFeedback, useDeleteConfirm, useOperationFeedback,
 } from '../../ui/operation-feedback/public.tsx';
 import { useUiPreferences } from '../providers/ui-preferences.tsx';
+import { useReadReceipts } from '../providers/read-receipts.tsx';
 import { TypedDeleteBody, useTypedConfirm } from '../../ui/typed-confirm/public.tsx';
 import type { NavTarget } from '../router/navigation.ts';
 import { routeParamFromPath } from '../router/navigation.ts';
@@ -85,7 +86,8 @@ export function Sidebar({
 
   const userAreas = visibleAreas(areas);
   const userTracks = userVisibleTracks(tracks, areas);
-  const isUnread = (track: Track) => preferences.isUnread('track', track.id, track.activityAt ?? 0);
+  const receipts = useReadReceipts();
+  const isUnread = (track: Track) => receipts.isUnread('track', track.id, track.activityAt);
   const memberships = sidebarTrackGroups(userTracks, isUnread);
   const waiting = memberships.waiting;
   const groups: ReadonlyArray<{ id: SidebarSectionId; title: string; icon: IconName; tracks: readonly Track[] }> = [
@@ -181,7 +183,7 @@ export function Sidebar({
       areaPinned: preferences.areaTrackPinned(track.areaId, track.id),
       onSetPinned: setPinned,
       onSetAreaPinned: (id: string, next: boolean) => preferences.setAreaTrackPinned(track.areaId, id, next),
-      onMarkUnread: (id: string) => preferences.markUnread('track', id),
+      onMarkUnread: (id: string) => receipts.markUnread('track', id),
     }),
   };
 

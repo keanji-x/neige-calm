@@ -7,6 +7,9 @@ import { NEUTRAL_ACTIVITY, type Track } from '../../../../core/domain/track.ts';
 import '../../styles/entry.css';
 import { ThemeProvider } from '../theme/public.tsx';
 import { Sidebar } from './sidebar.tsx';
+import { readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';
+
+const receipts = readReceiptsFixture();
 
 afterEach(() => { cleanup(); delete document.documentElement.dataset.theme; });
 
@@ -41,7 +44,7 @@ it('keeps Area actions visible without requiring hover on a desktop pointer', as
     id: 'a1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user',
     defaultTemplateId: null, defaultCwd: null, createdAt: 1, updatedAt: 1,
   };
-  render(
+  render(receipts.wrap(
     <ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
       <Sidebar
         areas={[area]}
@@ -62,7 +65,7 @@ it('keeps Area actions visible without requiring hover on a desktop pointer', as
         onToggleCollapsed={vi.fn()}
       />
     </ThemeProvider>,
-  );
+  ));
 
   const actions = document.querySelector<HTMLElement>('[aria-label="Area actions for Work"]')!;
   const actionsWrap = actions.parentElement!;
@@ -96,7 +99,7 @@ it('keeps the clickable Area quieter and uses the same cadence as its Track rows
     pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1,
     ...NEUTRAL_ACTIVITY,
   }));
-  render(
+  render(receipts.wrap(
     <ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
       <Sidebar
         areas={[emptyArea, area, nextArea]}
@@ -117,7 +120,7 @@ it('keeps the clickable Area quieter and uses the same cadence as its Track rows
         onToggleCollapsed={vi.fn()}
       />
     </ThemeProvider>,
-  );
+  ));
 
   const disclosure = document.querySelector<HTMLElement>('[aria-label="Collapse area Work"]')!;
   const areaRow = disclosure;

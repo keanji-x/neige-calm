@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 // Behaviour of the workspace rail: disclosure, badges, create/delete, account menu.
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Area } from '../../../../core/domain/area.ts';
 import { NEUTRAL_ACTIVITY, type Track } from '../../../../core/domain/track.ts';
 import { createUiPreferences, UiPreferencesProvider } from '../providers/ui-preferences.tsx';
+import { createReadReceiptsKernel, readReceiptsFixture, type ReadReceiptsKernel } from '../providers/read-receipts-fixture.tsx';
 import { ThemeProvider } from '../theme/public.tsx';
 import { Sidebar } from './sidebar.tsx';
 
@@ -35,11 +36,13 @@ function track(overrides: Partial<Track> = {}): Track {
 
 type Props = Parameters<typeof Sidebar>[0];
 
-function renderSidebar(props: Partial<Props> = {}, preferences = createUiPreferences()) {
+/** The kernel's receipts default to a baseline of 1: a Track whose `activityAt` is later reads as unread. */
+function renderSidebar(props: Partial<Props> = {}, preferences = createUiPreferences(), kernel: ReadReceiptsKernel = createReadReceiptsKernel({ baselineMs: 1 })) {
+  const { wrap } = readReceiptsFixture(kernel);
   const build = (overrides: Partial<Props>) => {
     const merged = { ...props, ...overrides };
     const tracks = merged.tracks ?? [];
-    return (
+    return wrap(
       <UiPreferencesProvider preferences={preferences}><ThemeProvider storage={memoryStorage()}>
         <Sidebar
           areas={merged.areas ?? [area()]}
@@ -64,7 +67,7 @@ function renderSidebar(props: Partial<Props> = {}, preferences = createUiPrefere
           readLoading={merged.readLoading}
           onRetryRead={merged.onRetryRead}
         />
-      </ThemeProvider></UiPreferencesProvider>
+      </ThemeProvider></UiPreferencesProvider>,
     );
   };
   const result = render(build({}));
@@ -464,22 +467,19 @@ describe('collapse toggle', () => {
 });
 
 
-it('reads the track receipt against the activity high-water mark, not updatedAt', () => {
+it('reads the track receipt against the activity high-water mark, not updatedAt', async () => {
   /* `updatedAt` moves on a rename or a pin; the receipt compares the kernel's
-   * completion high-water mark, and `activityAt: null` is never unread. The scope
-   * is entered at server time 100 (the baseline). */
-  const preferences = createUiPreferences(memoryStorage());
-  preferences.setReadScope('db1', 100);
+   * completion high-water mark, and `activityAt: null` is never unread. The kernel's baseline is 100. */
   renderSidebar({
     tracks: [
       track({ id: 'fresh', title: 'Fresh', updatedAt: 1, activityAt: 150 }),
       track({ id: 'seen', title: 'Seen', updatedAt: 1_000, activityAt: 50 }),
       track({ id: 'never', title: 'Never', updatedAt: 1_000, activityAt: null }),
     ],
-  }, preferences);
+  }, createUiPreferences(memoryStorage()), createReadReceiptsKernel({ baselineMs: 100 }));
   const marker = (title: string) => screen.getByRole('button', { name: new RegExp(`^Track ${title}`) })
     .parentElement?.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity') ?? null;
-  expect(marker('Fresh')).toBe('unread');
+  await waitFor(() => expect(marker('Fresh')).toBe('unread'));
   expect(marker('Seen')).toBeNull();
   expect(marker('Never')).toBeNull();
 });
@@ -505,7 +505,6 @@ describe('shared sidebar groups', () => {
   it('toggles Unread and Running independently and remembers both choices', async () => {
     const storage = memoryStorage();
     const preferences = createUiPreferences(storage);
-    preferences.setReadScope('db', 1);
     const props = { tracks: [track({ activityAt: 10, working: true, attention: 'input', pinnedAt: 5 })] };
     renderSidebar(props, preferences);
     expect(headings()).toEqual(['Waiting on you', 'Pinned', 'Areas']);
@@ -524,7 +523,6 @@ describe('shared sidebar groups', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Sidebar view options' }));
     cleanup();
     const restored = createUiPreferences(storage);
-    restored.setReadScope('db', 1);
     renderSidebar(props, restored);
     expect(headings()).toEqual(['Waiting on you', 'Pinned', 'Unread', 'Running', 'Areas']);
     await userEvent.click(screen.getByRole('button', { name: 'Group actions for Unread' }));
@@ -532,29 +530,32 @@ describe('shared sidebar groups', () => {
     expect(headings()).toEqual(['Waiting on you', 'Pinned', 'Running', 'Areas']);
   });
 
-  it('uses completion receipts for Unread and live working state for Running independently of attention', () => {
+  it('uses completion receipts for Unread and live working state for Running independently of attention', async () => {
     const preferences = createUiPreferences();
-    preferences.setReadScope('db', 1);
     preferences.setSidebarGroupVisible('unread', true);
     preferences.setSidebarGroupVisible('running', true);
     const tracks = [
       track({ id: 'both', title: 'Both', activityAt: 10, working: true, attention: 'input', closedAt: 5 }),
       track({ id: 'read', title: 'Read', activityAt: 8, updatedAt: 99 }),
       track({ id: 'quiet', title: 'Renamed', activityAt: null, updatedAt: 100 }),
+      track({ id: 'fresh', title: 'Fresh', activityAt: 12 }),
     ];
-    preferences.markRead('track', 'read', 8);
-    const { update } = renderSidebar({ tracks }, preferences);
+    const kernel = createReadReceiptsKernel({ baselineMs: 1, receipts: [
+      { kind: 'track', targetId: 'read', readThroughMs: 8, manualUnread: false },
+      { kind: 'track', targetId: 'both', readThroughMs: 10, manualUnread: false },
+    ] });
+    const { update } = renderSidebar({ tracks }, preferences, kernel);
     const unreadGroup = screen.getByRole('group', { name: 'Unread' });
     const runningGroup = screen.getByRole('group', { name: 'Running' });
-    expect(within(unreadGroup).getAllByRole('button', { name: /^Track / })).toHaveLength(1);
+    await waitFor(() => expect(within(unreadGroup).getAllByRole('button', { name: /^Track / })
+      .map((row) => row.getAttribute('aria-label'))).toEqual(['Track Fresh, in area Work']));
     expect(within(runningGroup).getAllByRole('button', { name: /^Track / })).toHaveLength(1);
-    act(() => preferences.markRead('track', 'both', 10));
     expect(headings()).toEqual(['Waiting on you', 'Unread', 'Running', 'Areas']);
-    expect(within(unreadGroup).queryAllByRole('button', { name: /^Track / })).toHaveLength(0);
-    update({ tracks: tracks.map((row) => ({ ...row, working: false })) });
+    update({ tracks: tracks.filter((row) => row.id !== 'fresh').map((row) => ({ ...row, working: false })) });
     expect(headings()).toEqual(['Waiting on you', 'Unread', 'Running', 'Areas']);
     expect(within(runningGroup).queryAllByRole('button', { name: /^Track / })).toHaveLength(0);
-    update({ tracks: tracks.map((row) => row.id === 'both' ? { ...row, working: false, activityAt: 11 } : row) });
+    update({ tracks: tracks.filter((row) => row.id !== 'fresh')
+      .map((row) => row.id === 'both' ? { ...row, working: false, activityAt: 11 } : row) });
     expect(headings()).toEqual(['Waiting on you', 'Unread', 'Running', 'Areas']);
     expect(within(unreadGroup).getAllByRole('button', { name: /^Track / })).toHaveLength(1);
   });
@@ -579,12 +580,13 @@ describe('shared sidebar groups', () => {
     expect(screen.getByRole('button', { name: 'Collapse area Work' })).toBeTruthy();
   });
 
-  it('never surfaces system Tracks in enabled shortcut groups', () => {
+  it('never surfaces system Tracks in enabled shortcut groups', async () => {
     const preferences = createUiPreferences();
-    preferences.setReadScope('db', 1);
     preferences.setSidebarGroupVisible('unread', true);
     preferences.setSidebarGroupVisible('running', true);
-    renderSidebar({ areas: [area({ kind: 'system' })], tracks: [track({ activityAt: 10, working: true })] }, preferences);
+    const kernel = createReadReceiptsKernel({ baselineMs: 1 });
+    renderSidebar({ areas: [area({ kind: 'system' })], tracks: [track({ activityAt: 10, working: true })] }, preferences, kernel);
+    await waitFor(() => expect(kernel.requests).toHaveLength(1));
     expect(headings()).toEqual(['Unread', 'Running', 'Areas']);
     expect(screen.queryByRole('button', { name: /^Track / })).toBeNull();
   });
@@ -607,7 +609,6 @@ describe('sidebar group management', () => {
     const preferences = createUiPreferences();
     preferences.setSidebarGroupVisible('unread', true);
     preferences.setSidebarGroupVisible('running', true);
-    preferences.setReadScope('db', 1);
     renderSidebar({ tracks: [track({ pinnedAt: 5, attention: 'input', working: true, activityAt: 10 })] }, preferences);
     await userEvent.click(screen.getByRole('button', { name: 'Group actions for Waiting on you' }));
     expect(screen.getByRole('menuitem', { name: 'Move up' }).getAttribute('aria-disabled')).toBe('true');
@@ -682,12 +683,13 @@ it('distinguishes hidden Areas from workspace groups with the same title', async
 
 it('keeps Show recovery for every built-in group after all groups are hidden', async () => {
   const preferences = createUiPreferences();
-  preferences.setReadScope('db', 1);
   preferences.setSidebarGroupVisible('unread', true);
   preferences.setSidebarGroupVisible('running', true);
   const onGo = vi.fn();
   const rows = [track({ title: 'Recoverable', pinnedAt: 5, attention: 'input', working: true, activityAt: 10 })];
   renderSidebar({ tracks: rows, onGo }, preferences);
+  // The receipts land before any menu opens: the row joins Unread once they are read.
+  await waitFor(() => expect(screen.getAllByRole('button', { name: /^Track Recoverable/ })).toHaveLength(5));
   const titles = ['Waiting on you', 'Pinned', 'Unread', 'Running', 'Areas'];
   for (const title of titles) {
     await userEvent.click(screen.getByRole('button', { name: `Group actions for ${title}` }));
@@ -713,12 +715,13 @@ it('keeps Show recovery for every built-in group after all groups are hidden', a
 
 it('offers personal Track actions without navigation and pins before the Area limit', async () => {
   const preferences = createUiPreferences();
-  preferences.setReadScope('db', 1_000);
+  preferences.setDatabaseScope('db');
+  const kernel = createReadReceiptsKernel({ baselineMs: 1_000 });
   const onGo = vi.fn();
   const onSetPinned = vi.fn();
   const rows = [track({ id: 'old', title: 'Old', activityAt: 0 }), ...Array.from({ length: 6 }, (_, i) => track({ id: `t${i}`, title: `Task ${i}` }))];
   preferences.setAreaTrackPinned('c1', 'old', true);
-  renderSidebar({ tracks: rows.toReversed(), onGo, onSetPinned }, preferences);
+  renderSidebar({ tracks: rows.toReversed(), onGo, onSetPinned }, preferences, kernel);
   const group = within(screen.getByRole('group', { name: 'area Work' }));
   expect(group.getAllByRole('button', { name: /^Track / })[0]?.getAttribute('aria-label')).toBe('Track Old');
   await userEvent.click(group.getByRole('button', { name: 'Actions for track Old' }));
@@ -726,7 +729,7 @@ it('offers personal Track actions without navigation and pins before the Area li
   expect(onSetPinned).toHaveBeenCalledWith('old', true);
   await userEvent.click(group.getByRole('button', { name: 'Actions for track Old' }));
   await userEvent.click(screen.getByRole('menuitem', { name: 'Mark as unread' }));
-  expect(preferences.isUnread('track', 'old', 0)).toBe(true);
+  await waitFor(() => expect(kernel.stored('track', 'old')?.manualUnread).toBe(true));
   expect(onGo).not.toHaveBeenCalled();
   expect(screen.queryByRole('group', { name: 'Pinned' })).toBeNull();
   await userEvent.click(group.getByRole('button', { name: 'Actions for track Old' }));
@@ -737,12 +740,13 @@ it('offers personal Track actions without navigation and pins before the Area li
 
 
 it('keeps manually unread until the selected Track view acknowledges it', async () => {
-  const preferences = createUiPreferences();
-  preferences.setReadScope('db', 1_000);
-  renderSidebar({ tracks: [track()], currentPath: '/track/w1' }, preferences);
+  const kernel = createReadReceiptsKernel({ baselineMs: 1_000 });
+  renderSidebar({ tracks: [track()], currentPath: '/track/w1' }, createUiPreferences(), kernel);
+  await waitFor(() => expect(kernel.requests).toHaveLength(1));
   await userEvent.click(screen.getByRole('button', { name: 'Actions for track Task' }));
   await userEvent.click(screen.getByRole('menuitem', { name: 'Mark as unread' }));
-  expect(preferences.isUnread('track', 'w1', 0)).toBe(true);
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Track Task' }).getAttribute('aria-describedby')).toBeTruthy());
   await userEvent.click(screen.getByRole('button', { name: 'Track Task' }));
-  expect(preferences.isUnread('track', 'w1', 0)).toBe(true);
+  expect(kernel.stored('track', 'w1')?.manualUnread).toBe(true);
+  expect(kernel.posts().map((request) => request.path)).toEqual(['/api/read-receipts/track/w1/unread']);
 });

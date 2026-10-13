@@ -1,4 +1,4 @@
-import { act, cleanup, render } from '@testing-library/react';
+import { cleanup, render } from '@testing-library/react';
 import { page, userEvent } from 'vitest/browser';
 import { afterEach, expect, it, vi } from 'vitest';
 
@@ -6,6 +6,7 @@ import type { Area } from '../../../../core/domain/area.ts';
 import { NEUTRAL_ACTIVITY, type Track } from '../../../../core/domain/track.ts';
 import '../../styles/entry.css';
 import { createUiPreferences, UiPreferencesProvider } from '../providers/ui-preferences.tsx';
+import { createReadReceiptsKernel, readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';
 import { ThemeProvider } from '../theme/public.tsx';
 import styles from './shell.module.css';
 import { Sidebar } from './sidebar.tsx';
@@ -16,7 +17,9 @@ afterEach(() => { cleanup(); delete document.documentElement.dataset.theme; });
 async function scene(activitiesVisible: boolean) {
   await page.viewport(1400, 900);
   const preferences = createUiPreferences();
-  preferences.setReadScope('db', 1);
+  /* The kernel's baseline is 1, so a Track whose `activityAt` is later reads as unread. */
+  const kernel = createReadReceiptsKernel({ baselineMs: 1 });
+  const { wrap } = readReceiptsFixture(kernel);
   if (activitiesVisible) {
     preferences.setSidebarGroupVisible('unread', true);
     preferences.setSidebarGroupVisible('running', true);
@@ -32,7 +35,7 @@ async function scene(activitiesVisible: boolean) {
     closedAt: null, createdAt: 1, updatedAt: 10, ...NEUTRAL_ACTIVITY, activityAt: 10, ...row }));
   const onGo = vi.fn();
   const onSetPinned = vi.fn();
-  const sidebar = (tracks: Track[]) => <UiPreferencesProvider preferences={preferences}>
+  const sidebar = (tracks: Track[]) => wrap(<UiPreferencesProvider preferences={preferences}>
     <ThemeProvider storage={{ getItem: () => 'light', setItem: () => undefined }}>
       <div className={`${styles.shell} ${styles.shellExpanded}`} style={{ blockSize: '100dvh' }}>
         <Sidebar areas={[area, reading]} tracksByArea={new Map([[area.id, tracks], [reading.id, []]])} tracks={tracks}
@@ -43,15 +46,16 @@ async function scene(activitiesVisible: boolean) {
         <main />
       </div>
     </ThemeProvider>
-  </UiPreferencesProvider>;
+  </UiPreferencesProvider>);
   const view = render(sidebar(tracks));
+  await expect.poll(() => kernel.requests.length).toBe(1);
 
   const options = page.getByRole('button', { name: 'Sidebar view options' });
   const collapse = page.getByRole('button', { name: 'Collapse sidebar' });
   const today = page.getByRole('button', { name: 'Go to Today' });
   const areasDisclosure = page.getByRole('button', { name: 'Collapse Areas', exact: true });
   const areasMarker = areasDisclosure.element().querySelector<HTMLElement>('span[aria-hidden="true"]')!;
-  return { preferences, tracks, sidebar, view, onGo, onSetPinned, options, collapse, today, areasDisclosure, areasMarker };
+  return { kernel, preferences, tracks, sidebar, view, onGo, onSetPinned, options, collapse, today, areasDisclosure, areasMarker };
 }
 
 it('places view options and preserves disclosure and keyboard navigation', async () => {
@@ -166,13 +170,13 @@ it('manages group ordering, visibility and pointer restoration', async () => {
 });
 
 it('keeps pin controls usable and updates live group membership', async () => {
-  const { today, onGo, onSetPinned, preferences, tracks, sidebar, view } = await scene(true);
+  const { today, onGo, onSetPinned, kernel, tracks, sidebar, view } = await scene(true);
   await today.hover();
   const pinNext = page.getByRole('button', { name: 'Pin Next task' });
   expect(getComputedStyle(pinNext.element()).opacity).toBe('0');
   expect(getComputedStyle(pinNext.element().querySelector('svg')!).rotate).toBe('none');
+  await expect.poll(() => page.getByRole('button', { name: 'Unpin Build frontend' }).elements()).toHaveLength(4);
   const pins = page.getByRole('button', { name: 'Unpin Build frontend' }).elements() as HTMLElement[];
-  expect(pins).toHaveLength(4);
   for (const pin of pins) {
     expect(getComputedStyle(pin).opacity).toBe('0');
     expect(getComputedStyle(pin).pointerEvents).toBe('none');
@@ -192,7 +196,11 @@ it('keeps pin controls usable and updates live group membership', async () => {
   await page.getByRole('group', { name: 'Running', exact: true }).getByRole('button', { name: /^Track Build frontend/ }).click();
   expect(onGo).toHaveBeenCalledWith({ name: 'track', trackId: 'running' });
   expect(document.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
-  act(() => { preferences.markRead('track', 'review', 10); preferences.markRead('track', 'running', 10); });
+  // Another device reads both; this one sees it when its tab is shown again.
+  for (const id of ['review', 'running']) {
+    await kernel.transport.send({ method: 'POST', path: `/api/read-receipts/track/${id}/read`, credentials: 'include', body: { readThroughMs: 10 } });
+  }
+  window.dispatchEvent(new Event('visibilitychange'));
   await expect.element(page.getByRole('group', { name: 'Unread', exact: true })).toBeVisible();
   await expect.element(page.getByRole('group', { name: 'Unread', exact: true }).getByRole('button', { name: /^Track / })).not.toBeInTheDocument();
   await expect.element(page.getByRole('group', { name: 'Waiting on you', exact: true })).toBeVisible();
@@ -233,14 +241,16 @@ it('recovers hidden groups through the full pointer list and Escape layers', asy
 it('uses the three-dot Track menu with keyboard and keeps actions separate from navigation', async () => {
   await page.viewport(1400, 900);
   const preferences = createUiPreferences();
-  preferences.setReadScope('db', 1_000);
+  preferences.setDatabaseScope('db');
+  const kernel = createReadReceiptsKernel({ baselineMs: 1_000 });
+  const { wrap } = readReceiptsFixture(kernel);
   const area: Area = { id: 'work', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user',
     defaultTemplateId: null, defaultCwd: null, createdAt: 1, updatedAt: 1 };
   const tracks: Track[] = ['Recent', 'Older'].map((title, i) => ({ id: `t${i}`, areaId: area.id, title, sort: i,
     cwd: '/tmp', agentCwd: '/tmp', pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 2, ...NEUTRAL_ACTIVITY }));
   const onGo = vi.fn();
   const onSetPinned = vi.fn();
-  render(<UiPreferencesProvider preferences={preferences}>
+  render(wrap(<UiPreferencesProvider preferences={preferences}>
     <ThemeProvider storage={{ getItem: () => 'light', setItem: () => undefined }}>
       <div className={`${styles.shell} ${styles.shellExpanded}`} style={{ blockSize: '100dvh' }}>
         <Sidebar areas={[area]} tracksByArea={new Map([[area.id, tracks]])} tracks={tracks}
@@ -251,7 +261,7 @@ it('uses the three-dot Track menu with keyboard and keeps actions separate from 
         <main />
       </div>
     </ThemeProvider>
-  </UiPreferencesProvider>);
+  </UiPreferencesProvider>));
   const menu = page.getByRole('button', { name: 'Actions for track Older' });
   await expect.element(menu).toBeVisible();
   const row = page.getByRole('button', { name: 'Track Older', exact: true }).element();
@@ -267,8 +277,8 @@ it('uses the three-dot Track menu with keyboard and keeps actions separate from 
   expect(navigationRows[0]?.getAttribute('aria-label')).toBe('Track Older');
   await menu.click();
   await page.getByRole('menuitem', { name: 'Mark as unread', exact: true }).click();
-  expect(preferences.isUnread('track', 't1', 0)).toBe(true);
-  expect(row.getAttribute('aria-describedby')).toBeTruthy();
+  await expect.poll(() => kernel.stored('track', 't1')?.manualUnread).toBe(true);
+  await expect.poll(() => row.getAttribute('aria-describedby')).toBeTruthy();
   await menu.click();
   await userEvent.keyboard('{Escape}');
   await expect.element(menu).toHaveFocus();

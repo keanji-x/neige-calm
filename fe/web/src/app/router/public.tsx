@@ -110,7 +110,8 @@ import { ConversationSurface } from './mobile-conversation-surface.tsx';
 import { plannerConversationRow } from '../conversations/planner-row.ts';
 import { NewTrackDraftProvider } from './new-track-drafts.tsx';
 import { RecipesRoute } from './recipes-route.tsx';
-import { createUiPreferences, UiPreferencesProvider, useConversationViewTarget, useUiPreferences, useReadReceipt, type UiPreferences } from '../providers/ui-preferences.tsx';
+import { createUiPreferences, UiPreferencesProvider, useConversationViewTarget, type UiPreferences } from '../providers/ui-preferences.tsx';
+import { ReadReceiptsProvider, useReadReceipt, useReadReceipts } from '../providers/read-receipts.tsx';
 import { TrackSelector } from '../shell/track-selector.tsx';
 import { AppShell, MobileConversationProvider, useMobileConversationOwner, useConversationDrawerResize, useOpenMobileSection, useMobileHeaderActionsHost, useMobileHeaderTitleHost } from '../shell/public.tsx';
 import {
@@ -177,9 +178,9 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
   const recentFiles = deps.recentFiles ?? createRecentFileHistory();
   const preferences = deps.uiPreferences ?? createUiPreferences();
   const rootRoute = createRootRoute({ component: () => (
-    <UiPreferencesProvider preferences={preferences}>
+    <UiPreferencesProvider preferences={preferences}><ReadReceiptsProvider transport={transport} unauthorized={unauthorized}>
       <TrackViewProvider><MobileConversationProvider><ShellRoute transport={transport} unauthorized={unauthorized} onSignOut={onSignOut} /></MobileConversationProvider></TrackViewProvider>
-    </UiPreferencesProvider>
+    </ReadReceiptsProvider></UiPreferencesProvider>
   ) });
 
   const indexRoute = createRoute({
@@ -452,12 +453,11 @@ function useConversationPane(
   const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
   /* While an Edit is held nothing else acts on the conversation; its replace, once sent, blocks as any send does. */
   const respondable = canContinue && edit.held === null;
-  const preferences = useUiPreferences();
   const drawerResize = useConversationDrawerResize();
   // Receipts compare the row's completion time, not `updatedAt`, which also moves
   // when the reader queues a message. `null` is never unread.
   const openActivity = rows.find(row => row.id === open?.id);
-  useReadReceipt('conversation', openActivity?.id ?? null, openActivity?.lastTurnCompletedAt ?? 0,
+  useReadReceipt('conversation', openActivity?.id ?? null, openActivity?.lastTurnCompletedAt ?? null,
     store.historyReady && !store.historyLoading && store.historyError === null);
 
   /* Only this route's slot is visible, reopenable or sendable here. */
@@ -802,10 +802,9 @@ function useConversationPane(
   const openConversation = useCommittedCallback(sourceScopeId, (conversation: Conversation) => {
     setOpenTarget({ kind: 'row', id: conversation.id });
   });
-  const preferencesRevision = preferences.getSnapshot();
-  const { ids: unreadIds } = useMemo(() => ({ revision: preferencesRevision,
-    ids: new Set(rows.filter(row => preferences.isUnread('conversation', row.id,
-      row.lastTurnCompletedAt ?? 0)).map(row => row.id)) }), [rows, preferences, preferencesRevision]);
+  const receipts = useReadReceipts();
+  const unreadIds = useMemo(() => new Set(rows.filter(row => receipts.isUnread('conversation', row.id,
+    row.lastTurnCompletedAt ?? null)).map(row => row.id)), [rows, receipts]);
   const listNode = useMemo(() => (
       <ChatList
         conversations={store.conversations}
@@ -946,7 +945,7 @@ function TrackRouteBody({
   // high-water mark, never the row's `updatedAt`.
   // A completed navigation also acknowledges a repeated selection of this already rendered Track.
   const navigationCompletedAt = useRouterState({ select: (state) => state.loadedAt });
-  useReadReceipt('track', track.id, track.activityAt ?? 0, true, navigationCompletedAt);
+  useReadReceipt('track', track.id, track.activityAt, true, navigationCompletedAt);
   const trackMutations = useTrackMutations(transport, unauthorized);
   const conversationMutations = useTrackConversationMutations(transport, track.id, unauthorized);
   const openMobileSection = useOpenMobileSection();

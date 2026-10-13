@@ -26,4 +26,7 @@
 // Revision 28 (#2516): `GET /api/claude/installed-version` and
 // `POST /api/claude/installed-version/refresh` are new; a bundle of this revision would get 404 from
 // an older kernel when a Claude card asks which version is installed.
-pub const REST_API_VERSION: &str = "28";
+// Revision 29 (#2596): `GET /api/read-receipts` and its `read`/`unread` writes are new, and
+// `/api/version` no longer carries `nowMs`; a bundle of this revision reads its unread state from the
+// kernel and would get 404 from an older one.
+pub const REST_API_VERSION: &str = "29";

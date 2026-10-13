@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useSyncExternalStore, type ReactNode } from 'react';
 
 import { createStorageKey, DATABASE_ID_KEY } from '../../../../core/keys/storage.ts';
 import { sidebarOrder, type SidebarGroupId, type SidebarOrderScope } from '../../../../core/view/sidebar-layout.ts';
@@ -12,22 +12,21 @@ export type UiPreferences = ReturnType<typeof createUiPreferences>;
  * in different tabs cannot replace other Tracks' or Areas' preferences. */
 export function createUiPreferences(storage?: UiPreferenceStorage) {
   const memory = new Map<string, Preference>();
-  const unpersisted = new Set<string>();
   const listeners = new Set<() => void>();
   let revision = 0;
-  /* Seeded from the database's STABLE identity, never the per-boot `DB_INSTANCE_ID_KEY`: receipts keyed
+  /* Seeded from the database's STABLE identity, never the per-boot `DB_INSTANCE_ID_KEY`: choices keyed
    * by a process id were thrown away on every kernel restart. `null` until the compat gate confirms it. */
   let database: string | null = null;
-  try { database = storage?.getItem(DATABASE_ID_KEY) ?? null; } catch { /* memory-only receipts */ }
+  try { database = storage?.getItem(DATABASE_ID_KEY) ?? null; } catch { /* memory-only choices */ }
   const notify = () => {
     revision += 1;
     for (const listener of listeners) listener();
   };
   let recoveryScope: string | null = null;
-  /* Display preferences live under the bundled recovery scope `[origin, userId, dbInstanceId]`, but receipts
-   * and the baseline (`read:*`) must NOT: `dbInstanceId` is per boot, so they use origin and userId only. */
-  let receiptNamespace: readonly [origin: string, userId: string] | null = null;
-  const receiptNamespaceOf = (scope: string): readonly [string, string] | null => {
+  /* Display preferences live under the bundled recovery scope `[origin, userId, dbInstanceId]`, but per-browser
+   * choices (`browser:*`) must NOT: `dbInstanceId` is per boot, so they use origin and userId only. */
+  let browserNamespace: readonly [origin: string, userId: string] | null = null;
+  const browserNamespaceOf = (scope: string): readonly [string, string] | null => {
     try {
       const parsed: unknown = JSON.parse(scope);
       if (Array.isArray(parsed) && parsed.length === 3
@@ -39,93 +38,43 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
   };
   const storageKey = (key: string) => {
     if (recoveryScope === null) return createStorageKey('ui', 'v1', encodeURIComponent(key));
-    if (receiptNamespace !== null && key.startsWith('read:')) {
-      return createStorageKey('ui', 'receipts',
-        encodeURIComponent(receiptNamespace[0]), encodeURIComponent(receiptNamespace[1]), encodeURIComponent(key));
-    }
-    /* A per-browser display choice outlives a kernel restart the same way: origin and user, not the boot. */
-    if (receiptNamespace !== null && key.startsWith('browser:')) {
+    /* A per-browser display choice outlives a kernel restart: origin and user, not the boot. */
+    if (browserNamespace !== null && key.startsWith('browser:')) {
       return createStorageKey('ui', 'browser',
-        encodeURIComponent(receiptNamespace[0]), encodeURIComponent(receiptNamespace[1]), encodeURIComponent(key));
+        encodeURIComponent(browserNamespace[0]), encodeURIComponent(browserNamespace[1]), encodeURIComponent(key));
     }
     return createStorageKey('ui', 'recovery', encodeURIComponent(recoveryScope), encodeURIComponent(key));
   };
-  const read = (key: string, fresh = false): Preference => {
-    if (memory.has(key) && (!fresh || storage === undefined || unpersisted.has(key))) return memory.get(key) ?? null;
+  const read = (key: string): Preference => {
+    if (memory.has(key)) return memory.get(key) ?? null;
     let value: Preference = null;
     try {
       const parsed: unknown = JSON.parse(storage?.getItem(storageKey(key)) ?? 'null');
       if (typeof parsed === 'boolean' || (typeof parsed === 'string' && parsed.length > 0)) value = parsed;
     } catch {
-      // Unavailable storage retains this instance's choices, including manual unread.
-      if (fresh) return memory.get(key) ?? null;
       // Malformed or unavailable storage leaves the default display usable.
     }
     memory.set(key, value);
     return value;
   };
-  const write = (key: string, value: Preference, notifyLayout: boolean, persist = true) => {
-    if ((persist ? read(key) : memory.get(key)) === value) return;
+  const write = (key: string, value: Preference, notifyLayout: boolean) => {
+    if (read(key) === value) return;
     memory.set(key, value);
     try {
-      if (persist) {
-        storage?.setItem(storageKey(key), JSON.stringify(value));
-        unpersisted.delete(key);
-      }
+      storage?.setItem(storageKey(key), JSON.stringify(value));
     } catch {
-      unpersisted.add(key);
       // The current app instance still remembers the choice when storage fails.
     }
     if (!notifyLayout) return;
     notify();
   };
-  const receiptKey = (kind: 'track' | 'conversation', id: string) => `read:${database ?? 'local'}:${kind}:${id}`;
-  /* A device's first entry into a database scope marks everything read: the baseline is written once per
-   * `(device, databaseId)` with the SERVER's clock, and every receipt reads as at least that. */
-  const baselineKey = (databaseId: string) => `read:${databaseId}:baseline`;
-  const stampOf = (value: unknown) => {
-    const stamp = typeof value === 'string' ? Number(value) : 0;
-    return Number.isFinite(stamp) && stamp > 0 ? stamp : 0;
-  };
-  const receipt = (key: string): number => {
-    if (database === null) return stampOf(memory.get(key));
-    const baseline = stampOf(read(baselineKey(database)));
-    const cached = stampOf(read(key));
-    try {
-      // Re-read before acknowledging: another tab may already have seen a newer update.
-      return Math.max(baseline, cached, stampOf(JSON.parse(storage?.getItem(storageKey(key)) ?? 'null')));
-    } catch { return Math.max(baseline, cached); }
-  };
-  const writeManualUnread = (kind: 'track' | 'conversation', id: string, unread: boolean) => {
-    if (database === null) return;
-    const key = `${receiptKey(kind, id)}:unread`;
-    read(key, true); // Refresh before write's no-op check: another tab may have changed it.
-    write(key, unread, true);
-  };
   return Object.freeze({
-    readScope: () => database,
-    /** `nowMs` is the server time the scope was confirmed at; it becomes the baseline the first time this device sees `id`. A `null` scope writes nothing. */
-    setReadScope(id: string | null, nowMs: number | null = null): void {
-      if (id !== null && nowMs !== null && Number.isFinite(nowMs) && nowMs > 0 && read(baselineKey(id)) === null) {
-        write(baselineKey(id), String(nowMs), false);
-      }
+    databaseScope: () => database,
+    /** The database the visible data belongs to; a `null` scope keeps no per-database choice. */
+    setDatabaseScope(id: string | null): void {
       if (database === id) return;
       database = id;
       notify();
-    },
-    isUnread(kind: 'track' | 'conversation', id: string, updatedAt: number): boolean {
-      // No scope, no verdict: "everything is unread until /api/version answers" is a lie on every page load.
-      if (database === null) return false;
-      return read(`${receiptKey(kind, id)}:unread`, true) === true || updatedAt > receipt(receiptKey(kind, id));
-    },
-    markRead(kind: 'track' | 'conversation', id: string, updatedAt: number): void {
-      const key = receiptKey(kind, id);
-      writeManualUnread(kind, id, false);
-      if (Number.isFinite(updatedAt) && updatedAt > receipt(key)) write(key, String(updatedAt), true, database !== null);
-    },
-    /** Explicit unread is independent of activity timestamps and the baseline. */
-    markUnread(kind: 'track' | 'conversation', id: string): void {
-      writeManualUnread(kind, id, true);
     },
     areaTrackPinned(areaId: string, trackId: string): boolean {
       if (database === null) return false;
@@ -136,7 +85,7 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
     },
     setRecoveryScope(scope: string): void {
       if (recoveryScope === scope) return;
-      recoveryScope = scope; receiptNamespace = receiptNamespaceOf(scope); memory.clear(); unpersisted.clear(); notify();
+      recoveryScope = scope; browserNamespace = browserNamespaceOf(scope); memory.clear(); notify();
     },
     // Only layout changes are live: conversation selection is restored on route
     // entry and owned by React while open, so saving it must not move focus.
@@ -178,7 +127,7 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
       return typeof value === 'boolean' ? value : null;
     },
     setRailCollapsed: (value: boolean) => write('rail-collapsed', value, true),
-    /** The conversation drawer's dragged width in rem, or `null` for the default; stored as a string like receipts. */
+    /** The conversation drawer's dragged width in rem, or `null` for the default; stored as a string. */
     drawerWidth(): number | null {
       const stored = read('browser:drawer-width');
       const value = typeof stored === 'string' ? Number(stored) : 0;
@@ -195,23 +144,19 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {
 }
 
 const UiPreferencesContext = createContext<UiPreferences | null>(null);
-/** The database the visible data belongs to, and the server time that was confirmed at. */
-export type ReadReceiptScope = Readonly<{ id: string | null; nowMs: number | null }>;
-// Undefined means a standalone preferences host; a null `id` means the gate has not confirmed the database
-// yet (or the server predates database identity), in which case nothing is ever unread.
-const ReadReceiptScopeContext = createContext<ReadReceiptScope | undefined>(undefined);
+// The database the visible data belongs to. Undefined means a standalone preferences host; `null` means the
+// gate has not confirmed the database yet, in which case no per-database choice (an Area pin) applies.
+const DatabaseScopeContext = createContext<string | null | undefined>(undefined);
 
-export function ReadReceiptScopeProvider({ id, nowMs = null, children }: { id: string | null; nowMs?: number | null; children: ReactNode }) {
-  const scope = useMemo<ReadReceiptScope>(() => ({ id, nowMs }), [id, nowMs]);
-  return <ReadReceiptScopeContext.Provider value={scope}>{children}</ReadReceiptScopeContext.Provider>;
+export function DatabaseScopeProvider({ id, children }: { id: string | null; children: ReactNode }) {
+  return <DatabaseScopeContext.Provider value={id}>{children}</DatabaseScopeContext.Provider>;
 }
 
 export function UiPreferencesProvider({ preferences, children }: { preferences: UiPreferences; children: ReactNode }) {
-  const scope = useContext(ReadReceiptScopeContext);
-  // Layout, not passive: the baseline has to be on disk before the first
-  // `useReadReceipt` (a passive effect in the same commit) persists a receipt.
+  const scope = useContext(DatabaseScopeContext);
+  // Layout, not passive: rows never paint their Area pins under a scope the gate has replaced.
   useLayoutEffect(() => {
-    if (scope !== undefined) preferences.setReadScope(scope.id, scope.nowMs);
+    if (scope !== undefined) preferences.setDatabaseScope(scope);
   }, [scope, preferences]);
   return <UiPreferencesContext.Provider value={preferences}>{children}</UiPreferencesContext.Provider>;
 }
@@ -246,19 +191,4 @@ export function useConversationViewTarget(scopeId: string) {
     preferences.setConversation(currentScopeId, target?.kind === 'row' ? target.id : null);
   }, [preferences, currentScopeId, target]);
   return [current.target, setTarget] as const;
-}
-
-/** A background tab never acknowledges work the reader has not seen. */
-export function useReadReceipt(kind: 'track' | 'conversation', id: string | null, updatedAt: number, enabled = true, openedAt?: number) {
-  const preferences = useUiPreferences();
-  const scope = preferences.readScope();
-  useEffect(() => {
-    if (id === null || !enabled) return;
-    const markVisible = () => {
-      if (document.visibilityState === 'visible') preferences.markRead(kind, id, updatedAt);
-    };
-    markVisible();
-    document.addEventListener('visibilitychange', markVisible);
-    return () => document.removeEventListener('visibilitychange', markVisible);
-  }, [preferences, scope, kind, id, updatedAt, enabled, openedAt]);
 }

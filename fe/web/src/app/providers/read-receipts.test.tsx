@@ -1,146 +1,107 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import type { ReactNode } from 'react';
 import { afterEach, expect, it, vi } from 'vitest';
-import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { RecoveryAccess } from '../../../../core/domain/recovery/access.ts';
-import { DATABASE_ID_KEY, DB_INSTANCE_ID_KEY } from '../../../../core/keys/storage.ts';
-import { RecoverySession } from '../../systems/recovery/session.ts';
-import { createRecoveryTransports } from '../../systems/recovery/transport.ts';
-import { RecoveryGate } from '../auth/recovery-gate.tsx';
-import { ServerCompatGate, WEB_COMPAT_VERSION, type ServerVersionInfo } from './public.tsx';
-import { createUiPreferences, UiPreferencesProvider, useReadReceipt } from './ui-preferences.tsx';
+import type { ApiTransportResponse } from '../../../../core/api/types.ts';
+import { useReadReceipt, useReadReceipts } from './read-receipts.tsx';
+import { createReadReceiptsKernel, readReceiptsFixture, type ReadReceiptsKernel } from './read-receipts-fixture.tsx';
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
-it('records the initially visible track under the first discovered instance', async () => {
-  const values = new Map<string, string>();
-  const storage = {
-    getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => { values.set(key, value); },
-    removeItem: (key: string) => { values.delete(key); },
-  };
-  const preferences = createUiPreferences(storage);
-  let release!: (value: ServerVersionInfo) => void;
-  const version = new Promise<ServerVersionInfo>(resolve => { release = resolve; });
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const runtime = { storage, fetchVersion: () => version, reload: () => {}, deleteDatabase: () => {}, idbDatabaseName: 'test' };
-  function Reader() {
-    useReadReceipt('track', 'current', 100);
-    return <p>Visible track</p>;
+const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
+
+function mount(kernel: ReadReceiptsKernel, children: ReactNode) {
+  const { wrap } = readReceiptsFixture(kernel);
+  const view = render(wrap(children));
+  return { rerender: (node: ReactNode) => view.rerender(wrap(node)) };
+}
+
+function Verdict({ id, at }: { id: string; at: number | null }) {
+  const receipts = useReadReceipts();
+  return <p>{id}: {receipts.ready ? (receipts.isUnread('track', id, at) ? 'unread' : 'read') : 'pending'}</p>;
+}
+
+it('reads nothing as unread until the kernel answers, then applies its baseline and receipts', async () => {
+  let answer!: (value: unknown) => void;
+  const pending = new Promise((resolve) => { answer = resolve; });
+  const kernel = createReadReceiptsKernel();
+  const slow = { ...kernel, transport: { send: async () => ok(await pending) } };
+  function Probe() {
+    const receipts = useReadReceipts();
+    return <p>{['old', 'seen', 'fresh'].map((id) => `${id}=${receipts.isUnread('track', id, 200)}`).join(' ')}</p>;
   }
-  try {
-    render(<QueryClientProvider client={client}>
-      <ServerCompatGate client={client} runtime={runtime} cursorStore={{ clear() {} }}>
-        <UiPreferencesProvider preferences={preferences}><Reader /></UiPreferencesProvider>
-      </ServerCompatGate>
-    </QueryClientProvider>);
-    expect(screen.getByText('Visible track')).toBeTruthy();
-    expect(preferences.isUnread('track', 'current', 100)).toBe(false);
-    expect(values.size).toBe(0);
-    await act(async () => {
-      release({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION,
-        syncEventVersion: 20, dbInstanceId: 'boot-1', databaseId: 'real-db', nowMs: 50 });
-      await version;
-    });
-    await waitFor(() => expect(values.get(DB_INSTANCE_ID_KEY)).toBe('boot-1'));
-    await waitFor(() => expect(values.get(DATABASE_ID_KEY)).toBe('real-db'));
-    await waitFor(() => expect(preferences.readScope()).toBe('real-db'));
-    await waitFor(() => expect(preferences.isUnread('track', 'current', 100)).toBe(false));
-    // The next load seeds its scope from `DATABASE_ID_KEY`, so it is the receipt, not the baseline, that answers here.
-    expect(createUiPreferences(storage).isUnread('track', 'current', 100)).toBe(false);
-    expect(createUiPreferences(storage).isUnread('track', 'other', 100)).toBe(true);
-  } finally { client.clear(); }
+  mount(slow, <Probe />);
+  expect(screen.getByText('old=false seen=false fresh=false')).toBeTruthy();
+  await act(async () => {
+    answer({ baselineMs: 150, receipts: [{ kind: 'track', targetId: 'old', readThroughMs: 0, manualUnread: false },
+      { kind: 'track', targetId: 'seen', readThroughMs: 200, manualUnread: false }] });
+    await pending;
+  });
+  await screen.findByText('old=true seen=false fresh=true');
 });
 
-it('database_id_change_overwrites_the_key', async () => {
-  // The per-boot instance id is unchanged here, so none of the cache busting runs.
-  const values = new Map<string, string>([[DB_INSTANCE_ID_KEY, 'boot-1'], [DATABASE_ID_KEY, 'db-old']]);
-  const storage = {
-    getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => { values.set(key, value); },
-    removeItem: (key: string) => { values.delete(key); },
-  };
-  const reload = vi.fn();
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const runtime = {
-    storage, reload, deleteDatabase: () => {}, idbDatabaseName: 'test',
-    fetchVersion: () => Promise.resolve({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION,
-      syncEventVersion: 20, dbInstanceId: 'boot-1', databaseId: 'db-new', nowMs: 50 }),
-  };
-  const preferences = createUiPreferences(storage);
-  expect(preferences.readScope()).toBe('db-old');
-  try {
-    render(<QueryClientProvider client={client}>
-      <ServerCompatGate client={client} runtime={runtime} cursorStore={{ clear() {} }}>
-        <UiPreferencesProvider preferences={preferences}><p>Route</p></UiPreferencesProvider>
-      </ServerCompatGate>
-    </QueryClientProvider>);
-    await waitFor(() => expect(values.get(DATABASE_ID_KEY)).toBe('db-new'));
-    await waitFor(() => expect(preferences.readScope()).toBe('db-new'));
-    expect(reload).not.toHaveBeenCalled();
-    expect(values.get(DB_INSTANCE_ID_KEY)).toBe('boot-1');
-  } finally { cleanup(); client.clear(); }
+it('marks unread optimistically, posts it, and refetches', async () => {
+  const fake = createReadReceiptsKernel({ writeDelayMs: 20 });
+  let markUnread!: (id: string) => void;
+  function Actions() { const receipts = useReadReceipts(); markUnread = (id) => receipts.markUnread('track', id); return <Verdict id="t" at={null} />; }
+  mount(fake, <Actions />);
+  await screen.findByText('t: read');
+  act(() => markUnread('t'));
+  await screen.findByText('t: unread');
+  await waitFor(() => expect(fake.requests.map((request) => `${request.method} ${request.path}`)).toEqual([
+    'GET /api/read-receipts', 'POST /api/read-receipts/track/t/unread', 'GET /api/read-receipts',
+  ]));
+  expect(screen.getByText('t: unread')).toBeTruthy();
 });
 
-it('leaves the receipt scope null, and nothing unread, when the kernel reports no database identity', async () => {
-  const values = new Map<string, string>();
-  const storage = {
-    getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => { values.set(key, value); },
-    removeItem: (key: string) => { values.delete(key); },
-  };
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const runtime = {
-    storage, reload: () => {}, deleteDatabase: () => {}, idbDatabaseName: 'test',
-    fetchVersion: () => Promise.resolve({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION,
-      syncEventVersion: 20, dbInstanceId: 'boot-1' }),
-  };
-  const preferences = createUiPreferences(storage);
-  try {
-    render(<QueryClientProvider client={client}>
-      <ServerCompatGate client={client} runtime={runtime} cursorStore={{ clear() {} }}>
-        <UiPreferencesProvider preferences={preferences}><p>Route</p></UiPreferencesProvider>
-      </ServerCompatGate>
-    </QueryClientProvider>);
-    await waitFor(() => expect(values.get(DB_INSTANCE_ID_KEY)).toBe('boot-1'));
-    expect(values.has(DATABASE_ID_KEY)).toBe(false);
-    expect(preferences.readScope()).toBeNull();
-    expect(preferences.isUnread('track', 't', Number.MAX_SAFE_INTEGER)).toBe(false);
-  } finally { cleanup(); client.clear(); }
+it('puts the kernel state back when a write fails', async () => {
+  const fake = createReadReceiptsKernel({ fail: true, writeDelayMs: 20 });
+  let markUnread!: () => void;
+  function Actions() { const receipts = useReadReceipts(); markUnread = () => receipts.markUnread('track', 't'); return <Verdict id="t" at={null} />; }
+  mount(fake, <Actions />);
+  await screen.findByText('t: read');
+  act(() => markUnread());
+  await screen.findByText('t: unread');
+  await screen.findByText('t: read');
+  expect(fake.posts()).toHaveLength(1);
 });
 
-it('persists the initially visible bundled track under its verified recovery database', async () => {
-  vi.stubGlobal('__NC_BUNDLED__', true);
-  const values = new Map<string, string>();
-  const storage = { getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => { values.set(key, value); },
-    removeItem: (key: string) => { values.delete(key); } };
-  const preferences = createUiPreferences(storage);
-  const access = new RecoveryAccess();
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const version = { webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION,
-    syncEventVersion: 20, dbInstanceId: 'bundled-boot', databaseId: 'bundled-db', nowMs: 50 };
-  const fetchVersion = () => Promise.resolve(version);
-  let scope = '';
-  const recovery = new RecoverySession({ access, storage, origin: 'https://server.test',
-    compatibleVersion: WEB_COMPAT_VERSION, version: fetchVersion,
-    identity: () => Promise.resolve({ userId: 'owner', displayName: 'Owner', role: 'owner', sessionId: 'session' }),
-    adoptScope: value => { scope = value; preferences.setRecoveryScope(value); },
-    logout: () => Promise.resolve(), clear: () => client.clear(), online: () => true, visible: () => true });
-  const transport = createRecoveryTransports({ send: () => Promise.reject(new Error('Unexpected business request')) }, access).business;
-  function Reader() { useReadReceipt('track', 'visible', 100); return <p>Visible bundled track</p>; }
-  const mounted = render(<RecoveryGate recovery={recovery} transport={transport}
-    unauthorized={createUnauthorizedChannel({ enqueue: task => task() })} client={client}
-    runtime={{ storage, fetchVersion, reload() {}, deleteDatabase() {}, idbDatabaseName: 'test' }}
-    cursorStore={{ clear() {} }} renderLogin={() => <p>Login</p>}>
-    <UiPreferencesProvider preferences={preferences}><Reader /></UiPreferencesProvider>
-  </RecoveryGate>);
-  try {
-    await screen.findByText('Visible bundled track');
-    await waitFor(() => expect(preferences.readScope()).toBe('bundled-db'));
-    expect(preferences.isUnread('track', 'visible', 100)).toBe(false);
-    const restored = createUiPreferences(storage);
-    restored.setRecoveryScope(scope); restored.setReadScope('bundled-db', 50);
-    expect(restored.isUnread('track', 'visible', 100)).toBe(false);
-  } finally { mounted.unmount(); client.clear(); }
+it('acknowledges the open target only while the tab is visible, and only when it is unread', async () => {
+  const fake = createReadReceiptsKernel({ baselineMs: 100 });
+  const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+  function Open({ at }: { at: number }) { useReadReceipt('track', 't', at); return <Verdict id="t" at={at} />; }
+  const view = mount(fake, <Open at={150} />);
+  await screen.findByText('t: unread');
+  expect(fake.posts()).toHaveLength(0);
+  visibility.mockReturnValue('visible');
+  act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+  await screen.findByText('t: read');
+  expect(fake.posts().map((request) => [request.path, request.body])).toEqual([
+    ['/api/read-receipts/track/t/read', { readThroughMs: 150 }],
+  ]);
+  // Activity at or before the baseline is already read: nothing to write.
+  view.rerender(<Open at={90} />);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(fake.posts()).toHaveLength(1);
+});
+
+it('keeps a manual unread of the open target until it is opened again', async () => {
+  const fake = createReadReceiptsKernel({ baselineMs: 100 });
+  let markUnread!: () => void;
+  function Open({ opened }: { opened: number }) {
+    const receipts = useReadReceipts();
+    markUnread = () => receipts.markUnread('track', 't');
+    useReadReceipt('track', 't', 50, true, opened);
+    return <Verdict id="t" at={50} />;
+  }
+  const view = mount(fake, <Open opened={1} />);
+  await screen.findByText('t: read');
+  act(() => markUnread());
+  await screen.findByText('t: unread');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(screen.getByText('t: unread')).toBeTruthy();
+  view.rerender(<Open opened={2} />);
+  await screen.findByText('t: read');
+  expect(fake.posts().map((request) => request.path)).toEqual([
+    '/api/read-receipts/track/t/unread', '/api/read-receipts/track/t/read',
+  ]);
 });

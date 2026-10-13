@@ -12,6 +12,8 @@ import { AppShell } from './public.tsx';
 import { ApiError } from '../../../../core/domain/failure-class.ts';
 import { AreaCreatePreflightError } from '../providers/queries.ts';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
+import { ReadReceiptsProvider } from '../providers/read-receipts.tsx';
+import { createReadReceiptsKernel } from '../providers/read-receipts-fixture.tsx';
 
 
 const harness = vi.hoisted(() => ({
@@ -113,7 +115,7 @@ function renderShell(compact = false, transport: ApiTransportPort = { send: vi.f
   harness.compact = compact;
   return render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { mutations: { retry: false } } })}>
-      <ThemeProvider storage={memoryStorage()}>
+      <ThemeProvider storage={memoryStorage()}><ReadReceiptsProvider transport={createReadReceiptsKernel().transport} unauthorized={unauthorized}>
         <AppShell
           transport={transport}
           unauthorized={unauthorized}
@@ -121,7 +123,7 @@ function renderShell(compact = false, transport: ApiTransportPort = { send: vi.f
           onOpenPlugins={vi.fn()}
           onSignOut={vi.fn()}
         />
-      </ThemeProvider>
+      </ReadReceiptsProvider></ThemeProvider>
     </QueryClientProvider>,
   );
 }

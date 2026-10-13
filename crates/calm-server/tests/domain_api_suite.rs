@@ -67,6 +67,8 @@ mod plugin_names_migration;
 mod plugin_ws_proxy;
 #[path = "cases/preview_gateway.rs"]
 mod preview_gateway;
+#[path = "cases/read_receipts.rs"]
+mod read_receipts;
 #[path = "cases/recipe_minted_names_migration.rs"]
 mod recipe_minted_names_migration;
 #[path = "cases/repo.rs"]

@@ -7,6 +7,9 @@ import { EventStream, type EventStreamSink } from '../../systems/events/event-st
 import { EventBridge } from '../events/event-bridge.tsx';
 import { LiveConnectionProvider, ConnectionStatusScope } from '../providers/connection-status.tsx';
 import { createUiPreferences, UiPreferencesProvider } from '../providers/ui-preferences.tsx';
+import { readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';
+
+const receipts = readReceiptsFixture();
 import { ThemeProvider } from '../theme/public.tsx';
 import { Sidebar, type SidebarProps } from './sidebar.tsx';
 
@@ -19,9 +22,9 @@ function sidebar(overrides: Partial<SidebarProps> = {}) {
     onSignOut={vi.fn()} collapsed={false} onToggleCollapsed={vi.fn()} {...overrides} />;
 }
 function frame(children: React.ReactNode, width = 280) {
-  return <ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}><UiPreferencesProvider preferences={createUiPreferences()}>
+  return receipts.wrap(<ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}><UiPreferencesProvider preferences={createUiPreferences()}>
     <div style={{ width, height: 700 }}>{children}</div>
-  </UiPreferencesProvider></ThemeProvider>;
+  </UiPreferencesProvider></ThemeProvider>);
 }
 it('paints live connection changes without restarting the stream and reveals details on hover', async () => {
   await page.viewport(1200, 800);

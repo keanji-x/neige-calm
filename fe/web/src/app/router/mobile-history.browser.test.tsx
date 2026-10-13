@@ -3,7 +3,7 @@ import { cleanup } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import type { ApiTransportResponse } from '../../../../core/api/types.ts';
-import { createUiPreferences } from '../providers/ui-preferences.tsx';
+import { createReadReceiptsKernel } from '../providers/read-receipts-fixture.tsx';
 import { renderDailyFixture } from './daily-planner-fixture.tsx';
 
 afterEach(async () => { cleanup(); await page.viewport(1280, 800); });
@@ -116,9 +116,7 @@ it('keeps the closed report composer stable while its conversation is read', asy
 
 it.each([320, 390])('switches four sidebar views using current history and real workspace groups at %ipx', async (width) => {
   await page.viewport(width, 844);
-  const preferences = createUiPreferences();
-  preferences.setReadScope('mobile-sidebar', 1);
-  preferences.markUnread('track', 'unread');
+  const receipts = createReadReceiptsKernel({ receipts: [{ kind: 'track', targetId: 'unread', readThroughMs: 0, manualUnread: true }] });
   const current = { id: 'project', area_id: 'project-area', title: 'Project evidence', sort: 0, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
   const pinned = { ...current, id: 'pinned', area_id: 'other-area', title: 'Pinned report', pinned_at: 20 };
   const unread = { ...current, id: 'unread', area_id: 'other-area', title: 'Unread report' };
@@ -129,7 +127,9 @@ it.each([320, 390])('switches four sidebar views using current history and real 
     { id: 'failure', plugin_id: 'kernel', entity_kind: 'track', entity_id: failed.id, kind: 'activity', payload: { schemaVersion: 4, working: false, attention: 'failed', activity_at_ms: null, items: [], cards: [] }, updated_at: 3 },
     { id: 'running', plugin_id: 'kernel', entity_kind: 'track', entity_id: working.id, kind: 'activity', payload: { schemaVersion: 4, working: true, attention: 'none', activity_at_ms: null, items: [], cards: [] }, updated_at: 3 },
   ];
-  const { router, requests } = renderDailyFixture({ initial: '/track/project', uiPreferences: preferences, reply: (request) => {
+  const { router, requests } = renderDailyFixture({ initial: '/track/project', reply: async (request) => {
+    const receipt = await receipts.reply(request);
+    if (receipt !== undefined) return receipt;
     if (request.path === '/api/areas') return ok([
       { id: 'project-area', name: 'Project', kind: 'user', color: '#6574cd', sort: 0, created_at: 1, updated_at: 1 },
       { id: 'other-area', name: 'Other', kind: 'user', color: '#6574cd', sort: 1, created_at: 1, updated_at: 1 },

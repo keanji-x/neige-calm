@@ -12,6 +12,9 @@ import { ThemeProvider } from '../theme/public.tsx';
 import { createUiPreferences, UiPreferencesProvider } from '../providers/ui-preferences.tsx';
 import { Sidebar } from './sidebar.tsx';
 import styles from './shell.module.css';
+import { readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';
+
+const receipts = readReceiptsFixture();
 
 afterEach(() => { cleanup(); delete document.documentElement.dataset.theme; });
 
@@ -23,7 +26,7 @@ it.each(['light', 'dark'] as const)('says a refused pin in the rail as an error 
     pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 10, ...NEUTRAL_ACTIVITY, activityAt: null }];
   const onSetPinned = vi.fn(() => Promise.reject(new ApiError({ kind: 'http', status: 409, code: 'conflict',
     message: 'A managed track cannot be pinned.' })));
-  render(<UiPreferencesProvider preferences={createUiPreferences()}>
+  render(receipts.wrap(<UiPreferencesProvider preferences={createUiPreferences()}>
     <ThemeProvider storage={{ getItem: () => theme, setItem: () => undefined }}>
       <div className={`${styles.shell} ${styles.shellExpanded}`} style={{ blockSize: '100dvh' }}>
         <Sidebar areas={[area]} tracksByArea={new Map([[area.id, tracks]])} tracks={tracks}
@@ -34,7 +37,7 @@ it.each(['light', 'dark'] as const)('says a refused pin in the rail as an error 
         <main />
       </div>
     </ThemeProvider>
-  </UiPreferencesProvider>);
+  </UiPreferencesProvider>));
 
   await page.getByRole('button', { name: /^Track Next task/ }).hover();
   await page.getByRole('button', { name: 'Pin Next task' }).click();

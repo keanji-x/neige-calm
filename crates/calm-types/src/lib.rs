@@ -22,6 +22,7 @@ pub mod observation;
 pub mod planner_attachment;
 pub mod plugin;
 pub mod proposal;
+pub mod read_receipts;
 pub mod report_blocks;
 pub mod report_contract;
 pub mod report_edit_diff;

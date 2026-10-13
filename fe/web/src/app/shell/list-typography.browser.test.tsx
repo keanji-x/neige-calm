@@ -9,6 +9,9 @@ import { makeDesktopPainter, paintDesktopPanel } from '../../features/track/page
 import { ChatList } from '../../features/chat/list/public.tsx';
 import { PanelCard, PanelModule } from '../../ui/panel-card/public.tsx';
 import { Sidebar } from './sidebar.tsx';
+import { readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';
+
+const receipts = readReceiptsFixture();
 
 afterEach(() => { cleanup(); delete document.documentElement.dataset.theme; });
 
@@ -32,7 +35,7 @@ function draw() {
     activity: NEUTRAL_ACTIVITY,
     openableCards: new Set(),
   });
-  render(<div style={{ display: 'flex', gap: 32 }}>
+  render(receipts.wrap(<div style={{ display: 'flex', gap: 32 }}>
     <div style={{ inlineSize: 240 }}><Sidebar areas={[area]} tracksByArea={new Map([[area.id, tracks]])}
       tracks={tracks} currentPath="/" onGo={vi.fn()} onRequestCreateArea={vi.fn()} onRequestEditArea={vi.fn()}
       onDeleteArea={vi.fn()} onNewTrack={vi.fn()} onSetPinned={vi.fn()} onDeleteTrack={vi.fn()}
@@ -42,7 +45,7 @@ function draw() {
         conversations={['Chat first', 'Chat second'].map((title, i) => ({ id: `chat-${i}`, trackId: 'track-0', title,
           kind: 'track-assistant', state: 'idle', updatedAt: 1 }))} /></PanelModule>
     </PanelCard></div>
-  </div>);
+  </div>));
 }
 function element(node: HTMLElement | null) {
   expect(node).not.toBeNull();

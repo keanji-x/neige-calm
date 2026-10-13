@@ -9,6 +9,9 @@ import { useState } from '../../ui/state/public.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import styles from './shell.module.css';
 import { Sidebar } from './sidebar.tsx';
+import { readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';
+
+const receipts = readReceiptsFixture();
 
 afterEach(() => { cleanup(); delete document.documentElement.dataset.theme; });
 
@@ -75,7 +78,7 @@ async function renderRail({
   theme = 'light', collapsed = false, mainLayer = false, currentPath = '/', areaCount = AREAS.length,
 }: RailOptions = {}) {
   await page.viewport(1400, VIEWPORT_H);
-  render(<Rail theme={theme} collapsed={collapsed} mainLayer={mainLayer} currentPath={currentPath} areaCount={areaCount} />);
+  render(receipts.wrap(<Rail theme={theme} collapsed={collapsed} mainLayer={mainLayer} currentPath={currentPath} areaCount={areaCount} />));
   await new Promise(requestAnimationFrame);
   return railParts();
 }

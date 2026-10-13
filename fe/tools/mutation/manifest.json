@@ -1355,67 +1355,40 @@
     "why_more_than_one": "The exhaustive 2x3x2 table names each row the reordered chain gets wrong; the row-level precedence test and the core predicate test are the two consumers that see the same swap. Since S2b r1 the router wedge case seeds the kernel's working verdict for the wedged planner beside its local failed, so the swapped chain reads that row as working instead of failed."
   },
   {
-    "mutation_id": "s2a-receipt-baseline-not-written",
+    "mutation_id": "n2596-receipt-write-stays-local",
     "defends": [
       "oracle:INV-APP-118"
     ],
-    "target": "web/src/app/providers/ui-preferences.tsx",
-    "patch": "diff --git a/web/src/app/providers/ui-preferences.tsx b/web/src/app/providers/ui-preferences.tsx\nindex 93d9252..88698d4 100644\n--- a/web/src/app/providers/ui-preferences.tsx\n+++ b/web/src/app/providers/ui-preferences.tsx\n@@ -87,9 +87,6 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {\n     readScope: () => database,\n     /** `nowMs` is the server time the scope was confirmed at; it becomes the baseline the first time this device sees `id`. A `null` scope writes nothing. */\n     setReadScope(id: string | null, nowMs: number | null = null): void {\n-      if (id !== null && nowMs !== null && Number.isFinite(nowMs) && nowMs > 0 && read(baselineKey(id)) === null) {\n-        write(baselineKey(id), String(nowMs), false);\n-      }\n       if (database === id) return;\n       database = id;\n       notify();\n",
+    "target": "web/src/app/providers/read-receipts.tsx",
+    "patch": "diff --git a/web/src/app/providers/read-receipts.tsx b/web/src/app/providers/read-receipts.tsx\n--- a/web/src/app/providers/read-receipts.tsx\n+++ b/web/src/app/providers/read-receipts.tsx\n@@ -53,6 +53,7 @@\n     client.setQueryData<ReadState>(queryKey, (state) => state === undefined ? state : optimistic(state));\n   }\n   try {\n+    return; // MUT-2596-1: the write stays in this page and never reaches the kernel.\n     const receipt = await runOperation(channel.transport, operation, channel.unauthorized);\n     client.setQueryData<ReadState>(queryKey, (state) => state === undefined ? state : withReceipt(state, receipt));\n   } catch {\n",
     "expected_red": [
-      "local read receipts first_scope_entry_marks_everything_read",
-      "local read receipts null_scope_is_never_unread",
-      "receipts_survive_a_recovery_scope_change_on_the_same_database",
-      "receipts_are_isolated_per_user",
-      "reads the track receipt against the activity high-water mark, not updatedAt"
-    ],
-    "selection_paths": [
-      "web/src/app/providers/ui-preferences.test.tsx",
-      "web/src/app/shell/sidebar.test.tsx"
-    ],
-    "why_more_than_one": "Scope/baseline fixtures and the shared Track-route receipt assertion exercise the same persistent receipt owner."
-  },
-  {
-    "mutation_id": "s2a-receipt-scope-from-instance-id",
-    "defends": [
-      "oracle:INV-APP-118"
-    ],
-    "target": "web/src/app/providers/ui-preferences.tsx",
-    "patch": "diff --git a/web/src/app/providers/ui-preferences.tsx b/web/src/app/providers/ui-preferences.tsx\n--- a/web/src/app/providers/ui-preferences.tsx\n+++ b/web/src/app/providers/ui-preferences.tsx\n@@ -1,6 +1,6 @@\n import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react';\n \n-import { createStorageKey, DATABASE_ID_KEY } from '../../../../core/keys/storage.ts';\n+import { createStorageKey, DATABASE_ID_KEY, DB_INSTANCE_ID_KEY } from '../../../../core/keys/storage.ts';\n import { sidebarOrder, type SidebarGroupId, type SidebarOrderScope } from '../../../../core/view/sidebar-layout.ts';\n import { useState } from '../../ui/state/public.ts';\n \n@@ -17,7 +17,7 @@\n   /* Seeded from the database's STABLE identity, never the per-boot `DB_INSTANCE_ID_KEY`: receipts keyed\n    * by a process id were thrown away on every kernel restart. `null` until the compat gate confirms it. */\n   let database: string | null = null;\n-  try { database = storage?.getItem(DATABASE_ID_KEY) ?? null; } catch { /* memory-only receipts */ }\n+  try { database = storage?.getItem(DB_INSTANCE_ID_KEY) ?? null; } catch { /* memory-only receipts */ }\n   const notify = () => {\n     revision += 1;\n     for (const listener of listeners) listener();\n",
-    "expected_red": [
-      "database_id_change_overwrites_the_key",
-      "does not overwrite a newer acknowledgement from another tab",
+      "keeps a visited track read after a page refresh, with nothing kept in browser storage",
+      "keeps a manual unread after a page refresh",
+      "shows a second browser profile the same state once it is focused again",
+      "marks unread optimistically, posts it, and refetches",
+      "puts the kernel state back when a write fails",
+      "acknowledges the open target only while the tab is visible, and only when it is unread",
+      "keeps a manual unread of the open target until it is opened again",
+      "offers personal Track actions without navigation and pins before the Area limit",
+      "keeps manually unread until the selected Track view acknowledges it",
+      "uses a spinner while a closed conversation runs, a blue unread dot on completion, and no dot after reading",
       "keeps new replies unread while reopening cached history is still loading",
-      "local read receipts construction_seeds_from_database_id_key",
-      "local read receipts keeps read receipts across reloads, accepts only newer acknowledgements, and isolates databases",
-      "local read receipts null_scope_is_never_unread",
-      "records the initially visible track under the first discovered instance",
       "shows a closed Planner working and preserves unread completion until its history is read",
       "the injected planner row reads activity.cards and last_turn_completed_ms",
-      "uses a spinner while a closed conversation runs, a blue unread dot on completion, and no dot after reading"
+      "clears manual unread when reopening the current Track through mobile navigation",
+      "retains unread when a selected Track detail cannot be loaded",
+      "acknowledges a repeated desktop selection only in the rendered Track view",
+      "uses the three-dot Track menu with keyboard and keeps actions separate from navigation"
     ],
     "selection_paths": [
+      "web/src/app/providers/read-state-refresh.browser.test.tsx",
       "web/src/app/providers/read-receipts.test.tsx",
-      "web/src/app/providers/ui-preferences.test.tsx",
-      "web/src/app/router/track-conversation.test.tsx"
+      "web/src/app/shell/sidebar.test.tsx",
+      "web/src/app/router/track-conversation.test.tsx",
+      "web/src/app/shell/mobile.browser.test.tsx",
+      "web/src/app/shell/sidebar.groups.browser.test.tsx"
     ],
-    "why_more_than_one": "Seeding the scope from the per-boot instance id changes what every scoped receipt resolves against, so the seeding case, the persistence cases, the gate cases and the router conversation-unread cases all move."
-  },
-  {
-    "mutation_id": "s2a-null-scope-reads-unread",
-    "defends": [
-      "oracle:INV-APP-118"
-    ],
-    "target": "web/src/app/providers/ui-preferences.tsx",
-    "patch": "diff --git a/web/src/app/providers/ui-preferences.tsx b/web/src/app/providers/ui-preferences.tsx\nindex 93d9252..1d468f2 100644\n--- a/web/src/app/providers/ui-preferences.tsx\n+++ b/web/src/app/providers/ui-preferences.tsx\n@@ -96,7 +96,6 @@ export function createUiPreferences(storage?: UiPreferenceStorage) {\n     },\n     isUnread(kind: 'track' | 'conversation', id: string, updatedAt: number): boolean {\n       // No scope, no verdict: \"everything is unread until /api/version answers\" is a lie on every page load.\n-      if (database === null) return false;\n       return read(`${receiptKey(kind, id)}:unread`, true) === true || updatedAt > receipt(receiptKey(kind, id));\n     },\n     markRead(kind: 'track' | 'conversation', id: string, updatedAt: number): void {\n",
-    "expected_red": [
-      "leaves the receipt scope null, and nothing unread, when the kernel reports no database identity",
-      "local read receipts null_scope_is_never_unread"
-    ],
-    "selection_paths": [
-      "web/src/app/providers/read-receipts.test.tsx",
-      "web/src/app/providers/ui-preferences.test.tsx"
-    ],
-    "why_more_than_one": "A null scope must never read as unread; the unit case and the gate case for a kernel without database identity are the two carriers of that contract."
+    "why_more_than_one": "#2596: read state is the kernel's. A receipt write that stays in the page is lost on the next read: across a refresh, on a second profile, and in every rail, mobile and conversation-list case that reads a mark back from the kernel."
   },
   {
     "mutation_id": "s2a-failed-dot-uses-warn",

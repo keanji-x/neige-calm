@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render as renderDom, screen, waitFor } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -9,6 +8,7 @@ import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts'
 import type { Area } from '../../../../core/domain/area.ts';
 import { NEUTRAL_ACTIVITY, type Track } from '../../../../core/domain/track.ts';
 import { createUiPreferences, UiPreferencesProvider } from '../providers/ui-preferences.tsx';
+import { createReadReceiptsKernel, readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';
 
 /* Real router/history state, with navigation effects isolated: an empty
  * `useRouter` result hides required history fields. */
@@ -26,9 +26,10 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
     useRouterState: ({ select }: { select: (state: typeof router.state) => unknown }) => select(router.state),
   };
 });
+// The kernel's read receipts; a case may replace them before it renders.
+let receipts = createReadReceiptsKernel();
 function render(node: ReactNode) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return renderDom(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
+  return renderDom(readReceiptsFixture(receipts).wrap(node));
 }
 
 
@@ -46,7 +47,8 @@ let workspaceTracks: readonly Track[] = [TRACK];
 // Authentication notifications have their own real query and browser coverage; this contract isolates navigation.
 vi.mock('./provider-authentication.tsx', () => ({ ProviderAuthenticationNotice: () => null }));
 
-vi.mock('../providers/queries.ts', () => ({
+vi.mock('../providers/queries.ts', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../providers/queries.ts')>(),
   useWorkspace: () => ({
     areas: [AREA], tracks: workspaceTracks, tracksByArea: new Map([['c1', workspaceTracks]]), trackErrorsByArea: new Map(), tracksLoadingByArea: new Map(),
     areasError: null, overlaysError: null, areasLoading: false, overlaysLoading: false,
@@ -70,7 +72,7 @@ vi.mock('./sidebar.tsx', () => ({ Sidebar: ({ collapsed, onToggleCollapsed }: {
   collapsed: boolean; onToggleCollapsed: () => void;
 }) => <button type="button" aria-expanded={!collapsed} onClick={onToggleCollapsed}>{collapsed ? 'Expand' : 'Collapse'}</button> }));
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); workspaceTracks = [TRACK]; });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); workspaceTracks = [TRACK]; receipts = createReadReceiptsKernel(); });
 
 function compactViewport() {
   const listeners = new Set<() => void>();
@@ -111,12 +113,12 @@ describe('compact navigation interaction contracts', () => {
 
   /* `MobileTracks` alone cannot show this (its receipt is a prop); only the shell
    * decides which receipt that prop is. */
-  it('hands the Track list the rail’s read receipt, so a newer completion is unread until it is read', () => {
+  it('hands the Track list the rail’s read receipt, so a newer completion is unread until it is read', async () => {
     compactViewport();
     workspaceTracks = [{ ...TRACK, activityAt: 150 }];
-    // The scope was entered at server time 100: that is the baseline receipt.
+    // The kernel's baseline is 100.
+    receipts = createReadReceiptsKernel({ baselineMs: 100 });
     const preferences = createUiPreferences(memoryStorage());
-    preferences.setReadScope('db1', 100);
     const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
     render(<UiPreferencesProvider preferences={preferences}>
       <AppShell transport={{} as never} unauthorized={unauthorized} onOpenSettings={vi.fn()} onOpenPlugins={vi.fn()} onSignOut={vi.fn()} />
@@ -125,10 +127,12 @@ describe('compact navigation interaction contracts', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Product' }));
     const marker = () => screen.getByRole('button', { name: /^Responsive mobile UI/ })
       .querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity') ?? null;
-    expect(marker()).toBe('unread');
+    await waitFor(() => expect(marker()).toBe('unread'));
     expect(screen.getByRole('button', { name: 'Responsive mobile UI' })).toBeTruthy();
 
-    act(() => preferences.markRead('track', 'w1', 150));
-    expect(marker()).toBeNull();
+    // Read elsewhere; this tab sees it when it is shown again.
+    await receipts.transport.send({ method: 'POST', path: '/api/read-receipts/track/w1/read', credentials: 'include', body: { readThroughMs: 150 } });
+    act(() => { window.dispatchEvent(new Event('visibilitychange')); });
+    await waitFor(() => expect(marker()).toBeNull());
   });
 });

@@ -7422,6 +7422,249 @@
         }
       }
     },
+    "/api/read-receipts": {
+      "get": {
+        "tags": [
+          "read_receipts"
+        ],
+        "summary": "The cutover baseline (activity at or before it is read) and every stored receipt.",
+        "operationId": "list_read_receipts",
+        "responses": {
+          "200": {
+            "description": "The baseline and every receipt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadReceipts"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`: no valid session cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/read-receipts/{kind}/{target_id}/read": {
+      "post": {
+        "tags": [
+          "read_receipts"
+        ],
+        "summary": "Mark a target read through `readThroughMs`: the stored instant is the larger of the two, and a\nmanual unread is cleared. Idempotent.",
+        "operationId": "mark_read",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "description": "`track` or `conversation`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "target_id",
+            "in": "path",
+            "description": "The track or conversation id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarkReadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The stored receipt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadReceipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown kind, or a negative instant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`: no valid session cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The actor is not the authenticated user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`payload_too_large`: the body is over the request size limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`: the request does not say `Content-Type: application/json`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`invalid_body`: the JSON is not the body's shape (a field missing or of the wrong type).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/read-receipts/{kind}/{target_id}/unread": {
+      "post": {
+        "tags": [
+          "read_receipts"
+        ],
+        "summary": "Mark a target unread by hand; the next mark read clears it. Idempotent.",
+        "operationId": "mark_unread",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "description": "`track` or `conversation`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "target_id",
+            "in": "path",
+            "description": "The track or conversation id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The stored receipt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadReceipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown kind",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`: no valid session cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The actor is not the authenticated user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/settings": {
       "get": {
         "tags": [
@@ -14302,6 +14545,20 @@
           }
         }
       },
+      "MarkReadRequest": {
+        "type": "object",
+        "description": "`POST /api/read-receipts/{kind}/{target_id}/read`: the activity instant the reader has seen.",
+        "required": [
+          "readThroughMs"
+        ],
+        "properties": {
+          "readThroughMs": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false
+      },
       "McpCheckResult": {
         "type": "object",
         "required": [
@@ -15516,6 +15773,59 @@
           },
           "truncated": {
             "type": "boolean"
+          }
+        }
+      },
+      "ReadReceipt": {
+        "type": "object",
+        "description": "One target's receipt. `readThroughMs` only rises; `manualUnread` is the reader's explicit\n\"mark unread\", cleared by the next mark read.",
+        "required": [
+          "kind",
+          "targetId",
+          "readThroughMs",
+          "manualUnread"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ReadReceiptKind"
+          },
+          "manualUnread": {
+            "type": "boolean"
+          },
+          "readThroughMs": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "targetId": {
+            "type": "string"
+          }
+        }
+      },
+      "ReadReceiptKind": {
+        "type": "string",
+        "description": "What a receipt is about: a track, or one conversation. A closed set, checked by the table too.",
+        "enum": [
+          "track",
+          "conversation"
+        ]
+      },
+      "ReadReceipts": {
+        "type": "object",
+        "description": "`GET /api/read-receipts`: the cutover baseline (activity at or before it is read) and every\nstored receipt.",
+        "required": [
+          "baselineMs",
+          "receipts"
+        ],
+        "properties": {
+          "baselineMs": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "receipts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReadReceipt"
+            }
           }
         }
       },
@@ -18189,8 +18499,7 @@
           "minWebCompatVersion",
           "supervisorControlVersion",
           "dbInstanceId",
-          "databaseId",
-          "nowMs"
+          "databaseId"
         ],
         "properties": {
           "apiVersion": {
@@ -18233,11 +18542,6 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
-          },
-          "nowMs": {
-            "type": "integer",
-            "format": "int64",
-            "description": "The server clock (unix ms) when this response was built."
           },
           "pluginMcpProtocolVersion": {
             "type": "string"
@@ -18457,6 +18761,10 @@
     {
       "name": "settings",
       "description": "App-global settings (HTTP proxy override, etc.)"
+    },
+    {
+      "name": "read_receipts",
+      "description": "The user's read receipts: what has been read, and what was marked unread by hand"
     },
     {
       "name": "plugins",

@@ -5,6 +5,9 @@ import '../../styles/entry.css';
 import type { Area } from '../../../../core/domain/area.ts';
 import { NEUTRAL_ACTIVITY, type Track } from '../../../../core/domain/track.ts';
 import { Sidebar } from './sidebar.tsx';
+import { readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';
+
+const receipts = readReceiptsFixture();
 
 afterEach(() => { cleanup(); });
 
@@ -22,10 +25,10 @@ it('puts Show N more on the Track row rhythm, in the Track title column', async 
     id: `track-${i}`, areaId: area.id, title: `Row ${i + 1}`, sort: i, cwd: '/tmp', agentCwd: '/tmp',
     pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY,
   }));
-  render(<div style={{ inlineSize: 240 }}><Sidebar areas={[area]} tracksByArea={new Map([[area.id, tracks]])}
+  render(receipts.wrap(<div style={{ inlineSize: 240 }}><Sidebar areas={[area]} tracksByArea={new Map([[area.id, tracks]])}
     tracks={tracks} currentPath="/" onGo={vi.fn()} onRequestCreateArea={vi.fn()} onRequestEditArea={vi.fn()}
     onDeleteArea={vi.fn()} onNewTrack={vi.fn()} onSetPinned={vi.fn()} onDeleteTrack={vi.fn()}
-    onOpenSettings={vi.fn()} onOpenPlugins={vi.fn()} onSignOut={vi.fn()} collapsed={false} onToggleCollapsed={vi.fn()} /></div>);
+    onOpenSettings={vi.fn()} onOpenPlugins={vi.fn()} onSignOut={vi.fn()} collapsed={false} onToggleCollapsed={vi.fn()} /></div>));
 
   const more = element(document.querySelector<HTMLElement>('[aria-label="Show 2 more in Work"]'));
   const lastRow = element(document.querySelector<HTMLElement>('[aria-label^="Track Row 5"]'));

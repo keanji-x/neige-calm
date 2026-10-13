@@ -7,7 +7,7 @@ import { Dialog } from '../../ui/dialog/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { BundledConnectionNotice } from '../auth/bundled-connection.tsx';
-import { ReadReceiptScopeProvider } from './ui-preferences.tsx';
+import { DatabaseScopeProvider } from './ui-preferences.tsx';
 import styles from './preflight-status.module.css';
 import { LiveConnectionProvider } from './connection-status.tsx';
 
@@ -15,9 +15,9 @@ import { LiveConnectionProvider } from './connection-status.tsx';
  * This bundle's view of the negotiated wire contract. Must equal `WEB_COMPAT_VERSION` in
  * `crates/calm-server/src/routes/version.rs` and `web/src/api/version.ts`; CI compares them textually.
  */
-export const WEB_COMPAT_VERSION = 47;
-/** `databaseId` / `nowMs` are optional in the type so an older kernel still parses before the curtain decides; absent means a `null` receipt scope, under which nothing is ever unread. */
-export type ServerVersionInfo = Readonly<{ conversationCreateModel?: boolean; conversationSide?: boolean; webCompatVersion: number; minWebCompatVersion: number; syncEventVersion: number; dbInstanceId: string; databaseId?: string; nowMs?: number }>;
+export const WEB_COMPAT_VERSION = 48;
+/** `databaseId` is optional in the type so an older kernel still parses before the curtain decides; absent means a `null` database scope, under which no per-database choice applies. */
+export type ServerVersionInfo = Readonly<{ conversationCreateModel?: boolean; conversationSide?: boolean; webCompatVersion: number; minWebCompatVersion: number; syncEventVersion: number; dbInstanceId: string; databaseId?: string }>;
 export interface ProviderRuntime {
   fetchVersion(): Promise<ServerVersionInfo>;
   reload(): void;
@@ -76,12 +76,9 @@ export function ServerCompatGate({ children: routeContent, runtime, client, rend
   const id = query.data?.dbInstanceId;
   const verdict = id === undefined ? 'pending'
     : previousInstanceId !== null && previousInstanceId !== id ? 'switched' : 'same';
-  // The receipt scope is the database identity (never the per-boot instance id) plus the server clock;
-  // a kernel that reports neither leaves the scope null, and a null scope is never unread.
-  const nowMs = query.data?.nowMs;
-  const receiptScope = verdict === 'same' && databaseId !== undefined && nowMs !== undefined
-    ? { id: databaseId, nowMs } : { id: null, nowMs: null };
-  const children = <ReadReceiptScopeProvider id={receiptScope.id} nowMs={receiptScope.nowMs}>{routeContent}</ReadReceiptScopeProvider>;
+  // The database scope is the database identity, never the per-boot instance id; a kernel without one leaves it null.
+  const databaseScope = verdict === 'same' && databaseId !== undefined ? databaseId : null;
+  const children = <DatabaseScopeProvider id={databaseScope}>{routeContent}</DatabaseScopeProvider>;
   if (busted) return __NC_BUNDLED__ ? <BundledConnectionNotice kind="checking" /> : null;
   if (__NC_BUNDLED__ && query.data === undefined) return <BundledConnectionNotice kind={query.isError || query.fetchStatus === 'paused' ? 'unreachable' : 'checking'}>
     {(query.isError || query.fetchStatus === 'paused') && <button type="button" disabled={query.isFetching} onClick={() => { void query.refetch(); }}>重试连接</button>}

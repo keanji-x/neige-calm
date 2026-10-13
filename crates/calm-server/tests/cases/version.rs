@@ -81,7 +81,6 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         "buildSha",
         "dbInstanceId",
         "databaseId",
-        "nowMs",
     ] {
         assert!(obj.contains_key(key), "missing field: {key}");
     }
@@ -102,7 +101,6 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert!(v["buildSha"].is_null() || v["buildSha"].is_string());
     assert!(v["dbInstanceId"].is_string());
     assert!(v["databaseId"].is_string());
-    assert!(v["nowMs"].is_i64());
 
     // Cheap shape check; per-process uniqueness is the dedicated test below.
     let id = v["dbInstanceId"].as_str().unwrap();
@@ -128,8 +126,8 @@ async fn get_version_returns_all_fields_with_expected_sources() {
     assert_eq!(v["apiVersion"].as_str().unwrap(), API_VERSION);
     assert_eq!(
         v["apiVersion"].as_str().unwrap(),
-        "28",
-        "#2516: the Claude installed-version routes are new"
+        "29",
+        "#2596: the read-receipt routes are new and `nowMs` is gone"
     );
     assert_eq!(
         v["syncEventVersion"].as_u64().unwrap(),
@@ -142,12 +140,12 @@ async fn get_version_returns_all_fields_with_expected_sources() {
         v["webCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 47);
+    assert_eq!(v["webCompatVersion"].as_u64().unwrap(), 48);
     assert_eq!(
         v["minWebCompatVersion"].as_u64().unwrap(),
         WEB_COMPAT_VERSION as u64,
     );
-    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 47);
+    assert_eq!(v["minWebCompatVersion"].as_u64().unwrap(), 48);
     assert_eq!(
         v["supervisorControlVersion"].as_u64().unwrap(),
         SUPERVISOR_CONTROL_VERSION as u64,
@@ -368,6 +366,23 @@ async fn web_compat_floor_excludes_bundles_that_reject_the_full_permission_mode(
     );
 }
 
+/// The last floor whose bundles keep read receipts in localStorage and scope them by `nowMs`, which
+/// `/api/version` no longer carries (#2596); historical literal, do not move it with `WEB_COMPAT_VERSION`.
+#[tokio::test]
+async fn web_compat_floor_excludes_bundles_with_browser_read_receipts() {
+    const LAST_FLOOR_WITH_BROWSER_READ_RECEIPTS: u64 = 47;
+
+    let body = version_body(fresh_state().await).await;
+    let floor = body["minWebCompatVersion"]
+        .as_u64()
+        .expect("minWebCompatVersion is a number");
+    assert!(
+        floor > LAST_FLOOR_WITH_BROWSER_READ_RECEIPTS,
+        "minWebCompatVersion must exclude bundles with browser read receipts, got {floor}"
+    );
+    assert!(body.get("nowMs").is_none(), "nowMs is retired: {body}");
+}
+
 async fn version_body(state: AppState) -> serde_json::Value {
     let app = axum::Router::new()
         .merge(routes::router())
@@ -396,10 +411,8 @@ async fn database_id_survives_reboot() {
         dir.path().join("reboot.db").display()
     );
 
-    let before = calm_server::model::now_ms();
     let boot_a = version_body(state_on(&url).await).await;
     let boot_b = version_body(state_on(&url).await).await;
-    let after = calm_server::model::now_ms();
 
     let database_a = boot_a["databaseId"].as_str().unwrap();
     let database_b = boot_b["databaseId"].as_str().unwrap();
@@ -421,11 +434,4 @@ async fn database_id_survives_reboot() {
     // Another database is another identity.
     let other = version_body(fresh_state().await).await;
     assert_ne!(other["databaseId"].as_str().unwrap(), database_a);
-
-    // `nowMs` is the server clock at response time.
-    let now = boot_a["nowMs"].as_i64().unwrap();
-    assert!(
-        (before..=after).contains(&now),
-        "nowMs {now} outside [{before}, {after}]"
-    );
 }

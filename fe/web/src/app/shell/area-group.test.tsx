@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 // An expanded Area shows its five most recent Tracks, the open one, and `Show N more`.
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Area } from '../../../../core/domain/area.ts';
 import { NEUTRAL_ACTIVITY, type Track } from '../../../../core/domain/track.ts';
 import { createUiPreferences, UiPreferencesProvider } from '../providers/ui-preferences.tsx';
+import { createReadReceiptsKernel, readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';
 import { Sidebar } from './sidebar.tsx';
 
 afterEach(() => { cleanup(); });
@@ -35,18 +36,13 @@ type View = Readonly<{
   collapsed?: boolean;
 }>;
 
-/** A read-receipt scope entered at 1, so a Track whose `activityAt` is later reads as unread. */
-function scopedPreferences() {
-  const preferences = createUiPreferences();
-  preferences.setReadScope('db-1', 1);
-  return preferences;
-}
-
-function renderRail(initial: View, preferences = scopedPreferences()) {
+function renderRail(initial: View, preferences = createUiPreferences()) {
+  /* The kernel's baseline is 1, so a Track whose `activityAt` is later reads as unread. */
+  const { wrap } = readReceiptsFixture(createReadReceiptsKernel({ baselineMs: 1 }));
   const build = (view: View) => {
     const areas = view.areas ?? [area()];
     const byArea = view.byArea ?? new Map();
-    return (
+    return wrap(
       <UiPreferencesProvider preferences={preferences}>
         <Sidebar
           areas={areas}
@@ -66,7 +62,7 @@ function renderRail(initial: View, preferences = scopedPreferences()) {
           onOpenPlugins={vi.fn()}
           onSignOut={vi.fn()}
         />
-      </UiPreferencesProvider>
+      </UiPreferencesProvider>,
     );
   };
   const result = render(build(initial));
@@ -237,9 +233,9 @@ describe('Closed tracks in the rail', () => {
     expect(shownTitles()).toEqual(['T1', 'T3']);
   });
 
-  it('shows a closed unread track', () => {
+  it('shows a closed unread track', async () => {
     renderRail({ byArea: closedAt(3, [2, 3], [2]) });
-    expect(shownTitles()).toEqual(['T1', 'T2']);
+    await waitFor(() => expect(shownTitles()).toEqual(['T1', 'T2']));
   });
 
   it('shows the closed track open in the view', () => {
@@ -268,7 +264,7 @@ describe('Closed tracks in the rail', () => {
   });
 
   it('keeps the choice per Area', () => {
-    const preferences = scopedPreferences();
+    const preferences = createUiPreferences();
     preferences.setAreaShowsClosed('c2', true);
     const reading = area({ id: 'c2', name: 'Reading', sort: 2 });
     const closedRow = (areaId: string, prefix: string) => tracks(2, areaId, prefix)

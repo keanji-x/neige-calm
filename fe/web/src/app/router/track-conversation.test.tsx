@@ -23,7 +23,7 @@ import {
 } from '../../../../core/domain/conversation.ts';
 import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
 import { createUiPreferences, type UiPreferenceStorage } from '../providers/ui-preferences.tsx';
-import { DATABASE_ID_KEY } from '../../../../core/keys/storage.ts';
+import { createReadReceiptsKernel, type ReadReceiptsKernel } from '../providers/read-receipts-fixture.tsx';
 import { ThemeProvider } from '../theme/public.tsx';
 import { APP_BASEPATH, createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
@@ -93,9 +93,9 @@ function assistantRow(overrides: Partial<Row> = {}): Row {
 
 /* Read receipts need a database scope; without `ServerCompatGate` it is seeded
  * from the stored database identity. Under a null scope nothing is unread. */
-function receiptStorage(): UiPreferenceStorage {
-  const values = new Map<string, string>([[DATABASE_ID_KEY, 'db-receipts']]);
-  return { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value); } };
+/** The kernel's read receipts from a baseline of 0: every completion is unread until it is read. */
+function receiptKernel(): ReadReceiptsKernel {
+  return createReadReceiptsKernel({ baselineMs: 0 });
 }
 
 /** One persisted transcript row. An agent message has `text`, a user message has `content` parts; a row spelled the other way silently yields no turn. */
@@ -156,7 +156,7 @@ function failure(status: number, code: string, error: string): ApiTransportRespo
 type Reply = (request: ApiRequest) => ApiTransportResponse | undefined
   | Promise<ApiTransportResponse | undefined>;
 
-function setup(reply?: Reply, storage?: UiPreferenceStorage, recovery?: RecoveryAccess) {
+function setup(reply?: Reply, storage?: UiPreferenceStorage, recovery?: RecoveryAccess, receipts?: ReadReceiptsKernel) {
   const requests: ApiRequest[] = [];
   const themeValues = new Map<string, string>();
   const themeStorage: Pick<Storage, 'getItem' | 'setItem'> = {
@@ -166,6 +166,8 @@ function setup(reply?: Reply, storage?: UiPreferenceStorage, recovery?: Recovery
   const transport: ApiTransportPort = {
     async send(request) {
       requests.push(request);
+      const receipt = await receipts?.reply(request);
+      if (receipt !== undefined) return receipt;
       if (reply) {
         const response = await reply(request);
         if (response) return response;
@@ -3841,7 +3843,7 @@ it('uses a spinner while a closed conversation runs, a blue unread dot on comple
     if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_close: true,
       cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD], overlays: [trackActivityOverlay({ working: cards.length > 0, cards })] });
     return undefined;
-  }, receiptStorage());
+  }, undefined, undefined, receiptKernel());
   const refetch = () => act(async () => {
     await client.invalidateQueries({ queryKey: ['track-conversations', 'w1'] });
     await client.invalidateQueries({ queryKey: ['track', 'w1'] });
@@ -3910,7 +3912,7 @@ it('keeps new replies unread while reopening cached history is still loading', a
     if (request.path.includes(HISTORY_PATH)) return holdHistory ? pending
       : ok([harnessMessage(20, 'agentMessage', { type: 'agentMessage', text: 'Previously read answer.' })]);
     return undefined;
-  }, receiptStorage());
+  }, undefined, undefined, receiptKernel());
   const row = () => screen.getByRole('button', { name: /^Conversation Assistant(?:,|$)/ });
   const unread = () => row().closest('li')?.querySelector('[data-nc-activity="unread"]');
   fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
@@ -3964,7 +3966,7 @@ it('shows a closed Planner working and preserves unread completion until its his
       harnessMessage(40, 'agentMessage', { type: 'agentMessage', text: 'Completed planner answer.' }),
     ]);
     return undefined;
-  }, receiptStorage());
+  }, undefined, undefined, receiptKernel());
   const row = () => screen.getByRole('button', { name: /^Conversation Planner chat(?:,|$)/ });
   const indicator = () => row().closest('li')?.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity');
   await screen.findByRole('button', { name: /^Conversation Planner chat(?:,|$)/ });
@@ -4015,7 +4017,7 @@ it('conversation rows read activity.cards, not session state', async () => {
     if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_close: true,
       cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD], overlays: [trackActivityOverlay({ cards })] });
     return undefined;
-  }, receiptStorage());
+  }, undefined, undefined, receiptKernel());
   const row = () => screen.getByRole('button', { name: /^Conversation Assistant(?:,|$)/ });
   const indicator = () => row().closest('li')?.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity');
   await screen.findByRole('button', { name: /^Conversation Assistant(?:,|$)/ });
@@ -4054,7 +4056,7 @@ it('the injected planner row reads activity.cards and last_turn_completed_ms', a
       harnessMessage(40, 'agentMessage', { type: 'agentMessage', text: 'Completed planner answer.' }),
     ]);
     return undefined;
-  }, receiptStorage());
+  }, undefined, undefined, receiptKernel());
   const row = () => screen.getByRole('button', { name: /^Conversation Planner chat(?:,|$)/ });
   const indicator = () => row().closest('li')?.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity');
   const refetch = () => act(async () => { await client.invalidateQueries({ queryKey: ['track', 'w1'] }); });

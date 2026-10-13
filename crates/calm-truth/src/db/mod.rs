@@ -618,6 +618,23 @@ pub trait RepoOutOfDomain: RepoRead {
     async fn settings_upsert(&self, key: &str, value: &str) -> Result<()>;
     async fn settings_delete(&self, key: &str) -> Result<()>;
 
+    // The one user's read receipts (#2596): server-private read state, written by the user only.
+    /// The cutover baseline and every stored receipt.
+    async fn read_receipts_load(&self) -> Result<calm_types::read_receipts::ReadReceipts>;
+    /// Raise one receipt to `read_through_ms` (never lower it) and clear its manual unread; idempotent.
+    async fn read_receipt_mark_read(
+        &self,
+        kind: calm_types::read_receipts::ReadReceiptKind,
+        target_id: &str,
+        read_through_ms: i64,
+    ) -> Result<calm_types::read_receipts::ReadReceipt>;
+    /// Set one receipt's manual unread, keeping the instant it was read through; idempotent.
+    async fn read_receipt_mark_unread(
+        &self,
+        kind: calm_types::read_receipts::ReadReceiptKind,
+        target_id: &str,
+    ) -> Result<calm_types::read_receipts::ReadReceipt>;
+
     // area_folders is an operational mapping table, not on the event-sourced path.
     /// Insert a folder with **no** overlap check; not reachable from HTTP, which goes through
     /// [`Self::area_folder_create_checked`]. Survives for tests and seeds that want states the checked writer refuses.

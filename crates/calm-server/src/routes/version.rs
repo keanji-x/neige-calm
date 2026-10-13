@@ -1,7 +1,7 @@
 //! `GET /api/version` — kernel + protocol version metadata.
 //!
 //! `dbInstanceId` changes on every process boot; `databaseId` is the database's own
-//! stable id; `nowMs` is the server clock at response time.
+//! stable id.
 
 use crate::event::SYNC_EVENT_VERSION;
 use crate::extract::Json;
@@ -38,7 +38,10 @@ pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 /// `delivery`), and an ask answer is tagged.
 /// #2441 bumps 46 -> 47: a Planner's `permission_mode` may be `full`, which older bundles reject,
 /// dropping the card's whole run state.
-pub const WEB_COMPAT_VERSION: u32 = 47;
+/// #2596 bumps 47 -> 48: read receipts live in the kernel (`/api/read-receipts`) and `nowMs` is
+/// gone from `/api/version`; an older bundle would keep its own localStorage receipts beside the
+/// kernel's and, without `nowMs`, lose its read scope altogether.
+pub const WEB_COMPAT_VERSION: u32 = 48;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]
@@ -99,8 +102,6 @@ pub struct VersionInfo {
     /// The database's stable id, minted once into the one-row `database_identity` table;
     /// survives restarts where `db_instance_id` does not.
     pub database_id: String,
-    /// The server clock (unix ms) when this response was built.
-    pub now_ms: i64,
 }
 
 pub fn current_version_info(db_instance_id: String, database_id: String) -> VersionInfo {
@@ -120,7 +121,6 @@ pub fn current_version_info(db_instance_id: String, database_id: String) -> Vers
         build_sha: option_env!("NEIGE_BUILD_SHA").map(|s| s.to_string()),
         db_instance_id,
         database_id,
-        now_ms: crate::model::now_ms(),
     }
 }
 
@@ -162,7 +162,6 @@ mod tests {
             build_sha: option_env!("NEIGE_BUILD_SHA").map(|s| s.to_string()),
             db_instance_id: "test-id".to_string(),
             database_id: "test-database-id".to_string(),
-            now_ms: 0,
         };
         assert_eq!(body.min_web_compat_version, WEB_COMPAT_VERSION);
         assert_eq!(body.web_compat_version, WEB_COMPAT_VERSION);

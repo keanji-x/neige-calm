@@ -120,6 +120,40 @@ pub async fn worker_flow_items_delete_by_card_tx(
 
 #[async_trait]
 impl RepoOutOfDomain for SqlxRepo {
+    async fn read_receipts_load(&self) -> Result<calm_types::read_receipts::ReadReceipts> {
+        super::read_receipt::read_receipts_load(&self.pool).await
+    }
+
+    async fn read_receipt_mark_read(
+        &self,
+        kind: calm_types::read_receipts::ReadReceiptKind,
+        target_id: &str,
+        read_through_ms: i64,
+    ) -> Result<calm_types::read_receipts::ReadReceipt> {
+        let mut tx = super::infra::begin_immediate_tx(&self.pool).await?;
+        let out = super::read_receipt::read_receipt_mark_read_tx(
+            &mut tx,
+            kind,
+            target_id,
+            read_through_ms,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(out)
+    }
+
+    async fn read_receipt_mark_unread(
+        &self,
+        kind: calm_types::read_receipts::ReadReceiptKind,
+        target_id: &str,
+    ) -> Result<calm_types::read_receipts::ReadReceipt> {
+        let mut tx = super::infra::begin_immediate_tx(&self.pool).await?;
+        let out =
+            super::read_receipt::read_receipt_mark_unread_tx(&mut tx, kind, target_id).await?;
+        tx.commit().await?;
+        Ok(out)
+    }
+
     async fn track_recipe_create(&self, p: NewTrackRecipe) -> Result<TrackRecipe> {
         // A deferred tx that reads then writes can lose the lock upgrade and surface
         // as SQLITE_BUSY with nothing safe to retry, so writers BEGIN IMMEDIATE.

@@ -133,6 +133,8 @@ export const queryKeys = Object.freeze({
   trackSource: (trackId: string, sourceId: string) => ['track-source', trackId, sourceId] as const,
   overlaysByKind: (entityKind: 'track' | 'card') => ['overlays', entityKind] as const,
   settings: () => ['settings'] as const,
+  /* The user's read receipts (#2596). Writes emit no event: the read refetches on focus and after each write. */
+  readReceipts: () => ['read-receipts'] as const,
   /* Settings › Plugins. Not reached by any event policy; `pluginsQueryOptions` polls instead. */
   plugins: () => ['plugins'] as const,
   /* One plugin's detail, read only by its configuration pane; the list carries no manifest by design. */
@@ -380,7 +382,6 @@ const serverVersionSchema = z.object({
   syncEventVersion: z.number(),
   dbInstanceId: z.string(),
   databaseId: z.string().optional(),
-  nowMs: z.number().optional(),
 });
 
 export function serverVersionOperation(): ApiOperation<ServerVersionInfo> {

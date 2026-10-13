@@ -35,6 +35,7 @@ pub mod planner_input_send;
 pub mod planner_model;
 pub mod planner_permission_mode;
 pub mod plugins;
+pub mod read_receipts;
 pub mod settings;
 pub mod task_recovery;
 pub mod terminal;
@@ -71,6 +72,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(crate::mentions::router())
         .merge(tracks::router())
         .merge(activity_dismissals::router())
+        .merge(read_receipts::router())
         .merge(track_asks::router())
         .merge(track_conversations::router())
         .merge(track_previews::router())

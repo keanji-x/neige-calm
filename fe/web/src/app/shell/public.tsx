@@ -13,6 +13,7 @@ import { Outlet } from '@tanstack/react-router';
 import { createContext, useContext, useEffect, useRef, useCallback, useLayoutEffect, useMemo, type ReactNode } from 'react';
 
 import { useUiPreferences } from '../providers/ui-preferences.tsx';
+import { useReadReceipts } from '../providers/read-receipts.tsx';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT, trackDisplayTitle, userVisibleTracks } from '../../../../core/domain/track.ts';
@@ -179,7 +180,8 @@ export function AppShell({
   const [historyOpen, setHistoryOpen] = useState(false);
   const conversationScope = useMobileConversationScope();
   const historyTracks = conversationScope === null ? [] : [conversationScope.track];
-  const isUnread = (track: Track) => preferences.isUnread('track', track.id, track.activityAt ?? 0);
+  const receipts = useReadReceipts();
+  const isUnread = (track: Track) => receipts.isUnread('track', track.id, track.activityAt);
   const trackGroups = sidebarTrackGroups(userVisibleTracks(workspace.tracks, workspace.areas), isUnread);
   const history = useMobileHistoryData(transport, unauthorized, historyTracks, conversationScope?.conversations ?? [], narrowRail && historyOpen);
   const visibleViewport = useVisibleViewport(narrowRail);
@@ -440,9 +442,9 @@ export function AppShell({
                   areaPinned: preferences.areaTrackPinned(track.areaId, track.id),
                   onSetPinned: (id, next) => { void pinFeedback.run(trackMutations.setPinned(id, track.areaId, next, nowMs ?? Date.now()), writeFailureText(TRACK_PATCH_FAILURES, TRACK_PATCH_TEXT.pin)); },
                   onSetAreaPinned: (id, next) => preferences.setAreaTrackPinned(track.areaId, id, next),
-                  onMarkUnread: (id) => preferences.markUnread('track', id),
+                  onMarkUnread: (id) => receipts.markUnread('track', id),
                 })}
-                isUnread={(track) => preferences.isUnread('track', track.id, track.activityAt ?? 0)}
+                isUnread={isUnread}
                 onOpenTrack={(trackId) => {
                   closeMobileSection();
                   go({ name: 'track', trackId, from: areaIdOf(trackId) === undefined ? 'pages' : 'area' });
