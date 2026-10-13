@@ -3,16 +3,10 @@
 // way the browser will and asserts the origin again.
 
 import type { AppBlockPayload } from '../../../../../core/domain/report.ts';
+import { reportFrameHeight } from '../../../../../core/domain/report-frame.ts';
 import styles from './app.module.css';
 
-const MIN_HEIGHT = 120;
-const MAX_HEIGHT = 2000;
 const DEFAULT_HEIGHT = 360;
-
-function clampHeight(height: number | null | undefined): number {
-  if (height == null || Number.isNaN(height)) return DEFAULT_HEIGHT;
-  return Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, height));
-}
 
 function isSameOrigin(src: string): boolean {
   try {
@@ -40,7 +34,7 @@ export function ReportAppBlock({ payload }: { payload: AppBlockPayload }) {
         className={styles.iframe}
         src={payload.src}
         title={title}
-        style={{ blockSize: `${clampHeight(payload.height)}px` }}
+        style={{ blockSize: `${reportFrameHeight(payload.height, DEFAULT_HEIGHT)}px` }}
         sandbox="allow-scripts allow-forms allow-popups"
         loading="lazy"
         referrerPolicy="no-referrer"

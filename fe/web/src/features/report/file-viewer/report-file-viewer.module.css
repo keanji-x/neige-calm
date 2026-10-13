@@ -34,7 +34,8 @@
   .state,
   .error,
   .sourceWrap,
-  .imageWrap {
+  .imageWrap,
+  .pageWrap {
     grid-column: 2;
     min-inline-size: 0;
   }
@@ -76,6 +77,42 @@
     gap: var(--space-4);
   }
 
+  /* A page gets the viewport's height under the header, like an image's cap. */
+  .pageWrap {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    block-size: calc(100dvh - var(--header-band, 0px) - var(--space-12));
+    min-block-size: 20rem;
+  }
+
+  .pageSource {
+    flex: 1 1 auto;
+    min-block-size: 0;
+    overflow: auto;
+  }
+
+  .views {
+    display: flex;
+    gap: var(--space-2);
+  }
+
+  .view {
+    padding: var(--space-1) var(--space-3);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-2);
+    font: inherit;
+    font-size: var(--text-sm);
+    cursor: pointer;
+  }
+
+  .view[aria-pressed='true'] {
+    background: var(--surface-chip);
+    color: var(--text);
+  }
+
   .imageWrap {
     display: grid;
     place-items: start center;
@@ -98,7 +135,8 @@
     .state,
     .error,
     .sourceWrap,
-    .imageWrap {
+    .imageWrap,
+    .pageWrap {
       grid-column: 1;
     }
 

@@ -100,6 +100,8 @@ function FileContent({ path, files, renderMarkdown }: Readonly<{
     {resource.kind === 'loading' && <p role="status">Loading file…</p>}
     {resource.kind === 'error' && <FileReadError failure={resource.failure} onRetry={resource.retry} />}
     {resource.kind === 'image' && <img className={styles.image} src={resource.url} alt={path} onLoad={resource.onLoad} onError={resource.onError} />}
+    {/* A hover card shows a page's source; the page itself opens in the file viewer. */}
+    {resource.kind === 'html' && <ReadOnlyCode text={resource.text} source={{ kind: 'filename', value: path }} />}
     {resource.kind === 'loaded' && <>
       {resource.truncated && <p>Showing the first 2 MiB of this file.</p>}
       {resource.format === 'markdown'

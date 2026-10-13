@@ -5,6 +5,8 @@ import type { WorkspaceFilePort } from '../../../../../core/domain/fs.ts';
 import type { ReportSourceLinkTarget } from '../../../../../core/domain/report-source.ts';
 import type { ReportFileLinkTarget } from '../../../../../core/domain/report-file.ts';
 import { FileReadError, useReportFileResource } from '../../../systems/fs-viewers/public.tsx';
+import { useState } from '../../../ui/state/public.ts';
+import { ReportHtmlFrame } from '../html/public.tsx';
 import type { ReportLinkPreviewResources } from '../link-preview/public.tsx';
 import { ReportDocument } from '../document/public.tsx';
 import styles from './report-file-viewer.module.css';
@@ -30,7 +32,7 @@ export function ReportFileViewer({
   path: string;
   files: WorkspaceFilePort;
   fileRoot: string;
-  /** Code, text and images may use the panel column when no card owns it. */
+  /** Code, text, images and pages may use the panel column when no card owns it. */
   wide: boolean;
   onClose: () => void;
   onFileOpened?: (path: string) => void;
@@ -41,6 +43,8 @@ export function ReportFileViewer({
   const layerRef = useRef<HTMLDivElement | null>(null);
   const resource = useReportFileResource(path, files, onFileOpened);
   const markdown = resource.kind === 'loaded' && resource.format === 'markdown';
+  /* A page opens rendered; its source is one toggle away. */
+  const [pageView, setPageView] = useState<'page' | 'source'>('page');
 
   useEffect(() => { layerRef.current?.focus({ preventScroll: true }); }, []);
 
@@ -82,6 +86,17 @@ export function ReportFileViewer({
               onError={resource.onError}
             />
           </figure>
+        )}
+        {resource.kind === 'html' && (
+          <div className={styles.pageWrap}>
+            <div className={styles.views} role="group" aria-label="Page view">
+              <button type="button" className={styles.view} aria-pressed={pageView === 'page'} onClick={() => { setPageView('page'); }}>Page</button>
+              <button type="button" className={styles.view} aria-pressed={pageView === 'source'} onClick={() => { setPageView('source'); }}>Source</button>
+            </div>
+            {pageView === 'page'
+              ? <ReportHtmlFrame url={resource.url} title={resource.path} />
+              : <div className={styles.pageSource} data-nc-report-file-source=""><ReadOnlyCode text={resource.text} source={{ kind: 'filename', value: resource.path }} /></div>}
+          </div>
         )}
         {resource.kind === 'loaded' && resource.format === 'markdown' && (
           <div className={styles.markdown}>

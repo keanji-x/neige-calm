@@ -4,17 +4,11 @@
 // under "unavailable" and takes no input, so an old frame never passes for the window.
 
 import type { WindowBlockPayload } from '../../../../../core/domain/report.ts';
+import { reportFrameHeight } from '../../../../../core/domain/report-frame.ts';
 import { useWindowStream, type WindowStreamOptions, type WindowStreamStatus } from '../../../systems/window-stream/public.tsx';
 import styles from './window.module.css';
 
-const MIN_HEIGHT = 120;
-const MAX_HEIGHT = 2000;
 const DEFAULT_HEIGHT = 480;
-
-function clampHeight(height: number | null | undefined): number {
-  if (height == null || Number.isNaN(height)) return DEFAULT_HEIGHT;
-  return Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, height));
-}
 
 const STATUS_TEXT: Readonly<Record<Exclude<WindowStreamStatus, 'live'>, string>> = Object.freeze({
   connecting: 'connecting…',
@@ -30,7 +24,7 @@ export function ReportWindowBlock({ payload, stream }: {
   const title = payload.title != null && payload.title.trim() !== '' ? payload.title : payload.src;
   return (
     <figure className={styles.figure}>
-      <div className={styles.stage} data-nc-state={status} style={{ blockSize: `${clampHeight(payload.height)}px` }}>
+      <div className={styles.stage} data-nc-state={status} style={{ blockSize: `${reportFrameHeight(payload.height, DEFAULT_HEIGHT)}px` }}>
         <canvas
           ref={canvasRef}
           className={styles.canvas}

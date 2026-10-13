@@ -7,6 +7,7 @@ import { max2048CodePoints, inlineTableBlockPayloadSchema } from './report-table
 import { isCalendarDate } from './report-date.js';
 import { nativeViewPayloadSchema, type NativeViewPayload } from './report-view.js';
 import { sameOriginPath, windowStreamSrc } from './report-src.js';
+import { htmlBlockPayloadSchema, type HtmlBlockPayload } from './report-html.js';
 export { inlineTableBlockPayloadSchema } from './report-table.js';
 export { isCalendarDate } from './report-date.js';
 
@@ -218,6 +219,7 @@ export type ReportBlock =
   | Readonly<{ id: string; kind: 'task'; payload: TaskBlockPayload }>
   | Readonly<{ id: string; kind: 'preview'; payload: PreviewBlockPayload }>
   | Readonly<{ id: string; kind: 'window'; payload: WindowBlockPayload }>
+  | Readonly<{ id: string; kind: 'html'; payload: HtmlBlockPayload }>
   | Readonly<{ id: string; kind: 'unsupported'; declaredKind: string }>;
 
 const blockWireSchema = z.object({
@@ -240,6 +242,7 @@ function payloadSchemaFor(kind: string): z.ZodType | null {
     case 'task': return taskBlockPayloadSchema;
     case 'preview': return previewBlockPayloadSchema;
     case 'window': return windowBlockPayloadSchema;
+    case 'html': return htmlBlockPayloadSchema;
     default: return null;
   }
 }

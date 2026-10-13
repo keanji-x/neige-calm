@@ -197,7 +197,10 @@ mod tests {
         // #2530: the `window` kind added 9 bytes to the commit enum and its describe-line entry
         // was paid for by dropping the restated result shape (net -12); the cap is the measured
         // 30,846.
-        const SURFACE_MAX_BYTES: usize = 30_846;
+        // #2585: the `html` kind adds 7 bytes to the commit enum and 13 to the describe line (its
+        // authoring contract is describe output, outside this surface); the cap is the measured
+        // 30,866.
+        const SURFACE_MAX_BYTES: usize = 30_866;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);

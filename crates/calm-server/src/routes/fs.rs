@@ -19,6 +19,7 @@ use std::process::Stdio;
 use tokio::process::Command;
 use utoipa::ToSchema;
 
+mod html_page;
 mod track_workspace;
 use track_workspace::open_track_workspace_file;
 
@@ -304,10 +305,10 @@ pub(crate) async fn read_track_workspace_file(
     tag = "fs",
     params(
         ("track_id" = String, Path, description = "Track whose persisted workspace is the read boundary"),
-        ("path" = String, Query, description = "Workspace-relative image file path")
+        ("path" = String, Query, description = "Workspace-relative image or HTML page path")
     ),
     responses(
-        (status = 200, description = "Workspace image bytes", body = Vec<u8>, content_type = "application/octet-stream"),
+        (status = 200, description = "Workspace image bytes, or an HTML page (at most 2 MiB) served under a script-only sandbox CSP", body = Vec<u8>, content_type = "application/octet-stream"),
         (status = 400, description = "Path is invalid, outside the Track workspace, not a file, unsupported, or too large", body = ErrorBody),
         (status = 403, description = "Read permission denied", body = ErrorBody),
         (status = 404, description = "Track not found (`not_found`), or the path doesn't exist in its workspace (`path_not_found`)", body = ErrorBody),
@@ -707,6 +708,9 @@ async fn read_workspace_file_response(opened: OpenWorkspaceFile) -> Result<ReadF
 }
 
 async fn read_workspace_file_raw_response(opened: OpenWorkspaceFile) -> Result<Response> {
+    if html_page::is_html_page(&opened.display_path) {
+        return html_page::html_page_response(opened).await;
+    }
     let content_type = image_content_type(&opened.display_path)?;
     read_file_raw_response_from_handle(opened.file, opened.size, &opened.display_path, content_type)
         .await
@@ -1150,6 +1154,9 @@ fn map_io_err(path: &std::path::Path, e: std::io::Error) -> CalmError {
 
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod workspace_read_tests;
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod html_page_tests;
 
 #[cfg(test)]
 mod tests {

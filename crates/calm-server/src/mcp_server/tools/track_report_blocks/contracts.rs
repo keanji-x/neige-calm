@@ -267,6 +267,7 @@ pub(super) fn kinds_table() -> Value {
             preview_kind(),
             native_view_kind(),
             window_kind(),
+            html_kind(),
         ]);
     kinds
 }
@@ -436,6 +437,24 @@ fn window_kind() -> Value {
             }
         },
         "usage": include_str!("../../../../prompts/report-kinds/window.md").trim_end()
+    })
+}
+
+/// Keep this schema in sync with `report_blocks::validate_payload`'s html validation.
+fn html_kind() -> Value {
+    json!({
+        "kind": "html",
+        "schema": {
+            "type": "object",
+            "required": ["path"],
+            "additionalProperties": false,
+            "properties": {
+                "path": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "description": "Workspace-relative `.html`/`.htm` path: no leading `/`, scheme, `..` segment, `\\`, `?`, `#` or control characters." },
+                "title": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS },
+                "height": { "type": "number", "minimum": 120, "maximum": 2000, "description": "Frame height in px (default chosen by the renderer)." }
+            }
+        },
+        "usage": include_str!("../../../../prompts/report-kinds/html.md").trim_end()
     })
 }
 

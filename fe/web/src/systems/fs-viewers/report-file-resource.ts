@@ -4,7 +4,7 @@ import type { ApiFailure } from '../../../../core/api/types.ts';
 import type { WorkspaceFilePort } from '../../../../core/domain/fs.ts';
 import { readFailureOf } from '../../../../core/domain/read-failure.ts';
 import { useState } from '../../ui/state/public.ts';
-import { isImagePath, isMarkdownPath } from './file-kind.ts';
+import { isHtmlPath, isImagePath, isMarkdownPath } from './file-kind.ts';
 
 type ResourceState =
   | Readonly<{ kind: 'loading' }>
@@ -13,6 +13,9 @@ type ResourceState =
       format: 'markdown' | 'source';
     }>
   | Readonly<{ kind: 'image'; path: string; url: string }>
+  /* A page read whole as text (the source view) and served to a frame from `url`. A page over the
+     2 MiB read cap is `loaded` source instead: the raw route refuses it. */
+  | Readonly<{ kind: 'html'; path: string; url: string; text: string }>
   | Readonly<{ kind: 'error'; failure: ApiFailure | null; resource: 'file' | 'image' }>;
 
 export type ReportFileResource =
@@ -24,7 +27,8 @@ export type ReportFileResource =
       onError: () => void;
     }>;
 
-/** Owns classification, async read/cancellation, and image load completion. */
+/** Owns classification, async read/cancellation, and image load completion. A page is read first, so a missing
+ *  or unreadable one is an error here and never a frame showing the route's error body. */
 export function useReportFileResource(
   path: string,
   files: WorkspaceFilePort,
@@ -45,6 +49,11 @@ export function useReportFileResource(
     files.readFile(path)
       .then((result) => {
         if (cancelled) return;
+        if (isHtmlPath(path) && !result.truncated) {
+          setState({ kind: 'html', path, url: files.rawUrl(path), text: result.text });
+          onOpenedRef.current?.(path);
+          return;
+        }
         setState({
           kind: 'loaded',
           path,

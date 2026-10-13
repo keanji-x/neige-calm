@@ -51,4 +51,21 @@ describe('useReportFileResource', () => {
     resolveFirst({ path: 'a.txt', size: 1, text: 'first', truncated: false });
     await waitFor(() => { expect(screen.queryByText('first')).toBeNull(); });
   });
+
+  it('reads a page first and hands it to a frame only once the read succeeds', async () => {
+    const readFile = vi.fn(() => Promise.resolve({ path: 'docs/a.html', size: 6, text: '<p>a</p>', truncated: false }));
+    const onOpened = vi.fn();
+    render(<Probe path="docs/A.HTM" files={{ readFile, rawUrl: (path) => `/raw/${path}` }} onOpened={onOpened} />);
+    expect((await screen.findByText('html')).dataset.kind).toBe('html');
+    expect(readFile).toHaveBeenCalledWith('docs/A.HTM');
+    expect(onOpened).toHaveBeenCalledWith('docs/A.HTM');
+  });
+
+  it('keeps a page over the read cap as truncated source, never a frame', async () => {
+    const readFile = vi.fn(() => Promise.resolve({ path: 'big.html', size: 3e6, text: '<p>', truncated: true }));
+    render(<Probe path="big.html" files={{ readFile, rawUrl: (path) => `/raw/${path}` }} />);
+    const loaded = await screen.findByText('<p>');
+    expect(loaded.dataset.kind).toBe('loaded');
+    expect(loaded.dataset.format).toBe('source');
+  });
 });

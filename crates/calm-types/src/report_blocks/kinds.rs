@@ -15,6 +15,7 @@ pub const KIND_APP: &str = "app";
 pub const KIND_TASK: &str = "task";
 pub const KIND_PREVIEW: &str = "preview";
 pub const KIND_WINDOW: &str = "window";
+pub const KIND_HTML: &str = "html";
 
 /// Maximum candle rows in a `chart.candles` payload.
 pub const MAX_CHART_CANDLES: usize = 5000;
@@ -33,7 +34,7 @@ pub const MAX_CANONICAL_BYTES: usize = 256 * 1024;
 pub const MAX_LIVE_UNIT_BYTES: usize = 4 * 1024 * 1024;
 
 /// The non-prose kinds a report may contain, in `blocks.kinds` order.
-pub const DATA_KINDS: [&str; 8] = [
+pub const DATA_KINDS: [&str; 9] = [
     KIND_CHART_CANDLES,
     KIND_CHART_SERIES,
     KIND_TABLE,
@@ -42,6 +43,7 @@ pub const DATA_KINDS: [&str; 8] = [
     KIND_PREVIEW,
     KIND_VIEW,
     KIND_WINDOW,
+    KIND_HTML,
 ];
 
 pub fn is_data_kind(kind: &str) -> bool {
@@ -90,6 +92,7 @@ pub fn validate_payload(kind: &str, payload: &Value) -> Result<(), String> {
         KIND_TASK => validate_task(map, &mut errors),
         KIND_PREVIEW => validate_preview(map, &mut errors),
         KIND_WINDOW => super::window::validate_window(map, &mut errors),
+        KIND_HTML => super::html::validate_html(map, &mut errors),
         other => errors.push(format!(
             "unknown block kind `{other}` — known data kinds: {}",
             DATA_KINDS.join(", ")
@@ -736,7 +739,7 @@ pub(super) fn optional_height(map: &Map<String, Value>, errors: &mut Vec<String>
 
 /// Characters the WHATWG URL parser strips or reinterprets before parsing (ASCII C0 controls + DEL
 /// and C1 U+0080..=U+009F); a `src` containing any could normalize into a different URL in the browser.
-fn is_url_hostile_char(c: char) -> bool {
+pub(super) fn is_url_hostile_char(c: char) -> bool {
     c.is_ascii_control() || matches!(c, '\u{80}'..='\u{9f}')
 }
 

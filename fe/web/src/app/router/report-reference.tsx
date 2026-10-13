@@ -56,6 +56,7 @@ function ReferenceDocument({ transport, unauthorized, target, detail, report, on
     onOpenLink={onOpenLink} onOpenSourceLink={source => onOpenSource(target.trackId, source)}
     onOpenFileLink={file => onOpenFile(target.trackId, file)}
     resolveOverlay={source => trackOverlayPayload(target.trackId, detail.overlays, source)} resolveSeries={resolveSeries}
+    files={files}
     linkPreview={{ files, trackId: target.trackId, report,
       renderSource: source => <ReportSourcePreview transport={transport} unauthorized={unauthorized} trackId={target.trackId} target={source} />,
       renderReference: reference => <ReportReferencePreview transport={transport} unauthorized={unauthorized} target={reference}

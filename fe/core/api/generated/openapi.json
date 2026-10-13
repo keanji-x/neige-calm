@@ -11923,7 +11923,7 @@
           {
             "name": "path",
             "in": "query",
-            "description": "Workspace-relative image file path",
+            "description": "Workspace-relative image or HTML page path",
             "required": true,
             "schema": {
               "type": "string"
@@ -11932,7 +11932,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Workspace image bytes",
+            "description": "Workspace image bytes, or an HTML page (at most 2 MiB) served under a script-only sandbox CSP",
             "content": {
               "application/octet-stream": {
                 "schema": {

@@ -1,0 +1,55 @@
+@layer features {
+  .figure {
+    margin: 0;
+  }
+
+  /* The app block's register: a tint and no border; the page brings its own layout and colours. */
+  .frame {
+    display: block;
+    inline-size: 100%;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: var(--surface-code);
+  }
+
+  /* The file viewer gives the page the column's remaining height. */
+  .fill {
+    flex: 1 1 auto;
+    min-block-size: 0;
+  }
+
+  /* Loading, refused, too large or on mobile: the box keeps its size and says why it is empty. */
+  .note {
+    display: grid;
+    place-items: center;
+    margin: 0;
+    padding: var(--space-3);
+    border-radius: var(--radius-sm);
+    background: var(--surface-code);
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    color: var(--text-2);
+    text-align: center;
+  }
+
+  .unavailable {
+    padding-block: var(--space-2);
+  }
+
+  .caption {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    margin-block-start: var(--space-3);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+  }
+
+  .title {
+    min-inline-size: 0;
+    overflow-wrap: anywhere;
+  }
+}

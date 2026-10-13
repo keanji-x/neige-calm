@@ -11,3 +11,9 @@ export function isMarkdownPath(path: string): boolean {
   const lower = path.toLowerCase();
   return lower.endsWith('.md') || lower.endsWith('.markdown');
 }
+
+/** A page the Report renders in its sandboxed frame (`.html` / `.htm`); the card browser shows it as source. */
+export function isHtmlPath(path: string): boolean {
+  const lower = path.toLowerCase();
+  return lower.endsWith('.html') || lower.endsWith('.htm');
+}

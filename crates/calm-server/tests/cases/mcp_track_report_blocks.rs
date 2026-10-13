@@ -198,7 +198,8 @@ async fn kinds_returns_all_supported_schemas() {
             "task",
             "preview",
             "view",
-            "window"
+            "window",
+            "html"
         ]
     );
     for kind in kinds {
@@ -368,6 +369,12 @@ async fn kinds_returns_all_supported_schemas() {
         Some(&json!(
             calm_types::report_blocks::window::WINDOW_SRC_PATTERN
         ))
+    );
+    let html = &kinds[9];
+    assert_eq!(html.pointer("/schema/required").unwrap(), &json!(["path"]));
+    assert_eq!(
+        html.pointer("/schema/additionalProperties"),
+        Some(&json!(false))
     );
     let task = &kinds[5];
     assert_eq!(
@@ -1258,6 +1265,52 @@ async fn upsert_window_block_round_trips_and_refuses_a_src_off_the_allowlist() {
     .expect_err("encoded dot segment");
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
     assert!(err.message.contains("src: required path"), "{err:?}");
+    assert_eq!(current_payload(&boot).await, stored);
+}
+
+#[tokio::test]
+async fn upsert_html_block_round_trips_and_refuses_a_path_outside_the_workspace() {
+    let boot = boot().await;
+    let payload = json!({ "path": "docs/architecture/overview.html", "title": "Architecture", "height": 640 });
+    upsert_block(
+        &boot,
+        planner_identity(&boot),
+        json!({ "kind": "html", "payload": payload }),
+    )
+    .await
+    .expect("html upsert succeeds");
+    let stored = current_payload(&boot).await;
+    let fence = calm_types::report_blocks::render_fence("html", &payload);
+    assert_eq!(stored.body, format!("{}{fence}", seed_body()));
+    let read = read(&boot, json!({})).await;
+    assert_eq!(
+        read["text"],
+        json!(stored.body),
+        "the read returns the stored fence"
+    );
+    assert!(
+        read["blocks"]
+            .as_array()
+            .expect("blocks index")
+            .iter()
+            .any(|block| block["kind"] == "html"),
+        "{read}"
+    );
+    for path in ["../outside.html", "/etc/overview.html", "docs/overview.txt"] {
+        let err = upsert_block(
+            &boot,
+            planner_identity(&boot),
+            json!({ "kind": "html", "payload": { "path": path } }),
+        )
+        .await
+        .expect_err(path);
+        assert_eq!(err.code, RpcError::INVALID_PARAMS, "{path}");
+        assert!(
+            err.message
+                .contains("path: required workspace-relative path"),
+            "{path}: {err:?}"
+        );
+    }
     assert_eq!(current_payload(&boot).await, stored);
 }
 

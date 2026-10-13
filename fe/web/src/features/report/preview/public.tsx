@@ -20,6 +20,7 @@ import { Icon } from '../../../ui/icon/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 
 import type { PreviewBlockPayload, PreviewResolution } from '../../../../../core/domain/report.ts';
+import { reportFrameHeight } from '../../../../../core/domain/report-frame.ts';
 import { readFailureText } from '../../../../../core/domain/read-failure.ts';
 import styles from './preview.module.css';
 import {
@@ -28,19 +29,12 @@ import {
 
 export type { PreviewViewportStore } from './viewport.ts';
 
-const MIN_HEIGHT = 120;
-const MAX_HEIGHT = 2000;
 const DEFAULT_HEIGHT = 360;
 
 /** The frame's sandbox: scripts and same-origin are safe together only because the frame is another origin. */
 export const PREVIEW_SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-popups allow-modals';
 
 type PageLocation = Readonly<{ protocol: string; hostname: string }>;
-
-function clampHeight(height: number | null | undefined): number {
-  if (height == null || Number.isNaN(height)) return DEFAULT_HEIGHT;
-  return Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, height));
-}
 
 /** The gateway listens on the host calm is reached by, on its own port; `path` defaults to the root. */
 export function previewFrameUrl(page: PageLocation, port: number, path: string | null | undefined): string {
@@ -57,7 +51,7 @@ export function ReportPreviewBlock({ payload, resolve, viewports }: {
   const resolution = resolve?.(payload.key);
   const registered = resolution?.status === 'registered' ? resolution.preview : null;
   const title = nonBlank(payload.title) ?? nonBlank(registered?.title) ?? payload.key;
-  const height = clampHeight(payload.height);
+  const height = reportFrameHeight(payload.height, DEFAULT_HEIGHT);
 
   if (resolution === undefined) {
     return <PreviewNotice title={title} height={height}
