@@ -16,9 +16,9 @@
 
 use super::driver::TerminalEvent;
 use super::protocol::{COMPACT_COMMAND, SystemInit};
-use super::session::{ClaudePlannerSession, SpawnInput};
+use super::session::{ClaudePlannerSession, SpawnFailure, SpawnInput};
 use crate::error::CalmError;
-use crate::harness::backend::TurnStartFailure;
+use crate::harness::backend::{CompactStartFailure, TurnStartFailure};
 use crate::planner_model::TurnModelSelection;
 use crate::planner_permission_mode::PlannerPermissionMode;
 
@@ -28,12 +28,13 @@ pub(crate) const NO_BOUNDARY: &str = "claude ended the compaction without a comp
 impl ClaudePlannerSession {
     /// Start a compaction of `thread`'s session and return its turn id. `selection` is the card's
     /// model, so the summary runs on the conversation's own context window. It runs under `never`:
-    /// it asks nothing of the person. A conversation whose session does not exist yet is refused.
+    /// it asks nothing of the person, whatever the card's turns run under. A conversation whose
+    /// session does not exist yet is refused.
     pub async fn compact_start(
         &self,
         thread: &str,
         selection: &TurnModelSelection,
-    ) -> Result<String, TurnStartFailure> {
+    ) -> Result<String, CompactStartFailure> {
         self.start_spawn(
             thread,
             SpawnInput::Compaction,
@@ -41,6 +42,7 @@ impl ClaudePlannerSession {
             PlannerPermissionMode::Never,
         )
         .await
+        .map_err(submission_failure)
     }
 }
 
@@ -73,15 +75,27 @@ pub(crate) fn result_event(event: TerminalEvent, compacted: bool) -> TerminalEve
     }
 }
 
-/// Refusals made before anything was spawned roll the harness back as Codex's refusal does; every
-/// other failure leaves the submission unconfirmed.
-pub(crate) fn submission_error(failure: TurnStartFailure) -> CalmError {
-    match failure {
-        TurnStartFailure::Refused { error, .. } => CalmError::BadRequest(format!(
-            "Claude will not compact this conversation: {error}"
-        )),
+/// A refusal of the compaction before anything was submitted; the reader is told `reason`.
+pub(crate) fn refused(reason: impl std::fmt::Display) -> CalmError {
+    CalmError::BadRequest(format!(
+        "Claude will not compact this conversation: {reason}"
+    ))
+}
+
+/// Every failure before the `/compact` line was written (a refusal, an unanswered `--version`, a
+/// setup `stop` or credential mint that failed, a turn still running, a spawn that did not start)
+/// submitted nothing, so the harness goes back to its previous phase as after Codex's refusal.
+/// Once the line may have reached the CLI, the submission is unconfirmed and the harness wedges.
+fn submission_failure(spawn: SpawnFailure) -> CompactStartFailure {
+    let error = match spawn.failure {
+        TurnStartFailure::Refused { error, .. } => refused(error),
         TurnStartFailure::Transient(error) | TurnStartFailure::AwaitingRecovery { error, .. } => {
             error
         }
+    };
+    if spawn.line_sent {
+        CompactStartFailure::Unconfirmed(error)
+    } else {
+        CompactStartFailure::NotSubmitted(error)
     }
 }

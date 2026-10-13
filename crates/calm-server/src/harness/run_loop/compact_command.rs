@@ -1,5 +1,6 @@
 //! A manual provider compaction, serialized with sends, edits and shutdown.
 use super::*;
+use crate::harness::backend::CompactStartFailure;
 
 pub(super) async fn handle_compact(inner: &Arc<Inner>) -> Result<()> {
     let _issuance = inner.issuance.lock().await;
@@ -56,15 +57,15 @@ pub(super) async fn handle_compact(inner: &Arc<Inner>) -> Result<()> {
     }
     match inner.backend.compact_start(&thread, inner.as_ref()).await {
         Ok(()) => Ok(()),
-        Err(error) => {
-            *inner.state.lock().await = if matches!(
-                error,
-                CalmError::CodexRefused(_) | CalmError::BadRequest(_)
-            ) {
-                previous
-            } else {
-                HarnessState::Wedged { since: Instant::now(), reason: "compaction submission could not be confirmed; reset the conversation to continue".into() }
+        Err(failure) => {
+            let (state, error) = match failure {
+                CompactStartFailure::NotSubmitted(error) => (previous, error),
+                CompactStartFailure::Unconfirmed(error) => (
+                    HarnessState::Wedged { since: Instant::now(), reason: "compaction submission could not be confirmed; reset the conversation to continue".into() },
+                    error,
+                ),
             };
+            *inner.state.lock().await = state;
             persist_snapshot(inner).await?;
             Err(error)
         }

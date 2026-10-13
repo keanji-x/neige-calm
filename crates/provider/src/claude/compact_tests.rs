@@ -28,7 +28,7 @@ fn a_compact_boundary_is_its_own_record_and_translates_to_nothing() {
     let mut translator =
         TurnTranslator::new(context("0".repeat(32), Vec::new()), visible_tools()).unwrap();
     assert!(translator.translate_line(&line, &record, 1).is_empty());
-    // The metadata is not documented, so a boundary without it is still one.
+    // The record alone says the session compacted; its metadata is unnecessary to that.
     assert_eq!(
         decode(r#"{"type":"system","subtype":"compact_boundary"}"#).unwrap(),
         Record::CompactBoundary

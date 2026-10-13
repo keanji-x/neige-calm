@@ -35,8 +35,8 @@ pub enum ProtocolError {
 pub enum Record {
     SystemInit(SystemInit),
     /// `system/compact_boundary`: the CLI compacted the session's context, whether a `/compact`
-    /// line asked for it or the CLI compacted on its own. The Agent SDK documents the record, not
-    /// its metadata, so none is read.
+    /// line asked for it or the CLI compacted on its own. The record alone says so; its
+    /// `compact_metadata` is unnecessary to that, so none is read.
     CompactBoundary,
     /// The CLI's echo of a line we wrote (`isReplay: true`), carrying the line's `uuid`.
     UserReplay {

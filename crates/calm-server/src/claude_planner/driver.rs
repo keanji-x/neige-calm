@@ -45,7 +45,8 @@ pub(crate) struct TurnRun {
     pub(crate) translator: TurnTranslator,
     pub(crate) instructions: InstructionsFile,
     pub(crate) thread: Uuid,
-    /// A compaction forwards only its start and completion and records no outcome (`compact`).
+    /// A compaction forwards only its start and completion, counts no usage and records no outcome
+    /// (`compact`).
     pub(crate) purpose: SpawnPurpose,
     /// The row's `agent_session_id` is not persisted yet: the first init naming the thread binds
     /// it (a `--session-id` spawn, or a `--resume` spawn after a bind that failed).
@@ -362,8 +363,9 @@ impl Reading<'_> {
             .translator
             .translate_line(line, &record, crate::model::now_ms())
         {
-            self.total_tokens = usage_total(&event).or(self.total_tokens);
+            // A compaction's own usage counts nowhere, like the rest of what it reads (`compact`).
             if self.purpose == SpawnPurpose::Turn {
+                self.total_tokens = usage_total(&event).or(self.total_tokens);
                 let _ = self.shared.events.send(event);
             }
         }

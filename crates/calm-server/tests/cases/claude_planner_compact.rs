@@ -5,6 +5,10 @@
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 
+use calm_server::claude_planner::stop::{
+    clear_claude_planner_stop_failure_for_test, fail_claude_planner_stop_for_test,
+};
+
 use super::claude_planner_stack_fixture::{Root, Stack};
 
 async fn compact(stack: &Stack, card_id: &str) -> (StatusCode, Value) {
@@ -243,4 +247,146 @@ async fn a_compact_refused_before_spawning_leaves_the_conversation_as_it_was() {
     assert_eq!(snapshot["phase"], snapshot_before["phase"], "{snapshot}");
     assert_eq!(snapshot["last_turn_id"], snapshot_before["last_turn_id"]);
     stack.shutdown().await;
+}
+
+/// The phase and last turn a stored snapshot carries, which a refused compaction leaves as it was.
+async fn phase_and_last_turn(stack: &Stack, card_id: &str) -> (Value, Value) {
+    let snapshot = stored_snapshot(stack, card_id).await;
+    (snapshot["phase"].clone(), snapshot["last_turn_id"].clone())
+}
+
+/// A failure before the compaction's spawn exists (an unanswered `--version`, a setup `stop` that
+/// did not confirm) submitted nothing: the conversation keeps its phase instead of wedging, and
+/// the next compaction runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_compact_failing_before_the_spawn_restores_the_phase() {
+    let root = Root::new("exit-trailing");
+    let stack = Stack::boot(&root).await;
+    let (_track_id, card_id) = stack.create_claude_track().await;
+    stack
+        .run_turn(&root, &card_id, "exit-trailing", "first")
+        .await;
+    let runtime = stack.runtime(&card_id).await;
+    let before = phase_and_last_turn(&stack, &card_id).await;
+    let spawns_before = spawns(&root);
+    root.set_scenario("compact");
+
+    std::fs::write(root.fake_dir().join("version"), "flood").unwrap();
+    let (status, body) = compact(&stack, &card_id).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("--version"),
+        "{body}"
+    );
+    assert_eq!(phase_and_last_turn(&stack, &card_id).await, before);
+    root.remove_fake("version");
+
+    fail_claude_planner_stop_for_test(&runtime.id);
+    let (status, body) = compact(&stack, &card_id).await;
+    clear_claude_planner_stop_failure_for_test(&runtime.id);
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(phase_and_last_turn(&stack, &card_id).await, before);
+    assert_eq!(spawns(&root), spawns_before, "nothing spawned");
+
+    let (status, body) = compact(&stack, &card_id).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    stack.wait_phase(&runtime.id, "turn_completed").await;
+    assert_eq!(spawns(&root), spawns_before + 1);
+    stack.shutdown().await;
+}
+
+/// The compaction's own usage reading counts nowhere: the lifetime total after it is that of the
+/// person's turns alone (each `exit-trailing` turn uses 15 tokens; the compaction 1500).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn compact_usage_is_not_added_to_the_lifetime_token_total() {
+    let root = Root::new("exit-trailing");
+    let stack = Stack::boot(&root).await;
+    let (_track_id, card_id) = stack.create_claude_track().await;
+    stack
+        .run_turn(&root, &card_id, "exit-trailing", "first")
+        .await;
+    let total = |snapshot: Value| snapshot["token_usage"]["total_tokens"].clone();
+    assert_eq!(total(stored_snapshot(&stack, &card_id).await), json!(15));
+    root.set_scenario("compact-usage");
+    let (status, body) = compact(&stack, &card_id).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let runtime = stack.runtime(&card_id).await;
+    stack.wait_phase(&runtime.id, "turn_completed").await;
+    assert_eq!(total(stored_snapshot(&stack, &card_id).await), json!(15));
+
+    stack
+        .run_turn(&root, &card_id, "exit-trailing", "second")
+        .await;
+    assert_eq!(total(stored_snapshot(&stack, &card_id).await), json!(30));
+    stack.shutdown().await;
+}
+
+/// A compaction asks nothing of the person, so it spawns under `never` whatever mode the card's
+/// turns run under.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn compact_spawns_under_never_when_the_card_runs_ask_or_full() {
+    for (mode, flag) in [
+        ("ask", "--permission-prompt-tool"),
+        ("full", "--permission-mode"),
+    ] {
+        let root = Root::new("exit-trailing");
+        let stack = Stack::boot(&root).await;
+        let (_track_id, card_id) = stack.create_claude_track().await;
+        let (status, body) = stack
+            .send(
+                "PUT",
+                &format!("/api/cards/{card_id}/planner/permission-mode"),
+                Some(json!({ "permission_mode": mode })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        stack
+            .run_turn(&root, &card_id, "exit-trailing", "first")
+            .await;
+        assert!(has(&argv(&root), flag), "the turn runs {mode}");
+        root.set_scenario("compact");
+
+        let (status, body) = compact(&stack, &card_id).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let runtime = stack.runtime(&card_id).await;
+        stack.wait_phase(&runtime.id, "turn_completed").await;
+        let argv = argv(&root);
+        let prompts = argv.iter().position(|a| a == "--permission-prompts");
+        assert_eq!(
+            prompts.map(|at| argv[at + 1].as_str()),
+            Some("none"),
+            "{mode}: {argv:?}"
+        );
+        assert!(!has(&argv, "--permission-prompt-tool"), "{mode}: {argv:?}");
+        assert!(!has(&argv, "--permission-mode"), "{mode}: {argv:?}");
+        stack.shutdown().await;
+    }
+}
+
+/// A server started without the Claude Planner config refuses a recovered conversation's
+/// compaction with a 400 that speaks of the compaction, not of a queued message.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_compact_without_the_config_is_refused_as_a_compaction() {
+    let root = Root::new("exit-trailing");
+    let stack = Stack::boot(&root).await;
+    let (_track_id, card_id) = stack.create_claude_track().await;
+    stack
+        .run_turn(&root, &card_id, "exit-trailing", "first")
+        .await;
+    stack.shutdown().await;
+
+    let stack = Stack::boot_with(&root, false).await;
+    let before = phase_and_last_turn(&stack, &card_id).await;
+    let spawns_before = spawns(&root);
+    let (status, body) = compact(&stack, &card_id).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let error = body["error"].as_str().unwrap();
+    assert!(
+        error.contains("Claude will not compact this conversation"),
+        "{body}"
+    );
+    assert!(error.contains("--claude-planner-config"), "{body}");
+    assert!(!error.contains("queued"), "{body}");
+    assert_eq!(phase_and_last_turn(&stack, &card_id).await, before);
+    assert_eq!(spawns(&root), spawns_before, "nothing spawned");
 }

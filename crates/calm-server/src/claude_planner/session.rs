@@ -180,6 +180,29 @@ pub(super) enum SpawnInput<'a> {
     Compaction,
 }
 
+/// Why a spawn did not start, and whether its user line may have reached the CLI. Every failure
+/// before the line is written submitted nothing; a failed write may have delivered part or all of
+/// it.
+pub(super) struct SpawnFailure {
+    pub(super) failure: crate::harness::backend::TurnStartFailure,
+    pub(super) line_sent: bool,
+}
+
+impl From<crate::harness::backend::TurnStartFailure> for SpawnFailure {
+    fn from(failure: crate::harness::backend::TurnStartFailure) -> Self {
+        Self {
+            failure,
+            line_sent: false,
+        }
+    }
+}
+
+impl From<CalmError> for SpawnFailure {
+    fn from(error: CalmError) -> Self {
+        crate::harness::backend::TurnStartFailure::from(error).into()
+    }
+}
+
 impl ClaudePlannerSession {
     /// Open the session for its worker-session row: a row whose `agent_session_id` is bound
     /// resumes that Claude session (`--resume`); otherwise the first spawn creates it.
@@ -289,7 +312,9 @@ impl ClaudePlannerSession {
             client_id,
             truncation,
         };
-        self.start_spawn(thread, input, selection, mode).await
+        self.start_spawn(thread, input, selection, mode)
+            .await
+            .map_err(|spawn| spawn.failure)
     }
 
     /// The submission contract for either kind of spawn; see the module docs.
@@ -299,7 +324,7 @@ impl ClaudePlannerSession {
         input: SpawnInput<'_>,
         selection: &TurnModelSelection,
         mode: PlannerPermissionMode,
-    ) -> Result<String, crate::harness::backend::TurnStartFailure> {
+    ) -> Result<String, SpawnFailure> {
         let purpose = match &input {
             SpawnInput::Turn { .. } => SpawnPurpose::Turn,
             SpawnInput::Compaction => SpawnPurpose::Compaction,
@@ -423,7 +448,7 @@ impl ClaudePlannerSession {
         );
         let argv = match argv {
             Ok(argv) => argv,
-            Err(error) => return Err(self.abort_before_ok(None, instructions, error).await),
+            Err(error) => return Err(self.abort_before_ok(None, instructions, error).await.into()),
         };
         let spawned = Command::new(&config.claude_binary)
             .args(argv)
@@ -442,7 +467,7 @@ impl ClaudePlannerSession {
                     "claude planner spawn of {} failed: {error}",
                     config.claude_binary.display()
                 ));
-                return Err(self.abort_before_ok(None, instructions, error).await);
+                return Err(self.abort_before_ok(None, instructions, error).await.into());
             }
         };
         #[cfg(feature = "fixtures")]
@@ -455,13 +480,17 @@ impl ClaudePlannerSession {
         if params.seals.is_sealed(thread) {
             return Err(self
                 .abort_before_ok(Some(child), instructions, sealed(thread))
-                .await);
+                .await
+                .into());
         }
         let (Some(stdin), Some(stdout), Some(stderr)) =
             (child.stdin.take(), child.stdout.take(), child.stderr.take())
         else {
             let error = CalmError::Internal("claude planner child has no piped stdio".into());
-            return Err(self.abort_before_ok(Some(child), instructions, error).await);
+            return Err(self
+                .abort_before_ok(Some(child), instructions, error)
+                .await
+                .into());
         };
         let slot = Arc::new(TurnSlot::new(stdin, settle_after_stop));
         #[cfg(feature = "fixtures")]
@@ -469,7 +498,10 @@ impl ClaudePlannerSession {
             shared.hooks.lock().expect("hooks").user_line_writes += 1;
         }
         if let Err(error) = slot.write_line(&line).await {
-            return Err(self.abort_before_ok(Some(child), instructions, error).await);
+            return Err(SpawnFailure {
+                failure: self.abort_before_ok(Some(child), instructions, error).await,
+                line_sent: true,
+            });
         }
 
         {

@@ -2,13 +2,14 @@
 # A fake `claude -p` for the #1791 session tests (tests/cases/claude_planner_session.rs). The test
 # copies it into a private directory next to a `scenario` file; the spawn's environment is an
 # allowlist, so everything the fake needs or records lives in that directory:
-#   in:  scenario, version (optional; default 2.1.280), result_line (optional),
-#        stream, stream-burst, stream-rest (the `stream*` scenarios' records; burst and rest
-#        optional),
+#   in:  scenario, version (optional; default 2.1.280, `flood` for no answer),
+#        result_line (optional), stream, stream-burst, stream-rest (the `stream*` scenarios'
+#        records; burst and rest optional),
 #        auth (optional; the `auth status --json` answer, default logged-in),
 #        catalog (optional; the `initialize` answer, default ok)
 #   in (#1923): check (optional; a rewind dry run's refusal reason)
-#   scenarios `compact`, `compact-no-boundary`: a manual compaction's `/compact` spawn
+#   scenarios `compact`, `compact-no-boundary`, `compact-usage`: a manual compaction's
+#        `/compact` spawn
 #   out: spawns, pid, argv, env, pwd, stdin, instructions, orphan, emitted, streamed, mcp_reply,
 #        checks, check-argv,
 #        auth-pid, auth-env, auth-calls, init-calls, init-pid, init-argv, init-env, init-cwd,
@@ -49,6 +50,8 @@ if [ "$1" = "--version" ]; then
     touch "$D/version-entered"
     while [ ! -e "$D/release-version" ]; do sleep 0.05; done
   fi
+  # A `version` of `flood` answers with more than a readiness answer may hold: no answer at all.
+  if [ "$(cat "$D/version" 2>/dev/null)" = flood ]; then exec yes '2.1.280 (Claude Code)'; fi
   echo "$(cat "$D/version" 2>/dev/null || echo 2.1.280) (Claude Code)"
   if [ "$SCENARIO" = "vanish-after-version" ]; then rm -f -- "$0"; fi
   exit 0
@@ -344,17 +347,25 @@ PY
     fi
     cat > /dev/null
     exit 0 ;;
-  compact|compact-no-boundary)
+  compact|compact-no-boundary|compact-usage)
     # A manual compaction: the one line must be `/compact`; the CLI answers with its boundary
-    # (left out by `compact-no-boundary`), its own command output, and a result without usage.
+    # (left out by `compact-no-boundary`), its own command output, and a result without usage
+    # (`compact-usage`: with the summary's usage).
     [ "$(jq -c '.message.content' <<< "$LINE")" = '[{"type":"text","text":"/compact"}]' ] || {
       echo "fake claude: expected the /compact line" >&2; exit 7; }
     echo '{"type":"system","subtype":"status","status":"compacting","session_id":"'"$SID"'"}'
-    if [ "$SCENARIO" = compact ]; then
+    if [ "$SCENARIO" != compact-no-boundary ]; then
       echo '{"type":"system","subtype":"compact_boundary","session_id":"'"$SID"'","uuid":"'"$(cat /proc/sys/kernel/random/uuid)"'","compact_metadata":{"trigger":"manual","pre_tokens":1234}}'
     fi
     echo '{"type":"user","uuid":"'"$(cat /proc/sys/kernel/random/uuid)"'","message":{"role":"user","content":"<local-command-stdout>Compacted </local-command-stdout>"}}'
-    echo '{"type":"result","subtype":"success","is_error":false,"result":"","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"iterations":[]},"modelUsage":{},"terminal_reason":"completed"}'
+    if [ "$SCENARIO" = compact-usage ]; then
+      COMPACTED='"usage":{"input_tokens":1000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,'
+      COMPACTED+='"output_tokens":500,"iterations":[{"input_tokens":1000,"cache_creation_input_tokens":0,'
+      COMPACTED+='"cache_read_input_tokens":0,"output_tokens":500}]},"modelUsage":{"claude-haiku-4-5":{"contextWindow":200000}}'
+      echo '{"type":"result","subtype":"success","is_error":false,"result":"",'"$COMPACTED"',"terminal_reason":"completed"}'
+    else
+      echo '{"type":"result","subtype":"success","is_error":false,"result":"","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"iterations":[]},"modelUsage":{},"terminal_reason":"completed"}'
+    fi
     cat > /dev/null
     exit 0 ;;
   interrupt-result-line)

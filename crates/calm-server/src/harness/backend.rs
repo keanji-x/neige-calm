@@ -47,6 +47,17 @@ pub enum TurnStartFailure {
     AwaitingRecovery { error: CalmError, reader: String },
 }
 
+/// A provider's failure to start a manual compaction, classified by the provider that raised it:
+/// the run loop restores the conversation's phase or wedges it from this, never from the error's
+/// shape.
+#[derive(Debug)]
+pub enum CompactStartFailure {
+    /// Nothing reached the provider; the conversation is as it was.
+    NotSubmitted(CalmError),
+    /// The request may have reached the provider, and whether it compacts is unknown.
+    Unconfirmed(CalmError),
+}
+
 /// A rewind the provider applies when the conversation's next turn starts (#1923). Its arms are
 /// private like [`PlannerBackend`]'s: the run loop stores, passes and clears it, never reads it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -330,32 +341,48 @@ impl PlannerBackend {
     }
 
     /// A manual context compaction. Codex compacts its thread; a Claude Planner spawns `/compact`
-    /// on the card's model, read from `source` as a turn's is. A refusal is a `BadRequest`, which
-    /// leaves the conversation as it was.
+    /// on the card's model, read from `source` as a turn's is.
     pub(crate) async fn compact_start(
         &self,
         thread_id: &str,
         source: &impl SelectionSource,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), CompactStartFailure> {
         match &self.0 {
-            Arm::Codex(daemon, _) => daemon.thread_compact_start(thread_id).await,
-            Arm::Claude(session) => {
-                let selection = self.resolve_selection(source).await.map_err(|refusal| {
-                    CalmError::BadRequest(if refusal.reader.is_empty() {
-                        refusal.log
-                    } else {
-                        refusal.reader
-                    })
-                })?;
-                session
-                    .compact_start(thread_id, &selection)
+            // A refusal is Codex's answer before anything started.
+            Arm::Codex(daemon, _) => {
+                daemon
+                    .thread_compact_start(thread_id)
                     .await
-                    .map(drop)
-                    .map_err(crate::claude_planner::compact::submission_error)
+                    .map_err(|error| match error {
+                        CalmError::CodexRefused(_) | CalmError::BadRequest(_) => {
+                            CompactStartFailure::NotSubmitted(error)
+                        }
+                        error => CompactStartFailure::Unconfirmed(error),
+                    })
             }
-            Arm::Acp(_) => Err(CalmError::BadRequest(
+            Arm::Claude(session) => {
+                use crate::claude_planner::compact;
+                // A turn's refusal here tells the reader the message stays queued; a compaction
+                // has no message, so it is refused in its own words.
+                if session.host().configured().is_err() {
+                    return Err(CompactStartFailure::NotSubmitted(compact::refused(
+                        crate::claude_planner::config::unavailable_message(),
+                    )));
+                }
+                let selection = self.resolve_selection(source).await.map_err(|refusal| {
+                    CompactStartFailure::NotSubmitted(compact::refused(
+                        if refusal.reader.is_empty() {
+                            refusal.log
+                        } else {
+                            refusal.reader
+                        },
+                    ))
+                })?;
+                session.compact_start(thread_id, &selection).await.map(drop)
+            }
+            Arm::Acp(_) => Err(CompactStartFailure::NotSubmitted(CalmError::BadRequest(
                 "Manual context compaction is available for Codex and Claude conversations.".into(),
-            )),
+            ))),
         }
     }
 
