@@ -11,17 +11,26 @@ const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 
 
 /**
  * Answers the receipt routes, or `undefined` for any other request. The default baseline is the far future:
- * everything has been read. `writeDelayMs` holds each write's answer.
+ * everything has been read. `writeDelayMs` holds each write's answer. `holdReads` makes reads answer what
+ * was stored when they arrived, only once released; `holdWrites` keeps each write uncommitted until released.
  */
 export function createReadReceiptsKernel({ baselineMs = Number.MAX_SAFE_INTEGER, receipts = [], fail = false, writeDelayMs = 0 }: Readonly<{
   baselineMs?: number; receipts?: readonly ReadReceipt[]; fail?: boolean; writeDelayMs?: number;
 }> = {}) {
   const stored = new Map<string, ReadReceipt>(receipts.map((receipt) => [`${receipt.kind}:${receipt.targetId}`, receipt]));
   const requests: ApiRequest[] = [];
+  let readGate: Promise<void> | null = null;
+  let holdingWrites = false;
+  const writeGates: Array<() => void> = [];
   const reply = async (request: ApiRequest): Promise<ApiTransportResponse | undefined> => {
     if (!request.path.startsWith('/api/read-receipts')) return undefined;
     requests.push(request);
-    if (request.method === 'GET') return ok({ baselineMs, receipts: [...stored.values()] });
+    if (request.method === 'GET') {
+      const snapshot = { baselineMs, receipts: [...stored.values()] };
+      if (readGate !== null) await readGate;
+      return ok(snapshot);
+    }
+    if (holdingWrites) await new Promise<void>((resolve) => { writeGates.push(resolve); });
     if (writeDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, writeDelayMs));
     if (fail) return { status: 500, statusText: 'Error', body: { error: 'unavailable', code: 'internal' } };
     const [, , , kind, encoded, verb] = request.path.split('/');
@@ -39,6 +48,17 @@ export function createReadReceiptsKernel({ baselineMs = Number.MAX_SAFE_INTEGER,
   } };
   return {
     reply, transport, requests,
+    /** Holds every read from now on; the returned function releases them and stops holding. */
+    holdReads(): () => void {
+      let release!: () => void;
+      readGate = new Promise<void>((resolve) => { release = resolve; });
+      return () => { readGate = null; release(); };
+    },
+    /** Holds every write from now on; `release` commits the oldest held one. */
+    holdWrites() {
+      holdingWrites = true;
+      return { held: () => writeGates.length, release: () => { writeGates.shift()?.(); } };
+    },
     posts: () => requests.filter((request) => request.method === 'POST'),
     stored: (kind: ReadReceiptKind, targetId: string) => stored.get(`${kind}:${targetId}`),
   };
@@ -56,4 +76,9 @@ export function readReceiptsFixture(kernel: ReadReceiptsKernel = createReadRecei
       <ReadReceiptsProvider transport={kernel.transport} unauthorized={unauthorized}>{node}</ReadReceiptsProvider>
     </QueryClientProvider>,
   };
+}
+
+/** `transport` with the receipt routes answered by `kernel` first: a harness records only its own requests. */
+export function withReadReceipts(transport: ApiTransportPort, kernel: ReadReceiptsKernel = createReadReceiptsKernel()): ApiTransportPort {
+  return { ...transport, send: async (request) => await kernel.reply(request) ?? await transport.send(request) };
 }

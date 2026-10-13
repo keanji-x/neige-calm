@@ -13,6 +13,7 @@ import { initialEventState, reduceEventFrame } from '../../../../core/events/red
 import { wireEventSchema } from '../../../../core/api/schemas.ts';
 import { TaskRecoveryDetails } from '../../features/report/task/recovery.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
+import { withReadReceipts } from '../providers/read-receipts-fixture.tsx';
 
 afterEach(cleanup);
 
@@ -73,7 +74,7 @@ function setup(mode: 'awaiting' | 'dispatched' | 'event-advance' | 'dependency' 
     });
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  const router = createAppRouter({ transport, client, cards: bootTestCardRuntime(),
+  const router = createAppRouter({ transport: withReadReceipts(transport), client, cards: bootTestCardRuntime(),
     unauthorized: createUnauthorizedChannel({ enqueue: (task) => task() }), onSignOut: vi.fn() });
   router.update({ history: createMemoryHistory({ initialEntries: ['/track/w1'] }) });
   const mount = () => render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>

@@ -1,5 +1,6 @@
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import type { TaskAttempt, TaskRecoveryView } from '../../../../core/domain/task-recovery.ts';
+import { withReadReceipts } from '../providers/read-receipts-fixture.tsx';
 
 /** A read-only Track with one failed task, as scripted HTTP snapshots. Any write is a test failure. */
 export function createTrackTaskFixture() {
@@ -33,5 +34,6 @@ export function createTrackTaskFixture() {
     if (request.path === '/api/settings') return Promise.resolve(ok({}));
     return Promise.resolve(ok([]));
   } };
-  return { goal, requests, transport };
+  // The receipt routes are answered first and not recorded: `requests` is this fixture's own traffic.
+  return { goal, requests, transport: withReadReceipts(transport) };
 }

@@ -9,6 +9,7 @@ import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts'
 import { createAppRouter } from '../router/public.tsx';
 import { bootTestCardRuntime } from '../router/test-card-runtime.ts';
 import { ThemeProvider } from '../theme/public.tsx';
+import { withReadReceipts } from '../providers/read-receipts-fixture.tsx';
 
 declare module 'vitest/internal/browser' {
   interface BrowserCommands { emulateReducedMotion(reduce: boolean): Promise<void> }
@@ -58,7 +59,7 @@ function setup(path: string, areaName = AREA.name, onRequest: (request: ApiReque
     return ok([]);
   }
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, unauthorized: createUnauthorizedChannel({ enqueue: (task) => task() }),
+  const router = createAppRouter({ transport: withReadReceipts(transport), unauthorized: createUnauthorizedChannel({ enqueue: (task) => task() }),
     client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
   router.update({ history: createMemoryHistory({ initialEntries: [path] }) });
   const view = render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>

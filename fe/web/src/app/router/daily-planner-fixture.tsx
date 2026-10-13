@@ -10,8 +10,9 @@ import { createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 import type { UiPreferences } from '../providers/ui-preferences.tsx';
 import { ThemeProvider } from '../theme/public.tsx';
+import { withReadReceipts, type ReadReceiptsKernel } from '../providers/read-receipts-fixture.tsx';
 
-export function renderDailyFixture({ initial = '/', failChanges = false, emptyWorkspace = false, projectTitle = 'Project evidence', reply, onCommit, uiPreferences }: Readonly<{ uiPreferences?: UiPreferences; initial?: string; failChanges?: boolean; emptyWorkspace?: boolean; projectTitle?: string; reply?: (request: ApiRequest) => ApiTransportResponse | undefined | Promise<ApiTransportResponse | undefined>; onCommit?: () => void }> = {}) {
+export function renderDailyFixture({ initial = '/', failChanges = false, emptyWorkspace = false, projectTitle = 'Project evidence', reply, onCommit, uiPreferences, receipts }: Readonly<{ uiPreferences?: UiPreferences; receipts?: ReadReceiptsKernel; initial?: string; failChanges?: boolean; emptyWorkspace?: boolean; projectTitle?: string; reply?: (request: ApiRequest) => ApiTransportResponse | undefined | Promise<ApiTransportResponse | undefined>; onCommit?: () => void }> = {}) {
   const requests: ApiRequest[] = [];
   const area = { id: 'daily-area', name: 'system', color: '#6574cd', sort: 0, kind: 'system', created_at: 1, updated_at: 1 };
   const projectArea = { ...area, id: 'project-area', name: 'Project', kind: 'user' };
@@ -47,7 +48,7 @@ export function renderDailyFixture({ initial = '/', failChanges = false, emptyWo
   } };
   const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), uiPreferences, onSignOut: () => undefined });
+  const router = createAppRouter({ transport: withReadReceipts(transport, receipts), unauthorized, client, cards: bootTestCardRuntime(), uiPreferences, onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: [initial] }) });
   const container = document.createElement('div');
   container.id = 'root';

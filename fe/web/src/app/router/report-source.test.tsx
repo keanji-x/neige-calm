@@ -13,6 +13,7 @@ import { createAppRouter } from './public.tsx';
 import { sourceResolutionOf } from './report-source.tsx';
 import { trackReportLinkUrl } from '../../../../core/domain/report.ts';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
+import { withReadReceipts } from '../providers/read-receipts-fixture.tsx';
 
 const BOOM: ApiFailure = Object.freeze({ kind: 'http', status: 500, code: 'internal', message: 'boom' });
 
@@ -73,7 +74,7 @@ function setup(reply?: Reply) {
     return ok([]);
   }
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
+  const router = createAppRouter({ transport: withReadReceipts(transport), unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
   router.update({ history: createMemoryHistory({ initialEntries: ['/track/w1'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider><RouterProvider router={router} /></ThemeProvider></QueryClientProvider>);
   return { requests };

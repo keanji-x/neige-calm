@@ -11,6 +11,7 @@ import { trackConversationCardId } from '../../../../core/domain/conversation.ts
 import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
+import { withReadReceipts } from '../providers/read-receipts-fixture.tsx';
 
 afterEach(() => {
   cleanup();
@@ -66,7 +67,7 @@ function renderApp() {
     },
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
+  const router = createAppRouter({ transport: withReadReceipts(transport), unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
   router.update({ history: createMemoryHistory({ initialEntries: ['/track/w1'] }) });
   render(
     <QueryClientProvider client={client}>

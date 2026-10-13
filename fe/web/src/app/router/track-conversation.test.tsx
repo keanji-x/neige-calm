@@ -157,6 +157,7 @@ type Reply = (request: ApiRequest) => ApiTransportResponse | undefined
   | Promise<ApiTransportResponse | undefined>;
 
 function setup(reply?: Reply, storage?: UiPreferenceStorage, recovery?: RecoveryAccess, receipts?: ReadReceiptsKernel) {
+  const defaultReceipts = createReadReceiptsKernel();
   const requests: ApiRequest[] = [];
   const themeValues = new Map<string, string>();
   const themeStorage: Pick<Storage, 'getItem' | 'setItem'> = {
@@ -165,9 +166,9 @@ function setup(reply?: Reply, storage?: UiPreferenceStorage, recovery?: Recovery
   };
   const transport: ApiTransportPort = {
     async send(request) {
-      requests.push(request);
-      const receipt = await receipts?.reply(request);
+      const receipt = await (receipts ?? defaultReceipts).reply(request);
       if (receipt !== undefined) return receipt;
+      requests.push(request);
       if (reply) {
         const response = await reply(request);
         if (response) return response;

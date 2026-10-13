@@ -65,7 +65,7 @@ it('puts the kernel state back when a write fails', async () => {
   expect(fake.posts()).toHaveLength(1);
 });
 
-it('acknowledges the open target only while the tab is visible, and only when it is unread', async () => {
+it('acknowledges the open target only while the tab is visible, and again when its activity moves', async () => {
   const fake = createReadReceiptsKernel({ baselineMs: 100 });
   const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
   function Open({ at }: { at: number }) { useReadReceipt('track', 't', at); return <Verdict id="t" at={at} />; }
@@ -78,10 +78,9 @@ it('acknowledges the open target only while the tab is visible, and only when it
   expect(fake.posts().map((request) => [request.path, request.body])).toEqual([
     ['/api/read-receipts/track/t/read', { readThroughMs: 150 }],
   ]);
-  // Activity at or before the baseline is already read: nothing to write.
-  view.rerender(<Open at={90} />);
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(fake.posts()).toHaveLength(1);
+  // A move is acknowledged whatever the cache says; the kernel keeps the larger instant.
+  view.rerender(<Open at={160} />);
+  await waitFor(() => expect(fake.posts().map((request) => request.body)).toEqual([{ readThroughMs: 150 }, { readThroughMs: 160 }]));
 });
 
 it('keeps a manual unread of the open target until it is opened again', async () => {
@@ -102,6 +101,70 @@ it('keeps a manual unread of the open target until it is opened again', async ()
   view.rerender(<Open opened={2} />);
   await screen.findByText('t: read');
   expect(fake.posts().map((request) => request.path)).toEqual([
-    '/api/read-receipts/track/t/unread', '/api/read-receipts/track/t/read',
+    '/api/read-receipts/track/t/read', '/api/read-receipts/track/t/unread', '/api/read-receipts/track/t/read',
   ]);
+});
+
+/* #2596 fix round 1: no read that started before a write settled may be the final cached state. */
+
+it('keeps a manual unread posted while the first read is still loading', async () => {
+  const fake = createReadReceiptsKernel({ baselineMs: 100 });
+  const release = fake.holdReads();
+  let markUnread!: () => void;
+  function Actions() { const receipts = useReadReceipts(); markUnread = () => receipts.markUnread('track', 't'); return <Verdict id="t" at={50} />; }
+  mount(fake, <Actions />);
+  await waitFor(() => expect(fake.requests).toHaveLength(1));
+  act(() => markUnread());
+  await waitFor(() => expect(fake.stored('track', 't')?.manualUnread).toBe(true));
+  act(() => release());
+  await screen.findByText('t: unread');
+  expect(fake.requests.map((request) => `${request.method} ${request.path}`)).toEqual([
+    'GET /api/read-receipts', 'POST /api/read-receipts/track/t/unread', 'GET /api/read-receipts',
+  ]);
+});
+
+it('acknowledges a target opened while a refetch reveals another device’s manual unread', async () => {
+  const fake = createReadReceiptsKernel({ baselineMs: 100,
+    receipts: [{ kind: 'track', targetId: 't', readThroughMs: 200, manualUnread: false }] });
+  const view = mount(fake, <Verdict id="t" at={150} />);
+  await screen.findByText('t: read');
+  // Another device marks it unread; this tab's refetch on focus is still in flight when the target opens.
+  await fake.reply({ method: 'POST', path: '/api/read-receipts/track/t/unread', credentials: 'include' });
+  const release = fake.holdReads();
+  act(() => { window.dispatchEvent(new Event('visibilitychange')); });
+  await waitFor(() => expect(fake.requests.filter((request) => request.method === 'GET')).toHaveLength(2));
+  function Open() { useReadReceipt('track', 't', 150); return <Verdict id="t" at={150} />; }
+  view.rerender(<Open />);
+  act(() => release());
+  await waitFor(() => expect(fake.posts().map((request) => request.path)).toEqual([
+    '/api/read-receipts/track/t/unread', '/api/read-receipts/track/t/read',
+  ]));
+  await waitFor(() => expect(fake.stored('track', 't')?.manualUnread).toBe(false));
+  await screen.findByText('t: read');
+});
+
+it('keeps a second write optimistic until it settles, whatever the first write reads back', async () => {
+  const fake = createReadReceiptsKernel({ baselineMs: 100 });
+  let markUnread!: (id: string) => void;
+  function Actions() {
+    const receipts = useReadReceipts();
+    markUnread = (id) => receipts.markUnread('track', id);
+    return <><Verdict id="a" at={50} /><Verdict id="b" at={50} /></>;
+  }
+  mount(fake, <Actions />);
+  await screen.findByText('b: read');
+  const writes = fake.holdWrites();
+  act(() => { markUnread('a'); markUnread('b'); });
+  await screen.findByText('b: unread');
+  await waitFor(() => expect(writes.held()).toBe(2));
+  act(() => writes.release());
+  await waitFor(() => expect(fake.stored('track', 'a')?.manualUnread).toBe(true));
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(screen.getByText('a: unread')).toBeTruthy();
+  expect(screen.getByText('b: unread')).toBeTruthy();
+  act(() => writes.release());
+  await waitFor(() => expect(fake.requests.map((request) => request.method)).toEqual(['GET', 'POST', 'POST', 'GET']));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(screen.getByText('a: unread')).toBeTruthy();
+  expect(screen.getByText('b: unread')).toBeTruthy();
 });

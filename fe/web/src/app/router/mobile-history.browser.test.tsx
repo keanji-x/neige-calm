@@ -127,9 +127,7 @@ it.each([320, 390])('switches four sidebar views using current history and real 
     { id: 'failure', plugin_id: 'kernel', entity_kind: 'track', entity_id: failed.id, kind: 'activity', payload: { schemaVersion: 4, working: false, attention: 'failed', activity_at_ms: null, items: [], cards: [] }, updated_at: 3 },
     { id: 'running', plugin_id: 'kernel', entity_kind: 'track', entity_id: working.id, kind: 'activity', payload: { schemaVersion: 4, working: true, attention: 'none', activity_at_ms: null, items: [], cards: [] }, updated_at: 3 },
   ];
-  const { router, requests } = renderDailyFixture({ initial: '/track/project', reply: async (request) => {
-    const receipt = await receipts.reply(request);
-    if (receipt !== undefined) return receipt;
+  const { router, requests } = renderDailyFixture({ initial: '/track/project', receipts, reply: (request) => {
     if (request.path === '/api/areas') return ok([
       { id: 'project-area', name: 'Project', kind: 'user', color: '#6574cd', sort: 0, created_at: 1, updated_at: 1 },
       { id: 'other-area', name: 'Other', kind: 'user', color: '#6574cd', sort: 1, created_at: 1, updated_at: 1 },

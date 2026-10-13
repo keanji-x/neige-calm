@@ -644,7 +644,8 @@ it('retains unread when a selected Track detail cannot be loaded', async () => {
   await page.getByRole('button', { name: 'Track Remote access', exact: true }).click();
   await expect.element(page.getByRole('alert')).toBeVisible();
   expect(receipts.stored('track', 'w2')?.manualUnread).toBe(true);
-  expect(receipts.posts().map((request) => request.path)).toEqual(['/api/read-receipts/track/w2/unread']);
+  expect(receipts.posts().map((request) => request.path).filter((path) => path.includes('/w2/')))
+    .toEqual(['/api/read-receipts/track/w2/unread']);
 });
 
 

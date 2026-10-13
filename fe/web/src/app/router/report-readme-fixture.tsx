@@ -10,6 +10,7 @@ import rootReadme from '../../../../../README.md?raw';
 import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
+import { withReadReceipts } from '../providers/read-receipts-fixture.tsx';
 
 export const README_TRACK_ID = 'aadd6ed448d349228d672b1546b6a48c';
 export const README_TRACK_URL = `/next/track/${README_TRACK_ID}`;
@@ -55,7 +56,7 @@ export function renderReadmeFixture(initial: string, detailReady: Promise<void> 
     return ok([]);
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, client, cards: bootTestCardRuntime(),
+  const router = createAppRouter({ transport: withReadReceipts(transport), client, cards: bootTestCardRuntime(),
     unauthorized: createUnauthorizedChannel({ enqueue: task => task() }), onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: [initial] }) });
   const container = document.createElement('div');

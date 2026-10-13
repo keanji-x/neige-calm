@@ -1360,21 +1360,24 @@
       "oracle:INV-APP-118"
     ],
     "target": "web/src/app/providers/read-receipts.tsx",
-    "patch": "diff --git a/web/src/app/providers/read-receipts.tsx b/web/src/app/providers/read-receipts.tsx\n--- a/web/src/app/providers/read-receipts.tsx\n+++ b/web/src/app/providers/read-receipts.tsx\n@@ -53,6 +53,7 @@\n     client.setQueryData<ReadState>(queryKey, (state) => state === undefined ? state : optimistic(state));\n   }\n   try {\n+    return; // MUT-2596-1: the write stays in this page and never reaches the kernel.\n     const receipt = await runOperation(channel.transport, operation, channel.unauthorized);\n     client.setQueryData<ReadState>(queryKey, (state) => state === undefined ? state : withReceipt(state, receipt));\n   } catch {\n",
+    "patch": "diff --git a/web/src/app/providers/read-receipts.tsx b/web/src/app/providers/read-receipts.tsx\n--- a/web/src/app/providers/read-receipts.tsx\n+++ b/web/src/app/providers/read-receipts.tsx\n@@ -61,6 +61,7 @@\n     // A read in flight may predate this write, the first read included: an invalidation would reuse it, so cancel.\n     await cancelReads();\n     client.setQueryData<ReadState>(queryKey, (state) => state === undefined ? state : optimistic(state));\n+    return; // MUT-2596-1: the write stays in this page and never reaches the kernel.\n     const receipt = await runOperation(channel.transport, operation, channel.unauthorized);\n     client.setQueryData<ReadState>(queryKey, (state) => state === undefined ? state : withReceipt(state, receipt));\n   } catch {\n",
     "expected_red": [
-      "keeps a visited track read after a page refresh, with nothing kept in browser storage",
-      "keeps a manual unread after a page refresh",
-      "shows a second browser profile the same state once it is focused again",
       "marks unread optimistically, posts it, and refetches",
       "puts the kernel state back when a write fails",
-      "acknowledges the open target only while the tab is visible, and only when it is unread",
+      "acknowledges the open target only while the tab is visible, and again when its activity moves",
       "keeps a manual unread of the open target until it is opened again",
+      "keeps a manual unread posted while the first read is still loading",
+      "acknowledges a target opened while a refetch reveals another device’s manual unread",
+      "keeps a second write optimistic until it settles, whatever the first write reads back",
       "offers personal Track actions without navigation and pins before the Area limit",
       "keeps manually unread until the selected Track view acknowledges it",
       "uses a spinner while a closed conversation runs, a blue unread dot on completion, and no dot after reading",
       "keeps new replies unread while reopening cached history is still loading",
       "shows a closed Planner working and preserves unread completion until its history is read",
       "the injected planner row reads activity.cards and last_turn_completed_ms",
+      "keeps a visited track read after a page refresh, with nothing kept in browser storage",
+      "keeps a manual unread after a page refresh",
+      "shows a second browser profile the same state once it is focused again",
       "clears manual unread when reopening the current Track through mobile navigation",
       "retains unread when a selected Track detail cannot be loaded",
       "acknowledges a repeated desktop selection only in the rendered Track view",
@@ -1389,6 +1392,23 @@
       "web/src/app/shell/sidebar.groups.browser.test.tsx"
     ],
     "why_more_than_one": "#2596: read state is the kernel's. A receipt write that stays in the page is lost on the next read: across a refresh, on a second profile, and in every rail, mobile and conversation-list case that reads a mark back from the kernel."
+  },
+  {
+    "mutation_id": "n2596-no-verdict-before-read",
+    "defends": [
+      "oracle:INV-APP-118"
+    ],
+    "target": "web/src/app/providers/read-receipts.tsx",
+    "patch": "diff --git a/web/src/app/providers/read-receipts.tsx b/web/src/app/providers/read-receipts.tsx\n--- a/web/src/app/providers/read-receipts.tsx\n+++ b/web/src/app/providers/read-receipts.tsx\n@@ -91,7 +91,7 @@\n   return useMemo<ReadReceipts>(() => ({\n     ...writes,\n     ready: data !== undefined,\n-    isUnread: (kind, id, activityAt) => data !== undefined && isUnread(data, kind, id, activityAt),\n+    isUnread: (kind, id, activityAt) => isUnread(data ?? toReadState({ baselineMs: 0, receipts: [] }), kind, id, activityAt), // MUT-2596-2: no verdict reads as a baseline of zero.\n   }), [data, writes]);\n }\n \n",
+    "expected_red": [
+      "reads nothing as unread until the kernel answers, then applies its baseline and receipts",
+      "reads the track receipt against the activity high-water mark, not updatedAt"
+    ],
+    "selection_paths": [
+      "web/src/app/providers/read-receipts.test.tsx",
+      "web/src/app/shell/sidebar.test.tsx"
+    ],
+    "why_more_than_one": "#2596: until the kernel's receipts are read there is no verdict, so nothing is unread. The provider case pins it directly; the rail case reads its first frame before the receipts land."
   },
   {
     "mutation_id": "s2a-failed-dot-uses-warn",
