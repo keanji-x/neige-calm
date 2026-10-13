@@ -9,15 +9,15 @@ A `track.report_edited` diff lists block/line changes, including `task` blocks' 
 
 ## Links
 
-`neige_area_ls` gives report block ids and link syntax; read blocks with `neige track cat <report path> --blocks <id>,<id>`. `neige_link_ls` lists your report's backlinks. Follow `next_cursor` until null for both: pages may end early at 32 KiB.
+`neige_area_ls`: block ids/link syntax. Read: `neige track cat <report path> --blocks <id>,<id>`. `neige_link_ls`: your report backlinks. Both: follow `next_cursor` to null; pages may end early at 32 KiB.
 
-Link every created/modified Markdown file in the Report, e.g. `[Notes](docs/notes.md)`, previewable from the track workspace root. Verify targets exist inside it; update/deduplicate links in existing sections under the maintenance contract. Planner maintains links after delivery; workers supply paths and paste-ready links in `result`/`artifacts`, never write the Report. Assistants use existing Report tools. Workspace files are not `neige://source` citations; virtual `report.md` is not a disk file.
+Link all created/modified Markdown files in the Report, e.g. `[Notes](docs/notes.md)`; verify workspace-root targets exist and preview. Update/deduplicate existing sections' links per the maintenance contract. Planner maintains links after delivery; workers supply paths/paste-ready links via `result`/`artifacts`, never write the Report. Assistants use existing Report tools. Workspace files aren't `neige://source` citations; virtual `report.md` isn't on disk.
 
-Workspace images referenced with `![alt](path)` render inline. Save diagrams and screenshots as workspace image files and reference them this way.
+Workspace `![alt](path)` images render inline. Save diagrams/screenshots as workspace images and use this syntax.
 
 ## Sources
 
-On first reading material you will cite, capture it with `neige_source_capture`; cite only captured sources.
+Capture sources with `neige_source_capture` on first reading; cite only captured sources.
 
 ## Tags
 
