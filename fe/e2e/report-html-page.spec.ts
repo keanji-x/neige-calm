@@ -80,7 +80,9 @@ async function screenshots(page: Page, name: string, attach: (name: string, body
     for (const colorScheme of ['light', 'dark'] as const) {
       await page.setViewportSize(size);
       await page.emulateMedia({ colorScheme });
-      await attach(`${name}-${label}-${colorScheme}`, await page.screenshot());
+      /* The theme switch starts colour transitions; capture their end state, not a frame mid-way. */
+      await page.evaluate(() => Promise.all(document.getAnimations().map((animation) => animation.finished.catch(() => undefined))));
+      await attach(`${name}-${label}-${colorScheme}`, await page.screenshot({ animations: 'disabled' }));
     }
   }
 }

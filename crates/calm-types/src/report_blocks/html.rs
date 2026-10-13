@@ -13,8 +13,9 @@ use super::kinds::{
     check_string_cap, is_url_hostile_char, optional_height, optional_string, reject_unknown,
 };
 
-const HTML_PATH_RULE: &str = "workspace-relative path to a `.html`/`.htm` file (no leading `/`, \
-     no scheme, no `..` segment, no `\\`, `?`, `#` or control characters)";
+const HTML_PATH_RULE: &str = "workspace-relative path to a `.html`/`.htm` file with a name \
+     before the extension (no leading `/`, no scheme, no `..` segment, no `\\`, `?`, `#` or control \
+     characters)";
 
 pub(super) fn validate_html(map: &Map<String, Value>, errors: &mut Vec<String>) {
     reject_unknown(map, &["path", "title", "height"], errors);
@@ -50,9 +51,13 @@ fn has_scheme(path: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
 }
 
+/// The last segment is `{stem}.html` or `{stem}.htm` with a non-empty stem: a bare `.html` is a
+/// dotfile with no extension, which the raw route does not serve as a page.
 fn has_html_extension(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
-    lower.ends_with(".html") || lower.ends_with(".htm")
+    let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    [".html", ".htm"]
+        .iter()
+        .any(|ext| name.len() > ext.len() && name.ends_with(ext))
 }
 
 #[cfg(test)]

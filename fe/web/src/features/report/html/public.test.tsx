@@ -76,11 +76,13 @@ describe('ReportHtmlBlock', () => {
     expect(container.querySelector('iframe')).toBeNull();
   });
 
-  it('shows the desktop note and no frame in the mobile app, whose document policy blocks frames', async () => {
+  it('shows the desktop note without reading the page or framing it in the mobile app, whose document policy blocks frames', async () => {
     vi.stubGlobal('__NC_BUNDLED__', true);
-    const { container } = renderBlock({ path: PATH, title: 'Architecture' }, readable());
+    const port = readable();
+    const { container } = renderBlock({ path: PATH, title: 'Architecture' }, port);
     expect((await screen.findByRole('note')).textContent).toContain('Open this page on desktop');
     expect(container.querySelector('iframe')).toBeNull();
+    expect(port.readFile).not.toHaveBeenCalled();
     expect(container.querySelector('figcaption')?.textContent).toContain('Architecture');
   });
 

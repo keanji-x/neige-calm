@@ -30,21 +30,24 @@ export function ReportHtmlFrame({ url, title, height }: Readonly<{
   /** In px; absent ⇒ the frame fills the box its parent gives it. */
   height?: number;
 }>) {
-  const style = height === undefined ? undefined : { blockSize: `${height}px` };
-  if (__NC_BUNDLED__) {
-    return <p className={styles.note} style={style} role="note">Open this page on desktop: the mobile app does not show embedded pages.</p>;
-  }
+  if (__NC_BUNDLED__) return <BundledNote height={height} />;
   return (
     <iframe
       className={height === undefined ? `${styles.frame} ${styles.fill}` : styles.frame}
       src={url}
       title={title}
-      style={style}
+      style={height === undefined ? undefined : { blockSize: `${height}px` }}
       sandbox={HTML_FRAME_SANDBOX}
       referrerPolicy="no-referrer"
       loading="lazy"
     />
   );
+}
+
+function BundledNote({ height }: Readonly<{ height?: number }>) {
+  return <p className={styles.note} style={height === undefined ? undefined : { blockSize: `${height}px` }} role="note">
+    Open this page on desktop: the mobile app does not show embedded pages.
+  </p>;
 }
 
 export function ReportHtmlBlock({ payload, files, onOpen }: Readonly<{
@@ -58,9 +61,12 @@ export function ReportHtmlBlock({ payload, files, onOpen }: Readonly<{
   const height = reportFrameHeight(payload.height, DEFAULT_HEIGHT);
   return (
     <figure className={styles.figure}>
-      {files === undefined
-        ? <p className={styles.note} style={{ blockSize: `${height}px` }} role="note">This view does not carry workspace files.</p>
-        : <BlockPage path={payload.path} files={files} title={title} height={height} />}
+      {/* The mobile app cannot show the frame, so it does not read the page either. */}
+      {__NC_BUNDLED__
+        ? <BundledNote height={height} />
+        : files === undefined
+          ? <p className={styles.note} style={{ blockSize: `${height}px` }} role="note">This view does not carry workspace files.</p>
+          : <BlockPage path={payload.path} files={files} title={title} height={height} />}
       <figcaption className={styles.caption}>
         <span className={styles.title}>{title}</span>
         {onOpen !== undefined && (

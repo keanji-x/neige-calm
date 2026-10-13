@@ -11,7 +11,9 @@
     "docs/overview...html",
     "docs/my page.html",
     "docs/\u56fe/\u67b6\u6784.html",
-    ".hidden/page.html"
+    ".hidden/page.html",
+    "docs/..html",
+    "a.htm"
   ],
   "refuse": [
     "",
@@ -54,6 +56,11 @@
     "docs/overview.xhtml",
     "docs/overviewhtml",
     "docs/overview.html/",
-    "docs/"
+    "docs/",
+    ".html",
+    ".htm",
+    "docs/.html",
+    "docs/.HTM",
+    "docs/.html/.htm"
   ]
 }

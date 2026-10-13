@@ -20,15 +20,20 @@ function hasHostileChar(path: string): boolean {
   return false;
 }
 
-/** Relative, no `..` segment, no scheme, `\`, `?`, `#` or control character, and a `.html`/`.htm` name. */
+/** The last segment is `{stem}.html` or `{stem}.htm` with a non-empty stem; a bare `.html` is a dotfile, not a page. */
+function hasHtmlName(path: string): boolean {
+  const name = (path.split('/').at(-1) ?? '').toLowerCase();
+  return ['.html', '.htm'].some((extension) => name.length > extension.length && name.endsWith(extension));
+}
+
+/** Relative, no `..` segment, no scheme, `\`, `?`, `#` or control character, and a `{stem}.html`/`.htm` name. */
 export function isReportHtmlPath(path: string): boolean {
-  const lower = path.toLowerCase();
   return path !== ''
     && !path.startsWith('/')
     && !SCHEME.test(path)
     && !hasHostileChar(path)
     && !path.split('/').includes('..')
-    && (lower.endsWith('.html') || lower.endsWith('.htm'));
+    && hasHtmlName(path);
 }
 
 export const htmlBlockPayloadSchema = z.strictObject({

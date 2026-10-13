@@ -30,6 +30,7 @@ describe('html blocks', () => {
     ['a parent segment', { path: 'docs/../overview.html' }],
     ['a URL', { path: 'https://calm.example/overview.html' }],
     ['another extension', { path: 'docs/overview.svg' }],
+    ['a dotfile with no name before .html', { path: 'docs/.html' }],
     ['a field the kernel refuses', { path: PATH, src: PATH }],
     ['a title that is not a string', { path: PATH, title: 7 }],
     ['a height below 120', { path: PATH, height: 119 }],

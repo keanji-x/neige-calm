@@ -172,3 +172,65 @@ async fn global_raw_route_still_refuses_html() {
         (StatusCode::BAD_REQUEST, "bad_request".into())
     );
 }
+
+/// Every path the `html` block accepts (`test-data/report-html-path-v1.json`) is one this route
+/// serves as a page, so a block that validates never frames the route's error body.
+#[tokio::test]
+async fn every_accepted_html_block_path_is_served_as_a_page() {
+    #[derive(serde::Deserialize)]
+    struct Cases {
+        accept: Vec<String>,
+    }
+    let cases: Cases = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../test-data/report-html-path-v1.json"
+    )))
+    .unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    for path in &cases.accept {
+        assert!(
+            calm_types::report_blocks::validate_payload(
+                calm_types::report_blocks::KIND_HTML,
+                &serde_json::json!({ "path": path })
+            )
+            .is_ok(),
+            "{path:?}: the fixture accept case validates"
+        );
+        let file = workspace
+            .path()
+            .join(workspace_relative_path(path).unwrap());
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, PAGE).unwrap();
+    }
+    let (state, track, _) =
+        route_state_with_workspace_tracks(workspace.path(), workspace.path()).await;
+    for path in &cases.accept {
+        let response = raw(&state, &track, path).await.unwrap();
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "text/html; charset=utf-8",
+            "{path:?}"
+        );
+    }
+}
+
+/// A dotfile named `.html` has no extension: the block refuses it and so does this route.
+#[tokio::test]
+async fn a_dotfile_named_html_is_not_a_page() {
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::create_dir(workspace.path().join("docs")).unwrap();
+    std::fs::write(workspace.path().join("docs/.html"), PAGE).unwrap();
+    let (state, track, _) =
+        route_state_with_workspace_tracks(workspace.path(), workspace.path()).await;
+    assert!(
+        calm_types::report_blocks::validate_payload(
+            calm_types::report_blocks::KIND_HTML,
+            &serde_json::json!({ "path": "docs/.html" })
+        )
+        .is_err()
+    );
+    assert_eq!(
+        answered(raw(&state, &track, "docs/.html").await.unwrap_err()).await,
+        (StatusCode::BAD_REQUEST, "bad_request".into())
+    );
+}
