@@ -841,13 +841,14 @@ about 45.
 - `status` answers `ok`, `attention` or `failing`, every finding, the last
   exit and the last 7 runs with their pair counts (ok, tried with no ok, not
   tried, planned) and frozen membership. One source per fact:
-  - **The runs** record data loss for good. The latest ended run decides:
-    `partial`, or `complete` but degraded (fewer than
-    [`DEGRADED_BELOW`](src/types.rs) of its pairs `ok`, the capture's own
-    `DEGRADED` rule), is `failing`; `complete` with pairs that have no `ok`
-    is `attention`. An earlier recent run's loss is `attention`, and so is a
-    `missed` day anywhere. An open run is not judged. So a lost day stays
-    `failing` until a later day ends.
+  - **The runs** record data loss for good. A run that ended `partial`, or
+    `complete` but degraded (fewer than [`DEGRADED_BELOW`](src/types.rs) of
+    its pairs `ok`, the capture's own `DEGRADED` rule), is `failing` until a
+    later day ends `complete`, which demotes it to `attention`. A later
+    `missed` or open run does not, so an outage across several windows (a
+    day closed `partial` at the next start, the days after it `missed`)
+    stays `failing`. A `missed` day is `attention`, and so is a run
+    `complete` with pairs that have no `ok`. An open run is not judged.
   - **`last_exit.json`** tells only what the runs cannot: it is `failing`
     when it is missing or older than `stale_after_minutes`, or when the last
     start had no usable token (`auth_unavailable`) or stopped on `fatal`;

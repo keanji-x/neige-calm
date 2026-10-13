@@ -235,22 +235,25 @@ fn run_status(run: &RunSummary, coverage: &[PairCoverage]) -> RunStatus {
     }
 }
 
-/// Data loss, from the runs, which keep it for good. The latest ended run
-/// decides: `partial` or degraded is `failing` until a later day ends
-/// `complete`; complete with failures is `attention`. An older run's loss,
-/// and a missed day anywhere, is `attention`. An open run is not judged.
+/// Data loss, from the runs, which keep it for good. A `partial` or degraded
+/// run is `failing` until a later run ends `complete`, which demotes it to
+/// `attention`; a later missed or open run does not, so an outage across
+/// several windows stays `failing`. A missed day, and a run complete with
+/// failures, is `attention`. An open run is not judged.
 fn run_findings(runs: &[(RunSummary, RunStatus)], out: &mut Vec<Finding>) {
-    let latest_ended = runs.iter().position(|(run, _)| run.end.is_some());
-    for (i, (run, status)) in runs.iter().enumerate() {
+    // Runs come latest first: whether one seen so far ended `complete`.
+    let mut later_complete = false;
+    for (run, status) in runs {
         let Some(end) = &run.end else { continue };
-        let latest = Some(i) == latest_ended;
+        let unrecovered = !later_complete;
+        later_complete |= end.outcome == RunOutcome::Complete;
         let lost = |text: String| Finding {
-            health: if latest {
+            health: if unrecovered {
                 Health::Failing
             } else {
                 Health::Attention
             },
-            text: if latest {
+            text: if unrecovered {
                 format!(
                     "{text}. Data of that day is lost for good; check `journalctl --user -u \
                      research-archive-capture` for the cause"

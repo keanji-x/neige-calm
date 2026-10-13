@@ -6,7 +6,7 @@ use std::path::Path;
 use research_archive::Store;
 use research_archive::catalog::{Catalog, KeyKind};
 use research_archive::plugin::view;
-use research_archive::state::{ExitKind, LastExit};
+use research_archive::state::{ClosedDangling, ExitKind, LastExit};
 use research_archive::status::{self, ArchiveStatus, Health, Policy};
 use research_archive::types::{FailureClass, Finish, Source, UnixMs};
 
@@ -254,6 +254,54 @@ async fn a_partial_latest_day_fails_until_a_later_day_completes() {
     assert_eq!(texts(&status), [(Health::Attention, partial)]);
 }
 
+/// A host outage across two windows: the start after it closes day 2
+/// dangling (`partial`, no ok) and marks day 3 missed. That is the loss the
+/// plugin exists to report, so it fails until a later day ends complete.
+#[tokio::test]
+async fn an_outage_fails_until_a_later_day_completes() {
+    let dir = healthy_dir().await;
+    let store = Store::open(&Store::path(dir.path())).await.unwrap();
+    store
+        .plan_run(&plan_request(2, &["AAPL.US"], &[".SPX.US"]))
+        .await
+        .unwrap();
+    store.close_dangling_runs(at(3, 0)).await.unwrap();
+    store
+        .record_missed(Source::Longbridge, as_of(3), window(3), at(4, 0))
+        .await
+        .unwrap();
+    store.close().await;
+    let partial = "2026-01-03 ended partial: 7 of 7 pairs have no ok";
+    let missed = "2026-01-04 was missed: no capture ran during its window";
+
+    let mut first = exit(ExitKind::Partial, NOW.0 - 2 * MINUTE);
+    first.closed_dangling = vec![ClosedDangling {
+        as_of: "2026-01-03".into(),
+        failure: None,
+    }];
+    // The start that found the outage, then the next one.
+    for last in [first, exit(ExitKind::NoWindow, NOW.0 - MINUTE)] {
+        last.write(dir.path());
+        assert_eq!(
+            texts(&read(dir.path()).await),
+            [
+                (Health::Failing, format!("{partial}{LOST}").as_str()),
+                (Health::Attention, missed),
+            ],
+            "{:?}",
+            last.kind
+        );
+    }
+
+    complete_day_n(dir.path(), 4).await;
+    let status = read(dir.path()).await;
+    assert_eq!(status.health, Health::Attention);
+    assert_eq!(
+        texts(&status),
+        [(Health::Attention, missed), (Health::Attention, partial)]
+    );
+}
+
 #[tokio::test]
 async fn complete_with_failures_needs_attention_from_the_rows() {
     let dir = healthy_dir().await;
@@ -317,7 +365,7 @@ async fn an_incomplete_missed_scan_needs_attention() {
 }
 
 #[tokio::test]
-async fn lost_days_need_attention() {
+async fn a_missed_day_does_not_demote_a_partial_one() {
     let dir = healthy_dir().await;
     let store = Store::open(&Store::path(dir.path())).await.unwrap();
     // Day 2 ends partial with one ok pair; day 3 is missed.
@@ -351,7 +399,7 @@ async fn lost_days_need_attention() {
     store.close().await;
 
     let status = read(dir.path()).await;
-    assert_eq!(status.health, Health::Attention);
+    assert_eq!(status.health, Health::Failing);
     assert_eq!(
         status
             .runs
@@ -379,12 +427,12 @@ async fn lost_days_need_attention() {
         texts(&status),
         [
             (
-                Health::Attention,
-                "2026-01-04 was missed: no capture ran during its window"
+                Health::Failing,
+                format!("2026-01-03 ended partial: 6 of 7 pairs have no ok{LOST}").as_str()
             ),
             (
                 Health::Attention,
-                "2026-01-03 ended partial: 6 of 7 pairs have no ok"
+                "2026-01-04 was missed: no capture ran during its window"
             ),
         ]
     );

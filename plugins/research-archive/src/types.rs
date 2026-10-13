@@ -389,8 +389,8 @@ impl Membership {
 
 /// A run that ends `complete` with fewer than this share of its planned
 /// pairs having an `ok` is degraded: the capture exits `DEGRADED` (non-zero),
-/// so the alert fires, and the status says `failing` while it is the latest
-/// ended run. Ordinary losses (a few delisted symbols, a few capped pairs)
+/// so the alert fires, and the status says `failing` until a later day ends
+/// `complete`. Ordinary losses (a few delisted symbols, a few capped pairs)
 /// stay above it and exit 0 as `complete_with_failures`.
 pub const DEGRADED_BELOW: f64 = 0.5;
 
