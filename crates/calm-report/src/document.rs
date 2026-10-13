@@ -240,32 +240,38 @@ impl ReportDoc {
         self.apply_aligned_blocks(&current, &aligned)
     }
 
-    /// [`Self::update_with_hints`] bounded to `range` of the current block list (#1877 section replace):
-    /// only that part is matched against `slices`, every other block is kept as it is, and the
-    /// summary is untouched. Returns the blocks that now stand in `range`'s place.
-    pub fn replace_range(
+    /// [`Self::update_with_hints`] bounded to the blocks of `span` that `member` accepts (#1877
+    /// section replace): only those are matched against `slices`. Every other block is kept as it
+    /// is, the non-members of `span` (#2598: task blocks) move after the replaced blocks, and the
+    /// summary is untouched. Returns the blocks that now stand in the members' place.
+    pub fn replace_section_members(
         &mut self,
-        range: std::ops::Range<usize>,
+        span: std::ops::Range<usize>,
+        member: impl Fn(&ReportBlock) -> bool,
         slices: &[BlockSlice],
         hints: &[Option<String>],
     ) -> Result<Vec<ReportBlock>> {
         let current = self.blocks_snapshot()?;
         ensure!(
-            range.start <= range.end && range.end <= current.len(),
-            "replace_range: {range:?} out of range (len {})",
+            span.start <= span.end && span.end <= current.len(),
+            "replace_section_members: {span:?} out of range (len {})",
             current.len()
         );
-        let (before, rest) = current.split_at(range.start);
-        let (old, after) = rest.split_at(range.len());
+        let (before, rest) = current.split_at(span.start);
+        let (spanned, after) = rest.split_at(span.len());
+        let (old, kept): (Vec<ReportBlock>, Vec<ReportBlock>) =
+            spanned.iter().cloned().partition(|block| member(block));
         let reserved: HashSet<String> = before
             .iter()
+            .chain(&kept)
             .chain(after)
             .map(|block| block.id.clone())
             .collect();
-        let replaced = reassign_ids_with_hints_reserving(old, slices, hints, &reserved);
+        let replaced = reassign_ids_with_hints_reserving(&old, slices, hints, &reserved);
         let aligned: Vec<ReportBlock> = before
             .iter()
             .chain(&replaced)
+            .chain(&kept)
             .chain(after)
             .cloned()
             .collect();

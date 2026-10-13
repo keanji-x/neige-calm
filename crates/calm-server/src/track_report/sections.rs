@@ -1,33 +1,35 @@
 //! The section ops of a [`super::ReportDocOp::Batch`] (#1877), inside the persist tx: the anchor is
 //! the section's ordered `(id, rev)` list as this session last read it, compared to the doc here.
+//! A section op reaches the section's members only, never a task block in its span (#2598).
 
 use super::{DocAnchor, SectionRead, block_op_internal, check_doc_anchor};
 use crate::error::CalmError;
-use crate::report_sections::{block_h1_title, find_section, h1_title, section_error_message};
+use crate::report_sections::{
+    Section, block_h1_title, find_section, h1_title, section_error_message,
+};
 use crate::track_report_doc::ReportDoc;
 use crate::track_report_guard::validate_body_fences;
-use calm_types::report_blocks::{flat_text, strip_markers_and_split};
+use calm_types::report_blocks::{flat_text, in_sections, parse_fence, strip_markers_and_split};
 use calm_types::report_contract::parse_line;
 use calm_types::track_report::ReportBlock;
-use std::ops::Range;
 
 fn snapshot(doc: &ReportDoc) -> Result<Vec<ReportBlock>, CalmError> {
     doc.blocks_snapshot()
         .map_err(|e| CalmError::Internal(format!("track_report: section snapshot: {e}")))
 }
 
-/// Section `name`'s range, checked against this session's read of it; a section the session read
+/// Section `name`, its members checked against this session's read of it; a section the session read
 /// that is gone now is a conflict for every section op, a section it never read that is gone is `None`.
-fn locate_read(
-    blocks: &[ReportBlock],
+fn locate_read<'a>(
+    blocks: &'a [ReportBlock],
     name: &str,
     read: &SectionRead,
-) -> Result<Option<Range<usize>>, CalmError> {
+) -> Result<Option<Section<'a>>, CalmError> {
     let found = find_section(blocks, name)
         .map_err(|error| CalmError::BadRequest(section_error_message(blocks, &error)))?;
     match (found, read) {
-        (Some(range), _) => {
-            check_section_read(name, &blocks[range.clone()], read).map(|()| Some(range))
+        (Some(section), _) => {
+            check_section_read(name, &section.member_blocks(blocks), read).map(|()| Some(section))
         }
         (None, SectionRead::Seen(_)) => Err(CalmError::Conflict(format!(
             "section `{name}` was removed since this session read it — re-read the report and retry"
@@ -39,7 +41,7 @@ fn locate_read(
 /// The implicit check: the section as this session last read it must be the section now.
 fn check_section_read(
     name: &str,
-    current: &[ReportBlock],
+    current: &[&ReportBlock],
     read: &SectionRead,
 ) -> Result<(), CalmError> {
     let SectionRead::Seen(seen) = read else {
@@ -73,12 +75,12 @@ pub(super) fn apply_replace_section(
     doc_anchor: DocAnchor,
 ) -> Result<(Vec<ReportBlock>, Vec<String>, bool), CalmError> {
     let current = snapshot(doc)?;
-    let (range, checked) = match locate_read(&current, name, read)? {
-        Some(range) => (range, false),
+    let (span, section, checked) = match locate_read(&current, name, read)? {
+        Some(found) => (found.span.clone(), found.member_blocks(&current), false),
         None => {
             let at = declared_position(&current, name)?;
             // Creating a section places it among the others: a whole-document edit.
-            (at..at, check_doc_anchor(doc, doc_anchor, true)?)
+            (at..at, Vec::new(), check_doc_anchor(doc, doc_anchor, true)?)
         }
     };
     let marked = strip_markers_and_split(markdown);
@@ -98,7 +100,6 @@ pub(super) fn apply_replace_section(
              other H1 line"
         )));
     }
-    let section = &current[range.clone()];
     if let Some(outside) = marked
         .hints
         .iter()
@@ -110,33 +111,53 @@ pub(super) fn apply_replace_section(
              replace may pin only that section's own blocks"
         )));
     }
+    if let Some(kind) = marked
+        .slices
+        .iter()
+        .filter_map(|slice| parse_fence(&slice.raw))
+        .map(|fence| fence.kind)
+        .find(|kind| !in_sections(kind))
+    {
+        return Err(CalmError::BadRequest(format!(
+            "the markdown of a section replace may not hold a `{kind}` block: it belongs to no \
+             section — create or change it with an `upsert` op (no position), read it by id"
+        )));
+    }
     validate_body_fences(&marked.cleaned)?;
-    let range_before = range.clone();
     let replaced = doc
-        .replace_range(range, &marked.slices, &marked.hints)
+        .replace_section_members(
+            span,
+            |block| in_sections(&block.kind),
+            &marked.slices,
+            &marked.hints,
+        )
         .map_err(block_op_internal)?;
-    let before = current[range_before].iter().map(|b| b.id.clone()).collect();
+    let before = section.iter().map(|b| b.id.clone()).collect();
     Ok((replaced, before, checked))
 }
 
-/// Delete every block of section `name` and return their ids; the batch's live-task guard still
-/// refuses a live task.
+/// Delete every member block of section `name` and return their ids; a task block in its span stays.
 pub(super) fn apply_delete_section(
     doc: &mut ReportDoc,
     name: &str,
     read: &SectionRead,
 ) -> Result<Vec<String>, CalmError> {
     let current = snapshot(doc)?;
-    let range = locate_read(&current, name, read)?.ok_or_else(|| {
+    let section = locate_read(&current, name, read)?.ok_or_else(|| {
         CalmError::BadRequest(section_error_message(
             &current,
             &crate::report_sections::SectionError::Unknown(name.to_string()),
         ))
     })?;
-    for block in &current[range.clone()] {
-        doc.delete_block(&block.id).map_err(block_op_internal)?;
+    let deleted: Vec<String> = section
+        .member_blocks(&current)
+        .into_iter()
+        .map(|block| block.id.clone())
+        .collect();
+    for id in &deleted {
+        doc.delete_block(id).map_err(block_op_internal)?;
     }
-    Ok(current[range].iter().map(|b| b.id.clone()).collect())
+    Ok(deleted)
 }
 
 /// Where an absent section goes: before the first section the contract declares after it that is

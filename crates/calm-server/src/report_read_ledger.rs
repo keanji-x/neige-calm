@@ -33,7 +33,8 @@ pub struct LastRead {
     /// cleared by a partial read at another docRev, kept across own commits that advanced `doc_rev`.
     pub whole: bool,
     pub blocks: HashMap<String, u32>,
-    /// Section title → its ordered `(id, rev)` list; only sections a read rendered whole.
+    /// Section title → the ordered `(id, rev)` list of its members (never a task block, #2598); only
+    /// sections a read rendered whole.
     pub sections: HashMap<String, Vec<(String, u32)>>,
 }
 
@@ -84,7 +85,7 @@ impl ReadLedger {
 
     /// Record one text-returning read: `blocks` is the snapshot at `doc_rev` it rendered from,
     /// `rendered` the ids of the blocks its text carries. A section counts as read only when all its
-    /// blocks were rendered; a read of every block replaces the record.
+    /// member blocks were rendered; a read of every block replaces the record.
     pub fn record(
         &self,
         session_id: &str,
@@ -125,15 +126,20 @@ impl ReadLedger {
             entry.read.blocks.insert(block.id.clone(), block.rev);
         }
         let all = sections(blocks);
-        for (title, range) in &all {
-            let section = &blocks[range.clone()];
+        for section in &all {
+            // A section's anchor is its members: a task block in its span is no part of it (#2598).
+            let members = section.member_blocks(blocks);
             // A duplicated title is refused at write time; recording either copy would be a guess.
-            if all.iter().filter(|(other, _)| other == title).count() == 1
-                && section.iter().all(seen)
+            if all
+                .iter()
+                .filter(|other| other.title == section.title)
+                .count()
+                == 1
+                && members.iter().all(|block| seen(block))
             {
                 entry.read.sections.insert(
-                    (*title).to_string(),
-                    section
+                    section.title.to_string(),
+                    members
                         .iter()
                         .map(|block| (block.id.clone(), block.rev))
                         .collect(),
@@ -202,7 +208,7 @@ impl ReadLedger {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calm_types::report_blocks::{reassign_ids, split_body};
+    use calm_types::report_blocks::{KIND_TASK, reassign_ids, render_fence, split_body};
     use std::sync::atomic::{AtomicI64, Ordering};
 
     fn ids(blocks: &[ReportBlock], indices: &[usize]) -> Vec<String> {
@@ -227,6 +233,24 @@ mod tests {
             "A was rendered only in part"
         );
         assert_eq!(ledger.last_read("other", "report"), None);
+    }
+
+    #[test]
+    fn section_anchors_exclude_task_blocks() {
+        let ledger = ReadLedger::new();
+        let task = render_fence(KIND_TASK, &serde_json::json!({ "key": "k" }));
+        let blocks = reassign_ids(&[], &split_body(&format!("# A\na\n{task}## A1\nx\n")));
+        assert_eq!(blocks[1].kind, KIND_TASK, "premise: the task sits inside A");
+        ledger.record("s", "planner", "report", 1, &blocks, &ids(&blocks, &[0, 2]));
+        let read = ledger.last_read("s", "report").expect("recorded");
+        assert_eq!(
+            read.sections.get("A"),
+            Some(&vec![
+                (blocks[0].id.clone(), blocks[0].rev),
+                (blocks[2].id.clone(), blocks[2].rev)
+            ]),
+            "a read of A's members is a read of A; the task is no part of its anchor"
+        );
     }
 
     #[test]

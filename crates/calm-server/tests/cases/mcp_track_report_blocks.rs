@@ -1471,7 +1471,7 @@ async fn write_markdown_refuses_worker() {
 }
 
 /// A schedulable planner task declaration: the full shape the projection materializes into a `tasks` row.
-fn planner_task_payload(key: &str, goal: &str) -> Value {
+pub(crate) fn planner_task_payload(key: &str, goal: &str) -> Value {
     json!({
         "key": key, "kind": "codex", "goal": goal,
         "acceptance": format!("accept {key}"), "context": {"key": key},
@@ -1499,7 +1499,7 @@ async fn seed_planner_task(boot: &Boot, key: &str) -> (String, u64) {
     )
 }
 
-async fn task_keys(boot: &Boot) -> Vec<String> {
+pub(crate) async fn task_keys(boot: &Boot) -> Vec<String> {
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
     sqlx::query_scalar::<_, String>("SELECT key FROM tasks WHERE track_id = ?1 ORDER BY key")
         .bind(boot.track_id.as_str())

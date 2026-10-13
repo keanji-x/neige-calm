@@ -50,6 +50,12 @@ pub fn is_data_kind(kind: &str) -> bool {
     DATA_KINDS.contains(&kind)
 }
 
+/// Whether a block of `kind` belongs to the H1 section it sits in (#2598). A task block belongs to
+/// no section wherever it sits in block order: it is read by id and written by an `upsert` op.
+pub fn in_sections(kind: &str) -> bool {
+    kind != KIND_TASK
+}
+
 /// Markdown-bearing payload fields the kernel declares safe to scan for report links.
 pub fn scannable_text_fields<'a>(kind: &str, payload: &'a Value) -> Vec<&'a str> {
     let Some(payload) = payload.as_object() else {

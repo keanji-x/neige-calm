@@ -19,6 +19,8 @@ mod mcp_report_links;
 mod mcp_report_read_vocabulary;
 #[path = "cases/mcp_report_sections.rs"]
 mod mcp_report_sections;
+#[path = "cases/mcp_report_sections_tasks.rs"]
+mod mcp_report_sections_tasks;
 #[path = "cases/mcp_report_series_read.rs"]
 mod mcp_report_series_read;
 #[path = "cases/mcp_report_tag.rs"]

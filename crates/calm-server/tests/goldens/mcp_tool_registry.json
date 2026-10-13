@@ -243,7 +243,7 @@
   },
   {
     "name": "neige_report_commit",
-    "description_sha256": "eaaae5f21418eed29b5640fd620a5803929fb3f02459d646e900823c3ac24efe",
+    "description_sha256": "fb9785b6954ad23a3cc3127963100238b08f5cfeda4eb598615c60468b37b0a8",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -384,7 +384,7 @@
   },
   {
     "name": "neige_report_read",
-    "description_sha256": "2c9d41530459e1dc8c1f79f46324a2618f3d2709b921334b334aa9b98628e3db",
+    "description_sha256": "2d73d0d85bead179dfc832c898c558a7499173c6d4da65cf201cd385f1bc8c68",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

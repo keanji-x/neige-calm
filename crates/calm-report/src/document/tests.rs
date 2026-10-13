@@ -505,3 +505,36 @@ fn replace_dropping_data_blocks_keeps_matching_prose_ids() {
 
     assert_eq!(doc.blocks_snapshot().unwrap(), vec![prose]);
 }
+
+/// #2598: a section replace realigns the section's members only; a task block in the span keeps
+/// its id, rev and text and moves after the replaced blocks.
+#[test]
+fn replace_section_members_keeps_task_blocks_byte_identical() {
+    use calm_types::report_blocks::in_sections;
+    let task = render_fence("task", &json!({ "key": "k" }));
+    let body = format!("# A\n\nalpha\n{task}## A1\n\nx\n# B\n\nb\n");
+    let mut doc = ReportDoc::from_payload(&TrackReportPayload::new("s", body));
+    let before = doc.blocks_snapshot().unwrap();
+    assert_eq!(before[1].kind, "task", "premise: the task sits inside A");
+
+    let slices = split_body("# A\n\nalpha2\n\n## A2\n\ny\n");
+    let replaced = doc
+        .replace_section_members(
+            0..3,
+            |block| in_sections(&block.kind),
+            &slices,
+            &[None, None],
+        )
+        .unwrap();
+
+    let after = doc.blocks_snapshot().unwrap();
+    assert_eq!(replaced, after[..2].to_vec());
+    assert_eq!(after[0].id, before[0].id, "the H1 block keeps its id");
+    assert_eq!(after[2], before[1], "the task: same id, rev and payload");
+    assert_eq!(after[3], before[3], "the next section is untouched");
+    assert_eq!(after.len(), 4);
+    assert_eq!(
+        doc.project().unwrap().1,
+        format!("# A\n\nalpha2\n\n## A2\n\ny\n{task}# B\n\nb\n")
+    );
+}

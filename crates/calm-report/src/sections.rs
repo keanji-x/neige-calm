@@ -1,7 +1,8 @@
-//! H1 sections of a report (#1877): an H1 block plus every block after it up to the next H1.
+//! H1 sections of a report (#1877): an H1 block plus every block after it up to the next H1, except
+//! the blocks that belong to no section wherever they sit (task blocks, #2598).
 //! A heading matches on its raw `# ` line, never on the H1/H2-blind outline heading.
 
-use calm_types::report_blocks::KIND_PROSE;
+use calm_types::report_blocks::{KIND_PROSE, in_sections};
 use calm_types::track_report::ReportBlock;
 use serde_json::Value;
 use std::ops::Range;
@@ -24,8 +25,25 @@ pub fn block_h1_title(block: &ReportBlock) -> Option<&str> {
         .and_then(h1_title)
 }
 
-/// Every section of `blocks` in document order: its title and its block range.
-pub fn sections(blocks: &[ReportBlock]) -> Vec<(&str, Range<usize>)> {
+/// One H1 section of a report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Section<'a> {
+    pub title: &'a str,
+    /// From its H1 block up to the next H1 block (or the end).
+    pub span: Range<usize>,
+    /// The indices in `span` of the blocks that belong to the section: every one but a task block.
+    pub members: Vec<usize>,
+}
+
+impl Section<'_> {
+    /// The member blocks of the section in document order; `blocks` is the list it was found in.
+    pub fn member_blocks<'b>(&self, blocks: &'b [ReportBlock]) -> Vec<&'b ReportBlock> {
+        self.members.iter().map(|index| &blocks[*index]).collect()
+    }
+}
+
+/// Every section of `blocks` in document order.
+pub fn sections(blocks: &[ReportBlock]) -> Vec<Section<'_>> {
     let starts: Vec<(usize, &str)> = blocks
         .iter()
         .enumerate()
@@ -36,7 +54,13 @@ pub fn sections(blocks: &[ReportBlock]) -> Vec<(&str, Range<usize>)> {
         .enumerate()
         .map(|(n, (start, title))| {
             let end = starts.get(n + 1).map_or(blocks.len(), |(next, _)| *next);
-            (*title, *start..end)
+            Section {
+                title,
+                span: *start..end,
+                members: (*start..end)
+                    .filter(|index| in_sections(&blocks[*index].kind))
+                    .collect(),
+            }
         })
         .collect()
 }
@@ -49,15 +73,14 @@ pub enum SectionError {
     Duplicate(String, Vec<String>),
 }
 
-/// The block range of the section titled `name`; `Ok(None)` when no section carries it.
-pub fn find_section(
-    blocks: &[ReportBlock],
+/// The section titled `name`; `Ok(None)` when no section carries it.
+pub fn find_section<'a>(
+    blocks: &'a [ReportBlock],
     name: &str,
-) -> Result<Option<Range<usize>>, SectionError> {
+) -> Result<Option<Section<'a>>, SectionError> {
     let mut found = sections(blocks)
         .into_iter()
-        .filter(|(title, _)| *title == name)
-        .map(|(_, range)| range)
+        .filter(|section| section.title == name)
         .collect::<Vec<_>>();
     match found.len() {
         0 => Ok(None),
@@ -66,22 +89,25 @@ pub fn find_section(
             name.to_string(),
             found
                 .iter()
-                .map(|range| blocks[range.start].id.clone())
+                .map(|section| blocks[section.span.start].id.clone())
                 .collect(),
         )),
     }
 }
 
-/// The ids of the sections `names` names, in document order; the input to the one block renderer.
+/// The ids of the member blocks of the sections `names` names, in document order; the input to the
+/// one block renderer.
 pub fn section_block_ids(
     blocks: &[ReportBlock],
     names: &[String],
 ) -> Result<Vec<String>, SectionError> {
     let mut chosen = vec![false; blocks.len()];
     for name in names {
-        let range =
+        let section =
             find_section(blocks, name)?.ok_or_else(|| SectionError::Unknown(name.clone()))?;
-        chosen[range].fill(true);
+        for index in section.members {
+            chosen[index] = true;
+        }
     }
     Ok(blocks
         .iter()
@@ -98,7 +124,7 @@ pub fn section_error_message(blocks: &[ReportBlock], error: &SectionError) -> St
         SectionError::Unknown(name) => {
             let listed: Vec<String> = sections(blocks)
                 .iter()
-                .map(|(title, _)| format!("  # {title}"))
+                .map(|section| format!("  # {}", section.title))
                 .collect();
             if listed.is_empty() {
                 format!("unknown section `{name}`; this report has no H1 sections")
@@ -120,7 +146,8 @@ pub fn section_error_message(blocks: &[ReportBlock], error: &SectionError) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calm_types::report_blocks::{reassign_ids, split_body};
+    use calm_types::report_blocks::{KIND_TASK, reassign_ids, render_fence, split_body};
+    use serde_json::json;
 
     fn blocks(body: &str) -> Vec<ReportBlock> {
         reassign_ids(&[], &split_body(body))
@@ -131,10 +158,16 @@ mod tests {
         let blocks = blocks("intro\n# A\na\n## A1\nx\n# B\nb\n#C\n");
         let found: Vec<_> = sections(&blocks)
             .into_iter()
-            .map(|(title, range)| (title.to_string(), range))
+            .map(|section| (section.title.to_string(), section.span, section.members))
             .collect();
-        assert_eq!(found, vec![("A".into(), 1..3), ("B".into(), 3..4)]);
-        assert_eq!(find_section(&blocks, "A"), Ok(Some(1..3)));
+        assert_eq!(
+            found,
+            vec![("A".into(), 1..3, vec![1, 2]), ("B".into(), 3..4, vec![3])]
+        );
+        assert_eq!(
+            find_section(&blocks, "A").map(|found| found.map(|section| section.span)),
+            Ok(Some(1..3))
+        );
         assert_eq!(find_section(&blocks, "A1"), Ok(None), "an H2 is no section");
         let ids = section_block_ids(&blocks, &["B".into(), "A".into()]).unwrap();
         assert_eq!(
@@ -143,6 +176,32 @@ mod tests {
                 blocks[1].id.clone(),
                 blocks[2].id.clone(),
                 blocks[3].id.clone()
+            ]
+        );
+    }
+
+    #[test]
+    fn a_task_block_is_in_no_section_wherever_it_sits() {
+        let task = |key: &str| render_fence(KIND_TASK, &json!({ "key": key }));
+        let blocks = blocks(&format!(
+            "{}# A\na\n{}## A1\nx\n# B\nb\n{}",
+            task("t0"),
+            task("t1"),
+            task("t2")
+        ));
+        assert_eq!(blocks[2].kind, KIND_TASK, "premise: the task sits inside A");
+        let found: Vec<_> = sections(&blocks)
+            .into_iter()
+            .map(|section| (section.span, section.members))
+            .collect();
+        assert_eq!(found, vec![(1..4, vec![1, 3]), (4..6, vec![4])]);
+        let ids = section_block_ids(&blocks, &["A".into(), "B".into()]).unwrap();
+        assert_eq!(
+            ids,
+            vec![
+                blocks[1].id.clone(),
+                blocks[3].id.clone(),
+                blocks[4].id.clone()
             ]
         );
     }

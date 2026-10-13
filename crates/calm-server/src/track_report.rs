@@ -389,7 +389,7 @@ pub enum ReportDocOp {
     ResetToInitial { if_doc_rev: u64 },
     /// `neige_report_commit`: an ordered list of block ops + optional summary under ONE document anchor.
     /// A failure anywhere aborts the whole persist transaction; the doc rev advances exactly once.
-    /// A `Delete` op may retire a live task it names by id; a section op may not.
+    /// A `Delete` op may retire a live task it names by id; a section op never reaches a task block.
     Batch {
         doc_anchor: DocAnchor,
         summary: Option<String>,

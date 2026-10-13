@@ -16,15 +16,16 @@ use calm_server::plugin_host::mcp::RpcError;
 use calm_server::track_report::TrackReportPayload;
 use serde_json::{Value, json};
 
-const INVALID_PARAMS: i64 = -32602;
-const CONTRACT: &str = "<!-- neige:contract {\"version\":1,\"sections\":[{\"h1\":\"概要\"},\
+pub(crate) const INVALID_PARAMS: i64 = -32602;
+pub(crate) const CONTRACT: &str = "<!-- neige:contract {\"version\":1,\"sections\":[{\"h1\":\"概要\"},\
                         {\"h1\":\"待你定\",\"omit_if_empty\":true},{\"h1\":\"已完成\"},\
                         {\"h1\":\"决策\"}]} -->\n";
 /// `待你定` is declared but absent; `概要` spans two blocks.
-const SECTIONS: &str = "# 概要\n\nalpha\n\n## 细节\n\na2\n\n# 已完成\n\nbeta\n\n# 决策\n\ngamma\n";
+pub(crate) const SECTIONS: &str =
+    "# 概要\n\nalpha\n\n## 细节\n\na2\n\n# 已完成\n\nbeta\n\n# 决策\n\ngamma\n";
 
 /// Written by another session, so the planner starts with no read of the report.
-async fn seed(boot: &Boot, sections: &str) {
+pub(crate) async fn seed(boot: &Boot, sections: &str) {
     read_then_write_markdown(
         boot,
         assistant_identity(boot),
@@ -34,7 +35,7 @@ async fn seed(boot: &Boot, sections: &str) {
     .expect("seed write");
 }
 
-async fn payload(boot: &Boot) -> TrackReportPayload {
+pub(crate) async fn payload(boot: &Boot) -> TrackReportPayload {
     let card = boot
         .repo
         .card_get(boot.report_card_id.as_str())
@@ -67,7 +68,7 @@ async fn section_blocks(boot: &Boot, heading: &str) -> Vec<(String, u64)> {
         .collect()
 }
 
-async fn read_sections(boot: &Boot, who: ToolCallIdentity, sections: &[&str]) -> String {
+pub(crate) async fn read_sections(boot: &Boot, who: ToolCallIdentity, sections: &[&str]) -> String {
     call_tool(boot, TOOL_REPORT_READ, who, json!({ "sections": sections }))
         .await
         .expect("read sections")["text"]
@@ -76,7 +77,11 @@ async fn read_sections(boot: &Boot, who: ToolCallIdentity, sections: &[&str]) ->
         .to_string()
 }
 
-async fn commit(boot: &Boot, who: ToolCallIdentity, extra: Value) -> Result<Value, RpcError> {
+pub(crate) async fn commit(
+    boot: &Boot,
+    who: ToolCallIdentity,
+    extra: Value,
+) -> Result<Value, RpcError> {
     let mut args = json!({ "message": "改写" });
     args.as_object_mut()
         .unwrap()
@@ -84,7 +89,7 @@ async fn commit(boot: &Boot, who: ToolCallIdentity, extra: Value) -> Result<Valu
     call_tool(boot, TOOL_REPORT_COMMIT, who, args).await
 }
 
-fn replace(section: &str, markdown: &str) -> Value {
+pub(crate) fn replace(section: &str, markdown: &str) -> Value {
     json!({ "ops": [{ "op": "replace", "section": section, "markdown": markdown }] })
 }
 
@@ -297,58 +302,6 @@ async fn a_new_session_of_the_card_starts_with_an_empty_ledger() {
         .expect("the successor's own read");
 }
 
-/// #1883: only a `delete` op naming a live task by id may retire it; a section op that would drop
-/// one is refused.
-#[tokio::test]
-async fn a_section_op_is_refused_while_its_section_holds_a_live_task() {
-    let boot = boot().await;
-    let task = calm_types::report_blocks::render_fence(
-        "task",
-        &json!({
-            "key": "k1", "kind": "codex", "goal": "build it",
-            "gate": {"steps": [{"name": "accept", "cmd": "true"}]},
-            "declared_by": calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR,
-            "ready": true
-        }),
-    );
-    read_then_write_markdown(
-        &boot,
-        planner_identity(&boot),
-        json!({
-            "body": format!("{CONTRACT}{}", SECTIONS.replace("beta\n", &format!("beta\n\n{task}"))),
-            "message": "seed"
-        }),
-    )
-    .await
-    .expect("the planner seeds its task");
-    read_full(&boot).await;
-    let before = payload(&boot).await;
-    for ops in [
-        json!([{ "op": "delete", "section": "已完成" }]),
-        json!([{ "op": "replace", "section": "已完成", "markdown": "# 已完成\n\nbeta\n" }]),
-    ] {
-        let err = commit(
-            &boot,
-            planner_identity(&boot),
-            json!({ "ops": ops.clone() }),
-        )
-        .await
-        .expect_err("live task");
-        assert_eq!(err.code, INVALID_PARAMS, "{ops}: {err:?}");
-        assert!(err.message.contains("must name it by id"), "{ops}: {err:?}");
-    }
-    assert_eq!(payload(&boot).await.body, before.body);
-
-    commit(
-        &boot,
-        planner_identity(&boot),
-        json!({ "ops": [{ "op": "delete", "section": "决策" }] }),
-    )
-    .await
-    .expect("a section without a live task goes");
-    assert!(!payload(&boot).await.body.contains("# 决策"));
-}
-
 #[tokio::test]
 async fn replacing_an_absent_declared_section_creates_it_at_the_contract_position() {
     let boot = boot().await;
@@ -411,7 +364,7 @@ async fn a_section_replace_may_not_reach_outside_its_section() {
     assert_eq!(payload(&boot).await.body, before.body);
 }
 
-async fn read_full(boot: &Boot) {
+pub(crate) async fn read_full(boot: &Boot) {
     call_tool(boot, TOOL_REPORT_READ, planner_identity(boot), json!({}))
         .await
         .expect("full read");

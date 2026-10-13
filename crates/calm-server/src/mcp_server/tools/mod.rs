@@ -200,7 +200,9 @@ mod tests {
         // #2585: the `html` kind adds 7 bytes to the commit enum and 13 to the describe line (its
         // authoring contract is describe output, outside this surface); the cap is the measured
         // 30,866.
-        const SURFACE_MAX_BYTES: usize = 30_866;
+        // #2598: section reads and ops exclude task blocks; saying so in the read and commit
+        // descriptions adds 8 bytes net; the cap is the measured 30,874.
+        const SURFACE_MAX_BYTES: usize = 30_874;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);
