@@ -26,6 +26,8 @@ mod claude_planner_session;
 mod claude_planner_session_fixture;
 #[path = "cases/claude_planner_session_lifecycle.rs"]
 mod claude_planner_session_lifecycle;
+#[path = "cases/claude_planner_session_results.rs"]
+mod claude_planner_session_results;
 #[path = "cases/claude_planner_stack_fixture.rs"]
 mod claude_planner_stack_fixture;
 #[path = "cases/claude_planner_wiring.rs"]

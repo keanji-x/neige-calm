@@ -189,6 +189,16 @@ SUCCESS+="$USAGE"',"terminal_reason":"completed"}'
 ABORTED='{"type":"result","subtype":"error_during_execution","errors":[],"terminal_reason":"aborted_streaming"}'
 
 case "$SCENARIO" in
+  result-no-reason|result-null-reason|result-error-no-reason)
+    echo "$TEXT"
+    case "$SCENARIO" in
+      result-no-reason) jq -c 'del(.terminal_reason)' <<< "$SUCCESS" ;;
+      result-null-reason) jq -c '.terminal_reason = null' <<< "$SUCCESS" ;;
+      result-error-no-reason)
+        jq -c 'del(.terminal_reason) | .is_error = true | .result = "fake result error"' <<< "$SUCCESS" ;;
+    esac
+    cat > /dev/null
+    exit 0 ;;
   exit)
     echo "$TEXT"; echo "$SUCCESS"
     cat > /dev/null

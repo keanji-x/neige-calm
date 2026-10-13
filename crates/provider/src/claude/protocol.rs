@@ -217,7 +217,8 @@ pub struct ResultSuccess {
     pub usage: Usage,
     #[serde(rename = "modelUsage")]
     pub model_usage: BTreeMap<String, ModelUsage>,
-    pub terminal_reason: String,
+    /// The SDK permits absence for older CLIs and results from local slash commands.
+    pub terminal_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

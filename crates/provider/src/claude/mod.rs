@@ -5,6 +5,8 @@ mod compact_tests;
 pub mod permission;
 pub mod protocol;
 #[cfg(test)]
+mod result_tests;
+#[cfg(test)]
 mod stream_tests;
 #[cfg(test)]
 mod tests;
