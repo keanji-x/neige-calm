@@ -473,7 +473,7 @@ enum Record {
   Assistant { message_id: String, blocks: Vec<AssistantBlock> },       // thinking | text | tool_use
   Stream(StreamEvent),  // #1923: MessageStart{message_id} | BlockStart{index, kind} | TextDelta{index, text}
   ResultSuccess { is_error: bool, result: String, usage: Usage,
-                  model_usage: BTreeMap<String, ModelUsage>, terminal_reason: String },
+                  model_usage: BTreeMap<String, ModelUsage>, terminal_reason: Option<String> },
   ResultError { subtype: ErrorSubtype, errors: Vec<String>, terminal_reason: Option<String>,
                 usage: Usage, model_usage: BTreeMap<String, ModelUsage> },
   ControlResponseIn { response: ControlResponseBody },                  // nested envelope (P-F3)
@@ -485,7 +485,8 @@ enum Record {
 //        | Error{request_id, error}}
 ```
 
-Recorded shapes: success results carry `result` and no `errors` (P-B, P-I); error results carry
+Recorded shapes: success results carry `result` and no `errors` (P-B, P-I); their `terminal_reason`
+may be absent or `null`, matching the official SDK's `ResultMessage` contract. Error results carry
 `errors` and no `result`; `terminal_reason` is `"aborted_streaming"` after an interrupt (P-F3) and absent
 when the sandbox is unavailable (P-S1). Client ids (32 hex) go out as the dashed UUID of the same bits.
 An inbound `can_use_tool` (not expected with `--permission-prompts none`, P-H/P-I) gets a `Success` deny;
