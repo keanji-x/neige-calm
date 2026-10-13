@@ -262,7 +262,11 @@ async fn attempt<C: Clock>(pool: Arc<Pool<C>>, work: Work, deadline: UnixMs) -> 
         .catalog
         .get(work.endpoint.as_str())
         .expect("a coverage endpoint is a catalog endpoint");
-    let may_send = pool.latch.send_check(Arc::clone(&pool.clock), deadline);
+    let may_send = pool.latch.send_check(
+        Arc::clone(&pool.clock),
+        pool.recorder.window().start(),
+        deadline,
+    );
     let fetch = pool.source.fetch_if(&endpoint, &work.key, may_send);
     let bounded = clock::within(&*pool.clock, deadline, fetch);
     let Some(Some(Some(fetched))) = pool.latch.unless_stopped(bounded).await else {

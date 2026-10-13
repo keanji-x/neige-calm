@@ -9,8 +9,10 @@
 //!   stop with the stop branch first, so a sibling whose response or
 //!   rate-limit slot is ready in the same poll as the latch is dropped.
 //! - **No send after the latch.** [`Latch::send_check`] is the check the
-//!   source runs at the actual request start: the deadline has not passed
-//!   and the run has not stopped.
+//!   source runs at the actual request start: the clock is inside the run's
+//!   window and before the deadline (`window_start ≤ now < deadline`, so a
+//!   backward step of the clock admits nothing either), and the run has not
+//!   stopped.
 //! - **A failed write is fatal.** A `Fatal` stop replaces an earlier one: an
 //!   auth row that cannot be written ends the start `FATAL`, not
 //!   `AUTH_UNAVAILABLE`.
@@ -89,15 +91,19 @@ impl Latch {
         let _ = halted.wait_for(|halted| *halted).await;
     }
 
-    /// The check at the actual request start: before `deadline` on `clock`,
-    /// and the run not stopped.
+    /// The check at the actual request start: `from ≤ now < deadline` on
+    /// `clock` (`from` is the window start), and the run not stopped.
     pub fn send_check<C: Clock>(
         self: &Arc<Self>,
         clock: Arc<C>,
+        from: UnixMs,
         deadline: UnixMs,
     ) -> impl FnOnce() -> bool + Send + 'static {
         let latch = Arc::clone(self);
-        move || !latch.is_stopped() && clock.now() < deadline
+        move || {
+            let now = clock.now();
+            !latch.is_stopped() && from <= now && now < deadline
+        }
     }
 }
 
@@ -141,12 +147,18 @@ mod tests {
     }
 
     #[test]
-    fn nothing_is_sent_once_the_run_has_stopped() {
+    fn nothing_is_sent_outside_the_window_or_once_the_run_has_stopped() {
         let latch = Arc::new(Latch::new());
         let clock = Arc::new(Fixed(UnixMs(10)));
-        assert!(latch.send_check(Arc::clone(&clock), UnixMs(11))());
-        assert!(!latch.send_check(Arc::clone(&clock), UnixMs(10))());
-        let check = latch.send_check(Arc::clone(&clock), UnixMs(11));
+        assert!(latch.send_check(Arc::clone(&clock), UnixMs(10), UnixMs(11))());
+        assert!(!latch.send_check(Arc::clone(&clock), UnixMs(0), UnixMs(10))());
+        // A clock stepped back before the window start admits nothing.
+        assert!(!latch.send_check(
+            Arc::clone(&clock),
+            UnixMs(11),
+            UnixMs(20)
+        )());
+        let check = latch.send_check(Arc::clone(&clock), UnixMs(0), UnixMs(11));
         latch.halt(Stop::Auth);
         assert!(!check());
     }

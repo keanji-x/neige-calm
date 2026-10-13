@@ -94,6 +94,11 @@ impl<C: Clock> Recorder<C> {
             .map(Observed::Recorded)
     }
 
+    /// The run's window.
+    pub(super) fn window(&self) -> Window {
+        self.window
+    }
+
     /// Freeze the membership now. Returns the freeze's stamp, or `None` when
     /// the window has closed.
     pub(super) async fn freeze(&self) -> Result<Option<UnixMs>, StoreError> {

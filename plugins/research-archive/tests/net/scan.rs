@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use regex::Regex;
 
 /// What names or builds an SDK client, or reaches the SDK at all.
-const PATTERNS: [&str; 5] = [
+const PATTERNS: [&str; 7] = [
     // Calls, qualified or not (`use …::auth::login` or `auth::*` first).
     r"\b(login|build_oauth|from_token)\s*\(",
     // SDK client types and the archive's source, as whole words.
@@ -30,6 +30,11 @@ const PATTERNS: [&str; 5] = [
     r"\bauth::(\*|\{[^}]*\blogin\b|login\b)",
     // The SDK's own config constructors.
     r"\bConfig::from_oauth\b",
+    // A capture start, which builds the source and the OAuth client: a
+    // call, a glob, or an import of `run`/`run_with` from `capture`.
+    r"\bcapture::(\*|\{[^}]*\brun(_with)?\b|run(_with)?\s*\()",
+    // The calendar's SDK source, which builds a quote connection.
+    r"\bQuoteDays\b",
 ];
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -136,7 +141,7 @@ fn sdk_clients_are_built_only_under_the_hermetic_harness() {
     assert!(escaped.is_empty(), "outside tests/net: {escaped:#?}");
 }
 
-/// Each form the scan must catch, and two it must not.
+/// Each form the scan must catch, and some it must not.
 #[test]
 fn the_patterns_catch_each_form() {
     let caught = [
@@ -153,12 +158,23 @@ fn the_patterns_catch_each_form() {
         "use research_archive::auth::{ClientId, login};",
         "Config::from_oauth(o)",
         "/*\n// */ auth::login(c)",
+        "capture::run(&config, clock, None)",
+        "research_archive::capture::run_with (&c, k, &d, None)",
+        "use research_archive::capture::{MAX_IN_FLIGHT, run};",
+        "use research_archive::capture::*;",
+        "let days = QuoteDays;",
     ];
     for text in caught {
         let unit = (PathBuf::from("x.rs"), 1, text.to_owned());
         assert!(!matches(&[unit], Path::new("")).is_empty(), "{text:?}");
     }
-    for text in [r#"env.run(&["auth", "login"])"#, "fn logins() {}"] {
+    for text in [
+        r#"env.run(&["auth", "login"])"#,
+        "fn logins() {}",
+        "capture::MAX_IN_FLIGHT",
+        "capture::AUTH_BOUND",
+        r#"env.run(&["capture"])"#,
+    ] {
         let unit = (PathBuf::from("x.rs"), 1, text.to_owned());
         assert!(matches(&[unit], Path::new("")).is_empty(), "{text:?}");
     }

@@ -552,8 +552,15 @@ The deadline is the clock's, not a timer fixed when a request starts:
 retries of a bare HTTP 429 inside it, is dropped within one step of the
 deadline, even when the wall clock steps forward (suspend, NTP) while it
 waits. Every other wait on the system clock follows it the same way. The
-send-time check and the recorder's window check still refuse a request
-start or a row past the window end.
+send-time check (`window_start ≤ now < deadline`) and the recorder's window
+check still refuse a request start or a row outside the window.
+
+**A backward clock step.** A step back to before the window start sends
+and records nothing more: the start ends `resumable`. A step back
+that stays inside the window reaches the Store's monotonic run clock
+([Writes](#writes)): the next row is refused (`ClockWentBack`) and the start
+ends `FATAL` (exit 70), which alerts. Nothing is lost; the next start
+resumes the run once the clock has passed its high-water mark again.
 
 **The retry schedule.** Every pair still to be worked waits in one queue,
 keyed by the time it may next be attempted (`src/capture/schedule.rs`). At
@@ -775,6 +782,12 @@ systemctl --user enable --now research-archive-capture.timer
   when a `.env` exists in the data dir or any parent. The notify unit runs
   in `/`: it builds no SDK client, and a missing data dir must not keep it
   from alerting (`unknown`).
+- **The timer can fire before time sync.** `Persistent=true` catches up a
+  missed start at boot, possibly before the clock is synchronized, and a
+  user unit cannot order itself after `time-sync.target` (a system unit).
+  Such a start works on the unsynchronized time; when the sync then steps
+  the clock back mid-run, it ends as above (`resumable` or `FATAL`), and a
+  later start resumes the run.
 - **No unit sets an SDK variable.** The region comes from the config, and the
   job refuses to start when any `LONGBRIDGE_*`/`LONGPORT_*` variable is set.
 - **A proxy, only if this host needs one.** Uncomment `EnvironmentFile=` in
@@ -821,14 +834,14 @@ Two integration binaries:
 | `net::refresh`, `net::login` | a hung token refresh is bounded and releases the `OAuth` lock; a hung code exchange ends `login` by its deadline |
 | `net::logs` | only our own log target is emitted |
 | `net::secrets` | I11 for the binary's output, our logs, the archive file, `Debug`, and a login callback carrying a canary |
-| `net::dotenv`, `net::scan` | a `.env` in reach is refused and cannot override the pins; no SDK client is built outside the harness |
+| `net::dotenv`, `net::scan` | a `.env` in reach is refused and cannot override the pins; no SDK client is built, and no capture started, outside the harness |
 | `net::runner` | on a fake clock, under the harness: I1, I7, freeze before fetch, resumption, the carry deadline, missed and dangling days, the serialized recorder, a hanging request, the `degraded` threshold, the first auth failure stopping every worker |
 | `net::calendar` | the calendar refresh's error mapping, the back-fill of a 40-day outage (every closed day `missed`), a failed back-fill that only warns and is retried, no back-fill inside a window (a hanging history request does not touch the capture), the fallback to a cache that still covers now |
 | `net::schedule` | the retry schedule through an outage; membership scenarios A (a blip is retried and `observed`), B (retried every 2 minutes, then a freeze at the carry deadline, across starts or within one) and C (a start to the window end waits for the carry deadline, never `partial`); constituents outages of 22, 25, 40 and 55 minutes `observed`; a late start freezing from stored rows; a resume after the carry deadline not held up by a hanging constituents attempt; the auth latch before a slow auth row; of two simultaneous auth failures only the winner recorded; an unwritable auth row `FATAL`; a throttle wait surviving a restart; no request starts after the window end however late its rate-limit slot |
 | `net::membership` | constituents outages at the shipped cadence (25-minute starts every 30 minutes); the freeze not waiting for a retry in flight at the carry deadline; only post-freeze failures counting toward the constituents cap |
 | `net::interrupt` | I4 and I12 in process: a capture interrupted during membership leaves a whole plan and no freeze; the rerun completes with the planned keys and index set |
 | `net::exit_state` | dangling runs on record (all of them) through a later failure; a dangling-only `partial` with its failure; a lock I/O error on record; a completed or resumable start clearing the alert dedupe |
-| `net::deadline` | a clock jump past the window end stopping the SDK's in-request retries within a step; stamps taken under the recorder's turn with parallel workers and a jittery clock |
+| `net::deadline` | a clock jump past the window end stopping the SDK's in-request retries within a step; a clock stepped back before the window start sending nothing, and inside the window ending `FATAL`; stamps taken under the recorder's turn with parallel workers and a jittery clock |
 | `capture_cli` | `capture` as a subprocess: a kill during the fetch (I4), I9, a hanging token refresh, I10, the calendar refresh. The membership phase cannot be reached in real time at every hour, so its kill and I12 run in `net::interrupt` |
 | `capture_secrets` | I11 for `capture` and `notify`; the alert's dedupe and environment; `notify` alerting when `capture` refused its environment; `notify` trusting only the failed start's own state (`$INVOCATION_ID` / `$MONITOR_INVOCATION_ID`) |
 | `units` | the systemd templates' directives and placeholders |
