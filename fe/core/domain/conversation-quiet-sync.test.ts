@@ -275,6 +275,27 @@ describe('foldQuietSyncs over persisted batches', () => {
     expect(foldQuietSyncs(editFirst).map(ids)).toEqual(['1:0', '1:1', '2']);
   });
 
+  const budget = (): Segment => ({ presentation: 'system_planner_turn_budget', text: 'Frozen context', attachments: [] });
+
+  it('folds regenerable budget and report edits together through the production transcript', () => {
+    const entries = buildTranscript([batch(1, [budget(), { ...edited(), origin: { observation: 'report_edited', event_id: 42 } }]), action(2), reply(3, 'Re-read.')]);
+    expect(entries.slice(0, 2)).toMatchObject([{ quiet: true }, { quiet: true }]);
+    const blocks = foldQuietSyncs(entries);
+    expect(blocks.map(ids)).toEqual([['1:0', '1:1', 'activity-item-2', '3']]);
+    expect(blocks[0]).toMatchObject({ kind: 'quiet-sync', author: 'user' });
+  });
+
+  it('keeps budget-only, user, task, timeout and warning batches visible', () => {
+    const system = (text: string): Segment => ({ presentation: 'system', text, attachments: [] });
+    for (const segments of [[budget()], [budget(), userSays('budget'), edited()],
+      [budget(), taskDone(), edited()], [budget(), system('Previous timeout'), edited()],
+      [budget(), system('Budget warning'), edited()], [system('Frozen context'), edited()]]) {
+      const entries = buildTranscript([batch(1, segments), reply(2, 'Visible')]);
+      expect(entries.filter((entry) => entry.author === 'system').every((entry) => entry.quiet === undefined)).toBe(true);
+      expect(foldQuietSyncs(entries).every((block) => block.kind === 'entry')).toBe(true);
+    }
+  });
+
   it('folds a batch that is nothing but the report edit', () => {
     const entries = buildTranscript([batch(1, [edited()]), action(2), reply(3, 'I re-read the report.')]);
     expect(entries[0]).toMatchObject({ id: '1', author: 'system', label: 'Report edited', quiet: true });

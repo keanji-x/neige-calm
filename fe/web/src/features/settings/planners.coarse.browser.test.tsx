@@ -36,7 +36,7 @@ for (const width of [390]) {
       await expect.element(element!).toBeVisible();
     }
     const text = descriptions.map((element) => element!.textContent).join(' ');
-    for (const phrase of ['Default: 30', '1–240', 'next turn', 'hold waiting', 'Backends without steer support (Claude and ACP)', '1 to 240']) expect(text).toContain(phrase);
+    for (const phrase of ['Default: 30', '1–240', 'next turn', 'retrying an unconfirmed start keeps its frozen budget', 'Hold waiting', 'Backends without steer support', '1 to 240']) expect(text).toContain(phrase);
     expect(onSave).toHaveBeenCalledTimes(1);
     await input.fill('60');
     await expect.element(input).not.toHaveAttribute('aria-invalid', 'true');

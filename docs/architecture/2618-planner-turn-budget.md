@@ -14,7 +14,7 @@ patch，400 给出具体原因，未知 key 与 proxy 行为保留。GET 原样�
 PUT reset 可清除损坏值；生产发轮读到损坏值必须明确失败，不能默认回退。
 
 通用真实发轮入口读取 DB 中当前 card role/profile 和设置，不依赖 harness 构造参数或广播。
-只有真实 Planner 适用，既存 harness 下一轮读取新设置；当前轮冻结。
+只有真实 Planner 适用，既存 harness 下一轮读取新设置；当前轮冻结；未知 start-attempt 的重试沿用原冻结预算，仅新 attempt 采样当前设置。
 Assistant、plain chat 与 compaction 保持原计时策略。预算在发送 start 前随
 snapshot 的 start attempt identity 持久化；恢复保留该冻结值，不重新采样活轮。
 旧 snapshot 明确为 legacy，不推测其预算。
@@ -26,7 +26,7 @@ snapshot 的 start attempt identity 持久化；恢复保留该冻结值，不�
 硬停止与预警共享既有 watchdog 基准；hold 等待不计执行时间。
 支持 steer 的后端仅尝试一次有界异步当前轮提醒；不得在 watchdog 上等待 steer。
 检查 runtime/turn identity、hold 及当前相位；RPC 使用 expected turn identity，
-迟到、失败或停止不产生新轮输入。不支持 steer 的后端（Claude、ACP）仅接收初始预警，能力由 backend.supports_steer 声明。
+迟到、失败或停止不产生新轮输入。不支持 steer 的后端仅接收初始预警，能力由 backend.supports_steer 声明。
 提醒在 RPC 前写既有 System input projection，echo 原位升级，避免异步回包早于投影造成
 重复或用户归属；失败保留未确认投影供迟到 echo 升级，可信终态仅删除仍未确认的
 投影，不排入下一轮。
@@ -121,8 +121,8 @@ wake，没有临时 observe，没有另建消费 receipt。准备 projection 不
 不复用 PlannerDown，不把 timeout 生命周期变为 Failed。UI decode/mapping 在下阶段处理。
 
 Repo 提供 latest terminal 和 pending timeouts 两个窄读取，以既有
-`idx_transcript_card_method_created_at` 的 card/method 范围读取，按 created_at_ms/id
-确定顺序。下一输入取最新一行（全状态）；Track 只读取成功完成之后的 timeout
+`idx_transcript_card_method_created_at` 的 card/method 范围读取，按 owner 分配的持久 row ID
+确定因果顺序，UTC 只保留为原始时间事实。下一输入取最新一行（全状态）；Track 只读取成功完成之后的 timeout
 候选并核查每行完整 identity，不全量分页 transcript、不设硬截断、无新索引迁移。
 永久维护成本只有 owner 类型、真实 writer/reader 和新增测试模块的 suite 注册；
 增加普通测试只修改自身模块。kernel gate 各跑一次文本/合同/quick 与三组聚焦
@@ -158,7 +158,7 @@ CR-2618-settings/track 已批准 core/domain 的 settings/activity/track/convers
 [Planners pane](../../fe/web/src/features/settings/planners.tsx) 复用 SettingRow，接收
 单值、读取状态/成功读取 revision 与 save/retry 能力；[shell host](../../fe/web/src/app/shell/settings-overlay.tsx)
 复用既有 settings query/mutation/invalidation，不能横向导入其他 feature。
-帮助明确默认30分钟、下一轮生效、hold等待不计，以及 不支持 steer 的后端（Claude、ACP）只有轮初预算提醒。
+帮助明确默认30分钟、下一轮生效、hold等待不计，以及 不支持 steer 的后端只有轮初预算提醒。
 控件保留数值原文，并用 numeric inputMode 提供手机数字键盘。这里有意复用 TextInput
 而不用 NumberInput：后者会将越界值在 blur/Enter 自动钳位、解析 locale 数字；这会
 掩盖 ASCII/范围错误与损坏的原始存储。范围由唯一 core codec 验证，未引入新 UI primitive。
@@ -202,7 +202,7 @@ conversation 测试红；让 decoder 不认识 timeout source 恰好 core/route 
 worker 另跑要求的 contract 选择与 Rust quick（非 broad suite）。kernel gate 各运行一次文本、前端lint/build/
 unit及指定browser replay，CI 拥有 broad suite，worker 不跑 broad suite。
 指定 gate 的普通 browser 文件不被 browser-coarse 的 suffix 分区收集，因此另在现有
-模块 inventory 窄登记 settings codec 测试及两个 coarse 文件，实际运行 coarse 用例，不扩大 Vitest include 或永久测试列表。
+模块目录中以 `.coarse.browser.test.tsx` suffix 放置两个 coarse 文件，实际运行 coarse 用例；inventory 的 basis 只是说明，不控制发现或收集。settings codec 测试同样由既有 suffix 规则发现，不扩大 Vitest include 或永久测试列表。
 普通以后增改测试仅改所属测试文件；新增模块才登记 inventory。没有新增 styles token、
 通用样式/allowlist、扫描规则或每 CI 重复检查。既有大型 conversation/router/page 文件
 只扩展窄 codec/映射/通知展示，未引入新的大型手写文件。
@@ -228,8 +228,17 @@ missing input still refuses replacement. The frontend decodes the new variant
 as a system entry; compatibility 52 prevents older bundles dropping its row.
 No migration or backfill confers this property on old rows.
 
+The frontend classifies a background sync by its observations: ignore only the
+initial budget variant, require at least one remaining segment, and require all
+remaining segments to be report edits. The opening budget belongs inside that
+fold, whose author comes from the report edit. A budget alone never folds. A
+confirmed replacement removes that regenerable prefix from the shown turn;
+composer refill and marked message IDs still contain only user speech/images.
+
 Corrupt budget sampling precedes expensive refresh/diff and uses the existing
-visible refusal/backoff path; resetting storage resumes at the existing retry.
+visible refusal/backoff path only for parsed invalid settings; resetting storage
+resumes at the existing retry. DB/card read failures retain their original error
+and existing Retryable pacing, with no advice to reset storage.
 No new recovery or stop policy is introduced. Ordinary new tests need no
 inventory edit; the enum requires updating its FE decoder/label and running
 `npm run gen:api` once, with generated drift checked by CI.

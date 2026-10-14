@@ -7,6 +7,7 @@
 import { REPORT_READ_TOOLS, REPORT_TOOL_PREFIX } from '../keys/mcp-tools.js';
 import {
   SYSTEM_PRESENTATION_LABELS,
+  isPlannerBudgetContext,
   type ConversationSystemEntry, type ConversationTurn, type ConversationTurnOutcome,
   type TranscriptEntry,
 } from './conversation.js';
@@ -21,7 +22,7 @@ export const REPORT_EDIT_AUTHORS: readonly ReportEditAuthor[] = Object.freeze([
 /** `updated`: a report write landed in the turn. `accepted`: no write and the planner said nothing. */
 export type QuietSyncOutcome = 'accepted' | 'updated';
 
-/** One folded background turn; `entries[0]` is always the opening system entry. */
+/** One folded background turn, including its regenerable opening context. */
 export type QuietSyncGroup = Readonly<{
   kind: 'quiet-sync';
   /** The opening system entry's id — stable, so a fold keeps its open state. */
@@ -99,14 +100,16 @@ export function foldQuietSyncs(entries: readonly TranscriptEntry[]): readonly Tr
   while (index < entries.length) {
     const entry = entries[index];
     if (entry === undefined) break;
-    if (!isReportEditedEntry(entry)) {
+    const opening = isPlannerBudgetContext(entry) && entry.quiet === true
+      ? entries[index + 1] : entry;
+    if (opening === undefined || !isReportEditedEntry(opening)) {
       blocks.push({ kind: 'entry', entry });
       index += 1;
       continue;
     }
-    const grouped: TranscriptEntry[] = [entry];
+    const grouped: TranscriptEntry[] = opening === entry ? [entry] : [entry, opening];
     const lifted: TranscriptEntry[] = [];
-    let next = index + 1;
+    let next = index + grouped.length;
     while (next < entries.length) {
       const candidate = entries[next];
       if (candidate === undefined || closesGroup(candidate)) break;
@@ -117,7 +120,7 @@ export function foldQuietSyncs(entries: readonly TranscriptEntry[]): readonly Tr
     blocks.push({
       kind: 'quiet-sync',
       id: entry.id,
-      author: reportEditAuthor(entry.text),
+      author: reportEditAuthor(opening.text),
       atMs: entry.atMs,
       entries: grouped,
       outcome: quietSyncOutcome(grouped, lifted),

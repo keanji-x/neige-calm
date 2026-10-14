@@ -1,5 +1,5 @@
 //! Capability context reaches the actual resumed harness turn, independent of startup snapshots.
-use super::completed_commit_tests::Fixture;
+use super::completed_commit_tests::{Fixture, initial_budget_segment};
 use super::*;
 use crate::model::CardRole;
 
@@ -24,12 +24,12 @@ async fn resumed_planner_and_assistant_receive_live_workspace_report_instruction
         .execute(fx.repo.pool())
         .await
         .unwrap();
-        fx.enqueue(vec![QueueEntry::user_message(
-            "Read other Areas' reports".into(),
-            None,
-            vec![],
-        )])
-        .await;
+        let user = QueueEntry::user_message("Read other Areas' reports".into(), None, vec![]);
+        let mut expected = input_segments_for_entries(&inner.card_id, std::slice::from_ref(&user));
+        if role == CardRole::Planner {
+            expected.insert(0, initial_budget_segment());
+        }
+        fx.enqueue(vec![user]).await;
         fx.issue().await;
         let sent = fx.daemon.started_turns_for_test();
         assert_eq!(sent.len(), 1);
@@ -51,9 +51,9 @@ async fn resumed_planner_and_assistant_receive_live_workspace_report_instruction
                 < text.find("Read other Areas' reports").unwrap()
         );
         assert_eq!(
-            fx.projected_segments().await.len(),
-            1,
-            "capability context is not a user message"
+            fx.projected_segments().await,
+            expected,
+            "workspace capability instructions stay outside input segments; only Planner adds budget context"
         );
     }
 }

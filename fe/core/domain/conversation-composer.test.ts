@@ -107,3 +107,34 @@ it('never takes more images than a message carries, keeping the composer’s own
   expect(withRefill({ text: '', attachments: [image('own.png')] }, { text: '', attachments: images }).attachments)
     .toEqual([image('own.png'), ...images.slice(0, MAX_ATTACHMENTS_PER_MESSAGE - 1)]);
 });
+
+
+it('removes the regenerable opening budget when replacing a user turn without refilling it', () => {
+  const entries = buildTranscript([
+    said(1, 'turn-0', [{ presentation: 'user', text: 'Earlier', attachments: [] }]),
+    ended(2, 'turn-0'),
+    said(3, 'turn-1', [
+      { presentation: 'system_planner_turn_budget', text: 'Frozen context', attachments: [] },
+      { presentation: 'user', text: 'User says:\nPrompt', attachments: [image('a.png')] },
+    ]),
+    row(4, 'turn-1', 'agentMessage', 'item/completed', { item: { text: 'Reply' } }),
+    ended(5, 'turn-1'),
+  ]);
+  const id = entries.at(-1)!.id;
+  expect(editedTurnRefill(entries, id)).toEqual({ text: 'Prompt', attachments: [image('a.png')] });
+  expect([...editedTurnMessageIds(entries, id)]).toEqual(['3:1']);
+  expect(withoutEditedTurn(entries, id)).toEqual(entries.slice(0, 2));
+});
+
+
+it('preserves preceding one-shot System events and never refills budget-only input', () => {
+  const system = { presentation: 'system' as const, text: 'Previous timeout', attachments: [] };
+  const budget = { presentation: 'system_planner_turn_budget' as const, text: 'Frozen context', attachments: [] };
+  const entries = buildTranscript([said(1, 'turn-1', [system, budget,
+    { presentation: 'user', text: 'Prompt', attachments: [] }]), ended(2, 'turn-1')]);
+  expect(withoutEditedTurn(entries, 'outcome-2')).toEqual(entries.slice(0, 1));
+  expect(editedTurnRefill(entries, 'outcome-2')).toEqual({ text: 'Prompt', attachments: [] });
+  const automatic = buildTranscript([said(1, 'turn-1', [budget]), ended(2, 'turn-1')]);
+  expect(editedTurnRefill(automatic, 'outcome-2')).toBeNull();
+  expect(withoutEditedTurn(automatic, 'outcome-2')).toBe(automatic);
+});

@@ -4,17 +4,28 @@ use crate::harness::profile::HarnessProfile;
 use crate::harness::state::HarnessState;
 use crate::model::{HarnessInputPresentation, HarnessInputSegment};
 pub use crate::planner_turn_budget::FrozenBudget;
-use crate::planner_turn_budget::PlannerTurnBudget;
+use crate::planner_turn_budget::{LoadError, PlannerTurnBudget};
 use std::sync::Arc;
 use std::time::Duration;
 
-pub(super) async fn sample(inner: &Inner) -> crate::error::Result<Option<PlannerTurnBudget>> {
-    let Some(card) = inner.repo.card_get(inner.card_id.as_str()).await? else {
-        return Err(crate::error::CalmError::Conflict(
+pub(super) async fn sample(
+    inner: &Inner,
+) -> Result<Option<PlannerTurnBudget>, super::IssuanceRefusal> {
+    let Some(card) = inner
+        .repo
+        .card_get(inner.card_id.as_str())
+        .await
+        .map_err(|error| read_refusal(error.into()))?
+    else {
+        return Err(read_refusal(crate::error::CalmError::Conflict(
             "budget card disappeared".into(),
-        ));
+        )));
     };
-    let role = inner.repo.card_role_get(inner.card_id.as_str()).await?;
+    let role = inner
+        .repo
+        .card_role_get(inner.card_id.as_str())
+        .await
+        .map_err(|error| read_refusal(error.into()))?;
     let is_planner = role
         .and_then(|role| HarnessProfile::from_shape(&card.kind, role, &card.payload))
         == Some(HarnessProfile::Planner);
@@ -30,7 +41,10 @@ pub(super) async fn sample(inner: &Inner) -> crate::error::Result<Option<Planner
         {
             return Ok(Some(*budget));
         }
-        PlannerTurnBudget::load(inner.repo.as_ref()).await.map(Some)
+        PlannerTurnBudget::load(inner.repo.as_ref())
+            .await
+            .map(Some)
+            .map_err(sampling_refusal)
     } else {
         Ok(None)
     }
@@ -171,5 +185,69 @@ pub(super) async fn settle_projection(inner: &Inner) {
     };
     if let Some(key) = key {
         remove_projection(inner, &key).await;
+    }
+}
+
+fn read_refusal(error: crate::error::CalmError) -> super::IssuanceRefusal {
+    super::IssuanceRefusal::retryable(format!("could not sample Planner turn budget: {error}"))
+}
+
+fn sampling_refusal(error: LoadError) -> super::IssuanceRefusal {
+    match error {
+        LoadError::InvalidSetting(error) => super::IssuanceRefusal::rejected(
+            format!("Planner turn budget: {error}"),
+            format!("Cannot start this turn: {error}. Reset the Planner duration in Settings."),
+        ),
+        LoadError::Read(error) => read_refusal(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::prelude::*;
+    use crate::harness::run_loop::completed_commit_tests::Fixture;
+    use crate::planner_model::FailureKind;
+
+    #[tokio::test]
+    async fn planner_turn_budget_storage_failure_is_retryable_without_reset_advice() {
+        let fx = Fixture::new().await;
+        fx.repo.pool().close().await;
+        let error = PlannerTurnBudget::load(fx.repo.as_ref()).await.unwrap_err();
+        let original = error.to_string();
+        let failure = sampling_refusal(error);
+        assert_eq!(failure.kind, FailureKind::Retryable);
+        assert!(failure.reader.is_empty());
+        assert!(failure.log.contains(&original), "{}", failure.log);
+    }
+
+    #[tokio::test]
+    async fn planner_turn_budget_missing_card_is_retryable_without_reset_advice() {
+        let fx = Fixture::new().await;
+        sqlx::query("DELETE FROM cards WHERE id=?1")
+            .bind(fx.harness.inner.card_id.as_str())
+            .execute(fx.repo.pool())
+            .await
+            .unwrap();
+        let failure = sample(&fx.harness.inner).await.unwrap_err();
+        assert_eq!(failure.kind, FailureKind::Retryable);
+        assert!(failure.reader.is_empty());
+    }
+
+    #[tokio::test]
+    async fn planner_turn_budget_invalid_setting_is_rejected_with_reset_advice() {
+        let fx = Fixture::new().await;
+        fx.repo
+            .settings_upsert(crate::planner_turn_budget::KEY, "broken")
+            .await
+            .unwrap();
+        let failure =
+            sampling_refusal(PlannerTurnBudget::load(fx.repo.as_ref()).await.unwrap_err());
+        assert_eq!(failure.kind, FailureKind::Rejected);
+        assert!(
+            failure
+                .reader
+                .contains("Reset the Planner duration in Settings")
+        );
     }
 }

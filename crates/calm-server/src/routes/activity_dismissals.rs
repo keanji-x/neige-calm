@@ -26,7 +26,7 @@ pub fn router() -> Router<AppState> {
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DismissActivityItemRequest {
-    /// The item's `key` as the activity overlay lists it: `ask:<ask_id>` or `planner_down:<id>`.
+    /// The item's `key` as the activity overlay lists it: `ask:<ask_id>`, `planner_down:<id>` or `planner_turn_timeout:<row_id>`.
     /// Whether the item is still open is not checked.
     pub key: String,
 }
@@ -61,7 +61,7 @@ pub(crate) async fn dismiss_activity_item(
     if !is_item_key(&body.key) {
         return Err(CalmError::BadRequest(format!(
             "activity dismissal: `{}` is not an item key \
-             (ask:<ask_id> or planner_down:<id>)",
+             (ask:<ask_id>, planner_down:<id> or planner_turn_timeout:<row_id>)",
             body.key
         )));
     }

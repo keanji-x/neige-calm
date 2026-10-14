@@ -13705,7 +13705,7 @@
         "properties": {
           "key": {
             "type": "string",
-            "description": "The item's `key` as the activity overlay lists it: `ask:<ask_id>` or `planner_down:<id>`.\nWhether the item is still open is not checked."
+            "description": "The item's `key` as the activity overlay lists it: `ask:<ask_id>`, `planner_down:<id>` or `planner_turn_timeout:<row_id>`.\nWhether the item is still open is not checked."
           }
         },
         "additionalProperties": false

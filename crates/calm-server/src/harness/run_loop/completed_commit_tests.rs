@@ -14,6 +14,16 @@ use crate::session_projection_repo::{
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use serde_json::json;
 
+/// Independent exact oracle for the default, kernel-generated prefix; never a queued entry.
+pub(super) fn initial_budget_segment() -> HarnessInputSegment {
+    HarnessInputSegment {
+        presentation: HarnessInputPresentation::SystemPlannerTurnBudget,
+        text: "[Trusted Planner turn budget]\nThis turn's execution budget is 30 minutes, excluding held requests. Begin wrapping up with 300 seconds remaining; finish or hand off work before the hard stop. This budget is frozen for this turn.".into(),
+        attachments: vec![],
+        origin: None,
+    }
+}
+
 pub(super) struct Fixture {
     pub(super) repo: Arc<SqlxRepo>,
     pub(super) harness: PlannerHarness,
@@ -345,13 +355,15 @@ async fn completed_commit_filter_keeps_failure_and_user_entries_in_order() {
     fx.issue().await;
     let stored = fx.stored().await;
     let actual = &fx.projected_segments().await;
-    assert_eq!(actual.len(), 2);
-    assert_eq!(actual[0].presentation, expected[0].presentation);
-    assert_eq!(actual[0].attachments, expected[0].attachments);
+    assert_eq!(actual.len(), 3);
+    assert_eq!(actual[0], initial_budget_segment());
+    assert_eq!(actual[1].presentation, expected[0].presentation);
+    assert_eq!(actual[1].attachments, expected[0].attachments);
+    assert_eq!(actual[1].origin, expected[0].origin);
     // The failure can acquire verified detail metadata at delivery. Its base
     // receipt and its position before the unmodified user segment must survive.
-    assert!(actual[0].text.starts_with(&expected[0].text));
-    assert_eq!(actual[1], expected[1]);
+    assert!(actual[1].text.starts_with(&expected[0].text));
+    assert_eq!(actual[2], expected[1]);
     assert!(stored.pending_entries().is_empty());
     assert_eq!(stored.push_watermark, event_id);
     assert_eq!(fx.daemon.turn_start_count_for_test(), 1);
@@ -361,8 +373,9 @@ async fn completed_commit_filter_keeps_failure_and_user_entries_in_order() {
 async fn commit_notifications_still_issue_for_an_open_track() {
     let fx = Fixture::new().await;
     let (_, commit) = fx.commit().await;
-    let expected =
+    let mut expected =
         input_segments_for_entries(&fx.harness.inner.card_id, std::slice::from_ref(&commit));
+    expected.insert(0, initial_budget_segment());
     fx.enqueue(vec![commit]).await;
     fx.issue().await;
     assert_eq!(fx.daemon.turn_start_count_for_test(), 1);
@@ -458,10 +471,9 @@ async fn consuming_a_commit_does_not_bypass_remaining_soft_observation_debounce(
     }
     fx.issue().await;
     assert_eq!(fx.daemon.turn_start_count_for_test(), 1);
-    assert_eq!(
-        fx.projected_segments().await,
-        input_segments_for_entries(&fx.harness.inner.card_id, &[leased])
-    );
+    let mut expected = input_segments_for_entries(&fx.harness.inner.card_id, &[leased]);
+    expected.insert(0, initial_budget_segment());
+    assert_eq!(fx.projected_segments().await, expected);
     let sent = fx.daemon.started_turns_for_test();
     let InputItem::Text { text } = &sent[0].1[0] else {
         panic!("expected text input")

@@ -139,8 +139,8 @@ export type ConversationSystemEntry = Readonly<{
   text: string;
   atMs: number;
   /**
-   * Set when this report-edit observation was the WHOLE of its batch (the kernel's definition of a
-   * background sync). Never `false`.
+   * Set on every segment of a report-only batch, including its regenerable budget context.
+   * A budget alone is not a background sync. Never `false`.
    */
   quiet?: true;
 }>;
@@ -953,9 +953,10 @@ export function harnessItemToTurns(item: HarnessItem): readonly ConversationMess
     }
     const atMs = typeof completedAtMs === 'number' && Number.isFinite(completedAtMs)
       ? completedAtMs : item.created_at_ms;
-    /* A background sync only when the batch is nothing but report edits — a fact about the batch,
-       not any one segment. */
-    const quiet = segments.every((segment) => segment.presentation === 'system_report_edited');
+    /* Regenerable context is not a wakeup. At least one real report edit must remain. */
+    const observations = segments.filter((segment) => segment.presentation !== 'system_planner_turn_budget');
+    const quiet = observations.length > 0
+      && observations.every((segment) => segment.presentation === 'system_report_edited');
     return segments.flatMap<ConversationMessage>((segment, index) => {
       const text = inputSegmentText(segment);
       const attachments = segment.attachments;
@@ -1000,6 +1001,11 @@ export function harnessItemToTurns(item: HarnessItem): readonly ConversationMess
     atMs: typeof envelope.completedAtMs === 'number' && Number.isFinite(envelope.completedAtMs)
       ? envelope.completedAtMs : item.created_at_ms,
   }];
+}
+
+/** The decoder's exact structured presentation label, never inferred from input text. */
+export function isPlannerBudgetContext(entry: TranscriptEntry): entry is ConversationSystemEntry {
+  return entry.author === 'system' && entry.label === SYSTEM_PRESENTATION_LABELS.system_planner_turn_budget;
 }
 
 /* What the agent did between two things it said: one line each, a verb and its target.

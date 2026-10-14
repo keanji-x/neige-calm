@@ -348,7 +348,8 @@ owns ASCII integer validation (1–240), the absent 30-minute default, canonical
 writes and explicit null reset. Corrupt storage remains visible and repairable.
 
 The help states that changes apply next turn, hold waits do not count, and backends without
-steer support (Claude and ACP) receive only the initial budget reminder. TextInput intentionally keeps raw
+steer support receive only the initial budget reminder. An unconfirmed start-attempt
+retry keeps its frozen budget; a new turn samples the current setting. TextInput intentionally keeps raw
 numeric text with a numeric mobile keyboard: NumberInput's locale parsing and
 blur/Enter clamping would hide invalid storage or a rejected value such as 241.
 

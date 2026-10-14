@@ -28,6 +28,15 @@ impl From<PlannerTurnBudget> for u16 {
         value.0
     }
 }
+/// Only malformed stored values invite a reset; repository failures keep their original cause.
+#[derive(Debug, thiserror::Error)]
+pub enum LoadError {
+    #[error("{0}")]
+    InvalidSetting(String),
+    #[error(transparent)]
+    Read(#[from] crate::error::CalmError),
+}
+
 impl PlannerTurnBudget {
     pub fn parse(value: &str) -> Result<Self, String> {
         if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
@@ -56,11 +65,14 @@ impl PlannerTurnBudget {
             self.warning_remaining().as_secs()
         )
     }
-    pub async fn load(repo: &dyn crate::db::RepoRead) -> crate::error::Result<Self> {
-        let rows = repo.settings_get_all().await?;
+    pub async fn load(repo: &dyn crate::db::RepoRead) -> Result<Self, LoadError> {
+        let rows = repo
+            .settings_get_all()
+            .await
+            .map_err(crate::error::CalmError::from)?;
         match rows.into_iter().find(|(key, _)| key == KEY) {
             None => Ok(Self::default()),
-            Some((_, value)) => Self::parse(&value).map_err(crate::error::CalmError::Internal),
+            Some((_, value)) => Self::parse(&value).map_err(LoadError::InvalidSetting),
         }
     }
 }

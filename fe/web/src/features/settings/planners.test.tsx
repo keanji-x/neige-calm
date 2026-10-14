@@ -113,7 +113,7 @@ it('associates help and errors with corrupt stored and invalid drafts, then clea
     }).join(' ');
   };
   expect(field.getAttribute('aria-invalid')).toBe('true');
-  for (const phrase of ['Default: 30', '1–240', 'next turn', 'hold waiting', 'Backends without steer support (Claude and ACP)', 'Stored duration is invalid']) expect(description()).toContain(phrase);
+  for (const phrase of ['Default: 30', '1–240', 'next turn', 'retrying an unconfirmed start keeps its frozen budget', 'Hold waiting', 'Backends without steer support', 'Stored duration is invalid']) expect(description()).toContain(phrase);
   fireEvent.change(field, { target: { value: '241' } });
   fireEvent.keyDown(field, { key: 'Enter' });
   expect(field.getAttribute('aria-invalid')).toBe('true');

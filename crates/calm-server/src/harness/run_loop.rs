@@ -3213,11 +3213,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // the same visible, paced refusal as other issuance prerequisites.
     let sampled_budget = match budget::sample(inner).await {
         Ok(budget) => budget,
-        Err(error) => {
-            let failure = IssuanceRefusal::rejected(
-                format!("Planner turn budget: {error}"),
-                format!("Cannot start this turn: {error}. Reset the Planner duration in Settings."),
-            );
+        Err(failure) => {
             apply_refusal(inner, &failure).await;
             return Ok(());
         }
