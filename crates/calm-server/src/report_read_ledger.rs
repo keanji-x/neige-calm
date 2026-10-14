@@ -126,27 +126,7 @@ impl ReadLedger {
         for block in blocks.iter().filter(|block| seen(block)) {
             entry.read.blocks.insert(block.id.clone(), block.rev);
         }
-        let all = sections(blocks);
-        for section in &all {
-            // A section's anchor is its members: a task block in its span is no part of it (#2598).
-            let members = section.member_blocks(blocks);
-            // A duplicated title is refused at write time; recording either copy would be a guess.
-            if all
-                .iter()
-                .filter(|other| other.title == section.title)
-                .count()
-                == 1
-                && members.iter().all(|block| seen(block))
-            {
-                entry.read.sections.insert(
-                    section.title.to_string(),
-                    members
-                        .iter()
-                        .map(|block| (block.id.clone(), block.rev))
-                        .collect(),
-                );
-            }
-        }
+        entry.read.sections.extend(certified_sections(blocks, seen));
     }
 
     /// Capture knowledge and its publication generation; no lock survives an await.
@@ -168,6 +148,7 @@ impl ReadLedger {
             && now - entry.recorded_at <= TTL_MS
         {
             entry.read = read;
+            entry.recorded_at = now;
             entry.generation = self.generation.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -183,10 +164,40 @@ impl ReadLedger {
     }
 }
 
+/// The shared section rule: a unique title and evidence for every final member.
+/// Callers supply both content and (for commits) structural-placement evidence.
+fn certified_sections(
+    blocks: &[ReportBlock],
+    witnessed: impl Fn(&ReportBlock) -> bool,
+) -> HashMap<String, Vec<(String, u32)>> {
+    let all = sections(blocks);
+    all.iter()
+        .filter(|section| {
+            all.iter()
+                .filter(|other| other.title == section.title)
+                .count()
+                == 1
+                && section
+                    .member_blocks(blocks)
+                    .iter()
+                    .all(|block| witnessed(block))
+        })
+        .map(|section| {
+            (
+                section.title.to_string(),
+                section
+                    .member_blocks(blocks)
+                    .iter()
+                    .map(|block| (block.id.clone(), block.rev))
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
 /// Project only witnessed unchanged content and content authored by this commit. Section evidence
 /// must cover every D0 structural source contributing to a final section, even when all individual
 /// blocks were known: knowing content alone does not certify the section's membership.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn project_commit(
     old: &LastRead,
     before_rev: u64,
@@ -194,7 +205,7 @@ pub(crate) fn project_commit(
     after_rev: u64,
     after: &[ReportBlock],
     written: &[String],
-    whole_sections: &[String],
+    section_output_ids: &[String],
 ) -> LastRead {
     let anchored = old.doc_rev == before_rev;
     let mut read = LastRead {
@@ -214,66 +225,27 @@ pub(crate) fn project_commit(
         }
     }
     let sources = sections(before);
-    let final_sections = sections(after);
-    let certificate = |source: &crate::report_sections::Section<'_>| {
-        let members: Vec<_> = source
-            .member_blocks(before)
-            .iter()
-            .map(|block| (block.id.clone(), block.rev))
-            .collect();
-        sources.iter().filter(|s| s.title == source.title).count() == 1
-            && (old.sections.get(source.title) == Some(&members)
-                || whole_sections.iter().any(|title| title == source.title))
-    };
-    for section in &final_sections {
-        let members = section.member_blocks(after);
-        let relevant: Vec<_> = sources
-            .iter()
-            .filter(|source| {
-                source.title == section.title
-                    || source
-                        .member_blocks(before)
-                        .iter()
-                        .any(|prior| members.iter().any(|block| block.id == prior.id))
-            })
-            .collect();
-        // A region outside every H1 has no section certificate. Only a valid whole-document
-        // witness or caller-authored content can certify that source when it joins a section.
-        let outside_sources_known = members.iter().all(|block| {
-            !before.iter().any(|prior| prior.id == block.id)
-                || sources.iter().any(|source| {
-                    source
-                        .member_blocks(before)
-                        .iter()
-                        .any(|prior| prior.id == block.id)
-                })
-                || written.contains(&block.id)
-                || (old.whole && anchored)
-        });
-        let has_source = !relevant.is_empty()
-            || whole_sections.iter().any(|t| t == section.title)
-            || members.iter().all(|block| written.contains(&block.id));
-        if has_source
-            && outside_sources_known
-            && relevant.iter().all(|source| certificate(source))
-            && final_sections
-                .iter()
-                .filter(|s| s.title == section.title)
-                .count()
-                == 1
-            && members
-                .iter()
-                .all(|block| read.blocks.get(&block.id) == Some(&block.rev))
-        {
-            read.sections.insert(
-                section.title.into(),
-                members
+    let valid_sources = certified_sections(before, |_| true);
+    read.sections = certified_sections(after, |block| {
+        let known = read.blocks.get(&block.id) == Some(&block.rev);
+        let placement = section_output_ids.contains(&block.id)
+            || if let Some(source) = sources.iter().find(|source| {
+                source
+                    .member_blocks(before)
                     .iter()
-                    .map(|block| (block.id.clone(), block.rev))
-                    .collect(),
-            );
-        }
-    }
+                    .any(|prior| prior.id == block.id)
+            }) {
+                valid_sources
+                    .get(source.title)
+                    .is_some_and(|members| old.sections.get(source.title) == Some(members))
+            } else if before.iter().any(|prior| prior.id == block.id) {
+                // Outside every H1: content knowledge alone does not witness placement.
+                old.whole && anchored
+            } else {
+                written.contains(&block.id)
+            };
+        known && placement
+    });
     read
 }
 
@@ -369,6 +341,27 @@ mod tests {
             !whole(&ledger),
             "a partial read at another docRev clears it"
         );
+    }
+
+    #[test]
+    fn own_commit_refreshes_knowledge_ttl() {
+        let clock = Arc::new(AtomicI64::new(0));
+        let now = clock.clone();
+        let ledger = ReadLedger::with_clock(Arc::new(move || now.load(Ordering::SeqCst)));
+        let blocks = reassign_ids(&[], &split_body("# A\na\n"));
+        ledger.record("s", "planner", "report", 1, &blocks, &ids(&blocks, &[0]));
+        clock.store(TTL_MS - 1, Ordering::SeqCst);
+        let (generation, old) = ledger.capture("s", "report").unwrap();
+        ledger.publish(
+            "s",
+            "report",
+            generation,
+            project_commit(&old, 1, &blocks, 2, &blocks, &[], &[]),
+        );
+        clock.store(TTL_MS + 1, Ordering::SeqCst);
+        assert_eq!(ledger.last_read("s", "report").unwrap().doc_rev, 2);
+        clock.store(2 * TTL_MS, Ordering::SeqCst);
+        assert!(ledger.last_read("s", "report").is_none());
     }
 
     #[test]

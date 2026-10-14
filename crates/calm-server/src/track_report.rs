@@ -462,7 +462,8 @@ pub struct ReportOpTrace {
     pub written_prose_block_ids: Vec<String>,
     /// Content explicitly authored by this caller, independent of intermediate revisions.
     pub written_block_ids: Vec<String>,
-    pub whole_sections: Vec<String>,
+    /// Blocks produced by whole-section or whole-document output, never source titles.
+    pub section_output_ids: Vec<String>,
     pub knowledge: Option<crate::report_read_ledger::LastRead>,
 }
 
@@ -628,7 +629,7 @@ pub(crate) fn apply_report_op_traced(
     })?;
     let mut written = Written::None;
     let mut written_block_ids = Vec::new();
-    let mut whole_sections = Vec::new();
+    let mut section_output_ids = Vec::new();
 
     let outcome: Result<Option<BlockOpOutcome>, CalmError> = match &op {
         ReportDocOp::Replace {
@@ -829,8 +830,8 @@ pub(crate) fn apply_report_op_traced(
                                 .filter(|block| block.kind == KIND_PROSE)
                                 .map(|block| block.id.clone()),
                         );
+                        section_output_ids.extend(replaced.iter().map(|block| block.id.clone()));
                         written_block_ids.extend(replaced.into_iter().map(|block| block.id));
-                        whole_sections.push(section.clone());
                     }
                     BatchBlockOp::DeleteSection { section, read } => {
                         sections::apply_delete_section(doc, section, read).map_err(step)?;
@@ -859,23 +860,9 @@ pub(crate) fn apply_report_op_traced(
             .map(|block| block.id.clone())
             .collect(),
     };
-    match &op {
-        ReportDocOp::WriteMarkdown { .. }
-        | ReportDocOp::Replace { .. }
-        | ReportDocOp::ResetToInitial { .. } => {
-            written_block_ids.extend(after.iter().map(|block| block.id.clone()));
-            whole_sections.extend(
-                crate::report_sections::sections(&after)
-                    .iter()
-                    .map(|s| s.title.to_string()),
-            );
-        }
-        ReportDocOp::UpsertBlock { .. } => {
-            if let Some(block) = &outcome {
-                written_block_ids.push(block.id.clone());
-            }
-        }
-        _ => {}
+    if matches!(&op, ReportDocOp::WriteMarkdown { .. }) {
+        written_block_ids.extend(after.iter().map(|block| block.id.clone()));
+        section_output_ids.extend(after.iter().map(|block| block.id.clone()));
     }
     // A delete that names the block by id is the ONLY way a live task declaration may leave the
     // document. `op` is the normalized op, so a user delete rewritten into a tombstone grants no exemption.
@@ -900,7 +887,7 @@ pub(crate) fn apply_report_op_traced(
         block: outcome,
         written_prose_block_ids,
         written_block_ids,
-        whole_sections,
+        section_output_ids,
         knowledge: None,
     })
 }

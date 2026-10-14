@@ -386,7 +386,7 @@ async fn persist(
                     doc_rev,
                     blocks,
                     &trace.written_block_ids,
-                    &trace.whole_sections,
+                    &trace.section_output_ids,
                 )
             });
             let (declarations, block_diagnostics) =

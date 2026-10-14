@@ -344,3 +344,134 @@ async fn newly_authored_section_has_its_final_anchor() {
     .await
     .unwrap();
 }
+
+/// Whole-section output must not certify untouched members of its D0 source by title.
+async fn section_output_does_not_certify_foreign_members(variant: &str) {
+    use crate::mcp_track_report::assistant_identity;
+    let b = boot().await;
+    seed(
+        &b,
+        "# 概要\n\na\n\n# 已完成\n\nb\n\n## x\n\nx\n\n## y\n\ny\n",
+    )
+    .await;
+    read_sections(&b, planner_identity(&b), &["概要", "已完成"]).await;
+    let members = section_blocks(&b, "# 已完成").await;
+    let x = &members[1].0;
+    let y = &members[2].0;
+    // Both moves preserve content and revisions but invalidate both D0 section certificates.
+    commit(
+        &b,
+        assistant_identity(&b),
+        json!({"ops":[
+            {"op":"move","id":x,"to_index":2},
+            {"op":"move","id":y,"to_index":3}
+        ]}),
+    )
+    .await
+    .unwrap();
+    if variant == "merge_after_replace" {
+        // Certify the unaffected merge donor, so only A's untouched members lack provenance.
+        read_sections(&b, planner_identity(&b), &["已完成"]).await;
+    }
+    let mut ops = vec![
+        json!({"op":"upsert","id":x,"kind":"prose","markdown":"# 待你定\n\nx\n"}),
+        json!({"op":"replace","section":"概要","markdown":"# 概要\n\nown\n"}),
+    ];
+    let target = match variant {
+        "repeated_replace" => {
+            ops.push(json!({"op":"replace","section":"概要","markdown":"# 概要\n\nown again\n"}));
+            "待你定"
+        }
+        "merge_after_replace" => {
+            ops.push(
+                json!({"op":"upsert","id":members[0].0,"kind":"prose","markdown":"## b\n\nb\n"}),
+            );
+            "待你定"
+        }
+        _ => "待你定",
+    };
+    let committed = commit(&b, planner_identity(&b), json!({"ops":ops})).await;
+    if variant == "repeated_replace" {
+        assert!(
+            committed
+                .unwrap_err()
+                .message
+                .contains("each section may appear at most once")
+        );
+        return;
+    }
+    committed.unwrap();
+    let read = b
+        .ctx
+        .read_ledger
+        .last_read(&planner_identity(&b).session_id, b.report_card_id.as_str())
+        .unwrap();
+    assert!(
+        read.blocks.contains_key(x) && read.blocks.contains_key(y),
+        "{variant}: content known"
+    );
+    assert!(
+        !read.sections.contains_key(target),
+        "{variant}: untouched y has no structural witness"
+    );
+    for op in [
+        json!({"op":"delete","section":target}),
+        json!({"op":"replace","section":target,"markdown":format!("# {target}\n\nstolen\n")}),
+    ] {
+        assert!(
+            commit(&b, planner_identity(&b), json!({"ops":[op]}))
+                .await
+                .is_err(),
+            "{variant}: requires a read"
+        );
+    }
+    read_sections(&b, planner_identity(&b), &[target]).await;
+    commit(
+        &b,
+        planner_identity(&b),
+        json!({"ops":[{"op":"delete","section":target}]}),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn section_output_does_not_certify_split_foreign_members() {
+    section_output_does_not_certify_foreign_members("split").await;
+}
+
+#[tokio::test]
+async fn repeated_section_ops_are_rejected_before_provenance_projection() {
+    section_output_does_not_certify_foreign_members("repeated_replace").await;
+}
+
+#[tokio::test]
+async fn section_output_does_not_certify_merged_foreign_members() {
+    section_output_does_not_certify_foreign_members("merge_after_replace").await;
+}
+
+#[tokio::test]
+async fn section_output_keeps_provenance_after_heading_edit() {
+    let b = boot().await;
+    seed(&b, SECTIONS).await;
+    read_sections(&b, planner_identity(&b), &["概要"]).await;
+    let id = section_blocks(&b, "# 概要").await[0].0.clone();
+    let marked = format!("<!-- neige:{id} -->\n# 概要\n\nalpha\n\n");
+    commit(
+        &b,
+        planner_identity(&b),
+        json!({"ops":[
+            {"op":"replace","section":"概要","markdown":marked},
+            {"op":"upsert","id":id,"kind":"prose","markdown":"# 待你定\n\nrenamed\n"}
+        ]}),
+    )
+    .await
+    .unwrap();
+    commit(
+        &b,
+        planner_identity(&b),
+        json!({"ops":[{"op":"delete","section":"待你定"}]}),
+    )
+    .await
+    .unwrap();
+}
