@@ -24,6 +24,8 @@ export function createReadReceiptsKernel({ baselineMs = Number.MAX_SAFE_INTEGER,
   let readGate: Promise<void> | null = null;
   let holdingWrites = false;
   const writeGates: Array<() => void> = [];
+  // A fake kernel answers at most 100 writes: a runaway writer fails its test by count, never by exhausting memory.
+  let writeCap = 100;
   let holdingAnswers = false;
   const answerGates: Array<() => void> = [];
   const reply = async (request: ApiRequest): Promise<ApiTransportResponse | undefined> => {
@@ -35,6 +37,8 @@ export function createReadReceiptsKernel({ baselineMs = Number.MAX_SAFE_INTEGER,
       if (readGate !== null) await readGate;
       return ok(snapshot);
     }
+    // Past the cap a write never answers: a runaway writer stops at a countable number of requests.
+    if (requests.filter((sent) => sent.method === 'POST').length > writeCap) await new Promise<never>(() => undefined);
     if (holdingWrites) await new Promise<void>((resolve) => { writeGates.push(resolve); });
     if (writeDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, writeDelayMs));
     if (fail) return { status: 500, statusText: 'Error', body: { error: 'unavailable', code: 'internal' } };
@@ -59,6 +63,8 @@ export function createReadReceiptsKernel({ baselineMs = Number.MAX_SAFE_INTEGER,
       holdingAnswers = true;
       return { held: () => answerGates.length, release: () => { answerGates.shift()?.(); } };
     },
+    /** Answers at most `count` writes; any later write stays unanswered. */
+    capWrites(count: number) { writeCap = count; },
     /** Another device's write: stored as given, outside this reader's transport. */
     store(receipt: ReadReceipt) { stored.set(`${receipt.kind}:${receipt.targetId}`, receipt); },
     /** From now on every write answers 500 (`true`) or is stored (`false`). */

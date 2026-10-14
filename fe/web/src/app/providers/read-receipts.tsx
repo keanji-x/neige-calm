@@ -1,4 +1,4 @@
-import { hashKey, onlineManager, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { focusManager, onlineManager, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { createContext, useContext, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import type { ApiOperation, ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
@@ -11,8 +11,8 @@ import { useConnectionStatus } from './connection-status.tsx';
 import { queryKeys, runOperation } from './queries.ts';
 import { useRecoveryMutation } from './recovery-mutation.ts';
 
-/** The provider's writes: how many are in flight, each target's last write, and whether the next read is its own. */
-type WriteLedger = { pending: number; tails: Map<string, Promise<void>>; reconciling: boolean };
+/** The provider's writes: how many are in flight, and each target's last write. */
+type WriteLedger = { pending: number; tails: Map<string, Promise<void>> };
 type Target = Readonly<{ kind: ReadReceiptKind; id: string }>;
 type Owed = Target & Readonly<{ at: number }>;
 type WriteIntent = Target & Readonly<{ operation: ApiOperation<ReadReceipt>; optimistic: (state: ReadState) => ReadState }>;
@@ -49,8 +49,7 @@ async function write(
     ledger.pending -= 1;
     // A read started while this write was in flight may predate its commit. The last write to settle reads again.
     await cancelReads();
-    // Its own read-back is no flush trigger (a failing write would loop on it), for exactly that fetch: success or not.
-    if (ledger.pending === 0) { ledger.reconciling = true; void client.invalidateQueries({ queryKey }).finally(() => { ledger.reconciling = false; }); }
+    if (ledger.pending === 0) void client.invalidateQueries({ queryKey });
   }
 }
 
@@ -58,16 +57,17 @@ async function write(
  * The kernel's read receipts (#2596), owned by the root route. Every receipt write goes through the app's write
  * admission (`useRecoveryMutation`), in the order made per target; no read that started before a write settled is the
  * final cached state. `markRead` owes an acknowledgement (the larger instant per target) and `flush` sends what is
- * owed, forgetting it once stored. A refused or failed send stays owed until a trigger: a new record, `onlineManager`
- * going online, the published connection turning connected, or a receipts read this provider did not cause. Triggers
- * flush only what is owed, so none can clear a manual unread, and admission is never predicted here. An owed
- * acknowledgement outlives navigation, unmount and a hidden tab: it was seen.
+ * owed, forgetting it once stored. A refused or failed send stays owed until a trigger. Triggers are external signals
+ * only, each published by its owner: a new record, `onlineManager` going online, `focusManager` reporting focus, and
+ * the published connection turning connected. A receipt write must never cause a trigger, so no send can feed back
+ * into another. Triggers flush only what is owed, so none can clear a manual unread, and admission is never predicted
+ * here. An owed acknowledgement outlives navigation, unmount and a hidden tab: it was seen.
  */
 export function ReadReceiptsProvider({ transport, unauthorized, children }: Readonly<{
   transport: ApiTransportPort; unauthorized: UnauthorizedChannel; children: ReactNode;
 }>) {
   const client = useQueryClient();
-  const [{ ledger, owed, sending, missed }] = useState(() => ({ ledger: { pending: 0, tails: new Map<string, Promise<void>>(), reconciling: false } satisfies WriteLedger,
+  const [{ ledger, owed, sending, missed }] = useState(() => ({ ledger: { pending: 0, tails: new Map<string, Promise<void>>() } satisfies WriteLedger,
     owed: new Map<string, Owed>(), sending: new Map<string, Owed>(), missed: new Set<string>() }));
   const mutation = useRecoveryMutation(transport, { mutationFn: (intent: WriteIntent, admitted: ApiTransportPort) =>
     write(client, ledger, admitted, unauthorized, intent) });
@@ -106,15 +106,9 @@ export function ReadReceiptsProvider({ transport, unauthorized, children }: Read
     },
   }), [transport, unauthorized, owed, flush]);
   useEffect(() => onlineManager.subscribe((online) => { if (online) flush(); }), [flush]);
+  useEffect(() => focusManager.subscribe((focused) => { if (focused) flush(); }), [flush]);
   const connected = useConnectionStatus()?.connected === true;
   useEffect(() => { if (connected) flush(); }, [connected, flush]);
-  useEffect(() => client.getQueryCache().subscribe((event) => {
-    // A receipts fetch that succeeded. `setQueryData` (this provider's own optimistic and answered writes) dispatches a
-    // `manual` success, which is no read: counting it, every send would see itself in flight and replay after failing.
-    if (event.type !== 'updated' || event.action.type !== 'success' || event.action.manual === true
-      || event.query.queryHash !== hashKey(queryKeys.readReceipts()) || ledger.reconciling) return;
-    flush();
-  }), [client, ledger, flush]);
   return <ReadReceiptsContext.Provider value={channel}>{children}</ReadReceiptsContext.Provider>;
 }
 

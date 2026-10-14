@@ -11,9 +11,9 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); onlineManager.setOnline(true)
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
 
 function mount(kernel: ReadReceiptsKernel, children: ReactNode) {
-  const { wrap } = readReceiptsFixture(kernel);
+  const { wrap, client } = readReceiptsFixture(kernel);
   const view = render(wrap(children));
-  return { rerender: (node: ReactNode) => view.rerender(wrap(node)) };
+  return { client, rerender: (node: ReactNode) => view.rerender(wrap(node)) };
 }
 
 function Verdict({ id, at }: { id: string; at: number | null }) {
@@ -221,13 +221,13 @@ it('acknowledges a target opened offline once the browser is back online', async
   await screen.findByText('t: read');
 });
 
-it('keeps a failed acknowledgement owed until the next receipts read', async () => {
+it('keeps a failed acknowledgement owed until the next focus', async () => {
   const fake = createReadReceiptsKernel({ baselineMs: 100, fail: true });
   function Open() { useReadReceipt('track', 't', 150); return <Verdict id="t" at={150} />; }
   mount(fake, <Open />);
   await waitFor(() => expect(fake.posts()).toHaveLength(1));
   await screen.findByText('t: unread');
-  // The read-back after the failed write is no new chance: nothing loops.
+  // The read-back after the failed write is no trigger: nothing loops.
   await new Promise((resolve) => setTimeout(resolve, 100));
   expect(fake.posts()).toHaveLength(1);
   fake.failWrites(false);
@@ -263,7 +263,7 @@ it('keeps an acknowledgement recorded after a manual unread, behind an earlier o
   await screen.findByText('t: read');
 });
 
-it('does not let a failed read-back swallow the next receipts read', async () => {
+it('retries a failed acknowledgement on the next focus, even after its read-back failed', async () => {
   const fake = createReadReceiptsKernel({ baselineMs: 100 });
   const view = mount(fake, <Verdict id="t" at={150} />);
   await screen.findByText('t: unread');
@@ -356,4 +356,50 @@ it('replays a missed trigger for its own target only, so two failing targets do 
   expect(settled).toBeLessThanOrEqual(3);
   await new Promise((resolve) => setTimeout(resolve, 200));
   expect(fake.posts()).toHaveLength(settled);
+});
+
+/* #2596 fix round 6: triggers are external signals only; a receipt write never causes one. */
+it('sends failing acknowledgements once per trigger, however long the reader waits', async () => {
+  const fake = createReadReceiptsKernel({ baselineMs: 100, fail: true });
+  fake.capWrites(40);
+  function Open() {
+    useReadReceipt('track', 'a', 150);
+    useReadReceipt('track', 'b', 150);
+    useReadReceipt('conversation', 'c', 150);
+    return <Verdict id="a" at={150} />;
+  }
+  mount(fake, <Open />);
+  // Three records, each a trigger: a and b were in flight when the later records flushed, so each is sent once more.
+  await waitFor(() => expect(fake.posts().length).toBeGreaterThanOrEqual(5));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  expect(fake.posts()).toHaveLength(5);
+  // One focus: one more attempt per owed target, then quiet again.
+  act(() => { window.dispatchEvent(new Event('visibilitychange')); });
+  await waitFor(() => expect(fake.posts().length).toBeGreaterThanOrEqual(8));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  expect(fake.posts()).toHaveLength(8);
+});
+
+it('retries an acknowledgement whose read-back an outside refresh replaced, on the next focus', async () => {
+  const fake = createReadReceiptsKernel({ baselineMs: 100 });
+  const view = mount(fake, <Verdict id="t" at={150} />);
+  await screen.findByText('t: unread');
+  fake.failWrites(true);
+  const release = fake.holdReads();
+  function Open() { useReadReceipt('track', 't', 150); return <Verdict id="t" at={150} />; }
+  view.rerender(<Open />);
+  await waitFor(() => expect(fake.posts()).toHaveLength(1));
+  const reads = () => fake.requests.filter((request) => request.method === 'GET').length;
+  // The provider's read-back is out and held; a global refresh replaces it, then every read answers.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const readBack = reads();
+  await act(async () => { void view.client.invalidateQueries(); await Promise.resolve(); });
+  await waitFor(() => expect(reads()).toBeGreaterThan(readBack));
+  act(() => release());
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(fake.posts()).toHaveLength(1);
+  fake.failWrites(false);
+  act(() => { window.dispatchEvent(new Event('visibilitychange')); });
+  await waitFor(() => expect(fake.posts()).toHaveLength(2));
+  await screen.findByText('t: read');
 });
