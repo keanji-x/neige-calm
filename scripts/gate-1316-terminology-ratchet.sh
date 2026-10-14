@@ -3,6 +3,9 @@
 # committed baseline tsv. Both directions fail: a rise is new retiring vocabulary,
 # a fall means tighten the ratchet (`--update-baseline`, commit the tsv).
 # A baseline is only valid for the tree it was generated on — regenerate after every merge of upstream.
+# #2618 review-fix exception: harness_item/crates 282 -> 290 covers eight test-only SQL
+# references to the frozen transcript table: rollback timestamps and persisted rewind contexts.
+# No new domain identifier or scan rule; ordinary tests need no new inventory entry.
 # #2618 bounded exception: harness_item/crates 278 -> 282 covers three frozen transcript-table
 # references in the storage owner's SELECTs and one compatibility test updating a real producer
 # row into the released provider-owned shape; no new domain identifier. Future SQL touching

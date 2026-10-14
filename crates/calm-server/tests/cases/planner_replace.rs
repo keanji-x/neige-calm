@@ -887,3 +887,6 @@ async fn a_replace_clears_the_live_text_of_the_removed_turn() {
     assert_eq!(status, StatusCode::OK, "body={body}");
     assert_eq!(live(&boot).await, json!({ "turn_id": null, "items": [] }));
 }
+
+#[path = "planner_replace/context_tests.rs"]
+mod context_tests;

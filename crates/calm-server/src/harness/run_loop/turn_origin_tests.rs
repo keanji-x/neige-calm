@@ -38,9 +38,10 @@ async fn a_task_completion_turn_records_the_completion_event() {
     fx.issue().await;
     assert_eq!(fx.daemon.turn_start_count_for_test(), 1);
     let segments = fx.projected_segments().await;
-    assert_eq!(segments.len(), 1);
+    assert_eq!(segments.len(), 2);
+    assert_initial_budget(&segments[0]);
     assert_eq!(
-        segments[0].origin,
+        segments[1].origin,
         origin("task_completed", Some(event_id)),
         "the receipt enrichment keeps the origin"
     );
@@ -54,8 +55,9 @@ async fn a_mail_wake_turn_records_the_wake_event() {
     fx.issue().await;
     assert_eq!(fx.daemon.turn_start_count_for_test(), 1);
     let segments = fx.projected_segments().await;
-    assert_eq!(segments.len(), 1);
-    assert_eq!(segments[0].origin, origin("track_wake", Some(event_id)));
+    assert_eq!(segments.len(), 2);
+    assert_initial_budget(&segments[0]);
+    assert_eq!(segments[1].origin, origin("track_wake", Some(event_id)));
 }
 
 #[tokio::test]
@@ -72,8 +74,23 @@ async fn a_user_message_turn_records_a_user_message_with_no_event() {
     fx.issue().await;
     assert_eq!(fx.daemon.turn_start_count_for_test(), 1);
     let segments = fx.projected_segments().await;
-    assert_eq!(segments.len(), 1);
-    assert_eq!(segments[0].origin, origin("user_message", None));
+    assert_eq!(
+        segments,
+        vec![
+            HarnessInputSegment {
+                presentation: HarnessInputPresentation::SystemPlannerTurnBudget,
+                text: crate::planner_turn_budget::PlannerTurnBudget::default().initial_input(),
+                attachments: vec![],
+                origin: None,
+            },
+            HarnessInputSegment {
+                presentation: HarnessInputPresentation::User,
+                text: "User says:\nwhy did you stop?".into(),
+                attachments: vec![],
+                origin: origin("user_message", None),
+            },
+        ]
+    );
 }
 
 #[tokio::test]
@@ -84,15 +101,17 @@ async fn each_segment_of_a_batch_records_its_own_origin_in_order() {
     fx.enqueue(vec![completion, wake]).await;
     fx.issue().await;
     assert_eq!(fx.daemon.turn_start_count_for_test(), 1);
-    let origins = fx
-        .projected_segments()
-        .await
+    let segments = fx.projected_segments().await;
+    assert_eq!(segments.len(), 3);
+    assert_initial_budget(&segments[0]);
+    let origins = segments
         .into_iter()
         .map(|segment| segment.origin)
         .collect::<Vec<_>>();
     assert_eq!(
         origins,
         vec![
+            None,
             origin("task_completed", Some(completed_id)),
             origin("track_wake", Some(wake_id)),
         ]
@@ -134,6 +153,19 @@ async fn a_folded_entry_records_the_newest_event() {
     fx.issue().await;
     assert_eq!(fx.daemon.turn_start_count_for_test(), 1);
     let segments = fx.projected_segments().await;
-    assert_eq!(segments.len(), 1);
-    assert_eq!(segments[0].origin, origin("report_edited", Some(newest_id)));
+    assert_eq!(segments.len(), 2);
+    assert_initial_budget(&segments[0]);
+    assert_eq!(segments[1].origin, origin("report_edited", Some(newest_id)));
+}
+
+fn assert_initial_budget(segment: &HarnessInputSegment) {
+    assert_eq!(
+        segment,
+        &HarnessInputSegment {
+            presentation: HarnessInputPresentation::SystemPlannerTurnBudget,
+            text: crate::planner_turn_budget::PlannerTurnBudget::default().initial_input(),
+            attachments: vec![],
+            origin: None,
+        }
+    );
 }

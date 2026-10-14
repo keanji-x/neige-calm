@@ -14251,7 +14251,8 @@
           "system_report_edited",
           "system_task_completed",
           "system_task_failed",
-          "system_mail"
+          "system_mail",
+          "system_planner_turn_budget"
         ]
       },
       "HarnessInputSegment": {

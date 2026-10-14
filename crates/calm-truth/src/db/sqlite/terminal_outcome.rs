@@ -1,4 +1,5 @@
 //! Indexed terminal reads, without transcript pagination or arbitrary history cutoffs.
+//! The owner-assigned row id orders durable outcomes; UTC samples are facts, not causality.
 use crate::db::terminal_outcome::HarnessTerminalOutcome;
 use crate::error::Result;
 use futures::TryStreamExt;
@@ -12,7 +13,7 @@ pub async fn latest(
     Ok(sqlx::query_as(
         "SELECT id, worker_session_id, card_id, track_id, thread_id, turn_id, params, created_at_ms \
          FROM harness_items WHERE card_id=?1 AND method='turn/completed' AND track_id=?2 \
-         AND turn_id IS NOT NULL ORDER BY created_at_ms DESC, id DESC LIMIT 1"
+         AND turn_id IS NOT NULL ORDER BY id DESC LIMIT 1"
     ).bind(card).bind(track).fetch_optional(pool).await?)
 }
 
@@ -30,8 +31,8 @@ pub async fn pending_timeouts(
          AND json_type(h.params, '$.harness_interruption_reason')='object' \
          AND NOT EXISTS (SELECT 1 FROM harness_items s WHERE s.card_id=?1 AND s.method='turn/completed' \
              AND s.track_id=?2 AND json_extract(s.params,'$.status')='completed' \
-             AND (s.created_at_ms > h.created_at_ms OR (s.created_at_ms=h.created_at_ms AND s.id>h.id))) \
-         ORDER BY h.created_at_ms DESC, h.id DESC"
+             AND s.id>h.id) \
+         ORDER BY h.id DESC"
     ).bind(card).bind(track).fetch(pool);
     let mut pending = Vec::new();
     while let Some(row) = rows.try_next().await? {

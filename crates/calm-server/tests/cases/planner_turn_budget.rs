@@ -148,11 +148,28 @@ async fn planner_turn_budget_corrupt_storage_leaves_input_queued_until_reset() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(boot.daemon.started_turns_for_test().is_empty());
     assert_eq!(boot.harness.snapshot().await.pending_entries().len(), 1);
+    assert!(
+        boot.harness
+            .issuance_block()
+            .await
+            .unwrap()
+            .contains("Planner duration in Settings")
+    );
     setting(&boot, serde_json::Value::Null).await;
-    wait_for_state(&boot.harness, |s| {
-        matches!(s, HarnessState::TurnRunning { .. })
+    // Reset does not invent a recovery policy: the existing refusal backoff retries it.
+    tokio::time::timeout(Duration::from_secs(35), async {
+        loop {
+            if matches!(
+                boot.harness.state_for_test().await,
+                HarnessState::TurnRunning { .. }
+            ) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     })
-    .await;
+    .await
+    .unwrap();
     let input = serde_json::to_string(&boot.daemon.started_turns_for_test()).unwrap();
     assert!(input.contains("30 minutes"));
     boot.harness.shutdown().await.unwrap();

@@ -37,7 +37,7 @@ use crate::harness::snapshot::{HarnessPhaseTag, HarnessSnapshot, IssuedInputSegm
 use crate::harness::state::{HarnessState, IssuingKind, RunningTurn, run_status_for};
 use crate::harness::token_usage::TokenUsage;
 use crate::ids::{ActorId, CardId, TrackId};
-use crate::model::HarnessInputSegment;
+use crate::model::{HarnessInputPresentation, HarnessInputSegment};
 use crate::planner_attachments::bind::BoundAttachment;
 use crate::planner_model::{FailureKind, TurnModelSelection};
 use crate::planner_permission_mode::PlannerPermissionMode;
@@ -3209,6 +3209,19 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         );
         return Ok(());
     }
+    // Refuse corrupt settings before transcript refresh/diff. Keep the queue intact and use
+    // the same visible, paced refusal as other issuance prerequisites.
+    let sampled_budget = match budget::sample(inner).await {
+        Ok(budget) => budget,
+        Err(error) => {
+            let failure = IssuanceRefusal::rejected(
+                format!("Planner turn budget: {error}"),
+                format!("Cannot start this turn: {error}. Reset the Planner duration in Settings."),
+            );
+            apply_refusal(inner, &failure).await;
+            return Ok(());
+        }
+    };
     // Two independent per-turn decisions: `skip_transcript_refresh` skips the track-level WRITE
     // transaction; `skip_track_diff` issues with no since-last-turn block. An area chat skips both;
     // a track assistant skips only the refresh (it cannot read transcripts; the diff IS its context).
@@ -3337,7 +3350,6 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     .await?;
 
     let timeout_notice = timeout_notice::previous(inner).await?;
-    let sampled_budget = budget::sample(inner).await?;
     let prior_turn = {
         let mut state = inner.state.lock().await;
         if !state.can_issue_turn() {
@@ -3409,12 +3421,6 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     *inner.debounce.lock().await = DebounceState::default();
     // Segments are built from the ENTRIES, not observations: an `Observation` cannot carry an attachment.
     let mut segments = input_segments_for_entries(&inner.card_id, &drained);
-    if let Some(budget) = sampled_budget {
-        segments.insert(0, budget::segment(budget.initial_input()));
-    }
-    if let Some(notice) = timeout_notice {
-        segments.insert(0, notice);
-    }
     super::result_receipt::enrich(
         inner.repo.as_ref(),
         &crate::state::WriteContext::new(
@@ -3426,6 +3432,16 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         &mut segments,
     )
     .await;
+
+    // Entry-index consumers must finish before adding kernel-owned context.
+    if let Some(budget) = sampled_budget {
+        let mut context = budget::segment(budget.initial_input());
+        context.presentation = HarnessInputPresentation::SystemPlannerTurnBudget;
+        segments.insert(0, context);
+    }
+    if let Some(notice) = timeout_notice {
+        segments.insert(0, notice);
+    }
 
     // The channel statement is the batch's, appended once here; same flag as `report_patch`.
     append_report_edit_batch_channel_line(&mut segments, report_edits_carry_diffs);

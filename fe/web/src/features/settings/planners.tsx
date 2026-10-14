@@ -133,7 +133,7 @@ function PlannerTurnDuration({ value, readRevision, loaded, loadError, onRetryLo
         {!loaded ? loadError === null && <span role="status">Loading duration…</span> : <>
           <AstryxTextInput label="Maximum turn duration (minutes)" value={draft} width={CONTROL_WIDTH}
             ref={(input) => { if (input !== null) input.inputMode = 'numeric'; }}
-            description="Default: 30 minutes. Choose 1–240 minutes. Changes apply to the next turn; hold waiting time does not count. Claude receives only the budget reminder at the start of the turn, without a mid-turn warning."
+            description="Default: 30 minutes. Choose 1–240 minutes. Changes apply to the next turn; hold waiting time does not count. Backends without steer support (Claude and ACP) receive only the budget reminder at the start of the turn, without a mid-turn warning."
             status={inputError === null ? undefined : { type: 'error', message: inputError }}
             onChange={(next) => { setDraft(next); setValidationError(null); }}
             onBlur={() => commit(false, false)}

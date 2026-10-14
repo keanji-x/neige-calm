@@ -76,17 +76,22 @@ pub(crate) fn plan(rows: &[TranscriptRow], turn_id: &str) -> Result<RewindPlan, 
                     .into(),
             );
         };
-        if segments
-            .iter()
-            .any(|segment| segment.presentation != HarnessInputPresentation::User)
-        {
+        if segments.iter().any(|segment| {
+            segment.presentation != HarnessInputPresentation::User
+                && !(segment.presentation == HarnessInputPresentation::SystemPlannerTurnBudget
+                    && segment.origin.is_none()
+                    && segment.attachments.is_empty())
+        }) {
             return Err(
                 "this turn also carried a system update, not only your messages, so it cannot be \
                  edited"
                     .into(),
             );
         }
-        said += segments.len();
+        said += segments
+            .iter()
+            .filter(|segment| segment.presentation == HarnessInputPresentation::User)
+            .count();
     }
     if said == 0 {
         return Err("this turn holds no message of yours to edit".into());

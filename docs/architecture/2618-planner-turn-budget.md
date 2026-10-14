@@ -26,7 +26,7 @@ snapshot 的 start attempt identity 持久化；恢复保留该冻结值，不�
 硬停止与预警共享既有 watchdog 基准；hold 等待不计执行时间。
 支持 steer 的后端仅尝试一次有界异步当前轮提醒；不得在 watchdog 上等待 steer。
 检查 runtime/turn identity、hold 及当前相位；RPC 使用 expected turn identity，
-迟到、失败或停止不产生新轮输入。Claude 仅接收初始预警，不假设其 stdin 支持 steer。
+迟到、失败或停止不产生新轮输入。不支持 steer 的后端（Claude、ACP）仅接收初始预警，能力由 backend.supports_steer 声明。
 提醒在 RPC 前写既有 System input projection，echo 原位升级，避免异步回包早于投影造成
 重复或用户归属；失败保留未确认投影供迟到 echo 升级，可信终态仅删除仍未确认的
 投影，不排入下一轮。
@@ -158,7 +158,7 @@ CR-2618-settings/track 已批准 core/domain 的 settings/activity/track/convers
 [Planners pane](../../fe/web/src/features/settings/planners.tsx) 复用 SettingRow，接收
 单值、读取状态/成功读取 revision 与 save/retry 能力；[shell host](../../fe/web/src/app/shell/settings-overlay.tsx)
 复用既有 settings query/mutation/invalidation，不能横向导入其他 feature。
-帮助明确默认30分钟、下一轮生效、hold等待不计，以及 Claude 只有轮初预算提醒。
+帮助明确默认30分钟、下一轮生效、hold等待不计，以及 不支持 steer 的后端（Claude、ACP）只有轮初预算提醒。
 控件保留数值原文，并用 numeric inputMode 提供手机数字键盘。这里有意复用 TextInput
 而不用 NumberInput：后者会将越界值在 blur/Enter 自动钳位、解析 locale 数字；这会
 掩盖 ASCII/范围错误与损坏的原始存储。范围由唯一 core codec 验证，未引入新 UI primitive。
@@ -212,3 +212,29 @@ backend CALM_PORT 与 frontend FE_DEV_PORT，后者 proxy 前者。检查
 `/next/settings/planners` 与 `/next/track/<track-id>`，包括坏值reset、保存失败、下一轮
 新预算、none attention timeout 的打开/dismiss，桌面与手机均需检查。
 后续验证运行 tier 1 `./e2e/run.sh`；真实 Codex/Tier 2 只在 dedicated host 执行。
+
+## Review correction: causal order and replaceable context
+
+Terminal reads use the owner-assigned harness row ID as durable causal order;
+UTC timestamps remain unchanged facts, including rollback and ties. Receipt
+enrichment runs while segments still match queue entry indexes, before either
+kernel prefix is inserted.
+
+Only `system_planner_turn_budget` identifies the initial, kernel-generated
+context that a replacement turn rebuilds. It has no observation origin or
+attachments and never counts as a user message. Legacy `system`, mid-turn
+warnings, previous-timeout notices and task observations remain nonreplaceable;
+missing input still refuses replacement. The frontend decodes the new variant
+as a system entry; compatibility 52 prevents older bundles dropping its row.
+No migration or backfill confers this property on old rows.
+
+Corrupt budget sampling precedes expensive refresh/diff and uses the existing
+visible refusal/backoff path; resetting storage resumes at the existing retry.
+No new recovery or stop policy is introduced. Ordinary new tests need no
+inventory edit; the enum requires updating its FE decoder/label and running
+`npm run gen:api` once, with generated drift checked by CI.
+
+The existing terminology ratchet is regenerated for eight test-only references
+to the frozen transcript table (282 → 290 in the crates scope). Its scan rule
+and CI frequency stay unchanged; future SQL naming that table still updates the
+existing baseline and rationale, rather than adding another check or inventory.

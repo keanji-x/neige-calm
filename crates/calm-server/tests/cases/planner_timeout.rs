@@ -482,3 +482,74 @@ async fn planner_timeout_legacy_provider_payload_does_not_become_trusted_evidenc
     );
     boot.harness.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn planner_timeout_terminal_causality_survives_utc_rollback_and_ties() {
+    use crate::support::planner_queue_fixture::SEED_THREAD_ID;
+    use crate::support::planner_timeout_fixture::{finish, request};
+    use calm_server::db::prelude::*;
+    for later_utc in [90_000_i64, 100_000] {
+        for status in ["failed", "interrupted", "completed"] {
+            let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
+            let turn = request(&boot).await;
+            let timeout = finish(&boot, &turn, "interrupted").await;
+            sqlx::query("UPDATE harness_items SET created_at_ms=100000 WHERE id=?1")
+                .bind(timeout.id)
+                .execute(boot.repo.pool())
+                .await
+                .unwrap();
+            let id = boot
+                .repo
+                .harness_turn_outcome_put(
+                    &boot.worker_session_id,
+                    boot.planner_card.id.as_str(),
+                    boot.planner_card.track_id.as_str(),
+                    SEED_THREAD_ID,
+                    "later",
+                    &json!({"id":"later","status":status}).to_string(),
+                )
+                .await
+                .unwrap();
+            sqlx::query("UPDATE harness_items SET created_at_ms=?1 WHERE id=?2")
+                .bind(later_utc)
+                .bind(id)
+                .execute(boot.repo.pool())
+                .await
+                .unwrap();
+            let latest = boot
+                .repo
+                .harness_latest_terminal(
+                    boot.planner_card.id.as_str(),
+                    boot.planner_card.track_id.as_str(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                (latest.id, latest.created_at_ms),
+                (id, later_utc),
+                "{status}"
+            );
+            let pending = boot
+                .repo
+                .harness_pending_timeouts(
+                    boot.planner_card.id.as_str(),
+                    boot.planner_card.track_id.as_str(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                pending
+                    .iter()
+                    .map(|r| (r.id, r.created_at_ms))
+                    .collect::<Vec<_>>(),
+                if status == "completed" {
+                    vec![]
+                } else {
+                    vec![(timeout.id, 100_000)]
+                }
+            );
+            boot.harness.shutdown().await.unwrap();
+        }
+    }
+}

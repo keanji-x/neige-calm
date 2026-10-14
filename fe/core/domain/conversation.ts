@@ -155,6 +155,7 @@ const harnessInputPresentationSchema: z.ZodType<HarnessInputPresentation> = z.en
   'system_task_completed',
   'system_task_failed',
   'system_mail',
+  'system_planner_turn_budget',
 ]);
 
 const plannerAttachmentSchema: z.ZodType<PlannerAttachment> = z.object({
@@ -854,6 +855,7 @@ Record<Exclude<HarnessInputPresentation, 'user'>, string>
   system_task_completed: 'Task completed',
   system_task_failed: 'Task failed',
   system_mail: 'Mail',
+  system_planner_turn_budget: 'Planner turn budget',
 });
 
 /* Live data uses the camelCase spellings; snake_case is accepted as a precaution since the kernel

@@ -88,7 +88,7 @@ it('shows the default, saves valid minutes on Enter once, and resets explicitly'
   const props = pane();
   const field = screen.getByRole('textbox', { name: 'Maximum turn duration (minutes)' });
   expect((field as HTMLInputElement).value).toBe('30');
-  expect(screen.getByText(/Claude receives only/)).toBeTruthy();
+  expect(screen.getByText(/Backends without steer support/)).toBeTruthy();
   fireEvent.change(field, { target: { value: '45' } });
   fireEvent.keyDown(field, { key: 'Enter' });
   fireEvent.blur(field);
@@ -113,7 +113,7 @@ it('associates help and errors with corrupt stored and invalid drafts, then clea
     }).join(' ');
   };
   expect(field.getAttribute('aria-invalid')).toBe('true');
-  for (const phrase of ['Default: 30', '1–240', 'next turn', 'hold waiting', 'Claude receives only', 'Stored duration is invalid']) expect(description()).toContain(phrase);
+  for (const phrase of ['Default: 30', '1–240', 'next turn', 'hold waiting', 'Backends without steer support (Claude and ACP)', 'Stored duration is invalid']) expect(description()).toContain(phrase);
   fireEvent.change(field, { target: { value: '241' } });
   fireEvent.keyDown(field, { key: 'Enter' });
   expect(field.getAttribute('aria-invalid')).toBe('true');
