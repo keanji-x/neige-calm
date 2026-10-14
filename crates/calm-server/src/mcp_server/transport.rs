@@ -14,7 +14,9 @@ pub(crate) mod plugin_tool_names;
 pub(crate) use call::call_registered_tool;
 
 use crate::db::{Repo, SessionCardIdentity};
+use crate::error::CalmError;
 use crate::forge_trust::trusted_forge_plugin;
+use crate::mcp_server::forge_receipt;
 use crate::mcp_server::framing::{
     Frame, RpcError, build_error_response_frame, build_ok_response_frame, parse_frame,
 };
@@ -31,7 +33,7 @@ use crate::model::{new_id, now_ms};
 use crate::operation::forge_action_adapter::{
     FORGE_ACTION_KIND, ForgeActionPayload, SUPPORTED_FORGE_EVENT_KINDS,
 };
-use crate::operation::{OperationKey, OperationOutcome, OperationResult, OperationRuntime};
+use crate::operation::{OperationKey, OperationRuntime};
 use crate::plugin_host::ConnectorClient;
 use crate::plugin_host::manifest::{ConnectorKind, ToolKind};
 use crate::session_projection_repo::AgentProvider;
@@ -458,7 +460,7 @@ pub(crate) fn plugin_tool_descriptors_from(
             let mut description = entry.description.unwrap_or_default();
             if entry.kind == Some(ToolKind::ForgeAction) {
                 description.push_str("\nFor a pending receipt: ");
-                description.push_str(super::forge_receipt::PENDING_GUIDANCE.trim());
+                description.push_str(forge_receipt::PENDING_GUIDANCE.trim());
             }
             descriptors.push(ToolDescriptor {
                 name: crate::plugin_results::registry_name(&plugin_id, &entry.name),
@@ -959,37 +961,45 @@ async fn dispatch_forge_action_result(
     let card_id = identity.card_id.clone();
     let cwd_lease = resolve_forge_cwd(ctx, &identity, &track_id).await?;
 
-    let completion_event = payload
-        .event_spec
-        .as_ref()
-        .map(|event| event.event_kind.clone());
-    let submitted =
-        match submit_forge_action(ctx, plugin_id, track_id, card_id, cwd_lease, payload).await? {
-            Ok(submitted) => submitted,
-            Err(e) => return Ok(mcp_error_result(e)),
-        };
+    let submitted = match submit_forge_action(
+        ctx,
+        plugin_id,
+        track_id.clone(),
+        card_id,
+        cwd_lease,
+        payload,
+    )
+    .await?
+    {
+        Ok(submitted) => submitted,
+        Err(e) => return Ok(json!(forge_receipt::error(e))),
+    };
     let Some(runtime) = ctx.operation_runtime.get().cloned() else {
         return Err(RpcError::internal("operation runtime not bound"));
     };
-    if submitted.parked {
-        let result = match runtime.operation_result(&submitted.op_id).await {
-            Ok(result) => result,
-            Err(e) => return Ok(mcp_error_result(e.to_string())),
-        };
-        if let Some(result) = result {
-            return Ok(operation_result_to_mcp_result(result));
-        }
-        return Ok(mcp_success_result(super::forge_receipt::pending(
-            &submitted.op_id,
-            completion_event.as_deref(),
-        )));
-    }
-
-    let outcome = match runtime.wait(&submitted.op_id).await {
-        Ok(outcome) => outcome,
-        Err(e) => return Ok(mcp_error_result(e.to_string())),
+    let result = if submitted.parked {
+        // The stored operation, as `neige_op_show` reads it, so both answer alike.
+        runtime
+            .operation_on_track(&submitted.op_id, FORGE_ACTION_KIND, &track_id)
+            .await
+            .and_then(|op| {
+                op.ok_or_else(|| {
+                    CalmError::Internal(format!(
+                        "forge action operation {} vanished",
+                        submitted.op_id
+                    ))
+                })
+            })
+            .and_then(|op| forge_receipt::show(&op))
+    } else {
+        runtime
+            .wait(&submitted.op_id)
+            .await
+            .map(|outcome| forge_receipt::render(&submitted.op_id, Some(outcome), None))
     };
-    Ok(operation_result_to_mcp_result(outcome))
+    Ok(json!(
+        result.unwrap_or_else(|e| forge_receipt::error(e.to_string()))
+    ))
 }
 
 fn validate_plugin_forge_payload(payload: &PluginForgePayload) -> Result<(), RpcError> {
@@ -1124,85 +1134,8 @@ pub(crate) fn forge_deadline_ms(parked: bool) -> i64 {
     secs.saturating_mul(1000)
 }
 
-fn operation_result_to_mcp_result(result: OperationResult) -> Value {
-    let op_id = result.op_id;
-    match result.outcome {
-        OperationOutcome::Succeeded { result } => mcp_success_result(json!({
-            "op_id": op_id,
-            "parked": false,
-            "result": result,
-        })),
-        OperationOutcome::SucceededViaCollision {
-            existing_op_id,
-            result,
-        } => mcp_success_result(json!({
-            "op_id": op_id,
-            "parked": false,
-            "result": {
-                "outcome": "succeeded_via_collision",
-                "existing_op_id": existing_op_id,
-                "result": result,
-            },
-        })),
-        OperationOutcome::Failed {
-            last_error,
-            from_phase,
-            last_error_class,
-        } => {
-            let message = format!("forge action operation {op_id} failed: {last_error}");
-            mcp_error_result_with_structured(
-                message.clone(),
-                json!({
-                    "error": message,
-                    "op_id": op_id,
-                    "parked": false,
-                    "outcome": "failed",
-                    "last_error": last_error,
-                    "from_phase": from_phase.as_str(),
-                    "last_error_class": last_error_class,
-                }),
-            )
-        }
-        OperationOutcome::Stuck { reason, from_phase } => {
-            let message = format!("forge action operation {op_id} stuck: {reason}");
-            mcp_error_result_with_structured(
-                message.clone(),
-                json!({
-                    "error": message,
-                    "op_id": op_id,
-                    "parked": false,
-                    "outcome": "stuck",
-                    "reason": reason,
-                    "from_phase": from_phase.as_str(),
-                }),
-            )
-        }
-    }
-}
-
 fn malformed_forge_payload() -> RpcError {
     RpcError::invalid_params("forge-action plugin returned a malformed payload")
-}
-
-fn mcp_success_result(structured: Value) -> Value {
-    let text = serde_json::to_string(&structured).unwrap_or_else(|_| "{}".to_string());
-    json!({
-        "content": [{ "type": "text", "text": text }],
-        "structuredContent": structured,
-        "isError": false,
-    })
-}
-
-fn mcp_error_result(message: String) -> Value {
-    mcp_error_result_with_structured(message.clone(), json!({ "error": message }))
-}
-
-fn mcp_error_result_with_structured(message: String, structured: Value) -> Value {
-    json!({
-        "content": [{ "type": "text", "text": message.clone() }],
-        "structuredContent": structured,
-        "isError": true,
-    })
 }
 
 /// Discovery and routing for connector-materialized tools, against a registry in the state `spawn_admitted` leaves it in.

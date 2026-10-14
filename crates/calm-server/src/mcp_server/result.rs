@@ -43,6 +43,16 @@ impl ToolResult {
         }
     }
 
+    /// A tool-level failure (`isError: true`) whose one text block is `text` and whose
+    /// `structuredContent` carries the typed failure.
+    pub fn structured_error(value: Value, text: String) -> Self {
+        Self {
+            content: vec![Content::Text { text }],
+            structured_content: value,
+            is_error: true,
+        }
+    }
+
     /// Explicit projection for in-process consumers of a structured tool.
     /// Transport must serialize the whole result.
     pub fn into_structured(self) -> Value {

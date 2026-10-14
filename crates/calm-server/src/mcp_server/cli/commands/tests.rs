@@ -495,6 +495,22 @@ fn track_close_maps_the_message_onto_neige_track_close() {
 }
 
 #[test]
+fn op_show_maps_the_op_id_positional_onto_neige_op_show() {
+    let parsed = parse_args(&["op", "show", "op-1"]).expect("parse");
+    assert_eq!(parsed.tool, "neige_op_show");
+    assert_eq!(parsed.args, json!({ "op_id": "op-1" }));
+    assert_eq!(
+        tool_args(&["op", "show", "--op-id", "op-1"]),
+        json!({ "op_id": "op-1" })
+    );
+    assert_eq!(refusal(&["op", "show"]), "op show requires <op_id>");
+    assert_eq!(
+        refusal(&["op", "show", "op-1", "extra"]),
+        "unexpected argument `extra`; usage: neige op show <op_id> [--json]"
+    );
+}
+
+#[test]
 fn json_flag_is_accepted_before_and_after_the_command() {
     for args in [
         &["--json", "track", "status"][..],
@@ -509,7 +525,7 @@ fn json_flag_is_accepted_before_and_after_the_command() {
     assert!(err.message.starts_with("unknown command `snow`"), "{err:?}");
     assert_eq!(
         refusal(&[]),
-        "missing command; expected `neige <object> <action>` with an object of: track, report, mail, task, admin, tool"
+        "missing command; expected `neige <object> <action>` with an object of: track, report, mail, task, op, admin, tool"
     );
 }
 
@@ -536,7 +552,7 @@ fn an_old_spelling_is_a_usage_error_listing_the_objects() {
     assert_eq!(
         help::unknown_command_message("cat"),
         "unknown command `cat`; a command is `neige <object> <action>`\n\n\
-         Objects: track, report, mail, task, admin, tool\nRun `neige --help` for usage."
+         Objects: track, report, mail, task, op, admin, tool\nRun `neige --help` for usage."
     );
     assert_eq!(
         refusal(&["track", "cat-at", "c", "p"]),

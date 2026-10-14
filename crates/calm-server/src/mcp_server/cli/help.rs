@@ -8,7 +8,7 @@ use super::catalog;
 use super::commands::{self, COMMANDS};
 use crate::mail::{TOOL_MAIL_CAT, TOOL_MAIL_LS};
 use crate::mcp_server::tools::{
-    admin, area_reports, emit, report_tag, task_gate, track_file, track_history, track_state,
+    admin, area_reports, emit, op, report_tag, task_gate, track_file, track_history, track_state,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -260,6 +260,23 @@ const HELP: &[CommandHelp] = &[
         "      --reason <text>          Failure reason",
         "      --json                   Emit errors as JSON",
         "  -h, --help                   Print help",
+    ),
+    command_help!(
+        op::TOOL_OP_SHOW,
+        "Show a forge action's recorded outcome on this track (Planner, Worker)",
+        "Usage: neige op show <op_id> [--json]",
+        "",
+        "Arguments:",
+        "  <op_id>  The op_id of a forge action's receipt (also --op-id)",
+        "",
+        "Prints the envelope the original call and its replay return: status pending (the pending",
+        "receipt), succeeded, failed or stuck. Any card of this track may read it; it never drives",
+        "or waits on the operation. An unknown op_id, another track's operation and a non-forge",
+        "operation are refused alike.",
+        "",
+        "Options:",
+        "      --json  Emit errors as JSON",
+        "  -h, --help  Print help",
     ),
     command_help!(
         admin::TOOL_ADMIN_GC,

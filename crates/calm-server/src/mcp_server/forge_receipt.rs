@@ -1,6 +1,12 @@
-//! The pending receipt for every plugin-backed forge action, regardless of tool name.
+//! The one renderer of a plugin-backed forge action's MCP result, regardless of tool name: the
+//! call itself, its replay and `neige_op_show` all answer through [`render`]; a parked call and
+//! `neige_op_show` both read the stored operation through [`show`].
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
+
+use crate::mcp_server::result::ToolResult;
+use crate::operation::forge_action_adapter::completion_event;
+use crate::operation::{Operation, OperationOutcome, OperationResult, operation_result_from};
 
 pub(super) const PENDING_GUIDANCE: &str = include_str!("../../prompts/forge-action/pending.md");
 
@@ -29,4 +35,185 @@ pub(crate) fn pending(op_id: &str, completion_event: Option<&str>) -> Value {
         completion_event,
     })
     .expect("pending receipt contains only strings, a bool, and an enum")
+}
+
+/// A stored forge-action operation as recorded: its outcome, or its pending receipt naming the
+/// completion event its payload declares.
+pub(crate) fn show(op: &Operation) -> crate::error::Result<ToolResult> {
+    let result = operation_result_from(op)?;
+    let completion_event = completion_event(op)?;
+    Ok(render(&op.id, result, completion_event.as_deref()))
+}
+
+/// Operation `op_id`'s recorded outcome, or its pending receipt while it has none.
+pub(crate) fn render(
+    op_id: &str,
+    result: Option<OperationResult>,
+    completion_event: Option<&str>,
+) -> ToolResult {
+    let Some(result) = result else {
+        return ToolResult::structured(pending(op_id, completion_event));
+    };
+    let op_id = result.op_id;
+    match result.outcome {
+        OperationOutcome::Succeeded { result } => ToolResult::structured(json!({
+            "op_id": op_id,
+            "parked": false,
+            "status": "succeeded",
+            "result": result,
+        })),
+        OperationOutcome::SucceededViaCollision {
+            existing_op_id,
+            result,
+        } => ToolResult::structured(json!({
+            "op_id": op_id,
+            "parked": false,
+            "status": "succeeded",
+            "result": {
+                "outcome": "succeeded_via_collision",
+                "existing_op_id": existing_op_id,
+                "result": result,
+            },
+        })),
+        OperationOutcome::Failed {
+            last_error,
+            from_phase,
+            last_error_class,
+        } => {
+            let message = format!("forge action operation {op_id} failed: {last_error}");
+            ToolResult::structured_error(
+                json!({
+                    "error": message,
+                    "op_id": op_id,
+                    "parked": false,
+                    "outcome": "failed",
+                    "status": "failed",
+                    "last_error": last_error,
+                    "from_phase": from_phase.as_str(),
+                    "last_error_class": last_error_class,
+                }),
+                message,
+            )
+        }
+        OperationOutcome::Stuck { reason, from_phase } => {
+            let message = format!("forge action operation {op_id} stuck: {reason}");
+            ToolResult::structured_error(
+                json!({
+                    "error": message,
+                    "op_id": op_id,
+                    "parked": false,
+                    "outcome": "stuck",
+                    "status": "stuck",
+                    "reason": reason,
+                    "from_phase": from_phase.as_str(),
+                }),
+                message,
+            )
+        }
+    }
+}
+
+/// A forge action that never reached a recorded outcome, such as a refused submit.
+pub(crate) fn error(message: String) -> ToolResult {
+    ToolResult::structured_error(json!({ "error": message }), message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::operation::PhaseTag;
+
+    fn wire(op_id: &str, outcome: Option<OperationOutcome>) -> Value {
+        let result = outcome.map(|outcome| OperationResult {
+            op_id: op_id.to_owned(),
+            outcome,
+        });
+        serde_json::to_value(render(op_id, result, Some("forge.scan.completed"))).unwrap()
+    }
+
+    #[test]
+    fn render_names_the_status_of_every_outcome() {
+        let succeeded = wire(
+            "op-s",
+            Some(OperationOutcome::Succeeded {
+                result: json!({ "n": 1 }),
+            }),
+        );
+        assert_eq!(succeeded["isError"], false);
+        assert_eq!(
+            succeeded["structuredContent"],
+            json!({ "op_id": "op-s", "parked": false, "status": "succeeded", "result": { "n": 1 } })
+        );
+        assert_eq!(
+            succeeded["content"],
+            json!([{ "type": "text", "text": succeeded["structuredContent"].to_string() }])
+        );
+
+        let collision = wire(
+            "op-c",
+            Some(OperationOutcome::SucceededViaCollision {
+                existing_op_id: "op-e".into(),
+                result: json!({ "n": 2 }),
+            }),
+        );
+        assert_eq!(collision["isError"], false);
+        assert_eq!(collision["structuredContent"]["status"], "succeeded");
+        assert_eq!(
+            collision["structuredContent"]["result"],
+            json!({ "outcome": "succeeded_via_collision", "existing_op_id": "op-e", "result": { "n": 2 } })
+        );
+
+        let failed = wire(
+            "op-f",
+            Some(OperationOutcome::Failed {
+                last_error: "boom".into(),
+                from_phase: PhaseTag::Parked,
+                last_error_class: Some("permanent".into()),
+            }),
+        );
+        let failed_message = "forge action operation op-f failed: boom";
+        assert_eq!(failed["isError"], true);
+        assert_eq!(
+            failed["content"],
+            json!([{ "type": "text", "text": failed_message }])
+        );
+        assert_eq!(
+            failed["structuredContent"],
+            json!({
+                "error": failed_message,
+                "op_id": "op-f",
+                "parked": false,
+                "outcome": "failed",
+                "status": "failed",
+                "last_error": "boom",
+                "from_phase": PhaseTag::Parked.as_str(),
+                "last_error_class": "permanent",
+            })
+        );
+
+        let stuck = wire(
+            "op-t",
+            Some(OperationOutcome::Stuck {
+                reason: "lost".into(),
+                from_phase: PhaseTag::SpawnStarted,
+            }),
+        );
+        assert_eq!(stuck["isError"], true);
+        assert_eq!(stuck["structuredContent"]["outcome"], "stuck");
+        assert_eq!(stuck["structuredContent"]["status"], "stuck");
+        assert_eq!(stuck["structuredContent"]["reason"], "lost");
+        assert_eq!(
+            stuck["structuredContent"]["error"],
+            "forge action operation op-t stuck: lost"
+        );
+
+        let pending_wire = wire("op-p", None);
+        assert_eq!(pending_wire["isError"], false);
+        assert_eq!(
+            pending_wire["structuredContent"],
+            pending("op-p", Some("forge.scan.completed"))
+        );
+        assert_eq!(pending_wire["structuredContent"]["status"], "pending");
+        assert_eq!(pending_wire["structuredContent"]["parked"], true);
+    }
 }

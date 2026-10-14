@@ -64,6 +64,8 @@ const ASSISTANT_DENIED_TOOLS_PLANNER_REACHABLE: &[&str] = &[
     "neige_mail_send",
     "neige_mail_ls",
     "neige_mail_cat",
+    // A forge action's recorded outcome is read by the Track's Planner and Workers (#2600).
+    "neige_op_show",
     // Preview gateway registration is a Planner action.
     "neige_preview_add",
     "neige_preview_rm",

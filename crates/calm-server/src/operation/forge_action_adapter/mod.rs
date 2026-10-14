@@ -72,6 +72,12 @@ pub struct ForgeActionPayload {
     pub deadline_ms: i64,
 }
 
+/// The event a forge-action operation emits on success, as its pending receipt names it.
+pub(crate) fn completion_event(op: &Operation) -> Result<Option<String>> {
+    let payload: ForgeActionPayload = serde_json::from_value(op.payload.clone())?;
+    Ok(payload.event_spec.map(|event| event.event_kind))
+}
+
 pub use calm_types::forge_action::ProbeSpec;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

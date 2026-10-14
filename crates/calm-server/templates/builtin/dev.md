@@ -61,8 +61,9 @@ Goal and inputs
   Use plugin_gitforge_gh_issue_search (repo/query, optional state/limit/attempt) for
   related issues. When creation is authorized, plugin_gitforge_gh_issue_create
   takes repo/title/body/idem and returns result.event.issue_number/issue_url.
-  Reuse identical arguments and idem from the same card to retrieve completion;
-  never blindly use a new idem after an Unknown outcome.
+  Read completion with `neige op show <op_id>` from any card of this Track (identical
+  arguments from the same card also return it); never blindly use a new idem after an
+  Unknown outcome.
   Use a new attempt when refreshing either read. With no issue, do not read,
   comment on, or close an issue, and do not create one unless the user or repository
   policy requires it.

@@ -268,11 +268,11 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
         .expect("pending explanation");
     assert!(message.contains("not confirmed success"), "{message}");
     assert!(message.contains("external command"), "{message}");
-    assert!(message.contains("same card"), "{message}");
-
+    assert!(message.contains("neige op show <op_id>"), "{message}");
+    assert!(message.contains("any card of this Track"), "{message}");
     assert!(
-        message.contains("same tool with identical arguments"),
-        "{message}"
+        message.contains("same tool with identical arguments from the same card"),
+        "replay stays a documented path: {message}"
     );
 
     assert!(parked_structured["op_id"].as_str().is_some());
@@ -301,6 +301,7 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
     let completed_structured = &completed_resp["result"]["structuredContent"];
     assert_eq!(completed_structured["op_id"], parked_structured["op_id"]);
     assert_eq!(completed_structured["parked"], false);
+    assert_eq!(completed_structured["status"], "succeeded");
     assert_eq!(
         completed_structured["result"]["event_kind"],
         "forge.scan.completed"
@@ -323,7 +324,7 @@ async fn forge_action_plugin_tools_submit_await_park_and_reject_malformed() {
         receipt["message"]
             .as_str()
             .unwrap()
-            .contains("same tool with identical arguments")
+            .contains("neige op show <op_id>")
     );
     let op_id = receipt["op_id"]
         .as_str()
@@ -1348,3 +1349,6 @@ impl Drop for EnvGuard {
         }
     }
 }
+
+#[path = "mcp_plugin_forge_action/op_show.rs"]
+mod op_show;

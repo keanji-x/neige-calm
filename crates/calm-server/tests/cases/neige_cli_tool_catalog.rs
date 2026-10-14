@@ -16,11 +16,12 @@ use support::mcp::{
 };
 
 /// The reviewed `COMMANDS` table: tool → command.
-const CLI_COVERED: [(&str, &str); 16] = [
+const CLI_COVERED: [(&str, &str); 17] = [
     ("neige_admin_gc", "neige admin gc"),
     ("neige_admin_vacuum", "neige admin vacuum"),
     ("neige_mail_cat", "neige mail cat"),
     ("neige_mail_ls", "neige mail ls"),
+    ("neige_op_show", "neige op show"),
     ("neige_report_find", "neige report find"),
     ("neige_report_tag", "neige report tag"),
     ("neige_task_fail", "neige task fail"),

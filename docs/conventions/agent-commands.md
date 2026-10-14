@@ -50,10 +50,10 @@ model sees    := "mcp__" server_key "__" tool name     e.g. mcp__neige__neige_tr
   respells a name; the only provider rule left is Codex's 128-byte cap on
   `mcp__<server>__<name>` (§9).
 - MCP is the complete surface. A CLI row exists only for a shell-native view (`track
-  ls/cat/show/diff/log/status`, `report find`, `report tag`, `mail ls/cat`), a Worker report in CLI
-  mode (`task done/fail/gate`), the Track's close (`track close --message`, no `--force`) or
-  maintenance that needs `--force` (`admin gc/vacuum`) (#2003 §4.4). `report tag` is the one view
-  that also writes: `tag` is a W/V verb (§3), so `--add`/`--remove` are its write.
+  ls/cat/show/diff/log/status`, `report find`, `report tag`, `mail ls/cat`, `op show`), a Worker
+  report in CLI mode (`task done/fail/gate`), the Track's close (`track close --message`, no
+  `--force`) or maintenance that needs `--force` (`admin gc/vacuum`) (#2003 §4.4). `report tag`
+  is the one view that also writes: `tag` is a W/V verb (§3), so `--add`/`--remove` are its write.
 
 ## 3. Verb vocabulary (closed)
 

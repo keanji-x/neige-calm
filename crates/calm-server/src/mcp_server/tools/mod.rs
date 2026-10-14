@@ -7,6 +7,7 @@ pub mod admin;
 pub mod area_reports;
 pub mod emit;
 pub mod mail;
+pub mod op;
 pub(crate) mod paging;
 pub mod plan;
 pub mod preview;
@@ -41,6 +42,7 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     track_rename::register_into(registry);
     user_ask::register_into(registry);
     mail::register_into(registry);
+    op::register_into(registry);
     preview::register_into(registry);
     track_state::register_into(registry);
     track_add::register_into(registry);

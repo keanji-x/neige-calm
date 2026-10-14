@@ -18,15 +18,15 @@ Use `gh_issue_search` with repo/query to find related issues, including closed o
 by default; state and limit (1..100, default 30) bound results. A new attempt
 refreshes them. Search is not an atomic deduplication or recovery guarantee.
 When issue creation is authorized, use `gh_issue_create` with repo/title/body and
-a stable idem. Repo is owner/name or host/owner/name. Retrieve completion with
-identical arguments from the same card; result.event contains issue_number and
-issue_url. Changed content under the same idem is rejected. An Unknown failure
+a stable idem. Repo is owner/name or host/owner/name. Read completion with
+`neige op show <op_id>`; result.event contains issue_number and issue_url.
+Changed content under the same idem is rejected. An Unknown failure
 must be investigated rather than blindly retried with a new idem.
 
 Use `gh_issue_comment` to post a progress update, question, or result. Pass `repo`,
 `issue`, Markdown `body`, and a stable `idem` for that logical comment. Reuse
 the same idem and body on retries; use a new idem for another comment. The kernel
 records and parks the write before running gh. A pending receipt is not proof
-that the comment was posted: retry the same call to retrieve its outcome. A
+that the comment was posted: read its outcome with `neige op show <op_id>`. A
 hidden marker supports recovery without confusing an existing human comment
 with this write.
