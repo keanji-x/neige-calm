@@ -10,7 +10,7 @@ use axum::http::{Request, StatusCode};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::codex_appserver::Notification;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
+use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, session_start_runtime_tx};
 use calm_server::event::{BroadcastEnvelope, Event, EventBus};
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, Observation, PlannerHarness,
@@ -115,18 +115,29 @@ async fn boot_with(plan: BootPlan) -> Boot {
         })
         .await
         .unwrap();
-    let card = repo
-        .card_create(NewCard {
+    let role_cache = CardRoleCache::new();
+    let mut tx = repo.pool().begin().await.unwrap();
+    let card = card_create_with_id_tx(
+        &mut tx,
+        new_id(),
+        NewCard {
             track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex"}),
-        })
-        .await
-        .unwrap();
-    let role_cache = CardRoleCache::new();
-    role_cache.insert(card.id.clone(), CardRole::Planner, track.id.clone());
+            payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex", "permission_mode": "never"}),
+        },
+        CardRole::Planner,
+        false,
+        &role_cache,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        repo.card_role_get(card.id.as_str()).await.unwrap(),
+        Some(CardRole::Planner)
+    );
     let track_area_cache = TrackAreaCache::new();
     track_area_cache.insert(track.id.clone(), area.id);
 
@@ -358,25 +369,25 @@ async fn drained_user_message_is_readable_before_the_echo_and_upgraded_by_it() {
     assert_eq!(projection["method"], "item/completed");
     assert_eq!(projection["turn_id"], Value::Null);
     assert_eq!(projection["item_uuid"], entry_id);
+    let budget = serde_json::to_value(crate::support::oracle::initial_planner_budget()).unwrap();
     assert_eq!(
-        projection["input_segments"][0]["presentation"],
-        serde_json::to_value(HarnessInputPresentation::User).unwrap()
-    );
-    assert!(
-        projection["input_segments"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("hello from the queue")
+        projection["input_segments"],
+        json!([
+            budget,
+            {"presentation": "user", "text": "User says:\nhello from the queue", "attachments": [],
+             "origin": {"observation": "user_message", "event_id": null}}
+        ])
     );
     let params: Value = serde_json::from_str(projection["params"].as_str().unwrap()).unwrap();
     assert_eq!(params["_projection"], true);
     assert_eq!(params["item"]["clientId"], entry_id);
     assert_eq!(params["item"]["type"], "userMessage");
-    assert!(
-        params["item"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("hello from the queue")
+    assert_eq!(
+        params["item"]["content"][0]["text"],
+        format!(
+            "{}\nUser says:\nhello from the queue",
+            crate::support::oracle::initial_planner_budget().text
+        )
     );
     let projection_db_id = projection["id"].as_i64().unwrap();
 
@@ -389,7 +400,7 @@ async fn drained_user_message_is_readable_before_the_echo_and_upgraded_by_it() {
         "id": "item-user-codex-1",
         "clientId": entry_id,
         "type": "userMessage",
-        "content": [{ "type": "text", "text": "User says:\nhello from the queue" }]
+        "content": [{ "type": "text", "text": params["item"]["content"][0]["text"] }]
     });
     boot.daemon.emit_notification_for_test(Notification::Item {
         method: "item/started".into(),
@@ -472,6 +483,7 @@ async fn projection_key_is_the_first_entry_with_an_id_and_segments_carry_every_e
     assert_eq!(
         presentations,
         vec![
+            serde_json::to_value(HarnessInputPresentation::SystemPlannerTurnBudget).unwrap(),
             serde_json::to_value(HarnessInputPresentation::SystemTaskCompleted).unwrap(),
             serde_json::to_value(HarnessInputPresentation::User).unwrap(),
         ]

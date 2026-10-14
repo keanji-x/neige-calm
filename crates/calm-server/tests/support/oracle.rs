@@ -118,6 +118,18 @@ pub async fn assert_ordering(repo: &SqlxRepo, edges: &[OrderingEdge]) {
     }
 }
 
+/// Independent literal oracle for the default typed Planner setting (30 minutes).
+/// This describes issued input; it never adds context to a fixture or queue entry.
+pub fn initial_planner_budget() -> calm_server::model::HarnessInputSegment {
+    use calm_server::model::{HarnessInputPresentation, HarnessInputSegment};
+    HarnessInputSegment {
+        presentation: HarnessInputPresentation::SystemPlannerTurnBudget,
+        text: "[Trusted Planner turn budget]\nThis turn's execution budget is 30 minutes, excluding held requests. Begin wrapping up with 300 seconds remaining; finish or hand off work before the hard stop. This budget is frozen for this turn.".into(),
+        attachments: vec![],
+        origin: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

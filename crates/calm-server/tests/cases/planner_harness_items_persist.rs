@@ -1,16 +1,19 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use calm_server::card_role_cache::CardRoleCache;
 use calm_server::codex_appserver::{InputItem, Notification};
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
+use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, session_start_runtime_tx};
 use calm_server::event::{BroadcastEnvelope, Event, EventBus, EventScope};
 use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, HarnessState, Observation, PlannerHarness,
     PlannerHarnessParams, QueueEntry,
 };
 use calm_server::ids::ActorId;
-use calm_server::model::{HarnessInputPresentation, NewArea, NewCard, NewTrack, new_id, now_ms};
+use calm_server::model::{
+    CardRole, HarnessInputPresentation, NewArea, NewCard, NewTrack, new_id, now_ms,
+};
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -68,16 +71,29 @@ async fn seed_harness_with_snapshot(
         })
         .await
         .unwrap();
-    let card = repo
-        .card_create(NewCard {
+    let role_cache = CardRoleCache::new();
+    let mut tx = repo.pool().begin().await.unwrap();
+    let card = card_create_with_id_tx(
+        &mut tx,
+        new_id(),
+        NewCard {
             track_id: track.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex"}),
-        })
-        .await
-        .unwrap();
+            payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex", "permission_mode": "never"}),
+        },
+        CardRole::Planner,
+        false,
+        &role_cache,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        repo.card_role_get(card.id.as_str()).await.unwrap(),
+        Some(CardRole::Planner)
+    );
     let runtime_id = new_id();
     let thread_id = SEED_THREAD_ID.to_string();
 
@@ -114,7 +130,7 @@ async fn seed_harness_with_snapshot(
         thread_id: Some(thread_id),
         repo: repo_dyn,
         events,
-        card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
+        card_role_cache: role_cache,
         track_area_cache,
         backend: daemon.clone().into(),
         live_replies: calm_server::harness::LiveReplies::for_test(),
@@ -356,11 +372,37 @@ async fn issued_mixed_observation_segments_are_on_the_projection_row_and_survive
             .map(|segment| segment.presentation)
             .collect::<Vec<_>>(),
         vec![
+            HarnessInputPresentation::SystemPlannerTurnBudget,
             HarnessInputPresentation::SystemTaskCompleted,
             HarnessInputPresentation::User,
             HarnessInputPresentation::SystemTaskFailed,
         ]
     );
+    assert_eq!(
+        issued_segments[0],
+        crate::support::oracle::initial_planner_budget()
+    );
+    assert_eq!(
+        serde_json::to_value(
+            issued_segments
+                .iter()
+                .skip(1)
+                .map(|segment| &segment.origin)
+                .collect::<Vec<_>>()
+        )
+        .unwrap(),
+        json!([
+            {"observation": "task_completed", "event_id": null},
+            {"observation": "user_message", "event_id": null},
+            {"observation": "task_failed", "event_id": null}
+        ])
+    );
+    assert!(
+        issued_segments
+            .iter()
+            .all(|segment| segment.attachments.is_empty())
+    );
+    assert_eq!(issued_segments[2].text, "User says:\nwhat changed?");
     assert_eq!(
         issued_text,
         issued_segments

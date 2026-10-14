@@ -116,18 +116,22 @@ test('creates a track from an Area group with no title, and persists it', async 
   expect(plannerItems.ok()).toBe(true);
   const plannerRows = await plannerItems.json() as {
     item_type: string | null; method: string; turn_id: string | null; item_uuid: string | null;
-    params: string; input_segments?: { presentation: string; text: string }[];
+    params: string; input_segments: { presentation: string; text: string; attachments: unknown[]; origin?: { observation: string; event_id: number | null } }[];
   }[];
   expect(
     plannerRows.map((row) => [row.item_type, row.method, row.turn_id]),
     'the kernel writes exactly one row for the drained sentence, before any echo (#1625 P2)',
   ).toEqual([['userMessage', 'item/completed', null]]);
   const projection = plannerRows[0];
-  expect(projection?.input_segments?.map((segment) => segment.presentation)).toEqual(['user']);
-  expect(projection?.input_segments?.[0]?.text).toContain(message);
-  const projectionParams = JSON.parse(projection?.params ?? '{}') as { _projection?: unknown; item?: { clientId?: unknown } };
+  expect(projection.input_segments).toEqual([
+    { presentation: 'system_planner_turn_budget', text: "[Trusted Planner turn budget]\nThis turn's execution budget is 30 minutes, excluding held requests. Begin wrapping up with 300 seconds remaining; finish or hand off work before the hard stop. This budget is frozen for this turn.", attachments: [] },
+    { presentation: 'user', text: `User says:\n${message}`, attachments: [],
+      origin: { observation: 'user_message', event_id: null } },
+  ]);
+  const projectionParams = JSON.parse(projection.params) as { _projection: boolean; item: { clientId: string } };
   expect(projectionParams._projection, 'the row is the kernel\'s own, not an echo').toBe(true);
-  expect(projectionParams.item?.clientId, 'keyed by the id the drain sent codex').toBe(projection?.item_uuid);
+  expect(projection.item_uuid).toEqual(expect.any(String));
+  expect(projectionParams.item.clientId, 'keyed by the id the drain sent codex').toBe(projection.item_uuid);
 
   /* `waitForRequest` returned on the first create; give the page a bounded moment, then count again. */
   await page.waitForTimeout(1_000);

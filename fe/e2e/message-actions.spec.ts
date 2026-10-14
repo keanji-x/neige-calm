@@ -61,7 +61,11 @@ test('edits the latest message in the composer and replaces it on Send, in one k
     const keys: (string | undefined)[] = [];
     let releaseReplace!: () => void;
     const replaceHeld = new Promise<void>((done) => { releaseReplace = done; });
-    const input = (cardId: string) => [{ presentation: 'user', text: 'User says:\nOriginal prompt',
+    // Explicit completed fresh-start wire contract: kernel context precedes attributable user input.
+    const input = (cardId: string) => [
+      { presentation: 'system_planner_turn_budget', text: "[Trusted Planner turn budget]\nThis turn's execution budget is 30 minutes, excluding held requests. Begin wrapping up with 300 seconds remaining; finish or hand off work before the hard stop. This budget is frozen for this turn.", attachments: [] },
+      { presentation: 'user', text: 'User says:\nOriginal prompt',
+      origin: { observation: 'user_message', event_id: null },
       attachments: [{ id: imageId, contentType: 'image/png', size: 68, url: `/api/cards/${cardId}/planner/attachments/${imageId}` }] }];
     await page.route('**/api/cards/*/harness/items?**', async (route) => {
       const response = await route.fetch();
@@ -69,8 +73,9 @@ test('edits the latest message in the composer and replaces it on Send, in one k
       const common = { worker_session_id: 'fixture', card_id: cardId, track_id: track.id, thread_id: 'thread',
         turn_id: 'turn', turn_error_text: null, item_uuid: null, created_at_ms: Date.now() };
       await route.fulfill({ response, json: removed ? [] : [
-        { ...common, id: 1, item_type: 'userMessage', method: 'item/completed', input_segments: input(cardId),
-          params: JSON.stringify({ item: { content: [{ text: 'Original prompt' }] } }) },
+        { ...common, id: 1, item_uuid: 'echo-1', item_type: 'userMessage', method: 'item/completed', input_segments: input(cardId),
+          params: JSON.stringify({ item: { id: 'echo-1', clientId: 'input-1', type: 'userMessage',
+            content: [{ type: 'text', text: input(cardId).map((segment) => segment.text).join('\n') }] } }) },
         { ...common, id: 2, item_type: 'agentMessage', method: 'item/completed',
           params: JSON.stringify({ item: { text: 'Original answer' } }) },
         { ...common, id: 3, item_type: null, method: 'turn/completed',

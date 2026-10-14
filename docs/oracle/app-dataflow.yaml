@@ -640,8 +640,10 @@
     会话状态或任务 token 自行推导 attention / failed / working；
     声明例外：打开抽屉那一行的本地 in-flight spinner 与 `phase==='wedged'` 的本地 `failed`（设计 §5.3）。
     Track 页的 Notifications 侧条每项一行：注释行（只有色点带颜色的平实标签与时间）在上，正文是内核给的原话
-    （`items[].text`，以 chat 回复的同一 markdown 渲染器渲染；planner down 截 3 行）；点整行即回复，
-    打开 Planner 输入框（ask 与 planner down 同一动作）；行右上角的 × 即 Dismiss，把该项的 `key` 发给
+    （`items[].text`，以 chat 回复的同一 markdown 渲染器渲染；planner down 截 3 行）；
+    timeout 同样来自 overlay 的 `items[]`（`source: planner_turn_timeout`），保留原文与记录时间，
+    即使 attention 为 none 且 Planner idle 仍可见；点整行即回复，
+    打开 Planner 输入框（ask、planner down 与 timeout 同一动作）；行右上角的 × 即 Dismiss，把该项的 `key` 发给
     `POST /api/tracks/{id}/activity/dismissals`，行在 overlay 更新后才消失（不做乐观删除），
     同一来源再次发生是新 key、重新出现；每日 Today 复用 Track 的活动指示和对话行，不再维护独立活动计数或分组。
     `unread` 只来自内核保存的回执（GET /api/read-receipts，#2596）与 `activityAt` / `lastTurnCompletedAt`

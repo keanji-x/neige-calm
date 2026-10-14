@@ -1673,13 +1673,14 @@
       "track conversations Dismiss posts the item key",
       "track conversations both notification kinds show the kernel's words and a row click opens the Planner composer",
       "track conversations counts an ask and planner down as two notifications",
-      "track conversations ignores a retired kernel/card/status row and a plugin-authored activity row"
+      "track conversations ignores a retired kernel/card/status row and a plugin-authored activity row",
+      "track conversations opens and dismisses a timeout while attention is none and the Planner is idle"
     ],
     "selection_paths": [
       "web/src/app/router/read-fallbacks.contract.test.tsx",
       "web/src/app/router/track-conversation.test.tsx"
     ],
-    "why_more_than_one": "Reading the retired per-card status rows again instead of activity.items empties the aside for every fixture that carries its items in the activity overlay and fills it for the fixture that carries a retired status row: the two-kinds Reply case, the Dismiss case, the ask-plus-planner-down count case, the retired-row case and the read-fallbacks detail case all move."
+    "why_more_than_one": "Reading the retired per-card status rows again instead of activity.items empties the aside for every fixture that carries its items in the activity overlay and fills it for the fixture that carries a retired status row: the two-kinds Reply case, the Dismiss case, the ask-plus-planner-down count case, the retired-row case and the read-fallbacks detail case all move. The timeout route case also reads activity.items while attention is none and the Planner is idle; retired card status cannot supply its Notifications row (original CI report: missing Notifications)."
   },
   {
     "mutation_id": "n1829-decoder-accepts-v1",
@@ -1702,7 +1703,7 @@
       "oracle:INV-APP-118"
     ],
     "target": "web/src/features/track/page/public.tsx",
-    "patch": "diff --git a/web/src/features/track/page/public.tsx b/web/src/features/track/page/public.tsx\n--- a/web/src/features/track/page/public.tsx\n+++ b/web/src/features/track/page/public.tsx\n@@ -647,7 +647,8 @@\n                     {/* The kernel's words are markdown, rendered as the chat renders a reply. An ask is read whole;\n                         a failure is clamped, its full text is in the Planner conversation. */}\n                     <div className={`${styles.noticeBody} ${notification.kind === 'planner-down' ? styles.noticeBodyClamped : ''}`}>\n-                      <Markdown density=\"compact\" headingLevelStart={3}>{notification.text}</Markdown>\n+                      {/* MUT-1829-S3-2: the row shows a fixed placeholder instead of the kernel's words */}\n+                      <Markdown density=\"compact\" headingLevelStart={3}>{'The Planner needs you.'}</Markdown>\n                     </div>\n                     {onDismiss !== undefined && notification.action === undefined && NOTIFICATION_DISMISSABLE[notification.kind] && (\n                       <button\n",
+    "patch": "diff --git a/web/src/features/track/page/public.tsx b/web/src/features/track/page/public.tsx\n--- a/web/src/features/track/page/public.tsx\n+++ b/web/src/features/track/page/public.tsx\n@@ -651,5 +651,6 @@\n                         a failure is clamped, its full text is in the Planner conversation. */}\n                     <div className={`${styles.noticeBody} ${notification.kind === 'planner-down' ? styles.noticeBodyClamped : ''}`}>\n-                      <Markdown density=\"compact\" headingLevelStart={3}>{notification.text}</Markdown>\n+                      {/* MUT-1829-S3-2: the row shows a fixed placeholder instead of the kernel's words */}\n+                      <Markdown density=\"compact\" headingLevelStart={3}>{'The Planner needs you.'}</Markdown>\n                       {notification.kind === 'planner-turn-timeout' && <p className={styles.noticeTimestamp}>\n                         Recorded at <time dateTime={new Date(notification.atMs).toISOString()}>{new Date(notification.atMs).toISOString()}</time>\n",
     "expected_red": [
       "TrackPage header turns a Planner ask into a bottom-right notification whose whole row answers it",
       "TrackPage header names a row by the first 80 characters of its text",
@@ -1710,14 +1711,17 @@
       "track conversations both notification kinds show the kernel's words and a row click opens the Planner composer",
       "the track closed status in the page header floats a Planner ask at the viewport corner; the whole row answers it and its × dismisses it",
       "the track closed status in the page header clamps a planner-down reason to three lines and never an ask",
-      "the track closed status in the page header keeps three type steps: the title largest, the body at body size, the meta line smallest"
+      "the track closed status in the page header keeps three type steps: the title largest, the body at body size, the meta line smallest",
+      "track conversations opens and dismisses a timeout while attention is none and the Planner is idle",
+      "keeps timeout text and open/dismiss controls visible with none attention at 1200px",
+      "keeps timeout text and open/dismiss controls visible with none attention at 390px"
     ],
     "selection_paths": [
       "web/src/features/track/page/public.test.tsx",
       "web/src/features/track/page/header-status.browser.test.tsx",
       "web/src/app/router/track-conversation.test.tsx"
     ],
-    "why_more_than_one": "Every case that reads a row's body reddens: the page cases read its text, its markdown and a link in it; the route's two-kinds case reads the kernel's words; the browser cases hit-test a link in the body, measure an ask body longer than three lines, and size the body's heading and code. Cases that only count rows, click the × or read the header stay green."
+    "why_more_than_one": "Every case that reads a row's body reddens: the page cases read its text, its markdown and a link in it; the route's two-kinds case reads the kernel's words; the browser cases hit-test a link in the body, measure an ask body longer than three lines, and size the body's heading and code. Cases that only count rows, click the × or read the header stay green. The timeout route case requires its exact kernel body, and both 1200px and 390px browser cases require /Turn stopped at/ in the body, so all three additionally redden. Their labels, timestamp and controls are unchanged. The separate coarse-browser file is not in this mutation’s registered witness selection; the runner and project selection remain unchanged."
   },
   {
     "mutation_id": "n1829-dismiss-not-posted",
@@ -1727,12 +1731,13 @@
     "target": "web/src/app/router/public.tsx",
     "patch": "diff --git a/web/src/app/router/public.tsx b/web/src/app/router/public.tsx\n--- a/web/src/app/router/public.tsx\n+++ b/web/src/app/router/public.tsx\n@@ -2372,7 +2372,8 @@\n       onReply={plannerCard === undefined ? undefined : () => {\n         registry.requestOpen(plannerCard.id, { focusComposer: true });\n       }}\n-      onDismiss={(key) => trackMutations.dismissActivityItem(track.id, key)}\n+      /* MUT-1829-S3-1: Dismiss resolves without posting the key */\n+      onDismiss={() => Promise.resolve()}\n       onRenameTrack={(title) => trackMutations.patch(track.id, track.areaId, { title }).then(() => undefined)}\n       onReopenTrack={() => trackMutations.patch(track.id, track.areaId, { closed: false }).then(() => undefined)}\n       onCloseTrack={() => trackMutations.patch(track.id, track.areaId, { closed: true }).then(() => undefined)}\n",
     "expected_red": [
-      "track conversations Dismiss posts the item key"
+      "track conversations Dismiss posts the item key",
+      "track conversations opens and dismisses a timeout while attention is none and the Planner is idle"
     ],
     "selection_paths": [
       "web/src/app/router/track-conversation.test.tsx"
     ],
-    "why_more_than_one": "Only the Dismiss case clicks Dismiss through the route; the other aside cases read the rows or click Reply, and the page suite renders rows without the route's wiring."
+    "why_more_than_one": "Both the original Dismiss case and the timeout route case click the same onDismiss callback and require the exact posted item key; the timeout case expects planner_turn_timeout:9 (original CI report: undefined request body). Other route cases only read rows or open the Planner; page cases do not exercise route wiring."
   },
   {
     "mutation_id": "s2b-mobile-painter-no-indicator",

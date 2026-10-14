@@ -941,7 +941,23 @@ async fn first_turn_with_last_seen_head_none_has_no_diff_block() {
     )
     .await;
 
-    assert_eq!(text, "read the goal");
+    let budget = crate::support::oracle::initial_planner_budget();
+    assert_eq!(text, format!("{}\nread the goal", budget.text));
+    let rows = boot
+        .repo
+        .transcript_rows_of_thread(boot.planner_card_id.as_str(), &boot.thread_id)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let segments: Value = serde_json::from_str(rows[0].input_segments.as_ref().unwrap()).unwrap();
+    assert_eq!(
+        segments,
+        json!([
+            budget,
+            {"presentation": "user", "text": "read the goal", "attachments": [],
+             "origin": {"observation": "track_goal", "event_id": null}}
+        ])
+    );
     assert!(runtime_snapshot(&boot).await.last_seen_head.is_none());
     assert!(
         planner_card(&boot)
