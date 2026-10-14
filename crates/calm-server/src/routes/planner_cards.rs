@@ -119,17 +119,22 @@ pub struct InterruptPlannerCardResponse {
     pub stopped: bool,
 }
 
-/// Current planner-harness run snapshot for a card, so a page opened mid-turn can seed its phase. Dormancy is NOT an error: it is the `{worker_session_id: null, phase: null}` answer.
+/// Current harness and maintenance facts for a card. Dormancy is not an error: phase is null, while durable maintenance facts may retain their carrier runtime id.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct GetPlannerRunResponse {
     #[schema(value_type = String)]
     pub card_id: CardId,
-    /// Active worker-session id, or null when the harness is dormant.
+    /// Carrier runtime id for the read facts, or null when dormant without maintenance facts.
     pub worker_session_id: Option<String>,
     /// Current harness phase, or null when the harness is dormant.
     pub phase: Option<HarnessPhaseTag>,
-    /// Latest context-window usage, or null when the harness is dormant or codex has not pushed a `thread/tokenUsage/updated` frame yet. A dormant conversation reports `null` even though the reading is on disk.
+    /// Latest valid context-window reading, or null when no trusted reading exists or a context replacement invalidated it.
     pub token_usage: Option<PlannerRunTokenUsage>,
+    /// Current runtime's manual maintenance result; submission alone is not success.
+    #[schema(required = true)]
+    pub compact_outcome: Option<crate::harness::compact_outcome::CompactOutcome>,
+    /// A context replacement invalidated the previous occupancy; await a new trusted reading.
+    pub context_usage_invalidated: bool,
     /// The model slug this conversation's turns run with, or `null` to follow the installation default. Read off the CARD, so answered for a dormant conversation too.
     pub model: Option<String>,
     /// The chosen reasoning effort, or `null` for the default. Same source as `model`.
@@ -411,6 +416,8 @@ pub(crate) async fn get_planner_run(
         // A dormant conversation has no harness to be blocked and nothing waiting.
         blocked_reason: None,
         token_usage: None,
+        compact_outcome: None,
+        context_usage_invalidated: false,
         pending: Vec::new(),
         pending_overflow: 0,
         attachments_supported,
@@ -427,20 +434,28 @@ pub(crate) async fn get_planner_run(
             .session_projection_projectable_for_card(&card.id.to_string())
             .await?
         {
+            if let Some(snapshot) = runtime
+                .handle_state_json
+                .clone()
+                .and_then(crate::harness::HarnessSnapshot::parse_known)
+                && (snapshot.compact_outcome.is_some() || snapshot.context_usage_invalidated)
+            {
+                dormant.worker_session_id = Some(runtime.id.clone());
+                apply_context_snapshot(&mut dormant, &snapshot);
+            }
             if let Some(snapshot) = super::planner_recovery::unconfirmed_stop_snapshot(&runtime) {
                 dormant.worker_session_id = Some(runtime.id.clone());
                 dormant.phase = Some(snapshot.phase);
                 dormant.blocked_reason =
                     Some(calm_types::harness::HARNESS_INTERRUPT_TIMEOUT_MESSAGE.into());
-                dormant.token_usage = snapshot
-                    .token_usage
-                    .as_ref()
-                    .map(PlannerRunTokenUsage::from);
+                apply_context_snapshot(&mut dormant, &snapshot);
                 (dormant.pending, dormant.pending_overflow) =
                     page_pending_entries(&card.id, &snapshot.pending_entries());
             } else if let Some(snapshot) =
                 super::planner_recovery::recoverable_snapshot(&s, &runtime).await?
             {
+                dormant.worker_session_id = Some(runtime.id.clone());
+                apply_context_snapshot(&mut dormant, &snapshot);
                 dormant.blocked_reason = Some(super::planner_recovery::RECOVERY_NOTICE.into());
                 (dormant.pending, dormant.pending_overflow) =
                     page_pending_entries(&card.id, &snapshot.pending_entries());
@@ -449,6 +464,15 @@ pub(crate) async fn get_planner_run(
         return Ok(Json(dormant));
     };
     let Some(harness) = s.harness.get(&runtime.id) else {
+        if let Some(snapshot) = runtime
+            .handle_state_json
+            .clone()
+            .and_then(crate::harness::HarnessSnapshot::parse_known)
+            && (snapshot.compact_outcome.is_some() || snapshot.context_usage_invalidated)
+        {
+            dormant.worker_session_id = Some(runtime.id.clone());
+            apply_context_snapshot(&mut dormant, &snapshot);
+        }
         return Ok(Json(dormant));
     };
     // Phase and the running turn come from one state read, so a running turn is never paired with another phase.
@@ -467,11 +491,32 @@ pub(crate) async fn get_planner_run(
         token_usage: snapshot
             .token_usage
             .as_ref()
+            .filter(|_| !snapshot.context_usage_invalidated)
             .map(PlannerRunTokenUsage::from),
+        compact_outcome: snapshot.compact_outcome.clone(),
+        context_usage_invalidated: snapshot.context_usage_invalidated,
         pending,
         pending_overflow,
         running_turn: running_turn.map(PlannerRunningTurn::from),
     }))
+}
+
+fn apply_context_snapshot(
+    response: &mut GetPlannerRunResponse,
+    snapshot: &crate::harness::HarnessSnapshot,
+) {
+    response.context_usage_invalidated = snapshot.context_usage_invalidated;
+    response.token_usage = snapshot
+        .token_usage
+        .as_ref()
+        .filter(|_| !snapshot.context_usage_invalidated)
+        .map(PlannerRunTokenUsage::from);
+    response.compact_outcome = snapshot.compact_outcome.clone().map(|mut outcome| {
+        if outcome.status == crate::harness::compact_outcome::CompactStatus::Started {
+            outcome.status = crate::harness::compact_outcome::CompactStatus::Unconfirmed;
+        }
+        outcome
+    });
 }
 
 #[utoipa::path(

@@ -66,6 +66,8 @@ export type ConversationStore = Readonly<{
   manualCompactSupported: boolean;
   compact: () => void;
   compacting: boolean;
+  compactOutcome: import('../../../../core/domain/conversation.ts').CompactOutcome | null;
+  contextUsageInvalidated: boolean;
   retryHistory: () => void;
   retryRun: () => void;
   loadEarlier: () => void;

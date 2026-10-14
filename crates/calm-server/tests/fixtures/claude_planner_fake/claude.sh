@@ -203,7 +203,7 @@ case "$SCENARIO" in
     echo "$TEXT"; echo "$SUCCESS"
     cat > /dev/null
     exit 0 ;;
-  exit-trailing)
+  exit-trailing|compact-auto-boundary)
     # #1923: the turn's last chain record makes no item (an assistant block neige does not render),
     # under a uuid of its own per spawn, so the outcome's `lastRecordUuid` and the last item differ;
     # a stream frame with a uuid of its own follows it, and is not a chain record.
@@ -212,6 +212,9 @@ case "$SCENARIO" in
     echo "$TEXT"
     echo '{"type":"assistant","uuid":"'"$TRAIL"'","message":{"id":"msg_fake_trail","content":[{"type":"server_tool_use"}]}}'
     echo '{"type":"stream_event","uuid":"'"$FRAME"'","parent_tool_use_id":null,"event":{"type":"message_stop"}}'
+    if [ "$SCENARIO" = compact-auto-boundary ]; then
+      echo '{"type":"system","subtype":"compact_boundary"}'
+    fi
     echo "$SUCCESS"
     cat > /dev/null
     exit 0 ;;
@@ -357,7 +360,7 @@ PY
     fi
     cat > /dev/null
     exit 0 ;;
-  compact|compact-no-boundary|compact-usage)
+  compact|compact-no-boundary|compact-usage|compact-boundary-failed)
     # A manual compaction: the one line must be `/compact`; the CLI answers with its boundary
     # (left out by `compact-no-boundary`), its own command output, and a result without usage
     # (`compact-usage`: with the summary's usage).
@@ -368,7 +371,9 @@ PY
       echo '{"type":"system","subtype":"compact_boundary","session_id":"'"$SID"'","uuid":"'"$(cat /proc/sys/kernel/random/uuid)"'","compact_metadata":{"trigger":"manual","pre_tokens":1234}}'
     fi
     echo '{"type":"user","uuid":"'"$(cat /proc/sys/kernel/random/uuid)"'","message":{"role":"user","content":"<local-command-stdout>Compacted </local-command-stdout>"}}'
-    if [ "$SCENARIO" = compact-usage ]; then
+    if [ "$SCENARIO" = compact-boundary-failed ]; then
+      echo '{"type":"result","subtype":"success","is_error":true,"result":"failed after boundary","usage":{},"modelUsage":{}}'
+    elif [ "$SCENARIO" = compact-usage ]; then
       COMPACTED='"usage":{"input_tokens":1000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,'
       COMPACTED+='"output_tokens":500,"iterations":[{"input_tokens":1000,"cache_creation_input_tokens":0,'
       COMPACTED+='"cache_read_input_tokens":0,"output_tokens":500}]},"modelUsage":{"claude-haiku-4-5":{"contextWindow":200000}}'

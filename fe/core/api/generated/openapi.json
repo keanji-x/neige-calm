@@ -13171,6 +13171,34 @@
           }
         }
       },
+      "CompactOutcome": {
+        "type": "object",
+        "required": [
+          "operation_id",
+          "thread_id",
+          "turn_id",
+          "status"
+        ],
+        "properties": {
+          "operation_id": {
+            "type": "string",
+            "description": "Neige's identifier for this submission, minted before calling the provider."
+          },
+          "status": {
+            "$ref": "#/components/schemas/CompactStatus"
+          },
+          "thread_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Unknown until the provider starts its maintenance turn."
+          }
+        }
+      },
       "CompactPlannerResponse": {
         "type": "object",
         "required": [
@@ -13190,6 +13218,17 @@
             "type": "string"
           }
         }
+      },
+      "CompactStatus": {
+        "type": "string",
+        "enum": [
+          "started",
+          "completed",
+          "interrupted",
+          "failed",
+          "unconfirmed",
+          "refused"
+        ]
       },
       "ConnectorInstall": {
         "type": "object",
@@ -13888,9 +13927,11 @@
       },
       "GetPlannerRunResponse": {
         "type": "object",
-        "description": "Current planner-harness run snapshot for a card, so a page opened mid-turn can seed its phase. Dormancy is NOT an error: it is the `{worker_session_id: null, phase: null}` answer.",
+        "description": "Current harness and maintenance facts for a card. Dormancy is not an error: phase is null, while durable maintenance facts may retain their carrier runtime id.",
         "required": [
           "card_id",
+          "compact_outcome",
+          "context_usage_invalidated",
           "permission_mode",
           "pending",
           "pending_overflow",
@@ -13911,6 +13952,21 @@
           },
           "card_id": {
             "type": "string"
+          },
+          "compact_outcome": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CompactOutcome",
+                "description": "Current runtime's manual maintenance result; submission alone is not success."
+              }
+            ]
+          },
+          "context_usage_invalidated": {
+            "type": "boolean",
+            "description": "A context replacement invalidated the previous occupancy; await a new trusted reading."
           },
           "manual_compact_supported": {
             "type": "boolean",
@@ -13983,7 +14039,7 @@
               },
               {
                 "$ref": "#/components/schemas/PlannerRunTokenUsage",
-                "description": "Latest context-window usage, or null when the harness is dormant or codex has not pushed a `thread/tokenUsage/updated` frame yet. A dormant conversation reports `null` even though the reading is on disk."
+                "description": "Latest valid context-window reading, or null when no trusted reading exists or a context replacement invalidated it."
               }
             ]
           },
@@ -13992,7 +14048,7 @@
               "string",
               "null"
             ],
-            "description": "Active worker-session id, or null when the harness is dormant."
+            "description": "Carrier runtime id for the read facts, or null when dormant without maintenance facts."
           }
         }
       },

@@ -60,6 +60,10 @@ pub enum PlannerEventKind {
     PlanUpdated {
         params: Value,
     },
+    /// Provider-declared replacement of retained context; not a manual-operation outcome.
+    ContextReplaced {
+        turn_id: String,
+    },
     /// A context-usage reading: `params.tokenUsage` carries `last`, `total` and `modelContextWindow`.
     TokenUsage {
         params: Value,

@@ -131,7 +131,7 @@ class CollectorTests(unittest.TestCase):
                         ("POST", "/api/areas"): {"id": "area"},
                         ("POST", "/api/tracks"): {"id": "track"},
                         ("GET", "/api/tracks/track/cards"): [{"id": "planner", "payload": {"planner_harness": True}}],
-                        ("GET", "/api/cards/planner/planner/run"): {"worker_session_id": "session", "phase": "idle", "manual_compact_supported": True},
+                        ("GET", "/api/cards/planner/planner/run"): {"worker_session_id": "session", "phase": "idle", "manual_compact_supported": True, "compact_outcome": None, "context_usage_invalidated": False},
                         ("POST", "/api/cards/planner/planner/input"): {"worker_session_id": "session"}}[(method, path)]
 
         class BootstrapReached(Exception):

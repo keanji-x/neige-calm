@@ -168,3 +168,194 @@ async fn compact_recovery_requires_reset_instead_of_reissuing_maintenance() {
         HarnessState::Wedged { .. }
     ));
 }
+
+#[tokio::test]
+async fn compact_only_completed_confirms_success_and_invalidates_reading() {
+    use serde_json::json;
+    for status in ["completed", "interrupted", "failed", "unknown"] {
+        let f = ready().await;
+        let live = f.harness.inner.live_claim.writer();
+        f.harness.compact().await.unwrap();
+        for kind in [
+            PlannerEventKind::TurnStarted {
+                turn_id: "maintenance".into(),
+            },
+            PlannerEventKind::TurnCompleted {
+                turn: json!({"id":"maintenance", "status":status}),
+            },
+        ] {
+            on_notification(
+                &f.harness.inner,
+                &live,
+                PlannerEvent {
+                    thread_id: Some("thread-commit-wake".into()),
+                    kind,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let snapshot = serde_json::to_value(snapshot_for(&f.harness.inner).await).unwrap();
+        let expected = match status {
+            "completed" => "completed",
+            "interrupted" => "interrupted",
+            "failed" => "failed",
+            _ => "unconfirmed",
+        };
+        assert_eq!(
+            snapshot["compact_outcome"]["status"], expected,
+            "{snapshot}"
+        );
+        assert_eq!(
+            snapshot["context_usage_invalidated"],
+            status == "completed",
+            "{snapshot}"
+        );
+        let previous = snapshot.clone();
+        on_notification(
+            &f.harness.inner,
+            &live,
+            PlannerEvent {
+                thread_id: Some("thread-commit-wake".into()),
+                kind: PlannerEventKind::TurnCompleted {
+                    turn: json!({"id":"maintenance", "status":"completed"}),
+                },
+            },
+        )
+        .await
+        .unwrap();
+        let snapshot = serde_json::to_value(snapshot_for(&f.harness.inner).await).unwrap();
+        assert_eq!(snapshot["compact_outcome"], previous["compact_outcome"]);
+        assert_eq!(snapshot["last_turn_id"], "old-turn");
+    }
+}
+
+#[tokio::test]
+async fn compact_boundary_invalidates_even_when_maintenance_fails_or_is_interrupted() {
+    use serde_json::json;
+    for terminal in ["failed", "interrupted", "systemError", "aborted"] {
+        let f = ready().await;
+        let live = f.harness.inner.live_claim.writer();
+        *f.harness.inner.token_usage.lock().await = Some(TokenUsage {
+            used_tokens: 100_000,
+            total_tokens: 15,
+            context_window: Some(200_000),
+            at_ms: 1,
+        });
+        f.harness.compact().await.unwrap();
+        for kind in [
+            PlannerEventKind::TurnStarted {
+                turn_id: "maintenance".into(),
+            },
+            PlannerEventKind::ContextReplaced {
+                turn_id: "maintenance".into(),
+            },
+            match terminal {
+                "systemError" => PlannerEventKind::ThreadSystemError,
+                "aborted" => PlannerEventKind::TurnAborted {
+                    turn_id: "maintenance".into(),
+                },
+                _ => PlannerEventKind::TurnCompleted {
+                    turn: json!({"id":"maintenance", "status":terminal}),
+                },
+            },
+            PlannerEventKind::TokenUsage {
+                params: json!({"turnId":"maintenance", "tokenUsage":{"last":{"totalTokens":1500},"total":{"totalTokens":1500}}}),
+            },
+        ] {
+            on_notification(
+                &f.harness.inner,
+                &live,
+                PlannerEvent {
+                    thread_id: Some("thread-commit-wake".into()),
+                    kind,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let snapshot = snapshot_for(&f.harness.inner).await;
+        assert!(snapshot.context_usage_invalidated, "{terminal}");
+        assert_ne!(
+            snapshot.compact_outcome.unwrap().status,
+            crate::harness::compact_outcome::CompactStatus::Completed
+        );
+        assert_eq!(snapshot.token_usage.unwrap().total_tokens, 15);
+    }
+}
+
+#[tokio::test]
+async fn compact_automatic_boundary_is_not_manual_success_and_needs_a_new_turn_reading() {
+    use serde_json::json;
+    let f = ready().await;
+    let live = f.harness.inner.live_claim.writer();
+    *f.harness.inner.state.lock().await =
+        HarnessState::turn_running("old-turn".into(), Instant::now());
+    for (thread, turn) in [("foreign", "old-turn"), ("thread-commit-wake", "stale")] {
+        on_notification(
+            &f.harness.inner,
+            &live,
+            PlannerEvent {
+                thread_id: Some(thread.into()),
+                kind: PlannerEventKind::ContextReplaced {
+                    turn_id: turn.into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            !snapshot_for(&f.harness.inner)
+                .await
+                .context_usage_invalidated
+        );
+    }
+    on_notification(
+        &f.harness.inner,
+        &live,
+        PlannerEvent {
+            thread_id: Some("thread-commit-wake".into()),
+            kind: PlannerEventKind::ContextReplaced {
+                turn_id: "old-turn".into(),
+            },
+        },
+    )
+    .await
+    .unwrap();
+    let reading = |turn: &str| PlannerEventKind::TokenUsage {
+        params: json!({"turnId":turn, "tokenUsage":{"last":{"totalTokens":16000},"total":{"totalTokens":30},"modelContextWindow":200000}}),
+    };
+    for turn in ["old-turn", "foreign"] {
+        on_notification(
+            &f.harness.inner,
+            &live,
+            PlannerEvent {
+                thread_id: Some("thread-commit-wake".into()),
+                kind: reading(turn),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            snapshot_for(&f.harness.inner)
+                .await
+                .context_usage_invalidated
+        );
+    }
+    *f.harness.inner.last_turn_id.lock().await = Some("next".into());
+    *f.harness.inner.state.lock().await = HarnessState::turn_running("next".into(), Instant::now());
+    on_notification(
+        &f.harness.inner,
+        &live,
+        PlannerEvent {
+            thread_id: Some("thread-commit-wake".into()),
+            kind: reading("next"),
+        },
+    )
+    .await
+    .unwrap();
+    let snapshot = snapshot_for(&f.harness.inner).await;
+    assert!(!snapshot.context_usage_invalidated);
+    assert!(snapshot.compact_outcome.is_none());
+    assert_eq!(snapshot.token_usage.unwrap().used_tokens, 16000);
+}

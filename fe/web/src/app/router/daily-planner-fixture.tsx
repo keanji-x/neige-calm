@@ -13,7 +13,7 @@ import type { UiPreferences } from '../providers/ui-preferences.tsx';
 import { ThemeProvider } from '../theme/public.tsx';
 import { withReadReceipts, type ReadReceiptsKernel } from '../providers/read-receipts-fixture.tsx';
 
-export function renderDailyFixture({ initial = '/', plannerProvider = 'codex', failChanges = false, emptyWorkspace = false, projectTitle = 'Project evidence', reply, onCommit, uiPreferences, receipts }: Readonly<{ plannerProvider?: AgentProvider; uiPreferences?: UiPreferences; receipts?: ReadReceiptsKernel; initial?: string; failChanges?: boolean; emptyWorkspace?: boolean; projectTitle?: string; reply?: (request: ApiRequest) => ApiTransportResponse | undefined | Promise<ApiTransportResponse | undefined>; onCommit?: () => void }> = {}) {
+export function renderDailyFixture({ initial = '/', plannerProvider = 'codex', failChanges = false, emptyWorkspace = false, extraPlanner = false, projectTitle = 'Project evidence', reply, onCommit, uiPreferences, receipts }: Readonly<{ plannerProvider?: AgentProvider; uiPreferences?: UiPreferences; receipts?: ReadReceiptsKernel; initial?: string; failChanges?: boolean; emptyWorkspace?: boolean; extraPlanner?: boolean; projectTitle?: string; reply?: (request: ApiRequest) => ApiTransportResponse | undefined | Promise<ApiTransportResponse | undefined>; onCommit?: () => void }> = {}) {
   const requests: ApiRequest[] = [];
   const area = { id: 'daily-area', name: 'system', color: '#6574cd', sort: 0, kind: 'system', created_at: 1, updated_at: 1 };
   const projectArea = { ...area, id: 'project-area', name: 'Project', kind: 'user' };
@@ -35,13 +35,14 @@ export function renderDailyFixture({ initial = '/', plannerProvider = 'codex', f
       const date = new URL(request.path, 'http://fixture').searchParams.get('date');
       return ok(date === null || date === '2026-10-04' ? { date: '2026-10-04', time_zone: 'Asia/Shanghai', track_id: track.id } : null);
     }
-    if (request.path === '/api/tracks/daily') return ok({ track, can_reopen: false, can_close: false, cards: [card, report], overlays: [] });
+    if (request.path === '/api/tracks/daily') return ok({ track, can_reopen: false, can_close: false, cards: [card, ...(extraPlanner ? [{ ...card, id: 'second-planner', title: 'Other conversation', payload: { harness_profile: 'assistant', planner_provider: plannerProvider }, deletable: false }] : []), report], overlays: [] });
+    if (request.path === '/api/tracks/daily/conversations') return ok(extraPlanner ? [{ id: 'second-planner', trackId: 'daily', title: 'Other conversation', kind: 'track-assistant', state: 'idle', updatedAt: 2, lastTurnCompletedAt: null }] : []);
     if (request.path === '/api/tracks/project') return ok({ track: project, can_reopen: false, can_close: true, cards: [{ ...report, id: 'project-report', track_id: project.id, payload: { schemaVersion: 3, docRev: 0, summary: '', body: '# Project result\n\nRelease is ready.\n' } }], overlays: [] });
     if (request.path.startsWith('/api/today/report-changes')) return failChanges
       ? { status: 500, statusText: 'Error', body: { error: 'Report history unavailable' } }
       : ok({ date: '2026-10-03', timezone: 'Asia/Shanghai', through_event_id: 42, next_cursor: null, changes: [{ track_id: project.id, track_title: project.title, area_id: projectArea.id, area_name: projectArea.name, edit_count: 2, first_event_id: 10, last_event_id: 42, summary_before: 'In progress', summary_after: 'Ready', patch: '--- a/report.md\n+++ b/report.md\n@@ -1 +1 @@\n-Building\n+Release is ready.\n', patch_truncated: false }] });
     if (request.path.startsWith('/api/today/report-edits')) return ok({ next_cursor: null, edits: [{ event_id: 42, at: Date.parse('2026-10-03T01:00:00Z'), edit: { track_id: project.id, edit_id: 'edit-42', summary_before: 'In progress', summary_after: 'Ready', body_before: '# Before release\n\nBuilding', body_after: '# After release\n\nRelease is ready.' } }] });
-    if (request.path.endsWith('/planner/run')) return ok({ card_id: card.id, worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, pending_queue: [], manual_compact_supported: true, running_turn: null, final_reply: null });
+    if (request.path.endsWith('/planner/run')) return ok({ card_id: card.id, worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, pending_queue: [], manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null, final_reply: null });
     if (request.path.includes('/harness/items')) return ok([]);
     if (request.path === '/api/plugins') return ok([{ id: 'calendar', version: '0.1.0', enabled: true, state: 'running', manifest_name: 'Calendar', has_config: false, can_uninstall: false, can_disable: false }]);
     if (request.path === '/api/settings') return ok({});

@@ -270,3 +270,22 @@ fn an_unmodelled_method_is_ignored_on_its_thread() {
     assert_eq!(unthreaded.thread_id, None);
     assert!(matches!(unthreaded.kind, PlannerEventKind::Ignored));
 }
+
+#[test]
+fn compact_codex_boundary_is_declared_only_by_a_completed_context_item() {
+    let params = json!({"threadId":"thr-1", "turnId":"turn-1", "item":{"id":"compact", "type":"contextCompaction"}});
+    assert!(super::codex_events::compact_boundary(&wire("item/started", params.clone())).is_none());
+    let event = wire("item/completed", params);
+    let boundary = super::codex_events::compact_boundary(&event).unwrap();
+    assert_eq!(boundary.thread_id, event.thread_id);
+    assert!(
+        matches!(boundary.kind, PlannerEventKind::ContextReplaced { turn_id } if turn_id == "turn-1")
+    );
+    assert!(
+        super::codex_events::compact_boundary(&wire(
+            "item/completed",
+            json!({"threadId":"thr-1","turnId":"turn-1","item":{"type":"agentMessage"}})
+        ))
+        .is_none()
+    );
+}

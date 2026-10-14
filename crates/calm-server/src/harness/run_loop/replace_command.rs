@@ -122,6 +122,9 @@ pub(super) async fn handle_replace(
     snapshot.phase = HarnessPhaseTag::from(&state);
     snapshot.last_turn_id = plan.previous_turn_id.clone();
     snapshot.pending_rewind = Some(prepared.clone());
+    snapshot.compact_outcome = None;
+    snapshot.context_usage_invalidated = true;
+    snapshot.context_usage_invalidated_turn = plan.previous_turn_id.clone();
     // The provider forgets the turn's since-last-turn block with the turn, so the watermark goes
     // back to where that block started. A turn issued before `last_turn_base` existed has none:
     // its watermark stays advanced (transitional gap, one turn per upgraded conversation).
@@ -170,6 +173,8 @@ pub(super) async fn handle_replace(
     *inner.state.lock().await = state;
     *inner.last_turn_id.lock().await = plan.previous_turn_id;
     *inner.pending_rewind.lock().await = Some(prepared);
+    *inner.compact_outcome.lock().await = None;
+    super::compact_command::invalidate_usage(inner, inner.last_turn_id.lock().await.clone()).await;
     if let Some(head) = restored_head {
         *inner.last_seen_head.lock().await = head;
     }

@@ -720,6 +720,8 @@ function useConversationPane(
             {options?.sideError != null && (
               <ChatFooterNotice><ChatFooterError message={options.sideError} /></ChatFooterNotice>
             )}
+            {store.compactOutcome?.status === 'completed' && <ChatFooterNotice tone="neutral">已压缩</ChatFooterNotice>}
+            {store.contextUsageInvalidated && <ChatFooterNotice tone="neutral">用量待更新</ChatFooterNotice>}
             {store.compacting && <ChatFooterNotice>Compacting conversation context…</ChatFooterNotice>}
             {store.actionError !== null && (
               <ChatFooterNotice><ChatFooterError message={store.actionError} /></ChatFooterNotice>

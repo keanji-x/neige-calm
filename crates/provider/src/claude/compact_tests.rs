@@ -9,7 +9,7 @@ use super::tests::{context, fixture_lines, visible_tools};
 use super::translate::TurnTranslator;
 
 #[test]
-fn a_compact_boundary_is_its_own_record_and_translates_to_nothing() {
+fn a_compact_boundary_declares_context_replacement_without_metadata() {
     let line = json!({
         "type": "system",
         "subtype": "compact_boundary",
@@ -27,7 +27,15 @@ fn a_compact_boundary_is_its_own_record_and_translates_to_nothing() {
     );
     let mut translator =
         TurnTranslator::new(context("0".repeat(32), Vec::new()), visible_tools()).unwrap();
-    assert!(translator.translate_line(&line, &record, 1).is_empty());
+    let events = translator.translate_line(&line, &record, 1);
+    assert_eq!(
+        events.len(),
+        1,
+        "a declared boundary must reach the harness"
+    );
+    assert!(
+        matches!(&events[0].kind, crate::events::PlannerEventKind::ContextReplaced { turn_id } if turn_id == "turn-1")
+    );
     // The record alone says the session compacted; its metadata is unnecessary to that.
     assert_eq!(
         decode(r#"{"type":"system","subtype":"compact_boundary"}"#).unwrap(),

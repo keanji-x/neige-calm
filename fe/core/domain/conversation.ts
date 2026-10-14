@@ -211,6 +211,13 @@ const pendingQueueEntrySchema: z.ZodType<PendingQueueEntry> = z.object({
   queued_at_ms: z.number(),
 });
 
+export type CompactOutcome = Readonly<{
+  operation_id: string;
+  thread_id: string;
+  turn_id: string | null;
+  status: 'started' | 'completed' | 'interrupted' | 'failed' | 'unconfirmed' | 'refused';
+}>;
+
 export type PlannerRun = Readonly<{
   card_id: string;
   worker_session_id?: string | null;
@@ -239,6 +246,8 @@ export type PlannerRun = Readonly<{
   attachments_supported: boolean;
   /** Whether the bound Planner backend implements manual context compaction. */
   manual_compact_supported: boolean;
+  compact_outcome: CompactOutcome | null;
+  context_usage_invalidated: boolean;
   /** How full the model's context is, or `null` when the harness has never reported it. */
   token_usage: PlannerRunTokenUsage | null;
   /** The turn the harness is running; non-null exactly when `phase` is `turn_running`. */
@@ -305,6 +314,10 @@ export function plannerRunOperation(cardId: string): ApiOperation<PlannerRun> {
       /* Absent on older servers, and false is the safe read. */
       attachments_supported: z.boolean().optional().default(false),
       manual_compact_supported: z.boolean(),
+      compact_outcome: z.object({ operation_id: z.string(), thread_id: z.string(), turn_id: z.string().nullable(),
+        status: z.enum(['started', 'completed', 'interrupted', 'failed', 'unconfirmed', 'refused']),
+      }).nullable(),
+      context_usage_invalidated: z.boolean(),
       /* Absent on older servers and whenever the harness has never reported a usage frame; `null` draws no meter. */
       token_usage: plannerRunTokenUsageSchema.nullable().optional().default(null),
       running_turn: plannerRunningTurnSchema.nullable(),

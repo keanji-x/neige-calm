@@ -310,6 +310,8 @@ use utoipa::{Modify, OpenApi, ToSchema};
         InterruptPlannerCardResponse,
         crate::routes::planner_compact::CompactPlannerResponse,
         GetPlannerRunResponse,
+        crate::harness::compact_outcome::CompactOutcome,
+        crate::harness::compact_outcome::CompactStatus,
         PlannerRunTokenUsage,
         EditPlannerInputBody,
         DeletePlannerInputBody,

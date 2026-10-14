@@ -13,17 +13,52 @@ use crate::harness::planner_event::{ItemPhase, PlannerEvent, PlannerEventKind};
 use crate::shared_codex_appserver::{SharedCodexAppServer, other_turn_id};
 
 /// A subscription to the Codex daemon's notifications, received as [`PlannerEvent`]s.
-pub struct CodexEvents(broadcast::Receiver<Notification>);
+pub struct CodexEvents {
+    receiver: broadcast::Receiver<Notification>,
+    pending: Option<PlannerEvent>,
+}
 
 impl CodexEvents {
     pub fn subscribe(daemon: &SharedCodexAppServer) -> Self {
-        Self(daemon.subscribe_notifications())
+        Self {
+            receiver: daemon.subscribe_notifications(),
+            pending: None,
+        }
     }
 
     /// Cancel safe: the mapping after the inner `recv` never awaits.
     pub async fn recv(&mut self) -> Result<PlannerEvent, RecvError> {
-        self.0.recv().await.map(planner_event)
+        if let Some(event) = self.pending.take() {
+            return Ok(event);
+        }
+        let event = planner_event(self.receiver.recv().await?);
+        if let Some(boundary) = compact_boundary(&event) {
+            self.pending = Some(event);
+            return Ok(boundary);
+        }
+        Ok(event)
     }
+}
+
+/// The declared app-server contextCompaction completion; preserve the original item as well.
+pub(crate) fn compact_boundary(event: &PlannerEvent) -> Option<PlannerEvent> {
+    let PlannerEventKind::Item {
+        phase: ItemPhase::Completed,
+        params,
+        ..
+    } = &event.kind
+    else {
+        return None;
+    };
+    if params.get("item")?.get("type")?.as_str()? != "contextCompaction" {
+        return None;
+    }
+    Some(PlannerEvent {
+        thread_id: event.thread_id.clone(),
+        kind: PlannerEventKind::ContextReplaced {
+            turn_id: params.get("turnId")?.as_str()?.to_owned(),
+        },
+    })
 }
 
 /// The event one Codex notification is. The thread is the notification's own

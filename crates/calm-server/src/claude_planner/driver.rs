@@ -367,6 +367,8 @@ impl Reading<'_> {
             if self.purpose == SpawnPurpose::Turn {
                 self.total_tokens = usage_total(&event).or(self.total_tokens);
                 let _ = self.shared.events.send(event);
+            } else if matches!(event.kind, PlannerEventKind::ContextReplaced { .. }) {
+                let _ = self.shared.events.send(event);
             }
         }
         match record {

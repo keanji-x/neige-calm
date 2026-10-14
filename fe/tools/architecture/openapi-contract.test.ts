@@ -221,6 +221,9 @@ it('compact capability is required in the generated Planner run contract', () =>
   const schema = document.components.schemas.GetPlannerRunResponse;
   expect(schema.properties.manual_compact_supported).toMatchObject({ type: 'boolean' });
   expect(schema.required).toContain('manual_compact_supported');
+  expect(schema.required).toContain('compact_outcome');
+  expect(schema.required).toContain('context_usage_invalidated');
+  expect(schema.properties.context_usage_invalidated).toMatchObject({ type: 'boolean' });
 });
 
 

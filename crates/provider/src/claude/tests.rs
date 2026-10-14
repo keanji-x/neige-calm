@@ -389,13 +389,14 @@ fn a_success_without_iterations_emits_no_usage_frame() {
 }
 
 #[test]
-fn a_success_with_iterations_emits_one_usage_frame() {
+fn a_success_with_iterations_emits_one_usage_frame_with_compact_turn_correlation() {
     let notifications = translate_fixture("pB_baseline.ndjson", Vec::new());
     let frames = usage_frames(&notifications);
     // last iteration 8 + 22914 + 269 + 197; the turn 28 + 59812 + 8479 + 870 on top of the seeded 1000.
     assert_eq!(
         frames,
         [&json!({
+            "turnId": "turn-1",
             "tokenUsage": {
                 "last": { "totalTokens": 23_388 },
                 "total": { "totalTokens": 70_189 },
@@ -708,12 +709,13 @@ fn no_fixture_names_the_recording_machine() {
 }
 
 #[test]
-fn an_error_result_with_iterations_emits_a_usage_frame() {
+fn an_error_result_with_iterations_emits_a_usage_frame_with_compact_turn_correlation() {
     // P-F1: SIGINT mid-tool ends with `error_during_execution` / `aborted_tools` and one iteration.
     let frames = translate_fixture("pF_sigint.ndjson", Vec::new());
     assert_eq!(
         usage_frames(&frames),
         [&json!({
+            "turnId": "turn-1",
             "tokenUsage": {
                 "last": { "totalTokens": 12_657 },
                 "total": { "totalTokens": 13_657 },

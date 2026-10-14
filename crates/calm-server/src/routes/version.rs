@@ -43,7 +43,8 @@ pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 /// kernel's and, without `nowMs`, lose its read scope altogether.
 /// 48 -> 49: Planner run declares required manual_compact_supported; composers consume backend
 /// capability rather than infer it from provider identity.
-pub const WEB_COMPAT_VERSION: u32 = 49;
+// Required compact outcome and context-reading validity prevent stale occupancy and false success.
+pub const WEB_COMPAT_VERSION: u32 = 50;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

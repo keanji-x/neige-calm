@@ -39,6 +39,14 @@ pub(super) async fn handle_compact(inner: &Arc<Inner>) -> Result<()> {
             "Send a message before compacting this conversation.".into(),
         ));
     }
+    use crate::harness::compact_outcome::{CompactOutcome, CompactStatus};
+    let previous_outcome = inner.compact_outcome.lock().await.clone();
+    *inner.compact_outcome.lock().await = Some(CompactOutcome {
+        operation_id: crate::model::new_id(),
+        thread_id: thread.clone(),
+        turn_id: None,
+        status: CompactStatus::Started,
+    });
     let previous = inner.state.lock().await.clone();
     *inner.state.lock().await = HarnessState::Compacting {
         since: Instant::now(),
@@ -47,6 +55,7 @@ pub(super) async fn handle_compact(inner: &Arc<Inner>) -> Result<()> {
         Ok(true) => {}
         result => {
             *inner.state.lock().await = previous;
+            *inner.compact_outcome.lock().await = previous_outcome;
             return Err(match result {
                 Err(error) => error,
                 _ => CalmError::PlannerHarnessRuntimeSuperseded(
@@ -59,15 +68,35 @@ pub(super) async fn handle_compact(inner: &Arc<Inner>) -> Result<()> {
         Ok(()) => Ok(()),
         Err(failure) => {
             let (state, error) = match failure {
-                CompactStartFailure::NotSubmitted(error) => (previous, error),
-                CompactStartFailure::Unconfirmed(error) => (
-                    HarnessState::Wedged { since: Instant::now(), reason: "compaction submission could not be confirmed; reset the conversation to continue".into() },
-                    error,
-                ),
+                CompactStartFailure::NotSubmitted(error) => {
+                    settle(inner, CompactStatus::Refused).await;
+                    (previous, error)
+                }
+                CompactStartFailure::Unconfirmed(error) => {
+                    settle(inner, CompactStatus::Unconfirmed).await;
+                    (HarnessState::Wedged { since: Instant::now(), reason: "compaction submission could not be confirmed; reset the conversation to continue".into() },
+                    error)
+                }
             };
             *inner.state.lock().await = state;
             persist_snapshot(inner).await?;
             Err(error)
         }
     }
+}
+
+pub(super) async fn settle(
+    inner: &Arc<Inner>,
+    status: crate::harness::compact_outcome::CompactStatus,
+) {
+    if let Some(outcome) = inner.compact_outcome.lock().await.as_mut()
+        && outcome.status == crate::harness::compact_outcome::CompactStatus::Started
+    {
+        outcome.status = status;
+    }
+}
+
+pub(super) async fn invalidate_usage(inner: &Arc<Inner>, turn_id: Option<String>) {
+    *inner.context_usage_invalidated.lock().await = true;
+    *inner.context_usage_invalidated_turn.lock().await = turn_id;
 }

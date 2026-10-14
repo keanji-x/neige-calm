@@ -31,4 +31,5 @@
 // kernel and would get 404 from an older one.
 // Revision 30: Planner run responses require the bound backend's manual_compact_supported.
 // A bundle that requires this field rejects older kernels' run responses.
-pub const REST_API_VERSION: &str = "30";
+// Revision 31: required compact outcome and context-reading validity in planner/run.
+pub const REST_API_VERSION: &str = "31";

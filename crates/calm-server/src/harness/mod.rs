@@ -4,6 +4,7 @@ pub(crate) mod codex_events;
 #[cfg(test)]
 mod codex_events_tests;
 mod codex_selection;
+pub mod compact_outcome;
 pub mod config;
 pub mod held_requests;
 pub(crate) mod issuance;

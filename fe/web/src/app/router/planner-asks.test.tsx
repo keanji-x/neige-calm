@@ -55,7 +55,7 @@ function setup({ reopen = false, refusal = false } = {}) {
       if (request.path.includes('/harness/items')) return ok([]);
       if (request.path.endsWith('/planner/run')) return ok({
         card_id: request.path.split('/')[3], worker_session_id: 'runtime', phase: 'idle', model: null,
-        reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, running_turn: null,
+        reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null,
       });
       if (request.path === '/api/settings') return ok({});
       return ok([]);

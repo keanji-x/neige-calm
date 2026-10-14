@@ -39,8 +39,11 @@ async fn replace(stack: &Stack, card_id: &str, turn_id: &str, text: &str) -> (St
 
 async fn stored_snapshot(stack: &Stack, card_id: &str) -> Value {
     stack
-        .runtime(card_id)
+        .repo()
+        .session_projection_projectable_for_card(&card_id.to_owned())
         .await
+        .expect("projectable runtime read")
+        .expect("a projectable runtime")
         .handle_state_json
         .expect("a persisted snapshot")
 }
@@ -215,6 +218,8 @@ async fn after_compact_a_turn_resumes_and_an_edit_across_it_is_judged_by_the_dry
     let stored = stored_snapshot(&stack, &card_id).await;
     assert_eq!(stored["pending_rewind"]["resume_at"], json!(anchor));
     assert_eq!(stored["last_turn_id"], b["id"]);
+    assert!(stored["compact_outcome"].is_null());
+    assert_eq!(stored["context_usage_invalidated"], true);
     stack.shutdown().await;
 }
 
@@ -409,4 +414,100 @@ async fn a_compact_without_the_config_is_refused_as_a_compaction() {
     assert!(!error.contains("queued"), "{body}");
     assert_eq!(phase_and_last_turn(&stack, &card_id).await, before);
     assert_eq!(spawns(&root), spawns_before, "nothing spawned");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn compact_confirmed_outcome_invalidates_old_reading_and_recovers_on_next_turn() {
+    let root = Root::new("exit-trailing");
+    let stack = Stack::boot(&root).await;
+    let (_, card) = stack.create_claude_track().await;
+    stack.run_turn(&root, &card, "exit-trailing", "first").await;
+    root.set_scenario("compact-usage");
+    assert_eq!(compact(&stack, &card).await.0, StatusCode::OK);
+    let runtime = stack.runtime(&card).await;
+    stack.wait_phase(&runtime.id, "turn_completed").await;
+    let (_, run) = stack
+        .send("GET", &format!("/api/cards/{card}/planner/run"), None)
+        .await;
+    assert_eq!(run["compact_outcome"]["status"], "completed", "{run}");
+    assert_eq!(run["context_usage_invalidated"], true, "{run}");
+    assert!(run["token_usage"].is_null(), "{run}");
+    let outcome = run["compact_outcome"].clone();
+    assert_eq!(outcome["thread_id"], runtime.thread_id.clone().unwrap());
+    assert!(
+        outcome["operation_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+    );
+    stack.shutdown().await;
+    let stack = Stack::boot(&root).await;
+    let (_, run) = stack
+        .send("GET", &format!("/api/cards/{card}/planner/run"), None)
+        .await;
+    assert_eq!(run["compact_outcome"], outcome, "{run}");
+    assert_eq!(run["context_usage_invalidated"], true, "{run}");
+    stack
+        .run_turn(&root, &card, "exit-trailing", "second")
+        .await;
+    let (_, run) = stack
+        .send("GET", &format!("/api/cards/{card}/planner/run"), None)
+        .await;
+    assert_eq!(run["context_usage_invalidated"], false, "{run}");
+    assert!(run["token_usage"].is_object(), "{run}");
+    assert_eq!(
+        stored_snapshot(&stack, &card).await["token_usage"]["total_tokens"],
+        30
+    );
+    stack.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn compact_boundary_failure_hides_old_reading_and_automatic_boundary_is_not_manual_success() {
+    for scenario in ["compact-auto-boundary", "compact-boundary-failed"] {
+        let root = Root::new("exit-trailing");
+        let mut stack = Stack::boot(&root).await;
+        let (_, card) = stack.create_claude_track().await;
+        stack.run_turn(&root, &card, "exit-trailing", "first").await;
+        if scenario == "compact-auto-boundary" {
+            stack.run_turn(&root, &card, scenario, "automatic").await;
+        } else {
+            root.set_scenario(scenario);
+            assert_eq!(compact(&stack, &card).await.0, StatusCode::OK);
+            let runtime = stack.runtime(&card).await;
+            stack.wait_phase(&runtime.id, "wedged").await;
+        }
+        let (_, run) = stack
+            .send("GET", &format!("/api/cards/{card}/planner/run"), None)
+            .await;
+        assert_eq!(run["context_usage_invalidated"], true, "{run}");
+        assert!(run["token_usage"].is_null(), "{run}");
+        assert_eq!(
+            stored_snapshot(&stack, &card).await["token_usage"]["total_tokens"],
+            if scenario == "compact-auto-boundary" {
+                30
+            } else {
+                15
+            }
+        );
+        assert_ne!(run["compact_outcome"]["status"], "completed", "{run}");
+        if scenario == "compact-auto-boundary" {
+            stack.shutdown().await;
+            stack = Stack::boot(&root).await;
+            stack
+                .run_turn(&root, &card, "exit-trailing", "after automatic boundary")
+                .await;
+            assert_eq!(
+                stored_snapshot(&stack, &card).await["token_usage"]["total_tokens"],
+                45
+            );
+        }
+        let (status, _) = stack.reset(&card).await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, run) = stack
+            .send("GET", &format!("/api/cards/{card}/planner/run"), None)
+            .await;
+        assert!(run["compact_outcome"].is_null(), "{run}");
+        assert!(run["token_usage"].is_null(), "{run}");
+        stack.shutdown().await;
+    }
 }

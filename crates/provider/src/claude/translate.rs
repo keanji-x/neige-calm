@@ -264,8 +264,10 @@ impl TurnTranslator {
                 .usage_frame(&error.usage, &error.model_usage)
                 .into_iter()
                 .collect(),
+            Record::CompactBoundary => vec![self.event(PlannerEventKind::ContextReplaced {
+                turn_id: self.ctx.turn_id.clone(),
+            })],
             Record::UserReplay { .. }
-            | Record::CompactBoundary
             | Record::UserText { .. }
             | Record::ControlResponseIn { .. }
             | Record::ControlRequestIn { .. }
@@ -582,6 +584,7 @@ impl TurnTranslator {
         }
         Some(self.event(PlannerEventKind::TokenUsage {
             params: json!({
+                "turnId": self.ctx.turn_id,
                 "tokenUsage": {
                     "last": { "totalTokens": last_total },
                     "total": { "totalTokens": self.total_tokens },
