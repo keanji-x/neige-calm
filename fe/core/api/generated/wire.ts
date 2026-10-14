@@ -371,7 +371,8 @@ attachments: Array<PlannerAttachment>,
  * The queue entry this segment was built from. Every segment a turn issues or a steer
  * delivers carries one. Absent only on rows written before #2206 and on the echo of a
  * turn an older binary had in flight (its segments were restored from that binary's
- * snapshot, which has no queue entry to name).
+ * snapshot, which has no queue entry to name). Trusted per-turn budget segments also
+ * have no queue entry: their owner is the persisted start attempt.
  */
 origin?: HarnessInputOrigin, };
 

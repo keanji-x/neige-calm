@@ -7731,7 +7731,7 @@
             }
           },
           "400": {
-            "description": "`bad_request`: the body is not parseable JSON.",
+            "description": "Invalid setting value",
             "content": {
               "application/json": {
                 "schema": {
@@ -14276,7 +14276,7 @@
               },
               {
                 "$ref": "#/components/schemas/HarnessInputOrigin",
-                "description": "The queue entry this segment was built from. Every segment a turn issues or a steer\ndelivers carries one. Absent only on rows written before #2206 and on the echo of a\nturn an older binary had in flight (its segments were restored from that binary's\nsnapshot, which has no queue entry to name)."
+                "description": "The queue entry this segment was built from. Every segment a turn issues or a steer\ndelivers carries one. Absent only on rows written before #2206 and on the echo of a\nturn an older binary had in flight (its segments were restored from that binary's\nsnapshot, which has no queue entry to name). Trusted per-turn budget segments also\nhave no queue entry: their owner is the persisted start attempt."
               }
             ]
           },

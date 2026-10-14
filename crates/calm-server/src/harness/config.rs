@@ -23,7 +23,7 @@ impl Default for HarnessConfig {
             debounce_max_wait: Duration::from_secs(5),
             report_edit_min_idle: Duration::from_secs(20),
             report_edit_max_wait: Duration::from_secs(120),
-            max_turn_duration: Duration::from_secs(30 * 60),
+            max_turn_duration: crate::planner_turn_budget::PlannerTurnBudget::default().limit(),
             interrupt_completion_budget: Duration::from_secs(30),
             resumed_reconcile_budget: Duration::from_secs(5),
             transient_silence_budget: Duration::from_secs(30),

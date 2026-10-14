@@ -268,6 +268,7 @@ pub(super) struct Inner {
     /// The last watchdog tick that saw the table hold a request; `None` while it holds none.
     watchdog_held_since: Mutex<Option<Instant>>,
     abort_handle: StdMutex<Option<AbortHandle>>,
+    turn_budget: Mutex<budget::FrozenBudget>,
     config: HarnessConfig,
 }
 
@@ -1277,6 +1278,7 @@ fn inner_from_params(
         held_request_sender,
         watchdog_held_since: Mutex::new(None),
         abort_handle: StdMutex::new(None),
+        turn_budget: Mutex::new(snapshot.turn_budget),
         config: params.config,
     });
     (inner, announce_first)
@@ -1758,6 +1760,7 @@ async fn restore_steered_entries_codex_dropped(
     inner: &Arc<Inner>,
     turn_id: &str,
 ) -> Vec<QueueEntryId> {
+    budget::settle_projection(inner).await;
     let steered = std::mem::take(&mut *inner.steered_into_running_turn.lock().await);
     if steered.is_empty() {
         return Vec::new();
@@ -3333,6 +3336,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     )
     .await?;
 
+    let sampled_budget = budget::sample(inner).await?;
     let prior_turn = {
         let mut state = inner.state.lock().await;
         if !state.can_issue_turn() {
@@ -3380,6 +3384,14 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         *slot = Some(key.clone());
         key
     };
+    *inner.turn_budget.lock().await = match sampled_budget {
+        Some(budget) => budget::FrozenBudget::Planner {
+            budget,
+            start_attempt: client_id.clone(),
+            warning_attempted: false,
+        },
+        None => budget::FrozenBudget::NotApplicable,
+    };
     persist_snapshot(inner).await?;
 
     let drained = {
@@ -3396,6 +3408,9 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     *inner.debounce.lock().await = DebounceState::default();
     // Segments are built from the ENTRIES, not observations: an `Observation` cannot carry an attachment.
     let mut segments = input_segments_for_entries(&inner.card_id, &drained);
+    if let Some(budget) = sampled_budget {
+        segments.insert(0, budget::segment(budget.initial_input()));
+    }
     super::result_receipt::enrich(
         inner.repo.as_ref(),
         &crate::state::WriteContext::new(
@@ -3867,6 +3882,7 @@ async fn watchdog_tick(inner: &Arc<Inner>) -> Result<()> {
         return Ok(());
     }
 
+    let turn_limit = budget::limit(inner).await;
     let should_interrupt = {
         let state = inner.state.lock().await;
         match &*state {
@@ -3874,9 +3890,7 @@ async fn watchdog_tick(inner: &Arc<Inner>) -> Result<()> {
                 turn_id,
                 watchdog_from,
                 ..
-            } if Instant::now().duration_since(*watchdog_from)
-                >= inner.config.max_turn_duration =>
-            {
+            } if Instant::now().duration_since(*watchdog_from) >= turn_limit => {
                 Some(turn_id.clone())
             }
             _ => None,
@@ -3884,6 +3898,8 @@ async fn watchdog_tick(inner: &Arc<Inner>) -> Result<()> {
     };
     if let Some(turn_id) = should_interrupt {
         issue_interrupt_for_turn(inner, turn_id, "max_turn_duration".into()).await?;
+    } else {
+        budget::warn(inner).await?;
     }
     Ok(())
 }
@@ -3993,6 +4009,7 @@ async fn snapshot_from_state(inner: &Arc<Inner>, state: &HarnessState) -> Harnes
     let token_usage = inner.token_usage.lock().await.clone();
     let mut snapshot = HarnessSnapshot::from_state(
         state,
+        inner.turn_budget.lock().await.clone(),
         push_watermark,
         entries,
         last_thread_id,
@@ -4592,6 +4609,7 @@ mod tests {
     }
 }
 
+pub(crate) mod budget;
 mod compact_command;
 #[cfg(test)]
 mod compact_tests;

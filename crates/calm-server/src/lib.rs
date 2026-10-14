@@ -583,6 +583,7 @@ pub mod planner_card;
 pub mod planner_model;
 pub mod planner_permission_mode;
 pub mod planner_process;
+pub mod planner_turn_budget;
 pub mod plugin_host;
 pub use plugin::results as plugin_results;
 pub mod preview;

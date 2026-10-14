@@ -49,14 +49,24 @@ pub(crate) async fn get_settings(State(s): State<RouteState>) -> Result<Json<Set
     request_body = SettingsPutBody,
     responses(
         (status = 200, description = "Settings replaced; returns the resulting bag", body = SettingsBag),
+        (status = 400, description = "Invalid setting value", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
 pub(crate) async fn put_settings(
     State(s): State<RouteState>,
     State(cs): State<CodexShellState>,
-    JsonBody(p): JsonBody<SettingsPutBody>,
+    JsonBody(mut p): JsonBody<SettingsPutBody>,
 ) -> Result<Json<SettingsBag>> {
+    // Validate the complete incoming patch before any write or proxy side effect. Do not
+    // decode stored budgets here: a corrupt value must remain readable and resettable.
+    if let Some(Some(value)) = p.settings.get_mut(crate::planner_turn_budget::KEY)
+        && !value.is_empty()
+    {
+        *value = crate::planner_turn_budget::PlannerTurnBudget::parse(value)
+            .map_err(crate::error::CalmError::BadRequest)?
+            .canonical();
+    }
     let before = load_settings(s.repo.as_ref()).await?;
     let mut proxy_changed = false;
     for (key, maybe_val) in p.settings.iter() {

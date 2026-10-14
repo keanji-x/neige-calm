@@ -12,6 +12,7 @@ use crate::harness::token_usage::TokenUsage;
 use crate::model::HarnessInputSegment;
 use crate::planner_attachments::bind::BoundAttachment;
 
+pub use crate::planner_turn_budget::FrozenBudget;
 pub use calm_types::harness::HarnessPhaseTag;
 
 pub use calm_types::harness::{HARNESS_MODE, HARNESS_SNAPSHOT_SCHEMA_VERSION};
@@ -83,6 +84,9 @@ pub struct HarnessSnapshot {
     pub schema_version: u32,
     pub mode: String,
     pub phase: HarnessPhaseTag,
+    /// Frozen at the start attempt; legacy rows have no claimed budget.
+    #[serde(default)]
+    pub turn_budget: FrozenBudget,
     #[serde(default)]
     pub push_watermark: i64,
     /// The four arrays below are ONE value split across four keys for on-disk compatibility, and
@@ -184,6 +188,7 @@ impl HarnessSnapshot {
             schema_version: HARNESS_SNAPSHOT_SCHEMA_VERSION,
             mode: HARNESS_MODE.to_string(),
             phase: HarnessPhaseTag::PendingThreadStart,
+            turn_budget: FrozenBudget::Legacy,
             push_watermark,
             pending_queue: Vec::new(),
             pending_envelope_ids: Vec::new(),
@@ -211,6 +216,7 @@ impl HarnessSnapshot {
 
     pub fn from_state(
         state: &HarnessState,
+        turn_budget: FrozenBudget,
         push_watermark: i64,
         entries: Vec<QueueEntry>,
         last_thread_id: Option<String>,
@@ -226,6 +232,7 @@ impl HarnessSnapshot {
             schema_version: HARNESS_SNAPSHOT_SCHEMA_VERSION,
             mode: HARNESS_MODE.to_string(),
             phase,
+            turn_budget,
             push_watermark,
             pending_queue: Vec::new(),
             pending_envelope_ids: Vec::new(),
@@ -500,6 +507,7 @@ mod tests {
             };
             let snapshot = HarnessSnapshot::from_state(
                 &state,
+                FrozenBudget::Legacy,
                 0,
                 vec![],
                 Some("thread".into()),

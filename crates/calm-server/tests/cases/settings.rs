@@ -265,3 +265,93 @@ async fn settings_proxy_update_with_unchanged_value_does_not_mark() {
     assert_eq!(resp.status(), 200);
     assert!(!shared.needs_respawn_on_next_thread_start_for_test());
 }
+
+#[tokio::test]
+async fn planner_turn_budget_invalid_patch_writes_nothing() {
+    let (state, repo) = fresh_state().await;
+    let shared = state.shared_codex_appserver.clone();
+    let app = axum::Router::new()
+        .merge(routes::router())
+        .with_state(state);
+    for value in [
+        "0",
+        "241",
+        " 30",
+        "+30",
+        "1.0",
+        "1e1",
+        "３０",
+        "999999999999999999999999",
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/settings")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"settings": {
+                            "aaa_unknown": "must not write", "http_proxy": "changed",
+                            "planner_max_turn_duration_minutes": value
+                        }})
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400, "{value}");
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        assert!(String::from_utf8_lossy(&bytes).contains("planner_max_turn_duration_minutes"));
+        assert!(repo.settings_get_all().await.unwrap().is_empty());
+        assert!(!shared.needs_respawn_on_next_thread_start_for_test());
+    }
+}
+
+#[tokio::test]
+async fn planner_turn_budget_canonical_reset_and_corrupt_get() {
+    let (state, repo) = fresh_state().await;
+    let app = axum::Router::new()
+        .merge(routes::router())
+        .with_state(state);
+    for (value, expected) in [
+        (serde_json::json!("0001"), Some("1")),
+        (serde_json::json!("240"), Some("240")),
+        (serde_json::Value::Null, None),
+        (serde_json::json!(""), None),
+    ] {
+        repo.settings_upsert("planner_max_turn_duration_minutes", "broken")
+            .await
+            .unwrap();
+        let get = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/settings")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get.status(), 200);
+        let bytes = get.into_body().collect().await.unwrap().to_bytes();
+        assert!(String::from_utf8_lossy(&bytes).contains("broken"));
+        let resp = app.clone().oneshot(Request::builder().method("PUT").uri("/api/settings")
+            .header("content-type", "application/json").body(Body::from(serde_json::json!({"settings": {
+                "planner_max_turn_duration_minutes": value, "unknown": "unchanged semantics"
+            }}).to_string())).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let rows = repo.settings_get_all().await.unwrap();
+        assert_eq!(
+            rows.iter()
+                .find(|(k, _)| k == "planner_max_turn_duration_minutes")
+                .map(|(_, v)| v.as_str()),
+            expected
+        );
+        assert!(
+            rows.iter()
+                .any(|(k, v)| k == "unknown" && v == "unchanged semantics")
+        );
+    }
+}
