@@ -460,20 +460,10 @@ pub struct BlockOpOutcome {
 pub struct ReportOpTrace {
     pub block: Option<BlockOpOutcome>,
     pub written_prose_block_ids: Vec<String>,
-    /// A batch's own writes, in op order, for the author's read ledger (#1877).
-    pub authored: Vec<Authored>,
-    /// Whether the doc before the batch was the one its anchor names, i.e. the author knew all of it.
-    pub doc_anchor_checked: bool,
-}
-
-/// One write a batch itself applied, with the revs it produced; never another writer's block.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Authored {
-    Block(String, u32),
-    Section(String, Vec<(String, u32)>),
-    SectionDeleted(String),
-    /// A block the batch removed; its id may be minted again for a block the author never read.
-    Removed(String),
+    /// Content explicitly authored by this caller, independent of intermediate revisions.
+    pub written_block_ids: Vec<String>,
+    pub whole_sections: Vec<String>,
+    pub knowledge: Option<crate::report_read_ledger::LastRead>,
 }
 
 /// Which blocks an op wrote, before the post-op snapshot exists.
@@ -637,8 +627,9 @@ pub(crate) fn apply_report_op_traced(
         CalmError::Internal(format!("track_report: snapshot before task guard: {e}"))
     })?;
     let mut written = Written::None;
-    let mut authored = Vec::new();
-    let mut doc_anchor_checked = false;
+    let mut written_block_ids = Vec::new();
+    let mut whole_sections = Vec::new();
+
     let outcome: Result<Option<BlockOpOutcome>, CalmError> = match &op {
         ReportDocOp::Replace {
             summary,
@@ -764,7 +755,7 @@ pub(crate) fn apply_report_op_traced(
                         BatchBlockOp::Upsert { id: None, .. } | BatchBlockOp::Move { .. }
                     )
                 });
-            doc_anchor_checked = check_doc_anchor(doc, *doc_anchor, needs_doc_anchor)?;
+            check_doc_anchor(doc, *doc_anchor, needs_doc_anchor)?;
             if ops.len() > MAX_BATCH_OPS {
                 return Err(CalmError::BadRequest(format!(
                     "batch carries {} ops; at most {MAX_BATCH_OPS} per commit",
@@ -799,13 +790,13 @@ pub(crate) fn apply_report_op_traced(
                                 let outcome =
                                     apply_upsert_existing(doc, id, kind, content, expected, true)
                                         .map_err(step)?;
-                                authored.push(Authored::Block(outcome.id.clone(), outcome.rev));
+                                written_block_ids.push(outcome.id.clone());
                                 outcome
                             }
                             None => {
                                 let outcome = apply_upsert_new(doc, kind, content, *position, true)
                                     .map_err(step)?;
-                                authored.push(Authored::Block(outcome.id.clone(), outcome.rev));
+                                written_block_ids.push(outcome.id.clone());
                                 outcome
                             }
                         };
@@ -818,14 +809,13 @@ pub(crate) fn apply_report_op_traced(
                     }
                     BatchBlockOp::Delete { id, if_rev } => {
                         apply_delete(doc, id, *if_rev).map_err(step)?;
-                        authored.push(Authored::Removed(id.clone()));
                     }
                     BatchBlockOp::ReplaceSection {
                         section,
                         markdown,
                         read,
                     } => {
-                        let (replaced, before, checked) = sections::apply_replace_section(
+                        let (replaced, _, _) = sections::apply_replace_section(
                             doc,
                             section,
                             markdown,
@@ -833,32 +823,17 @@ pub(crate) fn apply_report_op_traced(
                             *doc_anchor,
                         )
                         .map_err(step)?;
-                        doc_anchor_checked |= checked;
-                        authored.extend(
-                            before
-                                .into_iter()
-                                .filter(|id| !replaced.iter().any(|block| &block.id == id))
-                                .map(Authored::Removed),
-                        );
                         written_ids.extend(
                             replaced
                                 .iter()
                                 .filter(|block| block.kind == KIND_PROSE)
                                 .map(|block| block.id.clone()),
                         );
-                        authored.push(Authored::Section(
-                            section.clone(),
-                            replaced
-                                .into_iter()
-                                .map(|block| (block.id, block.rev))
-                                .collect(),
-                        ));
+                        written_block_ids.extend(replaced.into_iter().map(|block| block.id));
+                        whole_sections.push(section.clone());
                     }
                     BatchBlockOp::DeleteSection { section, read } => {
-                        let deleted =
-                            sections::apply_delete_section(doc, section, read).map_err(step)?;
-                        authored.extend(deleted.into_iter().map(Authored::Removed));
-                        authored.push(Authored::SectionDeleted(section.clone()));
+                        sections::apply_delete_section(doc, section, read).map_err(step)?;
                     }
                 }
             }
@@ -884,6 +859,24 @@ pub(crate) fn apply_report_op_traced(
             .map(|block| block.id.clone())
             .collect(),
     };
+    match &op {
+        ReportDocOp::WriteMarkdown { .. }
+        | ReportDocOp::Replace { .. }
+        | ReportDocOp::ResetToInitial { .. } => {
+            written_block_ids.extend(after.iter().map(|block| block.id.clone()));
+            whole_sections.extend(
+                crate::report_sections::sections(&after)
+                    .iter()
+                    .map(|s| s.title.to_string()),
+            );
+        }
+        ReportDocOp::UpsertBlock { .. } => {
+            if let Some(block) = &outcome {
+                written_block_ids.push(block.id.clone());
+            }
+        }
+        _ => {}
+    }
     // A delete that names the block by id is the ONLY way a live task declaration may leave the
     // document. `op` is the normalized op, so a user delete rewritten into a tombstone grants no exemption.
     let deleted_by_id: Vec<&str> = match &op {
@@ -906,8 +899,9 @@ pub(crate) fn apply_report_op_traced(
     Ok(ReportOpTrace {
         block: outcome,
         written_prose_block_ids,
-        authored,
-        doc_anchor_checked,
+        written_block_ids,
+        whole_sections,
+        knowledge: None,
     })
 }
 

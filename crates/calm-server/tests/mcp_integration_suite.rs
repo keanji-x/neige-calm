@@ -111,3 +111,6 @@ mod track_worker_cwd_ends;
 
 #[path = "cases/mcp_report_read_diagnostics.rs"]
 mod mcp_report_read_diagnostics;
+
+#[path = "cases/mcp_report_anchor_knowledge.rs"]
+mod mcp_report_anchor_knowledge;

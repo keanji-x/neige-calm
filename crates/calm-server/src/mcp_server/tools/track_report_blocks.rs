@@ -11,7 +11,7 @@ use crate::mcp_server::registry::{
 use crate::mcp_server::tools::track_report::{resolve_report_for_caller, updated_report_doc_rev};
 use crate::mcp_server::tools::write_args::{parse_optional_write_args, parse_write_args};
 use crate::report_read_ledger::LastRead;
-use crate::track_report::{BatchBlockOp, DocAnchor, MAX_BATCH_OPS, ReportBlock, ReportDocOp};
+use crate::track_report::{BatchBlockOp, DocAnchor, MAX_BATCH_OPS, ReportDocOp};
 use calm_types::report_blocks;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -117,7 +117,6 @@ async fn write_markdown(
         body,
         if_doc_rev,
     };
-    let report_card_id = report_card.id.clone();
     let ReportOpCommit { card, warnings, .. } = match CardDecisionSink::from_app_context(&ctx)
         .commit_report_op(&identity, track, report_card, current, op, message)
         .await
@@ -126,29 +125,6 @@ async fn write_markdown(
         Err(e) => return Err(map_commit_err(tool, e)),
     };
     let doc_rev = updated_report_doc_rev(&card, tool)?;
-    // The rewrite was anchored on this session's whole read, so, like an own commit, it counts as a
-    // read of the whole report at the new docRev. The blocks are the tx's post state, not the body
-    // sent: where the write path altered what landed (the contract header is normalized), the
-    // ledger holds what landed, and the session re-reads before relying on that block's text.
-    let blocks: Vec<ReportBlock> = card
-        .payload
-        .get("blocks")
-        .cloned()
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(|e| RpcError::internal(format!("{tool}: updated report blocks: {e}")))?
-        .ok_or_else(|| {
-            RpcError::internal(format!("{tool}: updated report payload has no blocks"))
-        })?;
-    let every: Vec<String> = blocks.iter().map(|block| block.id.clone()).collect();
-    ctx.read_ledger.record(
-        &identity.session_id,
-        &identity.card_id,
-        report_card_id.as_str(),
-        doc_rev,
-        &blocks,
-        &every,
-    );
     Ok(
         json!({ "updated_at": crate::time_format::at(card.updated_at), "doc_rev": doc_rev, "warnings": warnings }),
     )
@@ -200,14 +176,7 @@ async fn commit(
         Some(read) => DocAnchor::LastRead(read.doc_rev),
         None => DocAnchor::Unread,
     };
-    let report_card_id = report_card.id.clone();
-    let ReportOpCommit {
-        card,
-        warnings,
-        authored,
-        doc_anchor_checked,
-        ..
-    } = CardDecisionSink::from_app_context(&ctx)
+    let ReportOpCommit { card, warnings, .. } = CardDecisionSink::from_app_context(&ctx)
         .commit_report_op(
             &identity,
             track,
@@ -223,12 +192,6 @@ async fn commit(
         .await
         .map_err(|e| map_commit_err(tool, e))?;
     let doc_rev = updated_report_doc_rev(&card, tool)?;
-    ctx.read_ledger.record_authored(
-        &identity.session_id,
-        report_card_id.as_str(),
-        &authored,
-        doc_anchor_checked.then_some(doc_rev),
-    );
     // Read off the persisted payload so it is exactly what the next `neige_report_read` would return.
     let blocks = card
         .payload

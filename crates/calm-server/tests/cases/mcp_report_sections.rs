@@ -46,7 +46,7 @@ pub(crate) async fn payload(boot: &Boot) -> TrackReportPayload {
 }
 
 /// `(id, rev)` of the blocks of the section `heading` opens, straight from the row (not a tool read).
-async fn section_blocks(boot: &Boot, heading: &str) -> Vec<(String, u64)> {
+pub(crate) async fn section_blocks(boot: &Boot, heading: &str) -> Vec<(String, u64)> {
     let blocks = payload(boot).await.blocks.expect("blocks");
     let first_line = |b: &calm_server::track_report::ReportBlock| {
         b.payload["markdown"]

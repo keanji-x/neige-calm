@@ -36,6 +36,7 @@ pub struct CardDecisionSink {
     write: WriteContext,
     /// Read-only, for the post-commit `report_sources` lookup behind the receipt warnings; `None` means no warnings are computed.
     sqlite_pool: Option<sqlx::SqlitePool>,
+    read_ledger: Arc<crate::report_read_ledger::ReadLedger>,
 }
 
 /// The updated card, the block-level outcome where the op has one, and the unresolved `neige://source/` links of the prose the write touched.
@@ -44,9 +45,6 @@ pub struct ReportOpCommit {
     pub card: Card,
     pub block: Option<BlockOpOutcome>,
     pub warnings: Vec<SourceLinkWarning>,
-    /// What a batch itself wrote and whether its document anchor held (#1877).
-    pub authored: Vec<crate::track_report::Authored>,
-    pub doc_anchor_checked: bool,
 }
 
 impl CardDecisionSink {
@@ -56,6 +54,7 @@ impl CardDecisionSink {
             events: ctx.events.clone(),
             write: ctx.write.clone(),
             sqlite_pool: ctx.sqlite_pool.clone(),
+            read_ledger: Arc::clone(&ctx.read_ledger),
         }
     }
 
@@ -311,6 +310,8 @@ impl CardDecisionSink {
             });
         let author = report_op_attribution(identity.role)?;
         // The writer is private to its module; this is the one entry point that accepts a caller-decided attribution.
+        let report_id = report_card.id.to_string();
+        let captured = self.read_ledger.capture(&identity.session_id, &report_id);
         let (card, trace) = track_report::write::agent_report_op(
             self.repo.as_ref(),
             &self.events,
@@ -320,9 +321,14 @@ impl CardDecisionSink {
             ReportEditTarget::for_resolved_parts(track, report_card, current_payload)?,
             op,
             agent_message,
+            captured.as_ref().map(|(_, read)| read.clone()),
             recorder_shadow,
         )
         .await?;
+        if let (Some((generation, _)), Some(read)) = (captured, trace.knowledge) {
+            self.read_ledger
+                .publish(&identity.session_id, &report_id, generation, read);
+        }
         // After the transaction committed, before the receipt is assembled. Never blocks the write; a lookup failure here is the receipt's problem, not the row's.
         let warnings = match self.sqlite_pool.as_ref() {
             Some(pool) if !trace.written_prose_block_ids.is_empty() => {
@@ -350,8 +356,6 @@ impl CardDecisionSink {
             card,
             block: trace.block,
             warnings,
-            authored: trace.authored,
-            doc_anchor_checked: trace.doc_anchor_checked,
         })
     }
 }
@@ -703,6 +707,7 @@ mod tests {
             events: EventBus::new(),
             write: WriteContext::new(card_role_cache, track_area_cache),
             sqlite_pool: repo.sqlite_pool(),
+            read_ledger: Arc::new(crate::report_read_ledger::ReadLedger::new()),
         };
         let identity = ToolCallIdentity {
             card_id: worker_card.id.as_str().to_string(),
@@ -827,6 +832,7 @@ mod tests {
             events: EventBus::new(),
             write: WriteContext::new(card_role_cache, track_area_cache),
             sqlite_pool: repo.sqlite_pool(),
+            read_ledger: Arc::new(crate::report_read_ledger::ReadLedger::new()),
         };
         let identity = ToolCallIdentity {
             card_id: planner_card.id.as_str().to_string(),
@@ -968,6 +974,7 @@ mod tests {
             events: EventBus::new(),
             write: WriteContext::new(card_role_cache, track_area_cache),
             sqlite_pool: repo.sqlite_pool(),
+            read_ledger: Arc::new(crate::report_read_ledger::ReadLedger::new()),
         };
         let identity = ToolCallIdentity {
             card_id: planner_card.id.as_str().to_string(),

@@ -1,15 +1,11 @@
 //! What each worker session last read of a report (#1877): the anchors of every agent report write,
 //! which takes no revisions (#1883). A `neige_report_read` that returned text records exactly the
-//! snapshot it rendered; an own `write_markdown` records its post-write document the same way; and
-//! [`ReadLedger::record_authored`] records only what the session's own commit wrote. The check
-//! itself stays in the persist tx.
+//! snapshot it rendered. Every own write projects knowledge from the transaction's pre-batch and
+//! final snapshots, then publishes it before receipt enrichment with a generation check.
 //! Process memory like [`crate::plugin_results`]: a kernel restart forgets it and the next write is
 //! refused until the session reads again. Eviction is lazy: the TTL on every access, and a session's
 //! first read drops every other session's entries of the same card (at most one session of a card
 //! is live, so those were superseded or exited).
-//! Known gap, fails closed: a block the session creates inside a section it read is not added to
-//! that section's recorded list, so the next write of the section needs a re-read; likewise an own
-//! `move` into, out of or within a recorded section does not refresh that section's list.
 //! Known gap, out of scope: a foreign delete whose id is later reused at the same rev can match a
 //! stale anchor; the same ABA exists for the REST `if_rev`.
 
@@ -20,7 +16,7 @@ use calm_types::track_report::ReportBlock;
 
 use crate::plugin_results::Clock;
 use crate::report_sections::sections;
-use crate::track_report::Authored;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const TTL_MS: i64 = 2 * 60 * 60 * 1000;
 
@@ -34,7 +30,7 @@ pub struct LastRead {
     pub whole: bool,
     pub blocks: HashMap<String, u32>,
     /// Section title → the ordered `(id, rev)` list of its members (never a task block, #2598); only
-    /// sections a read rendered whole.
+    /// sections witnessed by a whole section read or the committed knowledge projection.
     pub sections: HashMap<String, Vec<(String, u32)>>,
 }
 
@@ -42,12 +38,14 @@ struct Entry {
     caller_card_id: String,
     read: LastRead,
     recorded_at: i64,
+    generation: u64,
 }
 
 /// Keyed by `(worker session id, report card id)`.
 pub struct ReadLedger {
     inner: Mutex<HashMap<(String, String), Entry>>,
     now: Clock,
+    generation: AtomicU64,
 }
 
 impl Default for ReadLedger {
@@ -74,6 +72,7 @@ impl ReadLedger {
         Self {
             inner: Mutex::new(HashMap::new()),
             now,
+            generation: AtomicU64::new(0),
         }
     }
 
@@ -112,8 +111,10 @@ impl ReadLedger {
                     sections: HashMap::new(),
                 },
                 recorded_at: now,
+                generation: 0,
             });
         entry.recorded_at = now;
+        entry.generation = self.generation.fetch_add(1, Ordering::Relaxed);
         let seen = |block: &ReportBlock| rendered.contains(&block.id);
         let all_seen = blocks.iter().all(seen);
         if all_seen {
@@ -148,49 +149,26 @@ impl ReadLedger {
         }
     }
 
-    /// The second entry point: what the session's own commit wrote, in op order, at the revs it
-    /// wrote; `doc_rev` is the committed docRev when the commit checked its document anchor. Blocks
-    /// the commit did not write are never touched, so another writer's change stays a conflict.
-    pub fn record_authored(
-        &self,
-        session_id: &str,
-        report_card_id: &str,
-        authored: &[Authored],
-        doc_rev: Option<u64>,
-    ) {
+    /// Capture knowledge and its publication generation; no lock survives an await.
+    pub fn capture(&self, session_id: &str, report_card_id: &str) -> Option<(u64, LastRead)> {
+        let now = (self.now)();
         let mut inner = self.lock();
-        let Some(entry) = inner.get_mut(&(session_id.to_string(), report_card_id.to_string()))
-        else {
-            return;
-        };
-        let read = &mut entry.read;
-        for write in authored {
-            match write {
-                Authored::Block(id, rev) => {
-                    read.blocks.insert(id.clone(), *rev);
-                    for (seen, seen_rev) in read.sections.values_mut().flatten() {
-                        if seen == id {
-                            *seen_rev = *rev;
-                        }
-                    }
-                }
-                Authored::Section(title, list) => {
-                    read.blocks.extend(list.iter().cloned());
-                    read.sections.insert(title.clone(), list.clone());
-                }
-                Authored::SectionDeleted(title) => {
-                    read.sections.remove(title);
-                }
-                Authored::Removed(id) => {
-                    read.blocks.remove(id);
-                    for list in read.sections.values_mut() {
-                        list.retain(|(seen, _)| seen != id);
-                    }
-                }
-            }
-        }
-        if let Some(doc_rev) = doc_rev {
-            read.doc_rev = doc_rev;
+        inner.retain(|_, entry| now - entry.recorded_at <= TTL_MS);
+        inner
+            .get(&(session_id.into(), report_card_id.into()))
+            .map(|entry| (entry.generation, entry.read.clone()))
+    }
+
+    /// A failed transaction never calls this. A newer read or commit wins over a late publish.
+    pub fn publish(&self, session_id: &str, report_card_id: &str, generation: u64, read: LastRead) {
+        let now = (self.now)();
+        let mut inner = self.lock();
+        if let Some(entry) = inner.get_mut(&(session_id.into(), report_card_id.into()))
+            && entry.generation == generation
+            && now - entry.recorded_at <= TTL_MS
+        {
+            entry.read = read;
+            entry.generation = self.generation.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -203,6 +181,100 @@ impl ReadLedger {
             .get(&(session_id.to_string(), report_card_id.to_string()))
             .map(|entry| entry.read.clone())
     }
+}
+
+/// Project only witnessed unchanged content and content authored by this commit. Section evidence
+/// must cover every D0 structural source contributing to a final section, even when all individual
+/// blocks were known: knowing content alone does not certify the section's membership.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn project_commit(
+    old: &LastRead,
+    before_rev: u64,
+    before: &[ReportBlock],
+    after_rev: u64,
+    after: &[ReportBlock],
+    written: &[String],
+    whole_sections: &[String],
+) -> LastRead {
+    let anchored = old.doc_rev == before_rev;
+    let mut read = LastRead {
+        doc_rev: if anchored { after_rev } else { old.doc_rev },
+        whole: old.whole && anchored,
+        blocks: HashMap::new(),
+        sections: HashMap::new(),
+    };
+    for block in after {
+        let valid = before.iter().any(|prior| {
+            prior.id == block.id
+                && prior.rev == block.rev
+                && old.blocks.get(&prior.id) == Some(&prior.rev)
+        });
+        if valid || written.contains(&block.id) {
+            read.blocks.insert(block.id.clone(), block.rev);
+        }
+    }
+    let sources = sections(before);
+    let final_sections = sections(after);
+    let certificate = |source: &crate::report_sections::Section<'_>| {
+        let members: Vec<_> = source
+            .member_blocks(before)
+            .iter()
+            .map(|block| (block.id.clone(), block.rev))
+            .collect();
+        sources.iter().filter(|s| s.title == source.title).count() == 1
+            && (old.sections.get(source.title) == Some(&members)
+                || whole_sections.iter().any(|title| title == source.title))
+    };
+    for section in &final_sections {
+        let members = section.member_blocks(after);
+        let relevant: Vec<_> = sources
+            .iter()
+            .filter(|source| {
+                source.title == section.title
+                    || source
+                        .member_blocks(before)
+                        .iter()
+                        .any(|prior| members.iter().any(|block| block.id == prior.id))
+            })
+            .collect();
+        // A region outside every H1 has no section certificate. Only a valid whole-document
+        // witness or caller-authored content can certify that source when it joins a section.
+        let outside_sources_known = members.iter().all(|block| {
+            !before.iter().any(|prior| prior.id == block.id)
+                || sources.iter().any(|source| {
+                    source
+                        .member_blocks(before)
+                        .iter()
+                        .any(|prior| prior.id == block.id)
+                })
+                || written.contains(&block.id)
+                || (old.whole && anchored)
+        });
+        let has_source = !relevant.is_empty()
+            || whole_sections.iter().any(|t| t == section.title)
+            || members.iter().all(|block| written.contains(&block.id));
+        if has_source
+            && outside_sources_known
+            && relevant.iter().all(|source| certificate(source))
+            && final_sections
+                .iter()
+                .filter(|s| s.title == section.title)
+                .count()
+                == 1
+            && members
+                .iter()
+                .all(|block| read.blocks.get(&block.id) == Some(&block.rev))
+        {
+            read.sections.insert(
+                section.title.into(),
+                members
+                    .iter()
+                    .map(|block| (block.id.clone(), block.rev))
+                    .collect(),
+            );
+        }
+    }
+    read
 }
 
 #[cfg(test)]
@@ -280,7 +352,13 @@ mod tests {
         assert!(whole(&ledger), "a read of every block");
         ledger.record("s", "planner", "report", 1, &blocks, &ids(&blocks, &[1]));
         assert!(whole(&ledger), "a partial read at the same docRev keeps it");
-        ledger.record_authored("s", "report", &[], Some(2));
+        let (generation, read) = ledger.capture("s", "report").unwrap();
+        ledger.publish(
+            "s",
+            "report",
+            generation,
+            project_commit(&read, 1, &blocks, 2, &blocks, &[], &[]),
+        );
         assert!(
             whole(&ledger),
             "an own commit that advanced the docRev keeps it"
@@ -294,28 +372,24 @@ mod tests {
     }
 
     #[test]
-    fn blocks_an_own_write_removed_are_forgotten() {
+    fn a_late_publication_cannot_overwrite_a_newer_read_or_recreated_entry() {
         let ledger = ReadLedger::new();
-        let blocks = reassign_ids(&[], &split_body("# A\na\n## A1\nx\n# B\nb\n"));
-        let all = ids(&blocks, &[0, 1, 2]);
-        ledger.record("s", "planner", "report", 1, &blocks, &all);
-        let (x, y) = (all[1].clone(), all[2].clone());
-        ledger.record_authored(
-            "s",
+        let blocks = reassign_ids(&[], &split_body("# A\na\n"));
+        ledger.record("s", "planner", "report", 1, &blocks, &ids(&blocks, &[0]));
+        let (generation, old) = ledger.capture("s", "report").unwrap();
+        ledger.record("s", "planner", "report", 2, &blocks, &ids(&blocks, &[0]));
+        ledger.publish("s", "report", generation, old.clone());
+        assert_eq!(ledger.last_read("s", "report").unwrap().doc_rev, 2);
+        ledger.record(
+            "other",
+            "planner",
             "report",
-            &[
-                Authored::Removed(x.clone()),
-                Authored::Section("A".into(), vec![(all[0].clone(), 2)]),
-                Authored::Removed(y.clone()),
-                Authored::SectionDeleted("B".into()),
-            ],
-            None,
+            3,
+            &blocks,
+            &ids(&blocks, &[0]),
         );
-        let read = ledger.last_read("s", "report").expect("recorded");
-        for gone in [&x, &y] {
-            assert!(!read.blocks.contains_key(gone), "{gone}");
-            assert!(read.sections.values().flatten().all(|(id, _)| id != gone));
-        }
-        assert_eq!(read.sections["A"], vec![(all[0].clone(), 2)]);
+        ledger.record("s", "planner", "report", 4, &blocks, &ids(&blocks, &[0]));
+        ledger.publish("s", "report", generation, old);
+        assert_eq!(ledger.last_read("s", "report").unwrap().doc_rev, 4);
     }
 }

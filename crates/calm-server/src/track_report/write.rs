@@ -72,6 +72,7 @@ pub(crate) async fn rest_user_replace(
         },
         None,
         None,
+        None,
     )
     .await?;
     Ok(updated)
@@ -94,6 +95,7 @@ pub(crate) async fn rest_user_reset(
         EditAuthor::User,
         target,
         ReportDocOp::ResetToInitial { if_doc_rev },
+        None,
         None,
         None,
     )
@@ -119,6 +121,7 @@ pub(crate) async fn rest_user_block_op(
         op,
         None,
         None,
+        None,
     )
     .await
     .map(|(card, trace)| (card, trace.block))
@@ -137,6 +140,7 @@ pub(crate) async fn agent_report_op(
     target: ReportEditTarget,
     op: ReportDocOp,
     agent_message: Option<String>,
+    knowledge: Option<crate::report_read_ledger::LastRead>,
     recorder_shadow: Arc<dyn RecorderShadowProbe>,
 ) -> Result<(Card, ReportOpTrace), CalmError> {
     persist(
@@ -148,6 +152,7 @@ pub(crate) async fn agent_report_op(
         target,
         op,
         agent_message,
+        knowledge,
         Some(recorder_shadow),
     )
     .await
@@ -222,6 +227,7 @@ pub async fn persist_report(
         },
         agent_message,
         None,
+        None,
     )
     .await?;
     Ok(updated)
@@ -241,6 +247,7 @@ async fn persist(
     target: ReportEditTarget,
     op: ReportDocOp,
     agent_message: Option<String>,
+    knowledge: Option<crate::report_read_ledger::LastRead>,
     recorder_shadow: Option<Arc<dyn RecorderShadowProbe>>,
 ) -> Result<(Card, ReportOpTrace), CalmError> {
     let ReportEditTarget {
@@ -273,6 +280,7 @@ async fn persist(
         let actor = actor.clone();
         let agent_message = agent_message.clone();
         let recorder_shadow = recorder_shadow.clone();
+        let knowledge = knowledge.clone();
         Box::pin(async move {
             let mut events: Vec<(ActorId, EventScope, Event)> = Vec::new();
             if let Some(probe) = recorder_shadow.as_ref() {
@@ -339,7 +347,9 @@ async fn persist(
                 None
             };
             // 3. Apply the op; `if_rev` checks happen in here against the CRDT truth, a conflict aborts the tx.
-            let (trace, doc_rev) = apply_persisted_report_op(&mut doc, &op, author)?;
+            let before_rev = doc.doc_rev().map_err(block_op_internal)?;
+            let before_blocks = doc.blocks_snapshot().map_err(block_op_internal)?;
+            let (mut trace, doc_rev) = apply_persisted_report_op(&mut doc, &op, author)?;
             if let Some(before) = tasks_before {
                 let after = doc
                     .blocks_snapshot()
@@ -368,6 +378,17 @@ async fn persist(
                 ))
             })?);
             let blocks = projected_payload.blocks.as_deref().unwrap_or_default();
+            trace.knowledge = knowledge.as_ref().map(|old| {
+                crate::report_read_ledger::project_commit(
+                    old,
+                    before_rev,
+                    &before_blocks,
+                    doc_rev,
+                    blocks,
+                    &trace.written_block_ids,
+                    &trace.whole_sections,
+                )
+            });
             let (declarations, block_diagnostics) =
                 calm_types::report_blocks::tasks::project_task_declarations(blocks);
             // 5. The row write and the task projection, in the one order both writers use.
