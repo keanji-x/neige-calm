@@ -1469,7 +1469,10 @@ async fn accepted_verdict_does_not_overwrite_worker_completion() {
     let md = out["content"].as_str().expect("markdown content");
     assert!(md.contains("## Verdict"), "md = {md}");
     assert!(md.contains("Verdict: accepted by planner at"), "md = {md}");
-    assert!(md.contains("did the thing"), "md = {md}");
+    assert!(md.lines().any(|line| line == "did the thing"), "md = {md}");
+    let verdict = md.find("## Verdict").expect("verdict section");
+    let outcome = md.find("## Outcome").expect("outcome section");
+    assert!(verdict < outcome, "the verdict must lead: md = {md}");
 }
 
 #[tokio::test]

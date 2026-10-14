@@ -5,7 +5,7 @@ The track views are read-only: `neige track ls [path]` lists, `neige track cat <
 ## Paths
 
 - `runs/index.json`: every run in the track: status, kind, times, worker card and verdict.
-- `runs/<attempt_id>.md`: one run, outcome first.
+- `runs/<attempt_id>.md`: one run, verdict first.
 - `runs/<attempt_id>.json`: the structured run. `events.completed.payload.result` is the worker's output, `events.failed` holds failures, `verdict` holds your verdict, `worker_card_payload` holds the task context and a codex worker's `resolved_model`.
 - `runs/<attempt_id>/gates/<N>.log`: the full log of gate run N.
 - `cards/<card_id>/.payload.json`: a card's payload; `cards/<card_id>/runtime.json`: its runtime status, or `null`; `cards/<card_id>/conversation.md`: a worker's conversation, including how each turn ended.
