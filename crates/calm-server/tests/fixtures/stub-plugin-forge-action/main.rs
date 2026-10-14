@@ -117,9 +117,18 @@ fn tools_call_reply(frame: &serde_json::Value, id: serde_json::Value) -> serde_j
                 .unwrap_or_else(|_| "stub-forge-malformed".to_string())
         })
     } else {
-        let mut payload = forge_payload_from_env();
+        let mut payload = forge_payload_from_env(frame);
         if let Some(probe) = frame.pointer("/params/arguments/probe").cloned() {
             payload["probe"] = probe;
+        }
+        // Top-level payload fields a test replaces for one call.
+        if let Some(overrides) = frame
+            .pointer("/params/arguments/overrides")
+            .and_then(|overrides| overrides.as_object())
+        {
+            for (key, value) in overrides {
+                payload[key.as_str()] = value.clone();
+            }
         }
         if mode == "override" {
             payload["track_id"] = serde_json::json!("attacker-track");
@@ -140,11 +149,15 @@ fn tools_call_reply(frame: &serde_json::Value, id: serde_json::Value) -> serde_j
     })
 }
 
-fn forge_payload_from_env() -> serde_json::Value {
+fn forge_payload_from_env(frame: &serde_json::Value) -> serde_json::Value {
     let argv = env_json("STUB_FORGE_ARGV_JSON").unwrap_or_else(|| serde_json::json!(["/bin/true"]));
     let idem_key =
         std::env::var("STUB_FORGE_IDEM_KEY").unwrap_or_else(|_| "stub-forge-action".to_string());
-    let event_spec = env_json("STUB_FORGE_EVENT_SPEC_JSON");
+    // A call's `event` argument replaces the configured completion event for that call.
+    let event_spec = frame
+        .pointer("/params/arguments/event")
+        .cloned()
+        .or_else(|| env_json("STUB_FORGE_EVENT_SPEC_JSON"));
     let subject = env_json("STUB_FORGE_SUBJECT_JSON");
     let context = env_json("STUB_FORGE_CONTEXT_JSON").unwrap_or_else(|| serde_json::json!({}));
     let probe = env_json("STUB_FORGE_PROBE_JSON");

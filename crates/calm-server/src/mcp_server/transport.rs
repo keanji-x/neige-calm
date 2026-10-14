@@ -995,7 +995,7 @@ async fn dispatch_forge_action_result(
         runtime
             .wait(&submitted.op_id)
             .await
-            .map(|outcome| forge_receipt::render(&submitted.op_id, Some(outcome), None))
+            .map(forge_receipt::outcome)
     };
     Ok(json!(
         result.unwrap_or_else(|e| forge_receipt::error(e.to_string()))

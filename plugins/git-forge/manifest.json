@@ -210,7 +210,7 @@
     },
     {
       "name": "gh_issue_create",
-      "description": "Create an issue with repo/title/body/idem. Retry identical arguments from the same card to obtain its real issue_number and issue_url; Unknown failures must not be retried with a new idem.",
+      "description": "Create an issue with repo/title/body/idem. Read its real issue_number and issue_url with `neige op show <op_id>`, or retry identical arguments from the same card; Unknown failures must not be retried with a new idem.",
       "kind": "forge-action",
       "input_schema": {
         "type": "object",

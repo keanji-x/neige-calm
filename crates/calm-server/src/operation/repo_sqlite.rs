@@ -141,6 +141,24 @@ impl OperationRepo for SqlxOperationRepo {
         self.find_by_id(op_id).await
     }
 
+    async fn get_operation_on_track(
+        &self,
+        op_id: &str,
+        kind: &str,
+        track_id: &str,
+    ) -> Result<Option<Operation>> {
+        let row = sqlx::query(
+            "SELECT * FROM operations
+             WHERE id = ?1 AND kind = ?2 AND target_type = 'track' AND target_id = ?3",
+        )
+        .bind(op_id)
+        .bind(kind)
+        .bind(track_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.as_ref().map(operation_from_row).transpose()
+    }
+
     async fn operation_result(&self, op_id: &str) -> Result<Option<OperationResult>> {
         let Some(op) = self.find_by_id(op_id).await? else {
             return Ok(None);

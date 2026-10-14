@@ -1,6 +1,7 @@
-//! The one renderer of a plugin-backed forge action's MCP result, regardless of tool name: the
-//! call itself, its replay and `neige_op_show` all answer through [`render`]; a parked call and
-//! `neige_op_show` both read the stored operation through [`show`].
+//! The one renderer of a plugin-backed forge action's MCP result, regardless of tool name: a
+//! recorded outcome answers through [`outcome`] for the call itself, its replay and
+//! `neige_op_show` alike; a parked call and `neige_op_show` both read the stored operation through
+//! [`show`].
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -37,23 +38,21 @@ pub(crate) fn pending(op_id: &str, completion_event: Option<&str>) -> Value {
     .expect("pending receipt contains only strings, a bool, and an enum")
 }
 
-/// A stored forge-action operation as recorded: its outcome, or its pending receipt naming the
-/// completion event its payload declares.
+/// A stored forge-action operation as recorded: its outcome, or, while it has none, its pending
+/// receipt naming the completion event its payload declares.
 pub(crate) fn show(op: &Operation) -> crate::error::Result<ToolResult> {
-    let result = operation_result_from(op)?;
+    if let Some(result) = operation_result_from(op)? {
+        return Ok(outcome(result));
+    }
     let completion_event = completion_event(op)?;
-    Ok(render(&op.id, result, completion_event.as_deref()))
+    Ok(ToolResult::structured(pending(
+        &op.id,
+        completion_event.as_deref(),
+    )))
 }
 
-/// Operation `op_id`'s recorded outcome, or its pending receipt while it has none.
-pub(crate) fn render(
-    op_id: &str,
-    result: Option<OperationResult>,
-    completion_event: Option<&str>,
-) -> ToolResult {
-    let Some(result) = result else {
-        return ToolResult::structured(pending(op_id, completion_event));
-    };
+/// A forge action's recorded outcome, under the op_id it records.
+pub(crate) fn outcome(result: OperationResult) -> ToolResult {
     let op_id = result.op_id;
     match result.outcome {
         OperationOutcome::Succeeded { result } => ToolResult::structured(json!({
@@ -121,23 +120,23 @@ pub(crate) fn error(message: String) -> ToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::operation::PhaseTag;
+    use crate::operation::{OperationKey, OperationRepo, PhaseTag, SqlxOperationRepo};
 
-    fn wire(op_id: &str, outcome: Option<OperationOutcome>) -> Value {
-        let result = outcome.map(|outcome| OperationResult {
+    fn wire(op_id: &str, recorded: OperationOutcome) -> Value {
+        serde_json::to_value(outcome(OperationResult {
             op_id: op_id.to_owned(),
-            outcome,
-        });
-        serde_json::to_value(render(op_id, result, Some("forge.scan.completed"))).unwrap()
+            outcome: recorded,
+        }))
+        .unwrap()
     }
 
     #[test]
-    fn render_names_the_status_of_every_outcome() {
+    fn outcome_names_the_status_of_every_outcome() {
         let succeeded = wire(
             "op-s",
-            Some(OperationOutcome::Succeeded {
+            OperationOutcome::Succeeded {
                 result: json!({ "n": 1 }),
-            }),
+            },
         );
         assert_eq!(succeeded["isError"], false);
         assert_eq!(
@@ -151,10 +150,10 @@ mod tests {
 
         let collision = wire(
             "op-c",
-            Some(OperationOutcome::SucceededViaCollision {
+            OperationOutcome::SucceededViaCollision {
                 existing_op_id: "op-e".into(),
                 result: json!({ "n": 2 }),
-            }),
+            },
         );
         assert_eq!(collision["isError"], false);
         assert_eq!(collision["structuredContent"]["status"], "succeeded");
@@ -165,11 +164,11 @@ mod tests {
 
         let failed = wire(
             "op-f",
-            Some(OperationOutcome::Failed {
+            OperationOutcome::Failed {
                 last_error: "boom".into(),
                 from_phase: PhaseTag::Parked,
                 last_error_class: Some("permanent".into()),
-            }),
+            },
         );
         let failed_message = "forge action operation op-f failed: boom";
         assert_eq!(failed["isError"], true);
@@ -193,10 +192,10 @@ mod tests {
 
         let stuck = wire(
             "op-t",
-            Some(OperationOutcome::Stuck {
+            OperationOutcome::Stuck {
                 reason: "lost".into(),
                 from_phase: PhaseTag::SpawnStarted,
-            }),
+            },
         );
         assert_eq!(stuck["isError"], true);
         assert_eq!(stuck["structuredContent"]["outcome"], "stuck");
@@ -206,14 +205,43 @@ mod tests {
             stuck["structuredContent"]["error"],
             "forge action operation op-t stuck: lost"
         );
+    }
 
-        let pending_wire = wire("op-p", None);
-        assert_eq!(pending_wire["isError"], false);
-        assert_eq!(
-            pending_wire["structuredContent"],
-            pending("op-p", Some("forge.scan.completed"))
-        );
-        assert_eq!(pending_wire["structuredContent"]["status"], "pending");
-        assert_eq!(pending_wire["structuredContent"]["parked"], true);
+    async fn stored(payload: Value) -> (SqlxOperationRepo, Operation) {
+        let truth = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+            .await
+            .unwrap();
+        let repo = SqlxOperationRepo::new(truth.pool().clone());
+        let op_id = repo
+            .insert_operation(
+                crate::operation::forge_action_adapter::FORGE_ACTION_KIND,
+                OperationKey {
+                    operation_key: crate::model::new_id(),
+                    idempotency_key: None,
+                    payload_hash: "hash".into(),
+                },
+                payload,
+            )
+            .await
+            .unwrap();
+        let op = repo.get_operation(&op_id).await.unwrap().unwrap();
+        (repo, op)
+    }
+
+    /// A recorded outcome never depends on decoding the payload: only a pending receipt reads it.
+    #[tokio::test]
+    async fn show_renders_a_recorded_outcome_without_decoding_the_payload() {
+        let (repo, op) = stored(json!({ "track_id": "track-a" })).await;
+        assert!(show(&op).is_err(), "a pending receipt needs the payload");
+        sqlx::query("UPDATE operations SET phase = 'failed', last_error = 'boom' WHERE id = ?1")
+            .bind(&op.id)
+            .execute(&repo.sqlite_pool())
+            .await
+            .unwrap();
+        let failed = repo.get_operation(&op.id).await.unwrap().unwrap();
+        let shown = serde_json::to_value(show(&failed).unwrap()).unwrap();
+        assert_eq!(shown["isError"], true);
+        assert_eq!(shown["structuredContent"]["status"], "failed");
+        assert_eq!(shown["structuredContent"]["last_error"], "boom");
     }
 }

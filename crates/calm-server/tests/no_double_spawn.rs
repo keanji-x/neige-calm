@@ -130,6 +130,17 @@ impl OperationRepo for ReverseSpawnClaimRepo {
         self.inner.get_operation(op_id).await
     }
 
+    async fn get_operation_on_track(
+        &self,
+        op_id: &str,
+        kind: &str,
+        track_id: &str,
+    ) -> CalmResult<Option<Operation>> {
+        self.inner
+            .get_operation_on_track(op_id, kind, track_id)
+            .await
+    }
+
     async fn operation_result(&self, op_id: &str) -> CalmResult<Option<OperationResult>> {
         self.inner.operation_result(op_id).await
     }
@@ -249,6 +260,17 @@ impl OperationRepo for DriveErrorOnceRepo {
 
     async fn get_operation(&self, op_id: &str) -> CalmResult<Option<Operation>> {
         self.inner.get_operation(op_id).await
+    }
+
+    async fn get_operation_on_track(
+        &self,
+        op_id: &str,
+        kind: &str,
+        track_id: &str,
+    ) -> CalmResult<Option<Operation>> {
+        self.inner
+            .get_operation_on_track(op_id, kind, track_id)
+            .await
     }
 
     async fn operation_result(&self, op_id: &str) -> CalmResult<Option<OperationResult>> {

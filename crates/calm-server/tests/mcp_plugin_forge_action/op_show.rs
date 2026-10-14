@@ -197,6 +197,122 @@ async fn op_show_refuses_unknown_foreign_and_non_forge_ids_identically() {
     fx.plugin_host.stop(PLUGIN_ID).await.expect("stop plugin");
 }
 
+async fn insert_operation(fx: &Fixture, kind: &str, track_id: &str) -> String {
+    SqlxOperationRepo::new(fx.repo.pool().clone())
+        .insert_operation(
+            kind,
+            OperationKey {
+                operation_key: calm_server::model::new_id(),
+                idempotency_key: None,
+                payload_hash: "op-show-out-of-scope".into(),
+            },
+            json!({ "track_id": track_id }),
+        )
+        .await
+        .expect("insert an operation")
+}
+
+/// An out-of-scope row is filtered in the lookup, never decoded: one whose stored JSON no longer
+/// decodes is refused exactly like an absent id, not with an internal error.
+#[tokio::test]
+async fn op_show_refuses_undecodable_out_of_scope_rows_like_an_absent_id() {
+    let _env = env_guards().await;
+    let fx = boot_fixture_with_role(StubMode::Awaited, CardRole::Planner).await;
+    let foreign = insert_operation(&fx, FORGE_ACTION_KIND, "another-track").await;
+    let non_forge = insert_operation(&fx, "terminal-create", &fx.track_id).await;
+    for op_id in [&foreign, &non_forge] {
+        // Valid JSON, so the table's CHECKs pass, that no longer decodes as a `TxOutput`.
+        sqlx::query("UPDATE operations SET tx_output_json = '\"undecodable\"' WHERE id = ?1")
+            .bind(op_id)
+            .execute(fx.repo.pool())
+            .await
+            .expect("corrupt the stored operation");
+    }
+
+    let mut refusals = Vec::new();
+    for (id, op_id) in [
+        (5, "no-such-op"),
+        (6, foreign.as_str()),
+        (7, non_forge.as_str()),
+    ] {
+        let resp = op_show(&fx, id, op_id).await;
+        assert!(
+            resp.get("result").is_none(),
+            "{op_id} must be refused: {resp:#?}"
+        );
+        let mut normalized = resp["error"].clone();
+        normalized["message"] = json!(
+            normalized["message"]
+                .as_str()
+                .unwrap_or_default()
+                .replace(op_id, "<op_id>")
+        );
+        refusals.push(normalized);
+    }
+    assert_eq!(refusals[0]["code"], -32404, "{refusals:#?}");
+    assert_eq!(
+        refusals[0]["message"],
+        "neige_op_show: no operation <op_id> on this track"
+    );
+    assert!(
+        refusals.windows(2).all(|pair| pair[0] == pair[1]),
+        "undecodable foreign and non-forge rows must be refused like an absent id: {refusals:#?}"
+    );
+    fx.plugin_host.stop(PLUGIN_ID).await.expect("stop plugin");
+}
+
+/// A parked replay that selects a frozen predecessor through `compatible_payload_hashes` names the
+/// completion event of the STORED payload, which is the event that will be emitted, not the one
+/// the replaying call declares.
+#[tokio::test]
+async fn parked_replay_of_a_compatible_predecessor_names_its_stored_completion_event() {
+    let _env = env_guards().await;
+    let fx = boot_fixture_with_role(StubMode::Parked, CardRole::Planner).await;
+    let release = fx._tmp.path().join("release");
+    let argv = json!([
+        "/bin/sh",
+        "-c",
+        "while [ ! -f \"$1\" ]; do sleep 0.05; done",
+        "sh",
+        release.display().to_string(),
+    ]);
+    let first = call_forge_tool_with_args(&fx, 5, json!({ "overrides": { "argv": argv } })).await;
+    let receipt = &first["result"]["structuredContent"];
+    assert_eq!(receipt["status"], "pending", "{first:#?}");
+    assert_eq!(receipt["completion_event"], "forge.scan.completed");
+    let op_id = op_id_of(&first);
+    let stored_hash: String =
+        sqlx::query_scalar("SELECT payload_hash FROM operations WHERE id = ?1")
+            .bind(&op_id)
+            .fetch_one(fx.repo.pool())
+            .await
+            .expect("stored payload hash");
+
+    let upgraded = json!({
+        "event": { "event_kind": "forge.issue.read", "fields": {} },
+        "overrides": { "argv": argv },
+    });
+    let incompatible = call_forge_tool_with_args(&fx, 6, upgraded.clone()).await;
+    assert_eq!(
+        incompatible["result"]["isError"], true,
+        "the upgraded payload differs from the stored one: {incompatible:#?}"
+    );
+
+    let mut compatible = upgraded;
+    compatible["overrides"]["compatible_payload_hashes"] = json!([stored_hash]);
+    let replay = call_forge_tool_with_args(&fx, 7, compatible).await;
+    assert_eq!(op_id_of(&replay), op_id, "the predecessor is selected");
+    assert_eq!(
+        replay["result"], first["result"],
+        "the replay names the stored completion event: {replay:#?}"
+    );
+    assert_eq!(op_show(&fx, 8, &op_id).await["result"], first["result"]);
+
+    std::fs::write(&release, "").expect("release the parked action");
+    wait_for_terminal(&fx, &op_id).await;
+    fx.plugin_host.stop(PLUGIN_ID).await.expect("stop plugin");
+}
+
 #[tokio::test]
 async fn op_show_failed_keeps_the_replay_error_shape() {
     let _env = env_guards().await;

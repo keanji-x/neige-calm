@@ -821,6 +821,14 @@ pub trait OperationRepo: Send + Sync {
         key: &OperationKey,
     ) -> Result<Option<Operation>>;
     async fn get_operation(&self, op_id: &str) -> Result<Option<Operation>>;
+    /// The `kind` operation `op_id` whose stored target is Track `track_id`. The scope is part of
+    /// the query, so a row outside it is never read or decoded.
+    async fn get_operation_on_track(
+        &self,
+        op_id: &str,
+        kind: &str,
+        track_id: &str,
+    ) -> Result<Option<Operation>>;
     async fn operation_result(&self, op_id: &str) -> Result<Option<OperationResult>>;
     async fn claim_drive_batch(&self, limit: i64) -> Result<Vec<Operation>>;
     async fn claim_interaction_retry(

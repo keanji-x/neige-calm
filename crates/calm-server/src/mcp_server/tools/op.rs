@@ -1,6 +1,6 @@
 //! `neige_op_show` (#2600): read one forge action's recorded outcome by op_id, from any card of
-//! the caller's Track, in the envelope the original call and its replay return. Read-only: it
-//! never drives, waits on, or re-emits anything for the operation.
+//! the caller's Track, in the forge-action envelope a plugin forge action's call and its replay
+//! return. Read-only: it never drives, waits on, or re-emits anything for the operation.
 
 use crate::mcp_server::forge_receipt;
 use crate::mcp_server::framing::RpcError;
