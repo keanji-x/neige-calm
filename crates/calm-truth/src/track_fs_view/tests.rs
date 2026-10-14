@@ -445,6 +445,79 @@ fn run_markdown_points_at_the_worker_cards_conversation() {
     );
 }
 
+fn run_with_worker_inputs_and_result(result: Value) -> RunProjection {
+    let mut run = run_with_verdict_and_events();
+    run.worker_card = Some(test_card(
+        "card-worker",
+        "codex",
+        json!({
+            "idempotency_key": "run-full",
+            "goal": "ship the widget",
+            "context": {"priority": "high"},
+            "acceptance_criteria": "widget ships green",
+            "prompt": "Goal:\nship the widget\n\nGate step 1 `ratchet`: scripts/gate-only-in-prompt.sh",
+        }),
+    ));
+    run.completed_event = Some(run_event(
+        11,
+        1200,
+        "task.completed",
+        json!({"idempotency_key": "run-full", "result": result}),
+    ));
+    run
+}
+
+#[test]
+fn run_markdown_leads_with_the_outcome_and_omits_the_prompt() {
+    let markdown = run_markdown(&run_with_worker_inputs_and_result(
+        json!({"summary": "widget shipped"}),
+    ));
+    let position = |needle: &str| {
+        markdown
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing {needle:?} in {markdown}"))
+    };
+
+    assert!(position("\n## Outcome\n") < position("\n## Verdict\n"));
+    assert!(position("\n## Verdict\n") < position("\n## Goal\n"));
+    assert!(position("\n## Goal\n") < position("\n## Acceptance Criteria\n"));
+    assert!(position("\n## Acceptance Criteria\n") < position("\n## Context\n"));
+    assert!(!markdown.contains("## Final Event"), "{markdown}");
+    assert!(!markdown.contains("## Prompt"), "{markdown}");
+    assert!(!markdown.contains("gate-only-in-prompt"), "{markdown}");
+    assert_eq!(markdown.matches("ship the widget").count(), 1, "{markdown}");
+    assert!(
+        markdown.lines().any(|line| line == "widget shipped"),
+        "summary must be a line of its own: {markdown}"
+    );
+    assert!(
+        markdown.contains(
+            "\nFull worker prompt (gate steps, checkout facts): \
+             [.payload.json](../cards/card-worker/.payload.json) field `prompt`\n"
+        ),
+        "{markdown}"
+    );
+}
+
+#[test]
+fn run_markdown_keeps_result_fields_beyond_summary() {
+    let markdown = run_markdown(&run_with_worker_inputs_and_result(json!({
+        "summary": "found one blocker",
+        "verdict": "blocking",
+        "blocking_findings": [{"title": "lost update", "evidence": "db.rs:42"}],
+    })));
+
+    assert!(
+        markdown.lines().any(|line| line == "found one blocker"),
+        "{markdown}"
+    );
+    assert!(markdown.contains("\"verdict\": \"blocking\""), "{markdown}");
+    assert!(
+        markdown.contains("\"evidence\": \"db.rs:42\""),
+        "{markdown}"
+    );
+}
+
 #[test]
 fn project_runs_real_requested_event_wins_over_dispatch_record() {
     let write = fallback_write();

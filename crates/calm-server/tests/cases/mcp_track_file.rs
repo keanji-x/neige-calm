@@ -1289,7 +1289,7 @@ async fn runs_index_json_returns_same_run_set_as_ls_with_full_fields() {
 async fn completed_run_markdown_includes_read_only_banner_and_worker_fields() {
     let boot = boot().await;
     request_codex(&boot, "done-md").await;
-    materialize_worker(&boot, "done-md").await;
+    let worker_id = materialize_worker(&boot, "done-md").await;
     complete_run(&boot, "done-md", "finished cleanly").await;
 
     let out = call_tool(
@@ -1309,10 +1309,23 @@ async fn completed_run_markdown_includes_read_only_banner_and_worker_fields() {
     assert!(md.contains("## Context"), "md = {md}");
     assert!(md.contains("## Acceptance Criteria"), "md = {md}");
     assert!(md.contains("accept done-md"), "md = {md}");
-    assert!(md.contains("## Prompt"), "md = {md}");
-    assert!(md.contains("prompt for done-md"), "md = {md}");
+    assert!(!md.contains("## Prompt"), "md = {md}");
+    assert!(!md.contains("prompt for done-md"), "md = {md}");
+    assert!(
+        md.contains(&format!(
+            "[.payload.json](../cards/{}/.payload.json) field `prompt`",
+            worker_id.as_str()
+        )),
+        "md = {md}"
+    );
     assert!(md.contains("TaskCompleted"), "md = {md}");
-    assert!(md.contains("finished cleanly"), "md = {md}");
+    assert!(
+        md.lines().any(|line| line == "finished cleanly"),
+        "md = {md}"
+    );
+    let outcome = md.find("## Outcome").expect("outcome section");
+    let goal = md.find("## Goal").expect("goal section");
+    assert!(outcome < goal, "outcome must lead the inputs: md = {md}");
 }
 
 #[tokio::test]

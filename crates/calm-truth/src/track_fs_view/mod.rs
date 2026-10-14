@@ -1292,27 +1292,7 @@ pub(crate) fn run_markdown(run: &RunProjection) -> String {
         format_optional_i64(run.finished_at)
     ));
 
-    if let Some(verdict) = run.verdict.as_ref() {
-        let reason = verdict.reason.as_deref().unwrap_or("");
-        out.push_str(&format!(
-            "\n## Verdict\n\nVerdict: {} by planner at {}: {}\n",
-            verdict.status, verdict.at, reason
-        ));
-    }
-
-    if let Some(card) = run.worker_card.as_ref() {
-        append_payload_field(&mut out, &card.payload, "goal", "Goal");
-        append_payload_json_field(&mut out, &card.payload, "context", "Context");
-        append_payload_field(
-            &mut out,
-            &card.payload,
-            "acceptance_criteria",
-            "Acceptance Criteria",
-        );
-        append_payload_field(&mut out, &card.payload, "prompt", "Prompt");
-    }
-
-    out.push_str("\n## Final Event\n\n");
+    out.push_str("\n## Outcome\n\n");
     match latest_final_event(run.completed_event.as_ref(), run.failed_event.as_ref()) {
         Some(FinalRunEvent::Failed(event)) => {
             let reason = event
@@ -1328,12 +1308,34 @@ pub(crate) fn run_markdown(run: &RunProjection) -> String {
             }
         }
         Some(FinalRunEvent::Completed(event)) => {
-            out.push_str("- TaskCompleted:\n\n");
-            out.push_str("```json\n");
-            out.push_str(&final_result_summary(event));
-            out.push_str("\n```\n");
+            out.push_str("- TaskCompleted:\n");
+            append_completed_result(&mut out, event);
         }
         None => out.push_str("- No TaskCompleted or TaskFailed event has been recorded.\n"),
+    }
+
+    if let Some(verdict) = run.verdict.as_ref() {
+        let reason = verdict.reason.as_deref().unwrap_or("");
+        out.push_str(&format!(
+            "\n## Verdict\n\nVerdict: {} by planner at {}: {}\n",
+            verdict.status, verdict.at, reason
+        ));
+    }
+
+    if let Some(card) = run.worker_card.as_ref() {
+        append_payload_field(&mut out, &card.payload, "goal", "Goal");
+        append_payload_field(
+            &mut out,
+            &card.payload,
+            "acceptance_criteria",
+            "Acceptance Criteria",
+        );
+        append_payload_json_field(&mut out, &card.payload, "context", "Context");
+        out.push_str(&format!(
+            "\nFull worker prompt (gate steps, checkout facts): \
+             [.payload.json](../cards/{}/.payload.json) field `prompt`\n",
+            card.id.as_str()
+        ));
     }
     out
 }
@@ -1352,15 +1354,26 @@ fn append_payload_json_field(out: &mut String, payload: &Value, key: &str, label
     }
 }
 
-fn final_result_summary(event: &RunEventProjection) -> String {
+/// The summary goes on a plain line of its own so a reader (and an exact-line match) sees the
+/// conclusion first; any other result field follows as the full result JSON.
+fn append_completed_result(out: &mut String, event: &RunEventProjection) {
     let result = event.payload.get("result").unwrap_or(&Value::Null);
-    if let Some(summary) = result.get("summary").and_then(Value::as_str) {
-        return summary.to_string();
-    }
     if let Some(summary) = result.as_str() {
-        return summary.to_string();
+        out.push_str(&format!("\n{summary}\n"));
+        return;
     }
-    pretty_json(result)
+    let summary = result.get("summary").and_then(Value::as_str);
+    if let Some(summary) = summary {
+        out.push_str(&format!("\n{summary}\n"));
+    }
+    let has_other_fields = result
+        .as_object()
+        .is_none_or(|fields| fields.keys().any(|key| key != "summary"));
+    if summary.is_none() || has_other_fields {
+        out.push_str("\n```json\n");
+        out.push_str(&pretty_json(result));
+        out.push_str("\n```\n");
+    }
 }
 
 fn pretty_json(value: &Value) -> String {
