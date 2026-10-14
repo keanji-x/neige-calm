@@ -62,6 +62,8 @@ export type ConversationStore = Readonly<{
   interrupt: () => void;
   /** The fresh-session strip (#2192): what it says and its action, or `null` when there is nothing to say. */
   restart: Readonly<{ strip: RestartStrip | null; pending: boolean; start: () => void }>;
+  /** Declared by the bound Planner backend; false until the run read answers. */
+  manualCompactSupported: boolean;
   compact: () => void;
   compacting: boolean;
   retryHistory: () => void;

@@ -282,6 +282,7 @@ export function useConversationStore(
     dismissFailedSend: outbox.dismissFailedSend,
     send: outbox.send,
     attachmentsSupported: run.data?.attachments_supported ?? false,
+    manualCompactSupported: run.data?.manual_compact_supported === true,
     contextUsage: run.data?.token_usage ?? null,
     runningAnchor: nextRunningAnchor,
     uploadAttachment: mutations.uploadAttachment,

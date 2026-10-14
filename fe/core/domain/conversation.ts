@@ -237,6 +237,8 @@ export type PlannerRun = Readonly<{
    * the server is older than the feature.
    */
   attachments_supported: boolean;
+  /** Whether the bound Planner backend implements manual context compaction. */
+  manual_compact_supported: boolean;
   /** How full the model's context is, or `null` when the harness has never reported it. */
   token_usage: PlannerRunTokenUsage | null;
   /** The turn the harness is running; non-null exactly when `phase` is `turn_running`. */
@@ -302,6 +304,7 @@ export function plannerRunOperation(cardId: string): ApiOperation<PlannerRun> {
       blocked_reason: z.string().nullable(),
       /* Absent on older servers, and false is the safe read. */
       attachments_supported: z.boolean().optional().default(false),
+      manual_compact_supported: z.boolean(),
       /* Absent on older servers and whenever the harness has never reported a usage frame; `null` draws no meter. */
       token_usage: plannerRunTokenUsageSchema.nullable().optional().default(null),
       running_turn: plannerRunningTurnSchema.nullable(),

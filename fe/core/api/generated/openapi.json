@@ -13894,7 +13894,8 @@
           "permission_mode",
           "pending",
           "pending_overflow",
-          "attachments_supported"
+          "attachments_supported",
+          "manual_compact_supported"
         ],
         "properties": {
           "attachments_supported": {
@@ -13910,6 +13911,10 @@
           },
           "card_id": {
             "type": "string"
+          },
+          "manual_compact_supported": {
+            "type": "boolean",
+            "description": "Whether the bound Planner backend implements manual context compaction. This is not\ncurrent admission: the compact POST still checks authorization, busy state and history.\nAnswered for dormant conversations too; managed ACP does not implement it."
           },
           "model": {
             "type": [

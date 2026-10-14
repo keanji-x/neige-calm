@@ -29,4 +29,6 @@
 // Revision 29 (#2596): `GET /api/read-receipts` and its `read`/`unread` writes are new, and
 // `/api/version` no longer carries `nowMs`; a bundle of this revision reads its unread state from the
 // kernel and would get 404 from an older one.
-pub const REST_API_VERSION: &str = "29";
+// Revision 30: Planner run responses require the bound backend's manual_compact_supported.
+// A bundle that requires this field rejects older kernels' run responses.
+pub const REST_API_VERSION: &str = "30";

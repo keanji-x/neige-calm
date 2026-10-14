@@ -531,6 +531,7 @@ function useConversationPane(
   const composerView = useMemo(() => ({
     compact: compact,
     compacting: store.compacting,
+    manualCompactSupported: store.manualCompactSupported,
     attachmentsSupported: store.attachmentsSupported,
     contextUsage: store.contextUsage,
     deleteQueuedEntry: deleteQueuedEntry,
@@ -549,7 +550,7 @@ function useConversationPane(
     steerQueuedEntry: canSteer ? steerQueuedEntry : undefined,
     stopping: store.stopping,
     working: store.working
-  }), [compact, store.compacting, store.attachmentsSupported, store.contextUsage, deleteQueuedEntry, store.historyReady, interrupt, store.model, store.modelCatalog, store.pendingQueue, store.pendingQueueOverflow, store.permissionMode, store.queueWriteOut, store.sendBlocked, store.sending, setModel, setPermissionMode, store.stopping, store.working, canSteer, steerQueuedEntry]);
+  }), [compact, store.compacting, store.manualCompactSupported, store.attachmentsSupported, store.contextUsage, deleteQueuedEntry, store.historyReady, interrupt, store.model, store.modelCatalog, store.pendingQueue, store.pendingQueueOverflow, store.permissionMode, store.queueWriteOut, store.sendBlocked, store.sending, setModel, setPermissionMode, store.stopping, store.working, canSteer, steerQueuedEntry]);
   const { replacing, bar: editingBar } = edit;
   const composerNode = useMemo(() => existingId === null ? null : (
             <ChatComposer layout={compactComposer ? 'mobile' : 'standard'}
@@ -559,7 +560,7 @@ function useConversationPane(
               focusRequest={composerFocusRequest}
               draft={{ text: composer.text, onChange: setComposerText }}
               disabled={composerView.sendBlocked || !composerView.historyReady || replacing}
-              onCompact={scopeProvider === 'codex' && composerView.historyReady && editingBar === undefined ? composerView.compact : undefined}
+              onCompact={composerView.manualCompactSupported && composerView.historyReady && editingBar === undefined ? composerView.compact : undefined}
               sendWaiting={replacing} {...(editingBar === undefined ? {} : { editing: editingBar })}
               /* The images stay with the composer until the store reports them delivered; the press waits out its Edit. */
               showSideCommand={options?.showSideCommand}

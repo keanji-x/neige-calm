@@ -25,7 +25,7 @@ function renderRecovery(state: 'dormant' | 'paused', initial = '/track/daily?pan
     if (request.path.endsWith('/planner/run')) return ok({ card_id: 'daily-planner', worker_session_id: 'runtime',
       phase: state === 'paused' && !restarted ? 'wedged' : 'idle', model: null, reasoning_effort: null, permission_mode: 'never',
       blocked_reason: state === 'paused' && !restarted
-        ? 'The stop request timed out before the model confirmed that this turn had stopped.' : null, running_turn: null });
+        ? 'The stop request timed out before the model confirmed that this turn had stopped.' : null, manual_compact_supported: true, running_turn: null });
     if (request.path.endsWith('/planner/input')) return restarted || state === 'paused'
       ? ok({ card_id: 'daily-planner', worker_session_id: 'runtime' })
       : { status: 409, statusText: 'Conflict', body: { code: 'planner_harness_dormant',

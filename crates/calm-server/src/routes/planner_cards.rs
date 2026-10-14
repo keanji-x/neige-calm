@@ -149,6 +149,10 @@ pub struct GetPlannerRunResponse {
     pub pending_overflow: u32,
     /// Whether this card can take image attachments at all: not when the track's workspace is an attached directory, since neige never writes into one. Answered by the same function the upload runs (`planner_attachments::attachment_root`).
     pub attachments_supported: bool,
+    /// Whether the bound Planner backend implements manual context compaction. This is not
+    /// current admission: the compact POST still checks authorization, busy state and history.
+    /// Answered for dormant conversations too; managed ACP does not implement it.
+    pub manual_compact_supported: bool,
     /// The turn the harness is running. Non-null exactly when this response's `phase` is `turn_running`: both come from one read of the harness state.
     pub running_turn: Option<PlannerRunningTurn>,
 }
@@ -376,11 +380,13 @@ pub(crate) async fn get_planner_run(
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    if !card_runs_headless_harness(&card, role) {
+    let Some(binding) = crate::harness::profile::PlannerBinding::from_card(&card, role) else {
         return Err(CalmError::Forbidden(format!(
             "card {id} is not a planner codex card",
         )));
-    }
+    };
+    let manual_compact_supported =
+        crate::harness::PlannerBackend::manual_compact_supported(&binding.provider);
 
     // Unreadable model keys are reported as 'no selection' by this READ rather than as a 500; the turn-issuing path refuses on the same payload, so the conversation still stops but this surface can show why.
     let selection =
@@ -408,6 +414,7 @@ pub(crate) async fn get_planner_run(
         pending: Vec::new(),
         pending_overflow: 0,
         attachments_supported,
+        manual_compact_supported,
         running_turn: None,
     };
     let Some(runtime) = s
@@ -449,6 +456,7 @@ pub(crate) async fn get_planner_run(
     let (pending, pending_overflow) = page_pending_entries(&card.id, &snapshot.pending_entries());
     Ok(Json(GetPlannerRunResponse {
         attachments_supported,
+        manual_compact_supported,
         card_id: card.id,
         worker_session_id: Some(runtime.id.clone()),
         phase: Some(snapshot.phase),

@@ -68,7 +68,7 @@ function setup(reply?: Reply) {
     }
     if (request.path.includes('/harness/items')) return ok([]);
     if (request.path.endsWith('/planner/run')) {
-      return ok({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, running_turn: null });
+      return ok({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, running_turn: null });
     }
     if (request.path === '/api/settings') return ok({});
     return ok([]);
@@ -397,7 +397,7 @@ describe('the source panel on the track page', () => {
   it('does not let an Escape inside the source card interrupt a running planner turn', async () => {
     const { requests } = setup((request) => {
       if (request.path.endsWith('/planner/run')) {
-        return ok({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, running_turn: null });
+        return ok({ card_id: PLANNER_CARD.id, worker_session_id: 'runtime', phase: 'turn_running', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, running_turn: null });
       }
       return undefined;
     });

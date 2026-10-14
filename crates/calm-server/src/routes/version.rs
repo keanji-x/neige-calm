@@ -41,7 +41,9 @@ pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 /// #2596 bumps 47 -> 48: read receipts live in the kernel (`/api/read-receipts`) and `nowMs` is
 /// gone from `/api/version`; an older bundle would keep its own localStorage receipts beside the
 /// kernel's and, without `nowMs`, lose its read scope altogether.
-pub const WEB_COMPAT_VERSION: u32 = 48;
+/// 48 -> 49: Planner run declares required manual_compact_supported; composers consume backend
+/// capability rather than infer it from provider identity.
+pub const WEB_COMPAT_VERSION: u32 = 49;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

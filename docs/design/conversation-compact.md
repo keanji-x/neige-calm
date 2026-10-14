@@ -24,4 +24,12 @@ The spawn emits only `TurnStarted` and `TurnCompleted` for its minted turn id, s
 
 A later turn resumes the compacted session as usual. A rewind still cuts at the last record of the person's turn before the removed one. When a compaction lies between them, that anchor precedes the boundary, so an accepted cut restores the uncompacted history up to the anchor, which still matches the transcript. The existing dry run (`--resume-session-at` / `--resume-drops-turn`) lets the CLI judge that cut first; a refusal is a 409 and changes nothing.
 
-The web composer still offers `/compact` only when `scopeProvider === 'codex'` (`fe/web/src/app/router/public.tsx`); exposing it for Claude is a separate frontend change.
+## Frontend capability contract
+
+The bound Planner backend declares `manual_compact_supported` through `PlannerBackend::manual_compact_supported`; the read route resolves the existing `PlannerBinding`, without consulting the worker provider registry or opening a provider session. Codex and Claude implement manual compaction; managed ACP does not. This capability describes backend support, not permission or current admission: the existing compact POST still enforces human authorization, busy state, queue, history and seal checks.
+
+`GET /api/cards/{id}/planner/run` always sends the required boolean, including dormant reads. The frontend schema rejects a missing or non-boolean value. The store passes it to the router/composer, which offers the command only with loaded history and outside message editing. Selecting it calls the existing compact POST rather than sending chat. REST revision 30 and web compatibility revision 49 keep an older kernel from pairing with a bundle that requires the field.
+
+Review tier for this frontend exposure: L1, because it adds a read capability and consumes it without changing compression, authorization or persistence. Contract changes in the owner layers are authorized by this task.
+
+Adding a Planner backend requires its exhaustive capability declaration in the backend owner alongside its implementation; the frontend, schema and fixtures do not need a provider-name list. Capability regressions use true and false for the same provider identities, including a synthetic supported ACP response, so the page's contract stays independent of the current support matrix. Ordinary provider additions do not add another permanent check or pin. The DOM and browser files run once each in this task gate, with focused iteration/replay as needed; CI owns broad suites.

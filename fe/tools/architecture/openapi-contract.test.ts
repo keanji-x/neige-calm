@@ -214,6 +214,15 @@ it('pins the server DTO outside the generated wire type roster', () => {
   expect(schema.required.sort()).toEqual(['body', 'id', 'title']);
 });
 
+it('compact capability is required in the generated Planner run contract', () => {
+  const document = JSON.parse(readFileSync(new URL('../../core/api/generated/openapi.json', import.meta.url), 'utf8')) as {
+    components: { schemas: { GetPlannerRunResponse: { properties: Record<string, unknown>; required: string[] } } };
+  };
+  const schema = document.components.schemas.GetPlannerRunResponse;
+  expect(schema.properties.manual_compact_supported).toMatchObject({ type: 'boolean' });
+  expect(schema.required).toContain('manual_compact_supported');
+});
+
 
 it('the shipped template form binds to its plugin and keeps merge approval by default', () => {
   const body = readFileSync(new URL('../../../crates/calm-server/templates/builtin/dev.md', import.meta.url), 'utf8');

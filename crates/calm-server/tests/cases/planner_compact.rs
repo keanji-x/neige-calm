@@ -8,6 +8,52 @@ use calm_server::harness::HarnessPhaseTag;
 use calm_server::harness::HarnessState;
 use serde_json::json;
 
+/// The run read declares support even without a live backend; no provider process is opened.
+#[tokio::test]
+async fn compact_run_declares_capability_for_dormant_backend_bindings() {
+    let boot = boot_with(idle_snapshot(vec![])).await;
+    boot.harness.shutdown().await.unwrap();
+    boot.registry.remove(&boot.worker_session_id);
+    for (provider, supported) in [("codex", true), ("claude", true), ("opencode", false)] {
+        sqlx::query(
+            "UPDATE cards SET payload = json_set(payload, '$.planner_provider', ?1) WHERE id = ?2",
+        )
+        .bind(provider)
+        .bind(boot.planner_card.id.as_str())
+        .execute(boot.repo.pool())
+        .await
+        .unwrap();
+        let (status, body) = send_json(
+            boot.app.clone(),
+            "GET",
+            format!("/api/cards/{}/planner/run", boot.planner_card.id),
+            "user",
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["phase"].is_null(), "{body}");
+        assert!(body["worker_session_id"].is_null(), "{body}");
+        assert_eq!(body["manual_compact_supported"], supported, "{body}");
+    }
+}
+
+#[tokio::test]
+async fn compact_run_declares_codex_capability() {
+    let boot = boot_with(idle_snapshot(vec![])).await;
+    let (status, body) = send_json(
+        boot.app.clone(),
+        "GET",
+        format!("/api/cards/{}/planner/run", boot.planner_card.id),
+        "user",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["manual_compact_supported"], true, "{body}");
+    boot.harness.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn compact_rest_requires_a_human_and_keeps_unknown_cards_private_from_agents() {
     let boot = boot_with(idle_snapshot(vec![])).await;

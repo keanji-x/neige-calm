@@ -80,6 +80,26 @@ async fn two_turns_then_compact(root: &Root, stack: &Stack) -> (String, Value, V
     (card_id, a, b)
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn compact_run_declares_claude_capability_before_and_after_a_turn() {
+    let root = Root::new("exit-trailing");
+    let stack = Stack::boot(&root).await;
+    let (_, card_id) = stack.create_claude_track().await;
+    for active in [false, true] {
+        if active {
+            stack
+                .run_turn(&root, &card_id, "exit-trailing", "first")
+                .await;
+        }
+        let (status, body) = stack
+            .send("GET", &format!("/api/cards/{card_id}/planner/run"), None)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["manual_compact_supported"], true, "{body}");
+    }
+    stack.shutdown().await;
+}
+
 /// The compaction is one `--resume` spawn whose one line is `/compact`, run with the CLI's
 /// commands; it completes through the harness and leaves the person's last turn the last one:
 /// no outcome, no transcript row, the same `last_turn_id`.
