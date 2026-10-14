@@ -34,21 +34,14 @@ pub(super) async fn failed_conversation(boot: &Boot) -> (Card, String, String, Q
         WorkerSessionState::Failed,
     )
     .await;
-    boot.repo
-        .harness_item_insert(
-            &runtime,
-            card.id.as_str(),
-            &boot.track_id,
-            &thread,
-            Some("old-turn"),
-            Some("old-answer"),
-            Some("agentMessage"),
-            "item/completed",
-            r#"{"item":{"id":"old-answer","type":"agentMessage","text":"history must survive"}}"#,
-            None,
-        )
-        .await
-        .unwrap();
+    super::planner_hibernation::seed_conversation_history(
+        boot,
+        &card,
+        &runtime,
+        &thread,
+        "history must survive",
+    )
+    .await;
     (card, runtime, thread, entry)
 }
 

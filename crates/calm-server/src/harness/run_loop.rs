@@ -329,6 +329,9 @@ pub struct HarnessObservationDelivery {
 }
 
 enum HarnessObservationCommand {
+    Hibernate {
+        done: oneshot::Sender<Result<bool>>,
+    },
     /// Recovery must snapshot on the loop that owns both queue and watermark,
     /// after earlier deliveries/notifications settle and before stopping it.
     QuiesceSystemError {
@@ -1378,6 +1381,16 @@ async fn run_loop(
             command = observations.recv() => {
                 let Some(command) = command else { break };
                 match command {
+                    HarnessObservationCommand::Hibernate { done } => {
+                        let result = hibernation::quiesce(&inner, observations.is_empty(), Some(&done)).await;
+                        #[cfg(feature = "fixtures")]
+                        crate::test_seams::pause_point(
+                            crate::test_seams::PLANNER_HIBERNATION_DECIDED, inner.card_id.as_str(),
+                        ).await;
+                        let stop = matches!(result, Ok(true));
+                        let _ = done.send(result);
+                        if stop { break; }
+                    }
                     HarnessObservationCommand::QuiesceSystemError {done} => {
                         let result=quiesce_system_error(&inner).await;
                         let stop=result.is_ok();
@@ -4669,6 +4682,7 @@ mod compact_command;
 #[cfg(test)]
 mod compact_tests;
 mod held;
+mod hibernation;
 mod live_reply;
 mod native_ask;
 mod replace_command;

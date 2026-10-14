@@ -2781,6 +2781,12 @@ pub(crate) async fn update_track(
         return Ok(Json(existing).into_response());
     }
 
+    let reopening = p.closed == Some(false);
+    let lifecycle_guard = if p.closed.is_some() {
+        Some(crate::per_card_lock::lock_key(&s.track_delete_locks, &id).await)
+    } else {
+        None
+    };
     let projection_policy_changed = p.planner_task_ceiling.is_some()
         || p.automation_policy.is_some()
         || p.require_task_gates.is_some()
@@ -2831,6 +2837,10 @@ pub(crate) async fn update_track(
             })
         })
         .await?;
+    drop(lifecycle_guard);
+    if reopening && let Err(error) = w.dispatcher.wake_planner_on_reopen(&track.id).await {
+        tracing::warn!(%error, track_id=%track.id, "Planner resume after reopen failed; next wake can retry");
+    }
     Ok(Json(track).into_response())
 }
 

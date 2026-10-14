@@ -49,8 +49,8 @@ fn starting() -> CalmError {
 }
 
 /// A live [`PlannerHarness`] for the card, by the card's state:
-/// * an active row with a registered harness → reused (unlocked fast path);
-/// * an active row with a registry miss → re-spawned from its snapshot (no Codex RPC);
+/// * an active row with a registered harness → reused under the card fence;
+/// * an active row with a registry miss → re-spawned from its snapshot (resuming an unloaded Codex thread);
 /// * a person's send to a `failed` carrier with a recoverable snapshot → `planner_recovery`;
 /// * a person's send to a card nothing can start any more but the send ([`send_owns_first_start`]:
 ///   a managed Track's card, or a self-minted conversation whose starts all failed) with no
@@ -60,7 +60,7 @@ fn starting() -> CalmError {
 ///   start it) → 409 `planner_harness_dormant`. Row-intrinsic dormancy is checked before daemon
 ///   liveness, so such a row is 409 even with the daemon down.
 ///
-/// Everything past the fast path runs under the card's [`CardStartFence`], which `/planner/reset`
+/// Every send runs under the card's [`CardStartFence`], which `/planner/reset`
 /// and every other start take too, and re-reads the card under it, so racing sends neither
 /// double-spawn nor double-start. The fence is RETURNED so the caller holds it through enqueue and
 /// audit.
@@ -77,15 +77,6 @@ pub(crate) async fn ensure_planner_session(
     Option<CardStartFence>,
 )> {
     let human_send = actor.as_str() == "user";
-    // Unlocked fast path only: its reads can straddle a racing Send's recovery commit, so a miss
-    // here is not dormancy (#1820); only the locked re-check below answers 409.
-    if let Some(runtime) = planner_recovery::candidate(s, card_id, human_send).await?
-        && runtime.status != WorkerSessionState::Failed
-        && let Some(harness) = s.harness.get(&runtime.id)
-    {
-        return Ok((runtime, harness, None));
-    }
-
     let fence = CardStartFence::lock(
         &s.planner_recovery_locks,
         &s.repo,
@@ -236,7 +227,10 @@ pub(super) async fn restore_failed_session(
     runtime: WorkerSessionProjection,
 ) -> Result<(WorkerSessionProjection, PlannerHarness)> {
     let runtime = planner_recovery::recover(s, w, cs, runtime).await?;
-    let harness = install_preserved_session(s, w, cs, runtime.clone()).await?;
+    let harness =
+        crate::planner_hibernation::WakeContext::new(s.clone(), w.repo.clone(), cs.clone())
+            .install_resumed(runtime.clone())
+            .await?;
     Ok((runtime, harness))
 }
 #[allow(deprecated)]
@@ -246,21 +240,7 @@ async fn install_preserved_session(
     cs: &CodexShellState,
     runtime: WorkerSessionProjection,
 ) -> Result<PlannerHarness> {
-    let harness = crate::harness::spawn_recovered_harness(
-        w.repo.clone(),
-        s.events.clone(),
-        s.write.role_cache().clone(),
-        s.write.area_cache().clone(),
-        cs.shared_codex_appserver.clone(),
-        s.thread_seals.clone(),
-        &s.claude_planner_wiring(),
-        &s.harness,
-        &s.track_delete_locks,
-        runtime.clone(),
-        crate::harness::ClaimMode::Replace,
-    )
-    .await?
-    .installed()
-    .ok_or_else(dormant)?;
-    Ok(harness)
+    crate::planner_hibernation::WakeContext::new(s.clone(), w.repo.clone(), cs.clone())
+        .install(runtime)
+        .await
 }

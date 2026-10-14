@@ -123,3 +123,6 @@ mod planner_turn_budget;
 
 #[path = "cases/planner_timeout.rs"]
 mod planner_timeout;
+
+#[path = "cases/claude_planner_hibernation.rs"]
+mod claude_planner_hibernation;

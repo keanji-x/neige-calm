@@ -508,6 +508,30 @@ pub struct Dispatcher {
 }
 
 impl Dispatcher {
+    pub(crate) fn bind_planner_wake(&self, wake: crate::planner_hibernation::WakeContext) {
+        *self
+            .inner
+            .planner_wake
+            .write()
+            .expect("Planner wake context") = Some(wake);
+    }
+
+    pub(crate) async fn wake_planner_on_reopen(&self, track: &TrackId) -> crate::error::Result<()> {
+        let Some(card) = self.inner.resolve_planner_card(track).await else {
+            return Ok(());
+        };
+        let wake = self
+            .inner
+            .planner_wake
+            .read()
+            .expect("Planner wake context")
+            .clone();
+        if let Some(wake) = wake {
+            let _ = wake.ensure(&card).await?;
+        }
+        Ok(())
+    }
+
     /// Permit count from `NEIGE_DISPATCHER_PERMITS`, falling back to `default` when unset,
     /// unparseable, or zero.
     pub fn permits_from_env(default: usize) -> usize {
@@ -848,6 +872,7 @@ impl Dispatcher {
             harness,
             scheduler: Arc::clone(&scheduler),
             context_monitor: Arc::clone(&context_monitor),
+            planner_wake: std::sync::RwLock::new(None),
             // A push only fires when `envelope_id > cursor`, making pushes idempotent under
             // at-least-once delivery.
             push_cursor: EventCursorCache::new(),
@@ -972,6 +997,7 @@ impl Dispatcher {
 }
 
 struct Inner {
+    planner_wake: std::sync::RwLock<Option<crate::planner_hibernation::WakeContext>>,
     repo: Arc<dyn Repo>,
     write: WriteContext,
     harness: HarnessRegistry,
@@ -1289,15 +1315,23 @@ impl Inner {
             );
             return;
         };
-        let Some(harness) = self.harness.get(&runtime_id) else {
-            tracing::warn!(
-                track_id = %track_id,
-                planner_card_id = %planner_card_id,
-                runtime_id = %runtime_id,
-                envelope_id,
-                kind = event.kind_tag(),
-                "dispatcher push: no live PlannerHarness for harness runtime; cursor NOT bumped so snapshot recovery will replay on boot"
-            );
+        let wake = self
+            .planner_wake
+            .read()
+            .expect("Planner wake context")
+            .clone();
+        let (_wake_fence, harness) = if let Some(wake) = wake {
+            match wake.ensure(&planner_card_id).await {
+                Ok(Some((handle, fence))) => (Some(fence), handle),
+                Ok(None) => return,
+                Err(error) => {
+                    tracing::warn!(%runtime_id, %error, "Planner wake failed; retaining replay cursor");
+                    return;
+                }
+            }
+        } else if let Some(handle) = self.harness.get(&runtime_id) {
+            (None, handle)
+        } else {
             return;
         };
         // Recovery may have already accepted this prefix while the Dispatcher

@@ -471,6 +471,20 @@ impl PlannerBackend {
         }
     }
 
+    /// Release an idle harness's resources. Codex only detaches approvals here;
+    /// the lifecycle owner unsubscribes its thread after removing the harness.
+    /// This operation never sends a Codex turn interrupt.
+    pub(crate) async fn hibernate(&self) -> Result<()> {
+        match &self.0 {
+            Arm::Codex(_, approvals) => {
+                approvals.release();
+                Ok(())
+            }
+            Arm::Acp(session) => session.shutdown().await,
+            Arm::Claude(session) => session.shutdown().await,
+        }
+    }
+
     /// Stop this harness's turns. `Err` is the last step that failed, for strict callers; every
     /// failure is logged here. `last_turn_id` is read only when Codex has a thread to interrupt.
     pub async fn shutdown(

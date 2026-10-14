@@ -116,6 +116,9 @@ pub struct RouteState {
     /// never the reverse. So no caller may hold the drive mutex or `track_delete_locks` when it
     /// takes this lock: the workspace re-point drops both before its restart, and the launchpad
     /// `ensure` holds neither. A track create's `area_delete_locks` guard comes before all of these.
+    /// Dispatcher push delivery also takes this card fence before restoring a sleeping
+    /// Planner. The hibernation sweep takes card → drive → track → resume_replay_serial;
+    /// it drops drive after owner removal, before any provider release RPC.
     /// The scheduler takes it holding only its per-track pass lock and a spawn permit, which no
     /// holder of this lock waits on: a holder's start is driven by its own `wait`, never by the
     /// scheduler, and no operation adapter re-enters this lock under the drive mutex.
@@ -279,6 +282,12 @@ impl BootState {
             plugin: self.plugin.clone(),
         };
 
+        self.dispatcher
+            .bind_planner_wake(crate::planner_hibernation::WakeContext::new(
+                route.clone(),
+                self.repo.clone(),
+                codex_shell.clone(),
+            ));
         AppState {
             repo: route_repo,
             events: self.events,
@@ -1009,6 +1018,7 @@ impl AppState {
     pub fn with_operation_runtime(mut self, runtime: Arc<OperationRuntime>) -> Self {
         self.operation_runtime = runtime.clone();
         self.route.operation_runtime = runtime;
+        self.refresh_planner_wake();
         self
     }
 
@@ -1027,6 +1037,16 @@ impl AppState {
         );
         self.rebuild_operation_runtime();
         self
+    }
+
+    #[cfg(feature = "fixtures")]
+    fn refresh_planner_wake(&self) {
+        self.dispatcher
+            .bind_planner_wake(crate::planner_hibernation::WakeContext::new(
+                self.route.clone(),
+                self.raw.clone(),
+                self.codex_shell.clone(),
+            ));
     }
 
     /// Arm the track-create mint rendezvous so the cross-instance primary-key race is
@@ -1119,6 +1139,7 @@ impl AppState {
         ));
         self.operation_runtime = runtime.clone();
         self.route.operation_runtime = runtime;
+        self.refresh_planner_wake();
     }
 
     pub fn card_kind_registry(&self) -> &CardKindRegistry {

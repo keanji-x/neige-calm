@@ -436,6 +436,9 @@ pub struct SharedCodexAppServer {
     home: Arc<SharedCodexHome>,
     repo: Arc<dyn Repo>,
     thread_cache: Arc<DashMap<String, String>>,
+    /// Attribution can be forgotten before unsubscribe succeeds. Keep the
+    /// hibernation obligation independently until release or successful wake.
+    hibernating_releases: DashMap<String, ()>,
     active_turns: Arc<DashMap<String, String>>,
     /// The server's one deletion-seal registry, built here and shared through [`Self::thread_seals`].
     /// A late turn/start response or notification on a sealed thread is interrupted instead of
@@ -680,6 +683,7 @@ impl SharedCodexAppServer {
             home,
             repo,
             thread_cache: Arc::new(DashMap::new()),
+            hibernating_releases: DashMap::new(),
             active_turns: Arc::new(DashMap::new()),
             thread_seals: Arc::new(ThreadSeals::new()),
             restart_backoff: BackoffState::new(Duration::from_millis(250), Duration::from_secs(10)),
@@ -746,6 +750,7 @@ impl SharedCodexAppServer {
             home,
             repo,
             thread_cache: Arc::new(DashMap::new()),
+            hibernating_releases: DashMap::new(),
             active_turns: Arc::new(DashMap::new()),
             thread_seals: Arc::new(ThreadSeals::new()),
             restart_backoff: BackoffState::new(
@@ -3286,6 +3291,13 @@ impl SharedCodexAppServer {
 
         let active_threads = merge_active_shared_thread_attribution(self.repo.as_ref()).await?;
         for (card_id, thread_id) in active_threads {
+            // Only cold rebuild infers sleep from retained carriers. Mid-life
+            // replacement replays the live owners already in the cache.
+            if let Some(pool) = self.repo.sqlite_pool()
+                && crate::planner_hibernation::sleeping_thread(&pool, &thread_id).await?
+            {
+                continue;
+            }
             self.thread_cache.insert(thread_id, card_id);
         }
         Ok(())

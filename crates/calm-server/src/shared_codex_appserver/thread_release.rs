@@ -11,7 +11,7 @@ const THREAD_UNSUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(5);
 impl SharedCodexAppServer {
     /// Drop the threads' attribution and unsubscribe the kernel connection from them. The
     /// tombstone keeps a later `thread/started` for one from binding to a pending Card.
-    async fn release_threads(&self, thread_ids: &[String]) {
+    async fn release_threads(&self, thread_ids: &[String]) -> HashSet<String> {
         {
             let mut forgotten = self.forgotten_threads.lock().await;
             for thread_id in thread_ids {
@@ -19,15 +19,15 @@ impl SharedCodexAppServer {
                 forgotten.remember(thread_id);
             }
         }
-        self.unsubscribe_threads(thread_ids).await;
+        self.unsubscribe_threads(thread_ids).await
     }
 
     /// Best effort, with one [`THREAD_UNSUBSCRIBE_TIMEOUT`] for the whole batch: a failure is
     /// logged, with no connection there is nothing to unsubscribe, and the threads the budget
     /// does not reach are logged once and left loaded.
-    pub(super) async fn unsubscribe_threads(&self, thread_ids: &[String]) {
+    pub(super) async fn unsubscribe_threads(&self, thread_ids: &[String]) -> HashSet<String> {
         if thread_ids.is_empty() {
-            return;
+            return HashSet::new();
         }
         #[cfg(feature = "fixtures")]
         if let Some(fake) = self.fake.as_ref() {
@@ -35,13 +35,16 @@ impl SharedCodexAppServer {
                 .lock()
                 .expect("fake unsubscribed threads mutex")
                 .extend(thread_ids.iter().cloned());
-            return;
+            return thread_ids.iter().cloned().collect();
         }
         let deadline = tokio::time::Instant::now() + THREAD_UNSUBSCRIBE_TIMEOUT;
-        let Ok(Some(client)) = tokio::time::timeout_at(deadline, self.running_client()).await
-        else {
-            return;
+        let client = match tokio::time::timeout_at(deadline, self.running_client()).await {
+            Ok(Some(client)) => client,
+            // No connection means our subscription is already gone.
+            Ok(None) => return thread_ids.iter().cloned().collect(),
+            _ => return HashSet::new(),
         };
+        let mut released = HashSet::new();
         let mut unreached = 0_usize;
         for thread_id in thread_ids {
             if tokio::time::Instant::now() >= deadline {
@@ -52,12 +55,15 @@ impl SharedCodexAppServer {
             // Like every other RPC on the shared connection, a daemon that stops reading blocks
             // the send itself; cancelling a partial send would poison the connection for good.
             match client.thread_unsubscribe(thread_id, deadline).await {
-                Ok(response) => tracing::info!(
-                    target: "shared_codex_daemon::release_thread",
-                    %thread_id,
-                    status = %response.status,
-                    "released shared codex thread"
-                ),
+                Ok(response) => {
+                    released.insert(thread_id.clone());
+                    tracing::info!(
+                        target: "shared_codex_daemon::release_thread",
+                        %thread_id,
+                        status = %response.status,
+                        "released shared codex thread"
+                    );
+                }
                 Err(error) => tracing::warn!(
                     target: "shared_codex_daemon::release_thread",
                     %thread_id,
@@ -72,6 +78,30 @@ impl SharedCodexAppServer {
                 unreached,
                 "thread/unsubscribe budget spent; codex may keep these threads loaded"
             );
+        }
+        released
+    }
+
+    /// The daemon owns these obligations after attribution is removed. The old
+    /// carrier may have been reset or deleted; SQL eligibility cannot drive retry.
+    pub(crate) async fn retry_hibernating_releases(&self) {
+        let _replay = self.resume_replay_serial.lock().await;
+        let pending: Vec<String> = self
+            .hibernating_releases
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+        for thread in self.release_threads(&pending).await {
+            self.hibernating_releases.remove(&thread);
+        }
+    }
+
+    pub(crate) async fn release_hibernating_thread(&self, thread_id: &str) {
+        let _replay = self.resume_replay_serial.lock().await;
+        self.hibernating_releases.insert(thread_id.to_owned(), ());
+        let released = self.release_threads(&[thread_id.to_owned()]).await;
+        for thread in released {
+            self.hibernating_releases.remove(&thread);
         }
     }
 

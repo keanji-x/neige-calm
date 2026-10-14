@@ -76,9 +76,11 @@ pub fn new_track_delete_locks() -> TrackDeleteLocks {
 /// How [`spawn_recovered_harness`] claims the registry slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaimMode {
-    /// Boot recovery + user resume: an existing Live harness is shut down, an in-flight
-    /// reservation is superseded. No daemon eligibility gate.
+    /// Explicit wake: an existing Live harness is shut down, an in-flight
+    /// reservation is superseded. Closed tracks may resume on demand.
     Replace,
+    /// Automatic recovery replaces an owner unless its closed Planner is sleep-eligible.
+    ReplaceIfOpen,
     /// Deferred (post-heal) recovery: an occupied slot means the user already touched this runtime,
     /// so skip without shutting anything down. `expected_generation` is re-checked at the claim
     /// boundary because the replay before it can be long.
@@ -215,14 +217,36 @@ pub async fn spawn_recovered_harness(
     }
     let runtime_id = runtime.id.clone();
     let track_id = card.track_id.clone();
+    #[cfg(feature = "fixtures")]
+    crate::test_seams::pause_point(
+        crate::test_seams::PLANNER_RECOVERY_INSTALL,
+        card.id.as_str(),
+    )
+    .await;
     // Replay may be long, so claim the lifecycle fence only at the installation boundary and then
     // revalidate every row DELETE can remove.
     let _track_delete_guard = lock_key(track_delete_locks, track_id.as_str()).await;
     let Some(current_card) = repo.card_get(&runtime.card_id).await? else {
         return Ok(RecoveryOutcome::Skipped);
     };
-    if current_card.track_id != track_id || repo.track_get(track_id.as_str()).await?.is_none() {
+    let Some(current_track) = repo.track_get(track_id.as_str()).await? else {
         return Ok(RecoveryOutcome::Skipped);
+    };
+    if current_card.track_id != track_id {
+        return Ok(RecoveryOutcome::Skipped);
+    }
+    if current_track.closed_at.is_some() && !matches!(claim_mode, ClaimMode::Replace) {
+        // Automatic recovery must not resurrect a sleeping Planner, but closure
+        // alone does not make queued input or active work eligible for sleep.
+        let sleeping = match repo.sqlite_pool() {
+            Some(pool) if role == Some(CardRole::Planner) => {
+                crate::planner_hibernation::eligible(&pool, &runtime.id).await?
+            }
+            _ => false,
+        };
+        if sleeping {
+            return Ok(RecoveryOutcome::Skipped);
+        }
     }
     let Some(current_runtime) = repo.session_projection_by_id(&runtime_id).await? else {
         return Ok(RecoveryOutcome::Skipped);
@@ -238,7 +262,9 @@ pub async fn spawn_recovered_harness(
     }
     // The reservation sits after recovery replay, immediately before handle construction/install.
     let reservation = match claim_mode {
-        ClaimMode::Replace => registry.reserve_after_shutdown(runtime_id.clone()).await?,
+        ClaimMode::Replace | ClaimMode::ReplaceIfOpen => {
+            registry.reserve_after_shutdown(runtime_id.clone()).await?
+        }
         ClaimMode::SkipIfClaimed {
             expected_generation,
         } => {
@@ -500,7 +526,7 @@ pub async fn recover_harnesses_on_boot(
             registry,
             track_delete_locks,
             runtime,
-            ClaimMode::Replace,
+            ClaimMode::ReplaceIfOpen,
         )
         .await
         {
@@ -590,7 +616,7 @@ pub async fn recover_harnesses_for_tracks(
             &context.registry,
             &context.track_delete_locks,
             runtime,
-            ClaimMode::Replace,
+            ClaimMode::ReplaceIfOpen,
         )
         .await
         {

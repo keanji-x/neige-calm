@@ -28,7 +28,10 @@ use tokio::net::UnixListener;
 use tokio_tungstenite::tungstenite::Message;
 
 mod approvals;
+mod thread_release;
+mod wire;
 use approvals::ApprovalScript;
+use wire::{send_error, send_notification, send_result};
 
 /// #954 — set by the `SIGTERM` handler installed in
 /// [`install_signal_fixture`]; a monitor thread turns it into the marker
@@ -376,6 +379,7 @@ async fn serve_conn(
     let mut approvals = 0_u32;
     // Requests codex already settled: an answer to one is ignored, as codex ignores it.
     let mut resolved = std::collections::HashSet::new();
+    let mut resumed_threads = std::collections::HashSet::new();
 
     while let Some(msg) = read.next().await {
         let msg = msg.map_err(|e| format!("ws read: {e}"))?;
@@ -459,23 +463,29 @@ async fn serve_conn(
                 )
                 .await?;
             }
-            // #1853: each `threadId` is appended to `<sock>.unsubscribed`, socket-keyed like
-            // `record_method`, and answered the way codex 0.157 answers a live subscription.
             "thread/unsubscribe" => {
-                let requested = req
-                    .pointer("/params/threadId")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                reads.record_line("unsubscribed", requested);
-                send_result(&mut write, &id, json!({ "status": "unsubscribed" })).await?;
+                thread_release::unsubscribe(&mut write, &id, &req, &reads).await?;
             }
             "thread/start" | "thread/resume" => {
+                if method == "thread/start" {
+                    let scripted = reads.sock.with_extension("thread-start");
+                    if scripted.exists() {
+                        send_result(
+                            &mut write,
+                            &id,
+                            ReadFixtures::result_or(&scripted, json!({})),
+                        )
+                        .await?;
+                        continue;
+                    }
+                }
                 if method == "thread/resume" {
                     let requested = req
                         .pointer("/params/threadId")
                         .and_then(Value::as_str)
                         .unwrap_or_default();
                     reads.park_first_resume(requested).await;
+                    resumed_threads.insert(requested.to_owned());
                     let scripted = reads.sock.with_extension("thread-resume");
                     if scripted.exists() {
                         send_result(
@@ -505,6 +515,19 @@ async fn serve_conn(
                 .await?;
             }
             "turn/start" => {
+                // Opt-in protocol check: an unloaded thread must be resumed on
+                // this connection before a new turn can start.
+                let requested = req
+                    .pointer("/params/threadId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if reads.sock.with_extension("require-resume").exists()
+                    && !resumed_threads.contains(requested)
+                {
+                    let message = "thread not loaded; resume required";
+                    send_error(&mut write, &id, -32000, message).await?;
+                    continue;
+                }
                 // Script a native turn failure verbatim (a `TurnError` object): Codex accepts the
                 // turn, then reports it on `error` and a failed `turn/completed`, as 0.159.2 does
                 // for a refresh token it cannot use (#2512). No failure policy lives here.
@@ -772,44 +795,4 @@ fn record_request(req: &Value) {
         use std::io::Write;
         let _ = writeln!(file, "{req}");
     }
-}
-
-async fn send_result<S>(write: &mut S, id: &Value, result: Value) -> Result<(), String>
-where
-    S: SinkExt<Message> + Unpin,
-    <S as futures::Sink<Message>>::Error: std::fmt::Display,
-{
-    let frame = json!({ "jsonrpc": "2.0", "id": id, "result": result });
-    write
-        .send(Message::Text(frame.to_string()))
-        .await
-        .map_err(|e| format!("send result: {e}"))
-}
-
-async fn send_error<S>(write: &mut S, id: &Value, code: i64, message: &str) -> Result<(), String>
-where
-    S: SinkExt<Message> + Unpin,
-    <S as futures::Sink<Message>>::Error: std::fmt::Display,
-{
-    let frame = json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "error": { "code": code, "message": message }
-    });
-    write
-        .send(Message::Text(frame.to_string()))
-        .await
-        .map_err(|e| format!("send error: {e}"))
-}
-
-async fn send_notification<S>(write: &mut S, method: &str, params: Value) -> Result<(), String>
-where
-    S: SinkExt<Message> + Unpin,
-    <S as futures::Sink<Message>>::Error: std::fmt::Display,
-{
-    let frame = json!({ "jsonrpc": "2.0", "method": method, "params": params });
-    write
-        .send(Message::Text(frame.to_string()))
-        .await
-        .map_err(|e| format!("send notification: {e}"))
 }

@@ -55,6 +55,11 @@ pub const PLANNER_INPUT_REPLAY_MISSED: &str = "planner-input-replay-missed";
 #[cfg(feature = "fixtures")]
 pub const PLANNER_FIRST_START: &str = "planner-first-start";
 
+/// Where harness recovery has replayed its candidate and is about to claim the
+/// track lifecycle fence; keyed by card id.
+#[cfg(feature = "fixtures")]
+pub const PLANNER_RECOVERY_INSTALL: &str = "planner-recovery-install";
+
 /// Where a message-less track create has committed its cards and not yet submitted its
 /// Planner's start (#2184); keyed by the track's area id, which the test knows in advance.
 #[cfg(feature = "fixtures")]
@@ -289,3 +294,11 @@ pub async fn admit_gate_run_for_test(
         | crate::operation::task_gate_run::Admitted::Joined { key, .. } => Ok(key),
     }
 }
+
+/// Where an idle Planner is about to persist its hibernation snapshot; keyed by card id.
+#[cfg(feature = "fixtures")]
+pub const PLANNER_HIBERNATION_QUIESCE: &str = "planner-hibernation-quiesce";
+
+/// Where the loop decided a hibernation request, before replying; keyed by card id.
+#[cfg(feature = "fixtures")]
+pub const PLANNER_HIBERNATION_DECIDED: &str = "planner-hibernation-decided";

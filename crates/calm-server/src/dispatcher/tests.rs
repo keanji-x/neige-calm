@@ -3802,6 +3802,7 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
         scheduler.context_metrics(),
     ));
     let inner = Arc::new(Inner {
+        planner_wake: std::sync::RwLock::new(None),
         repo: repo.clone(),
         write,
         harness: registry,

@@ -72,6 +72,15 @@ pub(crate) async fn answer_ask(
 /// request went away between the two steps, the stored answer has no effect.
 async fn answer(s: RouteState, track: TrackId, ask_id: i64, answers: Vec<AskAnswer>) -> Result<()> {
     let ask = crate::ask::stored_ask(s.repo.as_ref(), &track, ask_id).await?;
+    // A tagged answer can reopen the track; order that lifecycle write with sleep.
+    let _lifecycle = if matches!(
+        ask.action,
+        Some(crate::event::AskAction::ReopenTrack { .. })
+    ) {
+        Some(crate::per_card_lock::lock_key(&s.track_delete_locks, track.as_str()).await)
+    } else {
+        None
+    };
     let answers = crate::ask::validate_answers(ask_id, &ask.questions, ask.delivery, answers)?;
     let holder = match ask.delivery {
         AskDelivery::Wake => None,

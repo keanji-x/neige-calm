@@ -8,6 +8,109 @@ use serde_json::Value;
 use serde_json::json;
 
 impl SharedCodexAppServer {
+    /// Active carrier restoration uses the same exact-thread read/resume RPCs as
+    /// system-error recovery. A cold thread receives this carrier's MCP token;
+    /// a loaded thread keeps its existing credentials.
+    pub(crate) async fn resume_active_conversation(
+        &self,
+        runtime: &WorkerSessionProjection,
+        thread_id: &str,
+    ) -> Result<()> {
+        let _transition = self.transition_serial.lock().await;
+        let _replay = self.resume_replay_serial.lock().await;
+        if self.thread_seals.is_sealed(thread_id) {
+            return Err(CalmError::Conflict("conversation is being deleted".into()));
+        }
+        let before = {
+            #[cfg(feature = "fixtures")]
+            if self.fake.is_some() && !self.thread_cache.contains_key(thread_id) {
+                json!({"id":thread_id,"status":{"type":"notLoaded"}})
+            } else {
+                self.read_recovery_thread(thread_id).await?
+            }
+            #[cfg(not(feature = "fixtures"))]
+            self.read_recovery_thread(thread_id).await?
+        };
+        if before.get("id").and_then(Value::as_str) != Some(thread_id) {
+            return Err(CalmError::Conflict(
+                "provider returned a different conversation".into(),
+            ));
+        }
+        let cold = match before.pointer("/status/type").and_then(Value::as_str) {
+            Some("notLoaded") => true,
+            Some("idle" | "systemError" | "active") => false,
+            _ => {
+                return Err(CalmError::ServiceUnavailable(
+                    "Original conversation state is unknown; retry shortly".into(),
+                ));
+            }
+        };
+        // A loaded thread still needs this connection's subscription restored.
+        // Its existing credentials and running turn stay in place.
+        let config = if cold {
+            let socket_path = self.kernel_mcp_socket_path.clone();
+            let expected = runtime.clone();
+            let thread = thread_id.to_owned();
+            write_in_tx_typed(self.repo.as_ref(), move |tx| {
+                Box::pin(async move {
+                    let current =
+                        session_projection_active_for_card_tx(tx, &expected.card_id).await?;
+                    if !current.as_ref().is_some_and(|current| {
+                        current.id == expected.id
+                            && crate::harness::effective_runtime_thread_id(current).as_deref()
+                                == Some(thread.as_str())
+                            && current.handle_state_json.eq(&expected.handle_state_json)
+                    }) {
+                        return Err(CalmError::Conflict(
+                            "conversation changed during resume".into(),
+                        ));
+                    }
+                    let shape =
+                        crate::db::sqlite::card_execution_shape_tx(tx, &expected.card_id).await?;
+                    let binding = crate::harness::profile::PlannerBinding::from_shape(
+                        &shape.kind,
+                        shape.role,
+                        &shape.payload,
+                    )
+                    .filter(|binding| {
+                        binding.provider == crate::session_projection_repo::AgentProvider::Codex
+                    })
+                    .ok_or_else(|| {
+                        CalmError::Conflict("card is not a Codex harness conversation".into())
+                    })?;
+                    if binding.profile.mcp_role().is_none() {
+                        return Ok(ThreadConfig::NoMcp);
+                    }
+                    let raw_token =
+                        mint_and_persist_card_token(tx, &expected.card_id, &expected.id).await?;
+                    Ok(ThreadConfig::McpShell {
+                        role: shape.role,
+                        socket_path,
+                        raw_token,
+                    })
+                })
+            })
+            .await?
+        } else {
+            ThreadConfig::NoMcp
+        };
+        let resumed = self.resume_recovery_thread(thread_id, config).await?;
+        if resumed.get("id").and_then(Value::as_str) != Some(thread_id)
+            || !matches!(
+                resumed.pointer("/status/type").and_then(Value::as_str),
+                Some("idle" | "systemError" | "active")
+            )
+            || (cold && resumed.pointer("/status/type").and_then(Value::as_str) == Some("active"))
+        {
+            return Err(CalmError::ServiceUnavailable(
+                "Original conversation did not confirm resume; history retained".into(),
+            ));
+        }
+        self.thread_cache
+            .insert(thread_id.to_owned(), runtime.card_id.clone());
+        self.hibernating_releases.remove(thread_id);
+        Ok(())
+    }
     pub(crate) async fn resume_system_error_conversation(
         &self,
         runtime: &WorkerSessionProjection,

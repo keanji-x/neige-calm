@@ -10,6 +10,7 @@ pub mod liveness_feeder;
 pub mod mail;
 pub mod mobile_access;
 pub mod plain_chat;
+mod planner_hibernation;
 pub mod provider_registry;
 pub mod reaper;
 mod state_clients;
