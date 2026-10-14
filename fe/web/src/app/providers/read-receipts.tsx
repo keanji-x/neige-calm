@@ -120,7 +120,7 @@ export function readReceiptsQueryOptions(transport: ApiTransportPort, unauthoriz
 export type ReadReceipts = Readonly<{
   /** Until the kernel's receipts are read nothing is unread: no verdict is not "everything is unread". */
   isUnread(kind: ReadReceiptKind, id: string, activityAt: number | null): boolean;
-  /** Owes the reader an acknowledgement of `activityAt`, sent as soon as a write is admitted. */
+  /** Owes the reader an acknowledgement of `activityAt`, sent now and, if refused or failed, on the next trigger. */
   markRead(kind: ReadReceiptKind, id: string, activityAt: number | null): void;
   /** The reader's own write: rejects as any other write does (read it through `READ_RECEIPT_FAILURES`). */
   markUnread(kind: ReadReceiptKind, id: string): Promise<void>;

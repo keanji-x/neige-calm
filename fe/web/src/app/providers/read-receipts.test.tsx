@@ -306,7 +306,7 @@ it('sends once more after a failed attempt when a trigger fired while it was in 
   function Open() { useReadReceipt('track', 't', 150); return <Verdict id="t" at={150} />; }
   mount(fake, <Open />);
   await waitFor(() => expect(writes.held()).toBe(1));
-  // A receipts read lands while the acknowledgement is in flight: a trigger its flush has to skip.
+  // A focus (from visibilitychange) fires while the acknowledgement is in flight: a trigger its flush has to skip.
   const reads = fake.requests.filter((request) => request.method === 'GET').length;
   act(() => { window.dispatchEvent(new Event('visibilitychange')); });
   await waitFor(() => expect(fake.requests.filter((request) => request.method === 'GET').length).toBeGreaterThan(reads));
