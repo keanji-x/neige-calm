@@ -14048,7 +14048,7 @@
               "string",
               "null"
             ],
-            "description": "Carrier runtime id for the read facts, or null when dormant without maintenance facts."
+            "description": "Current live runtime id, or null when dormant (except the retained unconfirmed-stop carrier)."
           }
         }
       },

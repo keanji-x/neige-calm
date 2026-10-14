@@ -133,3 +133,57 @@ async fn compact_preserves_latest_user_turn_replacement_with_maintenance_items()
     assert!(body["entry_id"].is_string());
     boot.harness.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn compact_dormant_feedback_never_exposes_retained_ordinary_occupancy() {
+    use calm_server::harness::TokenUsage;
+    use calm_server::harness::compact_outcome::{CompactOutcome, CompactStatus};
+    for state in ["idle", "failed"] {
+        for status in [CompactStatus::Completed, CompactStatus::Started] {
+            let mut snapshot = idle_snapshot(vec![]);
+            snapshot.last_turn_id = Some("previous-turn".into());
+            snapshot.token_usage = Some(TokenUsage {
+                used_tokens: 100000,
+                total_tokens: 15,
+                context_window: Some(200000),
+                at_ms: 1,
+            });
+            snapshot.compact_outcome = Some(CompactOutcome {
+                operation_id: "operation".into(),
+                thread_id: SEED_THREAD_ID.into(),
+                turn_id: Some("maintenance".into()),
+                status: status.clone(),
+            });
+            let boot = boot_with(snapshot).await;
+            boot.harness.shutdown().await.unwrap();
+            boot.registry.remove(&boot.worker_session_id);
+            sqlx::query("UPDATE worker_sessions SET state=? WHERE id=?")
+                .bind(state)
+                .bind(&boot.worker_session_id)
+                .execute(boot.repo.pool())
+                .await
+                .unwrap();
+            let (code, body) = send_json(
+                boot.app.clone(),
+                "GET",
+                format!("/api/cards/{}/planner/run", boot.planner_card.id),
+                "user",
+                json!({}),
+            )
+            .await;
+            assert_eq!(code, StatusCode::OK, "{body}");
+            assert!(body["worker_session_id"].is_null(), "{body}");
+            assert!(body["phase"].is_null(), "{body}");
+            assert!(body["token_usage"].is_null(), "{body}");
+            assert_eq!(
+                body["compact_outcome"]["status"],
+                if status == CompactStatus::Completed {
+                    "completed"
+                } else {
+                    "unconfirmed"
+                },
+                "{body}"
+            );
+        }
+    }
+}

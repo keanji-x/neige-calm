@@ -96,7 +96,14 @@ pub(super) async fn settle(
     }
 }
 
+/// The user watermark at context replacement, never a provider maintenance id.
+#[derive(Clone, Debug)]
+pub(super) struct UsageInvalidation {
+    pub user_turn_id: Option<String>,
+}
+
 pub(super) async fn invalidate_usage(inner: &Arc<Inner>, turn_id: Option<String>) {
-    *inner.context_usage_invalidated.lock().await = true;
-    *inner.context_usage_invalidated_turn.lock().await = turn_id;
+    *inner.context_usage_invalidation.lock().await = Some(UsageInvalidation {
+        user_turn_id: turn_id,
+    });
 }

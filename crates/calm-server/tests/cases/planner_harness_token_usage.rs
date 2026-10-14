@@ -28,6 +28,7 @@ use tower::ServiceExt;
 
 /// The thread id the harness is seeded with; `on_notification` silently drops any frame whose `threadId` does not match.
 const SEED_THREAD_ID: &str = "thread-token-usage";
+const SEED_TURN_ID: &str = "turn-token-usage";
 
 /// A thread id that is emphatically not this harness's.
 const FOREIGN_THREAD_ID: &str = "thread-belonging-to-another-card";
@@ -42,7 +43,7 @@ const CAPTURED_TOTAL: i64 = 65_570_537;
 /// `modelContextWindow` in the captured frame.
 const CAPTURED_WINDOW: i64 = 258_400;
 
-/// The fixture's wire `params`, with the placeholder `threadId` replaced by the seeded one.
+/// The fixture's required wire thread/turn ids, addressed to the seeded known user turn.
 fn fixture_params() -> Value {
     let fixture: Value = serde_json::from_str(USAGE_FIXTURE).unwrap();
     let mut params = fixture
@@ -50,6 +51,7 @@ fn fixture_params() -> Value {
         .expect("fixture must carry the wire params under `params`")
         .clone();
     params["threadId"] = json!(SEED_THREAD_ID);
+    params["turnId"] = json!(SEED_TURN_ID);
     params
 }
 
@@ -129,6 +131,7 @@ async fn boot() -> Boot {
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(SEED_THREAD_ID.to_string());
+    snapshot.last_turn_id = Some(SEED_TURN_ID.to_string());
     session_start_runtime_tx(
         &mut tx,
         calm_server::session_projection_repo::WorkerSessionInit {
@@ -449,6 +452,20 @@ async fn token_usage_from_a_foreign_thread_is_ignored() {
         method: "thread/tokenUsage/updated".into(),
         params: foreign_frame(200_000, json!(400_000)),
     });
+
+    // Required-wire correlation rejects both missing and stale ids even on our thread.
+    for turn in [Value::Null, json!("old-turn")] {
+        let mut params = frame_with(190_000, json!(400_000));
+        if turn.is_null() {
+            params.as_object_mut().unwrap().remove("turnId");
+        } else {
+            params["turnId"] = turn;
+        }
+        boot.daemon.emit_notification_for_test(Notification::Other {
+            method: "thread/tokenUsage/updated".into(),
+            params,
+        });
+    }
 
     // Our own next frame carries no window, so any window on the wire afterwards can only have come from the foreign frame.
     let usage = emit_and_wait(&boot, frame_with(55_555, Value::Null), 55_555).await;

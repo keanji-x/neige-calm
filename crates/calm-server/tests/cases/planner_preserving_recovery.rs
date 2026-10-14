@@ -487,7 +487,10 @@ async fn preserving_recovery_uses_exact_thread_resume_wire_for_hot_and_cold_thre
 #[tokio::test]
 async fn planner_run_exposes_retained_queue_and_send_to_resume_notice() {
     let boot = boot_fake_running().await;
-    let (card, _, _, entry) = failed_conversation(&boot).await;
+    let (card, runtime, _, entry) = failed_conversation(&boot).await;
+    sqlx::query("UPDATE worker_sessions SET handle_state_json=json_set(handle_state_json,'$.token_usage',json(?)) WHERE id=?")
+        .bind(json!({"used_tokens":100000,"total_tokens":15,"context_window":200000,"at_ms":1}).to_string())
+        .bind(&runtime).execute(boot.repo.pool()).await.unwrap();
     let response = boot
         .app
         .oneshot(
@@ -506,6 +509,10 @@ async fn planner_run_exposes_retained_queue_and_send_to_resume_notice() {
         "failed carrier must remain sendable in the existing composer"
     );
     assert!(body["worker_session_id"].is_null());
+    assert!(
+        body["token_usage"].is_null(),
+        "ordinary recovery hides old occupancy: {body}"
+    );
     assert!(body["running_turn"].is_null(), "{body}");
     assert!(
         body["blocked_reason"]

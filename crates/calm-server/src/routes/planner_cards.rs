@@ -124,7 +124,7 @@ pub struct InterruptPlannerCardResponse {
 pub struct GetPlannerRunResponse {
     #[schema(value_type = String)]
     pub card_id: CardId,
-    /// Carrier runtime id for the read facts, or null when dormant without maintenance facts.
+    /// Current live runtime id, or null when dormant (except the retained unconfirmed-stop carrier).
     pub worker_session_id: Option<String>,
     /// Current harness phase, or null when the harness is dormant.
     pub phase: Option<HarnessPhaseTag>,
@@ -434,15 +434,7 @@ pub(crate) async fn get_planner_run(
             .session_projection_projectable_for_card(&card.id.to_string())
             .await?
         {
-            if let Some(snapshot) = runtime
-                .handle_state_json
-                .clone()
-                .and_then(crate::harness::HarnessSnapshot::parse_known)
-                && (snapshot.compact_outcome.is_some() || snapshot.context_usage_invalidated)
-            {
-                dormant.worker_session_id = Some(runtime.id.clone());
-                apply_context_snapshot(&mut dormant, &snapshot);
-            }
+            apply_dormant_context_snapshot(&mut dormant, &runtime);
             if let Some(snapshot) = super::planner_recovery::unconfirmed_stop_snapshot(&runtime) {
                 dormant.worker_session_id = Some(runtime.id.clone());
                 dormant.phase = Some(snapshot.phase);
@@ -454,8 +446,6 @@ pub(crate) async fn get_planner_run(
             } else if let Some(snapshot) =
                 super::planner_recovery::recoverable_snapshot(&s, &runtime).await?
             {
-                dormant.worker_session_id = Some(runtime.id.clone());
-                apply_context_snapshot(&mut dormant, &snapshot);
                 dormant.blocked_reason = Some(super::planner_recovery::RECOVERY_NOTICE.into());
                 (dormant.pending, dormant.pending_overflow) =
                     page_pending_entries(&card.id, &snapshot.pending_entries());
@@ -464,15 +454,7 @@ pub(crate) async fn get_planner_run(
         return Ok(Json(dormant));
     };
     let Some(harness) = s.harness.get(&runtime.id) else {
-        if let Some(snapshot) = runtime
-            .handle_state_json
-            .clone()
-            .and_then(crate::harness::HarnessSnapshot::parse_known)
-            && (snapshot.compact_outcome.is_some() || snapshot.context_usage_invalidated)
-        {
-            dormant.worker_session_id = Some(runtime.id.clone());
-            apply_context_snapshot(&mut dormant, &snapshot);
-        }
+        apply_dormant_context_snapshot(&mut dormant, &runtime);
         return Ok(Json(dormant));
     };
     // Phase and the running turn come from one state read, so a running turn is never paired with another phase.
@@ -489,9 +471,7 @@ pub(crate) async fn get_planner_run(
         permission_mode,
         blocked_reason: harness.issuance_block().await,
         token_usage: snapshot
-            .token_usage
-            .as_ref()
-            .filter(|_| !snapshot.context_usage_invalidated)
+            .visible_context_usage()
             .map(PlannerRunTokenUsage::from),
         compact_outcome: snapshot.compact_outcome.clone(),
         context_usage_invalidated: snapshot.context_usage_invalidated,
@@ -507,16 +487,27 @@ fn apply_context_snapshot(
 ) {
     response.context_usage_invalidated = snapshot.context_usage_invalidated;
     response.token_usage = snapshot
-        .token_usage
-        .as_ref()
-        .filter(|_| !snapshot.context_usage_invalidated)
+        .visible_context_usage()
         .map(PlannerRunTokenUsage::from);
-    response.compact_outcome = snapshot.compact_outcome.clone().map(|mut outcome| {
-        if outcome.status == crate::harness::compact_outcome::CompactStatus::Started {
-            outcome.status = crate::harness::compact_outcome::CompactStatus::Unconfirmed;
-        }
-        outcome
-    });
+    let mut restored = snapshot.clone();
+    restored.restore_context_feedback();
+    response.compact_outcome = restored.compact_outcome;
+}
+
+fn apply_dormant_context_snapshot(
+    response: &mut GetPlannerRunResponse,
+    runtime: &WorkerSessionProjection,
+) {
+    if let Some(mut snapshot) = runtime
+        .handle_state_json
+        .clone()
+        .and_then(crate::harness::HarnessSnapshot::parse_known)
+        && snapshot.has_context_feedback()
+    {
+        snapshot.restore_context_feedback();
+        response.compact_outcome = snapshot.compact_outcome;
+        response.context_usage_invalidated = snapshot.context_usage_invalidated;
+    }
 }
 
 #[utoipa::path(

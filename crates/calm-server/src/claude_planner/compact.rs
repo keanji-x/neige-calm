@@ -4,7 +4,7 @@
 //!
 //! It emits `TurnStarted` and `TurnCompleted` under a minted turn id, so the harness's
 //! `Compacting` → `CompactionRunning` → `TurnCompleted` handling applies as it does for Codex, and
-//! nothing else: no item, delta or usage reading, and no stored outcome row. It is therefore no
+//! forwards ContextReplaced at the declared boundary, but no item, delta, usage reading or stored outcome row. It is therefore no
 //! turn of the transcript and no anchor a rewind can cut at; the harness keeps its last turn id.
 //! It completes only when the CLI reported a `system/compact_boundary` before its result.
 //!

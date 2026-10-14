@@ -44,6 +44,10 @@ it('compact browser lifecycle shows confirmed result, hides old usage, and resto
   await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
   await page.getByRole('button', { name: /Conversation Daily Planner conversation/ }).click();
   await expect.element(page.getByText('已压缩', { exact: true })).toBeVisible();
+  fixture.run.compact_outcome = null;
+  await fixture.client.invalidateQueries({ queryKey: ['planner-run', 'daily-planner'] });
+  await expect.element(page.getByText('已压缩', { exact: true })).not.toBeInTheDocument();
+  await expect.element(page.getByText('用量待更新', { exact: true })).toBeVisible();
   fixture.run.context_usage_invalidated = false;
   fixture.run.token_usage = { used_tokens: 16000, context_window: 200000, percent: 2, at_ms: 2 };
   await fixture.client.invalidateQueries({ queryKey: ['planner-run', 'daily-planner'] });

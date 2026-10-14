@@ -453,6 +453,10 @@ async fn compact_confirmed_outcome_invalidates_old_reading_and_recovers_on_next_
         .send("GET", &format!("/api/cards/{card}/planner/run"), None)
         .await;
     assert_eq!(run["context_usage_invalidated"], false, "{run}");
+    assert!(
+        run["compact_outcome"].is_null(),
+        "new user turn supersedes feedback: {run}"
+    );
     assert!(run["token_usage"].is_object(), "{run}");
     assert_eq!(
         stored_snapshot(&stack, &card).await["token_usage"]["total_tokens"],

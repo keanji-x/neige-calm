@@ -543,6 +543,7 @@ pub struct FakeSharedCodexAppServer {
     /// The `account/read` answer; logged in (an account present) unless a test says otherwise.
     account_read: std::sync::Mutex<AccountRead>,
     fail_turn_interrupt: AtomicBool,
+    interrupt_hold: std::sync::Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
     started_thread_params: std::sync::Mutex<Vec<StartedThreadParam>>,
     started_turns: std::sync::Mutex<Vec<(String, Vec<InputItem>)>>,
     /// The model selection each `turn/start` carried, in the same order as `started_turns`.
@@ -611,6 +612,7 @@ impl FakeSharedCodexAppServer {
             reject_model_list: AtomicBool::new(false),
             account_read: std::sync::Mutex::new(AccountRead::for_test(true, true)),
             fail_turn_interrupt: AtomicBool::new(false),
+            interrupt_hold: std::sync::Mutex::new(None),
             started_thread_params: std::sync::Mutex::new(Vec::new()),
             started_turns: std::sync::Mutex::new(Vec::new()),
             started_turn_selections: std::sync::Mutex::new(Vec::new()),
@@ -1525,6 +1527,15 @@ impl SharedCodexAppServer {
                 .lock()
                 .expect("fake shared codex interrupted turns mutex poisoned")
                 .push((thread_id.to_string(), turn_id.to_string()));
+            let hold = fake
+                .interrupt_hold
+                .lock()
+                .expect("interrupt hold poisoned")
+                .clone();
+            if let Some((entered, release)) = hold {
+                entered.notify_one();
+                release.notified().await;
+            }
             if fake.fail_turn_interrupt.load(Ordering::SeqCst) {
                 return Err(CalmError::CodexAppServer(
                     "fixture: turn/interrupt failed".into(),
@@ -3738,6 +3749,22 @@ impl SharedCodexAppServer {
         if let Some(fake) = self.fake.as_ref() {
             fake.fail_next_thread_start.store(true, Ordering::SeqCst);
         }
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn hold_turn_interrupt_for_test(
+        &self,
+    ) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        *self
+            .fake
+            .as_ref()
+            .expect("fake daemon")
+            .interrupt_hold
+            .lock()
+            .expect("interrupt hold poisoned") = Some((entered.clone(), release.clone()));
+        (entered, release)
     }
 
     #[cfg(feature = "fixtures")]

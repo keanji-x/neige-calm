@@ -104,6 +104,23 @@ impl HarnessState {
         }
     }
 
+    /// A terminal boundary can arrive after completion/systemError, but never cross a
+    /// new issuance or a different active turn. Identity comes from the current owner facts.
+    pub fn accepts_context_boundary(
+        &self,
+        turn: &str,
+        last_user: Option<&str>,
+        maintenance: Option<&str>,
+    ) -> bool {
+        if let Some(active) = self.active_turn_id() {
+            return active == turn;
+        }
+        matches!(
+            self,
+            Self::TurnCompleted { .. } | Self::Wedged { .. } | Self::Resumed { .. }
+        ) && (last_user == Some(turn) || maintenance == Some(turn))
+    }
+
     pub fn active_turn_id(&self) -> Option<String> {
         match self {
             Self::CompactionRunning { turn_id, .. } | Self::TurnRunning { turn_id, .. } => {

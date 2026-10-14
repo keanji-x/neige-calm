@@ -114,6 +114,11 @@ it('compact lifecycle hides old occupancy, accepts the next reading and clears a
   expect(await screen.findByText('已压缩')).toBeTruthy();
   expect(await screen.findByText('用量待更新')).toBeTruthy();
   expect(screen.queryByRole('img', { name: /100k of 200k/ })).toBeNull();
+  // The backend supersedes feedback when the next user start is accepted.
+  fixture.run.compact_outcome = null;
+  await act(() => fixture.client.invalidateQueries({ queryKey: ['planner-run', 'daily-planner'] }));
+  await waitFor(() => expect(screen.queryByText('已压缩')).toBeNull());
+  expect(screen.getByText('用量待更新')).toBeTruthy();
   fixture.run.context_usage_invalidated = false;
   fixture.run.token_usage = { used_tokens: 16000, context_window: 200000, percent: 2, at_ms: 2 };
   await act(() => fixture.client.invalidateQueries({ queryKey: ['planner-run', 'daily-planner'] }));
