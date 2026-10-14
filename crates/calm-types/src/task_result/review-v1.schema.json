@@ -1,12 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "review-v1",
+  "description": "Byte limits (summary at most 2048 UTF-8 bytes, each finding string at most 4096) are enforced by the kernel validator beyond this schema: JSON Schema maxLength counts code points, not bytes.",
   "type": "object",
   "additionalProperties": false,
   "required": ["verdict", "summary", "blocking_findings"],
   "properties": {
     "verdict": { "type": "string", "enum": ["pass", "blocking"] },
-    "summary": { "type": "string", "minLength": 1, "pattern": "\\S", "description": "The conclusion; at most 2048 bytes." },
+    "summary": { "type": "string", "minLength": 1, "pattern": "\\S", "description": "The conclusion; at most 2048 UTF-8 bytes, enforced by the kernel validator." },
     "blocking_findings": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/finding" } },
     "non_blocking": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/finding" } },
     "details": { "description": "Any JSON the worker wants to keep beside the verdict." }
@@ -20,10 +21,10 @@
       "additionalProperties": false,
       "required": ["title", "evidence"],
       "properties": {
-        "title": { "type": "string", "minLength": 1, "pattern": "\\S", "description": "At most 4096 bytes." },
-        "evidence": { "type": "string", "minLength": 1, "pattern": "\\S", "description": "Source or test evidence; at most 4096 bytes." },
-        "location": { "type": "string", "minLength": 1, "pattern": "\\S", "description": "Where, such as path:line; at most 4096 bytes." },
-        "acceptance": { "type": "string", "minLength": 1, "pattern": "\\S", "description": "The acceptance criterion it fails; absent means new scope. At most 4096 bytes." }
+        "title": { "type": "string", "minLength": 1, "pattern": "\\S", "description": "At most 4096 UTF-8 bytes, enforced by the kernel validator." },
+        "evidence": { "type": "string", "minLength": 1, "pattern": "\\S", "description": "Source or test evidence; at most 4096 UTF-8 bytes, enforced by the kernel validator." },
+        "location": { "type": "string", "minLength": 1, "pattern": "\\S", "description": "Where, such as path:line; at most 4096 UTF-8 bytes, enforced by the kernel validator." },
+        "acceptance": { "type": "string", "minLength": 1, "pattern": "\\S", "description": "The acceptance criterion it fails; absent means new scope. At most 4096 UTF-8 bytes, enforced by the kernel validator." }
       }
     }
   },

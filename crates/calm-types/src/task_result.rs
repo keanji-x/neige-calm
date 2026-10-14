@@ -157,6 +157,10 @@ fn findings(
 ) -> Option<usize> {
     match map.get(field) {
         None if !required => None,
+        Some(Value::Null) if !required => {
+            errors.push(format!("{field}: must be an array of findings or omitted"));
+            None
+        }
         Some(Value::Array(items)) => {
             if items.len() > MAX_FINDINGS {
                 errors.push(format!(
@@ -245,14 +249,15 @@ fn json_type(value: &Value) -> &'static str {
     }
 }
 
-/// `pass: <summary>` or `blocking: <n> blocking findings: "<title>"; .... <summary>`.
+/// `pass: <summary>` or `blocking: <n> blocking findings: "<title>"; .... <summary>`. Titles are
+/// plain text; the receipt escapes the whole line once.
 fn review_v1_conclusion(result: &Value) -> String {
     let summary = result["summary"].as_str().unwrap_or_default();
     let titles: Vec<String> = result["blocking_findings"]
         .as_array()
         .into_iter()
         .flatten()
-        .map(|finding| format!("{:?}", finding["title"].as_str().unwrap_or_default()))
+        .map(|finding| format!("\"{}\"", finding["title"].as_str().unwrap_or_default()))
         .collect();
     match titles.len() {
         0 => format!(

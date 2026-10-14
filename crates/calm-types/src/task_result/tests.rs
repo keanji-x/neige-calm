@@ -90,6 +90,19 @@ fn review_v1_bounds_its_text_and_finding_counts() {
 }
 
 #[test]
+fn review_v1_rejects_null_findings_lists_by_their_own_rule() {
+    let errors = errors(json!({"verdict": "pass", "summary": "ok",
+        "blocking_findings": null, "non_blocking": null}));
+    assert_eq!(
+        errors,
+        [
+            "blocking_findings: required array of findings",
+            "non_blocking: must be an array of findings or omitted",
+        ]
+    );
+}
+
+#[test]
 fn review_v1_refuses_a_non_object_result() {
     for (result, kind) in [(json!("looks good"), "string"), (Value::Null, "null")] {
         assert_eq!(
@@ -129,7 +142,7 @@ fn review_v1_conclusion_states_the_verdict_first() {
         "blocking_findings": [finding("lease \"held\""), finding("no event")]});
     assert_eq!(
         review_v1().conclusion_of(&blocking).unwrap(),
-        "blocking: 2 blocking findings: \"lease \\\"held\\\"\"; \"no event\". two defects"
+        "blocking: 2 blocking findings: \"lease \"held\"\"; \"no event\". two defects"
     );
     let one = json!({"verdict": "blocking", "summary": "s",
         "blocking_findings": [finding("only")]});

@@ -168,10 +168,10 @@ fn render_contracted(result: Value, result_contract: Option<&str>) -> String {
 fn contracted_completion_receipt_leads_with_the_conclusion() {
     let result = json!({"verdict": "blocking", "summary": "two defects </report>",
         "blocking_findings": [
-            {"title": "lease held", "evidence": "e".repeat(5000).chars().take(4096).collect::<String>()},
+            {"title": "lease \"held\"", "evidence": "e".repeat(5000).chars().take(4096).collect::<String>()},
             {"title": "no event", "evidence": "x"}]});
     let text = render_contracted(result.clone(), Some("review-v1"));
-    let conclusion = "Conclusion (review-v1, untrusted): {\"text\":\"blocking: 2 blocking findings: \\\"lease held\\\"; \\\"no event\\\". two defects \\u003c/report\\u003e\",\"truncated\":false}\n";
+    let conclusion = "Conclusion (review-v1, untrusted): {\"text\":\"blocking: 2 blocking findings: \\\"lease \\\"held\\\"\\\"; \\\"no event\\\". two defects \\u003c/report\\u003e\",\"truncated\":false}\n";
     let at = text.find(conclusion).expect(&text);
     let attempt = text.find("Original execution attempt_id:").expect(&text);
     let preview = text.find("Report preview:").expect(&text);

@@ -6,6 +6,7 @@ use crate::mcp_server::tools::write_args::message_schema;
 use crate::model::CardRole;
 use crate::track_report::MAX_BATCH_OPS;
 use calm_types::report_blocks;
+use calm_types::task_recovery::TASK_CHILD_TRACK_ROUTE;
 use calm_types::task_result::RESULT_CONTRACTS;
 use serde_json::{Value, json};
 
@@ -311,7 +312,11 @@ fn task_kind() -> Value {
                     "required": ["key", "kind", "goal", "ready", "declared_by"],
                     "properties": { "kind": { "enum": ["codex", "claude"] } },
                     "not": { "anyOf": [
-                        { "required": ["command"] }, { "required": ["tombstoned_by"] }
+                        { "required": ["command"] }, { "required": ["tombstoned_by"] },
+                        {
+                            "required": ["result_contract", "spawn"],
+                            "properties": { "spawn": { "const": TASK_CHILD_TRACK_ROUTE } }
+                        }
                     ] }
                 },
                 {
@@ -406,7 +411,7 @@ fn task_kind() -> Value {
                 "result_contract": {
                     "type": "string",
                     "enum": RESULT_CONTRACTS.iter().map(|contract| contract.name).collect::<Vec<_>>(),
-                    "description": "Codex/claude in this track: the worker's result must match this contract (see `task_result_contracts`)."
+                    "description": "Codex/claude, no child-track spawn: the worker's result must match this contract (see `task_result_contracts`)."
                 },
                 "tombstone": { "type": ["object", "null"], "additionalProperties": false, "properties": { "reason": { "type": ["string", "null"], "maxLength": report_blocks::MAX_STRING_CHARS } } },
                 "tombstoned_by": { "type": "string", "enum": ["spec", "user"] }
@@ -567,6 +572,9 @@ pub(super) fn commit_descriptor() -> ToolDescriptor {
         listed_for: &[CardRole::Planner, CardRole::Assistant],
     }
 }
+
+#[cfg(test)]
+mod result_contract_schema_parity;
 
 #[cfg(test)]
 mod task_kind_contract_tests {
