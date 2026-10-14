@@ -330,7 +330,7 @@ async fn task_recovery_plan_inventory_pages_all_current_allocations() {
 }
 
 /// #1830 S2 D5: a codex task waiting for another one in the track's checkout reads `trackBusy`,
-/// the same sentence on the report read and on the recovery view; #2139 R2: so does a terminal
+/// the same sentence on the REST report read and on the recovery view; #2139 R2: so does a terminal
 /// task.
 #[tokio::test]
 async fn task_recovery_blocker_names_a_busy_track_like_report_read() {
@@ -347,21 +347,14 @@ async fn task_recovery_blocker_names_a_busy_track_like_report_read() {
     let view = task_recovery_view(boot.repo.as_ref(), boot.track_id.as_str(), "b")
         .await
         .unwrap();
-    let report = call_tool(
-        &boot,
-        "neige_report_read",
-        planner_identity(&boot),
-        json!({}),
-    )
-    .await
-    .unwrap();
+    let report = crate::task_projection_acceptance::rest_read(&boot).await;
     let pending_reason = |key: &str| {
-        report["task_diagnostics"]
+        report["taskDiagnostics"]
             .as_array()
             .unwrap()
             .iter()
             .find(|entry| entry["key"] == key)
-            .unwrap()["pending_reason"]
+            .unwrap()["pendingReason"]
             .clone()
     };
     let reason = pending_reason("b");

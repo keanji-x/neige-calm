@@ -53,14 +53,17 @@ pub(crate) enum ReportReadScope<'a> {
     Index,
 }
 
-/// Evaluate the whole live plan, then project only actionable diagnostics owned by rendered
-/// blocks. Never evaluate a partial plan: duplicates, dependencies and budgets are global.
+/// Evaluate the whole live plan, then project actionable diagnostics or pending reasons owned by
+/// rendered blocks. Never evaluate a partial plan: duplicates, dependencies and budgets are global.
 pub(crate) async fn report_read_task_diagnostics(
     repo: &dyn RouteRepo,
     track_id: &str,
     doc: &ReportDocSnapshot,
     scope: ReportReadScope<'_>,
 ) -> Result<Vec<crate::db::sqlite::BlockVerdict>, CalmError> {
+    if matches!(scope, ReportReadScope::Index) {
+        return Ok(Vec::new());
+    }
     let mut verdicts = repo.task_diagnostics(track_id, &doc.blocks).await?;
     verdicts.retain_mut(|verdict| {
         let included = match &scope {
@@ -73,7 +76,12 @@ pub(crate) async fn report_read_task_diagnostics(
         verdict.diagnostics.retain(|diagnostic| {
             calm_types::report_blocks::tasks::task_diagnostic_is_actionable(&diagnostic.code)
         });
-        included && !verdict.diagnostics.is_empty()
+        included
+            && (!verdict.diagnostics.is_empty()
+                || verdict
+                    .pending_reason
+                    .as_ref()
+                    .is_some_and(|reason| reason.is_actionable()))
     });
     Ok(verdicts)
 }

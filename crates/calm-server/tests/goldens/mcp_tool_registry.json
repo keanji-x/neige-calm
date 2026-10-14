@@ -409,7 +409,7 @@
   },
   {
     "name": "neige_report_read",
-    "description_sha256": "3bf0b16bd255e511b7c3f71e8c30b0c7c915e73ee4aaa4a84487769f869ba1b5",
+    "description_sha256": "5e096afbc667f022588f702055cb54d399947d2fcf3950a870d50b12d14bddcb",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

@@ -22,7 +22,6 @@ use calm_server::event::{EditAuthor, Event, EventBus};
 use calm_server::ids::{ActorId, AreaId, CardId, TrackId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::emit::{TOOL_TASK_DONE, TOOL_TASK_FAIL};
-use calm_server::mcp_server::tools::track_report::TOOL_REPORT_READ;
 use calm_server::mcp_server::tools::track_state::TOOL_TASK_ACCEPT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{
@@ -1660,13 +1659,18 @@ async fn spawn_failure_status_detail_carries_the_real_reason() {
         "status_detail must carry the real reason, got {detail:?}"
     );
 
-    // It must also reach the wire type both the planner (`neige_report_read`) and the FE (`GET /api/tracks/:id`) read.
-    let report = call_tool(&boot, TOOL_REPORT_READ, planner_identity(&boot), json!({}))
-        .await
-        .expect("report read");
-    let verdict = report["task_diagnostics"]
+    // Failure details reach the Planner through task history, independently of report diagnostics.
+    let report = call_tool(
+        &boot,
+        "neige_task_ls",
+        planner_identity(&boot),
+        json!({"key":"nogit"}),
+    )
+    .await
+    .expect("task list");
+    let verdict = report["tasks"]
         .as_array()
-        .expect("task_diagnostics array")
+        .expect("tasks array")
         .iter()
         .find(|v| v["key"] == json!("nogit"))
         .expect("verdict for the failed task")
@@ -1675,7 +1679,7 @@ async fn spawn_failure_status_detail_carries_the_real_reason() {
     let wire_detail = verdict["status_detail"].as_str().unwrap_or_default();
     assert!(
         wire_detail.contains("track-without-worktree"),
-        "the tool verdict status_detail must carry the reason, got {verdict}"
+        "the task list status_detail must carry the reason, got {verdict}"
     );
 }
 

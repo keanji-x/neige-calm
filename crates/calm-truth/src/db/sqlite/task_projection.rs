@@ -122,6 +122,10 @@ pub enum TaskPendingReason {
     DependencyBlocked {
         message: String,
         dependencies: Vec<String>,
+        /// Transient evaluation evidence, never persisted or exposed on the wire.
+        #[serde(skip)]
+        #[schema(ignore)]
+        terminal_dependencies: Vec<String>,
     },
     /// A codex or claude task waiting for the track's checkout (#1830 S2 D5).
     TrackBusy { message: String },
@@ -131,6 +135,36 @@ pub enum TaskPendingReason {
         diagnostic_codes: Vec<String>,
         actions: Vec<String>,
     },
+}
+
+impl TaskPendingReason {
+    pub fn is_actionable(&self) -> bool {
+        use calm_types::report_blocks::tasks::{
+            TaskPendingReasonKind, task_pending_reason_is_actionable,
+        };
+        let kind = match self {
+            Self::DependencyBlocked {
+                terminal_dependencies,
+                ..
+            } => {
+                if terminal_dependencies.is_empty() {
+                    TaskPendingReasonKind::DependencyWaiting
+                } else {
+                    TaskPendingReasonKind::DependencyFailedOrCanceled
+                }
+            }
+            Self::TrackBusy { .. } => TaskPendingReasonKind::TrackBusy,
+            Self::NotAdmitted {
+                diagnostic_codes, ..
+            } => {
+                return task_pending_reason_is_actionable(
+                    TaskPendingReasonKind::NotAdmitted,
+                    diagnostic_codes,
+                );
+            }
+        };
+        task_pending_reason_is_actionable(kind, &[])
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -434,6 +468,10 @@ fn attach_task_pending_reasons(
                         ),
                     };
                     verdict.pending_reason = Some(TaskPendingReason::DependencyBlocked {
+                        terminal_dependencies: terminal_dependencies
+                            .iter()
+                            .map(|(key, _)| (*key).to_owned())
+                            .collect(),
                         message,
                         dependencies,
                     });

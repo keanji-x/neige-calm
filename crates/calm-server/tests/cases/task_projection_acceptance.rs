@@ -123,7 +123,7 @@ pub(super) async fn route_state(boot: &Boot) -> AppState {
     state
 }
 
-async fn rest_read(boot: &Boot) -> Value {
+pub(super) async fn rest_read(boot: &Boot) -> Value {
     let response = calm_server::routes::tracks::router()
         .with_state(route_state(boot).await)
         .layer(Extension(principal()))
@@ -318,7 +318,13 @@ async fn pending_reasons_distinguish_dependency_busy_track_and_admission() {
         .await
         .unwrap();
 
-    for (surface, response) in [("MCP", read(&boot).await), ("REST", rest_read(&boot).await)] {
+    let mcp = read(&boot).await;
+    assert_eq!(verdicts(&mcp).len(), 1, "{mcp}");
+    assert_eq!(verdicts(&mcp)[0]["key"], "not-admitted");
+    assert_eq!(verdicts(&mcp)[0]["pending_reason"]["kind"], "notAdmitted");
+    {
+        let surface = "REST";
+        let response = rest_read(&boot).await;
         let (pending, codes) = pending_keys(surface);
         let dependency = &task_verdict(&response, "dependency-blocked")[pending];
         assert_eq!(dependency["kind"], "dependencyBlocked", "{surface}");
@@ -384,7 +390,10 @@ async fn malformed_persisted_dependency_shape_keeps_report_reads_available() {
         .await
         .unwrap();
 
-    for (surface, response) in [("MCP", read(&boot).await), ("REST", rest_read(&boot).await)] {
+    assert!(verdicts(&read(&boot).await).is_empty());
+    {
+        let surface = "REST";
+        let response = rest_read(&boot).await;
         let verdict = task_verdict(&response, "legacy-shape");
         assert_eq!(verdict["status"], "pending", "{surface}: {verdict}");
         assert!(
@@ -417,7 +426,10 @@ async fn syntactically_invalid_persisted_dependencies_also_degrade_to_empty() {
         .unwrap();
     drop(connection);
 
-    for (surface, response) in [("MCP", read(&boot).await), ("REST", rest_read(&boot).await)] {
+    assert!(verdicts(&read(&boot).await).is_empty());
+    {
+        let surface = "REST";
+        let response = rest_read(&boot).await;
         let verdict = task_verdict(&response, "corrupt-dependencies");
         assert_eq!(verdict["status"], "pending", "{surface}: {verdict}");
         assert!(
@@ -517,8 +529,10 @@ async fn failed_dependency_reason_points_to_a_new_task() {
         .await
         .unwrap();
 
-    for (surface, response) in [("MCP", read(&boot).await), ("REST", rest_read(&boot).await)] {
-        let failed = task_verdict(&response, "failed-first");
+    let status_read = rest_read(&boot).await;
+    {
+        let surface = "REST";
+        let failed = task_verdict(&status_read, "failed-first");
         assert_eq!(failed["status"], "failed", "{surface}: {failed}");
         let diagnostics = failed["diagnostics"].as_array().unwrap();
         let hint = diagnostics
@@ -532,6 +546,8 @@ async fn failed_dependency_reason_points_to_a_new_task() {
             hint["message"].as_str().unwrap().contains("new task key"),
             "{surface}: {hint}"
         );
+    }
+    for (surface, response) in [("MCP", read(&boot).await), ("REST", rest_read(&boot).await)] {
         let reason = &task_verdict(&response, "blocked-next")[pending_keys(surface).0];
         assert_eq!(reason["kind"], "dependencyBlocked", "{surface}");
         assert_eq!(reason["dependencies"], json!(["failed-first"]), "{surface}");
@@ -698,10 +714,15 @@ async fn agent_task_gate_cwd_not_admitted_at_claim() {
             "{key}: a gate is declared; only its cwd is refused"
         );
     }
-    let terminal_verdict = task_verdict(&snapshot, "terminal-gate-cwd");
+    let status_snapshot = rest_read(&boot).await;
+    let terminal_verdict = task_verdict(&status_snapshot, "terminal-gate-cwd");
     assert_eq!(terminal_verdict["schedulable"], true, "{terminal_verdict}");
     assert!(
-        !has_diagnostic_code(&snapshot, "terminal-gate-cwd", "gate_cwd_on_agent_task"),
+        !has_diagnostic_code(
+            &status_snapshot,
+            "terminal-gate-cwd",
+            "gate_cwd_on_agent_task"
+        ),
         "{terminal_verdict}"
     );
     assert_eq!(keys(&boot).await, vec!["terminal-gate-cwd".to_string()]);
@@ -1244,7 +1265,9 @@ async fn terminal_task_does_not_receive_in_flight_withdrawal_diagnostic() {
         .await
         .unwrap();
 
-    for snapshot in [&read(&boot).await, &rest_read(&boot).await] {
+    assert!(verdicts(&read(&boot).await).is_empty());
+    {
+        let snapshot = &rest_read(&boot).await;
         assert!(
             has_diagnostic_code(snapshot, "finished", "task_key_completed"),
             "{}",

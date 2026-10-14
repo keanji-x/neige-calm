@@ -94,6 +94,35 @@ pub fn task_diagnostic_is_actionable(code: &str) -> bool {
     }
 }
 
+/// Scheduling reasons, classified at their producer rather than from human copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskPendingReasonKind {
+    DependencyWaiting,
+    DependencyFailedOrCanceled,
+    TrackBusy,
+    NotAdmitted,
+}
+
+pub const TASK_PENDING_REASON_KINDS: &[TaskPendingReasonKind] = &[
+    TaskPendingReasonKind::DependencyWaiting,
+    TaskPendingReasonKind::DependencyFailedOrCanceled,
+    TaskPendingReasonKind::TrackBusy,
+    TaskPendingReasonKind::NotAdmitted,
+];
+
+pub fn task_pending_reason_is_actionable(
+    kind: TaskPendingReasonKind,
+    diagnostic_codes: &[String],
+) -> bool {
+    match kind {
+        TaskPendingReasonKind::DependencyFailedOrCanceled => true,
+        TaskPendingReasonKind::DependencyWaiting | TaskPendingReasonKind::TrackBusy => false,
+        TaskPendingReasonKind::NotAdmitted => diagnostic_codes
+            .iter()
+            .any(|code| task_diagnostic_is_actionable(code)),
+    }
+}
+
 /// Recovery-action contract shared by producers and checked by the web copy tests.
 pub const TASK_DIAGNOSTIC_ACTIONS: &[(&str, &str)] = &[
     ("planner_task_ceiling", "raise_planner_task_ceiling"),
@@ -1339,13 +1368,70 @@ mod tests {
         );
 
         for &(code, path) in TASK_DIAGNOSTIC_CODE_PATHS {
-            task_diagnostic_is_actionable(code);
             let action = (code != "tree_budget_exhausted")
                 .then(|| task_diagnostic_action(code))
                 .flatten()
                 .map(str::to_owned);
             let diagnostic = Diagnostic::coded(code, path, BTreeMap::new(), vec![], None, action);
             assert_eq!(diagnostic.path, path, "path drifted for {code}");
+        }
+    }
+
+    #[test]
+    fn diagnostic_and_pending_reason_classification_pins_every_kind() {
+        let expected = [
+            ("invalid_declaration", true),
+            ("duplicate_key", true),
+            ("dependency_cycle", true),
+            ("tombstone_blocks_redeclaration", true),
+            ("unknown_dependency", true),
+            ("gate_required", true),
+            ("gate_cwd_on_agent_task", true),
+            ("neige_execution_retired", true),
+            ("reference_needs_block", true),
+            ("reference_missing", true),
+            ("reference_cross_area", true),
+            ("declare_and_wait", true),
+            ("declaration_changed_in_flight", true),
+            ("task_key_completed", false),
+            ("context_stale_declaration", true),
+            ("context_stale_reference", true),
+            ("reference_chain_too_large", true),
+            ("planner_task_ceiling", true),
+            ("tree_budget_exhausted", true),
+            ("tree_root_unresolved", true),
+        ];
+        assert_eq!(
+            expected.map(|(code, _)| code).as_slice(),
+            TASK_DIAGNOSTIC_CODES
+        );
+        for (code, actionable) in expected {
+            assert_eq!(task_diagnostic_is_actionable(code), actionable, "{code}");
+            assert_eq!(
+                task_pending_reason_is_actionable(
+                    TaskPendingReasonKind::NotAdmitted,
+                    &[code.into()]
+                ),
+                actionable,
+                "NotAdmitted: {code}",
+            );
+        }
+        let expected_pending = [
+            (TaskPendingReasonKind::DependencyWaiting, false),
+            (TaskPendingReasonKind::DependencyFailedOrCanceled, true),
+            (TaskPendingReasonKind::TrackBusy, false),
+            (TaskPendingReasonKind::NotAdmitted, false),
+        ];
+        assert_eq!(
+            expected_pending.map(|(kind, _)| kind).as_slice(),
+            TASK_PENDING_REASON_KINDS
+        );
+        for (kind, actionable) in expected_pending {
+            assert_eq!(
+                task_pending_reason_is_actionable(kind, &[]),
+                actionable,
+                "{kind:?}"
+            );
         }
     }
 

@@ -113,11 +113,21 @@ async fn duplicate_evaluates_the_whole_document() {
 }
 
 #[tokio::test]
-async fn index_returns_no_diagnostics() {
+async fn index_skips_diagnostics_evaluation() {
     let (boot, _) = fixture(false).await;
+    // Make the production diagnostics query fail while leaving the document readable.
+    sqlx::query("DROP TABLE tasks")
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
     assert_eq!(
         read(&boot, json!({"detail":"index"})).await["task_diagnostics"],
-        json!([])
+        json!([]),
+    );
+    assert!(
+        call_tool(&boot, TOOL_REPORT_READ, planner_identity(&boot), json!({}))
+            .await
+            .is_err()
     );
 }
 
@@ -179,5 +189,87 @@ async fn orphan_withdrawals_belong_only_to_full_reads() {
                 .any(|item| item["key"] == "orphan"),
             "{out}"
         );
+    }
+}
+
+#[tokio::test]
+async fn pending_reason_keeps_terminal_dependency_blockers_but_not_waits() {
+    let (boot, _) = fixture(false).await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let mut body = String::from("# Overview\nstatus\n# Dependencies\n");
+    for (key, dependencies, status) in [
+        ("failed", vec![], "failed"),
+        ("canceled", vec![], "canceled"),
+        ("working", vec![], "running"),
+        ("blocked", vec!["failed"], "pending"),
+        ("canceled-blocked", vec!["canceled"], "pending"),
+        ("waiting", vec!["working"], "pending"),
+    ] {
+        let payload = json!({"key":key,"kind":"terminal","command":"true","ready":true,"depends_on":dependencies,"declared_by":PLANNER_DECLARATION_AUTHOR});
+        body.push_str(&render_fence("task", &payload));
+        body.push('\n');
+        sqlx::query(
+            "INSERT INTO tasks \
+             (id,track_id,key,kind,goal,context_json,depends_on_json,priority, \
+              status,declared_by,created_at_ms,updated_at_ms) \
+             VALUES(?1,?2,?3,'terminal','true','{}',?4,0,?5,?6,0,0)",
+        )
+        .bind(format!("dependency-{key}"))
+        .bind(boot.track_id.as_str())
+        .bind(key)
+        .bind(json!(dependencies).to_string())
+        .bind(status)
+        .bind(PLANNER_DECLARATION_AUTHOR)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query("UPDATE cards SET body_crdt=NULL,payload=?1 WHERE id=?2")
+        .bind(json!({"schemaVersion":4,"summary":"dependencies","body":body}).to_string())
+        .bind(boot.report_card_id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        read(&boot, json!({"sections":["Overview"]})).await["task_diagnostics"],
+        json!([])
+    );
+    let blocks = calm_server::track_report_read::load_report_doc_snapshot(
+        boot.repo.as_ref(),
+        boot.report_card_id.as_str(),
+    )
+    .await
+    .unwrap()
+    .blocks;
+    let blocked_id = &blocks
+        .iter()
+        .find(|b| b.payload["key"] == "blocked")
+        .unwrap()
+        .id;
+    let scoped = read(&boot, json!({"blocks":[blocked_id]})).await;
+    assert_eq!(scoped["task_diagnostics"].as_array().unwrap().len(), 1);
+    assert_eq!(scoped["task_diagnostics"][0]["key"], "blocked");
+    // Section reads are task-free: their rendered owners exclude task fences.
+    assert_eq!(
+        read(&boot, json!({"sections":["Dependencies"]})).await["task_diagnostics"],
+        json!([])
+    );
+    {
+        let out = read(&boot, json!({})).await;
+        let items = out["task_diagnostics"].as_array().unwrap();
+        assert_eq!(items.len(), 2, "{out}");
+        for key in ["blocked", "canceled-blocked"] {
+            let verdict = items
+                .iter()
+                .find(|v| v["key"] == key)
+                .expect("actionable pending reason");
+            assert_eq!(verdict["pending_reason"]["kind"], "dependencyBlocked");
+            assert!(
+                verdict["pending_reason"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("Blocked")
+            );
+        }
     }
 }
