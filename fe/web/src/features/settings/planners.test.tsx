@@ -99,16 +99,35 @@ it('shows the default, saves valid minutes on Enter once, and resets explicitly'
   expect(props.turnDuration.onSave).toHaveBeenLastCalledWith(null);
 });
 
-it('does not write invalid input and can reset corrupt stored values', () => {
+it('associates help and errors with corrupt stored and invalid drafts, then clears invalid on repair/reset', async () => {
   const props = pane({ turnDuration: { readRevision: 1, value: 'broken', loaded: true, loadError: null,
     onRetryLoad: vi.fn(), onSave: vi.fn().mockResolvedValue(undefined) } });
-  expect(screen.getByRole('alert').textContent).toContain('Stored duration is invalid');
   const field = screen.getByRole('textbox', { name: 'Maximum turn duration (minutes)' });
+  const description = () => {
+    const ids = field.getAttribute('aria-describedby');
+    expect(ids).toBeTruthy();
+    return ids!.split(/\s+/).map((id) => {
+      const element = document.getElementById(id);
+      expect(element).not.toBeNull();
+      return element!.textContent;
+    }).join(' ');
+  };
+  expect(field.getAttribute('aria-invalid')).toBe('true');
+  for (const phrase of ['Default: 30', '1–240', 'next turn', 'hold waiting', 'Claude receives only', 'Stored duration is invalid']) expect(description()).toContain(phrase);
   fireEvent.change(field, { target: { value: '241' } });
   fireEvent.keyDown(field, { key: 'Enter' });
+  expect(field.getAttribute('aria-invalid')).toBe('true');
+  expect(description()).toContain('1 to 240');
   expect(props.turnDuration.onSave).not.toHaveBeenCalled();
+  fireEvent.change(field, { target: { value: '60' } });
+  expect(field.getAttribute('aria-invalid')).toBeNull();
+  expect(description()).not.toContain('Stored duration is invalid');
+  fireEvent.change(field, { target: { value: '241' } });
   fireEvent.click(screen.getByRole('button', { name: 'Restore default duration' }));
+  expect(field.getAttribute('aria-invalid')).toBeNull();
+  expect((field as HTMLInputElement).value).toBe('30');
   expect(props.turnDuration.onSave).toHaveBeenCalledWith(null);
+  await screen.findByText('Saved.');
 });
 
 
@@ -157,12 +176,12 @@ it.each([
   const field = screen.getByRole('textbox', { name: 'Maximum turn duration (minutes)' });
   fireEvent.change(field, { target: { value: '45' } });
   fireEvent.keyDown(field, { key: 'Enter' });
-  expect((await screen.findByRole('alert')).textContent).toContain(sentence);
-  expect(screen.getByRole('alert').textContent).not.toContain('socket secret');
+  expect((await within(row('Maximum turn duration')).findByRole('alert')).textContent).toContain(sentence);
+  expect(within(row('Maximum turn duration')).getByRole('alert').textContent).not.toContain('socket secret');
   fireEvent.blur(field);
   expect(onSave).toHaveBeenCalledTimes(1);
   props.rerender(<PlannersPane {...props} turnDuration={{ ...props.turnDuration, value: '30' }} />);
-  expect(screen.getByRole('alert').textContent).toContain(sentence);
+  expect(within(row('Maximum turn duration')).getByRole('alert').textContent).toContain(sentence);
   fireEvent.keyDown(field, { key: 'Enter' });
   await screen.findByText('Saved.');
   expect(onSave).toHaveBeenCalledTimes(2);
@@ -189,7 +208,7 @@ it('commits canonical minutes on blur and rejects an invalid blur without clampi
   expect(field.value).toBe('1');
   fireEvent.change(field, { target: { value: '241' } });
   fireEvent.blur(field);
-  expect(screen.getByRole('alert').textContent).toContain('1 to 240');
+  expect(screen.getByText('Enter a whole number from 1 to 240 minutes (ASCII digits).').textContent).toContain('1 to 240');
   expect(field.value).toBe('241');
   expect(props.turnDuration.onSave).toHaveBeenCalledTimes(1);
 });
@@ -229,8 +248,8 @@ it('keeps an unconfirmed reset visible through an unchanged successful read', as
   const props = pane({ turnDuration: { readRevision: 1, value: '30', loaded: true, loadError: null,
     onRetryLoad: vi.fn(), onSave: vi.fn().mockRejectedValue(new Error('lost')) } });
   fireEvent.click(screen.getByRole('button', { name: 'Restore default duration' }));
-  await screen.findByRole('alert');
+  await within(row('Maximum turn duration')).findByRole('alert');
   props.rerender(<PlannersPane {...props} turnDuration={{ ...props.turnDuration, readRevision: 2 }} />);
-  expect(screen.getByRole('alert').textContent).toContain('The save is unconfirmed.');
+  expect(within(row('Maximum turn duration')).getByRole('alert').textContent).toContain('The save is unconfirmed.');
   expect(props.turnDuration.onSave).toHaveBeenCalledTimes(1);
 });

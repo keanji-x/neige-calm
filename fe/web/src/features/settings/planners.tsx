@@ -121,25 +121,25 @@ function PlannerTurnDuration({ value, readRevision, loaded, loadError, onRetryLo
     })();
   };
   const stored = plannerTurnDuration(value);
+  const parsedDraft = plannerTurnDuration(draft);
+  const inputError = parsedDraft.ok ? null
+    : !stored.ok && draft === durationText(value)
+      ? `Stored duration is invalid. ${stored.error} Restore default to repair it.`
+      : validationError ?? parsedDraft.error;
   return <SettingsList>
     <SettingRow title="Maximum turn duration" titleSuffix="minutes"
-      description={<span className={styles.plannerReason} id="planner-duration-help">
-        Default: 30 minutes. Choose 1–240 minutes. Changes apply to the next turn; hold waiting time does not count.
-        Claude receives only the budget reminder at the start of the turn, without a mid-turn warning.
-      </span>}
       control={<div className={styles.durationControl}>
         {loadError !== null && <ErrorBox message={loadError} onRetry={onRetryLoad} />}
         {!loaded ? loadError === null && <span role="status">Loading duration…</span> : <>
-          <AstryxTextInput label="Maximum turn duration (minutes)" isLabelHidden value={draft} width={CONTROL_WIDTH}
+          <AstryxTextInput label="Maximum turn duration (minutes)" value={draft} width={CONTROL_WIDTH}
             ref={(input) => { if (input !== null) input.inputMode = 'numeric'; }}
-            aria-describedby="planner-duration-help" aria-invalid={validationError !== null || !stored.ok}
+            description="Default: 30 minutes. Choose 1–240 minutes. Changes apply to the next turn; hold waiting time does not count. Claude receives only the budget reminder at the start of the turn, without a mid-turn warning."
+            status={inputError === null ? undefined : { type: 'error', message: inputError }}
             onChange={(next) => { setDraft(next); setValidationError(null); }}
             onBlur={() => commit(false, false)}
             onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); commit(false, true); } }} />
           <AstryxButton label="Restore default duration" variant="secondary" isDisabled={save.phase === 'pending'}
             onPointerDown={(event) => event.preventDefault()} onClick={() => commit(true, true)}>Restore default</AstryxButton>
-          {!stored.ok && <p className={styles.error} role="alert">Stored duration is invalid. {stored.error} Restore default to repair it.</p>}
-          {validationError !== null && <p className={styles.error} role="alert">{validationError}</p>}
           {save.phase === 'failed' && <p className={styles.error} role="alert">{save.value} minutes: {save.message} Press Enter to try again or restore default.</p>}
           <span role="status">{save.phase === 'pending' ? `Saving ${save.value} minutes…`
             : save.phase === 'saved' && save.value === draft ? 'Saved.'

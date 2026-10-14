@@ -146,9 +146,11 @@ it('repairs corrupt storage with null and reads the default without rewriting a 
   });
   const field = await screen.findByRole('textbox', { name: 'Maximum turn duration (minutes)' });
   expect((field as HTMLInputElement).value).toBe('broken');
-  expect(screen.getByRole('alert').textContent).toContain('Stored duration is invalid');
+  expect(field.getAttribute('aria-invalid')).toBe('true');
+  const ids = field.getAttribute('aria-describedby')!.split(/\s+/);
+  expect(ids.map((id) => document.getElementById(id)?.textContent).join(' ')).toContain('Stored duration is invalid');
   await userEvent.click(screen.getByRole('button', { name: 'Restore default duration' }));
-  await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  await waitFor(() => expect(field.getAttribute('aria-invalid')).toBeNull());
   expect((field as HTMLInputElement).value).toBe('30');
   expect(sent.filter((request) => request.method === 'PUT')).toHaveLength(1);
   expect(stored.http_proxy).toBe('http://proxy');
