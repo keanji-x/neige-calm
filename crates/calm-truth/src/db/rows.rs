@@ -261,8 +261,16 @@ fn turn_error_text(method: &str, params: &str) -> Option<String> {
     if params.get("status").and_then(serde_json::Value::as_str) != Some("interrupted") {
         return None;
     }
-    let reason: calm_types::harness::HarnessInterruptionReason =
-        serde_json::from_value(params.get("harness_interruption_reason")?.clone()).ok()?;
+    let metadata = params.get("harness_interruption_reason")?;
+    // Explicit compatibility: the released cause-only string and complete v1 evidence.
+    let reason =
+        serde_json::from_value::<calm_types::harness::HarnessInterruptionReason>(metadata.clone())
+            .ok()
+            .or_else(|| {
+                let calm_types::harness::HarnessTimeoutEvidence::V1 { request, .. } =
+                    serde_json::from_value(metadata.clone()).ok()?;
+                Some(request.reason)
+            })?;
     Some(reason.message().into())
 }
 

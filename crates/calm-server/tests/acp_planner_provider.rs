@@ -108,8 +108,10 @@ async fn acp_runs_two_turns_and_loads_the_same_native_session_after_restart() {
     let rows =
         claude_planner_session_fixture::card_rows(stack.repo(), &card, "item/completed").await;
     assert!(
-        rows.iter()
-            .any(|row| row["item"]["text"] == "reply: User says:\nfirst explicit input"),
+        rows.iter().any(|row| row["item"]["text"]
+            .as_str()
+            .is_some_and(|text| text.starts_with("reply: ")
+                && text.ends_with("User says:\nfirst explicit input"))),
         "{rows:?}"
     );
     assert!(

@@ -273,6 +273,11 @@ fn validate_activity_overlay_payload(payload: &Value) -> Result<()> {
             questions: Vec<Question>,
             delivery: Delivery,
         },
+        PlannerTurnTimeout {
+            key: String,
+            text: String,
+            at_ms: i64,
+        },
         PlannerDown {
             key: String,
             text: String,

@@ -127,6 +127,7 @@ impl Fold {
             .map(|i| match i.source() {
                 NotificationSource::PlannerDown => Attention::Failed,
                 NotificationSource::Ask => Attention::Input,
+                NotificationSource::PlannerTurnTimeout => Attention::None,
             })
             .max()
             .unwrap_or(Attention::None)

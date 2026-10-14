@@ -376,6 +376,12 @@ attachments: Array<PlannerAttachment>,
  */
 origin?: HarnessInputOrigin, };
 
+/**
+ * Kernel-owned cause recorded only for a confirmed interrupted turn.
+ * This metadata is separate from the provider's original error payload.
+ */
+export type HarnessInterruptionReason = "max_turn_duration";
+
 export type HarnessItem = { id: number, worker_session_id: string, card_id: CardId, track_id: TrackId, thread_id: string, turn_id: string | null, item_uuid: string | null, item_type: string | null, method: string, params: string, input_segments?: Array<HarnessInputSegment>, created_at_ms: number, 
 /**
  * Readable reason for a `turn/completed` row: the provider's reduced `error.message`, or a
@@ -413,6 +419,16 @@ export type HarnessPhaseTag = "pending_thread_start" | "idle" | "issuing_turn" |
  * What happened to one entry in the harness pending queue.
  */
 export type HarnessQueueChange = "edited" | "deleted" | "steered" | "restored" | "dropped";
+
+/**
+ * Written exclusively at the kernel terminal-outcome boundary after confirmation.
+ */
+export type HarnessTimeoutEvidence = { "version": "v1", request: HarnessTimeoutRequest, ended_at_ms: number, };
+
+/**
+ * All facts are sampled by the watchdog before issuing the interrupt.
+ */
+export type HarnessTimeoutRequest = { session_id: string, card_id: string, track_id: string, thread_id: string, turn_id: string, reason: HarnessInterruptionReason, requested_at_ms: number, effective_elapsed_ms: number, budget_ms: number, };
 
 /**
  * `POST /api/read-receipts/{kind}/{target_id}/read`: the activity instant the reader has seen.

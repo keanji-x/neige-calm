@@ -1,5 +1,5 @@
-//! The two notification sources of a track (#1829, #2209): an ask (an open `ask.requested`) and
-//! planner down (the Planner's newest finished turn failed). A pure function
+//! Notification sources: open asks, the latest failed Planner turn, and confirmed Planner
+//! timeout evidence not superseded by a successful terminal. A pure function
 //! of the rows `sql::notification_rows` read; nothing else is an item.
 
 use std::collections::BTreeSet;
@@ -12,12 +12,13 @@ use crate::event::{AskDelivery, AskQuestion};
 /// The two key shapes: a source prefix, then the evidence row's id (the `ask.requested` event id
 /// for an ask, the transcript row id for a failed turn).
 const ASK_KEY: &str = "ask:";
+const PLANNER_TIMEOUT_KEY: &str = calm_types::harness::PLANNER_TURN_TIMEOUT_KEY_PREFIX;
 const PLANNER_DOWN_KEY: &str = "planner_down:";
 
 /// Whether `key` has one of the two item key shapes (`<prefix><decimal row id>`). The Dismiss
 /// route admits only these; whether the item is still open is not asked.
 pub fn is_item_key(key: &str) -> bool {
-    [ASK_KEY, PLANNER_DOWN_KEY]
+    [ASK_KEY, PLANNER_DOWN_KEY, PLANNER_TIMEOUT_KEY]
         .iter()
         .filter_map(|prefix| key.strip_prefix(prefix))
         .any(|id| id.bytes().all(|b| b.is_ascii_digit()) && id.parse::<i64>().is_ok())
@@ -28,6 +29,7 @@ pub fn is_item_key(key: &str) -> bool {
 pub enum NotificationSource {
     Ask,
     PlannerDown,
+    PlannerTurnTimeout,
 }
 
 /// One thing addressed to the user and not yet handled, tagged by `source`. `key` carries the
@@ -48,6 +50,11 @@ pub enum ActivityItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         action: Option<crate::event::AskAction>,
     },
+    PlannerTurnTimeout {
+        key: String,
+        text: String,
+        at_ms: i64,
+    },
     PlannerDown {
         key: String,
         text: String,
@@ -59,25 +66,32 @@ impl ActivityItem {
     pub fn source(&self) -> NotificationSource {
         match self {
             ActivityItem::Ask { .. } => NotificationSource::Ask,
+            ActivityItem::PlannerTurnTimeout { .. } => NotificationSource::PlannerTurnTimeout,
             ActivityItem::PlannerDown { .. } => NotificationSource::PlannerDown,
         }
     }
 
     pub fn key(&self) -> &str {
         match self {
-            ActivityItem::Ask { key, .. } | ActivityItem::PlannerDown { key, .. } => key,
+            ActivityItem::Ask { key, .. }
+            | ActivityItem::PlannerDown { key, .. }
+            | ActivityItem::PlannerTurnTimeout { key, .. } => key,
         }
     }
 
     pub fn text(&self) -> &str {
         match self {
-            ActivityItem::Ask { text, .. } | ActivityItem::PlannerDown { text, .. } => text,
+            ActivityItem::Ask { text, .. }
+            | ActivityItem::PlannerDown { text, .. }
+            | ActivityItem::PlannerTurnTimeout { text, .. } => text,
         }
     }
 
     pub fn at_ms(&self) -> i64 {
         match self {
-            ActivityItem::Ask { at_ms, .. } | ActivityItem::PlannerDown { at_ms, .. } => *at_ms,
+            ActivityItem::Ask { at_ms, .. }
+            | ActivityItem::PlannerDown { at_ms, .. }
+            | ActivityItem::PlannerTurnTimeout { at_ms, .. } => *at_ms,
         }
     }
 }
@@ -109,6 +123,8 @@ pub struct NotificationRows {
     /// U — the newest user message to the Planner card.
     pub user_sent_at: Option<i64>,
     pub last_turn: Option<LastTurn>,
+    /// Trusted timeouts not superseded by a successful completed turn.
+    pub timeouts: Vec<LastTurn>,
     /// N4 — the keys the user dismissed on this track.
     pub dismissed: BTreeSet<String>,
 }
@@ -162,6 +178,19 @@ pub fn notifications(track_id: &str, rows: &NotificationRows) -> Vec<ActivityIte
                 key = %key,
                 "track_activity: notification evidence has no text; item dropped"
             ),
+        }
+    }
+
+    for turn in &rows.timeouts {
+        let key = calm_types::harness::planner_timeout_key(turn.row_id);
+        if !rows.dismissed.contains(&key) {
+            items.push(ActivityItem::PlannerTurnTimeout {
+                key,
+                text: include_str!("../../prompts/planner-timeout-activity.md")
+                    .trim()
+                    .to_owned(),
+                at_ms: turn.at_ms,
+            });
         }
     }
 
@@ -281,5 +310,36 @@ mod tests {
         assert_eq!(wire["ask_id"], 7);
         assert_eq!(wire["questions"][0]["options"][1], "Hold");
         assert_eq!(wire["delivery"], "wake");
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+
+    #[test]
+    fn planner_timeout_key_dismiss_and_attention_are_independent_of_user_messages() {
+        let mut rows = NotificationRows {
+            timeouts: vec![LastTurn {
+                row_id: 42,
+                at_ms: 100,
+                status: Some("interrupted".into()),
+                error_message: None,
+            }],
+            user_sent_at: Some(200),
+            ..Default::default()
+        };
+        let items = notifications("track", &rows);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].source(), NotificationSource::PlannerTurnTimeout);
+        assert!(is_item_key(items[0].key()));
+        assert_eq!(
+            serde_json::to_value(&items[0]).unwrap()["source"],
+            "planner_turn_timeout"
+        );
+        rows.dismissed.insert("planner_turn_timeout:42".into());
+        assert!(notifications("track", &rows).is_empty());
+        rows.timeouts[0].row_id = 43;
+        assert_eq!(notifications("track", &rows).len(), 1);
     }
 }

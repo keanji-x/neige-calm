@@ -305,9 +305,21 @@ pub(crate) async fn notification_rows(
             status: r.get("status"),
             error_message: r.get("text"),
         });
+    let timeouts =
+        calm_truth::db::sqlite::terminal_outcome::pending_timeouts(pool, &planner_card, track_id)
+            .await?
+            .into_iter()
+            .map(|r| LastTurn {
+                row_id: r.id,
+                at_ms: r.created_at_ms,
+                status: Some("interrupted".into()),
+                error_message: None,
+            })
+            .collect();
     Ok(NotificationRows {
         asks,
         user_sent_at,
+        timeouts,
         last_turn,
         dismissed,
     })

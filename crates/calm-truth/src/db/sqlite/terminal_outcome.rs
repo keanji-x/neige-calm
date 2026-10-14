@@ -1,0 +1,43 @@
+//! Indexed terminal reads, without transcript pagination or arbitrary history cutoffs.
+use crate::db::terminal_outcome::HarnessTerminalOutcome;
+use crate::error::Result;
+use futures::TryStreamExt;
+use sqlx::SqlitePool;
+
+pub async fn latest(
+    pool: &SqlitePool,
+    card: &str,
+    track: &str,
+) -> Result<Option<HarnessTerminalOutcome>> {
+    Ok(sqlx::query_as(
+        "SELECT id, worker_session_id, card_id, track_id, thread_id, turn_id, params, created_at_ms \
+         FROM harness_items WHERE card_id=?1 AND method='turn/completed' AND track_id=?2 \
+         AND turn_id IS NOT NULL ORDER BY created_at_ms DESC, id DESC LIMIT 1"
+    ).bind(card).bind(track).fetch_optional(pool).await?)
+}
+
+/// Every confirmed timeout stays visible until a later successful completion.
+/// Stream all candidates after that success; malformed evidence cannot hide an older valid row.
+pub async fn pending_timeouts(
+    pool: &SqlitePool,
+    card: &str,
+    track: &str,
+) -> Result<Vec<HarnessTerminalOutcome>> {
+    let mut rows = sqlx::query_as::<_, HarnessTerminalOutcome>(
+        "SELECT h.id, h.worker_session_id, h.card_id, h.track_id, h.thread_id, h.turn_id, h.params, h.created_at_ms \
+         FROM harness_items h WHERE h.card_id=?1 AND h.method='turn/completed' AND h.track_id=?2 \
+         AND h.turn_id IS NOT NULL AND json_extract(h.params, '$.status')='interrupted' \
+         AND json_type(h.params, '$.harness_interruption_reason')='object' \
+         AND NOT EXISTS (SELECT 1 FROM harness_items s WHERE s.card_id=?1 AND s.method='turn/completed' \
+             AND s.track_id=?2 AND json_extract(s.params,'$.status')='completed' \
+             AND (s.created_at_ms > h.created_at_ms OR (s.created_at_ms=h.created_at_ms AND s.id>h.id))) \
+         ORDER BY h.created_at_ms DESC, h.id DESC"
+    ).bind(card).bind(track).fetch(pool);
+    let mut pending = Vec::new();
+    while let Some(row) = rows.try_next().await? {
+        if row.timeout().is_some() {
+            pending.push(row);
+        }
+    }
+    Ok(pending)
+}

@@ -5,7 +5,10 @@ use calm_server::harness::{HarnessState, IssuingKind, PlannerHarness};
 use serde_json::json;
 use std::time::{Duration, Instant};
 
-async fn wait_for_state(harness: &PlannerHarness, matches: impl Fn(&HarnessState) -> bool) {
+pub(super) async fn wait_for_state(
+    harness: &PlannerHarness,
+    matches: impl Fn(&HarnessState) -> bool,
+) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let state = harness.state_for_test().await;
@@ -17,7 +20,7 @@ async fn wait_for_state(harness: &PlannerHarness, matches: impl Fn(&HarnessState
     }
 }
 
-async fn setting(boot: &Boot, value: serde_json::Value) {
+pub(super) async fn setting(boot: &Boot, value: serde_json::Value) {
     let (status, body) = send_json(
         boot.app.clone(),
         "PUT",
@@ -28,7 +31,7 @@ async fn setting(boot: &Boot, value: serde_json::Value) {
     .await;
     assert_eq!(status, 200, "{body}");
 }
-async fn start(boot: &Boot) {
+pub(super) async fn start(boot: &Boot) {
     let (status, body) = post_input(boot.app.clone(), boot.planner_card.id.as_str(), "start").await;
     assert_eq!(status, 200, "{body}");
     wait_for_state(&boot.harness, |s| {

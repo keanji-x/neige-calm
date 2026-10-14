@@ -139,6 +139,13 @@ impl CodexApprovals {
 }
 
 impl PlannerBackend {
+    /// Codex reports provider terminal confirmation directly. Local-process adapters record
+    /// their confirmed terminal after teardown, before publishing the event; their event alone
+    /// cannot prove teardown succeeded if that write failed.
+    pub(crate) fn terminal_event_confirms_stop(&self) -> bool {
+        matches!(&self.0, Arm::Codex(..))
+    }
+
     /// Static support of the bound Planner backend, including before a session is opened.
     /// This is not admission: `compact_start` and the harness retain their current fences.
     pub(crate) fn manual_compact_supported(provider: &AgentProvider) -> bool {

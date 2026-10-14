@@ -165,6 +165,7 @@ impl SharedCodexAppServer {
             thread_id,
             turn_id,
             turn,
+            crate::harness::turn_outcome::Confirmation::ProviderTerminal,
         )
         .await?;
         Ok(Some((id, turn_id.to_owned())))

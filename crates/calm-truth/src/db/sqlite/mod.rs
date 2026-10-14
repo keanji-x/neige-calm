@@ -40,6 +40,7 @@ mod planner_input_idempotency_tests;
 mod read;
 mod read_receipt;
 mod session_conversation;
+pub mod terminal_outcome;
 mod transcript_projection;
 mod worker_flow_capture;
 pub use session_conversation::{

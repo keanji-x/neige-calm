@@ -367,6 +367,7 @@ async fn record_interrupted_claude_turn(
         &thread_id,
         turn_id,
         &turn,
+        crate::harness::turn_outcome::Confirmation::Unconfirmed,
     )
     .await?;
     Ok(())

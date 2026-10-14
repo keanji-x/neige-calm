@@ -14288,6 +14288,13 @@
           }
         }
       },
+      "HarnessInterruptionReason": {
+        "type": "string",
+        "description": "Kernel-owned cause recorded only for a confirmed interrupted turn.\nThis metadata is separate from the provider's original error payload.",
+        "enum": [
+          "max_turn_duration"
+        ]
+      },
       "HarnessItem": {
         "type": "object",
         "required": [
@@ -14449,6 +14456,84 @@
           "resumed",
           "wedged"
         ]
+      },
+      "HarnessTimeoutEvidence": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "request",
+              "ended_at_ms",
+              "version"
+            ],
+            "properties": {
+              "ended_at_ms": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "request": {
+                "$ref": "#/components/schemas/HarnessTimeoutRequest"
+              },
+              "version": {
+                "type": "string",
+                "enum": [
+                  "v1"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Written exclusively at the kernel terminal-outcome boundary after confirmation."
+      },
+      "HarnessTimeoutRequest": {
+        "type": "object",
+        "description": "All facts are sampled by the watchdog before issuing the interrupt.",
+        "required": [
+          "session_id",
+          "card_id",
+          "track_id",
+          "thread_id",
+          "turn_id",
+          "reason",
+          "requested_at_ms",
+          "effective_elapsed_ms",
+          "budget_ms"
+        ],
+        "properties": {
+          "budget_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "card_id": {
+            "type": "string"
+          },
+          "effective_elapsed_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "reason": {
+            "$ref": "#/components/schemas/HarnessInterruptionReason"
+          },
+          "requested_at_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "thread_id": {
+            "type": "string"
+          },
+          "track_id": {
+            "type": "string"
+          },
+          "turn_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
       },
       "InstallBody": {
         "type": "object",

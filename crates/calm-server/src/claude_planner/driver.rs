@@ -549,7 +549,7 @@ struct SettleInput {
     stderr_tail: Arc<Mutex<String>>,
 }
 
-/// record → close stdin → bounded wait for the direct child (not on the stop path) → `stop` →
+/// close stdin → bounded wait for the direct child (not on the stop path) → `stop` → record →
 /// remove the instructions file → close open items → `TurnCompleted`. A compaction records no
 /// outcome and closes no items: it is no turn of the transcript.
 /// Every await here is bounded by its own timeout and, once a stop is armed, by the slot's
@@ -598,9 +598,6 @@ async fn settle(shared: &Shared, input: SettleInput, ending: Ending) {
         unreachable!("turn_completed builds TurnCompleted");
     };
     let turn_id = turn["id"].as_str().unwrap_or_default().to_string();
-    if purpose == SpawnPurpose::Turn {
-        record_outcome(shared, &slot, &thread.to_string(), &turn_id, turn).await;
-    }
     if let Some(mut stdin) = slot.bounded(WRITE_TIMEOUT, slot.stdin.lock()).await {
         stdin.take();
     }
@@ -622,6 +619,22 @@ async fn settle(shared: &Shared, input: SettleInput, ending: Ending) {
                 "claude planner settlement stop cut off at settle_by".into(),
             ))
         });
+    if purpose == SpawnPurpose::Turn {
+        let confirmation = if stopped.is_ok() {
+            crate::harness::turn_outcome::Confirmation::ProviderTerminal
+        } else {
+            crate::harness::turn_outcome::Confirmation::Unconfirmed
+        };
+        record_outcome(
+            shared,
+            &slot,
+            &thread.to_string(),
+            &turn_id,
+            turn,
+            confirmation,
+        )
+        .await;
+    }
     if let Err(error) = stopped {
         tracing::warn!(
             worker_session_id = %params.worker_session_id,
@@ -663,6 +676,7 @@ async fn record_outcome(
     thread: &str,
     turn_id: &str,
     turn: &serde_json::Value,
+    confirmation: crate::harness::turn_outcome::Confirmation,
 ) {
     let params = &shared.params;
     let recorded = slot
@@ -676,6 +690,7 @@ async fn record_outcome(
                 thread,
                 turn_id,
                 turn,
+                confirmation,
             ),
         )
         .await;

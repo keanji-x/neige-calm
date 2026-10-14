@@ -3336,6 +3336,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     )
     .await?;
 
+    let timeout_notice = timeout_notice::previous(inner).await?;
     let sampled_budget = budget::sample(inner).await?;
     let prior_turn = {
         let mut state = inner.state.lock().await;
@@ -3410,6 +3411,9 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     let mut segments = input_segments_for_entries(&inner.card_id, &drained);
     if let Some(budget) = sampled_budget {
         segments.insert(0, budget::segment(budget.initial_input()));
+    }
+    if let Some(notice) = timeout_notice {
+        segments.insert(0, notice);
     }
     super::result_receipt::enrich(
         inner.repo.as_ref(),
@@ -3958,10 +3962,44 @@ async fn issue_interrupt_for_turn(
             return Ok(());
         }
         *inner.issued_turn_id.lock().await = None;
-        if let Some(intent) =
-            calm_types::harness::HarnessInterruptionIntent::from_request(&target_turn_id, &reason)
-        {
-            *inner.interruption_intent.lock().await = Some(intent);
+        if reason == "max_turn_duration" {
+            use calm_types::harness::{
+                HarnessInterruptionIntent, HarnessInterruptionReason, HarnessTimeoutIntent,
+                HarnessTimeoutRequest,
+            };
+            if let HarnessState::TurnRunning {
+                turn_id,
+                watchdog_from,
+                ..
+            } = &*state
+                && turn_id == &target_turn_id
+            {
+                let request = HarnessTimeoutRequest {
+                    session_id: inner.worker_session_id.clone(),
+                    card_id: inner.card_id.to_string(),
+                    track_id: inner.track_id.to_string(),
+                    thread_id: thread_id.clone(),
+                    turn_id: target_turn_id.clone(),
+                    reason: HarnessInterruptionReason::MaxTurnDuration,
+                    requested_at_ms: crate::model::now_ms(),
+                    effective_elapsed_ms: watchdog_from
+                        .elapsed()
+                        .as_millis()
+                        .try_into()
+                        .expect("elapsed fits u64"),
+                    budget_ms: budget::limit(inner)
+                        .await
+                        .as_millis()
+                        .try_into()
+                        .expect("budget fits u64"),
+                };
+                *inner.interruption_intent.lock().await = Some(
+                    HarnessInterruptionIntent::Versioned(HarnessTimeoutIntent::V1(request)),
+                );
+            }
+        } else {
+            // A later manual stop supersedes any earlier unconfirmed timeout request.
+            *inner.interruption_intent.lock().await = None;
         }
         *state = HarnessState::Issuing {
             since: Instant::now(),
@@ -4093,7 +4131,7 @@ async fn clear_interruption_intent(inner: &Arc<Inner>, turn_id: &str) {
     let mut intent = inner.interruption_intent.lock().await;
     if intent
         .as_ref()
-        .is_some_and(|intent| intent.turn_id == turn_id)
+        .is_some_and(|intent| intent.turn_id() == turn_id)
     {
         *intent = None;
     }
@@ -4122,6 +4160,11 @@ async fn persist_turn_outcome(inner: &Arc<Inner>, turn_id: &str, turn: &Value) -
         &thread_id,
         turn_id,
         turn,
+        if inner.backend.terminal_event_confirms_stop() {
+            crate::harness::turn_outcome::Confirmation::ProviderTerminal
+        } else {
+            crate::harness::turn_outcome::Confirmation::Unconfirmed
+        },
     )
     .await
     {
@@ -4617,6 +4660,7 @@ mod held;
 mod live_reply;
 mod native_ask;
 mod replace_command;
+mod timeout_notice;
 mod turn_permission;
 
 #[cfg(test)]

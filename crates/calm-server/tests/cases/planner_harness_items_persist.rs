@@ -894,10 +894,10 @@ async fn recovered_pending_timeout_retains_its_cause_until_the_exact_target_sett
     snapshot.phase = HarnessPhaseTag::IssuingInterrupt;
     snapshot.last_thread_id = Some(SEED_THREAD_ID.into());
     snapshot.last_turn_id = Some("timeout-target".into());
-    snapshot.interruption_intent = Some(calm_types::harness::HarnessInterruptionIntent {
-        turn_id: "timeout-target".into(),
-        reason: calm_types::harness::HarnessInterruptionReason::MaxTurnDuration,
-    });
+    snapshot.interruption_intent = calm_types::harness::HarnessInterruptionIntent::from_request(
+        "timeout-target",
+        "max_turn_duration",
+    );
     let (harness, daemon, card_id, _) =
         seed_harness_with_snapshot(repo.clone(), events, snapshot).await;
     wait_for_notification_receiver(&daemon).await;
@@ -978,7 +978,10 @@ async fn watchdog_execution_timeout_projects_durable_reason() {
         Value::Null,
         "provider error stays unchanged"
     );
-    assert_eq!(stored["harness_interruption_reason"], "max_turn_duration");
+    assert_eq!(
+        stored["harness_interruption_reason"]["request"]["reason"],
+        "max_turn_duration"
+    );
     assert_eq!(
         outcome_rows_at_event(&repo, completed.id).await,
         1,

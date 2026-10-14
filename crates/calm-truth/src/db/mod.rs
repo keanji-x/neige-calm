@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 pub mod rows;
 pub mod sqlite;
+pub mod terminal_outcome;
 pub mod worker_flow_capture;
 
 /// Closure shape accepted by `Repo::write_with_event`; returns the `Event` to persist + broadcast. Not generic over a
@@ -141,6 +142,19 @@ pub struct WorkspaceLease {
 /// Universal read surface; no writes are reachable from here.
 #[async_trait]
 pub trait RepoRead: Send + Sync + 'static {
+    /// Latest terminal of this card/track, including every outcome status.
+    async fn harness_latest_terminal(
+        &self,
+        card: &str,
+        track: &str,
+    ) -> Result<Option<terminal_outcome::HarnessTerminalOutcome>>;
+    /// Every trusted timeout not followed by a successful terminal.
+    async fn harness_pending_timeouts(
+        &self,
+        card: &str,
+        track: &str,
+    ) -> Result<Vec<terminal_outcome::HarnessTerminalOutcome>>;
+
     /// Every area regardless of [`AreaKind`]; the user-facing route prefers [`RepoRead::areas_list_user_visible`] so the system area stays hidden.
     async fn areas_list(&self) -> Result<Vec<Area>>;
     /// `areas_list` filtered to `kind = 'user'`, so the system area never reaches the sidebar.

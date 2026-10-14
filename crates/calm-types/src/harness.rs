@@ -27,10 +27,18 @@ pub enum HarnessPhaseTag {
     Wedged,
 }
 
+/// Stable protocol identity shared by next-input delivery and Track dismissals.
+pub const PLANNER_TURN_TIMEOUT_KEY_PREFIX: &str = "planner_turn_timeout:";
+
+pub fn planner_timeout_key(row_id: i64) -> String {
+    format!("{PLANNER_TURN_TIMEOUT_KEY_PREFIX}{row_id}")
+}
+
 /// Kernel-owned cause recorded only for a confirmed interrupted turn.
 /// This metadata is separate from the provider's original error payload.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum HarnessInterruptionReason {
     MaxTurnDuration,
 }
@@ -45,21 +53,74 @@ impl HarnessInterruptionReason {
     }
 }
 
-/// A persisted kernel timeout request; the target and cause must both be known.
+/// Explicit compatibility: legacy intents establish only a cause, never time or budget.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HarnessInterruptionIntent {
+#[serde(untagged)]
+pub enum HarnessInterruptionIntent {
+    Versioned(HarnessTimeoutIntent),
+    Legacy(HarnessLegacyInterruptionIntent),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HarnessLegacyInterruptionIntent {
     pub turn_id: String,
     pub reason: HarnessInterruptionReason,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "version", rename_all = "snake_case")]
+pub enum HarnessTimeoutIntent {
+    V1(HarnessTimeoutRequest),
+}
+
+/// All facts are sampled by the watchdog before issuing the interrupt.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct HarnessTimeoutRequest {
+    pub session_id: String,
+    pub card_id: String,
+    pub track_id: String,
+    pub thread_id: String,
+    pub turn_id: String,
+    pub reason: HarnessInterruptionReason,
+    pub requested_at_ms: i64,
+    pub effective_elapsed_ms: u64,
+    pub budget_ms: u64,
+}
+
+/// Written exclusively at the kernel terminal-outcome boundary after confirmation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[serde(tag = "version", rename_all = "snake_case")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub enum HarnessTimeoutEvidence {
+    V1 {
+        request: HarnessTimeoutRequest,
+        ended_at_ms: i64,
+    },
+}
+
 impl HarnessInterruptionIntent {
-    pub fn from_request(turn_id: &str, reason: &str) -> Option<Self> {
-        if reason != "max_turn_duration" {
-            return None;
+    pub fn turn_id(&self) -> &str {
+        match self {
+            Self::Legacy(intent) => &intent.turn_id,
+            Self::Versioned(HarnessTimeoutIntent::V1(request)) => &request.turn_id,
         }
-        Some(Self {
-            turn_id: turn_id.into(),
-            reason: HarnessInterruptionReason::MaxTurnDuration,
+    }
+    pub fn reason(&self) -> HarnessInterruptionReason {
+        match self {
+            Self::Legacy(intent) => intent.reason,
+            Self::Versioned(HarnessTimeoutIntent::V1(request)) => request.reason,
+        }
+    }
+    /// Old snapshot construction has no trusted clock; retain only the legacy facts.
+    pub fn from_request(turn_id: &str, reason: &str) -> Option<Self> {
+        (reason == "max_turn_duration").then(|| {
+            Self::Legacy(HarnessLegacyInterruptionIntent {
+                turn_id: turn_id.into(),
+                reason: HarnessInterruptionReason::MaxTurnDuration,
+            })
         })
     }
 }
@@ -127,4 +188,34 @@ pub struct SetPlannerPermissionModeResponse {
     pub card_id: crate::ids::CardId,
     /// The stored mode, echoed rather than assumed.
     pub permission_mode: PlannerPermissionMode,
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn versioned_timeout_requires_all_facts_and_legacy_does_not_invent_them() {
+        let old = json!({"turn_id":"t", "reason":"max_turn_duration"});
+        let legacy: HarnessInterruptionIntent = serde_json::from_value(old.clone()).unwrap();
+        assert!(matches!(legacy, HarnessInterruptionIntent::Legacy(_)));
+        assert_eq!(serde_json::to_value(&legacy).unwrap(), old);
+        let current = json!({"version":"v1","session_id":"s","card_id":"c","track_id":"track","thread_id":"th","turn_id":"t","reason":"max_turn_duration","requested_at_ms":100,"effective_elapsed_ms":61000,"budget_ms":60000});
+        assert!(matches!(
+            serde_json::from_value::<HarnessInterruptionIntent>(current.clone()).unwrap(),
+            HarnessInterruptionIntent::Versioned(_)
+        ));
+        for key in current.as_object().unwrap().keys() {
+            let mut missing = current.clone();
+            missing.as_object_mut().unwrap().remove(key);
+            assert!(
+                serde_json::from_value::<HarnessInterruptionIntent>(missing).is_err(),
+                "missing {key}"
+            );
+        }
+        let mut future = current;
+        future["version"] = json!("v2");
+        assert!(serde_json::from_value::<HarnessInterruptionIntent>(future).is_err());
+    }
 }

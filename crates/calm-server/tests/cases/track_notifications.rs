@@ -657,3 +657,94 @@ async fn planner_down_text_is_the_readable_error() {
     let a = f.recompute(&p.track).await;
     assert_eq!(planner_down(&a)[0].text(), "400: Upgrade Codex.");
 }
+
+#[tokio::test]
+async fn planner_timeout_notice_survives_messages_failed_and_manual_then_success_clears() {
+    use crate::support::planner_queue_fixture::{Issuance, boot_with_issuance, idle_snapshot};
+    use crate::support::planner_timeout_fixture::{finish, projector, request, start};
+    let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
+    let turn = request(&boot).await;
+    let row = finish(&boot, &turn, "interrupted").await;
+    let key = format!("planner_turn_timeout:{}", row.id);
+    let project = projector(&boot);
+    for status in ["failed", "interrupted", "completed"] {
+        let current = project
+            .recompute_track(boot.planner_card.track_id.as_str())
+            .await
+            .unwrap();
+        let activity = current.payload().unwrap();
+        assert!(
+            activity
+                .items
+                .iter()
+                .any(|i| i.key() == key && i.source() == NotificationSource::PlannerTurnTimeout),
+            "{activity:?}"
+        );
+        if status == "failed" {
+            assert_eq!(activity.attention, Attention::None);
+        }
+        let next = start(&boot).await;
+        let current = project
+            .recompute_track(boot.planner_card.track_id.as_str())
+            .await
+            .unwrap();
+        assert!(
+            current
+                .payload()
+                .unwrap()
+                .items
+                .iter()
+                .any(|i| i.key() == key),
+            "input cannot dismiss timeout"
+        );
+        if status == "interrupted" {
+            boot.harness.interrupt("user".into()).await.unwrap();
+        }
+        finish(&boot, &next, status).await;
+    }
+    let current = project
+        .recompute_track(boot.planner_card.track_id.as_str())
+        .await
+        .unwrap();
+    assert!(
+        !current
+            .payload()
+            .unwrap()
+            .items
+            .iter()
+            .any(|i| i.key() == key)
+    );
+    boot.harness.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn planner_timeout_new_timeout_does_not_hide_earlier_undismissed_evidence() {
+    use crate::support::planner_queue_fixture::{Issuance, boot_with_issuance, idle_snapshot};
+    use crate::support::planner_timeout_fixture::{finish, projector, request};
+    let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
+    let first = request(&boot).await;
+    let first = finish(&boot, &first, "interrupted").await;
+    let second = request(&boot).await;
+    let second = finish(&boot, &second, "interrupted").await;
+    let project = projector(&boot);
+    let current = project
+        .recompute_track(boot.planner_card.track_id.as_str())
+        .await
+        .unwrap();
+    let activity = current.payload().unwrap();
+    let keys: Vec<_> = activity
+        .items
+        .iter()
+        .filter(|i| i.source() == NotificationSource::PlannerTurnTimeout)
+        .map(|i| i.key())
+        .collect();
+    assert_eq!(
+        keys,
+        vec![
+            format!("planner_turn_timeout:{}", second.id),
+            format!("planner_turn_timeout:{}", first.id)
+        ]
+    );
+    assert_eq!(activity.attention, Attention::None);
+    boot.harness.shutdown().await.unwrap();
+}

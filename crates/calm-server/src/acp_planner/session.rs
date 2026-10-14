@@ -649,6 +649,7 @@ async fn drive(
         &receipt.thread_id,
         &receipt.turn_id,
         &turn,
+        crate::harness::turn_outcome::Confirmation::ProviderTerminal,
     )
     .await
     {

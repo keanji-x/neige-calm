@@ -144,6 +144,7 @@ pub(crate) async fn recover(
         &receipt.thread_id,
         &receipt.turn_id,
         &outcome,
+        crate::harness::turn_outcome::Confirmation::ProviderTerminal,
     )
     .await?;
     snapshot.phase = HarnessPhaseTag::TurnCompleted;

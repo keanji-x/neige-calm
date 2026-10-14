@@ -1,8 +1,9 @@
-# #2618 Planner 单轮预算：第一阶段
+# #2618 Planner 单轮预算与可信超时通知
 
-CR-2618-budget 已批准并广播。实施为 L2：跨生命周期、持久化与公开设置契约，
-由 Planner 安排两个独立评审渠道。本阶段只有后端设置、冻结预算及预警；
-下一轮通知、Track 活动和 UI 留待下一阶段。
+第一阶段 CR-2618-budget 已批准并广播，包含后端设置、冻结预算及预警。
+第二阶段 CR-2618-timeout 批准可信终态、下一真实输入通知及 Track 活动投影，
+见后文实际契约；UI 留待后续阶段。实施为 L2：跨生命周期、持久化与公开设置
+契约，由 Planner 安排两个独立评审渠道。
 
 ## 设置与采样
 
@@ -61,3 +62,83 @@ mutation 独占 worktree，先预测完整红集，单因子修改生产采样�
 安全恢复并确认绿，不永久维护测试名列表。普通新增测试只改自身模块，新增模块再登记 suite；
 无新增每 CI 重复扫描规则或应用身份白名单。生成器实际改动的 frozen 路径必须附
 exact-path `OWNERSHIP-CHANGE` trailer (#2618)，不手写生成物或修改 allowlist。
+
+## 第二阶段：可信 timeout 终态与可继续通知
+
+CR-2618-timeout 批准沿用 L2；正式两个独立渠道的评审由 Planner 安排。
+不修改设置 UI、FE 手写契约或 attention 的闭集，不新增迁移、outbox、receipt 或
+blanket recovery_stop。
+
+### 证据与确认边界
+
+`HarnessInterruptionIntent` 明确区分旧 `{turn_id, reason}` 与 `version: v1`。
+旧 shape 只证明原因，不推测请求时间、耗时或预算，不生成第二阶段通知。
+v1 的 session/card/track/thread/turn、reason、requested_at_ms、effective_elapsed_ms、
+budget_ms 都为 required 类型；watchdog 在 interrupt 前采样并持久化。
+有效耗时使用既有 `watchdog_from`，与冻结预算/hold 暂停规则共享同一基准。
+
+唯一 `turn_outcome::record` 删除 provider 的 `harness_interruption_reason` 和
+`harness_timeout`，仅在明确 interrupted、显式 turn id、持久 snapshot 的 thread/turn、
+当前 session/card/track 与 intent 全身份一致且停止已确认时，写入
+`harness_interruption_reason: {version: v1, request: {...}, ended_at_ms}`。
+ended_at_ms 是确认终态写入时的内核墙钟，不是推测 provider 的结束时间。
+UTC 墙钟可向后校正；reader 不用它与请求时间的大小比较拒绝真实证明，执行超限
+只由 monotonic effective_elapsed_ms/budget_ms 判断，不人工修补或假造 UTC 时间。
+既有 first-insert-wins 保留；重复 live/recovery 记录不升级、覆盖或改写首次终态。
+
+Codex 的真实终态通知/恢复读出的终态证明 provider 停止。Claude 的本地 driver
+在 stop 确认之后才记录证据；stop 不确认时只写不带 timeout 证明的终态。
+ACP 只有 prompt 已返回且 teardown/revoke 已成功的终态/持久 receipt 才能证明结束。
+通用 loop 消费 backend 声明的确认契约，不能将本地 adapter 的事件当作缺失的
+teardown 证明。Claude 重启 sweep 合成的 interrupted 行显式为 Unconfirmed，
+不能仅因重启后进程已消失就宣称此前预算超时已确认。
+
+活轮重启仍沿用既有 Resumed/reconcile 策略，没有恢复 monotonic 执行计时；
+持久预算和请求证据不修复该既有缺口，也不会主动再次停止所有恢复轮。
+
+### 下一真实输入的交付与恢复
+
+真实 issue 入口在修改 Issuing 状态/清 intent/排空队列之前，从 Repo 读取当前
+card/track 的最新 `turn/completed`。即使 session 或 thread 更换，仍以保留的对话
+历史为准；reset 清理历史后自然没有上一轮证据。最新终态为可信 timeout 时，
+将 `planner_turn_timeout:<terminal row id>` 放入 System segment，携带原因、请求与
+确认记录时间、有效耗时和预算，并要求核查已保存成果及更新 Report 的实际进度/
+验证/剩余工作。不推测被截断步骤或未回执操作的结果。
+
+通知与现有真实队列一起经过 input projection、turn/start 和 rebuffer；没有独立
+wake，没有临时 observe，没有另建消费 receipt。准备 projection 不是 accepted
+证明。start 失败保留上一终态，恢复后重读存储并用同一 terminal row 标识至少一次
+投递；start 回执丢失也不能据此消耗通知。新轮产生任意终态后，旧 timeout 不再是
+“上一轮”，后续 start 不重复该 notice。Assistant 同样收到自己保留的上一轮证据，
+与只有真实 Planner 才采样设置预算的角色判断相互独立。
+
+### Track 投影和查询
+
+新增 `planner_turn_timeout` source，dismiss key 为 `planner_turn_timeout:<row id>`。
+每个可信 timeout 都保留至该 key 被用户 dismiss，或它之后有成功 completed；
+发消息、failed 或人工 interrupted 都不能清除。后来的 timeout 不隐式清掉此前
+尚未处理的 key。attention 保持既有 None/Input/Failed 的折叠：timeout 单独为 None，
+不复用 PlannerDown，不把 timeout 生命周期变为 Failed。UI decode/mapping 在下阶段处理。
+
+Repo 提供 latest terminal 和 pending timeouts 两个窄读取，以既有
+`idx_transcript_card_method_created_at` 的 card/method 范围读取，按 created_at_ms/id
+确定顺序。下一输入取最新一行（全状态）；Track 只读取成功完成之后的 timeout
+候选并核查每行完整 identity，不全量分页 transcript、不设硬截断、无新索引迁移。
+永久维护成本只有 owner 类型、真实 writer/reader 和新增测试模块的 suite 注册；
+增加普通测试只修改自身模块。kernel gate 各跑一次文本/合同/quick 与三组聚焦
+replay，CI 保留 broad suite。
+
+API evidence 类型由 calm-types 导出，并注册到 OpenAPI；唯一生成命令为
+`env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 npm --prefix fe run gen:api`。
+生成物实际变化附 exact-path ownership trailers，不手写生成物或 FE 枚举。
+
+通知文案实际 owner 为 [下一输入模板](../../crates/calm-server/prompts/previous-turn-timeout.md)
+与 [Track 通知模板](../../crates/calm-server/prompts/planner-timeout-activity.md)。固定表名的
+四个新 SQL 引用（三个 storage SELECT 引用及一个旧数据兼容测试更新）按既有 terminology ratchet 记录有界 baseline 例外，不改变门禁规则；
+以后增加该物理表的 SQL 引用仍需更新 baseline 与对应理由，门禁在 CI lint 中运行一次。
+
+可信 v1 outcome 使用既有 protected `harness_interruption_reason` 命名空间：旧版本已
+删除 provider 的该字段并且最多写 cause-only 字符串，因此历史行不能经旧 provider
+任意 payload 获得新时间 authority。未保护过的 `harness_timeout` 即使完整匹配 v1
+shape 也不被 reader 信任；当前 writer 清除它。transcript error 文本明确兼容旧 reason
+字符串与 v1 证据对象，不以 provider 文本或新字段外观推断可信 timeout。

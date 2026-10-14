@@ -1,0 +1,2 @@
+[Trusted previous turn timeout: {key}]
+The previous turn {turn_id} was confirmed interrupted for max_turn_duration. Stop requested at {requested_at_ms} ms UTC; confirmed end recorded at {ended_at_ms} ms UTC. Effective execution elapsed {effective_elapsed_ms} ms; frozen budget {budget_ms} ms. Inspect the stored artifacts and current workspace before continuing. Update the Report with completed work, verification actually run, and remaining work. The timeout does not establish which step was interrupted or whether an unacknowledged operation completed.

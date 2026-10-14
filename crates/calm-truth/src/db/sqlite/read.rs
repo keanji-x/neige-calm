@@ -72,6 +72,21 @@ impl SqlxRepo {
 
 #[async_trait]
 impl RepoRead for SqlxRepo {
+    async fn harness_latest_terminal(
+        &self,
+        card: &str,
+        track: &str,
+    ) -> Result<Option<crate::db::terminal_outcome::HarnessTerminalOutcome>> {
+        super::terminal_outcome::latest(&self.pool, card, track).await
+    }
+    async fn harness_pending_timeouts(
+        &self,
+        card: &str,
+        track: &str,
+    ) -> Result<Vec<crate::db::terminal_outcome::HarnessTerminalOutcome>> {
+        super::terminal_outcome::pending_timeouts(&self.pool, card, track).await
+    }
+
     async fn areas_list(&self) -> Result<Vec<Area>> {
         let rows = sqlx::query_as::<_, crate::db::rows::AreaRow>(
             r#"SELECT id, name, color, sort, kind, default_template_id, default_cwd,

@@ -411,7 +411,7 @@ async fn claude_watchdog_timeout_reason_survives_a_server_restart() {
     let outcomes = stack.wait_outcomes(&card_id, 1).await;
     assert_eq!(outcomes[0]["status"], "interrupted");
     assert_eq!(
-        outcomes[0]["harness_interruption_reason"],
+        outcomes[0]["harness_interruption_reason"]["request"]["reason"],
         "max_turn_duration"
     );
     assert_eq!(outcomes[0]["error"], Value::Null);

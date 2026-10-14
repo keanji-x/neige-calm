@@ -214,3 +214,55 @@ async fn dismiss_route_is_idempotent() {
     );
     assert_eq!(dismissals(&f).await, first);
 }
+
+#[tokio::test]
+async fn planner_timeout_dismiss_route_hides_only_the_stable_evidence_key() {
+    use crate::support::planner_queue_fixture::{
+        Issuance, boot_with_issuance, idle_snapshot, send_json,
+    };
+    use crate::support::planner_timeout_fixture::{finish, projector, request};
+    let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
+    let project = projector(&boot);
+    let turn = request(&boot).await;
+    let row = finish(&boot, &turn, "interrupted").await;
+    let key = format!("planner_turn_timeout:{}", row.id);
+    let (status, body) = send_json(
+        boot.app.clone(),
+        "POST",
+        format!(
+            "/api/tracks/{}/activity/dismissals",
+            boot.planner_card.track_id
+        ),
+        "user",
+        json!({"key":key}),
+    )
+    .await;
+    assert_eq!(status, 204, "{body}");
+    let current = project
+        .recompute_track(boot.planner_card.track_id.as_str())
+        .await
+        .unwrap();
+    assert!(
+        !current
+            .payload()
+            .unwrap()
+            .items
+            .iter()
+            .any(|i| i.key() == key)
+    );
+    let next = request(&boot).await;
+    let next_row = finish(&boot, &next, "interrupted").await;
+    let current = project
+        .recompute_track(boot.planner_card.track_id.as_str())
+        .await
+        .unwrap();
+    assert!(
+        current
+            .payload()
+            .unwrap()
+            .items
+            .iter()
+            .any(|i| i.key() == format!("planner_turn_timeout:{}", next_row.id))
+    );
+    boot.harness.shutdown().await.unwrap();
+}

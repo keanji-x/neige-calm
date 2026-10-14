@@ -142,7 +142,7 @@ pub(super) async fn handle_replace(
     if snapshot
         .interruption_intent
         .as_ref()
-        .is_some_and(|intent| intent.turn_id == turn_id)
+        .is_some_and(|intent| intent.turn_id() == turn_id)
     {
         snapshot.interruption_intent = None;
     }
