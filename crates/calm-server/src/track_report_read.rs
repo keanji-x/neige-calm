@@ -46,6 +46,38 @@ pub async fn load_report_read_snapshot(
     })
 }
 
+/// Scope of the text actually rendered from this document snapshot. Orphans belong only to Full.
+pub(crate) enum ReportReadScope<'a> {
+    Full,
+    Part(&'a [String]),
+    Index,
+}
+
+/// Evaluate the whole live plan, then project only actionable diagnostics owned by rendered
+/// blocks. Never evaluate a partial plan: duplicates, dependencies and budgets are global.
+pub(crate) async fn report_read_task_diagnostics(
+    repo: &dyn RouteRepo,
+    track_id: &str,
+    doc: &ReportDocSnapshot,
+    scope: ReportReadScope<'_>,
+) -> Result<Vec<crate::db::sqlite::BlockVerdict>, CalmError> {
+    let mut verdicts = repo.task_diagnostics(track_id, &doc.blocks).await?;
+    verdicts.retain_mut(|verdict| {
+        let included = match &scope {
+            ReportReadScope::Full => true,
+            ReportReadScope::Part(ids) => {
+                !verdict.block_id.is_empty() && ids.contains(&verdict.block_id)
+            }
+            ReportReadScope::Index => false,
+        };
+        verdict.diagnostics.retain(|diagnostic| {
+            calm_types::report_blocks::tasks::task_diagnostic_is_actionable(&diagnostic.code)
+        });
+        included && !verdict.diagnostics.is_empty()
+    });
+    Ok(verdicts)
+}
+
 /// Load the document snapshot for the report card (no diagnostics).
 pub async fn load_report_doc_snapshot(
     repo: &dyn crate::db::RepoRead,
@@ -58,7 +90,7 @@ pub async fn load_report_doc_snapshot(
 
 /// The CRDT is the source of truth and the JSON cache is best-effort: with no cache, `summary`/`body`/
 /// `blocks` are all projected from the one doc — never mix `payload.body` with CRDT-derived blocks.
-async fn load_report_doc_snapshot_with_track(
+pub(crate) async fn load_report_doc_snapshot_with_track(
     repo: &dyn crate::db::RepoRead,
     report_card_id: &str,
 ) -> Result<(crate::ids::TrackId, ReportDocSnapshot), CalmError> {

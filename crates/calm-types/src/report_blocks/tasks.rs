@@ -66,6 +66,34 @@ pub const TASK_DIAGNOSTIC_CODE_PATHS: &[(&str, &str)] = &[
     ("tree_root_unresolved", "key"),
 ];
 
+/// Whether a diagnostic requires Planner attention in a report read. This is domain policy,
+/// independent of optional UI recovery links and of scheduling/status projection.
+pub fn task_diagnostic_is_actionable(code: &str) -> bool {
+    match code {
+        "task_key_completed" => false,
+        "invalid_declaration"
+        | "duplicate_key"
+        | "dependency_cycle"
+        | "tombstone_blocks_redeclaration"
+        | "unknown_dependency"
+        | "gate_required"
+        | "gate_cwd_on_agent_task"
+        | "neige_execution_retired"
+        | "reference_needs_block"
+        | "reference_missing"
+        | "reference_cross_area"
+        | "declare_and_wait"
+        | "declaration_changed_in_flight"
+        | "context_stale_declaration"
+        | "context_stale_reference"
+        | "reference_chain_too_large"
+        | "planner_task_ceiling"
+        | "tree_budget_exhausted"
+        | "tree_root_unresolved" => true,
+        _ => panic!("unclassified task diagnostic code: {code}"),
+    }
+}
+
 /// Recovery-action contract shared by producers and checked by the web copy tests.
 pub const TASK_DIAGNOSTIC_ACTIONS: &[(&str, &str)] = &[
     ("planner_task_ceiling", "raise_planner_task_ceiling"),
@@ -1311,6 +1339,7 @@ mod tests {
         );
 
         for &(code, path) in TASK_DIAGNOSTIC_CODE_PATHS {
+            task_diagnostic_is_actionable(code);
             let action = (code != "tree_budget_exhausted")
                 .then(|| task_diagnostic_action(code))
                 .flatten()

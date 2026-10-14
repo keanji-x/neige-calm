@@ -13,7 +13,8 @@ use crate::mcp_server::tools::track_report_hydrate::{hydrated_block_index, parse
 use crate::model::{Card, CardRole, Track};
 use crate::track_report::TrackReportPayload;
 use crate::track_report_read::{
-    load_report_read_snapshot, marked_blocks_text, selected_blocks_text,
+    ReportReadScope, load_report_doc_snapshot_with_track, marked_blocks_text,
+    report_read_task_diagnostics, selected_blocks_text,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -120,9 +121,10 @@ pub(crate) async fn report_read(
     // The response body comes from ONE fresh row snapshot so `summary`/`text`/`blocks` can never tear against each other.
     let resolve_modes = parse_resolve_arg(&args, "neige_report_read")?;
     let (track, _, report_card, _) = resolve_report_for_caller(&ctx, &identity).await?;
-    let snapshot = load_report_read_snapshot(ctx.repo.as_ref(), report_card.id.as_str())
-        .await
-        .map_err(|e| RpcError::internal(format!("{e}")))?;
+    let (snapshot_track_id, snapshot) =
+        load_report_doc_snapshot_with_track(ctx.repo.as_ref(), report_card.id.as_str())
+            .await
+            .map_err(|e| RpcError::internal(format!("{e}")))?;
     // The index is always present.
     let all = || {
         snapshot
@@ -143,6 +145,23 @@ pub(crate) async fn report_read(
         ReadSelect::Full if with_markers => Some((marked_blocks_text(&snapshot.blocks), all())),
         ReadSelect::Full => Some((snapshot.body.clone(), all())),
     };
+    let task_diagnostics = if identity.role == CardRole::Planner {
+        let scope = match (&select, &text) {
+            (ReadSelect::Full, _) => ReportReadScope::Full,
+            (ReadSelect::Part(_), Some((_, ids))) => ReportReadScope::Part(ids),
+            _ => ReportReadScope::Index,
+        };
+        report_read_task_diagnostics(
+            ctx.repo.as_ref(),
+            snapshot_track_id.as_str(),
+            &snapshot,
+            scope,
+        )
+        .await
+        .map_err(|e| RpcError::internal(format!("{e}")))?
+    } else {
+        Vec::new()
+    };
     // Only a read that returned text is this session's read of the report (#1877): exactly the blocks it rendered.
     if let Some((_, rendered)) = &text {
         ctx.read_ledger.record(
@@ -159,7 +178,7 @@ pub(crate) async fn report_read(
         hydrated_block_index(&ctx, track.id.as_str(), &snapshot.blocks, &resolve_modes).await;
     let mut response = json!({
         "summary": snapshot.summary,
-        "schema_version": snapshot.schema_version,
+        "schema_version": TrackReportPayload::SCHEMA_VERSION,
         "doc_rev": snapshot.doc_rev,
         "updated_at": crate::time_format::at(snapshot.updated_at),
         "blocks": index,
@@ -167,9 +186,9 @@ pub(crate) async fn report_read(
     if let Some((text, _)) = text {
         response["text"] = Value::String(text);
     }
-    // `task_diagnostics` is the dispatched-task runtime projection `neige_task_ls` withholds from the assistant; only the Planner gets it.
+    // Only the Planner sees actionable diagnostics; status is available through `neige_task_ls`.
     if identity.role == CardRole::Planner {
-        response["task_diagnostics"] = task_diagnostics_output(json!(snapshot.task_diagnostics));
+        response["task_diagnostics"] = task_diagnostics_output(json!(task_diagnostics));
     }
     Ok(response)
 }

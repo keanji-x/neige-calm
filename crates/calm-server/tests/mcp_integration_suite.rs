@@ -108,3 +108,6 @@ mod track_readers;
 mod track_worker_cwd;
 #[path = "cases/track_worker_cwd_ends.rs"]
 mod track_worker_cwd_ends;
+
+#[path = "cases/mcp_report_read_diagnostics.rs"]
+mod mcp_report_read_diagnostics;

@@ -409,7 +409,7 @@
   },
   {
     "name": "neige_report_read",
-    "description_sha256": "2d73d0d85bead179dfc832c898c558a7499173c6d4da65cf201cd385f1bc8c68",
+    "description_sha256": "3bf0b16bd255e511b7c3f71e8c30b0c7c915e73ee4aaa4a84487769f869ba1b5",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -800,7 +800,7 @@
   },
   {
     "name": "neige_task_ls",
-    "description_sha256": "7ff1189196ade6d8288a51234b275b87aedb414078392e9370f7b1b1d0880709",
+    "description_sha256": "2e5714d25cd111e0dedfd8b9be4e6d06413a9c8bc6fb4f90b20c0263f3638d00",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
