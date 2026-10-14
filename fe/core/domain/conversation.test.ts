@@ -937,6 +937,39 @@ describe('transcriptRowToTurnOutcome', () => {
     ...overrides,
   });
 
+  it('decodes protected legacy and v1 reasons without disguising them as provider errors', () => {
+    const request = { session_id: 'r', card_id: 'c', track_id: 'w', thread_id: 't', turn_id: 'turn-9',
+      reason: 'max_turn_duration', requested_at_ms: 6000, effective_elapsed_ms: 61000, budget_ms: 60000 };
+    for (const reason of ['max_turn_duration', { version: 'v1', request, ended_at_ms: 5000 }]) {
+      const parsed = transcriptRowToTurnOutcome(outcome({ id: 'turn-9', status: 'interrupted',
+        durationMs: 61000, harness_interruption_reason: reason }));
+      expect(parsed).toMatchObject({ status: 'interrupted', elapsedMs: 61000, atMs: 5000,
+        harnessInterruption: reason });
+      expect(parsed?.message).toBeUndefined();
+      expect(parsed?.code).toBeUndefined();
+    }
+  });
+  it('never accepts complete timeout evidence from the unprotected provider namespace', () => {
+    const evidence = { version: 'v1', request: { session_id: 'r', card_id: 'c', track_id: 'w',
+      thread_id: 't', turn_id: 'turn-9', reason: 'max_turn_duration', requested_at_ms: 6000,
+      effective_elapsed_ms: 61000, budget_ms: 60000 }, ended_at_ms: 5000 };
+    const parsed = transcriptRowToTurnOutcome(outcome({ status: 'interrupted', durationMs: 61000,
+      harness_timeout: evidence }));
+    expect(parsed).toMatchObject({ status: 'interrupted', elapsedMs: 61000, atMs: 5000 });
+    expect(parsed).not.toHaveProperty('harnessInterruption');
+    expect(parsed?.message).toBeUndefined();
+    expect(parsed?.code).toBeUndefined();
+  });
+
+  it('ignores unknown reserved shapes and unprotected provider metadata without losing the outcome', () => {
+    for (const reason of [null, 1, 'future', { version: 'v2' }, { version: 'v1', request: {} }]) {
+      const parsed = transcriptRowToTurnOutcome(outcome({ status: 'interrupted', durationMs: 9,
+        harness_interruption_reason: reason, harness_timeout: { version: 'v1' } }));
+      expect(parsed).toMatchObject({ status: 'interrupted', elapsedMs: 9, atMs: 5000 });
+      expect(parsed).not.toHaveProperty('harnessInterruption');
+    }
+  });
+
   it('carries the kernel\'s readable text beside codex\'s raw message', () => {
     const raw = '{"type":"error","status":400,"error":{"message":"Upgrade Codex."}}';
     expect(transcriptRowToTurnOutcome({

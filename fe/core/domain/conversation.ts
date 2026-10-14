@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import type {
   AgentProvider, HarnessInputPresentation, HarnessInputSegment, HarnessItem, HarnessPhaseTag,
+  HarnessInterruptionReason, HarnessTimeoutEvidence,
   PlannerAttachment, PlannerPermissionMode, TrackConversationSummary, UploadAttachmentResponse,
 } from '../api/generated/wire.js';
 import type { ApiFailure, ApiOperation } from '../api/types.js';
@@ -1039,6 +1040,8 @@ export type ConversationTurnOutcome = Readonly<{
   text?: string;
   /** `error.codexErrorInfo` as one token: the bare enum string or, for the object form, its single key. */
   code?: string;
+  /** Protected kernel metadata, separate from provider error/code. Unknown shapes are ignored without losing the outcome. */
+  harnessInterruption?: HarnessInterruptionReason | HarnessTimeoutEvidence;
   /**
    * The wire `status` when it was not one of the three above; such a row is surfaced as `failed`
    * rather than dropped.
@@ -1241,7 +1244,22 @@ const turnOutcomeParamsSchema = z.object({
     codexErrorInfo: z.union([z.string(), z.record(z.string(), z.unknown())]).nullish().catch(undefined),
   }).nullish().catch(undefined),
   durationMs: z.unknown().optional(),
+  harness_interruption_reason: z.unknown().optional(),
 });
+
+/** The released cause-only string and complete v1 proof; never read unprotected `harness_timeout`. */
+const harnessInterruptionSchema = z.union([
+  z.literal('max_turn_duration'),
+  z.object({
+    version: z.literal('v1'),
+    request: z.strictObject({
+      session_id: z.string(), card_id: z.string(), track_id: z.string(), thread_id: z.string(), turn_id: z.string(),
+      reason: z.literal('max_turn_duration'), requested_at_ms: z.number().int(),
+      effective_elapsed_ms: z.number().int().nonnegative(), budget_ms: z.number().int().nonnegative(),
+    }),
+    ended_at_ms: z.number().int(),
+  }),
+]);
 
 /** A recorded duration only when it is a finite, non-negative integer; anything else is unknown, not 0. */
 function recordedDurationMs(value: unknown): number | null {
@@ -1272,12 +1290,15 @@ export function transcriptRowToTurnOutcome(item: HarnessItem): ConversationTurnO
   if (turnId === undefined) return null;
   const message = error?.message;
   const code = codexErrorCode(error?.codexErrorInfo);
+  const interruption = wireStatus === 'interrupted'
+    ? harnessInterruptionSchema.safeParse(result.data.harness_interruption_reason) : null;
   const base = {
     id: `outcome-${item.id}`, author: 'turn' as const, turnId, atMs: item.created_at_ms,
     elapsedMs: recordedDurationMs(durationMs),
     ...(message === undefined ? {} : { message }),
     ...(item.turn_error_text === null ? {} : { text: item.turn_error_text }),
     ...(code === undefined ? {} : { code }),
+    ...(interruption?.success ? { harnessInterruption: interruption.data } : {}),
   };
   if (wireStatus === 'completed' || wireStatus === 'interrupted' || wireStatus === 'failed') {
     return { ...base, status: wireStatus };

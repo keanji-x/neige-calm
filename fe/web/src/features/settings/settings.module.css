@@ -1,4 +1,11 @@
 @layer features {
+  .durationControl {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    max-inline-size: 100%;
+    overflow-wrap: anywhere;
+  }
   /*
    * The overlay's two columns. The nav column is fixed at a measure that fits
    * the longest label plus its padding; the pane takes the rest and is the only

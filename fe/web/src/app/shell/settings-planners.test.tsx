@@ -40,11 +40,13 @@ function answer(claude: Readonly<{ status: string; reason: string | null }>) {
 }
 
 /** `recheck` answers `refresh=true` in place of the ready answer. */
-function renderPlanners(recheck?: () => Promise<ApiTransportResponse>) {
+function renderPlanners(recheck?: () => Promise<ApiTransportResponse>,
+  settingsReply?: (request: ApiRequest) => Promise<ApiTransportResponse>) {
   const sent: ApiRequest[] = [];
   const transport: ApiTransportPort = {
     send(request): Promise<ApiTransportResponse> {
       sent.push(request);
+      if (settingsReply !== undefined && request.path === '/api/settings') return settingsReply(request);
       if (recheck !== undefined && request.path === '/api/agent-providers?refresh=true') return recheck();
       const body = request.path === '/api/agent-providers'
         ? answer({ status: 'unavailable', reason: LOGGED_OUT })
@@ -117,4 +119,78 @@ describe('a failed Recheck', () => {
     expect(screen.getByRole('alert').textContent).not.toMatch(RAW_OR_CONNECTIVITY);
     expect(screen.getByText(LOGGED_OUT)).toBeTruthy();
   });
+});
+
+
+it('hosts turn duration writes through settings and refetches without clobbering other keys', async () => {
+  const { sent } = renderPlanners();
+  const field = await screen.findByRole('textbox', { name: 'Maximum turn duration (minutes)' });
+  await userEvent.clear(field);
+  await userEvent.type(field, '45{Enter}');
+  await waitFor(() => expect(sent.filter((request) => request.method === 'PUT')).toHaveLength(1));
+  expect(sent.find((request) => request.method === 'PUT')?.body)
+    .toEqual({ settings: { planner_max_turn_duration_minutes: '45' } });
+  await waitFor(() => expect(sent.filter((request) => request.path === '/api/settings' && request.method === 'GET').length)
+    .toBeGreaterThan(1));
+});
+
+
+it('repairs corrupt storage with null and reads the default without rewriting a proxy', async () => {
+  let stored: Record<string, string> = { planner_max_turn_duration_minutes: 'broken', http_proxy: 'http://proxy' };
+  const { sent } = renderPlanners(undefined, (request) => {
+    if (request.method === 'PUT') {
+      expect(request.body).toEqual({ settings: { planner_max_turn_duration_minutes: null } });
+      stored = { http_proxy: 'http://proxy' };
+    }
+    return Promise.resolve({ status: 200, statusText: 'OK', body: { settings: stored } });
+  });
+  const field = await screen.findByRole('textbox', { name: 'Maximum turn duration (minutes)' });
+  expect((field as HTMLInputElement).value).toBe('broken');
+  expect(screen.getByRole('alert').textContent).toContain('Stored duration is invalid');
+  await userEvent.click(screen.getByRole('button', { name: 'Restore default duration' }));
+  await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  expect((field as HTMLInputElement).value).toBe('30');
+  expect(sent.filter((request) => request.method === 'PUT')).toHaveLength(1);
+  expect(stored.http_proxy).toBe('http://proxy');
+});
+
+it.each([
+  ['refused', 400, 'Duration must be between 1 and 240'],
+  ['unknown', 500, 'The save is unconfirmed.'],
+])('shows a %s settings write, does not retry on blur, and permits an explicit recovery', async (_label, status, sentence) => {
+  let minutes = '30';
+  let refused = true;
+  const { sent } = renderPlanners(undefined, (request) => {
+    if (request.method === 'PUT' && refused) return Promise.resolve({ status, statusText: 'Error',
+      body: { code: 'bad_request', error: 'Duration must be between 1 and 240' } });
+    if (request.method === 'PUT') minutes = '45';
+    return Promise.resolve({ status: 200, statusText: 'OK', body: { settings: { planner_max_turn_duration_minutes: minutes } } });
+  });
+  const field = await screen.findByRole('textbox', { name: 'Maximum turn duration (minutes)' });
+  await userEvent.clear(field);
+  await userEvent.type(field, '45{Enter}');
+  expect((await screen.findByRole('alert')).textContent).toContain(sentence);
+  await userEvent.tab();
+  expect(sent.filter((request) => request.method === 'PUT')).toHaveLength(1);
+  refused = false;
+  await userEvent.click(field);
+  await userEvent.keyboard('{Enter}');
+  await screen.findByText('Saved.');
+  expect(sent.filter((request) => request.method === 'PUT')).toHaveLength(2);
+});
+
+it('a same-value fresh GET overrides an obsolete PUT acknowledgement even with a frozen clock', async () => {
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(1000);
+  try {
+    const { sent } = renderPlanners(undefined, (request) => Promise.resolve({ status: 200, statusText: 'OK',
+      body: { settings: { planner_max_turn_duration_minutes: request.method === 'PUT' ? '45' : '30' } } }));
+    const field = await screen.findByRole<HTMLInputElement>('textbox', { name: 'Maximum turn duration (minutes)' });
+    await userEvent.clear(field);
+    await userEvent.type(field, '45{Enter}');
+    await waitFor(() => expect(sent.filter((request) => request.path === '/api/settings' && request.method === 'GET').length).toBeGreaterThan(1));
+    await screen.findByText(/Changed elsewhere/);
+    expect(screen.queryByText('Saved.')).toBeNull();
+    expect(field.value).toBe('45');
+    expect(sent.filter((request) => request.method === 'PUT')).toHaveLength(1);
+  } finally { clock.mockRestore(); }
 });

@@ -1,7 +1,7 @@
 // Settings › Planners with the production styles in a real browser (#1817): a long reason (a path in a
 // fix hint) wraps inside its row at desktop and phone widths instead of widening the pane.
 import { cleanup, render } from '@testing-library/react';
-import { page } from 'vitest/browser';
+import { page, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import '../../styles/entry.css';
@@ -26,7 +26,7 @@ describe('Settings Planners', () => {
       await page.viewport(width, height);
       render(
         <SettingsSurface presentation={presentation} section="planners" onSelectSection={vi.fn()}>
-          <PlannersPane authenticationRecovery={null} providers={PROVIDERS} loadError={null} onRetryLoad={vi.fn()} onRecheck={vi.fn()}
+          <PlannersPane turnDuration={{ readRevision: 1, value: undefined, loaded: true, loadError: null, onRetryLoad: vi.fn(), onSave: vi.fn().mockResolvedValue(undefined) }} authenticationRecovery={null} providers={PROVIDERS} loadError={null} onRetryLoad={vi.fn()} onRecheck={vi.fn()}
             rechecking={false} recheckError={null} />
         </SettingsSurface>,
       );
@@ -45,3 +45,32 @@ describe('Settings Planners', () => {
     });
   }
 });
+
+
+for (const width of [1180, 390]) {
+  it(`edits minutes and resets the default at ${width}px`, async () => {
+    await page.viewport(width, 844);
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(<SettingsSurface presentation={width === 390 ? 'mobile-detail' : 'desktop'} section="planners" onSelectSection={vi.fn()}>
+      <PlannersPane providers={[]} loadError={null} onRetryLoad={vi.fn()} onRecheck={vi.fn()}
+        rechecking={false} recheckError={null} authenticationRecovery={null}
+        turnDuration={{ readRevision: 1, value: undefined, loaded: true, loadError: null, onRetryLoad: vi.fn(), onSave }} />
+    </SettingsSurface>);
+    const input = page.getByRole('textbox', { name: 'Maximum turn duration (minutes)' });
+    await expect.element(input).toHaveValue('30');
+    await expect.element(input).toHaveAttribute('inputmode', 'numeric');
+    await input.fill('45');
+    await userEvent.keyboard('{Enter}');
+    await expect.element(page.getByText('Saved.', { exact: true })).toBeVisible();
+    expect(onSave).toHaveBeenCalledWith('45');
+    await input.fill('241');
+    await userEvent.keyboard('{Enter}');
+    await expect.element(page.getByRole('alert')).toHaveTextContent('1 to 240');
+    await expect.element(input).toHaveValue('241');
+    expect(onSave).toHaveBeenCalledTimes(1);
+    await userEvent.click(page.getByRole('button', { name: 'Restore default duration' }));
+    expect(onSave).toHaveBeenLastCalledWith(null);
+    await expect.element(page.getByText(/next turn/)).toBeVisible();
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+  });
+}

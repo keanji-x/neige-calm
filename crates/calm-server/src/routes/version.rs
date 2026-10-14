@@ -44,7 +44,8 @@ pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 /// 48 -> 49: Planner run declares required manual_compact_supported; composers consume backend
 /// capability rather than infer it from provider identity.
 // Required compact outcome and context-reading validity prevent stale occupancy and false success.
-pub const WEB_COMPAT_VERSION: u32 = 50;
+// #2618: older bundles silently drop planner_turn_timeout activity notices.
+pub const WEB_COMPAT_VERSION: u32 = 51;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

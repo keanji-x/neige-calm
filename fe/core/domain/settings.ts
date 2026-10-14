@@ -20,8 +20,8 @@ export function putSettingsOperation(settings: SettingsPatch): ApiOperation<Sett
 }
 
 /**
- * `PUT /api/settings`, a per-key merge that is safe to repeat. The handler itself answers only 500; an answered 4xx
- * is the extractor's refusal before anything was stored. Read through `writeFailureText` at the row.
+ * `PUT /api/settings`, a per-key merge. A 400 rejects an invalid Planner duration before any key
+ * is stored; other answered 4xx also refuse the patch. Read through `writeFailureText` at the row.
  */
 export const SETTINGS_FAILURES: FailureTable<WriteClass> = Object.freeze({
   rules: Object.freeze([Object.freeze({ status: Object.freeze({ from: 400, to: 499 }), is: 'refused' as const })]),
@@ -33,3 +33,27 @@ export const SETTINGS_TEXT: WriteText = Object.freeze({ refused: 'It was not sav
 
 export const HTTP_PROXY_KEY = 'http_proxy';
 export const HTTPS_PROXY_KEY = 'https_proxy';
+
+export const PLANNER_TURN_DURATION_KEY = 'planner_max_turn_duration_minutes';
+export const DEFAULT_PLANNER_TURN_DURATION_MINUTES = 30;
+export const PLANNER_TURN_DURATION_ERROR = 'Enter a whole number from 1 to 240 minutes (ASCII digits).';
+
+/** Missing means the declared default; corrupt storage is an error, never a default. */
+export function plannerTurnDuration(value: string | undefined):
+  | Readonly<{ ok: true; minutes: number; isDefault: boolean }>
+  | Readonly<{ ok: false; error: string }> {
+  if (value === undefined) return { ok: true, minutes: DEFAULT_PLANNER_TURN_DURATION_MINUTES, isDefault: true };
+  const minutes = Number(value);
+  if (!/^[0-9]+$/.test(value) || !Number.isInteger(minutes) || minutes < 1 || minutes > 240) {
+    return { ok: false, error: PLANNER_TURN_DURATION_ERROR };
+  }
+  return { ok: true, minutes, isDefault: false };
+}
+
+/** One-key patch; null explicitly resets even corrupt storage. */
+export function plannerTurnDurationPatch(value: string | null): SettingsPatch {
+  if (value === null) return { [PLANNER_TURN_DURATION_KEY]: null };
+  const parsed = plannerTurnDuration(value);
+  if (!parsed.ok) throw new Error(parsed.error);
+  return { [PLANNER_TURN_DURATION_KEY]: String(parsed.minutes) };
+}

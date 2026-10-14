@@ -203,6 +203,19 @@ describe('trackActivityFrom: the kernel activity overlay', () => {
     cards: [{ card_id: 'worker-1', state: 'failed' }, { card_id: 'planner', state: 'input' }, { card_id: 'w2', state: 'working' }],
   };
 
+  it('keeps timeout notices with none attention and skips unknown sources', () => {
+    const activity = trackActivityFrom('t1', [overlay({ ...payload, attention: 'none', working: false,
+      items: [
+        { source: 'planner_turn_timeout', key: 'planner_turn_timeout:9', text: 'Stopped at 12:00 UTC', at_ms: 20 },
+        { source: 'future', key: 'future:1', text: 'Unknown', at_ms: 1 },
+      ], cards: [],
+    })]);
+    expect(activity.attention).toBe('none');
+    expect(activity.attentionItems).toEqual([
+      { source: 'planner_turn_timeout', key: 'planner_turn_timeout:9', text: 'Stopped at 12:00 UTC', atMs: 20 },
+    ]);
+  });
+
   it('decodes working, attention, the high-water mark, the items and the per-card verdicts', () => {
     const activity = trackActivityFrom('t1', [overlay(payload)]);
     expect(activity.working).toBe(true);

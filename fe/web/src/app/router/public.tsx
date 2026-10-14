@@ -915,16 +915,21 @@ function TrackRoute({ transport, unauthorized, cardRuntime, recentFiles }: {
 
 /**
  * The Notifications aside from `activity.items`: one row per item, in the kernel's order (newest
- * first) and in the kernel's words. No item names a card: both sources belong to the Planner.
+ * first) and in the kernel's words. No item names a card: all sources belong to the Planner.
  */
 function trackNotifications(items: TrackActivity['attentionItems']): readonly TrackInputNotification[] {
-  return items.map((item): TrackInputNotification => ({
-    key: item.key,
-    kind: item.source === 'planner_down' ? 'planner-down' : item.delivery === 'hold' ? 'approval' : 'ask',
-    text: item.text,
-    atMs: item.atMs,
-    ...(item.source !== 'ask' || item.action === undefined ? {} : { action: item.action }),
-  }));
+  return items.map((item): TrackInputNotification => {
+    let kind: TrackInputNotification['kind'];
+    switch (item.source) {
+      case 'ask': kind = item.delivery === 'hold' ? 'approval' : 'ask'; break;
+      case 'planner_down': kind = 'planner-down'; break;
+      case 'planner_turn_timeout': kind = 'planner-turn-timeout'; break;
+    }
+    return {
+      key: item.key, kind, text: item.text, atMs: item.atMs,
+      ...(item.source !== 'ask' || item.action === undefined ? {} : { action: item.action }),
+    };
+  });
 }
 
 function TrackRouteBody({

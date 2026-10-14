@@ -337,3 +337,30 @@ picker, and that read is unchanged.
 `public.test.tsx` holds behavior; `public.contract.test.tsx` holds invariants —
 including the section list, which is where the removed Templates entry is
 asserted absent.
+
+## Planner turn duration (#2618)
+
+[Planners](planners.tsx) owns one duration editor and provider availability rows;
+[app/shell](../../app/shell/settings-overlay.tsx) injects the setting's value,
+read status/revision, retry and save capabilities. The feature never receives a transport
+or imports another feature. The [core codec](../../../../core/domain/settings.ts)
+owns ASCII integer validation (1–240), the absent 30-minute default, canonical
+writes and explicit null reset. Corrupt storage remains visible and repairable.
+
+The help states that changes apply next turn, hold waits do not count, and Claude
+receives only the initial budget reminder. TextInput intentionally keeps raw
+numeric text with a numeric mobile keyboard: NumberInput's locale parsing and
+blur/Enter clamping would hide invalid storage or a rejected value such as 241.
+
+Blur/Enter saves once. One pending write leaves the field editable, keeps a newer
+edit visibly unsaved, and never queues it for an automatic PUT. A successful
+answer describes only the submitted value. Refreshed settings seed a clean field; the successful-read counter also makes
+an unchanged read withdraw an obsolete Saved confirmation, even under a frozen
+clock;
+a dirty field stays intact with a changed-elsewhere notice. Refused/unconfirmed
+saves stay visible, blur cannot retry them, and Enter or Restore default explicitly
+recovers. Closing the pane does not silently commit or retry a draft. The shared
+mutation invalidates reads and never writes an older PUT response into the cache.
+
+See the [implementation design](../../../../../docs/architecture/2618-planner-turn-budget.md)
+for timeout notices, compatibility, test ownership and real preview requirements.

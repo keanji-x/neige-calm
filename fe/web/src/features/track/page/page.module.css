@@ -322,8 +322,15 @@
     border-radius: var(--radius-pill);
   }
 
-  .noticeDotAsk {
+  .noticeDotAsk,
+  .noticeDotTimeout {
     background: var(--warn);
+  }
+
+  .noticeTimestamp {
+    color: var(--text-3);
+    font: var(--type-metadata);
+    overflow-wrap: anywhere;
   }
 
   .noticeDotDown {
@@ -1097,6 +1104,20 @@
 
     .needsInputNotice {
       display: none;
+    }
+
+    /* Timeout is independent of attention; old ask/down mobile presentation stays unchanged. */
+    .timeoutNotice.needsInputNoticeExpanded {
+      display: flex;
+      inset-inline: var(--space-5);
+      inset-block-end: calc(var(--space-5) + env(safe-area-inset-bottom));
+      inline-size: auto;
+    }
+
+    .timeoutNotice.needsInputNoticeCompact {
+      display: grid;
+      inset-inline-end: var(--space-5);
+      inset-block-end: calc(var(--space-5) + env(safe-area-inset-bottom));
     }
 
     .panel {

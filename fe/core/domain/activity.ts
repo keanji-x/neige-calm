@@ -17,8 +17,8 @@ export type AttentionKind = 'none' | 'input' | 'failed';
 /** The per-card verdict the overlay's `cards[]` carries; a card without one has no indicator. */
 export type CardActivity = 'working' | 'input' | 'failed';
 
-/** What a notification is: the Planner asks the user something, or the Planner stopped. */
-export type NotificationSource = 'ask' | 'planner_down';
+/** Kernel notification sources: a question, an outage, or a confirmed turn timeout independent of attention. */
+export type NotificationSource = 'ask' | 'planner_down' | 'planner_turn_timeout';
 
 /** One question of an ask: the first option is the recommended one; none means a free answer. */
 export type AskQuestion = Readonly<{ title: string; options: readonly string[] }>;
@@ -46,7 +46,7 @@ export type ActivityItem =
     source: 'ask'; askId: number; questions: readonly AskQuestion[]; delivery: AskDelivery;
     action?: import('../api/generated/wire.js').AskAction;
   }>)
-  | (ActivityItemBase & Readonly<{ source: 'planner_down' }>);
+  | (ActivityItemBase & Readonly<{ source: 'planner_down' | 'planner_turn_timeout' }>);
 
 /**
  * Dismiss one item: the kernel stores its key and the projector drops it, so the row goes when the

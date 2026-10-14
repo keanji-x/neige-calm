@@ -48,9 +48,9 @@ export type TrackInputNotification = Readonly<{
   key: string;
   /**
    * `ask`: the Planner asks the user something; `approval`: a Planner turn is paused on a request only an answer ends
-   * (#2348), so it cannot be dismissed; `planner-down`: the Planner stopped.
+   * (#2348), so it cannot be dismissed; `planner-down`: the Planner stopped; `planner-turn-timeout`: a confirmed budget stop.
    */
-  kind: 'ask' | 'approval' | 'planner-down';
+  kind: 'ask' | 'approval' | 'planner-down' | 'planner-turn-timeout';
   /** The kernel's words, shown verbatim: the Planner's questions, or the reason it stopped. */
   text: string;
   atMs: number;
@@ -60,10 +60,11 @@ export type TrackInputNotification = Readonly<{
 /** A row's meta line: what kind of thing is waiting, in plain words; only its dot carries colour. */
 const NOTIFICATION_LABEL = Object.freeze({
   ask: 'Needs your answer', approval: 'Waiting for your approval', 'planner-down': "Planner can't continue",
+  'planner-turn-timeout': 'Planner turn timed out',
 } as const);
 
 /** Whether a row offers Dismiss. A paused turn's request stays until it is answered or goes away, so dismissing it would do nothing. */
-const NOTIFICATION_DISMISSABLE = Object.freeze({ ask: true, approval: false, 'planner-down': true } as const);
+const NOTIFICATION_DISMISSABLE = Object.freeze({ ask: true, approval: false, 'planner-down': true, 'planner-turn-timeout': true } as const);
 
 /**
  * What clicking a row does: shown in the label's place while the row is hovered or focused, and the start of its
@@ -75,7 +76,7 @@ const NOTIFICATION_ACTION = Object.freeze({
 } as const);
 
 function notificationAction(kind: TrackInputNotification['kind']) {
-  return NOTIFICATION_ACTION[kind === 'planner-down' ? 'open' : 'answer'];
+  return NOTIFICATION_ACTION[kind === 'ask' || kind === 'approval' ? 'answer' : 'open'];
 }
 
 /** The start of a row's words, as plain text, for its accessible names; the whole text is in the Planner conversation. */
@@ -219,6 +220,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
   const dismissFeedback = useOperationFeedback();
   const [closedPending, setClosedPending] = useState(false);
   const notificationSignature = inputNotifications.map(({ key }) => key).join('|');
+  const hasTurnTimeout = inputNotifications.some(({ kind }) => kind === 'planner-turn-timeout');
   const [noticeExpanded, setNoticeExpanded] = useState(inputNotifications.length > 0 && !conversationOpen);
   const [notificationAnnouncement, setNotificationAnnouncement] = useState('');
   const offeredClosedAction = canReopenTrack ? 'reopen' : (canCloseTrack ? 'close' : null);
@@ -590,7 +592,8 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
         <aside
           className={`${styles.needsInputNotice} ${noticePanelOpen
             ? styles.needsInputNoticeExpanded
-            : styles.needsInputNoticeCompact} ${conversationOpen ? styles.needsInputNoticeBesideDrawer : ''}`}
+            : styles.needsInputNoticeCompact} ${conversationOpen ? styles.needsInputNoticeBesideDrawer : ''}
+            ${hasTurnTimeout && !conversationOpen && !mobilePanelObscured ? styles.timeoutNotice : ''}`}
           data-nc-needs-input-notice=""
           data-nc-notification-mode={noticePanelOpen ? 'expanded' : 'compact'}
           role="region"
@@ -600,7 +603,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
             <>
               <span className={styles.needsInputNoticeHeader}>
                 <span className={styles.needsInputNoticeIcon}><Icon name="notification" size="sm" /></span>
-                <strong className={styles.needsInputNoticeTitle}>Waiting on you</strong>
+                <strong className={styles.needsInputNoticeTitle}>{hasTurnTimeout ? 'Notifications' : 'Waiting on you'}</strong>
                 <span className={styles.needsInputCount}>{inputNotifications.length}</span>
                 <button
                   type="button"
@@ -629,7 +632,8 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
                     )}
                     <span className={styles.noticeMeta}>
                       <span
-                        className={`${styles.noticeDot} ${notification.kind === 'planner-down' ? styles.noticeDotDown : styles.noticeDotAsk}`}
+                        className={`${styles.noticeDot} ${notification.kind === 'planner-down' ? styles.noticeDotDown
+                          : notification.kind === 'planner-turn-timeout' ? styles.noticeDotTimeout : styles.noticeDotAsk}`}
                         aria-hidden="true"
                       />
                       {/* One slot, two spans: the label, and the row's action in its place while the row is hovered
@@ -648,6 +652,9 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
                         a failure is clamped, its full text is in the Planner conversation. */}
                     <div className={`${styles.noticeBody} ${notification.kind === 'planner-down' ? styles.noticeBodyClamped : ''}`}>
                       <Markdown density="compact" headingLevelStart={3}>{notification.text}</Markdown>
+                      {notification.kind === 'planner-turn-timeout' && <p className={styles.noticeTimestamp}>
+                        Recorded at <time dateTime={new Date(notification.atMs).toISOString()}>{new Date(notification.atMs).toISOString()}</time>
+                      </p>}
                     </div>
                     {onDismiss !== undefined && notification.action === undefined && NOTIFICATION_DISMISSABLE[notification.kind] && (
                       <button

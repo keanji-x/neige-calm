@@ -4,11 +4,12 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useRouter, useRouterState, type RouterHistory } from '@tanstack/react-router';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { readErrorText } from '../../../../core/domain/read-failure.ts';
+import { PLANNER_TURN_DURATION_KEY, plannerTurnDurationPatch } from '../../../../core/domain/settings.ts';
 import { PluginConfigPane } from '../../features/settings/plugin-config.tsx';
 import { PluginAddPane } from '../../features/settings/plugin-add.tsx';
 import { PlannersPane } from '../../features/settings/planners.tsx';
@@ -24,7 +25,7 @@ import { useCompactViewport } from '../../ui/viewport/public.ts';
 import { MobileHeader } from '../../ui/mobile-header/public.tsx';
 import styles from './settings-page.module.css';
 import {
-  pluginDetailQueryOptions, pluginsQueryOptions, settingsQueryOptions, usePluginConfigMutations,
+  pluginDetailQueryOptions, pluginsQueryOptions, settingsQueryOptions, queryKeys, usePluginConfigMutations,
   usePluginInstall, usePluginMutations, useSettingsMutation,
 } from '../providers/queries.ts';
 import { agentProvidersQueryOptions, useAgentProvidersRecheck } from '../providers/agent-providers.ts';
@@ -155,12 +156,22 @@ function SectionPane({ section, transport, unauthorized }: SettingsOverlayProps 
 
 /** Settings › Planners: the shared availability answer the new-track picker also reads, and its Recheck. */
 function PlannersPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
+  const client = useQueryClient();
+  // A same-value successful read can withdraw an obsolete save acknowledgement.
+  // Observe query state too, so structural sharing cannot hide its read counter.
+  const settings = useQuery({ ...settingsQueryOptions(transport, unauthorized), notifyOnChangeProps: 'all' });
+  const save = useSettingsMutation(transport, unauthorized);
   const providers = useQuery(agentProvidersQueryOptions(transport, unauthorized));
   const recheck = useAgentProvidersRecheck(transport, unauthorized);
   const recovery = useCodexAuthenticationRetry(transport, unauthorized);
   const go = useGo();
   return (
     <PlannersPane
+      turnDuration={{ value: settings.data?.settings[PLANNER_TURN_DURATION_KEY], loaded: settings.data !== undefined,
+        readRevision: client.getQueryState(queryKeys.settings())?.dataUpdateCount ?? 0,
+        loadError: settings.error === null ? null : readErrorText(settings.error, 'Settings are unavailable.'),
+        onRetryLoad: () => { void settings.refetch(); },
+        onSave: (value) => save(plannerTurnDurationPatch(value)).then(() => undefined) }}
       authenticationRecovery={{ provider: 'codex', pending: recovery.pending, error: recovery.error,
         notices: recovery.notices, onRetry: recovery.retry,
         onOpenConversation: (notice) => go({ name: 'track', trackId: notice.track_id, cardId: notice.card_id, openPlanner: true }) }}

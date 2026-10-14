@@ -2,7 +2,7 @@
 
 第一阶段 CR-2618-budget 已批准并广播，包含后端设置、冻结预算及预警。
 第二阶段 CR-2618-timeout 批准可信终态、下一真实输入通知及 Track 活动投影，
-见后文实际契约；UI 留待后续阶段。实施为 L2：跨生命周期、持久化与公开设置
+见后文实际契约；第三阶段提供设置 UI 与独立 timeout 通知。实施为 L2：跨生命周期、持久化与公开设置
 契约，由 Planner 安排两个独立评审渠道。
 
 ## 设置与采样
@@ -142,3 +142,73 @@ API evidence 类型由 calm-types 导出，并注册到 OpenAPI；唯一生成�
 任意 payload 获得新时间 authority。未保护过的 `harness_timeout` 即使完整匹配 v1
 shape 也不被 reader 信任；当前 writer 清除它。transcript error 文本明确兼容旧 reason
 字符串与 v1 证据对象，不以 provider 文本或新字段外观推断可信 timeout。
+
+## 第三阶段：Settings 与 Track UI
+
+CR-2618-settings/track 已批准 core/domain 的 settings/activity/track/conversation
+窄 codec、features/settings 的 Planners props、features/track/page 的通知 kind，
+以及 app shell/query/router 的注入映射。沿用 L2（消费持久设置与可信终态边界），
+正式独立评审和真实 stack preview 由 Planner 的后续任务执行。
+
+[设置 codec](../../fe/core/domain/settings.ts) 仅处理
+`planner_max_turn_duration_minutes`：ASCII 整数 1..240，缺失明确为30，非法存储为
+错误，写入规范化，reset 只发送该 key 的 null。400 是整份 patch 写入前的拒绝，
+不能再把 handler 描述成只返回500。它不采样预算、不推断后端能力，也不修补坏值。
+
+[Planners pane](../../fe/web/src/features/settings/planners.tsx) 复用 SettingRow，接收
+单值、读取状态/成功读取 revision 与 save/retry 能力；[shell host](../../fe/web/src/app/shell/settings-overlay.tsx)
+复用既有 settings query/mutation/invalidation，不能横向导入其他 feature。
+帮助明确默认30分钟、下一轮生效、hold等待不计，以及 Claude 只有轮初预算提醒。
+控件保留数值原文，并用 numeric inputMode 提供手机数字键盘。这里有意复用 TextInput
+而不用 NumberInput：后者会将越界值在 blur/Enter 自动钳位、解析 locale 数字；这会
+掩盖 ASCII/范围错误与损坏的原始存储。范围由唯一 core codec 验证，未引入新 UI primitive。
+
+Enter/blur 发出一次单 key 写入；一个请求未结束时仍可编辑，后续草稿保持未保存并
+要求完成后再 Enter。没有串行队列、自动重试或卸载时隐式保存，也没有复制 Network
+两字段的 sequence/status 表。服务端刷新同时比较值与成功读取计数（不能用可能相同的毫秒时间）：
+即使重读最初的值也撤销旧 Saved，干净草稿随读取更新，脏草稿保留
+并提示 Changed elsewhere。成功只确认所提交的值；新草稿不能继承 Saved。失败明确
+区分拒绝与 unconfirmed，blur 不重放失败值，Enter 或 Restore default 是显式恢复。
+PUT 响应不写入 query cache；settings invalidation 重新读取，不能倒灌旧响应。
+
+[activity 模型](../../fe/core/domain/activity.ts) 与
+[Track decoder](../../fe/core/domain/track.ts) 明确接收 `planner_turn_timeout`，unknown
+source 保持跳过语义，不能落入 ask/down。attention 闭集及 fold 不变；
+[router](../../fe/web/src/app/router/public.tsx) 穷尽映射独立
+`planner-turn-timeout` kind，[Track page](../../fe/web/src/features/track/page/public.tsx)
+标题为 “Planner turn timed out”，保留 kernel 原文并显示 atMs 的 UTC 记录时间。
+可 Open Planner 和 dismiss 原始 key，无乐观删除；不要求 attention Input/Failed 或
+Planner Failed 生命周期。手机只有包含 timeout 的通知容器新增可见分支；打开对话或
+被前景 mobile panel 遮蔽时恢复旧隐藏行为，旧 ask/down 独立展示不变。
+
+[conversation decoder](../../fe/core/domain/conversation.ts) 将 protected
+`harness_interruption_reason` 的 legacy string 与完整 v1 object 作为独立 kernel
+metadata 保留。durationMs 与 created_at_ms 继续来自原始 row，不以预算代替 duration，
+不比较请求与结束 UTC 大小，不把 metadata 填到 provider message/code。
+未知 shape 仅丢该 detail，既有 outcome/status/error 行继续展示；即使 unprotected
+`harness_timeout` 完全符合 v1 shape 也不能接受。FE 不复制后端可信 record 验证规则。
+
+WEB_COMPAT_VERSION 两声明同步 50→51：旧 bundle 会静默跳过新 timeout item，
+造成已确认终态通知不可见。没有修改 activity schemaVersion、sync event、REST版本、
+迁移或预算规则。实际 API generator 已执行，产物与 c9a29a0 相同，无手改 generated。
+
+### 验证归属与维护成本
+
+worker 先确认 core codec/track/conversation、Planners、shell host、router 与 desktop/
+mobile/coarse browser 最小红测，再跑这些聚焦选择；protected namespace 的 load-bearing
+断言用单因子 production mutation 验证：改读 unprotected namespace 恰好两个
+conversation 测试红；让 decoder 不认识 timeout source 恰好 core/route 两个测试红，
+旧通知测试仍绿，恢复后全部重绿。仅因 compatibility floor 的 Rust 声明更新，
+worker 另跑要求的 contract 选择与 Rust quick（非 broad suite）。kernel gate 各运行一次文本、前端lint/build/
+unit及指定browser replay，CI 拥有 broad suite，worker 不跑 broad suite。
+指定 gate 的普通 browser 文件不被 browser-coarse 的 suffix 分区收集，因此另在现有
+模块 inventory 窄登记 settings codec 测试及两个 coarse 文件，实际运行 coarse 用例，不扩大 Vitest include 或永久测试列表。
+普通以后增改测试仅改所属测试文件；新增模块才登记 inventory。没有新增 styles token、
+通用样式/allowlist、扫描规则或每 CI 重复检查。既有大型 conversation/router/page 文件
+只扩展窄 codec/映射/通知展示，未引入新的大型手写文件。
+
+真实 preview 按 [开发预览流程](../development-preview.md) 使用两个空闲 loopback 端口：
+backend CALM_PORT 与 frontend FE_DEV_PORT，后者 proxy 前者。检查
+`/next/settings/planners` 与 `/next/track/<track-id>`，包括坏值reset、保存失败、下一轮
+新预算、none attention timeout 的打开/dismiss，桌面与手机均需检查。
+后续验证运行 tier 1 `./e2e/run.sh`；真实 Codex/Tier 2 只在 dedicated host 执行。

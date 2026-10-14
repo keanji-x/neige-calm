@@ -51,7 +51,7 @@ const WORKER_CARD = { ...PLANNER_CARD, id: 'card-worker', title: 'Worker', paylo
  * `cards` the per-card verdicts every row and card head reads. */
 type ActivityItemWire =
   | { source: 'ask'; key: string; text: string; at_ms: number; ask_id: number; questions: { title: string; options: string[] }[]; delivery: 'wake' | 'hold' }
-  | { source: 'planner_down'; key: string; text: string; at_ms: number };
+  | { source: 'planner_down' | 'planner_turn_timeout'; key: string; text: string; at_ms: number };
 type ActivityCardWire = { card_id: string; state: 'working' | 'input' | 'failed' };
 const trackActivityOverlay = (payload: Partial<{
   working: boolean; attention: 'none' | 'input' | 'failed'; activity_at_ms: number | null;
@@ -347,6 +347,27 @@ describe('track conversations', () => {
       expect(screen.getByRole('region', { name: 'Notifications' }).querySelector('strong')).toBeNull();
       expect(window.location.search).not.toContain('card=');
     }
+  });
+
+  it('opens and dismisses a timeout while attention is none and the Planner is idle', async () => {
+    const text = 'Turn timed out at 2026-10-14 12:00 UTC after 30 minutes.';
+    const { requests } = setup((request) => {
+      if (request.path === '/api/tracks/w1/activity/dismissals') return { status: 204, statusText: 'No Content', body: undefined };
+      if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_close: true,
+        cards: [PLANNER_CARD], overlays: [trackActivityOverlay({ attention: 'none', items: [
+          { source: 'planner_turn_timeout', key: 'planner_turn_timeout:9', text, at_ms: 5 },
+        ] })] });
+      return undefined;
+    });
+    const notice = await screen.findByRole('region', { name: 'Notifications' });
+    expect(within(notice).getByText('Planner turn timed out')).toBeTruthy();
+    expect(within(notice).getByText(text)).toBeTruthy();
+    expect(within(notice).queryByText('Needs your answer')).toBeNull();
+    fireEvent.click(within(notice).getByRole('button', { name: /^Dismiss: Planner turn timed out:/ }));
+    await waitFor(() => expect(requests.find((request) => request.path.endsWith('/activity/dismissals'))?.body)
+      .toEqual({ key: 'planner_turn_timeout:9' }));
+    fireEvent.click(within(notice).getByRole('button', { name: /^Open the Planner:/ }));
+    expect(await screen.findByRole('complementary', { name: 'Planner chat' })).toBeTruthy();
   });
 
   it('Dismiss posts the item key', async () => {

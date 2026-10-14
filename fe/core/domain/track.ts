@@ -41,13 +41,13 @@ export type TrackActivity = Readonly<{
   now: string;
   /** From the kernel `activity` overlay: something dispatched is still running. */
   working: boolean;
-  /** Same overlay: the fold of `attentionItems` — a `planner_down` item → failed, else an `ask` → input. */
+  /** Same overlay: the fold of `attentionItems` — a `planner_down` item → failed, an `ask` → input; timeout alone stays none. */
   attention: AttentionKind;
   /** Same overlay: high-water mark of completion-class evidence; the read receipt compares against it. */
   activityAt: number | null;
   /** Latest finite write/evidence time from the kernel activity overlay; used for recent-activity ordering. */
   recentAt: number | null;
-  /** Same overlay: every notification — an ask or planner down — with the kernel's words for it. */
+  /** Same overlay: every ask, outage and turn-timeout notification, with the kernel's words for it. */
   attentionItems: readonly ActivityItem[];
   /** Same overlay: the per-card verdicts, keyed by card id. Read through `cardActivityOf`. */
   cards: Readonly<Record<string, CardActivity>>;
@@ -158,6 +158,12 @@ const activityItemWireSchema = z.discriminatedUnion('source', [
     text: z.string(),
     at_ms: z.number(),
   }),
+  z.object({
+    source: z.literal('planner_turn_timeout'),
+    key: z.string(),
+    text: z.string(),
+    at_ms: z.number(),
+  }),
 ]);
 const activityCardWireSchema = z.object({
   card_id: z.string(),
@@ -188,7 +194,7 @@ function activityOverlayFields(payload: unknown): Partial<TrackActivity> | null 
         ...base, source: 'ask', askId: item.data.ask_id, questions: item.data.questions, delivery: item.data.delivery,
         ...(item.data.action === undefined ? {} : { action: item.data.action }),
       }
-      : { ...base, source: 'planner_down' });
+      : { ...base, source: item.data.source });
   }
   const cards: Record<string, CardActivity> = {};
   for (const row of parsed.data.cards) {
