@@ -282,6 +282,7 @@ async fn post_card_with_a_server_owned_key_is_rejected_for_every_kind() {
             "terminal_signals",
             "template_context",
             "planner_provider",
+            "assistant_provider",
             "side_source_card_id",
             "permission_mode",
             "owner_created",

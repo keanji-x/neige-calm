@@ -17,7 +17,7 @@ afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 const NOW = 1_760_000_000_000;
 
-const conversation: Conversation = {
+const conversation: Conversation = { provider: 'codex' as const,
   id: 'c1', trackId: 'w1', trackTitle: 'Ship the rewrite', title: null, kind: 'codex',
   state: 'idle', updatedAt: NOW, turns: 0,
 };

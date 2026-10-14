@@ -148,6 +148,31 @@ pub(crate) async fn seed_non_root_session_with_provider(
     .expect("seed non-root session");
 }
 
+pub(crate) async fn seed_assistant_session(
+    repo: &dyn RepoEventWrite,
+    card: &CardId,
+    session: &str,
+    provider: AgentProvider,
+) {
+    let init = calm_server::session_projection_repo::WorkerSessionInit::managed_assistant(
+        session.into(),
+        card.to_string(),
+        provider,
+        WorkerSessionState::Running,
+        None,
+        json!({}),
+        0,
+    );
+    calm_server::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            calm_server::db::sqlite::session_start_runtime_tx(tx, init).await?;
+            Ok(())
+        })
+    })
+    .await
+    .expect("managed Assistant fixture");
+}
+
 pub(crate) async fn boot() -> Boot {
     boot_at("sqlite::memory:").await
 }
@@ -238,7 +263,7 @@ async fn boot_with_scope(db_url: &str, plugin_scope: Option<&str>) -> Boot {
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1, "harness_profile": "assistant"}),
+            payload: json!({"schemaVersion": 1, "harness_profile": "assistant", "assistant_provider":"codex"}),
         })
         .await
         .unwrap();
@@ -248,7 +273,7 @@ async fn boot_with_scope(db_url: &str, plugin_scope: Option<&str>) -> Boot {
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1, "harness_profile": "assistant"}),
+            payload: json!({"schemaVersion": 1, "harness_profile": "assistant", "assistant_provider":"codex"}),
         })
         .await
         .unwrap();
@@ -273,18 +298,18 @@ async fn boot_with_scope(db_url: &str, plugin_scope: Option<&str>) -> Boot {
         PLANNER_SESSION_ID,
     )
     .await;
-    seed_non_root_session(
+    seed_assistant_session(
         repo.as_ref(),
-        &track.id,
         &assistant_card.id,
         ASSISTANT_SESSION_ID,
+        AgentProvider::Codex,
     )
     .await;
-    seed_non_root_session(
+    seed_assistant_session(
         repo.as_ref(),
-        &track.id,
         &assistant_b_card.id,
         ASSISTANT_B_SESSION_ID,
+        AgentProvider::Codex,
     )
     .await;
     seed_non_root_session(repo.as_ref(), &track.id, &worker_card.id, WORKER_SESSION_ID).await;

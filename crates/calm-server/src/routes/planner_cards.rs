@@ -400,9 +400,12 @@ pub(crate) async fn get_planner_run(
         .then(|| crate::planner_permission_mode::shown_for_planner(&card));
     // The same predicate the upload endpoint enforces, so the answer cannot drift from the refusal.
     let attachments_supported = match s.repo.track_get(card.track_id.as_str()).await? {
-        Some(track) => {
-            crate::planner_attachments::attachment_root(&track.workspace, &s.workspace_root).is_ok()
-        }
+        Some(track) => crate::planner_attachments::image_input_root(
+            &binding.provider,
+            &track.workspace,
+            &s.workspace_root,
+        )
+        .is_ok(),
         // No track means no workspace to write into; this field is not the place to raise it, and 'supported' would be the wrong guess.
         None => false,
     };

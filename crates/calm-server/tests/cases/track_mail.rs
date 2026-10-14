@@ -438,11 +438,21 @@ async fn mail_send_refusals_follow_the_table() {
         .await
         .unwrap();
     let foreign = w
-        .add_planner_without_harness(&other_area.id, "foreign")
+        .add_planner_without_harness(
+            &other_area.id,
+            "foreign",
+            calm_server::session_projection_repo::AgentProvider::Codex,
+        )
         .await;
     let closed = w.add_track(&w.area_id, "closed").await;
     let chat = w.add_track(&w.area_id, "chat").await;
-    let daily = w.add_planner_without_harness(&w.area_id, "daily").await;
+    let daily = w
+        .add_planner_without_harness(
+            &w.area_id,
+            "daily",
+            calm_server::session_projection_repo::AgentProvider::Codex,
+        )
+        .await;
     let pool = w.repo.pool();
     sqlx::query("UPDATE tracks SET closed_at = ?1 WHERE id = ?2")
         .bind(now_ms())
@@ -561,7 +571,13 @@ async fn mail_send_refusals_follow_the_table() {
 async fn mail_to_a_down_planner_is_woken_on_its_next_harness_start() {
     let w = World::new(&["R"]).await;
     let r = w.p(0);
-    let n = w.add_planner_without_harness(&w.area_id, "down").await;
+    let n = w
+        .add_planner_without_harness(
+            &w.area_id,
+            "down",
+            calm_server::session_projection_repo::AgentProvider::Codex,
+        )
+        .await;
     w.user_turn(r, "ask the down Track").await;
     let (m1, _) = w.send_ok(r, &n, "question").await;
     tokio::time::sleep(Duration::from_millis(200)).await;

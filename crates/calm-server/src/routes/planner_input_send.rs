@@ -190,16 +190,27 @@ pub(crate) async fn send_planner_input_keyed(
     )
     .await;
 
-    // `_recovery_guard` holds the card's start fence (its recovery lock) until end of scope, so a concurrent `/planner/reset` can't supersede the just-recovered runtime before the observe/audit below.
-    let (runtime, harness, _recovery_guard) = match replaces_turn {
-        None => super::planner_session::ensure_planner_session(s, w, cs, &card.id, &actor).await?,
-        Some(_) => live_planner_harness(s, &card.id).await?,
-    };
     let track = s
         .repo
         .track_get(card.track_id.as_str())
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {} for card {id}", card.track_id)))?;
+    let image_root = if attachments.is_empty() {
+        None
+    } else {
+        let binding =
+            crate::harness::profile::checked_card_binding(s.repo.as_ref(), &card, role).await?;
+        Some(crate::planner_attachments::image_input_root(
+            &binding.provider,
+            &track.workspace,
+            &s.workspace_root,
+        )?)
+    };
+    // `_recovery_guard` holds the card's start fence (its recovery lock) until end of scope, so a concurrent `/planner/reset` can't supersede the just-recovered runtime before the observe/audit below.
+    let (runtime, harness, _recovery_guard) = match replaces_turn {
+        None => super::planner_session::ensure_planner_session(s, w, cs, &card.id, &actor).await?,
+        Some(_) => live_planner_harness(s, &card.id).await?,
+    };
     let scope = EventScope::Card {
         card: card.id.clone(),
         track: track.id.clone(),
@@ -210,10 +221,11 @@ pub(crate) async fn send_planner_input_keyed(
     let attachments = if attachments.is_empty() {
         Vec::new()
     } else {
-        let root =
-            crate::planner_attachments::attachment_root(&track.workspace, &s.workspace_root)?;
+        let root = image_root
+            .as_ref()
+            .expect("nonempty images were admitted before recovery");
         crate::planner_attachments::bind::bind_attachments(
-            &root,
+            root,
             &card.id,
             &attachments,
             &s.planner_attachment_locks,

@@ -26,11 +26,12 @@ impl AcpPlannerWiring {
             .track_get(row.track_id)
             .await?
             .ok_or_else(|| CalmError::NotFound("ACP track".into()))?;
-        let instructions = crate::operation::planner_harness_start_adapter::planner_instructions(
+        let instructions = crate::harness::instructions::profile_instructions(
             repo.as_ref(),
             &self.plugin,
             row.track_id,
             row.card_id,
+            &row.binding,
         )
         .await?;
         Ok(Arc::new(AcpPlannerSession::open(SessionParams {

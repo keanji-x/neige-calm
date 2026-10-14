@@ -8,7 +8,7 @@ afterEach(cleanup);
 it('copies the visible response Markdown only after a deliberate click', async () => {
   const copyText = vi.fn().mockResolvedValue(undefined);
   const text = 'Reply\n\n```ts\nx()\n```';
-  render(<ChatThread conversation={{ id: 'c', trackId: 't', title: null, kind: 'codex', state: 'idle', updatedAt: 0 }} cards={{}}
+  render(<ChatThread conversation={{ provider: 'codex' as const, id: 'c', trackId: 't', title: null, kind: 'codex', state: 'idle', updatedAt: 0 }} cards={{}}
     stalled={false} canContinue={false} copyText={copyText} turns={[
       { id: 'u', author: 'you', text: 'Prompt', atMs: 1 }, { id: 'a', author: 'agent', text, atMs: 2 },
       { id: 'end', author: 'turn', elapsedMs: null, turnId: 'turn', status: 'completed', atMs: 3 },
@@ -59,7 +59,7 @@ it('regenerates only the delivered prompt after an explicit click, including its
   const user = { id: 'u', author: 'you' as const, text: 'Prompt', atMs: 1, attachments: [
     { id: 'image', contentType: 'image/png', size: 4, url: '/image' },
   ] };
-  render(<ChatThread conversation={{ id: 'c', trackId: 't', title: null, kind: 'codex', state: 'idle', updatedAt: 0 }} cards={{}}
+  render(<ChatThread conversation={{ provider: 'codex' as const, id: 'c', trackId: 't', title: null, kind: 'codex', state: 'idle', updatedAt: 0 }} cards={{}}
     stalled={false} canContinue={false} regenerateMessage={regenerate} turns={[
       user, { id: 'a', author: 'agent', text: 'Answer', atMs: 2 },
       { id: 'end', author: 'turn', elapsedMs: null, turnId: 'turn', status: 'completed', atMs: 3 },
@@ -70,7 +70,7 @@ it('regenerates only the delivered prompt after an explicit click, including its
   expect(screen.getByText('Answer', { exact: true })).toBeTruthy();
 });
 
-const EDIT_CONVERSATION = { id: 'c', trackId: 't', title: null, kind: 'codex' as const, state: 'idle' as const, updatedAt: 0 };
+const EDIT_CONVERSATION = { provider: 'codex' as const, id: 'c', trackId: 't', title: null, kind: 'codex' as const, state: 'idle' as const, updatedAt: 0 };
 const editTurns = (first: 'you' | 'system' = 'you') => [
   first === 'you' ? { id: 'u', author: 'you' as const, text: 'Prompt', atMs: 1 }
     : { id: 'wake', author: 'system' as const, label: 'Wake', text: 'Automatic turn', atMs: 1 },

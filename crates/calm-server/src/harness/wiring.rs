@@ -12,6 +12,7 @@ pub struct PlannerWiring {
 }
 
 pub struct PlannerRow<'a> {
+    pub binding: crate::harness::profile::PlannerBinding,
     pub worker_session_id: &'a str,
     pub card_id: &'a str,
     pub track_id: &'a str,

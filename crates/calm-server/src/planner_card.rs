@@ -53,6 +53,10 @@ fn planner_wake_authors_prose() -> String {
 pub(crate) fn render_system_prompt(template: &str, track_id: &str) -> String {
     calm_types::observation::render_task_acceptance_guidance(
         &template
+            .replace(
+                "{assistant_tool_discovery}",
+                include_str!("../prompts/assistant/discovery-codex.md"),
+            )
             .replace("{track_id}", track_id)
             .replace("{planner_wake_authors}", &planner_wake_authors_prose()),
     )
@@ -300,10 +304,13 @@ mod tests {
             "the launchpad identity has to differ from the ordinary one; if it \
              does not, nothing about #1343 shipped"
         );
-        let mechanics = include_str!("../prompts/assistant/mechanics.md");
+        let mechanics = render_system_prompt(
+            include_str!("../prompts/assistant/mechanics.md"),
+            "track-golden-1189",
+        );
         assert!(!mechanics.is_empty(), "the shared mechanics file is empty");
         assert!(
-            ordinary.contains(mechanics) && launchpad.contains(mechanics),
+            ordinary.contains(&mechanics) && launchpad.contains(&mechanics),
             "both assistant identities must embed prompts/assistant/mechanics.md"
         );
     }

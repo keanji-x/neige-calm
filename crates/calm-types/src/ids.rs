@@ -36,12 +36,39 @@ pub enum ActorId {
     AiPlanner(CardId),
     AiCodex(CardId),
     AiClaude(CardId),
+    /// Internal role-gate surrogate; never accepted from or written to the event wire.
+    #[serde(skip)]
+    #[ts(skip)]
+    AiManagedCard(CardId),
     #[schema(value_type = String)]
     AiPlannerSession(WorkerSessionId),
     #[schema(value_type = String)]
     AiCodexSession(WorkerSessionId),
     #[schema(value_type = String)]
     AiClaudeSession(WorkerSessionId),
+    #[schema(value_type = String)]
+    AiManagedSession(WorkerSessionId),
+}
+
+impl ActorId {
+    /// Session actor vocabulary shared by transport and report attribution; authorization stays live.
+    pub fn for_agent_session(
+        role: crate::model::CardRole,
+        provider: &crate::runtime::AgentProvider,
+        session: WorkerSessionId,
+    ) -> Self {
+        use crate::model::CardRole;
+        use crate::runtime::AgentProvider;
+        match role {
+            CardRole::Planner => Self::AiPlannerSession(session),
+            CardRole::Assistant => Self::AiManagedSession(session),
+            CardRole::Worker | CardRole::ReportCard => match provider {
+                AgentProvider::Codex => Self::AiCodexSession(session),
+                AgentProvider::Claude => Self::AiClaudeSession(session),
+                AgentProvider::OpenCode => Self::AiManagedSession(session),
+            },
+        }
+    }
 }
 
 impl std::fmt::Display for ActorId {
@@ -57,6 +84,8 @@ impl std::fmt::Display for ActorId {
             Self::AiCodex(id) => write!(f, "ai:codex:{}", id.as_str()),
             Self::AiClaude(id) if id.as_str().is_empty() => f.write_str("ai:claude"),
             Self::AiClaude(id) => write!(f, "ai:claude:{}", id.as_str()),
+            Self::AiManagedCard(id) if id.as_str().is_empty() => f.write_str("ai:managed-card"),
+            Self::AiManagedCard(id) => write!(f, "ai:managed-card:{}", id.as_str()),
             Self::AiPlannerSession(id) if id.as_str().is_empty() => {
                 f.write_str("ai:planner-session")
             }
@@ -65,6 +94,10 @@ impl std::fmt::Display for ActorId {
             Self::AiCodexSession(id) => write!(f, "ai:codex-session:{}", id.as_str()),
             Self::AiClaudeSession(id) if id.as_str().is_empty() => f.write_str("ai:claude-session"),
             Self::AiClaudeSession(id) => write!(f, "ai:claude-session:{}", id.as_str()),
+            Self::AiManagedSession(id) if id.as_str().is_empty() => {
+                f.write_str("ai:managed-session")
+            }
+            Self::AiManagedSession(id) => write!(f, "ai:managed-session:{}", id.as_str()),
         }
     }
 }
@@ -158,9 +191,17 @@ mod tests {
         let back: ActorId = serde_json::from_str(&s).unwrap();
         assert_eq!(back, claude_session);
 
+        assert!(serde_json::to_string(&ActorId::AiManagedCard(CardId::from("internal"))).is_err());
+        assert!(
+            serde_json::from_str::<ActorId>(r#"{"kind":"AiManagedCard","id":"internal"}"#).is_err()
+        );
         let u = ActorId::User;
         let back: ActorId = serde_json::from_str(&serde_json::to_string(&u).unwrap()).unwrap();
         assert_eq!(back, u);
+        let actor = ActorId::AiManagedSession(WorkerSessionId::from("sess-9"));
+        let wire = r#"{"kind":"AiManagedSession","id":"sess-9"}"#;
+        assert_eq!(serde_json::to_string(&actor).unwrap(), wire);
+        assert_eq!(serde_json::from_str::<ActorId>(wire).unwrap(), actor);
     }
 
     #[test]

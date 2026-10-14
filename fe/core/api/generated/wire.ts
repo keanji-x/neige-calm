@@ -3,7 +3,7 @@
 /**
  * Semantic identity of an event producer.
  */
-export type ActorId = { "kind": "User" } | { "kind": "Kernel" } | { "kind": "KernelDispatcher" } | { "kind": "Plugin", "id": string } | { "kind": "AiPlanner", "id": CardId } | { "kind": "AiCodex", "id": CardId } | { "kind": "AiClaude", "id": CardId } | { "kind": "AiPlannerSession", "id": WorkerSessionId } | { "kind": "AiCodexSession", "id": WorkerSessionId } | { "kind": "AiClaudeSession", "id": WorkerSessionId };
+export type ActorId = { "kind": "User" } | { "kind": "Kernel" } | { "kind": "KernelDispatcher" } | { "kind": "Plugin", "id": string } | { "kind": "AiPlanner", "id": CardId } | { "kind": "AiCodex", "id": CardId } | { "kind": "AiClaude", "id": CardId } | { "kind": "AiPlannerSession", "id": WorkerSessionId } | { "kind": "AiCodexSession", "id": WorkerSessionId } | { "kind": "AiClaudeSession", "id": WorkerSessionId } | { "kind": "AiManagedSession", "id": WorkerSessionId };
 
 export type AgentProvider = "opencode" | "codex" | "claude";
 
@@ -687,7 +687,7 @@ creator_key: string | null, workspace: TrackWorkspace, created_at: number, updat
 /**
  * One row of `GET /api/tracks/{track_id}/conversations`.
  */
-export type TrackConversationSummary = { 
+export type TrackConversationSummary = { provider: AgentProvider, 
 /**
  * The source conversation of a discussion branch; absent for ordinary conversations.
  */
@@ -934,7 +934,7 @@ export type VerifyTargetEvidence = { "kind": "refused", cwd: string, before: Sam
  */
 export type WorkerSessionId = string;
 
-export type WorkerSessionKind = "terminal" | "codex" | "claude" | "shared-spec";
+export type WorkerSessionKind = "terminal" | "codex" | "claude" | "shared-spec" | "managed-assistant";
 
 export type WorkerSessionProjection = { id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, terminal_run_id: string | null, thread_id: string | null, session_id: string | null, active_turn_id: string | null, handle_state_json: unknown | null, created_at_ms: number, updated_at_ms: number, completed_at_ms: number | null, 
 /**

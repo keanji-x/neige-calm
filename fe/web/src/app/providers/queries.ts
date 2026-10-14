@@ -8,6 +8,7 @@ import { hasReadFailure } from './query-read-feedback.ts';
 import { useRef } from 'react';
 import { admitTransport, useRecoveryMutation } from './recovery-mutation.ts';
 import { z } from 'zod';
+import type { AgentProvider } from '../../../../core/api/generated/wire.ts';
 
 import { performApiRequest } from '../../../../core/api/client.ts';
 import type { ApiOperation, ApiTransportPort } from '../../../../core/api/types.ts';
@@ -328,7 +329,7 @@ import type { SideConversation } from '../../../../core/domain/conversation.ts';
 
 export type ConversationMutations = Readonly<{
   /** The key identifies the DRAFT, not the attempt: a retry after a timeout must reuse it, or it mints a second conversation. */
-  create: (text: string, idempotencyKey: string, selection: ModelSelection, side?: SideConversation) => Promise<Conversation>;
+  create: (text: string, idempotencyKey: string, provider: AgentProvider, selection: ModelSelection, side?: SideConversation) => Promise<Conversation>;
   /** Re-read the list and hand back what it now holds. */
   refresh: () => Promise<Conversation[]>;
 }>;
@@ -350,8 +351,8 @@ export function useTrackConversationMutations(
 ): ConversationMutations {
   const client = useQueryClient();
   const create = useRecoveryMutation(transport, {
-    mutationFn: ({ text, idempotencyKey, selection, side }: { text: string; idempotencyKey: string; selection: ModelSelection; side?: SideConversation }, transport: ApiTransportPort) =>
-      runOperation(transport, createTrackConversationOperation(trackId, text, idempotencyKey, selection, side), unauthorized),
+    mutationFn: ({ text, idempotencyKey, provider, selection, side }: { text: string; idempotencyKey: string; provider: AgentProvider; selection: ModelSelection; side?: SideConversation }, transport: ApiTransportPort) =>
+      runOperation(transport, createTrackConversationOperation(trackId, text, idempotencyKey, provider, selection, side), unauthorized),
     onSuccess: (row) => {
       /* Written through as well as invalidated: the drawer switches to this row in the same tick. */
       client.setQueryData<Conversation[]>(queryKeys.trackConversations(trackId), (current) => {
@@ -366,7 +367,7 @@ export function useTrackConversationMutations(
     },
   });
   return {
-    create: (text, idempotencyKey, selection, side) => create.mutateAsync({ text, idempotencyKey, selection, side }),
+    create: (text, idempotencyKey, provider, selection, side) => create.mutateAsync({ text, idempotencyKey, provider, selection, side }),
     refresh: () => client.fetchQuery({
       ...trackConversationsQueryOptions(transport, trackId, unauthorized),
       staleTime: 0,
@@ -375,6 +376,7 @@ export function useTrackConversationMutations(
 }
 
 const serverVersionSchema = z.object({
+  assistantProviders: z.boolean().optional(),
   conversationCreateModel: z.boolean().optional(),
   conversationSide: z.boolean().optional(),
   webCompatVersion: z.number(),

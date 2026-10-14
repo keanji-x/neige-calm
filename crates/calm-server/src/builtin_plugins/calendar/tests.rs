@@ -77,8 +77,16 @@ impl Fixture {
         fx
     }
     async fn identity(&self, role: CardRole) -> ToolCallIdentity {
-        self.identity_with(role, WorkerSessionKind::CodexCard, None)
-            .await
+        self.identity_with(
+            role,
+            if role == CardRole::Assistant {
+                WorkerSessionKind::ManagedAssistant
+            } else {
+                WorkerSessionKind::CodexCard
+            },
+            None,
+        )
+        .await
     }
     /// A Track-bound card identity whose live session has `kind` and `handle_state`.
     async fn identity_with(
@@ -117,7 +125,11 @@ impl Fixture {
                 track_id: track.id.clone(),
                 kind: "codex".into(),
                 sort: None,
-                payload: json!({}),
+                payload: if role == CardRole::Assistant {
+                    json!({"harness_profile":"assistant","assistant_provider":"codex"})
+                } else {
+                    json!({})
+                },
                 title: None,
             })
             .await

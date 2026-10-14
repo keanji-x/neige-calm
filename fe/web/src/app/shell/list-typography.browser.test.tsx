@@ -42,7 +42,7 @@ function draw() {
       onOpenSettings={vi.fn()} onOpenPlugins={vi.fn()} onSignOut={vi.fn()} collapsed={false} onToggleCollapsed={vi.fn()} /></div>
     <div style={{ inlineSize: 300 }}><PanelCard>{paintDesktopPanel(makeDesktopPainter({ taskSummary: '2' }), view)}
       <PanelModule title="Conversations"><ChatList showTrack={false} onOpen={vi.fn()} cards={{}}
-        conversations={['Chat first', 'Chat second'].map((title, i) => ({ id: `chat-${i}`, trackId: 'track-0', title,
+        conversations={['Chat first', 'Chat second'].map((title, i) => ({ provider: 'codex' as const, id: `chat-${i}`, trackId: 'track-0', title,
           kind: 'track-assistant', state: 'idle', updatedAt: 1 }))} /></PanelModule>
     </PanelCard></div>
   </div>));

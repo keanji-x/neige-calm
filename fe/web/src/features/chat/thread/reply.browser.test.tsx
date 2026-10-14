@@ -18,7 +18,7 @@ it('loads a local screenshot in streamed and stored replies and fits a narrow co
     + '<text x="60" y="160" font-size="40">Screenshot preview</text></svg>',
   ], { type: 'image/svg+xml' }));
   try {
-    const conversation: Conversation = { id: 'c1', trackId: 'w1', title: 'Planner', kind: 'codex', state: 'running', updatedAt: 0 };
+    const conversation: Conversation = { provider: 'codex' as const, id: 'c1', trackId: 'w1', title: 'Planner', kind: 'codex', state: 'running', updatedAt: 0 };
     const imageFiles = { root: '/work/track', files: { rawUrl: () => screenshot } };
     const reply = (id: string, text: string): ConversationTurn => ({ id, author: 'agent', text, atMs: 1 });
     const props = { conversation, imageFiles, canContinue: false, cards: {}, stalled: false };

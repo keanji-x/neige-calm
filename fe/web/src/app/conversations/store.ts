@@ -11,6 +11,7 @@ import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import type { ConversationStopFeedback } from '../../../../core/domain/conversation-stop.ts';
 import { anchorRunningTurn, type RunningTurnAnchor } from '../../../../core/domain/conversation-meta.ts';
 import { harnessItemsQueryOptions, modelCatalogQueryOptions, plannerRunQueryOptions, usePlannerMutations } from '../providers/queries.ts';
+import { managedProvidersQueryOptions } from '../providers/managed-providers.ts';
 import { useState } from '../../ui/state/public.ts';
 import { useConversationRegistry } from './public.tsx';
 import { useConversationStop } from './stop.ts';
@@ -37,10 +38,14 @@ export function useConversationStore(
   const registry = useConversationRegistry();
   const cardId = scope?.cardId ?? '';
   const trackId = scope?.id;
+  const provider = scope?.provider;
   const trackTitle = scope?.title;
   const cardTitle = scope?.cardTitle;
   const scopeUpdatedAt = scope?.updatedAt;
   const scopeKind = scope?.kind ?? 'shared-spec';
+  const capabilities = useQuery({ ...managedProvidersQueryOptions(transport, unauthorized), enabled: scope?.kind === 'track-assistant' });
+  const historyReplacementSupported = scopeKind !== 'track-assistant' || (!capabilities.isError
+    && capabilities.data?.find(answer => answer.availability.provider === scope?.provider)?.capabilities.history_replacement === true);
   const scopeState = scope?.state ?? null;
   const serverRows = routeIntent.rows;
   const rememberOn = routeIntent.rememberOn;
@@ -173,10 +178,10 @@ export function useConversationStore(
   const stopFeedback: ConversationStopFeedback | null = stalled ? null
     : phase === 'issuing_interrupt' ? { kind: 'stopping' }
     : stop.feedback?.kind === 'requesting' && !working ? null : stop.feedback;
-  const facts = useMemo<ConversationFacts | null>(() => trackId === undefined ? null : {
-    sourceCardId, cardId, trackId, trackTitle, cardTitle: cardTitle ?? null, kind: scopeKind,
+  const facts = useMemo<ConversationFacts | null>(() => trackId === undefined || provider === undefined ? null : {
+    sourceCardId, cardId, trackId, trackTitle, provider, cardTitle: cardTitle ?? null, kind: scopeKind,
     state: scopeState, working, stalled, fallbackUpdatedAt: scopeUpdatedAt ?? 0,
-  }, [sourceCardId, cardId, cardTitle, scopeKind, scopeState, scopeUpdatedAt, trackId, trackTitle, working, stalled]);
+  }, [sourceCardId, cardId, cardTitle, provider, scopeKind, scopeState, scopeUpdatedAt, trackId, trackTitle, working, stalled]);
   /** What the reader is looking at: every turn, echoes included. */
   const conversation = useMemo(
     () => facts === null ? null : describeConversation(facts, turns), [facts, turns],
@@ -281,7 +286,9 @@ export function useConversationStore(
     discardFailedSend: outbox.discardFailedSend,
     dismissFailedSend: outbox.dismissFailedSend,
     send: outbox.send,
-    attachmentsSupported: run.data?.attachments_supported ?? false,
+    attachmentsSupported: (run.data?.attachments_supported ?? false) && (scopeKind !== 'track-assistant' || (!capabilities.isError
+      && capabilities.data?.find(answer => answer.availability.provider === provider)?.capabilities.images === true)),
+    historyReplacementSupported,
     manualCompactSupported: run.data?.manual_compact_supported === true,
     contextUsage: run.data?.context_usage_invalidated === true ? null : run.data?.token_usage ?? null,
     compactOutcome: run.data?.compact_outcome ?? null,

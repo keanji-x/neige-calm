@@ -34,6 +34,10 @@ pub(super) struct Fixture {
 
 impl Fixture {
     pub(super) async fn new() -> Self {
+        Self::for_role(CardRole::Planner).await
+    }
+
+    pub(super) async fn for_role(role: CardRole) -> Self {
         let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let area = repo
             .area_create(NewArea {
@@ -69,9 +73,13 @@ impl Fixture {
                 title: None,
                 kind: "codex".into(),
                 sort: None,
-                payload: json!({"schemaVersion":1,"planner_harness":true,"planner_provider":"codex","permission_mode":"never"}),
+                payload: match role {
+                    CardRole::Assistant => json!({"harness_profile":"assistant","assistant_provider":"codex"}),
+                    CardRole::Worker => json!({"harness_profile":"plain_chat"}),
+                    _ => json!({"schemaVersion":1,"planner_harness":true,"planner_provider":"codex","permission_mode":"never"}),
+                },
             },
-            CardRole::Planner,
+            role,
             false,
             &roles,
         )
@@ -86,7 +94,11 @@ impl Fixture {
             WorkerSessionInit {
                 id: worker_session_id.clone(),
                 card_id: card.id.to_string(),
-                kind: WorkerSessionKind::SharedPlanner,
+                kind: match role {
+                    CardRole::Assistant => WorkerSessionKind::ManagedAssistant,
+                    CardRole::Worker => WorkerSessionKind::CodexCard,
+                    _ => WorkerSessionKind::SharedPlanner,
+                },
                 agent_provider: Some(AgentProvider::Codex),
                 status: WorkerSessionState::Idle,
                 terminal_run_id: None,

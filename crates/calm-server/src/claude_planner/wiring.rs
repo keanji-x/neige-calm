@@ -32,16 +32,18 @@ impl ClaudePlannerWiring {
             .track_get(row.track_id)
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("track {}", row.track_id)))?;
-        let mut instructions =
-            crate::operation::planner_harness_start_adapter::planner_instructions(
-                repo.as_ref(),
-                &self.plugin,
-                row.track_id,
-                row.card_id,
-            )
-            .await?;
-        instructions.push_str("\n\n");
-        instructions.push_str(CLAUDE_FRAGMENT.trim_end());
+        let mut instructions = crate::harness::instructions::profile_instructions(
+            repo.as_ref(),
+            &self.plugin,
+            row.track_id,
+            row.card_id,
+            &row.binding,
+        )
+        .await?;
+        if row.binding.profile == crate::harness::profile::HarnessProfile::Planner {
+            instructions.push_str("\n\n");
+            instructions.push_str(CLAUDE_FRAGMENT.trim_end());
+        }
         let settings = crate::routes::settings::load_settings(repo.as_ref()).await?;
         let proxy = crate::proxy_env::resolved_proxy_env_pairs(
             settings.http_proxy.as_deref(),

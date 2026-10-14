@@ -135,7 +135,7 @@ async fn mcp_assistant_block_write_is_assistant_attributed() {
     let (actor, payload) = only_report_edit(&pool).await;
     assert_eq!(
         actor,
-        json!({"kind": "AiCodexSession", "id": "assistant-session"})
+        json!({"kind": "AiManagedSession", "id": "assistant-session"})
     );
     assert_attribution(&payload, "assistant");
 }
@@ -384,17 +384,16 @@ async fn mcp_claude_assistant_block_write_is_actored_to_the_claude_session() {
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1, "harness_profile": "assistant"}),
+            payload: json!({"schemaVersion": 1, "harness_profile": "assistant", "assistant_provider":"claude"}),
         })
         .await
         .expect("mint the claude assistant's card");
     set_persisted_card_role(boot.repo.as_ref(), card.id.as_str(), CardRole::Assistant).await;
-    seed_non_root_session_with_provider(
+    super::mcp_track_report::seed_assistant_session(
         boot.repo.as_ref(),
-        &boot.track_id,
         &card.id,
         CLAUDE_SESSION_ID,
-        WorkerProviderKind::Claude,
+        AgentProvider::Claude,
     )
     .await;
     boot.repo
@@ -424,7 +423,7 @@ async fn mcp_claude_assistant_block_write_is_actored_to_the_claude_session() {
     let (actor, payload) = only_report_edit(&pool).await;
     assert_eq!(
         actor,
-        json!({"kind": "AiClaudeSession", "id": "assistant-claude-session"})
+        json!({"kind": "AiManagedSession", "id": "assistant-claude-session"})
     );
     assert_attribution(&payload, "assistant");
 }

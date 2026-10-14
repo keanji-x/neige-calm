@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { agentProviderSchema } from '../api/schemas.js';
 
 import type {
   AgentProvider, HarnessInputPresentation, HarnessInputSegment, HarnessItem, HarnessPhaseTag,
@@ -39,6 +40,7 @@ export type Conversation = Readonly<{
   /** The conversation's own name, or null; never the track's title. */
   title: string | null;
   kind: ConversationKind;
+  provider: AgentProvider;
   /** The live session's state, or `null` when there is no live session to read — a fact, not a gap. */
   state: ConversationState | null;
   /** Last turn, or the session's own update time when it has no turns yet. */
@@ -702,6 +704,7 @@ export const CONVERSATION_TEXT_MAX = 32768;
    rather than in `core/api/schemas.ts` because `kind: 'track-assistant'` is not in the event vocabulary. */
 
 const trackConversationSummarySchema: z.ZodType<TrackConversationSummary> = z.object({
+  provider: agentProviderSchema,
   id: z.string(),
   trackId: z.string(),
   title: z.string().nullable(),
@@ -719,6 +722,7 @@ const trackConversationSummarySchema: z.ZodType<TrackConversationSummary> = z.ob
  */
 export function toTrackConversation(row: TrackConversationSummary): Conversation {
   return {
+    provider: row.provider,
     id: row.id,
     trackId: row.trackId,
     ...(row.sourceCardId === undefined ? {} : { sourceCardId: row.sourceCardId }),
@@ -743,13 +747,13 @@ export function trackConversationsOperation(trackId: string): ApiOperation<Conve
  * conversation after a timeout.
  */
 export function createTrackConversationOperation(
-  trackId: string, text: string, idempotencyKey: string, selection: ModelSelection, side?: SideConversation,
+  trackId: string, text: string, idempotencyKey: string, provider: AgentProvider, selection: ModelSelection, side?: SideConversation,
 ): ApiOperation<Conversation> {
   return {
     method: 'POST',
     path: `/api/tracks/${encodeURIComponent(trackId)}/conversations`,
     headers: { 'Idempotency-Key': idempotencyKey },
-    body: { text,
+    body: { text, provider,
       ...(side === undefined ? {} : { side }),
       ...(selection.model === null ? {} : { model: selection.model }),
       ...(selection.reasoning_effort === null ? {} : { reasoning_effort: selection.reasoning_effort }),

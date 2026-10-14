@@ -185,9 +185,9 @@ impl Fx {
     ) -> String {
         let provider = match kind {
             WorkerSessionKind::ClaudeCard => Some(AgentProvider::Claude),
-            WorkerSessionKind::CodexCard | WorkerSessionKind::SharedPlanner => {
-                Some(AgentProvider::Codex)
-            }
+            WorkerSessionKind::CodexCard
+            | WorkerSessionKind::SharedPlanner
+            | WorkerSessionKind::ManagedAssistant => Some(AgentProvider::Codex),
             WorkerSessionKind::Terminal => None,
         };
         let mut tx = self.pool.begin().await.unwrap();

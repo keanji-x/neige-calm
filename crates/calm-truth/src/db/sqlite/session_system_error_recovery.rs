@@ -51,7 +51,7 @@ async fn matches<'e>(
              AND t.closed_at IS NULL
              AND c.kind = 'codex'
              AND ((c.role = 'planner' AND ws.contract = 'planner' AND COALESCE(t.purpose, '') != 'area-chat')
-               OR (c.role = 'assistant' AND ws.contract = 'executor' AND json_extract(c.payload, '$.harness_profile') = 'assistant')
+               OR (c.role = 'assistant' AND ws.contract = 'assistant' AND json_extract(c.payload, '$.assistant_provider') = 'codex' AND json_extract(c.payload, '$.harness_profile') = 'assistant')
                OR (c.role = 'worker' AND ws.contract = 'executor' AND json_extract(c.payload, '$.harness_profile') = 'plain_chat'))
              AND json_extract(ws.handle_state_json, '$.mode') = ?4
              AND json_extract(ws.handle_state_json, '$.schema_version') = ?5

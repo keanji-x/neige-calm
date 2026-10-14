@@ -1,7 +1,7 @@
 //! Conversation identity and capabilities, shared by creation and recovery.
 use crate::model::{Card, CardRole};
 use crate::session_projection_repo::AgentProvider;
-use crate::validation::PLANNER_PROVIDER_PAYLOAD_KEY;
+use crate::validation::{ASSISTANT_PROVIDER_PAYLOAD_KEY, PLANNER_PROVIDER_PAYLOAD_KEY};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -42,6 +42,15 @@ impl HarnessProfile {
         }
     }
 
+    pub(crate) fn session_kind(self) -> crate::session_projection_repo::WorkerSessionKind {
+        use crate::session_projection_repo::WorkerSessionKind;
+        match self {
+            Self::Planner => WorkerSessionKind::SharedPlanner,
+            Self::Assistant => WorkerSessionKind::ManagedAssistant,
+            Self::PlainChat => WorkerSessionKind::CodexCard,
+        }
+    }
+
     /// None is an explicit no-MCP capability, never a missing role/default.
     pub(crate) fn mcp_role(self) -> Option<CardRole> {
         match self {
@@ -54,14 +63,14 @@ impl HarnessProfile {
 
 /// A harness card's identity at the construction boundary: what it is and which backend runs it.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PlannerBinding {
-    pub(crate) profile: HarnessProfile,
-    pub(crate) provider: AgentProvider,
+pub struct PlannerBinding {
+    pub profile: HarnessProfile,
+    pub provider: AgentProvider,
 }
 
 impl PlannerBinding {
     /// A Planner card names its backend in the server-owned `planner_provider` key; missing or
-    /// unknown makes it not a harness card (fail closed). PlainChat and Assistant run on Codex.
+    /// unknown makes it not a harness card (fail closed). Assistant names its own backend; PlainChat is Codex.
     pub(crate) fn from_card(card: &Card, role: CardRole) -> Option<Self> {
         Self::from_shape(&card.kind, role, &card.payload)
     }
@@ -73,26 +82,101 @@ impl PlannerBinding {
                 let stored = payload.get(PLANNER_PROVIDER_PAYLOAD_KEY)?;
                 serde_json::from_value(stored.clone()).ok()?
             }
-            HarnessProfile::PlainChat | HarnessProfile::Assistant => AgentProvider::Codex,
+            HarnessProfile::Assistant => {
+                serde_json::from_value(payload.get(ASSISTANT_PROVIDER_PAYLOAD_KEY)?.clone()).ok()?
+            }
+            HarnessProfile::PlainChat => AgentProvider::Codex,
         };
+        if profile == HarnessProfile::Assistant
+            && !crate::harness::backend::PlannerBackend::metadata(&provider)
+                .capabilities
+                .managed_conversation
+        {
+            return None;
+        }
         Some(Self { profile, provider })
     }
 }
 
-/// The backend a recovered Planner row runs on: its own provider, and only when the card's
-/// persisted role is Planner and its `planner_provider` names that same provider (#1791 §4.4 Boot).
-/// Anything else (a mismatched row, a card naming another or no backend, a card that is not a
-/// Planner) is not recovered.
-pub(crate) fn planner_row_provider(
-    row_provider: Option<&AgentProvider>,
+/// Resolve live row/card identity once for managed issuance and transport authorization.
+async fn persisted_binding(
+    repo: &dyn crate::db::RouteRepo,
+    session: &calm_types::worker::WorkerSession,
+) -> crate::error::Result<Option<PlannerBinding>> {
+    use calm_types::worker::{SessionMode, WorkerContract};
+    let Some(card_id) = session.card_id.as_ref() else {
+        return Ok(None);
+    };
+    let Some(card) = repo.card_get(card_id.as_str()).await? else {
+        return Ok(None);
+    };
+    let role = repo.card_role_get(card_id.as_str()).await?;
+    let Some(binding) = role.and_then(|role| PlannerBinding::from_card(&card, role)) else {
+        return Ok(None);
+    };
+    let current = repo
+        .card_identity_get_by_session(session.id.as_str())
+        .await?;
+    let contract = match binding.profile {
+        HarnessProfile::Planner => WorkerContract::Planner,
+        HarnessProfile::Assistant => WorkerContract::Assistant,
+        HarnessProfile::PlainChat => WorkerContract::Executor,
+    };
+    Ok((session.mode == SessionMode::Resumable
+        && card.track_id == session.track_id
+        && session.contract == contract
+        && calm_types::worker::WorkerProviderKind::from(&binding.provider) == session.provider
+        && current.is_some_and(|current| {
+            current.card_id == *card_id && current.track_id == session.track_id
+        }))
+    .then_some(binding))
+}
+
+pub(crate) async fn live_binding(
+    repo: &dyn crate::db::RouteRepo,
+    session: &calm_types::worker::WorkerSession,
+) -> crate::error::Result<Option<PlannerBinding>> {
+    if !session.state.is_active_authority() {
+        return Ok(None);
+    }
+    persisted_binding(repo, session).await
+}
+
+/// Resolve a declared card backend, including dormant cards, and reject a conflicting current row.
+pub(crate) async fn checked_card_binding(
+    repo: &dyn crate::db::RouteRepo,
     card: &Card,
-    role: Option<CardRole>,
-) -> Option<AgentProvider> {
-    let row_provider = row_provider?;
-    (role == Some(CardRole::Planner)
-        && PlannerBinding::from_card(card, CardRole::Planner)
-            .is_some_and(|binding| &binding.provider == row_provider))
-    .then(|| row_provider.clone())
+    role: CardRole,
+) -> crate::error::Result<PlannerBinding> {
+    let binding = PlannerBinding::from_card(card, role).ok_or_else(|| {
+        crate::error::CalmError::Forbidden("The conversation provider binding is invalid".into())
+    })?;
+    if let Some(runtime) = repo
+        .session_projection_projectable_for_card(&card.id.to_string())
+        .await?
+    {
+        let row = repo
+            .session_get_by_id(&calm_types::worker::WorkerSessionId(runtime.id))
+            .await?
+            .ok_or_else(|| {
+                crate::error::CalmError::Forbidden("The conversation session is missing".into())
+            })?;
+        if persisted_binding(repo, &row).await?.as_ref() != Some(&binding) {
+            return Err(crate::error::CalmError::Forbidden(
+                "The conversation provider and current session disagree".into(),
+            ));
+        }
+    }
+    Ok(binding)
+}
+
+pub(crate) async fn validate_live_assistant(
+    repo: &dyn crate::db::RouteRepo,
+    session: &calm_types::worker::WorkerSession,
+) -> crate::error::Result<bool> {
+    Ok(live_binding(repo, session)
+        .await?
+        .is_some_and(|binding| binding.profile == HarnessProfile::Assistant))
 }
 
 #[cfg(test)]
@@ -158,30 +242,32 @@ mod tests {
     }
 
     #[test]
-    fn conversations_bind_codex_without_a_provider_key() {
-        for (role, marker, profile) in [
-            (
-                CardRole::Worker,
-                PLAIN_CHAT_MARKER,
-                HarnessProfile::PlainChat,
-            ),
-            (
-                CardRole::Assistant,
-                ASSISTANT_MARKER,
-                HarnessProfile::Assistant,
-            ),
-        ] {
-            let card = card(
+    fn assistant_provider_binding_requires_identity_while_plain_chat_stays_codex() {
+        let plain = card("codex", json!({"harness_profile":"plain_chat"}));
+        assert_eq!(
+            PlannerBinding::from_card(&plain, CardRole::Worker)
+                .unwrap()
+                .provider,
+            AgentProvider::Codex
+        );
+        for provider in crate::harness::backend::PlannerBackend::registered_providers() {
+            let assistant = card(
                 "codex",
-                json!({"schemaVersion": 1, "harness_profile": marker}),
+                json!({"harness_profile":"assistant", "assistant_provider":provider}),
             );
             assert_eq!(
-                PlannerBinding::from_card(&card, role),
+                PlannerBinding::from_card(&assistant, CardRole::Assistant),
                 Some(PlannerBinding {
-                    profile,
-                    provider: AgentProvider::Codex
+                    profile: HarnessProfile::Assistant,
+                    provider
                 })
             );
+        }
+        for bad in [
+            json!({"harness_profile":"assistant"}),
+            json!({"harness_profile":"assistant","assistant_provider":"unknown"}),
+        ] {
+            assert!(PlannerBinding::from_card(&card("codex", bad), CardRole::Assistant).is_none());
         }
     }
 }

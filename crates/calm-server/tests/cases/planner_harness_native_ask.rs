@@ -117,8 +117,8 @@ async fn rig(profile: Profile) -> Rig {
         ),
         Profile::Assistant => (
             CardRole::Assistant,
-            json!({"schemaVersion": 1, "harness_profile": "assistant"}),
-            WorkerSessionKind::CodexCard,
+            json!({"schemaVersion": 1, "harness_profile": "assistant", "assistant_provider":"codex"}),
+            WorkerSessionKind::ManagedAssistant,
         ),
     };
     let mut tx = repo.pool().begin().await.unwrap();

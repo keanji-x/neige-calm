@@ -149,7 +149,7 @@ describe('route parameter codec', () => {
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe('conversation pending accounting', () => {
-  const conversation = {
+  const conversation = { provider: 'codex' as const,
     id: 'c1', trackId: 'w1', trackTitle: 'Track', title: null, kind: 'shared-spec' as const,
     state: 'idle' as const, updatedAt: 0, turns: 0,
   };

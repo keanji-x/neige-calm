@@ -11,7 +11,7 @@ import drawerStyles from '../../../ui/drawer/drawer.module.css';
 
 afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
-const conversation: Conversation = { id: 'c1', trackId: 'w1', title: 'Review', kind: 'codex', state: 'running', updatedAt: 0 };
+const conversation: Conversation = { provider: 'codex' as const, id: 'c1', trackId: 'w1', title: 'Review', kind: 'codex', state: 'running', updatedAt: 0 };
 const LINE = 'The reply runs on for a few lines so the pane has something to scroll. ';
 
 const history: readonly ConversationTurn[] = Array.from({ length: 6 }).flatMap((_unused, index) => [

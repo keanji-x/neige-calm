@@ -13,7 +13,7 @@ vi.mock(import('../../../../../core/markdown/public.ts'), async (original) => {
 
 afterEach(() => { cleanup(); document.querySelector('[data-preview-test-host]')?.remove(); vi.clearAllMocks(); });
 
-const conversation: Conversation = Object.freeze({ id: 'chat', trackId: 'track', trackTitle: 'Measured',
+const conversation: Conversation = Object.freeze({ provider: 'codex' as const, id: 'chat', trackId: 'track', trackTitle: 'Measured',
   title: 'Preview', kind: 'codex', state: 'idle', updatedAt: 1, turns: 3 });
 function message(id: string, author: 'you' | 'agent', text: string, atMs: number): ConversationTurn {
   return { id, author, text, atMs };

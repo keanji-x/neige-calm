@@ -27,7 +27,7 @@ const track = (id: string, title: string, sort: number) => ({
 const TRACKS = [track('w1', 'Track one', 1), track('w2', 'Track two', 2)];
 
 /** The whole router over a fake kernel whose create mints the row the key derives, and lists it afterwards. */
-function renderApp() {
+function renderApp(managed = false) {
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
   vi.stubGlobal('cancelAnimationFrame', vi.fn());
   /* Reduced motion: a closed drawer unmounts at once instead of retracting with its last frame, which jsdom never finishes. */
@@ -41,6 +41,12 @@ function renderApp() {
   const transport: ApiTransportPort = {
     send(request) {
       requests.push(request);
+      if (request.path === '/api/version') return Promise.resolve(ok({ webCompatVersion: 53, minWebCompatVersion: 53, syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationCreateModel: true }));
+      if (request.path.startsWith('/api/agent-providers/managed')) return Promise.resolve(ok([{
+        availability: { provider: managed ? 'claude' : 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
+        capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
+      }]));
+      if (managed && request.path === '/api/models?provider=claude') return Promise.resolve(ok({ models: [{ id: 'sonnet', model: 'sonnet', display_name: 'Sonnet', resolved_model: null, description: '', is_default: true, default_reasoning_effort: null, supported_reasoning_efforts: [] }], source: 'live', fetched_at_ms: 1, default_source: 'claude_cli', default: { model: 'sonnet', reasoning_effort: null, supported_reasoning_efforts: [] } }));
       const conversations = /^\/api\/tracks\/(\w+)\/conversations$/.exec(request.path);
       if (conversations !== null) {
         const trackId = conversations[1];
@@ -48,7 +54,7 @@ function renderApp() {
         if (request.method !== 'POST') return Promise.resolve(ok(rows));
         const row = {
           id: trackConversationCardId(trackId, request.headers?.['Idempotency-Key'] ?? ''),
-          trackId, title: null, kind: 'track-assistant', state: null, updatedAt: 99, lastTurnCompletedAt: null,
+          trackId, title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 99, lastTurnCompletedAt: null,
         };
         minted.set(trackId, [...rows, row]);
         return Promise.resolve({ status: 201, statusText: 'Created', body: row });
@@ -164,8 +170,19 @@ it('leaves an empty field for the next `+` after the first message is sent', asy
   });
   await screen.findByRole('complementary', { name: 'Assistant' });
   expect(requests.filter((request) => request.method === 'POST').map((request) => request.body))
-    .toEqual([{ text: 'The first message' }]);
+    .toEqual([{ text: 'The first message', provider: 'codex' }]);
   closeDrawer();
   await pressPlus();
   expect(messageField().textContent).toBe('');
+});
+
+it('offers the registered managed backend and sends the selected provider', async () => {
+  const { requests } = renderApp(true);
+  await screen.findByText('No conversations yet.');
+  await pressPlus();
+  fireEvent.click(await screen.findByRole('button', { name: /Model:/ }));
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Sonnet' }));
+  await typeInto('Use the selected backend');
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+  await waitFor(() => expect(requests.find(request => request.method === 'POST' && request.path.endsWith('/conversations'))?.body).toMatchObject({ provider: 'claude', model: 'sonnet', text: 'Use the selected backend' }));
 });

@@ -46,12 +46,21 @@ async fn closed_nonquiescent_automatic_install(work: &str) {
             };
             sqlx::query("UPDATE cards SET role=?,payload=? WHERE id=?")
                 .bind(role.as_db_str())
-                .bind(json!({"schemaVersion":1,"harness_profile":work}).to_string())
+                .bind(if role == CardRole::Assistant {
+                    json!({"schemaVersion":1,"harness_profile":work,"assistant_provider":"codex"})
+                } else {
+                    json!({"schemaVersion":1,"harness_profile":work})
+                }.to_string())
                 .bind(card.id.as_str())
                 .execute(boot.repo.pool())
                 .await
                 .unwrap();
-            sqlx::query("UPDATE worker_sessions SET contract='executor' WHERE id=?")
+            sqlx::query("UPDATE worker_sessions SET contract=? WHERE id=?")
+                .bind(if role == CardRole::Assistant {
+                    "assistant"
+                } else {
+                    "executor"
+                })
                 .bind(&id)
                 .execute(boot.repo.pool())
                 .await

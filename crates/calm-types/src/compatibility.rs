@@ -32,4 +32,5 @@
 // Revision 30: Planner run responses require the bound backend's manual_compact_supported.
 // A bundle that requires this field rejects older kernels' run responses.
 // Revision 31: required compact outcome and context-reading validity in planner/run.
-pub const REST_API_VERSION: &str = "31";
+// Revision 32: managed Assistant provider identity, wire and capability.
+pub const REST_API_VERSION: &str = "32";

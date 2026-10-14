@@ -279,12 +279,12 @@ impl ProviderAvailabilityCache {
         acp: &crate::acp_planner::config::AcpPlannerHost,
         codex: &SharedCodexAppServer,
     ) -> Vec<Checked> {
-        let (codex_checked, claude_checked, acp_checked) = tokio::join!(
-            self.get(&AgentProvider::Codex, freshness, claude, acp, codex),
-            self.get(&AgentProvider::Claude, freshness, claude, acp, codex),
-            self.get(&AgentProvider::OpenCode, freshness, claude, acp, codex),
-        );
-        vec![codex_checked, claude_checked, acp_checked]
+        futures::future::join_all(
+            crate::harness::backend::PlannerBackend::registered_providers().map(
+                |provider| async move { self.get(&provider, freshness, claude, acp, codex).await },
+            ),
+        )
+        .await
     }
 
     /// Fixtures only: see [`Slot::age_past_ttl_for_test`].

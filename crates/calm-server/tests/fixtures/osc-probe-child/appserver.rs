@@ -467,6 +467,15 @@ async fn serve_conn(
                 thread_release::unsubscribe(&mut write, &id, &req, &reads).await?;
             }
             "thread/start" | "thread/resume" => {
+                // One native start failure while keeping the loaded predecessor and daemon alive.
+                if method == "thread/start"
+                    && std::env::var("FAKE_CODEX_FAIL_THREAD_START_MARKER")
+                        .ok()
+                        .is_some_and(|path| std::fs::remove_file(path).is_ok())
+                {
+                    send_error(&mut write, &id, -32000, "forced thread/start failure").await?;
+                    continue;
+                }
                 if method == "thread/start" {
                     let scripted = reads.sock.with_extension("thread-start");
                     if scripted.exists() {

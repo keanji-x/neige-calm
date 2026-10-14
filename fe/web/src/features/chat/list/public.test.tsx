@@ -10,7 +10,7 @@ import { ChatList, type ChatListProps } from './public.tsx';
 afterEach(cleanup);
 
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
-  return {
+  return { provider: 'codex' as const,
     id: 'c1', trackId: 'w1', title: 'Assistant', kind: 'track-assistant',
     state: 'turn_pending', updatedAt: 1, lastTurnCompletedAt: null, ...overrides,
   };

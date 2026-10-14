@@ -94,7 +94,8 @@ impl Rig {
         );
         let daemon = SharedCodexAppServer::new_stub(repo.clone());
         let worker_session_id = new_id();
-        worker_session_row(&repo, &worker_session_id, &card_id).await;
+        let thread = uuid::Uuid::new_v4().to_string();
+        worker_session_row(&repo, &worker_session_id, &card_id, &thread).await;
         let (held_tx, held_rx) = mpsc::unbounded_channel();
         let mut rig = Self {
             dir,
@@ -109,7 +110,7 @@ impl Rig {
             ws,
             instructions: instructions.to_string(),
             worker_session_id,
-            thread: uuid::Uuid::new_v4().to_string(),
+            thread,
         };
         rig.session = Some(Arc::new(rig.open_session().await));
         rig
@@ -304,7 +305,7 @@ async fn planner_card(repo: &Arc<SqlxRepo>) -> (String, String) {
             kind: "codex".into(),
             sort: None,
             // Every Planner card is created with a permission mode (#2348).
-            payload: json!({"schemaVersion": 1, "planner_harness": true, "permission_mode": "never"}),
+            payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider":"claude", "permission_mode": "never"}),
         },
         CardRole::Planner,
         false,
@@ -316,9 +317,8 @@ async fn planner_card(repo: &Arc<SqlxRepo>) -> (String, String) {
     (card.id.to_string(), track.id.to_string())
 }
 
-/// A Planner worker-session row with no `agent_session_id`. It is spelled as the Codex kind: the
-/// `(claude, planner)` identity is PR3's, and the session reads only `agent_session_id`.
-async fn worker_session_row(repo: &Arc<SqlxRepo>, id: &str, card_id: &str) {
+/// A managed Claude Planner row, with native identity still unbound before its first spawn.
+async fn worker_session_row(repo: &Arc<SqlxRepo>, id: &str, card_id: &str, thread: &str) {
     let mut tx = repo.pool().begin().await.expect("tx");
     session_start_runtime_tx(
         &mut tx,
@@ -326,10 +326,10 @@ async fn worker_session_row(repo: &Arc<SqlxRepo>, id: &str, card_id: &str) {
             id: id.to_string(),
             card_id: card_id.to_string(),
             kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
+            agent_provider: Some(AgentProvider::Claude),
             status: WorkerSessionState::Idle,
             terminal_run_id: None,
-            thread_id: None,
+            thread_id: Some(thread.into()),
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,

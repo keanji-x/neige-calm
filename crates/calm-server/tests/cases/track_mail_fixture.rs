@@ -40,6 +40,7 @@ const BUDGET: Duration = Duration::from_secs(5);
 
 /// One Track and its Codex Planner.
 pub struct Planner {
+    pub provider: AgentProvider,
     pub track_id: TrackId,
     pub card_id: CardId,
     pub session_id: String,
@@ -60,7 +61,7 @@ impl Planner {
         ToolCallIdentity {
             card_id: self.card_id.to_string(),
             role: CardRole::Planner,
-            provider: AgentProvider::Codex,
+            provider: self.provider.clone(),
             session_id: self.session_id.clone(),
             track_id: Some(self.track_id.to_string()),
             area_id: area_id.to_string(),
@@ -207,7 +208,9 @@ impl World {
 
     /// A Track with a Planner card, its idle shared-planner session (MCP token minted) and a live harness.
     pub async fn add_planner(&self, area: &AreaId, title: &str) -> Planner {
-        let mut planner = self.add_planner_without_harness(area, title).await;
+        let mut planner = self
+            .add_planner_without_harness(area, title, AgentProvider::Codex)
+            .await;
         let harness = PlannerHarness::run(PlannerHarnessParams {
             worker_session_id: planner.session_id.clone(),
             track_id: planner.track_id.clone(),
@@ -229,7 +232,12 @@ impl World {
     }
 
     /// The same Planner with no harness running: a down Planner whose next start replays.
-    pub async fn add_planner_without_harness(&self, area: &AreaId, title: &str) -> Planner {
+    pub async fn add_planner_without_harness(
+        &self,
+        area: &AreaId,
+        title: &str,
+        provider: AgentProvider,
+    ) -> Planner {
         let track_id = self.add_track(area, title).await;
         let card = self
             .repo_dyn
@@ -238,7 +246,7 @@ impl World {
                 title: None,
                 kind: "codex".into(),
                 sort: None,
-                payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": "codex", "permission_mode": "never"}),
+                payload: json!({"schemaVersion": 1, "planner_harness": true, "planner_provider": provider, "permission_mode": "never"}),
             })
             .await
             .unwrap();
@@ -261,7 +269,7 @@ impl World {
                 id: session_id.clone(),
                 card_id: card.id.to_string(),
                 kind: WorkerSessionKind::SharedPlanner,
-                agent_provider: Some(AgentProvider::Codex),
+                agent_provider: Some(provider.clone()),
                 status: WorkerSessionState::Idle,
                 terminal_run_id: None,
                 thread_id: Some(thread_id.clone()),
@@ -280,6 +288,7 @@ impl World {
             .unwrap();
         tx.commit().await.unwrap();
         Planner {
+            provider,
             track_id,
             card_id: card.id,
             session_id,

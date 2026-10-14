@@ -197,6 +197,9 @@ pub(crate) async fn write_today_summary(
             headers,
             track_id.clone(),
             NewTrackConversationBody {
+                provider: crate::routes::track_conversations::AssistantProviderRequest::Explicit(
+                    crate::session_projection_repo::AgentProvider::Codex,
+                ),
                 side: None,
                 text: TODAY_SUMMARY_BOOTSTRAP_TEXT.to_string(),
                 model: None,

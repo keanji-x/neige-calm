@@ -197,21 +197,25 @@ pub(super) async fn runtimes_active_for_kind_from_pool(
 ) -> WorkerSessionProjectionResult<Vec<WorkerSessionProjection>> {
     let (provider, _mode, contract) = derive_session_identity(&kind);
     // A Planner row carries its own provider (`WorkerSessionInit::shared_planner`), so the
-    // Planner contract selects both backends.
-    let provider_sql = if kind == WorkerSessionKind::SharedPlanner {
-        "ws.provider IN (?1, 'claude', 'opencode')"
+    // managed contract selects every registered backend.
+    let provider_filter = if matches!(
+        kind,
+        WorkerSessionKind::SharedPlanner | WorkerSessionKind::ManagedAssistant
+    ) {
+        None
     } else {
-        "ws.provider = ?1"
+        Some(provider.as_db_str())
     };
     let sql = format!(
         r#"{WS_BACKED_CARD_RUNTIME_SELECT}
-           WHERE {provider_sql}
+           WHERE (?1 IS NULL OR ws.provider = ?1)
+             AND (?1 IS NOT NULL OR ws.provider != 'terminal')
              AND ws.contract = ?2
              AND ws.state IN ('starting', 'running', 'idle', 'turn_pending')
            ORDER BY ws.created_at_ms ASC, c.id ASC"#
     );
     let rows = sqlx::query(&sql)
-        .bind(provider.as_db_str())
+        .bind(provider_filter)
         .bind(contract.as_db_str())
         .fetch_all(pool)
         .await?;
@@ -835,31 +839,14 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
                            AND c.role = 'worker'
                            AND c.kind = 'codex'
                            AND json_extract(c.payload, '$.harness_profile') = 'plain_chat')
-                       -- #1189 — a track assistant. Structurally a sibling of the
-                       -- clause above (same executor contract, its own role +
-                       -- marker pair) and NOT covered by it: an assistant
-                       -- matches neither `contract = 'planner'` nor
-                       -- `role = 'worker'` nor the `plain_chat` marker, so
-                       -- without this arm a kernel restart mid-turn leaves the
-                       -- `worker_sessions` row running with no harness in
-                       -- memory: `GET /planner/run` answers dormant, and the reply
-                       -- to the in-flight turn is lost for good because no run
-                       -- loop is behind it any more. The conversation itself is
-                       -- not permanently stranded — the next `POST /planner/input`
-                       -- goes through `ensure_planner_session`, which does not
-                       -- consult this selector and lazily rebuilds the harness —
-                       -- so the damage is one silently dropped turn plus a
-                       -- dormant-looking card until the user pokes it again.
-                       -- The literals below are pinned from the Rust side by
-                       -- `planner_harness_start_adapter::tests::
-                       -- boot_recovery_sql_literals_track_the_minted_card_shape`.
-                       OR (ws.contract = 'executor'
-                           AND c.role = 'assistant'
-                           AND c.kind = 'codex'
-                           AND json_extract(c.payload, '$.harness_profile') = 'assistant')
+
                  ))
                  -- #1791 — a Claude Planner: only the Planner contract on a Planner card.
-                 OR (ws.provider IN ('claude','opencode') AND ws.contract = 'planner' AND c.role = 'planner'))
+                 OR (ws.provider IN ('claude','opencode') AND ws.contract = 'planner' AND c.role = 'planner')
+                 OR (ws.contract = 'assistant' AND c.role = 'assistant' AND c.kind = 'codex'
+                     AND ws.mode = 'resumable'
+                     AND json_extract(c.payload, '$.harness_profile') = 'assistant'
+                     AND json_extract(c.payload, '$.assistant_provider') = ws.provider))
                  AND ws.state IN ('starting','running','idle','turn_pending')
                  AND ws.thread_id IS NOT NULL
                  AND ws.handle_state_json IS NOT NULL

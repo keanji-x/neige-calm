@@ -44,6 +44,7 @@ export const RECHECK_TEXT: ProbeText = Object.freeze({ answered: 'The recheck fa
  * Whether track create refuses `provider` while it is not `ready` (#1817), and so whether a picker may
  * offer it then. Claude: refused with the reason. Codex: never refused — its create answers 201 during a
  * daemon outage (#293), and the Planner runs once Codex is back.
+ * Total over AgentProvider: adding a backend must explicitly declare its Planner create policy.
  */
 export const CREATE_REFUSED_WHEN_UNAVAILABLE: Readonly<Record<AgentProvider, boolean>> = Object.freeze({
   codex: false,
@@ -91,4 +92,35 @@ export function authenticationRetryFailureText(error: unknown): string {
   if (writeFailureOf(error) instanceof NotSentError) return 'Not sent. Reconnect before retrying queued messages.';
   return writeClassOf(error, AUTHENTICATION_RETRY_FAILURES) === 'refused'
     ? AUTHENTICATION_RETRY_TEXT.refused : AUTHENTICATION_RETRY_TEXT.unknown;
+}
+
+/** Backend-owned managed conversation capabilities; availability is the same cached check. */
+export const managedProviderAvailabilitySchema = z.object({
+  availability: providerAvailabilitySchema,
+  capabilities: z.object({
+    managed_conversation: z.boolean(),
+    images: z.boolean(),
+    manual_compact: z.boolean(),
+    history_replacement: z.boolean(),
+    requires_ready_availability: z.boolean(),
+  }),
+});
+export type ManagedProviderAvailability = z.infer<typeof managedProviderAvailabilitySchema>;
+
+/** Provider menus consume this response instead of maintaining an Assistant provider list. */
+export function managedProvidersOperation(recheck: boolean): ApiOperation<ManagedProviderAvailability[]> {
+  return {
+    method: 'GET',
+    path: recheck ? '/api/agent-providers/managed?refresh=true' : '/api/agent-providers/managed',
+    responseSchema: z.array(managedProviderAvailabilitySchema),
+  };
+}
+
+/** A picker can offer only a declared managed backend. This does not describe Planner create admission. */
+export function managedProviderProblem(answers: readonly ManagedProviderAvailability[] | undefined, provider: AgentProvider): string | null {
+  const answer = answers?.find(({ availability }) => availability.provider === provider);
+  if (answer === undefined) return 'Managed provider capabilities are unavailable. Reconnect before sending.';
+  if (!answer.capabilities.managed_conversation) return 'This provider does not support managed conversations.';
+  return !answer.capabilities.requires_ready_availability || answer.availability.status === 'ready'
+    ? null : answer.availability.reason;
 }

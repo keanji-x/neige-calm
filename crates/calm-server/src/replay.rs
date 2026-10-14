@@ -248,9 +248,7 @@ pub async fn force_planner_phase(
     use crate::harness::{HarnessPhaseTag, HarnessSnapshot, is_harness_snapshot_value};
     use crate::model::{CardRole, new_id, now_ms};
     use crate::per_card_lock::lock_card;
-    use crate::session_projection_repo::{
-        AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
-    };
+    use crate::session_projection_repo::{WorkerSessionInit, WorkerSessionState};
     use crate::state::RouteState;
 
     // `wedged` is not forceable: `persist_snapshot` would write `Failed`, which the read path filters, so the next force would mint a second runtime.
@@ -276,6 +274,7 @@ pub async fn force_planner_phase(
             "card {card_id} is not a planner codex card",
         )));
     }
+    let binding = crate::harness::profile::checked_card_binding(repo.as_ref(), &card, role).await?;
     let track = repo
         .track_get(card.track_id.as_str())
         .await?
@@ -310,13 +309,8 @@ pub async fn force_planner_phase(
                         WorkerSessionInit {
                             id: runtime_id_for_tx,
                             card_id: card_id_for_tx,
-                            // Only a real planner card gets `SharedPlanner`, which makes the session the track's root authority.
-                            kind: if role == CardRole::Planner {
-                                WorkerSessionKind::SharedPlanner
-                            } else {
-                                WorkerSessionKind::CodexCard
-                            },
-                            agent_provider: Some(AgentProvider::Codex),
+                            kind: binding.profile.session_kind(),
+                            agent_provider: Some(binding.provider),
                             // `Idle`, not `Starting`: a `starting` row trips `ensure_planner_session`'s 503 guard. The first `persist_snapshot` overwrites status anyway.
                             status: WorkerSessionState::Idle,
                             terminal_run_id: None,

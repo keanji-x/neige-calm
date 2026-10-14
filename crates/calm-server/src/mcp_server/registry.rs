@@ -34,13 +34,11 @@ impl CardIdentity {
     /// The `ActorId` the role gate will see; MCP writes are keyed by worker session, not card id.
     /// `ReportCard` is mapped by provider as a total-function fallback — the role gate refuses it.
     pub fn to_actor_id(&self) -> ActorId {
-        let session_id = WorkerSessionId::from(self.session_id.clone());
-        match self.role {
-            CardRole::Planner => ActorId::AiPlannerSession(session_id),
-            CardRole::Worker | CardRole::ReportCard | CardRole::Assistant => {
-                provider_session_actor(&self.provider, session_id)
-            }
-        }
+        ActorId::for_agent_session(
+            self.role,
+            &self.provider,
+            WorkerSessionId::from(self.session_id.clone()),
+        )
     }
 
     pub fn to_principal(&self) -> Option<Principal> {
@@ -78,13 +76,11 @@ pub struct ToolCallIdentity {
 impl ToolCallIdentity {
     /// The `ActorId` the role gate will see; MCP writes are keyed by worker session, not card id.
     pub fn to_actor_id(&self) -> ActorId {
-        let session_id = WorkerSessionId::from(self.session_id.clone());
-        match self.role {
-            CardRole::Planner => ActorId::AiPlannerSession(session_id),
-            CardRole::Worker | CardRole::ReportCard | CardRole::Assistant => {
-                provider_session_actor(&self.provider, session_id)
-            }
-        }
+        ActorId::for_agent_session(
+            self.role,
+            &self.provider,
+            WorkerSessionId::from(self.session_id.clone()),
+        )
     }
 
     pub fn to_principal(&self) -> Option<Principal> {
@@ -114,15 +110,6 @@ impl ToolCallIdentity {
             .decide_recorder(tx, &TrackId::from(track.to_string()))
             .await?;
         Ok(matches!(decision, GateDecision::Allow))
-    }
-}
-
-fn provider_session_actor(provider: &AgentProvider, session_id: WorkerSessionId) -> ActorId {
-    match provider {
-        // The released identity contract permits OpenCode only for managed Planner sessions.
-        AgentProvider::OpenCode => ActorId::AiPlannerSession(session_id),
-        AgentProvider::Codex => ActorId::AiCodexSession(session_id),
-        AgentProvider::Claude => ActorId::AiClaudeSession(session_id),
     }
 }
 
@@ -591,6 +578,21 @@ mod tests {
                 .to_actor_id(),
             ActorId::AiClaudeSession(WorkerSessionId::from("session-1"))
         );
+    }
+
+    #[test]
+    fn assistant_provider_registered_backends_share_one_managed_actor() {
+        for provider in crate::harness::backend::PlannerBackend::registered_providers() {
+            assert_eq!(
+                card_identity_with_role_and_provider(CardRole::Assistant, provider.clone())
+                    .to_actor_id(),
+                ActorId::AiManagedSession(WorkerSessionId::from("session-1"))
+            );
+            assert_eq!(
+                identity_with_role_and_provider(CardRole::Assistant, provider).to_actor_id(),
+                ActorId::AiManagedSession(WorkerSessionId::from("session-1"))
+            );
+        }
     }
 
     #[test]

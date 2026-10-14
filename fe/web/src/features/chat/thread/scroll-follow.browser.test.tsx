@@ -13,7 +13,7 @@ declare module 'vitest/browser' {
   interface BrowserCommands { wheelScroll(selector: string, deltaY: number): Promise<void> }
 }
 
-const conversation: Conversation = { id: 'scroll', trackId: 'track', title: 'Reading', kind: 'codex', state: 'idle', updatedAt: 0 };
+const conversation: Conversation = { provider: 'codex' as const, id: 'scroll', trackId: 'track', title: 'Reading', kind: 'codex', state: 'idle', updatedAt: 0 };
 const words = 'A reply with enough lines to keep the transcript taller than its pane. ';
 const history: readonly TranscriptEntry[] = Array.from({ length: 8 }).flatMap((_, index) => [
   { id: `you-${index}`, author: 'you' as const, text: `Question ${index}`, atMs: index * 2000 },

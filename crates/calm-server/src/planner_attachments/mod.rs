@@ -73,6 +73,24 @@ pub fn attachment_root(workspace: &TrackWorkspace, workspace_root: &Path) -> Res
     Ok(path.join(NEIGE_DIR).join("attachments"))
 }
 
+/// One typed admission for uploads, new image inputs and run capability reporting.
+/// Historical attachment reads keep their existing workspace fence.
+pub(crate) fn image_input_root(
+    provider: &crate::session_projection_repo::AgentProvider,
+    workspace: &TrackWorkspace,
+    workspace_root: &Path,
+) -> Result<PathBuf> {
+    if !crate::harness::PlannerBackend::metadata(provider)
+        .capabilities
+        .images
+    {
+        return Err(CalmError::BadRequest(
+            "This conversation backend does not support images".into(),
+        ));
+    }
+    attachment_root(workspace, workspace_root)
+}
+
 const STAGING: &str = "staging";
 const BOUND: &str = "bound";
 

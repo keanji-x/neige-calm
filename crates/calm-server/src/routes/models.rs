@@ -209,50 +209,59 @@ pub(crate) async fn list_models(
         Some(card_id) => Some(resolve_card_workspace(&s, card_id).await?),
         None => None,
     };
-    if q.provider == Some(AgentProvider::OpenCode)
-        || card
-            .as_ref()
-            .is_some_and(|card| card.provider == AgentProvider::OpenCode)
+    if let (Some(card), Some(requested)) = (card.as_ref(), q.provider.as_ref())
+        && &card.provider != requested
     {
-        let cached = q
-            .card_id
-            .as_deref()
-            .and_then(|id| s.acp_planner.configuration(id));
-        let configuration = match cached {
-            Some(configuration) => Some(configuration),
-            None => {
-                s.acp_planner
-                    .discover_configuration(
-                        &AgentProvider::OpenCode,
-                        card.as_ref()
-                            .map(|card| std::path::Path::new(&card.workspace)),
-                    )
-                    .await
-            }
-        };
-        return Ok(Json(acp_catalog(configuration)));
+        return Err(CalmError::BadRequest(
+            "The catalog provider does not match this conversation".into(),
+        ));
     }
-    // #1822: a Claude Planner's catalog is the CLI's own list, cached by its availability
-    // check, and Codex is not asked. A Claude that is not ready has no list to offer.
-    if q.provider == Some(AgentProvider::Claude)
-        || card
-            .as_ref()
-            .is_some_and(|card| card.provider == AgentProvider::Claude)
-    {
-        let checked = s
-            .provider_availability
-            .claude(crate::agent_providers::Freshness::Cached, &s.claude_planner)
-            .await;
-        return Ok(Json(match checked.catalog() {
-            Ok(catalog) => claude_catalog(&catalog),
-            Err(_) => ModelsResponse {
-                models: Vec::new(),
-                default: ModelDefaults::default(),
-                default_source: DefaultSource::Unknown,
-                source: ModelSource::Unavailable,
-                fetched_at_ms: None,
-            },
-        }));
+    // A card's immutable binding owns its catalog; a query cannot override it.
+    let provider = card
+        .as_ref()
+        .map(|card| card.provider.clone())
+        .or(q.provider.clone())
+        .unwrap_or(AgentProvider::Codex);
+    let catalog = crate::harness::backend::PlannerBackend::metadata(&provider).catalog;
+    match catalog {
+        crate::harness::backend_metadata::CatalogProtocol::Acp => {
+            let cached = q
+                .card_id
+                .as_deref()
+                .and_then(|id| s.acp_planner.configuration(id));
+            let configuration = match cached {
+                Some(configuration) => Some(configuration),
+                None => {
+                    s.acp_planner
+                        .discover_configuration(
+                            &provider,
+                            card.as_ref()
+                                .map(|card| std::path::Path::new(&card.workspace)),
+                        )
+                        .await
+                }
+            };
+            return Ok(Json(acp_catalog(configuration)));
+        }
+        // #1822: a Claude Planner's catalog is the CLI's own list, cached by its availability
+        // check, and Codex is not asked. A Claude that is not ready has no list to offer.
+        crate::harness::backend_metadata::CatalogProtocol::Claude => {
+            let checked = s
+                .provider_availability
+                .claude(crate::agent_providers::Freshness::Cached, &s.claude_planner)
+                .await;
+            return Ok(Json(match checked.catalog() {
+                Ok(catalog) => claude_catalog(&catalog),
+                Err(_) => ModelsResponse {
+                    models: Vec::new(),
+                    default: ModelDefaults::default(),
+                    default_source: DefaultSource::Unknown,
+                    source: ModelSource::Unavailable,
+                    fetched_at_ms: None,
+                },
+            }));
+        }
+        crate::harness::backend_metadata::CatalogProtocol::Codex => {}
     }
     let cwd = card.map(|card| card.workspace);
     let daemon = &codex.shared_codex_appserver;
@@ -422,11 +431,23 @@ async fn resolve_card_workspace(s: &RouteState, card_id: &str) -> Result<Resolve
         .card_get(card_id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-    let provider = s
-        .write
-        .verify_role(&card.id)
-        .and_then(|role| crate::harness::profile::PlannerBinding::from_card(&card, role))
-        .map_or(AgentProvider::Codex, |binding| binding.provider);
+    let role = s.write.verify_role(&card.id);
+    let provider = match role {
+        Some(role)
+            if crate::harness::profile::HarnessProfile::from_shape(
+                &card.kind,
+                role,
+                &card.payload,
+            )
+            .is_some()
+                || role == crate::model::CardRole::Assistant =>
+        {
+            crate::harness::profile::checked_card_binding(s.repo.as_ref(), &card, role)
+                .await?
+                .provider
+        }
+        _ => AgentProvider::Codex,
+    };
     let track = s
         .repo
         .track_get(card.track_id.as_str())

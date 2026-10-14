@@ -76,6 +76,19 @@ pub(crate) async fn ensure_planner_session(
     PlannerHarness,
     Option<CardStartFence>,
 )> {
+    if s.repo.card_role_get(card_id.as_str()).await? == Some(crate::model::CardRole::Assistant) {
+        let card = s
+            .repo
+            .card_get(card_id.as_str())
+            .await?
+            .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
+        crate::harness::profile::checked_card_binding(
+            s.repo.as_ref(),
+            &card,
+            crate::model::CardRole::Assistant,
+        )
+        .await?;
+    }
     let human_send = actor.as_str() == "user";
     let fence = CardStartFence::lock(
         &s.planner_recovery_locks,

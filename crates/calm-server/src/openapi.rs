@@ -197,6 +197,7 @@ use utoipa::{Modify, OpenApi, ToSchema};
         crate::routes::plugins::plugin_tool_call,
         crate::routes::models::list_models,
         crate::routes::agent_providers::list_agent_providers,
+        crate::routes::agent_providers::list_managed_providers,
         crate::routes::agent_providers::retry_codex_authentication,
         crate::planner_attachments::routes::upload_planner_attachment,
         crate::planner_attachments::routes::read_planner_attachment,

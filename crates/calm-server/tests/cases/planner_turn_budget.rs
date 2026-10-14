@@ -310,13 +310,20 @@ async fn planner_turn_budget_only_real_planner_role_and_profile() {
         sqlx::query("UPDATE cards SET role = ?1, payload = ?2 WHERE id = ?3")
             .bind(role)
             .bind(
-                json!({"schemaVersion":1,"harness_profile":marker,"planner_provider":"codex"})
+                json!({"schemaVersion":1,"harness_profile":marker,"planner_provider":"codex","assistant_provider":"codex"})
                     .to_string(),
             )
             .bind(boot.planner_card.id.as_str())
             .execute(boot.repo.pool())
             .await
             .unwrap();
+        if role == "assistant" {
+            sqlx::query("UPDATE worker_sessions SET contract='assistant' WHERE id=?")
+                .bind(&boot.worker_session_id)
+                .execute(boot.repo.pool())
+                .await
+                .unwrap();
+        }
         boot.repo
             .settings_upsert("planner_max_turn_duration_minutes", "broken")
             .await

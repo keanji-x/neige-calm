@@ -9,7 +9,7 @@ import { useState } from '../../../ui/state/public.ts';
 import type { Conversation, TranscriptEntry } from '../../../../../core/domain/conversation.ts';
 
 const TEXT = 'Review the animation system and explain how editing can feel more natural. Keep the message readable and the rest of the conversation still. '.repeat(3);
-const conversation: Conversation = Object.freeze({ id: 'edit', trackId: 'track', title: null, kind: 'codex', state: 'idle', updatedAt: 1 });
+const conversation: Conversation = Object.freeze({ provider: 'codex' as const, id: 'edit', trackId: 'track', title: null, kind: 'codex', state: 'idle', updatedAt: 1 });
 function Scene({ onUpdate = () => {}, message = TEXT }: { onUpdate?: () => void; message?: string }) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState('');

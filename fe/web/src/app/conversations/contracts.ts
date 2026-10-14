@@ -54,6 +54,7 @@ export type ConversationStore = Readonly<{
     replaces: ReplacedTurn | null) => Promise<void> | null;
   /** Whether this card's track can take image attachments at all. */
   attachmentsSupported: boolean;
+  historyReplacementSupported: boolean;
   /** How full this conversation's context is; `null` when the harness has never said. */
   contextUsage: PlannerRunTokenUsage | null;
   /** Where the running turn's clock starts, anchored when the run response arrived; `null` when no turn is running. */
@@ -100,7 +101,7 @@ export type ConversationRouteIntent = Readonly<{
  */
 export type PlannerConversationScope = Readonly<{
   id: string;
-  /** The conversation's backend: `claude` only for a Claude Planner card (#1791). */
+  /** The backend declared by the summary or Planner card, including dormant cards. */
   provider: AgentProvider;
   title?: string;
   cardId: string;
@@ -113,6 +114,6 @@ export type PlannerConversationScope = Readonly<{
 /** First-message creation, its deterministic identity and its recovery read. */
 export type ConversationCreationSource = Readonly<{
   derivedCardId: (idempotencyKey: string) => string;
-  create: (text: string, idempotencyKey: string, selection: ModelSelection, side?: SideConversation) => Promise<Conversation>;
+  create: (text: string, idempotencyKey: string, provider: AgentProvider, selection: ModelSelection, side?: SideConversation) => Promise<Conversation>;
   refresh: () => Promise<readonly Conversation[]>;
 }>;

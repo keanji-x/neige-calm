@@ -233,7 +233,20 @@ async fn planner_timeout_assistant_still_receives_previous_timeout() {
     let boot = boot_with_issuance(idle_snapshot(vec![]), Issuance::Live).await;
     let turn = request(&boot).await;
     let row = finish(&boot, &turn, "interrupted").await;
-    sqlx::query("UPDATE cards SET role='assistant', payload=json_set(payload,'$.harness_profile','assistant') WHERE id=?1").bind(boot.planner_card.id.as_str()).execute(boot.repo.pool()).await.unwrap();
+    sqlx::query(concat!(
+        "UPDATE cards SET role='assistant', ",
+        "payload=json_set(payload,'$.harness_profile','assistant',",
+        "'$.assistant_provider','codex') WHERE id=?1"
+    ))
+    .bind(boot.planner_card.id.as_str())
+    .execute(boot.repo.pool())
+    .await
+    .unwrap();
+    sqlx::query("UPDATE worker_sessions SET contract='assistant' WHERE id=?")
+        .bind(&boot.worker_session_id)
+        .execute(boot.repo.pool())
+        .await
+        .unwrap();
     // The generic ingress exercises the real start; the Planner-only REST route refuses Assistant.
     boot.harness
         .observe_user_message_durable(

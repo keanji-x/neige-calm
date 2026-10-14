@@ -147,15 +147,15 @@ impl ProviderAdapter for PlannerHarnessShutdownAdapter {
             .session_projection_by_id(&worker_session_id)
             .await?
         {
-            if runtime.kind == WorkerSessionKind::SharedPlanner
-                && runtime.agent_provider == Some(AgentProvider::OpenCode)
-            {
+            let managed = matches!(
+                runtime.kind,
+                WorkerSessionKind::SharedPlanner | WorkerSessionKind::ManagedAssistant
+            );
+            if managed && runtime.agent_provider == Some(AgentProvider::OpenCode) {
                 crate::planner_process::stop(&self.acp_host.instance, &worker_session_id).await?;
                 return Ok(SpawnOutcome::Ready(SpawnHandle::NoOp));
             }
-            if runtime.kind == WorkerSessionKind::SharedPlanner
-                && runtime.agent_provider == Some(AgentProvider::Claude)
-            {
+            if managed && runtime.agent_provider == Some(AgentProvider::Claude) {
                 self.stop_claude_planner(&worker_session_id).await;
                 return Ok(SpawnOutcome::Ready(SpawnHandle::NoOp));
             }

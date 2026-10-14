@@ -1,5 +1,11 @@
 use std::path::Path;
 
+mod compensation;
+pub(crate) use compensation::{
+    CodexAssistantCredential, capture_codex_assistant_credential_tx,
+    restore_codex_assistant_credential_tx,
+};
+
 use sqlx::{Sqlite, Transaction};
 
 use crate::db::sqlite::{
@@ -161,6 +167,16 @@ pub async fn mint_and_persist_managed_planner_token(
     card_id: &str,
     worker_session_id: &str,
 ) -> Result<String> {
+    let current: Option<String> = sqlx::query_scalar("SELECT session_id FROM cards WHERE id=?1")
+        .bind(card_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .flatten();
+    if current.as_deref() != Some(worker_session_id) {
+        return Err(crate::error::CalmError::Conflict(
+            "Managed credential carrier changed".into(),
+        ));
+    }
     let (raw, hashed) = set_card_mcp_token(tx, card_id).await?;
     session_mcp_token_set_if_active_tx(tx, worker_session_id, &hashed).await?;
     Ok(raw)

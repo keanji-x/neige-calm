@@ -10,7 +10,7 @@ import type { Conversation, ConversationActivity, TranscriptEntry } from '../../
 afterEach(cleanup);
 
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
-  return {
+  return { provider: 'codex' as const,
     id: 'c1', trackId: 'w1', trackTitle: 'Tools', title: null, kind: 'codex', state: 'idle', updatedAt: 1, turns: 0,
     ...overrides,
   };

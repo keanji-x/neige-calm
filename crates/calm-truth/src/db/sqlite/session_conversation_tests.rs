@@ -238,3 +238,468 @@ async fn only_completed_failed_starts_or_nothing_at_all_leave_no_conversation() 
         );
     }
 }
+
+#[tokio::test]
+async fn assistant_provider_persistence_managed_identity_never_inherits_token_or_repoints_root() {
+    use crate::db::sqlite::{
+        card_mcp_token_set_tx, session_start_runtime_tx, session_supersede_and_start_tx,
+    };
+    use crate::session_projection_repo::{AgentProvider, WorkerSessionInit};
+    use calm_types::worker::{SessionMode, WorkerContract, WorkerSessionId, WorkerSessionState};
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let (card_id, track_id) = card(&repo).await;
+    let planner = "planner-card".to_owned();
+    for provider in [
+        AgentProvider::Codex,
+        AgentProvider::Claude,
+        AgentProvider::OpenCode,
+    ] {
+        let mut tx = repo.pool().begin().await.unwrap();
+        sqlx::query("UPDATE cards SET role='assistant',payload=?2 WHERE id=?1")
+            .bind(&card_id).bind(json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":provider}).to_string())
+            .execute(&mut *tx).await.unwrap();
+        crate::db::sqlite::card_create_with_id_tx(&mut tx, planner.clone(), NewCard {
+            track_id:track_id.clone().into(),title:None,kind:"codex".into(),sort:None,
+            payload:json!({"schemaVersion":1,"planner_harness":true,"planner_provider":"codex"}),
+        },crate::model::CardRole::Planner,false,repo.card_role_cache()).await.unwrap();
+        // Seed the Track's Planner root before the Assistant start under test.
+        let root = format!("root-{}", provider.wire_name());
+        crate::db::sqlite::session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit::shared_planner(
+                root.clone(),
+                planner.clone(),
+                AgentProvider::Codex,
+                WorkerSessionState::Idle,
+                None,
+                json!({}),
+                10,
+            ),
+        )
+        .await
+        .unwrap();
+        sqlx::query("UPDATE tracks SET root_session_id=?2 WHERE id=?1")
+            .bind(&track_id)
+            .bind(&root)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        card_mcp_token_set_tx(&mut tx, &card_id, "predecessor-hash")
+            .await
+            .unwrap();
+        let id = format!("assistant-{}", provider.wire_name());
+        let init = WorkerSessionInit::managed_assistant(
+            id.clone(),
+            card_id.clone(),
+            provider.clone(),
+            WorkerSessionState::Starting,
+            None,
+            json!({"pending_queue":[]}),
+            20,
+        );
+        if let Some(old) =
+            crate::db::sqlite::session_projection_active_for_card_tx(&mut tx, &card_id)
+                .await
+                .unwrap()
+        {
+            session_supersede_and_start_tx(&mut tx, &old.id, init)
+                .await
+                .unwrap();
+        } else {
+            session_start_runtime_tx(&mut tx, init).await.unwrap();
+        }
+        let live = crate::db::sqlite::session_get_tx(&mut tx, &WorkerSessionId(id.clone()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(live.contract, WorkerContract::Assistant);
+        assert_eq!(live.mode, SessionMode::Resumable);
+        assert_eq!(live.provider.as_db_str(), provider.wire_name());
+        assert!(
+            live.mcp_token_hash.is_none(),
+            "a managed Assistant must not inherit card credentials"
+        );
+        let current_root: Option<String> =
+            sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id=?1")
+                .bind(&track_id)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        assert_eq!(
+            current_root.as_deref(),
+            Some(root.as_str()),
+            "Assistant must never become root"
+        );
+        let projected = crate::db::sqlite::session_projection_by_id_tx(&mut tx, &id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            projected.kind,
+            crate::session_projection_repo::WorkerSessionKind::ManagedAssistant
+        );
+        assert_eq!(projected.agent_provider, Some(provider.clone()));
+        crate::db::sqlite::session_mcp_token_set_if_active_tx(&mut tx, &id, "current-hash")
+            .await
+            .unwrap();
+        let successor = format!("{id}-successor");
+        session_supersede_and_start_tx(
+            &mut tx,
+            &id,
+            WorkerSessionInit::managed_assistant(
+                successor.clone(),
+                card_id.clone(),
+                provider,
+                WorkerSessionState::Starting,
+                None,
+                json!({}),
+                30,
+            ),
+        )
+        .await
+        .unwrap();
+        let old = crate::db::sqlite::session_get_tx(&mut tx, &WorkerSessionId(id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            old.mcp_token_hash.is_none(),
+            "supersede revokes the old managed hash"
+        );
+        let next = crate::db::sqlite::session_get_tx(&mut tx, &WorkerSessionId(successor.clone()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(next.mcp_token_hash.is_none(), "replacement never inherits");
+        crate::db::sqlite::session_mcp_token_set_if_active_tx(
+            &mut tx,
+            &successor,
+            "successor-hash",
+        )
+        .await
+        .unwrap();
+        crate::db::sqlite::session_fail_if_active_runtime_tx(&mut tx, &successor)
+            .await
+            .unwrap();
+        let failed = crate::db::sqlite::session_get_tx(&mut tx, &WorkerSessionId(successor))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            failed.mcp_token_hash.is_none(),
+            "terminal failure revokes the managed hash"
+        );
+        tx.rollback().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn assistant_provider_managed_actor_uses_live_binding_and_has_no_planner_authority() {
+    use crate::db::sqlite::{append_decision_event_in_tx, session_start_runtime_tx};
+    use crate::event::{EditAuthor, Event, EventScope};
+    use crate::ids::ActorId;
+    use crate::session_projection_repo::{AgentProvider, WorkerSessionInit};
+    use calm_types::worker::WorkerSessionState;
+    for provider in [
+        AgentProvider::Codex,
+        AgentProvider::Claude,
+        AgentProvider::OpenCode,
+    ] {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let (assistant, track) = card(&repo).await;
+        let area: String = sqlx::query_scalar("SELECT area_id FROM tracks WHERE id=?1")
+            .bind(&track)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+        let mut tx = repo.pool().begin().await.unwrap();
+        sqlx::query("UPDATE cards SET role='assistant',payload=?2 WHERE id=?1").bind(&assistant)
+        .bind(json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":provider}).to_string()).execute(&mut *tx).await.unwrap();
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit::managed_assistant(
+                "acp-assistant".into(),
+                assistant.clone(),
+                provider.clone(),
+                WorkerSessionState::Idle,
+                None,
+                json!({}),
+                1,
+            ),
+        )
+        .await
+        .unwrap();
+        let report = "report";
+        crate::db::sqlite::card_create_with_id_tx(
+            &mut tx,
+            report.into(),
+            NewCard {
+                track_id: track.clone().into(),
+                title: None,
+                kind: "track-report".into(),
+                sort: None,
+                payload: serde_json::to_value(crate::track_report::TrackReportPayload::initial())
+                    .unwrap(),
+            },
+            crate::model::CardRole::ReportCard,
+            false,
+            repo.card_role_cache(),
+        )
+        .await
+        .unwrap();
+        let scope = EventScope::Card {
+            card: report.into(),
+            track: track.clone().into(),
+            area: area.into(),
+        };
+        let event = Event::TrackReportEdited {
+            track_id: track.clone().into(),
+            card_id: report.into(),
+            author: EditAuthor::Assistant,
+            author_plugin_id: None,
+            edit_id: "edit".into(),
+            summary_before: String::new(),
+            summary_after: String::new(),
+            body_before: String::new(),
+            body_after: "prose".into(),
+            agent_message: None,
+        };
+        let actor = ActorId::AiManagedSession("acp-assistant".into());
+        append_decision_event_in_tx(&mut tx, &actor, &scope, None, &event)
+            .await
+            .unwrap();
+        assert!(
+            append_decision_event_in_tx(
+                &mut tx,
+                &ActorId::AiPlannerSession("acp-assistant".into()),
+                &scope,
+                None,
+                &event
+            )
+            .await
+            .is_err()
+        );
+        for borrowed in [
+            ActorId::AiCodexSession("acp-assistant".into()),
+            ActorId::AiClaudeSession("acp-assistant".into()),
+        ] {
+            assert!(
+                append_decision_event_in_tx(&mut tx, &borrowed, &scope, None, &event)
+                    .await
+                    .is_err(),
+                "{borrowed:?}"
+            );
+        }
+        let other_provider = if provider == AgentProvider::Claude {
+            "codex"
+        } else {
+            "claude"
+        };
+        let mismatch = format!(
+            "UPDATE cards SET payload=json_set(payload,'$.assistant_provider','{other_provider}') WHERE id=?1"
+        );
+        let cross_track = EventScope::Card {
+            card: report.into(),
+            track: "another-track".into(),
+            area: "another-area".into(),
+        };
+        assert!(
+            append_decision_event_in_tx(&mut tx, &actor, &cross_track, None, &event)
+                .await
+                .is_err()
+        );
+        for damage in [
+            "UPDATE cards SET session_id=NULL WHERE id=?1",
+            mismatch.as_str(),
+            "UPDATE worker_sessions SET card_id=NULL WHERE id=(SELECT session_id FROM cards WHERE id=?1)",
+            "UPDATE worker_sessions SET contract='planner' WHERE id=(SELECT session_id FROM cards WHERE id=?1)",
+            "UPDATE cards SET role='planner' WHERE id=?1",
+        ] {
+            sqlx::query("SAVEPOINT invalid_identity")
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            sqlx::query(damage)
+                .bind(&assistant)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            assert!(
+                append_decision_event_in_tx(&mut tx, &actor, &scope, None, &event)
+                    .await
+                    .is_err(),
+                "{damage}"
+            );
+            sqlx::query("ROLLBACK TO invalid_identity")
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            sqlx::query("RELEASE invalid_identity")
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+        }
+        sqlx::query("UPDATE worker_sessions SET state='superseded' WHERE id='acp-assistant'")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        assert!(
+            append_decision_event_in_tx(&mut tx, &actor, &scope, None, &event)
+                .await
+                .is_err()
+        );
+        tx.rollback().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn assistant_provider_projection_preserves_shared_codex_without_mislabeling_native_backends()
+{
+    use crate::db::RepoRead;
+    use crate::session_projection_repo::{AgentProvider, WorkerSessionInit, WorkerSessionState};
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    for provider in [
+        AgentProvider::Codex,
+        AgentProvider::Claude,
+        AgentProvider::OpenCode,
+    ] {
+        let (_, track) = card(&repo).await;
+        let id = format!("assistant-{}", provider.wire_name());
+        let thread = format!("thread-{}", provider.wire_name());
+        let mut tx = repo.pool().begin().await.unwrap();
+        crate::db::sqlite::card_create_with_id_tx(&mut tx,id.clone(),NewCard {
+            track_id:track.into(),title:None,kind:"codex".into(),sort:None,
+            payload:json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":provider}),
+        },crate::model::CardRole::Assistant,false,repo.card_role_cache()).await.unwrap();
+        crate::db::sqlite::session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit::managed_assistant(
+                format!("session-{id}"),
+                id.clone(),
+                provider.clone(),
+                WorkerSessionState::Running,
+                Some(thread.clone()),
+                json!({}),
+                1,
+            ),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let mut card = repo.card_get(&id).await.unwrap().unwrap();
+        crate::session_projection_lookup::project_runtime_into_card_payload(&repo, &mut card)
+            .await
+            .unwrap();
+        let projection=crate::session_projection_repo::WorkerSessionProjectionRepo::session_projection_active_for_card(&repo,&id).await.unwrap().unwrap();
+        assert_eq!(
+            card.runtime.as_ref().unwrap().provider,
+            Some(provider.clone())
+        );
+        let codex = provider == AgentProvider::Codex;
+        assert_eq!(
+            crate::session_projection_lookup::card_is_shared_planner(&card, Some(&projection)),
+            codex
+        );
+        assert_eq!(
+            card.payload
+                .get("codex_thread_id")
+                .and_then(serde_json::Value::as_str),
+            codex.then_some(thread.as_str())
+        );
+    }
+}
+
+#[tokio::test]
+async fn assistant_provider_storage_rejects_terminal_and_nonresumable_managed_identities() {
+    use crate::session_projection_repo::{AgentProvider, WorkerSessionInit, WorkerSessionState};
+    use calm_types::worker::{SessionMode, WorkerProviderKind, WorkerSessionId};
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let (_, track) = card(&repo).await;
+    let mut tx = repo.pool().begin().await.unwrap();
+    let card = "storage-assistant".to_owned();
+    crate::db::sqlite::card_create_with_id_tx(&mut tx,card.clone(),NewCard {
+        track_id:track.into(),title:None,kind:"codex".into(),sort:None,
+        payload:json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":"codex"}),
+    },crate::model::CardRole::Assistant,false,repo.card_role_cache()).await.unwrap();
+    crate::db::sqlite::session_start_runtime_tx(
+        &mut tx,
+        WorkerSessionInit::managed_assistant(
+            "valid".into(),
+            card,
+            AgentProvider::Codex,
+            WorkerSessionState::Idle,
+            None,
+            json!({}),
+            1,
+        ),
+    )
+    .await
+    .unwrap();
+    let valid = crate::db::sqlite::session_get_tx(&mut tx, &WorkerSessionId("valid".into()))
+        .await
+        .unwrap()
+        .unwrap();
+    for (provider, mode) in [
+        (WorkerProviderKind::Terminal, SessionMode::Resumable),
+        (WorkerProviderKind::Codex, SessionMode::Ephemeral),
+        (WorkerProviderKind::Claude, SessionMode::Ephemeral),
+        (WorkerProviderKind::OpenCode, SessionMode::Ephemeral),
+    ] {
+        let mut invalid = valid.clone();
+        invalid.id = format!("invalid-{provider:?}").into();
+        invalid.state = WorkerSessionState::Superseded;
+        invalid.provider = provider;
+        invalid.mode = mode;
+        assert!(
+            crate::db::sqlite::session_insert_tx(&mut tx, invalid)
+                .await
+                .is_err(),
+            "{provider:?} {mode:?}"
+        );
+    }
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn assistant_provider_schema_is_extensible_but_unknown_typed_identity_is_rejected() {
+    use crate::session_projection_repo::{AgentProvider, WorkerSessionInit, WorkerSessionState};
+    use calm_types::worker::WorkerSessionId;
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let (id, _) = card(&repo).await;
+    let mut tx = repo.pool().begin().await.unwrap();
+    sqlx::query("UPDATE cards SET role='assistant',payload=?2 WHERE id=?1")
+        .bind(&id)
+        .bind(
+            json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":"codex"})
+                .to_string(),
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    crate::db::sqlite::session_start_runtime_tx(
+        &mut tx,
+        WorkerSessionInit::managed_assistant(
+            "future-session".into(),
+            id,
+            AgentProvider::Codex,
+            WorkerSessionState::Idle,
+            None,
+            json!({}),
+            1,
+        ),
+    )
+    .await
+    .unwrap();
+    // A later owner enum/decoder can introduce a provider without rebuilding the generic
+    // Assistant schema. Until then typed reads fail closed, never guessing Codex.
+    sqlx::query("UPDATE worker_sessions SET provider='future-agent' WHERE id='future-session'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    assert!(
+        crate::db::sqlite::session_get_tx(&mut tx, &WorkerSessionId("future-session".into()))
+            .await
+            .is_err()
+    );
+    tx.rollback().await.unwrap();
+}

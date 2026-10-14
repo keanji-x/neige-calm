@@ -1,9 +1,11 @@
+import type { AgentProvider } from '../api/generated/wire.js';
 import { CONVERSATION_STATE_SOURCE, conversationNameFrom, type Conversation, type ConversationKind, type ConversationMessage, type ConversationState } from './conversation.js';
 
 /** Everything about the open conversation that does *not* come from its turns. */
 export type ConversationFacts = Readonly<{
   sourceCardId?: string;
   cardId: string;
+  provider: AgentProvider;
   trackId: string;
   trackTitle: string | undefined;
   cardTitle: string | null;
@@ -20,6 +22,7 @@ export function describeConversation(
   facts: ConversationFacts, turns: readonly ConversationMessage[],
 ): Conversation {
   return {
+    provider: facts.provider,
     id: facts.cardId, trackId: facts.trackId,
     ...(facts.sourceCardId === undefined ? {} : { sourceCardId: facts.sourceCardId }),
     /* Absent, not `''`: list rows do not repeat the surrounding Track title.

@@ -1,3 +1,4 @@
+import { useManagedProviders } from '../providers/managed-providers.ts';
 import { useThreadReadingView } from '../../features/chat/thread/reading-view.tsx';
 import { useConversationDraftRetention, useConversationDraftAdoption, useRequestedConversationOpen, useConversationEscape, useConversationDraftAutoSend } from '../conversations/pane-lifecycle.ts';
 import { createConversationDraftActions } from '../conversations/draft-actions.ts';
@@ -31,7 +32,7 @@ import {
   NO_UPLOAD, type AttachmentStore, usePlannerAttachments,
 } from '../../features/planner/attachments.tsx';
 import {
-  trackOverlayPayload, plannerProviderOf, toTrack, trackActivityFrom, trackDisplayTitle,
+  trackOverlayPayload, toTrack, trackActivityFrom, trackDisplayTitle,
   type Track, type TrackActivity, type TrackDetailWire,
 } from '../../../../core/domain/track.ts';
 import { cardActivityOf, type CardActivity } from '../../../../core/domain/activity.ts';
@@ -95,7 +96,7 @@ import { PanelAction } from '../../ui/panel-card/public.tsx';
 import { useCommittedCallback } from '../../ui/state/committed-callback.ts';
 import { useState } from '../../ui/state/public.ts';
 import {
-  modelCatalogQueryOptions, serverVersionOperation, runOperation,
+  serverVersionOperation, runOperation,
   prefetchAreaList,
 
   useTrackConversationMutations, useTrackMutations,
@@ -349,7 +350,7 @@ function useConversationPanel(
           if (saved !== undefined) { sideTarget[1]({ kind: 'row', id: saved.id }); return; }
         }
         registry.startDraft({ scopeId: sideSlot, key: mintIdempotencyKey(),
-          side: sideConversationSnapshot(parent.id, entries), model: FOLLOW_INSTALLATION_DEFAULT,
+          provider: parent.provider, side: sideConversationSnapshot(parent.id, entries), model: FOLLOW_INSTALLATION_DEFAULT,
           text: question === '' ? null : question, autoSend: question !== '',
           sentText: null, creating: false, error: null, remedy: null });
         sideTarget[1]({ kind: 'draft' });
@@ -378,12 +379,8 @@ function useConversationPane(
   const compactComposer = options?.reportComposer !== undefined && compactViewport && options?.enabled !== false && options?.inline !== true;
   const dockRowId = compactComposer ? options?.reportComposer?.conversationId ?? null : null;
   const composerRowId = openRowId ?? dockRowId;
-  /* A track conversation runs on Codex; Claude is a Planner-only backend (#1791). */
-  const draftCatalog = useQuery({ ...modelCatalogQueryOptions(transport, { kind: 'provider', provider: 'codex' }, unauthorized),
-    enabled: openTarget?.kind === 'draft' });
-  const draftCapabilities = useQuery({ queryKey: ['server-version'],
-    queryFn: () => runOperation(transport, serverVersionOperation(), unauthorized),
-    enabled: openTarget?.kind === 'draft', retry: false });
+  const managed = useManagedProviders(transport, unauthorized, openTarget?.kind === 'draft');
+  const draftCapabilities = managed.version;
   const supportsDraftModel = draftCapabilities.data?.conversationCreateModel === true;
   useEffect(() => { if (openRowId === null) setComposerFocusFor(null); }, [openRowId]);
   const scope: PlannerConversationScope | null = composerRowId !== null
@@ -479,6 +476,9 @@ function useConversationPane(
 
   const { start, startWithMessage, withDraft, sendDraft, retryDraft, sendAsNewConversation, closeDrawer } = createConversationDraftActions({
     registry, draft, creating, source, sourceScopeId, transport, supportsDraftModel,
+    managedProviders: managed.answers,
+    recheckManagedProviders: managed.recheck,
+    supportsAssistantProviders: managed.supportsAssistantProviders,
     supportsSideConversation: draftCapabilities.data?.conversationSide === true,
     openDraft: () => setOpenTarget({ kind: 'draft' }), closeView: () => setOpenTarget(null),
     onGone: () => go({ name: 'today' }),
@@ -495,7 +495,7 @@ function useConversationPane(
   const contextSource = source.rows.find((row) => row.id === contextSourceId);
   const draftOpen = options?.enabled !== false && openTarget?.kind === 'draft' && draft !== null;
 
-  useConversationDraftAutoSend({ draftOpen, draft, creating, registry, sendDraft });
+  useConversationDraftAutoSend({ draftOpen, draft, creating: creating || managed.loading || draftCapabilities.isLoading, registry, sendDraft });
 
   const existingId = open?.id ?? null;
   const threadReadingView = useThreadReadingView(composerId);
@@ -667,11 +667,12 @@ function useConversationPane(
             <ChatComposer layout={compactComposer ? 'mobile' : 'standard'} disabled={creating} onSend={sendDraft} onNewConversation={options?.inline === true ? undefined : startAnother}
               mentionTrigger={mentionTrigger}
               draft={{ text: newConversationText, onChange: setNewConversationText }}
-              /* A track conversation is not a Planner create: no availability gate here (#1817). */
-              footerActions={<ModelPill groups={[{ provider: 'codex', catalog: draftCatalog.data ?? null, availability: null }]} provider="codex" selection={draft.model}
-                onChange={model => withDraft(draft, current => current.creating || current.sentText !== null
-                  ? current : { ...current, model })}
-                isDisabled={creating || draft.sentText !== null || !supportsDraftModel} />} />
+              /* Menu membership and readiness come from the managed backend declarations. */
+              footerActions={<ModelPill groups={managed.groups} provider={draft.provider} selection={draft.model}
+                effortControl={compactComposer ? 'in-menu' : 'separate'}
+                onChange={(model, provider) => withDraft(draft, current => current.creating || current.sentText !== null
+                  ? current : { ...current, model, provider })}
+                isDisabled={creating || draft.sentText !== null || !supportsDraftModel || !managed.supportsAssistantProviders} />} />
           </>
         ) : open === null ? undefined : (
           <>
@@ -746,7 +747,7 @@ function useConversationPane(
       >
         {(draft?.side !== undefined && draftOpen || open?.sourceCardId !== undefined) && (
           <p>From {contextSource === undefined ? 'an earlier conversation' : conversationName(contextSource)}.
-            {' '}Uses a snapshot of loaded text, not complete history. Replies use Codex.</p>
+            {' '}Uses a snapshot of loaded text, not complete history. Choose the backend before sending.</p>
         )}
         {/* Shown back because the composer clears its field on send; nothing here
                     claims they arrived. */}
@@ -789,7 +790,7 @@ function useConversationPane(
                 regenerateMessage={respondable
                   ? async (message) => { await store.send(open.id, message.text, message.attachments ?? [], false, null); }
                   : undefined}
-                editMessage={respondable && store.pendingQueue.length === 0 && store.pendingQueueOverflow === 0
+                editMessage={respondable && store.historyReplacementSupported && store.pendingQueue.length === 0 && store.pendingQueueOverflow === 0
                   && isComposerEmpty(composer) && !attachments.busy ? edit.start : undefined}
                 canContinue={canContinue}
                 stalledReason={store.blockedReason}
@@ -1046,7 +1047,7 @@ function TrackRouteBody({
          * comparison rests on, and written the other way it would be a tautology. */
         return row === undefined ? null : {
           id: row.trackId,
-          provider: plannerCard !== undefined && row.id === plannerCard.id ? plannerProviderOf(plannerCard.payload) : 'codex',
+          provider: row.provider,
           title: trackTitle, cardId: row.id, cardTitle: row.title,
           updatedAt: row.updatedAt, kind: row.kind, state: row.state,
         };

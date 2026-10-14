@@ -34,6 +34,16 @@ use clap::Parser;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+#[allow(dead_code)]
+#[path = "support/mcp.rs"]
+mod mcp;
+
+#[path = "cases/assistant_provider_compensation.rs"]
+mod assistant_provider_compensation;
+
+#[path = "cases/assistant_provider_phase2.rs"]
+mod assistant_provider_phase2;
+
 /// Serializes tests that toggle process env read by the fake codex shim.
 static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -237,7 +247,7 @@ async fn seed_assistant_card(
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1, "harness_profile": "assistant"}),
+            payload: json!({"schemaVersion": 1, "harness_profile": "assistant", "assistant_provider":"codex"}),
         },
         CardRole::Assistant,
         false,
@@ -1088,7 +1098,7 @@ async fn assistant_thread_start_carries_mcp_config_and_the_assistant_prompt() {
         .expect("assistant runtime");
     assert_eq!(
         runtime.kind,
-        WorkerSessionKind::CodexCard,
+        WorkerSessionKind::ManagedAssistant,
         "SharedPlanner would make this a Planner session"
     );
     assert!(

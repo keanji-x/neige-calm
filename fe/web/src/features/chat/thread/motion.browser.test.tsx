@@ -8,7 +8,7 @@ import type { Conversation, ConversationActivity } from '../../../../../core/dom
 
 afterEach(cleanup);
 
-const conversation: Conversation = Object.freeze({ id: 'motion', trackId: 'track', title: null, kind: 'codex', state: 'running', updatedAt: 1 });
+const conversation: Conversation = Object.freeze({ provider: 'codex' as const, id: 'motion', trackId: 'track', title: null, kind: 'codex', state: 'running', updatedAt: 1 });
 function action(id: string, state: 'running' | 'done'): ConversationActivity {
   return { id, author: 'activity', tool: null, verb: state === 'running' ? 'Running' : 'Ran', target: 'npm test', state,
     durationMs: state === 'done' ? 1400 : null, detail: null, atMs: 1 };

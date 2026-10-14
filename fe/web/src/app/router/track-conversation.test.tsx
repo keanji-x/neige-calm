@@ -80,13 +80,13 @@ const BARE_CONVERSATIONS = '/api/tracks/w2/conversations';
 const HISTORY_PATH = '/harness/items';
 
 type Row = {
-  id: string; trackId: string; title: string | null; kind: string;
+  id: string; trackId: string; title: string | null; kind: string; provider: 'codex';
   state: string | null; updatedAt: number; lastTurnCompletedAt: number | null;
 };
 
 function assistantRow(overrides: Partial<Row> = {}): Row {
   return {
-    id: ASSISTANT_CARD.id, trackId: 'w1', title: null, kind: 'track-assistant',
+    id: ASSISTANT_CARD.id, trackId: 'w1', title: null, kind: 'track-assistant', provider: 'codex',
     state: 'idle', updatedAt: 30, lastTurnCompletedAt: null, ...overrides,
   };
 }
@@ -173,6 +173,11 @@ function setup(reply?: Reply, storage?: UiPreferenceStorage, recovery?: Recovery
         const response = await reply(request);
         if (response) return response;
       }
+      if (request.path === '/api/version') return ok({ webCompatVersion: 53, minWebCompatVersion: 53, syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationCreateModel: true, conversationSide: true });
+      if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
+        availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
+        capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
+      }]);
       if (request.path === '/api/areas') return ok([AREA]);
       if (request.path === '/api/areas/c1/tracks') return ok([TRACK, BARE_TRACK]);
       if (request.path === '/api/overlays?entity_kind=track') return ok([]);
@@ -222,7 +227,7 @@ const creates = (requests: readonly ApiRequest[], path: string) =>
  * `(trackId, key)`, not for "a row that was not there before". */
 const derivedRow = (trackId: string, request: ApiRequest): Row => ({
   id: trackConversationCardId(trackId, request.headers?.['Idempotency-Key'] ?? ''),
-  trackId, title: null, kind: 'track-assistant', state: null, updatedAt: 99,
+  trackId, title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 99,
   lastTurnCompletedAt: null,
 });
 
@@ -2898,7 +2903,7 @@ describe('track conversations', () => {
     await write('what is in this repo?');
     await waitFor(() => expect(creates(requests, BARE_CONVERSATIONS)).toHaveLength(1));
     const [post] = creates(requests, BARE_CONVERSATIONS);
-    expect(post?.body).toEqual({ text: 'what is in this repo?' });
+    expect(post?.body).toEqual({ text: 'what is in this repo?', provider: 'codex' });
     expect(post?.headers?.['Idempotency-Key']).toMatch(/[0-9a-f-]{36}/);
     /* The drawer moves off the draft onto the row the derived id names. */
     await screen.findByRole('complementary', { name: 'Assistant' });
@@ -2955,8 +2960,8 @@ describe('track conversations', () => {
     expect(first?.headers?.['Idempotency-Key']).toBeDefined();
     expect(retry?.headers?.['Idempotency-Key']).toBe(first?.headers?.['Idempotency-Key']);
     expect([first?.body, retry?.body]).toEqual([
-      { text: 'words for track one' },
-      { text: 'words for track one' },
+      { text: 'words for track one', provider: 'codex' },
+      { text: 'words for track one', provider: 'codex' },
     ]);
 
     await act(async () => { await router.navigate({ to: '/track/w2' }); });
@@ -3379,7 +3384,7 @@ describe('registry write-through', () => {
     id: 'w1', provider: 'codex' as const, title: 'Test track', cardId: ASSISTANT_CARD.id, cardTitle: null,
     updatedAt: 30, kind: 'track-assistant' as const, state: 'idle' as const,
   };
-  const ROWS: readonly Conversation[] = [{
+  const ROWS: readonly Conversation[] = [{ provider: 'codex' as const,
     id: ASSISTANT_CARD.id, trackId: 'w1', trackTitle: 'Test track', title: null,
     kind: 'track-assistant', state: 'idle', updatedAt: 30,
   }];
@@ -3822,8 +3827,8 @@ it.each([false, true])('selects a model before the first conversation message an
   vi.stubGlobal('__NC_BUNDLED__', bundled);
   const access = new RecoveryAccess(); access.change('connected');
   const { requests } = setup(request => {
-    if (request.path === '/api/version') return ok({ webCompatVersion: 28, minWebCompatVersion: 28,
-      syncEventVersion: 20, dbInstanceId: 'test', conversationCreateModel: true });
+    if (request.path === '/api/version') return ok({ webCompatVersion: 53, minWebCompatVersion: 53,
+      syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationCreateModel: true });
     if (request.path === '/api/models?provider=codex') return ok({
       models: [{ id: 'preset-fast', model: 'gpt-5', resolved_model: null, display_name: 'GPT-5', description: '', is_default: false,
         supported_reasoning_efforts: [{ reasoning_effort: 'low', description: 'Faster' }, { reasoning_effort: 'high', description: 'Thinks longer' }], default_reasoning_effort: 'high' }],
@@ -3840,7 +3845,7 @@ it.each([false, true])('selects a model before the first conversation message an
   expect(creates(requests, CONVERSATIONS)).toHaveLength(0);
   await write('Use this model from the start');
   await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(1));
-  expect(creates(requests, CONVERSATIONS)[0].body).toEqual({ text: 'Use this model from the start', model: 'gpt-5', reasoning_effort: 'high' });
+  expect(creates(requests, CONVERSATIONS)[0].body).toEqual({ text: 'Use this model from the start', provider: 'codex', model: 'gpt-5', reasoning_effort: 'high' });
   expect(requests.filter(request => request.method === 'PUT' && request.path.endsWith('/planner/model'))).toEqual([]);
 });
 
@@ -3898,8 +3903,8 @@ it('keeps the first-message model fixed when a menu opened before sending is sel
   let settle!: (response: ApiTransportResponse) => void;
   const pending = new Promise<ApiTransportResponse>(resolve => { settle = resolve; });
   const { requests } = setup(request => {
-    if (request.path === '/api/version') return ok({ webCompatVersion: 28, minWebCompatVersion: 28,
-      syncEventVersion: 20, dbInstanceId: 'test', conversationCreateModel: true });
+    if (request.path === '/api/version') return ok({ webCompatVersion: 53, minWebCompatVersion: 53,
+      syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationCreateModel: true });
     if (request.path === '/api/models?provider=codex') return ok({
       models: [{ id: 'preset', model: 'chosen-model', resolved_model: null, display_name: 'Chosen model', description: '', is_default: false,
         supported_reasoning_efforts: [], default_reasoning_effort: 'low' }],
@@ -3913,12 +3918,12 @@ it('keeps the first-message model fixed when a menu opened before sending is sel
   await waitFor(() => expect(modelPicker.hasAttribute('disabled') || modelPicker.getAttribute('aria-disabled') === 'true').toBe(false));
   fireEvent.click(modelPicker);
   fireEvent.click(await screen.findByRole('menuitem', { name: 'Chosen model' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Model: Chosen model' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Model: codex Chosen model' }));
   await write('Keep my choice');
   await waitFor(() => expect(creates(requests, CONVERSATIONS)).toHaveLength(1));
   try {
     fireEvent.click(screen.getByRole('menuitem', { name: /^Default/, hidden: true }));
-    expect(screen.getByRole('button', { name: /^Model:/ }).getAttribute('aria-label')).toBe('Model: Chosen model');
+    expect(screen.getByRole('button', { name: /^Model:/ }).getAttribute('aria-label')).toBe('Model: codex Chosen model');
   } finally {
     await act(async () => { settle(failure(500, 'internal', 'Try again')); await pending; });
   }
@@ -4144,7 +4149,7 @@ it('an edited conversation retry cannot cross recovery after its reconciliation 
 });
 
 
-const sideVersion = () => ok({ conversationSide: true, webCompatVersion: 1, minWebCompatVersion: 1, syncEventVersion: 1, dbInstanceId: 'side-db' });
+const sideVersion = () => ok({ assistantProviders: true, conversationSide: true, webCompatVersion: 53, minWebCompatVersion: 53, syncEventVersion: 1, dbInstanceId: 'side-db' });
 
 describe('side conversations', () => {
   it('keeps the parent open, creates an independent child with a text snapshot and reopens it', async () => {

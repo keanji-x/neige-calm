@@ -38,6 +38,12 @@ pub trait WriteTx: sealed::Sealed + Send {
     /// transaction, `None` for a missing row (deny, never assume).
     async fn read_card_track(&mut self, card: &CardId) -> Result<Option<TrackId>>;
 
+    /// Persisted binding and current pointer, read inside the event write transaction.
+    async fn read_card_binding(
+        &mut self,
+        card: &CardId,
+    ) -> Result<Option<(String, serde_json::Value, Option<String>)>>;
+
     async fn read_track_area(&mut self, track: &TrackId) -> Result<Option<AreaId>>;
 }
 
@@ -55,7 +61,8 @@ pub async fn enforce_role_resolving_session<T: WriteTx + ?Sized + Send>(
     let session_id = match actor {
         ActorId::AiPlannerSession(session)
         | ActorId::AiCodexSession(session)
-        | ActorId::AiClaudeSession(session) => session.clone(),
+        | ActorId::AiClaudeSession(session)
+        | ActorId::AiManagedSession(session) => session.clone(),
         _ => return enforce_role(actor, event, scope, cache, track_area_cache),
     };
 
@@ -81,6 +88,16 @@ pub async fn enforce_role_resolving_session<T: WriteTx + ?Sized + Send>(
         });
     }
 
+    // The new managed contract has one live authorization entry point. Historical
+    // executor actors keep their semantics, but cannot impersonate a managed Assistant.
+    if session.contract == calm_types::worker::WorkerContract::Assistant
+        && !matches!(actor, ActorId::AiManagedSession(_))
+    {
+        return Err(RoleViolation::SessionActorUnresolved {
+            session: session_id,
+        });
+    }
+
     let card_id = session
         .card_id
         .ok_or_else(|| RoleViolation::CardlessSessionDenied {
@@ -101,6 +118,54 @@ pub async fn enforce_role_resolving_session<T: WriteTx + ?Sized + Send>(
         }
         ActorId::AiCodexSession(_) => ActorId::AiCodex(card_id),
         ActorId::AiClaudeSession(_) => ActorId::AiClaude(card_id),
+        ActorId::AiManagedSession(_) => {
+            use calm_types::worker::{SessionMode, WorkerContract, WorkerProviderKind};
+            let live = tx.read_card_binding(&card_id).await.map_err(|_| {
+                RoleViolation::SessionResolutionError {
+                    session: session_id.clone(),
+                }
+            })?;
+            let role = tx.read_card_role(&card_id).await.map_err(|_| {
+                RoleViolation::SessionResolutionError {
+                    session: session_id.clone(),
+                }
+            })?;
+            let track = tx.read_card_track(&card_id).await.map_err(|_| {
+                RoleViolation::SessionResolutionError {
+                    session: session_id.clone(),
+                }
+            })?;
+            if session.provider == WorkerProviderKind::Terminal
+                || session.contract != WorkerContract::Assistant
+                || session.mode != SessionMode::Resumable
+                || role != Some(CardRole::Assistant)
+                || track.as_ref() != Some(&session.track_id)
+                || !live.is_some_and(|(kind, payload, current)| {
+                    kind == "codex"
+                        && current.as_deref() == Some(session_id.as_str())
+                        && payload
+                            .get("harness_profile")
+                            .and_then(serde_json::Value::as_str)
+                            == Some("assistant")
+                        && payload
+                            .get(crate::validation::ASSISTANT_PROVIDER_PAYLOAD_KEY)
+                            .and_then(|value| {
+                                serde_json::from_value::<calm_types::runtime::AgentProvider>(
+                                    value.clone(),
+                                )
+                                .ok()
+                            })
+                            .map(|provider| WorkerProviderKind::from(&provider))
+                            == Some(session.provider)
+                })
+            {
+                return Err(RoleViolation::SessionPlannerRoleMismatch {
+                    session: session_id,
+                    card: card_id,
+                });
+            }
+            ActorId::AiManagedCard(card_id)
+        }
         _ => unreachable!("session actor match above guarantees session variant"),
     };
 
@@ -124,6 +189,7 @@ pub async fn enforce_role_resolving_session_from_tx<T: WriteTx + ?Sized + Send>(
         ActorId::AiPlannerSession(session)
         | ActorId::AiCodexSession(session)
         | ActorId::AiClaudeSession(session)
+        | ActorId::AiManagedSession(session)
             if !session.as_str().is_empty() =>
         {
             tx.read_worker_session(session)
@@ -143,14 +209,18 @@ pub async fn enforce_role_resolving_session_from_tx<T: WriteTx + ?Sized + Send>(
 /// resolved from `worker_sessions` and passed as `extra_card`.
 fn actor_card_id(actor: &ActorId) -> Option<&CardId> {
     match actor {
-        ActorId::AiCodex(card) | ActorId::AiClaude(card) | ActorId::AiPlanner(card) => Some(card),
+        ActorId::AiCodex(card)
+        | ActorId::AiClaude(card)
+        | ActorId::AiManagedCard(card)
+        | ActorId::AiPlanner(card) => Some(card),
         ActorId::User
         | ActorId::Kernel
         | ActorId::KernelDispatcher
         | ActorId::Plugin(_)
         | ActorId::AiPlannerSession(_)
         | ActorId::AiCodexSession(_)
-        | ActorId::AiClaudeSession(_) => None,
+        | ActorId::AiClaudeSession(_)
+        | ActorId::AiManagedSession(_) => None,
     }
 }
 
@@ -262,6 +332,19 @@ impl<'a> WriteTx for Transaction<'a, Sqlite> {
             .fetch_optional(&mut **self)
             .await?;
         Ok(row.map(|(track,)| TrackId::from(track)))
+    }
+
+    async fn read_card_binding(
+        &mut self,
+        card: &CardId,
+    ) -> Result<Option<(String, serde_json::Value, Option<String>)>> {
+        let row: Option<(String, String, Option<String>)> =
+            sqlx::query_as("SELECT kind, payload, session_id FROM cards WHERE id=?1")
+                .bind(card.as_str())
+                .fetch_optional(&mut **self)
+                .await?;
+        row.map(|(kind, payload, session)| Ok((kind, serde_json::from_str(&payload)?, session)))
+            .transpose()
     }
 
     async fn read_track_area(&mut self, track: &TrackId) -> Result<Option<AreaId>> {
@@ -555,6 +638,13 @@ mod tests {
                 .iter()
                 .find(|(id, _, _)| id == card)
                 .map(|(_, _, track)| track.clone()))
+        }
+
+        async fn read_card_binding(
+            &mut self,
+            _card: &CardId,
+        ) -> Result<Option<(String, serde_json::Value, Option<String>)>> {
+            Ok(None)
         }
 
         async fn read_track_area(&mut self, track: &TrackId) -> Result<Option<AreaId>> {

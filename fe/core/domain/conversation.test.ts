@@ -21,7 +21,7 @@ import {
 } from './conversation.js';
 
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
-  return {
+  return { provider: 'codex' as const,
     id: 'c1', trackId: 'w1', trackTitle: 'Ship the rewrite', title: null,
     kind: 'codex', state: 'idle', updatedAt: 0, turns: 0,
     ...overrides,
@@ -164,19 +164,30 @@ describe('conversationNameFrom', () => {
 
 describe('track conversations', () => {
   const row = {
-    id: 'card-3', trackId: 'track-1', title: null, kind: 'track-assistant',
+    id: 'card-3', trackId: 'track-1', title: null, kind: 'track-assistant', provider: 'codex' as const,
     state: 'starting' as const, updatedAt: 7, lastTurnCompletedAt: null,
   };
+
+  it('preserves the declared provider on a dormant Assistant', () => {
+    expect(toTrackConversation({ ...row, provider: 'claude', state: null })).toMatchObject({ provider: 'claude', state: null });
+  });
 
   it('decodes a list row into the app\'s own shape', () => {
     const operation = trackConversationsOperation('track 1');
     expect(operation.method).toBe('GET');
     expect(operation.path).toBe('/api/tracks/track%201/conversations');
     expect(operation.responseSchema.parse([row])).toEqual([{
-      id: 'card-3', trackId: 'track-1', title: null, kind: 'track-assistant',
+      id: 'card-3', trackId: 'track-1', title: null, kind: 'track-assistant', provider: 'codex',
       state: 'starting', updatedAt: 7, lastTurnCompletedAt: null,
     }]);
     expect(operation.responseSchema.parse([{ ...row, lastTurnCompletedAt: 9 }])[0].lastTurnCompletedAt).toBe(9);
+  });
+
+  it('requires the declared provider even without a live session', () => {
+    const withoutProvider: Partial<typeof row> = { ...row };
+    delete withoutProvider.provider;
+    expect(trackConversationsOperation('w').responseSchema.safeParse([{ ...withoutProvider, state: null }]).success).toBe(false);
+    expect(trackConversationsOperation('w').responseSchema.safeParse([{ ...row, provider: 'unregistered' }]).success).toBe(false);
   });
 
   it('requires lastTurnCompletedAt on a list row, null or a number', () => {
@@ -235,10 +246,10 @@ describe('track conversations', () => {
   });
 
   it('posts the first message to the track, carrying the key as a header', () => {
-    const operation = createTrackConversationOperation('track 1', 'hello', 'key-a', { model: null, reasoning_effort: null });
+    const operation = createTrackConversationOperation('track 1', 'hello', 'key-a', 'claude', { model: null, reasoning_effort: null });
     expect(operation.method).toBe('POST');
     expect(operation.path).toBe('/api/tracks/track%201/conversations');
-    expect(operation.body).toEqual({ text: 'hello' });
+    expect(operation.body).toEqual({ text: 'hello', provider: 'claude' });
     expect(operation.headers).toEqual({ 'Idempotency-Key': 'key-a' });
     expect(operation.responseSchema.parse(row).kind).toBe('track-assistant');
   });

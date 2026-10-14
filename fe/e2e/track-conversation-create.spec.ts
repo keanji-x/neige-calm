@@ -80,14 +80,15 @@ test('starts a conversation from a track page and sends the first message to tha
   expect(posts).toHaveLength(1);
   const post = posts[0];
   expect(new URL(post.url()).pathname).toBe(`/api/tracks/${track.id}/conversations`);
-  expect(post.postDataJSON()).toEqual({ text: message });
+  expect(post.postDataJSON()).toEqual({ provider: 'codex', text: message });
   // Without this header the kernel 400s, and a second attempt would mint a second conversation.
   expect(await post.headerValue('idempotency-key')).toMatch(/[0-9a-f-]{36}/);
 
   expect(created.status(), `create failed: ${await created.text()}`).toBe(201);
-  const conversation = await created.json() as { id: string; trackId: string; kind: string };
+  const conversation = await created.json() as { id: string; trackId: string; kind: string; provider: string };
   expect(conversation.trackId).toBe(track.id);
   expect(conversation.kind).toBe('track-assistant');
+  expect(conversation.provider).toBe('codex');
 
   // The only assertion here that fails if the mint writes a card the list predicate does not match.
   const listed = await request.get(`/api/tracks/${track.id}/conversations`);
@@ -148,18 +149,18 @@ test('the track conversations endpoint refuses a create it cannot make retryable
   createdAreaIds.push(area.id);
   const track = await createTrack(request, area.id, `FE e2e conversation guards ${Date.now()}`);
 
-  const noKey = await request.post(`/api/tracks/${track.id}/conversations`, { data: { text: 'hello' } });
+  const noKey = await request.post(`/api/tracks/${track.id}/conversations`, { data: { provider: 'codex', text: 'hello' } });
   expect(noKey.status(), await noKey.text()).toBe(400);
 
   const blank = await request.post(`/api/tracks/${track.id}/conversations`, {
     headers: { 'Idempotency-Key': crypto.randomUUID() },
-    data: { text: '   ' },
+    data: { provider: 'codex', text: '   ' },
   });
   expect(blank.status(), await blank.text()).toBe(400);
 
   const missing = await request.post('/api/tracks/00000000000000000000000000000000/conversations', {
     headers: { 'Idempotency-Key': crypto.randomUUID() },
-    data: { text: 'hello' },
+    data: { provider: 'codex', text: 'hello' },
   });
   expect(missing.status(), await missing.text()).toBe(404);
 });

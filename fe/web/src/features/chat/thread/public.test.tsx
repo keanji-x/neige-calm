@@ -20,7 +20,7 @@ const NOW = 1_760_000_000_000;
 const workingMarks = () => document.querySelectorAll('[data-nc-activity="working"], [data-nc-motion="execution"]');
 
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
-  return {
+  return { provider: 'codex' as const,
     id: 'c1', trackId: 'w1', trackTitle: 'Ship the rewrite', title: null, kind: 'codex',
     state: 'idle', updatedAt: NOW, turns: 0,
     ...overrides,

@@ -11,6 +11,7 @@ pub(crate) mod owned_parked;
 mod repo_sqlite;
 pub(crate) mod workspace_lease;
 
+pub(crate) mod assistant_start_wire;
 pub mod card_create_adapter;
 pub mod child_track_adapter;
 pub mod claude_adapter;

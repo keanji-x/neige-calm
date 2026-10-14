@@ -1,4 +1,5 @@
 pub mod backend;
+pub(crate) mod backend_metadata;
 pub(crate) mod catch_up;
 pub(crate) mod codex_events;
 #[cfg(test)]
@@ -7,6 +8,7 @@ mod codex_selection;
 pub mod compact_outcome;
 pub mod config;
 pub mod held_requests;
+pub(crate) mod instructions;
 pub(crate) mod issuance;
 pub mod live_replies;
 #[cfg(test)]
@@ -155,22 +157,29 @@ pub async fn spawn_recovered_harness(
         return Ok(RecoveryOutcome::Skipped);
     };
     let role = repo.card_role_get(card.id.as_str()).await?;
-    let provider = if runtime.kind == WorkerSessionKind::SharedPlanner {
-        match profile::planner_row_provider(runtime.agent_provider.as_ref(), &card, role) {
-            Some(provider) => provider,
-            None => {
-                tracing::warn!(
-                    worker_session_id = %runtime.id,
-                    card_id = %card.id,
-                    provider = ?runtime.agent_provider,
-                    "refusing harness recovery: the Planner row's provider is not the one its Planner card names"
-                );
-                return Ok(RecoveryOutcome::Skipped);
-            }
-        }
-    } else {
-        AgentProvider::Codex
+    let Some(binding) = role.and_then(|role| profile::PlannerBinding::from_card(&card, role))
+    else {
+        return Ok(RecoveryOutcome::Skipped);
     };
+    let expected_kind = match binding.profile {
+        profile::HarnessProfile::Planner => WorkerSessionKind::SharedPlanner,
+        profile::HarnessProfile::Assistant => WorkerSessionKind::ManagedAssistant,
+        profile::HarnessProfile::PlainChat => WorkerSessionKind::CodexCard,
+    };
+    if runtime.kind != expected_kind {
+        tracing::warn!(worker_session_id = %runtime.id, "refusing harness recovery: row/card identity mismatch");
+        return Ok(RecoveryOutcome::Skipped);
+    }
+    let live = repo
+        .session_get(&calm_types::worker::WorkerSessionId(runtime.id.clone()))
+        .await?;
+    let Some(live) = live else {
+        return Ok(RecoveryOutcome::Skipped);
+    };
+    if profile::live_binding(repo.as_ref(), &live).await?.as_ref() != Some(&binding) {
+        return Ok(RecoveryOutcome::Skipped);
+    }
+    let provider = binding.provider.clone();
     let Some(track) = repo.track_get(card.track_id.as_str()).await? else {
         return Ok(RecoveryOutcome::Skipped);
     };
@@ -324,6 +333,7 @@ pub async fn spawn_recovered_harness(
         claude,
         repo.clone(),
         ClaudePlannerRow {
+            binding,
             worker_session_id: &runtime.id,
             card_id: &runtime.card_id,
             track_id: card.track_id.as_str(),
@@ -486,13 +496,15 @@ pub enum BootRows {
     ClaudePlannersOnly,
 }
 
-/// A Claude Planner row: recovered at boot whatever the Codex daemon does, never by the deferred pass.
-fn is_claude_planner_row(runtime: &WorkerSessionProjection) -> bool {
-    runtime.kind == WorkerSessionKind::SharedPlanner
-        && matches!(
-            runtime.agent_provider,
-            Some(AgentProvider::Claude | AgentProvider::OpenCode)
-        )
+/// A backend-owned independent runtime: boot can recover it while Codex is down.
+fn recovers_without_codex_daemon(runtime: &WorkerSessionProjection) -> bool {
+    matches!(
+        runtime.kind,
+        WorkerSessionKind::SharedPlanner | WorkerSessionKind::ManagedAssistant
+    ) && runtime
+        .agent_provider
+        .as_ref()
+        .is_some_and(|provider| !PlannerBackend::metadata(provider).requires_codex_daemon)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -511,7 +523,7 @@ pub async fn recover_harnesses_on_boot(
     let runtimes = repo.session_projection_recover_harnesses_on_boot().await?;
     let mut recovered = 0usize;
     for runtime in runtimes {
-        if rows == BootRows::ClaudePlannersOnly && !is_claude_planner_row(&runtime) {
+        if rows == BootRows::ClaudePlannersOnly && !recovers_without_codex_daemon(&runtime) {
             continue;
         }
         let runtime_id = runtime.id.clone();
@@ -693,7 +705,7 @@ pub async fn recover_harnesses_deferred(params: DeferredRecoveryParams) {
         let mut recovered = 0usize;
         for runtime in runtimes {
             // Boot already recovered these: they never waited for the daemon.
-            if is_claude_planner_row(&runtime) {
+            if recovers_without_codex_daemon(&runtime) {
                 continue;
             }
             // Per-runtime eligibility: still running, same generation as the readiness we acted on.

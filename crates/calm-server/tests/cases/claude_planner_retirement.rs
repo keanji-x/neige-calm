@@ -257,6 +257,10 @@ async fn an_install_race_loser_shuts_down_promptly_and_signals_nothing() {
             repo.clone(),
             stack.state.thread_seals().clone(),
             ClaudePlannerRow {
+                binding: calm_server::harness::profile::PlannerBinding {
+                    profile: calm_server::harness::profile::HarnessProfile::Planner,
+                    provider: calm_server::session_projection_repo::AgentProvider::Claude,
+                },
                 worker_session_id: &runtime.id,
                 card_id: &card_id,
                 track_id: &track_id,

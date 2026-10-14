@@ -9,6 +9,15 @@ async fn recover_planner_row(
     card_provider: Option<&str>,
     row_provider: AgentProvider,
 ) -> (calm_server::harness::RecoveryOutcome, bool) {
+    recover_row(card_role, card_provider, row_provider, false).await
+}
+
+async fn recover_row(
+    card_role: CardRole,
+    card_provider: Option<&str>,
+    row_provider: AgentProvider,
+    assistant: bool,
+) -> (calm_server::harness::RecoveryOutcome, bool) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
         .area_create(NewArea {
@@ -32,9 +41,17 @@ async fn recover_planner_row(
         })
         .await
         .unwrap();
-    let mut payload = json!({"schemaVersion": 1, "planner_harness": true});
+    let mut payload = if assistant {
+        json!({"schemaVersion":1,"harness_profile":"assistant"})
+    } else {
+        json!({"schemaVersion": 1, "planner_harness": true})
+    };
     if let Some(provider) = card_provider {
-        payload["planner_provider"] = json!(provider);
+        payload[if assistant {
+            "assistant_provider"
+        } else {
+            "planner_provider"
+        }] = json!(provider);
     }
     let thread_id = format!("thread-{}", new_id());
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
@@ -60,7 +77,11 @@ async fn recover_planner_row(
     let worker_session_id = new_id();
     session_start_runtime_tx(
         &mut tx,
-        WorkerSessionInit::shared_planner(
+        (if assistant {
+            WorkerSessionInit::managed_assistant
+        } else {
+            WorkerSessionInit::shared_planner
+        })(
             worker_session_id.clone(),
             card.id.to_string(),
             row_provider,
@@ -154,5 +175,35 @@ async fn a_planner_row_on_a_card_that_is_not_a_planner_is_skipped() {
             "{role:?}"
         );
         assert!(!installed, "{role:?}");
+    }
+}
+
+#[tokio::test]
+async fn assistant_provider_recovery_requires_matching_live_card_provider() {
+    for provider in [
+        AgentProvider::Codex,
+        AgentProvider::Claude,
+        AgentProvider::OpenCode,
+    ] {
+        let (_, installed) = recover_row(
+            CardRole::Assistant,
+            Some(provider.wire_name()),
+            provider.clone(),
+            true,
+        )
+        .await;
+        assert!(installed, "{provider:?}");
+        for wrong in ["codex", "claude", "opencode"] {
+            if wrong == provider.wire_name() {
+                continue;
+            }
+            let (outcome, installed) =
+                recover_row(CardRole::Assistant, Some(wrong), provider.clone(), true).await;
+            assert!(
+                matches!(outcome, calm_server::harness::RecoveryOutcome::Skipped),
+                "{provider:?} vs {wrong}"
+            );
+            assert!(!installed);
+        }
     }
 }

@@ -28,7 +28,7 @@ describe('the Today report reset (#1343)', () => {
   });
 
   it('names the fixed summary writer without exposing its bootstrap instruction', () => {
-    const summary: Conversation = {
+    const summary: Conversation = { provider: 'codex' as const,
       id: trackConversationCardId('lp', TODAY_SUMMARY_CONVERSATION_KEY),
       trackId: 'lp', title: null, kind: 'track-assistant', state: 'idle', updatedAt: 1,
     };

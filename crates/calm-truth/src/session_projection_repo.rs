@@ -69,6 +69,30 @@ pub struct WorkerSessionInit {
 }
 
 impl WorkerSessionInit {
+    /// Managed Assistant identity always names its provider and remains resumable.
+    pub fn managed_assistant(
+        id: String,
+        card_id: CardId,
+        provider: AgentProvider,
+        status: WorkerSessionState,
+        thread_id: Option<String>,
+        handle_state_json: Value,
+        now_ms: TimestampMs,
+    ) -> Self {
+        Self {
+            kind: WorkerSessionKind::ManagedAssistant,
+            ..Self::shared_planner(
+                id,
+                card_id,
+                provider,
+                status,
+                thread_id,
+                handle_state_json,
+                now_ms,
+            )
+        }
+    }
+
     /// A Planner harness runtime. The provider is required: the mirror persists it as the
     /// session row's provider (`resumable`, `planner`), which the kind alone cannot name.
     pub fn shared_planner(

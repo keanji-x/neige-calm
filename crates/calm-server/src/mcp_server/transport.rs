@@ -1624,6 +1624,16 @@ async fn ensure_card_bound_session_active(
         warn_bound_session_reject(method, bound, "card session link drift");
         return Err(bound_session_auth_error(method, bound));
     }
+    if (bound.role == crate::model::CardRole::Assistant
+        || card.role == crate::model::CardRole::Assistant
+        || session.contract == calm_types::worker::WorkerContract::Assistant)
+        && (!crate::harness::profile::validate_live_assistant(ctx.repo.as_ref(), &session)
+            .await
+            .map_err(|error| RpcError::internal(error.to_string()))?
+            || session.provider.as_db_str() != bound.provider.wire_name())
+    {
+        return Err(bound_session_auth_error(method, bound));
+    }
     Ok(card)
 }
 

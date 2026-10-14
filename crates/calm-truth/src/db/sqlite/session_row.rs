@@ -123,7 +123,7 @@ pub async fn claude_planner_revoke_tx(
     };
     let ids: Vec<String> = sqlx::query_scalar(
         r#"SELECT id FROM worker_sessions
-            WHERE provider = 'claude' AND contract = 'planner'
+            WHERE provider = 'claude' AND contract IN ('planner','assistant')
               AND (?1 IS NULL OR track_id = ?1)
             ORDER BY id"#,
     )
@@ -132,7 +132,7 @@ pub async fn claude_planner_revoke_tx(
     .await?;
     sqlx::query(
         r#"UPDATE worker_sessions SET mcp_token_hash = NULL
-            WHERE provider = 'claude' AND contract = 'planner'
+            WHERE provider = 'claude' AND contract IN ('planner','assistant')
               AND (?1 IS NULL OR track_id = ?1)"#,
     )
     .bind(track)
@@ -201,11 +201,7 @@ pub async fn session_get_by_id(
 }
 
 pub(super) fn agent_provider_to_db(provider: &AgentProvider) -> &'static str {
-    match provider {
-        AgentProvider::Codex => "codex",
-        AgentProvider::Claude => "claude",
-        AgentProvider::OpenCode => "opencode",
-    }
+    provider.wire_name()
 }
 
 // Provisional NOT NULL worker-session identity from the runtime row's kind;
@@ -215,9 +211,9 @@ pub(crate) fn derive_session_identity(
 ) -> (WorkerProviderKind, SessionMode, WorkerContract) {
     let provider = match kind {
         WorkerSessionKind::Terminal => WorkerProviderKind::Terminal,
-        WorkerSessionKind::CodexCard | WorkerSessionKind::SharedPlanner => {
-            WorkerProviderKind::Codex
-        }
+        WorkerSessionKind::CodexCard
+        | WorkerSessionKind::SharedPlanner
+        | WorkerSessionKind::ManagedAssistant => WorkerProviderKind::Codex,
         WorkerSessionKind::ClaudeCard => WorkerProviderKind::Claude,
     };
     let mode = match provider {
@@ -226,6 +222,7 @@ pub(crate) fn derive_session_identity(
     };
     let contract = match kind {
         WorkerSessionKind::SharedPlanner => WorkerContract::Planner,
+        WorkerSessionKind::ManagedAssistant => WorkerContract::Assistant,
         _ => WorkerContract::Executor,
     };
     (provider, mode, contract)
@@ -592,6 +589,7 @@ pub async fn session_commit_exit_tx(
     let res = sqlx::query(
         r#"UPDATE worker_sessions
               SET state = ?1,
+                  mcp_token_hash = CASE WHEN contract = 'assistant' THEN NULL ELSE mcp_token_hash END,
                   liveness = 'exited',
                   liveness_probed_at_ms = ?2,
                   exit_code = ?3,
@@ -639,6 +637,7 @@ pub(super) async fn session_state_transition_at_tx(
     let res = sqlx::query(
         r#"UPDATE worker_sessions
               SET state = ?1,
+                  mcp_token_hash = CASE WHEN contract = 'assistant' AND ?3 = 1 THEN NULL ELSE mcp_token_hash END,
                   updated_at_ms = ?2,
                   completed_at_ms = CASE
                     WHEN ?3 = 1 THEN ?4

@@ -1,3 +1,5 @@
+import type { ManagedProviderAvailability } from '../../../../core/domain/agent-providers.ts';
+import { managedProviderProblem } from '../../../../core/domain/agent-providers.ts';
 import { onlineManager } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import { CONVERSATION_CREATE_TEXT, conversationCreateFailure, conversationCreateUnknownText, CONVERSATION_TEXT_MAX, FOLLOW_INSTALLATION_DEFAULT, type Conversation } from '../../../../core/domain/conversation.ts';
@@ -19,6 +21,9 @@ export type ConversationDraftActionInput = Readonly<{
   transport: ApiTransportPort;
   supportsSideConversation: boolean;
   supportsDraftModel: boolean;
+  supportsAssistantProviders: boolean;
+  managedProviders: readonly ManagedProviderAvailability[] | undefined;
+  recheckManagedProviders: () => Promise<readonly ManagedProviderAvailability[]>;
   openDraft: () => void;
   closeView: () => void;
   onGone: () => void;
@@ -27,7 +32,7 @@ export type ConversationDraftActionInput = Readonly<{
 /** A command assembly for this render's draft. Construction has no side effects;
  * dispatched attempts retain their original scope/key and settle through Registry. */
 export function createConversationDraftActions({ registry, draft, creating, source, sourceScopeId, transport,
-  supportsSideConversation, supportsDraftModel, openDraft, closeView, onGone,
+  supportsSideConversation, supportsDraftModel, supportsAssistantProviders, managedProviders, recheckManagedProviders, openDraft, closeView, onGone,
 }: ConversationDraftActionInput) {
   /* Every draft write goes through one of these three, each a whole-object update,
        and each a no-op when the draft it was computed from is no longer the one held. */
@@ -65,7 +70,7 @@ export function createConversationDraftActions({ registry, draft, creating, sour
            retry is a different derived card. */
     registry.startDraft({
       scopeId: sourceScopeId,
-      model: FOLLOW_INSTALLATION_DEFAULT,
+      provider: 'codex', model: FOLLOW_INSTALLATION_DEFAULT,
       key: mintIdempotencyKey(),
       text, autoSend: text !== null, sentText: null, creating: false, error: null, remedy: null,
     });
@@ -111,7 +116,14 @@ export function createConversationDraftActions({ registry, draft, creating, sour
 
   /* The draft's own send: it runs while there is no card, and its text lives in the
        registry's draft entry until the row it created is adopted. */
-  const refuseOfflineDraft = (attempt: ConversationDraft, text: string): boolean => {
+  const refuseOfflineDraft = (attempt: ConversationDraft, text: string, answers = managedProviders): boolean => {
+    const providerProblem = !supportsAssistantProviders
+      ? 'This server does not support Assistant provider selection. Update or reconnect before sending.'
+      : attempt.sentText === null ? managedProviderProblem(answers, attempt.provider) : null;
+    if (providerProblem !== null) {
+      amendDraft(attempt, { text, error: providerProblem, remedy: 'retry' });
+      return true;
+    }
     if (attempt.side !== undefined && !supportsSideConversation) {
       amendDraft(attempt, { text, error: 'This server does not report side conversation support. Update or reconnect before retrying.', remedy: 'retry' });
       return true;
@@ -140,7 +152,7 @@ export function createConversationDraftActions({ registry, draft, creating, sour
    * One create of the draft's words, from the press's checks on. With `recheck`, the old key's row is looked for first
    * and only a re-read saying "no row" earns a new key; while the re-read fails, the draft offers `recheck` again.
    */
-  const createDraft = (from: ConversationDraft, text: string, current: () => boolean, recheck: ConversationDraft['remedy']) => {
+  const createDraft = (from: ConversationDraft, text: string, current: () => boolean, recheck: ConversationDraft['remedy'], answers = managedProviders) => {
     const { create, refresh, derivedCardId } = source;
     const scopeId = sourceScopeId;
     /* The draft this send is for, fixed here: a send that outlives its draft changes nothing. */
@@ -148,6 +160,19 @@ export function createConversationDraftActions({ registry, draft, creating, sour
     let previouslySentText = attempt.sentText;
     void (async () => {
       try {
+        // A frozen retry may already have landed while the drawer was closed.
+        // Reconcile first, retaining the original key when its row is absent.
+        if (recheck === null && attempt.sentText !== null) {
+          const landing = await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key, current);
+          if (landing === 'landed') return;
+          if (landing === 'unknown') {
+            amendDraft(attempt, { error: CONVERSATION_CREATE_TEXT.unknown, remedy: 'retry' });
+            return;
+          }
+        }
+        // Refresh display metadata, but a frozen dispatched request keeps its original
+        // admission: neither probe failure nor new capabilities can prevent reconciliation/replay.
+        if (attempt.sentText !== null) void recheckManagedProviders().catch(() => undefined);
         if (recheck !== null) {
           const landing = await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key, current);
           if (landing === 'landed') return;
@@ -158,11 +183,11 @@ export function createConversationDraftActions({ registry, draft, creating, sour
           attempt = rekeyDraft(attempt, mintIdempotencyKey());
         }
         if (!current()) { amendDraft(attempt, { error: notSentText(attempt.sentText), remedy: 'retry' }); return; }
-        if (refuseOfflineDraft(attempt, text)) return;
+        if (refuseOfflineDraft(attempt, text, answers)) return;
         previouslySentText = attempt.sentText;
         markDraftSent(attempt, text);
         attempt = { ...attempt, text, sentText: text };
-        const created = await create(text, attempt.key, attempt.model, attempt.side);
+        const created = await create(text, attempt.key, attempt.provider, attempt.model, attempt.side);
         if (current()) adopt(attempt, created);
         else amendDraft(attempt, { error: CONVERSATION_CREATE_TEXT.unknown, remedy: 'retry' });
       } catch (error: unknown) {
@@ -180,7 +205,7 @@ export function createConversationDraftActions({ registry, draft, creating, sour
     })();
   };
 
-  const sendDraft = (text: string) => {
+  const sendDraft = (text: string, answers = managedProviders) => {
     if (creating || draft === null) return;
     /* The server refuses `text.trim().is_empty()` but counts `chars()` on the
            untrimmed text, in Unicode scalar values: so the blank check trims, the
@@ -196,12 +221,12 @@ export function createConversationDraftActions({ registry, draft, creating, sour
       });
       return;
     }
-    if (refuseOfflineDraft(draft, text)) return;
+    if (refuseOfflineDraft(draft, text, answers)) return;
     const current = admitDraft(draft); if (current === null) return;
     amendDraft(draft, { text, creating: true, error: null, remedy: null });
     /* Editing the text after a failure has to look at the list first: the old key may have succeeded with the old
        text, and only a re-read saying "no new row" earns a new key. */
-    createDraft(draft, text, current, draft.sentText !== null && draft.sentText !== text ? 'retry' : null);
+    createDraft(draft, text, current, draft.sentText !== null && draft.sentText !== text ? 'retry' : null, answers);
   };
 
   async function handleCreateFailure(
@@ -267,8 +292,16 @@ export function createConversationDraftActions({ registry, draft, creating, sour
 
   /* Retry means the same draft again: same key, same words. */
   const retryDraft = () => {
-    if (draft === null || draft.text === null) return;
-    sendDraft(draft.text);
+    if (creating || draft === null || draft.text === null) return;
+    if (draft.sentText !== null) { sendDraft(draft.sentText); return; }
+    const text = draft.text;
+    amendDraft(draft, { creating: true });
+    void recheckManagedProviders().then(answers => {
+      amendDraft(draft, { creating: false });
+      sendDraft(text, answers);
+    }).catch(() => {
+      amendDraft(draft, { creating: false, error: 'Managed provider capabilities are unavailable. Reconnect before sending.', remedy: 'retry' });
+    });
   };
 
   /* A draft no request was ever made for has no identity worth keeping; one that

@@ -19,6 +19,7 @@ use crate::db::write_with_event_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::Event;
 use crate::extract::{Json, JsonBody, Path};
+use crate::harness::backend_metadata::CatalogProtocol;
 use crate::ids::CardId;
 use crate::model::CardPatch;
 use crate::operation::codex_adapter::card_payload_get_tx;
@@ -27,7 +28,6 @@ use crate::routes::cards::card_scope;
 use crate::routes::models::CODEX_READ_TIMEOUT;
 use crate::routes::planner_cards::card_runs_headless_harness;
 use crate::routes::track_report_blocks::require_rest_user_actor_for;
-use crate::session_projection_repo::AgentProvider;
 use crate::state::{CodexShellState, RouteState, WorkerState};
 
 const ACTOR_SUBJECT: &str = "planner model selection";
@@ -120,48 +120,51 @@ pub(crate) async fn set_planner_model(
             "card {id} is not a planner codex card",
         )));
     }
-    let provider = crate::harness::profile::PlannerBinding::from_card(&card, role)
-        .ok_or_else(|| CalmError::Forbidden("The card has no declared Planner backend".into()))?
+    let provider = crate::harness::profile::checked_card_binding(s.repo.as_ref(), &card, role)
+        .await?
         .provider;
-    let claude = provider == AgentProvider::Claude;
 
     let SetPlannerModelBody {
         model,
         reasoning_effort,
     } = body;
-    let advice = if provider == AgentProvider::OpenCode {
-        s.acp_planner.configured(&provider)?;
-        catalog_advice(
-            CatalogSource::Acp,
-            model.as_deref(),
-            reasoning_effort.as_deref(),
-        )
-        .await
-    } else if claude {
-        // #1822 6′: a Claude write needs Claude ready, as its create does (#1817), so the list is
-        // in hand: an effort is judged against the chosen entry, and dropped for a model the list
-        // does not carry (the CLI would ignore it). Codex is not asked.
-        let catalog = s
-            .provider_availability
-            .claude(crate::agent_providers::Freshness::Cached, &s.claude_planner)
+    let advice = match crate::harness::PlannerBackend::metadata(&provider).catalog {
+        CatalogProtocol::Acp => {
+            s.acp_planner.configured(&provider)?;
+            catalog_advice(
+                CatalogSource::Acp,
+                model.as_deref(),
+                reasoning_effort.as_deref(),
+            )
             .await
-            .catalog()
-            .map_err(|refusal| {
-                CalmError::BadRequest(format!("card {id}: `planner_provider` {refusal}"))
-            })?;
-        catalog_advice(
-            CatalogSource::Claude(&catalog),
-            model.as_deref(),
-            reasoning_effort.as_deref(),
-        )
-        .await
-    } else {
-        catalog_advice(
-            CatalogSource::Codex(&codex),
-            model.as_deref(),
-            reasoning_effort.as_deref(),
-        )
-        .await
+        }
+        CatalogProtocol::Claude => {
+            // #1822 6′: a Claude write needs Claude ready, as its create does (#1817), so the list is
+            // in hand: an effort is judged against the chosen entry, and dropped for a model the list
+            // does not carry (the CLI would ignore it). Codex is not asked.
+            let catalog = s
+                .provider_availability
+                .claude(crate::agent_providers::Freshness::Cached, &s.claude_planner)
+                .await
+                .catalog()
+                .map_err(|refusal| {
+                    CalmError::BadRequest(format!("card {id}: `planner_provider` {refusal}"))
+                })?;
+            catalog_advice(
+                CatalogSource::Claude(&catalog),
+                model.as_deref(),
+                reasoning_effort.as_deref(),
+            )
+            .await
+        }
+        CatalogProtocol::Codex => {
+            catalog_advice(
+                CatalogSource::Codex(&codex),
+                model.as_deref(),
+                reasoning_effort.as_deref(),
+            )
+            .await
+        }
     };
     let stored_effort = match &advice.adjustment {
         Some(adjustment) => adjustment.to.clone(),

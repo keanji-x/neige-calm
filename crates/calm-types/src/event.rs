@@ -227,7 +227,8 @@ impl EventScope {
 
 /// Sync-engine event envelope version. Bump together with a migration default whenever clients
 /// must gate on a new persisted wire shape.
-pub const SYNC_EVENT_VERSION: u32 = 28;
+// 29: provider-neutral managed Assistant session actors.
+pub const SYNC_EVENT_VERSION: u32 = 29;
 
 mod forge_checks;
 pub use forge_checks::{

@@ -32,7 +32,8 @@ use crate::harness::{
 };
 use crate::ids::{ActorId, CardId, TrackId};
 use crate::mcp_server::wiring::{
-    mint_card_mcp_token_pair, mirror_session_mcp_token, persist_card_mcp_token_hash,
+    CodexAssistantCredential, capture_codex_assistant_credential_tx, mint_card_mcp_token_pair,
+    mirror_session_mcp_token, persist_card_mcp_token_hash, restore_codex_assistant_credential_tx,
 };
 use crate::model::{Card, CardPatch, CardRole, NewCard, new_id, now_ms};
 use crate::operation::codex_adapter::card_payload_get_tx;
@@ -318,16 +319,13 @@ pub struct LazyMintCardSeed {
     pub reasoning_effort: Option<String>,
 }
 
-/// `Assistant` is `CodexCard`, NOT `SharedPlanner`: a `SharedPlanner` session becomes the track's `root_session_id` and would displace the planner card as planning authority.
+/// Managed Assistant has a distinct kind and contract; only SharedPlanner may own track root.
 fn session_kind_for(profile: HarnessProfile) -> WorkerSessionKind {
-    match profile {
-        HarnessProfile::Planner => WorkerSessionKind::SharedPlanner,
-        HarnessProfile::PlainChat | HarnessProfile::Assistant => WorkerSessionKind::CodexCard,
-    }
+    profile.session_kind()
 }
 
 /// The provider the session row persists. A Planner card names it in `planner_provider` (missing or unknown is not a
-/// harness card); the conversation profiles run on Codex.
+/// harness card); Assistant has its own required provider and PlainChat is Codex.
 fn startable_provider(profile: HarnessProfile, card: &Card) -> Result<AgentProvider> {
     let role = match profile {
         HarnessProfile::Planner => CardRole::Planner,
@@ -339,7 +337,7 @@ fn startable_provider(profile: HarnessProfile, card: &Card) -> Result<AgentProvi
         .ok_or_else(|| CalmError::BadRequest(format!("card {} is not a harness card", card.id)))
 }
 
-/// A Planner row carries its provider (`WorkerSessionInit::shared_planner`); a conversation row is a Codex card.
+/// Managed Planner and Assistant constructors require provider; PlainChat remains a Codex card.
 fn starting_runtime_init(
     profile: HarnessProfile,
     provider: AgentProvider,
@@ -359,7 +357,16 @@ fn starting_runtime_init(
             snapshot,
             now_ms,
         ),
-        HarnessProfile::PlainChat | HarnessProfile::Assistant => WorkerSessionInit {
+        HarnessProfile::Assistant => WorkerSessionInit::managed_assistant(
+            id,
+            card_id,
+            provider,
+            WorkerSessionState::Starting,
+            thread_id,
+            snapshot,
+            now_ms,
+        ),
+        HarnessProfile::PlainChat => WorkerSessionInit {
             id,
             card_id,
             kind: session_kind_for(profile),
@@ -509,7 +516,8 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
     }
 
     async fn validate(&self, input: &Value) -> Result<()> {
-        let payload: PlannerHarnessStartOperationPayload = serde_json::from_value(input.clone())?;
+        let decoded = super::assistant_start_wire::StartInput::decode(input)?;
+        let payload = decoded.payload;
         let track = self
             .repo
             .track_get(&payload.track_id)
@@ -584,10 +592,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                     payload.planner_card_id
                 )));
             }
-            if !self.daemon.is_running() {
-                return Err(self.daemon.not_running_error());
-            }
-            return Ok(());
+            return self.check_ready(&decoded.mint_provider).await;
         }
         let Some(card) = self.repo.card_get(payload.planner_card_id.as_str()).await? else {
             return Err(CalmError::NotFound(format!(
@@ -647,7 +652,10 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             };
             return Err(CalmError::BadRequest(message));
         }
-        let provider = startable_provider(payload.profile, &card)?;
+        let provider =
+            crate::harness::profile::checked_card_binding(self.repo.as_ref(), &card, expected_role)
+                .await?
+                .provider;
         if expected_role == CardRole::Planner
             && track.purpose.as_deref() == Some(crate::AREA_CHAT_PURPOSE)
         {
@@ -665,7 +673,8 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         input: &Value,
         _op: &Operation,
     ) -> Result<TxOutput> {
-        let payload: PlannerHarnessStartOperationPayload = serde_json::from_value(input.clone())?;
+        let decoded = super::assistant_start_wire::StartInput::decode(input)?;
+        let payload = decoded.payload;
         let card_id = payload.planner_card_id;
         let track_id = payload.track_id;
         let report_card_id = payload.report_card_id;
@@ -709,6 +718,12 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 ("schemaVersion".to_string(), json!(1)),
                 ("harness_profile".to_string(), json!(minted_marker)),
             ]);
+            if payload.profile == HarnessProfile::Assistant {
+                card_payload.insert(
+                    crate::validation::ASSISTANT_PROVIDER_PAYLOAD_KEY.into(),
+                    json!(decoded.mint_provider),
+                );
+            }
             if let Some(side) = &seed.side {
                 card_payload.insert(
                     crate::validation::SIDE_SOURCE_CARD_PAYLOAD_KEY.into(),
@@ -763,9 +778,18 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         .map(Card::from)
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
         let provider = startable_provider(payload.profile, &card)?;
+        let worker_session_id = new_id();
 
+        let credential_predecessor =
+            session_projection_active_for_card_tx(tx, card.id.as_str()).await?;
+        let old_codex_credential = match credential_predecessor.as_ref() {
+            Some(old) => {
+                capture_codex_assistant_credential_tx(tx, &old.id, &worker_session_id).await?
+            }
+            None => None,
+        };
         let existing_active_runtime = if defer_runtime_start {
-            session_projection_active_for_card_tx(tx, card.id.as_str()).await?
+            credential_predecessor
         } else {
             None
         };
@@ -869,7 +893,6 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             }
         };
         // Sentences a human typed, stranded on a runtime that left the active set before its queue drained. Read, carried and stamped in THIS transaction so a second restart takes nothing.
-        let worker_session_id = new_id();
         crate::acp_planner::recovery::retire_card_sources(tx, card.id.as_str()).await?;
         let harvested = harvest_pending_user_messages_tx(
             tx,
@@ -1021,6 +1044,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             "track_id": track_id,
             "runtime_id": worker_session_id,
             "runtime_deferred": defer_runtime_start,
+            "old_codex_credential": old_codex_credential,
             "cwd": payload.cwd,
             "goal": payload.goal,
             "report_card_id": report_card_id,
@@ -1058,9 +1082,8 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         op: &Operation,
         ctx: &SpawnCtx,
     ) -> Result<AppServerInteractOutcome> {
-        let payload: PlannerHarnessStartOperationPayload =
-            serde_json::from_value(op.payload.clone())?;
-        let reset_harness_items = payload.reset_harness_items;
+        let payload = super::assistant_start_wire::StartInput::decode(&op.payload)?.payload;
+        let reset_transcript = payload.reset_harness_items;
         let profile = payload.profile;
         // Not a security boundary: production reads this role nowhere (the tool surface is resolved per MCP request from the card's persisted `role` column).
         let card_role = match profile {
@@ -1130,26 +1153,19 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             uuid::Uuid::new_v4().to_string()
         } else {
             let developer_instructions = match profile {
-                // A plain chat is a bare codex thread: no kernel prompt, no MCP tools to describe.
                 HarnessProfile::PlainChat => None,
-                // The assistant gets its own prompt, not the planner one. On Today's launchpad it gets a different identity (keeping the day's report current is the job);
-                // the criterion is `routes::today::is_launchpad_track`, the same call the activity briefing makes.
-                HarnessProfile::Assistant => {
-                    let template =
-                        if crate::routes::today::is_launchpad_track(self.repo.as_ref(), &track_id)
-                            .await?
-                        {
-                            crate::planner_card::LAUNCHPAD_ASSISTANT_SYSTEM_PROMPT_TEMPLATE
-                        } else {
-                            crate::planner_card::ASSISTANT_SYSTEM_PROMPT_TEMPLATE
-                        };
-                    Some(crate::planner_card::render_system_prompt(
-                        template, &track_id,
-                    ))
-                }
-                HarnessProfile::Planner => Some(
-                    planner_instructions(self.repo.as_ref(), &self.plugin, &track_id, &card_id)
-                        .await?,
+                _ => Some(
+                    crate::harness::instructions::profile_instructions(
+                        self.repo.as_ref(),
+                        &self.plugin,
+                        &track_id,
+                        &card_id,
+                        &crate::harness::profile::PlannerBinding {
+                            profile,
+                            provider: provider.clone(),
+                        },
+                    )
+                    .await?,
                 ),
             };
             let (raw, hashed) = mint_card_mcp_token_pair();
@@ -1223,9 +1239,6 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 Box::pin(async move {
                     let mut checkpoint_output = output_clone;
                     let mut old_worker_session_id = None;
-                    let mut old_runtime_status = None;
-                    // What this transaction took off which row; it has to leave the closure because the journal lives in `output`.
-                    let mut taken_from: Vec<HarvestedFrom> = Vec::new();
                     if let Some(hashed) = new_mcp_token_hash.as_ref() {
                         persist_card_mcp_token_hash(tx, &card_id, hashed).await?;
                     }
@@ -1250,7 +1263,6 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                         .await?;
                         if let Some(existing) = raced_in.as_ref() {
                             old_worker_session_id = Some(existing.id.clone());
-                            old_runtime_status = Some(existing.status);
                             checkpoint_output.set_output_data(
                                 "old_runtime_id",
                                 json!(existing.id.clone()),
@@ -1259,6 +1271,18 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                             checkpoint_output.set_output_data(
                                 "old_runtime_status",
                                 serde_json::to_value(existing.status)?,
+                                "planner harness",
+                            )?;
+                            checkpoint_output.set_output_data(
+                                "old_codex_credential",
+                                serde_json::to_value(
+                                    capture_codex_assistant_credential_tx(
+                                        tx,
+                                        &existing.id,
+                                        &worker_session_id,
+                                    )
+                                    .await?,
+                                )?,
                                 "planner harness",
                             )?;
                             // Supersede FIRST, then harvest: the harvest predicate is `state = 'superseded'` and this row is the one being retired.
@@ -1272,7 +1296,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                                 stranded_user_messages,
                             )
                             .await?;
-                            taken_from = harvested.taken_from;
+                            let taken_from = harvested.taken_from;
                             // The journal is written INSIDE this transaction, onto the checkpoint; a post-commit merge would leave a crash window with stamped rows and no record.
                             let mut journal = read_harvested_from_journal(&checkpoint_output)
                                 .into_iter()
@@ -1368,7 +1392,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                     }
                     // The delete is a hard delete across the card's whole history, so measure the transcript inside the tx and strictly before it.
                     let mut cleared_measure = HarnessTranscriptMeasure::default();
-                    if reset_harness_items {
+                    if reset_transcript {
                         cleared_measure = harness_items_measure_by_card_tx(tx, &card_id).await?;
                         harness_items_delete_by_card_tx(tx, &card_id).await?;
                     }
@@ -1393,10 +1417,9 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                     Ok((
                         (
                             card.clone(),
+                            checkpoint_output,
                             old_worker_session_id,
-                            old_runtime_status,
                             cleared_measure,
-                            taken_from,
                         ),
                         Event::CardUpdated(card),
                     ))
@@ -1404,7 +1427,11 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             },
         )
         .await?;
-        let (card, old_worker_session_id, old_runtime_status, cleared_measure, taken_from) = tx_out;
+        let (card, committed_output, old_worker_session_id, cleared_measure) = tx_out;
+        // The transaction's checkpoint is the authoritative replay/undo state. Adopt it before
+        // any fallible post-commit work so both driver persistence and compensation use exactly
+        // the state that committed, including a raced predecessor and its harvest/credential.
+        *output = committed_output;
         if provider == AgentProvider::OpenCode
             && let Some(displaced) = old_worker_session_id.as_ref()
         {
@@ -1412,37 +1439,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             crate::planner_process::stop(&self.acp_host.instance, displaced).await?;
         }
         drop(mint_lock_guard);
-        // Merge this transaction's undo journal into the one `prepare_tx` wrote, or a compensation puts back only half of what it took.
-        if !taken_from.is_empty() {
-            let mut merged = read_harvested_from_journal(output)
-                .into_iter()
-                .map(|entry| HarvestedFrom {
-                    worker_session_id: entry.worker_session_id,
-                    messages: entry.messages,
-                })
-                .collect::<Vec<_>>();
-            merged.extend(taken_from);
-            output.set_output_data(
-                "harvested_from",
-                harvested_from_journal(&merged),
-                "planner harness",
-            )?;
-        }
-        if let Some(old_worker_session_id) = old_worker_session_id {
-            output.set_output_data(
-                "old_runtime_id",
-                json!(old_worker_session_id),
-                "planner harness",
-            )?;
-        }
-        if let Some(old_runtime_status) = old_runtime_status {
-            output.set_output_data(
-                "old_runtime_status",
-                serde_json::to_value(old_runtime_status)?,
-                "planner harness",
-            )?;
-        }
-        if reset_harness_items {
+        if reset_transcript {
             ctx.repo
                 .log_pure_event(
                     ActorId::Kernel,
@@ -1464,9 +1461,6 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 )
                 .await?;
         }
-        output.result = serde_json::to_value(&card)?;
-        output.target_id = Some(card.id.to_string());
-
         Ok(AppServerInteractOutcome::MintedAndAwaited { thread_id })
     }
 
@@ -1514,12 +1508,16 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
             .await?;
         }
         let backend = PlannerBackend::open(
-            provider,
+            provider.clone(),
             self.daemon.clone(),
             self.seals.clone(),
             &self.claude_wiring(),
             self.repo.clone(),
             ClaudePlannerRow {
+                binding: crate::harness::profile::PlannerBinding {
+                    profile: op_profile(_op)?,
+                    provider,
+                },
                 worker_session_id: &worker_session_id,
                 card_id: &card_id,
                 track_id: &track_id,
@@ -1565,8 +1563,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
         output: &TxOutput,
         op: &Operation,
     ) -> Result<CompensationStateVersioned> {
-        let payload: PlannerHarnessStartOperationPayload =
-            serde_json::from_value(op.payload.clone())?;
+        let payload = super::assistant_start_wire::StartInput::decode(&op.payload)?.payload;
         let card_id = output.output_string("card_id", "planner harness")?;
         let worker_session_id = output.output_string("runtime_id", "planner harness")?;
         let thread_id = output.output_optional_string("codex_thread_id", "planner harness")?;
@@ -1636,6 +1633,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                 json!({
                     "runtime_id": old_worker_session_id,
                     "status": old_runtime_status,
+                    "codex_credential": output.data.get("old_codex_credential"),
                 }),
             ));
         }
@@ -1759,6 +1757,12 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
                     ctx.repo.as_ref(),
                     worker_session_id,
                     status,
+                    step.args
+                        .get("codex_credential")
+                        .filter(|value| !value.is_null())
+                        .cloned()
+                        .map(serde_json::from_value)
+                        .transpose()?,
                 )
                 .await
             }
@@ -1783,7 +1787,7 @@ impl ProviderAdapter for PlannerHarnessStartAdapter {
 
 /// The profile this operation was submitted with.
 fn op_profile(op: &Operation) -> Result<HarnessProfile> {
-    let payload: PlannerHarnessStartOperationPayload = serde_json::from_value(op.payload.clone())?;
+    let payload = super::assistant_start_wire::StartInput::decode(&op.payload)?.payload;
     Ok(payload.profile)
 }
 
@@ -2266,6 +2270,7 @@ async fn restore_old_runtime_after_spawn_failure(
     repo: &dyn crate::db::RouteRepo,
     old_worker_session_id: String,
     status: WorkerSessionState,
+    credential: Option<CodexAssistantCredential>,
 ) -> Result<()> {
     // A failed carrier (#2192) goes back to being the card's session, still `failed`.
     if status == WorkerSessionState::Failed {
@@ -2281,9 +2286,19 @@ async fn restore_old_runtime_after_spawn_failure(
     active_run_status_to_db(&status)?;
     write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
-            session_restore_from_superseded_runtime_tx(tx, &old_worker_session_id, status)
+            if let Some(credential) = credential {
+                restore_codex_assistant_credential_tx(
+                    tx,
+                    &credential,
+                    &old_worker_session_id,
+                    status,
+                )
                 .await
-                .map_err(CalmError::from)
+            } else {
+                session_restore_from_superseded_runtime_tx(tx, &old_worker_session_id, status)
+                    .await
+                    .map_err(CalmError::from)
+            }
         })
     })
     .await
@@ -2700,7 +2715,7 @@ mod tests {
                     title: None,
                     kind: "codex".into(),
                     sort: None,
-                    payload: json!({"schemaVersion": 1, "harness_profile": minted_marker}),
+                    payload: json!({"schemaVersion": 1, "harness_profile": minted_marker, "assistant_provider":"codex"}),
                 },
                 minted_role,
                 false,

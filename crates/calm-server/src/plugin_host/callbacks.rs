@@ -1172,6 +1172,7 @@ mod tests {
                 "terminal_signals",
                 "template_context",
                 "planner_provider",
+                "assistant_provider",
                 "side_source_card_id",
                 "permission_mode",
                 "owner_created",

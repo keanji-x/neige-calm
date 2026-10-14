@@ -2050,6 +2050,11 @@ async fn reset_planner_card_restarts_terminal_less_harness_card() {
         })
         .await
         .unwrap();
+    sqlx::query("UPDATE cards SET role='planner' WHERE id=?")
+        .bind(card.id.as_str())
+        .execute(boot.repo.pool())
+        .await
+        .unwrap();
     boot.state.card_role_cache.insert(
         card.id.clone(),
         CardRole::Planner,
@@ -2135,6 +2140,11 @@ async fn reset_planner_card_tolerates_corrupt_dormant_snapshot() {
                 "planner_harness": true, "planner_provider": "codex"
             }),
         })
+        .await
+        .unwrap();
+    sqlx::query("UPDATE cards SET role='planner' WHERE id=?")
+        .bind(card.id.as_str())
+        .execute(boot.repo.pool())
         .await
         .unwrap();
     boot.state.card_role_cache.insert(
@@ -2234,6 +2244,11 @@ async fn reset_planner_card_preserves_runtime_pending_queue_and_push_watermark()
                 "planner_harness": true, "planner_provider": "codex"
             }),
         })
+        .await
+        .unwrap();
+    sqlx::query("UPDATE cards SET role='planner' WHERE id=?")
+        .bind(card.id.as_str())
+        .execute(boot.repo.pool())
         .await
         .unwrap();
     boot.state.card_role_cache.insert(
@@ -2436,6 +2451,11 @@ async fn reset_planner_card_spawn_failure_restores_old_runtime_after_old_harness
         })
         .await
         .unwrap();
+    sqlx::query("UPDATE cards SET role='planner' WHERE id=?")
+        .bind(card.id.as_str())
+        .execute(boot.repo.pool())
+        .await
+        .unwrap();
     boot.state.card_role_cache.insert(
         card.id.clone(),
         CardRole::Planner,
@@ -2555,6 +2575,11 @@ async fn reset_planner_card_recovers_inert_harness_card_without_active_runtime()
         })
         .await
         .unwrap();
+    sqlx::query("UPDATE cards SET role='planner' WHERE id=?")
+        .bind(card.id.as_str())
+        .execute(boot.repo.pool())
+        .await
+        .unwrap();
     boot.state.card_role_cache.insert(
         card.id.clone(),
         CardRole::Planner,
@@ -2616,6 +2641,11 @@ async fn reset_planner_card_failure_keeps_old_runtime_when_shared_daemon_down() 
                 "codex_thread_id": "thread-old"
             }),
         })
+        .await
+        .unwrap();
+    sqlx::query("UPDATE cards SET role='planner' WHERE id=?")
+        .bind(card.id.as_str())
+        .execute(boot.repo.pool())
         .await
         .unwrap();
     boot.state.card_role_cache.insert(

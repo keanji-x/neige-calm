@@ -73,7 +73,7 @@ async fn mail_trace_reaches_a_claude_planner() {
     let w = World::new(&["NVDA research"]).await;
     let n = w.p(0);
     let r = w
-        .add_planner_without_harness(&w.area_id, "Weekly review")
+        .add_planner_without_harness(&w.area_id, "Weekly review", AgentProvider::Claude)
         .await;
     let bin = w.dir.path().join("claude-bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -131,8 +131,7 @@ async fn mail_trace_reaches_a_claude_planner() {
     });
     w.registry.insert(r.session_id.clone(), harness.clone());
     let ctx = w.app_context();
-    let mut identity = r.identity(&w.area_id);
-    identity.provider = AgentProvider::Claude;
+    let identity = r.identity(&w.area_id);
 
     // 1–4: the user's turn on the Claude Planner sends m1 at hop 1.
     harness

@@ -269,7 +269,7 @@ impl Stack {
         .await
     }
 
-    async fn send_with(
+    pub async fn send_with(
         &self,
         builder: axum::http::request::Builder,
         body: Option<Value>,

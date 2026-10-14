@@ -92,6 +92,14 @@ pub async fn handle_initialize(
     if card.track_id != session.track_id {
         return Err(token_not_recognized());
     }
+    if (card.role == crate::model::CardRole::Assistant
+        || session.contract == calm_types::worker::WorkerContract::Assistant)
+        && !crate::harness::profile::validate_live_assistant(repo, &session)
+            .await
+            .map_err(|error| RpcError::internal(error.to_string()))?
+    {
+        return Err(token_not_recognized());
+    }
     let principal = Principal::Agent {
         session_id: WorkerSessionId::from(session.id.as_str()),
         track_id: session.track_id.clone(),

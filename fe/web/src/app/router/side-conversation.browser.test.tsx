@@ -20,14 +20,18 @@ function setup(outcome?: 'interrupted' | 'failed', longText?: string, live?: { t
   const requests: ApiRequest[] = [];
   const track = { id: 'side-track', area_id: 'area', title: 'Architecture discussion', sort: 1,
     cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
-  const parent: Conversation = { id: 'parent', trackId: track.id, title: 'Main discussion', kind: 'track-assistant', state: 'idle', updatedAt: 2, lastTurnCompletedAt: null };
+  const parent: Conversation & { provider: 'codex' } = { id: 'parent', trackId: track.id, title: 'Main discussion', kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 2, lastTurnCompletedAt: null };
   const rows = [parent];
   const transport: ApiTransportPort = { async send(request) {
     await Promise.resolve();
     requests.push(request);
     let body: unknown = [];
     let status = 200;
-    if (request.path === '/api/version') body = { conversationSide: true, webCompatVersion: 1, minWebCompatVersion: 1, syncEventVersion: 1, dbInstanceId: 'browser-side' };
+    if (request.path === '/api/version') body = { assistantProviders: true, conversationSide: true, webCompatVersion: 53, minWebCompatVersion: 53, syncEventVersion: 1, dbInstanceId: 'browser-side' };
+    if (request.path.startsWith('/api/agent-providers/managed')) body = [{
+      availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
+      capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
+    }];
     if (request.path === '/api/areas') body = [{ id: 'area', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 }];
     if (request.path === '/api/areas/area/tracks') body = [track];
     if (request.path === '/api/settings') body = {};
@@ -37,7 +41,7 @@ function setup(outcome?: 'interrupted' | 'failed', longText?: string, live?: { t
     if (request.path === `/api/tracks/${track.id}/conversations`) {
       if (request.method === 'POST') {
         const id = trackConversationCardId(track.id, request.headers?.['Idempotency-Key'] ?? '');
-        const created: Conversation = { ...parent, id, title: 'Side discussion', sourceCardId: parent.id, updatedAt: 3 };
+        const created: typeof parent = { ...parent, id, title: 'Side discussion', sourceCardId: parent.id, updatedAt: 3 };
         rows.push(created); body = created; status = 201;
       } else body = rows;
     }

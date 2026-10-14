@@ -903,12 +903,58 @@ async fn mint_card_with_thread(
     role: CardRole,
 ) -> (String, String) {
     let card_id = calm_server::model::new_id();
-    let runtime_id = calm_server::model::new_id();
+    let worker_session_id = calm_server::model::new_id();
     let mut tx = sqlx_repo.pool().begin().await.expect("begin card tx");
+    if role == CardRole::Assistant {
+        use calm_server::session_projection_repo::{
+            AgentProvider, WorkerSessionInit, WorkerSessionState,
+        };
+        calm_server::db::sqlite::card_create_with_id_tx(
+            &mut tx,
+            card_id.clone(),
+            calm_server::model::NewCard {
+                track_id,
+                title: None,
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({"harness_profile":"assistant","assistant_provider":"codex"}),
+            },
+            role,
+            false,
+            card_role_cache,
+        )
+        .await
+        .unwrap();
+        let thread_id = format!("thread-{card_id}");
+        calm_server::db::sqlite::session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit::managed_assistant(
+                worker_session_id.clone(),
+                card_id.clone(),
+                AgentProvider::Codex,
+                WorkerSessionState::Running,
+                Some(thread_id.clone()),
+                json!({}),
+                0,
+            ),
+        )
+        .await
+        .unwrap();
+        let token = calm_server::mcp_server::auth::CardMcpToken::generate();
+        let token_hash = calm_server::mcp_server::auth::hash_token(token.as_str());
+        card_mcp_token_set_tx(&mut tx, &card_id, &token_hash)
+            .await
+            .unwrap();
+        session_mcp_token_set_tx(&mut tx, &worker_session_id, &token_hash)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        return (token.into_inner(), thread_id);
+    }
     let (_card, _term, mcp_token) = card_with_codex_create_tx(
         &mut tx,
         card_id.clone(),
-        &runtime_id,
+        &worker_session_id,
         None,
         track_id,
         None,
@@ -933,7 +979,7 @@ async fn mint_card_with_thread(
             card_mcp_token_set_tx(&mut tx, &card_id, &token_hash)
                 .await
                 .expect("mint card MCP token");
-            session_mcp_token_set_tx(&mut tx, &runtime_id, &token_hash)
+            session_mcp_token_set_tx(&mut tx, &worker_session_id, &token_hash)
                 .await
                 .expect("mint session MCP token");
             token.into_inner()

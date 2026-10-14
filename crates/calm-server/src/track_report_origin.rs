@@ -135,15 +135,7 @@ pub fn policy_for(origin: &WriteOrigin) -> Result<WritePolicy, CalmError> {
 
 /// Mirrors `ToolCallIdentity::to_actor_id`; `Worker` / `ReportCard` are refused by [`policy_for`] first.
 fn agent_actor(agent: &AgentOrigin) -> ActorId {
-    let session_id = agent.session_id.clone();
-    match agent.role {
-        CardRole::Planner => ActorId::AiPlannerSession(session_id),
-        CardRole::Assistant | CardRole::Worker | CardRole::ReportCard => match agent.provider {
-            AgentProvider::Codex => ActorId::AiCodexSession(session_id),
-            AgentProvider::Claude => ActorId::AiClaudeSession(session_id),
-            AgentProvider::OpenCode => ActorId::AiPlannerSession(session_id),
-        },
-    }
+    ActorId::for_agent_session(agent.role, &agent.provider, agent.session_id.clone())
 }
 
 #[cfg(test)]
@@ -193,7 +185,7 @@ mod tests {
             (
                 "agent/assistant/codex",
                 agent(CardRole::Assistant, AgentProvider::Codex),
-                ActorId::AiCodexSession(WorkerSessionId::from("sess_1".to_string())),
+                ActorId::AiManagedSession(WorkerSessionId::from("sess_1".to_string())),
                 WriteAttribution::Authored(EditAuthor::Assistant),
                 false,
                 RecorderRequirement::AgentGate,
@@ -201,7 +193,23 @@ mod tests {
             (
                 "agent/assistant/claude",
                 agent(CardRole::Assistant, AgentProvider::Claude),
-                ActorId::AiClaudeSession(WorkerSessionId::from("sess_1".to_string())),
+                ActorId::AiManagedSession(WorkerSessionId::from("sess_1".to_string())),
+                WriteAttribution::Authored(EditAuthor::Assistant),
+                false,
+                RecorderRequirement::AgentGate,
+            ),
+            (
+                "agent/planner/opencode",
+                agent(CardRole::Planner, AgentProvider::OpenCode),
+                ActorId::AiPlannerSession(WorkerSessionId::from("sess_1")),
+                WriteAttribution::Authored(EditAuthor::Planner),
+                true,
+                RecorderRequirement::AgentGate,
+            ),
+            (
+                "agent/assistant/opencode",
+                agent(CardRole::Assistant, AgentProvider::OpenCode),
+                ActorId::AiManagedSession(WorkerSessionId::from("sess_1")),
                 WriteAttribution::Authored(EditAuthor::Assistant),
                 false,
                 RecorderRequirement::AgentGate,
@@ -255,7 +263,7 @@ mod tests {
     // distinguish pass-through from a hardcoded `ActorId::User`. Add it when the admitted set widens.
 
     /// Bump this alongside a new arm in [`actor_variant_label`].
-    const ACTOR_ID_NON_USER_VARIANTS: usize = 9;
+    const ACTOR_ID_NON_USER_VARIANTS: usize = 11;
 
     /// No `_` arm: adding an `ActorId` variant fails to compile here.
     fn actor_variant_label(actor: &ActorId) -> &'static str {
@@ -267,9 +275,11 @@ mod tests {
             ActorId::AiPlanner(_) => "AiPlanner",
             ActorId::AiCodex(_) => "AiCodex",
             ActorId::AiClaude(_) => "AiClaude",
+            ActorId::AiManagedCard(_) => "AiManagedCard",
             ActorId::AiPlannerSession(_) => "AiPlannerSession",
             ActorId::AiCodexSession(_) => "AiCodexSession",
             ActorId::AiClaudeSession(_) => "AiClaudeSession",
+            ActorId::AiManagedSession(_) => "AiManagedSession",
         }
     }
 
@@ -282,9 +292,11 @@ mod tests {
             ActorId::AiPlanner(CardId::from("c_2".to_string())),
             ActorId::AiCodex(CardId::from("c_2".to_string())),
             ActorId::AiClaude(CardId::from("c_2".to_string())),
+            ActorId::AiManagedCard(CardId::from("c_2")),
             ActorId::AiPlannerSession(WorkerSessionId::from("sess_fork".to_string())),
             ActorId::AiCodexSession(WorkerSessionId::from("sess_fork".to_string())),
             ActorId::AiClaudeSession(WorkerSessionId::from("sess_fork".to_string())),
+            ActorId::AiManagedSession(WorkerSessionId::from("sess_fork")),
         ];
         let mut labels: Vec<&'static str> = samples.iter().map(actor_variant_label).collect();
         labels.sort_unstable();

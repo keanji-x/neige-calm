@@ -12,7 +12,7 @@ vi.mock(import('../../../../../core/domain/mentions.ts'), async (original) => {
 });
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
-const conversation: Conversation = {
+const conversation: Conversation = { provider: 'codex' as const,
   id: 'card', trackId: 'track', title: 'Measured messages', kind: 'codex', state: 'idle', updatedAt: 3,
 };
 const question: ConversationTurn = { id: 'you', author: 'you', text: 'First question', atMs: 1 };

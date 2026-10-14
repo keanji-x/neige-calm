@@ -424,7 +424,7 @@ describe('the caret a just-created track lands with', () => {
 });
 
 function railConversation(): Conversation {
-  return {
+  return { provider: 'codex' as const,
     id: 'c1', trackId: 'w1', trackTitle: 'Ship the rewrite', title: null, kind: 'codex',
     state: 'idle', updatedAt: 0, turns: 0,
   };

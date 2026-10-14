@@ -24,7 +24,7 @@ const LONGEST_NAME = 'Rework how the track panel lists conversations'
   .padEnd(CONVERSATION_NAME_MAX, '!');
 
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
-  return {
+  return { provider: 'codex' as const,
     id: 'c1', trackId: 'w1', trackTitle: LONG_TRACK, title: 'Assistant',
     kind: 'track-assistant', state: null, updatedAt: 1, ...overrides,
   };

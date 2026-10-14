@@ -588,3 +588,50 @@ async fn shutdown_registered_harnesses_drains_registry_and_allows_reforce() {
         "re-force must register a fresh harness"
     );
 }
+
+#[tokio::test]
+async fn assistant_provider_forced_phase_keeps_the_declared_provider_and_never_becomes_root() {
+    use calm_server::session_projection_repo::{AgentProvider, WorkerSessionKind};
+    for provider in [
+        AgentProvider::Codex,
+        AgentProvider::Claude,
+        AgentProvider::OpenCode,
+    ] {
+        let boot = boot().await;
+        let (track, _) = create_track(&boot).await;
+        let id = calm_server::model::new_id();
+        let roles = boot.state.card_role_cache.clone();
+        let mut tx = boot.repo.pool().begin().await.unwrap();
+        calm_server::db::sqlite::card_create_with_id_tx(&mut tx,id.clone(),NewCard {
+            track_id:track.clone().into(),title:None,kind:"codex".into(),sort:None,
+            payload:json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":provider}),
+        },CardRole::Assistant,false,&roles).await.unwrap();
+        tx.commit().await.unwrap();
+        let outcome =
+            replay::force_planner_phase(&boot.state, boot.dyn_repo(), &id, HarnessPhaseTag::Idle)
+                .await
+                .unwrap();
+        let runtime = boot
+            .repo
+            .session_projection_active_for_card(&id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(runtime.kind, WorkerSessionKind::ManagedAssistant);
+        assert_eq!(runtime.agent_provider, Some(provider));
+        let root: Option<String> =
+            sqlx::query_scalar("SELECT root_session_id FROM tracks WHERE id=?1")
+                .bind(&track)
+                .fetch_one(boot.repo.pool())
+                .await
+                .unwrap();
+        assert!(root.is_none());
+        boot.state
+            .harness
+            .remove(&outcome.worker_session_id)
+            .unwrap()
+            .shutdown()
+            .await
+            .unwrap();
+    }
+}

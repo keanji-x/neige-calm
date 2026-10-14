@@ -66,6 +66,9 @@ impl WorkerWatcher {
             headers,
             track_id.to_string(),
             NewTrackConversationBody {
+                provider: crate::routes::track_conversations::AssistantProviderRequest::Explicit(
+                    crate::session_projection_repo::AgentProvider::Codex,
+                ),
                 side: None,
                 text: BOOTSTRAP_TEXT.trim_end().to_string(),
                 model: None,

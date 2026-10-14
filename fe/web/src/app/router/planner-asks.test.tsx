@@ -14,7 +14,7 @@ import { bootTestCardRuntime } from './test-card-runtime.ts';
 const AREA = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const TRACK = { id: 'w1', area_id: 'c1', title: 'Release', sort: 1, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
 const PLANNER = { id: 'planner-1', track_id: 'w1', kind: 'codex', title: 'Planner chat', sort: 1, payload: { planner_harness: true }, deletable: false, created_at: 1, updated_at: 2 };
-const ASSISTANT = { id: 'assistant-1', trackId: 'w1', title: 'Side chat', kind: 'track-assistant', state: 'idle', updatedAt: 2, lastTurnCompletedAt: null };
+const ASSISTANT = { id: 'assistant-1', trackId: 'w1', title: 'Side chat', kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 2, lastTurnCompletedAt: null };
 const ASK = {
   source: 'ask', key: 'ask:41', text: 'Which branch? / Notes?', at_ms: 5, ask_id: 41,
   questions: [{ title: 'Which branch?', options: ['main', 'release'] }, { title: 'Notes?', options: [] }],

@@ -566,3 +566,15 @@ describe('ModelPill', () => {
     });
   });
 });
+
+
+it('emits a managed provider and model that have no UI presentation or policy table entry', () => {
+  const onChange = vi.fn();
+  const group: ModelGroup<'owner-backend'> = { provider: 'owner-backend', availability: null,
+    catalog: catalog(), selectionProblem: null };
+  render(<ModelPill groups={[group]} provider="owner-backend" selection={FOLLOW_INSTALLATION_DEFAULT} onChange={onChange} />);
+  fireEvent.click(screen.getByRole('button', { name: /^Model: owner-backend/ }));
+  expect(screen.getByRole('group', { name: 'owner-backend' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('menuitem', { name: /^GPT-5/ }));
+  expect(onChange).toHaveBeenCalledWith({ model: 'gpt-5', reasoning_effort: null }, 'owner-backend');
+});

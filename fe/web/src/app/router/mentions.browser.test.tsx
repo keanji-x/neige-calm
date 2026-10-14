@@ -19,7 +19,7 @@ afterEach(async () => { cleanup(); await page.viewport(1280, 720); });
 const AREA = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const TRACK = { id: 'w1', area_id: 'c1', title: 'Test track', sort: 1, cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
 const PLANNER_CARD = { id: 'card-planner', track_id: 'w1', kind: 'codex', title: 'Planner chat', sort: 1, payload: { planner_harness: true }, deletable: true, created_at: 1, updated_at: 2 };
-const ASSISTANT_ROW = { id: 'conv-assistant-1', trackId: 'w1', title: 'Side chat', kind: 'track-assistant', state: 'idle', updatedAt: 30, lastTurnCompletedAt: null };
+const ASSISTANT_ROW = { id: 'conv-assistant-1', trackId: 'w1', title: 'Side chat', kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 30, lastTurnCompletedAt: null };
 const BLOCK_INSERT = '@`area/reports/Deploy notes.md#b_1a2b`';
 const CANDIDATES: MentionCandidates = {
   tags: [{ label: '部署', track_count: 2, insert: '@`tag:部署`' }],
@@ -32,6 +32,11 @@ function mount(path: string, storedText: string | null = null, pluginDescription
   const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
   const transport: ApiTransportPort = { send(request) {
     requests.push(request);
+    if (request.path === '/api/version') return Promise.resolve(ok({ webCompatVersion: 53, minWebCompatVersion: 53, syncEventVersion: 20, dbInstanceId: 'mentions', assistantProviders: true, conversationCreateModel: true }));
+    if (request.path.startsWith('/api/agent-providers/managed')) return Promise.resolve(ok([{
+      availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
+      capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
+    }]));
     if (request.path.startsWith('/api/areas/c1/mentions?q=bob')) return Promise.resolve(ok({ tags: [], tracks: [], blocks: [] }));
     if (request.path.startsWith('/api/areas/c1/mentions?')) return Promise.resolve(ok(CANDIDATES));
     if (request.method === 'POST' && request.path === '/api/tracks') return new Promise<ApiTransportResponse>(() => undefined);

@@ -46,7 +46,8 @@ pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 // Required compact outcome and context-reading validity prevent stale occupancy and false success.
 // #2618: older bundles silently drop planner_turn_timeout activity notices.
 // #2618: 51 -> 52 adds the regenerable initial Planner budget presentation.
-pub const WEB_COMPAT_VERSION: u32 = 52;
+// #2616: 52 -> 53 adds managed Assistant identities and provider negotiation.
+pub const WEB_COMPAT_VERSION: u32 = 53;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]
@@ -85,6 +86,8 @@ pub fn router() -> Router<AppState> {
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct VersionInfo {
+    /// Three managed Assistant providers and immutable persisted provider identity.
+    pub assistant_providers: bool,
     /// True only when Area creation binds Idempotency-Key atomically and permanently.
     pub area_create_idempotency: bool,
     /// First-message model selection is part of atomic conversation creation.
@@ -112,6 +115,7 @@ pub struct VersionInfo {
 pub fn current_version_info(db_instance_id: String, database_id: String) -> VersionInfo {
     let compatibility = current_kernel_compatibility();
     VersionInfo {
+        assistant_providers: true,
         area_create_idempotency: true,
         conversation_create_model: true,
         conversation_side: true,
@@ -153,6 +157,7 @@ mod tests {
     #[test]
     fn min_web_compat_version_matches_constant() {
         let body = VersionInfo {
+            assistant_providers: true,
             area_create_idempotency: true,
             conversation_create_model: true,
             conversation_side: true,

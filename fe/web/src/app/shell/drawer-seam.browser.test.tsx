@@ -387,7 +387,7 @@ describe('the drawer against a real rendering engine', () => {
 
 /* #2020: the conversation drawer's dragged edge, against the real shell span rules and the shell's own width host. */
 describe('dragged conversation width', () => {
-  const conversation: Conversation = {
+  const conversation: Conversation = { provider: 'codex' as const,
     id: 'c1', trackId: 't1', trackTitle: 'Track', title: null, kind: 'codex', state: 'idle', updatedAt: 1, turns: 1,
   };
   const WIDE_LINE = `const route = ${'resolveRoute(origin, destination).'.repeat(8)}hops;`;

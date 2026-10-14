@@ -261,7 +261,7 @@ async fn assistant_turn_skips_the_transcript_refresh_but_still_reads_the_track_d
         &boot.area_id,
         "codex",
         CardRole::Assistant,
-        json!({"schemaVersion": 1, "harness_profile": "assistant"}),
+        json!({"schemaVersion": 1, "harness_profile": "assistant", "assistant_provider":"codex"}),
     )
     .await;
     // The baseline the assistant last saw…
@@ -300,20 +300,15 @@ async fn assistant_turn_skips_the_transcript_refresh_but_still_reads_the_track_d
     let mut tx = boot.repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
-        WorkerSessionInit {
-            id: runtime_id.clone(),
-            card_id: assistant_card.id.to_string(),
-            kind: WorkerSessionKind::CodexCard,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some(thread_id.clone()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
+        WorkerSessionInit::managed_assistant(
+            runtime_id.clone(),
+            assistant_card.id.to_string(),
+            AgentProvider::Codex,
+            WorkerSessionState::Idle,
+            Some(thread_id.clone()),
+            serde_json::to_value(&snapshot).unwrap(),
+            now_ms(),
+        ),
     )
     .await
     .unwrap();

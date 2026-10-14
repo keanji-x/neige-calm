@@ -30,6 +30,28 @@ pub(super) async fn resolve(inner: &Inner) -> Result<PlannerPermissionMode, Issu
         }
         Ok((Some(card), role)) => (card, role),
     };
+    if role == Some(crate::model::CardRole::Assistant) {
+        let row = inner
+            .repo
+            .session_get(&calm_types::worker::WorkerSessionId(
+                inner.worker_session_id.clone(),
+            ))
+            .await
+            .map_err(|error| IssuanceRefusal::retryable(error.to_string()))?;
+        let binding = match row {
+            Some(row) => crate::harness::profile::live_binding(inner.repo.as_ref(), &row)
+                .await
+                .map_err(|error| IssuanceRefusal::retryable(error.to_string()))?,
+            None => None,
+        };
+        if binding.is_none_or(|binding| {
+            binding.profile != crate::harness::profile::HarnessProfile::Assistant
+                || binding.provider != inner.backend.provider()
+        }) {
+            return Err(IssuanceRefusal::needs_a_choice("Assistant provider identity changed".into(),
+                "This conversation's provider identity is invalid. Create a new conversation; the queued input and history are retained.".into()));
+        }
+    }
     let has_mode =
         role.is_some_and(|role| planner_permission_mode::card_has_permission_mode(&card, role));
     if !has_mode {

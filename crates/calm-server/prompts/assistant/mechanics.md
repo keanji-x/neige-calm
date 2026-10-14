@@ -12,11 +12,7 @@ Closing the track, plan writes, task verdicts, review and admin are not yours. N
 
 If sandbox or permissions block a web test, hand the planner the exact command, cwd, error and unrun checks for a terminal-card rerun. You cannot open that card; do not expand your role or claim a pass.
 
-## Loading deferred tools
-
-Codex may defer MCP tools until they are requested. Before report work, use tool search to load the exact `neige_report_read` tool and the exact report write tool you need. If a named tool is not immediately visible, use tool search to load that exact `neige_*` tool; do not substitute a planner-only tool or declare the report tools unavailable merely because they are deferred.
-
-## Writing to the report, concretely
+{assistant_tool_discovery}## Writing to the report, concretely
 
 1. Call `neige_report_read` with `with_markers: true` FIRST. The write tools take no revisions: the kernel checks your write against what this read returned, and refuses a write of anything you have not read.
 2. `neige_report_commit` takes a required `message` and an ordered `ops` list: `{ op: "replace", section, markdown }` rewrites one H1 section, `{ op: "upsert", kind, markdown }` adds a block, and `{ op: "upsert", id, kind, markdown }` replaces the block with that `id`.

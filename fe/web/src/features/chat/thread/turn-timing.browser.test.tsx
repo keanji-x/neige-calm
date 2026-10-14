@@ -7,7 +7,7 @@ import type { Conversation, ConversationTurnOutcome } from '../../../../../core/
 
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
-const conversation: Conversation = { id: 'c1', trackId: 'w1', title: 'Review', kind: 'codex', state: 'idle', updatedAt: 1 };
+const conversation: Conversation = { provider: 'codex' as const, id: 'c1', trackId: 'w1', title: 'Review', kind: 'codex', state: 'idle', updatedAt: 1 };
 
 function outcome(status: ConversationTurnOutcome['status'], elapsedMs: number | null): ConversationTurnOutcome {
   return { id: `outcome-${status}`, author: 'turn', turnId: `turn-${status}`, status, elapsedMs, atMs: 1 };

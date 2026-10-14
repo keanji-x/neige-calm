@@ -175,6 +175,60 @@
         }
       }
     },
+    "/api/agent-providers/managed": {
+      "get": {
+        "tags": [
+          "agent_providers"
+        ],
+        "operationId": "list_managed_providers",
+        "parameters": [
+          {
+            "name": "refresh",
+            "in": "query",
+            "description": "`true` runs every check again instead of answering from the last one (at most 30 s old).",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ManagedProviderAvailability"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`bad_request`: a path or query parameter does not parse.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`unauthorized`: no valid session cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/areas": {
       "get": {
         "tags": [
@@ -12992,7 +13046,7 @@
               "object",
               "null"
             ],
-            "description": "Replaces the stored payload. A payload carrying a server-owned key is refused with 400:\n`terminal_signals`, `template_context`, `planner_provider`, `side_source_card_id`, `permission_mode`, `owner_created`, `settings_path`, `claude_session_id`. Every kernel-minted server-owned value the card already carries is kept."
+            "description": "Replaces the stored payload. A payload carrying a server-owned key is refused with 400:\n`terminal_signals`, `template_context`, `planner_provider`, `assistant_provider`, `side_source_card_id`, `permission_mode`, `owner_created`, `settings_path`, `claude_session_id`. Every kernel-minted server-owned value the card already carries is kept."
           },
           "sort": {
             "type": [
@@ -14692,6 +14746,50 @@
           }
         }
       },
+      "ManagedCapabilities": {
+        "type": "object",
+        "required": [
+          "managed_conversation",
+          "images",
+          "manual_compact",
+          "history_replacement",
+          "requires_ready_availability"
+        ],
+        "properties": {
+          "history_replacement": {
+            "type": "boolean"
+          },
+          "images": {
+            "type": "boolean"
+          },
+          "managed_conversation": {
+            "type": "boolean"
+          },
+          "manual_compact": {
+            "type": "boolean"
+          },
+          "requires_ready_availability": {
+            "type": "boolean",
+            "description": "Whether a failed availability/authentication probe refuses initial creation."
+          }
+        }
+      },
+      "ManagedProviderAvailability": {
+        "type": "object",
+        "description": "Availability and protocol capabilities share the existing backend registration owner.",
+        "required": [
+          "availability",
+          "capabilities"
+        ],
+        "properties": {
+          "availability": {
+            "$ref": "#/components/schemas/ProviderAvailability"
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/ManagedCapabilities"
+          }
+        }
+      },
       "MarkReadRequest": {
         "type": "object",
         "description": "`POST /api/read-receipts/{kind}/{target_id}/read`: the activity instant the reader has seen.",
@@ -15216,6 +15314,10 @@
               "null"
             ],
             "description": "Explicit choice for the first turn; omitted/null follows the installation default."
+          },
+          "provider": {
+            "$ref": "#/components/schemas/AgentProvider",
+            "description": "Omitted only by legacy clients; the API boundary explicitly selects Codex."
           },
           "reasoning_effort": {
             "type": [
@@ -17489,6 +17591,7 @@
         "type": "object",
         "description": "One row of `GET /api/tracks/{track_id}/conversations`.",
         "required": [
+          "provider",
           "id",
           "trackId",
           "kind",
@@ -17510,6 +17613,9 @@
             ],
             "format": "int64",
             "description": "When the conversation's last non-interrupted turn ended, or `null` when there is none."
+          },
+          "provider": {
+            "$ref": "#/components/schemas/AgentProvider"
           },
           "sourceCardId": {
             "type": [
@@ -18634,6 +18740,7 @@
         "type": "object",
         "description": "Response shape for `GET /api/version`; camelCase on the wire.",
         "required": [
+          "assistantProviders",
           "areaCreateIdempotency",
           "conversationCreateModel",
           "conversationSide",
@@ -18656,6 +18763,10 @@
           "areaCreateIdempotency": {
             "type": "boolean",
             "description": "True only when Area creation binds Idempotency-Key atomically and permanently."
+          },
+          "assistantProviders": {
+            "type": "boolean",
+            "description": "Three managed Assistant providers and immutable persisted provider identity."
           },
           "buildSha": {
             "type": [
@@ -18830,7 +18941,8 @@
           "terminal",
           "codex",
           "claude",
-          "shared-spec"
+          "shared-spec",
+          "managed-assistant"
         ]
       },
       "WorkerSessionState": {

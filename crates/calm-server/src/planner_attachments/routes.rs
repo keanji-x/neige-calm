@@ -36,6 +36,8 @@ struct AttachmentContext {
     card: Card,
     root: std::path::PathBuf,
     repo_root: std::path::PathBuf,
+    role: crate::model::CardRole,
+    workspace: crate::model::TrackWorkspace,
 }
 
 /// Card admission is the same predicate `GET /api/cards/{id}/harness/items` uses: the door onto an attachment must not be wider than the door onto the conversation.
@@ -62,6 +64,8 @@ async fn attachment_context(s: &RouteState, id: &str) -> Result<AttachmentContex
     let root = attachment_root(&track.workspace, &s.workspace_root)?;
     Ok(AttachmentContext {
         card,
+        role,
+        workspace: track.workspace.clone(),
         root,
         repo_root: std::path::PathBuf::from(&track.workspace.path),
     })
@@ -98,9 +102,13 @@ pub(crate) async fn upload_planner_attachment(
         "An agent already reads this workspace directly and has no upload channel.",
     )?;
     let context = attachment_context(&s, &id).await?;
+    let binding =
+        crate::harness::profile::checked_card_binding(s.repo.as_ref(), &context.card, context.role)
+            .await?;
+    let root = super::image_input_root(&binding.provider, &context.workspace, &s.workspace_root)?;
     let card_id = context.card.id.clone();
     let stored = store::store_upload(
-        &context.root,
+        &root,
         &context.repo_root,
         &card_id,
         &s.planner_attachment_locks,

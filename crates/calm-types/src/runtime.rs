@@ -20,6 +20,8 @@ pub enum WorkerSessionKind {
     ClaudeCard,
     #[serde(rename = "shared-spec")]
     SharedPlanner,
+    #[serde(rename = "managed-assistant")]
+    ManagedAssistant,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]

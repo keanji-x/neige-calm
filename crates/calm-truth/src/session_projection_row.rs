@@ -147,6 +147,9 @@ fn runtime_kind_from_session_identity(
     contract: WorkerContract,
 ) -> Result<WorkerSessionKind> {
     match (provider, contract) {
+        (provider, WorkerContract::Assistant) if provider != WorkerProviderKind::Terminal => {
+            Ok(WorkerSessionKind::ManagedAssistant)
+        }
         (WorkerProviderKind::Terminal, WorkerContract::Executor) => Ok(WorkerSessionKind::Terminal),
         (WorkerProviderKind::Codex, WorkerContract::Executor) => Ok(WorkerSessionKind::CodexCard),
         (
@@ -163,12 +166,7 @@ fn runtime_kind_from_session_identity(
 }
 
 fn agent_provider_from_session_provider(provider: WorkerProviderKind) -> Option<AgentProvider> {
-    match provider {
-        WorkerProviderKind::Terminal => None,
-        WorkerProviderKind::Codex => Some(AgentProvider::Codex),
-        WorkerProviderKind::Claude => Some(AgentProvider::Claude),
-        WorkerProviderKind::OpenCode => Some(AgentProvider::OpenCode),
-    }
+    AgentProvider::try_from(provider).ok()
 }
 
 pub(crate) fn run_status_from_db(value: &str) -> Result<WorkerSessionState> {

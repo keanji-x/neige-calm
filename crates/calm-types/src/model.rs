@@ -332,6 +332,7 @@ mod runtime_view_tests;
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct TrackConversationSummary {
+    pub provider: crate::runtime::AgentProvider,
     /// The source conversation of a discussion branch; absent for ordinary conversations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]

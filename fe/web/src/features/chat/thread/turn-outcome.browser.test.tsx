@@ -11,7 +11,7 @@ import type { Conversation, ConversationTurnOutcome } from '../../../../../core/
 afterEach(async () => { cleanup(); await page.viewport(1280, 720); });
 
 function conversation(): Conversation {
-  return { id: 'c1', trackId: 'w1', title: 'Review', kind: 'codex', state: 'idle', updatedAt: 1 };
+  return { provider: 'codex' as const, id: 'c1', trackId: 'w1', title: 'Review', kind: 'codex', state: 'idle', updatedAt: 1 };
 }
 
 function outcome(status: 'interrupted' | 'failed', text: string | undefined): ConversationTurnOutcome {

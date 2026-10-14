@@ -370,6 +370,24 @@ impl ClaudePlannerSession {
         if params.seals.is_sealed(thread) {
             return Err(sealed(thread).into());
         }
+        let live = params
+            .repo
+            .session_get(&WorkerSessionId(params.worker_session_id.clone()))
+            .await
+            .map_err(CalmError::from)?
+            .ok_or_else(|| CalmError::Conflict("Claude owner is missing".into()))?;
+        let binding = crate::harness::profile::live_binding(params.repo.as_ref(), &live)
+            .await?
+            .ok_or_else(|| CalmError::Conflict("Claude live owner identity changed".into()))?;
+        if live.provider != calm_types::worker::WorkerProviderKind::Claude
+            || live.card_id.as_ref().map(|id| id.as_str()) != Some(params.card_id.as_str())
+            || live.track_id.as_str() != params.track_id
+            || live.thread_id.as_deref() != Some(thread)
+            || (binding.profile == crate::harness::profile::HarnessProfile::Assistant
+                && mode != PlannerPermissionMode::Never)
+        {
+            return Err(CalmError::Conflict("Claude live owner identity changed".into()).into());
+        }
         let host = &params.host;
         let config = host
             .configured()

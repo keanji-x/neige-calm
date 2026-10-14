@@ -63,6 +63,8 @@ pub enum Principal {
 pub enum WorkerContract {
     /// Observations in, dispatch requests out.
     Planner,
+    /// A managed conversation with Assistant authority; never track root.
+    Assistant,
     /// Goal in, result out (`task.completed` / `task.failed`).
     Executor,
     /// Artifacts and acceptance criteria in, verdict out.
@@ -73,6 +75,7 @@ impl WorkerContract {
     pub fn as_db_str(self) -> &'static str {
         match self {
             WorkerContract::Planner => "planner",
+            WorkerContract::Assistant => "assistant",
             WorkerContract::Executor => "executor",
             WorkerContract::Validator => "validator",
         }
@@ -85,6 +88,7 @@ impl TryFrom<String> for WorkerContract {
     fn try_from(value: String) -> Result<Self, Self::Error> {
         match value.as_str() {
             "planner" => Ok(WorkerContract::Planner),
+            "assistant" => Ok(WorkerContract::Assistant),
             "executor" => Ok(WorkerContract::Executor),
             "validator" => Ok(WorkerContract::Validator),
             other => Err(format!("unknown worker_sessions.contract value `{other}`")),
@@ -216,6 +220,28 @@ impl WorkerProviderKind {
             WorkerProviderKind::Claude => "claude",
             WorkerProviderKind::OpenCode => "opencode",
             WorkerProviderKind::Terminal => "terminal",
+        }
+    }
+}
+
+impl From<&crate::runtime::AgentProvider> for WorkerProviderKind {
+    fn from(provider: &crate::runtime::AgentProvider) -> Self {
+        match provider {
+            crate::runtime::AgentProvider::Codex => Self::Codex,
+            crate::runtime::AgentProvider::Claude => Self::Claude,
+            crate::runtime::AgentProvider::OpenCode => Self::OpenCode,
+        }
+    }
+}
+
+impl TryFrom<WorkerProviderKind> for crate::runtime::AgentProvider {
+    type Error = &'static str;
+    fn try_from(provider: WorkerProviderKind) -> Result<Self, Self::Error> {
+        match provider {
+            WorkerProviderKind::Codex => Ok(Self::Codex),
+            WorkerProviderKind::Claude => Ok(Self::Claude),
+            WorkerProviderKind::OpenCode => Ok(Self::OpenCode),
+            WorkerProviderKind::Terminal => Err("terminal is not an agent provider"),
         }
     }
 }

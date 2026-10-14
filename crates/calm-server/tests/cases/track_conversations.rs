@@ -360,7 +360,7 @@ async fn the_first_message_mints_an_assistant_card_with_its_own_marker_and_mcp_t
             .await
             .unwrap();
     assert_eq!(
-        contract, "executor",
+        contract, "assistant",
         "an assistant session must never be a Planner: Planner sessions take \
          over tracks.root_session_id"
     );
@@ -859,7 +859,7 @@ async fn resetting_an_assistant_conversation_restarts_it_under_its_own_profile()
             .await
             .unwrap();
     assert!(
-        contracts.iter().all(|contract| contract == "executor"),
+        contracts.iter().all(|contract| contract == "assistant"),
         "reset restarted the assistant as a planner: {contracts:?}"
     );
     let root_after: Option<String> =
@@ -1239,3 +1239,8 @@ async fn side_source_survives_rest_and_trusted_payload_replacement() {
 
 #[path = "track_conversations_keyed.rs"]
 mod keyed;
+
+#[path = "assistant_provider_contract.rs"]
+mod assistant_provider_contract;
+#[path = "assistant_provider_create.rs"]
+mod assistant_provider_create;

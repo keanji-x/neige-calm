@@ -9,7 +9,7 @@ import type { Conversation, ConversationActivity, TranscriptEntry } from '../../
 
 afterEach(cleanup);
 
-const conversation: Conversation = {
+const conversation: Conversation = { provider: 'codex' as const,
   id: 'c1', trackId: 't1', trackTitle: 'Review', title: null,
   kind: 'codex', state: 'idle', updatedAt: 1, turns: 0,
 };

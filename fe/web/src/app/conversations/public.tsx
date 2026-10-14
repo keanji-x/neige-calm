@@ -2,6 +2,7 @@ import {
   createContext, useCallback, useContext, useMemo, useRef, type ReactNode,
 } from 'react';
 
+import type { AgentProvider } from '../../../../core/api/generated/wire.ts';
 import type { SideConversation } from '../../../../core/domain/conversation.ts';
 import {
   isOptimisticConversationTurn, TOO_MANY_IMAGES, type ModelSelection, type Conversation, type TranscriptEntry,
@@ -25,6 +26,7 @@ export type ConversationDraft = Readonly<{
   /** `/side question` sends the prepared question once; recovery thereafter is explicit. */
   autoSend?: boolean;
   /** Chosen before sending and locked while delivery is unconfirmed. */
+  provider: AgentProvider;
   model: ModelSelection;
   /** Identifies the draft to the server; minted once, never once per send. */
   key: string;

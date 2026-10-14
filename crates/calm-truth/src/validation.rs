@@ -24,6 +24,8 @@ pub const PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY: &str = "template_context";
 /// The Planner card's backend (`AgentProvider` serde names), minted at track creation and
 /// backfilled `"codex"` by migration 0117. Missing or unknown makes the card not a harness card.
 pub const PLANNER_PROVIDER_PAYLOAD_KEY: &str = "planner_provider";
+/// Immutable managed Assistant backend, minted by its start operation.
+pub const ASSISTANT_PROVIDER_PAYLOAD_KEY: &str = "assistant_provider";
 /// Creation-owned origin of an assistant discussion branch.
 pub const SIDE_SOURCE_CARD_PAYLOAD_KEY: &str = "side_source_card_id";
 /// A Planner card's `PlannerPermissionMode` (#2348): minted `"never"` at creation and changed only
@@ -44,10 +46,11 @@ pub const CLAUDE_SESSION_ID_PAYLOAD_KEY: &str = "claude_session_id";
 
 /// Kernel-owned card fields, refused at client boundaries and preserved by
 /// `card_update_tx` even when a replacement payload omits them.
-pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 8] = [
+pub const SERVER_OWNED_CARD_PAYLOAD_KEYS: [&str; 9] = [
     TERMINAL_SIGNALS_PAYLOAD_KEY,
     PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY,
     PLANNER_PROVIDER_PAYLOAD_KEY,
+    ASSISTANT_PROVIDER_PAYLOAD_KEY,
     SIDE_SOURCE_CARD_PAYLOAD_KEY,
     PLANNER_PERMISSION_MODE_PAYLOAD_KEY,
     OWNER_CREATED_PAYLOAD_KEY,
@@ -63,7 +66,9 @@ pub fn server_owned_value_is_sticky(key: &str, value: &Value) -> bool {
         // corruption, not erase it and silently drop the working method.
         PLANNER_TEMPLATE_CONTEXT_PAYLOAD_KEY => true,
         // Creation-owned identity stays immutable, including a corrupt stored value.
-        PLANNER_PROVIDER_PAYLOAD_KEY | SIDE_SOURCE_CARD_PAYLOAD_KEY => true,
+        PLANNER_PROVIDER_PAYLOAD_KEY
+        | ASSISTANT_PROVIDER_PAYLOAD_KEY
+        | SIDE_SOURCE_CARD_PAYLOAD_KEY => true,
         // Only its own writer changes it; a replacement can neither drop nor "repair" a stored value.
         PLANNER_PERMISSION_MODE_PAYLOAD_KEY => true,
         TERMINAL_SIGNALS_PAYLOAD_KEY | OWNER_CREATED_PAYLOAD_KEY => value.as_bool() == Some(true),

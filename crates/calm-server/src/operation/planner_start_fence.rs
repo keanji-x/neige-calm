@@ -65,13 +65,39 @@ impl CardStartFence {
         payload: &PlannerHarnessStartOperationPayload,
         key: OperationKey,
     ) -> Result<OperationResult> {
-        if payload.planner_card_id != self.card_id {
+        self.start_wire(
+            &payload.planner_card_id,
+            serde_json::to_value(payload)?,
+            key,
+        )
+        .await
+    }
+
+    pub(crate) async fn start_assistant(
+        &self,
+        wire: &super::assistant_start_wire::AssistantStartWire,
+        key: OperationKey,
+    ) -> Result<OperationResult> {
+        self.start_wire(
+            &wire.payload.planner_card_id,
+            serde_json::to_value(wire)?,
+            key,
+        )
+        .await
+    }
+
+    async fn start_wire(
+        &self,
+        card_id: &CardId,
+        payload: serde_json::Value,
+        key: OperationKey,
+    ) -> Result<OperationResult> {
+        if card_id != &self.card_id {
             return Err(CalmError::Internal(format!(
                 "a planner start for card {} was submitted under card {}'s start fence",
-                payload.planner_card_id, self.card_id
+                card_id, self.card_id
             )));
         }
-        let payload = serde_json::to_value(payload)?;
         let op_id = self
             .operation_runtime
             .submit(PLANNER_HARNESS_START, key, payload)

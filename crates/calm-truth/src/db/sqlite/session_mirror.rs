@@ -11,8 +11,8 @@ use super::{
 use crate::error::CalmError;
 use crate::ids::{CardId, TrackId};
 use crate::session_projection_repo::{
-    AgentProvider, Result as WorkerSessionProjectionResult, ThreadAttribution,
-    Tx as WorkerSessionProjectionTx, WorkerSessionInit, WorkerSessionKind, WorkerSessionProjection,
+    Result as WorkerSessionProjectionResult, ThreadAttribution, Tx as WorkerSessionProjectionTx,
+    WorkerSessionInit, WorkerSessionKind, WorkerSessionProjection,
     WorkerSessionProjectionRepoError,
 };
 use calm_types::worker::{
@@ -60,21 +60,33 @@ async fn worker_session_track_id_for_card_tx(
 fn runtime_init_session_identity(
     init: &WorkerSessionInit,
 ) -> WorkerSessionProjectionResult<(WorkerProviderKind, SessionMode, WorkerContract)> {
-    if init.kind != WorkerSessionKind::SharedPlanner {
+    if !matches!(
+        init.kind,
+        WorkerSessionKind::SharedPlanner | WorkerSessionKind::ManagedAssistant
+    ) {
         return Ok(derive_session_identity(&init.kind));
     }
-    let provider = match init.agent_provider {
-        Some(AgentProvider::Codex) => WorkerProviderKind::Codex,
-        Some(AgentProvider::Claude) => WorkerProviderKind::Claude,
-        Some(AgentProvider::OpenCode) => WorkerProviderKind::OpenCode,
-        None => {
-            return Err(runtime_message(format!(
-                "planner runtime init {} names no provider",
+    let provider = init
+        .agent_provider
+        .as_ref()
+        .map(WorkerProviderKind::from)
+        .ok_or_else(|| {
+            runtime_message(format!(
+                "{} runtime init {} names no provider",
+                if init.kind == WorkerSessionKind::ManagedAssistant {
+                    "assistant"
+                } else {
+                    "planner"
+                },
                 init.id
-            )));
-        }
+            ))
+        })?;
+    let contract = if init.kind == WorkerSessionKind::ManagedAssistant {
+        WorkerContract::Assistant
+    } else {
+        WorkerContract::Planner
     };
-    Ok((provider, SessionMode::Resumable, WorkerContract::Planner))
+    Ok((provider, SessionMode::Resumable, contract))
 }
 
 fn worker_session_from_runtime_init(
@@ -123,7 +135,7 @@ async fn session_refresh_deferred_placeholder_tx(
     if existing.contract != desired.contract
         || !matches!(
             desired.contract,
-            WorkerContract::Planner | WorkerContract::Executor
+            WorkerContract::Planner | WorkerContract::Assistant | WorkerContract::Executor
         )
         || !refreshable_state
         || existing.track_id != desired.track_id
@@ -254,12 +266,13 @@ async fn session_mirror_card_mcp_token_tx(
     if !session.state.is_active_authority() || session.mcp_token_hash.is_some() {
         return Ok(());
     }
-    // A managed Planner row's hash is written only by its first-turn mint (#1791 §5.1 token
+    // A managed Assistant or non-Codex Planner hash is written only by its own first-turn mint (#1791 §5.1 token
     // invariant): the card's hash may be a predecessor's, which must never authenticate it.
-    if matches!(
-        session.provider,
-        WorkerProviderKind::Claude | WorkerProviderKind::OpenCode
-    ) && session.contract == WorkerContract::Planner
+    if session.contract == WorkerContract::Assistant
+        || (matches!(
+            session.provider,
+            WorkerProviderKind::Claude | WorkerProviderKind::OpenCode
+        ) && session.contract == WorkerContract::Planner)
     {
         return Ok(());
     }
@@ -328,11 +341,13 @@ pub async fn session_prepare_deferred_planner_tx(
 ) -> WorkerSessionProjectionResult<WorkerSession> {
     if !matches!(
         init.kind,
-        WorkerSessionKind::SharedPlanner | WorkerSessionKind::CodexCard
+        WorkerSessionKind::SharedPlanner
+            | WorkerSessionKind::ManagedAssistant
+            | WorkerSessionKind::CodexCard
     ) || init.status != WorkerSessionState::Starting
     {
         return Err(runtime_message(
-            "deferred planner session placeholders require a starting shared-spec or codex runtime init",
+            "deferred harness placeholders require a starting managed or plain-chat runtime init",
         ));
     }
     if init.thread_id.is_some() || init.terminal_run_id.is_some() || init.session_id.is_some() {
@@ -373,7 +388,7 @@ pub async fn session_supersede_active_tx(
               SET state = 'superseded',
                   updated_at_ms = ?1,
                   completed_at_ms = COALESCE(completed_at_ms, ?1),
-                  mcp_token_hash = CASE WHEN provider IN ('claude','opencode') AND contract = 'planner'
+                  mcp_token_hash = CASE WHEN (contract = 'assistant' OR (provider IN ('claude','opencode') AND contract = 'planner'))
                                         THEN NULL ELSE mcp_token_hash END
             WHERE id = ?2
               AND state IN ('starting', 'running', 'idle', 'turn_pending')"#,
@@ -583,6 +598,7 @@ pub(super) async fn session_fail_if_active_tx(
     sqlx::query(
         r#"UPDATE worker_sessions
               SET state = 'failed',
+                  mcp_token_hash = CASE WHEN contract = 'assistant' THEN NULL ELSE mcp_token_hash END,
                   updated_at_ms = ?1,
                   completed_at_ms = ?1
             WHERE id = ?2
@@ -605,7 +621,7 @@ pub(super) async fn session_mark_superseded_tx(
               SET state = 'superseded',
                   updated_at_ms = ?1,
                   completed_at_ms = COALESCE(completed_at_ms, ?1),
-                  mcp_token_hash = CASE WHEN provider IN ('claude','opencode') AND contract = 'planner'
+                  mcp_token_hash = CASE WHEN (contract = 'assistant' OR (provider IN ('claude','opencode') AND contract = 'planner'))
                                         THEN NULL ELSE mcp_token_hash END
             WHERE id = ?2"#,
     )

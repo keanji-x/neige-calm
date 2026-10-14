@@ -132,12 +132,25 @@ impl AcpPlannerSession {
             .map_err(CalmError::from)?
             .ok_or_else(|| refused("ACP owner is missing"))?;
         if row.provider != WorkerProviderKind::OpenCode
-            || row.contract != WorkerContract::Planner
+            || !matches!(
+                row.contract,
+                WorkerContract::Planner | WorkerContract::Assistant
+            )
             || row.card_id.as_ref().map(|id| id.as_str()) != Some(&params.card_id)
             || row.thread_id.as_deref() != Some(thread)
             || !row.state.is_active_authority()
         {
             return Err(refused("ACP owner identity changed"));
+        }
+        let binding = crate::harness::profile::live_binding(params.repo.as_ref(), &row)
+            .await
+            .map_err(TurnStartFailure::from)?
+            .ok_or_else(|| refused("ACP live owner identity changed"))?;
+        if row.track_id.as_str() != params.track_id
+            || (binding.profile == crate::harness::profile::HarnessProfile::Assistant
+                && permission != PlannerPermissionMode::Never)
+        {
+            return Err(refused("ACP live owner identity changed"));
         }
         let input = serde_json::to_value(&items).map_err(CalmError::from)?;
         if let Some(receipt) = acp_submission_get(&pool, &params.worker_session_id, client)
@@ -193,7 +206,7 @@ impl AcpPlannerSession {
         .map_err(CalmError::from)?;
         if !has_receipts {
             blocks.push(protocol::ContentBlock::text(format!(
-                "Neige Planner instructions:\n{}",
+                "Neige conversation instructions:\n{}",
                 params.instructions
             )));
         }

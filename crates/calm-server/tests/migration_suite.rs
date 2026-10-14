@@ -1,5 +1,7 @@
 mod support;
 
+#[path = "cases/assistant_provider_migration.rs"]
+mod assistant_provider_migration;
 #[path = "cases/handle_state_writers.rs"]
 mod handle_state_writers;
 #[path = "cases/mails_cascade.rs"]

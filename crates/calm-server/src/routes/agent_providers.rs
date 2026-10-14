@@ -27,6 +27,7 @@ pub struct AgentProvidersQuery {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/agent-providers", get(list_agent_providers))
+        .route("/api/agent-providers/managed", get(list_managed_providers))
         .route(
             "/api/agent-providers/codex/retry",
             post(retry_codex_authentication),
@@ -146,4 +147,38 @@ pub(crate) async fn retry_codex_authentication(
         header::HeaderValue::from_static("no-store"),
     );
     Ok(response)
+}
+
+/// Availability and protocol capabilities share the existing backend registration owner.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ManagedProviderAvailability {
+    pub availability: ProviderAvailability,
+    pub capabilities: crate::harness::backend_metadata::ManagedCapabilities,
+}
+
+#[utoipa::path(
+    get, path = "/api/agent-providers/managed", tag = "agent_providers",
+    params(AgentProvidersQuery),
+    responses((status = 200, body = [ManagedProviderAvailability])),
+)]
+pub(crate) async fn list_managed_providers(
+    State(s): State<RouteState>,
+    State(codex): State<CodexShellState>,
+    Query(q): Query<AgentProvidersQuery>,
+) -> Result<Json<Vec<ManagedProviderAvailability>>> {
+    let Json(providers) = list_agent_providers(State(s), State(codex), Query(q)).await?;
+    Ok(Json(
+        providers
+            .into_iter()
+            .map(|availability| {
+                let capabilities =
+                    crate::harness::backend::PlannerBackend::metadata(&availability.provider)
+                        .capabilities;
+                ManagedProviderAvailability {
+                    availability,
+                    capabilities,
+                }
+            })
+            .collect(),
+    ))
 }

@@ -108,29 +108,52 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
     let card_role_cache = CardRoleCache::new();
     let card_id = calm_server::model::new_id();
     let other_card_id = calm_server::model::new_id();
-    let runtime_id = calm_server::model::new_id();
+    let worker_session_id = calm_server::model::new_id();
 
     let mut tx = sqlx_repo.pool().begin().await.unwrap();
-    let (_card, _term, mcp_token) = card_with_codex_create_tx(
-        &mut tx,
-        card_id.clone(),
-        &runtime_id,
-        None,
-        track.id.clone(),
-        None,
-        None,
-        "/workspace".into(),
-        json!({}),
-        None,
-        None,
-        None,
-        role,
-        true,
-        &card_role_cache,
-        calm_server::routes::theme::RequestTheme::default_dark(),
-    )
-    .await
-    .expect("mint card");
+    let mcp_token = if role == CardRole::Assistant {
+        calm_server::db::sqlite::card_create_with_id_tx(&mut tx, card_id.clone(), calm_server::model::NewCard {
+            track_id: track.id.clone(), title: None, kind: "codex".into(), sort: None,
+            payload: json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":"codex"}),
+        },role,true,&card_role_cache).await.unwrap();
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit::managed_assistant(
+                worker_session_id.clone(),
+                card_id.clone(),
+                AgentProvider::Codex,
+                WorkerSessionState::Running,
+                None,
+                json!({}),
+                now_ms(),
+            ),
+        )
+        .await
+        .unwrap();
+        None
+    } else {
+        let (_, _, mcp_token) = card_with_codex_create_tx(
+            &mut tx,
+            card_id.clone(),
+            &worker_session_id,
+            None,
+            track.id.clone(),
+            None,
+            None,
+            "/workspace".into(),
+            json!({}),
+            None,
+            None,
+            None,
+            role,
+            true,
+            &card_role_cache,
+            calm_server::routes::theme::RequestTheme::default_dark(),
+        )
+        .await
+        .expect("mint card");
+        mcp_token
+    };
     let raw_token = match mcp_token {
         Some(token) => token,
         None => {
@@ -139,7 +162,7 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
             card_mcp_token_set_tx(&mut tx, &card_id, &token_hash)
                 .await
                 .expect("mint test-only legacy MCP token");
-            session_mcp_token_set_tx(&mut tx, &runtime_id, &token_hash)
+            session_mcp_token_set_tx(&mut tx, &worker_session_id, &token_hash)
                 .await
                 .expect("mint test-only session MCP token");
             token.into_inner()

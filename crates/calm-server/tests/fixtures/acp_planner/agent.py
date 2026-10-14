@@ -80,7 +80,7 @@ def check_mcp(servers):
                   'token_rotated': rotated}
         with (root / 'cli-results.jsonl').open('a') as output:
             output.write(json.dumps(record) + '\n')
-    if not servers or (root / 'scenario').read_text().strip() != 'mcp':
+    if not servers or (root / 'scenario').read_text().strip() not in ['mcp', 'assistant-mcp']:
         return
     server = servers[0]
     env = dict(os.environ)
@@ -92,6 +92,22 @@ def check_mcp(servers):
             'protocolVersion': '2024-11-05', 'capabilities': {}, 'clientInfo': {'name': 'fixture', 'version': '1'}}}) + '\n')
         child.stdin.flush()
         (root / 'mcp-reply.json').write_text(child.stdout.readline())
+        if (root / 'scenario').read_text().strip() == 'assistant-mcp':
+            replies = []
+            for number, name, arguments in [
+                (2, 'neige_report_read', {'with_markers': True}),
+                (3, 'neige_report_commit', {'message': 'Assistant prose', 'ops': [
+                    {'op': 'upsert', 'kind': 'prose', 'markdown': '# Assistant note\n\nNative ACP prose.\n'}]}),
+                (4, 'neige_task_accept', {}),
+                (5, 'neige_terminal_open', {}),
+                (6, 'neige_track_close', {})]:
+                (root / 'assistant-mcp-progress').write_text(name)
+                child.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': number, 'method': 'tools/call',
+                    'params': {'name': name, 'arguments': arguments}}) + '\n')
+                child.stdin.flush()
+                replies.append(json.loads(child.stdout.readline()))
+                (root / 'assistant-mcp-results.json').write_text(json.dumps(replies))
+            (root / 'assistant-mcp-results.json').write_text(json.dumps(replies))
     finally:
         child.stdin.close()
         child.wait(timeout=5)

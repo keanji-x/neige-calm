@@ -16,7 +16,7 @@ afterEach(cleanup);
    where it matters. Counted by the marker, not by a label. */
 const workingMarks = () => document.querySelectorAll('[data-nc-activity="working"]');
 
-const conversation: Conversation = {
+const conversation: Conversation = { provider: 'codex' as const,
   id: 'integration', trackId: 'w1', trackTitle: 'Tools', title: null,
   kind: 'codex', state: 'idle', updatedAt: 1, turns: 0,
 };

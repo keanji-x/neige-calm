@@ -100,7 +100,7 @@ async fn a_planner_init_without_a_provider_writes_nothing() {
     let card_id = create_card_in_tx(&repo, &mut tx, "planner-unnamed", "codex").await;
     let mut init = WorkerSessionInit::shared_planner(
         "rt-planner-unnamed".into(),
-        card_id,
+        card_id.clone(),
         AgentProvider::Codex,
         WorkerSessionState::Idle,
         Some("thread-unnamed".into()),
@@ -117,4 +117,66 @@ async fn a_planner_init_without_a_provider_writes_nothing() {
             message: "planner runtime init rt-planner-unnamed names no provider".into()
         }
     );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM worker_sessions WHERE id='rt-planner-unnamed'"
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, Option<String>>("SELECT session_id FROM cards WHERE id=?")
+            .bind(&card_id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap(),
+        None
+    );
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn assistant_provider_init_without_a_provider_writes_nothing() {
+    let repo = fresh_repo().await;
+    let mut tx = repo.pool().begin().await.expect("begin");
+    let card_id = create_card_in_tx(&repo, &mut tx, "assistant-unnamed", "codex").await;
+    let mut init = WorkerSessionInit::managed_assistant(
+        "rt-assistant-unnamed".into(),
+        card_id.clone(),
+        AgentProvider::Codex,
+        WorkerSessionState::Idle,
+        Some("assistant-thread".into()),
+        json!({"mode":"harness"}),
+        1_000,
+    );
+    init.agent_provider = None;
+    let err = session_start_runtime_tx(&mut tx, init)
+        .await
+        .expect_err("a managed Assistant requires its provider");
+    assert_eq!(
+        err,
+        WorkerSessionProjectionRepoError::Message {
+            message: "assistant runtime init rt-assistant-unnamed names no provider".into()
+        }
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM worker_sessions WHERE id='rt-assistant-unnamed'"
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, Option<String>>("SELECT session_id FROM cards WHERE id=?")
+            .bind(&card_id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap(),
+        None
+    );
+    tx.rollback().await.unwrap();
 }

@@ -6,14 +6,8 @@ use crate::model::CardRole;
 #[tokio::test]
 async fn resumed_planner_and_assistant_receive_live_workspace_report_instructions() {
     for role in [CardRole::Planner, CardRole::Assistant] {
-        let fx = Fixture::new().await;
+        let fx = Fixture::for_role(role).await;
         let inner = &fx.harness.inner;
-        sqlx::query("UPDATE cards SET role=?1 WHERE id=?2")
-            .bind(role.as_db_str())
-            .bind(inner.card_id.as_str())
-            .execute(fx.repo.pool())
-            .await
-            .unwrap();
         // No template snapshot and an existing thread: updating the capability must suffice.
         sqlx::query(concat!(
             "INSERT INTO managed_track_identities(owner,identity,track_id,report_read_scope,",
@@ -65,14 +59,8 @@ async fn ordinary_revoked_and_worker_turns_do_not_receive_workspace_grants() {
         (CardRole::Assistant, Some("area")),
         (CardRole::Worker, Some("workspace")),
     ] {
-        let fx = Fixture::new().await;
+        let fx = Fixture::for_role(role).await;
         let inner = &fx.harness.inner;
-        sqlx::query("UPDATE cards SET role=?1 WHERE id=?2")
-            .bind(role.as_db_str())
-            .bind(inner.card_id.as_str())
-            .execute(fx.repo.pool())
-            .await
-            .unwrap();
         if let Some(scope) = scope {
             sqlx::query(concat!(
                 "INSERT INTO managed_track_identities(owner,identity,track_id,report_read_scope,",

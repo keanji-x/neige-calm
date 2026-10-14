@@ -459,7 +459,12 @@ async fn a_first_turn_mint_on_a_superseded_row_fails_and_writes_nothing() {
         )
         .await
         .expect_err("the guarded mint refuses a retired row");
-    assert!(error.to_string().contains("no longer active"), "{error}");
+    assert!(
+        error
+            .to_string()
+            .contains("Claude live owner identity changed"),
+        "{error}"
+    );
     assert_eq!(rig.mcp_token_hash().await, None);
     let card_rows: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM card_mcp_tokens WHERE card_id = ?1")

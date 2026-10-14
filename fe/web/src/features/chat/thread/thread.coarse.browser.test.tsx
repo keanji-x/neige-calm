@@ -16,7 +16,7 @@ import drawerStyles from '../../../ui/drawer/drawer.module.css';
 afterEach(() => { cleanup(); document.body.replaceChildren(); });
 
 function railConversation(): Conversation {
-  return {
+  return { provider: 'codex' as const,
     id: 'c1', trackId: 'w1', trackTitle: 'Ship the rewrite', title: null, kind: 'codex',
     state: 'idle', updatedAt: 0, turns: 0,
   };

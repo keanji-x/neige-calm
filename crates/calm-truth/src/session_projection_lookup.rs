@@ -194,10 +194,8 @@ pub(crate) fn project_runtime_fields(card: &mut Card, runtime: &WorkerSessionPro
         map.insert("claude_session_id".into(), Value::String(session_id));
     }
 
-    if matches!(
-        runtime.kind,
-        WorkerSessionKind::CodexCard | WorkerSessionKind::SharedPlanner
-    ) && let Some(thread_id) = thread_id
+    if projects_codex_fields(runtime)
+        && let Some(thread_id) = thread_id
     {
         map.insert("codex_thread_id".into(), Value::String(thread_id));
     }
@@ -247,11 +245,16 @@ pub fn claude_running_version(runtime: &WorkerSessionProjection) -> Option<&str>
         .filter(|version| !version.is_empty())
 }
 
-fn projected_thread_status(runtime: &WorkerSessionProjection) -> Option<&'static str> {
-    if !matches!(
+fn projects_codex_fields(runtime: &WorkerSessionProjection) -> bool {
+    matches!(
         runtime.kind,
         WorkerSessionKind::CodexCard | WorkerSessionKind::SharedPlanner
-    ) {
+    ) || (runtime.kind == WorkerSessionKind::ManagedAssistant
+        && runtime.agent_provider == Some(AgentProvider::Codex))
+}
+
+fn projected_thread_status(runtime: &WorkerSessionProjection) -> Option<&'static str> {
+    if !projects_codex_fields(runtime) {
         return None;
     }
 
@@ -293,8 +296,10 @@ pub fn card_is_shared_planner(card: &Card, runtime: Option<&WorkerSessionProject
 
 fn runtime_marks_shared(runtime: &WorkerSessionProjection) -> bool {
     matches!(runtime.kind, WorkerSessionKind::SharedPlanner)
-        || (matches!(runtime.kind, WorkerSessionKind::CodexCard)
-            && runtime.agent_provider == Some(AgentProvider::Codex)
+        || (matches!(
+            runtime.kind,
+            WorkerSessionKind::CodexCard | WorkerSessionKind::ManagedAssistant
+        ) && runtime.agent_provider == Some(AgentProvider::Codex)
             && runtime
                 .thread_id
                 .as_deref()

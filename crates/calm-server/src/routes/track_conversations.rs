@@ -40,9 +40,28 @@ pub fn router() -> Router<AppState> {
     )
 }
 
+/// The only provider omission compatibility boundary. Explicit null is not an omission.
+#[derive(Debug, Clone, Default)]
+pub enum AssistantProviderRequest {
+    #[default]
+    LegacyCodex,
+    Explicit(crate::session_projection_repo::AgentProvider),
+}
+impl<'de> Deserialize<'de> for AssistantProviderRequest {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        crate::session_projection_repo::AgentProvider::deserialize(deserializer).map(Self::Explicit)
+    }
+}
+
 /// Body of `POST /api/tracks/{track_id}/conversations`: the first message.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct NewTrackConversationBody {
+    /// Omitted only by legacy clients; the API boundary explicitly selects Codex.
+    #[serde(default)]
+    #[schema(value_type = crate::session_projection_repo::AgentProvider, required = false)]
+    pub provider: AssistantProviderRequest,
     /// Optional discussion source and frozen text excerpt. Does not fork provider history.
     #[serde(default)]
     pub side: Option<crate::side_conversation::SideConversation>,
@@ -142,6 +161,14 @@ pub(crate) async fn create_track_conversation_inner(
     })?;
     // Validate the message before minting anything, so an empty first message leaves no
     // conversation behind.
+    if matches!(&body.provider, AssistantProviderRequest::Explicit(provider) if *provider != crate::session_projection_repo::AgentProvider::Codex)
+    {
+        super::track_report_blocks::require_rest_user_actor_for(
+            &actor,
+            "Assistant provider selection",
+            "The person starting the conversation chooses its provider.",
+        )?;
+    }
     if body.model.is_some() || body.reasoning_effort.is_some() {
         super::track_report_blocks::require_rest_user_actor_for(
             &actor,
@@ -214,7 +241,21 @@ pub(crate) async fn create_track_conversation_inner(
         // This route mints no track, so it has no create request to hash.
         create_request_sha256: None,
     };
-    let payload_hash = stable_payload_hash(&serde_json::to_value(&payload)?)?;
+    let wire = match body.provider {
+        AssistantProviderRequest::LegacyCodex => None,
+        AssistantProviderRequest::Explicit(provider) => {
+            Some(crate::operation::assistant_start_wire::AssistantStartWire {
+                version: crate::operation::assistant_start_wire::AssistantWireVersion::V1,
+                provider,
+                payload: payload.clone(),
+            })
+        }
+    };
+    let serialized = match &wire {
+        Some(wire) => serde_json::to_value(wire)?,
+        None => serde_json::to_value(&payload)?,
+    };
+    let payload_hash = stable_payload_hash(&serialized)?;
     let operation_key = retryable_operation_key(&s, &derived.operation_key).await?;
     // The operation mints the card, so the fence is on the id it derives: a send or reset of
     // that card waits for the mint's start to settle.
@@ -225,16 +266,15 @@ pub(crate) async fn create_track_conversation_inner(
         &payload.planner_card_id,
     )
     .await;
-    let result = fence
-        .start(
-            &payload,
-            OperationKey {
-                operation_key: operation_key.clone(),
-                idempotency_key: Some(operation_key),
-                payload_hash,
-            },
-        )
-        .await?;
+    let key = OperationKey {
+        operation_key: operation_key.clone(),
+        idempotency_key: Some(operation_key),
+        payload_hash,
+    };
+    let result = match &wire {
+        Some(wire) => fence.start_assistant(wire, key).await?,
+        None => fence.start(&payload, key).await?,
+    };
     match result.outcome {
         OperationOutcome::Succeeded { .. } | OperationOutcome::SucceededViaCollision { .. } => {}
         OperationOutcome::Failed {
@@ -288,6 +328,7 @@ async fn load_track_conversation_summaries(
         r#"SELECT c.id                                   AS id,
                   json_extract(c.payload, '$.side_source_card_id') AS source_card_id,
                   c.track_id                              AS track_id,
+                  json_extract(c.payload, '$.assistant_provider') AS provider,
                   c.title                                AS title,
                   ws.state                               AS state,
                   COALESCE(ws.updated_at_ms, c.updated_at) AS updated_at,
@@ -323,6 +364,7 @@ async fn load_track_conversation_summaries(
 
 #[derive(sqlx::FromRow)]
 struct TrackConversationRow {
+    provider: String,
     source_card_id: Option<String>,
     id: String,
     track_id: String,
@@ -341,7 +383,9 @@ impl TryFrom<TrackConversationRow> for TrackConversationSummary {
             .map(WorkerSessionState::try_from)
             .transpose()
             .map_err(CalmError::Internal)?;
+        let provider = serde_json::from_value(serde_json::Value::String(row.provider))?;
         Ok(TrackConversationSummary {
+            provider,
             source_card_id: row.source_card_id,
             id: row.id,
             track_id: row.track_id,

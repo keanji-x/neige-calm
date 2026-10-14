@@ -84,7 +84,7 @@ export const trackSchema = z.preprocess(
   trackObjectSchema,
 );
 
-export const runtimeKindSchema = z.enum(['terminal', 'codex', 'claude', 'shared-spec']);
+export const runtimeKindSchema = z.enum(['terminal', 'codex', 'claude', 'shared-spec', 'managed-assistant']);
 export type WorkerSessionKind = z.infer<typeof runtimeKindSchema>;
 
 export const agentProviderSchema = z.enum(['codex', 'claude', 'opencode']);
@@ -308,6 +308,7 @@ export const actorIdSchema = z.union([
   z.object({ kind: z.literal('AiPlannerSession'), id: z.string() }),
   z.object({ kind: z.literal('AiCodexSession'), id: z.string() }),
   z.object({ kind: z.literal('AiClaudeSession'), id: z.string() }),
+  z.object({ kind: z.literal('AiManagedSession'), id: z.string() }),
 ]);
 
 /**

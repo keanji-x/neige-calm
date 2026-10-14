@@ -20,28 +20,66 @@ pub(crate) async fn agent_token(
     track: &str,
     role: CardRole,
 ) -> (String, String, String) {
-    let (card, session) = (new_id(), new_id());
-    let mut tx = h.sql.pool().begin().await.unwrap();
-    let (_, _, token) = card_with_codex_create_tx(
-        &mut tx,
-        card.clone(),
-        &session,
-        None,
-        track.to_owned().into(),
-        None,
-        None,
-        h.root.path().to_str().unwrap().into(),
-        json!({}),
-        None,
-        None,
-        None,
+    agent_token_provider(
+        h,
+        track,
         role,
-        true,
-        &CardRoleCache::new(),
-        calm_server::routes::theme::RequestTheme::default_dark(),
+        calm_server::session_projection_repo::AgentProvider::Codex,
     )
     .await
-    .unwrap();
+}
+
+async fn agent_token_provider(
+    h: &Harness,
+    track: &str,
+    role: CardRole,
+    provider: calm_server::session_projection_repo::AgentProvider,
+) -> (String, String, String) {
+    let (card, session) = (new_id(), new_id());
+    let mut tx = h.sql.pool().begin().await.unwrap();
+    let token = if role == CardRole::Assistant {
+        calm_server::db::sqlite::card_create_with_id_tx(&mut tx, card.clone(), calm_server::model::NewCard {
+            track_id:track.into(),title:None,kind:"codex".into(),sort:None,
+            payload:json!({"schemaVersion":1,"harness_profile":"assistant","assistant_provider":provider}),
+        },role,true,&CardRoleCache::new()).await.unwrap();
+        calm_server::db::sqlite::session_start_runtime_tx(
+            &mut tx,
+            calm_server::session_projection_repo::WorkerSessionInit::managed_assistant(
+                session.clone(),
+                card.clone(),
+                provider,
+                calm_server::session_projection_repo::WorkerSessionState::Running,
+                None,
+                json!({}),
+                now_ms(),
+            ),
+        )
+        .await
+        .unwrap();
+        None
+    } else {
+        let (_, _, token) = card_with_codex_create_tx(
+            &mut tx,
+            card.clone(),
+            &session,
+            None,
+            track.to_owned().into(),
+            None,
+            None,
+            h.root.path().to_str().unwrap().into(),
+            json!({}),
+            None,
+            None,
+            None,
+            role,
+            true,
+            &CardRoleCache::new(),
+            calm_server::routes::theme::RequestTheme::default_dark(),
+        )
+        .await
+        .unwrap();
+        token
+    };
     // An Assistant's token is minted by its harness start, as `planner-harness-start` persists it.
     let token = token.unwrap_or_else(|| {
         let token = calm_server::mcp_server::auth::CardMcpToken::generate();
@@ -127,8 +165,24 @@ async fn input_as(h: &Harness, token: &str, w: &Worker, key: &str, action: Value
 
 #[tokio::test]
 async fn an_assistant_reads_and_drives_a_same_track_claude_worker() {
+    exercise_assistant_terminal(calm_server::session_projection_repo::AgentProvider::Codex).await;
+}
+
+#[tokio::test]
+async fn assistant_provider_terminal_authority_works_for_claude_and_opencode() {
+    for provider in [
+        calm_server::session_projection_repo::AgentProvider::Claude,
+        calm_server::session_projection_repo::AgentProvider::OpenCode,
+    ] {
+        exercise_assistant_terminal(provider).await;
+    }
+}
+
+async fn exercise_assistant_terminal(
+    provider: calm_server::session_projection_repo::AgentProvider,
+) {
     let h = Harness::start().await;
-    let (_, _, assistant) = agent_token(&h, &h.track, CardRole::Assistant).await;
+    let (_, _, assistant) = agent_token_provider(&h, &h.track, CardRole::Assistant, provider).await;
     let w = worker_running(&h, "claude", &h.track, Some(ECHO_WORKER)).await;
     let shown = ok_as(
         &h,
