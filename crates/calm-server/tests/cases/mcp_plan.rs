@@ -867,6 +867,7 @@ async fn plan_list_ordinary_entry_has_exactly_the_kept_fields() {
             "key",
             "kind",
             "priority",
+            "result_contract",
             "start",
             "status",
             "status_detail",

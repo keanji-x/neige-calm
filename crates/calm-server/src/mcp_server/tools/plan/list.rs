@@ -100,6 +100,7 @@ pub(super) fn summary(entry: &Value) -> Value {
             "kind",
             "access",
             "start",
+            "result_contract",
             "status_detail",
             "task_projection",
             "worktree/path",

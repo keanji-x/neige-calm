@@ -665,6 +665,62 @@ fn task_start_rules_name_the_valid_choices() {
     );
 }
 
+/// #2599: `result_contract` names a registered contract, on a codex or claude task that reports
+/// through `neige_task_done`; a tombstone carries none.
+#[test]
+fn task_result_contract_must_name_a_registered_contract() {
+    for kind in ["codex", "claude"] {
+        let mut payload = valid_task();
+        payload["kind"] = json!(kind);
+        payload["result_contract"] = json!("review-v1");
+        assert_eq!(validate_payload(KIND_TASK, &payload), Ok(()));
+    }
+    for name in [json!("review-v9"), json!(""), json!(1), Value::Null] {
+        let mut payload = valid_task();
+        payload["result_contract"] = name.clone();
+        assert_eq!(
+            validate_payload(KIND_TASK, &payload).unwrap_err(),
+            "result_contract: must be one of \"review-v1\"",
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn task_result_contract_is_rejected_on_terminal_and_child_track_tasks() {
+    use crate::task_recovery::{TASK_CHILD_TRACK_ROUTE, TASK_IN_TRACK_ROUTE};
+    let mut terminal = valid_task();
+    terminal.as_object_mut().unwrap().remove("goal");
+    terminal["kind"] = json!("terminal");
+    terminal["command"] = json!("cargo test");
+    terminal["result_contract"] = json!("review-v1");
+    assert_eq!(
+        validate_payload(KIND_TASK, &terminal).unwrap_err(),
+        "result_contract: requires kind \"codex\" or \"claude\"; only a worker reports a result \
+         through neige_task_done"
+    );
+    let mut child_track = valid_task();
+    child_track["spawn"] = json!(TASK_CHILD_TRACK_ROUTE);
+    child_track["result_contract"] = json!("review-v1");
+    assert_eq!(
+        validate_payload(KIND_TASK, &child_track).unwrap_err(),
+        format!(
+            "result_contract: a {TASK_CHILD_TRACK_ROUTE:?} task completes through its child track; \
+             it requires spawn {TASK_IN_TRACK_ROUTE:?}"
+        )
+    );
+}
+
+#[test]
+fn task_tombstone_forbids_result_contract() {
+    let tombstone = json!({"key":"old","tombstone":{},"declared_by":"user",
+        "tombstoned_by":"user","result_contract":"review-v1"});
+    assert_eq!(
+        validate_payload(KIND_TASK, &tombstone).unwrap_err(),
+        "result_contract: must be absent from a tombstone task"
+    );
+}
+
 #[test]
 fn task_priority_rejects_integer_outside_i64_range() {
     let mut payload = valid_task();

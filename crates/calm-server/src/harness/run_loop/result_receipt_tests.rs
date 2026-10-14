@@ -613,6 +613,7 @@ async fn receipt_optional_track_absence_and_read_error_preserve_segments() {
             Observation::TaskCompleted {
                 idempotency_key: "original-completion".into(),
                 result: json!(null),
+                result_contract: None,
             },
             Some(21),
         )

@@ -1,5 +1,5 @@
 Planner-only. detail=summary: compact entries (key selects one); detail=full with key: evidence; neither: full plan. Compare attempt_id. Entries observe, not accept; absent key: no attempt/work (neige_report_read task_diagnostics).
-Stored settings: access=read_only/read_write, start=checkout/upstream.
+Stored settings: access=read_only/read_write, start=checkout/upstream, result_contract=<name>/null.
 status: pending/awaiting_projection await scheduling (blocking_reason); dispatched: claimed, not started; running: recorded, not progress; verifying: awaits gate; done/failed/canceled: execution terminal (status_detail), not delivery or acceptance; done may have pending/failed delivery. Dependencies await execution done, not acceptance.
 gate_result: latest verdict; failure status_detail gate-red/gate-timeout/gate-infra. No gate commands. worktree/base_sha: lease/start commit.
 candidate: binding none/unbound mints none; bound has delivery/verification, advisory upstream. delivery.state: not_reported, ended_without_delivery, pending (await task.git_delivery_settled), committed (candidate at ref), no_change, failed (failure.code; no candidate), inconsistent (accept nothing).

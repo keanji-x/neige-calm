@@ -1461,6 +1461,7 @@ pub(crate) async fn resolve_harness_observation(
     let mut observation = harness_observation_from_event(track_id, event, task_key.as_deref());
     if let Some(observation) = observation.as_mut() {
         attach_report_block_refs(repo, event, observation).await;
+        task_completed::attach_result_contract(repo, track_id, observation).await?;
     }
     Ok(observation)
 }
@@ -1530,6 +1531,7 @@ pub(crate) fn harness_observation_from_event(
         } => Some(HarnessObservation::TaskCompleted {
             idempotency_key: idempotency_key.clone(),
             result: result.clone(),
+            result_contract: None,
         }),
         Event::TaskFailed {
             idempotency_key,
@@ -1726,6 +1728,7 @@ fn sha256_hex(text: &str) -> String {
 
 mod ask_answered;
 mod git_delivery_settled;
+mod task_completed;
 
 #[cfg(test)]
 mod tests;

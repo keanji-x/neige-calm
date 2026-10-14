@@ -8,8 +8,8 @@ use crate::model::*;
 pub(super) const TASK_COLUMNS: &str = "id, track_id, key, kind, goal, context_json, acceptance_criteria, \
      cwd, depends_on_json, priority, gate_json, status, status_detail, worker_card_id, \
      gate_result_json, gate_attempt, gate_pid, gate_pid_starttime, gate_pid_boot_id, \
-     running_deadline_ms, context_stale_at_ms, declared_by, spawn, access, start, created_at_ms, \
-     updated_at_ms, finished_at_ms";
+     running_deadline_ms, context_stale_at_ms, declared_by, spawn, access, start, result_contract, \
+     created_at_ms, updated_at_ms, finished_at_ms";
 
 pub async fn tasks_by_track_tx(
     tx: &mut Transaction<'_, Sqlite>,
@@ -73,6 +73,27 @@ pub async fn task_get_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<O
         .fetch_optional(&mut **tx)
         .await?;
     Ok(row)
+}
+
+/// #2599: the registered result contract the task row declares, the one both the worker prompt
+/// states and the report is checked against; `None` for an untyped task or an absent row.
+pub async fn task_result_contract_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+) -> Result<Option<&'static calm_types::task_result::ResultContract>> {
+    let Some(name) = task_get_tx(tx, id)
+        .await?
+        .and_then(|task| task.result_contract)
+    else {
+        return Ok(None);
+    };
+    calm_types::task_result::result_contract(&name)
+        .map(Some)
+        .ok_or_else(|| {
+            CalmError::Internal(format!(
+                "task {id}: result_contract {name:?} is not registered"
+            ))
+        })
 }
 
 /// Sub-track parents are long-lived orchestration rows, not workers. They do

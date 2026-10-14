@@ -887,6 +887,7 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
         QueueEntry::entries_from_observations_for_test(vec![Observation::TaskCompleted {
             idempotency_key: "deferred-boot".into(),
             result: json!({"ok": true}),
+            result_contract: None,
         }]),
     );
     snapshot.phase = HarnessPhaseTag::Idle;
@@ -1538,6 +1539,7 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
         spawn: "in-wave".into(),
         access: calm_server::model::TaskAccess::ReadWrite,
         start: calm_server::model::TaskStart::Checkout,
+        result_contract: None,
         created_at_ms: now_ms(),
         updated_at_ms: now_ms(),
         finished_at_ms: None,

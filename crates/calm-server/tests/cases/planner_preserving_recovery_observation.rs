@@ -70,6 +70,7 @@ async fn recovery_cannot_commit_an_observation_watermark_without_its_queue_entry
     old.observe_envelope(
         Observation::TaskCompleted {
             idempotency_key: task_key,
+            result_contract: None,
             result,
         },
         event_id,

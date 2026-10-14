@@ -96,6 +96,8 @@ mod git_delivery;
 mod git_delivery_commit_message;
 #[path = "cases/lease_git_env.rs"]
 mod lease_git_env;
+#[path = "cases/task_result_contract.rs"]
+mod task_result_contract;
 #[path = "cases/track_catch_up.rs"]
 mod track_catch_up;
 #[path = "cases/track_publish.rs"]

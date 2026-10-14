@@ -682,6 +682,7 @@ async fn gated_self_report_predicate() {
         spawn: calm_types::task_recovery::TASK_IN_TRACK_ROUTE.into(),
         access: crate::model::TaskAccess::ReadWrite,
         start: crate::model::TaskStart::Checkout,
+        result_contract: None,
         created_at_ms: 1,
         updated_at_ms: 1,
         finished_at_ms: None,
@@ -869,6 +870,7 @@ async fn stale_worker_stop_hook_consultation_per_task_status() {
         spawn: calm_types::task_recovery::TASK_IN_TRACK_ROUTE.into(),
         access: crate::model::TaskAccess::ReadWrite,
         start: crate::model::TaskStart::Checkout,
+        result_contract: None,
         created_at_ms: 1,
         updated_at_ms: 1,
         finished_at_ms: None,
@@ -1723,6 +1725,7 @@ fn harness_observation_from_event_mapping_pin() {
         Some(HarnessObservation::TaskCompleted {
             idempotency_key: "map-a".into(),
             result: serde_json::json!({"ok": true, "n": 7}),
+            result_contract: None,
         })
     );
 
@@ -3503,6 +3506,7 @@ async fn delivery_failed_task_failed_is_not_a_wake() {
         spawn: calm_types::task_recovery::TASK_IN_TRACK_ROUTE.into(),
         access: crate::model::TaskAccess::ReadWrite,
         start: crate::model::TaskStart::Checkout,
+        result_contract: None,
         created_at_ms: 1,
         updated_at_ms: 1,
         finished_at_ms: Some(2),
@@ -3701,6 +3705,7 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
             spawn: calm_types::task_recovery::TASK_IN_TRACK_ROUTE.into(),
             access: crate::model::TaskAccess::ReadWrite,
             start: crate::model::TaskStart::Checkout,
+            result_contract: None,
             created_at_ms: 1,
             updated_at_ms: 1,
             finished_at_ms: None,

@@ -32,6 +32,7 @@ fn task(key: &str, status: TaskStatus) -> Task {
         spawn: "in-wave".into(),
         access: crate::model::TaskAccess::ReadWrite,
         start: crate::model::TaskStart::Checkout,
+        result_contract: None,
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,

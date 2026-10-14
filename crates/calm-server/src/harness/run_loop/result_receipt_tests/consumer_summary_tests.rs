@@ -24,7 +24,8 @@ async fn consumer_summary_transport_retains_full_exact_event() {
         fx.stored().await.pending_entries()[0].observation(),
         Observation::TaskCompleted {
             idempotency_key: "consumer-attempt".into(),
-            result: report.clone()
+            result: report.clone(),
+            result_contract: None,
         }
     );
     let text = turn(&fx).await;

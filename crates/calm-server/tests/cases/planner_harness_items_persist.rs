@@ -307,6 +307,7 @@ async fn issued_mixed_observation_segments_are_on_the_projection_row_and_survive
         Observation::TaskCompleted {
             idempotency_key: "task-completed".into(),
             result: json!({"status": "ok"}),
+            result_contract: None,
         },
         Observation::UserMessage {
             text: "what changed?".into(),

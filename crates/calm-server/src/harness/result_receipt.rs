@@ -83,6 +83,7 @@ pub(super) async fn enrich(
             Observation::TaskCompleted {
                 idempotency_key,
                 result,
+                ..
             } => Some((
                 index,
                 entry.envelope_id(),

@@ -410,6 +410,7 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
             Observation::TaskCompleted {
                 idempotency_key: task_id(&fx, key),
                 result: json!({ "summary": "completed" }),
+                result_contract: None,
             },
         )
         .await;
@@ -419,6 +420,7 @@ async fn real_planner_agent_autonomously_merges_pr_and_closes_issue_from_descrip
         Observation::TaskCompleted {
             idempotency_key: task_id(&fx, "review-pr"),
             result: review_result,
+            result_contract: None,
         },
     )
     .await;

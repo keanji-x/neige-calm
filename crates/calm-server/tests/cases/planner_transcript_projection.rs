@@ -446,6 +446,7 @@ async fn projection_key_is_the_first_entry_with_an_id_and_segments_carry_every_e
         Observation::TaskCompleted {
             idempotency_key: "task-completed".into(),
             result: json!({"status": "ok"}),
+            result_contract: None,
         },
         Observation::UserMessage {
             text: "and then?".into(),
@@ -577,6 +578,7 @@ async fn a_restarted_harness_replaces_the_stale_projection_of_a_system_only_batc
         QueueEntry::entries_from_observations_for_test(vec![Observation::TaskCompleted {
             idempotency_key: "task-done".into(),
             result: json!({"status": "ok"}),
+            result_contract: None,
         }]);
     assert_eq!(entries[0].id(), None, "a system entry carries no id");
     let persisted_key = QueueEntryId::from_wire("minted-by-the-predecessor".into());
@@ -622,6 +624,7 @@ async fn a_recovered_key_outranks_a_sentence_enqueued_before_the_re_drain() {
         Observation::TaskCompleted {
             idempotency_key: "task-done".into(),
             result: json!({"status": "ok"}),
+            result_contract: None,
         },
         Observation::UserMessage {
             text: "typed after the restart".into(),
@@ -682,6 +685,7 @@ async fn a_system_only_batch_persists_its_minted_key_before_the_row() {
         QueueEntry::entries_from_observations_for_test(vec![Observation::TaskCompleted {
             idempotency_key: "task-first".into(),
             result: json!({"status": "ok"}),
+            result_contract: None,
         }]);
     let entered = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());

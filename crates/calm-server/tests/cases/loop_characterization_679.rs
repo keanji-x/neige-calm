@@ -338,6 +338,7 @@ async fn catch_up_push_task_events_deliver_observations_and_advance_cursor() {
         Observation::TaskCompleted {
             idempotency_key: "loop-pin-a".into(),
             result: json!({"ok": true, "notes": "loop-pin"}),
+            result_contract: None,
         },
         "task.completed observation must carry the idempotency key and verbatim result"
     );
@@ -600,6 +601,7 @@ async fn dead_worker_never_reporting_reaper_converges() {
         spawn: "in-wave".into(),
         access: calm_server::model::TaskAccess::ReadWrite,
         start: calm_server::model::TaskStart::Checkout,
+        result_contract: None,
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,

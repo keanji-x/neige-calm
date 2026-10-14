@@ -283,6 +283,7 @@ fn declaration_from_normalized(task: &NormalizedTask) -> Result<TaskDeclaration,
         head: None,
         base: None,
         start: crate::model::TaskStart::Checkout,
+        result_contract: None,
         tombstoned_by: None,
         ready: true,
         tombstone: false,
@@ -317,6 +318,7 @@ fn task_row_from_normalized(track_id: &str, t: &NormalizedTask, now: i64) -> Tas
         spawn: "in-wave".into(),
         access: crate::model::TaskAccess::ReadWrite,
         start: crate::model::TaskStart::Checkout,
+        result_contract: None,
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,
@@ -567,7 +569,8 @@ async fn plan_list(
                     let mut entry = if args.summary {
                         match &task {
                             Some(task) => json!({"key":allocation.key,"kind":task.kind,
-                                "access":task.access,"start":task.start,"status_detail":task.status_detail,
+                                "access":task.access,"start":task.start,"result_contract":task.result_contract,
+                                "status_detail":task.status_detail,
                                 "gate_result":task.gate_result_json.as_deref().and_then(|raw| serde_json::from_str::<Value>(raw).ok())}),
                             None => json!({"key":allocation.key,"task_projection":"unavailable"}),
                         }
@@ -681,6 +684,7 @@ fn task_list_entry(t: &Task) -> Value {
         "kind": t.kind,
         "access": t.access,
         "start": t.start,
+        "result_contract": t.result_contract,
         "status": t.status,
         "status_detail": t.status_detail,
         "depends_on": t.depends_on(),

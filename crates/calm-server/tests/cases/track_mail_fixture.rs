@@ -357,6 +357,7 @@ impl World {
         let completion = Observation::TaskCompleted {
             idempotency_key: new_id(),
             result: json!({"ok": true}),
+            result_contract: None,
         };
         planner.harness().observe_for_test(completion, None).await;
         self.wait_turn(planner, before + 1).await;

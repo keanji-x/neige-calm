@@ -2490,6 +2490,7 @@ fn task(kind: TaskKind, spawn: &str, context: Value) -> Task {
         spawn: spawn.into(),
         access: crate::model::TaskAccess::ReadWrite,
         start: crate::model::TaskStart::Checkout,
+        result_contract: None,
         created_at_ms: 1,
         updated_at_ms: 1,
         finished_at_ms: None,

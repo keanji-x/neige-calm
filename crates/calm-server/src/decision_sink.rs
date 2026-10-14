@@ -139,6 +139,7 @@ impl CardDecisionSink {
                     {
                         return Err(CalmError::Conflict(worker_report::REPEATED.into()));
                     }
+                    worker_report::check_result_contract_tx(tx, &task_id, &report).await?;
                     let rows = if success {
                         match crate::db::sqlite::task_report_success_from_worker_tx(
                             tx,

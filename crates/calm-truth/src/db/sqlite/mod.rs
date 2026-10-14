@@ -143,8 +143,9 @@ pub use task::{
     task_cancel_running_tx, task_cancel_tx, task_claim_pending_tx, task_complete_from_worker_tx,
     task_fail_delivery_tx, task_fail_from_worker_tx, task_gate_attempt_bump_tx, task_get_tx,
     task_mark_running_tx, task_mark_sub_track_running_tx, task_report_success_from_worker_tx,
-    task_start_verifying_from_worker_tx, task_update_pending_tx, tasks_by_track_tx,
-    track_require_task_gates_tx, worker_card_declared_head_tx, worker_op_targets_card_tx,
+    task_result_contract_tx, task_start_verifying_from_worker_tx, task_update_pending_tx,
+    tasks_by_track_tx, track_require_task_gates_tx, worker_card_declared_head_tx,
+    worker_op_targets_card_tx,
 };
 pub use task_attempt::{
     task_attempt_current_by_track_pool, task_attempt_current_by_track_tx,

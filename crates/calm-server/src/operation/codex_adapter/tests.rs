@@ -157,6 +157,7 @@ fn codex_worker_payload_omits_none_cwd_for_hash_stability() {
         spawn: "in-wave".into(),
         access: crate::model::TaskAccess::ReadWrite,
         start: crate::model::TaskStart::Checkout,
+        result_contract: None,
         created_at_ms: 1,
         updated_at_ms: 1,
         finished_at_ms: None,

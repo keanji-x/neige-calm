@@ -413,6 +413,7 @@ pub async fn fake_root_contract() {
         root.react(&Observation::TaskCompleted {
             idempotency_key: "t-1".into(),
             result: json!({}),
+            result_contract: None,
         })
         .await
         .expect("matched reaction"),
@@ -440,6 +441,7 @@ pub async fn fake_observation_sink_contract() {
     let observation = Observation::TaskCompleted {
         idempotency_key: "t-1".into(),
         result: json!({}),
+        result_contract: None,
     };
 
     sink.deliver(&session, observation.clone(), Some(7))

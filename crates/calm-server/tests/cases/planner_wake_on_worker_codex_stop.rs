@@ -242,6 +242,7 @@ async fn seed_task(
         spawn: calm_types::task_recovery::TASK_IN_TRACK_ROUTE.into(),
         access: calm_server::model::TaskAccess::ReadWrite,
         start: calm_server::model::TaskStart::Checkout,
+        result_contract: None,
         created_at_ms: 1,
         updated_at_ms: 1,
         finished_at_ms: None,

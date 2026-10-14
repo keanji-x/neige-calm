@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "review-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "summary", "blocking_findings"],
+  "properties": {
+    "verdict": { "type": "string", "enum": ["pass", "blocking"] },
+    "summary": { "type": "string", "minLength": 1, "pattern": "\\S", "description": "The conclusion; at most 2048 bytes." },
+    "blocking_findings": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/finding" } },
+    "non_blocking": { "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/finding" } },
+    "details": { "description": "Any JSON the worker wants to keep beside the verdict." }
+  },
+  "if": { "properties": { "verdict": { "const": "pass" } } },
+  "then": { "properties": { "blocking_findings": { "maxItems": 0 } } },
+  "else": { "properties": { "blocking_findings": { "minItems": 1 } } },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "evidence"],
+      "properties": {
+        "title": { "type": "string", "minLength": 1, "pattern": "\\S", "description": "At most 4096 bytes." },
+        "evidence": { "type": "string", "minLength": 1, "pattern": "\\S", "description": "Source or test evidence; at most 4096 bytes." },
+        "location": { "type": "string", "minLength": 1, "pattern": "\\S", "description": "Where, such as path:line; at most 4096 bytes." },
+        "acceptance": { "type": "string", "minLength": 1, "pattern": "\\S", "description": "The acceptance criterion it fails; absent means new scope. At most 4096 bytes." }
+      }
+    }
+  },
+  "examples": [
+    {
+      "verdict": "pass",
+      "summary": "The diff meets every acceptance criterion; focused tests are green.",
+      "blocking_findings": []
+    },
+    {
+      "verdict": "blocking",
+      "summary": "The refusal path leaves the lease released.",
+      "blocking_findings": [
+        {
+          "title": "Lease released on refusal",
+          "evidence": "decision_sink.rs releases the lease before validating the result.",
+          "location": "crates/calm-server/src/decision_sink.rs:180",
+          "acceptance": "a refusal leaves the task running with its lease held"
+        }
+      ],
+      "non_blocking": [{ "title": "Naming", "evidence": "check_result reads as a predicate." }],
+      "details": { "commands": ["cargo nextest run -p calm-server result_contract"] }
+    }
+  ]
+}

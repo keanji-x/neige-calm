@@ -1,5 +1,5 @@
 //! Terminal report admission, under the same write transaction as its effects.
-use crate::db::sqlite::{TaskReporter, status_detail_class, task_get_tx};
+use crate::db::sqlite::{TaskReporter, status_detail_class, task_get_tx, task_result_contract_tx};
 use crate::error::{CalmError, Result};
 use crate::event::{ArtifactRef, Event};
 use crate::git_candidate::commit_message::DeliveryMessage;
@@ -70,6 +70,26 @@ pub(super) async fn admit_worker_report_tx(
             row.status_detail.as_deref().unwrap_or("no detail")
         ))),
     }
+}
+
+/// #2599: a completion of a task declared with a `result_contract` must carry a result of that
+/// shape. Run after admission, inside the report transaction: a refusal rolls it back, so the
+/// attempt stays running with its lease held. The tasks row is the authority, never the card
+/// payload; a rowless legacy worker has no contract.
+pub(super) async fn check_result_contract_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    task_id: &str,
+    report: &WorkerTaskReport,
+) -> Result<()> {
+    let WorkerTaskReport::Completed { result, .. } = report else {
+        return Ok(());
+    };
+    let Some(contract) = task_result_contract_tx(tx, task_id).await? else {
+        return Ok(());
+    };
+    contract
+        .check(result)
+        .map_err(|refusal| CalmError::BadRequest(format!("neige_task_done: {refusal}")))
 }
 
 /// How a worker says its attempt ended. Only a completion carries a commit message (#2139), so a

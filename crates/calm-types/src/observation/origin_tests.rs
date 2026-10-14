@@ -26,6 +26,7 @@ fn one_of_every_variant() -> Vec<Observation> {
         Observation::TaskCompleted {
             idempotency_key: "k".into(),
             result: Value::Null,
+            result_contract: None,
         },
         Observation::TaskFailed {
             idempotency_key: "k".into(),

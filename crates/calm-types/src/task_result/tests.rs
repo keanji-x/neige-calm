@@ -1,0 +1,175 @@
+use super::*;
+use serde_json::json;
+
+fn review_v1() -> &'static ResultContract {
+    result_contract("review-v1").expect("review-v1 is registered")
+}
+
+fn errors(result: Value) -> Vec<String> {
+    (review_v1().validate)(&result).expect_err("result must be refused")
+}
+
+fn finding(title: &str) -> Value {
+    json!({"title": title, "evidence": "decision_sink.rs:180 releases the lease first"})
+}
+
+#[test]
+fn review_v1_accepts_pass_without_findings() {
+    let result = json!({"verdict": "pass", "summary": "meets every criterion",
+        "blocking_findings": []});
+    assert_eq!((review_v1().validate)(&result), Ok(()));
+    assert_eq!(review_v1().check(&result), Ok(()));
+    let full = json!({"verdict": "pass", "summary": "ok", "blocking_findings": [],
+        "non_blocking": [finding("naming")], "details": {"any": [1, "json"]}});
+    assert_eq!((review_v1().validate)(&full), Ok(()));
+}
+
+#[test]
+fn review_v1_rejects_missing_verdict() {
+    let errors = errors(json!({"summary": "ok", "blocking_findings": []}));
+    assert_eq!(
+        errors,
+        ["verdict: required; must be \"pass\" | \"blocking\""]
+    );
+}
+
+#[test]
+fn review_v1_rejects_pass_with_blocking_findings() {
+    let errors = errors(json!({"verdict": "pass", "summary": "ok",
+        "blocking_findings": [finding("lease")]}));
+    assert_eq!(
+        errors,
+        ["verdict: \"pass\" requires blocking_findings to be empty"]
+    );
+}
+
+#[test]
+fn review_v1_rejects_blocking_without_findings() {
+    let errors = errors(json!({"verdict": "blocking", "summary": "bad",
+        "blocking_findings": []}));
+    assert_eq!(
+        errors,
+        ["verdict: \"blocking\" requires at least one entry in blocking_findings"]
+    );
+}
+
+#[test]
+fn review_v1_rejects_blank_evidence_and_unknown_top_level_key() {
+    let errors = errors(
+        json!({"verdict": "blocking", "summary": "bad", "passed": false,
+        "blocking_findings": [{"title": "lease", "evidence": " \n"}]}),
+    );
+    assert_eq!(
+        errors,
+        [
+            "passed: unknown field",
+            "blocking_findings[0].evidence: required non-blank string",
+        ]
+    );
+}
+
+#[test]
+fn review_v1_bounds_its_text_and_finding_counts() {
+    let mut result = json!({"verdict": "blocking", "summary": "é".repeat(1025),
+        "blocking_findings": vec![finding("x"); 33],
+        "non_blocking": [{"title": "t", "evidence": "a".repeat(4097), "extra": 1}]});
+    let errors = errors(result.clone());
+    assert_eq!(
+        errors,
+        [
+            "summary: too long (2050 bytes), limit is 2048",
+            "blocking_findings: too many findings (33), limit is 32",
+            "non_blocking[0].extra: unknown field",
+            "non_blocking[0].evidence: too long (4097 bytes), limit is 4096",
+        ]
+    );
+    result["summary"] = json!("a".repeat(2048));
+    result["blocking_findings"] = json!(vec![finding("x"); 32]);
+    result["non_blocking"] = json!([{"title": "t", "evidence": "a".repeat(4096)}]);
+    assert_eq!((review_v1().validate)(&result), Ok(()));
+}
+
+#[test]
+fn review_v1_refuses_a_non_object_result() {
+    for (result, kind) in [(json!("looks good"), "string"), (Value::Null, "null")] {
+        assert_eq!(
+            errors(result),
+            [format!("result: must be a JSON object, got {kind}")]
+        );
+    }
+}
+
+/// The refusal names the contract, every violation and the same shape the worker prompt states.
+#[test]
+fn a_result_contract_refusal_names_the_contract_the_violations_and_the_shape() {
+    let refusal = review_v1()
+        .check(&json!({"summary": "", "blocking_findings": []}))
+        .unwrap_err();
+    assert_eq!(
+        refusal,
+        format!(
+            "result does not match result_contract review-v1: verdict: required; must be \
+             \"pass\" | \"blocking\"; summary: required non-blank string. Expected: {}",
+            review_v1().shape_hint
+        )
+    );
+    assert!(
+        review_v1()
+            .shape_hint
+            .starts_with("a JSON object {\"verdict\"")
+    );
+    assert!(!review_v1().shape_hint.ends_with('\n'));
+}
+
+#[test]
+fn review_v1_conclusion_states_the_verdict_first() {
+    let pass = json!({"verdict": "pass", "summary": "all green", "blocking_findings": []});
+    assert_eq!(review_v1().conclusion_of(&pass).unwrap(), "pass: all green");
+    let blocking = json!({"verdict": "blocking", "summary": "two defects",
+        "blocking_findings": [finding("lease \"held\""), finding("no event")]});
+    assert_eq!(
+        review_v1().conclusion_of(&blocking).unwrap(),
+        "blocking: 2 blocking findings: \"lease \\\"held\\\"\"; \"no event\". two defects"
+    );
+    let one = json!({"verdict": "blocking", "summary": "s",
+        "blocking_findings": [finding("only")]});
+    assert_eq!(
+        review_v1().conclusion_of(&one).unwrap(),
+        "blocking: 1 blocking finding: \"only\". s"
+    );
+    assert_eq!(review_v1().conclusion_of(&json!({"verdict": "pass"})), None);
+}
+
+/// Iterates the registry, so adding a contract edits no list here.
+#[test]
+fn every_result_contract_schema_example_passes_its_validator() {
+    assert!(!RESULT_CONTRACTS.is_empty());
+    for contract in RESULT_CONTRACTS {
+        let schema = (contract.schema)();
+        assert_eq!(schema["title"], contract.name);
+        let examples = schema["examples"].as_array().expect("schema examples");
+        assert!(
+            examples.len() >= 2,
+            "{}: a pass and a failing example",
+            contract.name
+        );
+        for example in examples {
+            assert_eq!(
+                (contract.validate)(example),
+                Ok(()),
+                "{}: {example}",
+                contract.name
+            );
+            assert!(!(contract.conclusion)(example).is_empty());
+        }
+        let names = RESULT_CONTRACTS
+            .iter()
+            .filter(|other| other.name == contract.name);
+        assert_eq!(names.count(), 1, "{}: registered once", contract.name);
+        assert!(std::ptr::eq(
+            result_contract(contract.name).unwrap(),
+            contract
+        ));
+    }
+    assert!(result_contract("review-v2").is_none());
+}

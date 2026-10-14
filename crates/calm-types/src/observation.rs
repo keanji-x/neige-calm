@@ -69,6 +69,11 @@ pub enum Observation {
     TaskCompleted {
         idempotency_key: String,
         result: Value,
+        /// #2599: the result contract the task declared, read from its tasks row when the
+        /// observation is built. `None` is an untyped task or an observation queued before this
+        /// field existed; it is not serialized, so those render and persist byte for byte as before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result_contract: Option<String>,
     },
     TaskFailed {
         idempotency_key: String,
@@ -360,7 +365,8 @@ impl Observation {
             Observation::TaskCompleted {
                 idempotency_key,
                 result,
-            } => receipt::completed(idempotency_key, result),
+                result_contract,
+            } => receipt::completed(idempotency_key, result, result_contract.as_deref()),
             Observation::TaskFailed {
                 idempotency_key,
                 error,
@@ -993,6 +999,7 @@ mod tests {
             (Observation::TaskCompleted {
                 idempotency_key: "task-1".into(),
                 result: serde_json::json!({"ok": true}),
+                result_contract: None,
             })
             .input_segment(None)
             .presentation,
@@ -1070,6 +1077,7 @@ mod tests {
         let completed = Observation::TaskCompleted {
             idempotency_key: "task-1".into(),
             result: serde_json::Value::Null,
+            result_contract: None,
         };
         let expected_text = [
             report.to_turn_text(),

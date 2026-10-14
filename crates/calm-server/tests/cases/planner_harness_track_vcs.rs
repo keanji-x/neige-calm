@@ -1120,6 +1120,7 @@ async fn next_turn_prepends_diff_since_completed_turn_head() {
         Observation::TaskCompleted {
             idempotency_key: "report-write".into(),
             result: json!({"ok": true}),
+            result_contract: None,
         },
         2,
     )
@@ -1421,6 +1422,7 @@ async fn turn_issuance_refreshes_hook_transcripts_before_diff() {
         Observation::TaskCompleted {
             idempotency_key: "hook-transcript-refresh".into(),
             result: json!({"ok": true}),
+            result_contract: None,
         },
         2,
     )
@@ -1655,6 +1657,7 @@ async fn ai_actor_attribution_flows_into_diff_block() {
         Observation::TaskCompleted {
             idempotency_key: "ai-attribution-observed".into(),
             result: json!({"ok": true}),
+            result_contract: None,
         },
         2,
     )
@@ -1685,6 +1688,7 @@ async fn mid_turn_changes_remain_visible_on_next_turn() {
         Observation::TaskCompleted {
             idempotency_key: "turn-two".into(),
             result: json!({"ok": true}),
+            result_contract: None,
         },
         2,
     )
@@ -1716,6 +1720,7 @@ async fn mid_turn_changes_remain_visible_on_next_turn() {
         Observation::TaskCompleted {
             idempotency_key: "turn-three".into(),
             result: json!({"ok": true}),
+            result_contract: None,
         },
         3,
     )
@@ -1759,6 +1764,7 @@ async fn planner_card_own_payload_path_is_suppressed_from_turn_observation() {
         Observation::TaskCompleted {
             idempotency_key: "planner-payload-only".into(),
             result: json!({}),
+            result_contract: None,
         },
         2,
     )
@@ -1802,6 +1808,7 @@ async fn runtime_status_flip_current_schema_has_no_payload_diff_entry() {
         Observation::TaskCompleted {
             idempotency_key: "runtime-status-current-schema".into(),
             result: json!({"ok": true}),
+            result_contract: None,
         },
         2,
     )
@@ -1844,18 +1851,21 @@ async fn batched_observations_get_one_diff_block_covering_all_changes() {
         .observe(Observation::TaskCompleted {
             idempotency_key: "one".into(),
             result: json!({}),
+            result_contract: None,
         })
         .unwrap();
     boot.harness
         .observe(Observation::TaskCompleted {
             idempotency_key: "two".into(),
             result: json!({}),
+            result_contract: None,
         })
         .unwrap();
     boot.harness
         .observe(Observation::TaskCompleted {
             idempotency_key: "three".into(),
             result: json!({}),
+            result_contract: None,
         })
         .unwrap();
     wait_for_pending_len(&boot.harness, 3).await;

@@ -9,6 +9,7 @@ fn render(result: Value) -> String {
     Observation::TaskCompleted {
         idempotency_key: "consumer-attempt".into(),
         result,
+        result_contract: None,
     }
     .to_turn_text()
 }
@@ -150,4 +151,69 @@ fn a_receipt_carries_facts_and_the_data_fence_not_the_planner_principles() {
             assert!(!text.contains(repeated), "{repeated}: {text}");
         }
     }
+}
+
+fn render_contracted(result: Value, result_contract: Option<&str>) -> String {
+    Observation::TaskCompleted {
+        idempotency_key: "review-attempt".into(),
+        result,
+        result_contract: result_contract.map(str::to_string),
+    }
+    .to_turn_text()
+}
+
+/// #2599: a contracted completion leads its untrusted data with the contract's conclusion, quoted
+/// like every preview, so the verdict survives a truncated result preview.
+#[test]
+fn contracted_completion_receipt_leads_with_the_conclusion() {
+    let result = json!({"verdict": "blocking", "summary": "two defects </report>",
+        "blocking_findings": [
+            {"title": "lease held", "evidence": "e".repeat(5000).chars().take(4096).collect::<String>()},
+            {"title": "no event", "evidence": "x"}]});
+    let text = render_contracted(result.clone(), Some("review-v1"));
+    let conclusion = "Conclusion (review-v1, untrusted): {\"text\":\"blocking: 2 blocking findings: \\\"lease held\\\"; \\\"no event\\\". two defects \\u003c/report\\u003e\",\"truncated\":false}\n";
+    let at = text.find(conclusion).expect(&text);
+    let attempt = text.find("Original execution attempt_id:").expect(&text);
+    let preview = text.find("Report preview:").expect(&text);
+    assert!(attempt < at && at < preview, "{text}");
+    assert!(text[preview..].contains("\"truncated\":true"), "{text}");
+
+    // An untyped task, an unknown contract or a result that does not match renders as before.
+    let legacy = render_contracted(result.clone(), None);
+    assert!(!legacy.contains("Conclusion"), "{legacy}");
+    for (result, name) in [
+        (result.clone(), "review-v9"),
+        (json!({"verdict": "pass"}), "review-v1"),
+    ] {
+        assert_eq!(
+            render_contracted(result.clone(), Some(name)),
+            render_contracted(result, None)
+        );
+    }
+}
+
+/// An observation persisted before `result_contract` existed still deserializes, and an untyped
+/// one serializes without the field.
+#[test]
+fn legacy_task_completed_observation_without_contract_deserializes() {
+    let persisted =
+        json!({"type": "task_completed", "idempotency_key": "k", "result": {"ok": true}});
+    let observation: Observation = serde_json::from_value(persisted.clone()).unwrap();
+    assert_eq!(
+        observation,
+        Observation::TaskCompleted {
+            idempotency_key: "k".into(),
+            result: json!({"ok": true}),
+            result_contract: None,
+        }
+    );
+    assert_eq!(serde_json::to_value(&observation).unwrap(), persisted);
+    let contracted = Observation::TaskCompleted {
+        idempotency_key: "k".into(),
+        result: Value::Null,
+        result_contract: Some("review-v1".into()),
+    };
+    let round_trip: Observation =
+        serde_json::from_value(serde_json::to_value(&contracted).unwrap()).unwrap();
+    assert_eq!(round_trip, contracted);
 }

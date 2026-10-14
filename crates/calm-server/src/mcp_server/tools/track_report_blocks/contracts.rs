@@ -6,6 +6,7 @@ use crate::mcp_server::tools::write_args::message_schema;
 use crate::model::CardRole;
 use crate::track_report::MAX_BATCH_OPS;
 use calm_types::report_blocks;
+use calm_types::task_result::RESULT_CONTRACTS;
 use serde_json::{Value, json};
 
 pub(super) fn kinds_descriptor() -> ToolDescriptor {
@@ -269,7 +270,22 @@ pub(super) fn kinds_table() -> Value {
             window_kind(),
             html_kind(),
         ]);
+    kinds["task_result_contracts"] = task_result_contracts();
     kinds
+}
+
+/// #2599: the contracts a task's `result_contract` may name, read off the kernel registry.
+fn task_result_contracts() -> Value {
+    RESULT_CONTRACTS
+        .iter()
+        .map(|contract| {
+            json!({
+                "name": contract.name,
+                "shape": contract.shape_hint,
+                "schema": (contract.schema)(),
+            })
+        })
+        .collect()
 }
 
 /// Keep this schema in sync with `report_blocks::validate_payload`'s task validation.
@@ -303,7 +319,8 @@ fn task_kind() -> Value {
                     "required": ["key", "kind", "command", "ready", "declared_by"],
                     "properties": { "kind": { "const": "terminal" } },
                     "not": { "anyOf": [
-                        { "required": ["goal"] }, { "required": ["tombstoned_by"] }
+                        { "required": ["goal"] }, { "required": ["tombstoned_by"] },
+                        { "required": ["result_contract"] }
                     ] }
                 },
                 {
@@ -319,7 +336,7 @@ fn task_kind() -> Value {
                         { "required": ["ready"] }, { "required": ["released_by_user"] },
                         { "required": ["spawn"] }, { "required": ["access"] },
                         { "required": ["head"] }, { "required": ["base"] },
-                        { "required": ["start"] }
+                        { "required": ["start"] }, { "required": ["result_contract"] }
                     ] }
                 }
             ],
@@ -385,6 +402,11 @@ fn task_kind() -> Value {
                     "enum": ["checkout", "upstream"],
                     "default": "checkout",
                     "description": "`upstream` (codex/claude, read_write): start at the upstream the kernel fetches; replay the last done commit."
+                },
+                "result_contract": {
+                    "type": "string",
+                    "enum": RESULT_CONTRACTS.iter().map(|contract| contract.name).collect::<Vec<_>>(),
+                    "description": "Codex/claude in this track: the worker's result must match this contract (see `task_result_contracts`)."
                 },
                 "tombstone": { "type": ["object", "null"], "additionalProperties": false, "properties": { "reason": { "type": ["string", "null"], "maxLength": report_blocks::MAX_STRING_CHARS } } },
                 "tombstoned_by": { "type": "string", "enum": ["spec", "user"] }
@@ -710,6 +732,36 @@ mod task_kind_contract_tests {
             .collect();
         let validator: BTreeSet<&str> = TASK_FIELDS.iter().copied().collect();
         assert_eq!(published, validator);
+    }
+
+    /// #2599: the published `result_contract` choices and the `task_result_contracts` section are
+    /// read off the kernel registry, so adding a contract edits no list here.
+    #[test]
+    fn published_result_contract_choices_equal_the_registry() {
+        let table = kinds_table();
+        let schema = task_schema(&table);
+        let names: Vec<&str> = RESULT_CONTRACTS
+            .iter()
+            .map(|contract| contract.name)
+            .collect();
+        assert_eq!(
+            schema["properties"]["result_contract"]["enum"],
+            json!(names)
+        );
+        let tombstone_forbids: Vec<&Value> = schema["oneOf"][2]["not"]["anyOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|clause| &clause["required"][0])
+            .collect();
+        assert!(tombstone_forbids.contains(&&json!("result_contract")));
+        let published = table["task_result_contracts"].as_array().expect("section");
+        assert_eq!(published.len(), names.len());
+        for (entry, contract) in published.iter().zip(RESULT_CONTRACTS) {
+            assert_eq!(entry["name"], contract.name);
+            assert_eq!(entry["shape"], contract.shape_hint);
+            assert_eq!(entry["schema"], (contract.schema)());
+        }
     }
 
     /// The one gate-bearing task payload checked against the published schema (no builtin template file carries a `gate`).

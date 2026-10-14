@@ -6,8 +6,11 @@ use super::Tx;
 use super::task_gate_run::GateRunWait;
 use super::task_verify_adapter::{GateStep, declared_gate_steps_tx};
 use super::workspace_lease::worker::{CatchUpFacts, ReaderFacts, WorkerLeasePlan};
+use crate::db::sqlite::task_result_contract_tx;
 use crate::error::Result;
+use crate::mcp_server::tools::emit::TOOL_TASK_DONE;
 use crate::mcp_server::tools::task_gate::TOOL_TASK_GATE;
+use calm_types::task_result::ResultContract;
 
 /// The prompt both worker adapters freeze in their prepare transaction: the attempt's lease plan
 /// and its declared gate are read here, from the `tasks` row, never from the op payload. Both
@@ -23,6 +26,7 @@ pub(crate) async fn render_task_worker_prompt_tx(
     gate_run: GateRunWait,
 ) -> Result<String> {
     let gate = declared_gate_steps_tx(tx, attempt_id).await?;
+    let result_contract = task_result_contract_tx(tx, attempt_id).await?;
     Ok(render_task_worker_prompt(
         attempt_id,
         goal,
@@ -31,6 +35,7 @@ pub(crate) async fn render_task_worker_prompt_tx(
         plan.reader.as_ref(),
         plan.catch_up.as_ref(),
         gate.as_deref().map(|steps| (steps, gate_run)),
+        result_contract,
     ))
 }
 
@@ -38,6 +43,8 @@ pub(crate) async fn render_task_worker_prompt_tx(
 /// checkout, which nothing enforces, and is given its repo, checkout, head and base (#1933). A
 /// catch-up (#2058 D7) is told where it starts and what to replay. A gated task is shown its gate
 /// steps (#2404) and, when the kernel commits its checkout, how to have the kernel run them (#2464).
+/// A task with a result contract (#2599) is told the shape its report is refused without.
+#[allow(clippy::too_many_arguments)]
 fn render_task_worker_prompt(
     attempt_id: &str,
     goal: &str,
@@ -46,6 +53,7 @@ fn render_task_worker_prompt(
     reader: Option<&ReaderFacts>,
     catch_up: Option<&CatchUpFacts>,
     gate: Option<(&[GateStep], GateRunWait)>,
+    result_contract: Option<&ResultContract>,
 ) -> String {
     let prompt = render_worker_prompt(goal, context, acceptance);
     let gate = gate
@@ -58,8 +66,22 @@ fn render_task_worker_prompt(
         .unwrap_or_default();
     let reader = reader.map(render_reader_facts).unwrap_or_default();
     let catch_up = catch_up.map(render_catch_up).unwrap_or_default();
+    let result_contract = result_contract
+        .map(render_result_contract)
+        .unwrap_or_default();
     format!(
-        "{prompt}{reader}{catch_up}{gate}\n\nTask attempt_id: {attempt_id}\nEcho this exact attempt_id when reporting completion or failure."
+        "{prompt}{reader}{catch_up}{gate}{result_contract}\n\nTask attempt_id: {attempt_id}\nEcho this exact attempt_id when reporting completion or failure."
+    )
+}
+
+/// #2599: the shape is the contract's own hint, the text a refusal states, so the two cannot
+/// diverge.
+fn render_result_contract(contract: &ResultContract) -> String {
+    format!(
+        "\n\nThis task declares the result contract `{}`: call `{TOOL_TASK_DONE}` with a \
+         `result` that is {} The kernel refuses any other result and names what is wrong; correct \
+         it and report again.",
+        contract.name, contract.shape_hint
     )
 }
 
@@ -175,7 +197,8 @@ mod tests {
 
     #[test]
     fn task_worker_turn_input_names_the_execution_id_attempt_id() {
-        let out = render_task_worker_prompt("t:build", "g", &Value::Null, None, None, None, None);
+        let out =
+            render_task_worker_prompt("t:build", "g", &Value::Null, None, None, None, None, None);
         assert!(out.ends_with("\n\nTask attempt_id: t:build\nEcho this exact attempt_id when reporting completion or failure."), "{out}");
         assert!(
             !out.contains("idempotency") && !out.contains("task_id"),
@@ -209,6 +232,7 @@ mod tests {
             None,
             None,
             Some((&steps, GateRunWait::DEFAULT)),
+            None,
         );
         assert!(
             out.contains(
@@ -251,6 +275,7 @@ mod tests {
                 &steps,
                 GateRunWait::for_idle(std::time::Duration::from_secs(60)),
             )),
+            None,
         );
         assert!(short.contains("It answers within 30 seconds;"), "{short}");
     }
@@ -274,6 +299,7 @@ mod tests {
             Some(&reader),
             None,
             Some((&steps, GateRunWait::DEFAULT)),
+            None,
         );
         assert!(
             out.contains(
@@ -284,6 +310,37 @@ mod tests {
         );
         assert!(!out.contains("neige_task_gate"), "{out}");
         assert!(!out.contains("run every step yourself"), "{out}");
+    }
+
+    /// #2599: a task with a result contract is told the contract's shape, the same text its
+    /// refusal states, before the attempt_id; an untyped task is told nothing.
+    #[test]
+    fn a_contracted_task_prompt_states_the_result_shape() {
+        let contract = calm_types::task_result::result_contract("review-v1").unwrap();
+        let steps = steps();
+        let out = render_task_worker_prompt(
+            "t:review",
+            "g",
+            &Value::Null,
+            None,
+            None,
+            None,
+            Some((&steps, GateRunWait::DEFAULT)),
+            Some(contract),
+        );
+        let section = format!(
+            "\n\nThis task declares the result contract `review-v1`: call `neige_task_done` with \
+             a `result` that is {} The kernel refuses any other result and names what is wrong; \
+             correct it and report again.",
+            contract.shape_hint
+        );
+        let at = out.find(&section).expect(&out);
+        let gate = out.find("\nGate step 2 `test`").expect(&out);
+        let attempt = out.find("\n\nTask attempt_id: t:review").expect(&out);
+        assert!(gate < at && at < attempt, "{out}");
+        let untyped =
+            render_task_worker_prompt("t:review", "g", &Value::Null, None, None, None, None, None);
+        assert!(!untyped.contains("result contract"), "{untyped}");
     }
 
     /// L1: the wait stays under half the idle window and never above 90 s.

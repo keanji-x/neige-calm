@@ -1621,10 +1621,10 @@ async fn project_tasks_from_verdicts_tx(
                    id,track_id,key,kind,goal,context_json,acceptance_criteria,cwd,
                    depends_on_json,priority,gate_json,status,declared_by,spawn,
                    decl_ready,decl_released_by_user,created_at_ms,updated_at_ms,access,head,base,
-                   start
+                   start,result_contract
                ) VALUES(
                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'pending',?12,?13,
-                   ?14,?15,?16,?16,?17,?18,?19,?20
+                   ?14,?15,?16,?16,?17,?18,?19,?20,?21
                )
                ON CONFLICT(id) DO UPDATE SET
                    kind=excluded.kind,
@@ -1641,6 +1641,7 @@ async fn project_tasks_from_verdicts_tx(
                    head=excluded.head,
                    base=excluded.base,
                    start=excluded.start,
+                   result_contract=excluded.result_contract,
                    decl_ready=excluded.decl_ready,
                    decl_released_by_user=excluded.decl_released_by_user,
                    updated_at_ms=excluded.updated_at_ms
@@ -1660,6 +1661,7 @@ async fn project_tasks_from_verdicts_tx(
                      OR tasks.head IS NOT excluded.head
                      OR tasks.base IS NOT excluded.base
                      OR tasks.start IS NOT excluded.start
+                     OR tasks.result_contract IS NOT excluded.result_contract
                      OR tasks.decl_ready IS NOT excluded.decl_ready
                      OR tasks.decl_released_by_user IS NOT excluded.decl_released_by_user
                  )"#,
@@ -1684,6 +1686,7 @@ async fn project_tasks_from_verdicts_tx(
         .bind(&declaration.head)
         .bind(&declaration.base)
         .bind(declaration.start.as_str())
+        .bind(&declaration.result_contract)
         .execute(&mut **tx)
         .await?;
         if result.rows_affected() != 0 {
@@ -2412,6 +2415,48 @@ mod tests {
             assert_eq!(
                 row,
                 ("pending".into(), start.unwrap_or("checkout").to_string())
+            );
+        }
+    }
+
+    /// #2599: while a task is pending, its `result_contract` follows its block, as `start` does,
+    /// and re-projecting the same declaration changes nothing.
+    #[tokio::test]
+    async fn a_pending_tasks_result_contract_follows_its_block_and_reprojection_is_idempotent() {
+        let (repo, track) = setup().await;
+        let block = |contract: Option<&str>| {
+            let mut payload = json!({"key": "review", "kind": "claude", "goal": "review",
+                "ready": true, "no_gate_reason": "fixture",
+                "declared_by": calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR});
+            if let Some(contract) = contract {
+                payload["result_contract"] = json!(contract);
+            }
+            task_block(0, payload)
+        };
+        for contract in [Some("review-v1"), None, Some("review-v1")] {
+            let outcome = project_blocks(&repo, &track, &[block(contract)]).await;
+            assert_eq!(outcome.changed_keys, ["review"], "{contract:?}");
+            let row: (String, Option<String>) = sqlx::query_as(
+                "SELECT status, result_contract FROM tasks WHERE track_id = ?1 AND key = 'review'",
+            )
+            .bind(&track)
+            .fetch_one(&repo.pool)
+            .await
+            .unwrap();
+            assert_eq!(row, ("pending".into(), contract.map(str::to_string)));
+            let task = crate::db::sqlite::task_get_tx(
+                &mut repo.pool.begin().await.unwrap(),
+                &format!("{track}:review"),
+            )
+            .await
+            .unwrap()
+            .expect("task row");
+            assert_eq!(task.result_contract.as_deref(), contract);
+            let again = project_blocks(&repo, &track, &[block(contract)]).await;
+            assert!(
+                again.changed_keys.is_empty(),
+                "{contract:?}: {:?}",
+                again.changed_keys
             );
         }
     }

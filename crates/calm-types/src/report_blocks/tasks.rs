@@ -149,6 +149,8 @@ pub struct TaskDeclaration {
     pub base: Option<String>,
     /// #2058: missing and explicit null normalize to `checkout` before projection.
     pub start: TaskStart,
+    /// #2599: the [`crate::task_result`] contract the worker's result must match; `None` is untyped.
+    pub result_contract: Option<String>,
     pub tombstoned_by: Option<String>,
     pub ready: bool,
     pub tombstone: bool,
@@ -876,6 +878,10 @@ pub fn project_task_declarations(
                 .and_then(Value::as_str)
                 .and_then(|start| TaskStart::try_from(start.to_string()).ok())
                 .unwrap_or(TaskStart::Checkout),
+            result_contract: payload
+                .get("result_contract")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             tombstoned_by: payload
                 .get("tombstoned_by")
                 .and_then(Value::as_str)
@@ -1091,6 +1097,7 @@ mod tests {
             head: None,
             base: None,
             start: TaskStart::Checkout,
+            result_contract: None,
             tombstoned_by: None,
             ready: true,
             tombstone: false,

@@ -50,6 +50,7 @@ pub const ROOT_HASH_EXCLUDED_TASK_FIELDS: &[&str] = &[
     "head",
     "base",
     "start",
+    "result_contract",
     "tombstone",
     "tombstoned_by",
     "ready",

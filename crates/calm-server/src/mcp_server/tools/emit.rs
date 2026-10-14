@@ -190,9 +190,12 @@ async fn commit_worker_task_report_for_identity(
 
     match result {
         Ok(_) => Ok(()),
-        Err(e @ (CalmError::Forbidden(_) | CalmError::Conflict(_) | CalmError::NotFound(_))) => {
-            Err(crate::mcp_server::framing::calm_error(e))
-        }
+        Err(
+            e @ (CalmError::BadRequest(_)
+            | CalmError::Forbidden(_)
+            | CalmError::Conflict(_)
+            | CalmError::NotFound(_)),
+        ) => Err(crate::mcp_server::framing::calm_error(e)),
         Err(e) => Err(RpcError::internal(format!("emit {kind_tag}: {e}"))),
     }
 }
