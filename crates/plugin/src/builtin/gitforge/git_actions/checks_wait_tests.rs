@@ -20,6 +20,16 @@ const FAKE_GH: &str = concat!(
 /// `reads[n-1]` (the last one repeats), and a `None` read fails that call. Returns the wait's
 /// stdout and the number of `gh` calls; a wait that never ends fails the test.
 fn run_wait(reads: &[Option<&str>]) -> (String, usize) {
+    let (output, calls) = run_wait_output(reads);
+    assert!(output.status.success(), "{output:?}");
+    (
+        String::from_utf8(output.stdout).expect("utf-8 stdout"),
+        calls,
+    )
+}
+
+/// [`run_wait`] for any exit status.
+fn run_wait_output(reads: &[Option<&str>]) -> (std::process::Output, usize) {
     let dir = tempfile::tempdir().expect("tempdir");
     let gh = dir.path().join("gh");
     std::fs::write(&gh, FAKE_GH).expect("write fake gh");
@@ -62,12 +72,8 @@ fn run_wait(reads: &[Option<&str>]) -> (String, usize) {
         std::thread::sleep(Duration::from_millis(20));
     }
     let output = child.wait_with_output().expect("checks wait output");
-    assert!(output.status.success(), "{output:?}");
     let calls = std::fs::read_to_string(dir.path().join("calls")).expect("fake gh calls");
-    (
-        String::from_utf8(output.stdout).expect("utf-8 stdout"),
-        calls.lines().count(),
-    )
+    (output, calls.lines().count())
 }
 
 fn write_read(dir: &Path, name: &str, contents: &str) {
@@ -119,5 +125,28 @@ fn gh_pr_checks_wait_retries_a_failed_read() {
     let settled = r#"{"conclusion":"success","mergeable":"mergeable","head_sha":"abc"}"#;
     let (stdout, calls) = run_wait(&[None, Some(&format!("settle abc\n{settled}\n"))]);
     assert_eq!(stdout, format!("{settled}\n"));
+    assert_eq!(calls, 2);
+}
+
+/// A `refuse` of the first head (the after_rerun run is not of the PR head) ends the wait with
+/// exit 3 and no evidence; after the head moved, the move ends the wait as before.
+#[test]
+fn gh_pr_checks_after_rerun_wait_refuses_a_run_of_another_head() {
+    let (failed, _) = pretty("failure", json!("abc"));
+    let (output, calls) = run_wait_output(&[Some(&format!("refuse abc\n{failed}\n"))]);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert_eq!(calls, 1);
+
+    let (pending, _) = pretty("pending", json!("abc"));
+    let (moved, moved_value) = pretty("pending", json!("def"));
+    let (stdout, calls) = run_wait(&[
+        Some(&format!("wait abc\n{pending}\n")),
+        Some(&format!("refuse def\n{moved}\n")),
+    ]);
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout).expect("the wait prints only JSON"),
+        moved_value
+    );
     assert_eq!(calls, 2);
 }

@@ -81,3 +81,22 @@ fn gh_ci_failure_evidence_rejects_a_head_that_is_not_a_full_sha() {
         assert_eq!(err, "head_sha must be a full commit SHA");
     }
 }
+
+/// The read filters runs by exact head_sha equality, and GitHub reports it in lowercase.
+#[test]
+fn gh_ci_failure_evidence_lowercases_an_uppercase_head() {
+    let head = "abcdef0123456789abcdef0123456789abcdef01";
+    let upper = lower(
+        "gh_ci_failure_evidence",
+        &json!({ "repo": "o/r", "pr": 1, "head_sha": head.to_ascii_uppercase() }),
+    )
+    .expect("an uppercase full SHA is accepted");
+    let lowered = lower(
+        "gh_ci_failure_evidence",
+        &json!({ "repo": "o/r", "pr": 1, "head_sha": head }),
+    )
+    .unwrap();
+    assert_eq!(upper, lowered);
+    assert_eq!(upper["argv"][5], head);
+    assert_eq!(upper["context"]["head_sha"], head);
+}

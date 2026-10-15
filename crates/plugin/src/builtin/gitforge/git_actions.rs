@@ -492,4 +492,7 @@ mod error_tests;
 mod checks_wait_tests;
 
 #[cfg(test)]
+mod checks_rerun_tests;
+
+#[cfg(test)]
 mod test_helpers;

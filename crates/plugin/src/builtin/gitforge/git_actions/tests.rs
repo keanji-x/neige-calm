@@ -359,7 +359,8 @@ fn lowers_gh_pr_checks() {
                 PR_CHECKS_PAGES_JQ,
                 PR_CHECKS_ENRICH_SCRIPT,
                 checks::checks_sanitizer(),
-                "false"
+                "false",
+                "null"
             ],
             "idem_key": idem_key,
             "event_spec": {
@@ -397,7 +398,8 @@ fn lowers_gh_pr_checks() {
                     PR_CHECKS_PAGES_JQ,
                     PR_CHECKS_ENRICH_SCRIPT,
                     checks::checks_sanitizer(),
-                    "false"
+                    "false",
+                    "null"
                 ]
             },
             "parked": true,
@@ -417,7 +419,7 @@ fn lowers_gh_pr_checks() {
         "the wait reads what the output probe reads"
     );
     assert!(
-        PR_CHECKS_WAIT_JQ.contains(PR_CHECKS_JQ),
+        PR_CHECKS_WAIT_JQ.contains(PR_CHECKS_FOLD) && PR_CHECKS_JQ.contains(PR_CHECKS_FOLD),
         "the wait's verdict comes from the output probe's fold"
     );
     assert_no_reserved_context(&payload, &["track_id"]);

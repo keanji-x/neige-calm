@@ -15,7 +15,9 @@ pub(super) fn lower_gh_ci_failure_evidence(args: &Value) -> Result<Value, String
     // Idempotent read: intentionally probe-free.
     let repo = required_string(args, "repo")?;
     let pr = required_u64(args, "pr")?;
-    let head_sha = required_commit_sha(args, "head_sha")?;
+    // GitHub reports run head SHAs in lowercase and the script matches them exactly, so an
+    // uppercase SHA would silently match no run.
+    let head_sha = required_commit_sha(args, "head_sha")?.to_ascii_lowercase();
     let attempt = optional_attempt(args)?;
     // A JSON array encodes every argument injectively, so replaying by this key alone is safe.
     let arguments = serde_json::to_string(&json!([repo, pr, head_sha, attempt])).unwrap();

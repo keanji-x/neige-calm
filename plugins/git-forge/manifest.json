@@ -138,7 +138,7 @@
     },
     {
       "name": "gh_pr_checks",
-      "description": "Park this call to wait for a pull request's checks on its current head. By default return on the first failure; wait_for_all=true waits for every registered check to finish. A conflicting PR, changed head or deadline also ends the wait. The forge.pr.checks wake records the exact head, CI conclusion, mergeability, whether all checks completed, and failed check locators with available failure steps, error summaries and verified Actions job log links or an explicit diagnostic unavailability reason. While pending, repeating the same call returns the same receipt. After the wake, repeat the same call to read the recorded result. Replay is for same-key calls across program versions: the key encodes repo, pr, attempt and wait_for_all injectively for calls made from this version on, and a call stored by an earlier version is not replayed but starts a fresh read. Historical results retain their original fields. For fresh checks pass a new attempt.",
+      "description": "Park this call to wait for a pull request's checks on its current head. By default return on the first failure; wait_for_all=true waits for every registered check to finish. A conflicting PR, changed head or deadline also ends the wait. The forge.pr.checks wake records the exact head, CI conclusion, mergeability, whether all checks completed, and failed check locators with available failure steps, error summaries and verified Actions job log links or an explicit diagnostic unavailability reason. While pending, repeating the same call returns the same receipt. After the wake, repeat the same call to read the recorded result. Replay is for same-key calls across program versions: the key encodes repo, pr, attempt and wait_for_all injectively for calls made from this version on, and a call stored by an earlier version is not replayed but starts a fresh read. Historical results retain their original fields. For fresh checks pass a new attempt. After any rerun of a workflow run, including one the user starts, wait with after_rerun: the run's checks stay pending until it reports a later attempt that completed, so the rerun attempt's stale failure cannot end the wait; failures of other runs still do, and a run that is not of the PR head is refused (the call fails).",
       "kind": "forge-action",
       "input_schema": {
         "type": "object",
@@ -162,6 +162,27 @@
             "type": "boolean",
             "default": false,
             "description": "Wait for every registered check to complete before returning the failure collection; default returns on the first failure"
+          },
+          "after_rerun": {
+            "type": "object",
+            "description": "The GitHub Actions run that was rerun and the attempt that failed: its checks count as pending until the run reports a later, completed attempt",
+            "properties": {
+              "run_id": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Workflow run id"
+              },
+              "run_attempt": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The run attempt that failed and was rerun"
+              }
+            },
+            "required": [
+              "run_id",
+              "run_attempt"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [

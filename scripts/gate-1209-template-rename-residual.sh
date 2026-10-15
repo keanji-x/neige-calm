@@ -57,10 +57,12 @@ read -r -d '' ALLOWLIST <<'EOF' || true
 1   crates/provider/tests/fixtures/claude_planner_stream/pB_safe.ndjson
 2   crates/provider/tests/fixtures/claude_planner_stream/pG.ndjson
 # --- 16. #2363: GitHub GraphQL owns the exact `workflowRun` field; it binds checks to Actions run IDs.
-# Query selection and enrichment read that protocol field; raw response and argv fixtures pin the same contract.
-1   crates/plugin/src/builtin/gitforge/git_actions/checks.rs
+# Query selection, enrichment and the #2617 after_rerun fence (which matches a check to the rerun run) read that
+# protocol field; raw response and argv fixtures pin the same contract.
+2   crates/plugin/src/builtin/gitforge/git_actions/checks.rs
 1   crates/plugin/src/builtin/gitforge/git_actions/checks_enrich.sh
 1   crates/calm-server/tests/cases/forge_pr_checks_diagnostics.rs
+1   crates/calm-server/tests/cases/forge_pr_checks_rerun.rs
 1   crates/calm-server/tests/support/gh_shim.rs
 # #2617: the Actions REST runs listing's `workflow_runs` field; the CI evidence read and its fixtures.
 1   crates/plugin/src/builtin/gitforge/git_actions/ci_evidence.sh

@@ -71,6 +71,9 @@ fn failed_while_running_rollup() -> Value {
 #[path = "forge_pr_checks_diagnostics.rs"]
 mod diagnostics;
 
+#[path = "forge_pr_checks_rerun.rs"]
+mod rerun;
+
 #[tokio::test]
 async fn gh_pr_checks_deadline_marks_partial_failures_and_unavailable_diagnostics() {
     let _env_lock = FORGE_ENV_LOCK
