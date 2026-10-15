@@ -82,7 +82,7 @@ it.each(['unsupported', 'unavailable', 'missing-version', 'old-version'] as cons
     : condition === 'unavailable'
       ? { ...CLAUDE, availability: { ...CLAUDE.availability, status: 'unavailable', reason: 'Authenticate on this server' } }
       : CLAUDE;
-  const fixture = renderAssistantProviderFixture({ answers: [answer], assistantProviders: condition !== 'missing-version', webCompatVersion: condition === 'old-version' ? 50 : 53 });
+  const fixture = renderAssistantProviderFixture({ answers: [answer], assistantProviders: condition !== 'missing-version', webCompatVersion: condition === 'old-version' ? 50 : 54 });
   await page.getByRole('button', { name: 'New conversation', exact: true }).click();
   if (condition !== 'missing-version' && condition !== 'old-version') {
     await page.getByRole('button', { name: /^Model:/ }).click();
@@ -170,4 +170,25 @@ it('refreshes owner metadata before retrying a draft that never dispatched', asy
   await page.getByRole('button', { name: 'Try again', exact: true }).click();
   await expect.poll(() => fixture.requests.filter(request => request.method === 'POST' && request.path.endsWith('/conversations')).length).toBe(1);
   expect(fixture.requests.some(request => request.path === '/api/agent-providers/managed?refresh=true')).toBe(true);
+});
+
+
+it.each([1280, 390])('manually archives and restores a conversation without exposing its composer (%ipx)', async width => {
+  await page.viewport(width, 950);
+  const fixture = renderAssistantProviderFixture({answers:[CLAUDE], existingProvider:'claude', mobile:width < 600});
+  const history = async () => { if (width < 600) await page.getByRole('button',{name:'Open conversation history',exact:true}).click(); };
+  await history();
+  await page.getByRole('button',{name:'Conversation actions for Saved Assistant'}).click();
+  await page.getByRole('menuitem',{name:'Archive conversation'}).click();
+  await expect.element(page.getByRole('button',{name:'Archived conversations',exact:true})).toBeVisible();
+  await page.getByRole('button',{name:'Archived conversations',exact:true}).click();
+  await page.getByRole('button',{name:width < 600 ? /^Saved Assistant/ : 'Conversation Saved Assistant'}).click();
+  await expect.element(page.getByText('Saved reply', {exact:true})).toBeVisible();
+  await expect.element(page.getByText('This conversation is archived. Restore it from Archived conversations to continue.')).toBeVisible();
+  await expect.element(page.getByRole('combobox',{name:'Message'})).not.toBeInTheDocument();
+  await page.getByRole('button',{name:'Restore conversation',exact:true}).click();
+  await expect.element(page.getByRole('combobox',{name:'Message'})).toBeVisible();
+  expect(fixture.requests.filter(request => request.method === 'PATCH' && request.path.endsWith('/archive')).map(request => request.body)).toEqual([{archived:true},{archived:false}]);
+  expect(fixture.rows[0].provider).toBe('claude');
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
 });

@@ -81,13 +81,13 @@ const HISTORY_PATH = '/harness/items';
 
 type Row = {
   id: string; trackId: string; title: string | null; kind: string; provider: 'codex';
-  state: string | null; updatedAt: number; lastTurnCompletedAt: number | null;
+  state: string | null; updatedAt: number; archivedAt: number | null; lastTurnCompletedAt: number | null;
 };
 
 function assistantRow(overrides: Partial<Row> = {}): Row {
   return {
     id: ASSISTANT_CARD.id, trackId: 'w1', title: null, kind: 'track-assistant', provider: 'codex',
-    state: 'idle', updatedAt: 30, lastTurnCompletedAt: null, ...overrides,
+    state: 'idle', updatedAt: 30, archivedAt: null, lastTurnCompletedAt: null, ...overrides,
   };
 }
 
@@ -173,7 +173,7 @@ function setup(reply?: Reply, storage?: UiPreferenceStorage, recovery?: Recovery
         const response = await reply(request);
         if (response) return response;
       }
-      if (request.path === '/api/version') return ok({ webCompatVersion: 53, minWebCompatVersion: 53, syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationCreateModel: true, conversationSide: true });
+      if (request.path === '/api/version') return ok({ webCompatVersion: 54, minWebCompatVersion: 54, syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationCreateModel: true, conversationSide: true });
       if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
         availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
         capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
@@ -228,7 +228,7 @@ const creates = (requests: readonly ApiRequest[], path: string) =>
 const derivedRow = (trackId: string, request: ApiRequest): Row => ({
   id: trackConversationCardId(trackId, request.headers?.['Idempotency-Key'] ?? ''),
   trackId, title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 99,
-  lastTurnCompletedAt: null,
+  archivedAt: null, lastTurnCompletedAt: null,
 });
 
 /* The open drawer, reached by the control only it has: an adopted assistant row
@@ -3827,7 +3827,7 @@ it.each([false, true])('selects a model before the first conversation message an
   vi.stubGlobal('__NC_BUNDLED__', bundled);
   const access = new RecoveryAccess(); access.change('connected');
   const { requests } = setup(request => {
-    if (request.path === '/api/version') return ok({ webCompatVersion: 53, minWebCompatVersion: 53,
+    if (request.path === '/api/version') return ok({ webCompatVersion: 54, minWebCompatVersion: 54,
       syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationCreateModel: true });
     if (request.path === '/api/models?provider=codex') return ok({
       models: [{ id: 'preset-fast', model: 'gpt-5', resolved_model: null, display_name: 'GPT-5', description: '', is_default: false,
@@ -3863,7 +3863,7 @@ it('keeps first-message selection disabled on an older server that would ignore 
 it('uses a spinner while a closed conversation runs, a blue unread dot on completion, and no dot after reading', async () => {
   /* Unread follows `lastTurnCompletedAt`: `updatedAt` also moves when a message is
        queued. Working follows the kernel's per-card verdict, not the row's session state. */
-  let rows = [assistantRow({ lastTurnCompletedAt: 30 })];
+  let rows = [assistantRow({ archivedAt: null, lastTurnCompletedAt: 30 })];
   let cards: ActivityCardWire[] = [];
   const { client } = setup(request => {
     if (request.method === 'GET' && request.path === CONVERSATIONS) return ok(rows);
@@ -3881,18 +3881,18 @@ it('uses a spinner while a closed conversation runs, a blue unread dot on comple
   fireEvent.click(screen.getByRole('button', { name: /^Conversation Assistant(?:,|$)/ }));
   await waitFor(() => expect(indicator()).toBeNull());
   fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
-  rows = [{ ...assistantRow(), state: 'turn_pending', updatedAt: 40, lastTurnCompletedAt: 30 }];
+  rows = [{ ...assistantRow(), state: 'turn_pending', updatedAt: 40, archivedAt: null, lastTurnCompletedAt: 30 }];
   cards = [{ card_id: ASSISTANT_CARD.id, state: 'working' }];
   await refetch();
   await waitFor(() => expect(screen.getByRole('button', { name: /^Conversation Assistant/ }).closest('li')
     ?.querySelector('[data-nc-activity]')?.getAttribute('data-nc-activity')).toBe('working'));
   // A newer `updatedAt` alone (the reader queued something) is not unread…
-  rows = [{ ...assistantRow(), state: 'idle', updatedAt: 45, lastTurnCompletedAt: 30 }];
+  rows = [{ ...assistantRow(), state: 'idle', updatedAt: 45, archivedAt: null, lastTurnCompletedAt: 30 }];
   cards = [];
   await refetch();
   await waitFor(() => expect(indicator()).toBeNull());
   // …a newer completion is.
-  rows = [{ ...assistantRow(), state: 'idle', updatedAt: 50, lastTurnCompletedAt: 50 }];
+  rows = [{ ...assistantRow(), state: 'idle', updatedAt: 50, archivedAt: null, lastTurnCompletedAt: 50 }];
   await refetch();
   await waitFor(() => expect(indicator()?.getAttribute('data-nc-activity')).toBe('unread'));
   fireEvent.click(screen.getByRole('button', { name: /^Conversation Assistant(?:,|$)/ }));
@@ -3903,7 +3903,7 @@ it('keeps the first-message model fixed when a menu opened before sending is sel
   let settle!: (response: ApiTransportResponse) => void;
   const pending = new Promise<ApiTransportResponse>(resolve => { settle = resolve; });
   const { requests } = setup(request => {
-    if (request.path === '/api/version') return ok({ webCompatVersion: 53, minWebCompatVersion: 53,
+    if (request.path === '/api/version') return ok({ webCompatVersion: 54, minWebCompatVersion: 54,
       syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationCreateModel: true });
     if (request.path === '/api/models?provider=codex') return ok({
       models: [{ id: 'preset', model: 'chosen-model', resolved_model: null, display_name: 'Chosen model', description: '', is_default: false,
@@ -3930,7 +3930,7 @@ it('keeps the first-message model fixed when a menu opened before sending is sel
 });
 
 it('keeps new replies unread while reopening cached history is still loading', async () => {
-  let rows = [assistantRow({ lastTurnCompletedAt: 30 })];
+  let rows = [assistantRow({ archivedAt: null, lastTurnCompletedAt: 30 })];
   let holdHistory = false;
   let release!: (response: ApiTransportResponse) => void;
   const pending = new Promise<ApiTransportResponse>(resolve => { release = resolve; });
@@ -3945,7 +3945,7 @@ it('keeps new replies unread while reopening cached history is still loading', a
   fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
   await waitFor(() => expect(unread()).toBeNull());
   fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
-  rows = [{ ...assistantRow(), updatedAt: 50, lastTurnCompletedAt: 50 }];
+  rows = [{ ...assistantRow(), updatedAt: 50, archivedAt: null, lastTurnCompletedAt: 50 }];
   await act(async () => { await client.invalidateQueries({ queryKey: ['track-conversations', 'w1'] }); });
   await waitFor(() => expect(unread()).toBeTruthy());
   const previousReads = requests.filter(request => request.path.includes(HISTORY_PATH)).length;
@@ -4149,7 +4149,7 @@ it('an edited conversation retry cannot cross recovery after its reconciliation 
 });
 
 
-const sideVersion = () => ok({ assistantProviders: true, conversationSide: true, webCompatVersion: 53, minWebCompatVersion: 53, syncEventVersion: 1, dbInstanceId: 'side-db' });
+const sideVersion = () => ok({ assistantProviders: true, conversationSide: true, webCompatVersion: 54, minWebCompatVersion: 54, syncEventVersion: 1, dbInstanceId: 'side-db' });
 
 describe('side conversations', () => {
   it('keeps the parent open, creates an independent child with a text snapshot and reopens it', async () => {
@@ -4338,4 +4338,50 @@ it('compacts each selected conversation while another compaction request is pend
   await screen.findByText('Compacting conversation context…');
   act(() => { answers.get(b.id)?.(ok({ card_id: b.id, worker_session_id: 'r-b', started: true })); });
   await waitFor(() => expect(screen.queryByText('Compacting conversation context…')).toBeNull());
+});
+
+
+it('archives an open Assistant without losing history, and restores it before sending', async () => {
+  let row = assistantRow({ title: 'Archive this discussion' });
+  const { requests, client } = setup(request => {
+    if (request.method === 'GET' && request.path === CONVERSATIONS) return ok([row]);
+    if (request.method === 'PATCH' && request.path === `/api/tracks/w1/conversations/${ASSISTANT_CARD.id}/archive`) {
+      row = { ...row, archivedAt: (request.body as { archived: boolean }).archived ? 123 : null };
+      return {status:204, statusText:'No Content', body:undefined};
+    }
+    return undefined;
+  });
+  fireEvent.click(await screen.findByRole('button', {name:'Conversation Archive this discussion'}));
+  await screen.findByRole('combobox', {name:'Message'});
+  fireEvent.click(screen.getByRole('button', {name:'Conversation actions for Archive this discussion'}));
+  fireEvent.click(screen.getByRole('menuitem', {name:'Archive conversation'}));
+  await screen.findByText('This conversation is archived. Restore it from Archived conversations to continue.');
+  expect(screen.queryByRole('combobox', {name:'Message'})).toBeNull();
+  expect(screen.queryByRole('button', {name:'Conversation Archive this discussion'})).toBeNull();
+  fireEvent.click(screen.getByRole('button', {name:'Archived conversations'}));
+  fireEvent.click(await screen.findByRole('button', {name:'Conversation actions for Archive this discussion'}));
+  fireEvent.click(screen.getByRole('menuitem', {name:'Restore conversation'}));
+  await screen.findByRole('combobox', {name:'Message'});
+  expect(client.getQueryData<Row[]>(['track-conversations','w1'])?.[0].archivedAt).toBeNull();
+  expect(requests.filter(request => request.method === 'PATCH' && request.path.endsWith('/archive')).map(request => request.body)).toEqual([{archived:true},{archived:false}]);
+});
+
+
+it('keeps history read failures and retry available while the conversation is archived', async () => {
+  let unavailable = true;
+  setup(request => {
+    if (request.path === CONVERSATIONS) return ok([assistantRow({archivedAt:123})]);
+    if (request.path.includes('/harness/items')) return unavailable
+      ? {status:503,statusText:'Unavailable',body:{code:'service_unavailable',error:'History is temporarily unavailable'}}
+      : ok([]);
+    return undefined;
+  });
+  fireEvent.click(await screen.findByRole('button', {name:'Archived conversations'}));
+  fireEvent.click(await screen.findByRole('button', {name:'Conversation Assistant'}));
+  const retry = await screen.findByRole('button', {name:'Reload history'});
+  expect(screen.queryByRole('combobox', {name:'Message'})).toBeNull();
+  unavailable = false;
+  fireEvent.click(retry);
+  await waitFor(() => expect(screen.queryByRole('button', {name:'Reload history'})).toBeNull());
+  expect(screen.getByText('This conversation is archived. Restore it from Archived conversations to continue.')).toBeTruthy();
 });

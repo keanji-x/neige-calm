@@ -693,7 +693,11 @@ creator_key: string | null, workspace: TrackWorkspace, created_at: number, updat
 /**
  * One row of `GET /api/tracks/{track_id}/conversations`.
  */
-export type TrackConversationSummary = { provider: AgentProvider, 
+export type TrackConversationSummary = { 
+/**
+ * Person-owned archive time, or null while the conversation is in the active list.
+ */
+archivedAt: number | null, provider: AgentProvider, 
 /**
  * The source conversation of a discussion branch; absent for ordinary conversations.
  */

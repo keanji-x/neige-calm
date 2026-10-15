@@ -41,7 +41,7 @@ function renderApp(managed = false) {
   const transport: ApiTransportPort = {
     send(request) {
       requests.push(request);
-      if (request.path === '/api/version') return Promise.resolve(ok({ webCompatVersion: 53, minWebCompatVersion: 53, syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationCreateModel: true }));
+      if (request.path === '/api/version') return Promise.resolve(ok({ webCompatVersion: 54, minWebCompatVersion: 54, syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationCreateModel: true }));
       if (request.path.startsWith('/api/agent-providers/managed')) return Promise.resolve(ok([{
         availability: { provider: managed ? 'claude' : 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
         capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
@@ -54,7 +54,7 @@ function renderApp(managed = false) {
         if (request.method !== 'POST') return Promise.resolve(ok(rows));
         const row = {
           id: trackConversationCardId(trackId, request.headers?.['Idempotency-Key'] ?? ''),
-          trackId, title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 99, lastTurnCompletedAt: null,
+          trackId, title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 99, archivedAt: null, lastTurnCompletedAt: null,
         };
         minted.set(trackId, [...rows, row]);
         return Promise.resolve({ status: 201, statusText: 'Created', body: row });

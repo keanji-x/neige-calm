@@ -36,7 +36,7 @@ export function renderDailyFixture({ initial = '/', plannerProvider = 'codex', f
       return ok(date === null || date === '2026-10-04' ? { date: '2026-10-04', time_zone: 'Asia/Shanghai', track_id: track.id } : null);
     }
     if (request.path === '/api/tracks/daily') return ok({ track, can_reopen: false, can_admin: false, can_close: false, cards: [card, ...(extraPlanner ? [{ ...card, id: 'second-planner', title: 'Other conversation', payload: { harness_profile: 'assistant', planner_provider: plannerProvider }, deletable: false }] : []), report], overlays: [] });
-    if (request.path === '/api/tracks/daily/conversations') return ok(extraPlanner ? [{ id: 'second-planner', trackId: 'daily', title: 'Other conversation', kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 2, lastTurnCompletedAt: null }] : []);
+    if (request.path === '/api/tracks/daily/conversations') return ok(extraPlanner ? [{ id: 'second-planner', trackId: 'daily', title: 'Other conversation', kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 2, archivedAt: null, lastTurnCompletedAt: null }] : []);
     if (request.path === '/api/tracks/project') return ok({ track: project, can_reopen: false, can_admin: false, can_close: true, cards: [{ ...report, id: 'project-report', track_id: project.id, payload: { schemaVersion: 3, docRev: 0, summary: '', body: '# Project result\n\nRelease is ready.\n' } }], overlays: [] });
     if (request.path.startsWith('/api/today/report-changes')) return failChanges
       ? { status: 500, statusText: 'Error', body: { error: 'Report history unavailable' } }

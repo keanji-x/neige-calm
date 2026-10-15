@@ -28,6 +28,8 @@ pub const SQLITE_ACQUIRE_TIMEOUT_MS: u64 = 30_000;
 
 mod area;
 mod card;
+mod conversation_archive;
+pub use conversation_archive::conversation_archive_set_tx;
 mod card_composite;
 mod database_identity;
 mod events;

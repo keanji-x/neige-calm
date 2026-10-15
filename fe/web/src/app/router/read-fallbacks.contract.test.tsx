@@ -194,7 +194,7 @@ describe('degraded workspace reads stay usable', () => {
   it('finishes an offline conversation submission without waiting for delivery reconciliation', async () => {
     const creates: ApiRequest[] = [];
     const { client } = renderRoute('/track/w1', (request) => {
-      if (request.path === '/api/version') return ok({ webCompatVersion: 53, minWebCompatVersion: 53, syncEventVersion: 29, dbInstanceId: 'test', assistantProviders: true });
+      if (request.path === '/api/version') return ok({ webCompatVersion: 54, minWebCompatVersion: 54, syncEventVersion: 29, dbInstanceId: 'test', assistantProviders: true });
       if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
         availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
         capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
@@ -230,7 +230,7 @@ describe('degraded workspace reads stay usable', () => {
     const creates: ApiRequest[] = [];
     let revealLanding = false;
     const { client } = renderRoute('/track/w1', (request) => {
-      if (request.path === '/api/version') return ok({ webCompatVersion: 53, minWebCompatVersion: 53, syncEventVersion: 29, dbInstanceId: 'test', assistantProviders: true });
+      if (request.path === '/api/version') return ok({ webCompatVersion: 54, minWebCompatVersion: 54, syncEventVersion: 29, dbInstanceId: 'test', assistantProviders: true });
       if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
         availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
         capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
@@ -246,7 +246,7 @@ describe('degraded workspace reads stay usable', () => {
         return ok([{
           id: trackConversationCardId('w1', creates[0].headers!['Idempotency-Key']),
           trackId: 'w1', title: null, kind: 'track-assistant', provider: 'codex', state: null, updatedAt: 1,
-          lastTurnCompletedAt: null,
+          archivedAt: null, lastTurnCompletedAt: null,
         }]);
       }
       /* The create that lost its acknowledgement did commit, and the kernel
@@ -302,7 +302,7 @@ describe('degraded workspace reads stay usable', () => {
   it('keeps a create undispatched when connectivity drops between the click and its mutation', async () => {
     const creates: ApiRequest[] = [];
     const { client } = renderRoute('/track/w1', (request) => {
-      if (request.path === '/api/version') return ok({ webCompatVersion: 53, minWebCompatVersion: 53, syncEventVersion: 29, dbInstanceId: 'test', assistantProviders: true });
+      if (request.path === '/api/version') return ok({ webCompatVersion: 54, minWebCompatVersion: 54, syncEventVersion: 29, dbInstanceId: 'test', assistantProviders: true });
       if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
         availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
         capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },

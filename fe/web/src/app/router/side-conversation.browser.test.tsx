@@ -20,14 +20,14 @@ function setup(outcome?: 'interrupted' | 'failed', longText?: string, live?: { t
   const requests: ApiRequest[] = [];
   const track = { id: 'side-track', area_id: 'area', title: 'Architecture discussion', sort: 1,
     cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
-  const parent: Conversation & { provider: 'codex' } = { id: 'parent', trackId: track.id, title: 'Main discussion', kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 2, lastTurnCompletedAt: null };
+  const parent: Conversation & { provider: 'codex' } = { id: 'parent', trackId: track.id, title: 'Main discussion', kind: 'track-assistant', provider: 'codex', state: 'idle', updatedAt: 2, archivedAt: null, lastTurnCompletedAt: null };
   const rows = [parent];
   const transport: ApiTransportPort = { async send(request) {
     await Promise.resolve();
     requests.push(request);
     let body: unknown = [];
     let status = 200;
-    if (request.path === '/api/version') body = { assistantProviders: true, conversationSide: true, webCompatVersion: 53, minWebCompatVersion: 53, syncEventVersion: 1, dbInstanceId: 'browser-side' };
+    if (request.path === '/api/version') body = { assistantProviders: true, conversationSide: true, webCompatVersion: 54, minWebCompatVersion: 54, syncEventVersion: 1, dbInstanceId: 'browser-side' };
     if (request.path.startsWith('/api/agent-providers/managed')) body = [{
       availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
       capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },

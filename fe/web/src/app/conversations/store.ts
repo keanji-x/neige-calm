@@ -233,7 +233,7 @@ export function useConversationStore(
        name only the transcript can supply. */
   const conversations = useMemo(() => conversation === null
     ? listedConversations
-    : listedConversations.map((row) => row.id === conversation.id ? conversation : row), [conversation, listedConversations]);
+    : listedConversations.map((row) => row.id === conversation.id ? { ...conversation, archivedAt: row.archivedAt } : row), [conversation, listedConversations]);
   const model = useMemo(() => run.data === undefined ? FOLLOW_INSTALLATION_DEFAULT
     : { model: run.data.model, reasoning_effort: run.data.reasoning_effort }, [run.data]);
 
