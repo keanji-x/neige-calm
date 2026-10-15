@@ -74,6 +74,46 @@ describe('PlannerAskDrawer', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Answer' }));
     await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(9, [{ text: 'Wait for CI' }]));
   });
+  it('submits a custom answer with Enter', async () => {
+    const { onAnswer } = setup([SINGLE]);
+    await userEvent.type(screen.getByRole('textbox', { name: 'Merge PR #12?' }), ' Wait for CI {Enter}');
+    await waitFor(() => expect(onAnswer).toHaveBeenCalledExactlyOnceWith(9, [{ text: 'Wait for CI' }]));
+    expect(screen.queryByRole('group', { name: 'The Planner asks' })).toBeNull();
+  });
+  it('advances custom answers with Enter and sends only after the last question', async () => {
+    const { onAnswer } = setup([TWO]);
+    await userEvent.type(screen.getByRole('textbox', { name: 'Which branch?' }), 'hotfix{Enter}');
+    expect(onAnswer).not.toHaveBeenCalled();
+    const notes = screen.getByRole('textbox', { name: 'Notes?' });
+    expect(document.activeElement).toBe(notes);
+    await userEvent.type(notes, 'Ship it{Enter}');
+    await waitFor(() => expect(onAnswer).toHaveBeenCalledExactlyOnceWith(7, [{ text: 'hotfix' }, { text: 'Ship it' }]));
+  });
+  it.each([{ isComposing: true }, { keyCode: 229 }])('does not submit an IME confirmation (%j)', async ime => {
+    const { onAnswer } = setup([SINGLE]);
+    const input = screen.getByRole<HTMLInputElement>('textbox', { name: 'Merge PR #12?' });
+    fireEvent.change(input, { target: { value: '等检查完成' } });
+    fireEvent.keyDown(input, { key: 'Enter', ...ime });
+    expect(onAnswer).not.toHaveBeenCalled();
+    expect(input.value).toBe('等检查完成');
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(onAnswer).toHaveBeenCalledExactlyOnceWith(9, [{ text: '等检查完成' }]));
+  });
+  it('ignores blank Enter and repeated Enter while an answer is pending', async () => {
+    let finish!: () => void;
+    const onAnswer = vi.fn<AnswerAsk>(() => new Promise<void>(resolve => { finish = resolve; }));
+    setup([SINGLE], onAnswer);
+    const input = screen.getByRole('textbox', { name: 'Merge PR #12?' });
+    fireEvent.change(input, { target: { value: '   ' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onAnswer).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: 'Wait for CI' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onAnswer).toHaveBeenCalledExactlyOnceWith(9, [{ text: 'Wait for CI' }]);
+    finish();
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'The Planner asks' })).toBeNull());
+  });
   it('rejects blank free answers and clamps the server’s character limit', () => {
     setup([SINGLE]);
     const input = screen.getByRole<HTMLInputElement>('textbox', { name: 'Merge PR #12?' });

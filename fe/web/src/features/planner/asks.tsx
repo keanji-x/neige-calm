@@ -128,6 +128,7 @@ function AskForm({ ask, state, onChange, onAnswer, onBusy, onSettled }: {
         <TextInput ref={ownInput} label={question.title} isLabelHidden
           className={styles.answerInput} placeholder={question.options.length > 0 ? 'Or your own answer…' : 'Your answer…'} size="sm"
           value={draft.own} isDisabled={busy}
+          onEnter={() => { void ownAnswer(); }}
           onChange={own => onChange({ drafts: drafts.map((item, index) => index === page
             ? { ...item, own: clampAskAnswer(own) } : item), page })} />
         <Button label={ask.questions.length > 1 && page < ask.questions.length - 1 ? 'Next question' : 'Answer'}

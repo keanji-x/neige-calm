@@ -115,6 +115,33 @@ it.each([
   await expect.element(page.getByRole('combobox', { name: 'Message' })).toBeVisible();
 });
 
+it.each([1280, 390])('answers custom questions with Enter inside the real conversation at %ipx', async width => {
+  await page.viewport(width, 844);
+  const { requests } = setup('light');
+  await page.getByRole('button', { name: /Conversation Planner/ }).click();
+  const message = page.getByRole('combobox', { name: 'Message' });
+  await message.fill('Keep this message draft');
+  const ask = page.getByRole('group', { name: 'The Planner asks' });
+  const branch = ask.getByRole('textbox', { name: 'Which branch should I release from?' });
+  await branch.fill('hotfix');
+  await branch.click();
+  await userEvent.keyboard('{Enter}');
+  expect(requests.filter(request => request.path.endsWith('/answer'))).toHaveLength(0);
+  const notes = ask.getByRole('textbox', { name: 'Anything to tell the reviewers?' });
+  await expect.element(notes).toHaveFocus();
+  await notes.fill('Wait for CI');
+  await userEvent.keyboard('{Enter}');
+  await expect.poll(() => requests.filter(request => request.path.endsWith('/answer')).length).toBe(1);
+  expect(requests.filter(request => request.path.endsWith('/planner/input'))).toHaveLength(0);
+  expect(requests.find(request => request.path.endsWith('/answer'))).toMatchObject({
+    method: 'POST',
+    path: `/api/tracks/${TRACK.id}/asks/7/answer`,
+    body: { answers: [{ text: 'hotfix' }, { text: 'Wait for CI' }] },
+  });
+  await expect.element(ask).not.toBeInTheDocument();
+  await expect.element(message).toHaveTextContent('Keep this message draft');
+});
+
 it('keeps attachments in the composer with questions in their own Astryx drawer', async () => {
   await page.viewport(1280, 800);
   setup('light');
