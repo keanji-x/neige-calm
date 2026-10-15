@@ -1,6 +1,8 @@
 //! MCP identity decision-write sink for the MCP tool paths; the principal-based `DecisionSink::commit` entry is still inert.
 
+mod planner_message;
 mod worker_report;
+pub(crate) use worker_report::admit_worker_write_tx;
 
 pub use worker_report::WorkerTaskReport;
 
@@ -63,6 +65,7 @@ impl CardDecisionSink {
         identity: &ToolCallIdentity,
         report: WorkerTaskReport,
     ) -> Result<(), CalmError> {
+        let identity_for_tx = identity.clone();
         let actor = identity.to_actor_id();
         let card_id_str = identity.card_id.clone();
         let card = self
@@ -102,12 +105,14 @@ impl CardDecisionSink {
             &self.events,
             &self.write,
             move |tx| {
+                let identity = identity_for_tx.clone();
                 let report = report.clone();
                 let actor = actor.clone();
                 let scope = scope.clone();
                 let track_id = track_id.clone();
                 let worker_card_id = worker_card_id_for_tx.clone();
                 Box::pin(async move {
+                    admit_worker_write_tx(tx, &identity, &track_id).await?;
                     // Admission, task CAS and report event share one transaction; same-outcome repeats roll back as idempotent success.
                     let now = crate::model::now_ms();
                     let task_id = report.attempt_id().to_string();
@@ -137,6 +142,12 @@ impl CardDecisionSink {
                     .await?
                     {
                         return Err(CalmError::Conflict(worker_report::REPEATED.into()));
+                    }
+                    if success {
+                        let unread = crate::db::sqlite::planner_messages_unread_tx(tx, &task_id).await?;
+                        if !unread.is_empty() {
+                            return Err(CalmError::Conflict(format!("unread Planner messages: {}; read them with neige_message_read before reporting", unread.iter().map(|m| m.message_id.as_str()).collect::<Vec<_>>().join(", "))));
+                        }
                     }
                     worker_report::check_result_contract_tx(tx, &task_id, &report).await?;
                     let rows = if success {
@@ -301,13 +312,10 @@ impl CardDecisionSink {
         agent_message: Option<String>,
     ) -> Result<ReportOpCommit, CalmError> {
         let actor = identity.to_actor_id();
-        let principal = identity.to_principal();
         let track_id = track.id.clone();
-        let recorder_shadow: Arc<dyn RecorderShadowProbe> =
-            Arc::new(CardDecisionSinkRecorderShadowProbe {
-                principal,
-                track_id: track.id.clone(),
-            });
+        let recorder_shadow: Arc<dyn RecorderShadowProbe> = Arc::new(
+            CardDecisionSinkRecorderShadowProbe::for_identity(identity, track.id.clone()),
+        );
         let author = report_op_attribution(identity.role)?;
         // The writer is private to its module; this is the one entry point that accepts a caller-decided attribution.
         let report_id = report_card.id.to_string();
@@ -377,6 +385,7 @@ fn report_op_attribution(role: CardRole) -> Result<EditAuthor, CalmError> {
 pub(crate) struct CardDecisionSinkRecorderShadowProbe {
     principal: Option<Principal>,
     track_id: TrackId,
+    card_id: CardId,
 }
 
 impl CardDecisionSinkRecorderShadowProbe {
@@ -385,6 +394,7 @@ impl CardDecisionSinkRecorderShadowProbe {
         Self {
             principal: identity.to_principal(),
             track_id,
+            card_id: identity.card_id.clone().into(),
         }
     }
 }
@@ -404,10 +414,14 @@ impl RecorderShadowProbe for CardDecisionSinkRecorderShadowProbe {
                 "recorder gate requires an agent session".into(),
             ));
         };
-        match PrincipalDecisionGate::new(principal.clone())
-            .decide_recorder(tx, &self.track_id)
-            .await
-        {
+        let gate = PrincipalDecisionGate::new(principal.clone());
+        let decision = if decision_kind == RecorderShadowDecisionKind::PlannerMessage {
+            gate.decide_card_write(tx, &self.track_id, &self.card_id, CardRole::Planner)
+                .await
+        } else {
+            gate.decide_recorder(tx, &self.track_id).await
+        };
+        match decision {
             Ok(GateDecision::Allow) => Ok(()),
             Ok(GateDecision::Deny(message)) => {
                 emit_divergence(&RecorderShadowDivergence {

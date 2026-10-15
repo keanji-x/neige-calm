@@ -635,6 +635,8 @@ export type TaskContextChangedRef = { track_id: TrackId, block_id: string, from_
  */
 export type TaskContextRef = { track_id: TrackId, block_id: string, rev: number, hash: string, is_root: boolean, };
 
+export type TaskPlannerMessage = { message_id: string, seq: number, text: string, created_at_ms: number, read_at_ms: number | null, };
+
 /**
  * Execution history. `current` is null only when the live declaration has never
  * received an allocation.

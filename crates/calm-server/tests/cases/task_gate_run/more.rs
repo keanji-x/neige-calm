@@ -64,7 +64,7 @@ async fn a_gate_run_is_refused_for_other_callers_and_states() {
     refused(
         call_tool(&fx.boot, GATE, other, json!({"attempt_id": a.task.id})).await,
         -32602,
-        "a gate run needs the running attempt you were handed",
+        "needs an attempt owned by this card",
     );
     // A read-only task with a gate: nothing for the kernel to commit. A declaration refuses the
     // pair, so the row is given its gate by hand (the shape the admission still guards).
@@ -115,7 +115,7 @@ async fn a_gate_run_is_refused_for_other_callers_and_states() {
     refused(
         gate_run(&fx, &a, None).await,
         -32602,
-        "a gate run needs the running attempt you were handed",
+        "needs the current running attempt",
     );
     assert_eq!(run_ops(&fx, &a.task.id).await.len(), 1);
 }

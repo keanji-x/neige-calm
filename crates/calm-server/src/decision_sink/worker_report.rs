@@ -4,8 +4,12 @@ use crate::error::{CalmError, Result};
 use crate::event::{ArtifactRef, Event};
 use crate::git_candidate::commit_message::DeliveryMessage;
 use crate::git_candidate::delivery::AttemptOutcome;
-use crate::model::TaskStatus;
+use crate::ids::TrackId;
+use crate::mcp_server::registry::ToolCallIdentity;
+use crate::model::{CardRole, TaskStatus};
 use crate::operation::workspace_lease::ReleaseDelivery;
+use calm_truth::decision_gate::{GateDecision, PrincipalDecisionGate};
+use sqlx::{Sqlite, Transaction};
 
 pub(super) const REPEATED: &str = "worker report: recorded outcome already admitted";
 
@@ -151,5 +155,35 @@ impl WorkerTaskReport {
             } => ReleaseDelivery::CommitWorkerMessage(message.clone()),
             WorkerTaskReport::Failed { .. } => ReleaseDelivery::Commit(AttemptOutcome::Failed),
         }
+    }
+}
+
+/// Worker stamping and reporting must re-prove the same session/card/role admission.
+pub(crate) async fn admit_worker_write_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    identity: &ToolCallIdentity,
+    track: &TrackId,
+) -> Result<(), CalmError> {
+    if identity.role != CardRole::Worker {
+        return Err(CalmError::Forbidden(
+            "worker write requires Worker identity".into(),
+        ));
+    }
+    let principal = identity
+        .to_principal()
+        .ok_or_else(|| CalmError::Forbidden("worker write requires an agent session".into()))?;
+    match PrincipalDecisionGate::new(principal)
+        .decide_card_write(
+            tx,
+            track,
+            &identity.card_id.clone().into(),
+            CardRole::Worker,
+        )
+        .await?
+    {
+        GateDecision::Allow => Ok(()),
+        GateDecision::Deny(reason) => Err(CalmError::Forbidden(format!(
+            "worker write denied: {reason}"
+        ))),
     }
 }

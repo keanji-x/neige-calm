@@ -101,6 +101,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0161_read_receipts.sql",
     "0162_task_result_contract.sql",
     "0163_managed_assistant_sessions.sql",
+    "0164_task_planner_messages.sql",
 ];
 
 #[test]

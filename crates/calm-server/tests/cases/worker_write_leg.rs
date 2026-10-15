@@ -152,15 +152,14 @@ async fn refused_write_is_not_kept_and_the_same_key_writes_later() {
     written(&message(&h, target, "m", "x").await);
     assert_eq!(
         wait_for_reads(&f.log, 1).await,
-        vec![expected(&f.worker.task, "x")]
+        vec![expected(&h, &f.worker.task, "x").await]
     );
     stop(&h, &f.worker).await;
 }
 
-/// With the renderer entry gone there is no connection and no cache: a replay of a written key,
-/// typed or message, is told that its earlier outcome is unknown to the kernel.
+/// With no renderer, typed input has no cached receipt; messages retain their persisted record ID.
 #[tokio::test]
-async fn replay_without_renderer_entry_has_no_receipt() {
+async fn replay_without_renderer_entry_preserves_message_record_receipt() {
     let h = Harness::start().await;
     let f = running(&h, "claude", true, false).await;
     let view = claimed_view(&h, &f).await;
@@ -177,12 +176,16 @@ async fn replay_without_renderer_entry_has_no_receipt() {
         .execute(h.sql.pool())
         .await
         .unwrap();
-    for reply in [
-        typed(&h, &f, &view, "typed", "keys").await,
-        message(&h, target, "m", "x").await,
-    ] {
-        assert_refusal(&reply, -32403, Some("terminal_unreadable"), NO_RECEIPT);
-    }
+    assert_refusal(
+        &typed(&h, &f, &view, "typed", "keys").await,
+        -32403,
+        Some("terminal_unreadable"),
+        NO_RECEIPT,
+    );
+    let reply = message(&h, target, "m", "x").await;
+    let receipt = &reply["result"]["structuredContent"];
+    assert_eq!(receipt["outcome"], "refused", "{reply}");
+    assert!(receipt["message_id"].is_string(), "{reply}");
 }
 
 /// The Planner's identity, for calls that must be cancelled in process.
@@ -272,7 +275,10 @@ async fn write_cancelled_before_enqueue_leaves_no_fence() {
     written(&message(&h, json!({"attempt_id":f.worker.task}), "next", "y").await);
     assert_eq!(
         wait_for_reads(&f.log, 2).await,
-        vec![expected(&f.worker.task, "x"), expected(&f.worker.task, "y")]
+        vec![
+            expected(&h, &f.worker.task, "x").await,
+            expected(&h, &f.worker.task, "y").await
+        ]
     );
     stop(&h, &f.worker).await;
 }

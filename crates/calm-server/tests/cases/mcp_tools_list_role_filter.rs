@@ -223,8 +223,13 @@ async fn tools_list_for_worker_role_returns_completion_tools() {
     let names = tools_list_names_for_role(CardRole::Worker).await;
     assert_eq!(
         names,
-        vec!["neige_task_done", "neige_task_fail", "neige_task_gate"],
-        "worker tools/list must contain exactly the two completion tools and the gate run (#2464)",
+        vec![
+            "neige_message_read",
+            "neige_task_done",
+            "neige_task_fail",
+            "neige_task_gate"
+        ],
+        "worker tools/list must contain exactly completion, gate, and Planner message tools",
     );
 }
 

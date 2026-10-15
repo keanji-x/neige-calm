@@ -74,7 +74,7 @@ impl TerminalInteraction {
             )
             .await?
         {
-            Admission::Replayed(replayed) => return Ok(replayed),
+            Admission::Answered(replayed) => return Ok(replayed),
             Admission::New(admitted) => admitted,
         };
         let (resolved, client) = (&admitted.resolved, &admitted.client);

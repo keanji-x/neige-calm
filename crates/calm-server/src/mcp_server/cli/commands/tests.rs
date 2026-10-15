@@ -525,7 +525,10 @@ fn json_flag_is_accepted_before_and_after_the_command() {
     assert!(err.message.starts_with("unknown command `snow`"), "{err:?}");
     assert_eq!(
         refusal(&[]),
-        "missing command; expected `neige <object> <action>` with an object of: track, report, mail, task, op, admin, tool"
+        concat!(
+            "missing command; expected `neige <object> <action>` with an object of: ",
+            "track, report, mail, task, message, op, admin, tool"
+        )
     );
 }
 
@@ -552,7 +555,7 @@ fn an_old_spelling_is_a_usage_error_listing_the_objects() {
     assert_eq!(
         help::unknown_command_message("cat"),
         "unknown command `cat`; a command is `neige <object> <action>`\n\n\
-         Objects: track, report, mail, task, op, admin, tool\nRun `neige --help` for usage."
+         Objects: track, report, mail, task, message, op, admin, tool\nRun `neige --help` for usage."
     );
     assert_eq!(
         refusal(&["track", "cat-at", "c", "p"]),

@@ -51,8 +51,9 @@ use crate::routes::tracks::{
 };
 use crate::routes::version::VersionInfo;
 use crate::track_fs_dto::{
-    TrackFsCardMeta, TrackFsHookEvent, TrackFsRunDetail, TrackFsRunEventRef, TrackFsRunEvents,
-    TrackFsRunIndexEntry, TrackFsRunStatus, TrackFsRunVerdict, TrackFsRunVerdictSummary,
+    TaskPlannerMessage, TrackFsCardMeta, TrackFsHookEvent, TrackFsRunDetail, TrackFsRunEventRef,
+    TrackFsRunEvents, TrackFsRunIndexEntry, TrackFsRunStatus, TrackFsRunVerdict,
+    TrackFsRunVerdictSummary,
 };
 use crate::track_fs_view::{TrackFsContent, TrackFsEntry};
 use axum::http::{Method, StatusCode};
@@ -265,6 +266,7 @@ use utoipa::{Modify, OpenApi, ToSchema};
         TrackFsRunEventRef,
         TrackFsRunEvents,
         TrackFsRunDetail,
+        TaskPlannerMessage,
         TrackFsHookEvent,
         UpdateTrackReportBody,
         CreateReportBlockBody,

@@ -19,6 +19,27 @@ use tokio::sync::OwnedMutexGuard;
 
 const UNRESOLVED: &str = "prior input outcome unknown";
 
+/// The write fence refuses the notice, but the message was recorded before the fence check.
+async fn assert_recorded_refusal(h: &Harness, reply: &serde_json::Value) {
+    assert!(reply.get("error").is_none(), "{reply}");
+    let receipt = &reply["result"]["structuredContent"];
+    assert_eq!(receipt["outcome"], "refused", "{reply}");
+    assert!(
+        receipt["reason"].as_str().unwrap().contains(UNRESOLVED),
+        "{reply}"
+    );
+    let id = receipt["message_id"]
+        .as_str()
+        .expect("recorded-message receipt");
+    let text: String =
+        sqlx::query_scalar("SELECT text FROM task_planner_messages WHERE message_id=?")
+            .bind(id)
+            .fetch_one(h.sql.pool())
+            .await
+            .unwrap();
+    assert_eq!(text, "next");
+}
+
 type Held = Arc<Mutex<Option<OwnedMutexGuard<()>>>>;
 
 /// Hold the renderer's write admission once the next message client has attached.
@@ -45,7 +66,7 @@ async fn release_then_next_lands(h: &Harness, f: &Fixture, held: &Held, first: &
     written(&message(h, json!({"attempt_id":f.worker.task}), "after", "after").await);
     assert_eq!(
         wait_for_reads(&f.log, 2).await,
-        vec![first.to_vec(), expected(&f.worker.task, "after")],
+        vec![first.to_vec(), expected(h, &f.worker.task, "after").await],
         "the held write landed exactly once"
     );
 }
@@ -65,7 +86,7 @@ async fn message_held_past_its_budget_lands_once_and_fences_the_next() {
     assert!(reply.get("error").is_none(), "{reply}");
     assert_eq!(reply["result"]["structuredContent"]["outcome"], "unknown");
     let next = message(&h, json!({"attempt_id":f.worker.task}), "next", "next").await;
-    assert_refusal(&next, -32403, None, UNRESOLVED);
+    assert_recorded_refusal(&h, &next).await;
     // Typed input on a fresh observation is fenced by the same unresolved message.
     let typed = |key: &'static str| {
         let h = &h;
@@ -89,7 +110,7 @@ async fn message_held_past_its_budget_lands_once_and_fences_the_next() {
     // The same key still replays its receipt.
     let replay = message(&h, json!({"attempt_id":f.worker.task}), "held", "held").await;
     assert_eq!(replay["result"]["structuredContent"]["outcome"], "unknown");
-    release_then_next_lands(&h, &f, &held, &expected(&f.worker.task, "held")).await;
+    release_then_next_lands(&h, &f, &held, &expected(&h, &f.worker.task, "held").await).await;
     // Settled: typed input writes again, and only now.
     let written_keys = typed("keys").await;
     assert_eq!(
@@ -99,8 +120,8 @@ async fn message_held_past_its_budget_lands_once_and_fences_the_next() {
     assert_eq!(
         wait_for_reads(&f.log, 3).await,
         vec![
-            expected(&f.worker.task, "held"),
-            expected(&f.worker.task, "after"),
+            expected(&h, &f.worker.task, "held").await,
+            expected(&h, &f.worker.task, "after").await,
             b"keys".to_vec()
         ]
     );
@@ -143,8 +164,14 @@ async fn message_cancelled_after_enqueue_fences_the_next() {
         () = driver => {}
     }
     let next = message(&h, json!({"attempt_id":f.worker.task}), "next", "next").await;
-    assert_refusal(&next, -32403, None, UNRESOLVED);
-    release_then_next_lands(&h, &f, &held, &expected(&f.worker.task, "cancelled")).await;
+    assert_recorded_refusal(&h, &next).await;
+    release_then_next_lands(
+        &h,
+        &f,
+        &held,
+        &expected(&h, &f.worker.task, "cancelled").await,
+    )
+    .await;
     stop(&h, &f.worker).await;
 }
 
@@ -177,7 +204,7 @@ async fn message_after_unknown_input_is_refused() {
         .await;
     assert_eq!(typed["outcome"], "unknown", "{typed}");
     let next = message(&h, json!({"attempt_id":f.worker.task}), "next", "next").await;
-    assert_refusal(&next, -32403, None, UNRESOLVED);
+    assert_recorded_refusal(&h, &next).await;
     // Typed input on a fresh observation is fenced by the same unresolved write.
     let fresh = h
         .ok(

@@ -14,6 +14,8 @@ mod gc;
 mod read;
 mod runs;
 mod snapshot;
+#[cfg(test)]
+pub(crate) use snapshot::run_blob_bytes;
 mod store;
 #[cfg(test)]
 mod tests;

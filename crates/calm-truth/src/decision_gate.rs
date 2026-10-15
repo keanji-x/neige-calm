@@ -427,6 +427,35 @@ impl PrincipalDecisionGate {
     where
         T: WriteTx + ?Sized + Send,
     {
+        self.decide_card_authority(tx, track, None, &[CardRole::Planner, CardRole::Assistant])
+            .await
+    }
+
+    /// Re-prove a transported card identity for a write in the same transaction.
+    pub async fn decide_card_write<T>(
+        &self,
+        tx: &mut T,
+        track: &TrackId,
+        card: &CardId,
+        role: CardRole,
+    ) -> Result<GateDecision>
+    where
+        T: WriteTx + ?Sized + Send,
+    {
+        self.decide_card_authority(tx, track, Some(card), &[role])
+            .await
+    }
+
+    async fn decide_card_authority<T>(
+        &self,
+        tx: &mut T,
+        track: &TrackId,
+        expected_card: Option<&CardId>,
+        roles: &[CardRole],
+    ) -> Result<GateDecision>
+    where
+        T: WriteTx + ?Sized + Send,
+    {
         let Principal::Agent { session_id, .. } = &self.principal else {
             return Ok(GateDecision::Deny(
                 "principal is not an agent session".into(),
@@ -448,12 +477,17 @@ impl PrincipalDecisionGate {
                 "session {session_id} is not bound to a card"
             )));
         };
+        if expected_card.is_some_and(|expected| expected != &card_id) {
+            return Ok(GateDecision::Deny(format!(
+                "session {session_id} card binding changed"
+            )));
+        }
         let Some(role) = tx.read_card_role(&card_id).await? else {
             return Ok(GateDecision::Deny(format!(
                 "session {session_id} is bound to unknown card {card_id}"
             )));
         };
-        if !matches!(role, CardRole::Planner | CardRole::Assistant) {
+        if !roles.contains(&role) {
             return Ok(GateDecision::Deny(format!(
                 "session {session_id} card {card_id} has role {role:?}, which may not record"
             )));

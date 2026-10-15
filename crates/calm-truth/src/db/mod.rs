@@ -194,6 +194,12 @@ pub trait RepoRead: Send + Sync + 'static {
     async fn task_for_worker_card(&self, card_id: &str) -> Result<Option<Task>>;
     /// All surviving execution rows, oldest generation first.
     async fn task_history_by_key(&self, track_id: &str, key: &str) -> Result<Vec<Task>>;
+    /// Ordered live audit records of the attempt's Planner messages; does not mark them read.
+    async fn planner_messages_for_attempt(
+        &self,
+        track_id: &str,
+        attempt_id: &str,
+    ) -> Result<Vec<calm_types::track_fs_dto::TaskPlannerMessage>>;
     /// Every canceled execution of the track's tasks, current or superseded; the runs views' record
     /// that a canceled run ended.
     async fn canceled_task_attempts_by_track(

@@ -7,6 +7,7 @@ pub mod admin;
 pub mod area_reports;
 pub mod emit;
 pub mod mail;
+pub mod message_read;
 pub mod op;
 pub(crate) mod paging;
 pub mod plan;
@@ -34,6 +35,7 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     terminal::register_into(registry);
     emit::register_into(registry);
     task_gate::register_into(registry);
+    message_read::register_into(registry);
     plan::register_into(registry);
     report_links::register_into(registry);
     report_tag::register_into(registry);
@@ -207,7 +209,8 @@ mod tests {
         // #2599: `neige_task_ls` names the stored `result_contract` setting (29 bytes); the
         // contracts themselves are describe output, outside this surface; the cap is the measured
         // 30,903.
-        const SURFACE_MAX_BYTES: usize = 30_903;
+        // #2617: re-measured after the record/notice changes: 30,871 bytes; the cap follows it down.
+        const SURFACE_MAX_BYTES: usize = 30_871;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);

@@ -28,6 +28,7 @@ const NO_RECEIPT: &str = "the worker's terminal has no live view (after a server
 pub(super) struct Admitted {
     pub(super) resolved: target::Resolved,
     pub(super) client: Arc<Client>,
+    pub(super) message_id: Option<String>,
     /// Held until the request returns: one action at a time per connection, readback included.
     pub(super) _serial: OwnedMutexGuard<()>,
 }
@@ -49,14 +50,14 @@ impl<'a> WriteTarget<'a> {
 
 /// The write rule a new write passes after the replay: typed keys' or `message`'s.
 #[derive(Clone, Copy)]
-pub(super) enum WriteRule {
+pub(super) enum WriteRule<'a> {
     Keys,
-    Message,
+    Message(&'a str),
 }
 
 pub(super) enum Admission {
-    /// The key's first receipt, with a readback against the current screen.
-    Replayed(Value),
+    /// A replayed receipt, or a recorded-message receipt when no renderer can send its notice.
+    Answered(Value),
     New(Admitted),
 }
 
@@ -84,7 +85,7 @@ impl TerminalInteraction {
         key: &str,
         fingerprint: &str,
         observation_wait: Option<WaitPlan>,
-        rule: WriteRule,
+        rule: WriteRule<'_>,
     ) -> Result<Admission> {
         if let Some(wait) = &observation_wait {
             wait.validate()?;
@@ -99,7 +100,18 @@ impl TerminalInteraction {
             None => target.pinned = Some(resolved.binding.clone()),
         }
         if self.renderer.get(&resolved.binding.terminal_id).is_none() {
-            self.new_write_rule(rule, &resolved).await?;
+            if let Some(message_id) = self.new_write_rule(rule, &resolved, key, identity).await? {
+                return Ok(Admission::Answered(
+                    super::message::recorded_message_receipt(
+                        &resolved,
+                        key,
+                        &message_id,
+                        &Delivered::Refused(
+                            "the worker's terminal has no live view; notice not sent".into(),
+                        ),
+                    ),
+                ));
+            }
             return Err(refused("terminal_unreadable", NO_RECEIPT.into()).into());
         }
         let client = self.client(identity, &resolved.binding).await?;
@@ -115,19 +127,69 @@ impl TerminalInteraction {
             .replay(identity, &client, key, fingerprint, observation_wait)
             .await?
         {
-            return Ok(Admission::Replayed(replayed));
+            return Ok(Admission::Answered(replayed));
         }
-        self.new_write_rule(rule, &resolved).await?;
+        let message_id = self.new_write_rule(rule, &resolved, key, identity).await?;
         Ok(Admission::New(Admitted {
             resolved,
             client,
+            message_id,
             _serial: serial,
         }))
     }
-    async fn new_write_rule(&self, rule: WriteRule, resolved: &Resolved) -> Result<()> {
+    async fn new_write_rule(
+        &self,
+        rule: WriteRule<'_>,
+        resolved: &Resolved,
+        key: &str,
+        identity: &ToolCallIdentity,
+    ) -> Result<Option<String>> {
         match rule {
-            WriteRule::Keys => self.ensure_keys_accepted(resolved),
-            WriteRule::Message => self.message_rule(resolved).await,
+            WriteRule::Keys => {
+                self.ensure_keys_accepted(resolved)?;
+                Ok(None)
+            }
+            WriteRule::Message(text) => {
+                self.message_rule(resolved).await?;
+                #[cfg(feature = "fixtures")]
+                self.run_message_record_seam(&resolved.binding.terminal_id)
+                    .await;
+                let task = resolved
+                    .binding
+                    .task
+                    .as_ref()
+                    .expect("message rule requires task");
+                let id = crate::decision_sink::CardDecisionSink::commit_planner_message(
+                    self.repo.as_ref(),
+                    identity,
+                    &task.attempt_id,
+                    &resolved.binding.card_id,
+                    key,
+                    text,
+                )
+                .await?;
+                Ok(Some(id))
+            }
+        }
+    }
+    /// Pause after transport admission and before the record transaction acquires its lock.
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub fn set_message_record_seam(&self, seam: ClaimWindowSeam) {
+        *self
+            .message_record_seam
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(seam);
+    }
+    #[cfg(feature = "fixtures")]
+    async fn run_message_record_seam(&self, terminal_id: &str) {
+        let seam = self
+            .message_record_seam
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(seam) = seam {
+            seam(terminal_id.to_owned()).await;
         }
     }
     /// The receipt cached under `key` on this connection, with its readback, or `None` for a new

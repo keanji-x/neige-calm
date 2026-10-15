@@ -6,15 +6,15 @@
 use calm_types::task_execution::TaskAccess;
 
 use super::{GATE_RUNS_PER_ATTEMPT, TASK_GATE_RUN_KIND, TaskGateRunPayload, gate_run_key};
-use crate::db::sqlite::{task_attempt_current_tx, task_get_tx};
 use crate::error::{CalmError, Result};
 use crate::git_candidate::commit_message::CommitMessage;
-use crate::model::{TaskStatus, new_id};
+use crate::model::new_id;
 use crate::operation::gate_lifecycle::GateSpec;
 use crate::operation::gate_ops::{
     AttemptGateOps, GateOpKind, classify_gate_ops, gate_ops_of_attempt_tx,
 };
 use crate::operation::repo_sqlite::insert_pending_row;
+use crate::operation::worker_attempt::{current_running_attempt_tx, owned_attempt_tx};
 use crate::operation::workspace_lease::facts::latest_workspace_lease_for_card_tx;
 use crate::operation::workspace_lease::{DeliveryPolicy, worker_branch_tx};
 use crate::operation::{OperationKey, Tx};
@@ -40,21 +40,8 @@ pub(super) async fn run_target_tx(
     card_id: &str,
     track_id: &str,
 ) -> Result<RunTarget> {
-    let not_yours = || {
-        CalmError::BadRequest(format!(
-            "a gate run needs the running attempt you were handed; {attempt_id} is not one"
-        ))
-    };
-    let task = task_get_tx(tx, attempt_id).await?.ok_or_else(not_yours)?;
-    if task.track_id != track_id || task.worker_card_id.as_deref() != Some(card_id) {
-        return Err(not_yours());
-    }
-    let current = task_attempt_current_tx(tx, &task.track_id, &task.key).await?;
-    if task.status != TaskStatus::Running
-        || current.as_ref().map(|c| c.attempt_id.as_str()) != Some(attempt_id)
-    {
-        return Err(not_yours());
-    }
+    let task = owned_attempt_tx(tx, attempt_id, card_id, track_id).await?;
+    current_running_attempt_tx(tx, &task).await?;
     let gate_json = task
         .gate_json
         .as_deref()

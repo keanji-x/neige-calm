@@ -7,7 +7,6 @@ use super::terminal_support::{Harness, human_takeover};
 use super::worker_message_ready::prompt_submitted;
 use calm_server::db::prelude::*;
 use calm_server::model::now_ms;
-use calm_server::terminal_interaction::message_header;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -65,15 +64,10 @@ pub(crate) async fn wait_for_reads(log: &Path, count: usize) -> Vec<Vec<u8>> {
     }
 }
 
-pub(crate) fn expected(attempt: &str, text: &str) -> Vec<u8> {
-    [
-        b"\x1b[200~".as_slice(),
-        message_header(attempt).as_bytes(),
-        b"\n",
-        text.as_bytes(),
-        b"\x1b[201~\r",
-    ]
-    .concat()
+pub(crate) async fn expected(h: &Harness, attempt: &str, text: &str) -> Vec<u8> {
+    let id: String = sqlx::query_scalar("SELECT message_id FROM task_planner_messages WHERE attempt_id=? AND text=? ORDER BY seq DESC LIMIT 1")
+        .bind(attempt).bind(text).fetch_one(h.sql.pool()).await.unwrap();
+    format!("\x1b[200~[neige] Planner message {id} for attempt {attempt}: read it with neige_message_read\x1b[201~\r").into_bytes()
 }
 
 pub(crate) struct Fixture {
@@ -138,7 +132,7 @@ pub(crate) fn written(reply: &Value) -> &Value {
 }
 
 #[tokio::test]
-async fn message_is_one_bracketed_paste_write() {
+async fn planner_message_paste_carries_no_planner_text() {
     let h = Harness::start().await;
     let f = running(&h, "claude", true, false).await;
     let text = "rerun the gate\n\twith --locked";
@@ -147,8 +141,8 @@ async fn message_is_one_bracketed_paste_write() {
     assert_eq!(receipt["attempt_id"], f.worker.task);
     assert_eq!(
         wait_for_reads(&f.log, 1).await,
-        vec![expected(&f.worker.task, text)],
-        "one write: paste start, header, text, paste end and CR"
+        vec![format!("\x1b[200~[neige] Planner message {} for attempt {}: read it with neige_message_read\x1b[201~\r", receipt["message_id"].as_str().unwrap_or("missing"), f.worker.task).into_bytes()],
+        "only a fixed notice and Enter may reach the worker"
     );
     stop(&h, &f.worker).await;
 }
@@ -165,7 +159,10 @@ async fn message_never_leads_with_slash_or_bang() {
     let seen = wait_for_reads(&f.log, 2).await;
     assert_eq!(
         seen,
-        texts.map(|text| expected(&f.worker.task, text)).to_vec()
+        vec![
+            expected(&h, &f.worker.task, texts[0]).await,
+            expected(&h, &f.worker.task, texts[1]).await
+        ]
     );
     for read in seen {
         assert!(read.starts_with(b"\x1b[200~[neige] "), "{read:?}");
@@ -200,7 +197,7 @@ async fn message_text_refuses_controls() {
     written(&message(&h, json!({"attempt_id":f.worker.task}), "ok", "ok").await);
     assert_eq!(
         wait_for_reads(&f.log, 1).await,
-        vec![expected(&f.worker.task, "ok")]
+        vec![expected(&h, &f.worker.task, "ok").await]
     );
     stop(&h, &f.worker).await;
 }
@@ -209,9 +206,7 @@ async fn message_text_refuses_controls() {
 async fn message_over_cap_is_refused() {
     let h = Harness::start().await;
     let f = running(&h, "claude", true, false).await;
-    let room = calm_server::terminal_interaction::MESSAGE_BYTES_MAX
-        - message_header(&f.worker.task).len()
-        - 1;
+    let room = calm_server::terminal_interaction::MESSAGE_BYTES_MAX;
     let reply = message(
         &h,
         json!({"attempt_id":f.worker.task}),
@@ -223,7 +218,7 @@ async fn message_over_cap_is_refused() {
     written(&message(&h, json!({"attempt_id":f.worker.task}), "ok", "ok").await);
     assert_eq!(
         wait_for_reads(&f.log, 1).await,
-        vec![expected(&f.worker.task, "ok")]
+        vec![expected(&h, &f.worker.task, "ok").await]
     );
     stop(&h, &f.worker).await;
 }
@@ -367,7 +362,7 @@ async fn codex_running_worker_takes_message_refuses_keys() {
     written(&message(&h, json!({"attempt_id":codex.task}), "m", text).await);
     assert_eq!(
         wait_for_reads(&f.log, 1).await,
-        vec![expected(&codex.task, text)],
+        vec![expected(&h, &codex.task, text).await],
         "only the message reached the PTY"
     );
     for reply in &replies {
@@ -413,7 +408,10 @@ async fn claude_running_worker_takes_message_and_keys() {
     written(&message(&h, json!({"attempt_id":claude.task}), "m", "message").await);
     assert_eq!(
         wait_for_reads(&f.log, 2).await,
-        vec![b"keys".to_vec(), expected(&claude.task, "message")]
+        vec![
+            b"keys".to_vec(),
+            expected(&h, &claude.task, "message").await
+        ]
     );
     stop(&h, &f.worker).await;
 }
@@ -458,7 +456,7 @@ async fn message_replay_writes_once() {
     assert_refusal(&conflict, -32403, None, "reused with different arguments");
     assert_eq!(
         wait_for_reads(&f.log, 1).await,
-        vec![expected(&f.worker.task, "only once")]
+        vec![expected(&h, &f.worker.task, "only once").await]
     );
     stop(&h, &f.worker).await;
 }
@@ -469,12 +467,19 @@ async fn terminal_without_readable_view_refuses_message() {
     let worker = worker_running(&h, "claude", &h.track, None).await;
     prompt_submitted(&h, &worker).await;
     let reply = message(&h, json!({"attempt_id":worker.task}), "m", "x").await;
-    assert_refusal(
-        &reply,
-        -32403,
-        Some("terminal_unreadable"),
-        "the worker's terminal has no live view (after a server restart until reattached, #2499)",
-    );
+    let receipt = &reply["result"]["structuredContent"];
+    assert_eq!(receipt["outcome"], "refused", "{reply}");
+    let id = receipt["message_id"]
+        .as_str()
+        .expect("recorded message receipt");
+    let stored: String =
+        sqlx::query_scalar("SELECT message_id FROM task_planner_messages WHERE attempt_id=?")
+            .bind(&worker.task)
+            .fetch_one(h.sql.pool())
+            .await
+            .unwrap();
+    assert_eq!(id, stored);
+    assert!(!receipt.to_string().contains("this call wrote nothing"));
     assert!(h.state.terminal_renderer.get(&worker.terminal).is_none());
 }
 
@@ -483,11 +488,9 @@ async fn bracketed_paste_off_refuses_message() {
     let h = Harness::start().await;
     let f = running(&h, "codex", false, false).await;
     let reply = message(&h, json!({"attempt_id":f.worker.task}), "m", "x").await;
-    assert_refusal(
-        &reply,
-        -32403,
-        Some("terminal_unreadable"),
-        "or bracketed paste is off; nothing was sent",
+    assert_eq!(
+        reply["result"]["structuredContent"]["outcome"], "refused",
+        "{reply}"
     );
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(reads(&f.log).is_empty());
@@ -500,6 +503,7 @@ pub(crate) async fn queued_change(
     h: &Harness,
     f: &Fixture,
     change: impl std::future::Future<Output = ()>,
+    resend_notice_refused: bool,
 ) {
     let held = Arc::new(Mutex::new(None));
     let (entered, entered_rx) = tokio::sync::oneshot::channel();
@@ -538,7 +542,13 @@ pub(crate) async fn queued_change(
     // A proven refusal is not cached: a resend of the key is decided anew (refused by the rule
     // or the terminal check now), never answered with the refused receipt.
     let resend = message(h, json!({"attempt_id":f.worker.task}), "queued", "x").await;
-    assert_eq!(resend["error"]["code"], -32403, "{resend}");
+    if resend_notice_refused {
+        let resent = &resend["result"]["structuredContent"];
+        assert_eq!(resent["outcome"], "refused", "{resend}");
+        assert_eq!(resent["message_id"], receipt["message_id"]);
+    } else {
+        assert_eq!(resend["error"]["code"], -32403, "{resend}");
+    }
 }
 
 #[tokio::test]
@@ -546,27 +556,32 @@ async fn queued_message_refused_when_paste_mode_turns_off() {
     let h = Harness::start().await;
     let f = running(&h, "claude", true, true).await;
     let entry = h.state.terminal_renderer.get(&f.worker.terminal).unwrap();
-    queued_change(&h, &f, async {
-        std::fs::write(&f.flip, b"").unwrap();
-        let start = Instant::now();
-        while entry
-            .handle
-            .model_view
-            .lock()
-            .unwrap()
-            .capture(0)
-            .unwrap()
-            .0
-            .input_surface()
-            .bracketed_paste()
-        {
-            assert!(
-                start.elapsed() < Duration::from_secs(10),
-                "paste mode stayed on"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
+    queued_change(
+        &h,
+        &f,
+        async {
+            std::fs::write(&f.flip, b"").unwrap();
+            let start = Instant::now();
+            while entry
+                .handle
+                .model_view
+                .lock()
+                .unwrap()
+                .capture(0)
+                .unwrap()
+                .0
+                .input_surface()
+                .bracketed_paste()
+            {
+                assert!(
+                    start.elapsed() < Duration::from_secs(10),
+                    "paste mode stayed on"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        },
+        true,
+    )
     .await;
     stop(&h, &f.worker).await;
 }
@@ -575,7 +590,7 @@ async fn queued_message_refused_when_paste_mode_turns_off() {
 async fn queued_message_refused_when_task_finishes() {
     let h = Harness::start().await;
     let f = running(&h, "codex", true, false).await;
-    queued_change(&h, &f, set_status(&h, &f.worker.task, "done")).await;
+    queued_change(&h, &f, set_status(&h, &f.worker.task, "done"), false).await;
     stop(&h, &f.worker).await;
 }
 
@@ -590,7 +605,7 @@ async fn message_delivered_while_another_client_owns_the_terminal() {
     written(&reply);
     assert_eq!(
         wait_for_reads(&f.log, 1).await,
-        vec![expected(&f.worker.task, "while owned")]
+        vec![expected(&h, &f.worker.task, "while owned").await]
     );
     assert_eq!(
         entry.handle.owner_registry.lock().unwrap().current_owner(),
@@ -646,7 +661,7 @@ async fn message_accepts_echoed_defaults() {
     written(&h.call("neige_terminal_input", echoed).await);
     assert_eq!(
         wait_for_reads(&f.log, 1).await,
-        vec![expected(&f.worker.task, "x")]
+        vec![expected(&h, &f.worker.task, "x").await]
     );
     for option in ["claim", "release", "allow_output_since_observation"] {
         let mut args = json!({"attempt_id":f.worker.task,"idempotency_key":option,
@@ -723,7 +738,7 @@ async fn replay_after(h: &Harness, f: &Fixture, change: impl std::future::Future
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(
         reads(&f.log),
-        vec![expected(&f.worker.task, "only once")],
+        vec![expected(h, &f.worker.task, "only once").await],
         "the replay wrote nothing"
     );
 }
@@ -772,11 +787,9 @@ async fn message_replay_after_paste_mode_off_returns_the_receipt() {
     })
     .await;
     let fresh = message(&h, json!({"attempt_id":f.worker.task}), "new", "x").await;
-    assert_refusal(
-        &fresh,
-        -32403,
-        Some("terminal_unreadable"),
-        "bracketed paste is off",
+    assert_eq!(
+        fresh["result"]["structuredContent"]["outcome"], "refused",
+        "{fresh}"
     );
     stop(&h, &f.worker).await;
 }

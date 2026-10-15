@@ -330,6 +330,13 @@ impl RepoRead for SqlxRepo {
         super::task_attempt::task_history_by_key_pool(&self.pool, track_id, key).await
     }
 
+    async fn planner_messages_for_attempt(
+        &self,
+        track_id: &str,
+        attempt_id: &str,
+    ) -> Result<Vec<calm_types::track_fs_dto::TaskPlannerMessage>> {
+        super::planner_messages_for_attempt(&self.pool, track_id, attempt_id).await
+    }
     async fn canceled_task_attempts_by_track(
         &self,
         track_id: &str,

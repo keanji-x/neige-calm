@@ -1,4 +1,4 @@
-//! `message` (#2493): one bracketed paste of a fixed kernel header and the Planner's text, then
+//! `message` (#2493): one bracketed paste of a fixed kernel notice for a persisted Planner message, then
 //! Enter, into a running task worker's agent TUI. Its writer is a kernel-private client that
 //! writes as an Observer (`kernel_originated_input`), so it never claims or takes control; its
 //! scope re-runs the message rule and the terminal checks when the writer admits the write. The
@@ -14,16 +14,17 @@ use super::*;
 use crate::terminal_renderer::{RendererEntry, WriteShape};
 use calm_exec::{MessageReady, TuiInput};
 
-/// Cap on the header, its newline and the text (the probe's 7,999-byte paste arrived byte-exact
-/// on both TUIs).
+/// Cap on the persisted Planner text, mirrored by migration 0163.
 pub const MESSAGE_BYTES_MAX: usize = 8000;
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
 
 /// The kernel's first line of every message: the inserted text never starts with the caller's
 /// `/` or `!`, and it names the attempt it was written for.
-pub fn message_header(attempt_id: &str) -> String {
-    format!("[neige] Planner message for attempt {attempt_id}:")
+pub fn message_header(attempt_id: &str, message_id: &str) -> String {
+    format!(
+        "[neige] Planner message {message_id} for attempt {attempt_id}: read it with neige_message_read"
+    )
 }
 
 /// Invalid message text or arguments: answered `-32602`.
@@ -39,6 +40,12 @@ impl std::error::Error for MessageInvalid {}
 /// Non-empty, and no control character but newline and tab (ESC would end the paste early, CR
 /// would submit inside it).
 pub fn validate_message_text(text: &str) -> Result<(), MessageInvalid> {
+    if text.len() > MESSAGE_BYTES_MAX {
+        return Err(MessageInvalid(format!(
+            "message is {} bytes; the cap is {MESSAGE_BYTES_MAX}",
+            text.len()
+        )));
+    }
     if text.is_empty() {
         return Err(MessageInvalid("message text is empty".into()));
     }
@@ -54,24 +61,15 @@ pub fn validate_message_text(text: &str) -> Result<(), MessageInvalid> {
     }
 }
 
-/// The one write of a message: `ESC[200~` header `\n` text `ESC[201~` `\r`.
-pub fn encode_message(attempt_id: &str, text: &str) -> Result<Vec<u8>, MessageInvalid> {
-    validate_message_text(text)?;
-    let header = message_header(attempt_id);
-    let body = header.len() + 1 + text.len();
-    if body > MESSAGE_BYTES_MAX {
-        return Err(MessageInvalid(format!(
-            "message is {body} bytes with its header; the cap is {MESSAGE_BYTES_MAX}"
-        )));
-    }
-    let mut bytes = Vec::with_capacity(body + PASTE_START.len() + PASTE_END.len() + 1);
+/// The one write of a message notice: `ESC[200~` notice `ESC[201~` `\r`.
+pub fn encode_message(attempt_id: &str, message_id: &str) -> Vec<u8> {
+    let header = message_header(attempt_id, message_id);
+    let mut bytes = Vec::new();
     bytes.extend_from_slice(PASTE_START);
     bytes.extend_from_slice(header.as_bytes());
-    bytes.push(b'\n');
-    bytes.extend_from_slice(text.as_bytes());
     bytes.extend_from_slice(PASTE_END);
     bytes.push(b'\r');
-    Ok(bytes)
+    bytes
 }
 
 /// The message rule's declaration part: a task worker whose provider declares message delivery,
@@ -154,7 +152,37 @@ fn terminal_takes_paste(entry: &RendererEntry) -> bool {
 }
 
 const TERMINAL_UNREADABLE: &str = "the worker's terminal has no live readable view (after a server \
-     restart until reattached, #2499), or bracketed paste is off; nothing was sent";
+     restart until reattached, #2499), or bracketed paste is off; message recorded; notice was not sent";
+
+/// Once persisted, every delivery outcome identifies the authoritative record.
+pub(super) fn recorded_message_receipt(
+    resolved: &Resolved,
+    idempotency_key: &str,
+    message_id: &str,
+    outcome: &Delivered,
+) -> Value {
+    let mut receipt = json!({"terminal_id":resolved.binding.terminal_id,
+                "idempotency_key":idempotency_key,"attempt_id":resolved.binding.task.as_ref().expect("message requires task").attempt_id,
+                "application_result":"unverified", "message_id":message_id});
+    match outcome {
+        Delivered::Written => {
+            receipt["outcome"] = json!("written");
+            receipt["next"] = json!(
+                "the worker takes it in its current or next turn; its screen \
+                         (neige_terminal_read) and its report show what it did"
+            );
+        }
+        Delivered::Refused(reason) => {
+            receipt["outcome"] = json!("refused");
+            receipt["reason"] = json!(reason);
+            receipt["next"] = json!(
+                "message recorded; read-tool notice was not written; the worker can read the record on its next turn"
+            );
+        }
+        Delivered::Unknown => receipt["outcome"] = json!("unknown"),
+    }
+    receipt
+}
 
 impl TerminalInteraction {
     /// The providers whose workers take a message, for the `message_unsupported` text.
@@ -223,11 +251,11 @@ impl TerminalInteraction {
                     &key,
                     &fingerprint,
                     observation_wait.clone(),
-                    WriteRule::Message,
+                    WriteRule::Message(text),
                 )
                 .await
             {
-                Ok(Admission::Replayed(replayed)) => return Ok(replayed),
+                Ok(Admission::Answered(replayed)) => return Ok(replayed),
                 Ok(Admission::New(admitted)) => break admitted,
                 Err(error) if starting(&error) && Instant::now() < deadline => {
                     tokio::time::sleep(START_POLL).await;
@@ -236,57 +264,55 @@ impl TerminalInteraction {
             }
         };
         let (resolved, client) = (&admitted.resolved, &admitted.client);
-        Self::ensure_writable(client)?;
-        let entry = match self.renderer.get(&resolved.binding.terminal_id) {
-            Some(entry) if terminal_takes_paste(&entry) => entry,
-            _ => return Err(refused("terminal_unreadable", TERMINAL_UNREADABLE.into()).into()),
-        };
-        ensure!(
-            Arc::ptr_eq(&entry, &client.entry),
-            "terminal generation changed; read again"
-        );
         let attempt = resolved
             .binding
             .task
             .as_ref()
-            .map(|task| task.attempt_id.clone())
-            .ok_or_else(|| anyhow::anyhow!("message target is bound to no task"))?;
-        let bytes = encode_message(&attempt, text)?;
+            .expect("message admission requires a task")
+            .attempt_id
+            .clone();
+        let message_id = admitted
+            .message_id
+            .as_ref()
+            .expect("message admission records its message");
+        let bytes = encode_message(&attempt, message_id);
         let receipt = |outcome: &Delivered| {
-            let mut receipt = json!({"terminal_id":resolved.binding.terminal_id,
-                "idempotency_key":idempotency_key,"attempt_id":attempt,
-                "application_result":"unverified"});
-            match outcome {
-                Delivered::Written => {
-                    receipt["outcome"] = json!("written");
-                    receipt["next"] = json!(
-                        "the worker takes it in its current or next turn; its screen \
-                         (neige_terminal_read) and its report show what it did"
-                    );
-                }
-                Delivered::Refused(reason) => {
-                    receipt["outcome"] = json!("refused");
-                    receipt["reason"] = json!(reason);
-                    receipt["next"] = json!("nothing was written; show and read again");
-                }
-                Delivered::Unknown => receipt["outcome"] = json!("unknown"),
-            }
-            receipt
+            recorded_message_receipt(resolved, idempotency_key, message_id, outcome)
         };
+        if let Err(error) = Self::ensure_writable(client) {
+            return Ok(receipt(&Delivered::Refused(error.to_string())));
+        }
+        let entry = match self.renderer.get(&resolved.binding.terminal_id) {
+            Some(entry) if terminal_takes_paste(&entry) => entry,
+            _ => return Ok(receipt(&Delivered::Refused(TERMINAL_UNREADABLE.into()))),
+        };
+        if !Arc::ptr_eq(&entry, &client.entry) {
+            return Ok(receipt(&Delivered::Refused(
+                "terminal generation changed; read again".into(),
+            )));
+        }
         let baseline = Self::current_baseline(client);
         let result = match self.deliver(identity, resolved, entry).await {
             Ok(writer) => {
-                self.write_once(
-                    client,
-                    Some(writer),
-                    &key,
-                    &fingerprint,
-                    bytes,
-                    WriteShape::Verbatim,
-                    receipt,
-                )
-                .await?
-                .1
+                match self
+                    .write_once(
+                        client,
+                        Some(writer),
+                        &key,
+                        &fingerprint,
+                        bytes,
+                        WriteShape::Verbatim,
+                        receipt,
+                    )
+                    .await
+                {
+                    Ok((_, result)) => result,
+                    Err(error) => {
+                        let mut result = receipt(&Delivered::Unknown);
+                        result["reason"] = json!(error.to_string());
+                        result
+                    }
+                }
             }
             // Refused before a connection existed: nothing was reserved or cached.
             Err(reason) => receipt(&Delivered::Refused(reason)),
@@ -399,12 +425,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn message_encodes_one_bracketed_paste_with_the_kernel_header_and_enter() {
-        assert_eq!(
-            encode_message("track:k1", "fix the test\n\tthen gate").unwrap(),
-            b"\x1b[200~[neige] Planner message for attempt track:k1:\nfix the test\n\tthen gate\x1b[201~\r"
-                .to_vec()
-        );
+    fn message_encodes_one_bracketed_paste_with_the_kernel_notice_and_enter() {
+        assert_eq!(encode_message("track:k1", "m1"),
+            b"\x1b[200~[neige] Planner message m1 for attempt track:k1: read it with neige_message_read\x1b[201~\r".to_vec());
     }
 
     #[test]
@@ -439,15 +462,8 @@ mod tests {
     }
 
     #[test]
-    fn message_cap_counts_the_header() {
-        let attempt = "t:k";
-        let room = MESSAGE_BYTES_MAX - message_header(attempt).len() - 1;
-        assert!(encode_message(attempt, &"x".repeat(room)).is_ok());
-        assert_eq!(
-            encode_message(attempt, &"x".repeat(room + 1))
-                .unwrap_err()
-                .0,
-            format!("message is 8001 bytes with its header; the cap is {MESSAGE_BYTES_MAX}")
-        );
+    fn message_cap_counts_text_bytes() {
+        assert!(validate_message_text(&"x".repeat(MESSAGE_BYTES_MAX)).is_ok());
+        assert!(validate_message_text(&"x".repeat(MESSAGE_BYTES_MAX + 1)).is_err());
     }
 }

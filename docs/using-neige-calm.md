@@ -95,9 +95,15 @@ repository, checkout, head and base. A task waiting for the checkout shows
 *Waiting for the track's checkout*.
 Terminal and child-track tasks are not held.
 
-The Planner can correct a running Codex or Claude worker without stopping it: its message arrives in
-the worker's conversation headed `[neige] Planner message for attempt …`. A worker whose task has
-finished takes no messages; the Planner declares a new task instead.
+The Planner can correct a running Codex or Claude worker without stopping it: the kernel records
+its message and sends a `[neige] Planner message … for attempt …` notice to the terminal. The
+worker uses `neige_message_read` (`neige message read` in CLI mode) to read the authoritative
+content and record the read required before reporting done. Each read returns all records in sequence
+order, including previously read messages, so retries recover lost responses or context; only unread
+records receive a read timestamp. Reported attempts return the same records as no longer work.
+The live-only audit is available at
+`runs/<attempt_id>/planner-messages.json`; committed run snapshots do not contain this audit.
+A worker whose task has finished takes no messages; the Planner declares a new task instead.
 
 A Track that has fallen behind its upstream catches up with a Codex or Claude
 task declared `start: "upstream"`. The kernel fetches the upstream, starts the

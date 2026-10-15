@@ -203,6 +203,14 @@ impl<'a> TrackFsView<'a> {
                         .cat_execution_gate_log(track, path, parts[1], parts[3])
                         .await;
                 }
+                if parts.len() == 3 && parts[2] == "planner-messages.json" {
+                    let messages = self
+                        .repo
+                        .planner_messages_for_attempt(track.id.as_str(), parts[1])
+                        .await
+                        .map_err(|e| TrackFsError::Internal(format!("planner messages: {e}")))?;
+                    return content_json(&messages);
+                }
                 let runs = self.runs_for_track(track).await?;
                 let run_path = path.trim_start_matches("runs/");
                 if let Some(key) = run_path.strip_suffix(".md") {

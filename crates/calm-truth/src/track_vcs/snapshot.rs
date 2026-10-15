@@ -517,3 +517,8 @@ fn blob_from_fs_content(content: track_fs_view::TrackFsContent) -> BlobContent {
         content_type: content.content_type,
     }
 }
+
+#[cfg(test)]
+pub(crate) fn run_blob_bytes(run: &RunProjection) -> Result<Vec<u8>> {
+    Ok(run_json(run)?.bytes)
+}

@@ -1129,3 +1129,5 @@ mod operation_on_track_tests;
 
 #[cfg(test)]
 mod awaiting_retry_migration_tests;
+
+pub(crate) mod worker_attempt;

@@ -1051,3 +1051,12 @@ async fn conversation_md_paging_renders_full_transcript_over_500_items() {
         "final answer (tail past row 500) must NOT be dropped"
     );
 }
+
+#[test]
+fn snapshot_run_blob_bytes_match_upstream_without_messages() {
+    let run = run_without_verdict_or_events();
+    let bytes = crate::track_vcs::run_blob_bytes(&run).unwrap();
+    let upstream = content_json(&old_run_json(&run)).unwrap();
+    assert_eq!(bytes, upstream.content.as_bytes());
+    assert!(!upstream.content.contains("planner_messages"));
+}

@@ -51,7 +51,7 @@ model sees    := "mcp__" server_key "__" tool name     e.g. mcp__neige__neige_tr
   `mcp__<server>__<name>` (§9).
 - MCP is the complete surface. A CLI row exists only for a shell-native view (`track
   ls/cat/show/diff/log/status`, `report find`, `report tag`, `mail ls/cat`, `op show`), a Worker
-  report in CLI mode (`task done/fail/gate`), the Track's close (`track close --message`, no
+  attempt tool in CLI mode (`task done/fail/gate`, `message read`), the Track's close (`track close --message`, no
   `--force`) or maintenance that needs `--force` (`admin gc/vacuum`) (#2003 §4.4). `report tag`
   is the one view that also writes: `tag` is a W/V verb (§3), so `--add`/`--remove` are its write.
 
@@ -108,6 +108,8 @@ Decisions, one line each:
   observation" and refuses without one (`terminal_interaction/operations.rs:112`, "observe first")
   or when the screen moved (`stale_observation`). That is `report_read`'s pattern, so it becomes
   `terminal_read`, and the boolean `observe` (read back after a write) becomes `read`.
+- **`message read` is an anchored read (AR).** It returns Planner-message content and records
+  the read that a later `neige_task_done` requires (#2617).
 - **`status`, not `state`.** `git status` is the known word; plugins already use `barra.status`
   and `spy.status`.
 - **Noun actions are retired:** `outline` → `area_ls`, `backlinks` → `link_ls`, `kinds` →

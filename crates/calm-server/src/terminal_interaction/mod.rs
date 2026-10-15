@@ -89,6 +89,8 @@ pub struct TerminalInteraction {
     #[cfg(feature = "fixtures")]
     message_write_seam: StdMutex<Option<ClaimWindowSeam>>,
     #[cfg(feature = "fixtures")]
+    message_record_seam: StdMutex<Option<ClaimWindowSeam>>,
+    #[cfg(feature = "fixtures")]
     enqueue_seam: StdMutex<Option<ClaimWindowSeam>>,
     #[cfg(feature = "fixtures")]
     message_start_wait: StdMutex<Option<Duration>>,
@@ -120,6 +122,8 @@ impl TerminalInteraction {
             claim_window_seam: StdMutex::new(None),
             #[cfg(feature = "fixtures")]
             message_write_seam: StdMutex::new(None),
+            #[cfg(feature = "fixtures")]
+            message_record_seam: StdMutex::new(None),
             #[cfg(feature = "fixtures")]
             enqueue_seam: StdMutex::new(None),
             #[cfg(feature = "fixtures")]

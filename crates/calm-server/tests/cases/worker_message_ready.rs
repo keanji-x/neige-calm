@@ -117,7 +117,7 @@ async fn message_to_claude_worker_after_prompt_submit_is_written() {
     written(&message(&h, json!({"attempt_id":f.worker.task}), "m", text).await);
     assert_eq!(
         wait_for_reads(&f.log, 1).await,
-        vec![expected(&f.worker.task, text)],
+        vec![expected(&h, &f.worker.task, text).await],
         "only the message reached the PTY"
     );
     stop(&h, &f.worker).await;
@@ -144,7 +144,7 @@ async fn message_waits_for_its_worker_to_start() {
     assert!(sent.elapsed() >= delay, "{:?}", sent.elapsed());
     assert_eq!(
         wait_for_reads(&f.log, 1).await,
-        vec![expected(&f.worker.task, text)],
+        vec![expected(&h, &f.worker.task, text).await],
         "written once, after the start"
     );
     stop(&h, &f.worker).await;
@@ -180,7 +180,7 @@ async fn message_waits_through_dispatch_for_its_worker_card_and_start() {
     written(&reply);
     assert_eq!(
         wait_for_reads(&f.log, 1).await,
-        vec![expected(&f.worker.task, "x")]
+        vec![expected(&h, &f.worker.task, "x").await]
     );
     stop(&h, &f.worker).await;
 }
@@ -289,7 +289,7 @@ async fn prompt_submit_of_another_session_or_card_does_not_unlock() {
     written(&message(&h, json!({"attempt_id":other.worker.task}), "m", "x").await);
     assert_eq!(
         wait_for_reads(&other.log, 1).await,
-        vec![expected(&other.worker.task, "x")]
+        vec![expected(&h, &other.worker.task, "x").await]
     );
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(reads(&f.log).is_empty(), "{:?}", reads(&f.log));
@@ -312,7 +312,7 @@ async fn codex_running_worker_takes_message_without_any_hook() {
     written(&message(&h, json!({"attempt_id":f.worker.task}), "m", "x").await);
     assert_eq!(
         wait_for_reads(&f.log, 1).await,
-        vec![expected(&f.worker.task, "x")]
+        vec![expected(&h, &f.worker.task, "x").await]
     );
     stop(&h, &f.worker).await;
 }
@@ -323,20 +323,25 @@ async fn codex_running_worker_takes_message_without_any_hook() {
 async fn queued_message_refused_when_prompt_submit_is_pruned() {
     let h = Harness::start().await;
     let f = running(&h, "claude", true, false).await;
-    queued_change(&h, &f, async {
-        sqlx::query("UPDATE events SET at=0 WHERE kind='claude.hook' AND scope_card=?1")
-            .bind(&f.worker.card)
-            .execute(h.sql.pool())
+    queued_change(
+        &h,
+        &f,
+        async {
+            sqlx::query("UPDATE events SET at=0 WHERE kind='claude.hook' AND scope_card=?1")
+                .bind(&f.worker.card)
+                .execute(h.sql.pool())
+                .await
+                .unwrap();
+            let pruned = calm_server::events_prune::prune_events_once(
+                h.sql.pool(),
+                &calm_server::events_prune::EventsRetentionPolicy::default(),
+            )
             .await
             .unwrap();
-        let pruned = calm_server::events_prune::prune_events_once(
-            h.sql.pool(),
-            &calm_server::events_prune::EventsRetentionPolicy::default(),
-        )
-        .await
-        .unwrap();
-        assert!(pruned >= 1, "{pruned}");
-    })
+            assert!(pruned >= 1, "{pruned}");
+        },
+        false,
+    )
     .await;
     assert_not_started(&h, &f, "after").await;
     stop(&h, &f.worker).await;

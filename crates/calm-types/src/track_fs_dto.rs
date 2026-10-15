@@ -2,7 +2,7 @@
 
 use crate::ids::CardId;
 use crate::model::CardRole;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;
 use ts_rs::TS;
@@ -139,4 +139,15 @@ pub struct TrackFsHookEvent {
     #[schema(value_type = Value)]
     #[ts(type = "unknown")]
     pub payload: Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct TaskPlannerMessage {
+    pub message_id: String,
+    pub seq: i64,
+    pub text: String,
+    pub created_at_ms: i64,
+    #[schema(nullable = true, required = true)]
+    pub read_at_ms: Option<i64>,
 }

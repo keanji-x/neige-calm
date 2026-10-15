@@ -17168,6 +17168,39 @@
           }
         ]
       },
+      "TaskPlannerMessage": {
+        "type": "object",
+        "required": [
+          "message_id",
+          "seq",
+          "text",
+          "created_at_ms",
+          "read_at_ms"
+        ],
+        "properties": {
+          "created_at_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "read_at_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
       "TaskRecoveryView": {
         "type": "object",
         "description": "Execution history. `current` is null only when the live declaration has never\nreceived an allocation.",

@@ -170,6 +170,34 @@
     ]
   },
   {
+    "name": "neige_message_read",
+    "description_sha256": "e805ef9ca95f6267c049d734bdd72ce7a4bb566141a0ac401e13a12ded1d5ffb",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt_id": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "attempt_id"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "roles": [
+      "worker"
+    ],
+    "listed_for": [
+      "worker"
+    ]
+  },
+  {
     "name": "neige_op_show",
     "description_sha256": "cf9102f06b1c086c6697455731a2604aae8141a281c4ce493fe680cf204d972c",
     "input_schema": {
@@ -1001,7 +1029,7 @@
   },
   {
     "name": "neige_terminal_input",
-    "description_sha256": "1f6ce6152634b3bb6b7c43015047f98ddac905bcd89c7ba0a77ab11ee9c88d6e",
+    "description_sha256": "1a0c8c156f789d325687280c1741d5e0fd47ae5fb40b185f6f7d041c559e01d3",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

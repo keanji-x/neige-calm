@@ -248,6 +248,13 @@ pub(crate) const COMMANDS: &[Command] = &[
         render: Render::Raw,
     },
     Command {
+        tool: crate::mcp_server::tools::message_read::TOOL_MESSAGE_READ,
+        positionals: &[],
+        options: &[opt("--attempt-id", "attempt_id", OptValue::Text, true)],
+        confirm: None,
+        render: Render::Raw,
+    },
+    Command {
         tool: task_gate::TOOL_TASK_GATE,
         positionals: &[],
         options: &[

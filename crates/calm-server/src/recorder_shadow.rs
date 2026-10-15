@@ -11,6 +11,7 @@ static RECORDER_SHADOW_DIVERGENCES: AtomicU64 = AtomicU64::new(0);
 pub(crate) enum RecorderShadowDecisionKind {
     ReportWrite,
     TrackClose,
+    PlannerMessage,
 }
 
 impl RecorderShadowDecisionKind {
@@ -18,6 +19,7 @@ impl RecorderShadowDecisionKind {
         match self {
             Self::ReportWrite => "report_write",
             Self::TrackClose => "track_close",
+            Self::PlannerMessage => "planner_message",
         }
     }
 }

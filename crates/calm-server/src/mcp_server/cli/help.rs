@@ -233,6 +233,18 @@ const HELP: &[CommandHelp] = &[
         "  -h, --help                   Print help",
     ),
     command_help!(
+        crate::mcp_server::tools::message_read::TOOL_MESSAGE_READ,
+        "Read all Planner message records for your attempt",
+        "Usage: neige message read --attempt-id <id> [--json]",
+        "",
+        "Stamps unread records read. For a reported attempt, messages are not work.",
+        "",
+        "Options:",
+        "      --attempt-id <id>  The task attempt_id handed to you",
+        "      --json             Emit errors as JSON",
+        "  -h, --help             Print help",
+    ),
+    command_help!(
         task_gate::TOOL_TASK_GATE,
         "Have the kernel commit your changes and run your task's gate on them",
         "Usage: neige task gate --attempt-id <id> [--commit-message <text>] [--json]",
