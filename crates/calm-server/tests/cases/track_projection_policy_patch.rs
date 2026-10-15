@@ -187,6 +187,7 @@ const TRACK_PERSISTENT_COLUMNS: &[&str] = &[
     "closed_at",
     "creator_track_id",
     "creator_key",
+    "admin_granted_at",
 ];
 
 type PersistedTrackEvent = (
