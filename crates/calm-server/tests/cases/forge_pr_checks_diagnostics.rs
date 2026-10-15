@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "forge_pr_checks_coverage.rs"]
+mod coverage;
+
 fn api_fixture(cx: &ChecksFixture, suffix: &str, value: Value) {
     let dir = shim_state_dir(&cx.fx.origin_repo).join("actions");
     std::fs::create_dir_all(&dir).unwrap();
@@ -387,11 +390,12 @@ async fn gh_pr_checks_all_waits_for_two_shards_and_replays_diagnostics() {
     .unwrap();
     assert_eq!(replayed.payload_value(), event.payload);
     let log = std::fs::read_to_string(shim_state_dir(&cx.fx.origin_repo).join("gh.log")).unwrap();
+    // Both shards share one run: one identity read and one closing attempt re-check.
     assert_eq!(
         log.lines()
             .filter(|s| s.ends_with("/actions/runs/100"))
             .count(),
-        4
+        2
     );
     assert!(!log.contains("untrusted.example"));
 }

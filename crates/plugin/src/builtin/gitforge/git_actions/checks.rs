@@ -39,7 +39,7 @@ pub(super) const PR_CHECKS_READ_SCRIPT: &str = concat!(
     "rest=$(printf '%s\\n' \"$rest\" | jq -c \"$7 .failed_checks |= map(clean_check + {diagnostics:{status:\\\"unavailable\\\",reason:\\\"diagnostics not collected while checks are pending\\\"}})\") || exit 1; ",
     "body=$(printf '%s\\n%s' \"$prefix\" \"$rest\");; *) original=$body; body=$(printf '%s\\n' \"$body\" | sh -c \"$6\" sh \"$host\" \"$repo\" \"$head\" \"$7\") || ",
     "{ prefix=; case \"$original\" in settle*) prefix=${original%%\n*}; original=${original#*\n};; esac; ",
-    "rest=$(printf '%s\\n' \"$original\" | jq -c \"$7 .failed_checks |= map(clean_check + {diagnostics:{status:\\\"unavailable\\\",reason:\\\"diagnostic budget exceeded or API unavailable\\\"}})\") || exit 1; ",
+    "rest=$(printf '%s\\n' \"$original\" | jq -c \"$7 .failed_checks |= map(clean_check + {diagnostics:{status:\\\"unavailable\\\",reason:\\\"diagnostic enrichment failed\\\"}})\") || exit 1; ",
     "body=$(if [ -n \"$prefix\" ]; then printf '%s\\n' \"$prefix\"; fi; printf '%s' \"$rest\"); };; esac\n",
     "current=$(timeout --foreground 3 gh pr view \"$1\" --repo \"$2\" --json headRefOid --jq .headRefOid) || exit 1\n",
     "[ \"$head\" = \"$current\" ] || exit 1\n",

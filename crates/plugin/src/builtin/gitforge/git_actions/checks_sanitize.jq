@@ -1,4 +1,5 @@
-def clean:
+# The sanitized text before its length bound; `clean` is the bounded form callers report.
+def clean_uncut:
   tostring
   | gsub("\u001b\\][^\u0007\u001b]*(\u0007|\u001b\\\\)"; "")
   | gsub("\u001b\\[[0-?]*[ -/]*[@-~]"; "")
@@ -10,8 +11,9 @@ def clean:
   | gsub("(?i)(authorization[ :=]+(bearer|basic)[ ]+[^ ,;]+|bearer[ ]+[^ ,;]+|basic[ ]+[A-Za-z0-9+/=]+)"; "[REDACTED]")
   | gsub("(?i)(authorization|token|password|secret|api[_-]?key)[ :=]+[^ ,;]+"; "[REDACTED]")
   | gsub("https?://[^ /]+@"; "https://[REDACTED]@")
-  | gsub("https?://[^ ]*[?][^ ]*"; "[REDACTED URL]")
-  | .[0:1000];
+  | gsub("https?://[^ ]*[?][^ ]*"; "[REDACTED URL]");
+
+def clean: clean_uncut | .[0:1000];
 
 def clean_check:
   .name |= clean

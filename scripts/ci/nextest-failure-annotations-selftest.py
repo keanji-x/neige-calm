@@ -61,7 +61,8 @@ class RendererTests(unittest.TestCase):
         result = self.run_xml('<testsuite>' + ''.join(f'<testcase classname="bin" name="case{i}"><failure message="{chr(0x4e00) * 300}"/></testcase>' for i in range(100)) + '</testsuite>')
         self.assertLessEqual(result.stdout.count("::error title="), renderer.MAX_ANNOTATIONS)
         self.assertLessEqual(len(result.stdout.encode()), renderer.MAX_OUTPUT)
-        self.assertIn("truncated", result.stdout)
+        # gitforge's checks enrichment reports truncated diagnostics on this exact title and prefix.
+        self.assertIn("::warning title=nextest JUnit diagnostics::truncated: ", result.stdout)
         result = self.run_xml('<testsuite><testcase classname="bin" name="' + 'x' * 250 + '"><failure/></testcase></testsuite>')
         self.assertNotIn("::error title=", result.stdout)
         self.assertIn("truncated", result.stdout)
