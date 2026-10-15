@@ -9,8 +9,6 @@ use serde_json::{Value, json};
 use crate::forge_caller::ForgeCallerScope;
 
 mod checks;
-mod checks_compat;
-mod checks_pre2363;
 use checks::*;
 mod issue;
 mod issue_creation;

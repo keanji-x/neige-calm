@@ -261,11 +261,11 @@ async fn op_show_refuses_undecodable_out_of_scope_rows_like_an_absent_id() {
     fx.plugin_host.stop(PLUGIN_ID).await.expect("stop plugin");
 }
 
-/// A parked replay that selects a frozen predecessor through `compatible_payload_hashes` names the
-/// completion event of the STORED payload, which is the event that will be emitted, not the one
-/// the replaying call declares.
+/// A parked `replay_any_version` call that reuses an operation stored by another program version
+/// names the completion event of the STORED payload, which is the event that will be emitted, not
+/// the one the replaying call declares.
 #[tokio::test]
-async fn parked_replay_of_a_compatible_predecessor_names_its_stored_completion_event() {
+async fn parked_any_version_replay_names_its_stored_completion_event() {
     let _env = env_guards().await;
     let fx = boot_fixture_with_role(StubMode::Parked, CardRole::Planner).await;
     let release = fx._tmp.path().join("release");
@@ -281,12 +281,6 @@ async fn parked_replay_of_a_compatible_predecessor_names_its_stored_completion_e
     assert_eq!(receipt["status"], "pending", "{first:#?}");
     assert_eq!(receipt["completion_event"], "forge.scan.completed");
     let op_id = op_id_of(&first);
-    let stored_hash: String =
-        sqlx::query_scalar("SELECT payload_hash FROM operations WHERE id = ?1")
-            .bind(&op_id)
-            .fetch_one(fx.repo.pool())
-            .await
-            .expect("stored payload hash");
 
     let upgraded = json!({
         "event": { "event_kind": "forge.issue.read", "fields": {} },
@@ -298,10 +292,10 @@ async fn parked_replay_of_a_compatible_predecessor_names_its_stored_completion_e
         "the upgraded payload differs from the stored one: {incompatible:#?}"
     );
 
-    let mut compatible = upgraded;
-    compatible["overrides"]["compatible_payload_hashes"] = json!([stored_hash]);
-    let replay = call_forge_tool_with_args(&fx, 7, compatible).await;
-    assert_eq!(op_id_of(&replay), op_id, "the predecessor is selected");
+    let mut any_version = upgraded;
+    any_version["overrides"]["replay_any_version"] = json!(true);
+    let replay = call_forge_tool_with_args(&fx, 7, any_version).await;
+    assert_eq!(op_id_of(&replay), op_id, "the stored operation is reused");
     assert_eq!(
         replay["result"], first["result"],
         "the replay names the stored completion event: {replay:#?}"

@@ -850,17 +850,14 @@ pub(crate) async fn submit_forge_action_with_key(
         idempotency_key: Some(idempotency_key.clone()),
         payload_hash: semantic_payload_hash(&payload)?,
     };
-    // The plugin owns version compatibility; the kernel owns caller scope and
-    // lifecycle. Select only an explicitly authorized frozen predecessor, then
-    // retain the driver's strict equality check and permanent-row deduplication.
-    if !payload.compatible_payload_hashes.is_empty()
+    // The plugin declares which calls are replay-safe reads; the kernel owns caller scope (in the
+    // key) and lifecycle. Such a call reuses the scoped operation holding its key whatever program
+    // version stored it; any other call keeps the driver's strict payload equality.
+    if payload.replay_any_version
         && let Some(existing) = runtime
             .find_by_kind_and_idempotency(FORGE_ACTION_KIND, &idempotency_key)
             .await
-            .map_err(|e| RpcError::internal(format!("forge predecessor lookup: {e}")))?
-        && payload
-            .compatible_payload_hashes
-            .contains(&existing.payload_hash)
+            .map_err(|e| RpcError::internal(format!("forge replay lookup: {e}")))?
     {
         key.payload_hash = existing.payload_hash;
     }
@@ -1546,7 +1543,7 @@ mod tests {
                 context: serde_json::Map::new(),
                 probe: None,
                 parked: true,
-                compatible_payload_hashes: Vec::new(),
+                replay_any_version: false,
             }
         }
 

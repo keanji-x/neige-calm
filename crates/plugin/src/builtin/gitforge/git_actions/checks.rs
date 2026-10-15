@@ -132,16 +132,15 @@ pub(super) fn lower_gh_pr_checks(args: &Value) -> Result<Value, String> {
         Some(Value::Bool(value)) => *value,
         Some(_) => return Err("wait_for_all must be a boolean".into()),
     };
-    let mut idem_key = match attempt.as_deref() {
+    // `replay_any_version` replays by this key alone, so it must encode every argument
+    // injectively. The released `gh.pr.checks:` text is unambiguous only for a repo without `:`.
+    let arguments = || serde_json::to_string(&json!([repo, pr, attempt])).unwrap();
+    let idem_key = match attempt.as_deref() {
+        _ if wait_for_all => format!("gh_pr_checks_all:{}", arguments()),
+        _ if repo.contains(':') => format!("gh_pr_checks:{}", arguments()),
         Some(attempt) => format!("gh.pr.checks:{repo}:{pr}:{attempt}"),
         None => format!("gh.pr.checks:{repo}:{pr}"),
     };
-    if wait_for_all {
-        idem_key = format!(
-            "gh_pr_checks_all:{}",
-            serde_json::to_string(&json!([repo, pr, attempt])).unwrap()
-        );
-    }
     let wait = vec![
         "sh".into(),
         "-c".into(),
@@ -203,12 +202,8 @@ pub(super) fn lower_gh_pr_checks(args: &Value) -> Result<Value, String> {
         })),
         true,
     )?;
-    if !wait_for_all {
-        payload["compatible_payload_hashes"] = json!([
-            checks_compat::predecessor_hash(&payload, &repo, pr)?,
-            checks_pre2363::hash(&payload, &repo, pr)?,
-        ]);
-    }
+    // An idempotent read: a retry spanning a program change replays the stored operation.
+    payload["replay_any_version"] = json!(true);
     Ok(payload)
 }
 

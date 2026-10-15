@@ -25,10 +25,11 @@ pub struct PluginForgePayload {
     pub probe: Option<ProbeSpec>,
     #[serde(default)]
     pub parked: bool,
-    /// Plugin-authorized predecessor identities for this exact logical request.
-    /// Used only to retrieve an existing operation in the authenticated scope.
+    /// The plugin declares this call an idempotent read whose `idem_key` encodes every semantic
+    /// argument: an operation already holding the key is replayed whatever program version
+    /// submitted it. Not part of the semantic hash.
     #[serde(default)]
-    pub compatible_payload_hashes: Vec<String>,
+    pub replay_any_version: bool,
 }
 
 /// Construct a forge action with event extraction and recovery probes.
@@ -46,7 +47,7 @@ pub fn forge_action_payload(
         context: Map::new(),
         probe: Some(probes),
         parked: false,
-        compatible_payload_hashes: Vec::new(),
+        replay_any_version: false,
     }
 }
 

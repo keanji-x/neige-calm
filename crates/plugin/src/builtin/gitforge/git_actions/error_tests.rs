@@ -68,11 +68,13 @@ fn gh_pr_checks_rejects_non_boolean_wait_policy_and_separates_all_mode() {
             .unwrap()
             .starts_with("gh.pr.checks:")
     );
-    assert!(all.get("compatible_payload_hashes").is_none());
+    for payload in [&default, &all] {
+        assert_eq!(payload["replay_any_version"], true);
+    }
 }
 
 #[test]
-fn gh_pr_checks_all_identity_encodes_parameters_without_delimiter_collisions() {
+fn gh_pr_checks_identity_encodes_parameters_without_delimiter_collisions() {
     let cases = [
         ("owner/repo", 42, Some("43")),
         ("owner/repo:42", 43, None),
@@ -99,6 +101,10 @@ fn gh_pr_checks_all_identity_encodes_parameters_without_delimiter_collisions() {
         args["wait_for_all"] = json!(false);
         let default = lower("gh_pr_checks", &args).unwrap();
         assert_ne!(all["idem_key"], default["idem_key"]);
-        assert!(all.get("compatible_payload_hashes").is_none());
+        assert!(
+            keys.insert(default["idem_key"].as_str().unwrap().to_owned()),
+            "colliding identity: {}",
+            default["idem_key"]
+        );
     }
 }
