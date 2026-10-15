@@ -30,8 +30,8 @@ async fn local_prose_edit_preserves_task_after_unterminated_block_upserts() {
     assert_eq!(stripped.cleaned, snapshot["text"].as_str().unwrap());
     assert_eq!(
         stripped.hints.iter().filter(|id| id.is_some()).count(),
-        before.blocks.as_ref().unwrap().len(),
-        "all markers remain standalone"
+        before.blocks.as_ref().unwrap().len() - 1,
+        "all markers remain standalone; a full read renders no task block"
     );
     let second = before
         .blocks
@@ -115,7 +115,7 @@ async fn marked_import_and_block_move_keep_unterminated_prose_separate() {
     )
     .await
     .unwrap();
-    let snapshot = read(&boot, json!({})).await;
+    let snapshot = read(&boot, json!({"detail": "index"})).await;
     let task_index = snapshot["blocks"]
         .as_array()
         .unwrap()

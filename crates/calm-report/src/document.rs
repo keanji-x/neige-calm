@@ -216,6 +216,63 @@ impl ReportDoc {
         self.apply_aligned_blocks(&current, &aligned)
     }
 
+    /// [`Self::update_with_hints`] over the blocks `rewritten` selects only (#2617: a whole write
+    /// does not own task blocks). Every other block is kept as it is — id, kind, rev and text — right
+    /// after the nearest preceding rewritten block that survives, else after the result's first
+    /// block, or in front when no rewritten block preceded it. Its id is never minted again.
+    pub fn update_with_hints_keeping(
+        &mut self,
+        new_summary: &str,
+        slices: &[BlockSlice],
+        hints: &[Option<String>],
+        rewritten: impl Fn(&ReportBlock) -> bool,
+    ) -> Result<()> {
+        let summary_id = self.summary_text_id()?;
+        self.0
+            .update_text(&summary_id, new_summary)
+            .context("update summary text")?;
+
+        let current = self.blocks_snapshot()?;
+        let (old, kept): (Vec<ReportBlock>, Vec<ReportBlock>) =
+            current.iter().cloned().partition(|block| rewritten(block));
+        let reserved: HashSet<String> = kept.iter().map(|block| block.id.clone()).collect();
+        let replaced = reassign_ids_with_hints_reserving(&old, slices, hints, &reserved);
+        // Slot `s` of a kept block: it goes right before `replaced[s]` (or at the end).
+        let position: HashMap<&str, usize> = replaced
+            .iter()
+            .enumerate()
+            .map(|(index, block)| (block.id.as_str(), index))
+            .collect();
+        let mut slots = Vec::with_capacity(kept.len());
+        let (mut anchor, mut after_rewritten) = (None, false);
+        for block in &current {
+            if rewritten(block) {
+                after_rewritten = true;
+                if let Some(&index) = position.get(block.id.as_str()) {
+                    anchor = Some(index);
+                }
+            } else {
+                let slot = match anchor {
+                    Some(index) => index + 1,
+                    None if after_rewritten => replaced.len().min(1),
+                    None => 0,
+                };
+                slots.push((slot, block));
+            }
+        }
+        let mut aligned = Vec::with_capacity(replaced.len() + kept.len());
+        for slot in 0..=replaced.len() {
+            aligned.extend(
+                slots
+                    .iter()
+                    .filter(|(at, _)| *at == slot)
+                    .map(|(_, block)| (*block).clone()),
+            );
+            aligned.extend(replaced.get(slot).cloned());
+        }
+        self.apply_aligned_blocks(&current, &aligned)
+    }
+
     /// Wholesale replace that drops every current non-prose block. `new_body` is aligned onto the
     /// current prose blocks only, with every current data block's id reserved, so no block of the
     /// result can carry a dropped data block's id or inherit its kind.

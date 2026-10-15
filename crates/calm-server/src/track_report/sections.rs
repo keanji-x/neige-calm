@@ -9,7 +9,9 @@ use crate::report_sections::{
 };
 use crate::track_report_doc::ReportDoc;
 use crate::track_report_guard::validate_body_fences;
-use calm_types::report_blocks::{flat_text, in_sections, parse_fence, strip_markers_and_split};
+use calm_types::report_blocks::{
+    BlockSlice, flat_text, in_sections, parse_fence, strip_markers_and_split,
+};
 use calm_types::report_contract::parse_line;
 use calm_types::track_report::ReportBlock;
 
@@ -107,18 +109,7 @@ pub(super) fn apply_replace_section(
         )));
     }
     // Before the marker check: a task copied with its marker gets the `upsert` hint.
-    if let Some(kind) = marked
-        .slices
-        .iter()
-        .filter_map(|slice| parse_fence(&slice.raw))
-        .map(|fence| fence.kind)
-        .find(|kind| !in_sections(kind))
-    {
-        return Err(CalmError::BadRequest(format!(
-            "the markdown of a section replace may not hold a `{kind}` block: it belongs to no \
-             section — create or change it with an `upsert` op (no position), read it by id"
-        )));
-    }
+    refuse_unsectioned_fences(&marked.slices, "the markdown of a section replace")?;
     if let Some(outside) = marked
         .hints
         .iter()
@@ -136,6 +127,24 @@ pub(super) fn apply_replace_section(
         .map_err(block_op_internal)?;
     let before = section.iter().map(|b| b.id.clone()).collect();
     Ok((replaced, before, checked))
+}
+
+/// The section ops' and the whole write's shared refusal (#2598, #2617): neither owns a block that
+/// belongs to no section, so `what` may not carry one.
+pub(super) fn refuse_unsectioned_fences(slices: &[BlockSlice], what: &str) -> Result<(), CalmError> {
+    match slices
+        .iter()
+        .filter_map(|slice| parse_fence(&slice.raw))
+        .map(|fence| fence.kind)
+        .find(|kind| !in_sections(kind))
+    {
+        Some(kind) => Err(CalmError::BadRequest(format!(
+            "{what} may not hold a `{kind}` block: it belongs to no section — read it by id, \
+             create or change it with an `upsert` op (no position), withdraw it with \
+             `{{op: \"delete\", id}}`"
+        ))),
+        None => Ok(()),
+    }
 }
 
 /// Delete every member block of section `name` and return their ids; a task block in its span stays.

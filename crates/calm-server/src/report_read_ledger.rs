@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use calm_types::report_blocks::in_sections;
 use calm_types::track_report::ReportBlock;
 
 use crate::plugin_results::Clock;
@@ -25,7 +26,8 @@ pub const TTL_MS: i64 = 2 * 60 * 60 * 1000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LastRead {
     pub doc_rev: u64,
-    /// The session has seen every block at `doc_rev`: set by a read that rendered all of them,
+    /// The session has seen every block but the task blocks at `doc_rev` (#2617), the anchor of a
+    /// whole write, which keeps every task block: set by a read that rendered all of them,
     /// cleared by a partial read at another docRev, kept across own commits that advanced `doc_rev`.
     pub whole: bool,
     pub blocks: HashMap<String, u32>,
@@ -84,7 +86,7 @@ impl ReadLedger {
 
     /// Record one text-returning read: `blocks` is the snapshot at `doc_rev` it rendered from,
     /// `rendered` the ids of the blocks its text carries. A section counts as read only when all its
-    /// member blocks were rendered; a read of every block replaces the record.
+    /// member blocks were rendered; a read of every block but the task blocks replaces the record.
     pub fn record(
         &self,
         session_id: &str,
@@ -116,9 +118,14 @@ impl ReadLedger {
         entry.recorded_at = now;
         entry.generation = self.generation.fetch_add(1, Ordering::Relaxed);
         let seen = |block: &ReportBlock| rendered.contains(&block.id);
-        let all_seen = blocks.iter().all(seen);
+        let all_seen = crate::track_report_read::listed_blocks(blocks).all(seen);
         if all_seen {
-            entry.read.blocks.clear();
+            // A whole read renders no task block (#2617): a task read by id stays known while unchanged.
+            entry.read.blocks.retain(|id, rev| {
+                blocks
+                    .iter()
+                    .any(|block| &block.id == id && block.rev == *rev && !in_sections(&block.kind))
+            });
             entry.read.sections.clear();
         }
         entry.read.whole = all_seen || (entry.read.whole && entry.read.doc_rev == doc_rev);

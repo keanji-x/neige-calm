@@ -5,9 +5,12 @@
 #![cfg(unix)]
 
 use crate::mcp_report_sections::{
-    CONTRACT, INVALID_PARAMS, SECTIONS, commit, payload, read_full, read_sections, replace, seed,
+    CONTRACT, INVALID_PARAMS, SECTIONS, commit, payload, read_full, read_sections, replace,
+    section_blocks, seed,
 };
-use crate::mcp_track_report::{Boot, boot, planner_identity, read_then_write_markdown};
+use crate::mcp_track_report::{
+    Boot, boot, planner_identity, read_then_write_markdown, upsert_block,
+};
 use crate::mcp_track_report_blocks::{planner_task_payload, task_keys};
 use crate::task_projection_acceptance::user_upsert;
 use calm_server::track_report::ReportBlock;
@@ -18,16 +21,32 @@ fn task_fence(key: &str) -> String {
     render_fence(KIND_TASK, &planner_task_payload(key, "build it"))
 }
 
-/// The planner seeds the contract sections with its live task `k1` inside `已完成`.
+/// The planner seeds the contract sections, then its live task `k1` inside `已完成`.
 async fn seed_task_in_done(boot: &Boot) {
-    let sections = SECTIONS.replace("beta\n", &format!("beta\n\n{}", task_fence("k1")));
     read_then_write_markdown(
         boot,
         planner_identity(boot),
-        json!({ "body": format!("{CONTRACT}{sections}"), "message": "seed" }),
+        json!({ "body": format!("{CONTRACT}{SECTIONS}"), "message": "seed" }),
     )
     .await
-    .expect("the planner seeds its task");
+    .expect("the planner seeds the sections");
+    let (last, _) = section_blocks(boot, "# 已完成")
+        .await
+        .pop()
+        .expect("已完成 has blocks");
+    let blocks = payload(boot).await.blocks.expect("blocks");
+    let position = blocks.iter().position(|block| block.id == last).unwrap() + 1;
+    let op = json!({ "kind": "task", "payload": planner_task_payload("k1", "build it"),
+        "position": position });
+    upsert_block(boot, planner_identity(boot), op)
+        .await
+        .expect("the planner seeds its task");
+    let body = payload(boot).await.body;
+    let at = |needle: &str| body.find(needle).expect(needle);
+    assert!(
+        at("# 已完成") < at(&task_fence("k1")) && at(&task_fence("k1")) < at("# 决策"),
+        "premise: the task sits inside 已完成: {body}"
+    );
 }
 
 async fn task_block(boot: &Boot) -> ReportBlock {

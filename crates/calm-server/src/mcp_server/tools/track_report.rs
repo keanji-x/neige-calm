@@ -13,9 +13,11 @@ use crate::mcp_server::tools::track_report_hydrate::{hydrated_block_index, parse
 use crate::model::{Card, CardRole, Track};
 use crate::track_report::TrackReportPayload;
 use crate::track_report_read::{
-    ReportReadScope, load_report_doc_snapshot_with_track, marked_blocks_text,
-    report_read_task_diagnostics, selected_blocks_text,
+    ReportReadScope, flat_blocks_text, listed_blocks, load_report_doc_snapshot_with_track,
+    marked_blocks_text, report_read_task_diagnostics, selected_blocks_text,
 };
+use calm_types::report_blocks::in_sections;
+use calm_types::track_report::ReportBlock;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -125,14 +127,9 @@ pub(crate) async fn report_read(
         load_report_doc_snapshot_with_track(ctx.repo.as_ref(), report_card.id.as_str())
             .await
             .map_err(|e| RpcError::internal(format!("{e}")))?;
-    // The index is always present.
-    let all = || {
-        snapshot
-            .blocks
-            .iter()
-            .map(|block| block.id.clone())
-            .collect()
-    };
+    // A task block is rendered only when the read names it by id (#2617); `detail: "index"` lists
+    // every block, the way to discover task ids.
+    let listed = || listed_blocks(&snapshot.blocks);
     let text = match &select {
         ReadSelect::Index => None,
         ReadSelect::Part(selection) => {
@@ -142,8 +139,14 @@ pub(crate) async fn report_read(
                 .map_err(|id| unknown_block(&snapshot.blocks, id))?;
             Some((text, ids))
         }
-        ReadSelect::Full if with_markers => Some((marked_blocks_text(&snapshot.blocks), all())),
-        ReadSelect::Full => Some((snapshot.body.clone(), all())),
+        ReadSelect::Full => {
+            let text = if with_markers {
+                marked_blocks_text(listed())
+            } else {
+                flat_blocks_text(listed())
+            };
+            Some((text, listed().map(|block| block.id.clone()).collect()))
+        }
     };
     let task_diagnostics = if identity.role == CardRole::Planner {
         let scope = match (&select, &text) {
@@ -173,9 +176,19 @@ pub(crate) async fn report_read(
             rendered,
         );
     }
+    // The index of a text read omits the task blocks it did not render.
+    let indexed: Vec<ReportBlock> = match &text {
+        None => snapshot.blocks.clone(),
+        Some((_, rendered)) => snapshot
+            .blocks
+            .iter()
+            .filter(|block| in_sections(&block.kind) || rendered.contains(&block.id))
+            .cloned()
+            .collect(),
+    };
     // `resolved` is rows and overlays only; this read never calls a plugin and never writes.
     let index: Vec<Value> =
-        hydrated_block_index(&ctx, track.id.as_str(), &snapshot.blocks, &resolve_modes).await;
+        hydrated_block_index(&ctx, track.id.as_str(), &indexed, &resolve_modes).await;
     let mut response = json!({
         "summary": snapshot.summary,
         "schema_version": TrackReportPayload::SCHEMA_VERSION,
@@ -232,7 +245,7 @@ fn snake_case(key: &str) -> String {
 
 #[derive(Debug, PartialEq, Eq)]
 enum ReadSelect {
-    /// Today's shape: the whole `text` plus the index.
+    /// The `text` and index of every block but the task blocks (#2617).
     Full,
     /// The index and the document metadata; no `text`.
     Index,

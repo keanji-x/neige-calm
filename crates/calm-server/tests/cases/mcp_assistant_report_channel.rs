@@ -31,13 +31,20 @@ async fn doc_rev(boot: &Boot) -> u64 {
         .expect("docRev is numeric")
 }
 
+/// The stored body, task blocks included: a full read renders none (#2617).
 async fn body_text(boot: &Boot) -> String {
-    read(boot, planner_identity(boot), json!({}))
-        .await
-        .get("text")
-        .and_then(Value::as_str)
-        .expect("read returns text")
-        .to_string()
+    crate::mcp_report_sections::payload(boot).await.body
+}
+
+/// The ids of the report's task blocks, from the index read that lists every block.
+async fn task_ids(boot: &Boot, identity: ToolCallIdentity) -> Vec<String> {
+    read(boot, identity, json!({ "detail": "index" })).await["blocks"]
+        .as_array()
+        .expect("blocks index")
+        .iter()
+        .filter(|block| block["kind"].as_str() == Some(KIND_TASK))
+        .map(|block| block["id"].as_str().expect("id").to_string())
+        .collect()
 }
 
 /// The `author` of every `track.report_edited` in the persisted log, oldest first — attribution
@@ -55,33 +62,31 @@ async fn report_edit_authors(boot: &Boot) -> Vec<EditAuthor> {
         .collect()
 }
 
+fn task_payload(declared_by: &str, key: &str) -> Value {
+    json!({
+        "key": key,
+        "kind": "codex",
+        "goal": format!("{declared_by} wants {key}"),
+        "ready": true,
+        "declared_by": declared_by,
+    })
+}
+
 fn task_fence(declared_by: &str, key: &str) -> String {
-    render_fence(
-        KIND_TASK,
-        &json!({
-            "key": key,
-            "kind": "codex",
-            "goal": format!("{declared_by} wants {key}"),
-            "ready": true,
-            "declared_by": declared_by,
-        }),
-    )
+    render_fence(KIND_TASK, &task_payload(declared_by, key))
 }
 
 /// A gate-clean task declaration: it carries a `no_gate_reason`, so its only remaining barrier
 /// to schedulability is the `ready` flag. `task_fence` has neither and is unschedulable regardless.
-fn gated_task_fence(key: &str, ready: bool) -> String {
-    render_fence(
-        KIND_TASK,
-        &json!({
-            "key": key,
-            "kind": "codex",
-            "goal": "ship it",
-            "ready": ready,
-            "declared_by": "spec",
-            "no_gate_reason": "fixture: this key needs no verification gate",
-        }),
-    )
+fn gated_task_payload(key: &str, ready: bool) -> Value {
+    json!({
+        "key": key,
+        "kind": "codex",
+        "goal": "ship it",
+        "ready": ready,
+        "declared_by": "spec",
+        "no_gate_reason": "fixture: this key needs no verification gate",
+    })
 }
 
 /// `(key, status)` of every row in the track's task projection — what "a schedulable task" means.
@@ -103,11 +108,17 @@ async fn seed_prose_and_two_tasks(boot: &Boot) -> (String, String) {
     let planner_fence = task_fence("spec", "build");
     let user_fence = task_fence("user", "review");
 
-    let planner_body = format!("# Plan\n\nthe original prose\n\n{planner_fence}");
     read_then_write_markdown(
         boot,
         planner_identity(boot),
-        json!({ "body": planner_body, "summary": "seed"}),
+        json!({ "body": "# Plan\n\nthe original prose\n", "summary": "seed"}),
+    )
+    .await
+    .expect("planner writes its prose");
+    upsert_block(
+        boot,
+        planner_identity(boot),
+        json!({ "kind": KIND_TASK, "payload": task_payload("spec", "build") }),
     )
     .await
     .expect("planner declares its task");
@@ -306,7 +317,7 @@ async fn an_assistant_block_write_is_persisted_as_edit_author_assistant() {
     );
 }
 
-/// Keeps the rule from being written as "the write must not contain task blocks".
+/// A whole write owns no task block (#2617): the rewrite renders none and keeps both.
 #[tokio::test]
 async fn an_assistant_may_rewrite_prose_around_user_and_planner_task_blocks() {
     let boot = boot().await;
@@ -322,11 +333,7 @@ async fn an_assistant_may_rewrite_prose_around_user_and_planner_task_blocks() {
         json!({ "body": rewritten}),
     )
     .await
-    .expect(
-        "a prose-only rewrite that carries both task declarations through \
-         unchanged must go through — P2 is per-block equivalence, not \
-         'no task blocks in the result'",
-    );
+    .expect("a prose rewrite after a task-free full read keeps both task declarations");
 
     let text = body_text(&boot).await;
     assert!(text.contains("the assistant's rewrite"), "prose changed");
@@ -375,18 +382,16 @@ async fn an_assistant_may_not_flip_a_planner_task_to_ready() {
     let boot = boot().await;
 
     // 1. Planner seeds a gate-clean but withdrawn declaration.
-    let withheld = gated_task_fence("dispatchable", false);
-    let released = gated_task_fence("dispatchable", true);
-    read_then_write_markdown(
+    let declared = upsert_block(
         &boot,
         planner_identity(&boot),
-        json!({
-            "body": format!("# Plan\n\nthe original prose\n\n{withheld}"),
-            "summary": "seed",
-        }),
+        json!({ "kind": KIND_TASK, "payload": gated_task_payload("dispatchable", false) }),
     )
     .await
     .expect("the planner may declare a not-yet-ready task");
+    let id = declared["id"].clone();
+    let released = json!({ "id": id, "kind": KIND_TASK,
+        "payload": gated_task_payload("dispatchable", true) });
     assert_eq!(
         task_rows(&boot).await,
         Vec::<(String, String)>::new(),
@@ -395,21 +400,10 @@ async fn an_assistant_may_not_flip_a_planner_task_to_ready() {
     );
 
     // 2. The assistant flips exactly that block to ready.
-    let marked = marked_text(&boot, assistant_identity(&boot)).await;
-    let flipped = marked.replace(&withheld, &released);
-    assert_ne!(
-        flipped, marked,
-        "the fixture's fence must round-trip byte-for-byte, or step 2 is not \
-         actually flipping `ready`"
-    );
     let before = body_text(&boot).await;
-    let err = read_then_write_markdown(
-        &boot,
-        assistant_identity(&boot),
-        json!({ "body": flipped.clone()}),
-    )
-    .await
-    .expect_err("an assistant releasing a planner-declared task must be refused");
+    let err = upsert_block(&boot, assistant_identity(&boot), released.clone())
+        .await
+        .expect_err("an assistant releasing a planner-declared task must be refused");
     // Assert the guard's own message, not just the code: without the guard this write is stopped
     // later by the role gate's dispatch-request arm, and the fixture would silently stop pinning it.
     assert!(
@@ -431,7 +425,7 @@ async fn an_assistant_may_not_flip_a_planner_task_to_ready() {
     );
 
     // 3. Control: the planner makes the identical edit and a task appears.
-    read_then_write_markdown(&boot, planner_identity(&boot), json!({ "body": flipped}))
+    upsert_block(&boot, planner_identity(&boot), released)
         .await
         .expect("the planner releases its own declaration");
     assert_eq!(
@@ -450,34 +444,21 @@ async fn an_assistant_may_not_modify_or_delete_an_existing_task_block() {
     let (planner_fence, user_fence) = seed_prose_and_two_tasks(&boot).await;
     let before = body_text(&boot).await;
 
-    let index = read(&boot, assistant_identity(&boot), json!({})).await;
-    let blocks = index["blocks"].as_array().expect("blocks index").clone();
-    let tasks: Vec<(String, u64)> = blocks
-        .iter()
-        .filter(|block| block["kind"].as_str() == Some(KIND_TASK))
-        .map(|block| {
-            (
-                block["id"].as_str().unwrap().to_string(),
-                block["rev"].as_u64().unwrap(),
-            )
-        })
-        .collect();
+    let tasks = task_ids(&boot, assistant_identity(&boot)).await;
     assert_eq!(tasks.len(), 2, "fixture holds the planner and user tasks");
 
     // 1. In-place rewrite of the PLANNER-signed declaration (the user-only rule does not cover it).
-    let (planner_task_id, _) = {
-        let marked = marked_text(&boot, assistant_identity(&boot)).await;
-        let planner_marker_owner = tasks
-            .iter()
-            .find(|(id, _)| {
-                let marker = marker_line(id);
-                marked
-                    .split_once(&marker)
-                    .is_some_and(|(_, rest)| rest.starts_with(&planner_fence))
-            })
-            .expect("locate the planner-declared task block");
-        planner_marker_owner.clone()
-    };
+    let mut planner_task_id = None;
+    for id in &tasks {
+        let text = read(&boot, assistant_identity(&boot), json!({ "blocks": [id] })).await["text"]
+            .as_str()
+            .expect("a read by id returns the task")
+            .to_string();
+        if text == format!("{}{planner_fence}", marker_line(id)) {
+            planner_task_id = Some(id.clone());
+        }
+    }
+    let planner_task_id = planner_task_id.expect("locate the planner-declared task block");
     let err = upsert_block(
         &boot,
         assistant_identity(&boot),
@@ -507,18 +488,18 @@ async fn an_assistant_may_not_modify_or_delete_an_existing_task_block() {
     .expect_err("an assistant deleting a task block must be refused");
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
 
-    // 3. Whole-document rewrite that simply drops both fences.
-    let err = read_then_write_markdown(
+    assert_eq!(before, body_text(&boot).await, "neither attempt wrote anything");
+
+    // 3. A whole-document rewrite carrying no fence keeps both tasks (#2617): it owns none.
+    read_then_write_markdown(
         &boot,
         assistant_identity(&boot),
         json!({ "body": "# Plan\n\nno more tasks\n"}),
     )
     .await
-    .expect_err("a whole-document write may not launder a task deletion");
-    assert_eq!(err.code, RpcError::INVALID_PARAMS);
-
+    .expect("a whole write owns no task block, so it deletes none");
     let after = body_text(&boot).await;
-    assert_eq!(before, after, "none of the three attempts wrote anything");
+    assert!(after.contains("no more tasks"));
     assert!(after.contains(&planner_fence) && after.contains(&user_fence));
 }
 
@@ -527,20 +508,13 @@ async fn an_assistant_may_not_modify_or_delete_an_existing_task_block() {
 async fn the_planner_may_still_rewrite_its_own_task_block() {
     let boot = boot().await;
     seed_prose_and_two_tasks(&boot).await;
-    let blocks = read(&boot, planner_identity(&boot), json!({})).await["blocks"]
-        .as_array()
-        .expect("blocks index")
-        .clone();
     let mut rewritten = false;
-    for block in blocks
-        .iter()
-        .filter(|block| block["kind"].as_str() == Some(KIND_TASK))
-    {
+    for id in task_ids(&boot, planner_identity(&boot)).await {
         let out = upsert_block(
             &boot,
             planner_identity(&boot),
             json!({
-                "id": block["id"],
+                "id": id,
                 "kind": KIND_TASK,
                 "payload": {
                     "key": "build",

@@ -52,6 +52,13 @@ async fn read(boot: &Boot) -> Value {
         .expect("neige_report_read")
 }
 
+/// The index read, the one that lists task blocks (#2617).
+async fn index(boot: &Boot) -> Value {
+    call_tool(boot, TOOL_REPORT_READ, planner_identity(boot), json!({"detail": "index"}))
+        .await
+        .expect("neige_report_read index")
+}
+
 async fn upsert(boot: &Boot, id: Option<&str>, payload: Value) -> (String, u64) {
     let args = match id {
         Some(id) => json!({"id": id, "kind": "task", "payload": payload}),
@@ -992,7 +999,7 @@ async fn release_edges_obey_current_wait_policy_and_forward_edge_is_safe() {
     .await
     .unwrap();
 
-    let latest = read(&boot).await;
+    let latest = index(&boot).await;
     let rev = latest["blocks"]
         .as_array()
         .unwrap()
@@ -1117,12 +1124,8 @@ async fn in_flight_reference_target_deletion_warns_on_both_reads_without_declara
         .await
         .unwrap();
 
-    let referring_id = task_id;
-    let body = format!(
-        "<!-- neige:{referring_id} -->\n{}",
-        render_fence("task", &declaration)
-    );
-    read_then_write_markdown(&boot, planner_identity(&boot), json!({"body": body}))
+    // A whole write keeps the task block it does not carry (#2617): this one drops only the target.
+    read_then_write_markdown(&boot, planner_identity(&boot), json!({"body": ""}))
         .await
         .expect("delete referenced target");
     let mcp = read(&boot).await;
@@ -1349,7 +1352,7 @@ async fn deleted_tombstone_then_same_key_reproposal_creates_a_fresh_row() {
     .unwrap();
     assert!(keys(&boot).await.is_empty());
 
-    let block = read(&boot).await["blocks"]
+    let block = index(&boot).await["blocks"]
         .as_array()
         .unwrap()
         .iter()

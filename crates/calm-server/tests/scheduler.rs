@@ -3262,16 +3262,15 @@ async fn live_task_block(boot: &Boot) -> String {
     block.id
 }
 
+/// Make the report hold `blocks` through the production writers: the prose by a whole write, which
+/// owns no task block (#2617), then the tasks by one commit — the stored task blocks are upserted in
+/// order, extra ones created and missing ones deleted by id.
 async fn edit_report_blocks(boot: &Boot, blocks: &[(&str, &str, Value)]) {
     let body = blocks
         .iter()
-        .map(|(id, kind, payload)| {
-            let content = if *kind == "prose" {
-                payload["markdown"].as_str().unwrap().to_string()
-            } else {
-                render_fence(kind, payload)
-            };
-            format!("<!-- neige:{id} -->\n{content}")
+        .filter(|(_, kind, _)| *kind == "prose")
+        .map(|(id, _, payload)| {
+            format!("<!-- neige:{id} -->\n{}", payload["markdown"].as_str().unwrap())
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -3283,6 +3282,47 @@ async fn edit_report_blocks(boot: &Boot, blocks: &[(&str, &str, Value)]) {
     )
     .await
     .expect("production report edit");
+    let card = boot
+        .repo
+        .cards_by_track(boot.track_id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "track-report")
+        .expect("report card");
+    let stored: TrackReportPayload = serde_json::from_value(card.payload).unwrap();
+    let stored: Vec<String> = stored
+        .blocks
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|block| block.kind == "task")
+        .map(|block| block.id)
+        .collect();
+    let wanted: Vec<&Value> = blocks
+        .iter()
+        .filter(|(_, kind, _)| *kind == "task")
+        .map(|(_, _, payload)| payload)
+        .collect();
+    let mut ops = Vec::new();
+    for (index, payload) in wanted.iter().enumerate() {
+        ops.push(match stored.get(index) {
+            Some(id) => json!({"op": "upsert", "id": id, "kind": "task", "payload": payload}),
+            None => json!({"op": "upsert", "kind": "task", "payload": payload}),
+        });
+    }
+    for id in stored.iter().skip(wanted.len()) {
+        ops.push(json!({"op": "delete", "id": id}));
+    }
+    if !ops.is_empty() {
+        support::report_writes::read_then_commit(
+            &boot.ctx,
+            &boot.registry,
+            planner_identity(boot),
+            json!(ops),
+        )
+        .await
+        .expect("production task edit");
+    }
 }
 
 #[tokio::test]

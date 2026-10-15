@@ -45,12 +45,12 @@ async fn edit_preupgrade_report(missing_cache: bool, boundary_match: bool) {
         before.1.is_some(),
         "upgrade fixture must retain a real persisted CRDT"
     );
+    // A full read renders no task block (#2617), and the blocks it renders come from the CRDT.
     let snapshot = read(&boot, json!({})).await;
+    let text = snapshot["text"].as_str().unwrap();
     assert!(
-        snapshot["text"]
-            .as_str()
-            .unwrap()
-            .contains("original decision\n```neige-block task")
+        text.ends_with("local prose\n# Second\noriginal decision") && !text.contains("neige-block"),
+        "{snapshot}"
     );
     let after_read = boot
         .repo

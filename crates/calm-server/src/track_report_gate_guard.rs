@@ -118,7 +118,7 @@ mod tests {
     }
 
     #[test]
-    fn historical_gate_survives_prose_edit_but_new_gate_is_checked_on_whole_document_write() {
+    fn historical_gate_survives_prose_edit_but_new_gate_is_checked_on_whole_document_replace() {
         let fence = render_fence(
             "task",
             &json!({
@@ -134,7 +134,7 @@ mod tests {
         apply_report_op(
             &mut doc,
             &ReportDocOp::WriteMarkdown {
-                body: edited.clone(),
+                body: "# Result\n\nUpdated analysis.\n".into(),
                 summary: None,
                 if_doc_rev: rev,
             },
@@ -152,14 +152,14 @@ mod tests {
         let rev = doc.doc_rev().unwrap();
         let err = apply_report_op(
             &mut doc,
-            &ReportDocOp::WriteMarkdown {
+            &ReportDocOp::Replace {
                 body: format!("{edited}\n{}", fence.replace("old", "new")),
-                summary: None,
+                summary: String::new(),
                 if_doc_rev: rev,
             },
             EditAuthor::Planner,
         )
-        .expect_err("whole-document writes must also check new gates");
+        .expect_err("whole-document replaces must also check new gates");
         assert!(err.to_string().contains("NEIGE_MCP_SOCKET"), "{err}");
     }
 }

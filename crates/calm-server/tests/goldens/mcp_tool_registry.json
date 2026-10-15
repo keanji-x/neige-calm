@@ -296,7 +296,7 @@
   },
   {
     "name": "neige_report_commit",
-    "description_sha256": "fb9785b6954ad23a3cc3127963100238b08f5cfeda4eb598615c60468b37b0a8",
+    "description_sha256": "afc3155b75f0741cae4162c538e6fcc4672dce16fc606358f999ebdc4134e8d4",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -437,7 +437,7 @@
   },
   {
     "name": "neige_report_read",
-    "description_sha256": "5e096afbc667f022588f702055cb54d399947d2fcf3950a870d50b12d14bddcb",
+    "description_sha256": "2d404fcf9bae10f1822cf8680c71eb832e10ed510cf253563be1fc9e15315484",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -530,7 +530,7 @@
   },
   {
     "name": "neige_report_write",
-    "description_sha256": "0563dd7228afcaac619f05a11c2154b576831c71cf07163ed2828e33ba78906f",
+    "description_sha256": "8b8e1b0ac72f89465dce489a72414fca7be2196106e53859f9e23bf9306631b0",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -828,7 +828,7 @@
   },
   {
     "name": "neige_task_ls",
-    "description_sha256": "2e5714d25cd111e0dedfd8b9be4e6d06413a9c8bc6fb4f90b20c0263f3638d00",
+    "description_sha256": "c13a6739261136b71da742b3fd208a920da7cfc141d4abae85736c95fb252132",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

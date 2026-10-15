@@ -15,6 +15,8 @@ mod mcp_plugin_tools;
 mod mcp_report_concurrent_sessions;
 #[path = "cases/mcp_report_links.rs"]
 mod mcp_report_links;
+#[path = "cases/mcp_report_read_tasks.rs"]
+mod mcp_report_read_tasks;
 #[path = "cases/mcp_report_read_vocabulary.rs"]
 mod mcp_report_read_vocabulary;
 #[path = "cases/mcp_report_sections.rs"]

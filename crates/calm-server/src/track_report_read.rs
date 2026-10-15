@@ -46,7 +46,9 @@ pub async fn load_report_read_snapshot(
     })
 }
 
-/// Scope of the text actually rendered from this document snapshot. Orphans belong only to Full.
+/// Scope of the text actually rendered from this document snapshot. Full is the whole live plan,
+/// orphans included, though its text renders no task block (#2617): it is the Planner's one view of
+/// actionable declarations, and each verdict names the block id to read the task by.
 pub(crate) enum ReportReadScope<'a> {
     Full,
     Part(&'a [String]),
@@ -142,19 +144,9 @@ pub(crate) fn report_doc_snapshot(
             "track_report: malformed payload on card {report_card_id}: {e}"
         ))
     })?;
-    let flatten = |blocks: &[ReportBlock]| {
-        let mut body = String::new();
-        for block in blocks {
-            calm_types::report_blocks::append_block_text(
-                &mut body,
-                &calm_types::report_blocks::flat_text(block),
-            );
-        }
-        body
-    };
     let Some(bytes) = body_crdt else {
         let blocks = legacy_row_blocks(&payload.body);
-        let body = flatten(&blocks);
+        let body = flat_blocks_text(&blocks);
         return Ok(ReportDocSnapshot {
             updated_at,
             doc_rev: 0,
@@ -177,7 +169,7 @@ pub(crate) fn report_doc_snapshot(
     // the CRDT root rather than the JSON mirror.
     if let Some(blocks) = payload.blocks {
         let blocks = normalize_legacy_terminal_task_blocks(&blocks);
-        let body = flatten(&blocks);
+        let body = flat_blocks_text(&blocks);
         return Ok(ReportDocSnapshot {
             updated_at,
             doc_rev,
@@ -198,6 +190,27 @@ pub(crate) fn report_doc_snapshot(
         body,
         blocks,
     })
+}
+
+/// The blocks a report read renders unless it names them by id (#2617): every block but the task
+/// blocks, which belong to no section and are read by id only. Full and section reads, their
+/// `blocks` index and the read anchor they record all follow this one rule.
+pub fn listed_blocks(blocks: &[ReportBlock]) -> impl Iterator<Item = &ReportBlock> {
+    blocks
+        .iter()
+        .filter(|block| calm_types::report_blocks::in_sections(&block.kind))
+}
+
+/// `blocks`' flat text, in the given order, without marker lines.
+pub fn flat_blocks_text<'a>(blocks: impl IntoIterator<Item = &'a ReportBlock>) -> String {
+    let mut body = String::new();
+    for block in blocks {
+        calm_types::report_blocks::append_block_text(
+            &mut body,
+            &calm_types::report_blocks::flat_text(block),
+        );
+    }
+    body
 }
 
 /// `blocks`' text with a `<!-- neige:b_x -->` marker line before each block, in the given order.

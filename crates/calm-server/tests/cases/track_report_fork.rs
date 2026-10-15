@@ -1828,7 +1828,7 @@ async fn inv_1110_002_forked_track_requires_report_startup_read() {
     );
     assert!(
         prompt.contains(
-            "Before you first edit the report in a session, read it in full with `neige_report_read`."
+            "Before you edit the report, read the sections you change with `neige_report_read`"
         ),
         "forked planner must require the report read before direct edits"
     );

@@ -35,7 +35,22 @@ async fn read_all(
         .expect("read the report before writing it")
 }
 
-/// One `upsert` op committed after a full read; a `message` / `lifecycle` key in `op` moves to the
+/// A full read, then a read by id of each block `ops` names: a full read renders no task block
+/// (#2617). An id that names no block is left for the write to refuse.
+async fn read_for_ops(
+    ctx: &Arc<AppContext>,
+    registry: &ToolRegistry,
+    identity: ToolCallIdentity,
+    ops: &Value,
+) {
+    read_all(ctx, registry, identity.clone()).await;
+    for id in ops.as_array().into_iter().flatten().filter_map(|op| op.get("id")) {
+        let args = json!({ "blocks": [id] });
+        let _ = call(ctx, registry, TOOL_REPORT_READ, identity.clone(), args).await;
+    }
+}
+
+/// One `upsert` op committed after a full read and a read of its target; a `message` / `lifecycle` key in `op` moves to the
 /// commit. Returns the commit result plus the written block's `id` and `rev`.
 pub async fn upsert_block(
     ctx: &Arc<AppContext>,
@@ -43,7 +58,10 @@ pub async fn upsert_block(
     identity: ToolCallIdentity,
     mut op: Value,
 ) -> Result<Value, RpcError> {
-    let before = read_all(ctx, registry, identity.clone()).await;
+    let index = json!({ "detail": "index" });
+    let before = call(ctx, registry, TOOL_REPORT_READ, identity.clone(), index)
+        .await
+        .expect("read the report index");
     let fields = op.as_object_mut().expect("an op object");
     let mut args = json!({ "message": "upsert one block" });
     for key in ["message", "lifecycle"] {
@@ -54,6 +72,7 @@ pub async fn upsert_block(
     fields.insert("op".into(), json!("upsert"));
     let target = fields.get("id").cloned();
     args["ops"] = json!([op]);
+    read_for_ops(ctx, registry, identity.clone(), &args["ops"]).await;
     let mut out = call(ctx, registry, TOOL_REPORT_COMMIT, identity, args).await?;
     let known = before["blocks"].as_array().expect("read returns the index");
     let block = out["blocks"]
@@ -71,14 +90,14 @@ pub async fn upsert_block(
     Ok(out)
 }
 
-/// `neige_report_commit` of `ops` after a full read.
+/// `neige_report_commit` of `ops` after a full read and a read of each block they name.
 pub async fn read_then_commit(
     ctx: &Arc<AppContext>,
     registry: &ToolRegistry,
     identity: ToolCallIdentity,
     ops: Value,
 ) -> Result<Value, RpcError> {
-    read_all(ctx, registry, identity.clone()).await;
+    read_for_ops(ctx, registry, identity.clone(), &ops).await;
     let args = json!({ "message": "test commit", "ops": ops });
     call(ctx, registry, TOOL_REPORT_COMMIT, identity, args).await
 }

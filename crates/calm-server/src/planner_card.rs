@@ -64,8 +64,9 @@ pub(crate) fn render_system_prompt(template: &str, track_id: &str) -> String {
 
 #[cfg(test)]
 const TASK_BLOCK_PROTOCOL_GOLDEN: &str = concat!(
-    "   * Maintain task declarations as report `task` blocks. Tasks are in no section: read the ",
-    "report or the task by id with `neige_report_read`, then create (no `position`) or replace ",
+    "   * Maintain task declarations as report `task` blocks. Tasks are in no section and no full ",
+    "read: read the task by id with `neige_report_read` (any read before you create one), then ",
+    "create (no `position`) or replace ",
     "it with an `upsert` op of `neige_report_commit`; pass no revisions; your read anchors the ",
     "op. To start an authorized Planner task, ",
     "its payload needs a per-track-unique ",

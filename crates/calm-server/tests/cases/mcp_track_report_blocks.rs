@@ -1571,66 +1571,6 @@ async fn task_gate_accepts_artifact_checks() {
 }
 
 #[tokio::test]
-async fn write_markdown_cannot_silently_drop_a_planner_task_block() {
-    let boot = boot().await;
-    seed_planner_task(&boot, "build").await;
-    let before = current_payload(&boot).await;
-    assert!(
-        before.body.contains("neige-block task"),
-        "seeded body carries the task fence: {:?}",
-        before.body
-    );
-    assert_eq!(task_keys(&boot).await, ["build"], "task row is projected");
-
-    let err = read_then_write_markdown(
-        &boot,
-        planner_identity(&boot),
-        json!({ "body": seed_body()}),
-    )
-    .await
-    .expect_err("a body that drops the task fence must be rejected");
-    assert_eq!(err.code, RpcError::INVALID_PARAMS);
-    assert!(
-        err.message.contains("must name it by id"),
-        "the error must point at the delete op: {err:?}"
-    );
-    assert_eq!(
-        current_payload(&boot).await,
-        before,
-        "the rejected write lands nothing"
-    );
-    assert_eq!(
-        task_keys(&boot).await,
-        ["build"],
-        "the scheduling projection keeps the task"
-    );
-}
-
-#[tokio::test]
-async fn write_markdown_may_still_edit_a_task_fence_in_place() {
-    let boot = boot().await;
-    let (id, rev) = seed_planner_task(&boot, "build").await;
-    let edited = calm_types::report_blocks::render_fence(
-        "task",
-        &planner_task_payload("build", "build it better"),
-    );
-
-    read_then_write_markdown(
-        &boot,
-        planner_identity(&boot),
-        json!({ "body": format!("{}{edited}", seed_body())}),
-    )
-    .await
-    .expect("editing the fence body in place stays legal");
-
-    let blocks = current_payload(&boot).await.blocks.expect("blocks cache");
-    let task = blocks.iter().find(|b| b.id == id).expect("task survives");
-    assert_eq!(u64::from(task.rev), rev + 1, "edited fence: rev+1");
-    assert_eq!(task.payload["goal"], "build it better");
-    assert_eq!(task_keys(&boot).await, ["build"]);
-}
-
-#[tokio::test]
 async fn planner_commit_delete_by_id_retires_its_live_task() {
     let boot = boot().await;
     let (id, _) = seed_planner_task(&boot, "build").await;

@@ -754,23 +754,7 @@ mod tests {
     }
 
     #[test]
-    fn user_whole_document_write_cannot_delete_live_task() {
-        let (mut doc, _, _) = doc_with_task("spec");
-        let error = apply_report_op(
-            &mut doc,
-            &ReportDocOp::WriteMarkdown {
-                summary: None,
-                body: "# replacement\n".into(),
-                if_doc_rev: 0,
-            },
-            EditAuthor::User,
-        )
-        .unwrap_err();
-        assert!(matches!(error, CalmError::BadRequest(_)));
-    }
-
-    #[test]
-    fn no_author_may_delete_a_live_task_through_a_whole_document_write() {
+    fn no_author_may_delete_a_live_task_through_a_whole_document_replace() {
         for author in [
             EditAuthor::User,
             EditAuthor::Planner,
@@ -778,28 +762,40 @@ mod tests {
             EditAuthor::Plugin,
             EditAuthor::Assistant,
         ] {
-            for operation in [
-                ReportDocOp::WriteMarkdown {
+            let (mut doc, _, _) = doc_with_task("spec");
+            let operation = ReportDocOp::Replace {
+                summary: "s".into(),
+                body: "# replacement\n".into(),
+                if_doc_rev: 0,
+            };
+            let error = apply_report_op(&mut doc, &operation, author).unwrap_err();
+            let CalmError::BadRequest(message) = &error else {
+                panic!("{author:?} whole-document delete must be a 400: {error:?}");
+            };
+            assert!(
+                message.contains("block-level DELETE"),
+                "{author:?}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_whole_write_keeps_a_live_task_it_does_not_carry() {
+        for author in [EditAuthor::Planner, EditAuthor::Assistant] {
+            let (mut doc, task, _) = doc_with_task("spec");
+            apply_report_op(
+                &mut doc,
+                &ReportDocOp::WriteMarkdown {
                     summary: None,
                     body: "# replacement\n".into(),
                     if_doc_rev: 0,
                 },
-                ReportDocOp::Replace {
-                    summary: "s".into(),
-                    body: "# replacement\n".into(),
-                    if_doc_rev: 0,
-                },
-            ] {
-                let (mut doc, _, _) = doc_with_task("spec");
-                let error = apply_report_op(&mut doc, &operation, author).unwrap_err();
-                let CalmError::BadRequest(message) = &error else {
-                    panic!("{author:?} whole-document delete must be a 400: {error:?}");
-                };
-                assert!(
-                    message.contains("block-level DELETE"),
-                    "{author:?}: {message}"
-                );
-            }
+                author,
+            )
+            .unwrap_or_else(|error| panic!("{author:?}: a whole write owns no task: {error:?}"));
+            let blocks = doc.blocks_snapshot().unwrap();
+            assert_eq!(blocks.len(), 2, "{author:?}: {blocks:?}");
+            assert_eq!(blocks[0], task, "{author:?}: the task is untouched");
         }
     }
 

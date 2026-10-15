@@ -324,7 +324,7 @@ use crate::track_report_edit_guard::{guard_task_declarations, normalize_report_o
 use crate::track_report_guard::{
     guard_non_prose_stomp, validate_block_content, validate_body_fences,
 };
-use calm_types::report_blocks::KIND_PROSE;
+use calm_types::report_blocks::{KIND_PROSE, in_sections};
 use calm_types::report_contract::{HeaderError, normalize_header};
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -675,11 +675,26 @@ pub(crate) fn apply_report_op_traced(
                     &rebuilt
                 }
             };
-            // The escape hatch MAY rewrite/delete non-prose blocks, but every fence it carries must be
-            // well-formed and schema-valid.
+            // A whole write owns the blocks a full read renders, never a task block (#2617): those
+            // stay as they are, so the markdown may neither carry nor pin one.
+            sections::refuse_unsectioned_fences(slices, "the markdown of a whole write")?;
+            let current = doc.blocks_snapshot().map_err(internal)?;
+            if let Some(task) = marked.hints.iter().flatten().find(|id| {
+                current
+                    .iter()
+                    .any(|block| &block.id == *id && !in_sections(&block.kind))
+            }) {
+                return Err(CalmError::BadRequest(format!(
+                    "marker `<!-- neige:{task} -->` names a task block; a whole write keeps every \
+                     task block as it is — change one with an `upsert` op after reading it by id"
+                )));
+            }
+            // Every fence it does carry must be well-formed and schema-valid.
             validate_body_fences(&cleaned)?;
-            doc.update_with_hints(&summary, slices, &marked.hints)
-                .map_err(internal)?;
+            doc.update_with_hints_keeping(&summary, slices, &marked.hints, |block| {
+                in_sections(&block.kind)
+            })
+            .map_err(internal)?;
             written = Written::AllProse;
             Ok(None)
         }
@@ -861,8 +876,10 @@ pub(crate) fn apply_report_op_traced(
             .collect(),
     };
     if matches!(&op, ReportDocOp::WriteMarkdown { .. }) {
-        written_block_ids.extend(after.iter().map(|block| block.id.clone()));
-        section_output_ids.extend(after.iter().map(|block| block.id.clone()));
+        // The task blocks it kept were not written: they stay unknown to a session that never read them.
+        let rewritten = after.iter().filter(|block| in_sections(&block.kind));
+        written_block_ids.extend(rewritten.clone().map(|block| block.id.clone()));
+        section_output_ids.extend(rewritten.map(|block| block.id.clone()));
     }
     // A delete that names the block by id is the ONLY way a live task declaration may leave the
     // document. `op` is the normalized op, so a user delete rewritten into a tombstone grants no exemption.
