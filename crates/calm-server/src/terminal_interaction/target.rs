@@ -410,7 +410,7 @@ impl TerminalInteraction {
         result["task_status"] = json!(resolved.task_status);
         if !resolved.session_active {
             result["reason"] = json!(
-                "session ended; use neige_terminal_read for recorded output and exit facts (persisted_exit)"
+                "session ended; neige_terminal_read returns its final screen or recorded exit"
             );
         } else if !available {
             result["reason"] = json!("no live observable terminal view; no session was started");

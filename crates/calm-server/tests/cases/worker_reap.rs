@@ -495,6 +495,18 @@ async fn worker_reap_final_output_survives_orphan_grace() {
             .unwrap()
             .expect("task output survives orphan arm");
         assert_eq!(after.pty_output, before.pty_output);
+        let live = h.ok("neige_terminal_read", json!({"attempt_id": id})).await;
+        assert_eq!(live["exited"], true, "{live}");
+        assert!(
+            live["text"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|line| line.as_str().unwrap().contains("READY")),
+            "{live}"
+        );
+        // Simulate a server restart losing its retained renderer entry.
+        h.state.terminal_renderer.forget_entry_for_test(&p.terminal);
         let view = h.ok("neige_terminal_read", json!({"attempt_id": id})).await;
         assert_eq!(view["source"], "persisted_exit", "{view}");
         assert_eq!(view["pty_output"], after.pty_output);

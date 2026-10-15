@@ -292,7 +292,8 @@ where
     if !reap_live_terminal(state, &term).await? {
         tracing::info!(
             terminal_id = %term.id,
-            "terminal_sweeper: no renderer obtained for a settled-worker session; \
+            "terminal_sweeper: settled-worker exit persistence unconfirmed; \
+             no renderer was obtained or stopping its child was unverified; \
              left to the orphan arm / boot reconcile"
         );
     }

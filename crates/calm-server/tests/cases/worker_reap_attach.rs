@@ -118,6 +118,8 @@ async fn worker_reap_persisted_exit_read_authorization() {
         .await
         .unwrap();
     assert_reaped(&h, &p).await;
+    // Simulate a server restart losing its retained renderer entry.
+    h.state.terminal_renderer.forget_entry_for_test(&p.terminal);
     let view = h
         .ok("neige_terminal_read", json!({"terminal_id":p.terminal}))
         .await;

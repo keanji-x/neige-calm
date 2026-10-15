@@ -1276,7 +1276,7 @@
   },
   {
     "name": "neige_terminal_read",
-    "description_sha256": "be641ef9486555c86ab75e2b444b42cc388730795c85733e276a74c21a2e60a0",
+    "description_sha256": "c8e8f0bf7191a7ace14f2bd9d3ee2e45a20c281337fa2565cff85029ad44d344",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
