@@ -36,31 +36,43 @@ fn edited_program(mut payload: PluginForgePayload) -> PluginForgePayload {
     payload
 }
 
-#[derive(Clone, Copy, Debug)]
-enum StoredVersion {
-    /// Frozen semantic descriptor from 162aff1d, before #2129: no snapshot field.
-    Pre2129,
-    /// Any other program version of the current shape.
-    EditedProgram,
+/// A row of the current key written by another program version of the same call.
+fn stored_payload(fx: &ForgeRuntimeFixture) -> PluginForgePayload {
+    let mut payload = edited_program(current_payload());
+    payload.argv = release_argv(fx, CURRENT_OUTPUT);
+    payload
 }
 
-fn stored_payload(fx: &ForgeRuntimeFixture, version: StoredVersion) -> PluginForgePayload {
-    match version {
-        StoredVersion::Pre2129 => {
-            let mut payload: PluginForgePayload =
-                serde_json::from_str(include_str!("../checks-pre-2129.json")).unwrap();
-            payload.argv = release_argv(
-                fx,
-                "{\"conclusion\":\"success\",\"mergeable\":\"mergeable\",\"head_sha\":\"historical-head\"}",
-            );
-            payload
-        }
-        StoredVersion::EditedProgram => {
-            let mut payload = edited_program(current_payload());
-            payload.argv = release_argv(fx, CURRENT_OUTPUT);
-            payload
-        }
-    }
+/// A row a released version stored under its own key form, with the call that must not replay it.
+fn released_rows(fx: &ForgeRuntimeFixture) -> Vec<(PluginForgePayload, Value)> {
+    // Frozen semantic descriptor from 162aff1d, before #2129: no snapshot field.
+    let mut pre2129: PluginForgePayload =
+        serde_json::from_str(include_str!("../checks-pre-2129.json")).unwrap();
+    pre2129.argv = release_argv(
+        fx,
+        "{\"conclusion\":\"success\",\"mergeable\":\"mergeable\",\"head_sha\":\"historical-head\"}",
+    );
+    // The released text key of {repo:"owner/repo:42", pr:43} also spells the colon-free call
+    // {repo:"owner/repo", pr:42, attempt:43}.
+    let mut colon_repo = edited_program(lowered(json!({"repo": "owner/repo:42", "pr": 43})));
+    colon_repo.idem_key = "gh.pr.checks:owner/repo:42:43".into();
+    colon_repo.argv = release_argv(fx, CURRENT_OUTPUT);
+    let all_args =
+        json!({"repo": "owner/repo", "pr": 42, "attempt": "upgrade", "wait_for_all": true});
+    let mut released_all = edited_program(lowered(all_args.clone()));
+    released_all.idem_key = r#"gh_pr_checks_all:["owner/repo",42,"upgrade"]"#.into();
+    released_all.argv = release_argv(fx, CURRENT_OUTPUT);
+    vec![
+        (
+            colon_repo,
+            json!({"repo": "owner/repo", "pr": 42, "attempt": 43}),
+        ),
+        (
+            pre2129,
+            json!({"repo": "owner/repo", "pr": 42, "attempt": "upgrade"}),
+        ),
+        (released_all, all_args),
+    ]
 }
 
 async fn submit(fx: &ForgeRuntimeFixture, payload: PluginForgePayload) -> String {
@@ -173,22 +185,71 @@ async fn replays_stored_operation(
 }
 
 async fn upgraded_checks(completed: bool) {
-    for version in [StoredVersion::Pre2129, StoredVersion::EditedProgram] {
+    let fx = forge_runtime_fixture().await;
+    let stored = stored_payload(&fx);
+    let event = replays_stored_operation(&fx, stored, current_payload(), completed).await;
+    let events = event_payloads(&fx.repo, "forge.pr.checks").await;
+    assert!(events[0].get("snapshot").is_some_and(|v| !v.is_null()));
+    if let Some(event) = event {
+        assert!(event.get("snapshot").is_some());
+        assert!(event["snapshot"].get("all_checks_completed").is_none());
+    }
+}
+
+/// Reverse upgrade: a row stored under a key a released version wrote is never replayed, even
+/// when the current call's arguments would spell that released key. The current call starts a
+/// new operation and the stored row is left as it was.
+async fn released_rows_start_a_new_operation(completed: bool) {
+    for index in 0..3 {
         let fx = forge_runtime_fixture().await;
-        let stored = stored_payload(&fx, version);
-        let event = replays_stored_operation(&fx, stored, current_payload(), completed).await;
-        let events = event_payloads(&fx.repo, "forge.pr.checks").await;
-        let has_snapshot = matches!(version, StoredVersion::EditedProgram);
-        assert_eq!(
-            events[0].get("snapshot").is_some_and(|v| !v.is_null()),
-            has_snapshot,
-            "{version:?}: the stored program's event is kept"
+        let mut rows = released_rows(&fx);
+        assert_eq!(rows.len(), 3);
+        let (stored, args) = rows.swap_remove(index);
+        let released_key = stored.idem_key.clone();
+        let stored_op = submit(&fx, stored).await;
+        if completed {
+            std::fs::write(fx.cwd.path().join("release"), "").unwrap();
+            fx.runtime.wait(&stored_op).await.unwrap();
+        }
+        let before = stored_row(&fx, &released_key).await;
+        let mut current = lowered(args);
+        assert!(current.replay_any_version);
+        current.argv = vec!["/bin/false".into()];
+        let current_key = current.idem_key.clone();
+        let current_op = submit(&fx, current).await;
+        assert_ne!(
+            current_op, stored_op,
+            "{released_key}: a released row was replayed"
         );
-        if let Some(event) = event {
-            assert_eq!(event.get("snapshot").is_some(), has_snapshot, "{version:?}");
-            assert!(event["snapshot"].get("all_checks_completed").is_none());
+        fx.runtime.wait(&current_op).await.unwrap();
+        assert_ne!(current_key, released_key);
+        let after = stored_row(&fx, &released_key).await;
+        assert_eq!(after.id, stored_op);
+        assert_eq!(after.payload, before.payload);
+        assert_eq!(after.payload_hash, before.payload_hash);
+        for key in [&released_key, &current_key] {
+            assert_eq!(
+                operation_count_for_idem(&fx.repo, &format!("dev:{}:caller:{key}", fx.track_id))
+                    .await,
+                1,
+                "{key}"
+            );
+        }
+        if !completed {
+            std::fs::write(fx.cwd.path().join("release"), "").unwrap();
+            fx.runtime.wait(&stored_op).await.unwrap();
         }
     }
+}
+
+#[tokio::test]
+async fn checks_upgrade_pending_released_row_is_not_replayed() {
+    released_rows_start_a_new_operation(false).await;
+}
+
+#[tokio::test]
+async fn checks_upgrade_completed_released_row_is_not_replayed() {
+    released_rows_start_a_new_operation(true).await;
 }
 
 #[tokio::test]
@@ -219,7 +280,7 @@ async fn checks_upgrade_all_mode_retry_after_program_change_replays() {
 #[tokio::test]
 async fn checks_upgrade_rejects_different_parameters_and_scopes() {
     let fx = forge_runtime_fixture().await;
-    let op_id = submit(&fx, stored_payload(&fx, StoredVersion::Pre2129)).await;
+    let op_id = submit(&fx, stored_payload(&fx)).await;
     std::fs::write(fx.cwd.path().join("release"), "").unwrap();
     fx.runtime.wait(&op_id).await.unwrap();
 
@@ -231,13 +292,14 @@ async fn checks_upgrade_rejects_different_parameters_and_scopes() {
         .expect_err("an undeclared different payload must conflict");
     assert!(error.contains("different payload"), "{error}");
 
-    // Delimiter collision: the released text key of one call names different actual args.
-    let mut numeric_attempt = stored_payload(&fx, StoredVersion::Pre2129);
-    numeric_attempt.idem_key = "gh.pr.checks:owner/repo:42:43".into();
+    // Delimiter collision: calls whose arguments join to the same text get distinct keys.
+    let mut numeric_attempt = lowered(json!({"repo": "owner/repo", "pr": 42, "attempt": 43}));
+    numeric_attempt.argv = release_argv(&fx, CURRENT_OUTPUT);
+    let numeric_key = numeric_attempt.idem_key.clone();
     let numeric_op = submit(&fx, numeric_attempt).await;
     fx.runtime.wait(&numeric_op).await.unwrap();
     let mut colliding = lowered(json!({"repo": "owner/repo:42", "pr": 43}));
-    assert_ne!(colliding.idem_key, "gh.pr.checks:owner/repo:42:43");
+    assert_ne!(colliding.idem_key, numeric_key);
     colliding.argv = vec!["/bin/false".into()];
     let colliding_op = submit(&fx, colliding).await;
     assert_ne!(colliding_op, numeric_op, "different parameters replayed");

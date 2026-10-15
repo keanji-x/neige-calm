@@ -404,10 +404,13 @@ fn lowers_gh_pr_checks() {
             "replay_any_version": true
         })
     };
-    assert_eq!(payload, expected_payload("gh.pr.checks:owner/repo:42"));
+    assert_eq!(
+        payload,
+        expected_payload(r#"gh_pr_checks:v2:["owner/repo",42,null]"#)
+    );
     assert_eq!(
         attempt_payload,
-        expected_payload("gh.pr.checks:owner/repo:42:7")
+        expected_payload(r#"gh_pr_checks:v2:["owner/repo",42,"7"]"#)
     );
     assert!(
         payload["argv"][8] == PR_CHECKS_READ_SCRIPT,

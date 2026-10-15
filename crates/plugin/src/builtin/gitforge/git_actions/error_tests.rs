@@ -62,12 +62,6 @@ fn gh_pr_checks_rejects_non_boolean_wait_policy_and_separates_all_mode() {
     .unwrap();
     assert_eq!(default, explicit);
     assert_ne!(default["idem_key"], all["idem_key"]);
-    assert!(
-        !all["idem_key"]
-            .as_str()
-            .unwrap()
-            .starts_with("gh.pr.checks:")
-    );
     for payload in [&default, &all] {
         assert_eq!(payload["replay_any_version"], true);
     }
@@ -86,25 +80,51 @@ fn gh_pr_checks_identity_encodes_parameters_without_delimiter_collisions() {
     ];
     let mut keys = std::collections::BTreeSet::new();
     for (repo, pr, attempt) in cases {
-        let mut args = json!({"repo":repo,"pr":pr,"wait_for_all":true});
+        let mut args = json!({"repo":repo,"pr":pr});
         if let Some(attempt) = attempt {
             args["attempt"] = json!(attempt);
         }
-        let all = lower("gh_pr_checks", &args).unwrap();
-        let key = all["idem_key"].as_str().unwrap();
-        let encoded = key.strip_prefix("gh_pr_checks_all:").unwrap();
-        assert_eq!(
-            serde_json::from_str::<Value>(encoded).unwrap(),
-            json!([repo, pr, attempt])
-        );
-        assert!(keys.insert(key.to_owned()), "colliding identity: {key}");
-        args["wait_for_all"] = json!(false);
-        let default = lower("gh_pr_checks", &args).unwrap();
-        assert_ne!(all["idem_key"], default["idem_key"]);
-        assert!(
-            keys.insert(default["idem_key"].as_str().unwrap().to_owned()),
-            "colliding identity: {}",
-            default["idem_key"]
-        );
+        for (wait_for_all, prefix) in [(true, "gh_pr_checks_all:v2:"), (false, "gh_pr_checks:v2:")]
+        {
+            args["wait_for_all"] = json!(wait_for_all);
+            let payload = lower("gh_pr_checks", &args).unwrap();
+            let key = payload["idem_key"].as_str().unwrap();
+            let encoded = key.strip_prefix(prefix).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(encoded).unwrap(),
+                json!([repo, pr, attempt])
+            );
+            assert!(keys.insert(key.to_owned()), "colliding identity: {key}");
+        }
+    }
+}
+
+/// `replay_any_version` replays whatever row holds the key, so no current key may take a form a
+/// released version wrote: `gh.pr.checks:{repo}:{pr}[:{attempt}]` or `gh_pr_checks_all:[…]`.
+#[test]
+fn gh_pr_checks_keys_never_take_a_released_form() {
+    for (repo, pr, attempt) in [
+        ("owner/repo", 42, None),
+        ("owner/repo", 42, Some(json!("7"))),
+        ("owner/repo", 42, Some(json!(43))),
+        ("owner/repo:42", 43, None),
+        ("o/r", 1, Some(json!("upgrade"))),
+    ] {
+        for wait_for_all in [false, true] {
+            let mut args = json!({"repo": repo, "pr": pr, "wait_for_all": wait_for_all});
+            if let Some(attempt) = &attempt {
+                args["attempt"] = attempt.clone();
+            }
+            let payload = lower("gh_pr_checks", &args).unwrap();
+            let key = payload["idem_key"].as_str().unwrap();
+            assert!(
+                !key.starts_with("gh.pr.checks:"),
+                "released text form: {key}"
+            );
+            assert!(
+                !key.starts_with("gh_pr_checks_all:["),
+                "released all-mode form: {key}"
+            );
+        }
     }
 }
