@@ -8,9 +8,12 @@ use crate::state::AppState;
 use axum::extract::FromRef;
 use sqlx::Row;
 
+/// Work that prevents both Admin close and closed-Planner hibernation. SQL closed set owned here.
+pub(crate) const RUNNING_WORK_STATUSES_SQL: &str = "('dispatched','running','verifying')";
+
 /// Authoritative persisted eligibility for sleep, automatic install and cold daemon replay.
 /// Live eligibility is checked on the harness's own loop before quiescence.
-pub(crate) const ELIGIBLE_SQL: &str = "SELECT ws.id, ws.card_id, ws.track_id \
+const ELIGIBLE_SQL_PREFIX: &str = "SELECT ws.id, ws.card_id, ws.track_id \
     FROM worker_sessions ws JOIN cards c ON c.session_id=ws.id AND c.track_id=ws.track_id \
     JOIN tracks t ON t.id=ws.track_id \
     WHERE c.role='planner' AND ws.contract='planner' AND ws.mode='resumable' \
@@ -19,10 +22,14 @@ pub(crate) const ELIGIBLE_SQL: &str = "SELECT ws.id, ws.card_id, ws.track_id \
       AND json_extract(ws.handle_state_json,'$.mode')='harness' \
       AND json_array_length(json_extract(ws.handle_state_json,'$.pending_queue'))=0 \
       AND NOT EXISTS (SELECT 1 FROM current_tasks ct WHERE ct.track_id=t.id \
-                       AND ct.status IN ('dispatched','running','verifying'))";
+                       AND ct.status IN ";
+
+fn eligible_sql() -> String {
+    format!("{ELIGIBLE_SQL_PREFIX}{RUNNING_WORK_STATUSES_SQL})")
+}
 
 pub(crate) async fn eligible(pool: &sqlx::SqlitePool, session_id: &str) -> Result<bool> {
-    let sql = format!("{ELIGIBLE_SQL} AND ws.id=?1");
+    let sql = format!("{} AND ws.id=?1", eligible_sql());
     Ok(sqlx::query(&sql)
         .bind(session_id)
         .fetch_optional(pool)
@@ -34,7 +41,7 @@ pub(crate) async fn sweep(state: &AppState) -> Result<()> {
     let Some(pool) = state.sqlite_pool() else {
         return Ok(());
     };
-    for row in sqlx::query(ELIGIBLE_SQL).fetch_all(&pool).await? {
+    for row in sqlx::query(&eligible_sql()).fetch_all(&pool).await? {
         let id: String = row.get("id");
         let card: String = row.get("card_id");
         let track: String = row.get("track_id");
@@ -115,7 +122,7 @@ async fn hibernate_one(
 }
 
 pub(crate) async fn sleeping_thread(pool: &sqlx::SqlitePool, thread: &str) -> Result<bool> {
-    let sql = format!("{ELIGIBLE_SQL} AND ws.thread_id=?1");
+    let sql = format!("{} AND ws.thread_id=?1", eligible_sql());
     Ok(sqlx::query(&sql)
         .bind(thread)
         .fetch_optional(pool)

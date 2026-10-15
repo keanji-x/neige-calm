@@ -123,6 +123,7 @@ async fn area_outline(
         let row = json!({
             "track_id": track.id,
             "title": track.title,
+            "creator_track_id": track.creator_track_id,
             "closed_at": crate::time_format::at_opt(track.closed_at),
             "blocks": blocks,
             "blocks_truncated": snapshot.blocks.len().saturating_sub(MAX_BLOCKS_PER_TRACK),

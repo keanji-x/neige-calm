@@ -489,6 +489,17 @@ fn track_close_maps_the_message_onto_neige_track_close() {
     assert_eq!(parsed.tool, "neige_track_close");
     assert_eq!(parsed.args, json!({ "message": "goal met" }));
     assert_eq!(
+        tool_args(&[
+            "track",
+            "close",
+            "--message",
+            "settled",
+            "--track-id",
+            "added"
+        ]),
+        json!({"message": "settled", "track_id": "added"})
+    );
+    assert_eq!(
         refusal(&["track", "close"]),
         "track close requires --message"
     );

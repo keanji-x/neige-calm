@@ -1,7 +1,7 @@
 //! Track-state tools: `neige_track_status` (Planner or Worker snapshot read, no event emission),
 //! `neige_task_accept` / `neige_task_reject` (Planner-only verdicts, lowered to `TaskCompleted` / `TaskFailed`, scoped to the caller's track),
 //! `neige_task_regate` (Planner-only re-run of a failed gate on the same candidate, #2405)
-//! and `neige_track_close` (Planner-only close of the caller's track).
+//! and `neige_track_close` (own close, or an Admin closing a Track it added).
 
 use crate::decision_sink::{CardDecisionSink, CardDecisionSinkRecorderShadowProbe};
 use crate::error::CalmError;
@@ -342,7 +342,8 @@ fn track_close_descriptor() -> ToolDescriptor {
             "additionalProperties": false,
             "required": ["message"],
             "properties": {
-                "message": message_schema()
+                "message": message_schema(),
+                "track_id": { "type": "string", "minLength": 1 }
             }
         }),
         annotations: Some(role_gated_write_annotations()),
@@ -351,7 +352,7 @@ fn track_close_descriptor() -> ToolDescriptor {
     }
 }
 
-/// Closes the caller's track; closing a closed track is a no-op that returns its `closed_at`.
+/// Resolve the caller and preflight the target before transactional admission and close.
 async fn track_close(
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
@@ -359,23 +360,51 @@ async fn track_close(
 ) -> Result<Value, RpcError> {
     let message = parse_write_args(&args, TOOL_TRACK_CLOSE)?;
     let (_, track) = resolve_track_for_identity(&ctx, &identity).await?;
-    if crate::managed_track::kernel_controls_lifecycle(&ctx, track.id.as_str())
+    let target_id = match args.get("track_id") {
+        None => track.id.clone(),
+        Some(Value::String(id)) if !id.trim().is_empty() => id.clone().into(),
+        Some(_) => return Err(RpcError::invalid_params("track_id must be non-empty")),
+    };
+    let other = target_id != track.id;
+    if other {
+        // Ownership is the first target-specific read: foreign ids disclose no lifecycle facts.
+        let target = ctx
+            .repo
+            .track_get(target_id.as_str())
+            .await
+            .map_err(|error| crate::mcp_server::framing::calm_error(error.into()))?;
+        if !target
+            .as_ref()
+            .is_some_and(|target| added_by(target, &track))
+        {
+            return Err(close_refusal(-32404, "unknown_track", json!({})));
+        }
+        let pool = ctx
+            .sqlite_pool
+            .as_ref()
+            .ok_or_else(|| RpcError::internal("close needs sqlite"))?;
+        // Defensive preflight only; the forge operation's parked recovery remains the backstop.
+        if crate::operation::workspace_lease::track_has_active_forge_action(
+            pool,
+            target_id.as_str(),
+        )
         .await
-        .map_err(|e| RpcError::internal(e.to_string()))?
+        .map_err(crate::mcp_server::framing::calm_error)?
+        {
+            return Err(RpcError::conflict("target has an in-flight forge-action"));
+        }
+    } else if crate::managed_track::kernel_controls_lifecycle(&ctx, track.id.as_str())
+        .await
+        .map_err(crate::mcp_server::framing::calm_error)?
     {
         return Err(RpcError::forbidden(
             "The kernel controls this Track’s lifecycle.",
         ));
     }
     let recorder = CardDecisionSinkRecorderShadowProbe::for_identity(&identity, track.id.clone());
-    // A close that finds the track already closed writes nothing: the batch may not be empty, so
-    // the closure leaves the stamp here and rolls the transaction back with any error.
-    let already_closed = Arc::new(std::sync::OnceLock::<i64>::new());
-    let already_closed_in_tx = Arc::clone(&already_closed);
-    let scope = EventScope::Track {
-        track: track.id.clone(),
-        area: track.area_id.clone(),
-    };
+    // The write adapter transports storage errors; preserve typed refusals across its rollback.
+    let refusal = Arc::new(std::sync::OnceLock::<CloseError>::new());
+    let refusal_in_tx = refusal.clone();
     let written = crate::db::write_with_events_typed(
         ctx.repo.as_ref(),
         identity.to_actor_id(),
@@ -384,43 +413,158 @@ async fn track_close(
         &ctx.write,
         move |tx| {
             Box::pin(async move {
-                // In the transaction: a session superseded after the transport check is denied here,
-                // and a close that raced another close sees it and writes nothing.
-                recorder
-                    .record(tx, RecorderShadowDecisionKind::TrackClose)
-                    .await?;
-                let current = crate::db::sqlite::track_get_tx(tx, &track.id).await?;
-                if let Some(closed_at) = current.closed_at {
-                    let _ = already_closed_in_tx.set(closed_at);
-                    return Err(CalmError::Conflict("track already closed".into()));
-                }
-                let closed = crate::db::sqlite::track_update_tx(
-                    tx,
-                    track.id.as_str(),
-                    TrackPatch {
-                        closed: Some(true),
-                        ..TrackPatch::default()
-                    },
-                )
-                .await?;
-                let closed_at = closed
-                    .closed_at
-                    .ok_or_else(|| CalmError::Internal("a close left closed_at unset".into()))?;
-                let event = Event::TrackUpdated(crate::event::TrackUpdatedPayload::new(
-                    closed,
-                    Some(message),
-                ));
-                Ok((closed_at, vec![(scope, event)]))
+                let result =
+                    close_authorized_tx(tx, recorder, track, target_id, other, message).await;
+                result.map_err(|error| match error {
+                    CloseError::Storage(error) => error,
+                    error => {
+                        let _ = refusal_in_tx.set(error);
+                        CalmError::Conflict("close refused".into())
+                    }
+                })
             })
         },
     )
     .await;
     let closed = match written {
         Ok((closed_at, _)) => closed_at,
-        Err(_) if let Some(closed_at) = already_closed.get() => *closed_at,
-        Err(e) => return Err(crate::mcp_server::framing::calm_error(e)),
+        Err(error) => match refusal.get() {
+            Some(CloseError::AlreadyClosed(closed_at)) => *closed_at,
+            Some(CloseError::Refusal(error)) => return Err(error.clone()),
+            _ => return Err(crate::mcp_server::framing::calm_error(error)),
+        },
     };
     Ok(json!({ "closed_at": crate::time_format::at(closed) }))
+}
+
+/// Admission and the recorder share the write transaction; only the caller supplies authority.
+async fn close_authorized_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    recorder: CardDecisionSinkRecorderShadowProbe,
+    caller: Track,
+    target_id: crate::ids::TrackId,
+    other: bool,
+    message: String,
+) -> Result<(i64, Vec<(EventScope, Event)>), CloseError> {
+    if other {
+        crate::area_admin::require_admin_tx(tx, caller.id.as_str())
+            .await
+            .map_err(|error| match error {
+                crate::area_admin::RequireAdminError::NotAdmin => {
+                    CloseError::Refusal(close_refusal(-32403, "not_admin", json!({})))
+                }
+                crate::area_admin::RequireAdminError::Storage(error) => CloseError::Storage(error),
+            })?;
+    }
+    // Always bind the recorder to the caller, never the close target.
+    recorder
+        .record(tx, RecorderShadowDecisionKind::TrackClose)
+        .await?;
+    let target = crate::db::sqlite::track_get_tx(tx, &target_id).await;
+    let target = if other {
+        match target {
+            Ok(target) if added_by(&target, &caller) => target,
+            Ok(_) | Err(CalmError::NotFound(_)) => {
+                return Err(CloseError::Refusal(close_refusal(
+                    -32404,
+                    "unknown_track",
+                    json!({}),
+                )));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    } else {
+        target?
+    };
+    if other && target.closed_at.is_none() {
+        use sqlx::Row;
+        let sql = format!(
+            "SELECT key, status FROM current_tasks WHERE track_id=?1 AND status IN {} ORDER BY key",
+            crate::planner_hibernation::RUNNING_WORK_STATUSES_SQL
+        );
+        let active: Vec<Value> = sqlx::query(&sql)
+            .bind(target.id.as_str())
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(CalmError::from)?
+            .into_iter()
+            .map(|row| {
+                json!({
+                    "key": row.get::<String,_>("key"), "status": row.get::<String,_>("status")
+                })
+            })
+            .collect();
+        if !active.is_empty() {
+            return Err(CloseError::Refusal(close_refusal(
+                -32409,
+                "active_work",
+                json!({"active": active}),
+            )));
+        }
+    }
+    close_tx(tx, target, message).await
+}
+
+enum CloseError {
+    Storage(CalmError),
+    Refusal(RpcError),
+    AlreadyClosed(i64),
+}
+
+impl From<CalmError> for CloseError {
+    fn from(error: CalmError) -> Self {
+        Self::Storage(error)
+    }
+}
+
+fn added_by(target: &Track, caller: &Track) -> bool {
+    target.creator_track_id.as_deref() == Some(caller.id.as_str())
+}
+
+fn close_refusal(code: i64, refusal: &str, mut data: Value) -> RpcError {
+    data["refusal"] = json!(refusal);
+    RpcError {
+        code,
+        message: if refusal == "not_admin" {
+            "not_admin: ask with neige_user_ask action grant_admin".into()
+        } else {
+            refusal.into()
+        },
+        data: Some(data),
+    }
+}
+
+/// The shared close writer. An idempotent close rolls back even the recorder's writes.
+async fn close_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    target: Track,
+    message: String,
+) -> Result<(i64, Vec<(EventScope, Event)>), CloseError> {
+    if let Some(closed_at) = target.closed_at {
+        return Err(CloseError::AlreadyClosed(closed_at));
+    }
+    let scope = EventScope::Track {
+        track: target.id.clone(),
+        area: target.area_id.clone(),
+    };
+    let closed = crate::db::sqlite::track_update_tx(
+        tx,
+        target.id.as_str(),
+        TrackPatch {
+            closed: Some(true),
+            ..TrackPatch::default()
+        },
+    )
+    .await
+    .map_err(CalmError::from)?;
+    let closed_at = closed
+        .closed_at
+        .ok_or_else(|| CalmError::Internal("a close left closed_at unset".into()))?;
+    let event = Event::TrackUpdated(crate::event::TrackUpdatedPayload::new(
+        closed,
+        Some(message),
+    ));
+    Ok((closed_at, vec![(scope, event)]))
 }
 
 /// A missing thread-mapped card while its daemon is active is a delete-while-active race, surfaced as `InternalError`.

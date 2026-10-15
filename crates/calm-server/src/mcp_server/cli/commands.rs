@@ -197,7 +197,10 @@ pub(crate) const COMMANDS: &[Command] = &[
     Command {
         tool: track_state::TOOL_TRACK_CLOSE,
         positionals: &[],
-        options: &[opt("--message", "message", OptValue::Text, true)],
+        options: &[
+            opt("--message", "message", OptValue::Text, true),
+            opt("--track-id", "track_id", OptValue::Text, false),
+        ],
         confirm: None,
         render: Render::Raw,
     },

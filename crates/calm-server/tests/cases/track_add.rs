@@ -734,3 +734,6 @@ mod retry;
 
 #[path = "track_add/admin.rs"]
 mod admin;
+
+#[path = "track_add/close_admin.rs"]
+mod close_admin;

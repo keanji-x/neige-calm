@@ -43,7 +43,7 @@
   },
   {
     "name": "neige_area_ls",
-    "description_sha256": "804393cf1ac1b41c07014a1859696ec9b1e12659467685a262cabc821ba51c5a",
+    "description_sha256": "4bf1be131935e9474c08d44a66adc458dfa3c649951f299d0744edb6f7325a27",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
@@ -1505,12 +1505,16 @@
   },
   {
     "name": "neige_track_close",
-    "description_sha256": "9e303c81363887445660330f4105ce7893393a8dd6119083d9eddddc76d84726",
+    "description_sha256": "e96614322e34439e2295aa4abfaee508bfba5486a2f3ab09bdd600e59ec8be0f",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
         "message": {
           "description": "The audit note: why this write.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "track_id": {
           "minLength": 1,
           "type": "string"
         }
