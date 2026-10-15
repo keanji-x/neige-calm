@@ -467,8 +467,8 @@ pub(crate) async fn lease_for_delivery_tx(
 }
 
 /// The highest-`ordinal` delivery row of one attempt.
-pub(crate) async fn delivery_latest_for_attempt_tx(
-    tx: &mut Tx<'_>,
+pub(crate) async fn delivery_latest_for_attempt<'e>(
+    executor: impl sqlx::Executor<'e, Database = sqlx::Sqlite>,
     producer_attempt_id: &str,
 ) -> Result<Option<DeliveryRow>> {
     let sql = format!(
@@ -477,9 +477,17 @@ pub(crate) async fn delivery_latest_for_attempt_tx(
     );
     let row = sqlx::query(&sql)
         .bind(producer_attempt_id)
-        .fetch_optional(&mut **tx)
+        .fetch_optional(executor)
         .await?;
     row.map(row_to_delivery).transpose()
+}
+
+/// The highest-`ordinal` delivery row of one attempt in the caller's transaction.
+pub(crate) async fn delivery_latest_for_attempt_tx(
+    tx: &mut Tx<'_>,
+    producer_attempt_id: &str,
+) -> Result<Option<DeliveryRow>> {
+    delivery_latest_for_attempt(&mut **tx, producer_attempt_id).await
 }
 
 pub(crate) async fn delivery_by_id_tx(

@@ -526,7 +526,14 @@ impl Observer {
     }
 }
 
-/// Latest admitted input, independent of checkpoint progress and Git history. Run numbers
+// Base commit 3fc2edb3e's admission.rs persisted this kernel-owned text when the worker
+// omitted commit_message. Old payloads have no provenance field: only this exact text for
+// the exact attempt and run is excluded from explicit inputs after an upgrade.
+fn legacy_generated_message(attempt_id: &str, run: i64) -> String {
+    format!("neige: attempt {attempt_id} gate run {run}")
+}
+
+/// Latest explicit admitted input, independent of checkpoint progress and Git history. Run numbers
 /// follow admission order under the caller's write lock; the typed lookup fences attempt keys.
 pub(crate) async fn latest_input_message_tx(
     tx: &mut super::Tx<'_>,
@@ -534,10 +541,13 @@ pub(crate) async fn latest_input_message_tx(
 ) -> Result<Option<crate::git_candidate::commit_message::CommitMessage>> {
     use super::gate_ops::{GateOpKind, gate_ops_of_attempt_tx};
     let ops = gate_ops_of_attempt_tx(tx, attempt_id).await?;
-    match ops.iter().rev().find(|op| op.kind == GateOpKind::Run) {
-        Some(op) => admitted_message_tx(tx, &op.key).await.map(Some),
-        None => Ok(None),
+    for op in ops.iter().rev().filter(|op| op.kind == GateOpKind::Run) {
+        let message = admitted_message_tx(tx, &op.key).await?;
+        if message.as_str() != legacy_generated_message(attempt_id, op.number) {
+            return Ok(Some(message));
+        }
     }
+    Ok(None)
 }
 
 /// Joining compares against the admitted run itself, even before it has checkpointed.

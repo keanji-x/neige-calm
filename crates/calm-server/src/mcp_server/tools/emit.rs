@@ -3,6 +3,8 @@
 
 use crate::decision_sink::{CardDecisionSink, CommitMessage, WorkerTaskReport};
 use crate::error::CalmError;
+use crate::git_candidate::commit_message::DeliveryMessage;
+use crate::git_candidate::delivery::delivery_latest_for_attempt;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
@@ -88,18 +90,16 @@ async fn task_done(
     submit_reported_delivery(&ctx, &identity, &attempt_id).await;
     // Read the admitted delivery input, including on idempotent repeats. Never infer text
     // from a candidate SHA: no-op checkpoints may pin a foreign base commit.
-    let message: Option<String> = if let Some(pool) = &ctx.sqlite_pool {
-        sqlx::query_scalar(
-            "SELECT commit_message FROM task_git_deliveries WHERE producer_attempt_id = ?1 \
-         ORDER BY ordinal DESC LIMIT 1",
-        )
-        .bind(&attempt_id)
-        .fetch_optional(pool)
+    let pool = ctx
+        .sqlite_pool
+        .as_ref()
+        .ok_or_else(|| RpcError::internal("read delivery message: SQLite pool not configured"))?;
+    let delivery = delivery_latest_for_attempt(pool, &attempt_id)
         .await
-        .map_err(|error| RpcError::internal(format!("read delivery message: {error}")))?
-        .flatten()
-    } else {
-        None
+        .map_err(|error| RpcError::internal(format!("read delivery message: {error}")))?;
+    let message = match delivery.map(|delivery| delivery.commit_message) {
+        Some(DeliveryMessage::Worker(message)) => Some(message.as_str().to_string()),
+        Some(DeliveryMessage::Kernel) | None => None,
     };
     Ok(json!({
         "status": "report_received",

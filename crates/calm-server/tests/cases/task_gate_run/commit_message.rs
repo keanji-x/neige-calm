@@ -3,6 +3,72 @@ use super::*;
 
 const MESSAGE: &str = "fix: preserve attempt ownership\n\nRefs #2617";
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upgrade_legacy_generated_run_message_does_not_authorize_done() {
+    let fx = world(LONG_IDLE).await;
+    let a = running(&fx, "legacy-only", json!([{"name":"ok", "cmd":"true"}])).await;
+    // The old kernel persisted this exact payload when commit_message was omitted.
+    let legacy = format!("neige: attempt {} gate run 1", a.task.id);
+    std::fs::write(a.lease.path.join("before"), "before").unwrap();
+    let commit = passed(&gate_run(&fx, &a, Some(&legacy)).await.unwrap()).to_string();
+    std::fs::write(a.lease.path.join("after"), "after").unwrap();
+    let err = done(&fx, &a, None).await.unwrap_err();
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert!(err.message.contains("commit_message"), "{err:?}");
+    assert_eq!(
+        current(&fx.boot, "legacy-only").await.status,
+        TaskStatus::Running
+    );
+    assert!(fx.delivery_row(&a.task.id).await.is_none());
+    assert_eq!(git(&a.lease.path, &["rev-parse", "HEAD"]), commit);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upgrade_legacy_generated_run_message_does_not_shadow_explicit_input() {
+    for later_run in [false, true] {
+        let fx = world(LONG_IDLE).await;
+        let a = running(&fx, "legacy-shadow", json!([{"name":"ok", "cmd":"true"}])).await;
+        passed(&gate_run(&fx, &a, Some(MESSAGE)).await.unwrap());
+        let legacy = format!("neige: attempt {} gate run 2", a.task.id);
+        passed(&gate_run(&fx, &a, Some(&legacy)).await.unwrap());
+        std::fs::write(a.lease.path.join("after"), "after").unwrap();
+        if later_run {
+            passed(&gate_run(&fx, &a, None).await.unwrap());
+            assert_eq!(git(&a.lease.path, &["log", "-1", "--format=%B"]), MESSAGE);
+        }
+        assert_eq!(
+            done(&fx, &a, None).await.unwrap()["delivery_commit_message"],
+            MESSAGE
+        );
+        settle(&fx, &a).await;
+        assert_eq!(git(&a.lease.path, &["log", "-1", "--format=%B"]), MESSAGE);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upgrade_legacy_skip_requires_exact_attempt_run_and_bytes() {
+    for variant in 0..3 {
+        let fx = world(LONG_IDLE).await;
+        let a = running(&fx, "legacy-exact", json!([{"name":"ok", "cmd":"true"}])).await;
+        let message = match variant {
+            0 => "neige: attempt another-attempt gate run 1".to_string(),
+            1 => format!("neige: attempt {} gate run 2", a.task.id),
+            _ => format!("neige: attempt {} gate run 1\n", a.task.id),
+        };
+        passed(&gate_run(&fx, &a, Some(&message)).await.unwrap());
+        std::fs::write(a.lease.path.join("after"), "after").unwrap();
+        assert_eq!(
+            done(&fx, &a, None).await.unwrap()["delivery_commit_message"],
+            message
+        );
+        settle(&fx, &a).await;
+        assert_eq!(
+            git(&a.lease.path, &["log", "-1", "--format=%B"]),
+            message.trim_end()
+        );
+    }
+}
+
 async fn settle(fx: &Fx, a: &Attempt) {
     fx.wait_forge_op(&a.task.id).await;
     let row = fx.delivery_row(&a.task.id).await.unwrap();
