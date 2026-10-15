@@ -1,4 +1,4 @@
-//! Settled attempt ownership, rather than track closure, ends PTY workers.
+//! Settled workers and pre-close PTYs converge without losing final output.
 use super::*;
 use calm_types::task_recovery::{TASK_IN_TRACK_ROUTE, TaskAttemptOrigin, TaskRecoveryConstraint};
 
@@ -47,18 +47,24 @@ async fn attempt(
     sqlx::query(concat!(
         "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id,",
         "declared_by,created_at_ms,updated_at_ms,finished_at_ms) ",
-        "VALUES (?1,?2,?3,'terminal','test','[]',?4,?5,'user',?6,?6,?7)"
+        "VALUES (?1,?2,?3,(SELECT kind FROM cards WHERE id=?5),'test','[]',?4,?5,'user',?6,?6,?7)"
     ))
     .bind(&id)
     .bind(&h.track)
     .bind(key)
     .bind(status)
     .bind(&p.card)
-    .bind(calm_server::model::now_ms())
+    .bind(calm_server::model::now_ms() - 180_000)
     .bind(age.map(|age| calm_server::model::now_ms() - age))
     .execute(h.sql.pool())
     .await
     .unwrap();
+    sqlx::query("UPDATE worker_sessions SET created_at_ms=?1 WHERE id=?2")
+        .bind(calm_server::model::now_ms() - 180_000)
+        .bind(&p.session)
+        .execute(h.sql.pool())
+        .await
+        .unwrap();
     id
 }
 
@@ -143,7 +149,6 @@ async fn worker_reap_within_grace_or_missing_finish_not_reaped() {
         let h = Harness::start().await;
         let p = open_sleeper(&h, "grace").await;
         attempt(&h, &p, "grace", 1, "done", age).await;
-        complete_track(&h, &h.track).await;
         let before = write_snapshot(&h, &p).await;
         assert!(sweep_set(&h).await.is_empty());
         calm_server::terminal_sweeper::sweep(&h.state)
@@ -188,8 +193,7 @@ async fn worker_reap_dead_pty_running_converged() {
 #[tokio::test]
 async fn worker_reap_user_terminal_and_planner_untouched() {
     let h = Harness::start().await;
-    let p = open_sleeper(&h, "user").await;
-    complete_track(&h, &h.track).await;
+    let p = provider_sleeper(&h, "user", "claude").await;
     let before = write_snapshot(&h, &p).await;
     assert!(sweep_set(&h).await.is_empty());
     calm_server::terminal_sweeper::sweep(&h.state)
@@ -391,4 +395,248 @@ async fn worker_reap_planner_harness_untouched() {
     // outside the set as well.
     let (state, _, _) = session_row(&h, &h.session_id).await;
     assert_eq!(state, "starting");
+}
+
+/// Open through the real PTY operation, then model the provider worker card and
+/// persisted timestamps from a process that has outlived the orphan grace.
+async fn provider_sleeper(h: &Harness, key: &str, kind: &str) -> PtySession {
+    let p = open_sleeper(h, key).await;
+    sqlx::query("UPDATE cards SET kind=?1 WHERE id=?2")
+        .bind(kind)
+        .bind(&p.card)
+        .execute(h.sql.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE worker_sessions SET provider=?1, created_at_ms=?2 WHERE id=?3")
+        .bind(kind)
+        .bind(calm_server::model::now_ms() - 180_000)
+        .bind(&p.session)
+        .execute(h.sql.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE terminals SET created_at=?1 WHERE id=?2")
+        .bind(calm_server::model::now_ms() - 180_000)
+        .bind(&p.terminal)
+        .execute(h.sql.pool())
+        .await
+        .unwrap();
+    p
+}
+
+#[tokio::test]
+async fn worker_reap_final_output_survives_orphan_grace() {
+    for (kind, closed) in [
+        ("claude", false),
+        ("codex", false),
+        ("claude", true),
+        ("codex", true),
+    ] {
+        let h = Harness::start().await;
+        let p = provider_sleeper(&h, "output", kind).await;
+        let id = attempt(&h, &p, "output", 1, "done", Some(120_000)).await;
+        // Read-by-attempt checks the production spawn-operation ownership proof,
+        // independently of the lifecycle predicate under test.
+        use calm_server::operation::{OperationKey, OperationRepo, SqlxOperationRepo};
+        let op = SqlxOperationRepo::new(h.sql.pool().clone())
+            .insert_operation(
+                "terminal-worker",
+                OperationKey {
+                    operation_key: new_id(),
+                    idempotency_key: Some(id.clone()),
+                    payload_hash: "output".into(),
+                },
+                json!({"track_id": h.track, "idempotency_key": id}),
+            )
+            .await
+            .unwrap();
+        sqlx::query("UPDATE operations SET phase='succeeded' WHERE id=?1")
+            .bind(&op)
+            .execute(h.sql.pool())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE worker_sessions SET spawn_op_id=?1 WHERE id=?2")
+            .bind(op)
+            .bind(&p.session)
+            .execute(h.sql.pool())
+            .await
+            .unwrap();
+        if closed {
+            complete_track(&h, &h.track).await;
+        }
+        calm_server::terminal_sweeper::sweep(&h.state)
+            .await
+            .unwrap();
+        assert_reaped(&h, &p).await;
+        let before = h
+            .state
+            .repo
+            .terminal_get(&p.terminal)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!before.pty_output.is_empty(), "final screen was persisted");
+        calm_server::terminal_sweeper::sweep(&h.state)
+            .await
+            .unwrap();
+        let after = h
+            .state
+            .repo
+            .terminal_get(&p.terminal)
+            .await
+            .unwrap()
+            .expect("task output survives orphan arm");
+        assert_eq!(after.pty_output, before.pty_output);
+        let view = h.ok("neige_terminal_read", json!({"attempt_id": id})).await;
+        assert_eq!(view["source"], "persisted_exit", "{view}");
+        assert_eq!(view["pty_output"], after.pty_output);
+        assert!(view["pty_output"].as_str().unwrap().contains("READY"));
+        assert_eq!(view["controllable"], false);
+        assert!(view.get("observation_id").is_none());
+        let shown = h.ok("neige_terminal_show", json!({"attempt_id": id})).await;
+        assert_eq!(shown["terminal_id"], p.terminal);
+        assert_eq!(shown["controllable"], false);
+        h.stop(&p.terminal).await;
+    }
+}
+
+#[tokio::test]
+async fn worker_reap_restarted_after_finish_survives() {
+    let h = Harness::start().await;
+    let p = provider_sleeper(&h, "restart", "claude").await;
+    attempt(&h, &p, "restart", 1, "done", Some(120_000)).await;
+    sqlx::query("UPDATE worker_sessions SET created_at_ms=?1 WHERE id=?2")
+        .bind(calm_server::model::now_ms())
+        .bind(&p.session)
+        .execute(h.sql.pool())
+        .await
+        .unwrap();
+    let before = write_snapshot(&h, &p).await;
+    calm_server::terminal_sweeper::sweep(&h.state)
+        .await
+        .unwrap();
+    assert_eq!(write_snapshot(&h, &p).await, before);
+    assert!(pid_alive(p.pid));
+    h.stop(&p.terminal).await;
+}
+
+#[tokio::test]
+async fn worker_reap_closed_track_user_ptys_are_ended() {
+    for kind in ["claude", "codex", "terminal"] {
+        let h = Harness::start().await;
+        let p = provider_sleeper(&h, "close", kind).await;
+        let closed = complete_track(&h, &h.track).await;
+        // Inclusive boundary: a session minted at the close is owned by it.
+        sqlx::query("UPDATE worker_sessions SET created_at_ms=?1 WHERE id=?2")
+            .bind(closed)
+            .bind(&p.session)
+            .execute(h.sql.pool())
+            .await
+            .unwrap();
+        calm_server::terminal_sweeper::sweep(&h.state)
+            .await
+            .unwrap();
+        assert_reaped(&h, &p).await;
+        h.stop(&p.terminal).await;
+    }
+}
+
+#[tokio::test]
+async fn worker_reap_session_started_after_done_survives_sweep() {
+    let h = Harness::start().await;
+    let closed = complete_track(&h, &h.track).await;
+    let p = provider_sleeper(&h, "after-close", "codex").await;
+    sqlx::query("UPDATE worker_sessions SET created_at_ms=?1 WHERE id=?2")
+        .bind(closed + 1)
+        .bind(&p.session)
+        .execute(h.sql.pool())
+        .await
+        .unwrap();
+    let before = write_snapshot(&h, &p).await;
+    calm_server::terminal_sweeper::sweep(&h.state)
+        .await
+        .unwrap();
+    assert_eq!(write_snapshot(&h, &p).await, before);
+    assert!(pid_alive(p.pid));
+    h.stop(&p.terminal).await;
+}
+
+#[tokio::test]
+async fn worker_reap_reopen_during_claim_preserves_stale_candidate() {
+    let h = Harness::start_with_fake_codex().await;
+    let p = provider_sleeper(&h, "reopen", "codex").await;
+    make_codex_with_active_turn(&h, &p).await;
+    complete_track(&h, &h.track).await;
+    let candidate = sole_candidate(&h).await;
+    calm_server::terminal_sweeper::end_settled_worker_session_before_write_for_test(
+        &h.state,
+        &candidate,
+        || async {
+            h.sql
+                .track_update(
+                    &h.track,
+                    calm_server::model::TrackPatch {
+                        closed: Some(false),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(session_row(&h, &p.session).await.0, "running");
+    assert!(
+        h.state
+            .shared_codex_appserver
+            .interrupted_turns_for_test()
+            .is_empty()
+    );
+    assert!(pid_alive(p.pid));
+    h.stop(&p.terminal).await;
+}
+
+#[tokio::test]
+async fn worker_reap_dead_codex_interrupts_only_owner_once() {
+    let h = Harness::start_with_fake_codex().await;
+    let p = provider_sleeper(&h, "dead-turn", "codex").await;
+    make_codex_with_active_turn(&h, &p).await;
+    h.state
+        .shared_codex_appserver
+        .set_active_turn_for_test("unrelated", "other-turn");
+    sqlx::query("UPDATE worker_sessions SET mode='resumable' WHERE id=?1")
+        .bind(&p.session)
+        .execute(h.sql.pool())
+        .await
+        .unwrap();
+    let term = h
+        .state
+        .repo
+        .terminal_get(&p.terminal)
+        .await
+        .unwrap()
+        .unwrap();
+    calm_server::terminal_sweeper::reap_terminal_artifacts(&h.state, &term).await;
+    await_terminal_exit(&h, &p.terminal).await;
+    await_pid_gone(p.pid).await;
+    assert_eq!(session_row(&h, &p.session).await.0, "running");
+    attempt(&h, &p, "dead-turn", 1, "done", Some(120_000)).await;
+    for _ in 0..2 {
+        calm_server::terminal_sweeper::sweep(&h.state)
+            .await
+            .unwrap();
+    }
+    assert_eq!(session_row(&h, &p.session).await.0, "exited");
+    assert_eq!(
+        h.state.shared_codex_appserver.interrupted_turns_for_test(),
+        vec![("t-1".to_owned(), "turn-1".to_owned())]
+    );
+    assert_eq!(
+        h.state
+            .shared_codex_appserver
+            .active_turn_for_test("unrelated")
+            .as_deref(),
+        Some("other-turn")
+    );
+    h.stop(&p.terminal).await;
 }

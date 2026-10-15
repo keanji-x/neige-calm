@@ -2152,6 +2152,7 @@ async fn write_snapshot(
 /// as the sweeper runs it: the session ids it would end right now.
 async fn sweep_set(h: &Harness) -> Vec<String> {
     sqlx::query_scalar(calm_server::terminal_sweeper::SETTLED_WORKER_SESSIONS_SQL)
+        .bind(calm_server::terminal_sweeper::SETTLED_WORKER_GRACE_MS)
         .fetch_all(h.sql.pool())
         .await
         .unwrap()
@@ -2168,6 +2169,7 @@ async fn sole_candidate(h: &Harness) -> calm_server::terminal_sweeper::SettledWo
         String,
         Option<String>,
     ) = sqlx::query_as(calm_server::terminal_sweeper::SETTLED_WORKER_SESSIONS_SQL)
+        .bind(calm_server::terminal_sweeper::SETTLED_WORKER_GRACE_MS)
         .fetch_one(h.sql.pool())
         .await
         .unwrap();

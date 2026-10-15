@@ -198,6 +198,12 @@ fn observation_result(metadata: Value) -> ToolResult {
 }
 /// One line without screen text; the complete state is structuredContent.
 fn observation_summary(state: &Value) -> String {
+    if state["source"] == "persisted_exit" {
+        return format!(
+            "terminal {} exited; persisted ANSI output in structuredContent.pty_output; no live observation or input capability",
+            state["terminal_id"].as_str().unwrap_or("null")
+        );
+    }
     let text = |field: &str| match &state[field] {
         Value::String(value) => value.clone(),
         Value::Null => "null".into(),

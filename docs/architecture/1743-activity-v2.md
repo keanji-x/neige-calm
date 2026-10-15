@@ -127,33 +127,34 @@ payload 形状不变（`schemaVersion: 1`）。4140 效果：D6 的 13 条失败
 
 **集合**（一条自动提交 SELECT）：
 
-```sql
-SELECT ws.id, ws.provider, ws.card_id, te.id AS terminal_id, ws.thread_id
-  FROM worker_sessions ws JOIN tracks t ON t.id = ws.track_id
-  JOIN terminals te ON te.id = ws.terminal_run_id AND te.exit_code IS NULL AND te.signal_killed = 0
- WHERE ws.state = 'running'
-   AND ( (t.lifecycle = 'done' AND ws.created_at_ms <= t.terminal_at)
-      OR (t.archived_at IS NOT NULL AND ws.created_at_ms <= t.archived_at) )
-   AND NOT EXISTS (SELECT 1 FROM current_tasks ct WHERE ct.track_id = t.id AND ct.worker_card_id = ws.card_id
-                     AND ct.status IN ('dispatched','running','verifying'))
-```
+The current S2 contract uses `tracks.closed_at` (the lifecycle/archive columns
+below are historical): reap running Worker-role PTYs when either the session
+was created at or before track close, or an owning task attempt is settled
+(`done`, `failed`, `canceled`) for at least 60 seconds and the session was
+created no later than that attempt's finish. Check all attempts, including
+superseded attempts, and exclude any card with a dispatched/running/verifying
+attempt. The same predicate is rechecked in the IMMEDIATE claiming transaction.
 
-- **只收「track 完成时已在跑」的会话**（`created_at_ms <= terminal_at/archived_at`，K20 的列）：done 之后用户新开的终端、重开卡、planner 新一轮起的会话不在集合里——「重开能起」由这一行谓词保证，不需要事件区分。`terminal_at` 为 NULL 的 done track（4140 无，D12）不收（fail-closed 到「不动」）。
-- **不抢在飞任务**（`NOT EXISTS` 臂）：与 planner 轮/scheduler 的竞争按最简单的顺序处理——S2 不结束任何仍 `dispatched/running/verifying` 的任务的 worker；任务落定（worker 报告、gate、或 reaper 超时判 failed）后下一 tick 再收。4140 今天 0 条（D12）。
-- **只收挂 PTY 的**：harness（planner/assistant）行没有 `terminal_run_id`（D11），结构上不进集合，planner 在 done track 上仍可被追问；isolated 无 PTY（K24），不在 S2 里——DELETE 路径也没有 isolated 臂（K14），4140 的 4 条 isolated 会话都已 `exited`（D12）。
+User-opened claude/codex/terminal PTYs on closed tracks are included if created
+by close; sessions opened after close survive that term. User terminals on open
+tracks, Planner sessions and sessions restarted after attempt finish are
+protected. The 30 s sweep tick gives settled workers a normal 60–90 s cleanup
+window; missing finish timestamps do not authorize the settled-worker term.
+Dead PTYs with resumable running sessions are included so their authority also
+converges and any bound Codex turn is interrupted once.
 
 **每条会话的动作**（复用 K13 的 DELETE-card 底半部，顺序固定）：
 
 1. 与 `cleanup_terminal` 同一个 `operation_runtime.lock_for_track_delete()` 守卫 + `terminal_disposal::require_safe(Scope::Terminal)`（`terminal_sweeper.rs:187-194` 同一调用）；不安全则跳过、下 tick 再来。
-2. **先写后杀，写即认领**：一个 IMMEDIATE tx 先**认领**——上面的 SELECT 加 `AND ws.id = ?`（同一段文本）在事务上再跑一次，无行则跳过、不写、后面两步都不跑——再 `session_complete_tx(ws.id, Exited)`（K22；写 `state='exited', completed_at_ms, updated_at_ms`；不发事件——与 attach reader 的退出路径一致（isolated 例外：K24 发 `WorkerSessionStatusChanged`）；投影器 ≤30 s tick 读到，第 4 步的杀经 reader `Exited` 臂的唤醒（§4.3）通常秒级就到）。候选是锁前读的，可能隔了几次收尾；重开路由（`track_update_tx`）不拿 operation 锁：其间 track 重开/取消归档、或卡被派了任务，直到这个 BEGIN 之前的任何时刻，行都不在集合里 ⇒ 认领空 ⇒ 不写、不 interrupt、不杀（实现评审 r1 codex P1；r2 codex P2 = A MINOR-B）。重开也是写，IMMEDIATE 把两个写串行化：先提交的重开被尊重，后到的重开等在这个事务后面。
+2. **先写后杀，写即认领**：一个 IMMEDIATE tx 先**认领**——生产集合谓词加 `AND ws.id = ?`（同一段文本）在事务上再跑一次，无行则跳过、不写、后面两步都不跑——再 `session_complete_tx(ws.id, Exited)`（K22；写 `state='exited', completed_at_ms, updated_at_ms`；不发事件——与 attach reader 的退出路径一致（isolated 例外：K24 发 `WorkerSessionStatusChanged`）；投影器 ≤30 s tick 读到，第 4 步的杀经 reader `Exited` 臂的唤醒（§4.3）通常秒级就到）。候选是锁前读的，可能隔了几次收尾；重开路由（`track_update_tx`）不拿 operation 锁：其间 track 重开（且无独立的已落定任务授权）、或卡被派了任务，直到这个 BEGIN 之前的任何时刻，行都不在集合里 ⇒ 认领空 ⇒ 不写、不 interrupt、不杀（实现评审 r1 codex P1；r2 codex P2 = A MINOR-B）。重开也是写，IMMEDIATE 把两个写串行化：先提交的重开被尊重，后到的重开等在这个事务后面。
 3. 认领成功且 codex：按候选**携带的** `ws.thread_id` 调 `SharedCodexAppServer::interrupt_active_turn(thread_id)`（best-effort，失败只 warn；不 seal——seal 是删除 saga 的东西）。放在认领之后：被重开击败的候选连一次 interrupt 也不挨（实现评审 r3，codex P2 = A MINOR-1，两通道各自找到）；按携带的 id 而不是经会话行解析：第 2 步刚把行写成 `exited`，活跃会话查询（`starting/running/idle/turn_pending`）已找不到它。4140（2026-09-20）：`running` 的 codex 行 12/12 带 `thread_id`，9 条 claude + 4 条 terminal 都不带。
 4. 有 renderer entry 则直接 `reap_terminal_artifacts_with_renderer`；没有（内核重启后，K17）先走 `ws/terminal.rs:124-220` 的惰性重挂（把 `resolve_live_renderer_from_terminal` 提为 `pub(crate)`），`Alive` 再 reap；`ChildExited` 只说明**此次未取得 renderer**（重挂失败 `ws/terminal.rs:200`、probe 无活 PTY `:209`、probe 出错 `:217` 三处都返回它），不是进程已死的证明：本 tick 不再动，交给既有孤儿臂（下段）；终端行的退出记录由 K19 的下一次 boot 对账补 `-1`。
 
-**每提供者的效果**：claude PTY worker / 终端 PTY：进程 TERM→KILL，attach reader 写 `terminals.exit_code=NULL, signal_killed=1, pty_output`（K15），它的 ephemeral 补写找不到活会话（第 2 步已 `exited`）→ 无操作；task hook 见任务已终态 → 返回。codex 共享线程 worker：`codex resume` 观察窗被杀，线程留在 daemon 上空闲（与 DELETE 后一样，K14 只丢归属不卸线程），会话行由第 2 步写成 `exited`——不再依赖 reaper 仲裁（K15 说它永远判 `Alive`）。isolated：不涉及。**写的行**：`worker_sessions.state/completed_at_ms/updated_at_ms`（第 2 步）、`terminals.exit_code/signal_killed/pty_output(_truncated)`（reader）；`exit_interpretation` 不写（`session_complete_tx` 不写它，K22）；`terminals` 行不删——Terminal 卡的行有退出记录后由 #1701 规则跟卡走；worker 卡的终端行交给既有孤儿臂：它的 60 s 是**创建**宽限（`read.rs:966,980`：`t.created_at < now − 60 s`），不是退出宽限，4140 的行早已超过 ⇒ 第 2 步写完 `exited` 后的**下一次孤儿扫描**就删行、并经同一个 helper 再发一次 SIGTERM（今天 worker 正常退出后就是这样，K18）。
+**每提供者的效果**：claude PTY worker / 终端 PTY：进程 TERM→KILL，attach reader 写 `terminals.exit_code=NULL, signal_killed=1, pty_output`（K15），它的 ephemeral 补写找不到活会话（第 2 步已 `exited`）→ 无操作；task hook 见任务已终态 → 返回。codex 共享线程 worker：`codex resume` 观察窗被杀，线程留在 daemon 上空闲（与 DELETE 后一样，K14 只丢归属不卸线程），会话行由第 2 步写成 `exited`——不再依赖 reaper 仲裁（K15 说它永远判 `Alive`）。isolated：不涉及。**写的行**：`worker_sessions.state/completed_at_ms/updated_at_ms`（第 2 步）、`terminals.exit_code/signal_killed/pty_output(_truncated)`（reader）；`exit_interpretation` 不写（`session_complete_tx` 不写它，K22）；`terminals` 行不删：Terminal 卡以及有任务归属的 Worker 卡，只要已有退出记录，就由孤儿臂豁免，最终屏幕、scrollback 与退出码随卡保留；按 attempt_id 的 terminal read/show 仍可读取。孤儿臂的 60 s 是创建宽限，不是退出宽限；没有退出记录的残留仍走原来的清理路径。
 
 **先写后杀的理由**：杀了再写，attach reader 会把 ephemeral 会话写成 `failed`（signalled）、codex 的留 `running`——同一动作两种结局；先写则一律 `exited`，reader 的补写因找不到活会话而空过。若杀失败（进程还在、行已 `exited`）：卡已无活会话、终端行无退出记录、创建早过宽限 ⇒ 下一次孤儿扫描 SIGTERM + 删行——同一个 sweeper 就是重试。
 
-**重开**：done 之后开新终端卡（`POST /api/tracks/{id}/terminal-cards`）、planner 新一轮派任务、`claude/restart`——铸出的会话 `created_at_ms > terminal_at`，不在集合里。今天的 FE 对已退出的 claude/terminal 卡没有「重开」按钮（K22），S2 不改变这一点。
+**重开**：关闭后新建的会话 `created_at_ms > closed_at` 不由关闭臂收取；任务完成后重启的会话 `created_at_ms > finished_at_ms` 不由任务落定臂收取。若另一臂仍授权（例如重启后又关闭 track），则照常清理。今天的 FE 对已退出的 claude/terminal 卡没有「重开」按钮（K22），S2 不改变这一点。
 
 **4140**：首个 tick 收 22 条（D4），`06ff541a` 上 done 之后开的 4 条 zsh 留着（用户自己的；这个数随用户开新终端而涨，验收按 D4 的 sql 当场取）。
 
@@ -243,7 +244,7 @@ S1：与今天同形——全部 SELECT（含新增的 P 与 `archived_at` 列�
 - **G-11 codex 交互 TUI 被信号杀不铸 failed**：resumable 会话的 `ws.state` 留 `running`（K15），卡只是不再 working（退出门）；线程在 daemon 上仍可 `codex resume`。真要一个「TUI 没了」的红点需要第二个失败族（按终端行的 `signal_killed` 铸），规则 1 不加。
 - **G-12 安静后 ≤30 s 的 working 尾巴**：没有后沿臂（§4.3），有输出→安静由 tick 收；与 1722 G5 同类。
 - **G-13 落在 planner 轮中间的失败被那一轮老化**（红少）：任务在 t0 失败时 planner 轮 T1 在飞，`observe_envelope` 只入队（`harness/run_loop.rs:687-716`），`maybe_issue_turn` 要 `can_issue_turn()` 才排空（`:3688-3800`）⇒ 观察等到 T2；T1 在 t1 > t0 完成，feeder 写 P = t1 ⇒ `at_ms ≤ P` ⇒ 红只亮 t0..t1 就消失，T2 的 E1 之后亮一次 unread。4140：有转录覆盖的 4 条失败里 0 条落在轮内（`WITH f AS (failed, fa) , tc AS (planner turn/completed), ts AS (MIN item/started per turn) … ts.first_item_ms < f.fa AND tc.end_ms > f.fa` → 0/4），不是已观测缺陷。
-- **G-14 S2 的杀半截没跑时，收敛的是孤儿臂，它会删终端行**：§4.2 第 2 步写完 `exited` 之后第 4 步没有执行——写后出错（`terminal_get` / 重挂返回 `Err`）、写与杀之间内核重启、或 `ChildExited`（此次未取得 renderer）——会话行已 `exited`、终端行无退出记录、创建早过 60 s ⇒ 下一次孤儿扫描（`read.rs:952-985` 的谓词；#1701 的豁免只认**有**退出记录的 Terminal 卡行）走 `cleanup_terminal`：`reap_terminal_artifacts`（有 entry 则 TERM→KILL，reader 可能在这之间补上 `signal_killed=1`，否则 pid 兜底 SIGTERM）然后**删行** + `terminal.deleted`。对 Terminal 卡（4140 上 `8ab9cc27`）这正是 #1701 修掉的「卡指向空」形状——最终屏幕、scrollback、退出码随行一起没了；对 worker 卡则与今天正常退出后的处置相同（K18）。正常路径（`Alive` → reap → reader 写 `signal_killed=1`）保留行。不加固：这三种情形都是 S2 自己的失败分支，行删了卡还在，`observe` / `control release` 会失败（#1701 描述的形状）；要保行得给孤儿臂再加一条「已 `exited` 会话的终端行」豁免，那会让真正的残留永远留下。来自实现评审 r1（A）。
+- **G-14 S2 的杀半截没跑时，收敛的是孤儿臂，它会删终端行**：§4.2 第 2 步写完 `exited` 之后第 4 步没有执行——写后出错（`terminal_get` / 重挂返回 `Err`）、写与杀之间内核重启、或 `ChildExited`（此次未取得 renderer）——会话行已 `exited`、终端行无退出记录、创建早过 60 s ⇒ 下一次孤儿扫描（`read.rs:952-985` 的谓词；#1701 的保行规则现也覆盖有任务归属的 Worker 卡，但两者都要求**有**退出记录）走 `cleanup_terminal`：`reap_terminal_artifacts`（有 entry 则 TERM→KILL，reader 可能在这之间补上 `signal_killed=1`，否则 pid 兜底 SIGTERM）然后**删行** + `terminal.deleted`。对 Terminal 卡（4140 上 `8ab9cc27`）这正是 #1701 修掉的「卡指向空」形状——最终屏幕、scrollback、退出码随行一起没了；有任务归属的 Worker 卡在记录退出后现也豁免；本段只描述未记录退出的失败路径。正常路径（`Alive` → reap → reader 写 `signal_killed=1`）保留行。不加固：这三种情形都是 S2 自己的失败分支，行删了卡还在，`observe` / `control release` 会失败（#1701 描述的形状）；要保行得给孤儿臂再加一条「已 `exited` 会话的终端行」豁免，那会让真正的残留永远留下。来自实现评审 r1（A）。
 - **G-15 claude worker 卡在目录信任对话框**：新工作区 track 上的 claude worker 会停在 Claude Code 的 folder-trust 对话框上，会话尚未开始 ⇒ 没有任何 hook、PTY 也不再输出，任务 `working` 一直到 2 h 的运行超时（G-7 那条）才 failed（#1755；2026-09-20 在 4140 观测到）。不在本文加固：那是启动流程的事。
 - **G-16 启动恢复重驱 `SpawnStarted` 会给上一生命期的回放盖章**：交互卡的 create 操作在 `spawn_side_effect` 返回与 `set_phase(SpawnSucceeded)` 之间（`driver.rs` `Phase::SpawnStarted` 臂，几十 ms 的窗）遇到内核崩溃，启动恢复把它按 `Recover` 重驱（`driver.rs` `plan_recovery_for` 把 `SpawnStarted` 归入 Recover；`terminal_adapter.rs` 的「operation recovery re-runs this step」）：重跑先 `terminal_clear_exit_for_spawn` 清掉 `pid`，`resolve` → `Unbound`，`observation_replay_proven = true`，`EnsureProc` 落在 supervisor 的幂等快路径（PTY 还活着，`Spawned{pid}` 与真 spawn 无法区分）⇒ `AttachOk.replay` 是上一生命期的环、被盖章 ⇒ 崩溃时正在创建的那张卡一次假 `working`（≤ 5 s）+ 一个 unread。同族：`Spawned` 之后 `terminal_set_pid` 失败只 warn（行 `pid` NULL 而 PTY 活着）⇒ 下一生命期的懒重挂同样盖章。类：「行 `pid` NULL ⇏ supervisor 无进程」。今天没有不往返就能区分快路径的信号，规则 1 不加；登记（S3 实现评审 r2 A MINOR-1）。
 - **G-17 并发 attach 抢先入表时新启动的已证明 model view 被丢弃**：与 codex P2 同一个窗（`CardAdded` 在 `prepare_tx` 提交后、spawn 之前广播，`driver.rs` `Phase::Pending` 臂；前端 grid 一旦 `everOpened` 就对新卡立即挂 `XtermView`、WS 走 `ws/terminal.rs` 的懒重挂）：attach 形状的 ensure 读到已持久化的 `pid` ⇒ 它的 `ModelView` 被 `invalidate("terminal renderer reattached without complete geometry history")`，它赢下入表后新启动那条带完整几何史的 entry 被 `abort_tasks` 丢掉。后果：Planner 的 `calm.terminal.open` 在卡与终端行都已建好之后在 `observe_for_open` 上返回 `terminal projection unavailable`，`invalidate` 不可逆（`model_view.rs` 的 `view = Err`，无恢复臂），drop 后再 ensure 读到的仍是已持久化的 `pid`、仍 attach 形状 ⇒ 这个 PTY 的整个生命期 Planner 的 `calm.terminal.observe` 都读 `projection unavailable`；人类的 WS 走 render plane、不受影响。r2 的竞态用例最先就红在这里（随后改走 REST create 路由，它不 observe）。先于 S3 存在（「现有条目赢」分支与 `observation_replay_proven` 都不是本 issue 加的）；本文只交接章不交接 model view（幸存条目的 render plane 已在喂它自己的 observer），规则 1 不加固，登记待后续 issue。

@@ -34,10 +34,18 @@ Today the binding is inferred: the spawn op keyed by the attempt (`task.rs:270-2
 `COALESCE` stamp of `worker_card_id` (`task.rs:242-266`), the card payload's `idempotency_key`
 (`runs.rs:85-95`), and an `owns_key` op proof for reports (`decision_sink.rs:116-132`).
 
-A session outlives its attempt: reports touch only the task row and lease (`decision_sink.rs:100-190`),
-gates never touch sessions. It ends on track close (`terminal_sweeper.rs:68-74`), a cancel/timeout
-sweep (`scheduler/mod.rs:95-136,1650-1729`), the reaper (`reaper/mod.rs:95-372`), a Claude CLI exit
-(`attach_reader.rs:141-150`) or card deletion. So continuation needs no keep-alive.
+A session can briefly outlive its attempt: the sweeper ends a running task-owned
+PTY 60–90 seconds after its owning attempt finishes (`done`, `failed`, `canceled`),
+on open or closed tracks, provided it was created no later than that finish.
+It also ends running PTYs created at or before track close. Both terms exclude
+cards with any dispatched/running/verifying attempt and exclude Planner role.
+User terminals on open tracks and sessions opened after close are protected by
+the closed-track term; restarting after finish is protected by the settled term.
+Recorded exits and final output remain readable on task-owned worker cards.
+
+This conflicts with the deferred continuation feature #2520: continuation cannot
+assume a live worker needs no keep-alive. Its design must resolve lifecycle and
+authority explicitly before relying on a settled session remaining available.
 
 ### Decisions
 
@@ -151,7 +159,7 @@ Each reader asks one question. H = history (the binding fact, any session state)
 | 21 | `track_activity.rs:145-159`, `:186-215`; `track_activity/sql.rs:144-170` | every current row raises its `worker_card_id` | the view's attempt per session raises the card only when it is a `current_tasks` row (`track_activity/sql.rs:120-123`; a superseded attempt's card shows no verdict, as today) | H (ended sessions included) | old `failed` no longer outranks new `working` |
 | 22 | `track_vcs/delta.rs:344-394`, `:405-412`, `runs.rs:85-95,373-395`, `track_fs_view/mod.rs:518`, `:1303-1312` | card payload key; first run with the card; run Markdown from card payload | run ↔ card from bindings; attempt facts per §5 | H | each run shows its own goal and prompt |
 | 23 | `scheduler/worker_failure.rs:51-74` card delete | `worker_card_id` or op proof | the attempt resolved once by its caller (#16) | H | neutral |
-| 24 | `terminal_sweeper.rs:68-74` | no current task with `worker_card_id = card` in `dispatched|running|verifying` | same statuses through the view, current rows only | H | neutral |
+| 24 | `terminal_sweeper.rs::SETTLED_WORKER_SESSIONS_SQL` | Worker PTY: pre-close session OR settled owning attempt past grace with session created by finish; no in-flight attempt on the card | preserve both terms and all-attempt exclusion when adopting explicit bindings | H | continuation #2520 must resolve cleanup authority |
 | 25 | `plan/cancel_running.rs:110-114`, `task.rs:131-151` | CAS on `worker_card_id` | CAS on `worker_session_id` | the attempt | neutral |
 | 26 | `track_occupancy.rs:69-74` lease modes | lease's attempt via `operations.idempotency_key` | `wl.attempt_id IS NOT ?except`; the op join stays for `phase` | the attempt | neutral |
 | 27 | `task_gate_run/mod.rs:148-151,273` gate checkpoint refs | `refs/neige/gate-runs/<track>/<card>/r<N>` ("one worker card serves one attempt"); `r<N>` restarts per attempt (`admission.rs:116-148`), `update-ref` overwrites (`forge_git.rs:81`) | PR-3: `<track>/<gate-run op id>`. The op id is a fresh hex id already in `prepare_tx`, unique per run; an attempt id (`<track>:<key>`) is not ref-safe (`mod.rs:148-149`). `FrozenRun.ref_name` is frozen at prepare and read back (`checkpoint.rs:55`, `finalize.rs:139`), so existing refs keep their names | the run | a successor's r1 cannot replace the predecessor's pin |

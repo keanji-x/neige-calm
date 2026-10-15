@@ -745,7 +745,7 @@ impl RepoRead for SqlxRepo {
 
     async fn terminals_orphaned(&self, grace_seconds: i64) -> Result<Vec<Terminal>> {
         // Orphan: no active worker_session AND older than `grace_seconds` (created_at
-        // is unix ms). A Terminal card's terminal with a recorded exit is not residue:
+        // is unix ms). A Terminal or task-owned worker card's recorded exit is not residue:
         // it follows its card so its final screen and exit code stay observable.
         let cutoff = now_ms() - grace_seconds.saturating_mul(1000);
         let rows = sqlx::query_as::<_, Terminal>(
@@ -766,7 +766,13 @@ impl RepoRead for SqlxRepo {
                    (t.exit_code IS NOT NULL OR t.signal_killed = 1)
                    AND EXISTS (
                        SELECT 1 FROM cards c
-                       WHERE c.id = t.card_id AND c.kind = 'terminal'
+                       WHERE c.id = t.card_id AND (
+                           c.kind = 'terminal'
+                           OR (c.role = 'worker' AND EXISTS (
+                               SELECT 1 FROM tasks owner
+                               WHERE owner.track_id = c.track_id AND owner.worker_card_id = c.id
+                           ))
+                       )
                    )
                )"#,
         )

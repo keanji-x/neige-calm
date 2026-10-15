@@ -25,6 +25,7 @@ mod message;
 pub use message::{MESSAGE_BYTES_MAX, MessageInvalid, message_header};
 mod observation;
 mod operations;
+mod persisted_exit;
 pub use operations::InputOptions;
 mod receipt_summary;
 pub use receipt_summary::{receipt_summary, summary_line};
@@ -260,6 +261,13 @@ impl TerminalInteraction {
             "wait_for=text or text conditions read the live viewport; scroll_offset must be 0"
         );
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
+        if self.renderer.get(&resolved.binding.terminal_id).is_none()
+            && let Some(output) = self
+                .persisted_exit(identity, &resolved, offset, wait.mode)
+                .await?
+        {
+            return Ok(output);
+        }
         let client = self.client(identity, &resolved.binding).await?;
         self.capture(identity, resolved, &client, offset, wait, None)
             .await

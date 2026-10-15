@@ -12,12 +12,18 @@ attempts owning their old cards. Require Worker card role and an owning settled
 attempt (`done`, `failed`, `canceled`) with a recorded finish timestamp. Exclude
 any card with a dispatched, running or verifying attempt. Include terminals
 with persisted exit evidence so resumable running sessions converge too.
-Track closure must not authorize reaping a task-less terminal.
+Independently, a closed track authorizes ending running PTYs created at or
+before `tracks.closed_at`, including task-less user-opened worker cards. Sessions
+created after close survive that term. Both terms exclude in-flight attempts
+and require Worker role; Planner sessions remain outside the set.
 
 The 60-second grace allows the report response and provider turn to finish;
 with the existing 30-second tick, normal cleanup is 60–90 seconds after finish.
 Measure persisted wall-clock milliseconds, like the task writers, not terminal
-creation or session activity. Missing finish timestamps fail closed. Recheck
+creation or session activity. Missing finish timestamps fail closed for the
+settled-worker term. Require
+`ws.created_at_ms <= owner.finished_at_ms` so restarting a settled card does not
+transfer the old attempt's cleanup authority to the new session. Recheck
 this same predicate inside the claiming transaction, including a racing regate.
 
 Source checks: `scheduler/git_delivery.rs::drive_git_delivery` operates on lease,
@@ -32,9 +38,16 @@ attempts. No post-settlement dependency on a live worker was found.
 
 Acceptance: production sweep tests cover open/closed settled states, every
 in-flight state, retry on another card, grace/missing timestamp, exited PTY,
-task-less terminal/Planner exclusion, claim recheck and Codex interruption.
-Mutation verification removes the owning-settled-attempt predicate and must
-fail exactly the grace and task-less terminal protection tests. No new permanent
+user terminals on open tracks and Planner exclusion, closed-track teardown,
+after-close survival, restart protection, claim recheck and isolated Codex
+interruption (including a dead PTY, with a second sweep). Recorded terminal exits
+on task-owned Worker cards follow the card, just as Terminal-card exits do: the
+orphan arm retains the terminal row and final output for terminal reads by
+attempt ID. Without a live renderer, reads of an ended session return explicit
+`source=persisted_exit` ANSI output and truncation/exit facts, without a live
+observation ID, revision, connection or input capability. This does not
+reconstruct the live RMUX model from legacy serialized output. Unrecorded orphan residue still converges through existing cleanup.
+No new permanent
 registry, migration, or CI check: ordinary later changes edit the owning code
 and relevant tests; the existing focused replay runs once in this task's gate.
 
@@ -47,81 +60,7 @@ Existing test helpers mint PTYs through the production terminal-open operation;
 the tests call the production sweep and claiming entry points. No released
 migration or generated artifact changes are required.
 
-## Verification evidence
-
-Carry replay used:
-
-```sh
-git diff b42b799896341477bbfe649483b5752a52feec9b e59189142318143b606a49e495b102a862215ae6 > /tmp/worker-reap-carry.patch
-git apply --reject /tmp/worker-reap-carry.patch
-```
-
-For each rejected file, a Python loop obtained base/theirs via
-`git show <revision>:<path>`, restored that file's original upstream content via
-`git show HEAD:<path>`, and ran
-`git merge-file <path> /tmp/worker-reap-base /tmp/worker-reap-theirs`.
-Three conflicts retained upstream's binding check, fake start-failure handling,
-and lower terminology baseline. A duplicate already-upstream `hibernate`
-method from an offset-applied hunk was removed. The final carry diff is empty;
-all reject files were removed.
-
-Initial package-wide focused command compiled with two fixture ownership errors
-(consuming `Harness::stop`); these were corrected before the baseline:
-
-```sh
-env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest run --locked -p calm-server --no-tests=fail --test-threads 8 worker_reap
-```
-
-An attempted narrower command used `--test terminal_ws_suite`; Cargo reported
-that this is not a test target. The actual target is `api_suite`, which includes
-that module. This was a worker command, not a declared gate step.
-
-```sh
-env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest run --locked -p calm-server --test terminal_ws_suite --no-tests=fail --test-threads 8 worker_reap
-env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest run --locked -p calm-server --test api_suite --no-tests=fail --test-threads 8 worker_reap
-```
-
-The latter ran eight tests before fail-fast; the retry fixture then needed the
-complete persisted recovery origin. The complete baseline command below ran
-nine tests: eight failed for the old eligibility, and in-flight protection passed.
-After implementation, it ran ten tests and all passed (the tenth retains the
-existing shared Planner harness exclusion coverage).
-
-```sh
-cargo fmt --all
-env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest run --locked -p calm-server --test api_suite --no-tests=fail --no-fail-fast --test-threads 8 worker_reap
-git diff --check
-```
-
-The same complete-filter nextest command ran the owner-predicate mutation:
-production-only removal of the owning settled-attempt EXISTS block. Predicted
-and actual red sets were exactly
-`worker_reap_user_terminal_and_planner_untouched` and
-`worker_reap_within_grace_or_missing_finish_not_reaped`; eight others passed.
-Restoration uses the saved production file, byte equality checked, without
-checkout/reset. The in-flight-guard mutation predicts exactly
-`worker_reap_in_flight_not_reaped_even_with_settled_attempt_on_card` and
-`worker_reap_claim_rechecks_in_flight_before_write`.
-
-The kernel gate owns text/contract checks, Rust quick checks and the declared
-focused replay; CI owns broad suites. Worker commands do not replace the gate's
-frozen-target verification.
-
-The first in-flight mutation was invalid: only the in-flight test failed.
-The claim test changed its sole settled owner to verifying, so the independent
-owner EXISTS already blocked the claim. After safe restoration, the claim test
-was strengthened to insert a second verifying attempt on the same card at the
-before-write seam, leaving the settled owner in place. This pins the in-flight
-exclusion at the transaction boundary independently. The complete-filter command
-is rerun green before repeating the production-only guard removal.
-
-The eight addition collisions in the carry patch were compared against upstream:
-seven are byte-identical; upstream's Planner hibernation failure fixture adds
-the required managed Assistant provider/contract fields and retains the carried
-behavior. No carried addition is missing.
-
-With the strengthened claim test, the repeated in-flight mutation produced
-exactly the two predicted failures; eight other tests passed. Production was
-restored byte-for-byte and the complete-filter green command rerun. Both
-mutations changed production SQL only, with no concurrent writer/reviewer, and
-no mutation residue remains.
+The deferred continuation feature #2520 conflicts with ending settled sessions:
+it must explicitly resolve session lifecycle/authority before assuming a live
+worker remains available. Starting/turn_pending reaping (N7) and the spawn-op
+ownership proof (N6) remain follow-up work, outside this change.

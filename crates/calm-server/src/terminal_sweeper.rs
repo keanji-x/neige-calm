@@ -1,5 +1,5 @@
 //! The terminal sweeper: one 30 s tick, four independent arms — the orphan arm reaps terminal rows whose card
-//! has no active worker session; the settled-worker arm ends task-owned sessions after their attempts settle;
+//! has no active worker session; the settled-worker arm ends task-owned sessions after their attempts settle or their track closes;
 //! the Planner arm hibernates idle harnesses on closed tracks;
 //! the thread arm releases shared codex threads whose session ended (#1853).
 
@@ -69,6 +69,9 @@ const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 /// terminal-card create race; err on the side of "never reap a live terminal mid-create".
 const ORPHAN_GRACE_SECONDS: i64 = 60;
 
+/// Let a settled worker's reporting turn finish before ending its PTY.
+pub const SETTLED_WORKER_GRACE_MS: i64 = 60_000;
+
 /// Maximum time we wait for the daemon to accept a `Kill`; if it's hung, fall through to SIGTERM
 /// rather than block the sweep tick.
 const GRACEFUL_KILL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -77,15 +80,19 @@ const GRACEFUL_KILL_TIMEOUT: Duration = Duration::from_secs(5);
 /// Sixty seconds from the persisted task finish lets the reporting turn/response unwind;
 /// the 30 s tick then ends workers within 60–90 s. Missing finish timestamps fail closed.
 /// All attempts matter: a retry can supersede the owning attempt on another card.
-/// Worker role and task ownership exclude Planner harnesses and user-opened terminals.
+/// Also end pre-close PTYs on closed tracks; user PTYs on open tracks are excluded.
+/// Worker role excludes Planner sessions from both terms.
 pub const SETTLED_WORKER_SESSIONS_SQL: &str = "SELECT ws.id, ws.provider, ws.card_id, te.id AS terminal_id, ws.thread_id \
        FROM worker_sessions ws JOIN cards c ON c.id = ws.card_id AND c.track_id = ws.track_id \
        JOIN terminals te ON te.id = ws.terminal_run_id AND te.card_id = c.id \
+       JOIN tracks t ON t.id = ws.track_id \
       WHERE ws.state = 'running' AND c.role = 'worker' \
-        AND EXISTS (SELECT 1 FROM tasks owner WHERE owner.track_id = ws.track_id AND owner.worker_card_id = ws.card_id \
+        AND ((t.closed_at IS NOT NULL AND ws.created_at_ms <= t.closed_at) \
+          OR EXISTS (SELECT 1 FROM tasks owner WHERE owner.track_id = ws.track_id AND owner.worker_card_id = ws.card_id \
                       AND owner.status IN ('done','failed','canceled') \
+                      AND ws.created_at_ms <= owner.finished_at_ms \
                       AND owner.finished_at_ms <= (CAST(strftime('%s','now') AS INTEGER) * 1000 \
-                          + CAST(substr(strftime('%f','now'),4,3) AS INTEGER)) - 60000) \
+                          + CAST(substr(strftime('%f','now'),4,3) AS INTEGER)) - ?1)) \
         AND NOT EXISTS (SELECT 1 FROM tasks active WHERE active.worker_card_id = ws.card_id \
                           AND active.status IN ('dispatched','running','verifying'))";
 
@@ -174,6 +181,7 @@ async fn settled_worker_sessions(state: &AppState) -> Result<Vec<SettledWorkerSe
         return Ok(Vec::new());
     };
     let rows = sqlx::query(SETTLED_WORKER_SESSIONS_SQL)
+        .bind(SETTLED_WORKER_GRACE_MS)
         .fetch_all(&pool)
         .await?;
     Ok(rows
@@ -341,8 +349,9 @@ async fn in_settled_worker_set(
     conn: &mut sqlx::SqliteConnection,
     session_id: &str,
 ) -> Result<bool> {
-    let sql = format!("{SETTLED_WORKER_SESSIONS_SQL} AND ws.id = ?1");
+    let sql = format!("{SETTLED_WORKER_SESSIONS_SQL} AND ws.id = ?2");
     let row = sqlx::query(&sql)
+        .bind(SETTLED_WORKER_GRACE_MS)
         .bind(session_id)
         .fetch_optional(conn)
         .await?;
