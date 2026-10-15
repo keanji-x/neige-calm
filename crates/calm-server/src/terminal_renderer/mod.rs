@@ -605,6 +605,13 @@ impl TerminalRendererRegistry {
         };
 
         tracing::info!(terminal_id, "terminal renderer registry dropping entry");
+        self.stop_child(&entry).await
+    }
+
+    /// Stop the child and wait for its recorded exit, retaining the final screen just as a
+    /// natural exit does. The retained entry also makes ensure reuse this ended generation.
+    pub(crate) async fn stop_child(&self, entry: &RendererEntry) -> RendererDropOutcome {
+        let terminal_id = entry.terminal_id.as_str();
         let term_at = tokio::time::Instant::now();
         entry.shutdown_signal(ProcSignal::Term).await;
         // Wait for the exit to be persisted instead of sleeping the full grace; a child that ignores

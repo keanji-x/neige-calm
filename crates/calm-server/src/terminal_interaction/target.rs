@@ -408,7 +408,11 @@ impl TerminalInteraction {
         result["controllable"] = json!(available && self.keys_controllable(&resolved)?);
         result["card_kind"] = json!(resolved.card_kind);
         result["task_status"] = json!(resolved.task_status);
-        if !available {
+        if !resolved.session_active {
+            result["reason"] = json!(
+                "session ended; use neige_terminal_read for recorded output and exit facts (persisted_exit)"
+            );
+        } else if !available {
             result["reason"] = json!("no live observable terminal view; no session was started");
         }
         if let Some(refused) = resolved.keys_refused(self.tui_input(&resolved)?) {

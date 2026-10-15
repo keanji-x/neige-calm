@@ -261,10 +261,9 @@ impl TerminalInteraction {
             "wait_for=text or text conditions read the live viewport; scroll_offset must be 0"
         );
         let resolved = Self::resolve_target(self.repo.as_ref(), identity, target).await?;
-        if self.renderer.get(&resolved.binding.terminal_id).is_none()
-            && let Some(output) = self
-                .persisted_exit(identity, &resolved, offset, wait.mode)
-                .await?
+        if let Some(output) = self
+            .persisted_exit(identity, &resolved, offset, wait.mode)
+            .await?
         {
             return Ok(output);
         }

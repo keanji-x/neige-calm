@@ -301,15 +301,17 @@ where
 
 /// Stop the live child of `term`: its renderer, or a reattach to the child the supervisor runs,
 /// then the reap (TERM, bounded wait, KILL), whose reader persists the exit and ends an ephemeral
-/// runtime. `false` when no renderer could be obtained: no running child to stop.
+/// runtime. Retain its final screen for later viewers. `false` if no renderer was obtained
+/// or the reader did not confirm exit persistence.
 pub(crate) async fn reap_live_terminal(state: &AppState, term: &Terminal) -> Result<bool> {
     let live =
         crate::ws::terminal::resolve_live_renderer_from_terminal(state, term.clone()).await?;
-    reap_resolved(state, term, live).await
+    reap_resolved(state, term, live, true).await
 }
 
 /// [`reap_live_terminal`] for a caller holding the terminal's track entry in
 /// `track_delete_locks` (`track_id`) across the stop: no viewer can reattach meanwhile.
+/// This restart path removes the old entry so ensure can establish the replacement child.
 pub(crate) async fn reap_live_terminal_under_track_fence(
     state: &AppState,
     term: &Terminal,
@@ -318,15 +320,21 @@ pub(crate) async fn reap_live_terminal_under_track_fence(
     let live =
         crate::ws::terminal::resolve_live_renderer_under_track_fence(state, term.clone(), track_id)
             .await?;
-    reap_resolved(state, term, live).await
+    reap_resolved(state, term, live, false).await
 }
 
 async fn reap_resolved(
     state: &AppState,
     term: &Terminal,
     live: crate::ws::terminal::LiveRenderer,
+    retain_screen: bool,
 ) -> Result<bool> {
     match live {
+        crate::ws::terminal::LiveRenderer::Alive(entry) if retain_screen => {
+            // Keep the final screen available to later WS viewers, like a natural exit.
+            let outcome = state.terminal_renderer.stop_child(&entry).await;
+            Ok(outcome == RendererDropOutcome::ExitPersisted)
+        }
         crate::ws::terminal::LiveRenderer::Alive(_) => {
             reap_terminal_artifacts_with_renderer(Some(state.terminal_renderer.as_ref()), term)
                 .await;

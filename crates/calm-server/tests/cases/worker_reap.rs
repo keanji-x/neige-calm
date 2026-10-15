@@ -74,8 +74,10 @@ async fn assert_reaped(h: &Harness, p: &PtySession) {
     assert!(completed.is_some());
     await_terminal_exit(h, &p.terminal).await;
     await_pid_gone(p.pid).await;
-    assert!(h.state.terminal_renderer.get(&p.terminal).is_none());
 }
+
+#[path = "worker_reap_attach.rs"]
+mod attach;
 
 #[tokio::test]
 async fn worker_reap_settled_then_reaped_open_and_closed() {
@@ -285,7 +287,14 @@ async fn worker_reap_reattach_after_registry_reset() {
     assert_eq!(session_row(&h, &p.session).await.0, "exited");
     await_terminal_exit(&h, &p.terminal).await;
     await_pid_gone(p.pid).await;
-    assert!(fresh.terminal_renderer.get(&p.terminal).is_none());
+    assert!(
+        fresh
+            .terminal_renderer
+            .get(&p.terminal)
+            .unwrap()
+            .wait_exit_persisted_for_test(Duration::from_secs(1))
+            .await
+    );
     h.stop(&p.terminal).await;
 }
 
@@ -495,6 +504,13 @@ async fn worker_reap_final_output_survives_orphan_grace() {
         let shown = h.ok("neige_terminal_show", json!({"attempt_id": id})).await;
         assert_eq!(shown["terminal_id"], p.terminal);
         assert_eq!(shown["controllable"], false);
+        assert!(
+            shown["reason"]
+                .as_str()
+                .unwrap()
+                .contains("neige_terminal_read"),
+            "{shown}"
+        );
         h.stop(&p.terminal).await;
     }
 }

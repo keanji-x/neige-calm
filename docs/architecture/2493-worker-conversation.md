@@ -41,7 +41,9 @@ It also ends running PTYs created at or before track close. Both terms exclude
 cards with any dispatched/running/verifying attempt and exclude Planner role.
 User terminals on open tracks and sessions opened after close are protected by
 the closed-track term; restarting after finish is protected by the settled term.
-Recorded exits and final output remain readable on task-owned worker cards.
+The retained renderer entry keeps the final screen and scrollback visible in the FE
+until the server restarts. MCP reads retain the persisted 8 KiB raw `pty_output`
+tail, truncation flag and exit facts (`source=persisted_exit`) on task-owned worker cards.
 
 This conflicts with the deferred continuation feature #2520: continuation cannot
 assume a live worker needs no keep-alive. Its design must resolve lifecycle and

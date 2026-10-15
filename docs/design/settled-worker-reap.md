@@ -42,8 +42,11 @@ user terminals on open tracks and Planner exclusion, closed-track teardown,
 after-close survival, restart protection, claim recheck and isolated Codex
 interruption (including a dead PTY, with a second sweep). Recorded terminal exits
 on task-owned Worker cards follow the card, just as Terminal-card exits do: the
-orphan arm retains the terminal row and final output for terminal reads by
-attempt ID. Without a live renderer, reads of an ended session return explicit
+orphan arm retains the terminal row, including its 8 KiB raw `pty_output` tail
+and exit facts for MCP reads by attempt ID. The reap retains the renderer entry
+so a fresh FE/WS attach receives the final screen until the server restarts;
+the ended entry cannot accept input or respawn a child. MCP reads of an ended
+session return explicit
 `source=persisted_exit` ANSI output and truncation/exit facts, without a live
 observation ID, revision, connection or input capability. This does not
 reconstruct the live RMUX model from legacy serialized output. Unrecorded orphan residue still converges through existing cleanup.
@@ -58,7 +61,8 @@ task status and task/card IDs are owned protocol facts, with no provider/plugin
 identity added to generic policy. No external private session layout is inferred.
 Existing test helpers mint PTYs through the production terminal-open operation;
 the tests call the production sweep and claiming entry points. No released
-migration or generated artifact changes are required.
+migration changes are required. The terminal-read prompt change regenerates
+`crates/calm-server/tests/goldens/mcp_tool_registry.json` (the tool-registry golden).
 
 The deferred continuation feature #2520 conflicts with ending settled sessions:
 it must explicitly resolve session lifecycle/authority before assuming a live
