@@ -278,7 +278,9 @@ async fn a_red_step_returns_its_name_and_tail() {
     )
     .await;
 
-    let answer = gate_run(&fx, &a, None).await.unwrap();
+    let answer = gate_run(&fx, &a, Some("test: checkpoint worker attempt"))
+        .await
+        .unwrap();
 
     assert_eq!(answer["state"], "finished", "{answer}");
     assert_eq!(answer["passed"], false, "{answer}");
@@ -315,11 +317,14 @@ async fn an_edit_during_the_run_discards_its_result() {
     )
     .await;
 
-    let (answer, ()) = tokio::join!(gate_run(&fx, &a, None), async {
-        wait_step(&fx, &a.task.id, 1, "block").await;
-        std::fs::write(a.lease.path.join("edited.txt"), "during the run\n").unwrap();
-        touch(&flag);
-    });
+    let (answer, ()) = tokio::join!(
+        gate_run(&fx, &a, Some("test: checkpoint worker attempt")),
+        async {
+            wait_step(&fx, &a.task.id, 1, "block").await;
+            std::fs::write(a.lease.path.join("edited.txt"), "during the run\n").unwrap();
+            touch(&flag);
+        }
+    );
 
     let answer = answer.unwrap();
     assert_eq!(answer["status_detail"], "gate-target-mismatch", "{answer}");
@@ -358,7 +363,7 @@ async fn a_call_past_the_wait_bound_returns_running_and_the_next_call_joins() {
 
     // The second call is admitted while the step still blocks, so it can only join r1; the step
     // is released once that short admission is long done, well inside the call's 5 s wait.
-    let (second, ()) = tokio::join!(gate_run(&fx, &a, Some("a joining call's message")), async {
+    let (second, ()) = tokio::join!(gate_run(&fx, &a, Some("the first call's message")), async {
         tokio::time::sleep(Duration::from_secs(1)).await;
         assert_eq!(
             run_ops(&fx, &a.task.id).await.len(),
@@ -399,7 +404,9 @@ async fn a_blocked_checkpoint_still_answers_within_the_wait_bound() {
     std::fs::write(path.join("x.blk"), "held by the filter\n").unwrap();
 
     let started = Instant::now();
-    let answer = gate_run(&fx, &a, None).await.unwrap();
+    let answer = gate_run(&fx, &a, Some("test: checkpoint worker attempt"))
+        .await
+        .unwrap();
     let elapsed = started.elapsed();
 
     assert_eq!(answer["state"], "running", "{answer}");
@@ -424,7 +431,9 @@ async fn a_slow_drive_does_not_hold_the_call() {
     let a = running(&fx, "r4c", json!([{"name": "fine", "cmd": "true"}])).await;
 
     let started = Instant::now();
-    let answer = gate_run(&fx, &a, None).await.unwrap();
+    let answer = gate_run(&fx, &a, Some("test: checkpoint worker attempt"))
+        .await
+        .unwrap();
     let elapsed = started.elapsed();
 
     assert_eq!(answer["state"], "running", "{answer}");
@@ -445,7 +454,9 @@ async fn the_sixth_run_is_refused_with_the_cap() {
     let fx = world(LONG_IDLE).await;
     let a = running(&fx, "r5", json!([{"name": "fine", "cmd": "true"}])).await;
     for run in 1..=5 {
-        let answer = gate_run(&fx, &a, None).await.unwrap();
+        let answer = gate_run(&fx, &a, Some("test: checkpoint worker attempt"))
+            .await
+            .unwrap();
         passed(&answer);
         assert_eq!(
             (&answer["run"], &answer["runs_used"]),
@@ -453,7 +464,9 @@ async fn the_sixth_run_is_refused_with_the_cap() {
         );
     }
 
-    let err = gate_run(&fx, &a, None).await.unwrap_err();
+    let err = gate_run(&fx, &a, Some("test: checkpoint worker attempt"))
+        .await
+        .unwrap_err();
 
     assert_eq!(err.code, -32409, "{err:?}");
     assert!(
@@ -487,7 +500,7 @@ async fn done_during_a_run_delivers_after_the_run() {
 
     let (answer, ()) = tokio::join!(gate_run(&fx, &a, Some("Deliver r6")), async {
         wait_step(&fx, &a.task.id, 1, "block").await;
-        fx.complete(&a.worker, &a.task.id).await;
+        fx.complete(&a.worker, &a.task.id, None).await;
         assert_eq!(
             fx.forge_op_count().await,
             0,
@@ -557,38 +570,41 @@ async fn a_cancel_during_a_run_keeps_the_checkout_busy_until_it_ends() {
     scheduler.mark_boot_sweep_complete();
     scheduler.mark_context_sweep_boot_complete();
 
-    let (answer, ()) = tokio::join!(gate_run(&fx, &a, None), async {
-        wait_step(&fx, &a.task.id, 1, "block").await;
-        call_tool(
-            &fx.boot,
-            "neige_task_cancel",
-            planner_identity(&fx.boot),
-            json!({"key": "r7", "message": "stop"}),
-        )
-        .await
-        .unwrap();
-        scheduler.sweep_all().await;
-        assert_eq!(current(&fx.boot, "r7").await.status, TaskStatus::Canceled);
-        assert!(
-            fx.delivery_row(&a.task.id).await.is_some(),
-            "the cancel wrote the delivery row"
-        );
-        scheduler
-            .schedule_track(TrackId::from(fx.track().to_string()))
-            .await;
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert_eq!(
-            fx.forge_op_count().await,
-            0,
-            "nothing delivered during the run"
-        );
-        assert_eq!(
-            current(&fx.boot, "r7-next").await.status,
-            TaskStatus::Pending,
-            "the checkout stays busy while the run runs"
-        );
-        touch(&flag);
-    });
+    let (answer, ()) = tokio::join!(
+        gate_run(&fx, &a, Some("test: checkpoint worker attempt")),
+        async {
+            wait_step(&fx, &a.task.id, 1, "block").await;
+            call_tool(
+                &fx.boot,
+                "neige_task_cancel",
+                planner_identity(&fx.boot),
+                json!({"key": "r7", "message": "stop"}),
+            )
+            .await
+            .unwrap();
+            scheduler.sweep_all().await;
+            assert_eq!(current(&fx.boot, "r7").await.status, TaskStatus::Canceled);
+            assert!(
+                fx.delivery_row(&a.task.id).await.is_some(),
+                "the cancel wrote the delivery row"
+            );
+            scheduler
+                .schedule_track(TrackId::from(fx.track().to_string()))
+                .await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert_eq!(
+                fx.forge_op_count().await,
+                0,
+                "nothing delivered during the run"
+            );
+            assert_eq!(
+                current(&fx.boot, "r7-next").await.status,
+                TaskStatus::Pending,
+                "the checkout stays busy while the run runs"
+            );
+            touch(&flag);
+        }
+    );
 
     answer.unwrap();
     fx.wait_settled(&a.task.id).await;
@@ -607,6 +623,8 @@ async fn a_cancel_during_a_run_keeps_the_checkout_busy_until_it_ends() {
     .expect("the next task is claimed once the run ended and the delivery settled");
 }
 
+#[path = "task_gate_run/commit_message.rs"]
+mod commit_message;
 #[path = "task_gate_run/more.rs"]
 mod more;
 #[path = "task_gate_run/restart.rs"]

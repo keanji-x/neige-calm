@@ -28,7 +28,11 @@ async fn the_run_releases_its_wrapper_only_after_parked() {
     .await;
     let a = running(&fx, "r8d", json!([{"name": "fine", "cmd": "true"}])).await;
 
-    passed(&gate_run(&fx, &a, None).await.unwrap());
+    passed(
+        &gate_run(&fx, &a, Some("test: checkpoint worker attempt"))
+            .await
+            .unwrap(),
+    );
 
     assert_eq!(*seen.lock().unwrap(), vec!["parked".to_string()]);
 }
@@ -105,15 +109,17 @@ async fn a_gate_run_is_refused_for_other_callers_and_states() {
         .unwrap();
     assert_eq!(rows, 0, "no refusal wrote an op row");
 
-    let answer = gate_run(&fx, &a, None).await.unwrap();
+    let answer = gate_run(&fx, &a, Some("test: checkpoint worker attempt"))
+        .await
+        .unwrap();
     passed(&answer);
     assert_eq!(answer["run"], 1, "the first admitted call is r1: {answer}");
 
     // A verifying attempt: its run time is over.
-    fx.complete(&a.worker, &a.task.id).await;
+    fx.complete(&a.worker, &a.task.id, None).await;
     assert_eq!(current(&fx.boot, "r9").await.status, TaskStatus::Verifying);
     refused(
-        gate_run(&fx, &a, None).await,
+        gate_run(&fx, &a, Some("test: checkpoint worker attempt")).await,
         -32602,
         "needs the current running attempt",
     );
@@ -226,7 +232,9 @@ async fn a_stuck_run_does_not_hold_the_delivery() {
     .await
     .unwrap();
 
-    let err = gate_run(&fx, &a, None).await.unwrap_err();
+    let err = gate_run(&fx, &a, Some("test: checkpoint worker attempt"))
+        .await
+        .unwrap_err();
     assert_eq!(err.code, -32409, "{err:?}");
     assert!(
         err.message
@@ -235,7 +243,7 @@ async fn a_stuck_run_does_not_hold_the_delivery() {
     );
 
     touch(&red);
-    fx.complete(&a.worker, &a.task.id).await;
+    fx.complete(&a.worker, &a.task.id, None).await;
     fx.wait_forge_op(&a.task.id).await;
     let row = fx.delivery_row(&a.task.id).await.unwrap();
     fx.scheduler()

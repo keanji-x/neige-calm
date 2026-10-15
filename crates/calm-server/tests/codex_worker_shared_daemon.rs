@@ -1647,7 +1647,12 @@ async fn worker_optional_viewer_failure_preserves_business_and_owned_cleanup() {
                 attempt_id: attempt_id.clone(),
                 result: json!({"viewer":"unavailable","work":"complete"}),
                 artifacts: vec![],
-                commit_message: calm_server::decision_sink::DeliveryMessage::Kernel,
+                commit_message: Some(
+                    calm_server::decision_sink::CommitMessage::parse(
+                        "test: preserve completed worker notes",
+                    )
+                    .unwrap(),
+                ),
             },
         )
         .await

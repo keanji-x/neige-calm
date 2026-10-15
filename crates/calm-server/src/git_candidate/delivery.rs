@@ -172,18 +172,23 @@ pub(crate) fn candidate_ref_name(track_id: &str, card_id: &str, delivery_id: &st
     format!("refs/neige/candidates/{track_id}/{card_id}/{delivery_id}")
 }
 
-/// The commit message the delivery script uses when it has to commit (D8): the worker's own
-/// message verbatim (#2139), else the kernel's one-line text. Built from the row alone, so every
-/// builder of one row produces the same text.
-pub(crate) fn delivery_message(delivery: &DeliveryRow, outcome: AttemptOutcome) -> String {
+/// The delivery's message (D8): the worker's verbatim text, or the kernel's fixed text for a
+/// non-completed outcome. Built only from the persisted row.
+pub(crate) fn delivery_message(delivery: &DeliveryRow, outcome: AttemptOutcome) -> Result<String> {
     match &delivery.commit_message {
-        DeliveryMessage::Worker(message) => message.as_str().to_string(),
-        DeliveryMessage::Kernel => format!(
+        DeliveryMessage::Worker(message) => Ok(message.as_str().to_string()),
+        DeliveryMessage::Kernel if outcome == AttemptOutcome::Completed => {
+            Err(CalmError::Internal(format!(
+                "completed attempt {} has no commit_message",
+                delivery.producer_attempt_id
+            )))
+        }
+        DeliveryMessage::Kernel => Ok(format!(
             "neige: attempt {} {} (delivery {})",
             delivery.producer_attempt_id,
             outcome.as_column(),
             delivery.delivery_id
-        ),
+        )),
     }
 }
 
@@ -260,7 +265,7 @@ pub(crate) fn forge_payload_for(
     let canonical_path = utf8(&base.canonical_path, "canonical_path")?;
     let git_common_dir = utf8(&base.git_common_dir, "git_common_dir")?;
     let ref_name = candidate_ref_name(&delivery.track_id, &delivery.card_id, &delivery.delivery_id);
-    let message = delivery_message(delivery, outcome);
+    let message = delivery_message(delivery, outcome)?;
     Ok(forge_action_payload(
         delivery_idem_key(&delivery.delivery_id),
         delivery_argv(

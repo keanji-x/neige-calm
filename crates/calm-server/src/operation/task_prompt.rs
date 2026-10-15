@@ -97,7 +97,10 @@ fn render_gate(steps: &[GateStep], run: Option<GateRunWait>) -> String {
                  subject, body, trailers). The kernel makes your current changes the one commit of \
                  this attempt, with that message, and runs the gate on it here. It answers within \
                  {}; while it says `running`, call it again. Do not edit files while a run is in \
-                 progress. Fix what a failing step reports and run again. If the last run passed \
+                 progress. The first run requires a message; later runs inherit it when omitted. A \
+                 joining call must omit it or repeat it exactly. To change the message, run the \
+                 gate again with the new message before reporting done. Fix what a failing step \
+                 reports and run again. If the last run passed \
                  and you change nothing after it, that run is the gate's verdict when you report \
                  done, and its commit is what the kernel delivers. Otherwise the kernel runs the \
                  gate after you report. You need not run these steps yourself.",

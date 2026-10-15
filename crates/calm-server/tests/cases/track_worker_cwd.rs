@@ -232,7 +232,12 @@ pub(super) async fn wait_running(fx: &Fx, key: &str) -> Started {
 
 impl Started {
     pub(super) async fn complete(&self, fx: &Fx) {
-        fx.complete(&self.identity, &self.task.id).await;
+        fx.complete(
+            &self.identity,
+            &self.task.id,
+            Some("test: complete worker attempt"),
+        )
+        .await;
     }
 
     pub(super) async fn fail(&self, fx: &Fx, reason: &str) {

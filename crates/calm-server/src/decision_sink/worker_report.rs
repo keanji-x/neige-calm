@@ -2,7 +2,7 @@
 use crate::db::sqlite::{TaskReporter, status_detail_class, task_get_tx, task_result_contract_tx};
 use crate::error::{CalmError, Result};
 use crate::event::{ArtifactRef, Event};
-use crate::git_candidate::commit_message::DeliveryMessage;
+use crate::git_candidate::commit_message::{CommitMessage, attempt_commit_message_tx};
 use crate::git_candidate::delivery::AttemptOutcome;
 use crate::ids::TrackId;
 use crate::mcp_server::registry::ToolCallIdentity;
@@ -105,7 +105,7 @@ pub enum WorkerTaskReport {
         attempt_id: String,
         result: serde_json::Value,
         artifacts: Vec<ArtifactRef>,
-        commit_message: DeliveryMessage,
+        commit_message: Option<CommitMessage>,
     },
     /// `neige_task_fail`.
     Failed { attempt_id: String, reason: String },
@@ -142,18 +142,33 @@ impl WorkerTaskReport {
         }
     }
 
-    /// How the release in the report transaction commits the attempt (#1830 S2 D7).
-    pub(super) fn release_delivery(&self) -> ReleaseDelivery {
-        match self {
-            WorkerTaskReport::Completed {
-                commit_message: DeliveryMessage::Kernel,
-                ..
-            } => ReleaseDelivery::Commit(AttemptOutcome::Completed),
-            WorkerTaskReport::Completed {
-                commit_message: DeliveryMessage::Worker(message),
-                ..
-            } => ReleaseDelivery::CommitWorkerMessage(message.clone()),
-            WorkerTaskReport::Failed { .. } => ReleaseDelivery::Commit(AttemptOutcome::Failed),
+    /// Resolve completion policy before any report write, in the report transaction. A run's
+    /// message cannot change at done: its verdict is evidence about that exact commit.
+    pub(super) async fn release_delivery_tx(
+        &self,
+        tx: &mut crate::operation::Tx<'_>,
+    ) -> Result<ReleaseDelivery> {
+        let WorkerTaskReport::Completed {
+            attempt_id,
+            commit_message,
+            ..
+        } = self
+        else {
+            return Ok(ReleaseDelivery::Commit(AttemptOutcome::Failed));
+        };
+        let inherited = attempt_commit_message_tx(tx, attempt_id).await?;
+        if let (Some(requested), Some(previous)) = (commit_message, &inherited)
+            && requested != previous
+        {
+            return Err(CalmError::BadRequest(
+                "neige_task_done: commit_message differs from the attempt's run; run the gate again with it or omit it".into(),
+            ));
+        }
+        match commit_message.clone().or(inherited) {
+            Some(message) => Ok(ReleaseDelivery::CommitWorkerMessage(message)),
+            // The shared release boundary requires a message when this card actually
+            // releases a kernel-delivery lease; its refusal rolls back the whole report.
+            None => Ok(ReleaseDelivery::Commit(AttemptOutcome::Completed)),
         }
     }
 }

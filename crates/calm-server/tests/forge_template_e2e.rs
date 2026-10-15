@@ -1864,7 +1864,13 @@ async fn assert_tools_are_discoverable(fx: &Fixture) {
 
 async fn publish_delivery(fx: &mut Fixture, title: &str, body: &str, key: &str) -> Value {
     let started = fx.delivery.take().expect("implement worker");
-    let candidate = support::done_delivery::complete(&fx.repo, &fx.socket_path, &started).await;
+    let candidate = support::done_delivery::complete(
+        &fx.repo,
+        &fx.socket_path,
+        &started,
+        "test: complete forge template attempt",
+    )
+    .await;
     let result = call_tool_via_socket(
         &fx.socket_path,
         &fx.planner_token,

@@ -283,11 +283,17 @@ pub async fn admit_gate_run_for_test(
     attempt_id: &str,
     card_id: &str,
     track_id: &str,
+    message: crate::git_candidate::commit_message::CommitMessage,
 ) -> crate::error::Result<String> {
     let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
-    let admitted =
-        crate::operation::task_gate_run::admit_run_tx(&mut tx, attempt_id, card_id, track_id, None)
-            .await?;
+    let admitted = crate::operation::task_gate_run::admit_run_tx(
+        &mut tx,
+        attempt_id,
+        card_id,
+        track_id,
+        Some(message),
+    )
+    .await?;
     tx.commit().await?;
     match admitted {
         crate::operation::task_gate_run::Admitted::New { key, .. }

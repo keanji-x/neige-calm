@@ -351,14 +351,14 @@ pub async fn start(
     }
 }
 
-pub async fn complete(repo: &SqlxRepo, socket: &Path, started: &Started) -> String {
+pub async fn complete(repo: &SqlxRepo, socket: &Path, started: &Started, message: &str) -> String {
     let result = super::mcp::call_tool_via_socket(
         socket,
         &started.token,
         &started.thread,
         91,
         "neige_task_done",
-        json!({"attempt_id":started.attempt}),
+        json!({"attempt_id":started.attempt, "commit_message":message}),
     )
     .await;
     assert!(result.get("error").is_none(), "{result:#?}");
@@ -399,7 +399,13 @@ pub async fn local_candidate(fx: &super::codex_fixture::Fixture) -> String {
             .await;
             let started = start(&repo, &ctx, &registry, planner, "scripted-implement").await;
             super::git_helpers::stage_git_change(&started.cwd, "FORGE_E2E_D2.md", "forge-e2e-d2\n");
-            complete(&repo, &socket, &started).await
+            complete(
+                &repo,
+                &socket,
+                &started,
+                "test: complete scripted forge implementation",
+            )
+            .await
         });
         rt.shutdown_timeout(Duration::from_secs(5));
         candidate

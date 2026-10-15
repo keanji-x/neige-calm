@@ -492,7 +492,7 @@ async fn prepare_pr(repo: Arc<SqlxRepo>, track: &str, tmp: &Path, shim: &Path) -
             let started = support::done_delivery::start(&repo, &ctx, &registry, planner.clone(), "implement").await;
             configure_repo_identity(&started.cwd);
             stage_git_change(&started.cwd, "merge-crash.txt", "merge crash fixture\n");
-            let head = support::done_delivery::complete(&repo, &socket, &started).await;
+            let head = support::done_delivery::complete(&repo, &socket, &started, "test: complete merge crash attempt").await;
             let result = support::mcp::call_tool_via_socket(&socket, &token, &planner.thread_id, 21,
                 "plugin_gitforge_publish", json!({"title":"Merge crash fixture", "body":"Completed candidate", "idempotency_key":"prepare"})).await;
             assert_tool_succeeded(&result, "plugin_gitforge_publish");

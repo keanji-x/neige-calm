@@ -219,7 +219,8 @@ async fn settled_gated_task_with(
     for (file, content) in files {
         std::fs::write(lease.path.join(file), content).unwrap();
     }
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     let row = settle_by_hand(fx, &task.id).await;
     assert_eq!(row.settlement.as_deref(), Some("candidate"), "{row:?}");
     assert_eq!(row.wake_reason.as_deref(), Some("deferred_to_gate"));
@@ -339,7 +340,8 @@ async fn gate_is_not_submitted_while_delivery_pending() {
         .running_task("admit", "codex", &worker.card_id, gated("true"))
         .await;
     std::fs::write(lease.path.join("worker.txt"), "gated\n").unwrap();
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     let row = fx.delivery_row(&task.id).await.unwrap();
     assert!(row.settlement.is_none(), "{row:?}");
     assert!(
@@ -425,7 +427,8 @@ async fn gate_waiter_settles_terminal_unsettled_delivery() {
         .running_task("waiter", "codex", &worker.card_id, gated("true"))
         .await;
     std::fs::write(lease.path.join("worker.txt"), "waiter\n").unwrap();
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     let forge = fx.wait_forge_op(&task.id).await;
     assert_eq!(forge.phase.tag(), PhaseTag::Succeeded, "{forge:?}");
     let row = fx.delivery_row(&task.id).await.unwrap();
@@ -470,7 +473,8 @@ async fn gate_waiter_settles_terminal_unsettled_delivery() {
         .running_task("waiter-2", "codex", &worker.card_id, gated("true"))
         .await;
     std::fs::write(lease.path.join("worker.txt"), "waiter-2\n").unwrap();
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     fx.wait_forge_op(&task.id).await;
     let row = fx.delivery_row(&task.id).await.unwrap();
     assert!(row.settlement.is_none());
@@ -560,7 +564,8 @@ async fn gate_prepare_refuses_unsettled_delivery() {
         .running_task("pending", "codex", &worker.card_id, gated("true"))
         .await;
     std::fs::write(lease.path.join("worker.txt"), "pending\n").unwrap();
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     let row = fx.delivery_row(&task.id).await.unwrap();
     assert!(row.settlement.is_none());
     let gate_pending = assert_refused_without_candidate(&fx, &task, "pending").await;
@@ -585,7 +590,8 @@ async fn gate_prepare_refuses_unsettled_delivery() {
         .running_task("rowless", "codex", &worker.card_id, gated("true"))
         .await;
     std::fs::write(lease.path.join("worker.txt"), "rowless\n").unwrap();
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     let row = fx.delivery_row(&task.id).await.unwrap();
     sqlx::query("DELETE FROM task_git_deliveries WHERE delivery_id = ?1")
         .bind(&row.delivery_id)
@@ -982,7 +988,8 @@ async fn gate_result_discarded_when_tree_changed_during_steps() {
         )
         .await;
     std::fs::write(lease.path.join("worker.txt"), "touches\n").unwrap();
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     let settled = fx.wait_settled(&task.id).await;
     let (candidate_id, ..) = candidate_of(settled_result(&settled).0);
 
@@ -1043,7 +1050,8 @@ async fn gate_catches_untracked_under_suppressing_config() {
         )
         .await;
     std::fs::write(lease.path.join("worker.txt"), "suppressed\n").unwrap();
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     fx.wait_settled(&task.id).await;
     let gate = gate_result(&wait_gate_result(&fx, &task.id).await);
     assert!(!gate.passed, "{gate:?}");
@@ -1077,7 +1085,8 @@ async fn gate_catches_untracked_under_suppressing_config() {
         .running_task("plain", "codex", &worker.card_id, gated("touch extra.txt"))
         .await;
     std::fs::write(lease.path.join("worker.txt"), "plain\n").unwrap();
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     fx.wait_settled(&task.id).await;
     let gate = gate_result(&wait_gate_result(&fx, &task.id).await);
     assert_eq!(
@@ -1412,7 +1421,8 @@ async fn existing_terminal_gate_op_is_reconciled_before_admission() {
         .running_task("upgraded", "codex", &worker.card_id, gated("true"))
         .await;
     std::fs::write(lease.path.join("worker.txt"), "held\n").unwrap();
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     let row = fx.delivery_row(&task.id).await.unwrap();
     assert!(row.settlement.is_none(), "{row:?}");
     assert_eq!(
@@ -1844,7 +1854,8 @@ async fn gated_candidate_happy_path_wakes_planner_once() {
         .running_task("happy", "codex", &worker.card_id, gated("true"))
         .await;
     std::fs::write(lease.path.join("worker.txt"), "happy\n").unwrap();
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     let settled = fx.wait_settled(&task.id).await;
     let (result, wake_reason) = settled_result(&settled);
     let (candidate_id, commit_sha, _, _) = candidate_of(result);
@@ -1939,7 +1950,8 @@ async fn plan_list_reads_gate_verification() {
         .running_task("v-infra", "codex", &worker.card_id, gated("true"))
         .await;
     std::fs::write(lease.path.join("worker.txt"), "x\n").unwrap();
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     submit_gate_bypassing_admission(&fx, &task).await;
     let v = verification(&fx.plan_entry("v-infra").await);
     assert_eq!(v["state"], "infra", "{v}");
@@ -2010,7 +2022,8 @@ async fn plan_list_reads_gate_verification() {
         .running_task("v-pending", "codex", &worker.card_id, gated("true"))
         .await;
     std::fs::write(lease.path.join("worker.txt"), "x\n").unwrap();
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     let entry = fx.plan_entry("v-pending").await;
     assert_eq!(
         entry["candidate"]["delivery"]["state"], "pending",
@@ -2245,7 +2258,8 @@ async fn file_world_candidate(
     .await;
     let task = claim_with_closure(fx, key, &worker.card_id).await;
     std::fs::write(lease.path.join("worker.txt"), "delivered\n").unwrap();
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     let row = settle_by_hand(fx, &task.id).await;
     assert_eq!(row.settlement.as_deref(), Some("candidate"));
     let candidate = fx.candidate_row(&task.id).await.unwrap();

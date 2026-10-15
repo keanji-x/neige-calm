@@ -43,6 +43,8 @@ async fn admitted(world: &FileWorld, key: &str, steps: Value) -> (Attempt, Strin
         &task.id,
         &worker.card_id,
         fx.track(),
+        calm_server::decision_sink::CommitMessage::parse("test: checkpoint restarted worker")
+            .unwrap(),
     )
     .await
     .unwrap();
@@ -220,6 +222,8 @@ async fn a_restart_after_the_park_ends_the_run_as_infra() {
         &a.task.id,
         &a.worker.card_id,
         fx.track(),
+        calm_server::decision_sink::CommitMessage::parse("test: checkpoint restarted worker")
+            .unwrap(),
     )
     .await
     .unwrap();

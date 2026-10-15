@@ -70,19 +70,6 @@ fn task_gate_descriptor() -> ToolDescriptor {
     }
 }
 
-/// `commit_message` under `neige_task_done`'s rule; absent means the kernel's own text.
-fn commit_message_arg(args: &Value) -> Result<Option<CommitMessage>, RpcError> {
-    match args.get("commit_message") {
-        None => Ok(None),
-        Some(Value::String(text)) => CommitMessage::parse(text)
-            .map(Some)
-            .map_err(|error| RpcError::invalid_params(format!("{TOOL_TASK_GATE}: {error}"))),
-        Some(_) => Err(RpcError::invalid_params(format!(
-            "{TOOL_TASK_GATE}: commit_message must be a string"
-        ))),
-    }
-}
-
 async fn task_gate(
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
@@ -90,7 +77,8 @@ async fn task_gate(
 ) -> Result<Value, RpcError> {
     let deadline = tokio::time::Instant::now() + ctx.gate_run_wait.duration();
     let attempt_id = required_attempt_id(&args, TOOL_TASK_GATE)?;
-    let commit_message = commit_message_arg(&args)?;
+    let commit_message = CommitMessage::from_tool_arg(&args)
+        .map_err(|error| RpcError::invalid_params(format!("{TOOL_TASK_GATE}: {error}")))?;
     let runtime = ctx
         .operation_runtime
         .get()

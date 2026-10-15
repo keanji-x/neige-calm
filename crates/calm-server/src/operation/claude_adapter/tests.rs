@@ -1,7 +1,7 @@
 use super::*;
 use crate::db::sqlite::begin_immediate_tx;
 use crate::event::EventBus;
-use crate::git_candidate::delivery::AttemptOutcome;
+use crate::git_candidate::commit_message::CommitMessage;
 use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_repo};
 use crate::operation::{OperationCompletionBus, OperationKey, OperationRepo, SqlxOperationRepo};
 use crate::state::DaemonClient;
@@ -104,7 +104,9 @@ async fn claude_worker_prepare_acquires_held_workspace_lease_and_spawn_op() {
             harness.repo.as_ref(),
             &harness.events,
             &card_id,
-            ReleaseDelivery::Commit(AttemptOutcome::Completed),
+            ReleaseDelivery::CommitWorkerMessage(
+                CommitMessage::parse("test: complete provider fixture").unwrap()
+            ),
         )
         .await
         .unwrap()
@@ -131,7 +133,9 @@ async fn claude_worker_env_disables_claude_auto_memory() {
         harness.repo.as_ref(),
         &harness.events,
         &card_id,
-        ReleaseDelivery::Commit(AttemptOutcome::Completed),
+        ReleaseDelivery::CommitWorkerMessage(
+            CommitMessage::parse("test: complete provider fixture").unwrap(),
+        ),
     )
     .await
     .unwrap();
@@ -166,7 +170,9 @@ async fn claude_worker_prepare_stores_idempotency_key_in_card_payload() {
         harness.repo.as_ref(),
         &harness.events,
         &card_id,
-        ReleaseDelivery::Commit(AttemptOutcome::Completed),
+        ReleaseDelivery::CommitWorkerMessage(
+            CommitMessage::parse("test: complete provider fixture").unwrap(),
+        ),
     )
     .await
     .unwrap();
@@ -259,7 +265,9 @@ async fn claude_worker_spawn_env_carries_raw_card_token_and_socket() {
         harness.repo.as_ref(),
         &harness.events,
         &card_id,
-        ReleaseDelivery::Commit(AttemptOutcome::Completed),
+        ReleaseDelivery::CommitWorkerMessage(
+            CommitMessage::parse("test: complete provider fixture").unwrap(),
+        ),
     )
     .await
     .unwrap();
@@ -436,7 +444,9 @@ async fn claude_spawn_refuses_a_checkout_that_moved_after_prepare() {
         harness.repo.as_ref(),
         &harness.events,
         &card_id,
-        ReleaseDelivery::Commit(AttemptOutcome::Completed),
+        ReleaseDelivery::CommitWorkerMessage(
+            CommitMessage::parse("test: complete provider fixture").unwrap(),
+        ),
     )
     .await
     .unwrap();
@@ -704,7 +714,9 @@ async fn claude_worker_prompt_includes_completion_task_id() {
         harness.repo.as_ref(),
         &harness.events,
         &card_id,
-        ReleaseDelivery::Commit(AttemptOutcome::Completed),
+        ReleaseDelivery::CommitWorkerMessage(
+            CommitMessage::parse("test: complete provider fixture").unwrap(),
+        ),
     )
     .await
     .unwrap();

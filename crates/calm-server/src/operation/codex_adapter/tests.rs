@@ -1,7 +1,7 @@
 use super::*;
 use crate::db::sqlite::begin_immediate_tx;
 use crate::event::EventBus;
-use crate::git_candidate::delivery::AttemptOutcome;
+use crate::git_candidate::commit_message::CommitMessage;
 use crate::operation::workspace_lease::{ReleaseDelivery, release_workspace_lease_for_card_repo};
 use crate::operation::{OperationCompletionBus, OperationKey, OperationRepo, SqlxOperationRepo};
 use crate::state::DaemonClient;
@@ -312,7 +312,9 @@ async fn codex_worker_prepare_acquires_held_workspace_lease_cwd() {
             harness.repo.as_ref(),
             &harness.events,
             &card_id,
-            ReleaseDelivery::Commit(AttemptOutcome::Completed),
+            ReleaseDelivery::CommitWorkerMessage(
+                CommitMessage::parse("test: complete provider fixture").unwrap()
+            ),
         )
         .await
         .unwrap()
@@ -335,7 +337,9 @@ async fn workspace_lease_release_flips_row_and_persists_event() {
             harness.repo.as_ref(),
             &harness.events,
             &card_id,
-            ReleaseDelivery::Commit(AttemptOutcome::Completed),
+            ReleaseDelivery::CommitWorkerMessage(
+                CommitMessage::parse("test: complete provider fixture").unwrap()
+            ),
         )
         .await
         .unwrap()
@@ -365,7 +369,9 @@ async fn workspace_lease_release_flips_row_and_persists_event() {
             harness.repo.as_ref(),
             &harness.events,
             &card_id,
-            ReleaseDelivery::Commit(AttemptOutcome::Completed),
+            ReleaseDelivery::CommitWorkerMessage(
+                CommitMessage::parse("test: complete provider fixture").unwrap()
+            ),
         )
         .await
         .unwrap(),
@@ -543,7 +549,9 @@ async fn codex_spawn_refuses_a_checkout_that_moved_after_prepare() {
         harness.repo.as_ref(),
         &harness.events,
         &card_id,
-        ReleaseDelivery::Commit(AttemptOutcome::Completed),
+        ReleaseDelivery::CommitWorkerMessage(
+            CommitMessage::parse("test: complete provider fixture").unwrap(),
+        ),
     )
     .await
     .unwrap();

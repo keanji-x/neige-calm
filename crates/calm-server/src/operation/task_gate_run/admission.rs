@@ -7,7 +7,7 @@ use calm_types::task_execution::TaskAccess;
 
 use super::{GATE_RUNS_PER_ATTEMPT, TASK_GATE_RUN_KIND, TaskGateRunPayload, gate_run_key};
 use crate::error::{CalmError, Result};
-use crate::git_candidate::commit_message::CommitMessage;
+use crate::git_candidate::commit_message::{CommitMessage, attempt_commit_message_tx};
 use crate::model::new_id;
 use crate::operation::gate_lifecycle::GateSpec;
 use crate::operation::gate_ops::{
@@ -81,7 +81,7 @@ pub(super) async fn run_target_tx(
 }
 
 /// What the admission decided: a new run whose op row it inserted, or the unfinished run the call
-/// joins (its own `commit_message` is dropped: that run's checkpoint used the first call's).
+/// joins (an explicit message must match the running checkpoint's message).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Admitted {
     New { key: String, run: i64, used: i64 },
@@ -102,9 +102,19 @@ pub(crate) async fn admit_run_tx(
     crate::operation::refuse_if_context_stale(tx, Some(attempt_id)).await?;
     let ops = gate_ops_of_attempt_tx(tx, attempt_id).await?;
     let used = ops.iter().filter(|op| op.kind == GateOpKind::Run).count() as i64;
+    let inherited = attempt_commit_message_tx(tx, attempt_id).await?;
     match classify_gate_ops(&ops) {
         AttemptGateOps::Clear => {}
         AttemptGateOps::Unfinished(op) if op.kind == GateOpKind::Run => {
+            if commit_message
+                .as_ref()
+                .is_some_and(|message| Some(message) != inherited.as_ref())
+            {
+                return Err(CalmError::Conflict(format!(
+                    "run `r{}` is running with a different commit_message; join with its message or omit it",
+                    op.number
+                )));
+            }
             return Ok(Admitted::Joined {
                 key: op.key,
                 run: op.number,
@@ -132,16 +142,16 @@ pub(crate) async fn admit_run_tx(
             "attempt used {used} of {GATE_RUNS_PER_ATTEMPT} gate runs; report done and the kernel's gate decides"
         )));
     }
+    let message = commit_message.or(inherited).ok_or_else(|| {
+        CalmError::BadRequest("neige_task_gate: the first run requires commit_message".into())
+    })?;
     let run = used + 1;
     let payload = TaskGateRunPayload {
         track_id: track_id.to_string(),
         task_id: attempt_id.to_string(),
         card_id: card_id.to_string(),
         run,
-        message: match commit_message {
-            Some(message) => message.as_str().to_string(),
-            None => format!("neige: attempt {attempt_id} gate run {run}"),
-        },
+        message: message.as_str().to_string(),
     };
     let key = gate_run_key(attempt_id, run);
     let payload = serde_json::to_value(&payload)?;

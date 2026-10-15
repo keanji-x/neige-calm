@@ -67,17 +67,15 @@ fn commit_message_parse_boundaries() {
     }
 }
 
-/// The text every row without a worker message commits with, byte for byte as before #2139: the
-/// 4140 rows rely on it.
+/// Kernel text stays byte-equal for non-completed outcomes; completion cannot use it.
 #[test]
 fn kernel_message_is_byte_equal_to_the_pre_2139_text() {
-    let row = delivery_row(None);
-    assert_eq!(row.commit_message, DeliveryMessage::Kernel);
+    let row = DeliveryRow {
+        commit_message: DeliveryMessage::Kernel,
+        ..delivery_row(None)
+    };
+    assert!(delivery_message(&row, AttemptOutcome::Completed).is_err());
     for (outcome, text) in [
-        (
-            AttemptOutcome::Completed,
-            "neige: attempt attempt-1 completed (delivery dlv1)",
-        ),
         (
             AttemptOutcome::Failed,
             "neige: attempt attempt-1 failed (delivery dlv1)",
@@ -95,7 +93,7 @@ fn kernel_message_is_byte_equal_to_the_pre_2139_text() {
             "neige: attempt attempt-1 interrupted (delivery dlv1)",
         ),
     ] {
-        assert_eq!(delivery_message(&row, outcome), text);
+        assert_eq!(delivery_message(&row, outcome).unwrap(), text);
     }
 }
 
@@ -286,7 +284,7 @@ fn migrator_through(version: i64) -> sqlx::migrate::Migrator {
 /// no forge Operation yet) reads back as `Kernel` after the upgrade and rebuilds the argv the
 /// pre-#2139 builder produced, byte for byte.
 #[tokio::test]
-async fn pre_2139_unsettled_row_rebuilds_identical_argv() {
+async fn pre_2139_completed_row_without_a_message_is_refused() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -332,16 +330,11 @@ async fn pre_2139_unsettled_row_rebuilds_identical_argv() {
     assert!(row.settlement.is_none());
 
     let branch = track_branch_for("track-4140").unwrap();
-    let payload = forge_payload_for(&row, &lease, &branch).unwrap();
-    assert_eq!(
-        payload.argv,
-        delivery_argv(
-            "neige: attempt attempt-4140 completed (delivery dlv-4140)",
-            &branch,
-            "refs/neige/candidates/track-4140/card-4140/dlv-4140",
-            &"b".repeat(40),
-            "/repo/.claude/worktrees/track-4140",
-            "/repo/.git",
-        )
+    let error = forge_payload_for(&row, &lease, &branch).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("completed attempt attempt-4140 has no commit_message"),
+        "{error}"
     );
 }

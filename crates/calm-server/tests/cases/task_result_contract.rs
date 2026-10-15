@@ -23,7 +23,7 @@ async fn done(
         &fx.boot,
         "neige_task_done",
         worker.clone(),
-        json!({"attempt_id": attempt, "result": result}),
+        json!({"attempt_id": attempt, "result": result, "commit_message": "test: complete result contract attempt"}),
     )
     .await
 }

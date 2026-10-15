@@ -150,6 +150,7 @@ impl CardDecisionSink {
                         }
                     }
                     worker_report::check_result_contract_tx(tx, &task_id, &report).await?;
+                    let delivery = report.release_delivery_tx(tx).await?;
                     let rows = if success {
                         match crate::db::sqlite::task_report_success_from_worker_tx(
                             tx,
@@ -196,7 +197,7 @@ impl CardDecisionSink {
                     let released = release_workspace_lease_for_card_tx(
                         tx,
                         &worker_card_id,
-                        report.release_delivery(),
+                        delivery,
                     )
                     .await?;
 
@@ -739,7 +740,7 @@ mod tests {
                 attempt_id: "worker-report-preserve".into(),
                 result: Value::Null,
                 artifacts: Vec::new(),
-                commit_message: DeliveryMessage::Kernel,
+                commit_message: Some(CommitMessage::parse("worker output").unwrap()),
             },
         )
         .await

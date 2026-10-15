@@ -137,7 +137,9 @@ async fn claude_worker_task_prompt_runs_its_gate_through_the_mcp_tool() {
         harness.repo.as_ref(),
         &harness.events,
         &card_id,
-        ReleaseDelivery::Commit(AttemptOutcome::Completed),
+        ReleaseDelivery::CommitWorkerMessage(
+            CommitMessage::parse("test: complete provider fixture").unwrap(),
+        ),
     )
     .await
     .unwrap();
@@ -292,7 +294,9 @@ async fn claude_worker_spawn_has_only_the_kernel_mcp_server_as_its_worker_card()
         harness.repo.as_ref(),
         &harness.events,
         &card_id,
-        ReleaseDelivery::Commit(AttemptOutcome::Completed),
+        ReleaseDelivery::CommitWorkerMessage(
+            CommitMessage::parse("test: complete provider fixture").unwrap(),
+        ),
     )
     .await
     .unwrap();
@@ -448,7 +452,9 @@ async fn release(harness: &ClaudeWorkerHarness, card_id: &str) {
         harness.repo.as_ref(),
         &harness.events,
         card_id,
-        ReleaseDelivery::Commit(AttemptOutcome::Completed),
+        ReleaseDelivery::CommitWorkerMessage(
+            CommitMessage::parse("test: complete provider fixture").unwrap(),
+        ),
     )
     .await
     .unwrap();

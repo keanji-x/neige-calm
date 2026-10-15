@@ -1,7 +1,7 @@
 //! Worker outcome tools (`neige_task_done`, `neige_task_fail`). Every emitted event's scope is
 //! anchored on the caller's card.
 
-use crate::decision_sink::{CardDecisionSink, CommitMessage, DeliveryMessage, WorkerTaskReport};
+use crate::decision_sink::{CardDecisionSink, CommitMessage, WorkerTaskReport};
 use crate::error::CalmError;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
@@ -66,7 +66,8 @@ async fn task_done(
     args: Value,
 ) -> Result<Value, RpcError> {
     let attempt_id = required_attempt_id(&args, TOOL_TASK_DONE)?;
-    let commit_message = commit_message_arg(&args)?;
+    let commit_message = CommitMessage::from_tool_arg(&args)
+        .map_err(|error| RpcError::invalid_params(format!("{TOOL_TASK_DONE}: {error}")))?;
     let result = args.get("result").cloned().unwrap_or(Value::Null);
     let artifacts_val = args
         .get("artifacts")
@@ -86,21 +87,6 @@ async fn task_done(
     commit_worker_task_report_for_identity(&ctx, &identity, report).await?;
     submit_reported_delivery(&ctx, &identity, &attempt_id).await;
     Ok(json!({ "status": "report_received" }))
-}
-
-/// `commit_message` (#2139), parsed before the report transaction: an invalid one refuses the
-/// whole report and writes nothing, so the still-running attempt can report again. Absent means
-/// the kernel's own text.
-fn commit_message_arg(args: &Value) -> Result<DeliveryMessage, RpcError> {
-    match args.get("commit_message") {
-        None => Ok(DeliveryMessage::Kernel),
-        Some(Value::String(text)) => CommitMessage::parse(text)
-            .map(DeliveryMessage::Worker)
-            .map_err(|error| RpcError::invalid_params(format!("neige_task_done: {error}"))),
-        Some(_) => Err(RpcError::invalid_params(
-            "neige_task_done: commit_message must be a string",
-        )),
-    }
 }
 
 /// The report transaction wrote the attempt's first delivery row (#1830 S2 D7, a kernel-delivery

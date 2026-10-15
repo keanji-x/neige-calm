@@ -235,3 +235,29 @@ async fn failed_attempt_commits_with_the_kernel_message() {
         )
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn done_without_any_message_on_a_kernel_lease_is_refused() {
+    let fx = fixture().await;
+    let worker = fx.codex_worker();
+    let _lease = fx.kernel_lease(&worker.card_id).await;
+    let task = fx
+        .running_task("missing", "codex", &worker.card_id, json!({}))
+        .await;
+    let err = call_tool(
+        &fx.boot,
+        "neige_task_done",
+        worker,
+        json!({"attempt_id":task.id}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert!(err.message.contains("commit_message"), "{err:?}");
+    assert_eq!(
+        current(&fx.boot, "missing").await.status,
+        TaskStatus::Running
+    );
+    assert_eq!(fx.delivery_count(&task.id).await, 0);
+    assert_eq!(task_completed_events(&fx, &task.id).await, 0);
+}

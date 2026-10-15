@@ -162,7 +162,8 @@ async fn settled(
     if let Some(change) = change {
         std::fs::write(lease.path.join(format!("{key}.txt")), change).unwrap();
     }
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     let row = settle_by_hand(fx, &task.id).await;
     assert_eq!(row.settlement.as_deref(), Some("candidate"), "{row:?}");
     let candidate = fx.candidate_row(&task.id).await.expect("candidate");
@@ -219,7 +220,8 @@ async fn regate_reruns_gate_on_same_candidate() {
         .running_task("rerun", "codex", &worker.card_id, gate_on(&green, None))
         .await;
     std::fs::write(lease.path.join("worker.txt"), "rerun\n").unwrap();
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     wait_gate_result(&fx, &task.id).await;
     let first = verdicts(&fx, &task.id).await;
     assert_eq!(attempts(&first), vec![1]);

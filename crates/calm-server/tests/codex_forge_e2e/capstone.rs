@@ -55,7 +55,7 @@ pub(super) fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str
          Inspect, implement, publish, review, merge, close the issue, then close the track.\n\
          Environment: every gh.* tool's repo argument is exactly {repo_gitdir}. Embed that literal in worker goals. Base branch main has SHA {base_sha}.\n\
          Copy the bound template gate's exact cmd to every task; no no_gate_reason. Declare tasks in dependency order: inspect-issue, then implement-change.\n\
-         implement-change edits src/lib.rs as the issue requires, calls the git_commit MCP tool with a message and nonempty idem, and reports its branch with neige_task_done. Workers must not push or open a PR and must use MCP for git.\n\
+         implement-change edits src/lib.rs as the issue requires, calls the git_commit MCP tool with a message and nonempty idem, and reports its branch with neige_task_done, supplying commit_message with the full repository-required message. Workers must not push or open a PR and must use MCP for git.\n\
          After implement-change is Done and its delivery settled, YOU the Planner must call plugin_gitforge_publish with title, body and a stable idempotency_key. Use the returned pr_number, head_sha and branch. Call gh_pr_checks for that PR. Do not create an open-pr worker task.\n\
          Then declare review-pr with literal repo, pr_number, base_sha and head_sha: it must call gh_pr_diff, review against the issue, and report approved or changes_requested.\n\
          Declare merge only after the review task exists and merge only after approval and successful checks. Its gh_pr_merge must pass expected_head_sha equal to the reviewed head. It then calls gh_issue_close for #{issue_number} at the same repo.\n\

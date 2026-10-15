@@ -199,7 +199,12 @@ async fn regate_refuses_rows_that_cannot_rerun() {
         )
         .await;
     std::fs::write(lease.path.join("undelivered.txt"), "x\n").unwrap();
-    fx.complete(&worker, &undelivered.id).await;
+    fx.complete(
+        &worker,
+        &undelivered.id,
+        Some("test: complete worker attempt"),
+    )
+    .await;
     settle_by_hand(&fx, &undelivered.id).await;
     assert_eq!(
         current(&fx.boot, "undelivered")
@@ -269,7 +274,8 @@ async fn regate_refuses_rows_that_cannot_rerun() {
         .running_task("later", "codex", &worker.card_id, json!({}))
         .await;
     std::fs::write(lease.path.join("later.txt"), "later\n").unwrap();
-    fx.complete(&worker, &later.id).await;
+    fx.complete(&worker, &later.id, Some("test: complete worker attempt"))
+        .await;
     settle_by_hand(&fx, &later.id).await;
     refused(
         &fx,

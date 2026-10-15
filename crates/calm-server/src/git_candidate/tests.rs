@@ -186,7 +186,7 @@ impl ScriptRepo {
 
     fn argv(&self) -> Vec<String> {
         delivery_argv(
-            &delivery_message(&delivery_row(None), AttemptOutcome::Completed),
+            &delivery_message(&delivery_row(None), AttemptOutcome::Completed).unwrap(),
             &self.branch,
             &self.ref_name,
             &self.base_sha,
@@ -1126,7 +1126,14 @@ fn delivery_argv_joins_provenance_and_delivery_scripts() {
         ]
     );
     assert_eq!(
-        delivery_message(&delivery_row(None), AttemptOutcome::Failed),
+        delivery_message(
+            &DeliveryRow {
+                commit_message: DeliveryMessage::Kernel,
+                ..delivery_row(None)
+            },
+            AttemptOutcome::Failed
+        )
+        .unwrap(),
         format!("neige: attempt attempt-1 failed (delivery {DELIVERY})")
     );
     assert_eq!(
@@ -1254,8 +1261,11 @@ async fn count(repo: &SqlxRepo, sql: &str) -> i64 {
 
 impl DbFixture {
     async fn insert_delivery(&self, attempt: &str) -> DeliveryRow {
-        self.insert_delivery_with(attempt, DeliveryMessage::Kernel)
-            .await
+        self.insert_delivery_with(
+            attempt,
+            DeliveryMessage::Worker(CommitMessage::parse("test: completed delivery").unwrap()),
+        )
+        .await
     }
 
     /// A completed attempt's first row, committing with `message`.
@@ -1938,7 +1948,7 @@ async fn delivery_payload_semantic_hash_is_stable() {
     assert_eq!(
         first.argv,
         delivery_argv(
-            &delivery_message(&row, AttemptOutcome::Completed),
+            &delivery_message(&row, AttemptOutcome::Completed).unwrap(),
             &branch,
             &ref_name,
             &base.base_sha,
@@ -2017,7 +2027,7 @@ async fn delivery_payload_semantic_hash_is_stable() {
     assert_eq!(
         first.argv,
         delivery_argv(
-            &delivery_message(&messaged, AttemptOutcome::Completed),
+            &delivery_message(&messaged, AttemptOutcome::Completed).unwrap(),
             &branch,
             &ref_name,
             &base.base_sha,
@@ -2253,7 +2263,9 @@ fn delivery_row(settlement: Option<DeliverySettled>) -> DeliveryRow {
         operation_key: "op-key".into(),
         forge_idempotency_key: "idem".into(),
         outcome: Some(AttemptOutcome::Completed),
-        commit_message: DeliveryMessage::Kernel,
+        commit_message: DeliveryMessage::Worker(
+            CommitMessage::parse("test: completed delivery").unwrap(),
+        ),
         created_at_ms: 1,
         settlement,
     }

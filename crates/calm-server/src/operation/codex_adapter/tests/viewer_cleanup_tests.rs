@@ -1,5 +1,5 @@
 use super::*;
-use crate::decision_sink::{CardDecisionSink, DeliveryMessage, WorkerTaskReport};
+use crate::decision_sink::{CardDecisionSink, WorkerTaskReport};
 use crate::mcp_server::{AppContext, ToolCallIdentity};
 use crate::operation::{OperationCompletionBus, OperationRuntime, Phase};
 use crate::state::{DaemonClient, WriteContext};
@@ -510,7 +510,10 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: Opt
             attempt_id: task.id.clone(),
             result: json!({"notes":"completed-notes.txt"}),
             artifacts: vec![],
-            commit_message: DeliveryMessage::Kernel,
+            commit_message: Some(
+                crate::decision_sink::CommitMessage::parse("test: preserve completed worker notes")
+                    .unwrap(),
+            ),
         }
     };
     CardDecisionSink::from_app_context(&context)

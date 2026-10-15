@@ -14,7 +14,7 @@ use calm_server::operation::{Operation, Phase};
 /// Report `a` done and settle its delivery: the forge Operation to terminal, then the settlement
 /// step the stopped listener would have run.
 async fn done_and_settled(fx: &Fx, a: &Attempt) {
-    fx.complete(&a.worker, &a.task.id).await;
+    fx.complete(&a.worker, &a.task.id, None).await;
     fx.wait_forge_op(&a.task.id).await;
     let row = fx.delivery_row(&a.task.id).await.expect("delivery row");
     fx.scheduler()
@@ -154,8 +154,15 @@ async fn a_red_last_run_is_not_reused() {
     );
     let a = running(&fx, "u3", json!([{"name": "count", "cmd": count}])).await;
     // A clean tree: both runs are on the lease base, the commit the delivery then pins.
-    let first = passed(&gate_run(&fx, &a, None).await.unwrap()).to_string();
-    let second = gate_run(&fx, &a, None).await.unwrap();
+    let first = passed(
+        &gate_run(&fx, &a, Some("test: checkpoint worker attempt"))
+            .await
+            .unwrap(),
+    )
+    .to_string();
+    let second = gate_run(&fx, &a, Some("test: checkpoint worker attempt"))
+        .await
+        .unwrap();
     assert_eq!(second["status_detail"], "gate-red", "{second}");
     assert_eq!(second["commit"], json!(first), "{second}");
     let entry = fx.plan_entry("u3").await;

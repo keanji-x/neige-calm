@@ -22,7 +22,9 @@ use crate::db::sqlite::{
 use crate::db::{RepoEventWrite, write_in_tx_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope};
-use crate::git_candidate::commit_message::{CommitMessage, DeliveryMessage};
+use crate::git_candidate::commit_message::{
+    CommitMessage, DeliveryMessage, attempt_commit_message_tx,
+};
 use crate::git_candidate::delivery::{
     AttemptOutcome, delivery_latest_for_attempt_tx, insert_initial_delivery_tx,
 };
@@ -35,7 +37,8 @@ use crate::proc_identity::read_boot_id;
 /// stuck owner only flip the row: `super::release_workspace_lease_tx`.)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ReleaseDelivery {
-    /// The attempt ended this way: commit it with the kernel's text.
+    /// Commit the attempt with this outcome. Completion inherits its durable message and
+    /// refuses without one; other outcomes use the kernel's text.
     Commit(AttemptOutcome),
     /// The attempt completed and its worker supplied the commit message (#2139): the only way a
     /// worker message reaches a delivery row.
@@ -146,7 +149,7 @@ async fn release_lease_tx(
     {
         return Ok(events);
     }
-    let (outcome, message) = match delivery {
+    let (outcome, mut message) = match delivery {
         ReleaseDelivery::Commit(outcome) => (outcome, DeliveryMessage::Kernel),
         ReleaseDelivery::CommitWorkerMessage(message) => {
             (AttemptOutcome::Completed, DeliveryMessage::Worker(message))
@@ -156,6 +159,17 @@ async fn release_lease_tx(
             DeliveryMessage::Kernel,
         ),
     };
+    if outcome == AttemptOutcome::Completed && message == DeliveryMessage::Kernel {
+        message = DeliveryMessage::Worker(
+            attempt_commit_message_tx(tx, &attempt_id)
+                .await?
+                .ok_or_else(|| {
+                    CalmError::BadRequest(format!(
+                        "completed attempt {attempt_id} requires commit_message"
+                    ))
+                })?,
+        );
+    }
     insert_initial_delivery_tx(tx, &attempt_id, lease, outcome, message, now_ms()).await?;
     Ok(events)
 }

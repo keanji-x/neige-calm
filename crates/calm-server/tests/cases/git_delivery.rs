@@ -17,9 +17,7 @@ use crate::task_recovery::{current, declare};
 use calm_server::db::sqlite::{
     card_create_with_id_tx, session_set_handle_state_tx, session_start_runtime_tx,
 };
-use calm_server::decision_sink::{
-    CardDecisionSink, CommitMessage, DeliveryMessage, WorkerTaskReport,
-};
+use calm_server::decision_sink::{CardDecisionSink, CommitMessage, WorkerTaskReport};
 use calm_server::dispatcher::{Dispatcher, TaskFailurePushTestHook};
 use calm_server::error::CalmError;
 use calm_server::event::{Event, EventBus};
@@ -512,21 +510,30 @@ impl Fx {
         format!("neige/track-{}", self.track())
     }
 
-    pub(super) async fn complete(&self, worker: &ToolCallIdentity, task_id: &str) {
-        call_tool(
-            &self.boot,
-            "neige_task_done",
-            worker.clone(),
-            json!({"attempt_id": task_id, "result": {"ok": true}}),
-        )
-        .await
-        .unwrap();
+    pub(super) async fn complete(
+        &self,
+        worker: &ToolCallIdentity,
+        task_id: &str,
+        message: Option<&str>,
+    ) {
+        let mut args = json!({"attempt_id": task_id, "result": {"ok": true}});
+        if let Some(message) = message {
+            args["commit_message"] = json!(message);
+        }
+        call_tool(&self.boot, "neige_task_done", worker.clone(), args)
+            .await
+            .unwrap();
     }
 
     /// The report transaction alone — no forge submission — the state a kernel that died right
     /// after `neige_task_done`'s transaction leaves behind (no crash seam: 5.1.16).
-    pub(super) async fn report_only(&self, worker: &ToolCallIdentity, task_id: &str) {
-        self.report_only_as(worker, task_id, DeliveryMessage::Kernel)
+    pub(super) async fn report_only(
+        &self,
+        worker: &ToolCallIdentity,
+        task_id: &str,
+        message: &str,
+    ) {
+        self.report_only_with_message(worker, task_id, message)
             .await;
     }
 
@@ -538,15 +545,14 @@ impl Fx {
         message: &str,
     ) {
         let message = CommitMessage::parse(message).unwrap();
-        self.report_only_as(worker, task_id, DeliveryMessage::Worker(message))
-            .await;
+        self.report_only_as(worker, task_id, Some(message)).await;
     }
 
     async fn report_only_as(
         &self,
         worker: &ToolCallIdentity,
         task_id: &str,
-        commit_message: DeliveryMessage,
+        commit_message: Option<CommitMessage>,
     ) {
         CardDecisionSink::from_app_context(&self.boot.ctx)
             .commit_worker_task_report(
@@ -792,7 +798,8 @@ impl Fx {
             .running_task(key, "codex", &worker.card_id, extra)
             .await;
         std::fs::write(lease.path.join("worker.txt"), "rejected\n").unwrap();
-        self.complete(&worker, &task.id).await;
+        self.complete(&worker, &task.id, Some("test: complete worker attempt"))
+            .await;
         (worker, task, lease)
     }
 
@@ -1105,7 +1112,8 @@ async fn claude_worker_completion_yields_kernel_candidate() {
         .await;
     std::fs::write(lease.path.join("worker.txt"), "delivered\n").unwrap();
 
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     let row = fx.delivery_row(&task.id).await.expect("delivery row");
     assert_eq!(row.ordinal, 1);
     assert!(
@@ -1207,7 +1215,8 @@ async fn unchanged_worker_completion_settles_no_change() {
         .running_task("unchanged", "claude", &worker.card_id, json!({}))
         .await;
 
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     let settled = fx.wait_settled(&task.id).await;
 
     let (result, _) = settled_result(&settled);
@@ -1238,11 +1247,14 @@ async fn duplicate_completion_has_one_delivery() {
         .await;
     std::fs::write(lease.path.join("worker.txt"), "once\n").unwrap();
 
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     // The repeated report is admitted as an idempotent success and writes nothing.
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     fx.wait_settled(&task.id).await;
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
 
     assert_eq!(fx.delivery_count(&task.id).await, 1);
     assert_eq!(fx.forge_op_count().await, 1);
@@ -1272,7 +1284,8 @@ async fn candidate_row_is_minted_from_operation_result_not_events() {
         .running_task("from-result", "codex", &worker.card_id, json!({}))
         .await;
     std::fs::write(lease.path.join("worker.txt"), "result\n").unwrap();
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     let op = fx.wait_forge_op(&task.id).await;
     assert!(
         matches!(op.phase, calm_server::operation::Phase::Succeeded),
@@ -1368,7 +1381,8 @@ async fn crash_window_without_result_file_reads_ref_not_head() {
         .running_task("crash-ref", "codex", &worker.card_id, json!({}))
         .await;
     std::fs::write(lease.path.join("worker.txt"), "c1\n").unwrap();
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     park_without_result_file(&fx, &task.id).await;
     let row = fx.delivery_row(&task.id).await.unwrap();
     let ref_name = format!(
@@ -1405,7 +1419,8 @@ pub(super) async fn crashed_before_ref(
         .running_task("crash-noref", "codex", &worker.card_id, json!({}))
         .await;
     std::fs::write(lease.path.join("worker.txt"), "c1\n").unwrap();
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     park_without_result_file(fx, &task.id).await;
     let row = fx.delivery_row(&task.id).await.unwrap();
     let ref_name = format!(
@@ -1581,7 +1596,8 @@ async fn delivery_row_survives_crash_before_submission() {
         .await;
     std::fs::write(lease.path.join("worker.txt"), "handoff\n").unwrap();
 
-    fx.report_only(&worker, &task.id).await;
+    fx.report_only(&worker, &task.id, "test: complete worker attempt")
+        .await;
     let row = fx
         .delivery_row(&task.id)
         .await
@@ -1615,7 +1631,8 @@ async fn resubmitted_delivery_reuses_persisted_operation_key() {
         .running_task("keyed", "codex", &worker.card_id, json!({}))
         .await;
     std::fs::write(lease.path.join("worker.txt"), "keyed\n").unwrap();
-    fx.report_only(&worker, &task.id).await;
+    fx.report_only(&worker, &task.id, "test: complete worker attempt")
+        .await;
     let row = fx.delivery_row(&task.id).await.unwrap();
 
     fx.reboot().await;
@@ -1633,7 +1650,8 @@ async fn resubmitted_delivery_reuses_persisted_operation_key() {
     );
     assert_eq!(idem, row.forge_idempotency_key);
     // The report handler's own submission, arriving later, dedups against the same key.
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     assert_eq!(fx.forge_op_count().await, 1);
     assert_eq!(fx.settled_events_for(&task.id).await.len(), 1);
 }
@@ -1648,7 +1666,8 @@ async fn ungated_delivery_crashed_before_submission_settles_on_boot() {
         .running_task("boot-settle", "codex", &worker.card_id, json!({}))
         .await;
     std::fs::write(lease.path.join("worker.txt"), "boot\n").unwrap();
-    fx.report_only(&worker, &task.id).await;
+    fx.report_only(&worker, &task.id, "test: complete worker attempt")
+        .await;
     assert_eq!(
         current(&fx.boot, "boot-settle").await.status,
         TaskStatus::Done
@@ -1727,7 +1746,8 @@ async fn settlement_uses_lease_common_dir_when_track_cwd_moved() {
         .running_task("moved-cwd", "codex", &worker.card_id, json!({}))
         .await;
     std::fs::write(lease.path.join("worker.txt"), "moved\n").unwrap();
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     fx.wait_forge_op(&task.id).await;
     let row = fx.delivery_row(&task.id).await.unwrap();
     let ref_name = format!(
@@ -1776,7 +1796,8 @@ async fn linked_worktree_track_delivers() {
         .await;
     std::fs::write(lease.path.join("worker.txt"), "linked\n").unwrap();
 
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     let settled = fx.wait_settled(&task.id).await;
 
     let (result, _) = settled_result(&settled);
@@ -1816,7 +1837,8 @@ async fn moved_worktree_behind_symlink_is_provenance_mismatch() {
     std::os::unix::fs::symlink(&elsewhere, &lease.path).unwrap();
     std::fs::write(elsewhere.join("worker.txt"), "moved\n").unwrap();
 
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     let settled = fx.wait_settled(&task.id).await;
 
     let (result, _) = settled_result(&settled);
@@ -1858,7 +1880,8 @@ async fn delivery_refuses_switched_branch_as_provenance_mismatch() {
         std::fs::write(lease.path.join("worker.txt"), "switched\n").unwrap();
         let head_before = git(&lease.path, &["rev-parse", "HEAD"]);
 
-        fx.complete(&worker, &task.id).await;
+        fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+            .await;
         let settled = fx.wait_settled(&task.id).await;
 
         let (result, _) = settled_result(&settled);
@@ -1900,7 +1923,8 @@ async fn delivery_refuses_switched_branch_as_provenance_mismatch() {
         .running_task("on-branch", "codex", &worker.card_id, json!({}))
         .await;
     std::fs::write(lease.path.join("worker.txt"), "on branch\n").unwrap();
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     let settled = fx.wait_settled(&task.id).await;
     candidate_of(settled_result(&settled).0);
 }
@@ -1987,7 +2011,8 @@ async fn delivery_refuses_in_progress_merge() {
             "{name}: {pseudo_ref} present before the report"
         );
 
-        fx.complete(&worker, &task.id).await;
+        fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+            .await;
         let settled = fx.wait_settled(&task.id).await;
 
         let (result, _) = settled_result(&settled);
@@ -2083,7 +2108,8 @@ async fn rebased_lease_tip_records_base_not_ancestor() {
         .await;
     std::fs::write(lease.path.join("worker.txt"), "rebased\n").unwrap();
 
-    fx.complete(&rebased, &task.id).await;
+    fx.complete(&rebased, &task.id, Some("test: complete worker attempt"))
+        .await;
     let settled = fx.wait_settled(&task.id).await;
 
     let (result, _) = settled_result(&settled);
@@ -2110,7 +2136,12 @@ async fn rebased_lease_tip_records_base_not_ancestor() {
         .running_task("plain", "codex", &plain.card_id, json!({}))
         .await;
     std::fs::write(plain_lease.path.join("worker.txt"), "plain\n").unwrap();
-    fx.complete(&plain, &plain_task.id).await;
+    fx.complete(
+        &plain,
+        &plain_task.id,
+        Some("test: complete worker attempt"),
+    )
+    .await;
     let settled = fx.wait_settled(&plain_task.id).await;
     let (_, _, _, base_is_ancestor) = candidate_of(settled_result(&settled).0);
     assert!(base_is_ancestor);
@@ -2157,7 +2188,8 @@ async fn observation_failure_settles_as_commit_failed() {
     // The forge wrapper inherits this process's PATH; one process per test under nextest.
     unsafe { std::env::set_var("PATH", std::env::join_paths(dirs).unwrap()) };
 
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     let settled = fx.wait_settled(&task.id).await;
     unsafe { std::env::set_var("PATH", original_path) };
 
@@ -2202,7 +2234,8 @@ async fn workspace_missing_delivery_is_not_retryable() {
         .running_task("gone", "codex", &worker.card_id, json!({}))
         .await;
     std::fs::write(lease.path.join("worker.txt"), "gone\n").unwrap();
-    fx.report_only(&worker, &task.id).await;
+    fx.report_only(&worker, &task.id, "test: complete worker attempt")
+        .await;
     let planner = fx.planner().await;
     // The lease directory is removed before the delivery ever runs.
     std::fs::remove_dir_all(&lease.path).unwrap();
@@ -2246,7 +2279,8 @@ async fn ungated_candidate_settlement_wakes_planner_once() {
         .await;
     std::fs::write(lease.path.join("worker.txt"), "wake\n").unwrap();
 
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     let settled = fx.wait_settled(&task.id).await;
     assert_eq!(
         settled_result(&settled).1,
@@ -2341,7 +2375,8 @@ async fn candidate_settlement_wakes_when_gate_already_flipped() {
     assert!(task.gate_json.is_some());
     std::fs::write(lease.path.join("worker.txt"), "gated\n").unwrap();
 
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     assert_eq!(
         current(&fx.boot, "gate-first").await.status,
         TaskStatus::Verifying
@@ -2430,7 +2465,8 @@ async fn settlement_wake_is_replay_stable() {
     std::fs::write(lease.path.join("worker.txt"), "deferred\n").unwrap();
 
     // The candidate settles while the row is `verifying`: deferred to the gate, zero turns.
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     let settled = fx.wait_settled(&task.id).await;
     let (result, wake_reason) = settled_result(&settled);
     candidate_of(result);
@@ -2562,7 +2598,8 @@ async fn slice1_lease_completing_after_slice2_stays_legacy() {
             .await;
         std::fs::write(lease.path.join("worker.txt"), "legacy\n").unwrap();
 
-        fx.complete(&worker, &task.id).await;
+        fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+            .await;
 
         assert_eq!(
             fx.delivery_count(&task.id).await,
@@ -2623,7 +2660,8 @@ async fn slice1_lease_completing_after_slice2_stays_legacy() {
         )
         .await;
     std::fs::write(lease.path.join("worker.txt"), "legacy\n").unwrap();
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     let gate = wait_gate_result(&fx, &task.id).await;
     let Event::TaskGateResult {
         passed,
@@ -2721,7 +2759,8 @@ async fn candidate_view_is_total_over_task_status() {
     let task = fx
         .running_task("done", "codex", &done.card_id, json!({}))
         .await;
-    fx.report_only(&done, &task.id).await;
+    fx.report_only(&done, &task.id, "test: complete worker attempt")
+        .await;
     assert_eq!(fx.delivery_count(&task.id).await, 1);
     sqlx::query("DELETE FROM task_git_deliveries WHERE producer_attempt_id = ?1")
         .bind(&task.id)
@@ -2842,7 +2881,8 @@ async fn failed_delivery_fails_the_gated_task() {
         .await;
     let task_failed_handled = fx.arm_task_failed_barrier(&task.id);
     std::fs::write(lease.path.join("worker.txt"), "rejected\n").unwrap();
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
 
     let settled = fx.wait_settled(&task.id).await;
     let (code, _, _) = failure_of(settled_result(&settled).0);
@@ -2946,7 +2986,12 @@ async fn track_and_area_delete_after_a_failed_delivery() {
             .running_task("delivers", "codex", &other.card_id, json!({}))
             .await;
         std::fs::write(other_lease.path.join("worker.txt"), "ok\n").unwrap();
-        fx.complete(&other, &other_task.id).await;
+        fx.complete(
+            &other,
+            &other_task.id,
+            Some("test: complete worker attempt"),
+        )
+        .await;
         candidate_of(settled_result(&fx.wait_settled(&other_task.id).await).0);
         assert_eq!(candidate_refs(&lease.git_common_dir, fx.track()).len(), 1);
         for table in ["task_git_deliveries", "task_candidates"] {
@@ -3007,7 +3052,8 @@ async fn candidate_refs_are_deleted_with_the_track() {
         .running_task("moved-then-deleted", "codex", &worker.card_id, json!({}))
         .await;
     std::fs::write(lease.path.join("worker.txt"), "moved\n").unwrap();
-    fx.complete(&worker, &task.id).await;
+    fx.complete(&worker, &task.id, Some("test: complete worker attempt"))
+        .await;
     candidate_of(settled_result(&fx.wait_settled(&task.id).await).0);
     let candidate = fx.candidate_row(&task.id).await.unwrap();
     assert_eq!(
