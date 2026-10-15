@@ -142,6 +142,30 @@ it.each([1280, 390])('answers custom questions with Enter inside the real conver
   await expect.element(message).toHaveTextContent('Keep this message draft');
 });
 
+it('answers with Enter while keeping an image-only message draft unsent', async () => {
+  await page.viewport(1280, 844);
+  const { requests } = setup('light');
+  await page.getByRole('button', { name: /Conversation Planner/ }).click();
+  const picker = document.querySelector<HTMLInputElement>('[data-nc-attach] input[type="file"]')!;
+  await userEvent.upload(picker, new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'shot.png', { type: 'image/png' }));
+  const image = page.getByRole('button', { name: 'Remove Image 1', exact: true });
+  await expect.element(image).toBeVisible();
+  const ask = page.getByRole('group', { name: 'The Planner asks' });
+  const branch = ask.getByRole('textbox', { name: 'Which branch should I release from?' });
+  await branch.fill('hotfix');
+  await branch.click();
+  await userEvent.keyboard('{Enter}');
+  const notes = ask.getByRole('textbox', { name: 'Anything to tell the reviewers?' });
+  await expect.element(notes).toHaveFocus();
+  await notes.fill('Wait for CI');
+  await userEvent.keyboard('{Enter}');
+  await expect.poll(() => requests.find(request => request.path.endsWith('/answer'))?.body).toEqual({
+    answers: [{ text: 'hotfix' }, { text: 'Wait for CI' }],
+  });
+  expect(requests.filter(request => request.path.endsWith('/planner/input'))).toHaveLength(0);
+  await expect.element(image).toBeVisible();
+});
+
 it('keeps attachments in the composer with questions in their own Astryx drawer', async () => {
   await page.viewport(1280, 800);
   setup('light');

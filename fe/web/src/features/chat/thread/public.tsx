@@ -523,6 +523,7 @@ export function ChatComposer({
   sideConversationRef.current = onSideConversation;
 
   const rootRef = useRef<HTMLDivElement>(null);
+  const messageInputRef = useRef<HTMLDivElement>(null);
   const [sendCount, setSendCount] = useState(0);
   const wantsFieldFocus = useRef(focusOnMount);
   /** The element this component last put focus on; `null` while no restore is in flight. */
@@ -643,9 +644,9 @@ export function ChatComposer({
            submission. Keep unsent words while disabled, and
            let IME Enter accept its candidate without submitting. */
         if (event.key !== 'Enter' && event.key !== 'Tab' && event.key !== 'Escape') return;
-        /* Only Enter pressed in the field is a send: this handler captures on the root, and the `drawer` slot puts buttons under it. */
+        /* The drawer owns its inputs and keys; only the message input gets composer shortcuts. */
         const field = event.target instanceof Element ? event.target.closest('[contenteditable], textarea, input') : null;
-        if (field === null) return;
+        if (field === null || !messageInputRef.current?.contains(field)) return;
         if (event.key === 'Escape') {
           /* Esc leaves edit mode, unless it is closing an open `/` or `@` menu; handled, so the drawer stays open. */
           if (editing === undefined || field.getAttribute('aria-expanded') === 'true' || event.nativeEvent.isComposing) return;
@@ -712,7 +713,7 @@ export function ChatComposer({
             <>{sendAdornment}{sendDoor}</>
           )}
           input={(
-            <div className={layout === 'mobile' ? mobileStyles.input : undefined}><ChatComposerInput
+            <div ref={messageInputRef} className={layout === 'mobile' ? mobileStyles.input : undefined}><ChatComposerInput
               /* Longer drafts scroll inside the editor, leaving room for a shared pane's recovery strip and Send. */
               maxRows={3}
               onFiles={disabled ? undefined : onFiles}

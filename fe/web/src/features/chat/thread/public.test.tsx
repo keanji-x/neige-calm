@@ -1299,6 +1299,18 @@ describe('ChatComposer', () => {
     expect(pressed).toHaveBeenCalledTimes(1);
   });
 
+  it.each([false, true])('leaves drawer input Enter to its owner when the composer is disabled=%s', disabled => {
+    const onSend = vi.fn();
+    const pressed = vi.fn();
+    render(<ChatComposer onSend={onSend} allowEmptyText disabled={disabled}
+      drawer={<input aria-label="Drawer answer" onKeyDown={pressed} />} />);
+    const input = screen.getByRole('textbox', { name: 'Drawer answer' });
+    input.focus();
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(pressed).toHaveBeenCalledOnce();
+  });
+
   it('sends with Enter while a turn is running', async () => {
     const onSend = vi.fn();
     render(<ChatComposer onSend={onSend} onStop={vi.fn()} />);
