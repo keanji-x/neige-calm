@@ -111,7 +111,7 @@ export function ConversationArchiveAction({ conversation, onArchive, className }
   return <>
     <div className={className}>
       <DropdownMenu placement="below" alignment="end" button={{
-        label: `Conversation actions for ${conversationName(conversation)}`, icon: <Icon name="more" size="sm" />,
+        label: `Actions for conversation: ${conversationName(conversation)}`, icon: <Icon name="more" size="sm" />,
         isIconOnly: true, variant: 'ghost', size: 'sm', isDisabled: pending,
       }}>
         <DropdownMenuItem label={archived ? 'Restore conversation' : 'Archive conversation'} onClick={() => { void change(); }} />

@@ -4353,13 +4353,13 @@ it('archives an open Assistant without losing history, and restores it before se
   });
   fireEvent.click(await screen.findByRole('button', {name:'Conversation Archive this discussion'}));
   await screen.findByRole('combobox', {name:'Message'});
-  fireEvent.click(screen.getByRole('button', {name:'Conversation actions for Archive this discussion'}));
+  fireEvent.click(screen.getByRole('button', {name:'Actions for conversation: Archive this discussion'}));
   fireEvent.click(screen.getByRole('menuitem', {name:'Archive conversation'}));
   await screen.findByText('This conversation is archived. Restore it from Archived conversations to continue.');
   expect(screen.queryByRole('combobox', {name:'Message'})).toBeNull();
   expect(screen.queryByRole('button', {name:'Conversation Archive this discussion'})).toBeNull();
   fireEvent.click(screen.getByRole('button', {name:'Archived conversations'}));
-  fireEvent.click(await screen.findByRole('button', {name:'Conversation actions for Archive this discussion'}));
+  fireEvent.click(await screen.findByRole('button', {name:'Actions for conversation: Archive this discussion'}));
   fireEvent.click(screen.getByRole('menuitem', {name:'Restore conversation'}));
   await screen.findByRole('combobox', {name:'Message'});
   expect(client.getQueryData<Row[]>(['track-conversations','w1'])?.[0].archivedAt).toBeNull();

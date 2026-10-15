@@ -178,7 +178,7 @@ it.each([1280, 390])('manually archives and restores a conversation without expo
   const fixture = renderAssistantProviderFixture({answers:[CLAUDE], existingProvider:'claude', mobile:width < 600});
   const history = async () => { if (width < 600) await page.getByRole('button',{name:'Open conversation history',exact:true}).click(); };
   await history();
-  await page.getByRole('button',{name:'Conversation actions for Saved Assistant'}).click();
+  await page.getByRole('button',{name:'Actions for conversation: Saved Assistant'}).click();
   await page.getByRole('menuitem',{name:'Archive conversation'}).click();
   await expect.element(page.getByRole('button',{name:'Archived conversations',exact:true})).toBeVisible();
   await page.getByRole('button',{name:'Archived conversations',exact:true}).click();

@@ -97,7 +97,7 @@ describe('manual conversation archives', () => {
     fireEvent.click(screen.getByRole('button', {name:'Archived conversations'}));
     expect(screen.getByRole('button', {name:'Conversation Saved'})).toBeTruthy();
     expect(screen.queryByRole('button', {name:'Conversation Active'})).toBeNull();
-    fireEvent.click(screen.getByRole('button', {name:'Conversation actions for Saved'}));
+    fireEvent.click(screen.getByRole('button', {name:'Actions for conversation: Saved'}));
     fireEvent.click(screen.getByRole('menuitem', {name:'Restore conversation'}));
     await waitFor(() => expect(changeArchive).toHaveBeenCalledWith('saved', false));
   });
@@ -106,8 +106,9 @@ describe('manual conversation archives', () => {
     const changeArchive = vi.fn().mockRejectedValue(new Error('Please wait for the reply to finish.'));
     render(<ChatList cards={{}} onOpen={vi.fn()} onArchive={changeArchive}
       conversations={[conversation({state:'idle'}), conversation({id:'worker', kind:'codex', title:'Worker', state:'idle'})]} />);
-    expect(screen.queryByRole('button', {name:'Conversation actions for Worker'})).toBeNull();
-    fireEvent.click(screen.getByRole('button', {name:'Conversation actions for Assistant'}));
+    expect(screen.getAllByRole('button', {name:/^Conversation /})).toHaveLength(2);
+    expect(screen.queryByRole('button', {name:'Actions for conversation: Worker'})).toBeNull();
+    fireEvent.click(screen.getByRole('button', {name:'Actions for conversation: Assistant'}));
     fireEvent.click(screen.getByRole('menuitem', {name:'Archive conversation'}));
     await screen.findByText('Please wait for the reply to finish.');
     expect(screen.getByRole('button', {name:'Conversation Assistant'})).toBeTruthy();
