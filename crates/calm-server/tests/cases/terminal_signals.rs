@@ -1983,7 +1983,6 @@ struct PtySession {
     terminal: String,
     session: String,
     pid: i64,
-    created_at_ms: i64,
 }
 
 /// `neige_terminal_open` (the production mint: card + terminal row + a
@@ -2012,8 +2011,8 @@ async fn open_program(
     if ready {
         h.observe_text(&terminal, "READY").await;
     }
-    let (session, state, created_at_ms): (String, String, i64) = sqlx::query_as(
-        "SELECT id, state, created_at_ms FROM worker_sessions \
+    let (session, state): (String, String) = sqlx::query_as(
+        "SELECT id, state FROM worker_sessions \
           WHERE card_id = ?1 AND terminal_run_id = ?2",
     )
     .bind(&card)
@@ -2037,7 +2036,6 @@ async fn open_program(
         terminal,
         session,
         pid,
-        created_at_ms,
     }
 }
 
@@ -2119,21 +2117,6 @@ async fn complete_track(h: &Harness, track_id: &str) -> i64 {
         .expect("a close stamps closed_at")
 }
 
-/// A reopen through `track_update_tx`.
-async fn reopen_track(h: &Harness, track_id: &str) -> calm_server::model::Track {
-    use calm_server::model::TrackPatch;
-    h.sql
-        .track_update(
-            track_id,
-            TrackPatch {
-                closed: Some(false),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap()
-}
-
 /// The persisted worker-session and terminal rows the sweep may touch, plus
 /// the event count — for the no-write assertion.
 async fn write_snapshot(
@@ -2165,10 +2148,10 @@ async fn write_snapshot(
     (sessions, terminals, events)
 }
 
-/// The set's own SELECT (`terminal_sweeper::COMPLETED_TRACK_LIVE_SESSIONS_SQL`)
+/// The set's own SELECT (`terminal_sweeper::SETTLED_WORKER_SESSIONS_SQL`)
 /// as the sweeper runs it: the session ids it would end right now.
 async fn sweep_set(h: &Harness) -> Vec<String> {
-    sqlx::query_scalar(calm_server::terminal_sweeper::COMPLETED_TRACK_LIVE_SESSIONS_SQL)
+    sqlx::query_scalar(calm_server::terminal_sweeper::SETTLED_WORKER_SESSIONS_SQL)
         .fetch_all(h.sql.pool())
         .await
         .unwrap()
@@ -2176,19 +2159,19 @@ async fn sweep_set(h: &Harness) -> Vec<String> {
 
 /// The single candidate of the set, read the way the sweep reads it (all
 /// five columns, `thread_id` included), for driving
-/// `end_completed_track_session` with a candidate of the test's own.
-async fn sole_candidate(h: &Harness) -> calm_server::terminal_sweeper::CompletedTrackSession {
+/// `end_settled_worker_session` with a candidate of the test's own.
+async fn sole_candidate(h: &Harness) -> calm_server::terminal_sweeper::SettledWorkerSession {
     let (id, provider, card_id, terminal_id, thread_id): (
         String,
         String,
         String,
         String,
         Option<String>,
-    ) = sqlx::query_as(calm_server::terminal_sweeper::COMPLETED_TRACK_LIVE_SESSIONS_SQL)
+    ) = sqlx::query_as(calm_server::terminal_sweeper::SETTLED_WORKER_SESSIONS_SQL)
         .fetch_one(h.sql.pool())
         .await
         .unwrap();
-    calm_server::terminal_sweeper::CompletedTrackSession {
+    calm_server::terminal_sweeper::SettledWorkerSession {
         id,
         provider,
         card_id,
@@ -2217,436 +2200,8 @@ async fn make_codex_with_active_turn(h: &Harness, p: &PtySession) {
     );
 }
 
-/// Written `exited` first, then killed: the attach reader records `signal_killed = 1`, the pid is gone, the renderer entry dropped.
-#[tokio::test]
-async fn done_track_running_pty_session_is_torn_down() {
-    let h = Harness::start().await;
-    let p = open_sleeper(&h, "done-teardown").await;
-    let closed_at = complete_track(&h, &h.track).await;
-    assert!(
-        p.created_at_ms <= closed_at,
-        "the session predates the close: {} <= {closed_at}",
-        p.created_at_ms
-    );
-    assert_eq!(sweep_set(&h).await, vec![p.session.clone()]);
-
-    calm_server::terminal_sweeper::sweep(&h.state)
-        .await
-        .unwrap();
-
-    let (state, completed_at, _) = session_row(&h, &p.session).await;
-    assert_eq!(state, "exited", "the sweep ends the session as `exited`");
-    assert!(completed_at.is_some());
-    let (exit_code, signal_killed) = await_terminal_exit(&h, &p.terminal).await;
-    assert_eq!(
-        (exit_code, signal_killed),
-        (None, true),
-        "the reader recorded a signalled exit"
-    );
-    await_pid_gone(p.pid).await;
-    assert!(
-        h.state.terminal_renderer.get(&p.terminal).is_none(),
-        "the renderer entry is dropped"
-    );
-    assert!(sweep_set(&h).await.is_empty(), "nothing left to end");
-    h.stop(&p.terminal).await;
-}
-
-/// `created_at_ms > closed_at`: the user's own new work on a closed track.
-#[tokio::test]
-async fn session_started_after_done_survives_sweep() {
-    let h = Harness::start().await;
-    let closed_at = complete_track(&h, &h.track).await;
-    // The mint stamps `now_ms()`; a millisecond of slack keeps the
-    // precondition below strict rather than equal.
-    tokio::time::sleep(Duration::from_millis(5)).await;
-    let p = open_sleeper(&h, "after-done").await;
-    assert!(
-        p.created_at_ms > closed_at,
-        "the session postdates the close: {} > {closed_at}",
-        p.created_at_ms
-    );
-    assert!(sweep_set(&h).await.is_empty(), "not in the set");
-
-    calm_server::terminal_sweeper::sweep(&h.state)
-        .await
-        .unwrap();
-
-    let (state, completed_at, _) = session_row(&h, &p.session).await;
-    assert_eq!(state, "running", "a post-completion session survives");
-    assert_eq!(completed_at, None);
-    assert_eq!(terminal_exit(&h, &p.terminal).await, (None, false));
-    assert!(pid_alive(p.pid), "the process is still there");
-    assert!(h.state.terminal_renderer.get(&p.terminal).is_some());
-    h.stop(&p.terminal).await;
-}
-
-/// The `NOT EXISTS` arm: once the task settles, the next sweep ends the worker.
-#[tokio::test]
-async fn in_flight_task_worker_survives_sweep() {
-    let h = Harness::start().await;
-    let p = open_sleeper(&h, "in-flight").await;
-    let task_id = format!("{}:build", h.track);
-    sqlx::query(
-        "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,worker_card_id, \
-                           declared_by,created_at_ms,updated_at_ms) \
-         VALUES (?1,?2,'build','terminal','test','[]','running',?3,'user',?4,?4)",
-    )
-    .bind(&task_id)
-    .bind(&h.track)
-    .bind(&p.card)
-    .bind(calm_server::model::now_ms())
-    .execute(h.sql.pool())
-    .await
-    .unwrap();
-    let current: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM current_tasks WHERE id = ?1 AND status = 'running' AND worker_card_id = ?2",
-    )
-    .bind(&task_id)
-    .bind(&p.card)
-    .fetch_one(h.sql.pool())
-    .await
-    .unwrap();
-    assert_eq!(current, 1, "the attempt is the current one");
-    complete_track(&h, &h.track).await;
-    assert!(
-        sweep_set(&h).await.is_empty(),
-        "an in-flight worker is not in the set"
-    );
-
-    calm_server::terminal_sweeper::sweep(&h.state)
-        .await
-        .unwrap();
-    let (state, _, _) = session_row(&h, &p.session).await;
-    assert_eq!(state, "running", "the in-flight worker survives");
-    assert!(pid_alive(p.pid));
-
-    // The task settles: the next sweep ends the worker.
-    sqlx::query("UPDATE tasks SET status = 'done', finished_at_ms = ?2 WHERE id = ?1")
-        .bind(&task_id)
-        .bind(calm_server::model::now_ms())
-        .execute(h.sql.pool())
-        .await
-        .unwrap();
-    assert_eq!(sweep_set(&h).await, vec![p.session.clone()]);
-    calm_server::terminal_sweeper::sweep(&h.state)
-        .await
-        .unwrap();
-    let (state, _, _) = session_row(&h, &p.session).await;
-    assert_eq!(state, "exited", "settled ⇒ ended");
-    assert_eq!(await_terminal_exit(&h, &p.terminal).await, (None, true));
-    await_pid_gone(p.pid).await;
-    h.stop(&p.terminal).await;
-}
-
-/// A harness row is outside the set by two independent conditions — never `running`, no `terminal_run_id` — so no single-factor change admits it.
-#[tokio::test]
-async fn harness_session_is_never_in_the_sweep_set() {
-    use calm_server::db::sqlite::{card_create_with_id_tx, session_start_runtime_tx};
-    use calm_server::harness::HarnessSnapshot;
-    use calm_server::model::NewCard;
-    use calm_server::model::NewTrack;
-    use calm_server::session_projection_repo::{
-        AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
-    };
-    let h = Harness::start().await;
-    // One planner-role card per track: the harness track already has one,
-    // so the idle harness planner gets its own track (same area).
-    let track = h
-        .sql
-        .track_create(NewTrack {
-            template_input: None,
-            area_id: h.area_id.clone().into(),
-            title: "harness-set".into(),
-            sort: None,
-            cwd: h.root.path().to_str().unwrap().into(),
-            template_id: None,
-            plugin_scope: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        })
-        .await
-        .unwrap()
-        .id
-        .to_string();
-    let planner_card = new_id();
-    let planner_ws = new_id();
-    let mut tx = h.sql.pool().begin().await.unwrap();
-    card_create_with_id_tx(
-        &mut tx,
-        planner_card.clone(),
-        NewCard {
-            track_id: track.clone().into(),
-            title: None,
-            kind: "planner".into(),
-            sort: None,
-            payload: json!({}),
-        },
-        CardRole::Planner,
-        true,
-        &h.state.card_role_cache,
-    )
-    .await
-    .unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: planner_ws.clone(),
-            card_id: planner_card.clone(),
-            kind: WorkerSessionKind::SharedPlanner,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some("th-planner".into()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(
-                serde_json::to_value(HarnessSnapshot::initial(0, vec![])).unwrap(),
-            ),
-            spawn_op_id: None,
-            now_ms: 1_000,
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
-    complete_track(&h, &track).await;
-
-    // Both excluding facts hold on the row itself.
-    let (state, terminal_run_id, mode): (String, Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT state, terminal_run_id, json_extract(handle_state_json, '$.mode') \
-           FROM worker_sessions WHERE id = ?1",
-    )
-    .bind(&planner_ws)
-    .fetch_one(h.sql.pool())
-    .await
-    .unwrap();
-    assert_eq!(mode.as_deref(), Some("harness"));
-    assert_ne!(
-        state, "running",
-        "a harness row is idle / turn_pending, never `running`"
-    );
-    assert_eq!(terminal_run_id, None, "a harness row has no PTY");
-    assert!(
-        sweep_set(&h).await.is_empty(),
-        "structurally outside the set"
-    );
-
-    calm_server::terminal_sweeper::sweep(&h.state)
-        .await
-        .unwrap();
-    let (state, completed_at, _) = session_row(&h, &planner_ws).await;
-    assert_eq!(
-        state, "idle",
-        "the planner can still be asked on a closed track"
-    );
-    assert_eq!(completed_at, None);
-    // The harness' own Planner card session (`starting`, PTY-backed) is
-    // outside the set as well.
-    let (state, _, _) = session_row(&h, &h.session_id).await;
-    assert_eq!(state, "starting");
-}
-
-/// The terminal row is still inside the orphan arm's creation grace, so that arm is quiet too.
-#[tokio::test]
-async fn sweep_is_idempotent() {
-    let h = Harness::start().await;
-    let p = open_sleeper(&h, "idempotent").await;
-    complete_track(&h, &h.track).await;
-    calm_server::terminal_sweeper::sweep(&h.state)
-        .await
-        .unwrap();
-    let (state, _, _) = session_row(&h, &p.session).await;
-    assert_eq!(state, "exited");
-    await_terminal_exit(&h, &p.terminal).await;
-    await_pid_gone(p.pid).await;
-
-    let before = write_snapshot(&h, &p).await;
-    assert!(sweep_set(&h).await.is_empty());
-    calm_server::terminal_sweeper::sweep(&h.state)
-        .await
-        .unwrap();
-    let after = write_snapshot(&h, &p).await;
-    assert_eq!(after, before, "the second sweep writes nothing");
-    assert!(
-        h.state
-            .repo
-            .terminal_get(&p.terminal)
-            .await
-            .unwrap()
-            .is_some(),
-        "the terminal row is not deleted by this arm"
-    );
-    h.stop(&p.terminal).await;
-}
-
-/// A reopen clears `closed_at`; the claim re-runs the set predicate by id and leaves the row alone.
-#[tokio::test]
-async fn reopened_track_session_survives_a_stale_candidate() {
-    use calm_server::terminal_sweeper::end_completed_track_session;
-    let h = Harness::start().await;
-    let p = open_sleeper(&h, "stale-candidate").await;
-    complete_track(&h, &h.track).await;
-    // The candidate, read the way the sweep reads it.
-    let stale = sole_candidate(&h).await;
-    assert_eq!(stale.id, p.session);
-    assert_eq!(stale.terminal_id, p.terminal);
-
-    // Reopened before the candidate is acted on.
-    let reopened = reopen_track(&h, &h.track).await;
-    assert_eq!(reopened.closed_at, None, "reopening clears closed_at");
-    assert!(sweep_set(&h).await.is_empty(), "no longer in the set");
-
-    end_completed_track_session(&h.state, &stale).await.unwrap();
-
-    let (state, completed_at, _) = session_row(&h, &p.session).await;
-    assert_eq!(state, "running", "a stale candidate is not ended");
-    assert_eq!(completed_at, None);
-    assert_eq!(terminal_exit(&h, &p.terminal).await, (None, false));
-    assert!(pid_alive(p.pid), "the process is still there");
-    assert!(h.state.terminal_renderer.get(&p.terminal).is_some());
-    h.stop(&p.terminal).await;
-}
-
-/// The reopen route takes no operation lock; only the claim serializes it. The reopen goes through the `before_write`
-/// seam, not timing: `require_safe` is an IMMEDIATE transaction before the seam, so a reopen held open parks the sweeper there.
-#[tokio::test]
-async fn reopen_committed_during_the_claim_is_honoured() {
-    use calm_server::terminal_sweeper::end_completed_track_session_before_write_for_test;
-    let h = Harness::start_with_fake_codex().await;
-    let p = open_sleeper(&h, "reopen-in-window").await;
-    make_codex_with_active_turn(&h, &p).await;
-    complete_track(&h, &h.track).await;
-    let candidate = sole_candidate(&h).await;
-    assert_eq!(candidate.id, p.session);
-    assert_eq!(candidate.thread_id.as_deref(), Some("t-1"));
-    assert_eq!(
-        sweep_set(&h).await,
-        vec![p.session.clone()],
-        "in the set before the call"
-    );
-    let interrupted_before = h.state.shared_codex_appserver.interrupted_turns_for_test();
-
-    end_completed_track_session_before_write_for_test(&h.state, &candidate, || async {
-        // The guard has passed; the reopen commits now, before the
-        // IMMEDIATE write begins.
-        let reopened = reopen_track(&h, &h.track).await;
-        assert_eq!(reopened.closed_at, None, "reopening clears closed_at");
-    })
-    .await
-    .unwrap();
-
-    let (state, completed_at, _) = session_row(&h, &p.session).await;
-    assert_eq!(
-        state, "running",
-        "a reopen committed before the write is honoured"
-    );
-    assert_eq!(completed_at, None);
-    assert_eq!(terminal_exit(&h, &p.terminal).await, (None, false));
-    assert!(pid_alive(p.pid), "the process is still there");
-    assert!(h.state.terminal_renderer.get(&p.terminal).is_some());
-    let closed_at: Option<i64> = sqlx::query_scalar("SELECT closed_at FROM tracks WHERE id = ?1")
-        .bind(&h.track)
-        .fetch_one(h.sql.pool())
-        .await
-        .unwrap();
-    assert_eq!(closed_at, None, "the track stays reopened");
-    assert_eq!(
-        h.state.shared_codex_appserver.interrupted_turns_for_test(),
-        interrupted_before,
-        "a reopen that defeats the claim must not interrupt the turn"
-    );
-    assert_eq!(
-        h.state.shared_codex_appserver.active_turn_for_test("t-1"),
-        Some("turn-1".to_string()),
-        "the turn is still active"
-    );
-    h.stop(&p.terminal).await;
-}
-
-/// The interrupt is addressed by the captured thread id, after the claim wrote the row `exited`; nothing is interrupted at the seam before the write.
-#[tokio::test]
-async fn codex_candidate_is_interrupted_after_the_claim() {
-    use calm_server::terminal_sweeper::end_completed_track_session_before_write_for_test;
-    let h = Harness::start_with_fake_codex().await;
-    let p = open_sleeper(&h, "codex-interrupt").await;
-    make_codex_with_active_turn(&h, &p).await;
-    complete_track(&h, &h.track).await;
-    let candidate = sole_candidate(&h).await;
-    assert_eq!(candidate.id, p.session);
-    assert_eq!(candidate.provider, "codex");
-    assert_eq!(candidate.thread_id.as_deref(), Some("t-1"));
-
-    end_completed_track_session_before_write_for_test(&h.state, &candidate, || async {
-        assert!(
-            h.state
-                .shared_codex_appserver
-                .interrupted_turns_for_test()
-                .is_empty(),
-            "the interrupt comes after the claim, never before the write"
-        );
-    })
-    .await
-    .unwrap();
-
-    let (state, completed_at, _) = session_row(&h, &p.session).await;
-    assert_eq!(state, "exited");
-    assert!(completed_at.is_some());
-    assert_eq!(
-        h.state.shared_codex_appserver.interrupted_turns_for_test(),
-        vec![("t-1".to_string(), "turn-1".to_string())],
-        "the active turn of the captured thread is interrupted once"
-    );
-    assert_eq!(
-        h.state.shared_codex_appserver.active_turn_for_test("t-1"),
-        None,
-        "the interrupt cleared the active turn"
-    );
-    assert_eq!(await_terminal_exit(&h, &p.terminal).await, (None, true));
-    await_pid_gone(p.pid).await;
-    assert!(h.state.terminal_renderer.get(&p.terminal).is_none());
-    h.stop(&p.terminal).await;
-}
-
-/// Simulated with a second `AppState` over the same repo and supervisor socket (a fresh, empty registry); the old
-/// registry's attach reader is severed the way a dead process would sever it.
-#[tokio::test]
-async fn reattach_then_reap_after_registry_reset() {
-    let h = Harness::start().await;
-    let p = open_sleeper(&h, "registry-reset").await;
-    complete_track(&h, &h.track).await;
-    let old_entry = h.state.terminal_renderer.get(&p.terminal).unwrap();
-    old_entry.disconnect_output_source_for_test();
-
-    let repo: Arc<dyn calm_server::db::Repo> = h.sql.clone();
-    let fresh = calm_server::state::AppState::from_parts(
-        repo,
-        h.state.events.clone(),
-        h.state.daemon.clone(),
-        h.state.plugin.clone(),
-        h.state.codex.clone(),
-        Some(h.state.card_role_cache.clone()),
-        Some(h.state.track_area_cache.clone()),
-    );
-    assert!(
-        fresh.terminal_renderer.get(&p.terminal).is_none(),
-        "the fresh registry is empty"
-    );
-    assert!(pid_alive(p.pid), "the PTY survived the 'restart'");
-    assert_eq!(sweep_set(&h).await, vec![p.session.clone()]);
-
-    calm_server::terminal_sweeper::sweep(&fresh).await.unwrap();
-
-    let (state, _, _) = session_row(&h, &p.session).await;
-    assert_eq!(state, "exited");
-    assert_eq!(await_terminal_exit(&h, &p.terminal).await, (None, true));
-    await_pid_gone(p.pid).await;
-    assert!(
-        fresh.terminal_renderer.get(&p.terminal).is_none(),
-        "the reattached entry is dropped again after the reap"
-    );
-    h.stop(&p.terminal).await;
-}
+#[path = "worker_reap.rs"]
+mod worker_reap;
 
 /// The projector over the harness' repo, bus and registries — the shape `AppState::new` spawns.
 fn projector(h: &Harness) -> TrackActivityProjector {
