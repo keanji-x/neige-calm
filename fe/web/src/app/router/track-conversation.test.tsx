@@ -4355,7 +4355,7 @@ it('archives an open Assistant without losing history, and restores it before se
   await screen.findByRole('combobox', {name:'Message'});
   fireEvent.click(screen.getByRole('button', {name:'Actions for conversation: Archive this discussion'}));
   fireEvent.click(screen.getByRole('menuitem', {name:'Archive conversation'}));
-  await screen.findByText('This conversation is archived. Restore it from Archived conversations to continue.');
+  await screen.findByText('This conversation is archived. Restore it to continue.');
   expect(screen.queryByRole('combobox', {name:'Message'})).toBeNull();
   expect(screen.queryByRole('button', {name:'Conversation Archive this discussion'})).toBeNull();
   fireEvent.click(screen.getByRole('button', {name:'Archived conversations'}));
@@ -4383,5 +4383,5 @@ it('keeps history read failures and retry available while the conversation is ar
   unavailable = false;
   fireEvent.click(retry);
   await waitFor(() => expect(screen.queryByRole('button', {name:'Reload history'})).toBeNull());
-  expect(screen.getByText('This conversation is archived. Restore it from Archived conversations to continue.')).toBeTruthy();
+  expect(screen.getByText('This conversation is archived. Restore it to continue.')).toBeTruthy();
 });

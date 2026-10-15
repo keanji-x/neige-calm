@@ -96,10 +96,28 @@ describe('manual conversation archives', () => {
     expect(screen.queryByRole('button', {name:'Conversation Saved'})).toBeNull();
     fireEvent.click(screen.getByRole('button', {name:'Archived conversations'}));
     expect(screen.getByRole('button', {name:'Conversation Saved'})).toBeTruthy();
-    expect(screen.queryByRole('button', {name:'Conversation Active'})).toBeNull();
+    expect(screen.getByRole('button', {name:'Conversation Active'})).toBeTruthy();
+    expect(screen.getByRole('button', {name:'Active conversations'}).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('button', {name:'Archived conversations'}).getAttribute('aria-expanded')).toBe('true');
     fireEvent.click(screen.getByRole('button', {name:'Actions for conversation: Saved'}));
     fireEvent.click(screen.getByRole('menuitem', {name:'Restore conversation'}));
     await waitFor(() => expect(changeArchive).toHaveBeenCalledWith('saved', false));
+  });
+
+  it('collapses groups independently and hides an empty Archived group', () => {
+    const { rerender } = render(<ChatList cards={{}} onOpen={vi.fn()} conversations={[conversation({state:'idle'})]} />);
+    expect(screen.queryByRole('button', {name:'Archived conversations'})).toBeNull();
+    fireEvent.click(screen.getByRole('button', {name:'Active conversations'}));
+    expect(screen.queryByRole('button', {name:'Conversation Assistant'})).toBeNull();
+    rerender(<ChatList cards={{}} onOpen={vi.fn()} conversations={[conversation({state:'idle'}), conversation({id:'saved', title:'Saved', archivedAt:10, state:'idle'})]} />);
+    const archived = screen.getByRole('button', {name:'Archived conversations'});
+    expect(archived.getAttribute('aria-expanded')).toBe('false');
+    expect(archived.textContent).toContain('1');
+    fireEvent.click(archived);
+    expect(screen.getByRole('button', {name:'Conversation Saved'})).toBeTruthy();
+    expect(screen.queryByRole('button', {name:'Conversation Assistant'})).toBeNull();
+    rerender(<ChatList cards={{}} onOpen={vi.fn()} conversations={[conversation({state:'idle'})]} />);
+    expect(screen.queryByRole('button', {name:'Archived conversations'})).toBeNull();
   });
 
   it('offers archive only for Assistant rows, reports failures, and never hides a failed write', async () => {

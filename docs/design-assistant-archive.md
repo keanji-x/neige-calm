@@ -3,8 +3,9 @@
 Related issue: #2640. Review tier: L2, durable state and input admission.
 
 A person explicitly archives or restores an Assistant conversation. The default
-list hides archived rows; an Archived view can read their history and restore
-them. Planner and worker cards are ineligible. No timer archives conversations.
+list has independent Active and Archived collapsible groups on desktop and
+mobile. Active starts expanded; Archived starts collapsed, shows its count and
+is omitted when empty. Archived history remains readable and restorable. Planner and worker cards are ineligible. No timer archives conversations.
 
 ## Ownership and provider contract
 

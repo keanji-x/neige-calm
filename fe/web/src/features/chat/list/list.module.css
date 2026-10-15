@@ -37,13 +37,6 @@
     cursor: pointer;
   }
 
-  .archiveToggle {
-    color: var(--text-2);
-    font-size: var(--text-xs);
-    padding-block: var(--space-2);
-    cursor: pointer;
-  }
-
   .archiveError {
     color: var(--text-2);
     font-size: var(--text-xs);

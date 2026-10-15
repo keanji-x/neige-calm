@@ -13,6 +13,7 @@ import {
 } from '../../../../../core/domain/conversation.ts';
 import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
 import { PanelEmpty } from '../../../ui/panel-card/public.tsx';
+import { ConversationGroups } from './groups.tsx';
 import styles from './list.module.css';
 
 /** The open conversation's own send: `working` is its in-flight turn, `stalled` the drawer's own wedge detection. Neither is read off `Conversation.state`. */
@@ -37,17 +38,8 @@ export function ChatList({
   conversations, cards, activeId = null, showTrack = true, onOpen, onArchive, unreadIds, local = null,
 }: ChatListProps) {
   const descriptionPrefix = useId();
-  const [archived, setArchived] = useState(false);
-  const shown = conversations.filter(row => (row.archivedAt != null) === archived);
-  const hasArchives = conversations.some(row => row.archivedAt != null);
-  return (
-    <>
-    {(hasArchives || archived) && <button type="button" className={styles.archiveToggle}
-      aria-pressed={archived} onClick={() => setArchived(value => !value)}>
-      {archived ? 'Active conversations' : 'Archived conversations'}
-    </button>}
-    {shown.length === 0 && <PanelEmpty>{archived ? 'No archived conversations.' : 'No conversations yet.'}</PanelEmpty>}
-    <ul className={styles.list}>
+  return <ConversationGroups conversations={conversations} emptyActive={<PanelEmpty>{conversations.length === 0 ? 'No conversations yet.' : 'No active conversations.'}</PanelEmpty>}>
+    {shown => <ul className={styles.list}>
       {shown.toSorted(byRecency).map((conversation) => {
         /* The dot, accessible name and description derive from one fold of the card verdict, the receipt and the local echo — never from `conversation.state`, which stays `turn_pending`/`running` long after a turn ended. */
         const verdict = cardActivityOf({ cards }, conversation.id);
@@ -94,9 +86,8 @@ export function ChatList({
           </li>
         );
       })}
-    </ul>
-    </>
-  );
+    </ul>}
+  </ConversationGroups>;
 }
 
 
@@ -143,7 +134,7 @@ export function ArchivedConversationNotice({ conversation, onArchive }: Readonly
 }>) {
   const { pending, error, change } = useArchiveAction(conversation, onArchive);
   return <div className={styles.archiveNotice}>
-    <p>This conversation is archived. Restore it from Archived conversations to continue.</p>
+    <p>This conversation is archived. Restore it to continue.</p>
     {onArchive !== undefined && <button type="button" disabled={pending} onClick={() => { void change(); }}>
       {pending ? 'Restoring…' : 'Restore conversation'}
     </button>}
