@@ -50,6 +50,7 @@ pub(crate) async fn tool_descriptors_for_connection(
 /// the catalog does not.
 pub(crate) struct SessionCatalog {
     pub(crate) role: CardRole,
+    track_is_admin: bool,
     /// Every tool this caller may call, the managed-track restriction applied.
     callable: Vec<ToolDescriptor>,
     /// Kernel tools and running, in-scope natives whose declared `roles` exclude this role: served
@@ -76,16 +77,26 @@ impl SessionCatalog {
             .partition(|descriptor| descriptor.roles.contains(&identity.role));
         Ok(Self {
             role: identity.role,
+            track_is_admin: match ctx.sqlite_pool.as_ref() {
+                Some(pool) => crate::area_admin::card_is_admin(pool, &identity.card_id)
+                    .await
+                    .map_err(|error| RpcError::internal(error.to_string()))?,
+                None => false,
+            },
             callable: filter_profile(ctx, &identity.card_id, callable).await?,
             role_refused,
         })
     }
 
-    /// The `tools/list` view: the callable tools that declare `listed_for` this role.
+    /// The `tools/list` view: role-listed callable tools, with Admin discovery restricted.
     pub(crate) fn listed(&self) -> impl Iterator<Item = &ToolDescriptor> {
         self.callable
             .iter()
             .filter(|descriptor| descriptor.listed_for.contains(&self.role))
+            .filter(|descriptor| {
+                self.track_is_admin
+                    || !crate::area_admin::ADMIN_TOOLS.contains(&descriptor.name.as_str())
+            })
     }
 
     pub(crate) fn callable(&self) -> &[ToolDescriptor] {
@@ -154,16 +165,6 @@ async fn filter_profile(
     if crate::managed_track::reports_only_card(ctx, card_id).await? {
         descriptors
             .retain(|descriptor| crate::managed_track::report_planning_tool(&descriptor.name));
-    }
-    if let Some(pool) = ctx.sqlite_pool.as_ref() {
-        let admin: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM cards c JOIN tracks t ON t.id=c.track_id WHERE c.id=?1 AND t.admin_granted_at IS NOT NULL)",
-        ).bind(card_id).fetch_one(pool).await.map_err(|error| RpcError::internal(error.to_string()))?;
-        if !admin {
-            descriptors.retain(|descriptor| {
-                !crate::area_admin::ADMIN_TOOLS.contains(&descriptor.name.as_str())
-            });
-        }
     }
     Ok(descriptors)
 }

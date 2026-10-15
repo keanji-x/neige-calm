@@ -218,6 +218,21 @@ async fn cli_tool_lookup_matches_scoped_mcp_listing_and_rejects_stale_sessions()
     }
 }
 
+/// Admin discovery never removes a role-callable tool from CLI lookup.
+#[tokio::test]
+async fn non_admin_planner_catalog_keeps_track_add_unlisted() {
+    let boot = boot_with_role(CardRole::Planner).await;
+    let rows = all_rows(&boot).await;
+    let add = row(&rows, "neige_track_add").expect("role-callable Admin tool stays discoverable");
+    assert_eq!(add["listed"], false);
+
+    let (stdout, error, exit) = describe(&boot, "neige_track_add").await;
+    assert_eq!((error, exit), (Value::Null, 0));
+    let described: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(described["name"], "neige_track_add");
+    assert_eq!(described["listed"], false);
+}
+
 /// #2289: the owner's report. An Assistant may call `neige_report_read`, an MCP-only tool, so its
 /// catalog lists and describes it; a tool whose declared `roles` exclude the Assistant is absent
 /// from the listing and described as another role's.

@@ -1,7 +1,17 @@
 //! Person-granted Area admin authority. Eligibility uses only transactional storage facts.
 use crate::error::{CalmError, Result};
 use crate::model::Track;
-use sqlx::{Sqlite, Transaction};
+use sqlx::{Sqlite, SqlitePool, Transaction};
+
+/// Discovery predicate only; protected writes still require live authority in their transaction.
+pub(crate) async fn card_is_admin(pool: &SqlitePool, card_id: &str) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM cards c JOIN tracks t ON t.id=c.track_id WHERE c.id=?1 AND t.admin_granted_at IS NOT NULL)",
+    )
+    .bind(card_id)
+    .fetch_one(pool)
+    .await?)
+}
 
 /// Every grant writer and the detail affordance share this predicate. Grant writers pass
 /// their write transaction's connection; the detail affordance reads through the pool without a write lock.
@@ -23,9 +33,6 @@ pub async fn eligible_tx<'e>(
 
 /// Grant is conditional on live eligibility; revocation is unconditional. Returns the live row.
 pub async fn set_tx(tx: &mut Transaction<'_, Sqlite>, track: &Track, admin: bool) -> Result<Track> {
-    if admin == track.admin_granted_at.is_some() {
-        return Ok(track.clone());
-    }
     if admin && !eligible_tx(&mut **tx, track).await? {
         return Err(CalmError::Forbidden(
             "ineligible: track cannot be an Area admin".into(),
