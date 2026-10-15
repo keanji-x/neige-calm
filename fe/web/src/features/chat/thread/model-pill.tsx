@@ -2,7 +2,8 @@
 // every value is a prop; the queries and the write live in `app/router`. Each provider's catalog is one
 // group; on the new-track page the pick also decides the Planner's provider (#1810), and each group
 // follows its provider's availability (#1817). A Claude group is the Claude CLI's own list (#1822).
-// Beside it, a Planner conversation's approval setting (#2348), a trigger of the same kind.
+// Beside it, a Planner conversation's approval setting (#2348), and the Planner's role on the new-track page and in
+// an existing Planner conversation, triggers of the same kind.
 
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 import { Divider } from '@astryxdesign/core/Divider';
@@ -351,15 +352,60 @@ export function PermissionModePill({ mode, onChange, isDisabled = false, placeme
   isDisabled?: boolean;
   placement?: 'above' | 'below';
 }>) {
+  return <SettingPill name="Approvals" options={PERMISSION_MODES} value={mode} onChange={onChange}
+    note={PERMISSION_NOTE} isDisabled={isDisabled} placement={placement} />;
+}
+
+/** What a Track's Planner may do in its Area: an ordinary Planner, or an Area admin (`admin` on `POST`/`PATCH /api/tracks`). */
+export type PlannerRole = 'member' | 'admin';
+
+/** Total over `PlannerRole`, in menu order; Member is the default. */
+const PLANNER_ROLES: Readonly<Record<PlannerRole, Readonly<{ label: string; description: string }>>> = Object.freeze({
+  member: Object.freeze({ label: 'Member', description: 'An ordinary Planner.' }),
+  admin: Object.freeze({ label: 'Admin', description: 'May add Tracks and close the ones it added.' }),
+});
+
+/** The Planner's role beside a model picker, on the new-track page and in an existing Track's Planner conversation: a trigger of the approval setting's kind. */
+export function PlannerRolePill({ value, onChange, isDisabled = false, disabledReason, placement = 'above' }: Readonly<{
+  /** The role chosen; `role` would read as an ARIA role. */
+  value: PlannerRole;
+  onChange: (role: PlannerRole) => void;
+  isDisabled?: boolean;
+  /** Why it cannot be changed, as the disabled trigger's tooltip; it still names the current role. */
+  disabledReason?: string;
+  placement?: 'above' | 'below';
+}>) {
+  /* It sits at the trailing edge beside Create, so its menu opens leftward: room for its descriptions on a phone. */
+  return <SettingPill name="Role" options={PLANNER_ROLES} value={value} onChange={onChange}
+    isDisabled={isDisabled} tooltip={isDisabled ? disabledReason : undefined} placement={placement} alignment="end" />;
+}
+
+/** A short fixed setting: the trigger names it and its value, and each row explains itself. */
+function SettingPill<Value extends string>({
+  name, options, value, onChange, note, isDisabled, tooltip, placement, alignment = 'start',
+}: Readonly<{
+  name: string;
+  options: Readonly<Record<Value, Readonly<{ label: string; description: string }>>>;
+  value: Value;
+  onChange: (value: Value) => void;
+  note?: string;
+  isDisabled: boolean;
+  /** With it Astryx marks a disabled trigger `aria-disabled` rather than `disabled`, so the tooltip stays reachable. */
+  tooltip?: string;
+  placement: 'above' | 'below';
+  alignment?: 'start' | 'end';
+}>) {
   const [open, setOpen] = useState(false);
   const hostRef = useRef<HTMLSpanElement | null>(null);
-  const label = `Approvals: ${PERMISSION_MODES[mode].label}`;
+  const label = `${name}: ${options[value].label}`;
   return (
     <span ref={hostRef} className={styles.host} onKeyDownCapture={closeOnEscape(open, setOpen, hostRef)}>
       <DropdownMenu
         placement={placement}
-        isMenuOpen={open}
-        onOpenChange={setOpen}
+        alignment={alignment}
+        /* An `aria-disabled` trigger still passes ArrowDown to the menu, so a disabled one is held shut here. */
+        isMenuOpen={open && !isDisabled}
+        onOpenChange={(next) => { setOpen(next && !isDisabled); }}
         hasChevron={false}
         button={{
           label,
@@ -367,19 +413,24 @@ export function PermissionModePill({ mode, onChange, isDisabled = false, placeme
           variant: 'ghost',
           size: 'sm',
           isDisabled,
-          className: styles.permission,
+          tooltip,
+          className: styles.setting,
         }}
       >
-        {(Object.keys(PERMISSION_MODES) as PlannerPermissionMode[]).map((value) => (
+        {(Object.keys(options) as Value[]).map((option) => (
           /* A node, not a string: Astryx cuts a string description to one line, and Full access's says what it risks. */
-          <Choice key={value} label={PERMISSION_MODES[value].label}
-            description={<Text type="inherit" color="inherit">{PERMISSION_MODES[value].description}</Text>}
-            isSelected={mode === value} onSelect={() => { if (value !== mode) onChange(value); }} />
+          <Choice key={option} label={options[option].label}
+            description={<Text type="inherit" color="inherit">{options[option].description}</Text>}
+            isSelected={value === option} onSelect={() => { if (option !== value) onChange(option); }} />
         ))}
-        <Divider />
-        <div className={styles.permissionNote} role="note">
-          <Text type="supporting">{PERMISSION_NOTE}</Text>
-        </div>
+        {note !== undefined && (
+          <>
+            <Divider />
+            <div className={styles.settingNote} role="note">
+              <Text type="supporting">{note}</Text>
+            </div>
+          </>
+        )}
       </DropdownMenu>
     </span>
   );

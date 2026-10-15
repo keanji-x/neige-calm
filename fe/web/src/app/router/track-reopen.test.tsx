@@ -27,7 +27,7 @@ function renderTrack(closedAt: number | null, { failRefetch = false } = {}): Har
   const requests: ApiRequest[] = [];
   let track: TrackWire = {
     id: 'w1', area_id: 'c1', title: 'Recover me', sort: 1, cwd: '/tmp',
-    pinned_at: null, closed_at: closedAt, created_at: 1, updated_at: 2,
+    pinned_at: null, closed_at: closedAt, admin_granted_at: null, created_at: 1, updated_at: 2,
   };
   let refetchFails = false;
   const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });

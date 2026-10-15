@@ -319,7 +319,7 @@ describe('TrackPage header', () => {
             openableCards={new Set()}
             inputNotifications={notifications}
             canReopenTrack={false}
-            canCloseTrack={false}
+            canCloseTrack={false} adminGrantedAt={null}
             onRenameTrack={vi.fn()}
             onReopenTrack={vi.fn()}
             onCloseTrack={vi.fn()}
@@ -754,7 +754,7 @@ describe('TrackPage card inventory', () => {
     const props = {
       mobilePanelObscured: false,
       track: track(), cards: [card({ id: 'k1', title: 'Build log' })], tasks: [], openableCards: new Set(['k1']),
-      canReopenTrack: false, canCloseTrack: false, onRenameTrack: vi.fn(), onReopenTrack: vi.fn(), onCloseTrack: vi.fn(), onDeleteTrack: vi.fn(), onTrackDeleted: vi.fn(),
+      canReopenTrack: false, canCloseTrack: false, adminGrantedAt: null, onRenameTrack: vi.fn(), onReopenTrack: vi.fn(), onCloseTrack: vi.fn(), onDeleteTrack: vi.fn(), onTrackDeleted: vi.fn(),
     };
     const { container, rerender } = render(<TrackPage {...props} panel="cards" />);
     expect(container.querySelector('[data-nc-mobile-page]')?.getAttribute('data-nc-mobile-page')).toBe('open');
@@ -806,7 +806,7 @@ describe('TrackPage card inventory', () => {
       tasks={[]}
       openableCards={new Set(['k1'])}
       canReopenTrack={false}
-      canCloseTrack={false}
+      canCloseTrack={false} adminGrantedAt={null}
       onRenameTrack={vi.fn()}
       onReopenTrack={vi.fn()}
       onCloseTrack={vi.fn()}

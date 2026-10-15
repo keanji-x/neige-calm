@@ -46,7 +46,7 @@ describe('a withdrawn declaration on the mobile Tasks page', () => {
         panel="tasks"
         onOpenTask={vi.fn()}
         canReopenTrack={false}
-        canCloseTrack={false}
+        canCloseTrack={false} adminGrantedAt={null}
         onRenameTrack={vi.fn()}
         onReopenTrack={vi.fn()}
         onCloseTrack={vi.fn()}

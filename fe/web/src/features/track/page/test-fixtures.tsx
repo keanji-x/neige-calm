@@ -62,6 +62,7 @@ export function renderPage(overrides: Partial<TrackPageProps> = {}): RenderResul
     openableCards: openableCardsOf(cards, tasks),
     canReopenTrack: false,
     canCloseTrack: false,
+    adminGrantedAt: null,
     onRenameTrack: vi.fn(),
     onReopenTrack: vi.fn(),
     onCloseTrack: vi.fn(),

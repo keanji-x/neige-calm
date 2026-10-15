@@ -9,7 +9,7 @@ import { folderConflictMessage } from '../../../../core/domain/area.ts';
 import { ApiError, classifyFailure, NotSentError, refusedText, writeFailureOf } from '../../../../core/domain/failure-class.ts';
 import { readErrorText } from '../../../../core/domain/read-failure.ts';
 import { isBlankForKernel, TRACK_CREATE_FAILURES, TRACK_CREATE_TEXT, type NewTrackBodyWithoutFirstMessage } from '../../../../core/domain/track.ts';
-import { ModelPill } from '../../features/chat/thread/model-pill.tsx';
+import { ModelPill, PlannerRolePill } from '../../features/chat/thread/model-pill.tsx';
 import { useMentionTrigger } from '../../features/chat/thread/mention-trigger.tsx';
 import { NewTrackForm, type NewTrackDraft, type NewTrackFormState } from '../../features/area/new-track/public.tsx';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
@@ -95,6 +95,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
       ...(draft.template_input === undefined ? {} : { template_input: draft.template_input }),
       ...(draft.recipe_id === undefined ? {} : { recipe_id: draft.recipe_id }),
       ...(draft.cwd === undefined ? {} : { cwd: draft.cwd, attach_folder: true }),
+      ...(current.role === 'admin' ? { admin: true } : {}),
       ...(authorization === undefined ? {} : { allow_cross_area_cwd: authorization }),
     } satisfies NewTrackBodyWithoutFirstMessage;
     // The original wire body travels with the key. A retry after navigation,
@@ -159,7 +160,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
   return <NewTrackForm
     mentionTrigger={mentionTrigger}
     templatePluginGuides={id => <TemplatePluginGuides key={id} templateId={id} transport={transport} unauthorized={unauthorized} />}
-    modelControls={
+    modelControls={<>
       <ModelPill
         groups={[
           { provider: 'codex', catalog: codexCatalog.data ?? null, availability: availabilityOf(availability.data, 'codex') },
@@ -173,7 +174,9 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
         onChange={(model, provider) => { store.update(areaId, { provider, model }); }}
         isDisabled={configurationLocked}
       />
-    }
+      <PlannerRolePill value={session.role} onChange={(role) => { store.update(areaId, { role }); }}
+        isDisabled={configurationLocked} />
+    </>}
     initialDraft={session.form ?? undefined}
     onDraftChange={saveForm}
     submitBlocked={!available || createdTrackId !== null || session.canRetryAsNewTrack}

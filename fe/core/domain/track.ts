@@ -29,6 +29,8 @@ export const trackWireSchema = z.object({
   workspace: z.object({ worktree: z.string().optional() }).optional(),
   pinned_at: z.number().nullable().default(null),
   closed_at: z.number().nullable().default(null),
+  /** Unix-ms time a person granted Area admin; `null` otherwise. Absent on historical events, which read as not admin. */
+  admin_granted_at: z.number().nullable().default(null),
   created_at: z.number(),
   updated_at: z.number(),
 });
@@ -617,7 +619,7 @@ export function updateTrackOperation(trackId: string, body: TrackPatchBody): Api
 }
 
 /**
- * What a failed `PATCH /api/tracks/{id}` (rename, pin, close, reopen) says. It sets a value, so a retry is safe: 400, 403,
+ * What a failed `PATCH /api/tracks/{id}` (rename, pin, close, reopen, admin) says. It sets a value, so a retry is safe: 400, 403,
  * 404, 409 (a child track reopened under a closed parent), 413 and 422 are answered before anything is stored; anything
  * else may have stored it.
  */
@@ -632,6 +634,8 @@ export const TRACK_PATCH_TEXT = Object.freeze({
   pin: Object.freeze({ refused: 'The pin was not changed.', unknown: 'The pin change is unconfirmed.' }),
   close: Object.freeze({ refused: 'The track was not closed.', unknown: 'Closing the track is unconfirmed.' }),
   reopen: Object.freeze({ refused: 'The track was not reopened.', unknown: 'Reopening the track is unconfirmed.' }),
+  grantAdmin: Object.freeze({ refused: 'The track was not made an Area admin.', unknown: 'Making the track an Area admin is unconfirmed.' }),
+  revokeAdmin: Object.freeze({ refused: 'The Area admin grant was not removed.', unknown: 'Removing the Area admin grant is unconfirmed.' }),
 }) satisfies Readonly<Record<string, WriteText>>;
 
 export function deleteTrackOperation(trackId: string): ApiOperation<undefined> {

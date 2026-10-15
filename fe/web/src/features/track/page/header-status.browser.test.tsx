@@ -87,7 +87,7 @@ describe('Track actions menu text geometry', () => {
         renderPage({
           track: track({ title: 'A deliberately long track title '.repeat(12), closedAt: closed ? 5 : null }),
           canReopenTrack: closed,
-          canCloseTrack: !closed,
+          canCloseTrack: !closed, adminGrantedAt: null,
         });
         // 390px exercises TrackPage's production MobileHeader / MoreMenu path.
         const actions = browserPage.getByRole('button', {
@@ -315,7 +315,7 @@ describe('the track closed status in the page header', () => {
         tasks={[]}
         openableCards={new Set()}
         canReopenTrack={closed}
-        canCloseTrack={!closed}
+        canCloseTrack={!closed} adminGrantedAt={null}
         onRenameTrack={vi.fn()}
         onReopenTrack={() => { setClosed(false); }}
         onCloseTrack={() => { setClosed(true); }}

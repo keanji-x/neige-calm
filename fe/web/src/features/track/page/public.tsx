@@ -33,6 +33,7 @@ import { relativeTime } from '../row/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
 import type { RowModuleView, TrackPageView } from '../../../../../core/view/panel.ts';
+import { TrackAdminBadge } from '../admin-badge/public.tsx';
 import { TrackClosedBadge } from '../closed-badge/public.tsx';
 import { makeDesktopPainter, paintDesktopPanel } from './desktop-painter.tsx';
 import { makeMobilePainter, paintMobileModule } from './mobile-painter.tsx';
@@ -150,6 +151,8 @@ export type TrackPageProps = Readonly<{
   /** The server's capabilities; at most one is true, so the menu offers Close or Reopen, never both. */
   canReopenTrack: boolean;
   canCloseTrack: boolean;
+  /** The server's `admin_granted_at`: the Admin badge. The role is changed in the Planner conversation's composer. */
+  adminGrantedAt: number | null;
   onRenameTrack: (title: string) => void | Promise<void>;
   onReopenTrack: () => void | Promise<void>;
   onCloseTrack: () => void | Promise<void>;
@@ -175,7 +178,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
   cardsAction, recentFiles, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
   mobileBackLabel = 'Pages', onMobileBack, mobileHeaderActionsHost = null, mobileHeaderTitleHost = null, mobileTitleReadView,
-  canReopenTrack, canCloseTrack, onRenameTrack, onReopenTrack, onCloseTrack, onDeleteTrack, onTrackDeleted,
+  canReopenTrack, canCloseTrack, adminGrantedAt, onRenameTrack, onReopenTrack, onCloseTrack, onDeleteTrack, onTrackDeleted,
 }: TrackPageProps) {
   const compactViewport = useCompactViewport();
   const headerActionsHost = compactViewport ? mobileHeaderActionsHost : null;
@@ -451,6 +454,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
         <div className={styles.mobileTitleReadHost} hidden={!titleInHeader}
           ref={(node) => { if (node !== null && mobileTitleReadHost.parentNode !== node) node.appendChild(mobileTitleReadHost); }} />
         {!titleInHeader && <TrackClosedBadge closedAt={track.closedAt} />}
+        {!titleInHeader && <TrackAdminBadge adminGrantedAt={adminGrantedAt} />}
         {/* The same indicator the rail paints. `unread` is `false` by construction: the page is the reader, and its receipt clears the moment it is visible. The mobile page head carries no indicator. */}
         {!titleInHeader && <ActivityIndicator state={trackActivityState(track, false)} />}
       </div>, titleContainer)}
@@ -459,7 +463,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
         <MobileHeader
           title={trackDisplayTitle(track.title)}
           titleText={<TrackTitle track={track} />}
-          meta={<TrackClosedBadge closedAt={track.closedAt} />}
+          meta={<><TrackClosedBadge closedAt={track.closedAt} /><TrackAdminBadge adminGrantedAt={adminGrantedAt} /></>}
           level={1}
           backLabel={boardOpen ? 'Report' : mobileBackLabel}
           onBack={boardOpen ? onCloseBoard : onMobileBack}

@@ -169,9 +169,11 @@ find the Tracks it may close (`mcp_server/tools/report_links.rs:83-133`).
 
 `TrackDetail.can_admin` is computed in the route beside `can_close` (`routes/tracks.rs:740-742`)
 as `admin_granted_at.is_some() || eligible`, meaning "the toggle applies"; the UI infers no
-policy. `fe/` per `fe/AGENTS.md`: an "Area admin" checkbox in the create form (off by default;
-help: "This Track's Planner may add Tracks and close the ones it added"), an Admin toggle and
-badge on the Track page, and the ask drawer rendering `grant_admin` with the kernel's options.
+policy. `fe/` per `fe/AGENTS.md`: one Role picker (Member by default; Admin: "May add Tracks and
+close the ones it added") beside the model picker, both in the create composer and in an existing
+Track's Planner conversation composer, where it sends `PATCH {admin}` and is disabled with a reason
+when `can_admin` is false; an Admin badge on the Track page; and the ask drawer rendering
+`grant_admin` with the kernel's options.
 
 ## 3. Slices
 
@@ -185,7 +187,7 @@ rendering of any ask kind it adds. The grant path lands before the add gate.
 | **S1 Admin state and grant** | L2: migration, authority | Migration 0165; `Track.admin_granted_at`; `area_admin::eligible_tx`; strict POST/PATCH `admin`; `CreateRequestShape.admin`; `can_admin`; `AskAction::GrantAdmin` and answer; regenerated OpenAPI, `wire.ts`, registry golden; `fe/core` widening of `trackObjectSchema` (`schemas.ts:45`), the ask `action` unions (`schemas.ts:625`, `fe/core/domain/track.ts:153`), `NewTrackBody` / `TrackPatchBody` (`track.ts:360`, `:548`); drawer renders `grant_admin`. No behaviour change for existing tools. | `admin_backfill_grandfathers_eligible_creators_only` (fixture with managed, system-Area, child and chat creators); `the_database_refuses_an_admin_child_or_added_track`; `admin_patch_refuses_ai_actor_headers`*, `create_admin_refuses_ai_actor_headers`* (several `ai:*`; no row, event or replay effect); `admin_patch_refuses_an_ineligible_track`; `admin_revoke_is_allowed_when_ineligible`; `create_key_reused_with_other_admin_conflicts`; `grant_admin_click_grants_and_wakes`; `grant_admin_other_answers_grant_nothing`*; `grant_admin_answer_rechecks_eligibility`; `old_reopen_track_asks_still_deserialize`; fe unit: schemas accept `admin_granted_at` and `grant_admin`. |
 | **S2 Add under Admin** | L2: authority | `require_admin_tx` in `admit_tx`; `authorize_creator` removed; `ADMIN_TOOLS` listing filter; recipe and manifest sentence; byte budget for the changed descriptions. | `track_add_refuses_a_non_admin_planner`*, `track_add_refuses_a_closed_admin`, `track_add_admits_an_admin_planner` (kernel socket); `track_add_after_revoke_commits_nothing` (revoke between handler entry and tx); `tools_list_hides_track_add_from_a_non_admin`*; `track_add_creates_a_non_admin_track`; the old scope/depth tests retargeted at eligibility. |
 | **S3 Close own-added Tracks** | L2: authority | `track_id` on `neige_track_close`; `close_tx` split; the shared running-work const; `neige_area_ls.creator_track_id`; prompt text and byte budget. | `admin_closes_a_track_it_added_with_message` (event scoped to target); `non_admin_close_of_other_track_is_refused`*; `own_close_with_own_track_id_needs_no_admin`; `close_of_track_not_added_by_caller_is_unknown`*; `close_refuses_running_work_listing_keys`*; `close_after_revoke_commits_nothing`; `close_other_from_a_superseded_session_is_refused`; `area_ls_rows_carry_creator_track_id`. |
-| **S4 fe UI** | L1 | Create checkbox, Track-page toggle and badge, driven by `can_admin`. Ships any time after S1. | Browser: create posts `admin: true`; toggle hidden when `can_admin` is false; toggle revokes; grant-ask click posts the answer only. Preview per `docs/development-preview.md`. |
+| **S4 fe UI** | L1 | Role picker in the create composer and in an existing Track's Planner composer, driven by `can_admin`; Track-page badge. Ships any time after S1. | Browser: create posts `admin: true`; the Planner composer picker switches to Admin and back with `PATCH {admin}`; it is disabled with a reason when `can_admin` is false; grant-ask click posts the answer only. Preview per `docs/development-preview.md`. |
 
 For each `*` test, the mutation (drop the check under test) must turn exactly the predicted set
 red within its package filter; S2's prediction includes the retargeted eligibility tests.

@@ -56,7 +56,8 @@ import { ChatList } from '../../features/chat/list/public.tsx';
 import {
   ChatComposer, ChatFooterError, ChatFooterNotice, ChatFooterRemedy, ChatThread,
 } from '../../features/chat/thread/public.tsx';
-import { ModelPill, PermissionModePill } from '../../features/chat/thread/model-pill.tsx';
+import { ModelPill, PermissionModePill, PlannerRolePill } from '../../features/chat/thread/model-pill.tsx';
+import { usePlannerRoleControl, type PlannerRoleControl } from './planner-role.ts';
 import { ContextRing } from '../../features/chat/thread/context-ring.tsx';
 import { useMentionTrigger } from '../../features/chat/thread/mention-trigger.tsx';
 import { ReportBacklinks } from '../../features/report/backlinks/public.tsx';
@@ -152,10 +153,12 @@ type ConversationPanelSource = ConversationCreationSource & Readonly<{
     workspaceRoot: string | null;
     scopeOf: (conversationId: string) => PlannerConversationScope | null;
     /** The one row a Planner reads and the Area whose `area/reports/` it reads, which is what `@` offers; `null` where no row is a Planner's. A track conversation is an Assistant, which `area/reports/` refuses.
-     * `asks` are the track's open asks, shown above that row's composer, and `answerAsk` answers one. */
+     * `asks` are the track's open asks, shown above that row's composer, and `answerAsk` answers one; `role` is the
+     * Track's Area admin state, picked beside that row's model picker. */
     planner: Readonly<{
       cardId: string; areaId: string; asks: readonly OpenAsk[];
       answerAsk: (askId: number, answers: readonly AskAnswer[]) => Promise<void>;
+      role: PlannerRoleControl;
     }> | null;
   }>;
 
@@ -198,6 +201,7 @@ export function createRouteTree(deps: AppRouterDeps): AnyRoute {
         renderTrack={(detail, evidence, panelContent, intro) => <TrackRouteBody mobileReportIntro={intro} panelContent={panelContent} reportEvidence={evidence} key={detail.track.id} transport={transport} unauthorized={unauthorized}
           track={toTrack(detail.track, trackActivityFrom(detail.track.id, detail.overlays))}
           canReopenTrack={detail.can_reopen} canCloseTrack={detail.can_close}
+          adminGrantedAt={detail.track.admin_granted_at} canAdminTrack={detail.can_admin}
           cards={detail.cards} overlays={detail.overlays} cardRuntime={cards} recentFiles={recentFiles} />} />;
     },
   });
@@ -517,6 +521,11 @@ function useConversationPane(
     return options.onSide(open, store.turnsOf(open.id), question);
   });
   const plannerAsks = plannerRow?.asks ?? NO_ASKS;
+  /* Read field by field: the control is rebuilt each render, and the composer's memo keys on what it shows. */
+  const roleValue = plannerRow?.role.value ?? null;
+  const roleDisabled = plannerRow?.role.isDisabled ?? true;
+  const roleDisabledReason = plannerRow?.role.disabledReason;
+  const roleChange = plannerRow?.role.onChange;
   /* Without a Planner row the drawer lists no ask, so nothing can be answered from here: nothing is sent. */
   const answerAsk = useCommittedCallback(existingId, (askId: number, answers: readonly AskAnswer[]) => plannerRow === null
     ? Promise.reject(new NotSentError()) : plannerRow.answerAsk(askId, answers));
@@ -600,7 +609,9 @@ function useConversationPane(
                                reads it again. */
               /* With `headerActions` unset Astryx does not render that row at all. */
               footerActions={(
-                <HStack gap={1} align="center" className={footerStyles.group}>
+                /* A phone's options panel is narrower than the controls with the Role beside them, so the row wraps there
+                   rather than squeezing the model picker to nothing. */
+                <HStack gap={1} align="center" wrap={compactComposer ? 'wrap' : undefined} className={footerStyles.group}>
                   <PlannerAttachButton
                     attachments={composerAttachments}
                     support={{
@@ -623,12 +634,18 @@ function useConversationPane(
                     <PermissionModePill mode={composerView.permissionMode} onChange={composerView.setPermissionMode}
                       isDisabled={!composerView.historyReady} />
                   )}
+                  {/* The Planner's own row on its Track: the Track's role, not the conversation's, so no turn gates it. */}
+                  {roleValue !== null && roleChange !== undefined && (
+                    <PlannerRolePill value={roleValue} onChange={roleChange} isDisabled={roleDisabled}
+                      disabledReason={roleDisabledReason} />
+                  )}
                 </HStack>
               )}
             />
   ), [existingId, compactComposer, composerFocusFor, composerFocusRequest, composer.text, setComposerText, composerView,
     replacing, editingBar, options?.showSideCommand, options?.inline, hasSideConversation, sideQuestion,
-    sendText, composerAttachments, newConversation, mentionTrigger, scopeProvider, plannerAsks, answerAsk]);
+    sendText, composerAttachments, newConversation, mentionTrigger, scopeProvider, plannerAsks, answerAsk,
+    roleValue, roleDisabled, roleDisabledReason, roleChange]);
 
   const renderDrawer = (resizeGroup: PaneResizeGroup | null = null) => (
       <ConversationSurface
@@ -741,6 +758,7 @@ function useConversationPane(
                 <ChatFooterError message={store.blockedReason} />
               </ChatFooterNotice>
             )}
+            {plannerRow !== null && <OperationFeedback feedback={plannerRow.role.feedback} />}
             {composerNode}
           </>
         )}
@@ -906,6 +924,8 @@ function TrackRoute({ transport, unauthorized, cardRuntime, recentFiles }: {
       track={track}
       canReopenTrack={detail.data.can_reopen}
       canCloseTrack={detail.data.can_close}
+      adminGrantedAt={detail.data.track.admin_granted_at}
+      canAdminTrack={detail.data.can_admin}
       cards={detail.data.cards}
       overlays={detail.data.overlays}
       cardRuntime={cardRuntime}
@@ -934,13 +954,15 @@ function trackNotifications(items: TrackActivity['attentionItems']): readonly Tr
 }
 
 function TrackRouteBody({
-  transport, unauthorized, track, canReopenTrack, canCloseTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence, panelContent, mobileReportIntro,
+  transport, unauthorized, track, canReopenTrack, canCloseTrack, adminGrantedAt, canAdminTrack, cards, overlays, cardRuntime, recentFiles, reportEvidence, panelContent, mobileReportIntro,
 }: {
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
   track: Track;
   canReopenTrack: boolean;
   canCloseTrack: boolean;
+  adminGrantedAt: number | null;
+  canAdminTrack: boolean;
   cards: TrackDetailWire['cards'];
   overlays: TrackDetailWire['overlays'];
   cardRuntime: CardRuntime;
@@ -956,6 +978,8 @@ function TrackRouteBody({
   const navigationCompletedAt = useRouterState({ select: (state) => state.loadedAt });
   useReadReceipt('track', track.id, track.activityAt, true, navigationCompletedAt);
   const trackMutations = useTrackMutations(transport, unauthorized);
+  const plannerRole = usePlannerRoleControl({ trackId: track.id, adminGrantedAt, canAdmin: canAdminTrack,
+    setAdmin: (admin) => trackMutations.patch(track.id, track.areaId, { admin }) });
   const conversationMutations = useTrackConversationMutations(transport, track.id, unauthorized);
   const openMobileSection = useOpenMobileSection();
   const mobileHeaderActionsHost = useMobileHeaderActionsHost();
@@ -1057,6 +1081,7 @@ function TrackRouteBody({
       planner: plannerCard === undefined ? null : {
         cardId: plannerCard.id, areaId: track.areaId, asks: openAsks,
         answerAsk: (askId, answers) => trackMutations.answerAsk(track.id, askId, answers),
+        role: plannerRole,
       },
     },
     { showTrack: false, reportComposer: { ready: plannerCard !== undefined || conversationsQuery.isSuccess, returnLabel: routePanel === 'conversations' ? 'Conversations' : 'Report' } },
@@ -1330,6 +1355,7 @@ function TrackRouteBody({
       track={track}
       canReopenTrack={canReopenTrack}
       canCloseTrack={canCloseTrack}
+      adminGrantedAt={adminGrantedAt}
       cards={panelCards}
       /* Derived from the report's own blocks, so the panel and the document
          cannot disagree about what tasks exist. */

@@ -42,7 +42,7 @@ function renderTasks(
         onOpenCard={onOpenCard}
         onOpenTask={onOpenTask}
         canReopenTrack={false}
-        canCloseTrack={false}
+        canCloseTrack={false} adminGrantedAt={null}
         onRenameTrack={vi.fn()}
         onReopenTrack={vi.fn()}
         onCloseTrack={vi.fn()}

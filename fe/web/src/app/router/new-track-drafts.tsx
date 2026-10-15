@@ -4,6 +4,7 @@ import type { AgentProvider } from '../../../../core/api/generated/wire.ts';
 import type { Area } from '../../../../core/domain/area.ts';
 import type { NewTrackBody } from '../../../../core/domain/track.ts';
 import type { NewTrackFormState } from '../../features/area/new-track/public.tsx';
+import type { PlannerRole } from '../../features/chat/thread/model-pill.tsx';
 import { useState } from '../../ui/state/public.ts';
 import { mintIdempotencyKey } from '../providers/idempotency-key.ts';
 
@@ -17,6 +18,8 @@ export type NewTrackSession = Readonly<{
   provider: AgentProvider;
   /** A selection from `provider`'s catalog; set together with `provider` by one pick. */
   model: ModelSelection;
+  /** `admin` creates an Area admin Track (`admin: true`); `member` sends no `admin` key. */
+  role: PlannerRole;
   key: string;
   creating: boolean;
   request: TrackCreationRequest | null;
@@ -37,7 +40,7 @@ function createDraftStore() {
     get: (areaId: string) => drafts.get(areaId) ?? null,
     ensure: (area: Area) => {
       if (drafts.has(area.id)) return;
-      drafts.set(area.id, { area, form: null, provider: 'codex', model: FOLLOW_INSTALLATION_DEFAULT, key: mintIdempotencyKey(), creating: false,
+      drafts.set(area.id, { area, form: null, provider: 'codex', model: FOLLOW_INSTALLATION_DEFAULT, role: 'member', key: mintIdempotencyKey(), creating: false,
         request: null, createdTrackId: null, error: null, canRetryAsNewTrack: false, folderConflict: null });
       notify();
     },
