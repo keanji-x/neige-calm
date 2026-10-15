@@ -52,6 +52,13 @@ struct Caller {
 }
 
 async fn boot(max_open: u32) -> Boot {
+    boot_with_gate(max_open, None).await
+}
+
+async fn boot_with_gate(
+    max_open: u32,
+    gate: Option<Arc<routes::tracks::TrackCreateMintGate>>,
+) -> Boot {
     let tmp = TempDir::new().unwrap();
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo_dyn: Arc<dyn Repo> = repo.clone();
@@ -91,6 +98,9 @@ async fn boot(max_open: u32) -> Boot {
     .with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
         repo_dyn, None,
     ));
+    if let Some(gate) = gate {
+        state = state.with_track_create_mint_rendezvous(gate);
+    }
     // After the last builder: the creator keeps the route state it is given.
     state.bind_track_creator(max_open);
     let ctx = state.mcp_context();
@@ -196,12 +206,17 @@ impl Boot {
 
     /// A blank Track made through `POST /api/tracks`, and its Planner as a caller.
     async fn user_track(&self, title: &str) -> (String, Caller) {
+        self.user_track_admin(title, true).await
+    }
+
+    async fn user_track_admin(&self, title: &str, admin: bool) -> (String, Caller) {
         let (status, track) = send(
             self.app.clone(),
             "POST",
             "/api/tracks",
             Some(json!({
                 "planner_provider": "codex",
+                "admin": admin,
                 "area_id": self.area_id,
                 "title": title,
                 "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
@@ -348,7 +363,7 @@ fn assert_forbidden(result: Result<Value, RpcError>, why: &str) {
 }
 
 #[tokio::test]
-async fn track_add_records_provenance_not_parent() {
+async fn track_add_creates_a_non_admin_track() {
     let boot = boot(16).await;
     let (creator, planner) = boot.user_track("portfolio").await;
     let out = boot
@@ -367,6 +382,7 @@ async fn track_add_records_provenance_not_parent() {
     assert_eq!(track.title, "invest-US-SPY-1 research");
     assert_eq!(track.area_id.as_str(), boot.area_id);
     assert_eq!(track.plugin_scope, None);
+    assert_eq!(track.admin_granted_at, None);
     let (status, detail) = send(
         boot.app.clone(),
         "GET",
@@ -406,7 +422,7 @@ async fn track_add_records_provenance_not_parent() {
 }
 
 #[tokio::test]
-async fn track_add_refuses_past_open_cap() {
+async fn track_add_admin_refuses_past_open_cap() {
     let boot = boot(2).await;
     let (_, planner) = boot.user_track("portfolio").await;
     boot.added(&planner, "k1").await;
@@ -431,7 +447,7 @@ async fn track_add_refuses_past_open_cap() {
 }
 
 #[tokio::test]
-async fn track_add_counts_only_open_tracks() {
+async fn track_add_admin_counts_only_open_tracks() {
     let boot = boot(2).await;
     let (_, planner) = boot.user_track("portfolio").await;
     let first = boot.added(&planner, "k1").await;
@@ -450,7 +466,7 @@ async fn track_add_counts_only_open_tracks() {
 }
 
 #[tokio::test]
-async fn track_add_cap_refusal_lists_open_tracks() {
+async fn track_add_admin_cap_refusal_lists_open_tracks() {
     let boot = boot(2).await;
     let (creator, planner) = boot.user_track("portfolio").await;
     let first = boot.added(&planner, "k1").await;
@@ -483,7 +499,7 @@ async fn track_add_cap_refusal_lists_open_tracks() {
 }
 
 #[tokio::test]
-async fn track_add_refuses_worker() {
+async fn track_add_admin_refuses_worker() {
     let boot = boot(16).await;
     let (creator, _) = boot.user_track("portfolio").await;
     let worker = boot.worker_on(&creator).await;
@@ -501,7 +517,7 @@ async fn track_add_refuses_worker() {
 }
 
 #[tokio::test]
-async fn track_add_refuses_worker_replay() {
+async fn track_add_admin_refuses_worker_replay() {
     let boot = boot(16).await;
     let (creator, planner) = boot.user_track("portfolio").await;
     let added = boot.added(&planner, "k1").await;
@@ -522,59 +538,7 @@ async fn track_add_refuses_worker_replay() {
 }
 
 #[tokio::test]
-async fn track_add_refuses_bound_creator() {
-    let boot = boot(16).await;
-    let (creator, planner) = boot.user_track("portfolio").await;
-    // The recorded owner is not running, so the scope is the fail-closed one; a running owner
-    // would make it `Only`. Neither is `All`.
-    sqlx::query("UPDATE tracks SET plugin_scope = 'dev.neige.owner' WHERE id = ?1")
-        .bind(&creator)
-        .execute(boot.repo.pool())
-        .await
-        .unwrap();
-    let before = boot.track_count().await;
-    assert_forbidden(
-        boot.add(&planner, boot.args("k1")).await,
-        "a bound creator may not add a Track",
-    );
-    assert_eq!(boot.track_count().await, before);
-}
-
-#[tokio::test]
-async fn track_add_refuses_created_creator() {
-    let boot = boot(16).await;
-    let (_, planner) = boot.user_track("portfolio").await;
-    let added = boot.added(&planner, "k1").await;
-    let added_planner = boot.planner_of(&added).await;
-    let before = boot.track_count().await;
-    assert_forbidden(
-        boot.add(&added_planner, boot.args("k2")).await,
-        "an added Track may not add a Track",
-    );
-    assert_eq!(boot.track_count().await, before);
-}
-
-#[tokio::test]
-async fn track_add_refuses_child_creator() {
-    let boot = boot(16).await;
-    let (parent, _) = boot.user_track("parent").await;
-    let (creator, planner) = boot.user_track("child").await;
-    sqlx::query("UPDATE tracks SET parent_track_id = ?1 WHERE id = ?2")
-        .bind(&parent)
-        .bind(&creator)
-        .execute(boot.repo.pool())
-        .await
-        .unwrap();
-    let before = boot.track_count().await;
-    assert_forbidden(
-        boot.add(&planner, boot.args("k1")).await,
-        "a child Track may not add a Track",
-    );
-    assert_eq!(boot.track_count().await, before);
-}
-
-#[tokio::test]
-async fn track_add_replays_and_refuses_changed_request() {
+async fn track_add_admin_replays_and_refuses_changed_request() {
     let boot = boot(16).await;
     let (_, planner) = boot.user_track("portfolio").await;
     let first = boot.add(&planner, boot.args("k1")).await.expect("mint");
@@ -603,7 +567,7 @@ async fn track_add_replays_and_refuses_changed_request() {
 }
 
 #[tokio::test]
-async fn track_add_delivers_text_once() {
+async fn track_add_admin_delivers_text_once() {
     let boot = boot(16).await;
     let (_, planner) = boot.user_track("portfolio").await;
     let added = boot.added(&planner, "k1").await;
@@ -722,7 +686,7 @@ async fn track_creator_does_not_keep_the_state_alive() {
 /// A creator whose Planner runs on Claude, on a server where Claude is not ready, gets the
 /// dependency refusal: -32503, nothing created.
 #[tokio::test]
-async fn track_add_refuses_while_the_creators_provider_is_unavailable() {
+async fn track_add_admin_refuses_while_the_creators_provider_is_unavailable() {
     let boot = boot(16).await;
     let (creator, planner) = boot.user_track("portfolio").await;
     sqlx::query(
@@ -742,9 +706,9 @@ async fn track_add_refuses_while_the_creators_provider_is_unavailable() {
     assert_eq!(boot.track_count().await, before);
 }
 
-/// A closed creator adds nothing: the refusal is state (-32409), and no Track is created.
+/// A closed Admin adds nothing, even while its grant remains set.
 #[tokio::test]
-async fn track_add_refuses_closed_creator() {
+async fn track_add_refuses_a_closed_admin() {
     let boot = boot(16).await;
     let (creator, planner) = boot.user_track("portfolio").await;
     let (status, closed) = send(
@@ -760,10 +724,13 @@ async fn track_add_refuses_closed_creator() {
         .add(&planner, boot.args("k1"))
         .await
         .expect_err("a closed Track adds none");
-    assert_eq!(error.code, -32409, "{error:?}");
-    assert!(error.message.contains("closed"), "{error:?}");
+    assert_eq!(error.code, -32403, "{error:?}");
+    assert_eq!(error.data.unwrap()["refusal"], "not_admin");
     assert_eq!(boot.track_count().await, before);
 }
 
 #[path = "track_add_retry.rs"]
 mod retry;
+
+#[path = "track_add/admin.rs"]
+mod admin;

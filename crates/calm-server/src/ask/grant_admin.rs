@@ -56,7 +56,7 @@ async fn require_grantable_tx(tx: &mut Transaction<'_, Sqlite>, track: &Track) -
     if track.admin_granted_at.is_some() {
         return Err(CalmError::Conflict("already_admin".into()));
     }
-    if !crate::area_admin::eligible_tx(tx, track).await? {
+    if !crate::area_admin::eligible_tx(&mut **tx, track).await? {
         return Err(CalmError::Forbidden(
             "ineligible: track cannot be an Area admin".into(),
         ));

@@ -32,7 +32,6 @@ fn expected_planner_toolset() -> Vec<&'static str> {
         "neige_terminal_open",
         "neige_terminal_read",
         "neige_terminal_show",
-        "neige_track_add",
         "neige_track_close",
         "neige_track_rename",
         "neige_user_ask",
@@ -83,7 +82,7 @@ async fn tools_list_names_for_role(role: CardRole) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn tools_list_for_planner_role_returns_planner_toolset() {
+async fn tools_list_hides_track_add_from_a_non_admin_planner() {
     let names = tools_list_names_for_role(CardRole::Planner).await;
     assert_eq!(names, expected_planner_toolset());
 }
@@ -267,7 +266,7 @@ async fn tools_list_for_report_card_role_is_empty() {
 }
 
 #[tokio::test]
-async fn tools_list_for_shared_daemon_resolves_thread_role() {
+async fn tools_list_hides_track_add_from_a_non_admin_attributed_daemon() {
     let boot = boot_shared_daemon_with_planner_thread().await;
     let (mut rd, mut wr) = connect(&boot.socket_path).await;
     let daemon_token = boot.daemon_token.as_deref().expect("daemon token");
@@ -328,4 +327,23 @@ async fn tools_list_for_shared_daemon_without_thread_returns_role_union() {
         );
     }
     let _ = (&boot.server, &boot.repo);
+}
+
+#[tokio::test]
+async fn tools_list_shows_track_add_to_an_admin() {
+    let boot = boot_with_role(CardRole::Planner).await;
+    sqlx::query("UPDATE tracks SET admin_granted_at=1 WHERE id=?1")
+        .bind(boot.track_id.as_str())
+        .execute(boot.sqlx.pool())
+        .await
+        .unwrap();
+    let (mut rd, mut wr) = connect(&boot.socket_path).await;
+    handshake(&mut rd, &mut wr, &boot.raw_token).await;
+    send_frame(&mut wr, tools_list_frame(2, &boot.thread_id)).await;
+    let response = recv_frame(&mut rd).await;
+    assert!(
+        tool_names_from_response(&response)
+            .iter()
+            .any(|n| n == "neige_track_add")
+    );
 }

@@ -210,7 +210,9 @@ mod tests {
         // contracts themselves are describe output, outside this surface; the cap is the measured
         // 30,903.
         // #2617: re-measured after the record/notice changes: 30,871 bytes; the cap follows it down.
-        const SURFACE_MAX_BYTES: usize = 30_871;
+        // Area Admin S2 replaces shape-based add guidance with the grant requirement and
+        // grant_admin recovery; its description is four bytes smaller, so lower the cap.
+        const SURFACE_MAX_BYTES: usize = 30_867;
         const DESCRIPTION_MAX_BYTES: usize = 2_048;
 
         let descriptors = build_default_registry().descriptors_listed_for(CardRole::Planner);

@@ -744,10 +744,8 @@ pub(crate) async fn get_track_detail(
         .sqlite_pool
         .as_ref()
         .ok_or_else(|| CalmError::Internal("SQLite required for admin eligibility".into()))?;
-    let mut tx = begin_immediate_tx(pool).await?;
     detail.can_admin = detail.track.admin_granted_at.is_some()
-        || crate::area_admin::eligible_tx(&mut tx, &detail.track).await?;
-    tx.rollback().await?;
+        || crate::area_admin::eligible_tx(pool, &detail.track).await?;
     if crate::managed_track::kernel_controls_lifecycle(&s.mcp_context, &id).await? {
         detail.can_close = false;
         detail.can_reopen = false;
@@ -2840,7 +2838,10 @@ pub(crate) async fn update_track(
                 let mut patch = p_for_tx;
                 let admin = patch.admin.take();
                 let live = crate::db::sqlite::track_get_tx(tx, &id.clone().into()).await?;
-                if admin == Some(true) && !crate::area_admin::eligible_tx(tx, &live).await? {
+                if admin == Some(true)
+                    && live.admin_granted_at.is_none()
+                    && !crate::area_admin::eligible_tx(&mut **tx, &live).await?
+                {
                     return Err(CalmError::Forbidden(
                         "ineligible: track cannot be an Area admin".into(),
                     ));

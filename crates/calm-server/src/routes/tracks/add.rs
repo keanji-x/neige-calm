@@ -1,6 +1,6 @@
 //! The route half of `neige_track_add` (#2104 K1): the keyed create `POST /api/tracks` runs, for a
 //! Planner that adds an ordinary top-level Track from a stored recipe, and the creator's cap on
-//! open Tracks it added. The tool half decides who may call; this half only creates.
+//! open Tracks it added. This half checks Admin authority atomically with creation.
 
 use std::sync::{Arc, OnceLock};
 
@@ -20,20 +20,33 @@ use crate::state::RouteState;
 use super::create::{self, KeyedActor, KeyedCreate, KeyedPlan, SendPath, TRACK_ADD_KEY_PREFIX};
 use super::{CreateTrackOptions, FolderClaim, TrackInit};
 
+enum AdmissionRefusal {
+    NotAdmin,
+    OpenCap(Vec<OpenAddedTrack>),
+}
+
 /// What the create transaction checks and stamps for a Track that another Track's Planner adds.
 pub(super) struct CreatorAdmission {
     creator_track_id: String,
     /// The raw key the creator passed, recorded as `tracks.creator_key`.
     creator_key: String,
     max_open: u32,
-    /// Set when the cap refuses: the open Tracks the refusal lists, read by the same count.
-    refused: Arc<OnceLock<Vec<OpenAddedTrack>>>,
+    /// Typed authority or cap refusal carried out of the rolled-back transaction.
+    refused: Arc<OnceLock<AdmissionRefusal>>,
 }
 
 impl CreatorAdmission {
     /// Refuse when the creator already has `max_open` open Tracks it added. Runs inside the create
     /// transaction (`BEGIN IMMEDIATE`), so concurrent adds cannot both take the last slot.
     pub(super) async fn admit_tx(&self, tx: &mut Transaction<'_, Sqlite>) -> Result<()> {
+        match crate::area_admin::require_admin_tx(tx, &self.creator_track_id).await {
+            Ok(()) => {}
+            Err(crate::area_admin::RequireAdminError::NotAdmin) => {
+                let _ = self.refused.set(AdmissionRefusal::NotAdmin);
+                return Err(CalmError::Forbidden("not_admin".into()));
+            }
+            Err(crate::area_admin::RequireAdminError::Storage(error)) => return Err(error),
+        }
         let open: Vec<(String, String)> = sqlx::query_as(concat!(
             "SELECT id, creator_key FROM tracks WHERE creator_track_id=?1",
             " AND closed_at IS NULL",
@@ -50,7 +63,7 @@ impl CreatorAdmission {
                     creator_key,
                 })
                 .collect();
-            let _ = self.refused.set(open);
+            let _ = self.refused.set(AdmissionRefusal::OpenCap(open));
             return Err(CalmError::Conflict(format!(
                 "track {} is at its cap of {} open added Tracks",
                 self.creator_track_id, self.max_open
@@ -204,7 +217,8 @@ impl TrackCreator for RouteTrackCreator {
         create::create_track_with_first_message(s.clone(), &actor, p, options, plan)
             .await
             .map_err(|error| match refused.get() {
-                Some(open) => TrackAddRefusal::OpenCap {
+                Some(AdmissionRefusal::NotAdmin) => TrackAddRefusal::NotAdmin,
+                Some(AdmissionRefusal::OpenCap(open)) => TrackAddRefusal::OpenCap {
                     cap: self.max_open,
                     open: open.clone(),
                 },

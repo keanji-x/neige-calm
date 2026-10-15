@@ -173,3 +173,64 @@ async fn admin_eligibility_and_detail_use_storage_facts() {
         assert_eq!(value["can_admin"], json!(false), "{shape}: {value}");
     }
 }
+
+#[tokio::test]
+async fn admin_patch_same_state_succeeds_when_now_ineligible() {
+    let (state, id, repo) = boot().await;
+    assert_eq!(
+        patch(state.clone(), &id, None, json!({"admin":true}))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let before = repo.track_get(&id).await.unwrap().unwrap();
+    sqlx::query("UPDATE tracks SET plugin_scope='bound' WHERE id=?1")
+        .bind(&id)
+        .execute(&repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        patch(state, &id, None, json!({"admin":true}))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let after = repo.track_get(&id).await.unwrap().unwrap();
+    assert_eq!(after.admin_granted_at, before.admin_granted_at);
+    assert_eq!(after.updated_at, before.updated_at);
+    assert_eq!(
+        repo.events_for_track(&id, &["track.updated"], None)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn can_admin_detail_reads_while_write_transaction_is_held() {
+    use http_body_util::BodyExt;
+    let (state, id, repo) = boot().await;
+    let pool = repo.sqlite_pool().unwrap();
+    let tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        .await
+        .unwrap();
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        app(state).oneshot(
+            Request::builder()
+                .uri(format!("/api/tracks/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        ),
+    )
+    .await;
+    tx.rollback().await.unwrap();
+    let response = response
+        .expect("detail GET must not wait for the write lock")
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let value: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(value["can_admin"], true);
+}

@@ -155,6 +155,16 @@ async fn filter_profile(
         descriptors
             .retain(|descriptor| crate::managed_track::report_planning_tool(&descriptor.name));
     }
+    if let Some(pool) = ctx.sqlite_pool.as_ref() {
+        let admin: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM cards c JOIN tracks t ON t.id=c.track_id WHERE c.id=?1 AND t.admin_granted_at IS NOT NULL)",
+        ).bind(card_id).fetch_one(pool).await.map_err(|error| RpcError::internal(error.to_string()))?;
+        if !admin {
+            descriptors.retain(|descriptor| {
+                !crate::area_admin::ADMIN_TOOLS.contains(&descriptor.name.as_str())
+            });
+        }
+    }
     Ok(descriptors)
 }
 

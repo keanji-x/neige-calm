@@ -3,7 +3,7 @@
 //!
 //! The create is the keyed create `POST /api/tracks` runs, reached through
 //! [`AppContext::track_creator`]. This module owns who may call it and what the key binds: the
-//! caller's role, plugin scope and depth, and the fingerprint of the five inputs.
+//! caller's role and the fingerprint of the five inputs. The create transaction checks Admin authority.
 
 use crate::error::CalmError;
 use crate::ids::{ActorId, CardId};
@@ -12,7 +12,6 @@ use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     role_gated_write_annotations,
 };
-use crate::mcp_server::tool_visibility::{TrackPluginScope, plugin_scope_for_track_row};
 use crate::mcp_server::tools::write_args::parse_write_args;
 use crate::model::{Card, CardRole, Track};
 use crate::session_projection_repo::AgentProvider;
@@ -73,6 +72,8 @@ pub struct OpenAddedTrack {
 /// Why a [`TrackCreator`] created nothing.
 #[derive(Debug)]
 pub enum TrackAddRefusal {
+    /// The live caller Track is not an open Admin.
+    NotAdmin,
     /// The creator already holds `cap` open added Tracks.
     OpenCap {
         cap: u32,
@@ -198,13 +199,10 @@ async fn track_add(
 ) -> Result<Value, RpcError> {
     let args = parse_args(args)?;
     let (card, creator) = resolve_creator(&ctx, &identity).await?;
-    if let Some(closed_at) = creator.closed_at {
-        return Err(RpcError::conflict(format!(
-            "{TOOL_TRACK_ADD}: Track {} closed at {closed_at}; a closed Track adds none",
-            creator.id
-        )));
-    }
-    let pool = authorize_creator(&ctx, &creator).await?;
+    let pool = ctx
+        .sqlite_pool
+        .as_ref()
+        .ok_or_else(|| internal("track add needs sqlite"))?;
     let planner_provider =
         crate::operation::child_track_adapter::track_planner_provider(pool, creator.id.as_str())
             .await
@@ -249,48 +247,15 @@ async fn resolve_creator(
     Ok((card, track))
 }
 
-/// Scope and depth: only an unbound top-level Track that no Track created may add Tracks, so a
-/// bound creator cannot escape its plugin fence and an added Track cannot fan out further.
-/// Returns the read pool the checks used.
-async fn authorize_creator<'a>(
-    ctx: &'a Arc<AppContext>,
-    creator: &Track,
-) -> Result<&'a sqlx::SqlitePool, RpcError> {
-    let plugin_host = ctx.plugin_host.get().cloned();
-    let scope = plugin_scope_for_track_row(creator, plugin_host.as_deref()).await;
-    if scope != TrackPluginScope::All {
-        return Err(forbidden(format!(
-            "Track {} is bound to a plugin; only an unbound Track may add Tracks",
-            creator.id
-        )));
-    }
-    if let Some(by) = &creator.creator_track_id {
-        return Err(forbidden(format!(
-            "Track {} was added by Track {by}; an added Track adds none",
-            creator.id
-        )));
-    }
-    let pool = ctx
-        .sqlite_pool
-        .as_ref()
-        .ok_or_else(|| internal("the creator's depth needs sqlite"))?;
-    let parent: Option<String> =
-        sqlx::query_scalar("SELECT parent_track_id FROM tracks WHERE id=?1")
-            .bind(creator.id.as_str())
-            .fetch_one(pool)
-            .await
-            .map_err(internal)?;
-    if let Some(parent) = parent {
-        return Err(forbidden(format!(
-            "Track {} is a child of Track {parent}; a child Track adds none",
-            creator.id
-        )));
-    }
-    Ok(pool)
-}
-
 fn refusal_error(creator: &Track, refusal: TrackAddRefusal) -> RpcError {
     match refusal {
+        TrackAddRefusal::NotAdmin => RpcError {
+            code: -32403,
+            message: format!(
+                "{TOOL_TRACK_ADD}: not_admin: requires an open Admin Track; ask with neige_user_ask action grant_admin"
+            ),
+            data: Some(json!({"refusal": "not_admin"})),
+        },
         TrackAddRefusal::OpenCap { cap, open } => {
             let listed = open
                 .iter()

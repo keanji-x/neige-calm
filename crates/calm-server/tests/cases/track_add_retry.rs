@@ -10,7 +10,7 @@ use super::{boot, send};
 /// The added Track's start failed, a reset then started its Planner, and the creator retried the
 /// add: a typed `-32409`, with no second start of the card.
 #[tokio::test]
-async fn track_add_retry_onto_a_planner_started_since_is_a_conflict() {
+async fn track_add_admin_retry_onto_a_planner_started_since_is_a_conflict() {
     let boot = boot(16).await;
     let (_, planner) = boot.user_track("portfolio").await;
     boot.codex.fail_next_thread_start_for_test();
@@ -68,7 +68,7 @@ async fn track_add_retry_onto_a_planner_started_since_is_a_conflict() {
 /// The added Track's start failed and another start of its Planner is still running (another
 /// instance holds its lease): the retried add starts nothing and answers a typed `-32503`.
 #[tokio::test]
-async fn track_add_retry_while_a_start_is_in_flight_is_unavailable() {
+async fn track_add_admin_retry_while_a_start_is_in_flight_is_unavailable() {
     let boot = boot(16).await;
     let (_, planner) = boot.user_track("portfolio").await;
     boot.codex.fail_next_thread_start_for_test();

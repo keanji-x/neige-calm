@@ -1422,7 +1422,7 @@
   },
   {
     "name": "neige_track_add",
-    "description_sha256": "e20898c7129e7f734e9cf632c534871f6517e8d130fe34be3702c86538ab68b6",
+    "description_sha256": "70b521cabaa6da529af208faa5c8b4b1a8d4a624f8b69c2b8acd71baedaa6f96",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
