@@ -35,7 +35,7 @@ export function renderReadmeFixture(initial: string, detailReady: Promise<void> 
     if (request.path === '/api/areas/project/tracks') return ok([track]);
     if (request.path === `/api/tracks/${track.id}`) {
       await detailReady;
-      return ok({ track, can_reopen: false, can_close: true, cards: [card, report], overlays: [] });
+      return ok({ track, can_reopen: false, can_admin: false, can_close: true, cards: [card, report], overlays: [] });
     }
     if (request.path === `/api/tracks/${track.id}/report`) return ok({ taskDiagnostics: [] });
     if (request.path === `/api/tracks/${track.id}/workspace/readfile?path=docs%2FREADME.md`) {

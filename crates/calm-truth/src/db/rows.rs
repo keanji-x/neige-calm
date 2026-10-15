@@ -62,13 +62,13 @@ impl From<AreaFolderRow> for AreaFolder {
 
 /// The `tracks` column list every `query_as::<_, TrackRow>` SELECT must use, in `TrackRow` field order. `query_as`
 /// binds columns by name at **runtime**, so a stale hand-copied list compiles fine and blows up in production.
-pub const TRACK_SELECT_COLUMNS: &str = "id, area_id, title, sort, pinned_at, closed_at, template_id, \
+pub const TRACK_SELECT_COLUMNS: &str = "id, area_id, title, sort, pinned_at, closed_at, admin_granted_at, template_id, \
      plugin_scope, purpose, template_input, recipe_id, recipe_revision, creator_track_id, \
      creator_key, workspace_kind, workspace_path, workspace_frozen_at, workspace_worktree_path, \
      created_at, updated_at";
 
 /// [`TRACK_SELECT_COLUMNS`] with every column qualified by the `w` table alias; the two lists must stay in lockstep.
-pub const TRACK_SELECT_COLUMNS_W: &str = "w.id, w.area_id, w.title, w.sort, w.pinned_at, w.closed_at, \
+pub const TRACK_SELECT_COLUMNS_W: &str = "w.id, w.area_id, w.title, w.sort, w.pinned_at, w.closed_at, w.admin_granted_at, \
      w.template_id, w.plugin_scope, w.purpose, w.template_input, \
      w.recipe_id, w.recipe_revision, w.creator_track_id, w.creator_key, w.workspace_kind, \
      w.workspace_path, w.workspace_frozen_at, w.workspace_worktree_path, w.created_at, w.updated_at";
@@ -84,6 +84,7 @@ pub struct TrackRow {
     pub sort: f64,
     pub pinned_at: Option<i64>,
     pub closed_at: Option<i64>,
+    pub admin_granted_at: Option<i64>,
     pub template_id: Option<String>,
     pub plugin_scope: Option<String>,
     pub purpose: Option<String>,
@@ -116,6 +117,7 @@ impl From<TrackRow> for Track {
             sort: r.sort,
             pinned_at: r.pinned_at,
             closed_at: r.closed_at,
+            admin_granted_at: r.admin_granted_at,
             // The one place the wire alias is computed.
             cwd_wire_alias: r.workspace_path.clone(),
             template_id: r.template_id,

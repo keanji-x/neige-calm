@@ -80,10 +80,10 @@ function setup(reply?: Reply) {
       if (request.path === '/api/areas/c1/tracks') return ok([TRACK, TRACK_B]);
       if (request.path === '/api/overlays?entity_kind=track') return ok([]);
       if (request.path === '/api/tracks/w1') return ok({
-        track: TRACK, can_reopen: false, can_close: true, cards: [CARD], overlays: [],
+        track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [CARD], overlays: [],
       });
       if (request.path === '/api/tracks/w2') return ok({
-        track: TRACK_B, can_reopen: false, can_close: true, cards: [CARD_B], overlays: [],
+        track: TRACK_B, can_reopen: false, can_admin: false, can_close: true, cards: [CARD_B], overlays: [],
       });
       if (request.path.includes('/harness/items')) return ok([]);
       if (request.path.endsWith('/planner/run')) return ok(PLANNER_RUN_IDLE);
@@ -109,7 +109,7 @@ async function openConversation() {
 it('refreshes a mounted agent catalog when its first turn settles', async () => {
   let configured = false;
   const { client } = setup((request) => {
-    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_close: true, cards: [{ ...CARD, payload: { planner_harness: true, planner_provider: 'opencode' } }], overlays: [] });
+    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [{ ...CARD, payload: { planner_harness: true, planner_provider: 'opencode' } }], overlays: [] });
     if (request.path.includes('/models')) return ok({
       models: configured ? [{ id: 'declared', model: 'declared', resolved_model: null, display_name: 'Declared model', description: '', is_default: true, supported_reasoning_efforts: [], default_reasoning_effort: null }] : [],
       default: { model: configured ? 'declared' : null, reasoning_effort: null, supported_reasoning_efforts: null },
@@ -163,7 +163,7 @@ it('renders local screenshot references from planner history using the agent wor
   setup((request) => {
     if (request.path === '/api/tracks/w1') return ok({
       track: { ...TRACK, workspace: { worktree: agentRoot } },
-      can_reopen: false, can_close: true, cards: [CARD], overlays: [],
+      can_reopen: false, can_admin: false, can_close: true, cards: [CARD], overlays: [],
     });
     if (request.path.includes('/harness/items')) return ok([{
       ...harnessRows(1)[0],
@@ -389,12 +389,12 @@ describe('planner conversation regressions', () => {
     await screen.findByRole('button', { name: 'Conversation Planner chat, 3 turns' });
 
     client.setQueryData(queryKeys.trackDetail(TRACK.id), {
-      track: TRACK, can_reopen: false, can_close: true, cards: [CARD_SAME_TRACK], overlays: [],
+      track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [CARD_SAME_TRACK], overlays: [],
     });
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Other chat' }));
     await screen.findByRole('button', { name: 'Conversation Other chat, 3 turns' });
     client.setQueryData(queryKeys.trackDetail(TRACK.id), {
-      track: TRACK, can_reopen: false, can_close: true, cards: [CARD], overlays: [],
+      track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [CARD], overlays: [],
     });
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Planner chat' }));
     await screen.findByRole('button', { name: 'Conversation Planner chat, 3 turns' });
@@ -1105,7 +1105,7 @@ describe('planner conversation regressions', () => {
         /* The wedged case also carries the kernel's stale `working` verdict: the drawer's
                    own wedge must outrank it. */
         : policy === 'stalled' && request.path === '/api/tracks/w1'
-          ? ok({ track: TRACK, can_reopen: false, can_close: true, cards: [CARD],
+          ? ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [CARD],
               overlays: [trackActivityOverlay([{ card_id: CARD.id, state: 'working' }])] })
           : undefined);
       await openConversation();
@@ -1176,7 +1176,7 @@ describe('planner conversation regressions', () => {
           return ok({ ...PLANNER_RUN_IDLE, phase: 'turn_running', manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: { turn_id: 'turn-1', elapsed_ms: elapsed } });
         }
         return request.path === '/api/tracks/w1'
-          ? ok({ track: TRACK, can_reopen: false, can_close: true, cards: [CARD],
+          ? ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [CARD],
               overlays: [trackActivityOverlay([{ card_id: CARD.id, state: 'working' }])] })
           : undefined;
       });

@@ -66,7 +66,7 @@ function renderApp(managed = false) {
       if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok(TRACKS));
       const detail = TRACKS.find((candidate) => request.path === `/api/tracks/${candidate.id}`);
       if (detail !== undefined) {
-        return Promise.resolve(ok({ track: detail, can_reopen: false, can_close: true, cards: [], overlays: [] }));
+        return Promise.resolve(ok({ track: detail, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [] }));
       }
       if (request.path === '/api/settings') return Promise.resolve(ok({}));
       return Promise.resolve(ok([]));

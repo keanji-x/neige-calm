@@ -25,7 +25,7 @@ export function createTrackTaskFixture() {
     if (request.method !== 'GET') throw new Error(`Unexpected write: ${request.method} ${request.path}`);
     if (request.path === '/api/areas') return Promise.resolve(ok([area]));
     if (request.path === '/api/areas/c1/tracks') return Promise.resolve(ok([track]));
-    if (request.path === '/api/tracks/w1') return Promise.resolve(ok({ track, can_reopen: false, can_close: true, cards: [reportCard], overlays: [] }));
+    if (request.path === '/api/tracks/w1') return Promise.resolve(ok({ track, can_reopen: false, can_admin: false, can_close: true, cards: [reportCard], overlays: [] }));
     if (request.path === '/api/tracks/w1/report') return Promise.resolve(ok({ ...reportCard.payload, taskDiagnostics: [
       { blockId: declaration.id, key: taskKey, schedulable: true, status: first.status,
         statusDetail: first.status_detail, workerCardId: null, diagnostics: [] },

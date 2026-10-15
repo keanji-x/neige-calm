@@ -179,6 +179,7 @@ impl TrackCreator for RouteTrackCreator {
             theme: RequestTheme::default_dark(),
         };
         let options = CreateTrackOptions {
+            admin: false,
             managed_identity: None,
             creator: Some(CreatorAdmission {
                 creator_track_id,

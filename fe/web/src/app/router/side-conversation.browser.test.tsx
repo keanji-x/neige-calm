@@ -35,7 +35,7 @@ function setup(outcome?: 'interrupted' | 'failed', longText?: string, live?: { t
     if (request.path === '/api/areas') body = [{ id: 'area', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 }];
     if (request.path === '/api/areas/area/tracks') body = [track];
     if (request.path === '/api/settings') body = {};
-    if (request.path === `/api/tracks/${track.id}`) body = { track, can_reopen: false, can_close: true,
+    if (request.path === `/api/tracks/${track.id}`) body = { track, can_reopen: false, can_admin: false, can_close: true,
       cards: rows.map((row) => ({ id: row.id, track_id: track.id, title: row.title, kind: 'codex', sort: 1,
         payload: { harness_profile: 'assistant' }, deletable: false, created_at: 1, updated_at: 2 })), overlays: [] };
     if (request.path === `/api/tracks/${track.id}/conversations`) {

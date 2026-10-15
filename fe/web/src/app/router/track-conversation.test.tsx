@@ -183,12 +183,12 @@ function setup(reply?: Reply, storage?: UiPreferenceStorage, recovery?: Recovery
       if (request.path === '/api/overlays?entity_kind=track') return ok([]);
       if (request.path === '/api/tracks/w1') {
         return ok({
-          track: TRACK, can_reopen: false, can_close: true,
+          track: TRACK, can_reopen: false, can_admin: false, can_close: true,
           cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD], overlays: [],
         });
       }
       if (request.path === '/api/tracks/w2') return ok({
-        track: BARE_TRACK, can_reopen: false, can_close: true, cards: [], overlays: [],
+        track: BARE_TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [],
       });
       if (request.path === CONVERSATIONS) return ok([assistantRow()]);
       if (request.path === BARE_CONVERSATIONS) return ok([]);
@@ -318,7 +318,7 @@ describe('track conversations', () => {
   it('both notification kinds show the kernel\'s words and a row click opens the Planner composer', async () => {
     const mount = () => setup((request) => request.path === '/api/tracks/w1'
       ? ok({
-          track: TRACK, can_reopen: false, can_close: true,
+          track: TRACK, can_reopen: false, can_admin: false, can_close: true,
           cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
           overlays: [trackActivityOverlay({ attention: 'failed', items: [
             plannerDownItem('400: The gpt-6-astra model requires a newer version of Codex.', 5),
@@ -358,7 +358,7 @@ describe('track conversations', () => {
     const text = 'Turn timed out at 2026-10-14 12:00 UTC after 30 minutes.';
     const { requests } = setup((request) => {
       if (request.path === '/api/tracks/w1/activity/dismissals') return { status: 204, statusText: 'No Content', body: undefined };
-      if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_close: true,
+      if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true,
         cards: [PLANNER_CARD], overlays: [trackActivityOverlay({ attention: 'none', items: [
           { source: 'planner_turn_timeout', key: 'planner_turn_timeout:9', text, at_ms: 5 },
         ] })] });
@@ -384,7 +384,7 @@ describe('track conversations', () => {
       }
       return request.path === '/api/tracks/w1'
         ? ok({
-            track: TRACK, can_reopen: false, can_close: true,
+            track: TRACK, can_reopen: false, can_admin: false, can_close: true,
             cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
             overlays: [trackActivityOverlay({ attention: 'failed', items: [
               plannerDownItem('unexpected status 403 Forbidden', 5),
@@ -418,7 +418,7 @@ describe('track conversations', () => {
   it('counts an ask and planner down as two notifications', async () => {
     setup((request) => request.path === '/api/tracks/w1'
       ? ok({
-          track: TRACK, can_reopen: false, can_close: true,
+          track: TRACK, can_reopen: false, can_admin: false, can_close: true,
           cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
           overlays: [trackActivityOverlay({ attention: 'failed',
             items: [plannerDownItem('boom', 5), askItem('Which region?', 4)],
@@ -435,7 +435,7 @@ describe('track conversations', () => {
   it('ignores a retired kernel/card/status row and a plugin-authored activity row', async () => {
     setup((request) => request.path === '/api/tracks/w1'
       ? ok({
-          track: TRACK, can_reopen: false, can_close: true,
+          track: TRACK, can_reopen: false, can_admin: false, can_close: true,
           cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD],
           overlays: [
             cardStatusOverlay(WORKER_CARD.id, 'AwaitingInput', 5),
@@ -3867,7 +3867,7 @@ it('uses a spinner while a closed conversation runs, a blue unread dot on comple
   let cards: ActivityCardWire[] = [];
   const { client } = setup(request => {
     if (request.method === 'GET' && request.path === CONVERSATIONS) return ok(rows);
-    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_close: true,
+    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true,
       cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD], overlays: [trackActivityOverlay({ working: cards.length > 0, cards })] });
     return undefined;
   }, undefined, undefined, receiptKernel());
@@ -3985,7 +3985,7 @@ it('shows a closed Planner working and preserves unread completion until its his
   /* `CardRuntimeView.last_turn_completed_ms`: absent while the first turn is still running. */
   let lastTurnCompletedMs: number | undefined;
   const { client } = setup(request => {
-    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_close: true,
+    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true,
       cards: [{ ...PLANNER_CARD, runtime: { worker_session_id: 'planner-live', kind: 'shared-spec', status, updated_at_ms: activityAt,
         ...(lastTurnCompletedMs === undefined ? {} : { last_turn_completed_ms: lastTurnCompletedMs }) } }],
       overlays: [trackActivityOverlay({ working: cards.length > 0, activity_at_ms: lastTurnCompletedMs ?? null, cards })] });
@@ -4041,7 +4041,7 @@ it('conversation rows read activity.cards, not session state', async () => {
   let cards: ActivityCardWire[] = [];
   const { client } = setup(request => {
     if (request.method === 'GET' && request.path === CONVERSATIONS) return ok([assistantRow({ state: 'turn_pending' })]);
-    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_close: true,
+    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true,
       cards: [PLANNER_CARD, ASSISTANT_CARD, WORKER_CARD], overlays: [trackActivityOverlay({ cards })] });
     return undefined;
   }, undefined, undefined, receiptKernel());
@@ -4075,7 +4075,7 @@ it('the injected planner row reads activity.cards and last_turn_completed_ms', a
   let updatedAtMs = 50;
   let lastTurnCompletedMs: number | undefined;
   const { client } = setup(request => {
-    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_close: true,
+    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true,
       cards: [{ ...PLANNER_CARD, runtime: { worker_session_id: 'planner-live', kind: 'codex', status: 'turn_pending',
         updated_at_ms: updatedAtMs, ...(lastTurnCompletedMs === undefined ? {} : { last_turn_completed_ms: lastTurnCompletedMs }) } }],
       overlays: [trackActivityOverlay({ cards })] });

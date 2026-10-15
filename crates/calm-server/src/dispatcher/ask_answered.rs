@@ -25,6 +25,7 @@ pub(crate) async fn observation(
     let Some(Event::AskRequested {
         questions,
         delivery,
+        action,
         ..
     }) = asked.map(|row| row.event)
     else {
@@ -38,6 +39,9 @@ pub(crate) async fn observation(
     for (question, answer) in questions.into_iter().zip(answers) {
         let answer = match answer {
             AskAnswer::Option(index) => match question.options.get(*index) {
+                Some(_) if action == Some(crate::event::AskAction::GrantAdmin) && *index == 0 => {
+                    "Admin granted.".into()
+                }
                 Some(label) => label.clone(),
                 None => {
                     // The answer transaction admits only an option the question has.

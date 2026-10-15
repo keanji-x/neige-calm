@@ -291,11 +291,11 @@ async fn today_launchpad_ensure_tx(
         let sort: f64 = sqlx::query_scalar("SELECT CAST(COALESCE(MAX(sort),-1)+1 AS REAL) FROM tracks WHERE area_id=?1")
             .bind(area_id).fetch_one(&mut **tx).await?;
         // `cwd` is off this INSERT's column list; the single workspace writer below writes it.
-        sqlx::query("INSERT INTO tracks(id,area_id,title,sort,template_id,purpose,template_input,created_at,updated_at) VALUES(?1,?2,'Today',?3,NULL,'launchpad',NULL,?4,?4)")
+        sqlx::query("INSERT INTO tracks(id,area_id,title,sort,template_id,purpose,template_input,admin_granted_at,created_at,updated_at) VALUES(?1,?2,'Today',?3,NULL,'launchpad',NULL,NULL,?4,?4)")
             .bind(&id).bind(area_id).bind(sort).bind(now).execute(&mut **tx).await?;
         s.write.area_cache().insert(TrackId::from(id.clone()), area_id.to_string().into());
         (Track { id:id.into(), area_id:area_id.to_string().into(), title:"Today".into(), sort,
-            pinned_at:None, closed_at:None, cwd_wire_alias:String::new(),
+            pinned_at:None, closed_at:None, admin_granted_at:None, cwd_wire_alias:String::new(),
             template_id:None, plugin_scope:None, purpose:Some("launchpad".into()), template_input:None,
             recipe_id:None, recipe_revision:None, creator_track_id:None, creator_key:None, workspace: TrackWorkspace::default(), created_at:now, updated_at:now }, true, false)
     };

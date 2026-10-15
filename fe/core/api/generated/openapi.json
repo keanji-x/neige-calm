@@ -13520,6 +13520,9 @@
           "planner_provider"
         ],
         "properties": {
+          "admin": {
+            "type": "boolean"
+          },
           "allow_cross_area_cwd": {
             "oneOf": [
               {
@@ -17455,6 +17458,14 @@
           "updated_at"
         ],
         "properties": {
+          "admin_granted_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix-ms time a person granted Area admin authority; absent on historical events."
+          },
           "area_id": {
             "type": "string"
           },
@@ -17692,10 +17703,15 @@
           "track",
           "can_reopen",
           "can_close",
+          "can_admin",
           "cards",
           "overlays"
         ],
         "properties": {
+          "can_admin": {
+            "type": "boolean",
+            "description": "Whether the Area admin toggle applies, computed by the server."
+          },
           "can_close": {
             "type": "boolean",
             "description": "Open and not an Area chat: the same authority fence the close write applies."
@@ -18119,6 +18135,13 @@
         "type": "object",
         "description": "`plugin_scope` is create-time only and is not a field here. Extra JSON keys are ignored.",
         "properties": {
+          "admin": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Person-only Area admin grant or revoke; handled by the server authority owner."
+          },
           "automation_policy": {
             "type": [
               "string",

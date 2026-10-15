@@ -5,6 +5,7 @@ use crate::session_projection_repo::AgentProvider;
 
 fn provider_shape(planner_provider: AgentProvider) -> CreateRequestShape {
     CreateRequestShape {
+        admin: false,
         planner_provider,
         model: None,
         reasoning_effort: None,

@@ -94,6 +94,7 @@ fn track_min() -> Track {
         sort: 1.5,
         pinned_at: None,
         closed_at: None,
+        admin_granted_at: None,
         cwd_wire_alias: String::new(),
         template_id: None,
         plugin_scope: None,
@@ -171,6 +172,7 @@ golden_test!(
         Track {
             pinned_at: Some(222),
             closed_at: Some(333),
+            admin_granted_at: None,
             cwd_wire_alias: "/tmp/golden-track".into(),
             workspace: TrackWorkspace {
                 kind: TrackWorkspaceKind::Managed,

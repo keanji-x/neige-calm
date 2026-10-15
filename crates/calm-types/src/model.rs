@@ -238,6 +238,9 @@ pub struct Track {
     pub pinned_at: Option<i64>,
     /// Unix-ms time the track was closed, or `None` while it is open. Closed tracks do not schedule.
     pub closed_at: Option<i64>,
+    /// Unix-ms time a person granted Area admin authority; absent on historical events.
+    #[serde(default)]
+    pub admin_granted_at: Option<i64>,
     /// Wire-compatibility alias of `workspace.path`, serialized as `cwd`; Rust readers must use `workspace.path`.
     #[serde(rename = "cwd", default)]
     pub cwd_wire_alias: String,

@@ -150,7 +150,7 @@ const activityItemWireSchema = z.discriminatedUnion('source', [
     ask_id: z.number(),
     questions: z.array(z.object({ title: z.string(), options: z.array(z.string()) })),
     delivery: z.enum(['wake', 'hold']),
-    action: z.object({ kind: z.literal('reopen_track'), closed_at: z.number() }).optional(),
+    action: z.union([z.object({ kind: z.literal('reopen_track'), closed_at: z.number() }), z.object({ kind: z.literal('grant_admin') })]).optional(),
   }),
   z.object({
     source: z.literal('planner_down'),
@@ -329,6 +329,7 @@ export const trackDetailSchema = z.object({
   track: trackWireSchema,
   can_reopen: z.boolean(),
   can_close: z.boolean(),
+  can_admin: z.boolean(),
   cards: z.array(cardWireSchema),
   overlays: z.array(overlayWireSchema),
 });
@@ -358,6 +359,7 @@ export function plannerProviderOf(payload: unknown): AgentProvider {
 }
 
 export type NewTrackBody = Readonly<{
+  admin?: boolean;
   area_id: string;
   /** The Planner's backend, stamped on its card and never changed. Required: the kernel refuses a create without it. */
   planner_provider: AgentProvider;
@@ -546,6 +548,7 @@ export function recipeSaveLanded(stored: TrackRecipe, sent: Readonly<{ title: st
 }
 
 export type TrackPatchBody = Readonly<{
+  admin?: boolean;
   title?: string;
   sort?: number;
   pinned_at?: number | null;

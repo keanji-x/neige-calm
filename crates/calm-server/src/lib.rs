@@ -542,6 +542,7 @@ pub mod acp_planner;
 /// The Today summary's activity source; one caller (`routes::today_summary`), no MCP surface.
 pub mod activity_window;
 pub mod agent_providers;
+pub mod area_admin;
 pub mod area_reports;
 /// One way to ask the user (#2209): `ask.requested` / `ask.answered`.
 pub mod ask;

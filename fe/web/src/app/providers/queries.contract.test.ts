@@ -610,7 +610,7 @@ describe('a delete answered done drops its cache entry like a success', () => {
 
   it.each([['done', notFound, false], ['unknown', lost, true]] as const)('track delete answered %s', async (_name, answer, kept) => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    client.setQueryData(queryKeys.trackDetail('w1'), { track: baseTrackWire, can_reopen: false, can_close: true, cards: [], overlays: [] });
+    client.setQueryData(queryKeys.trackDetail('w1'), { track: baseTrackWire, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [] });
     const transport: ApiTransportPort = { send: (request) => (request.method === 'GET' ? new Promise(() => undefined) : answer()) };
     const { result } = renderHook(() => useTrackMutations(transport, unauthorized), { wrapper: wrapper(client) });
     await act(() => expect(result.current.remove('w1', 'c1')).rejects.toBeInstanceOf(ApiError));
@@ -624,7 +624,7 @@ describe('track detail mutation cache writes', () => {
     deletable: true, created_at: 1, updated_at: 2,
   });
   const detail = {
-    track: { ...baseTrackWire }, can_reopen: false, can_close: true,
+    track: { ...baseTrackWire }, can_reopen: false, can_admin: false, can_close: true,
     cards: [cardWire('card-a'), cardWire('card-b')], overlays: [],
   };
 

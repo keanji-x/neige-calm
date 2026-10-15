@@ -48,7 +48,7 @@ function renderTrack(closedAt: number | null, { failRefetch = false } = {}): Har
           return Promise.resolve({ status: 500, statusText: 'Refresh failed', body: {} });
         }
         const closed = track.closed_at !== null;
-        return Promise.resolve(ok({ track, can_reopen: closed, can_close: !closed, cards: [], overlays: [] }));
+        return Promise.resolve(ok({ track, can_reopen: closed, can_admin: false, can_close: !closed, cards: [], overlays: [] }));
       }
       if (request.path.endsWith('/conversations')) return Promise.resolve(ok([]));
       if (request.path === '/api/settings') return Promise.resolve(ok({}));

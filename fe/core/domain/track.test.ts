@@ -142,9 +142,9 @@ describe('open and closed', () => {
     const detail = { track: { ...baseWire }, cards: [], overlays: [] };
     expect(trackDetailSchema.safeParse(detail).success).toBe(false);
     expect(trackDetailSchema.safeParse({ ...detail, can_reopen: true }).success).toBe(false);
-    expect(trackDetailSchema.safeParse({ ...detail, can_close: true }).success).toBe(false);
-    expect(trackDetailSchema.parse({ ...detail, can_reopen: true, can_close: false }))
-      .toMatchObject({ can_reopen: true, can_close: false });
+    expect(trackDetailSchema.safeParse({ ...detail, can_admin: false, can_close: true }).success).toBe(false);
+    expect(trackDetailSchema.parse({ ...detail, can_reopen: true, can_admin: false, can_close: false }))
+      .toMatchObject({ can_reopen: true, can_admin: false, can_close: false });
   });
 
   it('builds the reopen PATCH without a parallel endpoint', () => {

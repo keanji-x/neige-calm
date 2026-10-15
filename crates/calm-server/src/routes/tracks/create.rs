@@ -101,6 +101,7 @@ pub(super) struct ResumeFirstMessage {
 /// Every request field that decides the minted track, as the caller sent it (cloned
 /// before `CreationSource::stamp` rewrites the template spelling).
 pub(super) struct CreateRequestShape {
+    pub admin: bool,
     pub planner_provider: crate::session_projection_repo::AgentProvider,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
@@ -434,6 +435,11 @@ fn create_request_digest(shape: &CreateRequestShape) -> Result<String> {
         "theme": shape.theme,
         "fork_report_from": shape.fork_report_from,
     });
+    // Keep historical non-admin fingerprints: explicit false and omission mean the same
+    // authority. Only a grant changes the identity of a keyed create.
+    if shape.admin {
+        payload["admin"] = serde_json::json!(true);
+    }
     // Existing durable bindings predate this optional field. Preserve their
     // exact payload shape when no authorization was supplied.
     if let Some(authorization) = &shape.allow_cross_area_cwd {

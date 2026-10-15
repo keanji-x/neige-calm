@@ -201,7 +201,7 @@ describe('degraded workspace reads stay usable', () => {
       }]);
       if (request.path === '/api/areas') return ok(areas.slice(0, 1));
       if (request.path === '/api/areas/c1/tracks') return ok([track]);
-      if (request.path === '/api/tracks/w1') return ok({ track, can_reopen: false, can_close: true, cards: [], overlays: [] });
+      if (request.path === '/api/tracks/w1') return ok({ track, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [] });
       if (request.method === 'POST') creates.push(request);
       return ok([]);
     });
@@ -237,7 +237,7 @@ describe('degraded workspace reads stay usable', () => {
       }]);
       if (request.path === '/api/areas') return ok(areas.slice(0, 1));
       if (request.path === '/api/areas/c1/tracks') return ok([track]);
-      if (request.path === '/api/tracks/w1') return ok({ track, can_reopen: false, can_close: true, cards: [], overlays: [] });
+      if (request.path === '/api/tracks/w1') return ok({ track, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [] });
       if (request.method === 'POST') {
         creates.push(request);
         return fail('Acknowledgement lost');
@@ -309,7 +309,7 @@ describe('degraded workspace reads stay usable', () => {
       }]);
       if (request.path === '/api/areas') return ok(areas.slice(0, 1));
       if (request.path === '/api/areas/c1/tracks') return ok([track]);
-      if (request.path === '/api/tracks/w1') return ok({ track, can_reopen: false, can_close: true, cards: [], overlays: [] });
+      if (request.path === '/api/tracks/w1') return ok({ track, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [] });
       if (request.method === 'POST') creates.push(request);
       return ok([]);
     });
@@ -346,7 +346,7 @@ describe('degraded workspace reads stay usable', () => {
     /* The Notifications aside reads the track's own `kernel/track/activity`
        overlay (#1722 §5.3), which arrives with the detail — the workspace-wide
        overlays read being down changes nothing on this page. */
-    resolveDetail(ok({ track, can_reopen: false, can_close: true, cards: [plannerCard], overlays: [{
+    resolveDetail(ok({ track, can_reopen: false, can_admin: false, can_close: true, cards: [plannerCard], overlays: [{
       id: 'o1', plugin_id: 'kernel', entity_kind: 'track', entity_id: 'w1', kind: 'activity', updated_at: 2,
       payload: { schemaVersion: 4, working: false, attention: 'input', activity_at_ms: 2,
         items: [{ source: 'ask', key: 'ask:2', text: 'Which region?', at_ms: 2, ask_id: 2,
@@ -368,7 +368,7 @@ describe('degraded workspace reads stay usable', () => {
           cards: [{ card_id: plannerCard.id, state: 'input' }] },
       }]);
       if (request.path === '/api/tracks/w1') return ok({
-        track, can_reopen: false, can_close: true, cards: [], overlays: [],
+        track, can_reopen: false, can_admin: false, can_close: true, cards: [], overlays: [],
       });
       return ok([]);
     });

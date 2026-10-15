@@ -40,7 +40,7 @@ function load(kernel: ReadReceiptsKernel, storage: Map<string, string>, initial:
     if (request.path === '/api/areas/work/tracks') return ok(tracks);
     if (request.path.startsWith('/api/overlays?')) return ok(overlays);
     const detail = tracks.find((track) => request.path === `/api/tracks/${track.id}`);
-    if (detail) return ok({ track: detail, can_reopen: false, can_close: true, cards: [],
+    if (detail) return ok({ track: detail, can_reopen: false, can_admin: false, can_close: true, cards: [],
       overlays: overlays.filter((overlay) => overlay.entity_id === detail.id) });
     return ok([]);
   } };

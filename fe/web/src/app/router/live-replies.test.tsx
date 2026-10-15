@@ -93,7 +93,7 @@ function setup(servers: Record<string, CardServer>, gate: Gate = { hold: false, 
       if (request.path === '/api/areas/c1/tracks') return ok([TRACK]);
       if (request.path === '/api/overlays?entity_kind=track') return ok([]);
       if (request.path === '/api/tracks/w1') return ok({
-        track: TRACK, can_reopen: false, can_close: true, cards: [CARD, OTHER], overlays: [],
+        track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [CARD, OTHER], overlays: [],
       });
       if (request.path === '/api/tracks/w1/conversations') return ok([OTHER_ROW]);
       if (request.path === '/api/settings') return ok({});

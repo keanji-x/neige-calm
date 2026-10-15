@@ -471,6 +471,7 @@ fn dispatcher_filter_matches_push_kinds() {
                 sort: 0.0,
                 pinned_at: None,
                 closed_at: None,
+                admin_granted_at: None,
                 cwd_wire_alias: String::new(),
                 template_id: None,
                 plugin_scope: None,
@@ -2626,6 +2627,7 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
                     sort: 0.0,
                     pinned_at: None,
                     closed_at: None,
+                    admin_granted_at: None,
                     cwd_wire_alias: String::new(),
                     template_id: None,
                     plugin_scope: None,
@@ -4302,4 +4304,36 @@ fn asynchronous_opened_results_keep_waking_live_and_on_replay() {
         |_| None
     ));
     assert!(PLANNER_CATCH_UP_KINDS.contains(&event.kind_tag()));
+}
+
+#[tokio::test]
+async fn grant_admin_wake_text_is_explicit() {
+    let (repo, _) = planner_push_delivery_fixture().await;
+    let ask_id = seed_ask(&repo, "w").await;
+    let payload = serde_json::to_value(Event::AskRequested {
+        track_id: TrackId::from("w"),
+        questions: vec![AskQuestion {
+            title: "Manage Tracks?".into(),
+            options: vec!["Grant admin".into(), "Not now".into()],
+        }],
+        delivery: AskDelivery::Wake,
+        source_item_id: None,
+        action: Some(crate::event::AskAction::GrantAdmin),
+    })
+    .unwrap();
+    sqlx::query("UPDATE events SET payload=?2 WHERE id=?1")
+        .bind(ask_id)
+        .bind(payload["data"].to_string())
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    let observation =
+        ask_answered::observation(&repo, &TrackId::from("w"), ask_id, &[AskAnswer::Option(0)])
+            .await
+            .unwrap()
+            .unwrap();
+    let HarnessObservation::AskAnswered { answers, .. } = observation else {
+        panic!("missing wake");
+    };
+    assert_eq!(answers[0].answer, "Admin granted.");
 }

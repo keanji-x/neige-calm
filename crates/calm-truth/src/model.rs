@@ -112,6 +112,8 @@ pub struct TrackPatch {
     pub pinned_at: Option<Option<i64>>,
     /// `true` closes the track and `false` reopens it; the server stamps the time. Omit to leave alone.
     pub closed: Option<bool>,
+    /// Person-only Area admin grant or revoke; handled by the server authority owner.
+    pub admin: Option<bool>,
     /// Maximum admitted planner-declared task inventory. A present null resets to
     /// the kernel default.
     #[serde(default, deserialize_with = "deserialize_double_option")]
@@ -397,6 +399,8 @@ pub struct TrackDetail {
     pub can_reopen: bool,
     /// Open and not an Area chat: the same authority fence the close write applies.
     pub can_close: bool,
+    /// Whether the Area admin toggle applies, computed by the server.
+    pub can_admin: bool,
     pub cards: Vec<Card>,
     pub overlays: Vec<Overlay>,
 }

@@ -44,7 +44,7 @@ function setup({ reopen = false, refusal = false } = {}) {
       if (request.path === '/api/areas/c1/tracks') return ok([currentTrack]);
       /* The overlay still lists the ask after the answer: the projector's `overlay.set` has not landed yet. */
       if (request.path === '/api/tracks/w1') return ok({
-        track: currentTrack, can_reopen: currentTrack.closed_at !== null, can_close: currentTrack.closed_at === null, cards: [PLANNER], overlays: [activity([currentAsk])],
+        track: currentTrack, can_reopen: currentTrack.closed_at !== null, can_admin: false, can_close: currentTrack.closed_at === null, cards: [PLANNER], overlays: [activity([currentAsk])],
       });
       if (request.path === '/api/tracks/w1/conversations') return ok([ASSISTANT]);
       if (request.path === '/api/tracks/w1/asks/41/answer') {

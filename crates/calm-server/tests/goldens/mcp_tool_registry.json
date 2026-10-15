@@ -1691,13 +1691,14 @@
   },
   {
     "name": "neige_user_ask",
-    "description_sha256": "bce6425bc5d9e53ccb01578a3bf4207b4a540b70860df8df4e49794d4354e8d2",
+    "description_sha256": "b9d29fc9ddda15ef9bbdd3d81188c831427694ad25cd1879c5ae45e56be80f30",
     "input_schema": {
       "additionalProperties": false,
       "properties": {
         "action": {
           "enum": [
-            "reopen_track"
+            "reopen_track",
+            "grant_admin"
           ],
           "type": "string"
         },

@@ -45,7 +45,7 @@ fn user_ask_descriptor() -> ToolDescriptor {
             "required": ["questions"],
             "additionalProperties": false,
             "properties": {
-                "action": { "type": "string", "enum": ["reopen_track"] },
+                "action": { "type": "string", "enum": ["reopen_track", "grant_admin"] },
                 "questions": {
                     "type": "array",
                     "minItems": 1,
@@ -114,10 +114,18 @@ async fn user_ask(
     args: Value,
 ) -> Result<Value, RpcError> {
     let questions = parse_questions(&args)?;
-    let reopen = match args.get("action") {
-        None => false,
-        Some(Value::String(action)) if action == "reopen_track" => true,
-        Some(_) => return Err(RpcError::invalid_params("action must be reopen_track")),
+    let action = match args.get("action") {
+        None => None,
+        Some(Value::String(action))
+            if matches!(action.as_str(), "reopen_track" | "grant_admin") =>
+        {
+            Some(action.clone())
+        }
+        Some(_) => {
+            return Err(RpcError::invalid_params(
+                "action must be reopen_track or grant_admin",
+            ));
+        }
     };
     let planner_card = CardId::from(identity.card_id.clone());
     let actor = identity.to_actor_id();
@@ -126,7 +134,10 @@ async fn user_ask(
         write_with_actor_events_typed::<(), _>(ctx.repo.as_ref(), None, &ctx.events, &ctx.write, {
             move |tx| {
                 Box::pin(async move {
-                    let (scope, event) = if reopen {
+                    let (scope, event) = if action.as_deref() == Some("grant_admin") {
+                        crate::ask::ask_grant_admin_requested_tx(tx, &planner_card, questions)
+                            .await?
+                    } else if action.as_deref() == Some("reopen_track") {
                         crate::ask::ask_reopen_requested_tx(tx, &planner_card, questions).await?
                     } else {
                         crate::ask::ask_requested_tx(tx, &planner_card, questions).await?

@@ -1180,3 +1180,14 @@ describe('worktree.committed delivery fields', () => {
     expect(wireEventSchema.safeParse({ ...legacy, data: { ...legacy.data, base_is_ancestor: 'yes' } }).success).toBe(false);
   });
 });
+
+it('accepts admin state and grant_admin asks in the event contract', () => {
+  const track = trackSchema.parse({ id: 't', area_id: 'a', title: '', sort: 0, created_at: 1, updated_at: 1, admin_granted_at: 42 });
+  expect(track.admin_granted_at).toBe(42);
+  expect(trackSchema.parse({ ...track, admin_granted_at: undefined }).admin_granted_at).toBeNull();
+  const ask = wireEventSchema.parse({ ev: 'ask.requested', data: {
+    track_id: 't', card_id: 'p', questions: [{ title: 'Manage Tracks?', options: ['Grant admin', 'Not now'] }],
+    delivery: 'wake', action: { kind: 'grant_admin' },
+  } });
+  expect(ask.ev).toBe('ask.requested');
+});

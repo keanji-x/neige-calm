@@ -50,6 +50,7 @@ const trackObjectSchema = z.object({
   pinned_at: z.number().nullable().default(null),
   /** Unix-ms time the track was closed, or `null` while it is open; a pre-#1876 frame has none and reads as open. */
   closed_at: z.number().nullable().default(null),
+  admin_granted_at: z.number().nullable().default(null),
   /** Defaulted to `""` for legacy replay payloads; production rows always carry an absolute path. */
   cwd: z.string().default(''),
   template_id: z.string().nullable().default(null),
@@ -622,7 +623,7 @@ export const askRequestedSchema = z.object({
     questions: z.array(askQuestionSchema),
     delivery: z.enum(['wake', 'hold']),
     source_item_id: z.string().optional(),
-    action: z.object({ kind: z.literal('reopen_track'), closed_at: z.number() }).optional(),
+    action: z.union([z.object({ kind: z.literal('reopen_track'), closed_at: z.number() }), z.object({ kind: z.literal('grant_admin') })]).optional(),
   }),
 });
 

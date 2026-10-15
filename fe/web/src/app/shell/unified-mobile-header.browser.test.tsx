@@ -48,10 +48,10 @@ function setup(path: string, areaName = AREA.name, onRequest: (request: ApiReque
     if (request.path === '/api/tracks/daily') return ok({
       track: { ...track, id: 'daily', area_id: 'system-area', title: '2026-10-04' },
       cards: [{ ...report, id: 'daily-report', track_id: 'daily' }, { ...planner, id: 'daily-planner', track_id: 'daily' }],
-      overlays: [], can_reopen: false, can_close: false,
+      overlays: [], can_reopen: false, can_admin: false, can_close: false,
     });
-    if (request.path === '/api/tracks/w1') return ok({ track, cards: [report, planner, { ...planner, id: 'terminal', title: 'Terminal', kind: 'terminal', payload: {} }], overlays: [], can_reopen: false, can_close: true });
-    if (request.path === '/api/tracks/w2') return ok({ track: { ...track, id: 'w2', title: 'Another track' }, cards: [], overlays: [], can_reopen: false, can_close: true });
+    if (request.path === '/api/tracks/w1') return ok({ track, cards: [report, planner, { ...planner, id: 'terminal', title: 'Terminal', kind: 'terminal', payload: {} }], overlays: [], can_reopen: false, can_admin: false, can_close: true });
+    if (request.path === '/api/tracks/w2') return ok({ track: { ...track, id: 'w2', title: 'Another track' }, cards: [], overlays: [], can_reopen: false, can_admin: false, can_close: true });
     if (request.path === '/api/tracks/w1/report') return ok({ taskDiagnostics: [] });
     if (request.path.endsWith('/sources/src_2c9e0a1b')) return ok(source);
     if (request.path.endsWith('/planner/run')) return ok({ card_id: 'planner', worker_session_id: 'runtime', phase: 'idle', model: null, reasoning_effort: null, permission_mode: 'never', blocked_reason: null, manual_compact_supported: true, compact_outcome: null, context_usage_invalidated: false, running_turn: null });

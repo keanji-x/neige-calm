@@ -53,7 +53,7 @@ function setup({ theme = 'light', mode = 'never', asks = [], putMode, answer }: 
     if (request.path === '/api/areas') body = [{ id: 'area', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 }];
     if (request.path === '/api/areas/area/tracks') body = [TRACK];
     if (request.path === '/api/settings') body = {};
-    if (request.path === `/api/tracks/${TRACK.id}`) body = { track: TRACK, can_reopen: false, can_close: true, cards: [PLANNER],
+    if (request.path === `/api/tracks/${TRACK.id}`) body = { track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [PLANNER],
       overlays: [{ id: 'activity', plugin_id: 'kernel', entity_kind: 'track', entity_id: TRACK.id, kind: 'activity', updated_at: 5,
         payload: { schemaVersion: 4, working: false, attention: asks.length > 0 ? 'input' : 'none', activity_at_ms: 5, items: asks, cards: [] } }] };
     if (request.path.endsWith('/planner/run')) body = { card_id: PLANNER.id, worker_session_id: 'session',

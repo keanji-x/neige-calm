@@ -299,6 +299,7 @@ impl RepoRead for SqlxRepo {
             track: Track::from(row.track),
             can_reopen,
             can_close,
+            can_admin: false,
             cards,
             overlays,
         }))

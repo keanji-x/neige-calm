@@ -60,7 +60,7 @@ function setup(reply?: Reply) {
     if (request.path === '/api/areas') return ok([AREA]);
     if (request.path === '/api/areas/c1/tracks') return ok([TRACK]);
     if (request.path === '/api/overlays?entity_kind=track') return ok([]);
-    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_close: true, cards: [PLANNER_CARD, REPORT_CARD], overlays: [] });
+    if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true, cards: [PLANNER_CARD, REPORT_CARD], overlays: [] });
     if (request.path === '/api/tracks/w1/report') return ok({ taskDiagnostics: [] });
     if (request.path === '/api/tracks/w1/sources/src_2c9e0a1b') return ok(SOURCE_ROW);
     if (request.path.startsWith('/api/tracks/w1/sources/')) {
@@ -115,13 +115,13 @@ describe('the source panel on the track page', () => {
   it('retries an unreadable referenced report inside the hover card', async () => {
     let reads = 0;
     setup(request => {
-      if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_close: true,
+      if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true,
         cards: [{ ...REPORT_CARD, payload: { ...REPORT_CARD.payload, blocks: [{ id: 'b_1', kind: 'prose', rev: 1,
           payload: { markdown: `[Report](${trackReportLinkUrl('w2')})` } }] } }], overlays: [] });
       if (request.path !== '/api/tracks/w2') return undefined;
       reads++;
       return reads === 1 ? { status: 500, statusText: 'Error', body: { error: 'Report read failed' } }
-        : ok({ track: { ...TRACK, id: 'w2' }, can_reopen: false, can_close: true, cards: [REPORT_CARD], overlays: [] });
+        : ok({ track: { ...TRACK, id: 'w2' }, can_reopen: false, can_admin: false, can_close: true, cards: [REPORT_CARD], overlays: [] });
     });
     const link = await screen.findByRole('button', { name: 'Report' });
     fireEvent.pointerEnter(link.parentElement!);
@@ -134,11 +134,11 @@ describe('the source panel on the track page', () => {
 
   it('previews and opens another track file using its declared worktree root', async () => {
     const { requests } = setup(request => {
-      if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_close: true,
+      if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true,
         cards: [{ ...REPORT_CARD, payload: { ...REPORT_CARD.payload, blocks: [{ id: 'b_1', kind: 'prose', rev: 1,
           payload: { markdown: `[Other report](${trackReportLinkUrl('w2')})` } }] } }], overlays: [] });
       if (request.path === '/api/tracks/w2') return ok({ track: { ...TRACK, id: 'w2', cwd: '/base', workspace: { worktree: '/owned-worktree' } },
-        can_reopen: false, can_close: true, cards: [{ ...REPORT_CARD, track_id: 'w2', payload: { ...REPORT_CARD.payload, blocks: [{
+        can_reopen: false, can_admin: false, can_close: true, cards: [{ ...REPORT_CARD, track_id: 'w2', payload: { ...REPORT_CARD.payload, blocks: [{
           id: 'b_1', kind: 'prose', rev: 1, payload: { markdown: '[Scoped notes](/owned-worktree/docs/notes.md)' },
         }] } }], overlays: [] });
       if (request.path === '/api/tracks/w2/workspace/readfile?path=docs%2Fnotes.md') return ok({
@@ -160,7 +160,7 @@ describe('the source panel on the track page', () => {
 
   it('previews and opens evidence linked from a workspace Markdown file', async () => {
     const { requests } = setup(request => {
-      if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_close: true,
+      if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true,
         cards: [{ ...REPORT_CARD, payload: { ...REPORT_CARD.payload, blocks: [{ id: 'b_1', kind: 'prose', rev: 1,
           payload: { markdown: '[Notes](./notes.md)' } }] } }], overlays: [] });
       if (request.path === '/api/tracks/w1/workspace/readfile?path=notes.md') return ok({ path: 'notes.md', size: 60, truncated: false,
@@ -181,10 +181,10 @@ describe('the source panel on the track page', () => {
 
   it.each(['empty', 'missing block', 'table block'])('renders the %s state of a report reference', async mode => {
     const { requests } = setup(request => {
-      if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_close: true,
+      if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true,
         cards: [{ ...REPORT_CARD, payload: { ...REPORT_CARD.payload, blocks: [{ id: 'b_1', kind: 'prose', rev: 1,
           payload: { markdown: `[Report](${trackReportLinkUrl('w2')}${mode === 'empty' ? '' : '#b_table'})` } }] } }], overlays: [] });
-      if (request.path === '/api/tracks/w2') return ok({ track: { ...TRACK, id: 'w2' }, can_reopen: false, can_close: true,
+      if (request.path === '/api/tracks/w2') return ok({ track: { ...TRACK, id: 'w2' }, can_reopen: false, can_admin: false, can_close: true,
         cards: mode === 'empty' ? [] : [{ ...REPORT_CARD, track_id: 'w2', payload: { ...REPORT_CARD.payload, blocks: [{
           id: mode === 'table block' ? 'b_table' : 'other', kind: 'table', rev: 1,
           payload: { columns: [{ key: 'result', label: 'Result' }], rows: [{ result: 'Actual table contents' }] },
@@ -210,7 +210,7 @@ describe('the source panel on the track page', () => {
         rows: [{ id: 'row', title: '', layout: 'one', cells: [live ? { kind: 'live', id: 'table', source, expects: 'table' } : cell] }] }
       : live ? { source } : table };
     const { requests } = setup(request => request.path === '/api/tracks/w1' ? ok({
-      track: TRACK, can_reopen: false, can_close: true,
+      track: TRACK, can_reopen: false, can_admin: false, can_close: true,
       cards: [{ ...REPORT_CARD, payload: { ...REPORT_CARD.payload, blocks: [block] } }],
       overlays: live ? [{ id: 'evidence', updated_at: 1, entity_kind: 'track', entity_id: 'w1', plugin_id: 'research', kind: 'evidence',
         payload: native ? { snapshot, cell } : table }] : [],
@@ -239,7 +239,7 @@ describe('the source panel on the track page', () => {
   });
 
   it('explains a malformed citation on hover without making a source request', async () => {
-    const { requests } = setup(request => request.path === '/api/tracks/w1' ? ok({ track: TRACK, can_reopen: false, can_close: true,
+    const { requests } = setup(request => request.path === '/api/tracks/w1' ? ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true,
       cards: [{ ...REPORT_CARD, payload: { ...REPORT_CARD.payload, blocks: [{ id: 'b_1', kind: 'prose', rev: 1,
         payload: { markdown: '[Invalid](neige://source/src_bad#q0)' } }] } }], overlays: [],
     }) : undefined);
@@ -279,11 +279,11 @@ describe('the source panel on the track page', () => {
       id: 'b_1', kind: 'prose', rev: 1, payload: { markdown: '[Other evidence](neige://source/src_2c9e0a1b#q1)' },
     }] } };
     const { requests } = setup(request => {
-      if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_close: true,
+      if (request.path === '/api/tracks/w1') return ok({ track: TRACK, can_reopen: false, can_admin: false, can_close: true,
         cards: [{ ...REPORT_CARD, payload: { ...REPORT_CARD.payload, blocks: [{
           id: 'b_1', kind: 'prose', rev: 1, payload: { markdown: `[Other report](${trackReportLinkUrl('w2')})` },
         }] } }], overlays: [] });
-      if (request.path === '/api/tracks/w2') return ok({ track: { ...TRACK, id: 'w2' }, can_reopen: false, can_close: true, cards: [otherReport], overlays: [] });
+      if (request.path === '/api/tracks/w2') return ok({ track: { ...TRACK, id: 'w2' }, can_reopen: false, can_admin: false, can_close: true, cards: [otherReport], overlays: [] });
       if (request.path === '/api/tracks/w2/sources/src_2c9e0a1b') return ok({ ...SOURCE_ROW, body: 'Other track evidence.' });
     });
     const link = await screen.findByRole('button', { name: 'Other report' });

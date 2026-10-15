@@ -89,7 +89,7 @@ function setup(path: string, areaName = AREA.name, onRequest: (request: ApiReque
       if (request.path === '/api/areas/c2/tracks') return Promise.resolve(ok([]));
       if (request.path === '/api/tracks/w1') {
         return Promise.resolve(ok({
-          track: TRACK, can_reopen: false, can_close: true,
+          track: TRACK, can_reopen: false, can_admin: false, can_close: true,
           cards: [REPORT_CARD, TERMINAL_CARD, REVIEW_CARD], overlays: [],
         }));
       }

@@ -226,6 +226,8 @@ async fn wait_at_track_delete_commit_hook(track_id: &str) -> bool {
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateTrackRequest {
+    #[serde(default)]
+    pub admin: bool,
     #[schema(value_type = String)]
     pub area_id: crate::ids::AreaId,
     /// Omitted stores the empty string; the planner agent names the track via
@@ -737,6 +739,15 @@ pub(crate) async fn get_track_detail(
         .track_detail(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {id}")))?;
+    let pool = s
+        .mcp_context
+        .sqlite_pool
+        .as_ref()
+        .ok_or_else(|| CalmError::Internal("SQLite required for admin eligibility".into()))?;
+    let mut tx = begin_immediate_tx(pool).await?;
+    detail.can_admin = detail.track.admin_granted_at.is_some()
+        || crate::area_admin::eligible_tx(&mut tx, &detail.track).await?;
+    tx.rollback().await?;
     if crate::managed_track::kernel_controls_lifecycle(&s.mcp_context, &id).await? {
         detail.can_close = false;
         detail.can_reopen = false;
@@ -773,6 +784,14 @@ pub(crate) async fn create_track(
     State(codex): State<CodexShellState>,
     JsonBody(mut request): JsonBody<CreateTrackRequest>,
 ) -> Result<Response> {
+    if request.admin {
+        super::track_report_blocks::require_rest_user_actor_for(
+            &actor,
+            "admin",
+            "Only the user grants Area admin.",
+        )?;
+    }
+    let admin = request.admin;
     // #1817: a Claude create's availability (the cached check, at most `TTL` old, or a new check
     // of up to ~28 s) is read before the area lock below, which it must not hold; it and the
     // model list it caches (#1822) gate only a new mint, after the replay arms.
@@ -816,6 +835,7 @@ pub(crate) async fn create_track(
         // The caller's raw strings, cloned here before `into_parts()` moves them; the binding
         // must not depend on `admit_template`, so a replay whose template left the roster still replays.
         create::CreateRequestShape {
+            admin,
             planner_provider: request.planner_provider.clone(),
             model: request.model.clone(),
             reasoning_effort: request.reasoning_effort.clone(),
@@ -976,6 +996,7 @@ pub(crate) async fn create_track(
         )
     };
     let options = CreateTrackOptions {
+        admin,
         planner_provider,
         model,
         reasoning_effort,
@@ -1251,6 +1272,7 @@ enum TrackInit {
 }
 
 struct CreateTrackOptions {
+    admin: bool,
     managed_identity: Option<crate::managed_track::ManagedTrackIdentity>,
     /// The Track whose Planner is creating this one with `neige_track_add`: its open-created cap is
     /// counted and its provenance stamped inside the create transaction. `None` on every other path.
@@ -1320,6 +1342,7 @@ async fn create_track_structure(
     options: CreateTrackOptions,
 ) -> Result<(Track, bool, String, String)> {
     let CreateTrackOptions {
+        admin,
         managed_identity,
         creator,
         creation_message,
@@ -1421,6 +1444,10 @@ async fn create_track_structure(
                 let area_id = track.area_id.clone();
                 if let Some(identity) = &managed_identity {
                     crate::managed_track::bind_tx(tx, identity, track_id.as_str()).await?;
+                }
+
+                if admin {
+                    track = crate::area_admin::set_tx(tx, &track, true).await?;
                 }
 
                 // The `Idempotency-Key` → track binding is written in the same transaction that mints
@@ -1759,6 +1786,7 @@ pub(crate) async fn create_managed_track(
         .and_then(|id| s.templates.get(id))
         .ok_or_else(|| CalmError::Internal("managed Track template is not registered".into()))?;
     let options = CreateTrackOptions {
+        admin: false,
         managed_identity: Some(identity),
         creator: None,
         creation_message: None,
@@ -2668,6 +2696,13 @@ pub(crate) async fn update_track(
     Path(id): Path<String>,
     JsonBody(p): JsonBody<TrackPatch>,
 ) -> Result<Response> {
+    if p.admin.is_some() {
+        super::track_report_blocks::require_rest_user_actor_for(
+            &actor,
+            "admin",
+            "Only the user changes Area admin.",
+        )?;
+    }
     if p.closed.is_some()
         && crate::managed_track::kernel_controls_lifecycle(&s.mcp_context, &id).await?
     {
@@ -2692,6 +2727,7 @@ pub(crate) async fn update_track(
             sort,
             pinned_at,
             closed,
+            admin,
             require_task_gates,
             planner_task_ceiling,
             automation_policy,
@@ -2701,6 +2737,7 @@ pub(crate) async fn update_track(
             || sort.is_some()
             || pinned_at.is_some()
             || closed.is_some()
+            || admin.is_some()
             || require_task_gates.is_some()
             || planner_task_ceiling.is_some()
             || automation_policy.is_some()
@@ -2769,7 +2806,8 @@ pub(crate) async fn update_track(
     }
 
     // An entirely empty patch is the idempotent retry path: nothing to write or emit.
-    let patch_has_changes = p.title.is_some()
+    let patch_has_changes = p.admin.is_some()
+        || p.title.is_some()
         || p.sort.is_some()
         || p.closed.is_some()
         || p.pinned_at.is_some()
@@ -2793,11 +2831,40 @@ pub(crate) async fn update_track(
         || p.tree_task_budget.is_some();
     let tree_budget_changed = p.tree_task_budget.is_some();
     let p_for_tx = p.clone();
-    let (track, _ids) =
+    let unchanged = std::sync::Arc::new(std::sync::OnceLock::<Track>::new());
+    let unchanged_tx = unchanged.clone();
+    let written =
         write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
             let scope = scope.clone();
             Box::pin(async move {
-                let track = track_update_tx(tx, &id, p_for_tx).await?;
+                let mut patch = p_for_tx;
+                let admin = patch.admin.take();
+                let live = crate::db::sqlite::track_get_tx(tx, &id.clone().into()).await?;
+                if admin == Some(true) && !crate::area_admin::eligible_tx(tx, &live).await? {
+                    return Err(CalmError::Forbidden(
+                        "ineligible: track cannot be an Area admin".into(),
+                    ));
+                }
+                let admin_changed =
+                    admin.is_some_and(|value| value != live.admin_granted_at.is_some());
+                let other_changes = patch.title.is_some()
+                    || patch.sort.is_some()
+                    || patch.pinned_at.is_some()
+                    || patch.closed.is_some()
+                    || patch.require_task_gates.is_some()
+                    || patch.planner_task_ceiling.is_some()
+                    || patch.automation_policy.is_some()
+                    || patch.tree_task_budget.is_some();
+                if !admin_changed && !other_changes {
+                    let _ = unchanged_tx.set(live);
+                    return Err(CalmError::Conflict(
+                        "admin already in requested state".into(),
+                    ));
+                }
+                let mut track = track_update_tx(tx, &id, patch).await?;
+                if admin_changed {
+                    track = crate::area_admin::set_tx(tx, &track, admin.unwrap()).await?;
+                }
                 let projections = if projection_policy_changed {
                     if tree_budget_changed {
                         tasks_rebuild_tree_tx(tx, &id).await?
@@ -2836,7 +2903,13 @@ pub(crate) async fn update_track(
                 Ok((track, events))
             })
         })
-        .await?;
+        .await;
+    let track = match written {
+        Err(_) if unchanged.get().is_some() => {
+            unchanged.get().expect("unchanged row was set").clone()
+        }
+        result => result?.0,
+    };
     drop(lifecycle_guard);
     if reopening && let Err(error) = w.dispatcher.wake_planner_on_reopen(&track.id).await {
         tracing::warn!(%error, track_id=%track.id, "Planner resume after reopen failed; next wake can retry");

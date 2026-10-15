@@ -657,3 +657,6 @@ async fn the_ratify_route_is_gone() {
 
 #[path = "user_ask/reopen.rs"]
 mod reopen;
+
+#[path = "user_ask/admin.rs"]
+mod admin;

@@ -227,3 +227,12 @@ describe('PlannerAskDrawer with a paused turn (#2348)', () => {
     expect(screen.queryByText('Turn paused, waiting for your approval')).toBeNull();
   });
 });
+
+it('renders grant_admin kernel choices and sends only the clicked answer', async () => {
+  const ask = { ...SINGLE, action: { kind: 'grant_admin' as const },
+    questions: [{ title: 'Manage Tracks?', options: ['Grant admin', 'Not now'] }] };
+  const { onAnswer } = setup([ask]);
+  expect(screen.queryByRole('textbox')).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: 'Grant admin' }));
+  expect(onAnswer).toHaveBeenCalledWith(ask.askId, [{ option: 0 }]);
+});

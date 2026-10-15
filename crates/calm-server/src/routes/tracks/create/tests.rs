@@ -9,6 +9,7 @@ use crate::session_projection_repo::AgentProvider;
 #[test]
 fn cross_area_authorization_is_part_of_idempotent_create_identity() {
     let shape = |allow_cross_area_cwd| CreateRequestShape {
+        admin: false,
         planner_provider: AgentProvider::Codex,
         model: None,
         reasoning_effort: None,

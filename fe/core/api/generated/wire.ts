@@ -46,7 +46,7 @@ export type ArtifactRef = string;
 /**
  * An explicit user choice with a lifecycle effect; absent on ordinary/native asks.
  */
-export type AskAction = { "kind": "reopen_track", closed_at: number, };
+export type AskAction = { "kind": "reopen_track", closed_at: number, } | { "kind": "grant_admin" };
 
 /**
  * One answer of an `ask.answered` (#2348): the index of a clicked option, or typed text. Clicking
@@ -649,6 +649,10 @@ export type Track = { id: TrackId, area_id: AreaId, title: string, sort: number,
  */
 closed_at: number | null, 
 /**
+ * Unix-ms time a person granted Area admin authority; absent on historical events.
+ */
+admin_granted_at: number | null, 
+/**
  * Wire-compatibility alias of `workspace.path`, serialized as `cwd`; Rust readers must use `workspace.path`.
  */
 cwd: string, 
@@ -836,6 +840,10 @@ export type TrackUpdatedPayload = { agent_message?: string, id: TrackId, area_id
  * Unix-ms time the track was closed, or `None` while it is open. Closed tracks do not schedule.
  */
 closed_at: number | null, 
+/**
+ * Unix-ms time a person granted Area admin authority; absent on historical events.
+ */
+admin_granted_at: number | null, 
 /**
  * Wire-compatibility alias of `workspace.path`, serialized as `cwd`; Rust readers must use `workspace.path`.
  */

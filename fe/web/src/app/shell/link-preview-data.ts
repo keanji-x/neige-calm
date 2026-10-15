@@ -58,7 +58,7 @@ export function createEvidencePreviewTransport(): ApiTransportPort {
       const trackId = request.path.slice('/api/tracks/'.length);
       const report = trackId === 'reference-demo' ? referencedReport() : evidenceExamples();
       return ok({ track: { id: trackId, title: trackId === 'reference-demo' ? '另一份报告' : '来源预览', area_id: 'examples',
-        sort: 1, cwd: '/preview', created_at: 1, updated_at: 1 }, can_reopen: false, can_close: false, overlays: [],
+        sort: 1, cwd: '/preview', created_at: 1, updated_at: 1 }, can_reopen: false, can_admin: false, can_close: false, overlays: [],
         cards: [{ id: `report-${trackId}`, track_id: trackId, kind: 'track-report', title: null, sort: 1, deletable: false,
           created_at: 1, updated_at: 1, payload: { schemaVersion: 3, docRev: 1, ...report } }],
       });

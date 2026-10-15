@@ -315,6 +315,7 @@ pub enum AskAnswer {
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum AskAction {
     ReopenTrack { closed_at: i64 },
+    GrantAdmin,
 }
 
 /// The full set of WS event envelopes the kernel emits on `/api/events`. ts-rs requires every
@@ -2892,6 +2893,7 @@ mod scope_tests {
             sort: 1.0,
             pinned_at: None,
             closed_at: None,
+            admin_granted_at: None,
             cwd_wire_alias: String::new(),
             template_id: None,
             plugin_scope: None,

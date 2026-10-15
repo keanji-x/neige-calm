@@ -277,6 +277,7 @@ async fn planner_card_can_emit_track_updated_via_enforce_role() {
             sort: 1.0,
             pinned_at: None,
             closed_at: None,
+            admin_granted_at: None,
             cwd_wire_alias: String::new(),
             template_id: None,
             plugin_scope: None,

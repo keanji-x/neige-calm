@@ -128,8 +128,8 @@ pub async fn track_create_tx(
     // can later be edited or deleted.
     sqlx::query(
         r#"INSERT INTO tracks
-           (id, area_id, title, sort, pinned_at, closed_at, template_id, plugin_scope, purpose, template_input, tree_task_budget, recipe_id, recipe_revision, created_at, updated_at)
-           VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, ?8, NULL, ?9, ?10, ?11, ?12)"#,
+           (id, area_id, title, sort, pinned_at, closed_at, admin_granted_at, template_id, plugin_scope, purpose, template_input, tree_task_budget, recipe_id, recipe_revision, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, NULL, NULL, NULL, ?5, ?6, ?7, ?8, NULL, ?9, ?10, ?11, ?12)"#,
     )
     .bind(&id)
     .bind(p.area_id.as_str())
@@ -200,6 +200,7 @@ pub async fn track_create_tx(
         sort,
         pinned_at: None,
         closed_at: None,
+        admin_granted_at: None,
         cwd_wire_alias: workspace.path.clone(),
         template_id: p.template_id,
         plugin_scope: p.plugin_scope,
@@ -263,6 +264,11 @@ pub async fn track_update_tx(
     id: &str,
     p: TrackPatch,
 ) -> Result<Track> {
+    if p.admin.is_some() {
+        return Err(CalmError::Forbidden(
+            "admin requires the server authority owner".into(),
+        ));
+    }
     let mut w = track_find_tx(tx, id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("track {id}")))?;

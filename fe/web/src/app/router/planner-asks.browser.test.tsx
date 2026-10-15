@@ -57,7 +57,7 @@ function setup(theme: 'light' | 'dark', ask: typeof ASK = ASK, reopen = false) {
     if (request.path === '/api/areas') body = [{ id: 'area', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 }];
     if (request.path === '/api/areas/area/tracks') body = [currentTrack];
     if (request.path === '/api/settings') body = {};
-    if (request.path === `/api/tracks/${TRACK.id}`) body = { track: currentTrack, can_reopen: currentTrack.closed_at !== null, can_close: currentTrack.closed_at === null, cards: [PLANNER],
+    if (request.path === `/api/tracks/${TRACK.id}`) body = { track: currentTrack, can_reopen: currentTrack.closed_at !== null, can_admin: false, can_close: currentTrack.closed_at === null, cards: [PLANNER],
       overlays: [{ id: 'activity', plugin_id: 'kernel', entity_kind: 'track', entity_id: TRACK.id, kind: 'activity', updated_at: 5,
         payload: { schemaVersion: 4, working: false, attention: 'input', activity_at_ms: 5, items: [reopen ? { ...ask, action: { kind: 'reopen_track', closed_at: 42 }, questions: [{ title: 'Continue this closed track?', options: ['Reopen and continue', 'Keep closed'] }] } : ask], cards: [] } }] };
     if (request.path.endsWith('/planner/run')) body = { card_id: PLANNER.id, worker_session_id: 'session', phase: 'idle',
@@ -258,4 +258,19 @@ it.each([1280, 390])('restores a closed track by clicking its existing AI questi
   await option.click();
   await expect.poll(() => requests.find(request => request.path.endsWith('/answer'))?.body).toEqual({ answers: [{ option: 0 }] });
   await expect.element(page.getByRole('status', { name: 'Track closed' })).not.toBeInTheDocument();
+});
+
+it('renders grant_admin choices and posts the grant click only to the ask answer route', async () => {
+  const grantAsk = { ...ASK, action: { kind: 'grant_admin' },
+    questions: [{ title: 'Manage Tracks?', options: ['Grant admin', 'Not now'] }] };
+  const { requests } = setup('light', grantAsk);
+  await page.getByRole('button', { name: /Conversation Planner/ }).click();
+  await expect.element(page.getByRole('heading', { name: 'Manage Tracks?' })).toBeVisible();
+  await expect.element(page.getByRole('button', { name: 'Not now' })).toBeVisible();
+  await page.getByRole('button', { name: 'Grant admin' }).click();
+  await expect.poll(() => requests.filter(request => request.path.endsWith('/asks/7/answer')).length).toBe(1);
+  const answer = requests.find(request => request.path.endsWith('/asks/7/answer'));
+  expect(answer?.path).toBe(`/api/tracks/${TRACK.id}/asks/7/answer`);
+  expect(requests.some(request => request.method === 'PATCH')).toBe(false);
+  expect(answer?.body).toEqual({ answers: [{ option: 0 }] });
 });

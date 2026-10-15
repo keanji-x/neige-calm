@@ -58,7 +58,8 @@
       "recipe_id": "recipe-01",
       "recipe_revision": 7,
       "creator_track_id": "track-00",
-      "creator_key": "invest-US-SPY-1"
+      "creator_key": "invest-US-SPY-1",
+      "admin_granted_at": null
     }
   }
 }
