@@ -92,7 +92,7 @@ describe('manual conversation archives', () => {
   it('hides archived discussions by default and restores them through the explicit action', async () => {
     const changeArchive = vi.fn().mockResolvedValue(undefined);
     render(<ChatList cards={{}} onOpen={vi.fn()} onArchive={changeArchive}
-      conversations={[conversation({id:'active', title:'Active'}), conversation({id:'saved', title:'Saved', archivedAt:10})]} />);
+      conversations={[conversation({id:'active', title:'Active', state:'idle'}), conversation({id:'saved', title:'Saved', archivedAt:10, state:'idle'})]} />);
     expect(screen.queryByRole('button', {name:'Conversation Saved'})).toBeNull();
     fireEvent.click(screen.getByRole('button', {name:'Archived conversations'}));
     expect(screen.getByRole('button', {name:'Conversation Saved'})).toBeTruthy();
@@ -105,7 +105,7 @@ describe('manual conversation archives', () => {
   it('offers archive only for Assistant rows, reports failures, and never hides a failed write', async () => {
     const changeArchive = vi.fn().mockRejectedValue(new Error('Please wait for the reply to finish.'));
     render(<ChatList cards={{}} onOpen={vi.fn()} onArchive={changeArchive}
-      conversations={[conversation(), conversation({id:'worker', kind:'codex', title:'Worker'})]} />);
+      conversations={[conversation({state:'idle'}), conversation({id:'worker', kind:'codex', title:'Worker', state:'idle'})]} />);
     expect(screen.queryByRole('button', {name:'Conversation actions for Worker'})).toBeNull();
     fireEvent.click(screen.getByRole('button', {name:'Conversation actions for Assistant'}));
     fireEvent.click(screen.getByRole('menuitem', {name:'Archive conversation'}));
