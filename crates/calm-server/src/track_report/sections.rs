@@ -131,7 +131,10 @@ pub(super) fn apply_replace_section(
 
 /// The section ops' and the whole write's shared refusal (#2598, #2617): neither owns a block that
 /// belongs to no section, so `what` may not carry one.
-pub(super) fn refuse_unsectioned_fences(slices: &[BlockSlice], what: &str) -> Result<(), CalmError> {
+pub(super) fn refuse_unsectioned_fences(
+    slices: &[BlockSlice],
+    what: &str,
+) -> Result<(), CalmError> {
     match slices
         .iter()
         .filter_map(|slice| parse_fence(&slice.raw))

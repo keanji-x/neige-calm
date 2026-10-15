@@ -54,9 +54,14 @@ async fn read(boot: &Boot) -> Value {
 
 /// The index read, the one that lists task blocks (#2617).
 async fn index(boot: &Boot) -> Value {
-    call_tool(boot, TOOL_REPORT_READ, planner_identity(boot), json!({"detail": "index"}))
-        .await
-        .expect("neige_report_read index")
+    call_tool(
+        boot,
+        TOOL_REPORT_READ,
+        planner_identity(boot),
+        json!({"detail": "index"}),
+    )
+    .await
+    .expect("neige_report_read index")
 }
 
 async fn upsert(boot: &Boot, id: Option<&str>, payload: Value) -> (String, u64) {

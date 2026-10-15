@@ -44,7 +44,12 @@ async fn read_for_ops(
     ops: &Value,
 ) {
     read_all(ctx, registry, identity.clone()).await;
-    for id in ops.as_array().into_iter().flatten().filter_map(|op| op.get("id")) {
+    for id in ops
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|op| op.get("id"))
+    {
         let args = json!({ "blocks": [id] });
         let _ = call(ctx, registry, TOOL_REPORT_READ, identity.clone(), args).await;
     }

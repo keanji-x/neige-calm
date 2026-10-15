@@ -3270,7 +3270,10 @@ async fn edit_report_blocks(boot: &Boot, blocks: &[(&str, &str, Value)]) {
         .iter()
         .filter(|(_, kind, _)| *kind == "prose")
         .map(|(id, _, payload)| {
-            format!("<!-- neige:{id} -->\n{}", payload["markdown"].as_str().unwrap())
+            format!(
+                "<!-- neige:{id} -->\n{}",
+                payload["markdown"].as_str().unwrap()
+            )
         })
         .collect::<Vec<_>>()
         .join("\n");

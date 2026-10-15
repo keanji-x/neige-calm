@@ -105,7 +105,8 @@ async fn task_rows(boot: &Boot) -> Vec<(String, String)> {
 /// user-signed one is already protected from every non-user writer, so only the planner-signed
 /// one exercises the assistant rule.
 async fn seed_prose_and_two_tasks(boot: &Boot) -> (String, String) {
-    let planner_fence = task_fence("spec", "build");
+    let planner_task = task_payload("spec", "build");
+    let planner_fence = render_fence(KIND_TASK, &planner_task);
     let user_fence = task_fence("user", "review");
 
     read_then_write_markdown(
@@ -118,7 +119,7 @@ async fn seed_prose_and_two_tasks(boot: &Boot) -> (String, String) {
     upsert_block(
         boot,
         planner_identity(boot),
-        json!({ "kind": KIND_TASK, "payload": task_payload("spec", "build") }),
+        json!({ "kind": KIND_TASK, "payload": planner_task }),
     )
     .await
     .expect("planner declares its task");
@@ -488,7 +489,11 @@ async fn an_assistant_may_not_modify_or_delete_an_existing_task_block() {
     .expect_err("an assistant deleting a task block must be refused");
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
 
-    assert_eq!(before, body_text(&boot).await, "neither attempt wrote anything");
+    assert_eq!(
+        before,
+        body_text(&boot).await,
+        "neither attempt wrote anything"
+    );
 
     // 3. A whole-document rewrite carrying no fence keeps both tasks (#2617): it owns none.
     read_then_write_markdown(

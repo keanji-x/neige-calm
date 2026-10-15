@@ -8,11 +8,11 @@
 use crate::mcp_report_sections::{CONTRACT, INVALID_PARAMS, SECTIONS, payload};
 use crate::mcp_track_report::{Boot, boot, call_tool, planner_identity};
 use crate::mcp_track_report_blocks::{planner_task_payload, task_keys};
+use calm_server::event::EditAuthor;
+use calm_server::ids::ActorId;
 use calm_server::mcp_server::ToolCallIdentity;
 use calm_server::mcp_server::tools::track_report::TOOL_REPORT_READ;
 use calm_server::mcp_server::tools::track_report_blocks::{TOOL_REPORT_COMMIT, TOOL_REPORT_WRITE};
-use calm_server::event::EditAuthor;
-use calm_server::ids::ActorId;
 use calm_server::track_report::{ReportBlock, TrackReportPayload, persist_report};
 use calm_types::report_blocks::{KIND_TASK, marker_line, render_fence};
 use serde_json::{Value, json};
@@ -47,7 +47,12 @@ async fn seed(boot: &Boot) -> Vec<ReportBlock> {
     let fence = |key: &str| render_fence(KIND_TASK, &planner_task_payload(key, "build it"));
     let sections = SECTIONS.replace("beta\n", &format!("beta\n\n{}", fence("k1")));
     let body = format!("{CONTRACT}{sections}\n{}", fence("k2"));
-    let track = boot.repo.track_get(boot.track_id.as_str()).await.unwrap().unwrap();
+    let track = boot
+        .repo
+        .track_get(boot.track_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
     let card = boot
         .repo
         .card_get(boot.report_card_id.as_str())
@@ -92,7 +97,10 @@ async fn a_full_read_renders_and_indexes_no_task_block() {
         let out = read(&boot, planner_identity(&boot), args.clone()).await;
         let text = out["text"].as_str().expect("a full read returns text");
         assert!(!text.contains("neige-block task"), "{args}: {text}");
-        assert!(text.contains("# 已完成") && text.contains("gamma"), "{text}");
+        assert!(
+            text.contains("# 已完成") && text.contains("gamma"),
+            "{text}"
+        );
         assert!(
             !index_kinds(&out).iter().any(|kind| kind == KIND_TASK),
             "{args}: {out}"
@@ -108,7 +116,10 @@ async fn a_full_read_renders_and_indexes_no_task_block() {
         .collect();
     assert_eq!(
         ids,
-        tasks.iter().map(|task| task.id.as_str()).collect::<Vec<_>>(),
+        tasks
+            .iter()
+            .map(|task| task.id.as_str())
+            .collect::<Vec<_>>(),
         "the index read still lists every task block"
     );
 }
@@ -117,7 +128,12 @@ async fn a_full_read_renders_and_indexes_no_task_block() {
 async fn a_section_read_indexes_no_task_block() {
     let boot = boot().await;
     seed(&boot).await;
-    let out = read(&boot, planner_identity(&boot), json!({ "sections": ["已完成"] })).await;
+    let out = read(
+        &boot,
+        planner_identity(&boot),
+        json!({ "sections": ["已完成"] }),
+    )
+    .await;
     assert!(!out["text"].as_str().unwrap().contains("neige-block task"));
     assert!(
         !index_kinds(&out).iter().any(|kind| kind == KIND_TASK),
@@ -134,13 +150,23 @@ async fn a_task_read_by_id_returns_it_and_anchors_its_upsert() {
         "ops": [{ "op": "upsert", "id": task.id, "kind": KIND_TASK, "payload": edited }] });
 
     read(&boot, planner_identity(&boot), json!({})).await;
-    let err = call_tool(&boot, TOOL_REPORT_COMMIT, planner_identity(&boot), upsert.clone())
-        .await
-        .expect_err("a full read is no read of a task block");
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_COMMIT,
+        planner_identity(&boot),
+        upsert.clone(),
+    )
+    .await
+    .expect_err("a full read is no read of a task block");
     assert_eq!(err.code, INVALID_PARAMS, "{err:?}");
     assert!(err.message.contains("has not been read"), "{err:?}");
 
-    let out = read(&boot, planner_identity(&boot), json!({ "blocks": [task.id] })).await;
+    let out = read(
+        &boot,
+        planner_identity(&boot),
+        json!({ "blocks": [task.id] }),
+    )
+    .await;
     assert_eq!(
         out["text"],
         json!(format!(
@@ -153,11 +179,16 @@ async fn a_task_read_by_id_returns_it_and_anchors_its_upsert() {
         index_kinds(&out).iter().any(|kind| kind == KIND_TASK),
         "a read naming a task indexes it: {out}"
     );
+    // A later full read, which renders no task, does not forget the unchanged task read by id.
+    read(&boot, planner_identity(&boot), json!({})).await;
     call_tool(&boot, TOOL_REPORT_COMMIT, planner_identity(&boot), upsert)
         .await
         .expect("the read by id anchors the upsert");
     let stored = task_blocks(&payload(&boot).await.blocks.unwrap()).remove(0);
-    assert_eq!((stored.id.as_str(), stored.rev), (task.id.as_str(), task.rev + 1));
+    assert_eq!(
+        (stored.id.as_str(), stored.rev),
+        (task.id.as_str(), task.rev + 1)
+    );
     assert_eq!(stored.payload["goal"], "build it better");
 }
 
@@ -165,11 +196,20 @@ async fn a_task_read_by_id_returns_it_and_anchors_its_upsert() {
 async fn a_whole_write_after_a_task_free_full_read_keeps_every_task_block() {
     let boot = boot().await;
     let tasks = seed(&boot).await;
-    let marked = read(&boot, planner_identity(&boot), json!({ "with_markers": true })).await["text"]
+    let marked = read(
+        &boot,
+        planner_identity(&boot),
+        json!({ "with_markers": true }),
+    )
+    .await["text"]
         .as_str()
         .unwrap()
         .replace("gamma", "gamma2")
         .replace("beta", "beta2");
+    assert!(
+        !marked.contains("neige-block task"),
+        "premise: the write carries no task: {marked}"
+    );
     call_tool(
         &boot,
         TOOL_REPORT_WRITE,
@@ -203,7 +243,12 @@ async fn a_whole_write_after_a_task_free_full_read_keeps_every_task_block() {
 async fn a_whole_write_carrying_a_task_fence_is_refused() {
     let boot = boot().await;
     let tasks = seed(&boot).await;
-    let marked = read(&boot, planner_identity(&boot), json!({ "with_markers": true })).await["text"]
+    let marked = read(
+        &boot,
+        planner_identity(&boot),
+        json!({ "with_markers": true }),
+    )
+    .await["text"]
         .as_str()
         .unwrap()
         .to_string();

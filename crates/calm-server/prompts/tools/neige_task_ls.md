@@ -1,4 +1,4 @@
-Planner-only. detail=summary: compact (key selects); detail=full+key: evidence; else full plan. Compare attempt_id. Entries observe, not accept. Absent key: no attempt/work. Status/history: here. neige_report_read task_diagnostics: actionable; Full=whole live plan incl. orphans, blocks/sections=rendered owners; index=none.
+Planner-only. detail=summary: compact (key selects); detail=full+key: evidence; else full plan. Compare attempt_id. Entries observe, not accept. Absent key: no attempt/work. Status/history: here. neige_report_read task_diagnostics: actionable; Full=all incl. orphans, blocks/sections=rendered owners; index=none.
 Stored: access=read_only/read_write, start=checkout/upstream, result_contract=name/null.
 status: pending/awaiting_projection await scheduling: blocking_reason; dispatched: claimed, not started; running: recorded, not progress; verifying: awaits gate; done/failed/canceled: terminal (status_detail), not delivery/acceptance. Done may await delivery; dependencies await done, not acceptance.
 gate_result: latest verdict; failure status_detail gate-red/gate-timeout/gate-infra. No commands. worktree/base_sha: lease/base commit.
