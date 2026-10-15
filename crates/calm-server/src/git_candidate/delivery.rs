@@ -173,16 +173,10 @@ pub(crate) fn candidate_ref_name(track_id: &str, card_id: &str, delivery_id: &st
 }
 
 /// The delivery's message (D8): the worker's verbatim text, or the kernel's fixed text for a
-/// non-completed outcome. Built only from the persisted row.
+/// non-completed outcome or a historical NULL-message row. Built only from the persisted row.
 pub(crate) fn delivery_message(delivery: &DeliveryRow, outcome: AttemptOutcome) -> Result<String> {
     match &delivery.commit_message {
         DeliveryMessage::Worker(message) => Ok(message.as_str().to_string()),
-        DeliveryMessage::Kernel if outcome == AttemptOutcome::Completed => {
-            Err(CalmError::Internal(format!(
-                "completed attempt {} has no commit_message",
-                delivery.producer_attempt_id
-            )))
-        }
         DeliveryMessage::Kernel => Ok(format!(
             "neige: attempt {} {} (delivery {})",
             delivery.producer_attempt_id,

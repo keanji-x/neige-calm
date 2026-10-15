@@ -67,14 +67,17 @@ fn commit_message_parse_boundaries() {
     }
 }
 
-/// Kernel text stays byte-equal for non-completed outcomes; completion cannot use it.
+/// Kernel text stays byte-equal, including historical completed rows.
 #[test]
 fn kernel_message_is_byte_equal_to_the_pre_2139_text() {
     let row = DeliveryRow {
         commit_message: DeliveryMessage::Kernel,
         ..delivery_row(None)
     };
-    assert!(delivery_message(&row, AttemptOutcome::Completed).is_err());
+    assert_eq!(
+        delivery_message(&row, AttemptOutcome::Completed).unwrap(),
+        "neige: attempt attempt-1 completed (delivery dlv1)"
+    );
     for (outcome, text) in [
         (
             AttemptOutcome::Failed,
@@ -284,7 +287,7 @@ fn migrator_through(version: i64) -> sqlx::migrate::Migrator {
 /// no forge Operation yet) reads back as `Kernel` after the upgrade and rebuilds the argv the
 /// pre-#2139 builder produced, byte for byte.
 #[tokio::test]
-async fn pre_2139_completed_row_without_a_message_is_refused() {
+async fn pre_2139_completed_row_without_a_message_keeps_legacy_payload() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
@@ -330,11 +333,6 @@ async fn pre_2139_completed_row_without_a_message_is_refused() {
     assert!(row.settlement.is_none());
 
     let branch = track_branch_for("track-4140").unwrap();
-    let error = forge_payload_for(&row, &lease, &branch).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("completed attempt attempt-4140 has no commit_message"),
-        "{error}"
-    );
+    let payload = forge_payload_for(&row, &lease, &branch).unwrap();
+    assert!(payload.argv[4] == "neige: attempt attempt-4140 completed (delivery dlv-4140)");
 }

@@ -102,13 +102,13 @@ pub(crate) async fn admit_run_tx(
     crate::operation::refuse_if_context_stale(tx, Some(attempt_id)).await?;
     let ops = gate_ops_of_attempt_tx(tx, attempt_id).await?;
     let used = ops.iter().filter(|op| op.kind == GateOpKind::Run).count() as i64;
-    let inherited = attempt_commit_message_tx(tx, attempt_id).await?;
     match classify_gate_ops(&ops) {
         AttemptGateOps::Clear => {}
         AttemptGateOps::Unfinished(op) if op.kind == GateOpKind::Run => {
+            let admitted = super::admitted_message_tx(tx, &op.key).await?;
             if commit_message
                 .as_ref()
-                .is_some_and(|message| Some(message) != inherited.as_ref())
+                .is_some_and(|message| !message.same_commit_text(&admitted))
             {
                 return Err(CalmError::Conflict(format!(
                     "run `r{}` is running with a different commit_message; join with its message or omit it",
@@ -138,10 +138,17 @@ pub(crate) async fn admit_run_tx(
         }
     }
     if used >= GATE_RUNS_PER_ATTEMPT {
-        return Err(CalmError::Conflict(format!(
-            "attempt used {used} of {GATE_RUNS_PER_ATTEMPT} gate runs; report done and the kernel's gate decides"
-        )));
+        return Err(CalmError::Conflict(
+            format!(
+                include_str!("../../../prompts/worker/gate-run-cap.md"),
+                used = used,
+                GATE_RUNS_PER_ATTEMPT = GATE_RUNS_PER_ATTEMPT
+            )
+            .trim_end()
+            .to_owned(),
+        ));
     }
+    let inherited = attempt_commit_message_tx(tx, attempt_id).await?;
     let message = commit_message.or(inherited).ok_or_else(|| {
         CalmError::BadRequest("neige_task_gate: the first run requires commit_message".into())
     })?;

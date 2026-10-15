@@ -156,20 +156,30 @@ impl WorkerTaskReport {
         else {
             return Ok(ReleaseDelivery::Commit(AttemptOutcome::Failed));
         };
-        let inherited = attempt_commit_message_tx(tx, attempt_id).await?;
-        if let (Some(requested), Some(previous)) = (commit_message, &inherited)
-            && requested != previous
-        {
-            return Err(CalmError::BadRequest(
-                "neige_task_done: commit_message differs from the attempt's run; run the gate again with it or omit it".into(),
-            ));
+        if let Some(requested) = commit_message {
+            if let Some(previous) = attempt_commit_message_tx(tx, attempt_id).await?
+                && !requested.same_commit_text(&previous)
+            {
+                let used = crate::operation::gate_ops::gate_ops_of_attempt_tx(tx, attempt_id)
+                    .await?
+                    .iter()
+                    .filter(|op| op.kind == crate::operation::gate_ops::GateOpKind::Run)
+                    .count() as i64;
+                let left = (crate::operation::task_gate_run::GATE_RUNS_PER_ATTEMPT - used).max(0);
+                return Err(CalmError::BadRequest(
+                    format!(
+                        include_str!("../../prompts/worker/done-commit-message-mismatch.md"),
+                        left = left
+                    )
+                    .trim_end()
+                    .to_owned(),
+                ));
+            }
+            return Ok(ReleaseDelivery::CommitWorkerMessage(requested.clone()));
         }
-        match commit_message.clone().or(inherited) {
-            Some(message) => Ok(ReleaseDelivery::CommitWorkerMessage(message)),
-            // The shared release boundary requires a message when this card actually
-            // releases a kernel-delivery lease; its refusal rolls back the whole report.
-            None => Ok(ReleaseDelivery::Commit(AttemptOutcome::Completed)),
-        }
+        // Inheritance belongs to release, which also enforces a message for a completed
+        // kernel-delivery lease. Its refusal rolls back the whole report transaction.
+        Ok(ReleaseDelivery::Commit(AttemptOutcome::Completed))
     }
 }
 

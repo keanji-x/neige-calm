@@ -525,3 +525,82 @@ impl Observer {
         }
     }
 }
+
+/// Only a checkpoint can select the message that delivery will inherit. Pending admissions
+/// cannot touch the checkout after done (prepare rechecks the running attempt). Once prepare
+/// has started, refuse until its ref is pinned, so a concurrent release cannot change the
+/// selected message after the report. A live run's ref is its durable checkpoint evidence;
+/// finished runs also record that commit in their result.
+pub(crate) async fn checkpointed_message_tx(
+    tx: &mut super::Tx<'_>,
+    attempt_id: &str,
+) -> Result<Option<crate::git_candidate::commit_message::CommitMessage>> {
+    use super::gate_ops::{GateOpKind, gate_ops_of_attempt_tx};
+    let ops = gate_ops_of_attempt_tx(tx, attempt_id).await?;
+    for op in ops.iter().rev().filter(|op| op.kind == GateOpKind::Run) {
+        let row = sqlx::query("SELECT * FROM operations WHERE kind = ?1 AND idempotency_key = ?2")
+            .bind(TASK_GATE_RUN_KIND)
+            .bind(&op.key)
+            .fetch_one(&mut **tx)
+            .await?;
+        let stored = super::repo_sqlite::operation_from_row(&row)?;
+        let mut recorded_commit = None;
+        if let Some(super::OperationResult {
+            outcome:
+                super::OperationOutcome::Succeeded { result }
+                | super::OperationOutcome::SucceededViaCollision { result, .. },
+            ..
+        }) = super::operation_result_from(&stored)?
+        {
+            let result: GateRunResult = serde_json::from_value(result)?;
+            recorded_commit = result.commit;
+        }
+        if let Some(output) = &stored.tx_output {
+            let frozen = FrozenRun::from_output(output)?;
+            let cwd = Path::new(&frozen.cwd);
+            let commit = match recorded_commit {
+                Some(commit) => Some(commit),
+                None => checkpoint::read_run_ref(cwd, &frozen.ref_name)
+                    .await
+                    .map_err(CalmError::Conflict)?,
+            };
+            if let Some(commit) = commit {
+                return checkpoint::read_commit_message(cwd, &commit)
+                    .await
+                    .map(Some)
+                    .map_err(CalmError::Conflict);
+            }
+        }
+        if !matches!(
+            op.phase,
+            PhaseTag::Pending | PhaseTag::Succeeded | PhaseTag::Failed
+        ) {
+            return Err(CalmError::Conflict(
+                format!(
+                    include_str!("../../../prompts/worker/checkpoint-pending.md"),
+                    op.number
+                )
+                .trim_end()
+                .to_owned(),
+            ));
+        }
+    }
+    Ok(None)
+}
+
+/// Joining compares against the admitted run itself, even before it has checkpointed.
+pub(super) async fn admitted_message_tx(
+    tx: &mut super::Tx<'_>,
+    key: &str,
+) -> Result<crate::git_candidate::commit_message::CommitMessage> {
+    let payload: String = sqlx::query_scalar(
+        "SELECT payload_json FROM operations WHERE kind = ?1 AND idempotency_key = ?2",
+    )
+    .bind(TASK_GATE_RUN_KIND)
+    .bind(key)
+    .fetch_one(&mut **tx)
+    .await?;
+    let payload: TaskGateRunPayload = serde_json::from_str(&payload)?;
+    crate::git_candidate::commit_message::CommitMessage::parse(&payload.message)
+        .map_err(CalmError::Internal)
+}

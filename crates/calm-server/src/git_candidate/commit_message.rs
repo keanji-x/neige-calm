@@ -50,6 +50,32 @@ impl CommitMessage {
         Ok(Self(text.to_string()))
     }
 
+    /// Equality after git's default `-m` whitespace cleanup (comments are retained).
+    pub(crate) fn same_commit_text(&self, other: &Self) -> bool {
+        fn cleaned(text: &str) -> String {
+            let lines: Vec<_> = text
+                .lines()
+                .map(|line| line.trim_end_matches([' ', '\t', '\r']))
+                .collect();
+            let mut result = Vec::new();
+            for line in lines {
+                if line.is_empty()
+                    && result
+                        .last()
+                        .is_none_or(|previous: &&str| previous.is_empty())
+                {
+                    continue;
+                }
+                result.push(line);
+            }
+            while result.last().is_some_and(|line| line.is_empty()) {
+                result.pop();
+            }
+            result.join("\n")
+        }
+        cleaned(self.as_str()) == cleaned(other.as_str())
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -75,9 +101,8 @@ impl DeliveryMessage {
     }
 }
 
-/// The attempt's durable message: its done delivery, otherwise its latest admitted run.
-/// Every admitted run stores the selected message, including inheritance; run numbers order
-/// admissions independently of operation completion time. Read under the caller's write lock.
+/// The attempt's durable message: its delivery, otherwise its latest checkpointed run.
+/// The run owner decodes its typed payload and commit evidence under the caller's write lock.
 pub(crate) async fn attempt_commit_message_tx(
     tx: &mut crate::operation::Tx<'_>,
     attempt_id: &str,
@@ -90,24 +115,10 @@ pub(crate) async fn attempt_commit_message_tx(
     .bind(attempt_id)
     .fetch_optional(&mut **tx)
     .await?;
-    let text = match text {
-        Some(text) => Some(text),
-        None => {
-            sqlx::query_scalar(
-                "SELECT json_extract(payload_json, '$.message') FROM operations \
-             WHERE kind = ?1 AND json_extract(payload_json, '$.task_id') = ?2 \
-             ORDER BY CAST(json_extract(payload_json, '$.run') AS INTEGER) DESC LIMIT 1",
-            )
-            .bind(crate::operation::task_gate_run::TASK_GATE_RUN_KIND)
-            .bind(attempt_id)
-            .fetch_optional(&mut **tx)
-            .await?
-        }
-    };
-    text.map(|text| {
-        CommitMessage::parse(&text).map_err(|error| {
-            crate::error::CalmError::Internal(format!("attempt {attempt_id}: {error}"))
-        })
-    })
-    .transpose()
+    match text {
+        Some(text) => CommitMessage::parse(&text)
+            .map(Some)
+            .map_err(crate::error::CalmError::Internal),
+        None => crate::operation::task_gate_run::checkpointed_message_tx(tx, attempt_id).await,
+    }
 }

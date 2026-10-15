@@ -180,6 +180,7 @@ impl Fixture {
 
 pub fn forge_goal() -> String {
     r#"Goal: At the repository root, create a single new file named `FORGE_E2E.md` whose entire contents are exactly the single line `forge-e2e-ok`. Do not modify any other file, do not run `git push`, and do not open a pull request.
+Report done with commit_message containing the full repository-required commit message.
 Acceptance: `FORGE_E2E.md` exists at the repository root with exactly that content."#
         .to_string()
 }

@@ -40,8 +40,8 @@ pub(crate) enum ReleaseDelivery {
     /// Commit the attempt with this outcome. Completion inherits its durable message and
     /// refuses without one; other outcomes use the kernel's text.
     Commit(AttemptOutcome),
-    /// The attempt completed and its worker supplied the commit message (#2139): the only way a
-    /// worker message reaches a delivery row.
+    /// The attempt completed with an explicit worker message. Omitted messages inherit at
+    /// this release boundary through `Commit(Completed)`.
     CommitWorkerMessage(CommitMessage),
     /// Commit it with the outcome its terminal `tasks.status` says (the reaper's race-lost arm,
     /// the cleanup after a kill, a timeout flip that marked no live session).

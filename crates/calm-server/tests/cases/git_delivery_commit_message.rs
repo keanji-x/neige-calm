@@ -261,3 +261,62 @@ async fn done_without_any_message_on_a_kernel_lease_is_refused() {
     assert_eq!(fx.delivery_count(&task.id).await, 0);
     assert_eq!(task_completed_events(&fx, &task.id).await, 0);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upgrade_restart_settles_a_legacy_null_message_without_a_forge_op() {
+    let mut fx = fixture().await;
+    fx.dispatcher.abort_event_listener_for_test();
+    let worker = fx.codex_worker();
+    let lease = fx.kernel_lease(&worker.card_id).await;
+    let task = fx
+        .running_task("legacy", "codex", &worker.card_id, json!({}))
+        .await;
+    std::fs::write(lease.path.join("legacy.txt"), "legacy\n").unwrap();
+    fx.report_only_with_message(&worker, &task.id, "fixture placeholder")
+        .await;
+    // Restore the persisted pre-deploy shape; the migration-level regression separately
+    // constructs this row at the base schema and upgrades it with the real migrator.
+    let mut tx = fx.pool().begin().await.unwrap();
+    let triggers: Vec<(String, String)> = sqlx::query_as(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'task_git_deliveries'"
+    ).fetch_all(&mut *tx).await.unwrap();
+    for (name, _) in &triggers {
+        sqlx::query(&format!("DROP TRIGGER {name}"))
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    sqlx::query(
+        "UPDATE task_git_deliveries SET commit_message = NULL WHERE producer_attempt_id = ?1",
+    )
+    .bind(&task.id)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    for (_, definition) in triggers {
+        sqlx::query(&definition).execute(&mut *tx).await.unwrap();
+    }
+    tx.commit().await.unwrap();
+    assert_eq!(fx.forge_op_count().await, 0);
+    fx.reboot().await;
+    fx.wait_settled(&task.id).await;
+    let row = fx.delivery_row(&task.id).await.unwrap();
+    let candidate = fx.candidate_row(&task.id).await.unwrap();
+    assert_eq!(
+        commit_message_of(&lease.path, &candidate.commit_sha),
+        format!(
+            "neige: attempt {} completed (delivery {})\n",
+            task.id, row.delivery_id
+        )
+    );
+    assert!(row.settlement.is_some());
+    // A new kernel lease proves the checkout is no longer Busy after settlement.
+    let next = fx
+        .new_worker(
+            "after-legacy",
+            calm_server::session_projection_repo::AgentProvider::Codex,
+        )
+        .await;
+    let next_lease = fx.kernel_lease(&next.card_id).await;
+    assert_eq!(next_lease.path, lease.path);
+}
