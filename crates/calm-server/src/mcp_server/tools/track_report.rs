@@ -16,7 +16,6 @@ use crate::track_report_read::{
     ReportReadScope, flat_blocks_text, listed_blocks, load_report_doc_snapshot_with_track,
     marked_blocks_text, report_read_task_diagnostics, selected_blocks_text,
 };
-use calm_types::report_blocks::in_sections;
 use calm_types::track_report::ReportBlock;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -179,12 +178,15 @@ pub(crate) async fn report_read(
     // The index of a text read omits the task blocks it did not render.
     let indexed: Vec<ReportBlock> = match &text {
         None => snapshot.blocks.clone(),
-        Some((_, rendered)) => snapshot
-            .blocks
-            .iter()
-            .filter(|block| in_sections(&block.kind) || rendered.contains(&block.id))
-            .cloned()
-            .collect(),
+        Some((_, rendered)) => {
+            let listed: Vec<&str> = listed().map(|block| block.id.as_str()).collect();
+            snapshot
+                .blocks
+                .iter()
+                .filter(|block| listed.contains(&block.id.as_str()) || rendered.contains(&block.id))
+                .cloned()
+                .collect()
+        }
     };
     // `resolved` is rows and overlays only; this read never calls a plugin and never writes.
     let index: Vec<Value> =

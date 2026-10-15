@@ -5,7 +5,9 @@
 
 #![cfg(unix)]
 
-use crate::mcp_report_sections::{CONTRACT, INVALID_PARAMS, SECTIONS, payload};
+use crate::mcp_report_sections::{
+    CONTRACT, INVALID_PARAMS, SECTIONS, commit, payload, read_sections, replace,
+};
 use crate::mcp_track_report::{Boot, boot, call_tool, planner_identity};
 use crate::mcp_track_report_blocks::{planner_task_payload, task_keys};
 use calm_server::event::EditAuthor;
@@ -44,9 +46,25 @@ fn task_blocks(blocks: &[ReportBlock]) -> Vec<ReportBlock> {
 /// planner edit outside this session's read ledger (a previous session's, or before a restart), so
 /// the session knows only what it reads. Returns the two task blocks as stored.
 async fn seed(boot: &Boot) -> Vec<ReportBlock> {
-    let fence = |key: &str| render_fence(KIND_TASK, &planner_task_payload(key, "build it"));
-    let sections = SECTIONS.replace("beta\n", &format!("beta\n\n{}", fence("k1")));
-    let body = format!("{CONTRACT}{sections}\n{}", fence("k2"));
+    let sections = SECTIONS.replace("beta\n", &format!("beta\n\n{}", task_fence("k1")));
+    let blocks = persist_body(boot, &format!("{CONTRACT}{sections}\n{}", task_fence("k2"))).await;
+    let tasks = task_blocks(&blocks);
+    assert_eq!(tasks.len(), 2, "premise: two task blocks");
+    let at = |id: &str| blocks.iter().position(|block| block.id == id).unwrap();
+    assert!(
+        calm_types::report_blocks::flat_text(&blocks[at(&tasks[0].id) - 1]).contains("beta")
+            && at(&tasks[1].id) == blocks.len() - 1,
+        "premise: k1 inside 已完成, k2 last"
+    );
+    tasks
+}
+
+fn task_fence(key: &str) -> String {
+    render_fence(KIND_TASK, &planner_task_payload(key, "build it"))
+}
+
+/// Store `body` as that outside planner edit; returns the blocks as stored.
+async fn persist_body(boot: &Boot, body: &str) -> Vec<ReportBlock> {
     let track = boot
         .repo
         .track_get(boot.track_id.as_str())
@@ -71,22 +89,13 @@ async fn seed(boot: &Boot) -> Vec<ReportBlock> {
         track,
         card,
         current,
-        TrackReportPayload::new("seed", &body),
+        TrackReportPayload::new("seed", body),
         doc_rev,
         None,
     )
     .await
     .expect("seed the report");
-    let blocks = payload(boot).await.blocks.expect("blocks");
-    let tasks = task_blocks(&blocks);
-    assert_eq!(tasks.len(), 2, "premise: two task blocks");
-    let at = |id: &str| blocks.iter().position(|block| block.id == id).unwrap();
-    assert!(
-        calm_types::report_blocks::flat_text(&blocks[at(&tasks[0].id) - 1]).contains("beta")
-            && at(&tasks[1].id) == blocks.len() - 1,
-        "premise: k1 inside 已完成, k2 last"
-    );
-    tasks
+    payload(boot).await.blocks.expect("blocks")
 }
 
 #[tokio::test]
@@ -196,6 +205,13 @@ async fn a_task_read_by_id_returns_it_and_anchors_its_upsert() {
 async fn a_whole_write_after_a_task_free_full_read_keeps_every_task_block() {
     let boot = boot().await;
     let tasks = seed(&boot).await;
+    let ids_before: Vec<String> = payload(&boot)
+        .await
+        .blocks
+        .unwrap()
+        .into_iter()
+        .map(|block| block.id)
+        .collect();
     let marked = read(
         &boot,
         planner_identity(&boot),
@@ -227,15 +243,15 @@ async fn a_whole_write_after_a_task_free_full_read_keeps_every_task_block() {
         tasks,
         "every task block is kept: id, rev and payload"
     );
-    let at = |id: &str| blocks.iter().position(|block| block.id == id).unwrap();
-    let text = |index: usize| calm_types::report_blocks::flat_text(&blocks[index]);
-    let k1 = at(&tasks[0].id);
-    assert!(
-        text(k1 - 1).contains("beta2") && text(k1 + 1).starts_with("# 决策"),
-        "k1 stays after the block it followed: {}",
+    let ids: Vec<&str> = blocks.iter().map(|block| block.id.as_str()).collect();
+    assert_eq!(
+        ids, ids_before,
+        "every block keeps its id and place, k1 after the block it followed: {}",
         after.body
     );
-    assert_eq!(at(&tasks[1].id), blocks.len() - 1, "k2 stays last");
+    let k1 = ids.iter().position(|id| *id == tasks[0].id).unwrap();
+    assert!(calm_types::report_blocks::flat_text(&blocks[k1 - 1]).contains("beta2"));
+    assert_eq!(ids.last(), Some(&tasks[1].id.as_str()), "k2 stays last");
     assert_eq!(task_keys(&boot).await, ["k1", "k2"]);
 }
 
@@ -276,4 +292,136 @@ async fn a_whole_write_carrying_a_task_fence_is_refused() {
         assert_eq!(payload(&boot).await, before, "nothing written");
     }
     assert_eq!(task_keys(&boot).await, ["k1", "k2"]);
+}
+
+/// A task used to separate two prose blocks; with tasks left out of the full read they render back to
+/// back, the second without a heading. Writing that marked read back unchanged must change nothing.
+/// `已完成` holds [prose with its heading, task k1, prose without a heading, task k2].
+async fn seed_prose_split_by_tasks(boot: &Boot) {
+    let sections = SECTIONS.replace(
+        "beta\n",
+        &format!(
+            "beta\n\n{}then more\n\n{}",
+            task_fence("k1"),
+            task_fence("k2")
+        ),
+    );
+    let blocks = persist_body(boot, &format!("{CONTRACT}{sections}")).await;
+    let kinds: Vec<&str> = blocks.iter().map(|block| block.kind.as_str()).collect();
+    let at = kinds.iter().position(|kind| *kind == KIND_TASK).unwrap();
+    assert_eq!(
+        kinds[at - 1..at + 3],
+        ["prose", KIND_TASK, "prose", KIND_TASK],
+        "premise: {blocks:?}"
+    );
+    assert!(
+        calm_types::report_blocks::flat_text(&blocks[at - 1]).starts_with("# 已完成")
+            && calm_types::report_blocks::flat_text(&blocks[at + 1]) == "then more\n\n",
+        "premise: a prose block with a heading, then one without: {blocks:?}"
+    );
+}
+
+/// A task used to separate two prose blocks; with tasks left out of the full read they render back to
+/// back, the second without a heading. Writing that marked read back unchanged must change nothing.
+#[tokio::test]
+async fn a_report_write_of_a_verbatim_marked_full_read_is_a_round_trip_identity() {
+    let boot = boot().await;
+    seed_prose_split_by_tasks(&boot).await;
+    let before = payload(&boot).await;
+    let marked = read(
+        &boot,
+        planner_identity(&boot),
+        json!({ "with_markers": true }),
+    )
+    .await["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        marked.contains("beta\n\n<!-- neige:") && !marked.contains("neige-block task"),
+        "premise: the two prose blocks render back to back: {marked}"
+    );
+    call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        planner_identity(&boot),
+        json!({ "body": marked, "message": "write the read back" }),
+    )
+    .await
+    .expect("a verbatim marked full read writes back");
+    let after = payload(&boot).await;
+    assert_eq!(
+        after.blocks, before.blocks,
+        "ids, revs, payloads, order and task placement are unchanged"
+    );
+    assert_eq!(after.body, before.body);
+}
+
+#[tokio::test]
+async fn a_report_write_pinning_a_task_by_its_marker_alone_is_refused() {
+    let boot = boot().await;
+    let tasks = seed(&boot).await;
+    let marked = read(
+        &boot,
+        planner_identity(&boot),
+        json!({ "with_markers": true }),
+    )
+    .await["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let before = payload(&boot).await;
+    let body = format!(
+        "{marked}{}prose under a task marker\n",
+        marker_line(&tasks[0].id)
+    );
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        planner_identity(&boot),
+        json!({ "body": body, "message": "pin a task" }),
+    )
+    .await
+    .expect_err("a whole write may not pin a task block");
+    assert_eq!(err.code, INVALID_PARAMS, "{err:?}");
+    assert!(
+        err.message.contains(&format!(
+            "`<!-- neige:{} -->` names a task block",
+            tasks[0].id
+        )),
+        "{err:?}"
+    );
+    assert_eq!(payload(&boot).await, before, "nothing written");
+}
+
+/// The section replace is the other marked write: the same blocks, read as section `已完成` and
+/// replaced verbatim, keep their ids, revs and order too. (A section replace moves the section's
+/// task blocks after its members, #2598; only the blocks it owns are pinned in place here.)
+#[tokio::test]
+async fn a_section_replace_of_a_verbatim_section_read_is_a_round_trip_identity() {
+    let boot = boot().await;
+    seed_prose_split_by_tasks(&boot).await;
+    let before = payload(&boot).await;
+    let section = read_sections(&boot, planner_identity(&boot), &["已完成"]).await;
+    assert!(
+        section.contains("beta\n\n<!-- neige:") && !section.contains("neige-block task"),
+        "premise: the two prose blocks render back to back: {section}"
+    );
+    commit(&boot, planner_identity(&boot), replace("已完成", &section))
+        .await
+        .expect("a verbatim section read replaces its section");
+    let (after, before) = (payload(&boot).await.blocks.unwrap(), before.blocks.unwrap());
+    let owned = |blocks: &[ReportBlock]| -> Vec<ReportBlock> {
+        blocks
+            .iter()
+            .filter(|block| block.kind != KIND_TASK)
+            .cloned()
+            .collect()
+    };
+    assert_eq!(
+        owned(&after),
+        owned(&before),
+        "ids, revs, payloads and order"
+    );
+    assert_eq!(task_blocks(&after), task_blocks(&before));
 }

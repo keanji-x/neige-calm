@@ -322,7 +322,7 @@ fn require_tree_budget_postcondition(
 }
 use crate::track_report_edit_guard::{guard_task_declarations, normalize_report_op};
 use crate::track_report_guard::{
-    guard_non_prose_stomp, validate_block_content, validate_body_fences,
+    guard_non_prose_stomp, validate_block_content, validate_body_fences, validate_marked_slices,
 };
 use calm_types::report_blocks::{KIND_PROSE, in_sections};
 use calm_types::report_contract::{HeaderError, normalize_header};
@@ -654,27 +654,18 @@ pub(crate) fn apply_report_op_traced(
         } => {
             check_doc_anchor(doc, DocAnchor::LastRead(*if_doc_rev), true)?;
             let summary = tx_summary(doc, summary)?;
-            let marked = calm_types::report_blocks::strip_markers_and_split(body);
+            let mut marked = calm_types::report_blocks::strip_markers_and_split(body);
             // Normalize AFTER the markers are stripped: a `with_markers` read puts the marker on line 1
-            // and the header on line 2. Replacing one comment line by another cannot change the block
-            // count, so the hints stay index-aligned.
-            let cleaned = normalize_header(&marked.cleaned).map_err(header_bad_request)?;
-            let rebuilt;
-            let slices = match &cleaned {
-                Cow::Borrowed(_) => &marked.slices,
-                Cow::Owned(cleaned) => {
-                    rebuilt = calm_types::report_blocks::split_body(cleaned);
-                    if rebuilt.len() != marked.hints.len() {
-                        return Err(CalmError::Internal(format!(
-                            "track_report: normalizing the contract header changed the block \
-                             count ({} → {})",
-                            marked.hints.len(),
-                            rebuilt.len()
-                        )));
-                    }
-                    &rebuilt
-                }
-            };
+            // and the header on line 2. The header is line 1 of slice 0, so rewriting it there keeps
+            // every block boundary and its hint.
+            if let Some(first) = marked.slices.first_mut()
+                && let Cow::Owned(normalized) =
+                    normalize_header(&first.raw).map_err(header_bad_request)?
+            {
+                first.raw = normalized;
+                marked.cleaned = calm_types::report_blocks::flatten(&marked.slices);
+            }
+            let slices = &marked.slices;
             // A whole write owns the blocks a full read renders, never a task block (#2617): those
             // stay as they are, so the markdown may neither carry nor pin one.
             sections::refuse_unsectioned_fences(slices, "the markdown of a whole write")?;
@@ -690,7 +681,7 @@ pub(crate) fn apply_report_op_traced(
                 )));
             }
             // Every fence it does carry must be well-formed and schema-valid.
-            validate_body_fences(&cleaned)?;
+            validate_marked_slices(&marked.cleaned, slices)?;
             doc.update_with_hints_keeping(&summary, slices, &marked.hints, |block| {
                 in_sections(&block.kind)
             })

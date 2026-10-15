@@ -4,8 +4,8 @@
 use crate::error::CalmError;
 use crate::track_report_doc::ReportDoc;
 use calm_types::report_blocks::{
-    KIND_PROSE, NonProseFence, check_prose_markdown, flat_text, invalid_neige_fences, parse_fence,
-    reassign_ids, split_body, validate_payload,
+    BlockSlice, KIND_PROSE, NonProseFence, check_prose_markdown, flat_text, invalid_neige_fences,
+    parse_fence, reassign_ids, split_body, validate_payload,
 };
 
 /// Schema-validate one parsed fence's payload as a `BadRequest` naming the kind and field errors.
@@ -31,6 +31,23 @@ pub(crate) fn validate_body_fences(body: &str) -> Result<(), CalmError> {
     for slice in split_body(body) {
         if let Some(fence) = parse_fence(&slice.raw) {
             check_fence_payload(&fence)?;
+        }
+    }
+    Ok(())
+}
+
+/// [`validate_body_fences`] for a marked write, whose `slices` become its blocks: a marker line cuts
+/// them anywhere, even inside a code fence, so each slice must also hold valid block content alone —
+/// a fence slice a schema-valid payload, a prose slice no `neige-block` fence or a piece of one.
+pub(crate) fn validate_marked_slices(
+    cleaned: &str,
+    slices: &[BlockSlice],
+) -> Result<(), CalmError> {
+    validate_body_fences(cleaned)?;
+    for slice in slices {
+        match parse_fence(&slice.raw) {
+            Some(fence) => check_fence_payload(&fence)?,
+            None => check_prose_markdown(&slice.raw).map_err(CalmError::BadRequest)?,
         }
     }
     Ok(())
@@ -91,6 +108,37 @@ mod tests {
         );
         let (id, _) = doc.upsert_block(None, "app", &fence_text).unwrap();
         (doc, fence_text, id)
+    }
+
+    /// A marker line cuts a marked write anywhere (#2617), so the slices, not the uncut text, must pass.
+    #[test]
+    fn marker_cuts_inside_a_fence_cannot_land_an_unchecked_block() {
+        let strip = calm_types::report_blocks::strip_markers_and_split;
+        let cases = [
+            // An example fence inside `~~~` is prose as one text; cut out, it is an `app` block.
+            (
+                "# A\n~~~md\n<!-- neige:b_0001 -->\n```neige-block app\n{\"height\": 1}\n```\n\
+                 <!-- neige:b_0002 -->\n~~~\n",
+                "invalid `app` block payload",
+            ),
+            // A cut inside a real fence leaves its opener in prose.
+            (
+                "# A\n```neige-block app\n<!-- neige:b_0001 -->\n{\"src\": \"/x\"}\n```\n",
+                "unterminated ```neige-block fence",
+            ),
+        ];
+        for (body, needle) in cases {
+            let marked = strip(body);
+            assert!(
+                super::validate_body_fences(&marked.cleaned).is_ok(),
+                "premise: {body:?}"
+            );
+            let err = super::validate_marked_slices(&marked.cleaned, &marked.slices).unwrap_err();
+            assert!(
+                matches!(&err, CalmError::BadRequest(m) if m.contains(needle)),
+                "{body:?} → {err:?}"
+            );
+        }
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use super::*;
 
+mod keeping_tests;
 mod malformed_tests;
 
 fn sample_payload() -> TrackReportPayload {

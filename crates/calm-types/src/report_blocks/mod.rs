@@ -257,6 +257,11 @@ pub struct MarkedBody {
 
 /// Strip every standalone `<!-- neige:b_xxxx -->` marker line out of `body` **unconditionally**
 /// (markers must never reach storage), then split and bind each stripped id to the slice it preceded.
+/// A marker line always opens a new slice: the cleaned text is cut where [`split_body`] cuts it and
+/// at every marker, so two blocks a marked read rendered back to back stay two blocks even when the
+/// second has no heading (#2617: a full read leaves out the task that used to separate them).
+/// Of several markers on one boundary the last binds, being the one directly above the text; a
+/// marker with no text after it binds nothing. Unmarked text splits exactly as [`split_body`].
 pub fn strip_markers_and_split(body: &str) -> MarkedBody {
     let mut cleaned = String::with_capacity(body.len());
     let mut markers: Vec<(usize, String)> = Vec::new();
@@ -266,25 +271,32 @@ pub fn strip_markers_and_split(body: &str) -> MarkedBody {
             None => cleaned.push_str(line),
         }
     }
-    let slices = split_body(&cleaned);
-    let mut starts = Vec::with_capacity(slices.len());
+    let mut starts = Vec::new();
     let mut offset = 0;
-    for slice in &slices {
+    for slice in split_body(&cleaned) {
         starts.push(offset);
         offset += slice.raw.len();
     }
+    starts.extend(
+        markers
+            .iter()
+            .map(|(offset, _)| *offset)
+            .filter(|offset| *offset < cleaned.len()),
+    );
+    starts.sort_unstable();
+    starts.dedup();
+    let slices: Vec<BlockSlice> = starts
+        .iter()
+        .enumerate()
+        .map(|(index, start)| BlockSlice {
+            raw: cleaned[*start..starts.get(index + 1).copied().unwrap_or(cleaned.len())]
+                .to_string(),
+        })
+        .collect();
     let mut hints = vec![None; slices.len()];
     for (offset, id) in markers {
-        if offset >= cleaned.len() && !cleaned.is_empty() {
-            continue;
-        }
-        // The slice whose byte range contains the marker's position — the block that directly follows it.
-        let index = match starts.binary_search(&offset) {
-            Ok(index) => index,
-            Err(0) => 0,
-            Err(insert) => insert - 1,
-        };
-        if hints[index].is_none() {
+        // Every marker inside the text starts a slice; one at its end follows the last block.
+        if let Ok(index) = starts.binary_search(&offset) {
             hints[index] = Some(id);
         }
     }
@@ -540,8 +552,15 @@ mod tests {
             "  <!-- neige:b_0001 -->  \r\n# A\n<!-- neige:b_0002 -->\nmid\n<!-- neige:b_0003 -->\n";
         let marked = strip_markers_and_split(messy);
         assert_eq!(marked.cleaned, "# A\nmid\n");
-        assert_eq!(marked.slices.len(), 1);
-        assert_eq!(marked.hints, vec![Some("b_0001".to_string())]);
+        assert_eq!(
+            marked.slices.len(),
+            2,
+            "the marker before `mid` opens a block"
+        );
+        assert_eq!(
+            marked.hints,
+            vec![Some("b_0001".to_string()), Some("b_0002".to_string())]
+        );
 
         for keep in [
             "x <!-- neige:b_0001 -->\n", // not standalone
@@ -553,6 +572,89 @@ mod tests {
         ] {
             let marked = strip_markers_and_split(keep);
             assert_eq!(marked.cleaned, keep, "{keep:?} must survive");
+        }
+    }
+
+    #[test]
+    fn a_marker_line_always_opens_a_block_bound_to_its_id() {
+        let raws = |marked: &MarkedBody| -> Vec<String> {
+            marked
+                .slices
+                .iter()
+                .map(|slice| slice.raw.clone())
+                .collect()
+        };
+        let id = |id: &str| Some(id.to_string());
+        // Two blocks a marked read rendered back to back stay two even without a heading (#2617).
+        let marked = strip_markers_and_split(
+            "<!-- neige:b_000a -->\n# A\nx\n<!-- neige:b_000c -->\ny\n<!-- neige:b_000d -->\nz",
+        );
+        assert_eq!(raws(&marked), ["# A\nx\n", "y\n", "z"]);
+        assert_eq!(marked.hints, [id("b_000a"), id("b_000c"), id("b_000d")]);
+        // Even inside a fence a block left open: the heading after it splits nothing, the marker does.
+        let marked = strip_markers_and_split(
+            "<!-- neige:b_000a -->\n# A\n```\ncode\n<!-- neige:b_000b -->\n## B\n",
+        );
+        assert_eq!(raws(&marked), ["# A\n```\ncode\n", "## B\n"]);
+        assert_eq!(marked.hints, [id("b_000a"), id("b_000b")]);
+        // A marker with no text after it binds nothing; of markers on one boundary the last binds.
+        let marked = strip_markers_and_split(
+            "x\n<!-- neige:b_000a -->\n<!-- neige:b_000b -->\ny\n<!-- neige:b_000c -->\n",
+        );
+        assert_eq!(raws(&marked), ["x\n", "y\n"]);
+        assert_eq!(marked.hints, [None, id("b_000b")]);
+        // Unmarked text splits exactly as `split_body`.
+        let body = "preamble\n# A\nalpha\nmore\n```neige-block app\n{\"src\": \"/x\"}\n```\ntail\n";
+        let marked = strip_markers_and_split(body);
+        assert_eq!(marked.slices, split_body(body));
+        assert!(marked.hints.iter().all(Option::is_none));
+    }
+
+    proptest! {
+        #[test]
+        fn marked_split_is_lossless_and_cuts_at_every_marker(
+            fragments in prop::collection::vec(
+                prop::sample::select(vec![
+                    "# A\n", "## B\n", "```\n", "~~~\n", "text\n", "\n", "x",
+                    "```neige-block app\n{\"src\": \"/x\"}\n```\n",
+                    "<!-- neige:b_00aa -->\n", "<!-- neige:b_00bb -->\n",
+                ]),
+                0..30,
+            ),
+        ) {
+            let body = fragments.concat();
+            let marked = strip_markers_and_split(&body);
+            prop_assert_eq!(flatten(&marked.slices), marked.cleaned.clone());
+            prop_assert_eq!(marked.hints.len(), marked.slices.len());
+            if !body.contains("<!-- neige:") {
+                prop_assert_eq!(marked.slices, split_body(&body));
+            } else {
+                // Each marker followed by text opens the slice it binds, right where it stood.
+                let mut offset = 0;
+                let mut marker_offsets = Vec::new();
+                for line in body.split_inclusive('\n') {
+                    match marker_line_id(line) {
+                        Some(_) if offset < marked.cleaned.len() => marker_offsets.push(offset),
+                        Some(_) => {}
+                        None => offset += line.len(),
+                    }
+                }
+                let mut start = 0;
+                let starts: Vec<usize> = marked
+                    .slices
+                    .iter()
+                    .map(|slice| {
+                        let at = start;
+                        start += slice.raw.len();
+                        at
+                    })
+                    .collect();
+                for offset in marker_offsets {
+                    let index = starts.iter().position(|start| *start == offset);
+                    prop_assert!(index.is_some(), "a marker at {} opens no slice", offset);
+                    prop_assert!(marked.hints[index.unwrap()].is_some());
+                }
+            }
         }
     }
 

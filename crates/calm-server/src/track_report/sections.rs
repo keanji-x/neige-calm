@@ -8,7 +8,7 @@ use crate::report_sections::{
     Section, block_h1_title, find_section, h1_title, section_error_message,
 };
 use crate::track_report_doc::ReportDoc;
-use crate::track_report_guard::validate_body_fences;
+use crate::track_report_guard::validate_marked_slices;
 use calm_types::report_blocks::{
     BlockSlice, flat_text, in_sections, parse_fence, strip_markers_and_split,
 };
@@ -121,7 +121,7 @@ pub(super) fn apply_replace_section(
              replace may pin only that section's own blocks"
         )));
     }
-    validate_body_fences(&marked.cleaned)?;
+    validate_marked_slices(&marked.cleaned, &marked.slices)?;
     let replaced = doc
         .replace_section_members(span, &members, &marked.slices, &marked.hints)
         .map_err(block_op_internal)?;
