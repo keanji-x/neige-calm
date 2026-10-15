@@ -112,6 +112,7 @@ fn real_manifest_parses() {
             "gh_pr_list",
             "gh_pr_diff",
             "gh_pr_checks",
+            "gh_ci_failure_evidence",
             "gh_pr_merge",
             "gh_issue_create",
             "gh_issue_search",

@@ -1,0 +1,12 @@
+{
+  "description": "forge.ci.evidence.read carries the track routing id, PR/head identity, and evidence artifact path; never log text",
+  "wire": {
+    "ev": "forge.ci.evidence.read",
+    "data": {
+      "track_id": "track-01",
+      "pr_number": 1,
+      "head_sha": "head-sha",
+      "artifact_path": "/tmp/neige/ci-evidence.json"
+    }
+  }
+}

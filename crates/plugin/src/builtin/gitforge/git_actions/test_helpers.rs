@@ -41,11 +41,16 @@ pub(super) fn is_hex_sha(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-pub(super) fn assert_supported_event_kind(payload: &Value) {
-    let event_kind = payload
+/// The event kind a lowered payload declares.
+pub(super) fn event_kind(payload: &Value) -> &str {
+    payload
         .pointer("/event_spec/event_kind")
         .and_then(Value::as_str)
-        .expect("payload carries event kind");
+        .expect("payload carries event kind")
+}
+
+pub(super) fn assert_supported_event_kind(payload: &Value) {
+    let event_kind = event_kind(payload);
     assert!(
         SUPPORTED_FORGE_EVENT_KINDS.contains(&event_kind),
         "unsupported event kind `{event_kind}`"

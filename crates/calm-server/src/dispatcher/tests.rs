@@ -434,6 +434,12 @@ fn dispatcher_filter_matches_push_kinds() {
         head_sha: "head-sha".into(),
         artifact_path: "/tmp/diff.patch".into(),
     })));
+    assert!(!filter.matches(&env(Event::ForgeCiEvidenceRead {
+        track_id: track.clone(),
+        pr_number: 1,
+        head_sha: "head-sha".into(),
+        artifact_path: "/tmp/ci-evidence.json".into(),
+    })));
     assert!(!filter.matches(&env(Event::ForgeIssueRead {
         track_id: track.clone(),
         issue_number: 1,
@@ -1548,6 +1554,16 @@ fn event_warrants_planner_push_covers_push_allowlist() {
         &write
     ));
     assert!(!event_warrants_planner_push(
+        &Event::ForgeCiEvidenceRead {
+            track_id: track.clone(),
+            pr_number: 1,
+            head_sha: "head-sha".into(),
+            artifact_path: "/tmp/ci-evidence.json".into(),
+        },
+        &ActorId::KernelDispatcher,
+        &write
+    ));
+    assert!(!event_warrants_planner_push(
         &Event::WorktreeRemoved {
             track_id: track.clone(),
             card_id: worker.clone(),
@@ -1990,6 +2006,19 @@ fn harness_observation_from_event_mapping_pin() {
                 base_sha: "base-sha".into(),
                 head_sha: "head-sha".into(),
                 artifact_path: "/tmp/diff.patch".into(),
+            },
+            Some("impl-parser")
+        ),
+        None
+    );
+    assert_eq!(
+        harness_observation_from_event(
+            &track,
+            &Event::ForgeCiEvidenceRead {
+                track_id: TrackId::from("payload-track-ignored"),
+                pr_number: 1,
+                head_sha: "head-sha".into(),
+                artifact_path: "/tmp/ci-evidence.json".into(),
             },
             Some("impl-parser")
         ),
@@ -2950,6 +2979,17 @@ async fn planner_push_wiring_table() -> PlannerPushWiringTable {
                 base_sha: "base-sha".into(),
                 head_sha: "head-sha".into(),
                 artifact_path: "/tmp/diff.patch".into(),
+            },
+            ActorId::KernelDispatcher,
+            false,
+            false,
+        ),
+        row(
+            Event::ForgeCiEvidenceRead {
+                track_id: track.clone(),
+                pr_number: 1,
+                head_sha: "head-sha".into(),
+                artifact_path: "/tmp/ci-evidence.json".into(),
             },
             ActorId::KernelDispatcher,
             false,

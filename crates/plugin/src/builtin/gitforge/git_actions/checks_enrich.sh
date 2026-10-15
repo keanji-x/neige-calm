@@ -1,27 +1,8 @@
 # Structured Actions evidence only. No log download, third-party URL fetch, or raw log persistence.
-# $1 trusted gh host, $2 canonical repository, $3 head, $4 shared sanitizer.
+# $1 trusted gh host, $2 canonical repository, $3 head, $4 shared sanitizer. Runs after the
+# shared Actions prelude, which defines gh_api.
 host=$1 repo=$2 head=$3 clean=$4
 budget_end=$(($(date +%s) + 40))
-# Status 2: the diagnostic time budget ran out before or during the call; 1: any other failure.
-gh_api() {
-  remaining=$((budget_end - $(date +%s)))
-  [ "$remaining" -gt 0 ] || return 2
-  # Keep the kernel's process group; timeout the direct HTTP client, not a parent shell.
-  # Bound the complete selected stream before any caller captures it. The final
-  # status marker rejects both a truncated stream and a failed later page.
-  response=$({ timeout --foreground "$remaining" gh api "$@"; api_status=$?;
-    printf '\ngh-enrich-status:%s\n' "$api_status"; } | head -c 262208) || return 1
-  case "${response##*
-}" in
-    gh-enrich-status:0) ;;
-    gh-enrich-status:124) return 2 ;;
-    *) return 1 ;;
-  esac
-  response=${response%
-gh-enrich-status:0}
-  [ "$(printf '%s' "$response" | wc -c)" -le 262144 ] || return 1
-  printf '%s\n' "$response"
-}
 IFS= read -r first || exit 1
 prefix=
 case "$first" in

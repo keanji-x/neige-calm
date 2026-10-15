@@ -180,6 +180,7 @@ pub(crate) fn event_warrants_planner_push_with_role(
         | Event::TaskContextFrozen { .. }
         | Event::TaskContextAdvanced { .. }
         | Event::ForgePrDiffRead { .. }
+        | Event::ForgeCiEvidenceRead { .. }
         | Event::ForgeIssueRead { .. }
         | Event::ForgeIssueCreated { .. }
         | Event::ForgeIssueSearched { .. }
@@ -1207,6 +1208,7 @@ impl Inner {
             | Event::TaskContextAdvanced { .. }
             | Event::ForgePrPublished { .. }
             | Event::ForgePrDiffRead { .. }
+            | Event::ForgeCiEvidenceRead { .. }
             | Event::ForgeIssueRead { .. }
             | Event::ForgeIssueCreated { .. }
             | Event::ForgeIssueSearched { .. }
@@ -1745,6 +1747,7 @@ pub(crate) fn harness_observation_from_event(
         | Event::TaskContextAdvanced { .. }
         | Event::ForgePrPublished { .. }
         | Event::ForgePrDiffRead { .. }
+        | Event::ForgeCiEvidenceRead { .. }
         | Event::ForgeIssueRead { .. }
         | Event::ForgeIssueCreated { .. }
         | Event::ForgeIssueSearched { .. }

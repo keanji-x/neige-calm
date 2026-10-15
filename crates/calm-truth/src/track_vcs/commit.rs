@@ -100,6 +100,7 @@ pub async fn commit_events_with_author_in_tx(
                 | Event::ForgePrOpened { .. }
                 | Event::ForgePrPublished { .. }
                 | Event::ForgePrDiffRead { .. }
+                | Event::ForgeCiEvidenceRead { .. }
                 | Event::ForgePrChecks { .. }
                 | Event::ForgeIssueRead { .. }
                 | Event::ForgeIssueCreated { .. }

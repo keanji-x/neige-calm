@@ -62,6 +62,9 @@ read -r -d '' ALLOWLIST <<'EOF' || true
 1   crates/plugin/src/builtin/gitforge/git_actions/checks_enrich.sh
 1   crates/calm-server/tests/cases/forge_pr_checks_diagnostics.rs
 1   crates/calm-server/tests/support/gh_shim.rs
+# #2617: the Actions REST runs listing's `workflow_runs` field; the CI evidence read and its fixtures.
+1   crates/plugin/src/builtin/gitforge/git_actions/ci_evidence.sh
+1   crates/calm-server/tests/cases/forge_ci_evidence.rs
 # #2053 uses the English plural for processes that require accepted inputs, not a retired API key.
 1   docs/architecture/2053-worker-outcome-reports.md
 EOF

@@ -49,6 +49,9 @@
 # local names use TranscriptRow and PAGE_LIMIT. No new protocol vocabulary is defined.
 # #2129 upgrade compatibility: one existing event_spec protocol field reference in the
 # frozen pre-2129 descriptor, kept as replay test data; no new domain term.
+# #2617 bounded exception: spec/crates 500 -> 501 comes solely from the CI evidence lowerer's
+# import of the existing `event_spec` payload builder, aliased `event_contract` as the issue
+# lowerer does; no new domain term.
 # Patterns are boundary-anchored per case; the two words' uppercase branches are deliberately
 # asymmetric (`COVE[A-Z]+` is English, `WAVE[A-Z]+` is oracle ids) and `.spec.ts` is excluded by lookahead.
 

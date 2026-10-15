@@ -736,6 +736,14 @@ describe('issue creation and search events (#2364)', () => {
   });
 });
 
+describe('CI failure evidence event (#2617)', () => {
+  it('requires the PR, head and evidence artifact and carries no log text', () => {
+    const data = { track_id: 'track-01', pr_number: 7, head_sha: 'head-sha', artifact_path: '/tmp/ci-evidence.json' };
+    expect(wireEventSchema.parse({ ev: 'forge.ci.evidence.read', data }).data).toEqual(data);
+    expect(wireEventSchema.safeParse({ ev: 'forge.ci.evidence.read', data: { track_id: 'track-01', pr_number: 7, head_sha: 'head-sha' } }).success).toBe(false);
+  });
+});
+
 describe('PR2 of #247: track.report_edited', () => {
   it('parses a valid track.report_edited with author=planner', () => {
     const parsed = wireEventSchema.parse({

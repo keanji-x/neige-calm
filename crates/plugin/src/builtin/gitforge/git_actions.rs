@@ -10,6 +10,8 @@ use crate::forge_caller::ForgeCallerScope;
 
 mod checks;
 use checks::*;
+mod ci_evidence;
+use ci_evidence::*;
 mod issue;
 mod issue_creation;
 
@@ -20,6 +22,7 @@ pub fn lower(tool: &str, args: &Value) -> Result<Value, String> {
         "gh_pr_list" => lower_gh_pr_list(args),
         "gh_pr_diff" => lower_gh_pr_diff(args),
         "gh_pr_checks" => lower_gh_pr_checks(args),
+        "gh_ci_failure_evidence" => lower_gh_ci_failure_evidence(args),
         "gh_pr_merge" => lower_gh_pr_merge(args),
         "gh_issue_view" => lower_gh_issue_view(args),
         "gh_issue_close" => lower_gh_issue_close(args),

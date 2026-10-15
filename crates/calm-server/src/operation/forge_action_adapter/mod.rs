@@ -407,6 +407,11 @@ fn new_kind_required_fields(event_kind: &str) -> &'static [(&'static str, ForgeF
         "forge.issue.created" => &[("issue_number", U64), ("issue_url", Str)],
         "forge.issue.searched" => &[("artifact_path", Str)],
         "forge.pr.checks" => &[("pr_number", U64), ("conclusion", Str)],
+        "forge.ci.evidence.read" => &[
+            ("pr_number", U64),
+            ("head_sha", Str),
+            ("artifact_path", Str),
+        ],
         "forge.issue.closed" => &[("issue_number", U64)],
         "worktree.provisioned" | "worktree.removed" => &[("path", Str)],
         "worktree.committed" => &[("commit_sha", Str), ("branch", Str)],
@@ -418,9 +423,10 @@ fn new_kind_required_fields(event_kind: &str) -> &'static [(&'static str, ForgeF
 fn kernel_injected_fields(event_kind: &str) -> &'static [&'static str] {
     match event_kind {
         "forge.pr.merged" => &["track_id", "subject"],
-        "forge.pr.diff.read" | "forge.issue.read" | "forge.issue.searched" => {
-            &["track_id", "artifact_path"]
-        }
+        "forge.pr.diff.read"
+        | "forge.ci.evidence.read"
+        | "forge.issue.read"
+        | "forge.issue.searched" => &["track_id", "artifact_path"],
         "worktree.provisioned" | "worktree.committed" | "worktree.removed" => {
             &["track_id", "card_id"]
         }
@@ -754,7 +760,10 @@ pub(crate) async fn read_result_file(result_path: &Path) -> Result<ForgeActionRe
 fn is_artifact_bearing_forge_event_kind(event_kind: &str) -> bool {
     matches!(
         event_kind,
-        "forge.pr.diff.read" | "forge.issue.read" | "forge.issue.searched"
+        "forge.pr.diff.read"
+            | "forge.ci.evidence.read"
+            | "forge.issue.read"
+            | "forge.issue.searched"
     )
 }
 

@@ -247,6 +247,7 @@ function policies(): PolicyMap {
   'forge.pr.published': noop('Published PR receipts have no query consumer.'),
   'forge.pr.diff.read': noop('Diff-read rows have no query consumer.'),
   'forge.pr.checks': noop('Forge check rows have no query consumer.'),
+  'forge.ci.evidence.read': noop('CI evidence reads have no query consumer.'),
   'forge.issue.read': noop('Issue-read rows have no query consumer.'),
   'forge.issue.created': noop('Issue creation has no query consumer.'),
   'forge.issue.searched': noop('Issue search has no query consumer.'),

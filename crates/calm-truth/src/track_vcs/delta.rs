@@ -500,6 +500,7 @@ pub(super) fn paths_changed_by_event(event: &Event, track_id: &TrackId) -> PathD
         | Event::ForgePrOpened { .. }
                 | Event::ForgePrPublished { .. }
         | Event::ForgePrDiffRead { .. }
+        | Event::ForgeCiEvidenceRead { .. }
         | Event::ForgePrChecks { .. }
         | Event::ForgeIssueRead { .. }
         | Event::ForgeIssueCreated { .. }

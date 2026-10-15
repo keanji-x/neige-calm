@@ -258,6 +258,10 @@ case "$area:$verb" in
     esac
     fixture=$(printf '%s' "$endpoint" | tr '/' '_')
     [ -f "$state/actions/$fixture" ] || exit 1
+    case "$endpoint" in
+      # A job log is plain text: gh follows GitHub's redirect to the download and prints it.
+      */actions/jobs/*/logs) exec cat "$state/actions/$fixture" ;;
+    esac
     filter=$(get_arg --jq "$@") || exit 2
     case "$*" in
       *--paginate*) jq -c "$filter" "$state/actions/$fixture" ;;

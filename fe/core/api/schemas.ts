@@ -753,6 +753,16 @@ export const forgePrDiffReadSchema = z.object({
   }),
 });
 
+export const forgeCiEvidenceReadSchema = z.object({
+  ev: z.literal('forge.ci.evidence.read'),
+  data: z.object({
+    track_id: z.string(),
+    pr_number: z.number(),
+    head_sha: z.string(),
+    artifact_path: z.string(),
+  }),
+});
+
 export const forgePrChecksSchema = z.object({
   ev: z.literal('forge.pr.checks'),
   data: z.object({
@@ -1007,6 +1017,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   forgePrPublishedSchema,
   forgePrDiffReadSchema,
   forgePrChecksSchema,
+  forgeCiEvidenceReadSchema,
   forgeIssueReadSchema,
   forgeIssueCreatedSchema,
   forgeIssueSearchedSchema,
@@ -1073,6 +1084,7 @@ export type ForgePrOpenedEvent = z.infer<typeof forgePrOpenedSchema>;
 export type ForgePrPublishedEvent = z.infer<typeof forgePrPublishedSchema>;
 export type ForgePrDiffReadEvent = z.infer<typeof forgePrDiffReadSchema>;
 export type ForgePrChecksEvent = z.infer<typeof forgePrChecksSchema>;
+export type ForgeCiEvidenceReadEvent = z.infer<typeof forgeCiEvidenceReadSchema>;
 export type ForgeIssueReadEvent = z.infer<typeof forgeIssueReadSchema>;
 export type ForgeIssueCreatedEvent = z.infer<typeof forgeIssueCreatedSchema>;
 export type ForgeIssueSearchedEvent = z.infer<typeof forgeIssueSearchedSchema>;

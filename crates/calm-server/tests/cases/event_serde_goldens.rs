@@ -1140,6 +1140,17 @@ golden_test!(
 );
 
 golden_test!(
+    forge_ci_evidence_read,
+    "forge_ci_evidence_read.json",
+    Event::ForgeCiEvidenceRead {
+        track_id: TrackId::from("track-01"),
+        pr_number: 1,
+        head_sha: "head-sha".into(),
+        artifact_path: "/tmp/neige/ci-evidence.json".into(),
+    }
+);
+
+golden_test!(
     forge_issue_read,
     "forge_issue_read.json",
     Event::ForgeIssueRead {
@@ -1367,7 +1378,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 }
 
 /// Every `Event` variant's kind tag, in declaration order.
-const ALL_KIND_TAGS: [&str; 57] = [
+const ALL_KIND_TAGS: [&str; 58] = [
     "area.updated",
     "area.deleted",
     "track.updated",
@@ -1416,6 +1427,7 @@ const ALL_KIND_TAGS: [&str; 57] = [
     "forge.pr.published",
     "forge.pr.diff.read",
     "forge.pr.checks",
+    "forge.ci.evidence.read",
     "forge.issue.read",
     "forge.issue.created",
     "forge.issue.searched",
@@ -1456,7 +1468,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 90,
+        files, 91,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -1521,6 +1533,7 @@ fn kind_tag_list_matches_enum() {
             Event::ForgePrPublished { .. } => "forge.pr.published",
             Event::ForgePrDiffRead { .. } => "forge.pr.diff.read",
             Event::ForgePrChecks { .. } => "forge.pr.checks",
+            Event::ForgeCiEvidenceRead { .. } => "forge.ci.evidence.read",
             Event::ForgeIssueRead { .. } => "forge.issue.read",
             Event::ForgeIssueCreated { .. } => "forge.issue.created",
             Event::ForgeIssueSearched { .. } => "forge.issue.searched",
@@ -1538,7 +1551,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        57,
+        58,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }

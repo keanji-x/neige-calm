@@ -176,6 +176,45 @@
       }
     },
     {
+      "name": "gh_ci_failure_evidence",
+      "description": "Read failure evidence of the GitHub Actions runs of one exact head: at most 4 completed, unsuccessful runs whose head_sha and repository match, at most 8 of their attempts' failed, timed-out or cancelled jobs with conclusion, failed steps and link, and each job's log tail (the last 200 lines, at most 16 KiB, sanitized line by line; log.truncated when cut) or log.status unavailable with a reason. A run is stale when its attempt changed during the read; truncated means a run, job or failed step was left out. The call waits and returns result.event.artifact_path, the JSON file holding the evidence; log text is never in the event or result. Repeating the same call replays the stored read; pass a new attempt for fresh evidence",
+      "kind": "forge-action",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "description": "Repository git-dir path or selector passed to gh/git"
+          },
+          "pr": {
+            "type": "integer",
+            "description": "Pull request number; labels the read, does not select the runs"
+          },
+          "head_sha": {
+            "type": "string",
+            "description": "Full head commit SHA whose Actions runs are read"
+          },
+          "attempt": {
+            "type": [
+              "string",
+              "integer"
+            ],
+            "description": "Optional read attempt identifier; a new one reads fresh evidence"
+          }
+        },
+        "required": [
+          "repo",
+          "pr",
+          "head_sha"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "Read CI Failure Evidence",
+        "readOnlyHint": true
+      }
+    },
+    {
       "name": "gh_pr_merge",
       "description": "Lower GitHub pull request merges into a forge action",
       "kind": "forge-action",

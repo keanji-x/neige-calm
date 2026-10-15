@@ -25,8 +25,8 @@ pub(super) const PR_CHECKS_PAGES_JQ: &str = concat!(
 /// $1 PR, $2 repository selector, $3 fold, $4 query, $5 page normalization. Recheck the current
 /// head after pagination; a moving read fails and the wait retries without emitting evidence.
 pub(super) const PR_CHECKS_READ_SCRIPT: &str = concat!(
-    "identity=$(timeout --foreground 3 gh repo view \"$2\" --json nameWithOwner,url --jq '(.url | split(\"/\")[2]), .nameWithOwner') || exit 1\n",
-    "host=${identity%%\n*}\nrepo=${identity#*\n}\n",
+    include_str!("actions_prelude.sh"),
+    "resolve_repo \"$2\" || exit 1\n",
     "pages=$({ timeout --foreground 10 gh api graphql --hostname \"$host\" --paginate --slurp -F owner=\"${repo%/*}\" -F name=\"${repo##*/}\" ",
     "-F pr=\"$1\" -f query=\"$4\"; status=$?; printf '\\ngh-read-status:%s\\n' \"$status\"; } | head -c 2097216) || exit 1\n",
     "[ \"${pages##*\n}\" = gh-read-status:0 ] || exit 1\n",
@@ -45,6 +45,12 @@ pub(super) const PR_CHECKS_READ_SCRIPT: &str = concat!(
     "[ \"$head\" = \"$current\" ] || exit 1\n",
     "[ \"$(printf '%s' \"$body\" | wc -c)\" -le 4194304 ] || exit 1\n",
     "printf '%s\\n' \"$body\"\n",
+);
+
+/// The checks enrichment, run after the shared Actions prelude that defines its `gh_api`.
+pub(super) const PR_CHECKS_ENRICH_SCRIPT: &str = concat!(
+    include_str!("actions_prelude.sh"),
+    include_str!("checks_enrich.sh"),
 );
 
 /// Folds normalized GraphQL nodes into a verdict, snapshot and failed-check locators.
@@ -154,7 +160,7 @@ pub(super) fn lower_gh_pr_checks(args: &Value) -> Result<Value, String> {
         PR_CHECKS_READ_SCRIPT.into(),
         PR_CHECKS_QUERY.into(),
         PR_CHECKS_PAGES_JQ.into(),
-        include_str!("checks_enrich.sh").into(),
+        PR_CHECKS_ENRICH_SCRIPT.into(),
         checks_sanitizer(),
         wait_for_all.to_string(),
     ];
@@ -169,7 +175,7 @@ pub(super) fn lower_gh_pr_checks(args: &Value) -> Result<Value, String> {
         PR_CHECKS_JQ.into(),
         PR_CHECKS_QUERY.into(),
         PR_CHECKS_PAGES_JQ.into(),
-        include_str!("checks_enrich.sh").into(),
+        PR_CHECKS_ENRICH_SCRIPT.into(),
         checks_sanitizer(),
         wait_for_all.to_string(),
     ];

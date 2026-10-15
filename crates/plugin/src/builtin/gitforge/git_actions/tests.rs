@@ -357,7 +357,7 @@ fn lowers_gh_pr_checks() {
                 PR_CHECKS_READ_SCRIPT,
                 PR_CHECKS_QUERY,
                 PR_CHECKS_PAGES_JQ,
-                include_str!("checks_enrich.sh"),
+                PR_CHECKS_ENRICH_SCRIPT,
                 checks::checks_sanitizer(),
                 "false"
             ],
@@ -395,7 +395,7 @@ fn lowers_gh_pr_checks() {
                     PR_CHECKS_JQ,
                     PR_CHECKS_QUERY,
                     PR_CHECKS_PAGES_JQ,
-                    include_str!("checks_enrich.sh"),
+                    PR_CHECKS_ENRICH_SCRIPT,
                     checks::checks_sanitizer(),
                     "false"
                 ]

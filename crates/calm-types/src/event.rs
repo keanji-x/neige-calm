@@ -774,6 +774,14 @@ pub enum Event {
         #[ts(optional)]
         failed_checks: Option<Vec<ForgeFailedCheck>>,
     },
+    /// An on-demand read of the head's failed Actions jobs; the log tails stay in the artifact.
+    #[serde(rename = "forge.ci.evidence.read")]
+    ForgeCiEvidenceRead {
+        track_id: TrackId,
+        pr_number: u64,
+        head_sha: String,
+        artifact_path: String,
+    },
     #[serde(rename = "forge.issue.read")]
     ForgeIssueRead {
         track_id: TrackId,
@@ -1123,6 +1131,7 @@ impl Event {
             | Event::ForgePrPublished { track_id, .. }
             | Event::ForgePrDiffRead { track_id, .. }
             | Event::ForgePrChecks { track_id, .. }
+            | Event::ForgeCiEvidenceRead { track_id, .. }
             | Event::ForgeIssueRead { track_id, .. }
             | Event::ForgeIssueCreated { track_id, .. }
             | Event::ForgeIssueSearched { track_id, .. }
@@ -1215,6 +1224,7 @@ impl Event {
             Event::ForgePrPublished { .. } => "forge.pr.published",
             Event::ForgePrDiffRead { .. } => "forge.pr.diff.read",
             Event::ForgePrChecks { .. } => "forge.pr.checks",
+            Event::ForgeCiEvidenceRead { .. } => "forge.ci.evidence.read",
             Event::ForgeIssueRead { .. } => "forge.issue.read",
             Event::ForgeIssueCreated { .. } => "forge.issue.created",
             Event::ForgeIssueSearched { .. } => "forge.issue.searched",
@@ -1378,6 +1388,7 @@ pub fn topics(ev: &Event) -> Vec<String> {
         | Event::ForgePrPublished { track_id, .. }
         | Event::ForgePrDiffRead { track_id, .. }
         | Event::ForgePrChecks { track_id, .. }
+        | Event::ForgeCiEvidenceRead { track_id, .. }
         | Event::ForgeIssueRead { track_id, .. }
         | Event::ForgeIssueCreated { track_id, .. }
         | Event::ForgeIssueSearched { track_id, .. }
@@ -1770,6 +1781,14 @@ mod scope_tests {
             failed_checks: None,
         };
         assert_eq!(forge_pr_checks.kind_tag(), "forge.pr.checks");
+
+        let forge_ci_evidence_read = Event::ForgeCiEvidenceRead {
+            track_id: TrackId::from("track-1"),
+            pr_number: 1,
+            head_sha: "head-sha".into(),
+            artifact_path: "/tmp/neige/ci-evidence.json".into(),
+        };
+        assert_eq!(forge_ci_evidence_read.kind_tag(), "forge.ci.evidence.read");
 
         let forge_issue_read = Event::ForgeIssueRead {
             track_id: TrackId::from("track-1"),
@@ -2832,6 +2851,12 @@ mod scope_tests {
                 snapshot: None,
                 failed_checks: None,
             },
+            Event::ForgeCiEvidenceRead {
+                track_id: TrackId::from("track-1"),
+                pr_number: 1,
+                head_sha: "head-sha".into(),
+                artifact_path: "/tmp/neige/ci-evidence.json".into(),
+            },
             Event::ForgeIssueRead {
                 track_id: TrackId::from("track-1"),
                 issue_number: 1,
@@ -3116,6 +3141,16 @@ mod scope_tests {
                     "track_id": "track-1",
                     "pr_number": 1,
                     "conclusion": "success",
+                }),
+            ),
+            (
+                "forge.ci.evidence.read",
+                "forge.ci.evidence.read",
+                serde_json::json!({
+                    "track_id": "track-1",
+                    "pr_number": 1,
+                    "head_sha": "head-sha",
+                    "artifact_path": "/tmp/neige/ci-evidence.json",
                 }),
             ),
             (
