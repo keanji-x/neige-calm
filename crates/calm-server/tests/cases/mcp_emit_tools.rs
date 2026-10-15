@@ -48,7 +48,7 @@ async fn task_completed_emits_task_completed_with_worker_actor() {
     assert!(resp.get("error").is_none(), "tool errored: {resp:#?}");
     assert_eq!(
         resp["result"]["structuredContent"],
-        json!({"status":"report_received"})
+        json!({"status":"report_received", "delivery_commit_message": null, "gate_run_commits_keep_original_message": true})
     );
 
     let env = wait_for_kind(&mut rx, "task.completed").await;

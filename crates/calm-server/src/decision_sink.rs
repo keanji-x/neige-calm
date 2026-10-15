@@ -150,7 +150,7 @@ impl CardDecisionSink {
                         }
                     }
                     worker_report::check_result_contract_tx(tx, &task_id, &report).await?;
-                    let delivery = report.release_delivery_tx(tx).await?;
+                    let delivery = report.release_delivery();
                     let rows = if success {
                         match crate::db::sqlite::task_report_success_from_worker_tx(
                             tx,

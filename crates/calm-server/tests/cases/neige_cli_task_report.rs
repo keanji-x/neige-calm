@@ -95,7 +95,7 @@ async fn neige_task_completed_emits_task_completed_event() {
 
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap(),
-        json!({"status":"report_received"})
+        json!({"status":"report_received", "delivery_commit_message": null, "gate_run_commits_keep_original_message": true})
     );
 
     let env = wait_for_kind(&mut rx, "task.completed").await;

@@ -53,6 +53,10 @@ async fn a_joining_call_with_a_different_message_is_refused() {
     .await;
     let first = gate_run(&fx, &a, Some(MESSAGE)).await.unwrap();
     assert_eq!(first["state"], "running");
+    let equivalent = gate_run(&fx, &a, Some(&format!("{MESSAGE} \t\n\n")))
+        .await
+        .unwrap();
+    assert_eq!(equivalent["run"], 1);
     let refused = gate_run(&fx, &a, Some("different message")).await;
     touch(&flag);
     run_result(&fx, &a.task.id, 1).await;
@@ -63,33 +67,27 @@ async fn a_joining_call_with_a_different_message_is_refused() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn done_with_a_message_other_than_the_last_runs_is_refused() {
-    let fx = world(LONG_IDLE).await;
-    let a = running(&fx, "different", json!([{"name":"ok", "cmd":"true"}])).await;
-    std::fs::write(a.lease.path.join("one"), "one").unwrap();
-    passed(&gate_run(&fx, &a, Some(MESSAGE)).await.unwrap());
-    let err = done(&fx, &a, Some("different message")).await.unwrap_err();
-    assert_eq!(err.code, RpcError::INVALID_PARAMS);
-    assert!(err.message.contains("gate again"), "{err:?}");
-    assert_eq!(
-        current(&fx.boot, "different").await.status,
-        TaskStatus::Running
-    );
-    assert_eq!(fx.delivery_count(&a.task.id).await, 0);
-    assert!(fx.events_for("task.completed", &a.task.id).await.is_empty());
-    // A new run is the only way to change the message, even with an unchanged tree.
-    let changed = gate_run(&fx, &a, Some("different message")).await.unwrap();
-    let commit = passed(&changed);
-    assert_eq!(
-        git(&a.lease.path, &["log", "-1", "--format=%B"]),
-        "different message"
-    );
-    done(&fx, &a, Some("different message")).await.unwrap();
-    settle(&fx, &a).await;
-    assert_eq!(
-        fx.candidate_row(&a.task.id).await.unwrap().commit_sha,
-        commit
-    );
+async fn done_reports_new_delivery_message_without_rewriting_the_run() {
+    for edit in [false, true] {
+        let fx = world(LONG_IDLE).await;
+        let a = running(&fx, "different", json!([{"name":"ok", "cmd":"true"}])).await;
+        std::fs::write(a.lease.path.join("one"), "one").unwrap();
+        let commit = passed(&gate_run(&fx, &a, Some(MESSAGE)).await.unwrap()).to_string();
+        if edit {
+            std::fs::write(a.lease.path.join("two"), "two").unwrap();
+        }
+        let result = done(&fx, &a, Some("different message")).await.unwrap();
+        assert_eq!(result["delivery_commit_message"], "different message");
+        assert_eq!(result["gate_run_commits_keep_original_message"], true);
+        settle(&fx, &a).await;
+        let candidate = fx.candidate_row(&a.task.id).await.unwrap();
+        assert_eq!(candidate.commit_sha == commit, !edit);
+        assert_eq!(
+            git(&a.lease.path, &["log", "-1", "--format=%B"]),
+            if edit { "different message" } else { MESSAGE }
+        );
+        assert_eq!(run_ops(&fx, &a.task.id).await.len(), 1);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -129,7 +127,7 @@ async fn done_with_the_run_message_still_reuses_the_run() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn done_ignores_an_admitted_uncheckpointed_message_across_restart() {
+async fn done_inherits_latest_admitted_input_across_restart() {
     for restart in [false, true] {
         let mut fx = world(LONG_IDLE).await;
         let a = running(&fx, "pending-message", json!([{"name":"ok", "cmd":"true"}])).await;
@@ -153,7 +151,7 @@ async fn done_ignores_an_admitted_uncheckpointed_message_across_restart() {
         .fetch_one(&fx.pool())
         .await
         .unwrap();
-        assert_eq!(stored, MESSAGE);
+        assert_eq!(stored, "second message");
         if restart {
             fx.reboot().await;
         } else {
@@ -170,32 +168,24 @@ async fn done_ignores_an_admitted_uncheckpointed_message_across_restart() {
                 &a.lease.path,
                 &["show", "-s", "--format=%B", &candidate.commit_sha]
             ),
-            stored
+            MESSAGE
         );
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn exhausted_runs_allow_done_with_the_checkpointed_message_or_omission() {
+async fn exhausted_runs_allow_done_without_a_message() {
     let fx = world(LONG_IDLE).await;
     let a = running(&fx, "cap-message", json!([{"name":"ok", "cmd":"true"}])).await;
     std::fs::write(a.lease.path.join("cap.txt"), "cap").unwrap();
     for _ in 0..5 {
         passed(&gate_run(&fx, &a, Some(MESSAGE)).await.unwrap());
     }
-    let err = done(&fx, &a, Some("different message")).await.unwrap_err();
-    assert!(err.message.contains("0 runs left"), "{err:?}");
-    assert!(
-        err.message
-            .contains("omitting commit_message keeps the last checkpointed run's message"),
-        "{err:?}"
-    );
     let err = gate_run(&fx, &a, Some("different message"))
         .await
         .unwrap_err();
     assert!(
-        err.message
-            .contains("report done without commit_message or with that message"),
+        err.message.contains("report done without commit_message"),
         "{err:?}"
     );
     done(&fx, &a, None).await.unwrap();
@@ -217,7 +207,7 @@ async fn done_accepts_git_cleanup_equivalent_message() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn done_before_checkpoint_release_is_recoverably_refused() {
+async fn done_before_checkpoint_release_accepts_the_admitted_input() {
     let (hold, entered, resume) = pause();
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let fx = world_with(LONG_IDLE, |boot| {
@@ -243,16 +233,11 @@ async fn done_before_checkpoint_release_is_recoverably_refused() {
     std::fs::write(a.lease.path.join("second.txt"), "second").unwrap();
     let (run, ()) = tokio::join!(gate_run(&fx, &a, Some("second message")), async {
         entered.notified().await;
-        let refusal = done(&fx, &a, None).await;
+        let result = done(&fx, &a, None).await;
         resume.notify_one();
-        let err = refusal.expect_err("no selected message until the checkpoint is pinned");
-        assert!(
-            err.message.contains("wait for the run to finish"),
-            "{err:?}"
-        );
-        assert_eq!(fx.delivery_count(&a.task.id).await, 0);
+        assert_eq!(result.unwrap()["delivery_commit_message"], "second message");
     });
-    passed(&run.unwrap());
+    run.unwrap();
     done(&fx, &a, None).await.unwrap();
     settle(&fx, &a).await;
     let stored: String = sqlx::query_scalar(
@@ -267,22 +252,85 @@ async fn done_before_checkpoint_release_is_recoverably_refused() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn done_inherits_the_recorded_commits_message_for_a_noop_checkpoint() {
+async fn noop_run_input_is_inherited_after_an_edit() {
     let fx = world(LONG_IDLE).await;
     let a = running(&fx, "noop-message", json!([{"name":"ok", "cmd":"true"}])).await;
-    let result = gate_run(&fx, &a, Some(MESSAGE)).await.unwrap();
-    let commit = passed(&result).to_string();
-    done(&fx, &a, None).await.unwrap();
+    passed(&gate_run(&fx, &a, Some(MESSAGE)).await.unwrap());
+    std::fs::write(a.lease.path.join("after-noop"), "edit").unwrap();
+    let result = done(&fx, &a, None).await.unwrap();
+    assert_eq!(result["delivery_commit_message"], MESSAGE);
     settle(&fx, &a).await;
-    let stored: String = sqlx::query_scalar(
-        "SELECT commit_message FROM task_git_deliveries WHERE producer_attempt_id = ?1",
-    )
-    .bind(&a.task.id)
-    .fetch_one(&fx.pool())
-    .await
-    .unwrap();
+    assert_eq!(git(&a.lease.path, &["log", "-1", "--format=%B"]), MESSAGE);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn noop_run_then_done_with_same_input_uses_only_one_run() {
+    let fx = world(LONG_IDLE).await;
+    let a = running(&fx, "noop-same", json!([{"name":"ok", "cmd":"true"}])).await;
+    passed(&gate_run(&fx, &a, Some(MESSAGE)).await.unwrap());
     assert_eq!(
-        git(&a.lease.path, &["show", "-s", "--format=%B", &commit]),
-        stored
+        done(&fx, &a, Some(MESSAGE)).await.unwrap()["delivery_commit_message"],
+        MESSAGE
     );
+    settle(&fx, &a).await;
+    assert_eq!(run_ops(&fx, &a.task.id).await.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn foreign_base_message_never_controls_run_or_done() {
+    for base_message in ["x".repeat(16_385), "foreign\u{1}message".to_string()] {
+        for later_run in [false, true] {
+            let fx = fixture_on_with_adapters(
+                boot().await,
+                |tmp| {
+                    let repo = tmp.join("repo");
+                    init_repo(&repo);
+                    git(&repo, &["commit", "--amend", "-m", &base_message]);
+                    repo
+                },
+                |_| Vec::new(),
+            )
+            .await;
+            fx.dispatcher.abort_event_listener_for_test();
+            let a = running(&fx, "foreign-base", json!([{"name":"ok", "cmd":"true"}])).await;
+            // This run pins the foreign base, but its input remains MESSAGE.
+            passed(&gate_run(&fx, &a, Some(MESSAGE)).await.unwrap());
+            std::fs::write(a.lease.path.join("edit"), "edit").unwrap();
+            if later_run {
+                passed(&gate_run(&fx, &a, None).await.unwrap());
+            }
+            done(&fx, &a, None).await.unwrap();
+            settle(&fx, &a).await;
+            assert_eq!(git(&a.lease.path, &["log", "-1", "--format=%B"]), MESSAGE);
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn commit_created_before_ref_failure_keeps_input_inheritance() {
+    let fx = world(LONG_IDLE).await;
+    let a = running(&fx, "ref-failure", json!([{"name":"ok", "cmd":"true"}])).await;
+    std::fs::write(a.lease.path.join("first"), "first").unwrap();
+    let common = PathBuf::from(git(
+        &a.lease.path,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ));
+    let ref_name = format!(
+        "refs/neige/gate-runs/{}/{}/r1",
+        fx.track(),
+        a.worker.card_id
+    );
+    let lock = common.join(format!("{ref_name}.lock"));
+    std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
+    std::fs::write(&lock, "held").unwrap();
+    let result = gate_run(&fx, &a, Some(MESSAGE)).await.unwrap();
+    assert_eq!(result["passed"], false);
+    assert_eq!(result["failing_step"], "neige-checkpoint");
+    assert_eq!(git(&a.lease.path, &["log", "-1", "--format=%B"]), MESSAGE);
+    std::fs::remove_file(lock).unwrap();
+    std::fs::write(a.lease.path.join("after"), "after").unwrap();
+    let result = done(&fx, &a, None).await.unwrap();
+    assert_eq!(result["delivery_commit_message"], MESSAGE);
+    settle(&fx, &a).await;
+    assert_eq!(git(&a.lease.path, &["log", "-1", "--format=%B"]), MESSAGE);
 }

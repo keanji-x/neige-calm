@@ -730,7 +730,7 @@
   },
   {
     "name": "neige_task_done",
-    "description_sha256": "c4565799e9f2ce8cfc6bf66bff7459e3d7f935704d0aba801d71c914748ab35d",
+    "description_sha256": "35897bea2d275c45fe601c4cb2999403bf0a5356c6fd49cb9a8ca09aa0fbeff3",
     "input_schema": {
       "additionalProperties": false,
       "properties": {

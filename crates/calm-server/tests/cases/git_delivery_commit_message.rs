@@ -138,9 +138,11 @@ async fn duplicate_completion_keeps_the_first_commit_message() {
         .await
         .unwrap();
     // A repeated report is an idempotent success that writes nothing, its message included.
-    done_with(&fx, &worker, &task.id, json!("fix: second\n"))
+    let repeated = done_with(&fx, &worker, &task.id, json!("fix: second\n"))
         .await
         .unwrap();
+    assert_eq!(repeated["delivery_commit_message"], "fix: first\n");
+    assert_eq!(repeated["gate_run_commits_keep_original_message"], true);
     fx.wait_settled(&task.id).await;
     done_with(&fx, &worker, &task.id, json!("fix: third\n"))
         .await

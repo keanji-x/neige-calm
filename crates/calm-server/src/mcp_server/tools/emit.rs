@@ -86,7 +86,26 @@ async fn task_done(
     };
     commit_worker_task_report_for_identity(&ctx, &identity, report).await?;
     submit_reported_delivery(&ctx, &identity, &attempt_id).await;
-    Ok(json!({ "status": "report_received" }))
+    // Read the admitted delivery input, including on idempotent repeats. Never infer text
+    // from a candidate SHA: no-op checkpoints may pin a foreign base commit.
+    let message: Option<String> = if let Some(pool) = &ctx.sqlite_pool {
+        sqlx::query_scalar(
+            "SELECT commit_message FROM task_git_deliveries WHERE producer_attempt_id = ?1 \
+         ORDER BY ordinal DESC LIMIT 1",
+        )
+        .bind(&attempt_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|error| RpcError::internal(format!("read delivery message: {error}")))?
+        .flatten()
+    } else {
+        None
+    };
+    Ok(json!({
+        "status": "report_received",
+        "delivery_commit_message": message,
+        "gate_run_commits_keep_original_message": true,
+    }))
 }
 
 /// The report transaction wrote the attempt's first delivery row (#1830 S2 D7, a kernel-delivery

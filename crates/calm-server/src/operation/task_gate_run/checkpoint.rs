@@ -129,28 +129,3 @@ pub(crate) async fn read_run_ref(cwd: &Path, ref_name: &str) -> Result<Option<St
         )),
     }
 }
-
-/// The text of the commit the checkpoint actually pinned, including the no-edit case where
-/// that commit is the lease base. Git's stored text has already undergone whitespace cleanup.
-pub(crate) async fn read_commit_message(
-    cwd: &Path,
-    commit: &str,
-) -> Result<crate::git_candidate::commit_message::CommitMessage, String> {
-    let output = git_read(
-        cwd,
-        &["cat-file", "commit", commit],
-        tokio::time::Instant::now() + SAMPLE_TIMEOUT,
-    )
-    .await?;
-    if !output.status.success() {
-        return Err(format!(
-            "could not read checkpoint commit {commit}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let text = String::from_utf8(output.stdout).map_err(|error| error.to_string())?;
-    let (_, message) = text
-        .split_once("\n\n")
-        .ok_or_else(|| format!("checkpoint commit {commit} has no message header"))?;
-    crate::git_candidate::commit_message::CommitMessage::parse(message.trim_end_matches('\n'))
-}

@@ -2,7 +2,7 @@
 use crate::db::sqlite::{TaskReporter, status_detail_class, task_get_tx, task_result_contract_tx};
 use crate::error::{CalmError, Result};
 use crate::event::{ArtifactRef, Event};
-use crate::git_candidate::commit_message::{CommitMessage, attempt_commit_message_tx};
+use crate::git_candidate::commit_message::CommitMessage;
 use crate::git_candidate::delivery::AttemptOutcome;
 use crate::ids::TrackId;
 use crate::mcp_server::registry::ToolCallIdentity;
@@ -142,44 +142,16 @@ impl WorkerTaskReport {
         }
     }
 
-    /// Resolve completion policy before any report write, in the report transaction. A run's
-    /// message cannot change at done: its verdict is evidence about that exact commit.
-    pub(super) async fn release_delivery_tx(
-        &self,
-        tx: &mut crate::operation::Tx<'_>,
-    ) -> Result<ReleaseDelivery> {
-        let WorkerTaskReport::Completed {
-            attempt_id,
-            commit_message,
-            ..
-        } = self
-        else {
-            return Ok(ReleaseDelivery::Commit(AttemptOutcome::Failed));
-        };
-        if let Some(requested) = commit_message {
-            if let Some(previous) = attempt_commit_message_tx(tx, attempt_id).await?
-                && !requested.same_commit_text(&previous)
-            {
-                let used = crate::operation::gate_ops::gate_ops_of_attempt_tx(tx, attempt_id)
-                    .await?
-                    .iter()
-                    .filter(|op| op.kind == crate::operation::gate_ops::GateOpKind::Run)
-                    .count() as i64;
-                let left = (crate::operation::task_gate_run::GATE_RUNS_PER_ATTEMPT - used).max(0);
-                return Err(CalmError::BadRequest(
-                    format!(
-                        include_str!("../../prompts/worker/done-commit-message-mismatch.md"),
-                        left = left
-                    )
-                    .trim_end()
-                    .to_owned(),
-                ));
-            }
-            return Ok(ReleaseDelivery::CommitWorkerMessage(requested.clone()));
+    /// Done's explicit input applies to a delivery commit; existing run commits keep their text.
+    pub(super) fn release_delivery(&self) -> ReleaseDelivery {
+        match self {
+            Self::Completed {
+                commit_message: Some(message),
+                ..
+            } => ReleaseDelivery::CommitWorkerMessage(message.clone()),
+            Self::Completed { .. } => ReleaseDelivery::Commit(AttemptOutcome::Completed),
+            Self::Failed { .. } => ReleaseDelivery::Commit(AttemptOutcome::Failed),
         }
-        // Inheritance belongs to release, which also enforces a message for a completed
-        // kernel-delivery lease. Its refusal rolls back the whole report transaction.
-        Ok(ReleaseDelivery::Commit(AttemptOutcome::Completed))
     }
 }
 

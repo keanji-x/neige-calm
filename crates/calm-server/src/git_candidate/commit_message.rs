@@ -101,8 +101,8 @@ impl DeliveryMessage {
     }
 }
 
-/// The attempt's durable message: its delivery, otherwise its latest checkpointed run.
-/// The run owner decodes its typed payload and commit evidence under the caller's write lock.
+/// Latest admitted message input: done's durable delivery row, otherwise the latest run payload.
+/// Done is terminal, so its admitted input always follows all run admissions.
 pub(crate) async fn attempt_commit_message_tx(
     tx: &mut crate::operation::Tx<'_>,
     attempt_id: &str,
@@ -119,6 +119,6 @@ pub(crate) async fn attempt_commit_message_tx(
         Some(text) => CommitMessage::parse(&text)
             .map(Some)
             .map_err(crate::error::CalmError::Internal),
-        None => crate::operation::task_gate_run::checkpointed_message_tx(tx, attempt_id).await,
+        None => crate::operation::task_gate_run::latest_input_message_tx(tx, attempt_id).await,
     }
 }

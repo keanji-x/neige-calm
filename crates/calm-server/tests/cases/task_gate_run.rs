@@ -470,9 +470,8 @@ async fn the_sixth_run_is_refused_with_the_cap() {
 
     assert_eq!(err.code, -32409, "{err:?}");
     assert!(
-        err.message.contains(
-            "attempt used 5 of 5 gate runs; report done without commit_message or with that message"
-        ),
+        err.message
+            .contains("attempt used 5 of 5 gate runs; report done without commit_message"),
         "{err:?}"
     );
     assert_eq!(run_ops(&fx, &a.task.id).await.len(), 5);

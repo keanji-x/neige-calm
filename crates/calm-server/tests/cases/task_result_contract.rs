@@ -101,7 +101,7 @@ async fn refuses_a_result_violating_its_declared_result_contract(
         "blocking_findings": [{"title": "lease", "evidence": "decision_sink.rs:180"}]});
     assert_eq!(
         done(&fx, &worker, &task.id, valid.clone()).await.unwrap(),
-        json!({"status": "report_received"})
+        json!({"status": "report_received", "delivery_commit_message": "test: complete result contract attempt", "gate_run_commits_keep_original_message": true})
     );
     assert_eq!(current(&fx.boot, "review").await.status, TaskStatus::Done);
     assert_eq!(task_completed_events(&fx, &task.id).await, 1);
@@ -140,7 +140,7 @@ async fn task_done_without_result_contract_still_accepts_any_result() {
         done(&fx, &worker, &task.id, json!("prose, not review-v1"))
             .await
             .unwrap(),
-        json!({"status": "report_received"})
+        json!({"status": "report_received", "delivery_commit_message": "test: complete result contract attempt", "gate_run_commits_keep_original_message": true})
     );
     assert_eq!(current(&fx.boot, "untyped").await.status, TaskStatus::Done);
     assert_eq!(task_completed_events(&fx, &task.id).await, 1);
