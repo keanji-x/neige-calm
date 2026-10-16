@@ -70,6 +70,13 @@ Writer lease uniqueness and supersede use workspace ID. Read/write occupancy
 still comes from the existing checkout admission logic; this adds no competing
 scheduler or reader policy.
 
+Identity, binding authorization, task admission and destructive quiescence are
+separate typed conclusions. Sharing their resource facts does not merge their
+policies into one Busy boolean. A live ordinary terminal or idle Planner is not
+a new worker-admission blocker. It does block destructive quiescence while it
+can access the resource. Reference accounting likewise separates permanent
+identity/audit history from active execution/storage and protected Git content.
+
 ## Materialization receipt and baseline pin
 
 Ensure still refreshes upstream first, takes the common metadata lock, probes
@@ -142,7 +149,11 @@ compiler/source checks alone do not prove isolation.
 ### Cross-version submit comparison
 
 Add required operation input-codec metadata in a new migration. Existing rows
-are explicitly marked `LegacyAbsoluteCwd`; new operations use `WorkspaceRefV1`.
+are marked `v1`, an opaque version interpreted by their registered adapter.
+Only adapters whose request representation changes register `workspace-ref-v2`
+and its strict v1 conversion. Unaffected adapters keep v1 and the original hash
+contract, including workspace-free card/recipe operations and `commit_keyed`.
+The driver has no workspace-kind list and never requires their bindings.
 This metadata does not rewrite payload, tx_output, event bytes or payload_hash.
 The driver looks up the stable operation key and its codec before comparing a
 new encoding's hash. Same-codec requests keep the existing hash comparison.
@@ -171,8 +182,12 @@ the early comparisons in `operation/repo_sqlite.rs` and `operation/driver.rs`.
 Change the existing occupancy/admission entry point's scope to workspace ID and
 aggregate its task, reader/writer lease and unsettled-delivery facts through all
 bindings. Its callers (claim, ready projection, supersede and cleanup) consume
-that same result. Add pending launches and positively identified live processes
-to the resource facts at the kernel boundary; do not create a second scheduler.
+that same task-admission result. Pending launches and positively identified live
+processes join the resource facts for destructive quiescence, not as additional
+worker-admission exclusions. Only a pending launch that belongs to an existing
+task claim participates in that task's existing exclusion. An ordinary terminal
+or idle Planner may coexist with a worker and still prevents reclaim. Do not
+create a second scheduler or infer task policy from process presence.
 Writer/reader conflicts span bindings, readers may share, and distinct worktree
 roots remain distinct even when they share a Git common directory.
 
@@ -186,8 +201,10 @@ binding transactionally. Rollback restores authorization through a new binding
 version rather than reviving old tickets.
 
 Resource retirement is separate from binding release: it is allowed only after
-the last binding/reference and all source-proof/operation/process references
-are gone. Borrowed legacy directories are never destruction targets. Existing
+the last binding and all active execution/storage references are released.
+Permanent identity/audit references do not imply a storage lease. Protected Git
+content has its own pin references, separate from physical directory lifetime.
+Borrowed legacy directories are never destruction targets. Existing
 ignored cleanup still applies only to owned track worktrees after resource-wide
 quiescence. This adds no S3 archive or retention policy. Multiresource fences
 are acquired in workspace-ID order after existing card/drive/track/resume locks;
@@ -207,9 +224,18 @@ the root and verifies its directory identity; later namespace registration is
 not smuggled in through arbitrary PID/path fields.
 
 The supervisor holds one per-resource executor gate across identity validation,
-ticket lookup/consumption, existing-process lookup, actual pipe/PTY fork and
-process registration. Revoke uses the same gate. Concurrent connections do not
-create independent gates. Its journal transitions are:
+ticket lookup/consumption, actual pipe/PTY fork and process registration. Revoke
+uses the same gate. Before fork it also atomically reserves the globally unique
+proc_id in the existing registry, recording the complete execution identity.
+The registry contains Reserved as well as Spawned entries. A different resource
+or ExternalDir racing for the same proc_id sees that reservation and is refused;
+an exact retry inspects/waits for its original receipt without another fork.
+Reservation and its journal identity are durable before fork. Startup rebuilds
+the reservation index before accepting requests; ambiguous duplicates require
+recovery. The global registry guard is short-lived, never spans fork/IO, and is
+acquired only after the resource/ExternalDir executor gate; no path holds it
+while acquiring another executor gate. Concurrent connections do not create
+independent gates or overwrite a reserved entry. Journal transitions are:
 
 | State | Allowed next state / evidence |
 |---|---|
@@ -258,7 +284,8 @@ with the full descriptor, exact owned pin names/OIDs, retention disposition and
 pending materialization IDs. Domain-row deletion cannot erase this information.
 The existing recycle/area compensation and worktree sweep consume that intent,
 record physical receipts and then CAS-release only this resource's owned pins
-when no active/source-proof/operation reference remains. A pin with an unexpected
+when no active execution/recovery or protected-content reference requires them.
+A pin with an unexpected
 OID is retained and requires recovery. A pin written before Ready is discoverable
 from its original materialization intent and is included in cancellation.
 
@@ -270,6 +297,22 @@ delete the restored resource. S2a preserves the existing seven-day trash policy
 and worktree deletion behavior, without introducing S3 archives or branch policy.
 Acceptance includes pin-written/Ready-not-written crashes followed by deletion,
 repoint during ensure, area rollback, and repeated materialize/release replay.
+
+Keyed operation rows and dedup sidecars remain permanent identity/audit history;
+their existence alone holds neither execution storage nor a Git content pin.
+Each registered adapter declares the active resource dependencies of its phases
+through the same operation contract, without a second hand-maintained kind/phase
+list. Pending, running or explicitly recoverable/stuck work retains the needed
+dependencies until settlement or an authorized cancellation; terminal results
+release execution dependencies transactionally. Independent source-evidence pins
+remain while a real evidence consumer requires them. Completed-key replay returns
+its original result using the original identity tombstone even after physical
+release; it cannot resolve a current track, recreate storage or execute again.
+Verify completed keyed work → track deletion → physical release → original-key
+replay returning the original result, and workspace-free keyed retries. Also
+verify a normal open terminal permits worker scheduling but prevents reclaim,
+and different resources/ExternalDir racing for one proc_id create at most one
+process without overwriting its receipt.
 
 Verify new/legacy create and materialization retries, shared legacy lock domains,
 repoint/launchpad and frozen binding behavior; immutable historical event and
