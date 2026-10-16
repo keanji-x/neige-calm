@@ -8,10 +8,12 @@ launch tickets, executor drain receipts and resource fences. This document
 introduces no alternative identity, scheduler, operation driver or reaper.
 
 The delivery, migration and retention rules below are proposed decisions.
-Section 7 and the [verification decision attachment](workspace-verification-decision.md)
-identify a parent-contract change requiring explicit design review: preserve
-logical cwd and Git-classified hot caches through a guarded verification
-projection, instead of claiming plain worktree sampling proves no source write.
+Three parent-contract amendments require explicit design review: guarded
+verification at the same logical cwd, durable content outside private storage,
+and writable branch projections only in kernel-owned storage. Sections 2, 6,
+7 and 10 and the [verification attachment](workspace-verification-decision.md)
+define those changes. Immutable source proves absence of actual source writes;
+it does not claim an audit of syscall attempts rejected before the mediator.
 No candidate-bound capability is advertised before that mechanism is verified.
 
 ## 1. Real call paths and ownership
@@ -30,6 +32,8 @@ repository root; these are evidence for the design, not a permanent caller list.
 | `crates/calm-server/src/operation/task_gate_run/checkpoint.rs` and `task_verify_adapter/target.rs` | Checkpoint is a synthetic first shell step; before/after evidence is provenance, HEAD and status. Prepare checkpoint before gate execution; retain logs and samples as observations, not a proof of no intermediate write. |
 | `crates/calm-server/src/planner_hibernation.rs`, `routes/planner_recovery.rs`, `routes/tracks.rs`, `routes/areas.rs` | Sleep, wake, patch reopen, deletion and area compensation own domain transitions. They request the same resource lifecycle operation and consume its result. |
 | `crates/calm-server/src/workspace_service/{worktree_clean,sweep,workspace_recycle}.rs` | Independent ignored cleanup, post-delete branch/candidate-ref sweep and seven-day managed trash collection exist. Converted resources use one persisted lifecycle driver; old helpers become mechanisms, not a second deletion authority. |
+| `crates/workspace/src/materialize.rs` and `recycle.rs` | Managed Git data and its owner marker live inside workspace `.git`; trash collection removes the entire directory tree. A pin there cannot survive seven-day private-tree reclamation. Retained content must reside outside that tree before deletion. |
+| `crates/workspace/src/metadata_lock.rs` | The source explicitly limits its cooperative lock to kernel create/delete; forge shell and external Git do not participate. Worktree-list observation plus ref CAS cannot exclude a human checkout racing between them. |
 
 `workspace` owns snapshot, normalized tree storage, controlled Git effects,
 staging/install inspection and physical receipts. `calm-truth` owns required
@@ -61,7 +65,8 @@ tip, epoch, baseline, normalized tree or upstream decision.
 | Delivered state | `DeliveredTip { sequence, commit, tree, settlement_id }`; the resource ledger is the single authority. Initial sequence zero is the conversion/materialization receipt. |
 | Installed state D | `InstalledBaseline { epoch, tree, delivered_sequence, install_receipt }`; outside a baseline-install operation its tree equals the settled delivery tree. HEAD/index are separate execution projections. |
 | Upstream | `NoneSelected` or `Configured { selection_version, remote, merge_ref, resolved_url, tracking_ref }`; explicit absence is a decision. Fetch observations are immutable receipts, not this selection. |
-| Branch projection | Exact owned branch ref, expected OID and `InSync(receipt)` / `Stale(reason, protected_observed_oid)` / `Absent`; never delivery authority. |
+| Durable content | Resource-scoped `ContentStoreId`, verified artifact directory/repository identity, object format, owned root pins and complete-closure durability receipt; independent of the private directory lifetime and never tip authority. |
+| Branch projection | Kernel-owned store/repository identity, exact branch ref, expected OID and `InSync(receipt)` / `Stale(reason)` / `Absent`; never delivery authority. User-common-dir refs are read-only external observations. |
 | Revision | Immutable snapshot identity, resource, install epoch, logical baseline sequence, normalized tree, normalization digest, source-content handle, changes and overlap acknowledgement. |
 | Active dependencies | Registered operation phases declare resource, execution, revision and protected-content dependencies through their existing owner contract. Permanent audit identity alone retains neither storage nor pins. |
 
@@ -71,6 +76,10 @@ candidate and run refs retain their domain owner and names where compatible.
 Ref names, full OIDs, object format and expected previous values are frozen in
 the operation intent before the first ref effect. OID types support Git's
 reported object format rather than assuming forty hexadecimal characters.
+All S3 delivery, candidate, run, archive, PR and retained baseline pins live in
+the resource's durable content repository. Legacy S2a pins in a human common
+directory are imported; their presence there is not durable-retention evidence
+and S3 does not automatically update/delete those external refs.
 
 | Reference owner | Retained until |
 | --- | --- |
@@ -81,12 +90,70 @@ reported object format rather than assuming forty hexadecimal characters.
 | Candidate pin | Existing candidate/evidence/PR dependencies are explicitly released; domain row deletion does not implicitly drop the pin. |
 | Archive pin | Its frozen archive deadline has passed and no restore, legal retention or other explicit content dependency remains. |
 | Divergent ref/source preservation pin | Recovery has a durable resolution; never expires merely because the originating attempt ended. |
-| Publish branch | No checkout uses it and no candidate, unsettled operation, open/unknown PR or other protected branch dependency remains. |
+| Private publish projection | No kernel execution/export or candidate, unsettled operation, open/unknown PR or other protected branch dependency remains. A user-common-dir branch is not a release target. |
 
 Reference release uses expected-OID CAS and records its receipt. A reference
 with an unexpected OID is retained for recovery. A terminal keyed-operation
 identity can replay its original result after physical release without resolving
 the current track or rematerializing content; it is not a hidden storage lease.
+
+### Durable content is a KernelArtifact capability
+
+Each resource has a kernel-owned bare content/projection repository registered
+under the typed artifact root, outside every worktree/private directory and
+trash subtree. Its content lifetime follows protected references, including
+the ninety-day archive period, rather than the seven-day private-layer period.
+It is an object/ref mechanism, not another ledger, driver or reaper: the DB
+resource ledger remains tip authority and existing operations store its intent
+and effect receipts. Kernel artifact identity/access policy grants exclusive
+administration; a cooperative source-repo flock is not that authority.
+
+The store is resource-scoped, not a globally mounted object pool. Providers,
+terminals, gates and forge subprocesses receive a separately materialized
+export containing only their authorized content closure and minimal refs.
+They receive no durable-store pathname, mount, alternates or administrative FD,
+and cannot enumerate another workspace/Area's content. Exports are physical
+copies/safe reflinks with independent lifetime, never hardlinks to the store.
+The same isolation applies to Gitforge's temporary exact-OID push repository.
+An export dependency keeps its authorized roots alive until positive drain.
+
+The existing operation's retain-content phase freezes resource/store/source
+identities, exact root OIDs, required reference version and expected owned pins
+before import. Roots cover every still-required B, tip, candidate, run, archive,
+unsettled operation and PR/recovery object. Import their complete reachable
+commit/tree/blob/tag closure, including all required ancestors, into the owned
+store through fixed trusted Git object commands. Verify object identities,
+connectivity and root types there with replacement/graft interpretation disabled.
+No retained root may depend on source alternates, hardlinks, shallow omissions
+or packs remaining in a soon-deleted `.git`. Missing closure keeps private
+storage retained until explicit recovery/fetch can supply it.
+
+Fsync imported object/pack/index files and their directories, CAS/fsync owned
+root pins, then persist `ContentReceipt { operation_id, store_id,
+store_identity, object_format, roots, closure_digest, durability_version }`
+in the existing operation output/resource reference transaction. Roots and
+closure are verified without the source object directory before acknowledging
+that receipt. `ArchiveReady` requires this durable-store receipt, not merely
+an archive ref in runtime Git. New normalized objects are written into the
+durable store from the start; runtime Git repositories receive disposable
+resource-scoped copies needed for execution HEAD/index, never the reverse
+retention dependency.
+
+Before reclaim, under the resource fence, validate that a committed receipt
+covers the current protected-reference version and every required root. Freeze
+that receipt/version into the destruction intent; new dependencies cannot race
+this CAS. Only then may the private tree, including all of its `.git`, be
+deleted. Final pin release/store GC follows the same resource lifecycle driver
+and reference checks; no independent artifact TTL can erase protected roots.
+
+| Content boundary before crash | Recovery |
+| --- | --- |
+| Import intent exists, copying incomplete | Private layer remains retained; inspect verified destination objects and resume the same root closure. No receipt means no reclaim. |
+| Closure copied/fsynced, pins or DB receipt incomplete | Validate destination closure and original expected pins; finish CAS/fsync and original receipt without choosing new roots. Foreign pin values require recovery. |
+| Pins durable, DB receipt absent | Reconstruct the effect receipt from that operation's frozen roots and verified store, then commit it; do not require private `.git` to still be the object source. |
+| Receipt committed, private deletion not completed | Recheck original reference/lifecycle version and store identity before continuing the exact destroy plan. |
+| Entire private tree/`.git` removed, process restarts | Restore exclusively from the durable receipt, protected archive A and tip/B roots into a new runtime repository; no original directory, alternates or hidden pack access is allowed. |
+| Durable store/closure is missing or corrupt | RecoveryRequired; never create an empty workspace or claim the retained archive remains recoverable. |
 
 ## 3. ImmutableRevision and normalization
 
@@ -151,8 +218,14 @@ source as W relative to H. Conversion may proceed with W, but a subsequent
 ordinary worker claim will refuse it until Planner commit or explicit discard.
 
 Persist the immutable conversion intent before creating delivery/source pins.
+Import the adopted H, known B and existing retained candidate/PR/operation
+closures into the resource's durable repository and commit its content receipt.
+Keep source/runtime Git identity distinct from durable repository identity.
+Create the private projection there; any legacy user-common-dir branch remains
+an external observation that is neither updated nor automatically deleted.
 Install detached execution HEAD/index at H without rewriting source bytes,
-then CAS the protocol, delivery sequence zero, D and upstream receipt together.
+then CAS the protocol, delivery sequence zero, D, durable-store binding and
+upstream receipt together.
 The CAS is the switch: every consumer now reads GitFacts, and legacy branch
 config is no longer an upstream authority. A crash before CAS leaves admission
 sealed; inspect pins/install receipts and complete the same intent. A retry
@@ -244,25 +317,42 @@ The existing operation intent/tx_output stores Revision, P, C, expected ledger
 sequence, all owned ref names/OIDs, projection observation, target epoch and
 install plan. Do not add a shadow operation journal. S2a resource/binding fences
 serialize mutation and install; existing lock order precedes workspace fences,
-then Git common-metadata locks. Never hold a DB writer transaction over Git,
-filesystem, drain, provider or network work.
+then the owned content/projection repository lock and any required source-Git
+mechanism lock. Never hold a DB writer transaction over Git, filesystem, drain,
+provider or network work. Source locks coordinate kernel participants only;
+they grant no exclusion against external Git.
 
-Final delivery atomically CASes the final candidate pin plus the owned delivery
-ref P->C in one Git update-ref transaction. Pins for provisional runs are not
-the delivery ref. A Git ref transaction is the Git-side intent commit; it is
+Final delivery first has a durable complete closure for C and P, then atomically
+CASes the final candidate pin plus the owned delivery ref P->C in one update-ref
+transaction inside the kernel-owned content repository. Pins for provisional
+runs are not the delivery ref. A Git ref transaction is the Git-side intent commit; it is
 not the settled resource tip. The final DB transaction CASes the ledger sequence
 and D/install receipt and writes candidate plus one-time delivery settlement.
 That transaction is the authoritative delivery linearization point. Write
 admission stays sealed between these points; reads/identity resolution may run.
 
-Projection is best effort. Before writing the owned publish branch, inspect its
-exact expected OID and `git worktree list --porcelain`. If another worktree
-has it checked out or its OID differs, protect any observed foreign commit,
-record Stale and skip writing it. This cannot stop settlement or ordinary task
-admission. HEAD/index changes, attached or detached, are source inputs, never
-projection drift. All kernel HEAD writes use update-ref --no-deref; they never
-move an attached user branch. Publish refuses a Stale projection with recovery
-information; it never publishes the deviating tip.
+The optional publish branch is a best-effort projection only inside that same
+kernel-owned repository. It is bare and never a human checkout target; kernel
+exports use independent repositories and cannot attach to its branch. All
+administration enters its one owned lock/operation mechanism. A private branch
+CAS mismatch is retained as Stale/recovery evidence and does not stop delivery
+settlement or ordinary task admission. No candidate tip is learned from it.
+
+User source common directories have no proven exclusive writer. A human can
+checkout an unchanged branch between `worktree list` and ref CAS; the CAS still
+succeeds and would move that human's HEAD. Repeated sampling or the cooperative
+metadata lock cannot repair this race. Therefore S3 never updates/deletes
+publish branches or other retained S3 refs there. An external local branch may
+be displayed with an observation timestamp, but is not an owned projection or
+publish prerequisite. The read-only external observation never blocks delivery.
+Owned execution-worktree HEAD/index updates remain permitted: use update-ref
+--no-deref against that verified worktree's private HEAD so an attached source
+branch is never moved. These execution projections are source inputs, never
+delivery authority; source object copies are disposable execution caches.
+An actual disposable Git probe confirmed the race: after a clean worktree-list
+observation, external Git checked out the same old OID; update-ref with that
+expected OID succeeded, moved human HEAD and left its working file at old bytes.
+This validates the counterexample, not the proposed private-store implementation.
 
 `install_delivered` writes HEAD/index=C and preserves all working files. It
 records D=tree(C) and W=current source minus C, preserving later source edits.
@@ -303,11 +393,15 @@ receipt to ensure/lease preparation, scheduler refresh, readers, staleness,
 catch-up and publish. None calls head_upstream/branch_upstream as a fallback.
 Changing upstream is a typed authorized operation with expected selection
 version; subsequent fetches use a new provenance key. Explicit no-upstream and
-fetch unavailable remain distinguishable. Publish consumes authoritative tip,
-candidate provenance, ancestry and projection receipt, pushes the exact frozen
-OID and records the remote/PR receipt under existing approval policy. Gitforge
-keeps done-candidate domain policy; `worktree.is_some()` and user current branch
-cannot determine publish eligibility.
+fetch unavailable remain distinguishable. Gitforge Services supplies a typed
+`PublishTarget` binding resource and authorization, ledger sequence/exact C,
+done-candidate/ancestry evidence, upstream selection version, remote URL/ref
+and base, and a scoped export capability. Gitforge retains done-candidate
+domain policy and existing approval rules. The authorized subprocess pushes
+`<exact C>:<frozen remote ref>` from its scoped export and records the remote/PR
+receipt; it never pushes a mutable local branch by name. Neither a source-local
+branch nor the optional private presentation projection is a publish prerequisite.
+`worktree.is_some()` and user current branch cannot determine eligibility.
 
 | Durable point reached before crash | Recovery / next linearization |
 | --- | --- |
@@ -315,7 +409,7 @@ cannot determine publish eligibility.
 | Object exists, run pin absent | CAS original expected ref to frozen C, then record run receipt. Unreferenced object creation alone proves no completed run. |
 | Run pin=C, receipt absent | Validate object/parent/tree and original intent, then receipt; no delivery advancement. |
 | Final refs transaction uncertain | Both refs old: retry transaction. Both at frozen targets: continue. Anything else: DeliveryRecoveryRequired after protecting observed objects; never accept partial/foreign values. |
-| Final refs=C, branch projection pending | Probe exact branch and checkout receipts; project or mark Stale, then continue. Branch staleness does not roll back the candidate refs. |
+| Final refs=C, private branch projection pending | Under the owned repository lock, CAS exact private branch or mark Stale, then continue. Do not write user-common-dir branches; private projection staleness does not roll back pins or prevent exact-OID publish. |
 | HEAD/index partly projected, DB still P | Reapply no-source-write projection to the frozen C, validate install receipt and complete original settlement transaction. |
 | Install receipt exists, DB settlement missing | CAS sequence P->C with original settlement/candidate; duplicate transaction observes identical result. |
 | DB already C, reply missing | Return original settlement and release owner once; do not construct C again. |
@@ -330,10 +424,10 @@ uses original intents and ledger expectations: automatic repair only preserves
 all bytes/objects; destructive choices require explicit authorized confirmation
 against the frozen recovery plan. Never adopt a divergent ref as a new delivery.
 
-## 7. Verification evidence and the remaining proof conflict
+## 7. Verification evidence and guarded source immutability
 
 `VerificationHandle` binds Revision, tree, C, resource/epoch, execution identity,
-normalization, environment digest and `SourceWriteProof`. The digest hashes
+normalization, environment digest and `SourceImmutabilityProof`. The digest hashes
 versioned declared execution inputs: GateSpec, typed cwd, normalized tree,
 toolchain/runtime contract, allowlisted environment names and digested effective
 values, provider/executor version, frozen Git refs and ignore/config rules.
@@ -341,14 +435,24 @@ Secret values remain private and are not emitted. Ignored caches are expressly
 mutable; digest does not claim reproducible builds or hash their full contents.
 
 Kernel holds the attempt's exclusive write owner, drains unrelated source
-writers, prepares C, and arms proof before any user step. Proof remains active
-through gate descendants' positive drain and final source sampling. A successful
-seal requires the same epoch/tree, complete proof coverage and no tracked or
-nonignored creation/deletion/mode/symlink mutation, even if later restored.
-Ignored output writes and cache reuse remain legal. Tracked files remain source
-even beneath ignored directories. A source-writing gate returns failed/unbound
-source evidence with its logs and preserves edits for fixing/rerunning; it
-cannot accept the candidate. Unknown descendants or lost evidence never bound.
+writers, prepares C, and activates the immutable-source projection before any
+user step. Proof remains active through positive descendant drain and final
+sampling. Successful seal requires the same epoch/tree and prevention of all
+actual tracked/nonignored source mutations, including temporary edits. Ignored
+output writes and cache reuse remain legal; tracked-in-ignored remains source.
+The mediator denies source mutation requests that reach it and latches
+`ObservedSourceMutationRequest`; catching that error cannot clear the latch.
+Unknown descendants, lost enforcement or a latched request cannot bind.
+
+This is an immutability proof, not a complete rejected-syscall audit. VFS may
+reject writable shared mmap/mprotect/ftruncate on a read-only FD before any
+FUSE request exists. Such a failed call changed no source and creates no
+invented mediator receipt or automatic invalidation. If the command handles
+that failure and all binding conditions hold, it may still pass; if it exits
+nonzero, ordinary gate failure applies. MAP_PRIVATE memory writes that do not
+change source are also not source mutation. The exact C source stays immutable
+in every case. Mediator-visible denied operations remain an explicit stricter
+signal, rather than a claim to know every failed caller intent.
 
 The production sampler currently cannot provide this proof. For example,
 `cp tracked saved; modify tracked; test; cp saved tracked` can leave the same
@@ -361,7 +465,7 @@ not an immutable write history. See the primary
 [mmap timestamp contract](https://man7.org/linux/man-pages/man2/mmap.2.html)
 and [statx field consistency](https://man7.org/linux/man-pages/man2/statx.2.html).
 
-Architectural blocker S3-V1: a complete source-write constraint/audit mechanism
+Architectural blocker S3-V1: a complete source immutability mechanism
 for arbitrary existing worktree gate commands has not been established by the
 parent or current code. The design deliberately does not rename inotify plus
 hashing to proof. Implement the evidence API with required typed
@@ -377,7 +481,8 @@ a directory allowlist, but changes the original worktree inode/mount contract
 and requires an additional Linux mechanism. Independent design review must
 accept that amendment before implementation. Unsupported hosts/resources remain
 on their explicit legacy protocol; they are not converted and silently made
-unbound. A source watcher remains supplementary invalidation, not the proof.
+unbound. A source watcher remains supplementary invalidation, not the proof,
+and no syscall-intent visibility is inferred from absence of FUSE requests.
 No implementation PR may claim full S3 completion while this blocker is open.
 
 ## 8. One lifecycle: archive, close, reopen and deletion
@@ -398,8 +503,10 @@ close/archive/reclaim; waiting for input is not process exit. The caller sees
 snapshot_pending and the actual blocking execution, with no forced kill.
 
 When quiescent, freeze a close intent and Revision; construct/pin archive A
-from that source with the settled delivery tip as primary parent. Persist
-archive receipt before any recycle/reclaim. Archive does not advance tip.
+in the durable content repository from that source with the settled delivery
+tip as primary parent. Persist archive plus complete-closure content receipts
+before any recycle/reclaim. A pin in the managed workspace's own `.git` is not
+an archive receipt. Archive does not advance tip.
 Freeze private retention at close+7 days and source archive at close+90 days
 from typed settings; later settings changes do not move existing deadlines.
 Close timestamps identify a unique cycle. Repeated driver retries reuse it;
@@ -409,20 +516,27 @@ Archives of older cycles keep their own references until separately released.
 Successful archive yields ClosedRetained. Existing managed recycle is the
 physical quarantine mechanism; no copy/delete cross-device fallback. The seven
 day private layer includes ignored caches and directory state. At expiry,
-require successful archive, no active execution/storage references or mounts,
-and identity-verified destruction plan, then reclaim owned storage. Borrowed
+require successful archive and committed durable receipts covering the current
+reference version, no active execution/storage references or mounts, and an
+identity-verified destruction plan, then reclaim owned storage. The whole
+managed private tree, including `.git`, may be removed; retained source has no
+dependency on any file in it. Borrowed
 legacy directories and user source paths are never destruction targets.
 For worktrees, registration/directory release and branch release are distinct
 operations. The old ten-minute ignored cleanup and unconditional sweep are
 disabled for LedgerV1 resources; both schedule this driver instead.
+The physical owned-worktree removal mechanism must not invoke its old coupled
+source-branch/candidate-ref deletion path; source-local refs remain untouched.
 
 Every explicit wake path, including human send/ask, recovery and patch
 `closed=false`, calls the same `reopenable` operation before changing closed
 state or restarting Planner. Under the lifecycle fence it cancels stale reclaim
 intents by CAS, validates retained storage or stages archive restoration, checks
 all bindings and executor facts, then advances generation and reopens admission.
-Reclaimed restore uses A's source with a new runtime generation/installation
-epoch; ignored caches rebuild. It preserves the old settled delivery tip and
+Reclaimed restore obtains A, tip and required baseline/object closure exclusively
+from the resource's durable content receipt, builds a new independent runtime
+repository, and uses a new runtime generation/installation epoch; ignored caches
+rebuild. It preserves the old settled delivery tip and
 installs D=tree(tip), W=tree(A)-D. It does not mislabel archive A as a delivered
 candidate. Archive missing/expired returns explicit unrecoverable status and
 does not create an empty workspace. The UI's can_reopen derives from this state.
@@ -435,7 +549,8 @@ drained. Reopen cannot revive an old ticket or an old binding version.
 Delete persists an independent tombstone plus per-resource release jobs before
 removing track/area rows. It contains descriptor/storage identity, binding
 versions, close/archive receipts/deadlines, operation dependencies, exact owned
-refs and pending materialization IDs. A deleted row is never needed to resume
+refs, durable store identity/content receipts and reference version, and pending
+materialization IDs. A deleted row is never needed to resume
 the job. Domain deletion may complete while archive/reclaim is pending, but
 failure cannot permit destructive release of unsnapshotted source.
 
@@ -448,24 +563,28 @@ sibling independently; one failure never erases another item's receipt. A
 reaper must recheck the cancellation/version fence before each physical effect,
 so stale deletion cannot destroy a restored area resource.
 
-At archive deadline release only refs with no active content dependency.
-Published branch deletion additionally requires authoritative evidence that all
+At archive deadline release only owned durable-store refs with no active
+content dependency. Private projection deletion additionally requires evidence that all
 known PRs are closed/merged and no open or unknown PR association remains.
 Remote unavailable/unknown means defer and display why. A PR pin/receipt binds
 repo, remote branch, PR identity and exact protected source OID; branch name
 alone is not content protection. Releasing an archive does not delete candidate
-pins or publish branches. Shared common-dir resources may release only their
-owned refs using expected values, never a broad namespace sweep.
+pins or publish projections. Private refs use exact expected-OID CAS under
+exclusive owned-store administration. S3 does not automatically delete/update
+user-common-dir branches or legacy refs, even after all known PRs close; source
+metadata locks prove no exclusion against a human checkout. Remote branch
+deletion remains a separately authorized Gitforge effect, outside expiry GC.
 
 | Lifecycle durable point | Recovery rule |
 | --- | --- |
 | Quiescing/close intent, no snapshot | Keep private layer and sealed destructive admission; reconcile blockers and retry same close. |
-| Archive object/ref exists, receipt missing | Validate exact close intent/object and pin, then record receipt; no reclaim beforehand. |
+| Archive object/ref exists, receipt missing | Validate exact close intent and complete closure in durable storage, fsync owned pins and record content/archive receipts; no reclaim beforehand. |
 | Archive failed | Retain private layer indefinitely pending repair; no ignored cleanup or expiry escape hatch. |
 | Tombstone committed, rows deleted, storage unmoved | Resume independent resource job from descriptor; no track lookup and no rematerialization. |
 | Managed rename complete, receipt missing | Probe original/trash identity and operation marker, then complete receipt; unknown/occupied paths require recovery. |
 | Area rollback after physical move | CAS cancel job, restore authorized references and compensate by original report; do not overwrite a replacement path. |
-| Reclaim partly complete | Reprobe only exact owned identities; expected absence can complete, unexpected identity cannot. Keep archive pinned. |
+| Reclaim partly complete | Reprobe exact owned identities and committed content/reference version; expected absence can complete, unexpected identity cannot. Keep durable archive/tip/B/candidate/PR roots pinned. |
+| Entire managed private `.git` deleted before restart | Reconcile the destruction receipt and restore only from the durable repository/receipt if authorized; no dependency on original `.git` or its alternates survives. |
 | Reopen races reclaim | Same fence and expected lifecycle version chooses one winner; loser rechecks persisted result before effects. |
 | Ref release/physical delete succeeds, reply lost | Expected absence plus original release intent completes receipt; do not infer expiry of sibling refs. |
 
@@ -481,12 +600,14 @@ scenarios, not a permanent list of test function names or source files.
 | One parent chain | Agent privately commits, gated run fails, second run passes, done settles; every C has frozen P, only settlement advances tip, next attempt starts there. Planner commit advances tip but cannot pass done-candidate publish policy. |
 | Admission | Planner commit while Readers/writer/unsettled delivery returns Busy; ordinary terminal does not block worker scheduling but does block conversion/reclaim. Unreleased run source survives with HEAD/index reset and blocks next dirty claim. |
 | Normalization | Actual clean/smudge/eol/fileMode fixtures execute in launcher with no kernel credentials; frozen C and verification tree match, ignored tracked source remains source, retry does not rerun filter to choose C. |
-| Projection | Detached and attached private HEAD changes never move a user branch. Foreign publish-branch OID/checkout records Stale, preserves foreign OID and allows settlement; publish refuses. Foreign delivery ref enters delivery recovery without making identity resolve unavailable. |
+| Projection | Concurrently let external Git checkout the same unchanged source-local branch while production delivery advances its private projection; neither user branch nor human HEAD moves. Delivery and exact-OID publish also succeed with no local source branch. The test must not require a worktree-list call removed from delivery policy. Private delivery-pin mismatch enters delivery recovery without making identity resolve unavailable. |
 | Conversion | Crash before/after pins, detach and DB switch; original H/upstream are adopted once, B remains LegacyUnknown when unknown, dirty source survives, old payload bytes/hash stay identical and no legacy write crosses switch. |
 | Installation/catch-up | Crash after H->U pin, mid-path install, after HEAD/index, after install receipt, before DB/lease and after settlement reply; re-drive exact U/C once, keep T and ignored cache, no original checkout modification. Repeat catch-up after failed spawn. |
 | Upstream/publish | Detached ensure/fetch/staleness/reader/publish all use durable selected upstream; restart and remote force-push do not change frozen receipts; no complete config is explicit absence. Verify exact OID push plus PR receipt and candidate ancestry. |
-| Verification | Tracked write/restore, create/delete nonignored, mmap restore, hardlink alias write, directory rename/new directory, queue/monitor failure, background descendants and restart cannot produce bound success. Ordinary ignored hot builds pass under the approved complete proof; root-external gates remain explicitly unbound. S3-V1 must close first. |
-| Retention | Close captures source after quiescence; archive failure prevents all destruction. Seven-day private and ninety-day archive deadlines are frozen; settings changes do not shorten them. Reclaimed reopen restores source as W over delivered D; expired archive refuses instead of empty recreation. |
+| Verification | No tracked/nonignored actual write can occur through source write/restore, create/delete, mmap/mprotect, alias, rename or link. Mediator-visible denied requests latch failure. A writable shared mmap/ftruncate rejected by VFS on an O_RDONLY source FD changes no source and produces no fabricated FUSE receipt; a command that handles it may bind. Lost enforcement/unknown descendants cannot bind. Ignored hot builds remain legal; root-external gates stay explicitly unbound. S3-V1 must close first. |
+| Retention | Close captures source after quiescence; archive/closure-import failure prevents destruction. Advance the real lifecycle test clock to day eight, run production reclaim and prove the entire managed private tree including `.git` is gone, then restart kernel and reopen from durable A/tip/B/candidate/PR roots only. Inspect full closure without source alternates/hardlinks; verify source as W over D and retained protected content. At frozen day ninety expiry refuses restore; settings changes never shorten frozen deadlines. |
+| Content crash replay | Interrupt copying, after fsync/pin before receipt, after receipt before private deletion, and after whole-tree deletion before its receipt. Restart must complete the same import/destroy or restore solely from verified durable content, never recreate empty storage or silently pick new roots. |
+| Content capability isolation | Launch gate/forge/terminal exports for two separately authorized workspaces/Areas; each sees only its granted object closure/refs and cannot open, enumerate or request the other's artifact store/objects. Exact-OID push uses only its scoped export; no durable-store administrative capability reaches user execution. |
 | Deletion/area | Delete then restart uses tombstone without domain rows; partial area failure compensates every sibling, occupied restore path is preserved, stale reaper cannot delete restored binding. Candidate/open/unknown PR refs survive physical private-layer release. |
 
 Mutation verification uniquely pins ledger-parent authority, source-proof
@@ -507,3 +628,46 @@ CI owns broad suites. Crash injection belongs to production operation/effect
 boundaries, not an alternate fake delivery algorithm. No real provider E2E runs
 on the shared host. This documentation proposal runs text ratchet and diff
 checks only; those checks do not establish the future acceptance scenarios.
+
+## 10. Parent-contract amendments proposed for review
+
+These replace conflicting parent clauses only after two-channel design review;
+the parent is not edited or described as already approved by this proposal.
+
+For section 2.2, adopt the verification attachment's amended paragraph: preserve
+logical cwd and Git-classified hot-cache locations through a guarded immutable-C
+projection, explicitly changing inode/mount semantics. Proof guarantees absence
+of actual source writes. Only source mutation requests reaching the mediator
+produce its denial/latch; VFS-rejected calls have no invented receipt and may
+be handled by a successful gate without violating immutability.
+
+For sections 2.3 and 4.3, replace the shared-branch write/check-out test protocol:
+
+> The resource ledger is the sole delivered-tip authority. All S3 pins and any
+> writable best-effort branch projection reside in a kernel-owned resource-scoped
+> durable content repository under exclusive kernel administration. User-common-dir
+> refs are external read-only observations; kernel never writes/deletes them on
+> the strength of worktree-list sampling or a cooperative metadata lock. Final
+> candidate plus delivery-pin CAS occurs in the owned repository, followed by
+> execution HEAD/index installation and authoritative DB settlement. Gitforge
+> publishes an exact frozen OID from an authorized scoped export using typed
+> upstream/remote receipts, independently of a mutable source-local branch or
+> optional presentation projection.
+
+For sections 4.1, 4.3 and 5.2, make content lifetime independent of private Git:
+
+> A ninety-day archive and all other retained roots require verified complete
+> object closure in kernel-owned durable storage outside the seven-day private
+> tree. Before destruction, import/fsync objects, CAS/fsync owned pins and commit
+> a content receipt covering the current protected-reference version. No alternate,
+> hardlink or missing shallow ancestor may rely on the directory to be destroyed.
+> Import/receipt crashes retain private storage until reconciliation; after full
+> managed `.git` deletion, authorized restore uses only the durable receipt and
+> protected roots. Existing operations and the single resource lifecycle driver
+> own this work. Subprocesses receive resource/authorization-scoped exports,
+> never the store or another workspace/Area's objects.
+
+These are three structural changes: verification semantics, content lifetime,
+and ref ownership/publish targeting. They preserve frozen P/run/catch-up,
+checkout admission, immutable historical bytes and area compensation policy.
+They do not add a parallel content ledger, delivery driver or retention reaper.

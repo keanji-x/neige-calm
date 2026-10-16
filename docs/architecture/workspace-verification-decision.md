@@ -20,9 +20,12 @@ execution environment, not a selectable new workspace backend.
 This preserves cwd strings, declared GateSpec steps and ignored output/cache
 locations. It changes underlying inode/device identities, mount topology and
 the fact that source writes used to be physically possible during a gate.
-Source-writing gates now fail their candidate evidence, including when they
-catch EROFS and return zero. It therefore needs an explicit parent amendment;
-calling it unchanged physical in-place worktree execution would be inaccurate.
+A mediator-visible source mutation request fails candidate evidence even when
+the command catches its denial and returns zero. The guarantee is no actual
+source mutation, not observation of every rejected syscall: a failure rejected
+by VFS before FUSE may be handled without invalidating otherwise sound evidence.
+This therefore needs an explicit parent amendment; calling it unchanged
+physical in-place worktree execution would be inaccurate.
 Users are not asked to add output-directory declarations or new GateSpec fields.
 
 Capability is checked before S3 conversion and before verification preparation.
@@ -45,6 +48,10 @@ The primary contracts are
 [inotify(7)](https://man7.org/linux/man-pages/man7/inotify.7.html),
 [mmap(2)](https://man7.org/linux/man-pages/man2/mmap.2.html) and
 [statx(2)](https://man7.org/linux/man-pages/man2/statx.2.html).
+The [mprotect](https://man7.org/linux/man-pages/man2/mprotect.2.html) and
+[ftruncate](https://man7.org/linux/man-pages/man2/truncate.2.html) contracts
+also establish permission failures on read-only access; those failures do not
+imply a userspace filesystem observed the attempted call.
 
 An immutable C checkout with writable ignored directories solves only a subset.
 A tracked file may live under an ignored directory, so mounting that whole
@@ -103,8 +110,10 @@ probes are not counted as evidence of mechanism support.
    block unrelated source writers and reconcile tickets/processes. Capture
    immutable Revision and C with the shared normalizer. Snapshot-owned source
    bytes have no writable alias to the original checkout: copy or safe reflink,
-   never hardlink. The gate cannot access mutable backing handles. Freeze a
-   per-path materialization metadata manifest, including relevant source mtimes,
+   never hardlink. Authorized source arrives through a scoped content export;
+   the gate receives no durable artifact-store path, administrative FD, alternate
+   or other workspace/Area's objects. It cannot access mutable backing handles.
+   Freeze a per-path materialization metadata manifest, including source mtimes,
    and bind its digest into environment evidence. Do not retimestamp every file
    to gate preparation time and thereby invalidate every hot build.
 2. Build the authoritative classifier from C's tracked set, frozen effective
@@ -116,13 +125,18 @@ probes are not counted as evidence of mechanism support.
    Gate writes to source rule files are denied; private copies freeze external
    Git config/excludes. A changed normalization/rule version at final snapshot
    or a later verification request invalidates reuse of the old proof.
-3. The mediator resolves every lookup and mutation by validated relative path
+3. The mediator resolves every request it receives by validated relative path
    and descriptor identity. Source paths read only from immutable C working
-   bytes, with the exact normalized tree/materialization contract. Every source
-   mutation attempt is denied and latches SourceMutationAttempt; it cannot be
-   cleared by restoring bytes, catching errno or returning zero. Read-only
-   source FDs cannot acquire a writable shared mmap, including via mprotect.
-   Ignored cache FDs can map/write through their distinct cache capability.
+   bytes, with the exact normalized tree/materialization contract. Source
+   mutation requests reaching the mediator are denied and latch
+   ObservedSourceMutationRequest; catching that error cannot clear the latch.
+   Source writable FDs are never issued. A read-only source FD cannot acquire
+   writable MAP_SHARED pages, including via mprotect; VFS may reject mmap,
+   mprotect or ftruncate on that FD before FUSE receives anything. Such failures
+   do not modify source and generate no invented daemon receipt/latch. If the
+   command handles them, ordinary exit/evidence rules apply and it may pass.
+   Writable MAP_PRIVATE pages do not change filesystem source and remain legal.
+   Ignored cache FDs map/write through their distinct cache capability.
 4. Existing ignored data stays in its original owned cache store, accessed only
    through the mediator. Cache content, mtimes and stable IDs within one gate
    are preserved; inode equality with a previous unsandboxed run is not promised.
@@ -133,9 +147,9 @@ probes are not counted as evidence of mechanism support.
    arbitrary descendants. Newly nonignored paths are
    denied even if a sibling name matches an ignore rule.
 5. Rename, exchange, link, symlink, unlink, chmod, truncate and other mutating
-   operations resolve both ends. Cross-classification rename/link and source
-   mutation are denied and latch invalidation; ignored-to-ignored operations
-   remain permitted with identity checks. There is no pathname-only symlink
+   requests reaching the mediator resolve both ends. Cross-classification
+   rename/link and source mutation are denied and latch invalidation there;
+   ignored-to-ignored operations remain permitted with identity checks. There is no pathname-only symlink
    following into source or outside the cache capability. Open cache handles
    retain their cache identity through rename/unlink and never become a source
    capability after a pathname is reused. All FUSE writeback/mmap callbacks use
@@ -157,7 +171,9 @@ probes are not counted as evidence of mechanism support.
    replaced mediator can seal another instance's proof. Unknown execution keeps
    occupancy; a lost proof requires a new run, not reconstructed success.
 8. Seal only after positive executor drain, unchanged Revision/epoch/C and an
-   authenticated mediator receipt with no invalidation or unaccounted request.
+   authenticated mediator receipt with no invalidation or unaccounted received
+   request. The receipt attests immutable source and mediation continuity,
+   not a complete history of calls rejected earlier by VFS.
    Since C is physically immutable to gate operations, external writers in the
    original working checkout cannot change the source tested through this
    environment. Cache changes do not advance candidate or ledger source. They
@@ -182,8 +198,9 @@ files and nested mounts refuse unless a later mechanism contract supports
 their complete effects. These are supported filesystem types/capabilities, not
 application identities or named build directories.
 
-Source writes, cache path escapes, metadata corruption, unsupported operations,
-mediator loss and unknown descendants produce explicit failed source evidence.
+Actual source writes are impossible under the supported capability. Observed
+source mutation requests, cache path escapes, metadata corruption, unsupported
+mediated operations, mediator loss and unknown descendants fail source evidence.
 They do not leave an apparently bound green verdict. Existing ignored caches
 with supported types do not require a clean rebuild or a new output path.
 Metadata-sensitive tools may still expose a semantic change from namespace/
@@ -199,8 +216,11 @@ Replace the worktree verification paragraph in track-workspace section 2.2:
 > Git-classified ignored output locations. A kernel-owned verification
 > projection reads source from immutable C and mediates ignored cache writes
 > dynamically, with tracked paths taking precedence. This changes physical
-> inode/mount identity and denies source mutation attempts. It does not require
-> a new GateSpec/output directory. Only a complete, independently tested
+> inode/mount identity and prevents actual source writes. Source mutation
+> requests reaching the mediator are denied and latched; VFS-rejected calls
+> with no source change have no invented receipt and may be handled by a
+> successful gate. This is not a complete attempted-syscall audit. It requires
+> no new GateSpec/output directory. Only a complete, independently tested
 > mechanism may produce bound evidence; unsupported hosts/resources remain
 > explicitly unconverted or refuse preparation, without silent unbound fallback.
 
@@ -215,7 +235,10 @@ Required production contracts cover every probe counterexample above plus
 ignored new paths/pattern negation, tracked-in-ignored, source symlinks, cache
 alias escapes, mmap/mprotect, rename-exchange, open-unlink-reuse, concurrent
 outside source writers, live descendants, mediator crash, filtered/eol
-materialization and repeated hot builds. These are invariants owned by the
+materialization and repeated hot builds. Test read-only-FD writable mmap,
+mprotect and ftruncate rejected before FUSE separately: assert no source
+mutation, no fabricated mediator event, and normal gate success/failure
+according to handled error and exit status. These are invariants owned by the
 verification mechanism, not a caller/test-name list. The mechanism must be
 implemented and verified before full S3 completion can be asserted.
 
@@ -229,3 +252,8 @@ kernel/FUSE/runtime versions in the capability receipt and rerun the mechanism
 job when those contracts change; do not enable the production capability from
 a config flag without its live probe. No model invocation is needed for this
 job, and no production host capability should be broadened just to run it.
+
+The main protocol's parent amendment additionally relocates retained content
+and writable ref projections outside private/runtime and human-common-dir Git.
+This attachment changes verification semantics only; it must not be described
+as the sole parent change or as an implementation of those other boundaries.
