@@ -9,6 +9,7 @@ import { makeDesktopPainter, paintDesktopPanel } from '../../features/track/page
 import { ChatList } from '../../features/chat/list/public.tsx';
 import { PanelCard, PanelModule } from '../../ui/panel-card/public.tsx';
 import { Sidebar } from './sidebar.tsx';
+import { withFontRoleProbe } from '../../../../tools/styles/font-role-fixture.ts';
 import { readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';
 
 const receipts = readReceiptsFixture();
@@ -62,28 +63,21 @@ it.each(['light', 'dark'])('uses the same named type hierarchy in both %s side p
   const name = element(document.querySelector<HTMLElement>('[title="Left first"]'));
   const primary = [element(document.querySelector<HTMLElement>('[data-nc-module="cards"] [data-nc-field="title"]')),
     element(document.querySelector<HTMLElement>('[data-nc-module="tasks"] [data-nc-field="title"]'))];
-  expect(getComputedStyle(name).fontSize).toBe('14px');
-  expect(Number.parseFloat(getComputedStyle(name).lineHeight)).toBeCloseTo(20, 1);
-  expect(getComputedStyle(name).fontWeight).toBe('500');
-  for (const node of primary) {
-    expect(getComputedStyle(node).fontSize).toBe('14px');
-    expect(getComputedStyle(node).fontWeight).toBe('400');
-    expect(getComputedStyle(node).lineHeight).toBe('20px');
-  }
+  const assertRole = (node: HTMLElement, role: Parameters<typeof withFontRoleProbe>[0]) => {
+    withFontRoleProbe(role, document.documentElement, expected => {
+      expect(getComputedStyle(node)).toMatchObject(expected);
+    });
+  };
+  assertRole(name, '--type-action');
+  for (const node of primary) assertRole(node, '--type-content');
   const group = element(document.querySelector<HTMLElement>('[title="Work"]'));
-  expect(getComputedStyle(group).fontWeight).toBe('400');
-  expect(getComputedStyle(group).fontSize).toBe('14px');
+  assertRole(group, '--type-ui');
   expect(typography(element(document.querySelector<HTMLElement>('[data-nc-inventory-group] summary > span:first-child')))).toEqual(typography(group));
   expect(typography(element(document.querySelector<HTMLElement>('[aria-label="Conversation Chat first"] > span > span')))).toEqual(typography(group));
-  expect(getComputedStyle(element(document.querySelector<HTMLElement>('[data-nc-module] h2'))).fontSize).toBe('12px');
-  expect(getComputedStyle(element(document.querySelector<HTMLElement>('nav[aria-label="Workspace"] h2'))).fontSize).toBe('12px');
   const panelTitles = [...document.querySelectorAll<HTMLElement>('h2')].filter(node => ['Tools', 'Tasks', 'Conversations'].includes(node.textContent ?? ''));
   expect(panelTitles).toHaveLength(3);
-  for (const title of panelTitles) expect(typography(title)).toEqual(typography(panelTitles[0]));
-  const section = element(document.querySelector<HTMLElement>('[title="Areas"]'));
-  const panelType = typography(panelTitles[0]);
-  // Workspace categories stay quieter than the module titles beside a report.
-  expect(typography(section)).toEqual([panelType[0], panelType[1], '400', ...panelType.slice(3)]);
+  for (const title of panelTitles) assertRole(title, '--type-navigation-label');
+  assertRole(element(document.querySelector<HTMLElement>('[title="Areas"]')), '--type-metadata');
 
 });
 

@@ -35,7 +35,7 @@ function contrastRatio(foreground: string, background: string): number {
   return ((values[0] ?? 0) + 0.05) / ((values[1] ?? 0) + 0.05);
 }
 
-it('keeps Area actions visible without requiring hover on a desktop pointer', async () => {
+it('reveals Area actions on hover with a desktop pointer', async () => {
   await page.viewport(1400, 900);
   expect(matchMedia('(width >= 60rem)').matches).toBe(true);
   expect(matchMedia('(hover: hover)').matches).toBe(true);
@@ -70,8 +70,8 @@ it('keeps Area actions visible without requiring hover on a desktop pointer', as
   const actions = document.querySelector<HTMLElement>('[aria-label="Area actions for Work"]')!;
   const actionsWrap = actions.parentElement!;
   await page.getByRole('button', { name: 'New area' }).hover();
-  expect(getComputedStyle(actionsWrap).opacity).toBe('1');
-  expect(getComputedStyle(actionsWrap).pointerEvents).toBe('auto');
+  expect(getComputedStyle(actionsWrap).opacity).toBe('0');
+  expect(getComputedStyle(actionsWrap).pointerEvents).toBe('none');
 
   await page.getByRole('button', { name: 'Collapse area Work' }).hover();
   expect(getComputedStyle(actionsWrap).opacity).toBe('1');

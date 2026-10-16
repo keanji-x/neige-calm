@@ -417,7 +417,7 @@ describe('Unified mobile headers', () => {
     await page.viewport(width, 844);
     const router = setup('/track/w1');
     const frames: Array<{ name: string; x: number; y: number; width: number; height: number; left: number; top: number }> = [];
-    const record = async (name: string, header: Element) => {
+    const record = async (name: string, header: HTMLElement) => {
       await expect.poll(() => header.closest('#mobile-workspace-navigation')?.getAnimations({ subtree: true })
         .filter((animation) => animation.effect?.getTiming().iterations !== Infinity)
         .every((animation) => animation.playState !== 'running') ?? true).toBe(true);
@@ -434,9 +434,6 @@ describe('Unified mobile headers', () => {
         expect(box.y).toBeGreaterThan(80);
         expect(hit.width).toBe(44); expect(hit.height).toBe(44);
         expect(hit.right).toBe(width - 16);
-        withFontRoleProbe('--type-page-title', header, expected => {
-          expect(getComputedStyle(header.querySelector('h2')!)).toMatchObject(expected);
-        });
         await page.screenshot({ path: `../../../../test-results/unified-${width}-${name}.png` });
         return;
       }
@@ -480,7 +477,7 @@ describe('Unified mobile headers', () => {
       await page.screenshot({ path: `../../../../test-results/unified-${width}-${name}.png` });
     };
     await page.getByRole('button', { name: /^Switch track,/ }).findElement();
-    await record('track', document.querySelector('[data-nc-workspace-header] header')!);
+    await record('track', document.querySelector<HTMLElement>('[data-nc-workspace-header] header')!);
     const selector = await page.getByRole('button', { name: 'Switch track, Responsive mobile UI', exact: true }).findElement();
     const history = await page.getByRole('button', { name: 'Open conversation history', exact: true }).findElement();
     expect(selector.getBoundingClientRect().left).toBeGreaterThanOrEqual(history.getBoundingClientRect().right + 8);

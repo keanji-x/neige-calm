@@ -118,12 +118,12 @@ it('runs /side through the production router and shows two independent desktop c
   await page.getByRole('button', { name: 'Conversation Main discussion' }).click();
   const main = page.getByRole('complementary', { name: 'Main discussion' });
   await expect.element(main.getByText('The main conversation keeps working while a separate discussion explores this design.')).toBeVisible();
-  const initialBox = (await main.findElement()).getBoundingClientRect();
-  const headerBottom = document.querySelector('[data-nc-header-rows]')!.getBoundingClientRect().bottom;
-  expect(initialBox.top).toBeGreaterThanOrEqual(headerBottom);
-  expect(initialBox.bottom).toBeLessThanOrEqual(window.innerHeight);
   const host = document.querySelector<HTMLElement>('[data-nc-drawer-stack]')!;
   await expect.poll(async () => (await main.findElement()).getBoundingClientRect().top).toBe(host.getBoundingClientRect().top);
+  const initialBox = (await main.findElement()).getBoundingClientRect();
+  expect(initialBox.top).toBeGreaterThan(0);
+  expect(initialBox.bottom).toBeLessThanOrEqual(window.innerHeight);
+  expect(window.innerHeight - initialBox.bottom).toBeCloseTo(initialBox.top, 0);
   const field = main.getByRole('combobox', { name: 'Message' });
   await field.fill('/side Explain the tradeoff');
   await userEvent.keyboard('{Enter}');
@@ -144,7 +144,7 @@ it('runs /side through the production router and shows two independent desktop c
   expect(mainBox.width).toBe(sideBox.width);
   const handles = document.querySelectorAll<HTMLElement>('[role=separator][aria-label="Resize conversation"]');
   expect(handles).toHaveLength(1);
-  expect(handles[0].getBoundingClientRect().top).toBeGreaterThanOrEqual(headerBottom);
+  expect(handles[0].getBoundingClientRect().top).toBeGreaterThanOrEqual(host.getBoundingClientRect().top);
   await expect.poll(() => handles[0]?.getAttribute('aria-valuenow')).not.toBe(null);
   const initialShare = Number(handles[0].getAttribute('aria-valuenow'));
   expect(initialShare).toBeGreaterThan(0);

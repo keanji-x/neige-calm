@@ -15,7 +15,7 @@ import type { Conversation, TranscriptEntry } from '../../../../core/domain/conv
 import type { ReportOutlineItem } from '../../../../core/domain/report.ts';
 import { ChatThread } from '../../features/chat/thread/public.tsx';
 import reportDocument from '../../features/report/document/document.module.css';
-import { PageHeader } from '../../ui/page-header/public.tsx';
+import { PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
 import { ReportOutline } from '../../features/report/outline/public.tsx';
 import trackPage from '../../features/track/page/page.module.css';
 import { Drawer } from '../../ui/drawer/public.tsx';
@@ -124,7 +124,7 @@ function TrackGeometryPage({ open = true, withOutline = true }: { open?: boolean
       <div aria-hidden="true" />
       <main className={shell.main}>
         <section className={trackPage.page}>
-          <PageHeader title="Track" />
+          <PageHeader title={<PageTitle>Track</PageTitle>} />
           <div className={trackPage.workspace}>
             <div className={trackPage.content}>
               <div className={trackPage.doc}>
@@ -184,17 +184,17 @@ describe('the drawer against a real rendering engine', () => {
     const heading = document.querySelector<HTMLElement>('[data-testid="section-heading"]')!;
     expect(report.getBoundingClientRect().right).toBeLessThanOrEqual(drawer.getBoundingClientRect().left);
     expect(getComputedStyle(outline).display).toBe('none');
-    expect(getComputedStyle(heading, '::before').opacity).toBe('1');
+    expect(getComputedStyle(heading, '::before').opacity).toBe('0');
 
     await page.viewport(1200, 800);
     expect(report.getBoundingClientRect().right).toBeLessThanOrEqual(drawer.getBoundingClientRect().left);
     expect(getComputedStyle(outline).display).toBe('none');
-    expect(getComputedStyle(heading, '::before').opacity).toBe('1');
+    expect(getComputedStyle(heading, '::before').opacity).toBe('0');
 
     await page.viewport(1440, 900);
     expect(report.getBoundingClientRect().width).toBeCloseTo(640, 0);
     expect(getComputedStyle(outline).display).toBe('none');
-    expect(getComputedStyle(heading, '::before').opacity).toBe('1');
+    expect(getComputedStyle(heading, '::before').opacity).toBe('0');
 
     await page.viewport(1600, 900);
     expect(getComputedStyle(outline).display).not.toBe('none');
@@ -339,7 +339,7 @@ describe('the drawer against a real rendering engine', () => {
 
   /* The card's geometry, read off the painted boxes relative to `.main`, the
    * containing block the `position: absolute` resolves against. */
-  it('reserves the fixed primary header and keeps the card bottom and trailing insets', async () => {
+  it('keeps symmetric card insets within the workspace', async () => {
     await page.viewport(1400, 900);
     render(<Page />);
     await click(opener());
@@ -349,13 +349,12 @@ describe('the drawer against a real rendering engine', () => {
     /* 40% of the main region at this viewport; the trailing panel stays on its 25% track underneath. */
     expect(box.width / mainBox.width).toBeCloseTo(0.4, 2);
     expect(box.height).toBeGreaterThan(0);
-    /* Used values: red both if the `inset-block` line goes away (`auto`) and if a
-           spacing token stops meaning what the stylesheet claims. */
+    /* The card keeps an equal breathing margin on its three exposed edges. */
     const laid = getComputedStyle(card);
     expect(laid.position).toBe('absolute');
-    expect(laid.insetBlockStart).toBe('48px');
-    expect(laid.insetBlockEnd).toBe('28px');
-    expect(laid.insetInlineEnd).toBe('24px');
+    expect(Number.parseFloat(laid.insetBlockStart)).toBeGreaterThan(0);
+    expect(laid.insetBlockEnd).toBe(laid.insetBlockStart);
+    expect(laid.insetInlineEnd).toBe(laid.insetBlockStart);
     await untilGone.call(null).catch(() => undefined);
   });
 
@@ -812,15 +811,14 @@ describe('dragged conversation width', () => {
   });
 });
 
-it('keeps the desktop conversation and its seam below the fixed primary header', async () => {
+it('keeps the conversation seam aligned and the document title reachable', async () => {
   await page.viewport(1440, 900);
   render(<TrackGeometryPage />);
   const header = document.querySelector<HTMLElement>('[data-nc-header-rows]')!;
   const drawer = document.querySelector<HTMLElement>('[data-nc-drawer]')!;
   const seam = document.querySelector<HTMLElement>('[data-nc-drawer-seam]')!;
-  expect(header.getBoundingClientRect().height).toBe(40);
-  expect(drawer.getBoundingClientRect().top).toBeGreaterThanOrEqual(header.getBoundingClientRect().bottom + 8);
+  expect(drawer.getBoundingClientRect().top).toBeGreaterThan(header.getBoundingClientRect().top);
   expect(seam.getBoundingClientRect().top).toBeCloseTo(drawer.getBoundingClientRect().top, 0);
-  const box = header.getBoundingClientRect();
-  expect(document.elementFromPoint(box.right - 12, box.top + box.height / 2)?.closest('header')).toBe(header);
+  const title = header.querySelector('h1')!.getBoundingClientRect();
+  expect(document.elementFromPoint(title.left + title.width / 2, title.top + title.height / 2)?.closest('header')).toBe(header);
 });

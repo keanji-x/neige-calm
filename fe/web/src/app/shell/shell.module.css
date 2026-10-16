@@ -154,6 +154,10 @@
   }
 
   @container (inline-size >= 85rem) {
+    .main:has([data-nc-drawer]) [data-nc-report] {
+      --report-section-number-opacity: 1;
+    }
+
     .main:has([data-nc-drawer]) [data-nc-report-outline] {
       display: block;
     }
