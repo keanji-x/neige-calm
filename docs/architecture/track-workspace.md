@@ -111,7 +111,9 @@ overlay upper/work/runtime 只在 backend 内定位；lower 活动来源只读�
 
 S4 改用受控 view 内的整个 provider 服务，实施协议见 [workspace-provider-environments.md](workspace-provider-environments.md)，须经两路 L2 评审后实现。已实测共享 app-server 的远端 exec 路由不能隔离其宿主 config/文件/搜索，断连后 thread/start 仍可成功，原“共享 app-server + 每 view exec-server”不足以满足本合同。provider 按 workspace、generation、授权 binding 和 ExecutionId 管理独立服务、可变状态及控制通道；kernel 只验证类型化能力，不按 provider 名称特判。Codex 初版在该 scope 中使用 app-server 官方本地工具，不登记远端 exec-server；不猜 RPC 字段、注销/drain 方法或私有状态布局。
 
-注册/readiness、每次调用、重连/恢复和所有控制均绑定授权、generation、install_epoch 及精确执行实例。先核实旧服务、工具和后台 helper 全部 drain，才能重启、换安装代次或回收；父进程退出、连接关闭和 DB idle 不构成静止证明。私有 provider state 与显式认证输入分离，不挂载成员私人 HOME、kernel 全局对象库或其他 Area 状态。未具部署版本/平台/认证 profile 的完整资格时拒绝，不 fallback 到共享 daemon 或来源 checkout。
+注册/readiness、每次调用、重连/恢复和所有控制均绑定授权、generation、install_epoch 及精确执行实例。S3 owner 区分有证明的 SameSourceProjection 与真实 SourceInstall：前者只推进 owned Git 执行投影/账本序列，不改源码 bytes/mode/link/分类/规则/挂载身份或 source epoch，不 drain 正在等该结果的 provider；后者先持久结束原调用，再 drain/install/新执行恢复并用新能力取原结果，未完调用始终 Busy。具体 S3 接缝由实施协议提出、须与 S3 owner 统一后实现；不能按工具名或既有 owner 豁免。重启、真实换安装代次或回收须核实旧服务、工具和后台 helper 全部 drain；父进程退出、连接关闭和 DB idle 不构成静止证明。私有 provider state 与显式认证输入分离，不挂载成员私人 HOME、kernel 全局对象库或其他 Area 状态。未具部署版本/平台/认证 profile 的完整资格时拒绝，不 fallback 到共享 daemon 或来源 checkout。
+
+view worker 采用类型化受控 console，保留输出/结果观察、继续 turn、approve 和 stop；每次输入经同一 ExecutionControl，不把终端字节写进 app-server stdio。view 不再启动直连 `codex resume --remote` 的原生 TUI，原 worktree 交互不变；这是显式产品合同修订，须双审。view 服务只用受控匿名 stdio，工具子进程的 PID/proc/挂载与 FD 边界隔离服务控制和私有 state，不能凭隐藏 URL 或同 uid 宣称安全；通用 UI 按 console 能力渲染，不按应用/provider 名称特判。
 
 provider 所在层声明类型化 `ViewSupport = Supported / Unsupported(reason)` 并提供合同测试；kernel 只消费声明，不按 provider 身份特判。Supported 必须证明项目读取、配置、Git/ghost/undo/搜索及按 cwd 的状态均隔离或显式禁用，整个服务进入 view 的元数据实验也不等于完整资格。S2b 负责本地 provider 合同：Claude 的共享 CLAUDE_CONFIG_DIR 不能证明 project 状态隔离，须按官方合同建立独立作用域；未证明前 Unsupported。任意配置 ACP 默认 Unsupported，只有具体适配层通过合同才能声明支持。Codex 由 S4 的部署版本/平台合同解除。可共享显式授权的推理/鉴权输入，不共享同一 app-server 进程、可变 home 或 trust 状态；Codex TUI `!` 不支持。
 
