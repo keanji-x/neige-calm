@@ -114,6 +114,25 @@ export function createScrollFollower(options: Readonly<{
         if (['ArrowUp', 'PageUp', 'Home'].includes(event.key) || (event.key === ' ' && event.shiftKey)) begin(event, 'up');
         else if (['ArrowDown', 'PageDown', 'End', ' '].includes(event.key)) begin(event, 'down');
       };
+      // Native focus/selection navigation can scroll before its event arrives.
+      // Yield only after it leaves the tail; caret restoration, tail controls
+      // and selections in another pane cannot change this pane's intent.
+      const readAway = () => {
+        if (restoring === 0 && distance() > options.bottomSlack) {
+          gesture = null;
+          following = false;
+        }
+      };
+      const onFocus = (event: FocusEvent) => {
+        if (event.target instanceof Node && content.contains(event.target)) readAway();
+      };
+      const onSelection = () => {
+        const selection = target.ownerDocument.getSelection();
+        if (selection === null || selection.isCollapsed) return;
+        for (let index = 0; index < selection.rangeCount; index++) {
+          if (selection.getRangeAt(index).intersectsNode(content)) { readAway(); break; }
+        }
+      };
       const onPointerDown = (event: PointerEvent) => {
         if (event.defaultPrevented || event.button !== 0 || event.pointerType === 'touch' || event.target !== target) return;
         pointer = event.pointerId;
@@ -168,6 +187,8 @@ export function createScrollFollower(options: Readonly<{
         }
       };
       target.addEventListener('wheel', onWheel, { passive: true });
+      content.addEventListener('focusin', onFocus);
+      target.ownerDocument.addEventListener('selectionchange', onSelection);
       target.ownerDocument.addEventListener('keydown', onKey);
       target.addEventListener('pointerdown', onPointerDown);
       target.addEventListener('pointermove', onPointerMove, { passive: true });
@@ -191,6 +212,8 @@ export function createScrollFollower(options: Readonly<{
         for (const id of frames) cancelAnimationFrame(id);
         observer.disconnect();
         target.removeEventListener('wheel', onWheel);
+        content.removeEventListener('focusin', onFocus);
+        target.ownerDocument.removeEventListener('selectionchange', onSelection);
         target.ownerDocument.removeEventListener('keydown', onKey);
         target.removeEventListener('pointerdown', onPointerDown);
         target.removeEventListener('pointermove', onPointerMove);

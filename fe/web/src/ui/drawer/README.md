@@ -12,6 +12,11 @@ arrival rules and navigation targets stay in the feature.
   intent. Nested scrollports retain their input while they can consume it or
   forbid chaining. Editing keys, cancelled defaults and zoom do not release
   following. A downward return resumes following after the input settles.
+- Native focus or non-collapsed selection within this content can also navigate
+  away from the tail. Once away, layout growth preserves that reading intent.
+  Tail controls, `preventScroll` restoration at the tail, outside composers and
+  another pane's selection retain following. The explicit return command resumes
+  it. Focus/selection during bracketed restoration does not establish new intent.
 - Scroll and resize report geometry. They cannot release or resume following by
   themselves. A feature calls `followGrowth()` when its tail changes; content
   resize also covers late image loading, wrapping and disclosure expansion.
