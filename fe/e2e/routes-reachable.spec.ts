@@ -45,7 +45,7 @@ test('the application routes are reachable through the real kernel', async ({ pa
     if (route.path === '/next/') {
       const calendar = page.locator('[data-nc-desktop-panel]').getByRole('region', { name: 'Calendar tasks' });
       await expect(calendar).toBeVisible();
-      await page.getByRole('button', { name: 'Planner', exact: true }).click();
+      await page.getByRole('button', { name: '讨论这项工作', exact: true }).click();
       await expect(page.locator('[data-nc-drawer]')).toBeVisible();
       await expect(page.locator('[aria-label="Calendar tasks"]')).toBeHidden();
       await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
