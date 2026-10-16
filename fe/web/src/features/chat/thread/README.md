@@ -65,5 +65,6 @@ Source-level profiling and the opt-in local build command are documented in
 [the presentation guide](../../../../../../docs/frontend-responsive-presentation.md).
 Active exchange lookup uses the transcript's ordered vertical flow, without a
 position cache or history windowing. Gap and compact timestamps share one locale
-formatter per style in a thread render; labels stay scalar message inputs so
-stored rows retain memoization and browser timezone changes are observed on render.
+formatter per style and thread timezone. Its stable identity lets unchanged rows
+skip formatting during live updates; browser timezone changes are observed on
+render and invalidate the formatters.

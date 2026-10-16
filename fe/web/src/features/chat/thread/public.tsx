@@ -92,11 +92,14 @@ export type ChatThreadProps = Readonly<{
 
 export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, readingView }: ChatThreadProps) {
   const compactViewport = useCompactViewport();
-  // One formatter per clock style in this render, shared by all stored rows.
-  // Render scope also observes a changed browser timezone without a global cache.
-  const gapClock = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' });
-  const compactClock = compactViewport
-    ? new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }) : null;
+  // Observe the browser timezone on render; keep formatters stable for memoized rows.
+  const timeZone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const gapClock = useMemo(() => new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric', minute: '2-digit', timeZone,
+  }), [timeZone]);
+  const compactClock = useMemo(() => compactViewport ? new Intl.DateTimeFormat('zh-CN', {
+    hour: '2-digit', minute: '2-digit', hour12: false, timeZone,
+  }) : null, [compactViewport, timeZone]);
   const localReading = useThreadReadingView(conversation.id);
   const reading = readingView ?? localReading;
   /* The live mark is the sender's pending send or the kernel's verdict — never `conversation.state`, which sits at `turn_pending`/`running` long after a turn ended. The local wedge outranks both. */
@@ -300,7 +303,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
     // Outcomes retain their grouping boundary; only the current metadata row paints status.
     if (turn.author === 'turn') return null;
     return (
-      <MessageEntry key={turn.id} mobile={compactViewport} atMs={turn.atMs} timestampLabel={turn.author === 'agent' && compactClock !== null ? clockTime(compactClock, turn.atMs) : null} id={turn.id} entryKey={key} author={turn.author} text={turn.text}
+      <MessageEntry key={turn.id} mobile={compactViewport} atMs={turn.atMs} timestampFormatter={turn.author === 'agent' ? compactClock : null} id={turn.id} entryKey={key} author={turn.author} text={turn.text}
         attachments={turn.attachments} opens={opensExchange(turns, index)}
         gapLabel={opensAfterGap(turns, index) && index > 0 ? clockTime(gapClock, turn.atMs) : null}
         queued={isQueuedConversationTurn(turn)} edited={edited.has(turn.id)} replacement={turn.id === replacement}

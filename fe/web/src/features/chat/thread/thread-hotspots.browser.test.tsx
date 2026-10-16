@@ -89,3 +89,47 @@ it('preserves local gap labels and invalid-date display with shared formatters',
   ]} cards={{}} stalled={false} canContinue={false} />);
   expect(document.body.textContent).toContain('Invalid Date');
 });
+
+it('does not reformat stored compact history when only the last reply grows', async () => {
+  await page.viewport(390, 900);
+  const NativeFormatter = Intl.DateTimeFormat;
+  let formats = 0;
+  vi.spyOn(Intl, 'DateTimeFormat').mockImplementation(function (locales, options) {
+    const formatter = new NativeFormatter(locales, options);
+    const format = formatter.format.bind(formatter);
+    Object.defineProperty(formatter, 'format', { value: (value: number | Date | undefined) => { formats++; return format(value); } });
+    return formatter;
+  });
+  const history = turns(64);
+  const view = render(<ChatThread conversation={conversation} turns={history} cards={{}} stalled={false} canContinue={false} />);
+  await frames(); formats = 0;
+  view.rerender(<ChatThread conversation={conversation} turns={history.map((turn, index) => index === history.length - 1 ? { ...turn, text: 'Only this reply changes.' } : { ...turn })} cards={{}} stalled={false} canContinue={false} />);
+  await frames();
+  expect(formats).toBeLessThanOrEqual(1);
+});
+
+it('invalidates compact clocks when the browser timezone changes on a later render', async () => {
+  await page.viewport(390, 900);
+  const NativeFormatter = Intl.DateTimeFormat;
+  let timeZone = 'UTC';
+  vi.spyOn(Intl, 'DateTimeFormat').mockImplementation(function (locales, options) {
+    const formatter = new NativeFormatter(locales, options);
+    if (locales === undefined && options === undefined) {
+      const resolved = formatter.resolvedOptions();
+      Object.defineProperty(formatter, 'resolvedOptions', { value: () => ({ ...resolved, timeZone }) });
+    }
+    return formatter;
+  });
+  const history = turns(2);
+  const expected = (zone: string) => history.filter(turn => turn.author === 'agent').map(turn => new NativeFormatter('zh-CN', {
+    hour: '2-digit', minute: '2-digit', hour12: false, timeZone: zone,
+  }).format(turn.atMs));
+  const labels = () => [...document.querySelectorAll('time')].map(time => time.textContent);
+  const view = render(<ChatThread conversation={conversation} turns={history} cards={{}} stalled={false} canContinue={false} />);
+  await frames(); expect(labels()).toEqual(expected('UTC'));
+  timeZone = 'America/New_York';
+  view.rerender(<ChatThread conversation={conversation} turns={[...history]} cards={{}} stalled={false} canContinue={false} />);
+  await frames(); expect(labels()).toEqual(expected(timeZone));
+  await page.viewport(1400, 900); await frames(); expect(labels()).toEqual([]);
+  await page.viewport(390, 900); await frames(); expect(labels()).toEqual(expected(timeZone));
+});

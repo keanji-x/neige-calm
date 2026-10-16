@@ -14,7 +14,8 @@ type MessageEntryProps = Readonly<{
   id: string;
   mobile: boolean;
   atMs: number;
-  timestampLabel: string | null;
+  /** Stable for this thread viewport/timezone; only a rendered row formats it. */
+  timestampFormatter: Intl.DateTimeFormat | null;
   entryKey: string;
   author: ConversationTurn['author'];
   text: string;
@@ -29,7 +30,7 @@ type MessageEntryProps = Readonly<{
 }>;
 
 export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, text, attachments,
-  opens, gapLabel, queued, edited, replacement, working, imageFiles, mobile, atMs, timestampLabel,
+  opens, gapLabel, queued, edited, replacement, working, imageFiles, mobile, atMs, timestampFormatter,
 }: MessageEntryProps) {
   return (
     <div
@@ -77,7 +78,7 @@ export const MessageEntry = memo(function MessageEntry({ id, entryKey, author, t
       ) : (
         <div className={`${styles.reply} ${mobile ? mobileStyles.reply : ''}`} data-nc-turn="agent">
           <Reply text={text} imageFiles={imageFiles} />
-          {timestampLabel !== null && <time className={mobileStyles.timestamp} dateTime={new Date(atMs).toISOString()}>{timestampLabel}</time>}
+          {timestampFormatter !== null && <time className={mobileStyles.timestamp} dateTime={new Date(atMs).toISOString()}>{timestampFormatter.format(atMs)}</time>}
           {working && <ActivityIndicator state="working" motion="thinking" />}
         </div>
       )}
