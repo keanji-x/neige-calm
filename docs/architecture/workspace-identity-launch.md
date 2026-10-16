@@ -13,6 +13,11 @@ WorkspaceRef or runtime authority. Canonical binding/Ready requires a live-objec
 proof and materialization/adoption receipt; persisted path/dev/inode cannot
 stand in for object lifetime. The new bridge defines the exact executor and
 legacy-owner cutover dependencies before those capabilities can be delivered.
+Before the first typed Ready/PreparedLaunch, its RuntimeSafety receipt must
+close necessary active/pending legacy source bindings and all retained new
+ingress/cleanup effects under the same resource fence. Task scheduling can
+remain Legacy until its separate atomic cutover; permanent Done audit and
+unrelated explicit ExternalDir/fresh-owned targets are not global blockers.
 
 ## Outcome
 

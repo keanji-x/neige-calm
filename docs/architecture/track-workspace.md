@@ -95,7 +95,7 @@ C 只有一种构造方式：launcher 内 snapshot → 规范化 tree → 可信
 
 ### 3.2 LaunchHandle 与运行期闸门
 
-S2a 下一实际启动/准入桥接见 [workspace-launch-admission.md](workspace-launch-admission.md)。foundation 的 logical selection 与 Pending/Observed 只作绑定观察，不生成 WorkspaceRef 或运行能力；同一 workspace owner 取得连续 live-FD 对象证明、materialization/adoption receipt 后才归一 CanonicalWorkspaceId 并 Ready。dev/inode/path/btime 和可复制 marker 都不是跨生命期证明；旧任务/租约/operation codec 的 source binding 闭合后才一次切换 resource admission，不把内部 executor checkpoint 当已交付接口。
+S2a 下一实际启动/准入桥接见 [workspace-launch-admission.md](workspace-launch-admission.md)。foundation 的 logical selection 与 Pending/Observed 只作绑定观察，不生成 WorkspaceRef 或运行能力；同一 workspace owner 取得连续 live-FD 对象证明、materialization/adoption receipt 后才归一 CanonicalWorkspaceId。首个 typed Ready/PreparedLaunch 之前，还须由同一 resource/recovery owner 提交 RuntimeSafety receipt：跨 alias 必要 active/pending legacy source binding/codec 先闭合，所有保留新 ingress、未 fork 准备及 cleanup/repoint/release/compensation 同闩登记、effect 前复验和最终 CAS；未迁入口对该资源拒绝新动作，unknown Busy，不能仅统计已有进程。task scheduling 暂留 Legacy，完整 owner/codec 迁移后再一次切 resource task admission；Done 审计、明确 ExternalDir 和有新建对象证明的无关 owned 资源不构成全局 veto。dev/inode/path/btime 和可复制 marker 都不是跨生命期证明，不把内部 executor checkpoint 当已交付接口。
 
 唯一解析入口 `resolve(principal, purpose, WorkspaceRef) → Ready(LaunchHandle) / WorkspaceRecoveryRequired / Unsupported(reason)` 先核对资源、授权和恢复状态，再生成当前代次句柄；恢复只解析身份，源码证据仍须单独匹配。generation 只进入 LaunchHandle、单次 ticket 和 environment id（资源运行状态保留计数），不进入持久启动身份或 Revision。track spawn 只接受不可伪造的 LaunchHandle，宿主 cwd 构造器在 crate 内私有。gate shell/采样/checkpoint、forge action/probe、Claude session/restart/rewind/readiness、ACP、普通/任务 terminal、child/system/today 都经它。展示路径不是启动权限；扫描发现回归，不证明隔离或维护文件名单。
 

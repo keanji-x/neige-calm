@@ -1,7 +1,8 @@
 # Workspace launch, materialization and admission bridge (S2a)
 
-Status: L2 implementation proposal, awaiting two independent reviews. Baseline
-`ebf4e6d4e5e6bf04a654347d3928220e2d99a1ad`; no implementation or qualification
+Status: L2 implementation proposal, revised after the first full dual review;
+fresh dual review is required. Baseline
+`589beea27a3b5e86e4856b908e8150df5dacf507`; no implementation or qualification
 is claimed. This refines [workspace-identity-launch.md](workspace-identity-launch.md)
 and [track-workspace.md](track-workspace.md), keeping S1 behavior, S3 delivery
 policy and S4 provider qualification at their existing owners.
@@ -19,6 +20,9 @@ binding-local Pending/Observed/CAS facts only. It does not publish WorkspaceRef,
 canonical physical identity, admission claims, generation or runtime authority.
 Its earlier persistent dev/inode or selection-key canonicalization is not
 restored. The first actual Ready transition below establishes a real resource.
+That first typed Ready/PreparedLaunch also requires the RuntimeSafety cutover
+receipt below; root/materialization proof alone cannot activate a mixed unsafe
+legacy/typed execution path.
 
 Executor checkpoint `2a68f5c27bef611e3e1789b69814de285d822aa7` is internal work,
 not a releasable dependency. Its old-base boundary is `d80c8c7be`; integrate only
@@ -42,6 +46,15 @@ Paths identify reviewed evidence, not a maintained completeness/file allowlist.
 | `operation/driver.rs:130-174`, `terminal_launch.rs` | Key lookup precedes validation; existing operation launch ownership, compensation and result replay own the new launch intent. |
 | `operation/mod.rs` SpawnCtx, terminal/provider/direct process callers | Consume PreparedLaunch and exact receipts. Raw cwd/Command construction is no longer a track execution authority path. |
 | Workspace recycle/clean/sweep and area compensation | Consume independent release/cancel intents, existing 7-day managed trash and 10-minute eligible ignored cleanup; no second reaper or S3 retention policy. |
+
+One specific safety gap is the timer path in
+`workspace_service/worktree_clean.rs:54-69`: it samples closed/idle rows and
+checkout occupancy, then independently starts blocking clean work. The earlier
+query is not a resource-fenced permission to perform the later effect. The
+operation driver's existing drive_mutex does serialize its operation/TrackDelete
+paths; this counterexample does not claim those paths have the same bare race.
+The bridge must bring the timer and every retained effect entry into their
+common resource safety protocol before any new typed capability is published.
 
 ## Authority: consume C1, do not invent identity
 
@@ -171,8 +184,11 @@ Qualified filesystem/mount semantics are required; unsupported comparison is
 a typed host/resource capability failure, not guessed equality.
 After kernel restart, rebuild this live index from reconciled active receipts
 and their actual transferred handles before enabling resolve/admission. Unknown
-old source owners are not guessed disjoint from new selections; their legacy
-cutover remains closed until the owner/dependency closure below is established.
+active/pending old source owners are not guessed disjoint from resources they
+may affect; their scoped cutover stays closed until the closure below is proved.
+This is not a full-history/global veto: terminal dedup audit is not adopted or
+kept alive. An explicit ExternalDir codec stays non-Git, and a fresh-owned
+creation/object proof can establish separation from unrelated old bindings.
 
 [Linux open(2)](https://man7.org/linux/man-pages/man2/open.2.html) establishes
 that an open description survives pathname removal/replacement. A small actual
@@ -199,7 +215,8 @@ rename; existing legacy owner markers remain readable by their explicit decoder.
 Never treat a marker containing only Track ID as a new incarnation receipt.
 The random token records owned lifecycle provenance; it is copyable and is not
 standalone cross-lifetime filesystem identity. Ready additionally requires the
-live object proof, original effect receipts and expected binding CAS.
+live object proof, original effect receipts, RuntimeSafety cutover receipt and
+expected binding CAS.
 
 At actual materialization, retain the current upstream/branch selection timing.
 After bounded refresh, persist chosen B and expected owned pin/ref before its
@@ -214,7 +231,8 @@ Borrowed existing checkouts get **no marker write, directory claim or destroy
 authority**. A LegacyAdoption operation freezes the authorized existing selection,
 opens/pins its current object, reconciles old executions/source bindings, assigns
 the real SourceIncarnationId, initial epoch/generation receipt and canonical
-resource association, and then permits Register/PreparedLaunch. The initial
+resource association and admission-closed Register. PreparedLaunch still waits
+for the common RuntimeSafety cutover receipt. The initial
 epoch means this actual adopted execution source; it does not assert an immutable
 tree or a known creation B. Git/lease facts are captured separately by their
 existing owner. No constant zero, dummy generation or observation-only Ready.
@@ -269,7 +287,7 @@ is a separate required state, not extra nullable evidence fields:
 | Planned | Existing operation ID, selection/binding/version, authority/purpose, target descriptor, ownership disposition and cancellation version. |
 | Materializing / Adopting | Frozen chosen B/pin or explicit LegacyUnknown, SourceIncarnationId, owned nonce where applicable, external effect intent and live-object lease. |
 | Registered | Canonical resource association plus actual ExecutorBootId and live-root registration receipt; no launch ticket yet. |
-| Ready | Materialization/adoption receipt, object-proof mechanism/keeper boot, real generation/epoch and binding CAS. Can resolve opaque handles, not rewrite operation source history. |
+| Ready | Materialization/adoption and RuntimeSafety cutover receipts, object-proof mechanism/keeper boot, real generation/epoch and binding CAS. Can resolve opaque handles, not rewrite operation source history. |
 | Canceling / Releasing | Sealed binding version, pending effect IDs, exact pins/ownership references and release intent independent of domain row deletion. |
 | Unwitnessed / RecoveryRequired | Missing/ambiguous lifetime or execution facts. No new authority is manufactured from observations. |
 
@@ -306,7 +324,8 @@ old drivers cannot act on the restored binding.
 
 `resolve(verified_authority, purpose, WorkspaceRef)` validates the frozen
 binding/version, current object witness, lifecycle and relevant source evidence.
-It yields an opaque LaunchHandle holding the object/registration lease and
+It also validates the current RuntimeSafetyReady receipt before yielding an
+opaque LaunchHandle holding the object/registration lease and
 current generation/epoch. The handle has no public cwd-to-capability constructor.
 Each invocation revalidates admission and the originating task/operation owner;
 resolving once cannot authorize an indefinitely delayed spawn.
@@ -395,13 +414,109 @@ continues to require its whole-service/tools/helper qualification. Provider
 configuration, attachment and content readers consume WorkspaceContent and
 their original visitor/common-execution authorization, not a displayed cwd.
 
-## One admission cutover after replay/source closure
+## RuntimeSafety closure before the first typed launch
 
-Launch protocol migration and resource task-admission activation are different
-axes. A real typed terminal launch can land before resource-wide scheduling,
-while task scheduling remains explicitly Legacy and destructive lifecycle counts
-both old and new execution facts. Do not advertise shared-resource admission
-from a foundation ID, a single migrated caller or a terminal-only integration.
+The first slice establishes a common **RuntimeSafety** latch in the existing
+resource/recovery operation and lifecycle fence. This is source-effect safety,
+not another scheduler or ledger. Task scheduling may still be Legacy, but no
+typed Ready or PreparedLaunch exists before this safety cutover is committed.
+Object registration can be prepared admission-closed while this work proceeds.
+
+| Resource safety state | Required transition / evidence |
+|---|---|
+| LegacyOnly | Existing pure-legacy contract; no new typed capability is advertised. |
+| SafetyConverting(operation/version) | Seal new unsafe preparation/effects across the proven alias set; resolve active/pending original source owners, install guarded ingress/effect contracts and reconcile old execution/maintenance facts. |
+| RuntimeSafetyReady(receipt) | Atomic receipt binds resource/incarnation, binding-set and lifecycle/admission versions, owner-contract version and active/pending source-closure evidence. Only this state can publish the first typed Ready. |
+| SafetySealed(reason/version) / RecoveryRequired | No new preparation, fork or conflicting cleanup effect; exact old owners may reconcile/finish. Unknown source/execution facts remain Busy and cannot be declared disjoint, NoChild or Drained. |
+
+These states/receipts extend the existing resource descriptor and operation
+intent/tx_output. They create no separate manager, table-ledger or lock domain.
+Closing/repointing/release/compensation use that same versioned latch. A safety
+receipt is invalidated by a relevant binding-set/incarnation/owner-contract
+change; a stale receipt cannot authorize a later effect.
+Persist the converting seal/version under the fence, release it while existing
+owners reconcile, then reacquire it for the final closure/version CAS. Do not
+wait for an owner acknowledgment while holding a fence that owner must enter.
+Already sampled/queued legacy cleanup or recovery work must enroll a bound
+intent before its effect, or finish/cancel behind this conversion barrier.
+The owner declares and acknowledges that pre-effect closure through its typed
+contract; absence from a PID/operation snapshot cannot prove it. An old issuer
+unable to join or positively close that path prevents this resource's receipt.
+
+Before RuntimeSafetyReady, every active or pending owner that may affect the
+resource has its original source binding decoded/frozen, including preparation
+that has not forked, recovery/readiness/rewind/native issuance and direct-launch
+work. The required v1/legacy decoder belongs to that original owner and uses
+its original frozen inputs, not today's Track path. Cross-alias closure includes
+all such possible shared owners before they can publish a common resource.
+This necessary source/dependency closure cannot be deferred to slice two.
+
+Closure is scoped to actual active/pending dependencies, not every historical
+row. Known workspace-free and ExternalDir targets retain distinct required
+shapes; ExternalDir is not forced to prove Git identity. An unresolved legacy
+source blocks the resources its original owner facts may affect until resolved,
+not all resources because its audit row exists. Fresh-owned materialization
+proof and positively settled old facts can establish a non-aliased safe scope.
+If continuity cannot be proved for an ordinary borrowed source, keep that scope
+in recovery. Do not guess disjointness, perform full-history adoption or make
+unrelated legitimate owned creates depend on a permanent whole-database scan.
+
+All retained new ingress declares one typed outcome at its existing owner:
+guarded workspace access with the required active-source codec and
+prepare/effect/recovery guards; explicit ExternalDir/workspace-free authority;
+or refusal of new effects for this safety-converted resource. This includes
+legacy-format public/provider/native entry points and maintenance/compensation,
+not just operation adapters. Their shared low-level effect constructors require
+the guard, so a disabled/unmigrated ingress cannot proceed with a raw path.
+Exhaustive owner declarations and source types enforce closure; there is no
+file/handler/test census or optional missing-source default.
+Refusal must be effective at the retained issuer/effect path, not only a UI
+flag or the first launch check. Automatic restart and already attached native
+issuers are included: if they can still issue unguarded work, their authority
+must be revoked/drained or that resource cannot complete safety cutover. This
+does not claim to sandbox unrelated human/worktree filesystem activity.
+
+A retained legacy-format new execution must already obey this safety protocol:
+persist its preparation/source reservation before leaving the fence, validate
+the same latch/version at actual fork/effect, register the real execution and
+retain its dependencies through positive settlement/drain. Otherwise its new
+starts are explicitly refused for this resource until migrated. Existing legacy
+executions may finish through their exact original owner/negotiated scope;
+unknown legacy state cannot justify strong Ready or destructive readiness.
+
+Preparation reserves the resource even before a process exists. Closing first
+seals the latch and persists cancellation/revoke work; it does not release a
+pending intent because a snapshot contained no PID. Executor revoke/consume
+and local effect dispatch linearize with that seal. A fork that won before
+sealing remains an occupied exact execution which close must reconcile; a
+late permit/ticket cannot fork after the completed seal/revoke barrier. Missing
+acknowledgment is Busy, never an invented no-child result.
+
+Cleanup's SQL/idle sample is only a candidate hint. Under this same fence it
+must revalidate source/binding/close version and **all pending plus live**
+references, then reserve a durable exclusive maintenance-effect intent. The
+actual clean/recycle/remove effect consumes that versioned reservation, and
+its process/descendants retain it until settled. During the effect, conflicting
+launch preparation is refused/deferred by the reservation; after a new launch
+intent wins first, cleanup refuses/cancels instead. A seal arriving after an
+effect starts waits for that identified effect, not a second stale idle sample.
+No check-then-unreserved IO window is permitted. Effect completion performs
+the final expected-version CAS; an old close/clean receipt cannot mark a new
+incarnation cleaned, release its references or undo a later compensation.
+
+This latch does not add worker exclusions: after safety validation, existing
+task scheduling still decides worker admission. An ordinary terminal may
+coexist with a worker while preventing conflicting cleanup/destruction. The
+same operation driver and lock order remain; the latch closes cross-ingress
+effect windows the driver mutex alone does not own.
+
+## One task-admission cutover after full replay/source closure
+
+RuntimeSafety activation and resource task-admission activation are separate
+receipts. The first slice may enable a real typed terminal consumer only after
+the safety closure above; task scheduling then remains explicitly Legacy.
+That does not advertise shared-resource scheduling from a foundation ID or
+terminal-only integration. A host/resource staying LegacyOnly has no new claim.
 
 Cutover is the existing resource recovery operation:
 `Legacy -> Converting(operation/version) -> ResourceAdmissionV1(receipt)`.
@@ -468,7 +583,7 @@ cleanup cannot touch new adoption, binding, incarnation or execution.
 | resolve(principal,purpose,ref) | Existing auth/C1 validates identity/provenance; C4 supplies accepted Area common grant; kernel workspace service checks both target and purpose. No C4 grant is fabricated here. |
 | Launch permission | This kernel bridge plus qualified executor: object witness, real versions, durable intent, exact ticket/receipt and all controls. Internal executor code alone is not delivery. |
 | WorkspaceContent | Workspace service and existing Track file/attachment/frontend ports; readers use visitor authorization and shared execution uses its frozen grant. Caller migration remains required. |
-| Occupancy/quiescence | Existing checkout admission/lifecycle plus exact executor drain; switch only after legacy source-owner/codec closure. Collaboration owns message batching, not another lease policy. |
+| Occupancy/quiescence | Existing lifecycle/RuntimeSafety plus exact executor drain; first typed launch requires active/pending source closure. Resource task admission switches separately after full owner/codec closure. Collaboration owns message batching, not another lease policy. |
 | Revision/GitFacts/results | S3 owns immutable source evidence and the one delivered-tip ledger; C4 references them. S2a root/adoption observations never impersonate them. |
 
 S2a supplies the workspace side of C4 integration, not membership, conversation
@@ -478,19 +593,24 @@ ports before multi-user execution is opened. S1 remains unchanged.
 
 ## Smallest implementation slices and acceptance
 
-1. **Object/materialization bridge and one real terminal consumer.** Extend the
+1. **RuntimeSafety closure, object bridge and one real terminal consumer.** Extend the
    narrowed foundation with canonical/source-incarnation states and live-root
    proof, materialization/adoption intents/B pin, cancel/release and qualified
-   Register provenance. Introduce real PreparedLaunch at the existing terminal
-   operation/renderer start path. Preserve explicit legacy other callers and
-   admission mode. Prove pipe/PTY startup, retry, controls, same-uid authentication
-   and positive descendant drain through the production entry point.
-2. **All launch/content and persistence owners.** Migrate create/ensure/repoint,
+   Register provenance. Before the first typed Ready, close necessary active/
+   pending legacy source bindings/codecs across aliases and guard every retained
+   ingress, preparation, cleanup/repoint/release/compensation effect. Unmigrated
+   ingresses refuse new effects for that resource; they cannot bypass the latch.
+   Commit RuntimeSafetyReady, then introduce real PreparedLaunch at the existing
+   terminal operation/renderer path. Keep task scheduling Legacy. Prove pipe/PTY,
+   exact controls/drain and the pending-prepare/old-clean/close races below.
+2. **Remaining caller/API, history-result and content migration.** Finish public
+   typed targets and capability consumers for create/ensure/repoint,
    Planner/conversation/provider/direct processes, worker/gate/forge/checkpoint,
    system/today/child and terminal restart/attach callers through the same kernel
-   bridge. Their owning codecs bind all old/new task/lease/session/operation
-   sources and result replay. Reuse existing operation registration to enforce
-   closure; a new variant declares its source/dependencies at that owner once.
+   bridge, plus historical result/access/content codecs and ports. Active/pending
+   source owners needed by a retained slice-one ingress were already safety-bound
+   in slice one; this phase cannot supply a missing safety dependency retroactively.
+   Reuse the same owner declarations; a new variant declares its contract once.
 3. **Atomic admission activation and frontend/content finish.** Reconcile proven
    aliases and old owners, switch the one occupancy/claim/lease/projection path,
    migrate Track file/preview consumers and run integrated UI checks. Only this
@@ -517,6 +637,17 @@ ordinary terminal allowing worker admission while preventing destroy.
 Include sender death before/after ancillary enqueue, receiver death before/after
 Registered, descriptor truncation/substitution and reverse-export crash gaps.
 No typed Ready may be recovered from a root lease that was never actually held.
+
+First-slice safety acceptance pauses old ignored-clean after its SQL idle sample,
+persists a new launch preparation intent before fork, then proves cleanup's
+guarded revalidation refuses/cancels without a clean effect or stale cleaned
+receipt. Also test cleanup reservation winning first; seal-close before delayed
+old launch; the same races through another alias; retained legacy provider,
+readiness, rewind, native-issue and direct-launch ports; and compensation versus
+a delayed cleanup completion. An unknown original source must block its possible
+resource, while unrelated Done audit, explicit non-Git ExternalDir and a proved
+fresh-owned create remain usable. No first typed Ready is issued without the
+cutover receipt, and no preparation is omitted merely because it has no process.
 
 Run focused production tests/mutations at their owning implementation slice,
 text/contract/quick gates as applicable and CI broad suites. Register tests
