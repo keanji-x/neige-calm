@@ -1,6 +1,7 @@
 # Workspace identity and launch protocol (S2a implementation plan)
 
-Status: draft implementation decisions for S2a of #2666. The parent contract is
+Status: S2a implementation protocol approved by two independent Codex L2 design
+review channels on 2026-10-16. The parent contract is
 [track-workspace.md](track-workspace.md). This document does not claim an
 implemented capability. S1 remains a separate behavior-preserving delivery.
 
