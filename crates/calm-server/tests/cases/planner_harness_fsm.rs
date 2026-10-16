@@ -1,3 +1,4 @@
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -24,11 +25,14 @@ async fn fresh_repo() -> Arc<SqlxRepo> {
 
 async fn seed_card(repo: &SqlxRepo) -> calm_server::model::Card {
     let area = repo
-        .area_create(NewArea {
-            name: "harness".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "harness".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

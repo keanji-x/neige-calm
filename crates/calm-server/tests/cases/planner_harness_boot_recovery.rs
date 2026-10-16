@@ -3,6 +3,7 @@ mod phase2;
 #[path = "planner_provider_recovery.rs"]
 mod planner_provider_recovery;
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -125,11 +126,14 @@ fn sqlite_url(tmp: &TempDir, name: &str) -> String {
 async fn boot_recovery_includes_marked_plain_chat_but_excludes_pty_codex() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "plain-chat-recovery".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "plain-chat-recovery".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -240,11 +244,14 @@ async fn boot_recovery_includes_marked_plain_chat_but_excludes_pty_codex() {
 async fn direct_recovery_boundary_rejects_area_chat_planner_runtime() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "chat-planner-recovery-fence".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "chat-planner-recovery-fence".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -344,11 +351,14 @@ async fn direct_recovery_boundary_rejects_area_chat_planner_runtime() {
 /// runtime id.
 async fn seed_recoverable_runtime(repo: &Arc<SqlxRepo>, tag: &str, thread_id: &str) -> String {
     let area = repo
-        .area_create(NewArea {
-            name: tag.into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: tag.into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -526,11 +536,14 @@ async fn a_recovered_harness_streams_into_its_registrys_live_replies() {
 async fn boot_recovery_respawns_harness_with_snapshot() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "boot".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "boot".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -861,11 +874,14 @@ async fn deferred_recovery_abandons_claim_and_rearms_when_daemon_transitions_dur
 async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "boot-deferred".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "boot-deferred".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -961,11 +977,14 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
 async fn boot_recovery_replays_events_since_snapshot_watermark() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "boot-replay".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "boot-replay".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -1108,11 +1127,14 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
 async fn boot_recovery_skips_terminal_tracks() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "boot-terminal".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "boot-terminal".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -1194,11 +1216,14 @@ async fn boot_recovery_skips_terminal_tracks() {
 async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "boot-phantom".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "boot-phantom".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -1284,11 +1309,14 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
 async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "gate-replay".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "gate-replay".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -1546,11 +1574,14 @@ async fn assistant_provider_boot_recovery_registers_the_assistant_without_replay
  {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "assistant-recovery".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "assistant-recovery".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -1875,11 +1906,14 @@ async fn a_redriven_start_hands_the_raced_in_runtimes_sentence_to_the_harness_it
     let (card_id, track_id, racer_id, placeholder_id, op_id) = {
         let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
         let area = repo
-            .area_create(NewArea {
-                name: "raced-in-harvest".into(),
-                color: "#111111".into(),
-                sort: None,
-            })
+            .area_create(
+                LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "raced-in-harvest".into(),
+                    color: "#111111".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         let track = repo
@@ -2107,11 +2141,14 @@ async fn a_redriven_start_takes_the_queue_from_the_row_not_from_the_carried_outp
     let (card_id, track_id, worker_session_id, op_id) = {
         let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
         let area = repo
-            .area_create(NewArea {
-                name: "single-home".into(),
-                color: "#111111".into(),
-                sort: None,
-            })
+            .area_create(
+                LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "single-home".into(),
+                    color: "#111111".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         let track = repo
@@ -2286,11 +2323,14 @@ async fn the_give_back_returns_nothing_that_somebody_else_has_taken_onward() {
     let (source_id, failing_id) = {
         let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
         let area = repo
-            .area_create(NewArea {
-                name: "give-back".into(),
-                color: "#111111".into(),
-                sort: None,
-            })
+            .area_create(
+                LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "give-back".into(),
+                    color: "#111111".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         let track = repo
@@ -2481,11 +2521,14 @@ async fn the_give_back_keeps_a_pre_upgrade_sentence_it_cannot_identify() {
     let (source_id, failing_id) = {
         let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
         let area = repo
-            .area_create(NewArea {
-                name: "give-back-legacy".into(),
-                color: "#111111".into(),
-                sort: None,
-            })
+            .area_create(
+                LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "give-back-legacy".into(),
+                    color: "#111111".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         let track = repo

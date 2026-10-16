@@ -2,6 +2,7 @@
 
 #![cfg(unix)]
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -67,11 +68,14 @@ async fn boot_with_registry_and_daemon_hash(
     let sqlx_repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let area = repo
-        .area_create(NewArea {
-            name: "mcp-thread-identity-test".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "mcp-thread-identity-test".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -263,11 +267,14 @@ async fn seed_thread(boot: &Boot, card_id: &str, thread_id: &str, _role: CardRol
 async fn card_mcp_token_set_tx_replaces_hash() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let area = repo
-        .area_create(NewArea {
-            name: "mcp-token-wrapper".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "mcp-token-wrapper".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -356,11 +363,14 @@ async fn session_mcp_token_set_tx_fails_closed_without_mirror_row() {
 async fn remint_updates_one_worker_session_hash_row() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let area = repo
-        .area_create(NewArea {
-            name: "mcp-token-remint".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "mcp-token-remint".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

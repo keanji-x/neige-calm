@@ -146,3 +146,56 @@ fn deployment_owner_depends_only_on_authenticated_user_id() {
     principal.role = OWNER_ROLE.into();
     assert!(!principal.is_deployment_owner());
 }
+
+#[tokio::test]
+async fn owner_profile_startup_preserves_stable_identity_and_does_not_repair_membership() {
+    use crate::db::prelude::*;
+    let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+        .await
+        .unwrap();
+    let area = repo
+        .area_create(
+            OWNER_USER_ID,
+            crate::model::NewArea {
+                name: "Existing".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM area_members WHERE area_id=?1")
+        .bind(area.id.as_str())
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    let created: i64 = sqlx::query_scalar("SELECT created_at FROM application_users WHERE id=?1")
+        .bind(OWNER_USER_ID)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    use clap::Parser;
+    let cfg = crate::config::Config::try_parse_from([
+        "calm-server",
+        "--auth-username",
+        "Renamed profile",
+    ])
+    .unwrap();
+    initialize_owner_profile(repo.pool(), &cfg).await.unwrap();
+    let profile: (String, String, i64) =
+        sqlx::query_as("SELECT id,display_name,created_at FROM application_users")
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        profile,
+        (OWNER_USER_ID.into(), "Renamed profile".into(), created)
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM area_members")
+            .fetch_one(repo.pool())
+            .await
+            .unwrap(),
+        0
+    );
+}

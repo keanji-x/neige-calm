@@ -1,5 +1,6 @@
 #![cfg(unix)]
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -101,11 +102,14 @@ async fn boot_with_shared_daemon(start_appserver: bool) -> Boot {
             .expect("open in-memory sqlite"),
     );
     let area = repo
-        .area_create(NewArea {
-            name: "prompt-shared".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "prompt-shared".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

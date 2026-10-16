@@ -331,11 +331,14 @@ mod tests {
 
     async fn track(repo: &SqlxRepo) -> Track {
         let area = repo
-            .area_create(NewArea {
-                name: "cards".into(),
-                color: "#123456".into(),
-                sort: None,
-            })
+            .area_create(
+                calm_types::organization::LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "cards".into(),
+                    color: "#123456".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         repo.track_create(NewTrack {

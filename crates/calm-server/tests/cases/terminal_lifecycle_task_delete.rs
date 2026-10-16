@@ -1,4 +1,5 @@
 use super::*;
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 
 // Deleting an execution card must settle its active task in the same transaction.
 #[tokio::test]
@@ -6,11 +7,14 @@ async fn card_delete_settles_active_tasks_and_preserves_other_tasks() {
     let state = fresh_state().await;
     let raw = state.raw_repo();
     let area = raw
-        .area_create(NewArea {
-            name: "delete-task".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "delete-task".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = raw

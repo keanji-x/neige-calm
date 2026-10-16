@@ -3,6 +3,7 @@
 //! The same rig drives the Codex entry of `GET /api/agent-providers` (#1817).
 
 use crate::common;
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 
 #[path = "cases/codex_authentication_retry.rs"]
 mod codex_authentication_retry;
@@ -101,11 +102,14 @@ async fn boot(start_daemon: bool, scripted: impl FnOnce(&PathBuf)) -> Boot {
     );
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let area = repo
-        .area_create(NewArea {
-            name: "models".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "models".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

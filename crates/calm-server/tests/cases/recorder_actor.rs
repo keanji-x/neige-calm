@@ -1,5 +1,6 @@
 //! RECORD_SESSION recorder × `BroadcastEnvelope.actor`: recorded lines carry the producing actor.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::io::{BufRead, BufReader};
 use std::sync::Arc;
 use std::time::Duration;
@@ -60,7 +61,7 @@ async fn create_area_as(
         &calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
         move |tx| {
             Box::pin(async move {
-                let c = area_create_tx(tx, p).await?;
+                let c = area_create_tx(tx, LEGACY_OWNER_USER_ID, p).await?;
                 Ok((c.clone(), Event::AreaUpdated(c)))
             })
         },

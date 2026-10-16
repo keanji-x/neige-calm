@@ -2,6 +2,7 @@
 
 #![cfg(unix)]
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -36,11 +37,14 @@ async fn boot() -> Boot {
             .expect("open in-memory sqlite"),
     );
     let area = repo
-        .area_create(NewArea {
-            name: "folders-test".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "folders-test".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
 
@@ -75,6 +79,15 @@ async fn boot() -> Boot {
     );
 
     let app = routes::router()
+        .layer(axum::middleware::from_fn_with_state(
+            calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
+                username: None,
+                password: None,
+                dev_autologin: true,
+                display_name: "Owner".into(),
+            }),
+            calm_server::auth::require_session,
+        ))
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
@@ -300,11 +313,14 @@ async fn overlapping_claim_cannot_slip_between_scan_and_insert() {
     let url = format!("sqlite://{}?mode=rwc", tmp.path().join("calm.db").display());
     let repo = Arc::new(SqlxRepo::open(&url).await.expect("open on-disk sqlite"));
     let area = repo
-        .area_create(NewArea {
-            name: "atomic-claim".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "atomic-claim".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let area_id = area.id.to_string();
@@ -403,11 +419,14 @@ async fn get_returns_only_own_area_folders() {
     let b = boot().await;
     let area_b = b
         .repo
-        .area_create(NewArea {
-            name: "folders-test-b".into(),
-            color: "#111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "folders-test-b".into(),
+                color: "#111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let area_b_id = area_b.id.to_string();
@@ -447,11 +466,14 @@ async fn cross_area_overlap_409_descendant() {
     let b = boot().await;
     let area_b = b
         .repo
-        .area_create(NewArea {
-            name: "folders-test-cross".into(),
-            color: "#333".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "folders-test-cross".into(),
+                color: "#333".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let area_b_id = area_b.id.to_string();
@@ -500,11 +522,14 @@ async fn delete_with_mismatched_area_id_returns_404() {
     let b = boot().await;
     let area_b = b
         .repo
-        .area_create(NewArea {
-            name: "folders-test-b".into(),
-            color: "#222".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "folders-test-b".into(),
+                color: "#222".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let area_b_id = area_b.id.to_string();

@@ -6,6 +6,7 @@
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::model::*;
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 
 async fn fresh_repo() -> SqlxRepo {
     SqlxRepo::open("sqlite::memory:")
@@ -14,11 +15,14 @@ async fn fresh_repo() -> SqlxRepo {
 }
 
 async fn make_area(repo: &SqlxRepo, name: &str) -> Area {
-    repo.area_create(NewArea {
-        name: name.into(),
-        color: "#abcdef".into(),
-        sort: None,
-    })
+    repo.area_create(
+        LEGACY_OWNER_USER_ID,
+        NewArea {
+            name: name.into(),
+            color: "#abcdef".into(),
+            sort: None,
+        },
+    )
     .await
     .expect("create area")
 }

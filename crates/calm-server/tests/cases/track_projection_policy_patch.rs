@@ -1,3 +1,4 @@
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -18,11 +19,14 @@ use tower::ServiceExt;
 async fn boot() -> (AppState, String, Arc<dyn Repo>) {
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "policy".into(),
-            color: "#fff".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "policy".into(),
+                color: "#fff".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

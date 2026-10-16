@@ -6,6 +6,7 @@
 //! session id, so the host-wide sweep of one test can only match processes that test started. The
 //! rig's `Drop` kills whatever still carries its own marker.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -274,11 +275,14 @@ pub fn client_id() -> String {
 
 async fn planner_card(repo: &Arc<SqlxRepo>) -> (String, String) {
     let area = repo
-        .area_create(NewArea {
-            name: "claude-planner".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "claude-planner".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("area");
     let track = repo

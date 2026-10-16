@@ -2,6 +2,7 @@
 
 #![cfg(unix)]
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::future::Future;
 use std::sync::Arc;
 use std::task::Poll;
@@ -1472,11 +1473,14 @@ async fn four_db_diagnostics_delete_rows_and_are_visible_on_mcp_and_rest_reads()
     let (id, _) = upsert(&boot, None, task("cross")).await;
     let other_area = boot
         .repo
-        .area_create(calm_server::model::NewArea {
-            name: "other".into(),
-            color: "#fff".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            calm_server::model::NewArea {
+                name: "other".into(),
+                color: "#fff".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let other_track = boot

@@ -1,6 +1,7 @@
 #![cfg(all(unix, feature = "codex-e2e"))]
 
 use crate::support;
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -51,11 +52,14 @@ async fn user_prompt_card_first_turn_true_binary() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "e2e-user-prompt".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "e2e-user-prompt".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

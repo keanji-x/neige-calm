@@ -631,11 +631,14 @@ mod tests {
                 .expect("open in-memory sqlite"),
         );
         let area = repo
-            .area_create(NewArea {
-                name: "worker report preserve".into(),
-                color: "#000".into(),
-                sort: None,
-            })
+            .area_create(
+                calm_types::organization::LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "worker report preserve".into(),
+                    color: "#000".into(),
+                    sort: None,
+                },
+            )
             .await
             .expect("create area");
         let track = repo
@@ -778,11 +781,14 @@ mod tests {
                 .expect("open in-memory sqlite"),
         );
         let area = repo
-            .area_create(NewArea {
-                name: "recorder-shadow".into(),
-                color: "#000".into(),
-                sort: None,
-            })
+            .area_create(
+                calm_types::organization::LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "recorder-shadow".into(),
+                    color: "#000".into(),
+                    sort: None,
+                },
+            )
             .await
             .expect("create area");
         let track = repo
@@ -920,11 +926,14 @@ mod tests {
                 .expect("open in-memory sqlite"),
         );
         let area = repo
-            .area_create(NewArea {
-                name: "recorder-root".into(),
-                color: "#000".into(),
-                sort: None,
-            })
+            .area_create(
+                calm_types::organization::LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "recorder-root".into(),
+                    color: "#000".into(),
+                    sort: None,
+                },
+            )
             .await
             .expect("create area");
         let track = repo

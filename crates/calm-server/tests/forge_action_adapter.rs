@@ -1,5 +1,6 @@
 #![cfg(unix)]
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
@@ -84,11 +85,14 @@ impl TestBoot {
                 .expect("open in-memory repo"),
         );
         let area = repo
-            .area_create(NewArea {
-                name: "forge-action".into(),
-                color: "#334455".into(),
-                sort: None,
-            })
+            .area_create(
+                LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "forge-action".into(),
+                    color: "#334455".into(),
+                    sort: None,
+                },
+            )
             .await
             .expect("create area");
         let track = repo

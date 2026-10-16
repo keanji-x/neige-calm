@@ -12,6 +12,7 @@ pub use application::public_mobile_router;
 
 pub mod activity_dismissals;
 pub mod agent_providers;
+mod area_access;
 pub mod area_folders;
 pub mod areas;
 pub mod cards;

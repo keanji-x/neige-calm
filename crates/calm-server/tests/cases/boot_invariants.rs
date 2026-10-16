@@ -1,3 +1,4 @@
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -43,11 +44,14 @@ async fn app_state(repo: Arc<SqlxRepo>) -> AppState {
 async fn boot_assert_card_id_complete_still_runs_post_9b_iv() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "boot-invariant".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "boot-invariant".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -115,11 +119,14 @@ async fn seed_folders(repo: &SqlxRepo, paths: &[&str]) -> Vec<String> {
     let mut area_ids = Vec::new();
     for (i, path) in paths.iter().enumerate() {
         let area = repo
-            .area_create(NewArea {
-                name: format!("area-{i}"),
-                color: "#222222".into(),
-                sort: None,
-            })
+            .area_create(
+                LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: format!("area-{i}"),
+                    color: "#222222".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         repo.area_folder_create(area.id.as_str(), path)
@@ -197,11 +204,14 @@ async fn equal_paths_are_unreachable_even_through_the_unchecked_primitive() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     seed_folders(&repo, &["/a"]).await;
     let area = repo
-        .area_create(NewArea {
-            name: "dup".into(),
-            color: "#333333".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "dup".into(),
+                color: "#333333".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     repo.area_folder_create(area.id.as_str(), "/a")

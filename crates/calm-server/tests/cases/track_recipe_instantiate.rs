@@ -1,5 +1,6 @@
 //! Creating a track from a user-defined recipe, and the provenance it records.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -42,11 +43,14 @@ pub(crate) async fn boot() -> Boot {
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let area = repo
-        .area_create(NewArea {
-            name: "recipe-instantiate".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "recipe-instantiate".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let card_role_cache = CardRoleCache::new();

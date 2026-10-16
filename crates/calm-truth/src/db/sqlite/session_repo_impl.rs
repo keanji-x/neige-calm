@@ -199,9 +199,9 @@ impl SessionRepo for SqlxRepo {
 
 #[async_trait]
 impl RepoSyncDomainRaw for SqlxRepo {
-    async fn area_create(&self, p: NewArea) -> Result<Area> {
+    async fn area_create(&self, owner_user_id: &str, p: NewArea) -> Result<Area> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
-        let out = area_create_tx(&mut tx, p).await?;
+        let out = area_create_tx(&mut tx, owner_user_id, p).await?;
         tx.commit().await?;
         Ok(out)
     }

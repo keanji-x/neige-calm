@@ -1,6 +1,7 @@
 //! End-to-end role-gate coverage: `enforce_role` from the public write surface
 //! (`Repo::write_with_event` / `Repo::log_pure_event`).
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 
 use calm_server::card_role_cache::CardRoleCache;
@@ -24,11 +25,14 @@ async fn planner_card_can_update_track() {
     let mut sub = bus.subscribe();
 
     let area = repo
-        .area_create(NewArea {
-            name: "c".into(),
-            color: "#fff".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "c".into(),
+                color: "#fff".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -119,11 +123,14 @@ async fn ai_codex_cannot_update_track() {
     let mut sub = bus.subscribe();
 
     let area = repo
-        .area_create(NewArea {
-            name: "c".into(),
-            color: "#fff".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "c".into(),
+                color: "#fff".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -257,11 +264,14 @@ async fn empty_codex_card_id_rejected() {
 async fn public_card_create_writes_worker_role() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let area = repo
-        .area_create(NewArea {
-            name: "c".into(),
-            color: "#fff".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "c".into(),
+                color: "#fff".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -301,11 +311,14 @@ async fn public_card_create_writes_worker_role() {
 async fn unique_planner_card_per_track_index_enforced() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let area = repo
-        .area_create(NewArea {
-            name: "c".into(),
-            color: "#fff".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "c".into(),
+                color: "#fff".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

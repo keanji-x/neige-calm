@@ -625,6 +625,7 @@ async fn lease_fixture(track_cwd: &Path) -> (crate::db::sqlite::SqlxRepo, String
         .unwrap();
     let area = crate::db::RepoSyncDomainRaw::area_create(
         &repo,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         crate::model::NewArea {
             name: "lease fixture".into(),
             color: "#101010".into(),

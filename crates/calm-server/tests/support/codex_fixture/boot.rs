@@ -1,5 +1,6 @@
 //! Fixture boot: the shared Codex daemon, kernel, plugin host and seeded track.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -116,11 +117,14 @@ pub async fn boot_forge_e2e_fixture(
     }
 
     let area = repo_dyn
-        .area_create(NewArea {
-            name: "codex-forge-e2e".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "codex-forge-e2e".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("create area");
     let track = repo_dyn

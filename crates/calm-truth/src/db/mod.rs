@@ -142,6 +142,16 @@ pub struct WorkspaceLease {
 /// Universal read surface; no writes are reachable from here.
 #[async_trait]
 pub trait RepoRead: Send + Sync + 'static {
+    /// Current registry/membership reads; internal global readers remain separate.
+    async fn application_user_require_registered(&self, user_id: &str) -> Result<()>;
+    async fn areas_list_for_member(&self, user_id: &str) -> Result<Vec<Area>>;
+    async fn area_require_access(
+        &self,
+        area_id: &str,
+        user_id: &str,
+        access: calm_types::organization::AreaAccess,
+    ) -> Result<Area>;
+
     /// Latest terminal of this card/track, including every outcome status.
     async fn harness_latest_terminal(
         &self,
@@ -155,9 +165,11 @@ pub trait RepoRead: Send + Sync + 'static {
         track: &str,
     ) -> Result<Vec<terminal_outcome::HarnessTerminalOutcome>>;
 
-    /// Every area regardless of [`AreaKind`]; the user-facing route prefers [`RepoRead::areas_list_user_visible`] so the system area stays hidden.
+    /// Internal global reader, regardless of [`AreaKind`]. Human ingress uses
+    /// [`RepoRead::areas_list_for_member`] instead.
     async fn areas_list(&self) -> Result<Vec<Area>>;
-    /// `areas_list` filtered to `kind = 'user'`, so the system area never reaches the sidebar.
+    /// Internal global reader filtered only by `kind = 'user'`; this is not a
+    /// membership or authorization filter.
     async fn areas_list_user_visible(&self) -> Result<Vec<Area>>;
     async fn area_get(&self, id: &str) -> Result<Option<Area>>;
     /// The singleton system area, `None` until `POST /api/areas/system` mints the row.
@@ -447,7 +459,7 @@ pub trait RepoEventWrite: RepoRead {
 /// these; a direct write here bypasses `write_with_event` and is invisible to replicas.
 #[async_trait]
 pub trait RepoSyncDomainRaw: RepoRead {
-    async fn area_create(&self, p: NewArea) -> Result<Area>;
+    async fn area_create(&self, owner_user_id: &str, p: NewArea) -> Result<Area>;
     async fn area_update(&self, id: &str, p: AreaPatch) -> Result<Area>;
     async fn area_delete(&self, id: &str) -> Result<()>;
 

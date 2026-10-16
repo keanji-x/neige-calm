@@ -3662,11 +3662,14 @@ async fn deferred_settlement_is_silent_live_and_on_replay() {
     let role_cache = CardRoleCache::new();
     let track_area_cache = TrackAreaCache::new();
     let area = repo
-        .area_create(NewArea {
-            name: "delivery wake".into(),
-            color: "#222222".into(),
-            sort: None,
-        })
+        .area_create(
+            calm_types::organization::LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "delivery wake".into(),
+                color: "#222222".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -4067,11 +4070,14 @@ mod report_edit_block_refs {
     async fn fixture() -> Fixture {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let area = repo
-            .area_create(NewArea {
-                name: "block-refs".into(),
-                color: "#123456".into(),
-                sort: None,
-            })
+            .area_create(
+                calm_types::organization::LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "block-refs".into(),
+                    color: "#123456".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         let track = repo
@@ -4210,11 +4216,14 @@ async fn track_updated_with_closed_at_reconciles_the_child() {
     let sqlx_repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let area = repo
-        .area_create(NewArea {
-            name: "close".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            calm_types::organization::LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "close".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let new_track = |title: &str| NewTrack {

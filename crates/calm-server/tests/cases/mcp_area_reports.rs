@@ -4,6 +4,7 @@
 
 #![cfg(unix)]
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 
 use calm_server::area_reports::MAX_REPORTS_PER_LISTING;
@@ -133,11 +134,14 @@ async fn boot(specs: &[(usize, &str)]) -> Boot {
     let mut areas = Vec::new();
     for name in ["area-a", "area-b"] {
         let area = sqlx
-            .area_create(NewArea {
-                name: name.into(),
-                color: "#000".into(),
-                sort: None,
-            })
+            .area_create(
+                LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: name.into(),
+                    color: "#000".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         areas.push(area.id);

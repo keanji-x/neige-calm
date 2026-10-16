@@ -6,6 +6,7 @@
 #![cfg(all(unix, feature = "codex-e2e"))]
 
 use crate::support;
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -65,11 +66,14 @@ fn seed_auth_only(home: &SharedCodexHome) {
 
 async fn seed_planner_card(repo: &SqlxRepo, card_role_cache: &CardRoleCache) -> (String, String) {
     let area = repo
-        .area_create(NewArea {
-            name: "codex-mcp-double-call".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "codex-mcp-double-call".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

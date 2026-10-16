@@ -149,11 +149,14 @@ async fn forge_pr_merged_only_batch_does_not_advance_head() {
         .await
         .expect("open sqlite repo");
     let area = repo
-        .area_create(NewArea {
-            name: "area".into(),
-            color: "#336699".into(),
-            sort: None,
-        })
+        .area_create(
+            calm_types::organization::LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "area".into(),
+                color: "#336699".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("create area");
     let track = repo
@@ -211,11 +214,14 @@ async fn worktree_committed_only_batch_does_not_advance_head() {
         .await
         .expect("open sqlite repo");
     let area = repo
-        .area_create(NewArea {
-            name: "area".into(),
-            color: "#336699".into(),
-            sort: None,
-        })
+        .area_create(
+            calm_types::organization::LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "area".into(),
+                color: "#336699".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("create area");
     let track = repo
@@ -275,11 +281,14 @@ async fn ask_batch_does_not_advance_head() {
         .await
         .expect("open sqlite repo");
     let area = repo
-        .area_create(NewArea {
-            name: "area".into(),
-            color: "#336699".into(),
-            sort: None,
-        })
+        .area_create(
+            calm_types::organization::LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "area".into(),
+                color: "#336699".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("create area");
     let track = repo

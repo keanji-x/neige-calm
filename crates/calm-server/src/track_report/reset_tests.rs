@@ -20,11 +20,14 @@ use crate::track_area_cache::TrackAreaCache;
 async fn a_reset_at_a_stale_revision_is_a_conflict_and_writes_nothing() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "reset".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            calm_types::organization::LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "reset".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

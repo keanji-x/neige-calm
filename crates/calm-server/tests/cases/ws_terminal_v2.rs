@@ -1,5 +1,6 @@
 //! Wire-level e2e tests for the v2 terminal protocol in the WS↔daemon bridge (`pump`), with a `tokio::io::duplex` pair as the daemon socket.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -179,11 +180,14 @@ async fn boot_renderer_ws() -> RendererWsFixture {
 async fn seed_terminal_with_scrollback(fixture: &RendererWsFixture, label: &str) -> Terminal {
     let area = fixture
         .repo
-        .area_create(NewArea {
-            name: format!("scrollback-{label}"),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: format!("scrollback-{label}"),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("create area");
     let track = fixture

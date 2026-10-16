@@ -4,6 +4,7 @@
 
 #![cfg(unix)]
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -64,11 +65,14 @@ async fn read_only_deferred_track_detail_closes_a_deadlock_cycle_with_the_track_
     );
 
     let area = repo
-        .area_create(NewArea {
-            name: "deadlock-repro".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "deadlock-repro".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("area_create");
     let track = repo

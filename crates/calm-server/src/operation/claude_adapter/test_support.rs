@@ -18,6 +18,7 @@ pub(super) async fn claude_worker_harness() -> ClaudeWorkerHarness {
     );
     let area = crate::db::RepoSyncDomainRaw::area_create(
         repo.as_ref(),
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         crate::model::NewArea {
             name: "claude workspace leases".into(),
             color: "#101010".into(),

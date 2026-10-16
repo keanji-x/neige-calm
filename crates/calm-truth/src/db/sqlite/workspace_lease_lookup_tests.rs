@@ -6,6 +6,7 @@ pub(super) async fn seed_track(repo: &SqlxRepo) -> String {
     let mut tx = repo.pool().begin().await.expect("begin seed tx");
     let area = area_create_tx(
         &mut tx,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         NewArea {
             name: "workspace lease lookup".into(),
             color: "#202020".into(),

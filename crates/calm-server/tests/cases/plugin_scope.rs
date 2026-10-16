@@ -1,5 +1,6 @@
 //! `tracks.plugin_scope` is a create-time copy; PATCH cannot change it.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -38,11 +39,14 @@ async fn boot() -> Boot {
             .expect("open in-memory sqlite"),
     );
     let area = repo
-        .area_create(NewArea {
-            name: "plugin-scope-test".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "plugin-scope-test".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let card_role_cache = CardRoleCache::new();

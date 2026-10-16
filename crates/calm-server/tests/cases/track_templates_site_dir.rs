@@ -1,5 +1,6 @@
 //! Operator-provided templates (`--templates-dir`) through the real routes.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -75,11 +76,14 @@ async fn boot() -> Boot {
             .expect("open in-memory sqlite"),
     );
     let area = repo
-        .area_create(NewArea {
-            name: "site-template-test".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "site-template-test".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let card_role_cache = CardRoleCache::new();
@@ -112,6 +116,15 @@ async fn boot() -> Boot {
     let shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let state = state.with_shared_codex_appserver(shared);
     let app = routes::router()
+        .layer(axum::middleware::from_fn_with_state(
+            calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
+                username: None,
+                password: None,
+                dev_autologin: true,
+                display_name: "Owner".into(),
+            }),
+            calm_server::auth::require_session,
+        ))
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))

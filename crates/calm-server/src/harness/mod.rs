@@ -862,11 +862,14 @@ mod tests {
         let role_cache = CardRoleCache::new();
         let track_area_cache = TrackAreaCache::new();
         let area = repo
-            .area_create(NewArea {
-                name: "catch-up parity".into(),
-                color: "#111111".into(),
-                sort: None,
-            })
+            .area_create(
+                calm_types::organization::LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "catch-up parity".into(),
+                    color: "#111111".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         let track = repo

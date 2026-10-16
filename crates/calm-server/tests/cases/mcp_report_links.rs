@@ -4,6 +4,7 @@ use calm_server::mcp_server::tools::report_links::{TOOL_AREA_LS, TOOL_LINK_LS};
 use calm_server::model::{NewArea, NewCard, NewTrack};
 use calm_server::track_report::{TrackReportPayload, persist_report};
 use calm_server::{event::EditAuthor, ids::ActorId};
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use calm_types::report_blocks::render_fence;
 use serde_json::{Value, json};
 
@@ -91,11 +92,14 @@ async fn outline_lists_same_area_sibling_but_not_other_area() {
     let sibling = add_track(&boot, boot.area_id.as_str(), "Sibling", String::new()).await;
     let other_area = boot
         .repo
-        .area_create(NewArea {
-            name: "other".into(),
-            color: "#fff".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "other".into(),
+                color: "#fff".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let outside = add_track(

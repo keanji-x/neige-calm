@@ -3,6 +3,7 @@
 //! adapter would; the answers go through the production answer route; the asks are read from the
 //! events table and the production activity projector.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -128,11 +129,14 @@ pub(super) async fn rig_on(
     permission_mode: &str,
 ) -> Rig {
     let area = repo
-        .area_create(NewArea {
-            name: "hold-ask".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "hold-ask".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

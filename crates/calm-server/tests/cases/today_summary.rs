@@ -112,6 +112,15 @@ async fn boot_with_rendezvouses(
     };
     let create_counters = Arc::clone(&state.today_summary_create);
     let app = routes::router()
+        .layer(axum::middleware::from_fn_with_state(
+            calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
+                username: None,
+                password: None,
+                dev_autologin: true,
+                display_name: "Owner".into(),
+            }),
+            calm_server::auth::require_session,
+        ))
         // `POST /api/tracks/{id}/report` extracts a `Principal`, so the session layer has to be present.
         .layer(Extension(Principal {
             user_id: "owner".into(),

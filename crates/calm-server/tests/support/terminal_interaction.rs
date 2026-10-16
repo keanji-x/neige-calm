@@ -11,6 +11,7 @@ use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_interaction::TerminalInteraction;
 use calm_server::track_area_cache::TrackAreaCache;
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -70,11 +71,14 @@ impl Harness {
         let sql = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let repo: Arc<dyn Repo> = sql.clone();
         let area = repo
-            .area_create(NewArea {
-                name: "terminal-tool".into(),
-                color: "#000".into(),
-                sort: None,
-            })
+            .area_create(
+                LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "terminal-tool".into(),
+                    color: "#000".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         let track = repo

@@ -1,3 +1,4 @@
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -29,11 +30,14 @@ struct Boot {
 async fn boot() -> Boot {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "items-rest".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "items-rest".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

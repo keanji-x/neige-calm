@@ -1,6 +1,7 @@
 //! Integration tests for per-kind payload validators wired into the `cards` and `overlays` route layer:
 //! a minimal Axum app with a stub-only AppState, driven through `tower::ServiceExt::oneshot`.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -33,11 +34,14 @@ async fn boot_with_repo() -> (AppState, String, Arc<dyn Repo>) {
             .expect("open in-memory sqlite repo"),
     );
     let area = repo
-        .area_create(NewArea {
-            name: "demo".into(),
-            color: "#fff".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "demo".into(),
+                color: "#fff".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

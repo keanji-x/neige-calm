@@ -13,6 +13,7 @@ async fn cards(repo: &SqlxRepo, role_cache: &CardRoleCache, n: usize) -> Vec<Str
     let mut tx = repo.pool().begin().await.expect("begin");
     let area = area_create_tx(
         &mut tx,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         NewArea {
             name: "planner input keys".into(),
             color: "#101010".into(),

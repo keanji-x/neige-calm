@@ -1,5 +1,6 @@
 //! `neige_track_rename`, the planner agent's naming write; these tests pin the guard's refusals.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 
 use calm_server::card_role_cache::CardRoleCache;
@@ -104,11 +105,14 @@ async fn boot_with(title: &str, purpose: Option<&'static str>) -> Boot {
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let area = repo
-        .area_create(NewArea {
-            name: "mcp-track-rename".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "mcp-track-rename".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track_area_cache = calm_server::track_area_cache::TrackAreaCache::new();

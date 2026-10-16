@@ -102,6 +102,15 @@ async fn boot_with_rendezvous(
     let system_area_mint = Arc::clone(&state.system_area_mint);
     let dispatcher = Arc::clone(&state.dispatcher);
     let app = routes::router()
+        .layer(axum::middleware::from_fn_with_state(
+            calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
+                username: None,
+                password: None,
+                dev_autologin: true,
+                display_name: "Owner".into(),
+            }),
+            calm_server::auth::require_session,
+        ))
         // `POST /api/today/launchpad/report/reset` extracts a `Principal`, so the session layer has to be present.
         .layer(axum::Extension(calm_server::auth::Principal {
             user_id: "owner".into(),

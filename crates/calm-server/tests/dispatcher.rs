@@ -2,6 +2,7 @@
 
 mod support;
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -49,11 +50,14 @@ async fn boot() -> (
             .expect("open in-memory sqlite"),
     );
     let area = repo
-        .area_create(NewArea {
-            name: "dispatcher-test".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "dispatcher-test".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

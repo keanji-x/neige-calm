@@ -1,6 +1,7 @@
 //! Codex hook ingest: POSTing a fake hook payload produces a `codex.hook` event with the snake_case
 //! `hook.codex.<event>` discriminator. No real `codex` CLI is spawned.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -331,11 +332,14 @@ async fn test_app() -> (axum::Router, Arc<SqlxRepo>, EventBus, String) {
 async fn create_codex_card(repo: &SqlxRepo) -> Card {
     // The ingest path stamps `AiCodex(card_id)` and the role gate refuses unknown cards, so seed a real card.
     let area = repo
-        .area_create(NewArea {
-            name: "c".into(),
-            color: "#fff".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "c".into(),
+                color: "#fff".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

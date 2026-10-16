@@ -97,11 +97,14 @@ impl Fixture {
     ) -> ToolCallIdentity {
         let area = self
             .repo
-            .area_create(NewArea {
-                name: "Calendar".into(),
-                color: "#123456".into(),
-                sort: None,
-            })
+            .area_create(
+                calm_types::organization::LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "Calendar".into(),
+                    color: "#123456".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         let track = self

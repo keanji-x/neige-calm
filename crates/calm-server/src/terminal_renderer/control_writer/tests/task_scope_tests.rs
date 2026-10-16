@@ -10,16 +10,20 @@ use crate::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use crate::terminal_interaction::{Binding, TaskBinding, TerminalInteraction};
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use serde_json::json;
 
 async fn queued_task_change(replace_session: bool) {
     let sql = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = sql
-        .area_create(NewArea {
-            name: "queued".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "queued".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let theme = crate::routes::theme::RequestTheme::default_dark();

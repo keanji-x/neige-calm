@@ -3,6 +3,7 @@
 //! characterization: changing any file under `tests/vectors/` requires a commit message carrying
 //! `FROZEN-VECTOR-CHANGE:` + rationale (CI-enforced).
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -154,11 +155,14 @@ async fn seed_area_track(
     track_title: &str,
 ) -> (AreaId, TrackId) {
     let area = repo
-        .area_create(NewArea {
-            name: area_name.into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: area_name.into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

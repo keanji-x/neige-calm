@@ -3,6 +3,7 @@
 
 #![cfg(unix)]
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -75,11 +76,14 @@ async fn boot() -> Boot {
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let area = repo
-        .area_create(NewArea {
-            name: "mcp-shim-round-trip".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "mcp-shim-round-trip".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

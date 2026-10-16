@@ -2,6 +2,7 @@
 //! its keyed retry and the launchpad's ensure each own their Planner's start, and a send that
 //! started a session first would have that session superseded by theirs.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -60,11 +61,14 @@ async fn create_ordinary_track(
 async fn a_send_between_a_creates_commit_and_its_start_does_not_pre_empt_the_creator() {
     let (tmp, repo, state) = app_state(AppServer::Running).await;
     let area = repo
-        .area_create(NewArea {
-            name: "racing create".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "racing create".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let app = router(&state);
@@ -144,11 +148,14 @@ async fn a_send_between_a_creates_commit_and_its_start_does_not_pre_empt_the_cre
 async fn an_ordinary_track_whose_create_time_start_failed_stays_dormant_for_its_creator() {
     let (tmp, repo, state) = app_state(AppServer::Running).await;
     let area = repo
-        .area_create(NewArea {
-            name: "inert".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "inert".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     state

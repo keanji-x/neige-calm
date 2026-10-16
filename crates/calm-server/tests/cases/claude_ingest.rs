@@ -3,6 +3,7 @@
 //! `ActorId::AiClaude(card_id)` and the snake_case `hook.claude.<event>`
 //! discriminator.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -177,11 +178,14 @@ async fn claude_hook_superseded_session_id_falls_back_and_succeeds() {
 async fn test_app() -> (axum::Router, Arc<SqlxRepo>, EventBus, String) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "c".into(),
-            color: "#fff".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "c".into(),
+                color: "#fff".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

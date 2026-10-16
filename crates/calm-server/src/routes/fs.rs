@@ -1194,11 +1194,14 @@ mod tests {
     ) -> (RouteState, String, String) {
         let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let area = repo
-            .area_create(NewArea {
-                name: "workspace reads".into(),
-                color: "#000".into(),
-                sort: None,
-            })
+            .area_create(
+                calm_types::organization::LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "workspace reads".into(),
+                    color: "#000".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         let create_track = |title: &str, workspace: &Path| NewTrack {

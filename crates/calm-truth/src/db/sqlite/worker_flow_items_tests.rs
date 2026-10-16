@@ -15,6 +15,7 @@ async fn seed_card_and_session(repo: &SqlxRepo, session_id: &str) -> (String, St
     let mut tx = repo.pool().begin().await.unwrap();
     let area = area_create_tx(
         &mut tx,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         NewArea {
             name: "c".into(),
             color: "#fff".into(),

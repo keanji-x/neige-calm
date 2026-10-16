@@ -5,6 +5,7 @@
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -94,11 +95,14 @@ async fn an_unavailable_codex_still_creates_a_track() {
     assert_eq!(codex_entry(&boot).await["status"], "unavailable");
     let area = boot
         .repo
-        .area_create(calm_server::model::NewArea {
-            name: "codex down".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            calm_server::model::NewArea {
+                name: "codex down".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let request = Request::builder()

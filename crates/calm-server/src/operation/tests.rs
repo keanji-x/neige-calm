@@ -23,6 +23,7 @@ async fn legacy_compensation_harness(
     );
     let area = crate::db::RepoSyncDomainRaw::area_create(
         repo.as_ref(),
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         crate::model::NewArea {
             name: "legacy compensation".into(),
             color: "#101010".into(),
@@ -492,11 +493,14 @@ async fn operation_event_append_creates_track_vcs_commit() {
         .await
         .unwrap();
     let area = sqlx_repo
-        .area_create(NewArea {
-            name: "area".into(),
-            color: "#abcdef".into(),
-            sort: None,
-        })
+        .area_create(
+            calm_types::organization::LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "area".into(),
+                color: "#abcdef".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = sqlx_repo
@@ -944,6 +948,7 @@ async fn recover_on_boot_reclaims_non_recoverable_workspace_lease_from_old_boot(
         .unwrap();
     let area = crate::db::RepoSyncDomainRaw::area_create(
         &sqlx_repo,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         crate::model::NewArea {
             name: "lease reclaim".into(),
             color: "#101010".into(),
@@ -1062,6 +1067,7 @@ async fn recover_on_boot_releases_workspace_lease_row_without_dir_cleanup() {
         .unwrap();
     let area = crate::db::RepoSyncDomainRaw::area_create(
         &sqlx_repo,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         crate::model::NewArea {
             name: "lease reclaim removal failure".into(),
             color: "#101010".into(),
@@ -1197,6 +1203,7 @@ async fn recover_on_boot_keeps_non_recoverable_workspace_lease_from_same_boot() 
         .unwrap();
     let area = crate::db::RepoSyncDomainRaw::area_create(
         &sqlx_repo,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         crate::model::NewArea {
             name: "lease same boot".into(),
             color: "#101010".into(),
@@ -1316,6 +1323,7 @@ async fn recover_on_boot_keeps_recoverable_workspace_lease_from_old_boot() {
         .unwrap();
     let area = crate::db::RepoSyncDomainRaw::area_create(
         &sqlx_repo,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         crate::model::NewArea {
             name: "lease recoverable".into(),
             color: "#101010".into(),
@@ -1483,6 +1491,7 @@ async fn recover_on_boot_finishes_releasing_workspace_lease() {
         .unwrap();
     let area = crate::db::RepoSyncDomainRaw::area_create(
         &sqlx_repo,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         crate::model::NewArea {
             name: "lease releasing".into(),
             color: "#101010".into(),

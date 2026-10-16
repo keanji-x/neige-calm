@@ -1,6 +1,7 @@
 //! Queue identity end to end: `POST /planner/input` hands back the id of the entry the text landed in, `GET /planner/run`
 //! shows the same id, the id survives a restart, and a pre-identity queue entry is never silently given a new id.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -151,11 +152,14 @@ async fn pre_1505_queue_entries_are_withheld_and_counted_not_minted() {
 async fn a_card_with_no_runtime_reports_an_empty_pending_page() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "dormant".into(),
-            color: "#222222".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "dormant".into(),
+                color: "#222222".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

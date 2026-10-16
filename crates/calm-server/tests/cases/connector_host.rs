@@ -2,6 +2,7 @@
 
 #![cfg(unix)]
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -648,11 +649,14 @@ impl Boot {
     async fn seed_track(&self) -> String {
         let area = self
             .repo
-            .area_create(calm_server::model::NewArea {
-                name: "demo".into(),
-                color: "#fff".into(),
-                sort: None,
-            })
+            .area_create(
+                LEGACY_OWNER_USER_ID,
+                calm_server::model::NewArea {
+                    name: "demo".into(),
+                    color: "#fff".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         self.repo

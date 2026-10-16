@@ -1,5 +1,6 @@
 #![cfg(unix)]
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -264,11 +265,14 @@ impl TestFixture {
     async fn seed_terminal_card(&self, card_kind: &str) -> Terminal {
         let area = self
             .repo
-            .area_create(NewArea {
-                name: "reconcile-e2e".into(),
-                color: "#000".into(),
-                sort: None,
-            })
+            .area_create(
+                LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "reconcile-e2e".into(),
+                    color: "#000".into(),
+                    sort: None,
+                },
+            )
             .await
             .expect("create area");
         let track = self

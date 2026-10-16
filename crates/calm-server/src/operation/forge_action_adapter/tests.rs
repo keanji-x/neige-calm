@@ -676,11 +676,14 @@ async fn forge_runtime_fixture() -> ForgeRuntimeFixture {
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let area = repo
-        .area_create(NewArea {
-            name: "forge-action-adapter-test".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            calm_types::organization::LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "forge-action-adapter-test".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("create area");
     let track = repo

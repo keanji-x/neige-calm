@@ -11,6 +11,7 @@ use calm_server::session_projection_lookup::project_runtime_into_card_payload;
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use serde_json::json;
 
 async fn fresh_repo() -> SqlxRepo {
@@ -20,11 +21,14 @@ async fn fresh_repo() -> SqlxRepo {
 }
 
 async fn make_area(repo: &SqlxRepo, name: &str) -> Area {
-    repo.area_create(NewArea {
-        name: name.into(),
-        color: "#abcdef".into(),
-        sort: None,
-    })
+    repo.area_create(
+        LEGACY_OWNER_USER_ID,
+        NewArea {
+            name: name.into(),
+            color: "#abcdef".into(),
+            sort: None,
+        },
+    )
     .await
     .expect("create area")
 }

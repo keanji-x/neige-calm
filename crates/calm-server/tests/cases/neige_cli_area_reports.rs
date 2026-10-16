@@ -5,6 +5,7 @@
 #![cfg(unix)]
 
 use crate::support;
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 
 use calm_server::ids::{AreaId, TrackId};
 use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, TrackPatch};
@@ -155,11 +156,14 @@ async fn planner_browses_searches_and_reads_area_reports_through_neige() {
     let login_report = add_report(&boot, &login, LOGIN_BODY).await;
     let elsewhere = boot
         .repo
-        .area_create(NewArea {
-            name: "elsewhere".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "elsewhere".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let foreign = add_track(&boot, &elsewhere.id, "认证 方案").await;

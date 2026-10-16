@@ -1,6 +1,7 @@
 //! #1780 S2b: `GET /api/tracks/{id}/previews` through the production router tree, with a real
 //! TCP listener behind the `live` probe.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -49,11 +50,14 @@ async fn create_track(repo: &SqlxRepo, area_id: &AreaId, title: &str) -> TrackId
 async fn boot() -> (Boot, TrackId, TrackId) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "previews".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "previews".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let a = create_track(&repo, &area.id, "a").await;

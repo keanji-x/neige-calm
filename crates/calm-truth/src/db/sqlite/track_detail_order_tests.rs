@@ -14,6 +14,7 @@ async fn empty_track(repo: &SqlxRepo) -> String {
     let mut tx = repo.pool().begin().await.expect("begin");
     let area = area_create_tx(
         &mut tx,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         NewArea {
             name: "order".into(),
             color: "#101010".into(),

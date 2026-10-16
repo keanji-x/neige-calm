@@ -51,6 +51,15 @@ async fn boot_with_concrete() -> (axum::Router, Arc<dyn Repo>, Arc<SqlxRepo>) {
         None,
     );
     let app = routes::router()
+        .layer(axum::middleware::from_fn_with_state(
+            calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
+                username: None,
+                password: None,
+                dev_autologin: true,
+                display_name: "Owner".into(),
+            }),
+            calm_server::auth::require_session,
+        ))
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
@@ -354,4 +363,18 @@ async fn post_areas_system_ignores_caller_actor_header() {
         json!({ "kind": "Kernel" }),
         "Kernel override wins over the declared `ai:codex` header: {actor}"
     );
+}
+
+#[tokio::test]
+async fn system_area_mint_refuses_an_unregistered_authenticated_owner() {
+    let (app, _repo, concrete) = boot_with_concrete().await;
+    // Credentials do not recreate a deleted registry fact. There is no supported
+    // user-deletion API; corrupted/missing identity still must fail closed.
+    sqlx::query("DELETE FROM application_users")
+        .execute(concrete.pool())
+        .await
+        .unwrap();
+    let (status, body) = post_empty(app, "/api/areas/system").await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(concrete.area_get_system().await.unwrap().is_none());
 }

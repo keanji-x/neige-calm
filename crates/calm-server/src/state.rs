@@ -1174,6 +1174,12 @@ impl AppState {
         repo: Arc<dyn Repo>,
         templates: &'static crate::templates::TemplateRoster,
     ) -> anyhow::Result<Self> {
+        // Reconcile the configured deployment-owner profile before serving. The
+        // migration adopted legacy ownership once; startup never repairs membership.
+        let pool = repo
+            .sqlite_pool()
+            .ok_or_else(|| anyhow::anyhow!("profile bootstrap requires SQLite"))?;
+        crate::auth::initialize_owner_profile(&pool, cfg).await?;
         // First: a pool overlapping calm's own ports refuses boot before anything is started.
         let preview = Arc::new(crate::preview::PreviewRegistry::from_config(cfg)?);
         let plugins_dir = cfg.plugins_dir_resolved();

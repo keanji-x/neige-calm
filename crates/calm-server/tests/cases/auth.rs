@@ -1,5 +1,6 @@
 //! Integration tests for the auth surface, driving the production router assembly via `oneshot`.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -95,11 +96,14 @@ struct HookBoot {
 async fn hook_boot() -> HookBoot {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "hook-auth".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "hook-auth".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

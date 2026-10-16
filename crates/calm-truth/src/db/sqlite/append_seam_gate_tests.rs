@@ -32,6 +32,7 @@ async fn seed(repo: &SqlxRepo, label: &str, role: CardRole) -> Home {
     let mut tx = repo.pool().begin().await.expect("begin seed tx");
     let area = area_create_tx(
         &mut tx,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         NewArea {
             name: format!("s3-seam {label}"),
             color: "#101010".into(),

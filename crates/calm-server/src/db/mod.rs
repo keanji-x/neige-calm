@@ -28,6 +28,16 @@ pub mod prelude {
 
 #[async_trait]
 pub trait ServerRepoReadExt {
+    /// Current registry/membership reads; internal global readers remain separate.
+    async fn application_user_require_registered(&self, user_id: &str) -> Result<()>;
+    async fn areas_list_for_member(&self, user_id: &str) -> Result<Vec<Area>>;
+    async fn area_require_access(
+        &self,
+        area_id: &str,
+        user_id: &str,
+        access: calm_types::organization::AreaAccess,
+    ) -> Result<Area>;
+
     async fn areas_list(&self) -> Result<Vec<Area>>;
     async fn areas_list_user_visible(&self) -> Result<Vec<Area>>;
     async fn area_get(&self, id: &str) -> Result<Option<Area>>;
@@ -124,6 +134,27 @@ impl<T> ServerRepoReadExt for T
 where
     T: calm_truth::db::RepoRead + ?Sized,
 {
+    async fn application_user_require_registered(&self, user_id: &str) -> Result<()> {
+        calm_truth::db::RepoRead::application_user_require_registered(self, user_id)
+            .await
+            .map_err(Into::into)
+    }
+    async fn areas_list_for_member(&self, user_id: &str) -> Result<Vec<Area>> {
+        calm_truth::db::RepoRead::areas_list_for_member(self, user_id)
+            .await
+            .map_err(Into::into)
+    }
+    async fn area_require_access(
+        &self,
+        area_id: &str,
+        user_id: &str,
+        access: calm_types::organization::AreaAccess,
+    ) -> Result<Area> {
+        calm_truth::db::RepoRead::area_require_access(self, area_id, user_id, access)
+            .await
+            .map_err(Into::into)
+    }
+
     async fn areas_list(&self) -> Result<Vec<Area>> {
         calm_truth::db::RepoRead::areas_list(self)
             .await
@@ -621,7 +652,7 @@ where
 
 #[async_trait]
 pub trait ServerRepoSyncDomainRawExt: ServerRepoReadExt {
-    async fn area_create(&self, p: NewArea) -> Result<Area>;
+    async fn area_create(&self, owner_user_id: &str, p: NewArea) -> Result<Area>;
     async fn area_update(&self, id: &str, p: AreaPatch) -> Result<Area>;
     async fn area_delete(&self, id: &str) -> Result<()>;
     async fn track_create(&self, p: NewTrack) -> Result<Track>;
@@ -645,8 +676,8 @@ impl<T> ServerRepoSyncDomainRawExt for T
 where
     T: calm_truth::db::RepoSyncDomainRaw + ?Sized,
 {
-    async fn area_create(&self, p: NewArea) -> Result<Area> {
-        calm_truth::db::RepoSyncDomainRaw::area_create(self, p)
+    async fn area_create(&self, owner_user_id: &str, p: NewArea) -> Result<Area> {
+        calm_truth::db::RepoSyncDomainRaw::area_create(self, owner_user_id, p)
             .await
             .map_err(Into::into)
     }

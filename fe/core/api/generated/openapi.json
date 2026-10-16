@@ -239,7 +239,7 @@
           {
             "name": "include_system",
             "in": "query",
-            "description": "When true, also include `kind='system'` areas. Opt-in for debug surfaces and integration tests.",
+            "description": "Deployment owner only: also include the kernel-owned system Area.",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -248,7 +248,7 @@
         ],
         "responses": {
           "200": {
-            "description": "List all areas (filtered to `kind='user'` unless `include_system=true` is set)",
+            "description": "List the authenticated user's member Areas; include_system additionally requires deployment-owner authority",
             "content": {
               "application/json": {
                 "schema": {
@@ -301,7 +301,7 @@
           {
             "name": "Idempotency-Key",
             "in": "header",
-            "description": "Optional creation identity. The same key and typed request return the same Area with 201 without another creation event; differing inputs return 409 `idempotency_key_reused` and a deleted Area 409 `idempotency_key_exhausted`. Bindings are permanent. A replay does not repeat mutable template/folder validation. Callers without a key retain non-idempotent creation: retrying may create another Area. Separate keys may create Areas with the same name. A blank, non-ASCII or over-128-byte key is 400.",
+            "description": "Optional permanent creation identity scoped to the authenticated creator. The same creator, key and typed request return the same Area with 201 without another creation event; differing inputs return 409 `idempotency_key_reused` and a deleted Area 409 `idempotency_key_exhausted`. Bindings are permanent. A replay does not repeat mutable template/folder validation. Callers without a key retain non-idempotent creation: retrying may create another Area. Separate keys may create Areas with the same name. A blank, non-ASCII or over-128-byte key is 400.",
             "required": false,
             "schema": {
               "type": [
@@ -1019,7 +1019,7 @@
             }
           },
           "403": {
-            "description": "Area is system-owned and cannot be deleted via REST",
+            "description": "Current Area owner required; system Areas cannot be deleted via REST",
             "content": {
               "application/json": {
                 "schema": {

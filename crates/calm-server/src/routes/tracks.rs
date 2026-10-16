@@ -3859,11 +3859,14 @@ mod tests {
     async fn structural_door_writes_cache_crdt_and_projection_together() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let area = repo
-            .area_create(NewArea {
-                name: "fork-helper".into(),
-                color: "#000".into(),
-                sort: None,
-            })
+            .area_create(
+                calm_types::organization::LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "fork-helper".into(),
+                    color: "#000".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         let track = repo

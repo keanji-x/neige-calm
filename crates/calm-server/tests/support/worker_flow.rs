@@ -1,3 +1,4 @@
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -87,6 +88,7 @@ pub async fn seed_codex_card(repo: &Arc<SqlxRepo>, card_id: &str) -> Card {
     let mut tx = repo.pool().begin().await.unwrap();
     let area = area_create_tx(
         &mut tx,
+        LEGACY_OWNER_USER_ID,
         NewArea {
             name: "area".into(),
             color: "#fff".into(),
@@ -139,6 +141,7 @@ pub async fn seed_claude_card(repo: &Arc<SqlxRepo>, card_id: &str, cwd: &str) ->
     let mut tx = repo.pool().begin().await.unwrap();
     let area = area_create_tx(
         &mut tx,
+        LEGACY_OWNER_USER_ID,
         NewArea {
             name: "area".into(),
             color: "#fff".into(),

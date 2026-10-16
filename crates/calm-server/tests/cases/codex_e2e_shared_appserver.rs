@@ -1,6 +1,7 @@
 #![cfg(all(unix, feature = "codex-e2e"))]
 
 use crate::support;
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -39,11 +40,14 @@ fn cfg(root: &tempfile::TempDir, codex_bin: &Path) -> Config {
 
 async fn seed_card(repo: &SqlxRepo, name: &str) -> String {
     let area = repo
-        .area_create(NewArea {
-            name: name.into(),
-            color: "#abc".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: name.into(),
+                color: "#abc".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

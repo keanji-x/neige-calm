@@ -11,6 +11,7 @@ async fn card(repo: &SqlxRepo) -> (String, String) {
     let mut tx = repo.pool().begin().await.unwrap();
     let area = area_create_tx(
         &mut tx,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         NewArea {
             name: "history".into(),
             color: "#101010".into(),

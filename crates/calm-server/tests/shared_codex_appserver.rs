@@ -1,3 +1,4 @@
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{path::Path, process::Stdio};
@@ -768,11 +769,14 @@ fn force_cleanup_process_group(child: tokio::process::Child, pgid: i32) {
 
 async fn seed_card(repo: &SqlxRepo, idx: usize) -> String {
     let area = repo
-        .area_create(NewArea {
-            name: format!("area-{idx}"),
-            color: "#abc".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: format!("area-{idx}"),
+                color: "#abc".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

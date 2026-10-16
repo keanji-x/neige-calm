@@ -1,5 +1,6 @@
 //! Cross-layer role-gate + scope coverage for the track-as-actor dispatcher pathway.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -36,11 +37,14 @@ async fn seed_worker_in_track(
     track_title: &str,
 ) -> (AreaId, TrackId, CardId) {
     let area = repo
-        .area_create(NewArea {
-            name: area_name.into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: area_name.into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -405,11 +409,14 @@ async fn worker_with_mismatched_area_in_card_scope_is_rejected() {
 async fn planner_emitting_track_scope_is_accepted() {
     let (repo, bus, cache, wcc) = boot_repo().await;
     let area = repo
-        .area_create(NewArea {
-            name: "c".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

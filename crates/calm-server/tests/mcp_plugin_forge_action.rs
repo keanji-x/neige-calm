@@ -2,6 +2,7 @@
 
 mod support;
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -777,11 +778,14 @@ async fn boot_fixture_with_role(mode: StubMode, role: CardRole) -> Fixture {
     let events = EventBus::new();
 
     let area = repo
-        .area_create(NewArea {
-            name: "mcp-plugin-forge-action".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "mcp-plugin-forge-action".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("create area");
     let track = repo

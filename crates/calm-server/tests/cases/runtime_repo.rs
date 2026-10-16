@@ -1,3 +1,4 @@
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -37,11 +38,14 @@ async fn fresh_repo() -> SqlxRepo {
 
 async fn make_track(repo: &SqlxRepo) -> calm_server::model::Track {
     let area = repo
-        .area_create(NewArea {
-            name: "runtime-repo".into(),
-            color: "#101010".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "runtime-repo".into(),
+                color: "#101010".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("create area");
     repo.track_create(NewTrack {

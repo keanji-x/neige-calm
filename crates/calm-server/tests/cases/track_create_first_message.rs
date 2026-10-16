@@ -9,6 +9,7 @@ mod template_startup_context;
 #[path = "planner_provider_identity.rs"]
 mod planner_provider_identity;
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -128,11 +129,14 @@ async fn boot_with_daemon(daemon_running: bool) -> Boot {
     let tmp = Arc::new(TempDir::new().unwrap());
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "track-create-first-message".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "track-create-first-message".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     instance_on(tmp, repo, area.id.to_string(), daemon_running).await
@@ -148,11 +152,14 @@ async fn boot_two_instances_on_one_database() -> (Boot, Boot) {
     );
     let first = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
     let area = first
-        .area_create(NewArea {
-            name: "track-create-first-message".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "track-create-first-message".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let second = Arc::new(SqlxRepo::open(&db_url).await.unwrap());

@@ -16,6 +16,7 @@ mod pr_checks;
 #[path = "cases/forge_pr_diff.rs"]
 mod pr_diff;
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1357,11 +1358,14 @@ async fn boot_fixture_with_delivery(delivery: bool) -> Fixture {
     let write = WriteContext::new(card_role_cache.clone(), track_area_cache.clone());
 
     let area = repo
-        .area_create(NewArea {
-            name: "forge-template-e2e".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "forge-template-e2e".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("create area");
     let track = repo

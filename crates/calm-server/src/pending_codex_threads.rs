@@ -545,11 +545,14 @@ mod tests {
     async fn seed_card_without_runtime() -> (Arc<SqlxRepo>, EventBus, String) {
         let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let area = repo
-            .area_create(NewArea {
-                name: "pending".into(),
-                color: "#000".into(),
-                sort: None,
-            })
+            .area_create(
+                calm_types::organization::LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "pending".into(),
+                    color: "#000".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         let track = repo

@@ -1,3 +1,4 @@
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -716,11 +717,14 @@ async fn drop_entry_kills_process_group_members_that_outlive_the_leader() {
 /// Minimal area → track → card → terminal chain so `terminal_set_exit` has a row to write to.
 pub(super) async fn seed_terminal_row(repo: &SqlxRepo) -> Terminal {
     let area = repo
-        .area_create(NewArea {
-            name: "renderer-e2e".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "renderer-e2e".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("create area");
     let track = repo

@@ -7,6 +7,7 @@
 #[path = "track_metadata_concurrency.rs"]
 mod metadata_concurrency;
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -46,11 +47,14 @@ async fn boot() -> Boot {
     let tmp = TempDir::new().unwrap();
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area_id = repo
-        .area_create(NewArea {
-            name: "track-worktree".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "track-worktree".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap()
         .id

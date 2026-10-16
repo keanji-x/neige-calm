@@ -1,5 +1,6 @@
 //! `X-Calm-Actor` middleware tests, asserted against `events.actor` directly.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
@@ -42,7 +43,15 @@ async fn boot() -> (axum::Router, Arc<SqlxRepo>, AppState) {
         None,
     );
     let app = axum::Router::new()
-        .merge(routes::router())
+        .merge(routes::router().layer(axum::middleware::from_fn_with_state(
+            calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
+                username: None,
+                password: None,
+                dev_autologin: true,
+                display_name: "Owner".into(),
+            }),
+            calm_server::auth::require_session,
+        )))
         .layer(axum::middleware::from_fn(actor_middleware))
         .with_state(state.clone());
     (app, concrete, state)
@@ -234,11 +243,14 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
     let (_app, repo, state) = boot().await;
 
     let area = repo
-        .area_create(NewArea {
-            name: "c".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -309,11 +321,14 @@ async fn create_card_stamps_full_scope_chain() {
     let (app, repo, _state) = boot().await;
 
     let area = repo
-        .area_create(NewArea {
-            name: "c".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

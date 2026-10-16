@@ -1,6 +1,7 @@
 //! Replay-based regression tests: fixtures under `tests/fixtures/events/` are
 //! raw-inserted into a fresh in-memory server and drained over WS with `since=0`.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,11 +39,14 @@ fn load_fixture(name: &str) -> Fixture {
 
 async fn seed_rooted_track(repo: &SqlxRepo) {
     let area = repo
-        .area_create(NewArea {
-            name: "reset-rooted".into(),
-            color: "#123456".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "reset-rooted".into(),
+                color: "#123456".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("create reset area");
     let track = repo
@@ -237,11 +241,14 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
         .await
         .expect("boot in-memory replay state");
     let area = repo
-        .area_create(NewArea {
-            name: "replay-terminal".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "replay-terminal".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("create area");
     let track = repo

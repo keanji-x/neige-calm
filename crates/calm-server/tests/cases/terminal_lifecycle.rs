@@ -3,6 +3,7 @@
 
 #![cfg(unix)]
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
@@ -61,6 +62,15 @@ fn build_app(state: AppState) -> axum::Router {
         .merge(routes::cards::router())
         .merge(routes::tracks::router())
         .merge(routes::areas::router())
+        .layer(axum::middleware::from_fn_with_state(
+            calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
+                username: None,
+                password: None,
+                dev_autologin: true,
+                display_name: "Owner".into(),
+            }),
+            calm_server::auth::require_session,
+        ))
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
@@ -106,11 +116,14 @@ async fn card_delete_reaps_terminal_process() {
     // Seed: area → track → terminal card → terminal row pointing at a
     // real spawned process.
     let area = raw
-        .area_create(NewArea {
-            name: "c".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = raw
@@ -204,11 +217,14 @@ async fn track_delete_refuses_unowned_live_pid_only_terminals() {
     // Seed: a track with TWO terminal cards whose rows contain only raw live pids, so deletion
     // cannot prove either pid still names our child.
     let area = raw
-        .area_create(NewArea {
-            name: "c".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = raw
@@ -336,11 +352,14 @@ async fn track_delete_refuses_unowned_live_pid_only_terminals() {
 async fn track_delete_external_teardown_does_not_hold_the_sqlite_writer() {
     let (state, repo) = fresh_state_with_repo().await;
     let area = repo
-        .area_create(NewArea {
-            name: "writer-probe-owner".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "writer-probe-owner".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -385,11 +404,14 @@ async fn track_delete_external_teardown_does_not_hold_the_sqlite_writer() {
 
     tokio::time::timeout(
         Duration::from_millis(250),
-        repo.area_create(NewArea {
-            name: "writer-probe-unrelated".into(),
-            color: "#111".into(),
-            sort: None,
-        }),
+        repo.area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "writer-probe-unrelated".into(),
+                color: "#111".into(),
+                sort: None,
+            },
+        ),
     )
     .await
     .expect("unrelated writer was blocked by external track teardown")
@@ -411,11 +433,14 @@ async fn area_delete_refuses_an_unowned_live_pid_only_terminal() {
     // A raw live pid without a renderer-owned proc_id or persisted identity
     // tuple cannot safely be signaled: the OS may already have recycled it.
     let area = raw
-        .area_create(NewArea {
-            name: "c".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = raw
@@ -520,11 +545,14 @@ async fn card_delete_succeeds_when_card_has_no_terminal() {
     let state = fresh_state().await;
     let raw = state.raw_repo();
     let area = raw
-        .area_create(NewArea {
-            name: "c".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = raw

@@ -81,6 +81,15 @@ async fn boot() -> Boot {
     .with_shared_codex_appserver(shared_codex.clone())
     .with_workspace_root(workspace_root);
     let app = routes::router()
+        .layer(axum::middleware::from_fn_with_state(
+            calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
+                username: None,
+                password: None,
+                dev_autologin: true,
+                display_name: "Owner".into(),
+            }),
+            calm_server::auth::require_session,
+        ))
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))

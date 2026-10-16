@@ -40,11 +40,14 @@ impl Fixture {
     pub(super) async fn for_role(role: CardRole) -> Self {
         let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
         let area = repo
-            .area_create(NewArea {
-                name: "completed commit wake".into(),
-                color: "#111111".into(),
-                sort: None,
-            })
+            .area_create(
+                calm_types::organization::LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "completed commit wake".into(),
+                    color: "#111111".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         let track = repo

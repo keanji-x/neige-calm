@@ -3,6 +3,7 @@
 
 #![cfg(unix)]
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -211,11 +212,14 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
             .expect("open in-memory sqlite repo"),
     );
     let area = repo
-        .area_create(NewArea {
-            name: "demo".into(),
-            color: "#fff".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "demo".into(),
+                color: "#fff".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

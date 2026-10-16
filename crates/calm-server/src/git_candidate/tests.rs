@@ -1160,6 +1160,7 @@ async fn db_fixture() -> DbFixture {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let area = crate::db::RepoSyncDomainRaw::area_create(
         &repo,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         crate::model::NewArea {
             name: "delivery fixture".into(),
             color: "#101010".into(),

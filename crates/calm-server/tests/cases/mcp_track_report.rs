@@ -3,6 +3,7 @@
 
 #![cfg(unix)]
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -204,11 +205,14 @@ pub(crate) async fn boot_development() -> Boot {
 async fn boot_with_scope(db_url: &str, plugin_scope: Option<&str>) -> Boot {
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open(db_url).await.expect("open sqlite"));
     let area = repo
-        .area_create(NewArea {
-            name: "report-test".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "report-test".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -1251,11 +1255,14 @@ async fn planner_from_different_track_cannot_reach_this_track_report() {
 
     let area2 = boot
         .repo
-        .area_create(NewArea {
-            name: "track-b".into(),
-            color: "#0f0".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "track-b".into(),
+                color: "#0f0".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track2 = boot

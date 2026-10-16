@@ -1,3 +1,4 @@
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::collections::{BTreeMap, BTreeSet};
 
 use calm_truth::db::prelude::RepoSyncDomainRaw;
@@ -38,11 +39,14 @@ async fn fresh_track() -> (SqlxRepo, TrackId) {
         .await
         .expect("open sqlite repo");
     let area = repo
-        .area_create(NewArea {
-            name: "area".into(),
-            color: "#336699".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "area".into(),
+                color: "#336699".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("create area");
     let track = repo
@@ -678,11 +682,14 @@ async fn sweep_preserves_live_objects_from_other_tracks() {
         .await
         .expect("open sqlite repo");
     let area = repo
-        .area_create(NewArea {
-            name: "area".into(),
-            color: "#336699".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "area".into(),
+                color: "#336699".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("create area");
     let track_a = repo

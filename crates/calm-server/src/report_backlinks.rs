@@ -364,11 +364,14 @@ mod tests {
     use serde_json::json;
 
     async fn area(repo: &SqlxRepo, name: &str) -> crate::model::Area {
-        repo.area_create(NewArea {
-            name: name.into(),
-            color: "#123456".into(),
-            sort: None,
-        })
+        repo.area_create(
+            calm_types::organization::LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: name.into(),
+                color: "#123456".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap()
     }

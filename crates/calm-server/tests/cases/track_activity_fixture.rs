@@ -1,6 +1,7 @@
 //! The in-memory repo, event bus and `kernel/track/activity` projector rig shared by the
 //! track-activity tests: `Fx` drives the production writers of every row the projector reads.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -59,11 +60,14 @@ pub(crate) async fn fx() -> Fx {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let area = repo_dyn
-        .area_create(NewArea {
-            name: "activity".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "activity".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let events = EventBus::new();

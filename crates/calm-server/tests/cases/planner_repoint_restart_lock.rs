@@ -1,6 +1,7 @@
 //! #2228 — the workspace re-point restarts the Planner under the card's `planner_recovery_locks`,
 //! as `/planner/reset` does, so a send waits for that restart instead of racing it.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -84,11 +85,14 @@ pub(crate) async fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
 async fn a_send_during_the_repoint_restart_waits_on_the_cards_lock() {
     let (tmp, repo, state) = app_state(AppServer::Running).await;
     let area = repo
-        .area_create(NewArea {
-            name: "repoint".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "repoint".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let app = router(&state);

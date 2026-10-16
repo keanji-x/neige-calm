@@ -27,6 +27,9 @@ pub const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 pub const SQLITE_ACQUIRE_TIMEOUT_MS: u64 = 30_000;
 
 mod area;
+pub mod area_membership;
+#[cfg(test)]
+mod area_ownership_tests;
 mod card;
 mod card_composite;
 mod database_identity;

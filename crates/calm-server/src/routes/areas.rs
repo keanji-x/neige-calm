@@ -1,7 +1,9 @@
 //! `/api/areas` — Area CRUD. `GET` defaults to `kind='user'`; the system area is minted only via the idempotent `POST /api/areas/system` upsert, and `DELETE` refuses a `kind='system'` row.
 use crate::workspace_service::sweep::sweep_workspace_worktrees_for_tracks;
 
+use super::area_access::{require_area_access, require_area_access_tx, require_deployment_owner};
 use crate::actor::Actor;
+use crate::auth::Principal;
 use crate::db::sqlite::{
     area_create_bind_tx, area_create_replay_tx, area_create_system_tx, area_create_tx,
     area_delete_tx, area_update_tx, overlay_delete_by_entity_tx, overlay_delete_subtree_by_area_tx,
@@ -27,6 +29,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     routing::get,
 };
+use calm_types::organization::AreaAccess;
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -57,7 +60,7 @@ pub fn router() -> Router<AppState> {
 /// Query string accepted by `GET /api/areas`.
 #[derive(Debug, Default, Deserialize, IntoParams, ToSchema)]
 pub struct ListAreasQuery {
-    /// When true, also include `kind='system'` areas. Opt-in for debug surfaces and integration tests.
+    /// Deployment owner only: also include the kernel-owned system Area.
     #[serde(default)]
     pub include_system: bool,
 }
@@ -105,20 +108,29 @@ fn validate_and_normalize_default_cwd(default_cwd: &mut Option<String>) -> Resul
     tag = "areas",
     params(ListAreasQuery),
     responses(
-        (status = 200, description = "List all areas (filtered to `kind='user'` unless `include_system=true` is set)", body = Vec<Area>),
+        (status = 200, description = "List the authenticated user's member Areas; include_system additionally requires deployment-owner authority", body = Vec<Area>),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
 pub(crate) async fn list_areas(
     State(s): State<RouteState>,
+    principal: Principal,
     Query(q): Query<ListAreasQuery>,
 ) -> Result<Json<Vec<Area>>> {
-    // Default to the user-visible subset so the sidebar never sees the singleton system area.
-    let areas = if q.include_system {
-        s.repo.areas_list().await?
-    } else {
-        s.repo.areas_list_user_visible().await?
-    };
+    if q.include_system {
+        require_deployment_owner(&principal)?;
+    }
+    let mut areas = s.repo.areas_list_for_member(&principal.user_id).await?;
+    if q.include_system
+        && let Some(system) = s.repo.area_get_system().await?
+    {
+        areas.push(system);
+        areas.sort_by(|a, b| {
+            a.sort
+                .total_cmp(&b.sort)
+                .then(a.id.as_str().cmp(b.id.as_str()))
+        });
+    }
     Ok(Json(areas))
 }
 
@@ -127,7 +139,7 @@ pub(crate) async fn list_areas(
     path = "/api/areas",
     tag = "areas",
     request_body = CreateAreaRequest,
-    params(("Idempotency-Key" = Option<String>, Header, description = "Optional creation identity. The same key and typed request return the same Area with 201 without another creation event; differing inputs return 409 `idempotency_key_reused` and a deleted Area 409 `idempotency_key_exhausted`. Bindings are permanent. A replay does not repeat mutable template/folder validation. Callers without a key retain non-idempotent creation: retrying may create another Area. Separate keys may create Areas with the same name. A blank, non-ASCII or over-128-byte key is 400.")),
+    params(("Idempotency-Key" = Option<String>, Header, description = "Optional permanent creation identity scoped to the authenticated creator. The same creator, key and typed request return the same Area with 201 without another creation event; differing inputs return 409 `idempotency_key_reused` and a deleted Area 409 `idempotency_key_exhausted`. Bindings are permanent. A replay does not repeat mutable template/folder validation. Callers without a key retain non-idempotent creation: retrying may create another Area. Separate keys may create Areas with the same name. A blank, non-ASCII or over-128-byte key is 400.")),
     responses(
         (status = 201, description = "Area created", body = Area),
         (status = 400, description = "Unknown default template, invalid default folder, or an invalid Idempotency-Key (`idempotency_key_invalid`)", body = ErrorBody),
@@ -138,6 +150,7 @@ pub(crate) async fn list_areas(
 pub(crate) async fn create_area(
     State(s): State<RouteState>,
     actor: Actor,
+    principal: Principal,
     headers: HeaderMap,
     JsonBody(mut request): JsonBody<CreateAreaRequest>,
 ) -> Result<(StatusCode, Json<Area>)> {
@@ -154,8 +167,14 @@ pub(crate) async fn create_area(
     let result =
         write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
             Box::pin(async move {
+                crate::db::sqlite::area_membership::application_user_require_registered(
+                    tx,
+                    &principal.user_id,
+                )
+                .await?;
                 if let Some(key) = &key
-                    && let Some(area) = area_create_replay_tx(tx, key, &fingerprint).await?
+                    && let Some(area) =
+                        area_create_replay_tx(tx, &principal.user_id, key, &fingerprint).await?
                 {
                     let _ = replay_tx.send(area);
                     return Err(CalmError::Conflict(
@@ -166,6 +185,7 @@ pub(crate) async fn create_area(
                 validate_and_normalize_default_cwd(&mut request.default_cwd)?;
                 let mut area = area_create_tx(
                     tx,
+                    &principal.user_id,
                     NewArea {
                         name: request.name,
                         color: request.color,
@@ -187,7 +207,14 @@ pub(crate) async fn create_area(
                     .await?;
                 }
                 if let Some(key) = &key {
-                    area_create_bind_tx(tx, key, &fingerprint, area.id.as_str()).await?;
+                    area_create_bind_tx(
+                        tx,
+                        &principal.user_id,
+                        key,
+                        &fingerprint,
+                        area.id.as_str(),
+                    )
+                    .await?;
                 }
                 // Creation reaches every replica through System scope. The
                 // same transaction commits the row, optional binding and event.
@@ -224,7 +251,12 @@ pub(crate) async fn get_or_create_system_area(
     State(s): State<RouteState>,
     // `Actor` is extracted so the middleware validates `X-Calm-Actor`, but the event is stamped `ActorId::Kernel`: the system area is kernel-owned scaffolding and a `User` actor would be untruthful.
     _actor: Actor,
+    principal: Principal,
 ) -> Result<(StatusCode, Json<Area>)> {
+    require_deployment_owner(&principal)?;
+    s.repo
+        .application_user_require_registered(&principal.user_id)
+        .await?;
     let (status, area) = ensure_system_area(&s).await?;
     Ok((status, Json(area)))
 }
@@ -279,14 +311,12 @@ pub(crate) async fn ensure_system_area(s: &RouteState) -> Result<(StatusCode, Ar
 pub(crate) async fn update_area(
     State(s): State<RouteState>,
     actor: Actor,
+    principal: Principal,
     Path(id): Path<String>,
     JsonBody(mut p): JsonBody<AreaPatch>,
 ) -> Result<Json<Area>> {
     // Resource-first: an unknown id 404s before an invalid caller-supplied path can trigger filesystem and `git` probes.
-    s.repo
-        .area_get(&id)
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("area {id}")))?;
+    require_area_access(s.repo.as_ref(), &id, &principal, AreaAccess::Collaborate).await?;
     validate_default_template(
         s.templates,
         p.default_template_id
@@ -308,6 +338,7 @@ pub(crate) async fn update_area(
         &s.write,
         move |tx| {
             Box::pin(async move {
+                require_area_access_tx(tx, &id, &principal, AreaAccess::Collaborate).await?;
                 let area = area_update_tx(tx, &id, p).await?;
                 Ok((area.clone(), Event::AreaUpdated(area)))
             })
@@ -322,6 +353,7 @@ struct PreparedAreaDeletion {
     area_kind: Option<AreaKind>,
     tracks: Vec<Track>,
     actor: ActorId,
+    principal: Principal,
     turn_daemon: std::sync::Arc<crate::shared_codex_appserver::SharedCodexAppServer>,
     thread_seals: std::sync::Arc<crate::thread_seals::ThreadSeals>,
     _area_guard: crate::per_card_lock::KeyedLockGuard,
@@ -533,6 +565,7 @@ async fn finish_area_deletion(
     id: String,
     terminal_ids: Vec<String>,
     actor: ActorId,
+    principal: Principal,
 ) -> Result<(
     Vec<crate::workspace_service::sweep::WorkspaceTrackSweep>,
     Vec<String>,
@@ -547,6 +580,7 @@ async fn finish_area_deletion(
         &route.write,
         move |tx| {
             Box::pin(async move {
+                require_area_access_tx(tx, &id, &principal, AreaAccess::Delete).await?;
                 crate::operation::terminal_disposal::require_safe_tx(
                     tx,
                     &crate::operation::terminal_disposal::Scope::Area(id.clone()),
@@ -604,6 +638,7 @@ impl RecycledAreaDeletion {
                 area_id.clone(),
                 self.quiesced.terminal_ids.clone(),
                 self.quiesced.prepared.actor.clone(),
+                self.quiesced.prepared.principal.clone(),
             )
             .await
         };
@@ -766,7 +801,7 @@ async fn finish_prepared_area_deletion_owned(
     params(("id" = String, Path, description = "Area id")),
     responses(
         (status = 204, description = "Area deleted"),
-        (status = 403, description = "Area is system-owned and cannot be deleted via REST", body = ErrorBody),
+        (status = 403, description = "Current Area owner required; system Areas cannot be deleted via REST", body = ErrorBody),
         (status = 404, description = "Area not found", body = ErrorBody),
         (status = 409, description = "A child track has an in-flight forge-action, or an unresolved terminal launch (`conflict`); retry after it settles", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
@@ -777,17 +812,15 @@ pub(crate) async fn delete_area(
     State(w): State<WorkerState>,
     State(cs): State<CodexShellState>,
     actor: Actor,
+    principal: Principal,
     Path(id): Path<String>,
 ) -> Result<StatusCode> {
-    // Refuse to delete the singleton system area at the handler boundary; `area_delete_tx` trusts its caller. `None` (no such area) makes every recycle below refuse; the row delete still 404s naturally.
+    // Resolve current ownership under the Area fence before any quiesce/recycle.
+    // The final write transaction checks the same policy again.
     // Lock order is area delete → operation drive → sorted track delete; the track-create route takes this area lock before entering the operation driver, so neither side can invert the pair.
     let area_delete_guard = crate::per_card_lock::lock_key(&s.area_delete_locks, &id).await;
-    let area_kind = s.repo.area_get(&id).await?.map(|area| area.kind);
-    if area_kind == Some(AreaKind::System) {
-        return Err(CalmError::Forbidden(format!(
-            "area {id} is system-owned and cannot be deleted via the public API"
-        )));
-    }
+    let area = require_area_access(s.repo.as_ref(), &id, &principal, AreaAccess::Delete).await?;
+    let area_kind = Some(area.kind);
 
     // Track DELETE holds this same guard through commit or compensation, so an area deletion cannot erase the rows underneath a workspace restoration.
     let operation_guard = s.operation_runtime.lock_for_track_delete().await;
@@ -823,6 +856,7 @@ pub(crate) async fn delete_area(
         area_kind,
         tracks,
         actor: actor.to_actor_id(),
+        principal,
         turn_daemon: cs.shared_codex_appserver.clone(),
         thread_seals: s.thread_seals.clone(),
         _area_guard: area_delete_guard,

@@ -5,6 +5,7 @@ use calm_truth::db::sqlite::{
 use calm_truth::model::{NewArea, NewTrack, RequestTheme};
 use calm_truth::session_repo::SessionRepo;
 use calm_types::ids::{CardId, TrackId};
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use calm_types::worker::{
     Liveness, LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession,
     WorkerSessionId, WorkerSessionState,
@@ -15,11 +16,14 @@ async fn seeded_repo() -> (SqlxRepo, TrackId) {
         .await
         .expect("open in-memory sqlite");
     let area = repo
-        .area_create(NewArea {
-            name: "worker-session-scan".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "worker-session-scan".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("seed area");
     let track = repo

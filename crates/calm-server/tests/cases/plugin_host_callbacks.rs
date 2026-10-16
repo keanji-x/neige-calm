@@ -3,6 +3,7 @@
 
 #![cfg(unix)]
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -35,11 +36,14 @@ async fn boot_with_track(
             .expect("open in-memory sqlite repo"),
     );
     let area = repo
-        .area_create(NewArea {
-            name: "demo".into(),
-            color: "#fff".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "demo".into(),
+                color: "#fff".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

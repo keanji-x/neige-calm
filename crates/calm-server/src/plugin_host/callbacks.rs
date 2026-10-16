@@ -892,11 +892,14 @@ mod tests {
             .await
             .unwrap();
             let area = repo
-                .area_create(NewArea {
-                    name: "test".into(),
-                    color: "#fff".into(),
-                    sort: None,
-                })
+                .area_create(
+                    calm_types::organization::LEGACY_OWNER_USER_ID,
+                    NewArea {
+                        name: "test".into(),
+                        color: "#fff".into(),
+                        sort: None,
+                    },
+                )
                 .await
                 .unwrap();
             let track = repo

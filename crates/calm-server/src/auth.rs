@@ -36,7 +36,7 @@ pub const SESSION_COOKIE: &str = "calm-session";
 pub(crate) const LOGOUT_PATH: &str = "/api/auth/logout";
 
 /// Deployment-owner identity used by the current password and device issuers.
-pub const OWNER_USER_ID: &str = "local-owner";
+pub const OWNER_USER_ID: &str = calm_types::organization::LEGACY_OWNER_USER_ID;
 
 /// Display name used when no `auth.username` is configured.
 pub const DEFAULT_DISPLAY_NAME: &str = "Owner";
@@ -57,15 +57,35 @@ pub struct AuthConfig {
     pub display_name: String,
 }
 
+/// Profile text is initialized at startup independently of credential validation.
+pub(crate) fn configured_owner_display_name(cfg: &Config) -> String {
+    cfg.auth_username
+        .clone()
+        .unwrap_or_else(|| DEFAULT_DISPLAY_NAME.to_string())
+}
+
+/// Startup profile reconciliation, before the application starts tasks/listeners.
+/// Credential issuance never registers a user or assigns an Area membership.
+pub(crate) async fn initialize_owner_profile(pool: &sqlx::SqlitePool, cfg: &Config) -> Result<()> {
+    let display_name = configured_owner_display_name(cfg);
+    let mut tx = pool.begin().await?;
+    crate::db::sqlite::area_membership::application_user_register(
+        &mut tx,
+        OWNER_USER_ID,
+        &display_name,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 impl AuthConfig {
     /// Panics if auth is live (`dev_autologin = false`) but no password is configured: a boot-time misconfiguration, not a request-time 500.
     pub fn from_config(cfg: &Config) -> anyhow::Result<Self> {
         let username = cfg.auth_username.clone();
         let password = cfg.auth_password.clone();
         let dev_autologin = cfg.auth_dev_autologin;
-        let display_name = username
-            .clone()
-            .unwrap_or_else(|| DEFAULT_DISPLAY_NAME.to_string());
+        let display_name = configured_owner_display_name(cfg);
 
         if !dev_autologin && password.is_none() {
             anyhow::bail!(

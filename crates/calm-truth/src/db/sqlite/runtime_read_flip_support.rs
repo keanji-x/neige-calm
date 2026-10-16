@@ -75,6 +75,7 @@ pub(super) async fn create_card_in_tx(
 ) -> String {
     let area = area_create_tx(
         tx,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         NewArea {
             name: format!("read flip {label}"),
             color: "#101010".into(),
@@ -189,6 +190,7 @@ pub(super) async fn seed_terminal_runtime(
     let mut tx = repo.pool().begin().await.expect("begin terminal seed tx");
     let area = area_create_tx(
         &mut tx,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         NewArea {
             name: format!("read flip {label}"),
             color: "#101010".into(),
@@ -256,6 +258,7 @@ pub(super) async fn seed_codex_terminal_card(
         .expect("begin codex terminal seed tx");
     let area = area_create_tx(
         &mut tx,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         NewArea {
             name: format!("read flip {label}"),
             color: "#101010".into(),

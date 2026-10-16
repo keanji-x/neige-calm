@@ -107,6 +107,7 @@ mod tests {
         let mut tx = repo.pool().begin().await.unwrap();
         let area = crate::db::sqlite::area_create_tx(
             &mut tx,
+            calm_types::organization::LEGACY_OWNER_USER_ID,
             NewArea {
                 name: "c".into(),
                 color: "#000".into(),

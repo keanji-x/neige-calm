@@ -8,13 +8,13 @@
 //! the host-wide sweeps of one test can only match processes that test started. `Drop` kills what
 //! still carries one of this root's markers, through the `start_time`-verified signal.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use calm_server::auth::Principal;
 use calm_server::claude_planner::stop::{MARKER_KEY, MarkerInstance, sigkill_verified_for_test};
 use calm_server::config::Config;
 use calm_server::db::prelude::*;
@@ -225,7 +225,15 @@ impl Stack {
             .layer(axum::middleware::from_fn(
                 calm_server::actor::actor_middleware,
             ))
-            .layer(axum::middleware::from_fn(insert_owner_principal))
+            .layer(axum::middleware::from_fn_with_state(
+                calm_server::auth::AuthState::new(calm_server::auth::AuthConfig {
+                    username: None,
+                    password: None,
+                    dev_autologin: true,
+                    display_name: "Owner".into(),
+                }),
+                calm_server::auth::require_session,
+            ))
             .with_state(state.clone());
         Self { state, app }
     }
@@ -299,11 +307,14 @@ impl Stack {
     /// A fresh area for a create body.
     pub async fn area(&self) -> String {
         self.repo()
-            .area_create(NewArea {
-                name: "claude planner".into(),
-                color: "#111111".into(),
-                sort: None,
-            })
+            .area_create(
+                LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "claude planner".into(),
+                    color: "#111111".into(),
+                    sort: None,
+                },
+            )
             .await
             .expect("area")
             .id
@@ -449,19 +460,6 @@ impl Stack {
             .expect("row")
             .mcp_token_hash
     }
-}
-
-async fn insert_owner_principal(
-    mut request: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> axum::response::Response {
-    request.extensions_mut().insert(Principal {
-        user_id: "owner".into(),
-        display_name: "owner".into(),
-        role: "owner".into(),
-        session_id: "claude-planner-stack".into(),
-    });
-    next.run(request).await
 }
 
 fn marked(markers: &HashSet<String>) -> Vec<(i32, u64)> {

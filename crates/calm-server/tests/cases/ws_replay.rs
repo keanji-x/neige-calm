@@ -1,5 +1,6 @@
 //! WS replay protocol (the `since` cursor side of `ws::events::handle`) — end-to-end tests.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -92,7 +93,7 @@ async fn seed_three(repo: &SqlxRepo, bus: &EventBus, names: [&str; 3]) -> Vec<(i
             ),
             move |tx| {
                 Box::pin(async move {
-                    let c = area_create_tx(tx, p).await?;
+                    let c = area_create_tx(tx, LEGACY_OWNER_USER_ID, p).await?;
                     Ok((c.clone(), Event::AreaUpdated(c)))
                 })
             },
@@ -257,7 +258,9 @@ async fn replay_then_live_no_drop_no_dupe() {
         ),
         move |tx| {
             Box::pin(async move {
-                let c = area_create_tx(tx, new_area).await?;
+                let c =
+                    area_create_tx(tx, calm_types::organization::LEGACY_OWNER_USER_ID, new_area)
+                        .await?;
                 Ok((c.clone(), Event::AreaUpdated(c)))
             })
         },

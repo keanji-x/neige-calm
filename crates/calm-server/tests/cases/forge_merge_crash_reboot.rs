@@ -5,6 +5,7 @@
 #![cfg(target_os = "linux")]
 
 use crate::support;
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 
 use std::ffi::{OsStr, OsString};
 use std::os::unix::process::ExitStatusExt;
@@ -520,11 +521,14 @@ struct Seeded {
 async fn seed_world(repo: &Arc<SqlxRepo>, track_cwd: &Path) -> Seeded {
     let as_repo: Arc<dyn Repo> = repo.clone();
     let area = as_repo
-        .area_create(NewArea {
-            name: "merge-crash-e2".into(),
-            color: "#123456".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "merge-crash-e2".into(),
+                color: "#123456".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("create area");
     let track = as_repo

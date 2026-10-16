@@ -1,6 +1,7 @@
 //! Orphan-terminal sweeper tests: detection, grace window, audit event, idempotency against a dead
 //! daemon or stale pid. No terminal renderer is started; the SIGTERM path is exercised on a spawned `sleep`.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -52,11 +53,14 @@ async fn fresh_state() -> (AppState, Arc<SqlxRepo>) {
 async fn seed_linked_pair(state: &AppState, concrete: &SqlxRepo) -> (String, String) {
     let area = state
         .raw_repo()
-        .area_create(NewArea {
-            name: "c".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = state
@@ -129,11 +133,14 @@ async fn seed_shared_planner_pair(
 ) -> (String, String) {
     let area = state
         .raw_repo()
-        .area_create(NewArea {
-            name: "c".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = state
@@ -205,11 +212,14 @@ async fn seed_migrated_shared_planner_pair(
 ) -> (String, String) {
     let area = state
         .raw_repo()
-        .area_create(NewArea {
-            name: "c".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = state

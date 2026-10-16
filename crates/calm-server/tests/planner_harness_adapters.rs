@@ -1,3 +1,4 @@
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -152,11 +153,14 @@ async fn state_with_live_daemon(tmp: &TempDir) -> (AppState, Arc<SqlxRepo>, Card
 
 async fn seed_track(repo: &SqlxRepo) -> calm_server::model::Track {
     let area = repo
-        .area_create(NewArea {
-            name: "adapter".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "adapter".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     repo.track_create(NewTrack {

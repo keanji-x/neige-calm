@@ -4,6 +4,7 @@
 
 #![cfg(unix)]
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 
 use calm_server::card_role_cache::CardRoleCache;
@@ -121,11 +122,14 @@ async fn side(sqlx: &SqlxRepo, cache: &CardRoleCache, area: &calm_server::ids::A
 async fn boot() -> Boot {
     let sqlx = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = sqlx
-        .area_create(NewArea {
-            name: "report-tag".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "report-tag".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let cache = CardRoleCache::new();

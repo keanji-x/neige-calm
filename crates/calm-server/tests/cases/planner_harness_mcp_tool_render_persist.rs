@@ -1,3 +1,4 @@
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -20,11 +21,14 @@ async fn seed_harness(
     events: EventBus,
 ) -> (PlannerHarness, Arc<SharedCodexAppServer>, String, String) {
     let area = repo
-        .area_create(NewArea {
-            name: "items-persist".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "items-persist".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

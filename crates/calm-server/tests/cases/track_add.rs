@@ -2,6 +2,7 @@
 //! through the keyed create, and the new row records which Track created it under which key.
 //! Every Track here is managed, so no test touches a real repository.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -63,11 +64,14 @@ async fn boot_with_gate(
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let area = repo
-        .area_create(NewArea {
-            name: "track-add".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "track-add".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let events = EventBus::new();

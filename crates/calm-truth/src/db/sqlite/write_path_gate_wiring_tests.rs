@@ -17,6 +17,7 @@ async fn seed_worker_card(repo: &SqlxRepo, label: &str) -> WorkerCardHome {
     let mut tx = repo.pool().begin().await.expect("begin seed tx");
     let area = area_create_tx(
         &mut tx,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         NewArea {
             name: format!("hp1-b-i {label}"),
             color: "#101010".into(),

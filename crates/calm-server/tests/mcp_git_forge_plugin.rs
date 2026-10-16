@@ -11,6 +11,7 @@ mod git_forge_track_worktree;
 #[path = "cases/git_forge_tool_catalog.rs"]
 mod git_forge_tool_catalog;
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -326,11 +327,14 @@ async fn boot_fixture() -> Fixture {
     let events = EventBus::new();
 
     let area = repo
-        .area_create(NewArea {
-            name: "mcp-git-forge-plugin".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "mcp-git-forge-plugin".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("create area");
     let track = repo

@@ -14,6 +14,7 @@ pub(super) async fn seed_worker_cards(repo: &SqlxRepo, ids: &[&str]) -> Vec<Stri
     let mut tx = repo.pool().begin().await.unwrap();
     let area = area_create_tx(
         &mut tx,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         NewArea {
             name: "c".into(),
             color: "#fff".into(),

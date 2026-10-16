@@ -62,6 +62,7 @@ async fn the_binding_and_the_track_commit_together() {
     let mut tx = repo.pool().begin().await.expect("begin tx");
     let area = area_create_tx(
         &mut tx,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         NewArea {
             name: "binding commits with the mint".into(),
             color: "#202020".into(),
@@ -116,6 +117,7 @@ async fn the_database_refuses_two_tracks_under_one_area_and_key() {
     let mut tx = repo.pool().begin().await.expect("begin tx");
     let area = area_create_tx(
         &mut tx,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         NewArea {
             name: "one key one track".into(),
             color: "#202020".into(),
@@ -176,6 +178,7 @@ async fn the_database_refuses_two_tracks_under_one_area_and_key() {
     let mut tx = repo.pool().begin().await.expect("begin a clean tx");
     let area2 = area_create_tx(
         &mut tx,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         NewArea {
             name: "one key one track, committed".into(),
             color: "#202020".into(),
@@ -229,6 +232,7 @@ async fn a_message_less_claim_round_trips_as_its_own_fingerprint_variant() {
     let mut tx = repo.pool().begin().await.expect("begin tx");
     let area = area_create_tx(
         &mut tx,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         NewArea {
             name: "message-less binding".into(),
             color: "#202020".into(),

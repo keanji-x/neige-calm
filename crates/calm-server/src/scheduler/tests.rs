@@ -469,11 +469,14 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
     let repo: Arc<dyn Repo> = concrete.clone();
     let route_repo: Arc<dyn crate::db::RouteRepo> = concrete.clone();
     let area = repo
-        .area_create(crate::model::NewArea {
-            name: "claude-timeout".into(),
-            color: "#101010".into(),
-            sort: None,
-        })
+        .area_create(
+            calm_types::organization::LEGACY_OWNER_USER_ID,
+            crate::model::NewArea {
+                name: "claude-timeout".into(),
+                color: "#101010".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("create area");
     let track = repo
@@ -640,11 +643,14 @@ async fn running_timeout_race_lost_does_not_teardown_or_release_lease() {
     );
     let repo: Arc<dyn Repo> = concrete.clone();
     let area = repo
-        .area_create(crate::model::NewArea {
-            name: "timeout-race".into(),
-            color: "#101010".into(),
-            sort: None,
-        })
+        .area_create(
+            calm_types::organization::LEGACY_OWNER_USER_ID,
+            crate::model::NewArea {
+                name: "timeout-race".into(),
+                color: "#101010".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("create area");
     let track = repo

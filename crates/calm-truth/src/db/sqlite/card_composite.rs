@@ -528,11 +528,14 @@ mod tests {
     async fn card_title_round_trips_through_create_patch_and_composite() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let area = repo
-            .area_create(NewArea {
-                name: "title-test".into(),
-                color: "#000".into(),
-                sort: None,
-            })
+            .area_create(
+                calm_types::organization::LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "title-test".into(),
+                    color: "#000".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         let track = repo
@@ -694,11 +697,14 @@ mod tests {
     async fn card_update_keeps_the_planner_terminal_marker_sticky() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let area = repo
-            .area_create(NewArea {
-                name: "marker".into(),
-                color: "#000".into(),
-                sort: None,
-            })
+            .area_create(
+                calm_types::organization::LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "marker".into(),
+                    color: "#000".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         let track = repo
@@ -833,11 +839,14 @@ mod tests {
     async fn card_update_keeps_only_minted_server_owned_values() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let area = repo
-            .area_create(NewArea {
-                name: "permissions".into(),
-                color: "#000".into(),
-                sort: None,
-            })
+            .area_create(
+                calm_types::organization::LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "permissions".into(),
+                    color: "#000".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         let track = repo

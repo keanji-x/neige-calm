@@ -1,6 +1,7 @@
 //! `mcp_server::tools::plan` integration coverage: an `AppContext` built directly (no live MCP
 //! listener) driving `neige_task_cancel` / `neige_task_ls` end-to-end.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -40,11 +41,14 @@ async fn boot() -> Boot {
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let area = repo
-        .area_create(NewArea {
-            name: "mcp-plan".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "mcp-plan".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

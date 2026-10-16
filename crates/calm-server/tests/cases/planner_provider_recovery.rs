@@ -3,6 +3,7 @@
 //! whose persisted role is not Planner, is skipped.
 
 use super::*;
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 
 async fn recover_planner_row(
     card_role: CardRole,
@@ -20,11 +21,14 @@ async fn recover_row(
 ) -> (calm_server::harness::RecoveryOutcome, bool) {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "planner-provider-recovery".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "planner-provider-recovery".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

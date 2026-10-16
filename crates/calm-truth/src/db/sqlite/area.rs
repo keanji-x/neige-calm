@@ -8,7 +8,12 @@ use super::session_row::{
 use crate::error::{CalmError, Result};
 use crate::model::*;
 
-pub async fn area_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewArea) -> Result<Area> {
+pub async fn area_create_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    owner_user_id: &str,
+    p: NewArea,
+) -> Result<Area> {
+    super::area_membership::application_user_require_registered(tx, owner_user_id).await?;
     let sort = match p.sort {
         Some(s) => s,
         None => next_sort_scoped_in_tx(tx, "areas", "", None).await?,
@@ -29,6 +34,14 @@ pub async fn area_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewArea) -> Res
     .bind(now)
     .execute(&mut **tx)
     .await?;
+    sqlx::query(
+        "INSERT INTO area_members(area_id, user_id, role, joined_at) VALUES (?1, ?2, 'owner', ?3)",
+    )
+    .bind(&id)
+    .bind(owner_user_id)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
     Ok(Area {
         id: id.into(),
         name: p.name,
@@ -46,12 +59,15 @@ pub async fn area_create_tx(tx: &mut Transaction<'_, Sqlite>, p: NewArea) -> Res
 /// minting. An absent/deleted Area never frees the key for a second creation.
 pub async fn area_create_replay_tx(
     tx: &mut Transaction<'_, Sqlite>,
+    creator_user_id: &str,
     key: &str,
     fingerprint: &str,
 ) -> Result<Option<Area>> {
+    super::area_membership::application_user_require_registered(tx, creator_user_id).await?;
     let binding: Option<(String, String)> = sqlx::query_as(
-        "SELECT request_fingerprint, area_id FROM area_create_idempotency WHERE idempotency_key = ?1",
+        "SELECT request_fingerprint, area_id FROM area_create_idempotency WHERE creator_user_id = ?1 AND idempotency_key = ?2",
     )
+    .bind(creator_user_id)
     .bind(key)
     .fetch_optional(&mut **tx)
     .await?;
@@ -75,6 +91,13 @@ pub async fn area_create_replay_tx(
          create the Area again under a new key."
             .into(),
     ))?;
+    super::area_membership::area_require_access(
+        tx,
+        area.id.as_str(),
+        creator_user_id,
+        calm_types::organization::AreaAccess::Collaborate,
+    )
+    .await?;
     Ok(Some(area))
 }
 
@@ -82,11 +105,13 @@ pub async fn area_create_replay_tx(
 /// separate transaction, or a lost response could leave unbound side effects.
 pub async fn area_create_bind_tx(
     tx: &mut Transaction<'_, Sqlite>,
+    creator_user_id: &str,
     key: &str,
     fingerprint: &str,
     area_id: &str,
 ) -> Result<()> {
-    sqlx::query("INSERT INTO area_create_idempotency (idempotency_key, request_fingerprint, area_id) VALUES (?1, ?2, ?3)")
+    sqlx::query("INSERT INTO area_create_idempotency (creator_user_id, idempotency_key, request_fingerprint, area_id) VALUES (?1, ?2, ?3, ?4)")
+        .bind(creator_user_id)
         .bind(key)
         .bind(fingerprint)
         .bind(area_id)

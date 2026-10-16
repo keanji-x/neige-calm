@@ -1229,11 +1229,14 @@ mod tests {
     ) -> (SqlxRepo, String, String) {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let area = repo
-            .area_create(NewArea {
-                name: format!("restore-guard-{status}"),
-                color: "#000".into(),
-                sort: None,
-            })
+            .area_create(
+                calm_types::organization::LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: format!("restore-guard-{status}"),
+                    color: "#000".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         let track = repo

@@ -3,6 +3,7 @@
 //! the recipient's harness) and the real MCP listener (so every call goes through the transport and
 //! the `neige` forwarder protocol). Tracks work in private temp directories, never a checkout.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -93,11 +94,14 @@ impl World {
         let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.expect("sqlite"));
         let repo_dyn: Arc<dyn Repo> = repo.clone();
         let area = repo_dyn
-            .area_create(NewArea {
-                name: "mail".into(),
-                color: "#000".into(),
-                sort: None,
-            })
+            .area_create(
+                LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "mail".into(),
+                    color: "#000".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         let dir = tempfile::tempdir().expect("tempdir");

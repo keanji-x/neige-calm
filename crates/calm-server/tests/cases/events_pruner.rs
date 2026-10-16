@@ -1,5 +1,6 @@
 //! Integration tests for the events retention pruner.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 
 use calm_server::db::sqlite::{SqlxRepo, area_create_tx, card_create_tx, track_create_tx};
@@ -97,6 +98,7 @@ async fn seed_track_with_card(repo: &Arc<SqlxRepo>, bus: &EventBus) -> String {
             Box::pin(async move {
                 let area = area_create_tx(
                     tx,
+                    LEGACY_OWNER_USER_ID,
                     NewArea {
                         name: "c".into(),
                         color: "#000".into(),

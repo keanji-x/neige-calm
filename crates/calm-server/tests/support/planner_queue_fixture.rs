@@ -1,5 +1,6 @@
 //! One live planner card with a registered harness, for the queue slices.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -129,11 +130,14 @@ async fn boot_inner(
 ) -> Boot {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "pending-queue".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "pending-queue".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let tmp = tempfile::TempDir::new().unwrap();

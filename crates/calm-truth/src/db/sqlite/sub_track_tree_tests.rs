@@ -6,6 +6,7 @@ async fn seed_area(repo: &SqlxRepo, suffix: &str) -> String {
     let mut tx = repo.pool().begin().await.unwrap();
     let area = area_create_tx(
         &mut tx,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         NewArea {
             name: suffix.into(),
             color: "#000".into(),

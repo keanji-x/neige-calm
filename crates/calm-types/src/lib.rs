@@ -19,6 +19,7 @@ pub mod mentions;
 pub mod mobile_access;
 pub mod model;
 pub mod observation;
+pub mod organization;
 pub mod planner_attachment;
 pub mod plugin;
 pub mod proposal;

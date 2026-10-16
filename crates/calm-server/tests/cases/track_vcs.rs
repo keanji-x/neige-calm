@@ -1,3 +1,4 @@
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -40,11 +41,14 @@ async fn fresh_file_repo() -> (tempfile::TempDir, Arc<SqlxRepo>) {
 }
 
 async fn make_area(repo: &SqlxRepo) -> calm_server::model::Area {
-    repo.area_create(NewArea {
-        name: "area".into(),
-        color: "#abcdef".into(),
-        sort: None,
-    })
+    repo.area_create(
+        LEGACY_OWNER_USER_ID,
+        NewArea {
+            name: "area".into(),
+            color: "#abcdef".into(),
+            sort: None,
+        },
+    )
     .await
     .expect("create area")
 }

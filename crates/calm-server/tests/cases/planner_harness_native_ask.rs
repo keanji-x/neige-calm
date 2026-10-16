@@ -2,6 +2,7 @@
 //! Planner's ask. Driven from the captured app-server frame through the production mapping and
 //! the run loop's item path to the stored `ask.requested` and the activity overlay.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -80,11 +81,14 @@ struct Rig {
 async fn rig(profile: Profile) -> Rig {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "native-ask".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "native-ask".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

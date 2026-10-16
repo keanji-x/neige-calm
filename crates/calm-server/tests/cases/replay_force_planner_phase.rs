@@ -3,6 +3,7 @@
 
 #![cfg(feature = "fixtures")]
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -74,11 +75,14 @@ impl Boot {
 async fn boot() -> Boot {
     let (repo, bus, state) = replay::boot_in_memory().await.expect("boot_in_memory");
     let area = repo
-        .area_create(NewArea {
-            name: "force-planner-phase-test".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "force-planner-phase-test".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let app = calm_server::routes::router()

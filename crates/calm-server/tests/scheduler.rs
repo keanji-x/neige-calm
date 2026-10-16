@@ -3,6 +3,7 @@
 
 mod support;
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::{
     Arc,
@@ -98,11 +99,14 @@ async fn boot() -> Boot {
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let area = repo
-        .area_create(NewArea {
-            name: "scheduler-test".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "scheduler-test".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -6078,11 +6082,14 @@ async fn closure_depth_exhaustion_truncates_and_cross_area_is_rejected() {
 
     let foreign_area = boot
         .repo
-        .area_create(NewArea {
-            name: "foreign".into(),
-            color: "#111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "foreign".into(),
+                color: "#111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let foreign_track = boot

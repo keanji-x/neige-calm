@@ -1,5 +1,6 @@
 //! The upload and read-back endpoints, driven through the real router with a real managed workspace on disk.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -38,11 +39,14 @@ async fn boot_with_kind(kind: TrackWorkspaceKind) -> Boot {
     let workspace_root = tmp.path().join("workspaces");
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "attachments".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "attachments".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     // `ManagedUnder` is the plan `POST /api/tracks` takes when no `cwd` is named; the workspace is frozen by the writer, so it is decided at creation.

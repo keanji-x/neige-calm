@@ -6,6 +6,7 @@ use calm_server::db::sqlite::{SqlxRepo, track_delete_tx};
 use calm_server::ids::TrackId;
 use calm_server::model::{NewArea, NewTrack, new_id, now_ms};
 use calm_server::track_area_cache::TrackAreaCache;
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 
 async fn track(repo: &SqlxRepo, area: &calm_server::ids::AreaId, dir: &std::path::Path) -> TrackId {
     let cwd = dir.join(new_id());
@@ -48,11 +49,14 @@ async fn mails_rows_cascade_with_either_track() {
     let dir = tempfile::tempdir().unwrap();
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let area = repo
-        .area_create(NewArea {
-            name: "mail".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "mail".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let (r, n, t) = (

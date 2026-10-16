@@ -2,6 +2,7 @@
 //! harness is `run_unstarted_for_test`, so deliveries are read deterministically from the
 //! observation channel.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -65,11 +66,14 @@ struct LoopFixture {
 async fn loop_fixture(tag: &str) -> LoopFixture {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: tag.into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: tag.into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -545,11 +549,14 @@ impl ProviderAdapter for SilentSpawnAdapter {
 async fn dead_worker_never_reporting_reaper_converges() {
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "dead-worker".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "dead-worker".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

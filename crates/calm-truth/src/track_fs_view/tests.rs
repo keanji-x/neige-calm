@@ -889,6 +889,7 @@ async fn conversation_md_paging_renders_full_transcript_over_500_items() {
     let mut tx = repo.pool().begin().await.unwrap();
     let area = area_create_tx(
         &mut tx,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         NewArea {
             name: "c".into(),
             color: "#fff".into(),

@@ -1,6 +1,7 @@
 //! `mcp_server::tools::track_state` integration smoke: in-memory `SqlxRepo` + `EventBus` + seeded
 //! `CardRoleCache`, handlers driven as plain async fns with no live MCP listener.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 
 use calm_server::card_role_cache::CardRoleCache;
@@ -100,11 +101,14 @@ async fn boot() -> Boot {
             .expect("open in-memory sqlite"),
     );
     let area = repo
-        .area_create(NewArea {
-            name: "mcp-track-state".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "mcp-track-state".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

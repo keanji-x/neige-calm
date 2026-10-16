@@ -1,5 +1,6 @@
 //! Production operation recovery from the durable phase-2 checkpoint.
 use super::*;
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 
 #[tokio::test]
 async fn force_new_thread_recovery_after_phase2_crash() {
@@ -46,11 +47,14 @@ async fn recover_phase2(profile: calm_server::harness::profile::HarnessProfile, 
     let (card_id, track_id, old_runtime_id, placeholder_id, op_id) = {
         let repo = Arc::new(SqlxRepo::open(&db_url).await.unwrap());
         let area = repo
-            .area_create(NewArea {
-                name: "phase2-crash".into(),
-                color: "#111111".into(),
-                sort: None,
-            })
+            .area_create(
+                LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "phase2-crash".into(),
+                    color: "#111111".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         let track = repo

@@ -336,11 +336,14 @@ mod tests {
     async fn set_card_mcp_token_rotates_and_returns_matching_hashes() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let area = repo
-            .area_create(NewArea {
-                name: "wiring-mcp-token".into(),
-                color: "#000".into(),
-                sort: None,
-            })
+            .area_create(
+                calm_types::organization::LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "wiring-mcp-token".into(),
+                    color: "#000".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         let track = repo

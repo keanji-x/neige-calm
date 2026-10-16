@@ -1,5 +1,6 @@
 #![cfg(feature = "fixtures")]
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -60,11 +61,14 @@ async fn boot() -> Boot {
     );
     let repo: Arc<dyn Repo> = repo_sqlx.clone();
     let area = repo
-        .area_create(NewArea {
-            name: "planner-wake-worker-stop".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "planner-wake-worker-stop".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

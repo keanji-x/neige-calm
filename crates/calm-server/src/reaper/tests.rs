@@ -37,6 +37,7 @@ async fn seeded_repo() -> (Arc<SqlxRepo>, TrackId) {
     );
     let area = RepoSyncDomainRaw::area_create(
         repo.as_ref(),
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         NewArea {
             name: "reaper-test".into(),
             color: "#000".into(),

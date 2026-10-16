@@ -10,6 +10,7 @@ async fn track_create_round_trips_template_input() {
     let mut tx = repo.pool().begin().await.expect("begin tx");
     let area = area_create_tx(
         &mut tx,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         NewArea {
             name: "template input round trip".into(),
             color: "#202020".into(),

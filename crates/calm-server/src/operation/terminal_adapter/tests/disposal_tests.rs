@@ -195,6 +195,15 @@ async fn exercise(history: History, disposal: Disposal) {
     .with_workspace_root(temp.path().join("workspaces"));
     let runtime = state.operation_runtime.clone();
     let app = crate::routes::router()
+        .layer(axum::middleware::from_fn_with_state(
+            crate::auth::AuthState::new(crate::auth::AuthConfig {
+                username: None,
+                password: None,
+                dev_autologin: true,
+                display_name: "Owner".into(),
+            }),
+            crate::auth::require_session,
+        ))
         .layer(axum::middleware::from_fn(crate::actor::actor_middleware))
         .with_state(state.clone());
     let (status, body) = call(

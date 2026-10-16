@@ -23,6 +23,7 @@ async fn seed_track_with_sorts(repo: &SqlxRepo, sorts: &[f64]) -> (String, Vec<S
     let mut tx = repo.pool().begin().await.expect("begin tx");
     let area = area_create_tx(
         &mut tx,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         NewArea {
             name: "sort precision".into(),
             color: "#101010".into(),

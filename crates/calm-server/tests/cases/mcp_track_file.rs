@@ -3,6 +3,7 @@
 
 #![cfg(unix)]
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 
 use calm_exec::flow::{CaptureCheckpoint, CaptureOutcome, CapturePosition};
@@ -83,11 +84,14 @@ async fn boot() -> Boot {
     );
     let repo: Arc<dyn Repo> = sqlx_repo.clone();
     let area = repo
-        .area_create(NewArea {
-            name: "track-file-test".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "track-file-test".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -137,11 +141,14 @@ async fn boot() -> Boot {
     seed_planner_root_runtime(sqlx_repo.as_ref(), &planner_card.id).await;
 
     let area2 = repo
-        .area_create(NewArea {
-            name: "track-file-other".into(),
-            color: "#0f0".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "track-file-other".into(),
+                color: "#0f0".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track2 = repo

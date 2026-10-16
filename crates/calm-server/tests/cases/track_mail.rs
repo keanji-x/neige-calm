@@ -2,6 +2,7 @@
 //! MCP calls and `neige` commands from Codex Planners whose turns run on live harnesses, the real
 //! Dispatcher pushing each mail's wake.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::time::{Duration, Instant};
 
 use calm_server::harness::{ClaimMode, Observation, new_track_delete_locks};
@@ -430,11 +431,14 @@ async fn mail_send_refusals_follow_the_table() {
     let (r, n) = (w.p(0), w.p(1));
     let other_area = w
         .repo_dyn
-        .area_create(NewArea {
-            name: "other".into(),
-            color: "#111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "other".into(),
+                color: "#111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let foreign = w

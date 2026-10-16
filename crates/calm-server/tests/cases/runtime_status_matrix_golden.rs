@@ -11,6 +11,7 @@ use calm_server::model::{CardRole, NewArea, NewCard, NewTrack, new_id, now_ms};
 use calm_server::session_projection_repo::{
     WorkerSessionInit, WorkerSessionKind, WorkerSessionProjectionRepoError, WorkerSessionState,
 };
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use serde_json::{Value, json};
 
 const GOLDEN: &str = include_str!("../goldens/runtime_status_matrix.json");
@@ -34,11 +35,14 @@ async fn fresh_repo() -> SqlxRepo {
 
 async fn make_track(repo: &SqlxRepo) -> calm_server::model::Track {
     let area = repo
-        .area_create(NewArea {
-            name: "exit-matrix".into(),
-            color: "#101010".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "exit-matrix".into(),
+                color: "#101010".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("create area");
     repo.track_create(NewTrack {

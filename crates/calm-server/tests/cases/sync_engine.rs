@@ -1,6 +1,7 @@
 //! Sync engine server-side tests: `write_with_event` atomicity, replay correctness,
 //! the replay-then-live boundary, and event version / scope round-trips.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 
 use calm_server::db::prelude::*;
@@ -46,7 +47,7 @@ async fn write_with_event_persists_entity_and_event_in_one_txn() {
         ),
         move |tx| {
             Box::pin(async move {
-                let area = area_create_tx(tx, p).await?;
+                let area = area_create_tx(tx, LEGACY_OWNER_USER_ID, p).await?;
                 Ok((area.clone(), Event::AreaUpdated(area)))
             })
         },
@@ -83,11 +84,14 @@ async fn closure_error_rolls_back_entity_and_event_rows() {
 
     // Seed an area so the track_create_tx step inside the closure succeeds; only the closure-level error should fail the txn.
     let area = repo
-        .area_create(NewArea {
-            name: "c".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let tracks_before: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tracks")
@@ -181,6 +185,7 @@ async fn event_insert_failure_rolls_back_entity_write() {
             Box::pin(async move {
                 let area = area_create_tx(
                     tx,
+                    LEGACY_OWNER_USER_ID,
                     NewArea {
                         name: "c".into(),
                         color: "#000".into(),
@@ -229,6 +234,7 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
             Box::pin(async move {
                 let area = area_create_tx(
                     tx,
+                    LEGACY_OWNER_USER_ID,
                     NewArea {
                         name: "c1".into(),
                         color: "#000".into(),
@@ -342,11 +348,14 @@ async fn replay_then_live_dedup_under_concurrent_write() {
     let (repo, concrete, bus) = boot().await;
 
     let area = repo
-        .area_create(NewArea {
-            name: "c".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
 
@@ -522,7 +531,7 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                 ),
                 move |tx| {
                     Box::pin(async move {
-                        let c = area_create_tx(tx, p).await?;
+                        let c = area_create_tx(tx, LEGACY_OWNER_USER_ID, p).await?;
                         Ok((c.clone(), Event::AreaUpdated(c)))
                     })
                 },
@@ -736,6 +745,7 @@ async fn event_version_round_trips_from_write_to_replay() {
             Box::pin(async move {
                 let area = area_create_tx(
                     tx,
+                    LEGACY_OWNER_USER_ID,
                     NewArea {
                         name: "version-rt".into(),
                         color: "#000".into(),

@@ -234,11 +234,14 @@ async fn boot(owners: &[OwnerFixture]) -> Boot {
         .await
         .expect("seed track-area cache");
     let area = repo_dyn
-        .area_create(crate::model::NewArea {
-            name: "1321-s1".into(),
-            color: "#101010".into(),
-            sort: None,
-        })
+        .area_create(
+            calm_types::organization::LEGACY_OWNER_USER_ID,
+            crate::model::NewArea {
+                name: "1321-s1".into(),
+                color: "#101010".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("create area");
 

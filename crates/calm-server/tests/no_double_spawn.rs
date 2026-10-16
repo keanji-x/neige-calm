@@ -1,5 +1,6 @@
 #![cfg(unix)]
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -366,11 +367,14 @@ async fn boot_with_counted_spawn() -> Boot {
     );
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let area = repo_dyn
-        .area_create(NewArea {
-            name: "operations-test".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "operations-test".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo_dyn
@@ -484,11 +488,14 @@ async fn boot_codex_with_counted_spawn_and_lifecycle_timeout(
     );
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let area = repo_dyn
-        .area_create(NewArea {
-            name: "codex-operations-test".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "codex-operations-test".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo_dyn
@@ -619,11 +626,14 @@ async fn boot_claude_with_counted_spawn() -> Boot {
     );
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let area = repo_dyn
-        .area_create(NewArea {
-            name: "claude-operations-test".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "claude-operations-test".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo_dyn

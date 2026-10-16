@@ -3,6 +3,7 @@
 //! fresh start (restart and reset alike) also carries the queued, unsent messages of a session
 //! that failed mid-conversation, exactly once.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -30,11 +31,14 @@ use crate::planner_repoint_restart_lock::{joined, request, wait_until};
 pub(crate) async fn ordinary_track() -> Boot {
     let (tmp, repo, state) = app_state(AppServer::Running).await;
     let area = repo
-        .area_create(NewArea {
-            name: "restart".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "restart".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let app = router(&state);

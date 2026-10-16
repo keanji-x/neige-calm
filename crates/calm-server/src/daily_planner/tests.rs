@@ -219,6 +219,7 @@ pub(crate) async fn foreign_track(state: &RouteState) -> Track {
             Box::pin(async move {
                 let area = area_create_tx(
                     tx,
+                    calm_types::organization::LEGACY_OWNER_USER_ID,
                     NewArea {
                         name: "Project".into(),
                         color: "#6574cd".into(),

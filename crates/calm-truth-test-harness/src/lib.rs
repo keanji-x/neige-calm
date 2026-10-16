@@ -39,11 +39,14 @@ async fn seeded_repo() -> (SqlxRepo, TrackId) {
         .await
         .expect("open migrated sqlite repo");
     let area = repo
-        .area_create(NewArea {
-            name: "truth conformance".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            calm_types::organization::LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "truth conformance".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("seed area");
     let track = repo

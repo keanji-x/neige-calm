@@ -3,6 +3,7 @@
 
 #![cfg(unix)]
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 
 use calm_server::db::prelude::*;
@@ -82,11 +83,14 @@ async fn backfill_mints_report_card_per_track() {
     let (repo, pool) = fresh_repo().await;
     // Mint directly via the repo (bypassing the HTTP route, so no report card is auto-minted): the pre-0014 shape.
     let area = repo
-        .area_create(NewArea {
-            name: "c".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -131,11 +135,14 @@ async fn backfill_mints_report_card_per_track() {
 async fn backfill_skips_tracks_that_already_have_a_report_card() {
     let (repo, pool) = fresh_repo().await;
     let area = repo
-        .area_create(NewArea {
-            name: "c".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -170,11 +177,14 @@ async fn backfill_skips_tracks_that_already_have_a_report_card() {
 async fn backfill_seeds_layout_overlay_when_absent() {
     let (repo, pool) = fresh_repo().await;
     let area = repo
-        .area_create(NewArea {
-            name: "c".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -221,11 +231,14 @@ async fn backfill_seeds_layout_overlay_when_absent() {
 async fn backfill_patches_existing_layout_overlay() {
     let (repo, pool) = fresh_repo().await;
     let area = repo
-        .area_create(NewArea {
-            name: "c".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

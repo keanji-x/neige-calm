@@ -3,6 +3,7 @@
 
 #![cfg(unix)]
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -44,11 +45,14 @@ async fn boot() -> Boot {
             .expect("open in-memory sqlite"),
     );
     let area = repo
-        .area_create(NewArea {
-            name: "planner-card-test".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "planner-card-test".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
 
@@ -338,6 +342,7 @@ async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
             Box::pin(async move {
                 let area = area_create_tx(
                     tx,
+                    LEGACY_OWNER_USER_ID,
                     NewArea {
                         name: "plural".into(),
                         color: "#fff".into(),
@@ -439,6 +444,7 @@ async fn write_with_events_typed_rolls_back_when_closure_errors() {
             Box::pin(async move {
                 let _area = area_create_tx(
                     tx,
+                    LEGACY_OWNER_USER_ID,
                     NewArea {
                         name: "doomed".into(),
                         color: "#000".into(),
@@ -500,6 +506,7 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
             Box::pin(async move {
                 let area = area_create_tx(
                     tx,
+                    LEGACY_OWNER_USER_ID,
                     NewArea {
                         name: "gated".into(),
                         color: "#000".into(),

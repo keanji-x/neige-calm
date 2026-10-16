@@ -1,3 +1,4 @@
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -155,11 +156,14 @@ async fn boot() -> Boot {
             .expect("open in-memory sqlite"),
     );
     let area = repo
-        .area_create(NewArea {
-            name: "planner-card-reset".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "planner-card-reset".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -228,11 +232,14 @@ async fn boot_shared() -> Boot {
             .expect("open in-memory sqlite"),
     );
     let area = repo
-        .area_create(NewArea {
-            name: "planner-card-reset-shared".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "planner-card-reset-shared".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -1758,11 +1765,14 @@ async fn track_delete_shuts_down_active_planner_harness() {
     let boot = boot_shared().await;
     let area = boot
         .repo
-        .area_create(NewArea {
-            name: "harness-track-delete".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "harness-track-delete".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let (status, body) = post_json(
@@ -1814,11 +1824,14 @@ async fn acceptance_20_descendant_refusal_preserves_live_track_runtime_and_termi
     let boot = boot_shared().await;
     let area = boot
         .repo
-        .area_create(NewArea {
-            name: "descendant-refusal-runtime".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "descendant-refusal-runtime".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let (status, body) = post_json(
@@ -2794,11 +2807,14 @@ async fn track_create_without_title_seeds_no_track_goal() {
     let boot = boot_shared().await;
     let area = boot
         .repo
-        .area_create(NewArea {
-            name: "no-goal-untitled".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "no-goal-untitled".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let (status, body) = post_json(
@@ -2829,11 +2845,14 @@ async fn track_create_with_title_seeds_no_track_goal() {
     let boot = boot_shared().await;
     let area = boot
         .repo
-        .area_create(NewArea {
-            name: "no-goal-titled".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "no-goal-titled".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let title = "ship the rename tool";
@@ -2881,11 +2900,14 @@ async fn planner_reset_seeds_no_track_goal() {
     let boot = boot_shared().await;
     let area = boot
         .repo
-        .area_create(NewArea {
-            name: "no-goal-reset".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "no-goal-reset".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let (status, body) = post_json(

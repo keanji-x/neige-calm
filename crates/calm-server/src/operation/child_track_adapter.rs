@@ -526,6 +526,7 @@ mod tests {
         let mut tx = repo.pool().begin().await.unwrap();
         let area = area_create_tx(
             &mut tx,
+            calm_types::organization::LEGACY_OWNER_USER_ID,
             NewArea {
                 name: "c".into(),
                 color: "#000".into(),
@@ -772,6 +773,7 @@ mod tests {
         let mut tx = repo.pool().begin().await.unwrap();
         let area = area_create_tx(
             &mut tx,
+            calm_types::organization::LEGACY_OWNER_USER_ID,
             NewArea {
                 name: "c".into(),
                 color: "#000".into(),
@@ -890,6 +892,7 @@ mod tests {
         let mut tx = repo.pool().begin().await.unwrap();
         let area = area_create_tx(
             &mut tx,
+            calm_types::organization::LEGACY_OWNER_USER_ID,
             NewArea {
                 name: "c".into(),
                 color: "#000".into(),
@@ -1054,6 +1057,7 @@ mod tests {
         let mut tx = repo.pool().begin().await.unwrap();
         let area = area_create_tx(
             &mut tx,
+            calm_types::organization::LEGACY_OWNER_USER_ID,
             NewArea {
                 name: "c".into(),
                 color: "#000".into(),
@@ -1347,6 +1351,7 @@ mod tests {
             let mut tx = repo.pool().begin().await.unwrap();
             let area = area_create_tx(
                 &mut tx,
+                calm_types::organization::LEGACY_OWNER_USER_ID,
                 NewArea {
                     name: "unrelated-area".into(),
                     color: "#111".into(),

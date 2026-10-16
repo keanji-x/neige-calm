@@ -6,6 +6,7 @@
 #![cfg(target_os = "linux")]
 
 use crate::support;
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 
 use std::path::PathBuf;
 
@@ -40,11 +41,14 @@ async fn seed_durable_state(db_url: &str) -> Seeded {
         .expect("open file db for seeding");
 
     let area = repo
-        .area_create(NewArea {
-            name: "reboot-e1".into(),
-            color: "#123456".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "reboot-e1".into(),
+                color: "#123456".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

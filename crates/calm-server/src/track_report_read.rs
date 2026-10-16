@@ -264,11 +264,14 @@ mod tests {
     async fn fixture(legacy_crdt: bool) -> (SqlxRepo, crate::model::Track, crate::model::Card) {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let area = repo
-            .area_create(NewArea {
-                name: "read-id-stability".into(),
-                color: "#123456".into(),
-                sort: None,
-            })
+            .area_create(
+                calm_types::organization::LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: "read-id-stability".into(),
+                    color: "#123456".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         let track = repo

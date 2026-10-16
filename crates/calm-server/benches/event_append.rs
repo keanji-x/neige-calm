@@ -1,6 +1,7 @@
 //! Microbenchmark for `Repo::write_with_event` overhead: the delta between the event-logged and baseline groups is what matters.
 //! Run with `cargo bench -p calm-server --bench event_append`.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 
 use calm_server::db::Repo;
@@ -52,7 +53,7 @@ fn event_append_bench(c: &mut Criterion) {
                     ),
                     move |tx| {
                         Box::pin(async move {
-                            let area = area_create_tx(tx, p).await?;
+                            let area = area_create_tx(tx, LEGACY_OWNER_USER_ID, p).await?;
                             Ok((area.clone(), Event::AreaUpdated(area)))
                         })
                     },
@@ -74,7 +75,7 @@ fn event_append_bench(c: &mut Criterion) {
                     color: "#000".into(),
                     sort: None,
                 };
-                let area = repo.area_create(p).await.unwrap();
+                let area = repo.area_create(LEGACY_OWNER_USER_ID, p).await.unwrap();
                 criterion::black_box(area);
             }
         });

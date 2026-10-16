@@ -1,6 +1,7 @@
 //! The per-edit-session debounce. The run loop reads `std::time::Instant`, which `tokio::time::pause` cannot move,
 //! so the clock is driven with `PlannerHarness::rewind_debounce_for_test`; nothing here sleeps for the debounce itself.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -30,11 +31,14 @@ async fn idle_harness(
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let daemon = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let area = repo
-        .area_create(NewArea {
-            name: "debounce".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "debounce".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

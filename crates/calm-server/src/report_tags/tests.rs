@@ -9,11 +9,14 @@ use crate::model::{NewArea, NewTrack, RequestTheme};
 async fn fixture() -> (SqlxRepo, String) {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let area = repo
-        .area_create(NewArea {
-            name: "report-tags".into(),
-            color: "#123456".into(),
-            sort: None,
-        })
+        .area_create(
+            calm_types::organization::LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "report-tags".into(),
+                color: "#123456".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track_id = track(&repo, &area.id).await;

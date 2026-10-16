@@ -1,6 +1,7 @@
 #![cfg(unix)]
 
 use crate::support;
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -754,11 +755,14 @@ async fn boot_fixture() -> Fixture {
 
     let trusted_plugin_id = configured_trusted_plugin_id();
     let area = repo
-        .area_create(NewArea {
-            name: "mcp-plugin-tools".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "mcp-plugin-tools".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .expect("create area");
     let track = repo

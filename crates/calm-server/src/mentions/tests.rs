@@ -35,11 +35,14 @@ async fn boot() -> Fixture {
     let mut areas = Vec::new();
     for name in ["mentions-a", "mentions-b"] {
         let area = repo
-            .area_create(NewArea {
-                name: name.into(),
-                color: "#123456".into(),
-                sort: None,
-            })
+            .area_create(
+                calm_types::organization::LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: name.into(),
+                    color: "#123456".into(),
+                    sort: None,
+                },
+            )
             .await
             .unwrap();
         areas.push(area.id);
@@ -64,6 +67,15 @@ async fn boot() -> Fixture {
         None,
     );
     let app = crate::routes::router()
+        .layer(axum::middleware::from_fn_with_state(
+            crate::auth::AuthState::new(crate::auth::AuthConfig {
+                username: None,
+                password: None,
+                dev_autologin: true,
+                display_name: "Owner".into(),
+            }),
+            crate::auth::require_session,
+        ))
         .layer(axum::middleware::from_fn(crate::actor::actor_middleware))
         .with_state(state);
     Fixture {

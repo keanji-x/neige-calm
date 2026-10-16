@@ -3,6 +3,7 @@
 #[path = "template_mismatch.rs"]
 mod template_mismatch;
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -157,11 +158,14 @@ async fn boot() -> Boot {
     let tmp = TempDir::new().unwrap();
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "fork-test".into(),
-            color: "#000".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "fork-test".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let source = repo
@@ -179,11 +183,14 @@ async fn boot() -> Boot {
         .await
         .unwrap();
     let other_area = repo
-        .area_create(NewArea {
-            name: "fork-test-other".into(),
-            color: "#111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "fork-test-other".into(),
+                color: "#111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let report = repo

@@ -1,3 +1,4 @@
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -48,11 +49,14 @@ async fn boot() -> Boot {
     let track_area_cache = TrackAreaCache::new();
     let write = WriteContext::new(roles.clone(), track_area_cache.clone());
     let area = repo
-        .area_create(NewArea {
-            name: "track-vcs-pr2".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "track-vcs-pr2".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

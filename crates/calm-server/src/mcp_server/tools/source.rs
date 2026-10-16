@@ -654,11 +654,14 @@ mod mint_tests {
         let track = {
             use crate::db::RepoSyncDomainRaw;
             let area = repo
-                .area_create(crate::model::NewArea {
-                    name: "mint".into(),
-                    color: "#000".into(),
-                    sort: None,
-                })
+                .area_create(
+                    calm_types::organization::LEGACY_OWNER_USER_ID,
+                    crate::model::NewArea {
+                        name: "mint".into(),
+                        color: "#000".into(),
+                        sort: None,
+                    },
+                )
                 .await
                 .expect("area");
             repo.track_create(crate::model::NewTrack {

@@ -1,6 +1,7 @@
 //! The person's sentence is on the transcript from the moment the queue
 //! drains, not from the moment codex echoes it.
 
+use calm_types::organization::LEGACY_OWNER_USER_ID;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -94,11 +95,14 @@ async fn boot_with(plan: BootPlan) -> Boot {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();
     let area = repo
-        .area_create(NewArea {
-            name: "items-projection".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "items-projection".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo
@@ -759,11 +763,14 @@ async fn a_system_only_batch_persists_its_minted_key_before_the_row() {
 async fn an_echo_upgrades_the_projection_of_its_own_card_only() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let area = repo
-        .area_create(NewArea {
-            name: "two-cards".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
+        .area_create(
+            LEGACY_OWNER_USER_ID,
+            NewArea {
+                name: "two-cards".into(),
+                color: "#111111".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let track = repo

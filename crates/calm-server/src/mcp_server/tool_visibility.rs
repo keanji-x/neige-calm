@@ -367,11 +367,14 @@ mod tests {
 
     async fn make_track(repo: &SqlxRepo, plugin_scope: Option<&str>) -> crate::model::Track {
         let area = repo
-            .area_create(NewArea {
-                name: format!("area-{plugin_scope:?}"),
-                color: "#101010".into(),
-                sort: None,
-            })
+            .area_create(
+                calm_types::organization::LEGACY_OWNER_USER_ID,
+                NewArea {
+                    name: format!("area-{plugin_scope:?}"),
+                    color: "#101010".into(),
+                    sort: None,
+                },
+            )
             .await
             .expect("create area");
         repo.track_create(NewTrack {
