@@ -13,7 +13,7 @@ import { ListText } from '../../ui/list-typography/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import type { NavTarget } from '../router/navigation.ts';
 import styles from './shell.module.css';
-import rowLayout from '../../ui/navigation-row/public.module.css';
+import { navigationRowClass as rowLayout } from '../../ui/navigation-row/public.ts';
 import ownStyles from './area-group.module.css';
 
 export type RowProps = Readonly<{
@@ -56,21 +56,21 @@ export function SidebarGroup({ title, icon, label, expanded, onToggle, level, ma
     ref={disclosureRef}
     type="button"
     data-nc-role="row"
-    className={`${styles.areaRow} ${rowLayout.content} ${rowLayout.twoActions}`}
+    className={`${styles.areaRow} ${rowLayout('content')} ${rowLayout('twoActions')}`}
     aria-expanded={disclosure.isOpen}
     aria-label={`${disclosure.isOpen ? 'Collapse' : 'Expand'} ${label}`}
     onClick={disclosure.toggle}
   >
-    {icon !== undefined && <span className={rowLayout.leading}><Icon name={icon} size="sm" /></span>}
-    <SpringRotation className={`${styles.chevron} ${rowLayout.leading}`} angle={disclosure.isOpen ? 90 : 0}>
+    {icon !== undefined && <span className={rowLayout('leading')}><Icon name={icon} size="sm" /></span>}
+    <SpringRotation className={`${styles.chevron} ${rowLayout('leading')}`} angle={disclosure.isOpen ? 90 : 0}>
       <Icon name="chevron-right" size={level === 'section' ? 'sm' : 'md'} />
     </SpringRotation>
     <ListText tone={level === 'section' ? 'section' : 'group'} className={styles.areaName} title={title} fadeOverflow>{title}</ListText>
   </button>;
   return <div role="group" aria-label={label} className={level === 'section' ? styles.section : styles.areaGroup}>
-    <div className={`${styles.areaRowWrap} ${rowLayout.row}`}>
+    <div className={`${styles.areaRowWrap} ${rowLayout('row')}`}>
       {level === 'section' ? <ListText as="h2" tone="section" className={styles.groupHeading}>{button}</ListText> : button}
-      <span className={`${styles.areaActions} ${rowLayout.inner}`}>
+      <span className={`${styles.areaActions} ${rowLayout('inner')}`}>
         <DropdownMenu placement="below" button={{
           label: management.menuLabel, icon: <Icon name="more" size="sm" />,
           isIconOnly: true, variant: 'ghost', size: 'sm', className: styles.areaActionsButton,
@@ -126,7 +126,7 @@ export function SidebarTrackGroup({ tracks, activeTrackId, areas, markCurrent = 
         ref={toggleRef}
         type="button"
         data-nc-role="row"
-        className={`${ownStyles.showMore} ${rowLayout.labelStart}`}
+        className={`${ownStyles.showMore} ${rowLayout('labelStart')}`}
         aria-label={showAll ? `Show less in ${group.title}` : `Show ${limited.hiddenCount} more in ${group.title}`}
         onClick={() => { pendingRevealRef.current = showAll; setShowAll(!showAll); }}
       >{showAll ? 'Show less' : `Show ${limited.hiddenCount} more`}</button>}

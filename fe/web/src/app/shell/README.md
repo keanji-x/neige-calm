@@ -238,7 +238,7 @@ Control feedback and progress animations are unaffected.
 ## Shared row columns
 
 Today, section disclosures, Area disclosures, Show more, empty-state actions
-and rail Track rows consume ui/navigation-row/public.module.css. That UI module
+and rail Track rows consume ui/navigation-row/public.ts. That UI module
 owns the leading slot, text inset and both trailing control centres; shell and
 feature styles own appearance and behavior. No per-host desktop gap or duplicated
 rail-offset arithmetic is needed. The header retains its larger hit targets on

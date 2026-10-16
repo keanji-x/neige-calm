@@ -1,6 +1,7 @@
 # Navigation row geometry
 
-Public CSS Module: `public.module.css`. This UI primitive owns only geometry;
+Public entry: `navigationRowClass` from `public.ts` returns a typed geometry
+slot class. Its CSS Module stays colocated inside this UI owner. This UI primitive owns only geometry;
 hosts own typography, surfaces, state, labels, actions and hit-target behavior.
 It has no application, Track or Area knowledge.
 
