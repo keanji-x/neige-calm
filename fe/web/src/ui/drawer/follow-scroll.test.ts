@@ -23,6 +23,13 @@ function mounted() {
 afterEach(() => { document.body.replaceChildren(); vi.useRealTimers(); });
 
 describe('drawer scroll intent', () => {
+  it('stops selection geometry callbacks when the attachment is detached', () => {
+    const x = mounted();
+    x.detach(); x.away.mockClear();
+    fireEvent(document, new Event('selectionchange'));
+    expect(x.away).not.toHaveBeenCalled();
+  });
+
   it('does not treat focused content inside restoration as new reader intent', () => {
     const x = mounted();
     withScrollRestoration([x.pane], () => {

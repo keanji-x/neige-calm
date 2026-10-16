@@ -1,3 +1,5 @@
+import { readContentSelection, sameContentSelection, type ContentSelection } from './selection.ts';
+
 /** Input owns following intent. Scroll/resize report geometry, including native
  * anchoring and programmatic writes. Navigation and restoration are explicit. */
 export type ScrollFollower = Readonly<{
@@ -43,12 +45,27 @@ export function createScrollFollower(options: Readonly<{
   onAwayChange: (away: boolean) => void;
 }>): ScrollFollower {
   let pane: HTMLElement | null = null;
+  let attachedContent: HTMLElement | null = null;
+  let observedSelection: ContentSelection = [];
   let following = true;
   let restoring = 0;
   let gesture: { top: number; direction?: Direction } | null = null;
   const distance = () => pane === null ? 0 : pane.scrollHeight - pane.scrollTop - pane.clientHeight;
   const measure = () => { options.onAwayChange(distance() > options.bottomSlack); };
+  const acknowledgeSelection = () => {
+    observedSelection = attachedContent === null ? [] : readContentSelection(attachedContent);
+  };
+  const reconcileSelection = () => {
+    if (attachedContent === null || restoring !== 0) return;
+    const selection = readContentSelection(attachedContent);
+    if (sameContentSelection(selection, observedSelection)) return;
+    observedSelection = selection;
+    if (selection.length > 0) { gesture = null; following = false; }
+  };
+  const resumeFollowing = () => { acknowledgeSelection(); following = true; };
   const followGrowth = () => {
+    // selectionchange is queued; a layout observer can arrive first.
+    reconcileSelection();
     if (pane !== null && following && gesture === null && restoring === 0 && distance() > 1) {
       pane.scrollTop = pane.scrollHeight;
     }
@@ -58,7 +75,7 @@ export function createScrollFollower(options: Readonly<{
     followGrowth,
     followToEnd() {
       gesture = null;
-      following = true;
+      resumeFollowing();
       if (pane !== null && restoring === 0) pane.scrollTop = pane.scrollHeight;
       measure();
     },
@@ -70,6 +87,8 @@ export function createScrollFollower(options: Readonly<{
     },
     attach(target, content) {
       pane = target;
+      attachedContent = content;
+      observedSelection = [];
       following = true;
       restoring = 0;
       let attached = true;
@@ -89,7 +108,7 @@ export function createScrollFollower(options: Readonly<{
         // Keep input provenance until two paints report no continuation.
         frame(() => frame(() => {
           if (gesture !== ended || ended.top !== top || pointer !== null || touchHeld) return;
-          following ||= ended.direction === 'down' && distance() <= options.bottomSlack;
+          if (ended.direction === 'down' && distance() <= options.bottomSlack) resumeFollowing();
           gesture = null;
           followGrowth();
         }));
@@ -168,18 +187,23 @@ export function createScrollFollower(options: Readonly<{
         }
         measure();
       };
+      const onSelection = () => { reconcileSelection(); measure(); };
       const onRestoration = (event: Event) => {
         if (!(event instanceof CustomEvent)) return;
+        // Observe an already-pending reader request before suppressing restores.
+        if (event.detail === true && restoring === 0) reconcileSelection();
         restoring += event.detail === true ? 1 : -1;
         // Keep pending input, but rebase its offset: the restored displacement
         // must not be mistaken for movement from the scrollbar or gesture.
         if (event.detail === false && gesture !== null) gesture.top = target.scrollTop;
         if (restoring === 0) {
+          acknowledgeSelection();
           if (pointer === null && !touchHeld) endGesture();
           followGrowth();
         }
       };
       target.addEventListener('wheel', onWheel, { passive: true });
+      target.ownerDocument.addEventListener('selectionchange', onSelection);
       content.addEventListener('focusin', onFocus);
       target.ownerDocument.addEventListener('keydown', onKey);
       target.addEventListener('pointerdown', onPointerDown);
@@ -197,13 +221,15 @@ export function createScrollFollower(options: Readonly<{
       observer.observe(target);
       observer.observe(content);
       // Attach follows once, including a pane whose first content just arrived.
-      target.scrollTop = target.scrollHeight;
+      reconcileSelection();
+      if (following) target.scrollTop = target.scrollHeight;
       measure();
       return () => {
         attached = false;
         for (const id of frames) cancelAnimationFrame(id);
         observer.disconnect();
         target.removeEventListener('wheel', onWheel);
+        target.ownerDocument.removeEventListener('selectionchange', onSelection);
         content.removeEventListener('focusin', onFocus);
         target.ownerDocument.removeEventListener('keydown', onKey);
         target.removeEventListener('pointerdown', onPointerDown);
@@ -217,7 +243,7 @@ export function createScrollFollower(options: Readonly<{
         target.removeEventListener('scroll', onScroll);
         target.removeEventListener('scrollend', endGesture);
         target.removeEventListener(RESTORATION_EVENT, onRestoration);
-        if (pane === target) { pane = null; gesture = null; }
+        if (pane === target) { pane = null; attachedContent = null; observedSelection = []; gesture = null; }
       };
     },
   };

@@ -20,6 +20,19 @@ arrival rules and navigation targets stay in the feature.
   caller knows it is restoring; the follower does not infer focus options from
   geometry. Use this entry after DOM replacement, including growth in the same
   commit. Outside a drawer it preserves the same native focus behavior.
+- A newly observed non-collapsed selection in this content pauses following,
+  including selection at the tail. Growth and initial attachment sample it before
+  scrolling; queued `selectionchange` delivery cannot lose a race with layout.
+  Each pane compares only its intersecting extent, clipped at its content edges.
+  Range order and direction alone do not change that extent.
+- Explicit return and a downward input return acknowledge the current selection;
+  an unchanged held selection cannot cancel them. Only an observed clear/extent
+  change rearms selection intent. Same-task clear/reselect may coalesce and is
+  not distinguished. Automatic selection restoration uses the existing fence:
+  its entrance reconciles a pending reader request, and its exit acknowledges
+  the restored extent without overriding an explicit command made inside.
+  Selection protection is not a browser-chrome Find hook; native Find may not
+  expose its matches through DOM Selection.
 - Scroll and resize report geometry. They cannot release or resume following by
   themselves. A feature calls `followGrowth()` when its tail changes; content
   resize also covers late image loading, wrapping and disclosure expansion.

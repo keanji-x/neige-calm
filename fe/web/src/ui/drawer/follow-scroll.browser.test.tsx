@@ -1,33 +1,10 @@
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
-import { useLayoutEffect, useRef } from 'react';
-import { useState } from '../state/public.ts';
-import { createScrollFollower } from './follow-scroll.ts';
 import { restoreDrawerFocus } from './restore-focus.ts';
+import { Pane } from './follow-scroll-fixture.tsx';
 
-function Pane({ growth = 0, restoreFocus = false }: { growth?: number; restoreFocus?: boolean }) {
-  const pane = useRef<HTMLDivElement | null>(null);
-  const content = useRef<HTMLDivElement | null>(null);
-  const [follower] = useState(() => createScrollFollower({ bottomSlack: 64, onAwayChange: () => {} }));
-  useLayoutEffect(() => follower.attach(pane.current!, content.current!), [follower]);
-  useLayoutEffect(() => {
-    if (restoreFocus) restoreDrawerFocus(content.current!.querySelector<HTMLAnchorElement>('a')!);
-  }, [growth, restoreFocus]);
-  return <>
-    <button onClick={() => follower.followToEnd()}>Return to latest</button>
-    <div ref={pane} data-testid="pane" data-nc-drawer-scroll="" style={{ height: 300, width: 400, overflow: 'auto' }}>
-      <div ref={content}>
-        <p><a href="#history">A unique historical search target</a></p>
-        {Array.from({ length: 60 }, (_, index) => <p key={index}>Paragraph {index}. {'A long passage of text. '.repeat(12)}</p>)}
-        <a href="#tail">Latest link</a>
-        <details><summary>Latest details</summary><p style={{ height: 400 }}>The detail grew.</p></details>
-        <div style={{ height: growth }} />
-      </div>
-    </div>
-    <input aria-label="Outside composer" />
-  </>;
-}
+
 const pane = () => document.querySelector<HTMLElement>('[data-testid="pane"]')!;
 const oldLink = () => document.querySelector<HTMLAnchorElement>('a[href="#history"]')!;
 const remaining = () => pane().scrollHeight - pane().scrollTop - pane().clientHeight;
