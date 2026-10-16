@@ -12,7 +12,7 @@ use super::upstream_tests::{
     attach_origin, attached_repo, git, kernel_ref, transport_count, user_ref_state,
     witness_transport, witness_transport_then,
 };
-use super::workspace_service_tests::{
+use super::tests::{
     ENV_SENTINEL, EnvVar, assert_env_allowlisted, install_ref_hook_env_probe,
 };
 
