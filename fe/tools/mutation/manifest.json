@@ -1099,7 +1099,7 @@
       "oracle:E2E-CAP-AXE-005"
     ],
     "target": "web/src/styles/tokens.css",
-    "patch": "diff --git a/web/src/styles/tokens.css b/web/src/styles/tokens.css\n--- a/web/src/styles/tokens.css\n+++ b/web/src/styles/tokens.css\n@@ -122,6 +122,6 @@\n     --navigation-label-inset: 0.25rem;\n     --surface-navigation: color-mix(in srgb, var(--surface-rail) 28%, var(--bg));\n-    --bg: oklch(96% 0.005 90);\n+    --bg: oklch(24.5% 0.015 250);\n     --paper: oklch(99.4% 0.004 90);\n     --hairline: oklch(84% 0.006 87);\n     --hairline-strong: oklch(74% 0.006 86);\n@@ -174,7 +174,7 @@\n   }\n \n   [data-theme=\"dark\"] {\n-    --bg: oklch(24.5% 0.015 250);\n+    --bg: oklch(96% 0.005 90);\n     --paper: oklch(31.4% 0.013 251);\n     --hairline: oklch(42% 0.01 253);\n     --hairline-strong: oklch(50% 0.008 254);\n",
+    "patch": "diff --git a/web/src/styles/tokens.css b/web/src/styles/tokens.css\n--- a/web/src/styles/tokens.css\n+++ b/web/src/styles/tokens.css\n@@ -124,4 +124,4 @@\n-    --bg: oklch(96% 0.005 90);\n+    --bg: oklch(24.5% 0.015 250);\n     --paper: oklch(99.4% 0.004 90);\n     --hairline: oklch(84% 0.006 87);\n     --hairline-strong: oklch(74% 0.006 86);\n@@ -174,7 +174,7 @@\n   }\n \n   [data-theme=\"dark\"] {\n-    --bg: oklch(24.5% 0.015 250);\n+    --bg: oklch(96% 0.005 90);\n     --paper: oklch(31.4% 0.013 251);\n     --hairline: oklch(42% 0.01 253);\n     --hairline-strong: oklch(50% 0.008 254);\n",
     "expected_red": [
       "real theme tokens E2E-CAP-AXE-005 keeps the dark page ground darker than the light page ground",
       "browser theme contracts E2E-CAP-AXE-005 a direct structured dataset write repaints token consumers",
