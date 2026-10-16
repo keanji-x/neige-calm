@@ -377,5 +377,4 @@ pub(super) fn operation_phase_is_recoverable(phase: &str) -> bool {
 const WORKSPACE_LEASE_MS: TimestampMs = 60_000;
 
 #[cfg(test)]
-#[path = "tests.rs"]
-mod workspace_service_tests;
+mod tests;

@@ -606,4 +606,3 @@ fn a_concurrent_claim_cannot_make_its_peer_publish_an_unmarked_workspace() {
         "and the published workspace materializes into a real repository"
     );
 }
-
