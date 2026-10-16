@@ -139,6 +139,138 @@ compiler/source checks alone do not prove isolation.
 
 ## Acceptance and review
 
+### Cross-version submit comparison
+
+Add required operation input-codec metadata in a new migration. Existing rows
+are explicitly marked `LegacyAbsoluteCwd`; new operations use `WorkspaceRefV1`.
+This metadata does not rewrite payload, tx_output, event bytes or payload_hash.
+The driver looks up the stable operation key and its codec before comparing a
+new encoding's hash. Same-codec requests keep the existing hash comparison.
+For a legacy row, the registered operation adapter compares the incoming typed
+request with that row's original request decoded through its verified sidecar.
+The generic driver does not know cwd field names or domain equivalence rules.
+
+Only a proven representation change may return `SameRequest(existing_op_id)`;
+every other request field and authorization-relevant value must match. A changed
+target or argument remains Conflict. A missing/unverifiable legacy binding is a
+recoverable refusal, not permission to ignore the hash. Sidecar adoption occurs
+outside the driver writer transaction, then comparison repeats under that
+transaction against the same operation ID, codec and original hash. Replay uses
+the original stored payload and adapter decoder, never the new payload. The
+sidecar cannot turn a new request into an old operation by key alone.
+
+Sweep producers as well as replay readers, including scheduler worker payloads,
+conversation/today/child starts, terminal and worker submissions, forge and
+verification. Test current production `submit` on pre-upgrade dispatched/running
+rows: original requests reuse the original operation; changed cwd/arguments
+conflict; old hash and payload bytes remain identical. This explicitly covers
+the early comparisons in `operation/repo_sqlite.rs` and `operation/driver.rs`.
+
+### Shared resources and binding-scoped lifecycle
+
+Change the existing occupancy/admission entry point's scope to workspace ID and
+aggregate its task, reader/writer lease and unsettled-delivery facts through all
+bindings. Its callers (claim, ready projection, supersede and cleanup) consume
+that same result. Add pending launches and positively identified live processes
+to the resource facts at the kernel boundary; do not create a second scheduler.
+Writer/reader conflicts span bindings, readers may share, and distinct worktree
+roots remain distinct even when they share a Git common directory.
+
+Bindings have a monotonically increasing admission version. A runtime handle
+and ticket carry its authorized binding/version in addition to resource
+generation/epoch; this does not add fields to persistent WorkspaceRef. Closing,
+deleting or repointing one binding seals/revokes only that binding and waits for
+its executions. It does not close another track's binding or bump the shared
+resource's generation. Repoint attaches the new selection and releases the old
+binding transactionally. Rollback restores authorization through a new binding
+version rather than reviving old tickets.
+
+Resource retirement is separate from binding release: it is allowed only after
+the last binding/reference and all source-proof/operation/process references
+are gone. Borrowed legacy directories are never destruction targets. Existing
+ignored cleanup still applies only to owned track worktrees after resource-wide
+quiescence. This adds no S3 archive or retention policy. Multiresource fences
+are acquired in workspace-ID order after existing card/drive/track/resume locks;
+no code acquires those existing locks while holding a workspace fence. Git
+metadata locks follow workspace fences; DB transactions stay short and contain
+no filesystem/network wait.
+
+### Executor authority, fast paths and crash states
+
+Kernel truth owns durable launch authorization and occupancy; the executor's
+owned journal is the single authority for ticket execution facts. The kernel
+intent names the exact executor boot identity and ticket, so an unavailable or
+replaced executor cannot answer for it. A control connection is authenticated
+as the registered local kernel client; an unguessable registered ticket is a
+capability, not a client-supplied resource path. S2a worktree registration opens
+the root and verifies its directory identity; later namespace registration is
+not smuggled in through arbitrary PID/path fields.
+
+The supervisor holds one per-resource executor gate across identity validation,
+ticket lookup/consumption, existing-process lookup, actual pipe/PTY fork and
+process registration. Revoke uses the same gate. Concurrent connections do not
+create independent gates. Its journal transitions are:
+
+| State | Allowed next state / evidence |
+|---|---|
+| Prepared | Revoke persists Revoked, or launch persists Forking before calling fork |
+| Revoked | Terminal no-fork receipt; delayed launch is refused |
+| Forking | Definite syscall failure persists NoChild; successful fork and verified process registration persist Spawned |
+| Spawned | Receipt includes resource, binding/version, generation, epoch, operation, specification digest, PID/start-time/nonce and executor identity |
+| NoChild | Terminal receipt with positive creation-failure evidence |
+| Unknown | Blocks quiescence until execution evidence resolves it; never treated as Revoked/NoChild |
+
+Journal state and its parent directory are fsynced before acknowledging the
+transition. A revoke ACK is issued only after a durable Revoked/NoChild receipt,
+or returns the identified Spawned receipt for the kernel to drain. Forking,
+lost executor state or an interrupted registration returns Unknown. If a fork
+wedges while holding the gate, revoke stays pending/Busy rather than succeeding
+on a timeout. No new generation opens before these facts are reconciled.
+
+The existing proc-ID fast path moves inside this gate and checks the complete
+registered execution identity. An exact retry returns the original ticket's
+receipt and never forks again. A reused proc_id with a different resource,
+binding/version, generation, epoch, operation or specification is refused. Lost
+fork replies recover by inspecting that ticket; they do not create a fresh
+ticket. The original intent remains occupied until reconciled.
+
+Attach/Probe use an authorized process capability bound to the same receipt;
+they cannot adopt an old process by proc_id alone. Read-only observation of a
+legacy process is a distinct artifact capability and cannot authorize stdin or
+new work. WriteStdin is an execution action and rechecks current admission.
+Known existing PTYs may be explicitly resumed only by a recoverable kernel op
+that verifies their original process identity and unchanged binding/source
+epoch, then advances the executor registration. Unknown PTYs keep the resource
+Busy and remain observable; an upgrade does not kill them to manufacture idle.
+
+### Minimal S2a resource cancellation and release
+
+Materialization intents bind the selection and binding version. Binding release
+first persists cancellation and closes admission under the resource fence;
+materialization and its retries must check that version/cancellation before
+each external effect and again before Ready CAS. Delete/repoint cannot race a
+stale materialization into recreating an unbound workspace. The fence serializes
+the final external effect with cancellation; crash recovery consults the same
+durable intent before resuming.
+
+Before deleting the last domain binding, persist an independent release intent
+with the full descriptor, exact owned pin names/OIDs, retention disposition and
+pending materialization IDs. Domain-row deletion cannot erase this information.
+The existing recycle/area compensation and worktree sweep consume that intent,
+record physical receipts and then CAS-release only this resource's owned pins
+when no active/source-proof/operation reference remains. A pin with an unexpected
+OID is retained and requires recovery. A pin written before Ready is discoverable
+from its original materialization intent and is included in cancellation.
+
+Release is idempotent: a missing expected resource/ref can complete its receipt;
+an unknown identity cannot. Partial failure retries siblings independently and
+retains the release intent. Area rollback restores the same descriptor/binding
+authorization and cancels the release through CAS; stale release drivers cannot
+delete the restored resource. S2a preserves the existing seven-day trash policy
+and worktree deletion behavior, without introducing S3 archives or branch policy.
+Acceptance includes pin-written/Ready-not-written crashes followed by deletion,
+repoint during ensure, area rollback, and repeated materialize/release replay.
+
 Verify new/legacy create and materialization retries, shared legacy lock domains,
 repoint/launchpad and frozen binding behavior; immutable historical event and
 operation bytes; every persisted replay owner; direct and supervisor launch
