@@ -142,6 +142,8 @@ fn workspace_worktree_remove_deletes_branch_and_is_idempotent() {
 
     assert!(!remove_workspace_worktree(&target, |_, _| {}).unwrap());
 }
+/// #1792: the branch delete runs the repository's `reference-transaction` hook, so it runs
+/// with the allowlisted environment. nextest gives this test its own process.
 #[test]
 fn workspace_worktree_remove_hook_sees_only_the_allowlisted_environment() {
     let _sentinel = EnvVar::set(ENV_SENTINEL, "server-secret");
@@ -155,6 +157,8 @@ fn workspace_worktree_remove_hook_sees_only_the_allowlisted_environment() {
 
     assert_env_allowlisted(&probes.join("delete.env"));
 }
+/// The `.claude/worktrees/` exclude lands in the common dir's `info/exclude` for a linked
+/// checkout too, exactly once.
 #[test]
 fn worktree_root_exclude_resolves_for_a_linked_checkout() {
     let tmp = tempfile::tempdir().unwrap();
@@ -194,6 +198,8 @@ fn worktree_root_exclude_resolves_for_a_linked_checkout() {
         "the exclude entry is written once"
     );
 }
+/// G15 — a symlink leaf is unlinked, never followed: whatever it points at (an external
+/// directory, registered or not) keeps every entry and registration it had.
 #[test]
 fn removal_of_symlink_leaf_unlinks_only() {
     for registered in [false, true] {
@@ -263,6 +269,9 @@ fn removal_of_symlink_leaf_unlinks_only() {
         }
     }
 }
+/// G15 — someone else's registration at the target's realpath (track A's worktree moved to track
+/// B's path, a symlink left at A's) is refused rather than `worktree remove --force`d through the
+/// alias; B's directory and its uncommitted file are exactly as they were.
 #[test]
 fn foreign_registration_at_the_target_is_refused() {
     let tmp = tempfile::tempdir().unwrap();
@@ -294,6 +303,9 @@ fn foreign_registration_at_the_target_is_refused() {
     assert_eq!(std::fs::read_dir(&b_path).unwrap().count(), entries_before);
     assert!(b_path.join("UNCOMMITTED.txt").is_file());
 }
+/// A user worktree at a path that is not UTF-8 is someone else's record: the registration parser
+/// compares bytes, so the target reads absent, then present once added, and is removed, all `Ok`,
+/// with the foreign worktree untouched.
 #[test]
 fn foreign_non_utf8_worktree_record_does_not_fail_the_target() {
     use std::os::unix::ffi::OsStringExt;
@@ -337,6 +349,12 @@ fn foreign_non_utf8_worktree_record_does_not_fail_the_target() {
         "the foreign worktree is untouched"
     );
 }
+/// The repository's common dir path holds a byte that is
+/// not UTF-8 (`wt-\xff`), and a sibling directory carrying the U+FFFD that a
+/// lossy decode would turn it into exists at the same relative path. The
+/// path reader keeps git's bytes, so `canonicalize` resolves the real common
+/// dir and the UTF-8 rule then refuses it — the lease never records the
+/// decoy directory.
 #[test]
 fn common_dir_bytes_are_not_decoded_before_canonicalize() {
     use std::os::unix::ffi::OsStringExt;

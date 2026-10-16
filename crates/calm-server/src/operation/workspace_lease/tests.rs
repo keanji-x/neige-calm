@@ -60,9 +60,6 @@ fn add_track_worktree(repo: &Path, track_id: &str) -> WorkspaceLeaseTarget {
     target
 }
 
-/// #1792: the branch delete runs the repository's `reference-transaction` hook, so it runs
-/// with the allowlisted environment. nextest gives this test its own process.
-
 /// The parent variable the hook-environment tests plant; it must never reach repository code.
 pub(super) const ENV_SENTINEL: &str = "NEIGE_LEASE_ENV_SENTINEL";
 
@@ -118,9 +115,6 @@ pub(super) fn assert_env_allowlisted(path: &Path) {
     assert!(seen.contains("PATH="), "{seen}");
     assert!(!seen.contains(ENV_SENTINEL), "leaked: {seen}");
 }
-
-/// The `.claude/worktrees/` exclude lands in the common dir's `info/exclude` for a linked
-/// checkout too, exactly once.
 
 /// An attached track with a track worktree, the fixture every prepare test below starts from.
 async fn worktree_track_fixture(
@@ -541,24 +535,6 @@ fn non_utf8_checkout_realpath_is_refused_not_a_panic() {
     assert!(matches!(err, CalmError::Internal(_)), "{err}");
     assert!(err.to_string().contains("not UTF-8"), "{err}");
 }
-
-/// G15 — a symlink leaf is unlinked, never followed: whatever it points at (an external
-/// directory, registered or not) keeps every entry and registration it had.
-
-/// G15 — someone else's registration at the target's realpath (track A's worktree moved to track
-/// B's path, a symlink left at A's) is refused rather than `worktree remove --force`d through the
-/// alias; B's directory and its uncommitted file are exactly as they were.
-
-/// A user worktree at a path that is not UTF-8 is someone else's record: the registration parser
-/// compares bytes, so the target reads absent, then present once added, and is removed, all `Ok`,
-/// with the foreign worktree untouched.
-
-/// The repository's common dir path holds a byte that is
-/// not UTF-8 (`wt-\xff`), and a sibling directory carrying the U+FFFD that a
-/// lossy decode would turn it into exists at the same relative path. The
-/// path reader keeps git's bytes, so `canonicalize` resolves the real common
-/// dir and the UTF-8 rule then refuses it — the lease never records the
-/// decoy directory.
 
 /// The whole `{sha,NULL} × {head,upstream,commit,attempt,NULL,bogus} × {A,NULL}`
 /// matrix against the tuple CHECK (0111, widened by 0115 to `upstream`;
