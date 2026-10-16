@@ -100,7 +100,7 @@ PTY 由 calm-proc-supervisor 实际 fork：扩展 calm-session 协议的版本�
 | 能力 | 授权范围和消费者 |
 |---|---|
 | WorkspaceContent | 通过 workspace handle 的 read/list/status/diff/write/verification；工作区文件、Report 相对链接、HTML/image/raw 预览、provider 项目配置和附件均在此类。保留附件 managed-only 准入，既有 `.neige/attachments` 也由受控 write/open 访问，不新增宿主直写通道 |
-| KernelArtifact | kernel 自有日志、operation/terminal 产物、runtime identity 与资源账本 storage；不接受工作区路径，不将 artifact 路径当用户 checkout。共享 app-server/插件宿主自身启动用此服务能力，不能据此执行 track 仓库脚本 |
+| KernelArtifact | kernel 自有日志、operation/terminal 产物、runtime identity 与资源账本 storage；不接受工作区路径，不将 artifact 路径当用户 checkout。服务自有产物用此能力；view 内 provider 服务启动仍须 LaunchHandle，不能据此执行 track 仓库脚本 |
 | SourceGitAdmin | 只允许框架提供的 repo identity 与自有 ref CAS、对象 pin/写入等固定 plumbing；不接受任意 argv，不执行仓库代码。hooks/filter/credential-sensitive 动作走 launcher 与既有凭据拆分。不能让 forge probe 冒充可信 Git |
 
 复用 `/api/tracks/{track_id}/workspace/readfile{,-raw}`，内部 opener 改用 WorkspaceContent；补齐 track list/status/diff 并迁移 FE 绝对路径消费者，不新建平行 read/raw API。输入相对路径，保留鉴权、越界、symlink、MIME 和 revision 冲突规则。旧绝对路径通用路由对 view 来源根拒绝；不能让 FE 留在旧 agentCwd 规则上。checkpoint refs_digest、lease facts、publish/staleness 都用 GitFacts，不自行开 cwd。
@@ -109,9 +109,11 @@ PTY 由 calm-proc-supervisor 实际 fork：扩展 calm-session 协议的版本�
 
 overlay upper/work/runtime 只在 backend 内定位；lower 活动来源只读，`.git` 元数据私有。linked gitdir/common dir/alternates 的路径只取 Git 报告；不能私有化时拒绝，不能写穿真实 common dir。launcher 映射回真实 uid/gid，环境显式 allowlist，继承 provider 的仓库外沙箱。复用 sandbox crate 的 typed 挂载/环境与子树约束；常驻 holder 的 open/recover/join 属 workspace 新机制，因为现有 bwrap policy 是一次性进程沙箱，不另抄一套通用沙箱政策。
 
-Codex 使用共享 app-server + 每个活跃 view 的官方 exec-server；provider 编码 environment/add、thread/start、turn/start 的环境参数。接口来自实验，仅部署版本官方 schema/响应及无模型协议合同能授权启用；当前不猜 RPC 字段、socket 布局或注销方法。environment id 由 kernel 拥有并绑定 generation；注册/readiness 成功才启动，恢复必重注册，断连拒绝，不 fallback 本地工具。
+S4 改用受控 view 内的整个 provider 服务，实施协议见 [workspace-provider-environments.md](workspace-provider-environments.md)，须经两路 L2 评审后实现。已实测共享 app-server 的远端 exec 路由不能隔离其宿主 config/文件/搜索，断连后 thread/start 仍可成功，原“共享 app-server + 每 view exec-server”不足以满足本合同。provider 按 workspace、generation、授权 binding 和 ExecutionId 管理独立服务、可变状态及控制通道；kernel 只验证类型化能力，不按 provider 名称特判。Codex 初版在该 scope 中使用 app-server 官方本地工具，不登记远端 exec-server；不猜 RPC 字段、注销/drain 方法或私有状态布局。
 
-provider 所在层声明类型化 `ViewSupport = Supported / Unsupported(reason)` 并提供合同测试；kernel 只消费声明，不按 provider 身份特判。Supported 必须证明项目读取、配置、Git/ghost/undo/搜索及按 cwd 的状态均隔离或显式禁用，exec 路由本身不足以证明。S2b 负责本地 provider 合同：Claude 的共享 CLAUDE_CONFIG_DIR 不能证明 project 状态隔离，须按官方合同建立独立作用域；未证明前 Unsupported。任意配置 ACP 默认 Unsupported，只有具体适配层通过合同才能声明支持。Codex 由 S4 解除。共享推理/鉴权不变，Codex TUI `!` 不支持。
+注册/readiness、每次调用、重连/恢复和所有控制均绑定授权、generation、install_epoch 及精确执行实例。先核实旧服务、工具和后台 helper 全部 drain，才能重启、换安装代次或回收；父进程退出、连接关闭和 DB idle 不构成静止证明。私有 provider state 与显式认证输入分离，不挂载成员私人 HOME、kernel 全局对象库或其他 Area 状态。未具部署版本/平台/认证 profile 的完整资格时拒绝，不 fallback 到共享 daemon 或来源 checkout。
+
+provider 所在层声明类型化 `ViewSupport = Supported / Unsupported(reason)` 并提供合同测试；kernel 只消费声明，不按 provider 身份特判。Supported 必须证明项目读取、配置、Git/ghost/undo/搜索及按 cwd 的状态均隔离或显式禁用，整个服务进入 view 的元数据实验也不等于完整资格。S2b 负责本地 provider 合同：Claude 的共享 CLAUDE_CONFIG_DIR 不能证明 project 状态隔离，须按官方合同建立独立作用域；未证明前 Unsupported。任意配置 ACP 默认 Unsupported，只有具体适配层通过合同才能声明支持。Codex 由 S4 的部署版本/平台合同解除。可共享显式授权的推理/鉴权输入，不共享同一 app-server 进程、可变 home 或 trust 状态；Codex TUI `!` 不支持。
 
 ### 3.5 Area 协作的授权接缝（S2a / S3）
 
@@ -231,7 +233,7 @@ remote environment 从开放工具准入到 drain 完成一直持运行许可；
 | S2a：只有 worktree 的类型化收口 + WorkspaceRef 迁移 | §1 全入口、truth 新 migration/sidecar binding、lease 索引、session/control/supervisor、FE track 文件端口。按持久身份/句柄、supervisor、FS/FE 三组收口，建立三类能力、票据/握手和资源账本；不预加 namespace fd。此片开始为实际 materialization 写 B pin（显式新增 Git ref 副作用），不前移 ensure 时点；无 view 可选 | 旧行与事件字节、create→ensure 来源变化、已有 branch 的失败重试、repoint/today、持久化重驱、PTY pipe/attach/restart/ACP/forge/gate/FS 生产入口。G；L2，依赖 S1 |
 | S3：worktree 的统一 Revision/Tree、交付与生命周期 | S3 开工前须产出并评审其交付协议实施设计，汇总下列待定点；本文档对 S1–S2a 为定稿。snapshot/verification、git_candidate、lease/checkpoint/publish、账本 install/archive、hibernation/recycle/area/reaper。复用原地 gate 证据与 agent catch-up。显式行为变更：§2.3 账本唯一权威/best-effort 分支投影、自动/Planner 确认的 kernel 修复 op、Planner 准入、统一 plumbing C（不再运行提交 hooks/签名、不保留 agent 私有历史）、存量 worktree/upstream receipt 同片转换、关闭快照/7/90；不改 GateSpec/ignored 构建语义，同片替换旧销毁策略 | 多 attempt 父链、agent 已 commit、只读 head、check_tip、dirty 拒绝、filter/eol 规范化、detach 后 catch-up/fetch/staleness、原地 gate/热缓存、连续 run 与修复重跑、每个 FS/ref/HEAD/DB 崩溃点、PR 阻止删分支、关闭/唤醒/area 回滚。G + 崩溃 replay；L2，依赖 S2a |
 | S2b：Linux 同路径视图，创建与关闭/删除/恢复同片 | holder/overlay、D/W、sandbox、supervisor namespace envelope；同片承担显式 view 选择的 API/wire/OpenAPI 字段及真实生成器产物。已过机制合同的 terminal、gate、受控 forge/FS 可用；Planner/conversation/worker 另须 provider ViewSupport（§3.4）。无 Supported Planner 时只开放显式 API/terminal 路径，两 track 生产链隔离用无模型测试，不宣称 Planner 端到端可用；子 track 拒绝 | 两 track 隔离、lower 原地/原子替换、copy-up overlap、whiteout/opaque、后台后代/uid、holder 崩溃恢复、旧 ticket 竞态、外部 gitdir 拒绝、gate lower 钉 tree、create 后立即 close/delete、7/90 到期。G + 允许 userns 的真实 Linux 机制合同；不能 skip 当通过。L2，依赖 S3 |
-| S4：Codex exec-server 环境接入 | provider、shared app-server、Planner/conversation/worker 的 start/turn/resume/recovery；配置和所有宿主项目读取受 §3.4 合同约束，未证明不开放 | 部署版本官方 schema、无模型协议 stub/二进制合同、断连/重注册/drain/旧环境拒绝；生产参数编码而非复制 fixture。G + 协议 gate；L2，依赖 S2b |
+| S4：provider 受控执行环境接入 | 按 [实施协议](workspace-provider-environments.md) 建 provider runtime scope、独立 state/授权认证输入和精确执行控制；Planner/conversation/worker 的 start/turn/resume/recovery 均接入。Codex 整个 app-server 进入 view 并用官方本地工具；所有宿主项目读取受 §3.4 合同约束，未证明不开放 | 实际部署 binary 官方 schema、无模型生产编码/真实 Linux 服务合同；断连/重注册、epoch/binding/旧执行控制拒绝、服务与后台 helper drain、共同授权及独立 state。G + profile 协议/平台资格；L2，依赖 S2b |
 | S5：完整产品预览/设置与推荐默认 | 产品设置及相关 types/OpenAPI、wire/zod、FE domain/ports/events、创建/恢复/保留期 UI。view 选择字段/生成器属 S2b；S2a 已封住绝对路径，S2b 已提供 view 预览；此片完善体验，能力齐备才推荐 Linux view，设置不换冻结 backend | 真生成器、schema/事件兼容、Report/image/raw/HTML、路径越界、白洞 404、设置和恢复浏览器测试；G + FE lint/build/test、真实浏览器预览与相关 browser E2E，遵循 development-preview。L2，依赖 S4 |
 
 实施时须定（仅归属与约束，不在本文展开）：
@@ -266,7 +268,7 @@ remote environment 从开放工具准入到 drain 完成一直持运行许可；
 |---|---|
 | 活 lower 的 rename/delete/切分支/git gc、复杂构建及 tracked 一致性 | S2b 真实 Linux 合同通过才开放对应宿主；不能 skip 算通过 |
 | 本地 provider 按 cwd 状态/项目读取 | S2b provider 层 ViewSupport 合同；Claude 依官方状态作用域，ACP 默认拒绝；未通过仍 Unsupported，不猜 HOME 私有布局 |
-| Codex 宿主项目文档/config/git info/ghost/undo/搜索、trust 状态 | S4 部署版本协议合同及独立状态/禁用功能证明，未过拒绝 Codex view |
+| Codex 宿主项目文档/config/git info/ghost/undo/搜索、trust 状态 | S4 整个服务 scope、独立 state/认证输入、部署版本协议和平台合同；部分 namespace 元数据实验不能放行，未过拒绝 Codex view |
 | 转换仓库、非 Git 交付、子 track、根外 cwd | S2b 在创建/准备和重驱边界拒绝（转换在 snapshot 重检）；解除另立扩展片，非 Linux 继续 worktree |
 | gate 写源码、ignored 环境/依赖缓存 | S3 原地证据兼容，S2b 钉 lower；源码写入使 bound 失效，ignored 写入合法，环境摘要不保证可重复构建；不强制新输出目录 |
 | 常驻 PTY/远端工具无法 drain、活动轮 HEAD 检测 | S3 资源静默与 S2b/S4 执行器证明；未 drain 持续 Busy、用户显式停止，不强杀，不承诺活动轮即时检测 |
