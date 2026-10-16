@@ -85,7 +85,7 @@ impl Executor {
         let mut records = HashMap::new();
         let mut aliases: HashMap<String, AliasSlot> = HashMap::new();
         for mut record in store.load()? {
-            anyhow::ensure!(record.version == 2, "unsupported execution journal version");
+            anyhow::ensure!(record.version == 3, "unsupported execution journal version");
             let identity = &record.request.identity;
             if let Some(receipt) = record.phase.receipt() {
                 anyhow::ensure!(
@@ -101,7 +101,7 @@ impl Executor {
                 );
             }
             record.phase = match &record.phase {
-                Phase::Prepared => Phase::Revoked,
+                Phase::Prepared => { record.interactive_revoked = true; Phase::Revoked },
                 phase if !phase.state().permits_handoff() => Phase::Unknown { slot_version: phase.slot_version().ok_or_else(|| anyhow::anyhow!("missing active alias version"))?, receipt: phase.receipt().cloned(), reason: "executor restarted without original native handles; reconciliation required".into() },
                 phase => phase.clone(),
             };
@@ -275,22 +275,38 @@ impl Executor {
         identity: &ExecutionIdentity,
         require_admission: bool,
     ) -> anyhow::Result<Arc<RegisteredRoot>> {
+        // Source/authorization belong to the referenced immutable receipt, never the latest grant.
         let root = self
-            .registrations
+            .live_objects
             .lock()
             .map_err(poison)?
-            .get(&scope_registration_key(&identity.scope))
+            .get(&identity.source_registration)
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("execution target not registered for this executor"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("source registration is Unwitnessed for this executor")
+            })?;
         anyhow::ensure!(
-            root.receipt.id == identity.source_registration
-                && root.receipt.transfer.incarnation == identity.source_incarnation
+            root.receipt.transfer.incarnation == identity.source_incarnation
                 && root.receipt.transfer.executor_boot == identity.executor_boot,
             "unwitnessed or stale source registration receipt"
         );
         anyhow::ensure!(
             registration_matches(&root.registration, identity, require_admission),
             "stale binding, generation, source epoch or grant"
+        );
+        // Currentness is a separate binding/resource fence. A new accepted grant cannot revoke another.
+        let current = self
+            .registrations
+            .lock()
+            .map_err(poison)?
+            .get(&scope_registration_key(&identity.scope))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("binding has no current live lifecycle fence"))?;
+        anyhow::ensure!(
+            lifecycle_matches(&current.registration, identity, require_admission)
+                && current.receipt.transfer.incarnation == root.receipt.transfer.incarnation
+                && current.receipt.transfer.shape == root.receipt.transfer.shape,
+            "binding closed or source/version changed"
         );
         for known in self.registration_facts.lock().map_err(poison)?.values() {
             if registration_resource(known) == scope_resource(&identity.scope) {
@@ -448,11 +464,25 @@ impl Executor {
         let _fence = gate.lock().await;
         let mut record = self.record(&request.execution_id)?;
         Self::check_ticket(&record, &request)?;
+        record.interactive_revoked = true;
         if matches!(record.phase, Phase::Prepared) {
             record.phase = Phase::Revoked;
-            self.persist(record.clone())?;
         }
-        Ok(reply(&record))
+        // IO failure seals interaction in this boot but cannot acknowledge durable revocation.
+        // Every retry fsyncs again, so a previous in-memory latch cannot manufacture an ACK.
+        if let Err(error) = self.persist(record.clone()) {
+            self.records
+                .lock()
+                .map_err(poison)?
+                .insert(request.execution_id.clone(), record);
+            return Err(error);
+        }
+        Ok(ExecutionReply::RevocationAcknowledged {
+            execution_id: request.execution_id,
+            ticket_id: request.ticket_id,
+            receipt: record.phase.receipt().cloned(),
+            state: record.phase.state(),
+        })
     }
 
     async fn control(&self, control: ExecutionControl) -> anyhow::Result<ExecutionReply> {
@@ -492,6 +522,10 @@ impl Executor {
             "wrong execution control purpose"
         );
         if required == ExecutionControlPurpose::Interactive {
+            anyhow::ensure!(
+                !record.interactive_revoked,
+                "exact execution interaction explicitly revoked"
+            );
             self.resolve(&record.request.identity, true)?;
         }
         let process = self.processes.lock().map_err(poison)?.get(id).cloned();

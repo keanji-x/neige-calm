@@ -39,7 +39,7 @@ async fn raw(harness: &Harness) -> tokio::net::UnixStream {
         &ControlMsg::Execution(ExecutionRequest::Handshake(ExecutionHandshake {
             required_contract: EXECUTION_ENVELOPE_VERSION,
             client_secret: harness.secret.clone(),
-            mode: ExecutionProtocolMode::RegisteredV2,
+            mode: ExecutionProtocolMode::RegisteredV3,
         })),
     )
     .await

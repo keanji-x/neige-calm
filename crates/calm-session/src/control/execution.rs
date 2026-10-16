@@ -13,7 +13,7 @@ mod attachment_client;
 pub mod rights;
 pub use attachment::*;
 
-pub const EXECUTION_ENVELOPE_VERSION: u32 = 2;
+pub const EXECUTION_ENVELOPE_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExecutionHandshake {
@@ -24,7 +24,7 @@ pub struct ExecutionHandshake {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExecutionProtocolMode {
-    RegisteredV2,
+    RegisteredV3,
     LegacyWorktree,
 }
 
@@ -180,6 +180,13 @@ pub enum ExecutionReply {
         cursor: u64,
         output: Vec<u8>,
     },
+    /// Durable exact-ticket revocation; a spawned process still requires independent drain evidence.
+    RevocationAcknowledged {
+        execution_id: ExecutionId,
+        ticket_id: LaunchTicketId,
+        receipt: Option<ExecutionReceipt>,
+        state: ExecutionState,
+    },
     ActionComplete,
     Refused {
         reason: String,
@@ -278,7 +285,7 @@ impl RegisteredExecutorConnection {
             &super::ControlMsg::Execution(ExecutionRequest::Handshake(ExecutionHandshake {
                 required_contract: EXECUTION_ENVELOPE_VERSION,
                 client_secret,
-                mode: ExecutionProtocolMode::RegisteredV2,
+                mode: ExecutionProtocolMode::RegisteredV3,
             })),
         )
         .await
@@ -290,7 +297,7 @@ impl RegisteredExecutorConnection {
             super::ControlReply::Execution(ExecutionReply::Handshake {
                 envelope_version: EXECUTION_ENVELOPE_VERSION,
                 executor_boot,
-                mode: ExecutionProtocolMode::RegisteredV2,
+                mode: ExecutionProtocolMode::RegisteredV3,
             }) => Ok(Self {
                 stream,
                 executor_boot,

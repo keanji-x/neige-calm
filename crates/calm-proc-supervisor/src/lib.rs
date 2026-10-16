@@ -549,7 +549,7 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
     loop {
         let incoming = if negotiated
             .as_ref()
-            .is_some_and(|(mode, _)| *mode == ExecutionProtocolMode::RegisteredV2)
+            .is_some_and(|(mode, _)| *mode == ExecutionProtocolMode::RegisteredV3)
         {
             calm_session::control::execution::rights::receive::<ControlMsg>(&stream)
                 .await
@@ -584,7 +584,7 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
         if let ControlMsg::Execution(ExecutionRequest::Handshake(hello)) = &msg {
             let reply = match &registry.executor {
                 Some(executor)
-                    if hello.mode == ExecutionProtocolMode::RegisteredV2
+                    if hello.mode == ExecutionProtocolMode::RegisteredV3
                         && hello.required_contract
                             == calm_session::control::execution::EXECUTION_ENVELOPE_VERSION
                         && executor.authenticates(&hello.client_secret) =>
@@ -619,7 +619,7 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
         let typed = matches!(&msg, ControlMsg::Execution(_));
         let correct_mode = negotiated.as_ref().is_some_and(|(mode, _)| {
             if typed {
-                *mode == ExecutionProtocolMode::RegisteredV2
+                *mode == ExecutionProtocolMode::RegisteredV3
             } else {
                 *mode == ExecutionProtocolMode::LegacyWorktree
             }

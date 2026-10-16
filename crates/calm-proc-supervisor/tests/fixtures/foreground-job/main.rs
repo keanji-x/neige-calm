@@ -1,8 +1,31 @@
+#[cfg(target_os = "linux")]
+mod bind_alias;
+
 use std::io::Write;
 
 const SELF_TERMINATE_SECS: libc::c_uint = 120;
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    {
+        let arguments = std::env::args_os().collect::<Vec<_>>();
+        if arguments
+            .get(1)
+            .is_some_and(|argument| argument == "--probe-bind-alias")
+        {
+            assert_eq!(
+                arguments.len(),
+                4,
+                "expected owned root and alias directories"
+            );
+            bind_alias::run(
+                std::path::Path::new(&arguments[2]),
+                std::path::Path::new(&arguments[3]),
+            )
+            .expect("controlled bind alias capability probe");
+            return;
+        }
+    }
     // Bound leaks even if the test process is aborted before its exact-pid
     // cleanup guard runs. portable-pty's pre_exec resets SIGALRM to SIG_DFL
     // and clears the signal mask (unix.rs:241-253).

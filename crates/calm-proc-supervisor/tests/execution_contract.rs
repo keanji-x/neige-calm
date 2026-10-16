@@ -86,7 +86,7 @@ async fn execution_wrong_ticket_and_revoke_create_no_target() {
             .request(ExecutionRequest::Revoke(consume(&request)))
             .await
             .unwrap(),
-        ExecutionReply::Receipt {
+        ExecutionReply::RevocationAcknowledged {
             state: ExecutionState::Revoked,
             ..
         }
@@ -497,7 +497,7 @@ async fn execution_launch_revoke_share_gate_and_ticket_is_single_use() {
                 state: ExecutionState::Revoked,
                 ..
             },
-            ExecutionReply::Receipt {
+            ExecutionReply::RevocationAcknowledged {
                 state: ExecutionState::Revoked,
                 ..
             },
@@ -507,7 +507,7 @@ async fn execution_launch_revoke_share_gate_and_ticket_is_single_use() {
                 receipt: Some(receipt),
                 state: ExecutionState::Spawned,
             },
-            ExecutionReply::Receipt {
+            ExecutionReply::RevocationAcknowledged {
                 receipt: Some(same),
                 ..
             },

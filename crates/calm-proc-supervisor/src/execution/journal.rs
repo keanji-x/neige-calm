@@ -16,6 +16,7 @@ pub(super) struct Journal {
     pub version: u32,
     pub request: PrepareExecution,
     pub phase: Phase,
+    pub interactive_revoked: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

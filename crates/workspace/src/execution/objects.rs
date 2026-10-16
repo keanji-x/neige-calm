@@ -1,10 +1,16 @@
 //! Live object leases. Serialized facts are validation inputs, never reopened leases.
+mod containment;
+pub use containment::{
+    ContainmentKind, ContainmentUnknown, ContainmentUnsupported, DirectoryContainment,
+    PositiveContainment,
+};
+
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{File, OpenOptions},
     io,
     os::{
-        fd::{AsFd, BorrowedFd, OwnedFd},
+        fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd},
         unix::{
             ffi::OsStrExt,
             fs::{FileExt, MetadataExt, OpenOptionsExt},
@@ -60,12 +66,31 @@ pub struct ObjectShape {
     pub objects: Vec<ObjectFact>,
 }
 
-/// Ephemeral bucket over a currently retained root; never a serialized authority or Ready proof.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// Physical candidate bucket over live leases. Mount view is checked separately before any join.
+/// This is never a serialized authority or Ready proof.
+#[derive(Clone, Debug)]
 pub struct HeldRootKey<'lease> {
     namespace: u64,
     root: ObjectFact,
     lease: std::marker::PhantomData<&'lease HeldSourceObjects>,
+}
+
+impl<'left, 'right> PartialEq<HeldRootKey<'right>> for HeldRootKey<'left> {
+    fn eq(&self, other: &HeldRootKey<'right>) -> bool {
+        self.namespace == other.namespace
+            && self.root.role == other.root.role
+            && self.root.device == other.root.device
+            && self.root.inode == other.root.inode
+    }
+}
+impl Eq for HeldRootKey<'_> {}
+impl std::hash::Hash for HeldRootKey<'_> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.namespace.hash(state);
+        self.root.role.hash(state);
+        self.root.device.hash(state);
+        self.root.inode.hash(state);
+    }
 }
 
 pub struct HeldObjectIdentity<'lease> {
@@ -78,6 +103,8 @@ pub enum HeldObjectComparison {
     SameObject,
     DifferentRoot,
     LayoutConflict,
+    /// Same live physical root in different mount views: neither merge nor allocate another owner.
+    MountAliasUnsupported,
 }
 
 impl HeldObjectIdentity<'_> {
@@ -87,6 +114,8 @@ impl HeldObjectIdentity<'_> {
     pub fn compare(&self, other: &HeldObjectIdentity<'_>) -> HeldObjectComparison {
         if self.root != other.root {
             HeldObjectComparison::DifferentRoot
+        } else if self.root.root.mount != other.root.root.mount {
+            HeldObjectComparison::MountAliasUnsupported
         } else if self.layout == other.layout {
             HeldObjectComparison::SameObject
         } else {
@@ -203,6 +232,29 @@ impl HeldSourceObjects {
     pub fn root(&self) -> &File {
         &self.files[0]
     }
+    /// Resolve one validated relative cwd through the actual retained root. This grants no authority.
+    pub fn open_cwd(&self, cwd: &crate::identity::WorkspaceCwd) -> io::Result<File> {
+        self.validate()?;
+        let mut directory = self.root().try_clone()?;
+        for part in cwd.as_str().split('/').filter(|part| *part != ".") {
+            let name = std::ffi::CString::new(part)?;
+            // SAFETY: each owned directory remains live; NOFOLLOW rejects replacement symlinks.
+            let descriptor = unsafe {
+                libc::openat(
+                    directory.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            if descriptor < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: successful openat returned this uniquely owned descriptor.
+            directory = unsafe { File::from_raw_fd(descriptor) };
+        }
+        Ok(directory)
+    }
+
     pub fn try_clone(&self) -> io::Result<Self> {
         Ok(Self {
             shape: self.shape.clone(),
@@ -361,7 +413,6 @@ fn read_link(file: &File) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 fn fact(file: &File, role: ObjectRole) -> io::Result<ObjectFact> {
-    use std::os::fd::AsRawFd;
     let stat = file.metadata()?;
     let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", file.as_raw_fd()))?;
     let mount = info

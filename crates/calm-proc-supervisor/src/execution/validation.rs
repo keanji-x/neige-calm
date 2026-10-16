@@ -65,11 +65,65 @@ pub(super) fn directory_recovery_version(
     }
 }
 
+/// A per-binding lifecycle projection; accepted per-operation grants are deliberately absent.
+#[derive(PartialEq, Eq)]
+enum LifecycleFence<'a> {
+    Worktree {
+        workspace: &'a workspace::identity::WorkspaceId,
+        root: &'a DirectoryRegistration,
+        binding: &'a WorkspaceBindingId,
+        binding_version: u64,
+        generation: u64,
+        epoch: u64,
+        open: bool,
+    },
+    ExternalDir {
+        directory: &'a ExternalDirectoryId,
+        root: &'a DirectoryRegistration,
+        version: u64,
+        open: bool,
+    },
+}
+fn lifecycle_fence(registration: &ExecutionRegistration) -> LifecycleFence<'_> {
+    match registration {
+        ExecutionRegistration::Worktree {
+            workspace_id,
+            root,
+            binding_id,
+            binding_version,
+            generation,
+            install_epoch,
+            admission_open,
+            ..
+        } => LifecycleFence::Worktree {
+            workspace: workspace_id,
+            root,
+            binding: binding_id,
+            binding_version: *binding_version,
+            generation: *generation,
+            epoch: *install_epoch,
+            open: *admission_open,
+        },
+        ExecutionRegistration::ExternalDir {
+            directory_id,
+            root,
+            registration_version,
+            admission_open,
+            ..
+        } => LifecycleFence::ExternalDir {
+            directory: directory_id,
+            root,
+            version: *registration_version,
+            open: *admission_open,
+        },
+    }
+}
+
 pub(super) fn registration_successor(
     previous: &ExecutionRegistration,
     next: &ExecutionRegistration,
 ) -> bool {
-    if previous == next {
+    if lifecycle_fence(previous) == lifecycle_fence(next) {
         return true;
     }
     if registration_version(next) > registration_version(previous) && !older_runtime(next, previous)
@@ -83,7 +137,6 @@ pub(super) fn registration_successor(
                 generation,
                 install_epoch,
                 admission_open,
-                authority,
                 ..
             },
             ExecutionRegistration::Worktree {
@@ -91,13 +144,11 @@ pub(super) fn registration_successor(
                 generation: new_generation,
                 install_epoch: new_epoch,
                 admission_open: open,
-                authority: grant,
                 ..
             },
         ) => {
             binding_version == new_version
                 && admission_open == open
-                && authority == grant
                 && new_generation >= generation
                 && new_epoch >= install_epoch
                 && (new_generation > generation || new_epoch > install_epoch)
@@ -193,6 +244,18 @@ pub(super) fn registration_matches(
     identity: &ExecutionIdentity,
     require_admission: bool,
 ) -> bool {
+    let authority = match registration {
+        ExecutionRegistration::Worktree { authority, .. }
+        | ExecutionRegistration::ExternalDir { authority, .. } => authority,
+    };
+    authority == &identity.authority && lifecycle_matches(registration, identity, require_admission)
+}
+
+pub(super) fn lifecycle_matches(
+    registration: &ExecutionRegistration,
+    identity: &ExecutionIdentity,
+    require_admission: bool,
+) -> bool {
     match (registration, &identity.scope) {
         (
             ExecutionRegistration::Worktree {
@@ -202,7 +265,6 @@ pub(super) fn registration_matches(
                 generation,
                 install_epoch,
                 admission_open,
-                authority,
                 ..
             },
             ExecutionScope::Worktree {
@@ -219,7 +281,6 @@ pub(super) fn registration_matches(
                 && binding_version == version
                 && generation == expected_generation
                 && install_epoch == expected_epoch
-                && authority == &identity.authority
                 && (!require_admission || *admission_open)
         }
         (
@@ -227,7 +288,6 @@ pub(super) fn registration_matches(
                 directory_id,
                 registration_version,
                 admission_open,
-                authority,
                 ..
             },
             ExecutionScope::ExternalDir {
@@ -238,7 +298,6 @@ pub(super) fn registration_matches(
         ) => {
             directory_id == expected
                 && registration_version == version
-                && authority == &identity.authority
                 && (!require_admission || *admission_open)
         }
         _ => false,

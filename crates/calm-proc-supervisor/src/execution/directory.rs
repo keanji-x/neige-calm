@@ -1,9 +1,5 @@
 use calm_session::control::execution::*;
-use std::{
-    fs::File,
-    os::fd::{AsRawFd, FromRawFd},
-    os::unix::fs::MetadataExt,
-};
+use std::{fs::File, os::unix::fs::MetadataExt};
 use workspace::{
     execution::objects::{HeldSourceObjects, ObjectLayout},
     identity::WorkspaceCwd,
@@ -59,24 +55,6 @@ impl RegisteredRoot {
     }
     /// Resolve and retain each component beneath the actual SCM_RIGHTS root; no later path chdir.
     pub fn cwd(&self, cwd: &WorkspaceCwd) -> anyhow::Result<File> {
-        self.validate()?;
-        let mut directory = self.objects.root().try_clone()?;
-        for part in cwd.as_str().split('/').filter(|part| *part != ".") {
-            let name = std::ffi::CString::new(part)?;
-            let fd = unsafe {
-                libc::openat(
-                    directory.as_raw_fd(),
-                    name.as_ptr(),
-                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                )
-            };
-            anyhow::ensure!(
-                fd >= 0,
-                "open registered cwd: {}",
-                std::io::Error::last_os_error()
-            );
-            directory = unsafe { File::from_raw_fd(fd) };
-        }
-        Ok(directory)
+        Ok(self.objects.open_cwd(cwd)?)
     }
 }

@@ -25,6 +25,7 @@ impl Executor {
                 };
                 if matches!(record.phase, Phase::Prepared) {
                     record.phase = Phase::Revoked;
+                    record.interactive_revoked = true;
                     let _ = self.persist(record);
                     continue;
                 }
