@@ -8,7 +8,9 @@ launch tickets, executor drain receipts and resource fences. This document
 introduces no alternative identity, scheduler, operation driver or reaper.
 
 The delivery, migration and retention rules below are proposed decisions.
-Three parent-contract amendments require explicit design review: guarded
+The parent now maps three S3 amendments and the shared installation-owner seam;
+this revision still awaits the third fresh full two-channel L2 design review.
+The amendments are guarded
 verification at the same logical cwd, durable content outside private storage,
 and writable branch projections only in kernel-owned storage. Sections 2, 6,
 7 and 10 and the [verification attachment](workspace-verification-decision.md)
@@ -63,7 +65,7 @@ tip, epoch, baseline, normalized tree or upstream decision.
 | Delivery protocol | `Legacy` or `Converting(operation_id, version)` or `LedgerV1(receipt)`; only LedgerV1 can accept new S3 writes. |
 | Baseline B | `Known(commit, owned_pin)` from S2a materialization, or `LegacyUnknown`; immutable after materialization/conversion. Unknown never means current HEAD. |
 | Delivered state | `DeliveredTip { sequence, commit, tree, settlement_id }`; the resource ledger is the single authority. Initial sequence zero is the conversion/materialization receipt. |
-| Installed state D | `InstalledBaseline { epoch, tree, delivered_sequence, install_receipt }`; outside a baseline-install operation its tree equals the settled delivery tree. HEAD/index are separate execution projections. |
+| Installed state D | `InstalledBaseline { source_epoch, baseline_sequence, tree, delivered_sequence, effect_receipt }`; its tree equals settled delivery outside a baseline effect. Proven same-source bookkeeping changes baseline/projection sequences, not source epoch. HEAD/index are execution projections. |
 | Upstream | `NoneSelected` or `Configured { selection_version, remote, merge_ref, resolved_url, tracking_ref }`; explicit absence is a decision. Fetch observations are immutable receipts, not this selection. |
 | Durable content | Resource-scoped `ContentStoreId`, verified artifact directory/repository identity, object format, normalized Git-history roots plus required materialized-source roots, owned pins and complete-closure receipt; independent of private-directory lifetime and never tip authority. |
 | Branch projection | Kernel-owned store/repository identity, exact branch ref, expected OID and `InSync(receipt)` / `Stale(reason)` / `Absent`; never delivery authority. User-common-dir refs are read-only external observations. |
@@ -376,6 +378,71 @@ declared cwd/user step semantics are unchanged.
 
 ## 6. Delivery, refs, installation and upstream
 
+### One owner classifies every source effect
+
+Only S3's workspace effect owner constructs sealed `ProvenSameSourceProjection`
+or `SourceInstallPlan`; adapters/provider/UI cannot pass a classification flag.
+Both bind resource/binding version, immutable operation/input, exact authorized
+Git handles, current generation/source epoch, expected projection/baseline
+sequence and durable normalized plus MaterializedSource closures. Every
+checkpoint, settlement, lease restore, catch-up and recovery uses this owner;
+these are consumers of one contract, not a tool-name or caller exemption list.
+
+The first plan proves raw bytes, modes, symlink values, tracked/nonignored
+classification, normalization/ignore/config rules, effective permissions and
+mount/root identity unchanged. Its closed effect footprint permits only owned
+private HEAD/index/refs and ledger/baseline bookkeeping. Source epoch and
+generation stay unchanged; projection/baseline sequence and receipt advance.
+Equal normalized trees, no-byte intention or an existing lease alone cannot
+construct this proof. If an index change alters required source classification,
+D/W reclassification changes visibility, or identity/rule/mount facts differ,
+use SourceInstallPlan even if file bytes would happen to match.
+
+The ordinary operation owner/reservation, snapshot stability and private-Git
+CAS remain required. Preserve the waiting provider and request as live
+occupancy; do not claim they drained. The proven metadata effect needs no
+resource-wide source-install drain and grants no source-write permission.
+Unrelated writers/readers retain existing admission rules. Proof cannot be
+established or expected facts change: Busy/recovery, never a lease-owner bypass.
+
+The actual task_gate handler (`mcp_server/tools/task_gate.rs`) detaches drive but
+then polls its result while the provider call remains live. Planner git_commit
+currently lowers through Gitforge shell, replaced here by Services. Both can
+finish normally through their original call when this owner proves same-source
+projection, without advancing source epoch or waiting for their own service
+to exit. Immutable verification remains mandatory; provider qualification must
+separately validate/refresh Git/ghost caches after allowed metadata changes.
+
+A SourceInstallPlan fixes both target closures, before-footprint, target source
+epoch and one recoverable install intent. Any provider-originated invocation
+first durably records `Accepted(operation_id, handoff_id)` and continuation
+binding to exact ExecutionId/native request/session and authorization. Return
+that receipt without awaiting the install; it is not an installed/commit result.
+The old call must actually finish or be canceled through its qualified protocol.
+An accepted handler result with unknown native completion is still Busy.
+
+Next seal new work and positively drain the entire exact scope, including
+service, tools, descendants, pending tickets and delegated calls. Only then may
+domain owners durably suspend/settle old execution claims through their existing
+contracts; the transition intent retains scheduling exclusion. An outstanding
+reader/writer lease is never ignored as "the caller's" reservation. Without
+that settlement and positive drain the installation remains Busy. Then
+the unique owner may execute the frozen install and commit source epoch/receipt.
+Afterward allocate new ExecutionId by S2a alias handoff, complete scope readiness
+and resume; a fresh authorized continuation/result capability reads the original
+operation result. It does not reexecute the operation or forge a response from
+the old incarnation. Non-provider callers use the same plan without native-call
+continuation. No unfinished old call is subtracted from quiescence.
+
+Crash/loss replays the same stages: Accepted/response-unknown reconciles that
+call and drain; drained/uninstalled completes the same plan; installed/unresumed
+creates one new execution through exact handoff; resumed/reply-lost replays the
+original result. A projection replay instead reuses frozen C and expected
+metadata sequence without changing epoch or constructing a second C. Neither
+variant silently changes classification after partial effects.
+
+### Ref, runtime projection and baseline settlement
+
 The existing operation intent/tx_output stores Revision, P, C, expected ledger
 sequence, all owned ref names/OIDs, projection observation, target epoch and
 install plan. Do not add a shadow operation journal. S2a resource/binding fences
@@ -418,11 +485,15 @@ observation, external Git checked out the same old OID; update-ref with that
 expected OID succeeded, moved human HEAD and left its working file at old bytes.
 This validates the counterexample, not the proposed private-store implementation.
 
-`install_delivered` writes HEAD/index=C and preserves all working files. It
+`install_delivered` requests this classification, never unconditionally bumps
+source epoch for a no-byte metadata effect. The proven variant sets owned
+HEAD/index=C and preserves all working files. It
 records D=tree(C) and W=current source minus C, preserving later source edits.
-An epoch/install receipt is required even when source bytes need no rewrite.
-Ordinary projection changes do not bump the resource generation. An install
-epoch change invalidates previous source-specific handles as S2a requires.
+Its receipt advances projection/baseline sequence and leaves source epoch and
+generation intact. An unproven/source-changing variant instead follows the
+accepted-call/drain/install protocol and advances source epoch, invalidating
+source-specific handles as S2a requires. Recovery/holder replacement alone
+follows the separate resource-generation rules.
 
 Catch-up freezes H=settled tip, newest done candidate T, fresh successful fetch
 receipt U and merge base M(T,U), original source revision and target epoch
@@ -435,6 +506,8 @@ Git lock. A later failed fetch never silently replaces a frozen successful U.
 Before H->U, complete and durably pin U's required working-byte manifest using
 authorized transformation/retrieval while available. Failure leaves H/source
 untouched and retains private data; a pointer-only fetch is not install-ready.
+The same effect owner classifies U installation; ordinary source-changing
+catch-up uses SourceInstallPlan and its full handoff/drain before that CAS.
 
 Under the exclusive owner, CAS delivery pin H->U, project best effort, stage
 and install source tree U, and settle ledger tip/D=U before publishing the
@@ -689,6 +762,7 @@ scenarios, not a permanent list of test function names or source files.
 | Filter persistence | Through production snapshot/close/reclaim/reopen, use an actual configured filter whose Git blob is only a pointer and whose working payload comes from private Git cache/external supply. After ArchiveReady, delete the whole private `.git` and external supply, restart, and assert restored payload bytes/modes/links equal the manifest, never the pointer. Missing manifest/payload or failed initial filter materialization must refuse Ready and retain private storage; unset optional filter pass-through cannot make the test green. These are required future production tests, not claimed /tmp probe results. |
 | Content crash replay | Interrupt copying, after fsync/pin before receipt, after receipt before private deletion, and after whole-tree deletion before its receipt. Restart must complete the same import/destroy or restore solely from verified durable content, never recreate empty storage or silently pick new roots. |
 | Content capability isolation | Launch gate/forge/terminal exports for two separately authorized workspaces/Areas; each sees only its granted object closure/refs and cannot open, enumerate or request the other's artifact store/objects. Exact-OID push uses only its scoped export; no durable-store administrative capability reaches user execution. |
+| Effect-owner continuation | Synchronous gate/Planner settlement with proven unchanged source returns through its live request, advances metadata sequence only and never waits on its own drain. Changed mode/link/classification/rules/permissions/mount refuses that proof. True installation remains Busy until Accepted old call actually ends, then full drain, one install/epoch, new ExecutionId/readiness/resume and fresh-capability original-result retrieval; inject crash/loss at every edge. |
 | Deletion/area | Delete then restart uses tombstone without domain rows; partial area failure compensates every sibling, occupied restore path is preserved, stale reaper cannot delete restored binding. Candidate/open/unknown PR refs survive physical private-layer release. |
 
 Mutation verification uniquely pins ledger-parent authority, source-proof
@@ -710,52 +784,11 @@ boundaries, not an alternate fake delivery algorithm. No real provider E2E runs
 on the shared host. This documentation proposal runs text ratchet and diff
 checks only; those checks do not establish the future acceptance scenarios.
 
-## 10. Parent-contract amendments proposed for review
+## 10. Parent alignment and review state
 
-These replace conflicting parent clauses only after two-channel design review;
-the parent is not edited or described as already approved by this proposal.
-
-For section 2.2, adopt the verification attachment's amended paragraph: preserve
-logical cwd and Git-classified hot-cache locations through a guarded projection
-of C's frozen working-byte manifest, explicitly changing inode/mount semantics. Proof guarantees absence
-of actual source writes. Only source mutation requests reaching the mediator
-produce its denial/latch; VFS-rejected calls have no invented receipt and may
-be handled by a successful gate without violating immutability.
-
-For sections 2.3 and 4.3, replace the shared-branch write/check-out test protocol:
-
-> The resource ledger is the sole delivered-tip authority. All S3 pins and any
-> writable best-effort branch projection reside in a kernel-owned resource-scoped
-> durable content repository under exclusive kernel administration. User-common-dir
-> refs are external read-only observations; kernel never writes/deletes them on
-> the strength of worktree-list sampling or a cooperative metadata lock. Final
-> candidate plus delivery-pin CAS occurs in the owned repository, followed by
-> execution HEAD/index installation and authoritative DB settlement. Gitforge
-> publishes an exact frozen OID from an authorized scoped export using typed
-> upstream/remote receipts, independently of a mutable source-local branch or
-> optional presentation projection.
-
-For sections 2.1, 4.1, 4.3 and 5.2, make retained source complete independently
-of private Git and transformations:
-
-> A ninety-day archive and all other retained roots require verified complete
-> normalized Git closure and every required materialized-source manifest/raw-byte
-> closure in kernel-owned durable storage outside the seven-day private tree.
-> The manifest binds source paths/bytes/modes/links to normalized tree and rule
-> identity. This same content contract covers B/tip/run/candidate/install/archive
-> consumers; a history-only Git root cannot authorize working source. Before
-> destruction, fsync both closures, CAS/fsync pins and commit a complete receipt
-> covering the current protected-reference version. No alternate,
-> hardlink or missing shallow ancestor may rely on the directory to be destroyed.
-> Import/receipt crashes retain private storage until reconciliation; after full
-> managed `.git` deletion, authorized restore installs frozen working bytes
-> directly from that receipt, without smudge/LFS, network or deleted caches;
-> unavailable source completeness refuses Ready/reclaim and preserves private
-> storage. Existing operations and the single resource lifecycle driver
-> own this work. Subprocesses receive resource/authorization-scoped exports,
-> never the store or another workspace/Area's objects.
-
-These are three structural changes: verification semantics, content lifetime,
-and ref ownership/publish targeting. They preserve frozen P/run/catch-up,
-checkout admission, immutable historical bytes and area compensation policy.
-They do not add a parallel content ledger, delivery driver or retention reaper.
+[track-workspace.md](track-workspace.md) now maps the verification, complete
+retained-content and private-ref ownership rules plus this single effect-owner
+classification. These contracts await the third fresh full two-channel L2
+review together; they do not claim an implemented capability. S1 is unchanged.
+The S4 execution-scope continuation consumes this owner protocol rather than
+adding an install exemption or separate epoch policy.

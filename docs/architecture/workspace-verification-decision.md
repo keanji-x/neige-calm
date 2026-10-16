@@ -1,7 +1,7 @@
 # S3 verification mechanism decision
 
-Status: proposed parent-contract amendment for two independent L2 design review
-channels, 2026-10-16. Companion to
+Status: parent-aligned implementation protocol awaiting the third fresh full
+two-channel L2 design review, 2026-10-16. Companion to
 [workspace-delivery-protocol.md](workspace-delivery-protocol.md), section 7.
 The probes below ran only against disposable /tmp repositories, without a
 provider, Cargo, network access or production source mutations. They falsify
@@ -216,9 +216,9 @@ inode projection: benchmark those through actual representative production
 entry points, and refuse the capability if its contract is not met. Do not
 claim universal compatibility from preserved mtimes alone.
 
-## Parent amendment proposed for review
+## Parent mapping awaiting full review
 
-Replace the worktree verification paragraph in track-workspace section 2.2:
+The worktree verification paragraph in track-workspace section 2.2 now maps:
 
 > Worktree verification retains the same logical cwd, declared user steps and
 > Git-classified ignored output locations. A kernel-owned verification
@@ -232,7 +232,7 @@ Replace the worktree verification paragraph in track-workspace section 2.2:
 > mechanism may produce bound evidence; unsupported hosts/resources remain
 > explicitly unconverted or refuse preparation, without silent unbound fallback.
 
-Adopt this amendment only with review of the complete mediator boundary; it
+Approve this amendment only with review of the complete mediator boundary; it
 adds a significant trusted mechanism and platform requirement to S3. The cheap
 alternative is to explicitly narrow the parent to endpoint equality, which
 would no longer prove tested tree equals delivered tree for arbitrary commands;
@@ -270,3 +270,7 @@ The main protocol's parent amendment additionally relocates retained content
 and writable ref projections outside private/runtime and human-common-dir Git.
 This attachment changes verification semantics only; it must not be described
 as the sole parent change or as an implementation of those other boundaries.
+Its prepare/metadata effects consume the main protocol's sealed effect-owner
+classification. A live provider awaiting a proven same-source checkpoint is
+not drained; changed source/environment requires the Accepted/full-drain/new-
+execution continuation. Verification adds no caller exemption or epoch policy.

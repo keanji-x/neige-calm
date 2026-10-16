@@ -1,6 +1,6 @@
 # Track Workspace 框架
 
-状态：第四轮 L2 评审后修订（第五轮文档），待分片实现。承接 [track-cow-view.md](track-cow-view.md) 的实验；设计冲突以本文为准。英文类型为合同草案，不表示已有 API。方向保持 Workspace 框架 + git worktree / Linux 同路径 overlay 视图两种实现。
+状态：S1–S2a 合同已定；S3 的交付/验证实施协议及以下最小映射修订待第三轮 fresh 双路完整 L2 设计评审。详见 [workspace-delivery-protocol.md](workspace-delivery-protocol.md) 与 [workspace-verification-decision.md](workspace-verification-decision.md)。本文不声称 S3 已实现。承接 [track-cow-view.md](track-cow-view.md) 的实验；方向保持 Workspace 框架 + git worktree / Linux 同路径 overlay 两种实现。
 
 ## Outcome 与初版边界
 
@@ -49,7 +49,7 @@ kernel 统一拥有选择、授权、交付、恢复和回收政策；workspace 
 
 分开三个对象：活动视图是随 lower 变化的读环境；私有写入记录是 agent 相对已安装源码的修改；`Revision` 是持有内容的不可变交付证据。只给 upper 计数不构成源码证据。
 
-`Revision { workspace_id, install_epoch, content_digest, tree_oid, changes, overlap, normalization }` 由框架 snapshot 产生，绑定稳定内容句柄和受保护 Git tree。changes 是相对当前 delivery baseline 的源码差异，含 tracked（即使被 ignore）、新增非 ignored、删除、mode/symlink；不含内部 Git 元数据和新增 ignored 产物。不支持类型显式拒绝。已 commit 且 status clean 仍比较完整 tree，不从 status 猜变化。非 Git 用显式 DirectoryRevision，初版不进入 candidate/gate Git 合同。
+`Revision { workspace_id, install_epoch, content_digest, tree_oid, materialized_source, changes, overlap, normalization }` 由框架 snapshot 产生，绑定规范化 Git tree 与必需的 MaterializedSource 工作字节 manifest。manifest 保存路径、原始 bytes/mode/symlink 与规则身份，不把 filter/LFS 指针当工作源码；同一 content owner 持久化两类闭包。changes 含 tracked（即使被 ignore）、新增非 ignored、删除、mode/symlink；不含内部 Git 元数据和新增 ignored 产物。不支持类型或无法取得必需工作字节时显式拒绝。已 commit/status clean 不替代完整源码证据，非 Git 的 DirectoryRevision 初版不进入 Git candidate/gate。
 
 创建基线 B 永久不变；当前安装基线 D 初始为 B，catch-up 准备后为 U 的 tree，agent replay 的结果属于 W。视图将 kernel 安装层 D 与 agent 写入层 W 分开记录（独立安装清单/代次，不能把整个 upper 当 W）；snapshot 合成 D ⊕ W。未触碰的活动 lower 脏源码不自动进入交付。copy-up 可能含用户改动时标 overlap；归属无法证明也保守标记，确认绑定 revision，未经确认拒绝交付。snapshot 期间来源变化则重试或返回 Busy，不能发布撕裂内容。
 
@@ -59,23 +59,23 @@ worktree 同样返回 Revision/GitFacts，只在实现内解析真实 checkout�
 
 `prepare_verification(revision, candidate)` 返回证据句柄：开始/结束观察到的 tracked tree 都等于 candidate tree，期间无 install_epoch 变化和源码写入；新增非 ignored 文件同样使证据失效。gate 结果绑定 `(revision, tree_oid, candidate_oid, environment_digest)`，缺证据不能 bound。此为不变量，不规定统一物化方式，不新增 GateSpec 字段。
 
-worktree 保留原地验证，以 §2.3 统一构造的 C 作 checkpoint，复用 HEAD/status/provenance 采样和排他准入，保留仓库内 ignored 构建产物、热缓存及现有 cwd/用户步骤语义；不要求只读挂载或独立输出目录。view 则从 candidate tree 钉住验证 lower、使用私有 Git 元数据，ignored 写入进验证 upper，不遮蔽交付源码。`a` 在活动 lower 改新而 agent 只改 `b` 时，验证和交付仍读 B 中的 `a`；活动 lower 更新不影响验证。源码写入型步骤不能获 bound 结果，回工作视图修改后重跑；不把这个约束扩大为拒绝既有 ignored 输出。只读 head pin 复用同一证据合同：worktree 原地核验 head，view 钉住 head tree，不强制为所有 reader 新建验证环境。
+worktree 验证保留相同逻辑 cwd、用户 GateSpec 步骤和 Git 权威分类的 ignored 热输出/缓存位置，改由 immutable C 对应的冻结工作字节 manifest + 逐路径受控缓存投影提供；物理 inode/mount 语义明确改变，不要求新输出目录或 GateSpec 字段。tracked 优先于 ignore，源码实际写入始终被阻止；到达 mediator 的源码写请求拒绝并 latch，VFS 提前拒绝且未改源码的调用不虚构回执，调用者处理错误后可按普通 gate 结果 bound。没有完整能力时保留未转换 Legacy 或拒绝准备，不静默降为 unbound。view 钉住同一源码证据，活动 lower 的其他修改不影响被测内容。只读 head pin 同样消费冻结源码证据，不凭工作 HEAD 猜身份。
 
 Git 内容规范化属于 snapshot：worktree 保留现有 Git clean/smudge、eol、fileMode 语义，在 launcher 内执行可能运行仓库代码的转换，记录规则和规范化 tree；验证使用同一规则。normalization 同时记录 ignored 分类的规则来源/摘要（仓库 ignore、有效 Git exclude 配置、kernel `.neige` 排除项）；view 私有 info/exclude 安装同一规则，snapshot 与 agent Git 观察一致，tracked 文件不因 ignore 消失。宿主可信写入器只接收已规范化 blob/tree，禁 hooks/filter/fsmonitor，不能用“禁 filter”代替规范化。初版 view 对 custom clean/smudge、LFS、working-tree-encoding、eol/autocrlf 等转换仓库明确 Unsupported（创建及 snapshot 重检 attributes/config）；不能把指针或工作树原字节静默当交付 blob。放开必须新增正反向物化等价合同。
 
 ### 2.3 attempt、交付与 Git facts
 
-交付 tip 的唯一权威是资源账本；Neige 自有 `refs/neige/…` delivery ref 仅作账本 tip 的 GC pin 与 Git 侧 intent，不承担权威语义。`refs/heads/neige/track-<id>` 是 best-effort publish 投影，工作 HEAD 是执行投影，二者都不能决定父链。worktree 正常形态为 detached HEAD（view 私有 HEAD 同义）；kernel 可安装已知 run 的 C，但不推进已结算 tip。detached 或 attached 的工作 HEAD 与 index 的任何变化都只是源码输入，只由 Revision 判定，永不算漂移；kernel 写 HEAD 一律 `update-ref --no-deref HEAD`，不移动附着分支。须清扫 forge_git 的 branch/exit 11、catch-up 第 0 步及 verify_worker_checkout/verify_worktree_base 的 attached-branch 检查，改核对资源身份/源码证据，spawn 校验失败仍为 spawn-failed；upstream 的 head_upstream/prepare_fetch/upstream_view/last_known_upstream 及其 scheduler refresh_catch_up_upstream、track_worktree ensure/choose_lease_start、worker catch-up、staleness 调用方一并清扫，S3 与 detach 同片切到账本 upstream receipt。
+交付 tip 的唯一权威是资源账本。所有 S3 delivery/candidate/run/archive/retained baseline pins 与可写 best-effort 分支投影放在私有层之外、按资源授权的 kernel-owned durable content repo；refs 只作 GC pin/intent，不承担 tip 权威。用户 common-dir refs 仅观察，不靠 worktree-list + CAS 或 cooperative lock 写删：人可在采样与 CAS 间 checkout 同 OID 分支。kernel 的 owned 工作 HEAD/index 是 detached 执行投影，HEAD 写一律 update-ref --no-deref，不移动附着用户分支。须将 forge_git/lease/spawn 的 attached-branch 校验改为资源身份/源码证据，spawn 校验失败仍为 spawn-failed；upstream 全消费链与 detach 同片切账本 receipt，无 branch-config fallback。
 
 lease 记录 identity、开始 Revision 与 `LeaseBase` 起点 P：普通 attempt 只取已结算 tip，catch-up 取已结算的 U，不从工作 HEAD 或上个 candidate 推断。dirty 判定是 Revision 相对已结算 tip 的差异，并拒绝未完成 Git 操作/冲突和未确认 overlap，不看工作 HEAD/status 或活动 lower 的 dirty。准备持排他准入，确认 Revision 为空后由 kernel 安装工作 HEAD/index 为 P；私有 commit 的相同 tree 不算 dirty，其历史不进入父链。Planner 私有改动先由 git_commit 结算或撤销。
 
 C 只有一种构造方式：launcher 内 snapshot → 规范化 tree → 可信 plumbing 提交（父为冻结 P）→ pin → 安装工作 HEAD/index；gated checkpoint、ungated 和 Planner git_commit 共用，不走 git commit/hooks/签名，agent 私有历史只是源码输入。同 attempt 各 run 固定 P，未交付 run 不改变 GitFacts.delivery_tip。Planner git_commit 经 gitforge Services 的类型化方法进入 kernel（参照 builtin_plugins/dev/publish.rs 的 Services），先走 checkout_admission，非 Free 返回 Busy，Free 时登记排他 owner 并持有至结算；forge 适配器不得按插件/动作名截获。Planner 提交推进已结算 tip，publish 仍区分 Planner commit 与 done candidate。
 
-完整候选 OID/父/tree/message、预期 refs 与投影 receipt 先入现有 operation intent；最终 candidate pin + 自有 delivery ref P→C 用一次 update-ref 事务，随后 best-effort 更新分支投影、install_delivered(C)，最后以现有 settlement/candidate 事务推进账本 tip。结算全程持写 fence，幂等键为 op id + revision + P，acceptance 独立。漂移仅两类：分支投影与 receipt 不符，或被任何 worktree checkout（以 `git worktree list --porcelain` 为准），则 pin 偏离 OID、跳过投影写入、标 stale，publish 拒绝并说明，不停止准入或阻断结算；自有 ref 与账本/持久 intent 无法对账才进入 `DeliveryRecoveryRequired`，仅阻塞写准入与结算，不影响 resolve 或 Planner 启动，区别于生命周期 `WorkspaceRecoveryRequired`。修复是 S3 kernel op：无损时自动执行，需确认时向 Planner 提供工具/API；保全未知对象与源码，按账本/原 intent 恢复 pin 并重驱原 settlement，不重造 C，已 done attempt 可继续结算，不收编偏离 tip。
+完整 C/父/tree/message、规范化与工作字节闭包、预期 refs 与 source-effect 计划先入现有 operation intent。最终 candidate pin + delivery ref P→C 在独占 kernel repo 一次 update-ref 事务，随后私有投影/执行元数据 receipt，再由 settlement/candidate 同一 DB 事务推进账本。唯一 effect owner 签 sealed ProvenSameSourceProjection 或 SourceInstallPlan：前者证明 raw bytes/mode/link、tracked/nonignored 分类、normalization/ignore/config、权限与 mount/root 全不变，只改私有 HEAD/index/refs 和 baseline bookkeeping，保留 source epoch/generation，独立推进 metadata/baseline sequence。后者先固定双闭包 target；若来自 provider 同步调用，durably Accepted 后原调用必须实际结束/cancel，再全 scope 正向 drain、唯一 install/epoch receipt、新 ExecutionId/alias readiness/resume，以新 capability 取原结果。未完旧调用 Busy；按同一 intent 恢复，不按工具名/已有 owner 豁免。此分类覆盖 checkpoint/settlement/lease restore/catch-up/recovery。自有 pins 无法对账才 DeliveryRecoveryRequired，区分物理 WorkspaceRecoveryRequired；修复保全内容并重驱原 C/settlement，不采纳偏离 ref。
 
-`GitFacts` 返回 repo identity、受保护基线、已结算 delivery tip、固定 upstream、候选与 ancestry/refs receipt；publish check_tip 核验权威链及投影一致性，不靠 worktree Some/用户当前分支推断。catch-up 保留 agent 回放：T 为最新 done candidate，fetch 得 U，H 只取已结算 tip，冻结 M/T/H/U 后由排他 kernel CAS 自有 ref H→U、best-effort 更新分支投影并安装 U，账本结算 U 后发布 P=U 的 lease；D 逻辑重定到 U，清源码 W、保留 ignored，再由 agent 回放 M..T 到 W/解冲突，C 父为 U。kernel 不自动 replay、不 reset 用户 checkout；live sync 只刷新 lower。
+`GitFacts` 返回资源 repo identity、受保护基线、账本 tip、固定 upstream、候选及 ancestry/内容 receipts。Gitforge check_tip 仍拥有 done-candidate 政策；typed PublishTarget 从授权 scoped export 推冻结精确 OID 到 frozen remote ref，不依赖用户本地分支或私有展示投影。catch-up 冻结 H=账本 tip、T=最新 done candidate、fresh U、M 后先备齐 U 工作字节/规范化闭包，再由唯一 effect owner 分类；真正源码安装执行全 scope drain 后 CAS 私有 pin H→U、安装并结算 U/发布 P=U lease。保留 agent 回放 M..T，kernel 不 replay、不 reset 用户 checkout。
 
-归档也消费 Revision，archive commit 父为已结算 tip，必要时保留上次 archive 保护链；不推进已结算 tip。保留期清理释放自有 archive/baseline refs，不删除被 candidate、未结算操作或打开 PR 引用的分支。PR 状态未知则保留分支并显示延期；branch 删除是独立的引用释放条件，不能随私有目录 destroy 隐式发生。
+归档消费同一 Revision/content owner，A 父为账本 tip，不推进交付；ArchiveReceipt 必需 pin A 的规范化闭包与 raw 工作字节 manifest，一次 ContentReceipt 覆盖两者。B/tip/run/candidate/install 的实际源码消费者也必须有 MaterializedSource，HistoryRoot 不能当 launch/restore 内容。保留期仅按引用释放 kernel repo 自有 pin/私有投影，用户 common-dir 分支/旧 refs 不自动删；candidate、未结算操作、open/unknown PR 继续保护其精确对象。remote branch 删除仍为独立授权 Gitforge effect。
 
 ## 3. S-B：类型化启动与文件能力
 
@@ -154,7 +154,7 @@ Revision/install_epoch，不能用 WorkspaceRef 或运行 generation 代替。�
 
 ### 4.1 selection 与 materialization
 
-资源账本由 kernel 拥有，生存期独立于 tracks；track/area 删除不能 cascade 它。保存 workspace_id、versioned descriptor、repo/storage identity、selection version、materialization receipt、B 的保护 ref、当前 D/tip/upstream、运行 generation/install_epoch、runtime identity、close 截止时间及 tombstone。账本只保存资源状态；机制操作注册为现有 operations kind，复用其 idempotency_key、payload_hash、tx_output、阶段/probe/补偿，保存不可变 input、expected CAS version 与 FS/ref receipt，不建子账本，也不依赖已删除 track 回查。
+资源账本由 kernel 拥有，生存期独立于 tracks；track/area 删除不能 cascade 它。保存 workspace_id、versioned descriptor、repo/storage identity、selection version、materialization receipt、B 的保护 ref、当前 D/tip/upstream、运行 generation/source install_epoch、projection/baseline sequence、独立 durable content repo/双闭包 receipts、runtime identity、close 截止时间及 tombstone。账本只保存资源状态；机制操作注册为现有 operations kind，复用其 idempotency_key、payload_hash、tx_output、阶段/probe/补偿，保存不可变 input、expected CAS version 与 FS/ref receipt，不建子账本，也不依赖已删除 track 回查。
 
 selection 是 backend/source/storage，由现有唯一工作区写者与四列一起写，未冻结时 create/repoint/today launchpad 都可更新；与现有 frozen_at 闩一起冻结，不提前到创建事务。system 特例仍只在 kernel，不启用 view。materialization 是 Pending → Ready(receipt) 的显式枚举；baseline/upstream 在 ensure 或 view create 的实际成功点以 NULL→值 CAS 安装，不从创建请求猜值。LegacyWorktree 为显式变体，保留 attached None、managed、child 和旧 cwd/refusal；不凭默认值补虚假 baseline，unborn 是独立类型。
 
@@ -168,8 +168,8 @@ worktree ensure 保留 fetch/choose_lease_start 时点，部分失败后探测�
 |---|---|
 | create / open / recover | selection + op id / ledger descriptor + runtime identity；返回句柄、实际 materialization receipt 或 WorkspaceRecoveryRequired。相同请求幂等，不同资源拒绝覆盖 |
 | snapshot / prepare_verification | handle + exclusive/read permit → Revision/SnapshotHandle；固定 candidate tree → VerificationHandle/环境证据；内容受保护到所有消费者释放 |
-| stage_install / install / inspect_install | 受保护 Revision、expected generation/epoch、意图 → staging/原子安装 receipt；支持 U 安装、archive restore，不靠 create 猜 upper |
-| install_delivered | C + expected Revision/epoch → 投影安装 receipt；遵循 §2.3 恢复协议，HEAD/index 设 C 且保留源码；D 逻辑重定到 C，剩余 W = 当前内容 − C，不将正常并发写视为投影漂移，不在挂载期间物理修改 lower/upper |
+| plan_source_effect / stage_install / install / inspect_install | 唯一 owner 验证 footprint 后签 sealed ProvenSameSourceProjection / SourceInstallPlan；固定双闭包 target、before identity 与序列。前者保 source epoch，仅推进 metadata/baseline receipt；后者按 Accepted/原调用结束/drain/install/new execution/result 协议安装，拒绝未知旧调用 |
+| install_delivered | 先经同一 sealed effect 分类；证明源码/环境不变时只设 owned HEAD/index、逻辑 D/W 与 projection/baseline sequence，source epoch/generation 不变。未证明则 SourceInstallPlan，不得把 no-byte 或 owner 身份当豁免 |
 | git_facts / pin / ref_cas | repo capability + owned refs + expected oid → GitFacts/receipt；Git 配置/网络政策仍由 kernel 决定 |
 | launcher / environment | handle + 准入 permit → LaunchHandle / typed provider 环境；每次执行仍核销 fence |
 | content / sync / reclaim | read/list/status/diff/授权 write；IdlePermit 刷新；DestroyPlan 回收/恢复/最终删除 owned storage，不连带删 branch |
@@ -185,21 +185,21 @@ worktree ensure 保留 fetch/choose_lease_start 时点，部分失败后探测�
 | selection DB → materialize intent DB | 未提交无动作；提交后按同一 selection/op id ensure，不能重新选 backend |
 | 选 B → Git 保护 ref CAS → Ready DB | 先持久化所选 oid/预期 ref；保护 ref 存在才可 Ready。写 ref 后崩溃按 input/实际 branch 校验并补 receipt；保护前对象丢失显式失败，不能换 B；view 未 Ready 不开放 |
 | 创建 FS/staging → rename → receipt DB | owned marker/storage identity 绑定 op id，逐项探测；完成后补 receipt，半成品只清理本 op 所有资源，不覆盖用户目录；Ready CAS 是可使用的提交点 |
-| install intent DB → staging+pin → 切换 active manifest → epoch/D DB CAS | fence 禁启动；manifest 包含 op id/epoch/tree，原子切换是磁盘提交点。崩溃后 inspect：旧 manifest 则重做/丢 staging，新 manifest 则补 DB，再开放准入；不能出现旧 D 配新源码 |
+| source-effect intent → 私有 metadata 或真正 install → receipt/DB | ProvenSameSourceProjection 按预期 metadata 序列幂等重驱，不改 source epoch、不等待同步调用者自 drain。SourceInstallPlan 先固定双闭包并完成 Accepted/旧调用结束与 scope drain，再安装/epoch CAS；中断按同一 manifest/intent 恢复，未结束调用保持 Busy |
 | run object → run ref pin → run receipt | OID/元数据先入 intent；pin 已为目标补 receipt，否则按 expected CAS；不推进 delivery tip，同 attempt 多 run 不串成父链 |
-| candidate pin + 自有 delivery ref CAS → 投影/install_delivered → settlement/candidate DB | 多 ref 全旧重试、全目标补齐；自有 ref 按 intent 重驱，无法对账才为 DeliveryRecoveryRequired；分支 stale 跳过写入且不阻断结算。按 intent 补 HEAD/index 后补账本 tip 与 settlement/candidate，不从工作 HEAD 猜父、不生成第二 C；结算完成才开写准入，resolve/Planner 不受交付对账阻塞 |
-| catch-up intent → 自有 ref H→U → 投影/安装 U → 账本 tip/lease DB | 冻结 H/U/M/T、旧工作 HEAD 与目标 epoch，不重新 fetch/选 T；ref 为 H 重试、为 U 补安装，其他按 §2.3 修复。view inspect manifest，worktree inspect tree/目标并以 read-tree 幂等重做；安装 receipt 后才结算 U/发布 lease，全程 fence，慢 FS 不放 prepare DB 事务内 |
-| archive intent → tree/commit+保护 ref → archive receipt DB | 每个 close op 独立 pin；补 DB 前禁止 destroy。重复 close 不释放旧 close 的 pin，失败保留私有层 |
+| kernel repo candidate + delivery pin CAS → classified effect → settlement DB | 多 ref 全旧重试、全目标补齐，不从用户 branch/工作 HEAD 猜父。私有展示投影可 stale；按 sealed plan 补 metadata/baseline 或 source-install receipt，再原子推进账本与 candidate/settlement，不造第二 C |
+| catch-up intent → 固定 U 双闭包 → classified effect → U/lease DB | 冻结 H/U/M/T，先完成必要调用交接/drain，再私有 ref H→U、按工作字节 manifest 安装；ref 为 U 仅补原 install/receipt/lease，不 refetch/重选 T，不依赖 smudge 重驱 |
+| archive intent → durable Git + raw manifest pins → receipt DB | 私有层外同一 content store 验证/fsync 两类闭包及 pins，补完整 ContentReceipt/ArchiveReceipt 才允许 destroy；pointer-only 或 filter/supply 缺失不能 Ready，失败保留私有层 |
 | tombstone/reclaim intent DB → .trash rename/unmount/remove → receipt DB | 先保留完整 descriptor/refs/截止时间再删领域行；失败重驱。area 事务回滚按原 recycle report 补偿，不恢复到已占用路径；保留 restoration gate |
 | 到期 intent DB → refs CAS 释放/FS 删除 → final DB | 每项检查引用与静默证明；缺失已属于预期删除可补 receipt，未知 identity/外部引用则延期。旧 GC 不能越过账本释放资源 |
 
-generation 在 holder 重建/恢复时单调增加，旧 handle/environment 失效；install_epoch 单独区分源码安装。PID 不作身份：需 nonce、进程开始时间、namespace 和 supervisor 事实；未知存活进入 WorkspaceRecoveryRequired，不建空目录冒充恢复。B/D、candidate、archive、未完成 op 均有保护 ref；最后引用释放才可交给 Git GC。
+generation 在 holder 重建/恢复时单调增加；source install_epoch 仅随真正 SourceInstallPlan 变化，证明同源 metadata 效果只推进 projection/baseline sequence。PID 不作身份，未知进程/未决调用保持 Busy/recovery。所有可恢复源码由独立 durable store 的规范化与 raw manifest refs 保护，最后内容引用释放后才可 GC。
 
 ## 5. S-D：一个生命周期状态机
 
 ### 5.1 静默、启动与刷新
 
-分层复用现有事实：hibernation 保持 Planner session 静默语义，不因 PTY/Readers 新增睡眠阻断。workspace 静默供 sync/install/close/reclaim 使用，组合现有 session 静默 ∧ occupancy ∧ 进程证据：occupancy 必须 Free（Readers 也阻塞），无 starting/running/turn_pending session、未决 launch ticket、gate/forge/内容快照读取、远端工具调用；proc-supervisor 确认 PTY 和整棵后代退出。terminal shell 等输入、dev server、setsid 后代、未知 terminal/daemon、stuck owner 残留均阻塞。idle session 仅在无执行/工具且调用准入关闭后才可通过。
+分层复用现有事实：hibernation 保持 Planner session 静默语义，不因 PTY/Readers 新增睡眠阻断。workspace 全静默供真正 SourceInstallPlan、sync/close/reclaim 使用；ProvenSameSourceProjection 仅需既有 owner/reservation/稳定性/CAS，不把等结果的 provider 伪装为 Drained。全静默组合现有 session 静默 ∧ occupancy ∧ 进程证据：occupancy 必须 Free（Readers 也阻塞）；旧执行 claim 由领域 owner 显式 suspend/结算，transition intent 保持调度排他，不能按 caller 身份忽略未完租约，无 starting/running/turn_pending session、未决 launch ticket、gate/forge/内容快照读取、远端工具调用；proc-supervisor 确认 PTY 和整棵后代退出。terminal shell 等输入、dev server、setsid 后代、未知 terminal/daemon、stuck owner 残留均阻塞。idle session 仅在无执行/工具且调用准入关闭后才可通过。
 
 remote environment 从开放工具准入到 drain 完成一直持运行许可；若协议不能证明工具/后台后代已 drain，就持续 Busy，不由 DB idle 猜空闲。排他准备窗口由当前 owner 持有，不能以 except_attempt 排除其他工作。claim 前刷新，或 owner 在该窗口执行；并发 reader 不可忽略。
 
@@ -213,7 +213,7 @@ remote environment 从开放工具准入到 drain 完成一直持运行许可；
 
 复用 workspace_recycle 的 managed .trash、owner marker、恢复闸门和 area saga 补偿；managed destroy 的第一阶段就是 recycle，不另建一个 trash service。worktree_clean 的 ignored 清理由同一状态机调度；S1 保持旧 10 分钟行为，S3 切换到新归档/保留政策。track/area delete、Admin close、hibernation 后的资源回收、planner recovery 和旧 worktree sweep 全部接入这个入口；新政策启用时旧 timer/GC 对账本资源停止独立决策，不能并行双删。
 
-私有层保留 **7 天**，关闭源码快照保留 **90 天**，为 typed settings；每次 close 冻结截止时间，改设置不追溯删除。私有层到期只在归档成功、无进程/挂载、无活动引用后回收。Reclaimed 后显式唤醒从 archive 安装新代次，ignored 环境重建；archive 已到期或缺失则拒绝并说明不可恢复。archive 到期只释放无引用的自有 pin，不强删 PR/candidate 分支。快照失败永不触发破坏性回收。
+私有层保留 **7 天**，关闭源码保留 **90 天**，为 typed settings 且每次 close 冻结。回收前必须在私有层/.git/trash 之外的资源 scoped KernelArtifact repo 导入、验证/fsync 完整 Git history 与所有必需 raw 工作字节 manifest 闭包，CAS pins 并提交覆盖当前引用版本的 ContentReceipt；不依赖 alternates/硬链/缺失祖先/私有 filter cache。第 8 天删整个 managed .git 后，reopen 从 A 冻结 bytes/mode/link 直接安装，无 smudge/LFS/网络；逻辑 D 保账本 tip，源码 W 保 A。缺闭包/到期拒绝，不造空目录或透传 pointer。同一 lifecycle driver 拥有 import/reclaim/reopen，子进程只获授权 export，不见其他 workspace/Area 对象。
 
 删除先保存独立 tombstone 和逐资源作业再删 track/area；恢复 area 时同时恢复其 resource/archive 引用和恢复闸门。单项失败不吞掉兄弟项。用户来源路径永不在 DestroyPlan 中。
 
@@ -229,7 +229,7 @@ remote environment 从开放工具准入到 drain 完成一直持运行许可；
 |---|---|---|
 | S1：现有 worktree/managed 机制封装，只有真实生产调用者 | 新 workspace crate/service；track_worktree、materialize、clean、workspace_recycle 与 area/recovery 调用链迁入机制入口。cwd、选择时点、refusal、branch config、wire/事件、7 天 trash 与 10 分钟 clean 均不变；无新归档/retention/schema 闲置机制 | 现有 track_worktree、回收/area 补偿和恢复 tests；对生产 ensure/delete/recovery 路径作前后等价验证。G；L2（回收所有权），无依赖 |
 | S2a：只有 worktree 的类型化收口 + WorkspaceRef 迁移 | §1 全入口、truth 新 migration/sidecar binding、lease 索引、session/control/supervisor、FE track 文件端口。按持久身份/句柄、supervisor、FS/FE 三组收口，建立三类能力、票据/握手和资源账本；不预加 namespace fd。此片开始为实际 materialization 写 B pin（显式新增 Git ref 副作用），不前移 ensure 时点；无 view 可选 | 旧行与事件字节、create→ensure 来源变化、已有 branch 的失败重试、repoint/today、持久化重驱、PTY pipe/attach/restart/ACP/forge/gate/FS 生产入口。G；L2，依赖 S1 |
-| S3：worktree 的统一 Revision/Tree、交付与生命周期 | S3 开工前须产出并评审其交付协议实施设计，汇总下列待定点；本文档对 S1–S2a 为定稿。snapshot/verification、git_candidate、lease/checkpoint/publish、账本 install/archive、hibernation/recycle/area/reaper。复用原地 gate 证据与 agent catch-up。显式行为变更：§2.3 账本唯一权威/best-effort 分支投影、自动/Planner 确认的 kernel 修复 op、Planner 准入、统一 plumbing C（不再运行提交 hooks/签名、不保留 agent 私有历史）、存量 worktree/upstream receipt 同片转换、关闭快照/7/90；不改 GateSpec/ignored 构建语义，同片替换旧销毁策略 | 多 attempt 父链、agent 已 commit、只读 head、check_tip、dirty 拒绝、filter/eol 规范化、detach 后 catch-up/fetch/staleness、原地 gate/热缓存、连续 run 与修复重跑、每个 FS/ref/HEAD/DB 崩溃点、PR 阻止删分支、关闭/唤醒/area 回滚。G + 崩溃 replay；L2，依赖 S2a |
+| S3：worktree 的统一 Revision/Tree、交付与生命周期 | 依 [delivery protocol](workspace-delivery-protocol.md) 与 [verification decision](workspace-verification-decision.md)，本次 parent 最小映射待第三轮 fresh 双路完整 L2 设计评审。统一 content/effect owner、raw manifest + normalized closure、kernel 私有 pins/投影、精确 OID publish、Free 转换与 upstream receipts、受控同 cwd 验证/ignored 热缓存、唯一生命周期 7/90；same-source metadata 保 source epoch，真 install 走 Accepted/full drain/new execution，不改 S1 | 多 run/P、同步 gate/commit 不自等待、raw/filter/source/规则身份、每个 ref/FS/DB/crash、整 .git 删除后 raw 恢复、PR/area rollback；G + 机制/崩溃 replay，未支持不得 skip 算通过；L2，依赖 S2a |
 | S2b：Linux 同路径视图，创建与关闭/删除/恢复同片 | holder/overlay、D/W、sandbox、supervisor namespace envelope；同片承担显式 view 选择的 API/wire/OpenAPI 字段及真实生成器产物。已过机制合同的 terminal、gate、受控 forge/FS 可用；Planner/conversation/worker 另须 provider ViewSupport（§3.4）。无 Supported Planner 时只开放显式 API/terminal 路径，两 track 生产链隔离用无模型测试，不宣称 Planner 端到端可用；子 track 拒绝 | 两 track 隔离、lower 原地/原子替换、copy-up overlap、whiteout/opaque、后台后代/uid、holder 崩溃恢复、旧 ticket 竞态、外部 gitdir 拒绝、gate lower 钉 tree、create 后立即 close/delete、7/90 到期。G + 允许 userns 的真实 Linux 机制合同；不能 skip 当通过。L2，依赖 S3 |
 | S4：Codex exec-server 环境接入 | provider、shared app-server、Planner/conversation/worker 的 start/turn/resume/recovery；配置和所有宿主项目读取受 §3.4 合同约束，未证明不开放 | 部署版本官方 schema、无模型协议 stub/二进制合同、断连/重注册/drain/旧环境拒绝；生产参数编码而非复制 fixture。G + 协议 gate；L2，依赖 S2b |
 | S5：完整产品预览/设置与推荐默认 | 产品设置及相关 types/OpenAPI、wire/zod、FE domain/ports/events、创建/恢复/保留期 UI。view 选择字段/生成器属 S2b；S2a 已封住绝对路径，S2b 已提供 view 预览；此片完善体验，能力齐备才推荐 Linux view，设置不换冻结 backend | 真生成器、schema/事件兼容、Report/image/raw/HTML、路径越界、白洞 404、设置和恢复浏览器测试；G + FE lint/build/test、真实浏览器预览与相关 browser E2E，遵循 development-preview。L2，依赖 S4 |
@@ -237,16 +237,7 @@ remote environment 从开放工具准入到 drain 完成一直持运行许可；
 实施时须定（仅归属与约束，不在本文展开）：
 
 - S2a / NB3-6、NB3-8、NB3-9：resolve 增 principal/purpose；按 backend 标明 QuiescenceEvidence 覆盖范围，定 supervisor 核销/撤销与 fork 线性化；删除/私有化 `agent_cwd()`，`DisplayPath` 不实现 `AsRef<Path>`，定 view 四列；扫描用 clippy disallowed-methods（Command::current_dir、std::fs）与逐处 `#[expect(reason)]`，不建文件名单。
-- S3 / NB3-2、A3:N2、A4:N2：worktree 采样+排他准入不排除瞬时写入；定 environment_digest、VerificationHandle 写入约束/失败关闭证据，验收 tracked 改后还原、新非 ignored 增后删、后台写与 ignored 热构建。
-- S3 / NB3-5：ask/reopen 与 patch closed=false 接入恢复/reopenable，Reclaimed 唤醒、archive 到期拒绝。
-- S3 / NB3-9、B4:N5、A4:N1：定 Free 排他转换 op 与可重启协议切换点；drain 旧写入/交付，首次采纳当前分支 tip、B=LegacyUnknown，与 upstream receipt/detach 一次切换；之前不接新写准入，旧 hash payload drain 或版本重驱且不改字节，禁止重试再次采纳。
-- S3 / B4:N2：定 git_commit 的 Planner-only 合同、worker 经 done 交付的明确拒绝与旧 branch 参数删除。
-- S3 / B4:N3：定以 ReadWrite workspace_lease/commit op owner 登记排他占用，Readers 也 Busy。
-- S3 / B4:N4：定未交付 run 释放后 HEAD/index 回装已结算 tip、保留文件的行为变更，含只读 head pin 与类型化放弃入口。
-- S3 / B4:N6：定 checkpoint 移出 shell 步骤 0 后 gate 日志编号的显式行为变更。
-- S3 / B4:N7：定安装窗口外 D = tree(已结算 tip)，覆盖交付、Planner 提交、catch-up 与 archive 恢复。
-- S3 / B4:N8：定普通 lease 准备的 HEAD/index 安装幂等重驱与移出 DB 事务。
-- S3 / NB3-4、A3:N1：验收 ref 已 U/安装未完、安装已完/DB 或 lease 未发、连续 catch-up 的生产恢复入口（§4.3）。
+- S3：以上旧实施待定项由 delivery/verification 两协议及唯一 sealed effect owner 统一收口，待第三轮 fresh 双路完整评审；不维护工具名/caller/test 名单。
 - S2b / NB3-2、NB3-3：定验证 ignored 依赖/缓存投影和 upper 丢弃规则；D/W 用逻辑 manifest 重定，清 W 保留 ignored（§2.3/§4.2）。
 - S2b / NB3-7：定创建时拒绝 Unsupported Planner 或无 Planner track 的明确 API 语义、overlap 确认执行者/API；无 Supported provider 时交付链无生产 provider 调用者是有意范围。
 
@@ -254,7 +245,7 @@ remote environment 从开放工具准入到 drain 完成一直持运行许可；
 
 ## 7. 架构五点与维护成本
 
-- 抽象边界：kernel 决策、truth 事务、workspace 机制、provider 外部编码；共享 Revision/Tree 和能力阻止 adapter 猜实现。验证以证据不变量为准，worktree 复用原地采样。
+- 抽象边界：kernel 决策、truth 事务、workspace 机制、provider 外部编码；共享 Revision/Tree 和能力阻止 adapter 猜实现。验证以证据不变量为准，worktree 用同逻辑 cwd 的冻结源码/动态 ignored 投影；采样不冒充无写入证明。
 - 重复逻辑：只保留 checkout admission、分层组合的静默事实与一台资源生命周期状态机；复用 recycle/hibernation/sandbox，旧清理入口不旁挂第二套政策。
 - 硬编码假设：backend 有意闭合，ref 命名是 Neige 自有协议，7/90 为 typed settings；不按模板、插件或路径字符串决定执行隔离。
 - 外部事实：Git 路径由 Git 返回；进程身份由自有 nonce 与监督事实证明；Codex 只认部署版本协议。实验记录不足以解除发布阻断。
@@ -268,7 +259,7 @@ remote environment 从开放工具准入到 drain 完成一直持运行许可；
 | 本地 provider 按 cwd 状态/项目读取 | S2b provider 层 ViewSupport 合同；Claude 依官方状态作用域，ACP 默认拒绝；未通过仍 Unsupported，不猜 HOME 私有布局 |
 | Codex 宿主项目文档/config/git info/ghost/undo/搜索、trust 状态 | S4 部署版本协议合同及独立状态/禁用功能证明，未过拒绝 Codex view |
 | 转换仓库、非 Git 交付、子 track、根外 cwd | S2b 在创建/准备和重驱边界拒绝（转换在 snapshot 重检）；解除另立扩展片，非 Linux 继续 worktree |
-| gate 写源码、ignored 环境/依赖缓存 | S3 原地证据兼容，S2b 钉 lower；源码写入使 bound 失效，ignored 写入合法，环境摘要不保证可重复构建；不强制新输出目录 |
+| gate 写源码、ignored 环境/依赖缓存 | S3 的冻结 raw 源码 + 按 Git 分类受控缓存投影；防实际源码写而非审计所有失败 syscall；S2b 钉 lower。无完整机制时拒绝 bound，不新增 GateSpec/outputdir |
 | 常驻 PTY/远端工具无法 drain、活动轮 HEAD 检测 | S3 资源静默与 S2b/S4 执行器证明；未 drain 持续 Busy、用户显式停止，不强杀，不承诺活动轮即时检测 |
 
 这是实现发布门槛，不是本次已实现/验证的能力；网络/端口和远端副作用仍遵循既有权限边界。
