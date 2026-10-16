@@ -165,11 +165,40 @@ pub(super) fn prepare(
     io_mode: IoMode,
     script: &str,
 ) -> PrepareExecution {
+    let receipt = client
+        .registrations()
+        .iter()
+        .rev()
+        .find(|receipt| match (&scope, &receipt.transfer.registration) {
+            (
+                ExecutionScope::Worktree {
+                    workspace_id,
+                    binding_id,
+                    ..
+                },
+                ExecutionRegistration::Worktree {
+                    workspace_id: registered,
+                    binding_id: binding,
+                    ..
+                },
+            ) => workspace_id == registered && binding_id == binding,
+            (
+                ExecutionScope::ExternalDir { directory_id, .. },
+                ExecutionRegistration::ExternalDir {
+                    directory_id: registered,
+                    ..
+                },
+            ) => directory_id == registered,
+            _ => false,
+        })
+        .expect("test launch requires a real attachment receipt");
     PrepareExecution {
         identity: ExecutionIdentity {
             execution_id: ExecutionId::fresh().unwrap(),
             executor_boot: client.executor_boot().clone(),
             ticket_id: LaunchTicketId::fresh().unwrap(),
+            source_registration: receipt.id.clone(),
+            source_incarnation: receipt.transfer.incarnation.clone(),
             authority,
             scope,
             operation_id: "explicit-test-operation".into(),
@@ -222,13 +251,54 @@ pub(super) async fn register(
     client: &mut RegisteredExecutorConnection,
     registration: ExecutionRegistration,
 ) {
-    assert!(matches!(
-        client
-            .request(ExecutionRequest::Register(registration))
-            .await
-            .unwrap(),
-        ExecutionReply::Registered
-    ));
+    use workspace::execution::objects::HeldSourceObjects;
+    let (root, worktree) = match &registration {
+        ExecutionRegistration::Worktree { root, .. } => (root, true),
+        ExecutionRegistration::ExternalDir { root, .. } => (root, false),
+    };
+    let held = HeldSourceObjects::open(&root.path, worktree).unwrap();
+    let incarnation = client
+        .registrations()
+        .iter()
+        .find(
+            |receipt| match (&receipt.transfer.registration, &registration) {
+                (
+                    ExecutionRegistration::Worktree {
+                        workspace_id: a, ..
+                    },
+                    ExecutionRegistration::Worktree {
+                        workspace_id: b, ..
+                    },
+                ) => a == b,
+                (
+                    ExecutionRegistration::ExternalDir {
+                        directory_id: a, ..
+                    },
+                    ExecutionRegistration::ExternalDir {
+                        directory_id: b, ..
+                    },
+                ) => a == b,
+                _ => false,
+            },
+        )
+        .map(|receipt| receipt.transfer.incarnation.clone())
+        .unwrap_or_else(|| {
+            if worktree {
+                SourceObjectIncarnation::Worktree(SourceIncarnationId::fresh().unwrap())
+            } else {
+                SourceObjectIncarnation::ExternalDir(
+                    ExternalDirectoryIncarnationId::fresh().unwrap(),
+                )
+            }
+        });
+    let transfer = AttachRegistration {
+        executor_boot: client.executor_boot().clone(),
+        nonce: TransferNonce::fresh().unwrap(),
+        incarnation,
+        registration,
+        shape: held.shape().clone(),
+    };
+    client.attach(transfer, &held).await.unwrap();
 }
 
 pub(super) async fn launch(

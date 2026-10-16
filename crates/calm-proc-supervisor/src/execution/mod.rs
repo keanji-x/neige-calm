@@ -1,5 +1,6 @@
 //! Durable executor mechanisms. Authorization and scheduling decisions remain in kernel.
 
+mod attachment;
 mod directory;
 mod journal;
 mod preparation;
@@ -51,6 +52,8 @@ pub struct Executor {
     gates: StdMutex<HashMap<ResourceKey, Arc<Mutex<()>>>>,
     registrations: StdMutex<HashMap<String, Arc<RegisteredRoot>>>,
     registration_facts: StdMutex<HashMap<String, ExecutionRegistration>>,
+    transfers: StdMutex<HashMap<TransferNonce, ObjectRegistrationReceipt>>,
+    live_objects: StdMutex<HashMap<ObjectRegistrationId, Arc<RegisteredRoot>>>,
     preparations: preparation::PreparationReservations,
     records: StdMutex<HashMap<ExecutionId, Journal>>,
     aliases: StdMutex<HashMap<String, AliasSlot>>,
@@ -82,7 +85,7 @@ impl Executor {
         let mut records = HashMap::new();
         let mut aliases: HashMap<String, AliasSlot> = HashMap::new();
         for mut record in store.load()? {
-            anyhow::ensure!(record.version == 1, "unsupported execution journal version");
+            anyhow::ensure!(record.version == 2, "unsupported execution journal version");
             let identity = &record.request.identity;
             if let Some(receipt) = record.phase.receipt() {
                 anyhow::ensure!(
@@ -146,14 +149,34 @@ impl Executor {
                 );
             }
         }
-        let mut registrations = HashMap::new();
         let mut registration_facts = HashMap::new();
-        for registration in store.registrations()? {
-            let key = registration_key(&registration);
-            if let Ok(root) = RegisteredRoot::open(registration.clone()) {
-                registrations.insert(key.clone(), Arc::new(root));
+        let mut transfers = HashMap::new();
+        // Serialized receipts retain audit/version facts only. No descriptor survives this boot.
+        for receipt in store.registrations()? {
+            anyhow::ensure!(
+                receipt.contract == EXECUTION_ENVELOPE_VERSION,
+                "unsupported persisted attachment contract"
+            );
+            let registration = &receipt.transfer.registration;
+            let key = registration_key(registration);
+            if let Some(previous) = registration_facts.get(&key) {
+                if registration_successor(previous, registration) {
+                    registration_facts.insert(key, registration.clone());
+                } else {
+                    anyhow::ensure!(
+                        registration_successor(registration, previous),
+                        "conflicting persisted registrations"
+                    );
+                }
+            } else {
+                registration_facts.insert(key, registration.clone());
             }
-            registration_facts.insert(key, registration);
+            anyhow::ensure!(
+                transfers
+                    .insert(receipt.transfer.nonce.clone(), receipt)
+                    .is_none(),
+                "duplicate persisted attachment nonce"
+            );
         }
         let executor = Arc::new(Self {
             closing: std::sync::atomic::AtomicBool::new(false),
@@ -164,8 +187,10 @@ impl Executor {
             mechanism,
             legacy_persistence: Default::default(),
             gates: Default::default(),
-            registrations: StdMutex::new(registrations),
+            registrations: Default::default(),
             registration_facts: StdMutex::new(registration_facts),
+            transfers: StdMutex::new(transfers),
+            live_objects: Default::default(),
             preparations: preparation::PreparationReservations::from_records(&records)?,
             records: StdMutex::new(records),
             aliases: StdMutex::new(aliases),
@@ -206,7 +231,11 @@ impl Executor {
                 executor_boot: self.boot.clone(),
                 mode: hello.mode,
             }),
-            ExecutionRequest::Register(registration) => self.register(registration).await,
+            ExecutionRequest::Attach(_)
+            | ExecutionRequest::Export(_)
+            | ExecutionRequest::ExportAck(_) => {
+                anyhow::bail!("object attachment requires the controlled ancillary transport")
+            }
             ExecutionRequest::Prepare(request) => self.prepare(request).await,
             ExecutionRequest::Launch(request) => self.launch(request).await,
             ExecutionRequest::Revoke(request) => self.revoke(request).await,
@@ -240,53 +269,6 @@ impl Executor {
         Ok(())
     }
 
-    async fn register(
-        &self,
-        registration: ExecutionRegistration,
-    ) -> anyhow::Result<ExecutionReply> {
-        let gate = self.gate(registration_resource(&registration))?;
-        let _fence = gate.lock().await;
-        let key = registration_key(&registration);
-        if let Some(previous) = self.registration_facts.lock().map_err(poison)?.get(&key) {
-            anyhow::ensure!(
-                registration_successor(previous, &registration),
-                "stale/conflicting registration or binding version"
-            );
-        }
-        let mut directory_changed = false;
-        for known in self.registration_facts.lock().map_err(poison)?.values() {
-            if registration_resource(known) == registration_resource(&registration) {
-                anyhow::ensure!(
-                    !older_runtime(&registration, known),
-                    "resource generation/epoch regressed"
-                );
-                if !same_directory(known, &registration) {
-                    anyhow::ensure!(
-                        directory_recovery_version(known, &registration),
-                        "directory replacement needs explicit recovery version"
-                    );
-                    directory_changed = true;
-                }
-            }
-        }
-        let root = Arc::new(RegisteredRoot::open(registration)?);
-        // Generation/source changes require every old execution to have positively settled.
-        for record in self.records.lock().map_err(poison)?.values() {
-            if scope_resource(&record.request.identity.scope)
-                == registration_resource(&root.registration)
-                && !record.phase.state().permits_handoff()
-                && (directory_changed
-                    || !same_runtime(&record.request.identity.scope, &root.registration))
-            {
-                anyhow::bail!("resource still occupied by an old execution/ticket");
-            }
-        }
-        self.store
-            .write(&format!("{key}.registration"), &root.registration)?;
-        self.registrations.lock().map_err(poison)?.insert(key, root);
-        Ok(ExecutionReply::Registered)
-    }
-
     fn resolve(
         &self,
         identity: &ExecutionIdentity,
@@ -299,6 +281,12 @@ impl Executor {
             .get(&scope_registration_key(&identity.scope))
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("execution target not registered for this executor"))?;
+        anyhow::ensure!(
+            root.receipt.id == identity.source_registration
+                && root.receipt.transfer.incarnation == identity.source_incarnation
+                && root.receipt.transfer.executor_boot == identity.executor_boot,
+            "unwitnessed or stale source registration receipt"
+        );
         anyhow::ensure!(
             registration_matches(&root.registration, identity, require_admission),
             "stale binding, generation, source epoch or grant"

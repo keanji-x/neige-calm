@@ -12,6 +12,7 @@ name = "integration_suite"
 path = "tests/integration_suite.rs"
 
 [dependencies]
+libc = "0.2"
 workspace = { path = "../workspace" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

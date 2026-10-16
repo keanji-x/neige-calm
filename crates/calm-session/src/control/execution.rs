@@ -8,17 +8,23 @@ use workspace::identity::WorkspaceId;
 
 use super::{IoMode, ProcSignal};
 
-pub const EXECUTION_ENVELOPE_VERSION: u32 = 1;
+pub mod attachment;
+mod attachment_client;
+pub mod rights;
+pub use attachment::*;
+
+pub const EXECUTION_ENVELOPE_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExecutionHandshake {
+    pub required_contract: u32,
     pub client_secret: CapabilityToken,
     pub mode: ExecutionProtocolMode,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExecutionProtocolMode {
-    RegisteredV1,
+    RegisteredV2,
     LegacyWorktree,
 }
 
@@ -95,7 +101,9 @@ pub struct ConsumeExecution {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ExecutionRequest {
     Handshake(ExecutionHandshake),
-    Register(ExecutionRegistration),
+    Attach(AttachRegistration),
+    Export(ExportRegistration),
+    ExportAck(ExportAcknowledgement),
     Prepare(PrepareExecution),
     Launch(ConsumeExecution),
     Revoke(ConsumeExecution),
@@ -155,7 +163,12 @@ pub enum ExecutionReply {
         executor_boot: ExecutorBootId,
         mode: ExecutionProtocolMode,
     },
-    Registered,
+    Registered(ObjectRegistrationReceipt),
+    Exported {
+        receipt: ObjectRegistrationReceipt,
+        nonce: TransferNonce,
+    },
+    ExportAcknowledged,
     Prepared,
     Receipt {
         receipt: Option<ExecutionReceipt>,
@@ -225,6 +238,7 @@ async fn legacy_negotiation(
     crate::write_frame(
         &mut stream,
         &super::ControlMsg::Execution(ExecutionRequest::Handshake(ExecutionHandshake {
+            required_contract: 0,
             client_secret: CapabilityToken::fresh()?,
             mode: ExecutionProtocolMode::LegacyWorktree,
         })),
@@ -249,6 +263,8 @@ async fn legacy_negotiation(
 pub struct RegisteredExecutorConnection {
     stream: tokio::net::UnixStream,
     executor_boot: ExecutorBootId,
+    registrations: Vec<ObjectRegistrationReceipt>,
+    in_flight: bool,
 }
 
 impl RegisteredExecutorConnection {
@@ -260,8 +276,9 @@ impl RegisteredExecutorConnection {
         crate::write_frame(
             &mut stream,
             &super::ControlMsg::Execution(ExecutionRequest::Handshake(ExecutionHandshake {
+                required_contract: EXECUTION_ENVELOPE_VERSION,
                 client_secret,
-                mode: ExecutionProtocolMode::RegisteredV1,
+                mode: ExecutionProtocolMode::RegisteredV2,
             })),
         )
         .await
@@ -273,10 +290,12 @@ impl RegisteredExecutorConnection {
             super::ControlReply::Execution(ExecutionReply::Handshake {
                 envelope_version: EXECUTION_ENVELOPE_VERSION,
                 executor_boot,
-                mode: ExecutionProtocolMode::RegisteredV1,
+                mode: ExecutionProtocolMode::RegisteredV2,
             }) => Ok(Self {
                 stream,
                 executor_boot,
+                registrations: Vec::new(),
+                in_flight: false,
             }),
             _ => Err(std::io::Error::other(
                 "registered executor negotiation refused",
@@ -286,18 +305,33 @@ impl RegisteredExecutorConnection {
     pub fn executor_boot(&self) -> &ExecutorBootId {
         &self.executor_boot
     }
+    pub fn registrations(&self) -> &[ObjectRegistrationReceipt] {
+        &self.registrations
+    }
+    fn begin(&mut self) -> std::io::Result<()> {
+        if self.in_flight {
+            return Err(std::io::Error::other(
+                "connection interrupted during a frame; reconnect",
+            ));
+        }
+        self.in_flight = true;
+        Ok(())
+    }
     pub async fn request(&mut self, request: ExecutionRequest) -> std::io::Result<ExecutionReply> {
         if matches!(request, ExecutionRequest::Handshake(_)) {
             return Err(std::io::Error::other("connection already negotiated"));
         }
-        crate::write_frame(&mut self.stream, &super::ControlMsg::Execution(request))
-            .await
-            .map_err(std::io::Error::other)?;
-        match crate::read_frame::<super::ControlReply, _>(&mut self.stream)
-            .await
-            .map_err(std::io::Error::other)?
-        {
-            super::ControlReply::Execution(reply) => Ok(reply),
+        self.begin()?;
+        rights::send(&self.stream, &super::ControlMsg::Execution(request), &[]).await?;
+        let (message, descriptors) = rights::receive::<super::ControlReply>(&self.stream).await?;
+        if !descriptors.is_empty() {
+            return Err(std::io::Error::other("unexpected response descriptors"));
+        }
+        match message {
+            super::ControlReply::Execution(reply) => {
+                self.in_flight = false;
+                Ok(reply)
+            }
             _ => Err(std::io::Error::other(
                 "unexpected executor protocol response",
             )),

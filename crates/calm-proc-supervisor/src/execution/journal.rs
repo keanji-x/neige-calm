@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use calm_session::control::execution::ExecutionRegistration;
+use calm_session::control::execution::ObjectRegistrationReceipt;
 use calm_session::control::execution::{ExecutionReceipt, ExecutionState, PrepareExecution};
 use serde::{Deserialize, Serialize};
 use workspace::execution::ExecutionId;
@@ -119,7 +119,7 @@ impl Store {
     pub fn load(&self) -> anyhow::Result<Vec<Journal>> {
         self.load_extension("execution")
     }
-    pub fn registrations(&self) -> anyhow::Result<Vec<ExecutionRegistration>> {
+    pub fn registrations(&self) -> anyhow::Result<Vec<ObjectRegistrationReceipt>> {
         self.load_extension("registration")
     }
     fn load_extension<T: serde::de::DeserializeOwned>(

@@ -1,3 +1,5 @@
+#[path = "execution_attachment.rs"]
+mod execution_attachment;
 #[path = "execution_contract.rs"]
 mod execution_contract;
 mod proc_probe;

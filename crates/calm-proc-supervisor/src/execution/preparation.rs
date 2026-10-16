@@ -89,7 +89,7 @@ impl Executor {
         // The global reservation is released before journal IO, and survives failed persistence.
         self.preparations.reserve(&request)?;
         self.persist(Journal {
-            version: 1,
+            version: 2,
             request,
             phase: Phase::Prepared,
         })?;

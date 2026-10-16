@@ -544,13 +544,31 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
         ExecutionProtocolMode, ExecutionReply, ExecutionRequest,
     };
     let peer = stream.peer_cred()?;
-    let mut negotiated = None;
+    let mut negotiated: Option<(ExecutionProtocolMode, workspace::execution::CapabilityToken)> =
+        None;
     loop {
-        let msg: ControlMsg = match read_frame(&mut stream).await {
-            Ok(msg) => msg,
+        let incoming = if negotiated
+            .as_ref()
+            .is_some_and(|(mode, _)| *mode == ExecutionProtocolMode::RegisteredV2)
+        {
+            calm_session::control::execution::rights::receive::<ControlMsg>(&stream)
+                .await
+                .map_err(FrameError::Io)
+        } else {
+            read_frame(&mut stream)
+                .await
+                .map(|message| (message, Vec::new()))
+        };
+        let (msg, descriptors) = match incoming {
+            Ok(message) => message,
             Err(FrameError::Io(e)) if e.kind() == io::ErrorKind::UnexpectedEof => break,
             Err(err) => return Err(err.into()),
         };
+        anyhow::ensure!(
+            descriptors.is_empty()
+                || matches!(&msg, ControlMsg::Execution(ExecutionRequest::Attach(_))),
+            "unexpected ancillary rights"
+        );
         if matches!(&msg, ControlMsg::Probe(request) if request.proc_id.is_empty()) {
             // Public read-only version query: no alias resolution and no execution authority.
             write_frame(
@@ -566,7 +584,9 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
         if let ControlMsg::Execution(ExecutionRequest::Handshake(hello)) = &msg {
             let reply = match &registry.executor {
                 Some(executor)
-                    if hello.mode == ExecutionProtocolMode::RegisteredV1
+                    if hello.mode == ExecutionProtocolMode::RegisteredV2
+                        && hello.required_contract
+                            == calm_session::control::execution::EXECUTION_ENVELOPE_VERSION
                         && executor.authenticates(&hello.client_secret) =>
                 {
                     negotiated = Some((hello.mode.clone(), hello.client_secret.clone()));
@@ -578,6 +598,7 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
                     }
                 }
                 _ if hello.mode == ExecutionProtocolMode::LegacyWorktree
+                    && hello.required_contract == 0
                     && peer.uid() == unsafe { libc::geteuid() } =>
                 {
                     // Explicitly negotiated old worktree trust only; this cannot produce a typed capability.
@@ -598,7 +619,7 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
         let typed = matches!(&msg, ControlMsg::Execution(_));
         let correct_mode = negotiated.as_ref().is_some_and(|(mode, _)| {
             if typed {
-                *mode == ExecutionProtocolMode::RegisteredV1
+                *mode == ExecutionProtocolMode::RegisteredV2
             } else {
                 *mode == ExecutionProtocolMode::LegacyWorktree
             }
@@ -721,8 +742,9 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
                 let (_, secret) = negotiated
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("handshake missing"))?;
-                let answer = executor.dispatch(secret, request).await;
-                write_frame(&mut stream, &ControlReply::Execution(answer)).await?;
+                executor
+                    .serve_registered(&stream, secret, request, descriptors)
+                    .await?;
             }
         }
     }

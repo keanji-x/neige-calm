@@ -1,5 +1,7 @@
 //! Execution identity and sealed executor inputs. Kernel policy supplies authorization.
 
+pub mod objects;
+
 use std::{fmt, io::Read};
 
 use serde::{Deserialize, Serialize};
@@ -40,7 +42,11 @@ identity!(
     ExternalDirectoryId,
     AuthorizationBindingId,
     ExecutionGrantId,
-    SpecificationId
+    SpecificationId,
+    SourceIncarnationId,
+    ExternalDirectoryIncarnationId,
+    ObjectRegistrationId,
+    TransferNonce
 );
 
 /// An unpredictable capability. Debug never exposes its bytes.
@@ -104,10 +110,18 @@ pub struct AliasHandoff {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SourceObjectIncarnation {
+    Worktree(SourceIncarnationId),
+    ExternalDir(ExternalDirectoryIncarnationId),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionIdentity {
     pub execution_id: ExecutionId,
     pub executor_boot: ExecutorBootId,
     pub ticket_id: LaunchTicketId,
+    pub source_registration: ObjectRegistrationId,
+    pub source_incarnation: SourceObjectIncarnation,
     pub authority: ExecutionAuthority,
     pub scope: ExecutionScope,
     pub operation_id: String,
