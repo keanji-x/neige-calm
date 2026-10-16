@@ -65,9 +65,9 @@ tip, epoch, baseline, normalized tree or upstream decision.
 | Delivered state | `DeliveredTip { sequence, commit, tree, settlement_id }`; the resource ledger is the single authority. Initial sequence zero is the conversion/materialization receipt. |
 | Installed state D | `InstalledBaseline { epoch, tree, delivered_sequence, install_receipt }`; outside a baseline-install operation its tree equals the settled delivery tree. HEAD/index are separate execution projections. |
 | Upstream | `NoneSelected` or `Configured { selection_version, remote, merge_ref, resolved_url, tracking_ref }`; explicit absence is a decision. Fetch observations are immutable receipts, not this selection. |
-| Durable content | Resource-scoped `ContentStoreId`, verified artifact directory/repository identity, object format, owned root pins and complete-closure durability receipt; independent of the private directory lifetime and never tip authority. |
+| Durable content | Resource-scoped `ContentStoreId`, verified artifact directory/repository identity, object format, normalized Git-history roots plus required materialized-source roots, owned pins and complete-closure receipt; independent of private-directory lifetime and never tip authority. |
 | Branch projection | Kernel-owned store/repository identity, exact branch ref, expected OID and `InSync(receipt)` / `Stale(reason)` / `Absent`; never delivery authority. User-common-dir refs are read-only external observations. |
-| Revision | Immutable snapshot identity, resource, install epoch, logical baseline sequence, normalized tree, normalization digest, source-content handle, changes and overlap acknowledgement. |
+| Revision | Immutable snapshot identity, resource, install epoch, logical baseline sequence, normalized tree, normalization identity and required materialized-source manifest/root, changes and overlap acknowledgement. |
 | Active dependencies | Registered operation phases declare resource, execution, revision and protected-content dependencies through their existing owner contract. Permanent audit identity alone retains neither storage nor pins. |
 
 Protocol ref names are Neige-owned identifiers made from validated IDs. Use
@@ -85,7 +85,7 @@ and S3 does not automatically update/delete those external refs.
 | --- | --- |
 | Known B pin | Resource retention has ended and no restore/evidence dependency uses B. |
 | Delivery pin | A newer settled delivery replaces it atomically, or final resource expiration releases the last protected-content dependency. |
-| Revision/object staging pin | Snapshot consumers and any prepared operation have settled or canceled; no consumer can outlive its content. |
+| Revision/materialized-source pin | Snapshot, verification, installation, restore and other declared consumers settle/cancel; normalized Git and frozen working-byte roots remain protected together for every restorable revision. |
 | Run pin | Its verification, candidate-binding or explicitly retained evidence dependency is released. Ending a worker alone does not release it. |
 | Candidate pin | Existing candidate/evidence/PR dependencies are explicitly released; domain row deletion does not implicitly drop the pin. |
 | Archive pin | Its frozen archive deadline has passed and no restore, legal retention or other explicit content dependency remains. |
@@ -128,19 +128,72 @@ No retained root may depend on source alternates, hardlinks, shallow omissions
 or packs remaining in a soon-deleted `.git`. Missing closure keeps private
 storage retained until explicit recovery/fetch can supply it.
 
+Normalized Git closure is not a restorable working-byte closure. A clean filter
+may store only a pointer while smudge needs private Git caches or a network
+service; Git may pass a pointer through when an optional filter is missing.
+The [Git filter contract](https://git-scm.com/docs/gitattributes#_filter)
+does not promise that retained blobs reconstruct original working bytes.
+Every Revision and every root that must later supply execution/recovery source
+therefore requires `MaterializedSource { revision_id, normalized_tree,
+normalization_identity, manifest_root }`. The canonical manifest enumerates
+validated relative paths, raw byte object IDs/digests/lengths, source modes,
+symlink values without following them, and relevant materialization metadata
+such as mtimes. It binds the frozen normalized tree and effective rule identity
+to the exact captured working bytes. Its complete source set follows section
+3, including tracked-in-ignored and excluding newly ignored output.
+
+Store the manifest and raw bytes as a typed artifact tree in this same durable
+Git object mechanism: one child is the canonical manifest blob and another is
+the raw working tree whose entries point to bytes written without filters.
+Pin that tree under the Revision's owned source-artifact ref and verify its
+complete object closure. This is content storage, not another candidate commit,
+delivery authority or retention driver. History-only roots may retain Git
+closure alone but cannot act as an install/restore source. Any consumer needing
+their working bytes must first obtain a complete materialized-source receipt.
+
+| Retained source owner | Required materialization coverage |
+| --- | --- |
+| Known B/history/PR Git evidence | A history-only root authorizes ancestry/object inspection, never source launch/restore. If a consumer requires B/PR working bytes, its dependency also retains the exact manifest or preparation refuses; no creation bytes are invented for legacy B. |
+| Settled tip/D | Every new C retains its bound source manifest. Conversion must prepare H's required baseline manifest separately from dirty current source before Ready; missing conversion/filter data preserves Legacy/private storage. |
+| Run/candidate/verification | Each Revision/C requires its exact manifest and raw closure before pin/Ready; a run, candidate or VerificationHandle cannot replace that source handle with a bare normalized OID. |
+| Catch-up/install U | Authorized initial materialization and the pinned manifest precede the H->U effect; retries use those exact bytes. |
+| Archive/restore A | ArchiveReceipt requires A, its materialized-source root and ContentReceipt; source restore uses that frozen manifest directly. |
+
+This is one content-completeness contract at the existing snapshot/retain owner,
+not an archive-only policy. `HistoryRoot` and `MaterializedSource` are distinct
+types; every source-producing capability requires the latter. Their references
+are released only after the existing consumer dependencies settle.
+
+Capture working bytes while their authorized source is available and stable,
+then normalize that captured source in the launcher and freeze the association.
+If an upstream/tree-only target needs initial smudge/LFS retrieval, perform it
+once in that authorized preparation and capture the resulting bytes before
+any install/ref effect. Failure, unsupported transformation or missing bytes
+returns typed `MaterializedSourceUnavailable`; retain old private storage and
+do not claim ArchiveReady. Do not fetch or rerun arbitrary transformations to
+reconstruct a previously acknowledged archive on restore.
+Selected configured transformations must actually be available and complete
+successfully during that initial preparation; optional-filter pass-through
+after missing/failing conversion is not materialization evidence.
+
 Fsync imported object/pack/index files and their directories, CAS/fsync owned
 root pins, then persist `ContentReceipt { operation_id, store_id,
-store_identity, object_format, roots, closure_digest, durability_version }`
+store_identity, object_format, git_roots, materialized_sources,
+closure_digest, durability_version }`
 in the existing operation output/resource reference transaction. Roots and
-closure are verified without the source object directory before acknowledging
-that receipt. `ArchiveReady` requires this durable-store receipt, not merely
-an archive ref in runtime Git. New normalized objects are written into the
+both closures are verified with the source Git directory, external filter
+supplies, converters and network unavailable before acknowledging the receipt:
+the frozen manifest alone must materialize the expected paths/bytes/modes/links.
+`ArchiveReady` requires that receipt for A's materialized source as well as
+the normalized A/tip/history roots, not merely an archive ref in runtime Git.
+New normalized objects and raw source artifacts are written into the
 durable store from the start; runtime Git repositories receive disposable
 resource-scoped copies needed for execution HEAD/index, never the reverse
 retention dependency.
 
 Before reclaim, under the resource fence, validate that a committed receipt
-covers the current protected-reference version and every required root. Freeze
+covers the current protected-reference version, every required Git root and
+each required working-byte manifest/closure. Freeze
 that receipt/version into the destruction intent; new dependencies cannot race
 this CAS. Only then may the private tree, including all of its `.git`, be
 deleted. Final pin release/store GC follows the same resource lifecycle driver
@@ -148,12 +201,12 @@ and reference checks; no independent artifact TTL can erase protected roots.
 
 | Content boundary before crash | Recovery |
 | --- | --- |
-| Import intent exists, copying incomplete | Private layer remains retained; inspect verified destination objects and resume the same root closure. No receipt means no reclaim. |
-| Closure copied/fsynced, pins or DB receipt incomplete | Validate destination closure and original expected pins; finish CAS/fsync and original receipt without choosing new roots. Foreign pin values require recovery. |
-| Pins durable, DB receipt absent | Reconstruct the effect receipt from that operation's frozen roots and verified store, then commit it; do not require private `.git` to still be the object source. |
+| Import intent exists, copying incomplete | Private layer remains retained; resume the same normalized/raw-source roots. Missing working bytes require typed refusal, never a pointer substituted as source. No complete receipt means no reclaim. |
+| Both closures copied/fsynced, pins or DB receipt incomplete | Validate destination Git and materialized-source closures plus original expected pins; finish CAS/fsync and original receipt without choosing new roots. Foreign pin values require recovery. |
+| Pins durable, DB receipt absent | Reconstruct the receipt from frozen Git/materialization roots and verified destination content, then commit it; do not rerun smudge or require private `.git`/filter supplies. |
 | Receipt committed, private deletion not completed | Recheck original reference/lifecycle version and store identity before continuing the exact destroy plan. |
-| Entire private tree/`.git` removed, process restarts | Restore exclusively from the durable receipt, protected archive A and tip/B roots into a new runtime repository; no original directory, alternates or hidden pack access is allowed. |
-| Durable store/closure is missing or corrupt | RecoveryRequired; never create an empty workspace or claim the retained archive remains recoverable. |
+| Entire private tree/`.git` removed, process restarts | Restore runtime Git from protected normalized roots and source directly from A's frozen working-byte manifest; no original directory, alternate, filter, network or hidden cache access is allowed. |
+| Durable Git or required working-byte closure is missing/corrupt | RecoveryRequired; never create empty storage, pass pointer blobs off as recovered working files or claim the archive remains recoverable. |
 
 ## 3. ImmutableRevision and normalization
 
@@ -170,8 +223,10 @@ isolated temporary index and the repository's effective attributes, filters,
 eol and fileMode behavior. Repository-selected clean/smudge execution receives
 the untrusted allowlisted environment and no kernel credentials. Do not mutate
 the user's index to take a snapshot. Freeze normalized blobs/tree and their
-content handle once: retry never reruns a nondeterministic clean filter to
-silently produce a different C. Record effective attributes/config and ignore
+required raw working-byte manifest once: retry never reruns a nondeterministic
+clean/smudge filter to choose new source or a different C. Raw content identity
+is required even if two working byte sequences normalize to the same pointer
+blob/tree; equal normalized tree alone cannot reuse source evidence. Record effective attributes/config and ignore
 rule sources/digests, including Git-reported exclude paths and kernel exclusions.
 Index flags cannot hide tracked modifications from the full tree comparison.
 
@@ -220,6 +275,11 @@ ordinary worker claim will refuse it until Planner commit or explicit discard.
 Persist the immutable conversion intent before creating delivery/source pins.
 Import the adopted H, known B and existing retained candidate/PR/operation
 closures into the resource's durable repository and commit its content receipt.
+Capture/pin the current source Revision's working-byte manifest and every
+materialized source required by active install/recovery consumers. Legacy
+history-only roots remain explicitly nonmaterialized; never invent bytes from
+pointer blobs or a current checkout. If a required manifest cannot be completed,
+conversion stays uncommitted with private storage retained and typed refusal.
 Keep source/runtime Git identity distinct from durable repository identity.
 Create the private projection there; any legacy user-common-dir branch remains
 an external observation that is neither updated nor automatically deleted.
@@ -236,7 +296,10 @@ publication path, without changing S2a selection timing.
 For an ordinary lease, checkout_admission first reserves the existing
 ReadWrite workspace lease owner for preparation; readers use their existing
 compatible policy. Snapshot must be empty relative to settled tip P; private
-commits with identical trees are empty. The kernel then freezes a prepare
+commits with identical normalized and materialized source are empty. Required
+source identity includes raw bytes/modes/links under the frozen rules, so a
+lossy filter cannot hide changed working source behind an unchanged pointer.
+Timestamp-only cache metadata changes do not make source dirty. The kernel then freezes a prepare
 intent and sets detached HEAD/index to P, preserving source/ignored files,
 outside the DB writer transaction. Only its completed receipt permits the
 lease's prepared/spawn-ready transaction. Expected epoch/sequence and binding
@@ -271,7 +334,7 @@ A run creates/pins C and installs execution HEAD/index=C while leaving D at
 tree(P): D is the settled logical baseline, not the index tree. Run two after a
 fix again has parent P, never run one's C. A `done` submission freezes the
 accepted Revision and C; a passing gate is reusable only for that exact tree,
-candidate, normalization/environment evidence and required policy. Report
+candidate, working-byte manifest, normalization/environment evidence and policy. Report
 transaction, delivery row, final candidate and acceptance remain distinct:
 neither done text nor a passing command is the delivery linearization point.
 When a passing run supplies C, final delivery reuses its exact frozen commit
@@ -322,7 +385,8 @@ mechanism lock. Never hold a DB writer transaction over Git, filesystem, drain,
 provider or network work. Source locks coordinate kernel participants only;
 they grant no exclusion against external Git.
 
-Final delivery first has a durable complete closure for C and P, then atomically
+Final delivery first has both required normalized and materialized closures for
+C and P, then atomically
 CASes the final candidate pin plus the owned delivery ref P->C in one update-ref
 transaction inside the kernel-owned content repository. Pins for provisional
 runs are not the delivery ref. A Git ref transaction is the Git-side intent commit; it is
@@ -368,6 +432,9 @@ fresh success receipt. Shallow/unknown history is not guessed. Fetch is bounded
 and outside DB prepare; its receipt binds exact selected remote/merge/URL,
 selection version, fetched OID and owned pin under the existing single-flight
 Git lock. A later failed fetch never silently replaces a frozen successful U.
+Before H->U, complete and durably pin U's required working-byte manifest using
+authorized transformation/retrieval while available. Failure leaves H/source
+untouched and retains private data; a pointer-only fetch is not install-ready.
 
 Under the exclusive owner, CAS delivery pin H->U, project best effort, stage
 and install source tree U, and settle ledger tip/D=U before publishing the
@@ -378,9 +445,10 @@ conflicts. Kernel does not replay, pick a new T on retry or reset the human
 checkout. Consecutive catch-ups freeze their own H and fetch receipts; they
 cannot infer H from an abandoned run or current HEAD.
 
-Source-writing installs use an operation-owned staging manifest. Freeze target
-working bytes through the same authorized smudge/materialization rules, and
-record each path's before/target identity/digest plus expected index/HEAD and
+Source-writing installs use an operation-owned staging manifest. Target working
+bytes come from the already pinned materialized-source manifest; initial
+transformation belongs to preparation, never retry or archive restoration.
+Record each path's before/target identity/digest plus expected index/HEAD and
 target epoch. Fs effects are descriptor-relative, fsynced and inspectable. A
 path already at target completes its receipt; one still at before can advance;
 anything else is protected as unexpected source and requires recovery instead
@@ -426,9 +494,11 @@ against the frozen recovery plan. Never adopt a divergent ref as a new delivery.
 
 ## 7. Verification evidence and guarded source immutability
 
-`VerificationHandle` binds Revision, tree, C, resource/epoch, execution identity,
+`VerificationHandle` binds Revision, working-byte manifest, tree, C,
+resource/epoch, execution identity,
 normalization, environment digest and `SourceImmutabilityProof`. The digest hashes
 versioned declared execution inputs: GateSpec, typed cwd, normalized tree,
+working-byte manifest identity,
 toolchain/runtime contract, allowlisted environment names and digested effective
 values, provider/executor version, frozen Git refs and ignore/config rules.
 Secret values remain private and are not emitted. Ignored caches are expressly
@@ -504,7 +574,8 @@ snapshot_pending and the actual blocking execution, with no forced kill.
 
 When quiescent, freeze a close intent and Revision; construct/pin archive A
 in the durable content repository from that source with the settled delivery
-tip as primary parent. Persist archive plus complete-closure content receipts
+tip as primary parent. Its ArchiveReceipt requires A's raw working-byte manifest
+and one ContentReceipt covering both normalized and materialized closures
 before any recycle/reclaim. A pin in the managed workspace's own `.git` is not
 an archive receipt. Archive does not advance tip.
 Freeze private retention at close+7 days and source archive at close+90 days
@@ -517,7 +588,8 @@ Successful archive yields ClosedRetained. Existing managed recycle is the
 physical quarantine mechanism; no copy/delete cross-device fallback. The seven
 day private layer includes ignored caches and directory state. At expiry,
 require successful archive and committed durable receipts covering the current
-reference version, no active execution/storage references or mounts, and an
+reference version and required normalized/raw-source roots, no active
+execution/storage references or mounts, and an
 identity-verified destruction plan, then reclaim owned storage. The whole
 managed private tree, including `.git`, may be removed; retained source has no
 dependency on any file in it. Borrowed
@@ -533,13 +605,21 @@ Every explicit wake path, including human send/ask, recovery and patch
 state or restarting Planner. Under the lifecycle fence it cancels stale reclaim
 intents by CAS, validates retained storage or stages archive restoration, checks
 all bindings and executor facts, then advances generation and reopens admission.
-Reclaimed restore obtains A, tip and required baseline/object closure exclusively
-from the resource's durable content receipt, builds a new independent runtime
-repository, and uses a new runtime generation/installation epoch; ignored caches
-rebuild. It preserves the old settled delivery tip and
-installs D=tree(tip), W=tree(A)-D. It does not mislabel archive A as a delivered
+Reclaimed restore obtains A, tip and required normalized/raw-source closures
+from the durable content receipt and builds a new independent runtime repository.
+The trusted materializer writes A's frozen path/byte/mode/link manifest directly,
+without smudge, external supply, network or old private Git cache. It never
+substitutes normalized pointer bytes. D remains logically tree(tip); preserved
+source/W is A's materialized content with its recorded normalized delta from D,
+so restoring D through filters is not a prerequisite. A new runtime generation/
+installation epoch invalidates old handles; ignored caches rebuild. It does
+not mislabel archive A as a delivered
 candidate. Archive missing/expired returns explicit unrecoverable status and
 does not create an empty workspace. The UI's can_reopen derives from this state.
+Ready after restoration proves the frozen source is present. Future operations
+requiring unavailable normalization tools/rules return typed Unsupported or
+Unavailable until re-established; restoration never silently uses Git's optional
+filter pass-through as proof of source recovery.
 
 If the domain track stays closed during an explicit authorized activity, its
 end reenters Quiescing and captures a new close cycle. A dormant Planner alone
@@ -599,13 +679,14 @@ scenarios, not a permanent list of test function names or source files.
 | --- | --- |
 | One parent chain | Agent privately commits, gated run fails, second run passes, done settles; every C has frozen P, only settlement advances tip, next attempt starts there. Planner commit advances tip but cannot pass done-candidate publish policy. |
 | Admission | Planner commit while Readers/writer/unsettled delivery returns Busy; ordinary terminal does not block worker scheduling but does block conversion/reclaim. Unreleased run source survives with HEAD/index reset and blocks next dirty claim. |
-| Normalization | Actual clean/smudge/eol/fileMode fixtures execute in launcher with no kernel credentials; frozen C and verification tree match, ignored tracked source remains source, retry does not rerun filter to choose C. |
+| Normalization | Actual clean/smudge/eol/fileMode fixtures execute in launcher with no kernel credentials; frozen normalized and materialized source match their bound Revision, tracked-in-ignored remains source, retry never reruns filters to choose C or raw bytes. Equal pointer blobs cannot hide a changed raw source or reuse old gate evidence. |
 | Projection | Concurrently let external Git checkout the same unchanged source-local branch while production delivery advances its private projection; neither user branch nor human HEAD moves. Delivery and exact-OID publish also succeed with no local source branch. The test must not require a worktree-list call removed from delivery policy. Private delivery-pin mismatch enters delivery recovery without making identity resolve unavailable. |
 | Conversion | Crash before/after pins, detach and DB switch; original H/upstream are adopted once, B remains LegacyUnknown when unknown, dirty source survives, old payload bytes/hash stay identical and no legacy write crosses switch. |
 | Installation/catch-up | Crash after H->U pin, mid-path install, after HEAD/index, after install receipt, before DB/lease and after settlement reply; re-drive exact U/C once, keep T and ignored cache, no original checkout modification. Repeat catch-up after failed spawn. |
 | Upstream/publish | Detached ensure/fetch/staleness/reader/publish all use durable selected upstream; restart and remote force-push do not change frozen receipts; no complete config is explicit absence. Verify exact OID push plus PR receipt and candidate ancestry. |
 | Verification | No tracked/nonignored actual write can occur through source write/restore, create/delete, mmap/mprotect, alias, rename or link. Mediator-visible denied requests latch failure. A writable shared mmap/ftruncate rejected by VFS on an O_RDONLY source FD changes no source and produces no fabricated FUSE receipt; a command that handles it may bind. Lost enforcement/unknown descendants cannot bind. Ignored hot builds remain legal; root-external gates stay explicitly unbound. S3-V1 must close first. |
-| Retention | Close captures source after quiescence; archive/closure-import failure prevents destruction. Advance the real lifecycle test clock to day eight, run production reclaim and prove the entire managed private tree including `.git` is gone, then restart kernel and reopen from durable A/tip/B/candidate/PR roots only. Inspect full closure without source alternates/hardlinks; verify source as W over D and retained protected content. At frozen day ninety expiry refuses restore; settings changes never shorten frozen deadlines. |
+| Retention | Close captures source after quiescence; missing normalized/raw manifest closure prevents ArchiveReady and destruction. At lifecycle day eight, production reclaim removes the entire managed tree including `.git`; restart/reopen uses only durable normalized roots and A's frozen bytes/modes/links without converters/network/cache. Verify source W over logical D and all retained roots. Frozen day-ninety expiry refuses restore; settings changes never shorten deadlines. |
+| Filter persistence | Through production snapshot/close/reclaim/reopen, use an actual configured filter whose Git blob is only a pointer and whose working payload comes from private Git cache/external supply. After ArchiveReady, delete the whole private `.git` and external supply, restart, and assert restored payload bytes/modes/links equal the manifest, never the pointer. Missing manifest/payload or failed initial filter materialization must refuse Ready and retain private storage; unset optional filter pass-through cannot make the test green. These are required future production tests, not claimed /tmp probe results. |
 | Content crash replay | Interrupt copying, after fsync/pin before receipt, after receipt before private deletion, and after whole-tree deletion before its receipt. Restart must complete the same import/destroy or restore solely from verified durable content, never recreate empty storage or silently pick new roots. |
 | Content capability isolation | Launch gate/forge/terminal exports for two separately authorized workspaces/Areas; each sees only its granted object closure/refs and cannot open, enumerate or request the other's artifact store/objects. Exact-OID push uses only its scoped export; no durable-store administrative capability reaches user execution. |
 | Deletion/area | Delete then restart uses tombstone without domain rows; partial area failure compensates every sibling, occupied restore path is preserved, stale reaper cannot delete restored binding. Candidate/open/unknown PR refs survive physical private-layer release. |
@@ -635,8 +716,8 @@ These replace conflicting parent clauses only after two-channel design review;
 the parent is not edited or described as already approved by this proposal.
 
 For section 2.2, adopt the verification attachment's amended paragraph: preserve
-logical cwd and Git-classified hot-cache locations through a guarded immutable-C
-projection, explicitly changing inode/mount semantics. Proof guarantees absence
+logical cwd and Git-classified hot-cache locations through a guarded projection
+of C's frozen working-byte manifest, explicitly changing inode/mount semantics. Proof guarantees absence
 of actual source writes. Only source mutation requests reaching the mediator
 produce its denial/latch; VFS-rejected calls have no invented receipt and may
 be handled by a successful gate without violating immutability.
@@ -654,16 +735,23 @@ For sections 2.3 and 4.3, replace the shared-branch write/check-out test protoco
 > upstream/remote receipts, independently of a mutable source-local branch or
 > optional presentation projection.
 
-For sections 4.1, 4.3 and 5.2, make content lifetime independent of private Git:
+For sections 2.1, 4.1, 4.3 and 5.2, make retained source complete independently
+of private Git and transformations:
 
 > A ninety-day archive and all other retained roots require verified complete
-> object closure in kernel-owned durable storage outside the seven-day private
-> tree. Before destruction, import/fsync objects, CAS/fsync owned pins and commit
-> a content receipt covering the current protected-reference version. No alternate,
+> normalized Git closure and every required materialized-source manifest/raw-byte
+> closure in kernel-owned durable storage outside the seven-day private tree.
+> The manifest binds source paths/bytes/modes/links to normalized tree and rule
+> identity. This same content contract covers B/tip/run/candidate/install/archive
+> consumers; a history-only Git root cannot authorize working source. Before
+> destruction, fsync both closures, CAS/fsync pins and commit a complete receipt
+> covering the current protected-reference version. No alternate,
 > hardlink or missing shallow ancestor may rely on the directory to be destroyed.
 > Import/receipt crashes retain private storage until reconciliation; after full
-> managed `.git` deletion, authorized restore uses only the durable receipt and
-> protected roots. Existing operations and the single resource lifecycle driver
+> managed `.git` deletion, authorized restore installs frozen working bytes
+> directly from that receipt, without smudge/LFS, network or deleted caches;
+> unavailable source completeness refuses Ready/reclaim and preserves private
+> storage. Existing operations and the single resource lifecycle driver
 > own this work. Subprocesses receive resource/authorization-scoped exports,
 > never the store or another workspace/Area's objects.
 

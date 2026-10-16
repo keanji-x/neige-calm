@@ -10,7 +10,8 @@ two cheaper designs; they do not validate the proposed FUSE implementation.
 ## Decision and compatibility change
 
 Recommend a kernel-owned, short-lived verification filesystem projection:
-immutable C source plus an operation-aware Git-classified ignored cache store,
+immutable working bytes from C's bound MaterializedSource manifest plus an
+operation-aware Git-classified ignored cache store,
 mounted at the same absolute logical cwd inside the authorized gate namespace.
 Use a path-mediating filesystem, initially Linux FUSE, for the mixed namespace.
 Do not approximate it with a mount for each familiar output directory. The
@@ -108,13 +109,16 @@ probes are not counted as evidence of mechanism support.
 
 1. Under the S2a resource fence, reserve the existing attempt/verification owner,
    block unrelated source writers and reconcile tickets/processes. Capture
-   immutable Revision and C with the shared normalizer. Snapshot-owned source
+   immutable Revision/C with the shared normalizer and its required working-byte
+   manifest. That same content owner pins normalized and raw-byte closures for
+   run/candidate/archive/install consumers; verification has no separate archive
+   or materialization policy. Snapshot-owned source
    bytes have no writable alias to the original checkout: copy or safe reflink,
    never hardlink. Authorized source arrives through a scoped content export;
    the gate receives no durable artifact-store path, administrative FD, alternate
    or other workspace/Area's objects. It cannot access mutable backing handles.
-   Freeze a per-path materialization metadata manifest, including source mtimes,
-   and bind its digest into environment evidence. Do not retimestamp every file
+   Use its frozen path/byte/mode/link/metadata manifest, including source mtimes,
+   bound to normalized tree and rule identity, in environment evidence. Do not retimestamp every file
    to gate preparation time and thereby invalidate every hot build.
 2. Build the authoritative classifier from C's tracked set, frozen effective
    Git ignore/exclude/config rules and kernel-owned exclusions. A typed fixed
@@ -126,8 +130,12 @@ probes are not counted as evidence of mechanism support.
    Git config/excludes. A changed normalization/rule version at final snapshot
    or a later verification request invalidates reuse of the old proof.
 3. The mediator resolves every request it receives by validated relative path
-   and descriptor identity. Source paths read only from immutable C working
-   bytes, with the exact normalized tree/materialization contract. Source
+   and descriptor identity. Source paths read only from C's immutable frozen
+   working-byte objects; Git pointer blobs cannot substitute for source. Initial
+   normalization/materialization runs before acknowledgement; preparing or
+   restoring this already captured source never reruns smudge/LFS, uses network
+   retrieval or needs deleted private Git/filter caches. Missing manifests/raw
+   bytes fail typed preparation, not a pointer-only or unbound fallback. Source
    mutation requests reaching the mediator are denied and latch
    ObservedSourceMutationRequest; catching that error cannot clear the latch.
    Source writable FDs are never issued. A read-only source FD cannot acquire
@@ -214,7 +222,7 @@ Replace the worktree verification paragraph in track-workspace section 2.2:
 
 > Worktree verification retains the same logical cwd, declared user steps and
 > Git-classified ignored output locations. A kernel-owned verification
-> projection reads source from immutable C and mediates ignored cache writes
+> projection reads C's frozen working-byte manifest and mediates ignored cache writes
 > dynamically, with tracked paths taking precedence. This changes physical
 > inode/mount identity and prevents actual source writes. Source mutation
 > requests reaching the mediator are denied and latched; VFS-rejected calls
@@ -235,7 +243,12 @@ Required production contracts cover every probe counterexample above plus
 ignored new paths/pattern negation, tracked-in-ignored, source symlinks, cache
 alias escapes, mmap/mprotect, rename-exchange, open-unlink-reuse, concurrent
 outside source writers, live descendants, mediator crash, filtered/eol
-materialization and repeated hot builds. Test read-only-FD writable mmap,
+materialization and repeated hot builds. Exercise a real pointer-producing
+filter through production capture and restore after deleting the whole private
+Git directory and external payload supply; raw working bytes must come from
+the retained manifest or preparation/ArchiveReady/reclaim must refuse. This is
+future production acceptance, not an experiment already performed here.
+Test read-only-FD writable mmap,
 mprotect and ftruncate rejected before FUSE separately: assert no source
 mutation, no fabricated mediator event, and normal gate success/failure
 according to handled error and exit status. These are invariants owned by the
