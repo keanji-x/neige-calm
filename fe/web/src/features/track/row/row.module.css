@@ -59,9 +59,28 @@
     background: var(--accent-soft);
   }
 
+  /* Label indentation never shifts the global status gutter. Selected fill
+     follows its own host-declared inset while the row remains full width. */
+  .rowActive.variantRail {
+    position: relative;
+    isolation: isolate;
+    background: transparent;
+  }
+
+  .rowActive.variantRail::before {
+    content: '';
+    position: absolute;
+    z-index: -1;
+    inset-block: 0;
+    inset-inline: var(--navigation-selection-inset, 0px) 0;
+    border-radius: inherit;
+    background: var(--accent-soft);
+    pointer-events: none;
+  }
+
   /* Selected already carries a fill; hovering it uses the faint overlay so the
      selection does not read as "more selected" under the pointer. */
-  .rowActive:hover {
+  .rowActive:hover:not(.variantRail) {
     background: var(--accent-soft);
     background-image: linear-gradient(var(--overlay-hover-faint), var(--overlay-hover-faint));
   }
@@ -160,22 +179,6 @@
   .row.variantPanel.hasPin.hasRemove {
     padding-inline-end: calc(var(--space-2) + var(--control-h-sm));
   }
-
-  /*
-   * There is no tree indent in the rail, and that is deliberate.
-   *
-   * The rail has exactly two vertical icon columns — state on the left (a
-   * area's disclosure chevron, a track's pin) and action on the right (the
-   * section `+`, every `×`) — and one text column that every row starts in,
-   * area and track alike. An indent would have been a third alignment fighting
-   * the first two: a child's title would sit right of its parent's while its
-   * pin sat directly under its parent's chevron, so one row would read as
-   * indented and flush at once.
-   *
-   * Depth is carried by the chevron that collapses the group, by the area
-   * heading's own type treatment, by the 10px that separates one area group
-   * from the next, and by adjacency.
-   */
 
   /* Row controls appear on hover/focus. The row keeps its geometry while the
      rail title yields trailing space when controls are revealed. */
@@ -291,11 +294,8 @@
     inset-inline-end: 0;
   }
 
-  .wrapperRail:hover .statusSlot,
-  .wrapperRail:focus-within .statusSlot,
   .wrapperPanel:hover .statusSlot,
   .wrapperPanel:focus-within .statusSlot,
-  .wrapperRail:has(.menuButton[aria-expanded='true']) .statusSlot,
   .wrapperPanel:has(.menuButton[aria-expanded='true']) .statusSlot {
     opacity: 0;
   }

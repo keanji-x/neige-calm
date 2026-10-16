@@ -10,8 +10,12 @@
     position: relative;
   }
 
-  .content { min-inline-size: 0; padding-inline: var(--navigation-text-inset); }
-  .labelStart { padding-inline-start: var(--navigation-text-inset); }
+  .content {
+    min-inline-size: 0;
+    padding-inline-start: calc(var(--navigation-text-inset) + var(--navigation-label-offset, 0px));
+    padding-inline-end: var(--navigation-text-inset);
+  }
+  .labelStart { padding-inline-start: calc(var(--navigation-text-inset) + var(--navigation-label-offset, 0px)); }
   .twoActions { padding-inline-end: var(--navigation-two-actions); }
 
   .leading,

@@ -245,6 +245,9 @@
    * adjacent controls, and the full 28px hit area (§5, 2.5.8).
    */
   .header {
+    /* The host can align this header with adjacent reading surfaces. */
+    box-sizing: border-box;
+    min-block-size: var(--nc-card-header-height, auto);
     display: flex;
     flex: none;
     align-items: center;
@@ -258,9 +261,7 @@
     min-inline-size: 0;
     margin: 0;
     overflow: hidden;
-    font-size: var(--text-base);
-    font-weight: var(--weight-semibold);
-    line-height: var(--leading-snug);
+    font: var(--type-reading);
     color: var(--text);
     text-overflow: ellipsis;
     white-space: nowrap;

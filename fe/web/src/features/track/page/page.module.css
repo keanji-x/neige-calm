@@ -1245,26 +1245,46 @@
   }
   /* Desktop controls stay separate from the compact Report action. */
   @media (width >= 60rem) {
+    .page:has(> .workHeader) {
+      --header-band: 0px;
+      --header-h: var(--workspace-header-bottom, calc(var(--space-10) + var(--control-h) + var(--space-7) * 2));
+    }
+
+    .workHeader {
+      /* Center the title in the full reading header, sharing its bottom
+         divider with the independently inset conversation card. */
+      --navigation-header-height: var(--header-h);
+      padding-block-start: var(--header-band);
+      border-block-end-color: var(--hairline);
+    }
+
+    .title {
+      font: var(--type-heading);
+      letter-spacing: var(--tracking-tight);
+    }
+
     .desktopChatAction {
-      inline-size: var(--control-h) !important;
-      min-inline-size: var(--control-h) !important;
-      block-size: var(--control-h) !important;
-      padding: 0 !important;
-      border: none;
-      border-radius: var(--radius-sm);
-      background: transparent !important;
-      color: var(--text-2) !important;
-      box-shadow: none !important;
+      min-block-size: var(--control-h);
+      padding-inline: var(--space-6);
+      border: 1px solid var(--hairline-strong);
+      border-radius: var(--radius-md);
+      background: var(--surface-card);
+      color: var(--text);
     }
 
     .desktopChatAction:hover,
     .desktopChatAction:focus-visible {
-      background: var(--overlay-hover) !important;
-      color: var(--text) !important;
+      background: var(--accent-soft);
+      border-color: var(--accent);
     }
 
     .desktopPanelSurface [data-nc-module] {
-      padding-block: var(--space-2);
+      padding-block: var(--space-3);
+    }
+
+    .panel {
+      border-inline-start: 1px solid var(--hairline);
+      padding-inline-start: var(--space-8);
     }
 
     .taskSummary {

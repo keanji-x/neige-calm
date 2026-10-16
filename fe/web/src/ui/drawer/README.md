@@ -48,3 +48,10 @@ arrival rules and navigation targets stay in the feature.
 
 The drawer keeps its existing character/block reading marks and native browser
 anchoring. No virtualizer, repeated positioning budget or message model is added.
+
+## Header composition
+
+A desktop host may set `--nc-card-header-height` to align the header's minimum
+height with adjacent surfaces. The regular reading-role title and close control
+remain vertically centered within that header. Card/divider bounds, the semantic
+heading, accessible label and close/focus behavior are unchanged.

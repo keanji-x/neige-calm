@@ -4,6 +4,7 @@ import { Icon } from '../icon/public.tsx';
 import styles from './page-header.module.css';
 
 export type PageHeaderProps = Readonly<{
+  className?: string;
   breadcrumb?: ReactNode;
   title: ReactNode;
   meta?: ReactNode;
@@ -12,11 +13,11 @@ export type PageHeaderProps = Readonly<{
   align?: 'page' | 'document';
 }>;
 
-export function PageHeader({ breadcrumb, title, meta, actions, identity, align = 'page' }: PageHeaderProps) {
+export function PageHeader({ className, breadcrumb, title, meta, actions, identity, align = 'page' }: PageHeaderProps) {
   const rows = 1 + (breadcrumb === undefined ? 0 : 1) + (identity === undefined ? 0 : 1);
   return (
     <header
-      className={styles.header}
+      className={[styles.header, className].filter(Boolean).join(' ')}
       data-nc-header-rows={String(rows) as '1' | '2' | '3'}
       data-nc-align={align}
     >

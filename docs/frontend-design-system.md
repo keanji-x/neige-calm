@@ -51,9 +51,10 @@
 | --- | --- | --- |
 | 普通界面、Area、卡片与任务名称 | 14／20／400 | `--type-ui`、`--type-content` |
 | Track、按钮 | 14／20／500 | `--type-action` |
-| Today、顶部报告标题 | 14／20／600 | `--type-page-title` |
+| Today、通用移动页头 | 16／24／600 | `--type-page-title` |
 | Unread、Pinned、Areas 和右侧模块标题 | 12／16／500 | `--type-navigation-label` |
-| 报告正文，衬线宋体回退 | 16／26.4／400 | `--type-reading` |
+| 工作与原生报告标题，衬线 | 20／24／600 | `--type-heading` |
+| 报告正文与对话页头，衬线宋体回退 | 16／26.4／400 | `--type-reading` |
 | 任务目标，无衬线 | 16／26.4／400 | `--type-detail` |
 | 报告章节，衬线 | 20／24／700 | `--type-chapter` |
 | 表格内容 | 14／20／400 | `--type-table` |
@@ -68,3 +69,14 @@ RGB 默认值仍由与 Rust 默认值对照的契约测试约束，本次不改�
 
 终端固定网格文字也在 `terminalText.fontSize` 中配置，保留既有 12.5px，避免本次改变 PTY 几何。
 次级章节有独立衬线／600 角色：16px 与14px，不复用任务说明或表格字体。
+
+## 排版与分组节奏
+
+界面保持 14／20，页头使用 16／24，工作标题使用半粗体的 20／24 衬线；对话标题文字使用与正文一致的 16px 常规衬线；辅助分组维持
+12／16。侧栏分组之间留 20px，组内行高与已有页头对齐关系保持不变。
+报告正文与 AI 回复使用衬线排版；用户消息和输入控件保持无衬线。
+
+这一层级参考 [Radix 字体尺度](https://www.radix-ui.com/themes/docs/theme/typography)
+和 [间距尺度](https://www.radix-ui.com/themes/docs/theme/spacing)，沿用已有语义角色，
+不引入另一套字号或间距入口；界面与阅读排版的分工参考
+[Carbon typography strategies](https://www.carbondesignsystem.com/building-blocks/foundations/typography/style-strategies)。

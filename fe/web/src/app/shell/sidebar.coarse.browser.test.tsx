@@ -1,10 +1,12 @@
 import { cleanup, render } from '@testing-library/react';
+import { page, userEvent } from 'vitest/browser';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import { NEUTRAL_ACTIVITY, type Track } from '../../../../core/domain/track.ts';
 import type { Area } from '../../../../core/domain/area.ts';
 import '../../styles/entry.css';
 import { ThemeProvider } from '../theme/public.tsx';
+import { TrackRow } from '../../features/track/row/public.tsx';
 import { Sidebar } from './sidebar.tsx';
 import { readReceiptsFixture } from '../providers/read-receipts-fixture.tsx';
 
@@ -23,7 +25,7 @@ it('keeps Area actions reachable on a wide no-hover touch display', () => {
   const tracks: Track[] = [null, 10].map((pinnedAt, index) => ({
     id: `t${index}`, areaId: area.id, title: `Touch task ${index}`, sort: index,
     cwd: '/tmp', agentCwd: '/tmp', pinnedAt, closedAt: null, createdAt: 1, updatedAt: 1,
-    ...NEUTRAL_ACTIVITY,
+    ...NEUTRAL_ACTIVITY, attention: 'input',
   }));
   render(receipts.wrap(
     <ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
@@ -53,16 +55,38 @@ it('keeps Area actions reachable on a wide no-hover touch display', () => {
   const style = getComputedStyle(actions!.parentElement!);
   expect(style.opacity).toBe('1');
   expect(style.pointerEvents).toBe('auto');
-  for (const pin of document.querySelectorAll<HTMLButtonElement>('[aria-label^="Pin Touch"], [aria-label^="Unpin Touch"]')) {
-    expect(getComputedStyle(pin).opacity).toBe('1');
-    expect(getComputedStyle(pin).pointerEvents).toBe('auto');
-  }
-  expect(document.querySelectorAll('[aria-label^="Pin Touch"], [aria-label^="Unpin Touch"]')).toHaveLength(3);
+  expect(document.querySelectorAll('[aria-label^="Pin Touch"], [aria-label^="Unpin Touch"]')).toHaveLength(0);
   const menus = document.querySelectorAll<HTMLButtonElement>('button[aria-label^="Actions for track Touch"]');
-  expect(menus).toHaveLength(3);
+  expect(menus.length).toBeGreaterThan(0);
   for (const menu of menus) {
     expect(getComputedStyle(menu).opacity).toBe('1');
     expect(getComputedStyle(menu).pointerEvents).toBe('auto');
+
+  }
+  for (const row of document.querySelectorAll<HTMLButtonElement>('button[aria-label^="Track Touch"]')) {
+    const wrapper = row.parentElement!;
+    const status = wrapper.querySelector('[data-nc-activity]')!;
+    const menu = wrapper.querySelector<HTMLButtonElement>('button[aria-label^="Actions for track Touch"]')!;
+    expect(status).not.toBeNull();
+    expect(status.getBoundingClientRect().right).toBeLessThan(menu.getBoundingClientRect().left);
+    expect(getComputedStyle(status.parentElement!).opacity).toBe('1');
   }
 
+});
+
+it('keeps a standalone rail pin reachable without covering leading status on touch', async () => {
+  const onSetPinned = vi.fn();
+  const track: Track = { id: 'standalone', areaId: 'a', title: 'Standalone rail task with a long title that must stop before its pin control', sort: 0, cwd: '/tmp', agentCwd: '/tmp',
+    pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY, attention: 'input' };
+  render(<ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
+    <div style={{ inlineSize: '15rem' }}><TrackRow track={track} variant="rail" onOpen={vi.fn()} onSetPinned={onSetPinned} /></div>
+  </ThemeProvider>);
+  const pin = page.getByRole('button', { name: `Pin ${track.title}` });
+  const status = document.querySelector('[data-nc-activity="attention"]')!;
+  expect(getComputedStyle(pin.element()).opacity).toBe('1');
+  expect(status.getBoundingClientRect().right).toBeLessThan(pin.element().getBoundingClientRect().left);
+  const row = page.getByRole('button', { name: /^Track Standalone/ }).element();
+  expect(row.querySelector('[title]')!.getBoundingClientRect().right).toBeLessThanOrEqual(pin.element().getBoundingClientRect().left);
+  await userEvent.click(pin);
+  expect(onSetPinned).toHaveBeenCalledWith('standalone', true);
 });

@@ -24,7 +24,7 @@
     .said.said { min-inline-size: min(14rem, 72%); min-block-size: calc(var(--space-12) + var(--space-10) - var(--space-2)); padding: var(--space-6); border-radius: var(--space-6); font-family: var(--font-sans); font-size: max(var(--text-md), 1rem); line-height: 1.625; }
     .userTurn { min-block-size: calc(var(--space-12) * 2); }
     .transcript > .userTurn + [data-nc-entry] { margin-block-start: var(--space-10); }
-    .reply.reply { --font-family-body: var(--font-sans); --font-family-heading: var(--font-sans); --text-body-size: max(var(--text-md), 1rem); --text-body-leading: 1.625; font-family: var(--font-sans); font-size: max(var(--text-md), 1rem); line-height: 1.625; }
+    .reply.reply { --font-family-body: var(--font-serif); --font-family-heading: var(--font-serif); --text-body-size: max(var(--text-md), 1rem); --text-body-leading: 1.625; font-family: var(--font-serif); font-size: max(var(--text-md), 1rem); line-height: 1.625; }
     .reply.reply :is(p, li, [role='paragraph']) { font-family: inherit; font-size: inherit !important; line-height: inherit !important; }
     .reply.reply div:has(> :is(ul, ol)) { margin-inline: 0 !important; }
     .reply.reply :is(ul, ol) { gap: 0 !important; margin-inline: 0 !important; padding-inline: 0 !important; }

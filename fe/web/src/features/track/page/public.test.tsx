@@ -907,19 +907,19 @@ describe('the desktop Planner entry', () => {
     const onReply = vi.fn();
     const onStartConversation = vi.fn();
     renderPage({ onReply, onStartConversation });
-    await userEvent.click(screen.getByRole('button', { name: 'Planner' }));
+    await userEvent.click(screen.getByRole('button', { name: '讨论这项工作' }));
     expect(onReply).toHaveBeenCalledOnce();
     expect(onStartConversation).not.toHaveBeenCalled();
   });
 
   it('offers the entry only when a Planner callback is supplied', () => {
     renderPage();
-    expect(screen.queryByRole('button', { name: 'Planner' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '讨论这项工作' })).toBeNull();
   });
 
   it('keeps the execution board header focused on returning to the report', () => {
     renderPage({ onReply: vi.fn(), onCloseBoard: vi.fn(), board: <div>Worker output</div> });
-    expect(screen.queryByRole('button', { name: 'Planner' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '讨论这项工作' })).toBeNull();
   });
 });
 

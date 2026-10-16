@@ -81,7 +81,9 @@ it.each(['light', 'dark'])('uses the same named type hierarchy in both %s side p
   expect(panelTitles).toHaveLength(3);
   for (const title of panelTitles) expect(typography(title)).toEqual(typography(panelTitles[0]));
   const section = element(document.querySelector<HTMLElement>('[title="Areas"]'));
-  expect(typography(section)).toEqual(typography(panelTitles[0]));
+  const panelType = typography(panelTitles[0]);
+  // Workspace categories stay quieter than the module titles beside a report.
+  expect(typography(section)).toEqual([panelType[0], panelType[1], '400', ...panelType.slice(3)]);
 
 });
 
@@ -104,7 +106,7 @@ it('uses configured sidebar density without changing the panel row rhythm', asyn
   expect(element(document.querySelector<HTMLElement>('[data-nc-module="cards"] [data-nc-inventory-group]')).getBoundingClientRect().top
     - panelHeader.getBoundingClientRect().bottom).toBeCloseTo(8, 0);
 
-  expect(element(document.querySelector<HTMLElement>('[title="Work"]')).getBoundingClientRect().left).toBeCloseTo(element(document.querySelector<HTMLElement>('[title="Left first"]')).getBoundingClientRect().left, 0);
+  expect(element(document.querySelector<HTMLElement>('[title="Work"]')).getBoundingClientRect().left).toBeLessThan(element(document.querySelector<HTMLElement>('[title="Left first"]')).getBoundingClientRect().left);
   const pairs = [
     [element(document.querySelector<HTMLElement>('[aria-label^="Track Left first"]')), element(document.querySelector<HTMLElement>('[aria-label^="Track Left second"]'))],
     [element(document.querySelector<HTMLElement>('[data-nc-row="card-0"]')), element(document.querySelector<HTMLElement>('[data-nc-row="card-1"]'))],

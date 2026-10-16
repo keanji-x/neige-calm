@@ -104,7 +104,7 @@ it('retains the current allocation when there is no projected execution row', as
   expect(document.querySelector('[data-nc-task-state] > summary')!.textContent).toContain('Waiting to start');
   expect(screen.queryByTitle('Open the worker card for b')).toBeNull();
   expect(screen.queryByRole('button', { name: /b.*failed/i })).toBeNull();
-  expect(screen.getByText('1 task')).toBeTruthy();
+  expect(screen.getByText('Reference').closest('summary')!.textContent).toContain('1 task');
   await userEvent.click(screen.getByText('Attempt history (2)'));
   await userEvent.click(screen.getByText('Attempt 1 · Failed'));
   expect(screen.getByText('gate-red')).toBeTruthy();

@@ -277,13 +277,13 @@ export function Sidebar({
           {shownSections.map((id) => {
             if (id !== 'areas') {
               const group = groups.find((group) => group.id === id)!;
-              return <SidebarTrackGroup key={id} title={group.title} icon={group.icon} label={group.title} level="section"
+              return <SidebarTrackGroup key={id} title={group.title} label={group.title} level="section"
                 management={management(id, `Group actions for ${group.title}`)}
                 tracks={group.tracks} areas={userAreas} activeTrackId={activeTrackId} markCurrent={false}
                 expanded={preferences.sidebarGroupExpanded(id)}
                 onToggle={(value) => preferences.setSidebarGroupExpanded(id, value)} {...rowProps} />;
             }
-            return <SidebarGroup key={id} title="Areas" icon="folder" label="Areas" level="section"
+            return <SidebarGroup key={id} title="Areas" label="Areas" level="section"
             management={management(id, 'Group actions for Areas')}
             expanded={areasExpanded}
             onToggle={(value) => preferences.setSidebarGroupExpanded('areas', value)}

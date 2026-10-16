@@ -149,7 +149,8 @@
   }
 
   .main:has([data-nc-drawer]) [data-nc-report] {
-    --report-section-number-opacity: 1;
+    /* The conversation consumes the margin needed by the report's hanging numbers. */
+    --report-section-number-opacity: 0;
   }
 
   @container (inline-size >= 85rem) {
@@ -373,6 +374,7 @@
    * 又给子元素写 margin".
    */
   .sidebarSections {
+    --list-section-font: var(--type-metadata);
     display: flex;
     flex-direction: column;
     gap: var(--navigation-section-gap);
@@ -385,6 +387,7 @@
   }
 
   .areaGroup {
+    --navigation-label-offset: var(--space-6);
     display: flex;
     flex-direction: column;
     gap: 0;
@@ -394,6 +397,11 @@
     display: flex;
     flex-direction: column;
     gap: 0;
+  }
+
+  .areaGroup > .trackList {
+    --navigation-label-offset: var(--space-10);
+    --navigation-selection-inset: var(--space-10);
   }
 
   .areaGroups {
@@ -449,31 +457,15 @@
     rotate: 90deg;
   }
 
-  /* Section icons share the leading control column with Area disclosures. */
+  /* Category captions have no leading glyph; Area rows own their disclosure. */
   .groupHeading .areaRow {
     min-block-size: var(--navigation-module-row-height);
     display: flex;
     gap: var(--space-2);
+    padding-inline-start: var(--navigation-inset);
   }
 
-  .groupHeading .chevron {
-    position: static;
-    order: 1;
-    inline-size: var(--control-h-sm);
-    block-size: var(--control-h-sm);
-    translate: none;
-    flex-shrink: 0;
-    opacity: 0;
-  }
-
-  .groupHeading .areaRow[aria-expanded="false"] .chevron,
-  .groupHeading .areaRow:hover .chevron,
-  .groupHeading .areaRow:focus-visible .chevron {
-    opacity: 1;
-  }
-
-  /* Areas and inventory status groups share one 13px medium text role.
-     Icon slots and the shared group text role establish hierarchy without extra indent. */
+  /* Category captions stay quiet; actual Area names retain the group text role. */
   .areaName {
     display: flex;
     align-items: center;
@@ -503,6 +495,8 @@
   }
 
   .areaNew {
+    opacity: 0;
+    pointer-events: none;
     transition: background-color var(--motion-quick) var(--ease-feedback),
       color var(--motion-quick) var(--ease-feedback);
   }
@@ -510,9 +504,8 @@
   .areaActions {
     z-index: var(--z-raised);
 
-    /* Management is a first-class Area action, so the trigger stays visible. */
-    opacity: 1;
-    pointer-events: auto;
+    opacity: 0;
+    pointer-events: none;
   }
 
   .areaActionsButton {
@@ -531,6 +524,31 @@
   .areaNew:focus-visible {
     background: var(--overlay-hover-strong);
     color: var(--text);
+  }
+
+  .areaRowWrap > .iconButton {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .areaActions:has([aria-expanded='true']),
+  .areaRowWrap:hover .areaActions,
+  .areaRowWrap:focus-within .areaActions,
+  .areaRowWrap:hover .areaNew,
+  .areaRowWrap:focus-within .areaNew,
+  .areaRowWrap:hover > .iconButton,
+  .areaRowWrap:focus-within > .iconButton {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  @media (hover: none) {
+    .areaActions,
+    .areaNew,
+    .areaRowWrap > .iconButton {
+      opacity: 1;
+      pointer-events: auto;
+    }
   }
 
   /*
@@ -717,13 +735,28 @@
     }
   }
   @media (width >= 60rem) {
+    /* Composition geometry shared by the reading header, drawer and first
+       sidebar category; additional groups never add horizontal dividers. */
+    .shell {
+      --workspace-header-inset: var(--space-10);
+      --workspace-header-row-height: calc(var(--control-h) + var(--space-7) * 2);
+      --workspace-header-bottom: calc(var(--workspace-header-inset) + var(--workspace-header-row-height));
+      --workspace-title-center: calc((var(--workspace-header-bottom) - 1px) / 2);
+      --workspace-sidebar-brand-height: calc(var(--workspace-header-bottom) - var(--navigation-module-row-height) / 2);
+    }
+
     .rail,
     .userRow,
     .brandRow {
       background: var(--surface-navigation);
     }
 
+    .sidebarSections {
+      padding-block-start: 0;
+    }
+
     .rail {
+      border-inline-end: 1px solid var(--hairline);
       padding-block-start: 0;
       scroll-padding-block-start: var(--navigation-header-height);
     }
@@ -733,10 +766,13 @@
       inset-block-start: 0;
       z-index: var(--z-sticky);
       flex-shrink: 0;
-      block-size: var(--navigation-header-height);
+      block-size: var(--workspace-sidebar-brand-height);
+      align-items: center;
+      padding-block-start: calc(var(--workspace-title-center) - var(--control-h) / 2);
+      padding-block-end: calc(var(--workspace-sidebar-brand-height) - var(--workspace-title-center) - var(--control-h) / 2);
       margin-inline: calc(var(--space-6) * -1);
       padding-inline: var(--space-6);
-      border-block-end: 1px solid transparent;
+      border-block-end: 0;
     }
 
     .railCollapsed .brandRow {
@@ -749,16 +785,21 @@
     .main [data-nc-drawer-stack],
     .main [data-nc-drawer],
     .main [data-nc-drawer-seam] {
-      inset-block-start: calc(var(--navigation-header-height) + var(--space-4));
+      inset-block: var(--workspace-header-inset);
+    }
+
+    .main [data-nc-drawer] {
+      --nc-card-header-height: var(--workspace-header-row-height);
     }
 
     /* The shared host owns header clearance; its cards stay inside their cells. */
     .main [data-nc-drawer-stack] [data-nc-drawer],
     .main [data-nc-drawer-stack] [data-nc-drawer-seam] {
-      inset-block-start: 0;
+      inset-block: 0;
     }
 
     .brand {
+      min-block-size: var(--control-h);
       font: var(--type-page-title);
       letter-spacing: var(--tracking-normal);
       color: var(--text);

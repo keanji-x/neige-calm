@@ -40,7 +40,8 @@ it.each(['light', 'dark'] as const)('says a refused pin in the rail as an error 
   </UiPreferencesProvider>));
 
   await page.getByRole('button', { name: /^Track Next task/ }).hover();
-  await page.getByRole('button', { name: 'Pin Next task' }).click();
+  await page.getByRole('button', { name: 'Actions for track Next task' }).click();
+  await page.getByRole('menuitem', { name: 'Pin globally' }).click();
   const alert = page.getByRole('alert');
   await expect.element(alert).toBeVisible();
   await expect.element(alert.getByText('A managed track cannot be pinned.')).toBeVisible();

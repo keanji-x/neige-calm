@@ -80,7 +80,8 @@ describe('a lost answer shows the write’s fixed state, never transport text', 
   /* Name, route, press, the fixed state shown; the track starts closed only where the press is Reopen. */
   const surfaces: ReadonlyArray<readonly [string, string, () => Promise<void>, string]> = [
     ['sidebar pin', '/', async () => {
-      await userEvent.click(await within(await rail()).findByRole('button', { name: 'Pin Reliable' }));
+      await userEvent.click(await within(await rail()).findByRole('button', { name: 'Actions for track Reliable' }));
+      await userEvent.click(screen.getByRole('menuitem', { name: 'Pin globally' }));
     }, 'The pin change is unconfirmed.'],
     ['rename', '/track/w1', async () => {
       await userEvent.click(await screen.findByRole('button', { name: 'Rename track' }));

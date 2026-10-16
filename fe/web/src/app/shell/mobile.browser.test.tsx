@@ -213,7 +213,7 @@ describe('Track mobile presentation', () => {
     expect(document.querySelector('nav[aria-label="Primary"]')).toBeNull();
     expect(page.getByRole('heading', { name: 'Tools' })).toBeTruthy();
     const cardsHeader = await page.getByRole('heading', { name: 'Tools', exact: true }).findElement();
-    expect(getComputedStyle(cardsHeader).fontSize).toBe('14px');
+    expect(getComputedStyle(cardsHeader).fontSize).toBe('16px');
     expect(getComputedStyle(cardsHeader.closest('header')!).backdropFilter).toBe('none');
     expect(getComputedStyle(cardsHeader.closest('header')!).borderRadius).toBe('0px');
     expect((await page.getByRole('button', { name: 'Back to Report' }).findElement()).getBoundingClientRect().height)

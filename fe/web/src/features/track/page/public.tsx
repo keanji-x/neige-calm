@@ -381,6 +381,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
       data-nc-track-page=""
     >
       <PageHeader
+        className={styles.workHeader}
         title={
           <>
             {onCloseBoard !== undefined && (
@@ -401,12 +402,11 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
         }
         actions={(
           <span className={styles.headerActions}>
-            {!boardOpen && (onReply !== undefined || onStartConversation !== undefined) && (
+            {!boardOpen && !conversationOpen && (onReply !== undefined || onStartConversation !== undefined) && (
               <AstryxButton
                 className={styles.desktopChatAction}
-                label={onReply === undefined ? 'Chat' : 'Planner'}
-                tooltip={onReply === undefined ? 'Chat' : 'Planner'}
-                isIconOnly
+                label="讨论这项工作"
+                tooltip={onReply === undefined ? 'Open conversation' : 'Open Planner conversation'}
                 variant="ghost"
                 size="sm"
                 icon={<Icon name="chat" />}

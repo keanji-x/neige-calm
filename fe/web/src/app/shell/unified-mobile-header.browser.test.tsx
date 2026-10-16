@@ -450,7 +450,7 @@ describe('Unified mobile headers', () => {
       const title = header.querySelector<HTMLElement>('[aria-label^="Switch track,"]')
         ?? header.querySelector<HTMLElement>('[aria-label^="Switch area,"]')
         ?? header.querySelector<HTMLElement>('h1, h2')!;
-      expect(getComputedStyle(title).fontSize).toBe(root || workspace ? '17px' : '14px');
+      expect(getComputedStyle(title).fontSize).toBe(root || workspace ? '17px' : '16px');
       expect(getComputedStyle(title).fontWeight).toBe(root || workspace ? '500' : '600');
       expect(title.getBoundingClientRect().right).toBeLessThanOrEqual(width - (root ? 16 : 64));
       const right = header.querySelector<HTMLElement>(':scope > :last-child button:not([role="menuitem"])');
@@ -585,13 +585,14 @@ describe('shared desktop primary header', () => {
     const centre = (element: HTMLElement) => { const box = element.getBoundingClientRect(); return box.top + box.height / 2; };
     expect(centre(title) - centre(today)).toBeCloseTo(0, 0);
     expect(centre(title) - centre(collapse)).toBeCloseTo(0, 0);
-    expect(header.getBoundingClientRect().height).toBe(40);
-    expect(today.parentElement!.getBoundingClientRect().height).toBe(40);
-    expect(getComputedStyle(header).borderBlockEndColor).toBe('rgba(0, 0, 0, 0)');
-    expect(getComputedStyle(today.parentElement!).borderBlockEndColor).toBe('rgba(0, 0, 0, 0)');
+    expect(header.getBoundingClientRect().height).toBe(80);
+    expect(today.parentElement!.getBoundingClientRect().height).toBe(66);
+    const dividerColor = getComputedStyle(header).borderBlockEndColor;
+    expect(dividerColor).not.toBe('rgba(0, 0, 0, 0)');
+    expect(getComputedStyle(today.parentElement!).borderBlockEndWidth).toBe('0px');
     header.parentElement!.setAttribute('data-nc-scrolled', '');
     await settlePaint();
-    expect(getComputedStyle(header).borderBlockEndColor).toBe('rgba(0, 0, 0, 0)');
+    expect(getComputedStyle(header).borderBlockEndColor).toBe(dividerColor);
     const scroller = document.querySelector<HTMLElement>('[data-nc-track-page]')!;
     expect(scroller.scrollHeight).toBeGreaterThan(scroller.clientHeight);
     expect(rail.scrollHeight).toBeGreaterThan(rail.clientHeight);
@@ -611,16 +612,16 @@ describe('shared desktop primary header', () => {
     setup('/', AREA.name, () => undefined, 'Responsive mobile UI', { viewportRoot: true });
     await waitFor(() => expect(document.querySelector('[data-nc-header-rows]')).not.toBeNull());
     const header = document.querySelector<HTMLElement>('[data-nc-header-rows]')!;
-    expect(header.getBoundingClientRect().height).toBe(40);
+    expect(header.getBoundingClientRect().height).toBe(80);
     const title = document.querySelector<HTMLElement>('[aria-label="Rename track"]')!;
     const today = document.querySelector<HTMLElement>('[aria-label="Go to Today"]')!;
     const centre = (element: HTMLElement) => { const box = element.getBoundingClientRect(); return box.top + box.height / 2; };
     expect(centre(title)).toBeCloseTo(centre(today), 0);
-    // A relative scale change must move both headers together.
+    // Font scaling preserves the shared title alignment.
     const previousSize = document.documentElement.style.fontSize;
     try {
       document.documentElement.style.fontSize = '20px';
-      expect(header.getBoundingClientRect().height).toBe(50);
+      expect(header.getBoundingClientRect().height).toBe(80);
       expect(centre(title)).toBeCloseTo(centre(today), 0);
     } finally { document.documentElement.style.fontSize = previousSize; }
     await page.screenshot({ path: './__screenshots__/header-alignment-fixed.png' });

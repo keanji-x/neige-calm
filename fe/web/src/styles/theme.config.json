@@ -51,9 +51,9 @@
       },
       "page-title": {
         "family": "ui",
-        "size": "ui",
+        "size": "reading",
         "weight": "semibold",
-        "line": "ui"
+        "line": "heading"
       },
       "navigation-label": {
         "family": "ui",
@@ -116,9 +116,9 @@
         "line": "metric"
       },
       "heading": {
-        "family": "ui",
+        "family": "reading",
         "size": "heading",
-        "weight": "medium",
+        "weight": "semibold",
         "line": "heading"
       },
       "subheading": {
@@ -141,7 +141,7 @@
     "headerHeight": 40,
     "moduleRowHeight": 28,
     "groupGap": 8,
-    "sectionGap": 16,
+    "sectionGap": 20,
     "labelInset": 4,
     "railMix": 28
   },

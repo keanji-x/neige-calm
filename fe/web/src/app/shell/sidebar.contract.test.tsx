@@ -85,19 +85,15 @@ describe('INV-SIDEBAR-007 three sections, and pinning is not relocation', () => 
   });
 });
 
-describe('INV-SIDEBAR-012 the pin button is always in the accessibility tree', () => {
-  // The visual reveal is CSS jsdom does not apply; what is provable here is that
-  // the control exists and is reachable in both states.
-  it('exposes a pressed-state pin control for pinned and unpinned tracks alike', () => {
-    renderSidebar({
-      tracks: [track({ id: 'u', title: 'Loose' }), track({ id: 'p', title: 'Stuck', pinnedAt: 10 })],
-    });
-    const unpinned = screen.getByRole('button', { name: 'Pin Loose' });
-    expect(unpinned.getAttribute('aria-pressed')).toBe('false');
-    // The pinned track renders twice (Pinned section + area list); both carry it.
-    const pinned = screen.getAllByRole('button', { name: 'Unpin Stuck' });
-    expect(pinned).toHaveLength(2);
-    for (const node of pinned) expect(node.getAttribute('aria-pressed')).toBe('true');
+describe('INV-SIDEBAR-012 pinning remains accessible for every track', () => {
+  it('offers the current pin action in the row menu without a duplicate leading control', async () => {
+    renderSidebar({ tracks: [track({ id: 'u', title: 'Loose' }), track({ id: 'p', title: 'Stuck', pinnedAt: 10 })] });
+    expect(screen.queryByRole('button', { name: 'Pin Loose' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Actions for track Loose' }));
+    expect(screen.getByRole('menuitem', { name: 'Pin globally' })).toBeTruthy();
+    await userEvent.keyboard('{Escape}');
+    await userEvent.click(screen.getAllByRole('button', { name: 'Actions for track Stuck' })[0]);
+    expect(screen.getByRole('menuitem', { name: 'Unpin globally' })).toBeTruthy();
   });
 });
 

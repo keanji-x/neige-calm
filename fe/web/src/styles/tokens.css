@@ -99,7 +99,7 @@
     --type-ui: 400 0.875rem/var(--line-ui) var(--font-sans);
     --type-action: 500 0.875rem/var(--line-ui) var(--font-sans);
     --type-detail: 400 1rem/var(--line-reading) var(--font-sans);
-    --type-page-title: 600 0.875rem/var(--line-ui) var(--font-sans);
+    --type-page-title: 600 1rem/var(--line-heading) var(--font-sans);
     --type-navigation-label: 500 0.75rem/var(--line-caption) var(--font-sans);
     --type-reading: 400 1rem/var(--line-reading) var(--font-serif);
     --type-chapter: 700 1.25rem/var(--line-heading) var(--font-serif);
@@ -110,7 +110,7 @@
     --type-content: 400 0.875rem/var(--line-ui) var(--font-sans);
     --type-metric: 500 1.25rem/var(--line-heading) var(--font-sans);
     --type-metric-primary: 500 2.25rem/var(--line-metric) var(--font-sans);
-    --type-heading: 500 1.25rem/var(--line-heading) var(--font-sans);
+    --type-heading: 600 1.25rem/var(--line-heading) var(--font-serif);
     --type-subheading: 600 1rem/var(--line-ui) var(--font-serif);
     --type-subheading-small: 600 0.875rem/var(--line-ui) var(--font-serif);
     --navigation-rail-width: 15rem;
@@ -118,7 +118,7 @@
     --navigation-header-height: 2.5rem;
     --navigation-module-row-height: 1.75rem;
     --navigation-group-gap: 0.5rem;
-    --navigation-section-gap: 1rem;
+    --navigation-section-gap: 1.25rem;
     --navigation-label-inset: 0.25rem;
     --surface-navigation: color-mix(in srgb, var(--surface-rail) 28%, var(--bg));
     --bg: oklch(96% 0.005 90);

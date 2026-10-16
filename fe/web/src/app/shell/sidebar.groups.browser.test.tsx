@@ -54,72 +54,55 @@ async function scene(activitiesVisible: boolean, areaName = 'Work') {
   const collapse = page.getByRole('button', { name: 'Collapse sidebar' });
   const today = page.getByRole('button', { name: 'Go to Today' });
   const areasDisclosure = page.getByRole('button', { name: 'Collapse Areas', exact: true });
-  const areasMarker = areasDisclosure.element().querySelector<HTMLElement>('span[aria-hidden="true"]')!;
-  return { kernel, preferences, tracks, sidebar, view, onGo, onSetPinned, options, collapse, today, areasDisclosure, areasMarker };
+  return { kernel, preferences, tracks, sidebar, view, onGo, onSetPinned, options, collapse, today, areasDisclosure };
 }
 
-it('aligns group icons and disclosures in expanded, collapsed and narrow rows', async () => {
+it('keeps category headers glyph-free and reserves the disclosure glyph for Areas', async () => {
   await scene(true);
-  const centerY = (element: Element) => {
-    const box = element.getBoundingClientRect();
-    return box.top + box.height / 2;
-  };
-  const centerX = (element: Element) => {
-    const box = element.getBoundingClientRect();
-    return box.left + box.width / 2;
-  };
   const rail = page.getByRole('navigation', { name: 'Workspace' }).element();
   for (const width of ['15rem', '11rem']) {
     rail.style.inlineSize = width;
-    const areaIconCenter = centerX(page.getByRole('button', { name: 'Collapse area Work', exact: true }).element()
-      .querySelector('[data-nc-spring-rotation]')!);
-    const todayLogo = page.getByRole('button', { name: 'Go to Today' }).element().querySelector('[aria-hidden="true"]')!;
-    expect(centerX(todayLogo)).toBeCloseTo(areaIconCenter, 1);
+    const area = page.getByRole('button', { name: 'Collapse area Work', exact: true }).element();
+    const section = page.getByRole('button', { name: 'Collapse Areas', exact: true }).element();
+    expect(area.querySelectorAll('svg').length).toBe(1);
+    expect(section.querySelectorAll('svg').length).toBe(0);
+    expect(area.querySelector('[title]')!.getBoundingClientRect().left)
+      .toBeGreaterThan(section.querySelector('[title]')!.getBoundingClientRect().left);
     for (const title of ['Running', 'Unread', 'Pinned', 'Waiting on you', 'Areas']) {
       for (const action of ['Collapse', 'Expand']) {
         const disclosure = page.getByRole('button', { name: `${action} ${title}`, exact: true });
         await disclosure.hover();
-        const button = disclosure.element();
-        const icon = button.querySelector('svg')!;
-        const chevron = button.querySelector('[data-nc-spring-rotation] svg')!;
-        expect(centerX(icon)).toBeCloseTo(areaIconCenter, 1);
-        expect(centerY(icon)).toBeCloseTo(centerY(button), 1);
-        expect(centerY(chevron)).toBeCloseTo(centerY(icon), 1);
-        // Rotation animates after toggling; measure the settled glyph bounds.
-        await expect.poll(() => chevron.getBoundingClientRect().width).toBeCloseTo(icon.getBoundingClientRect().width, 1);
+        expect(disclosure.element().querySelectorAll('svg').length).toBe(0);
         await disclosure.click();
       }
     }
   }
 });
 
-it('aligns Today text with section, area and track titles', async () => {
-  const { today } = await scene(true);
-  const textLeft = (element: Element) => {
-    const range = document.createRange();
-    range.selectNodeContents(element.lastChild!);
-    return range.getBoundingClientRect().left;
-  };
-  const expected = today.element().lastElementChild!.getBoundingClientRect().left;
-  for (const button of document.querySelectorAll('button[aria-expanded] [title]')) {
-    expect(textLeft(button)).toBeCloseTo(expected, 1);
-  }
-  for (const title of document.querySelectorAll('button[aria-label^="Track "] [title]')) {
-    expect(title.getBoundingClientRect().left).toBeCloseTo(expected, 1);
-  }
+it('indents Area tracks beyond the Area label and preserves the selected inset', async () => {
+  await scene(true);
+  const group = page.getByRole('group', { name: 'area Work', exact: true });
+  const areaTitle = group.getByRole('button', { name: 'Collapse area Work', exact: true }).element().querySelector('[title]')!;
+  const selected = group.getByRole('button', { name: /^Track Build frontend/ }).element();
+  expect(selected.querySelector('[title]')!.getBoundingClientRect().left).toBeGreaterThan(areaTitle.getBoundingClientRect().left);
+  expect(parseFloat(getComputedStyle(selected, '::before').insetInlineStart)).toBeGreaterThan(0);
+  expect(selected.getAttribute('aria-current')).toBe('page');
 });
 
-it('centres every trailing activity glyph on the outer action column', async () => {
-  const { today, collapse } = await scene(true);
+it('keeps activity markers before their own Track text at every hierarchy level', async () => {
+  const { today } = await scene(true);
   await today.hover();
-  const centerX = (element: Element) => {
-    const box = element.getBoundingClientRect();
-    return box.left + box.width / 2;
-  };
-  const expected = centerX(collapse.element().querySelector('svg')!);
   const markers = document.querySelectorAll('[data-nc-activity]');
   expect(markers.length).toBeGreaterThan(0);
-  for (const marker of markers) expect(centerX(marker)).toBeCloseTo(expected, 1);
+  const first = markers[0].getBoundingClientRect();
+  const globalCenter = first.left + first.width / 2;
+  for (const marker of markers) {
+    const box = marker.getBoundingClientRect();
+    expect(box.left + box.width / 2).toBeCloseTo(globalCenter, 1);
+    const row = marker.parentElement!.parentElement!;
+    const title = row.querySelector('[title]')!;
+    expect(marker.getBoundingClientRect().right).toBeLessThan(title.getBoundingClientRect().left);
+  }
 });
 
 it.each(['rail', 'panel'] as const)('centres both activity sizes in the %s action slot', (variant) => {
@@ -127,7 +110,7 @@ it.each(['rail', 'panel'] as const)('centres both activity sizes in the %s actio
     pinnedAt: null, closedAt: null, createdAt: 1, updatedAt: 1, ...NEUTRAL_ACTIVITY };
   const tree = (working: boolean) => <ThemeProvider storage={{ getItem: () => 'light', setItem: () => undefined }}>
     <div style={{ inlineSize: '15rem' }}><TrackRow track={{ ...track, working }} variant={variant}
-      unread={!working} onOpen={vi.fn()} onDelete={vi.fn()} /></div>
+      unread={!working} onOpen={vi.fn()} onDelete={vi.fn()} onSetPinned={vi.fn()} /></div>
   </ThemeProvider>;
   const view = render(tree(false));
   const centerX = (element: Element) => {
@@ -137,49 +120,29 @@ it.each(['rail', 'panel'] as const)('centres both activity sizes in the %s actio
   for (const working of [false, true]) {
     view.rerender(tree(working));
     const marker = document.querySelector('[data-nc-activity]')!;
-    const remove = page.getByRole('button', { name: 'Delete Slot geometry', exact: true }).element();
-    expect(centerX(marker)).toBeCloseTo(centerX(remove), 1);
+    const control = page.getByRole('button', { name: variant === 'rail' ? 'Pin Slot geometry' : 'Delete Slot geometry', exact: true }).element();
+    if (variant === 'rail') expect(centerX(marker)).toBeLessThan(centerX(control));
+    else expect(centerX(marker)).toBeCloseTo(centerX(control), 1);
   }
 });
 
-it.each(['light', 'dark'] as const)('keeps all rail columns aligned when sizing tokens change in %s mode', async (theme) => {
-  const { today, collapse, options } = await scene(true);
+it.each(['light', 'dark'] as const)('preserves hierarchy and leading status when sizing tokens change in %s mode', async (theme) => {
+  await scene(true);
   document.documentElement.dataset.theme = theme;
   const rail = page.getByRole('navigation', { name: 'Workspace' }).element();
   rail.style.setProperty('--control-h-sm', '24px');
   rail.style.setProperty('--space-2', '6px');
-  const centerX = (element: Element) => {
-    const box = element.getBoundingClientRect();
-    return box.left + box.width / 2;
-  };
-  const expectedText = today.element().lastElementChild!.getBoundingClientRect().left;
-  const expectedLeading = centerX(today.element().querySelector('[aria-hidden="true"]')!);
-  const expectedOuter = centerX(collapse.element());
-  for (const title of document.querySelectorAll('button[aria-expanded] [title]')) {
-    const range = document.createRange();
-    range.selectNodeContents(title.lastChild!);
-    expect(range.getBoundingClientRect().left).toBeCloseTo(expectedText, 1);
-  }
-  for (const title of document.querySelectorAll('button[aria-label^="Track "] [title]')) {
-    expect(title.getBoundingClientRect().left).toBeCloseTo(expectedText, 1);
-  }
-  for (const name of ['Collapse area Work', 'Collapse area Reading']) {
-    const disclosure = page.getByRole('button', { name, exact: true }).element();
-    expect(centerX(disclosure.querySelector('[data-nc-spring-rotation]')!)).toBeCloseTo(expectedLeading, 1);
+  const group = page.getByRole('group', { name: 'area Work', exact: true });
+  const area = group.getByRole('button', { name: 'Collapse area Work', exact: true }).element();
+  for (const row of group.getByRole('button', { name: /^Track / }).elements()) {
+    expect(row.querySelector('[title]')!.getBoundingClientRect().left)
+      .toBeGreaterThan(area.querySelector('[title]')!.getBoundingClientRect().left);
   }
   for (const marker of document.querySelectorAll('[data-nc-activity]')) {
-    expect(centerX(marker)).toBeCloseTo(expectedOuter, 1);
+    const title = marker.parentElement!.parentElement!.querySelector('[title]')!;
+    expect(marker.getBoundingClientRect().right).toBeLessThan(title.getBoundingClientRect().left);
   }
-  for (const name of ['New area', 'New track in Work', 'Delete Review result']) {
-    for (const button of page.getByRole('button', { name, exact: true }).elements()) {
-      expect(centerX(button)).toBeCloseTo(expectedOuter, 1);
-    }
-  }
-  for (const name of ['Group actions for Areas', 'Area actions for Work', 'Actions for track Review result']) {
-    for (const button of page.getByRole('button', { name, exact: true }).elements()) {
-      expect(centerX(button)).toBeCloseTo(centerX(options.element()), 1);
-    }
-  }
+  expect(rail.scrollWidth).toBe(rail.clientWidth);
 });
 
 it('keeps long rail labels within the shared columns without horizontal scrolling', async () => {
@@ -194,14 +157,14 @@ it('keeps long rail labels within the shared columns without horizontal scrollin
     const expected = today.element().lastElementChild!.getBoundingClientRect().left;
     const areaButton = page.getByRole('button', { name: `Collapse area ${areaName}`, exact: true });
     const areaTitle = areaButton.element().querySelector<HTMLElement>('[title]')!;
-    expect(areaTitle.getBoundingClientRect().left).toBeCloseTo(expected, 1);
+    expect(areaTitle.getBoundingClientRect().left).toBeGreaterThan(expected);
     const areaMenu = page.getByRole('button', { name: `Area actions for ${areaName}`, exact: true });
     expect(areaTitle.getBoundingClientRect().right).toBeLessThanOrEqual(areaMenu.element().getBoundingClientRect().left);
     const group = page.getByRole('group', { name: `area ${areaName}`, exact: true });
     const row = group.getByRole('button', { name: /^Track / });
     await row.first().hover();
     const caption = row.first().element().querySelector<HTMLElement>('[title]')!;
-    expect(caption.getBoundingClientRect().left).toBeCloseTo(expected, 1);
+    expect(caption.getBoundingClientRect().left).toBeGreaterThan(areaTitle.getBoundingClientRect().left);
     const menu = group.getByRole('button', { name: `Actions for track ${title}`, exact: true }).first();
     expect(caption.getBoundingClientRect().right).toBeLessThanOrEqual(menu.element().getBoundingClientRect().left);
     expect(rail.scrollWidth).toBe(rail.clientWidth);
@@ -224,28 +187,22 @@ it('lets clicks in a decorative status slot reach Track navigation', async () =>
 });
 
 it('places view options and preserves disclosure and keyboard navigation', async () => {
-  const { onGo, options, collapse, today, areasDisclosure, areasMarker } = await scene(false);
+  const { onGo, options, collapse, today, areasDisclosure } = await scene(false);
   const areasTitle = page.getByRole('button', { name: 'Collapse Areas', exact: true }).element()
     .querySelector<HTMLElement>('[title="Areas"]')!;
   const areaTitle = page.getByRole('button', { name: 'Collapse area Work', exact: true }).element()
     .querySelector<HTMLElement>('[title="Work"]')!;
-  expect(areaTitle.getBoundingClientRect().left).toBeCloseTo(areasTitle.getBoundingClientRect().left, 1);
+  expect(areaTitle.getBoundingClientRect().left).toBeGreaterThan(areasTitle.getBoundingClientRect().left);
 
-  expect(areasMarker.hasAttribute('data-nc-spring-rotation')).toBe(true);
-  expect(getComputedStyle(areasMarker).transitionProperty).toBe('none');
-  await today.hover();
-  expect(getComputedStyle(areasMarker).opacity).toBe('0');
-  await areasDisclosure.hover();
-  expect(getComputedStyle(areasMarker).opacity).toBe('1');
+  const areasButton = areasDisclosure.element();
+  expect(areasButton.querySelector('svg')).toBeNull();
+  expect(areasButton.getAttribute('aria-expanded')).toBe('true');
   await areasDisclosure.click();
-  await today.hover();
-  expect(getComputedStyle(areasMarker).opacity).toBe('1');
+  expect(areasButton.getAttribute('aria-expanded')).toBe('false');
   await page.getByRole('button', { name: 'Expand Areas', exact: true }).click();
-  await today.hover();
-  expect(getComputedStyle(areasMarker).opacity).toBe('0');
+  expect(areasButton.getAttribute('aria-expanded')).toBe('true');
   await userEvent.keyboard('{Shift>}{Tab}{/Shift}{Tab}');
   await expect.element(areasDisclosure).toHaveFocus();
-  expect(getComputedStyle(areasMarker).opacity).toBe('1');
   await today.click();
   expect(onGo).toHaveBeenCalledExactlyOnceWith({ name: 'today' });
   onGo.mockClear();
@@ -337,26 +294,13 @@ it('manages group ordering, visibility and pointer restoration', async () => {
 it('keeps pin controls usable and updates live group membership', async () => {
   const { today, onGo, onSetPinned, kernel, tracks, sidebar, view } = await scene(true);
   await today.hover();
-  const pinNext = page.getByRole('button', { name: 'Pin Next task' });
-  expect(getComputedStyle(pinNext.element()).opacity).toBe('0');
-  expect(getComputedStyle(pinNext.element().querySelector('svg')!).rotate).toBe('none');
-  await expect.poll(() => page.getByRole('button', { name: 'Unpin Build frontend' }).elements()).toHaveLength(4);
-  const pins = page.getByRole('button', { name: 'Unpin Build frontend' }).elements() as HTMLElement[];
-  for (const pin of pins) {
-    expect(getComputedStyle(pin).opacity).toBe('0');
-    expect(getComputedStyle(pin).pointerEvents).toBe('none');
-    expect(getComputedStyle(pin.querySelector('svg')!).rotate).toBe('180deg');
-  }
+  expect(page.getByRole('button', { name: 'Pin Next task' }).query()).toBeNull();
   const runningGroup = page.getByRole('group', { name: 'Running', exact: true });
   const runningRow = runningGroup.getByRole('button', { name: /^Track Build frontend/ });
-  const unpin = runningGroup.getByRole('button', { name: 'Unpin Build frontend' });
+  const menu = runningGroup.getByRole('button', { name: 'Actions for track Build frontend' });
   await runningRow.hover();
-  await expect.poll(() => getComputedStyle(unpin.element()).opacity).toBe('1');
-  expect(getComputedStyle(unpin.element()).pointerEvents).toBe('auto');
-  await today.hover();
-  unpin.element().focus();
-  await expect.poll(() => getComputedStyle(unpin.element()).opacity).toBe('1');
-  await unpin.click();
+  await menu.click();
+  await page.getByRole('menuitem', { name: 'Unpin globally', exact: true }).click();
   expect(onSetPinned).toHaveBeenCalledWith('running', false);
   await page.getByRole('group', { name: 'Running', exact: true }).getByRole('button', { name: /^Track Build frontend/ }).click();
   expect(onGo).toHaveBeenCalledWith({ name: 'track', trackId: 'running' });
@@ -537,7 +481,7 @@ it('reveals Track controls on hover or focus and lets the title use idle space',
   await expect.element(page.getByRole('menuitem', { name: 'Pin globally', exact: true })).toHaveFocus();
   expect(menu.element().getAttribute('aria-expanded')).toBe('true');
   const status = row.element().parentElement!.querySelector('[data-nc-activity]')!.parentElement!;
-  await expect.poll(() => getComputedStyle(status).opacity).toBe('0');
+  await expect.poll(() => getComputedStyle(status).opacity).toBe('1');
   expect(getComputedStyle(menu.element()).opacity).toBe('1');
   await userEvent.keyboard('{Escape}');
   await expect.element(menu).toHaveFocus();

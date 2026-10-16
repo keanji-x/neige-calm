@@ -74,7 +74,7 @@ export function TrackRow({
   const descriptionId = useId();
   const pinned = track.pinnedAt !== null;
   const title = trackDisplayTitle(track.title);
-  const hasPin = onSetPinned !== undefined;
+  const hasPin = onSetPinned !== undefined && !(variant === 'rail' && actions !== undefined);
   const hasRemove = onDelete !== undefined;
   const now = nowMs ?? Date.now();
 
@@ -84,7 +84,7 @@ export function TrackRow({
   const label = `Track ${title}${activityBit ? `, ${activityBit}` : ''}${isClosed(track) ? ', closed' : ''}`
     + (areaName === undefined ? '' : `, in area ${areaName}`);
 
-  /* The rail and panel variants move the status dot to the trailing edge and let the delete take its place on hover; the dot is `aria-hidden` decoration either way. */
+  /* Rail status uses the leading gutter; panel status shares the trailing delete slot. */
   const trailingStatus = variant === 'rail' || variant === 'panel';
 
   return (
@@ -98,6 +98,7 @@ export function TrackRow({
         data-nc-role="row"
         className={[
           styles.row, variantClass(variant), variant === 'rail' ? rowLayout('content') : '',
+          variant === 'rail' && hasPin ? rowLayout('twoActions') : '',
           active ? styles.rowActive : '',
           hasPin ? styles.hasPin : '', hasRemove ? styles.hasRemove : '', actions !== undefined ? styles.hasMenu : '',
         ].filter(Boolean).join(' ')}
@@ -120,14 +121,14 @@ export function TrackRow({
       </button>
 
       {activity === 'unread' && <span hidden id={descriptionId}>{activityLabelOf('unread')}</span>}
-      {trailingStatus && activity !== 'quiet' && <span className={`${styles.statusSlot} ${variant === 'rail' ? rowLayout('outer') : ''}`} aria-hidden="true">
+      {trailingStatus && activity !== 'quiet' && <span className={`${styles.statusSlot} ${variant === 'rail' ? rowLayout('leading') : ''}`} aria-hidden="true">
         <ActivityIndicator state={activity} />
       </span>}
-      {onSetPinned !== undefined && (
+      {hasPin && onSetPinned !== undefined && (
         <button
           type="button"
           data-nc-role="icon"
-          className={`${styles.action} ${styles.pin} ${variant === 'rail' ? rowLayout('leading') : ''} ${pinned ? styles.pinOn : ''}`}
+          className={`${styles.action} ${styles.pin} ${variant === 'rail' ? rowLayout('inner') : ''} ${pinned ? styles.pinOn : ''}`}
           aria-label={pinned ? `Unpin ${title}` : `Pin ${title}`}
           aria-pressed={pinned}
           onClick={() => onSetPinned(track.id, !pinned)}

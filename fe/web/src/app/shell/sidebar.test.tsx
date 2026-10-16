@@ -327,10 +327,11 @@ describe('destructive confirms', () => {
 });
 
 describe('pin', () => {
-  it('pins straight from the row without a confirm', async () => {
+  it('pins through the row menu without a confirm', async () => {
     const onSetPinned = vi.fn();
     renderSidebar({ tracks: [track({ id: 'w1', title: 'Task' })], onSetPinned });
-    await userEvent.click(screen.getByRole('button', { name: 'Pin Task' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Actions for track Task' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Pin globally' }));
     expect(onSetPinned.mock.calls).toEqual([['w1', true]]);
     expect(screen.queryByRole('dialog')).toBeNull();
   });

@@ -73,7 +73,7 @@ it.each([1000, 768, 600])('shares one right sidebar card between calendar and in
   await calendar.getByRole('link', { name: /October 3, 2026/ }).click();
   await page.getByRole('radio', { name: 'Month', exact: true }).click();
   await page.screenshot({ path: `../../../../test-results/today-sidebar-${height}.png` });
-  await page.getByRole('button', { name: 'Planner', exact: true }).click();
+  await page.getByRole('button', { name: '讨论这项工作', exact: true }).click();
   const drawer = page.getByRole('complementary', { name: 'Daily Planner conversation' });
   await expect.element(drawer).toBeVisible();
   const field = page.getByRole('combobox', { name: 'Message', exact: true });
@@ -173,7 +173,7 @@ it.each([1000, 768, 600])('keeps the composer inside its conversation card with 
     ? { status: 200, statusText: 'OK', body: history } : undefined });
   await page.getByText('Prioritize the release.', { exact: false }).findElement();
   await page.getByRole('radio', { name: 'Month', exact: true }).click();
-  await page.getByRole('button', { name: 'Planner', exact: true }).click();
+  await page.getByRole('button', { name: '讨论这项工作', exact: true }).click();
   const drawer = page.getByRole('complementary', { name: 'Daily Planner conversation' });
   await expect.element(drawer).toBeVisible();
   await drawer.getByText('Reply 30.', { exact: false }).findElement();
@@ -214,7 +214,7 @@ it.each([1000, 768, 600])('keeps both conversation composers reachable with a si
   } } : undefined });
   await page.getByText('Prioritize the release.', { exact: false }).findElement();
   await page.getByRole('radio', { name: 'Month', exact: true }).click();
-  await page.getByRole('button', { name: 'Planner', exact: true }).click();
+  await page.getByRole('button', { name: '讨论这项工作', exact: true }).click();
   const main = page.getByRole('complementary', { name: 'Daily Planner conversation' });
   await expect.element(main.getByText('Nothing said yet.', { exact: true })).toBeVisible();
   await main.getByRole('combobox', { name: 'Message', exact: true }).fill('/side');
@@ -255,7 +255,7 @@ it.each([768, 600])('keeps both inputs inside their cards when the parent footer
   } });
   await page.getByText('Prioritize the release.', { exact: false }).findElement();
   await page.getByRole('radio', { name: 'Month', exact: true }).click();
-  await page.getByRole('button', { name: 'Planner', exact: true }).click();
+  await page.getByRole('button', { name: '讨论这项工作', exact: true }).click();
   const main = page.getByRole('complementary', { name: 'Daily Planner conversation' });
   await expect.element(main.getByText('Nothing said yet.', { exact: true })).toBeVisible();
   await main.getByRole('combobox', { name: 'Message', exact: true }).fill('/side');
@@ -281,4 +281,41 @@ it.each([768, 600])('keeps both inputs inside their cards when the parent footer
   await expect.element(calendar).toBeVisible();
   await calendar.getByRole('button', { name: 'Previous month' }).click();
   await expect.element(calendar.getByRole('heading', { name: 'September 2026' })).toBeVisible();
+});
+
+it.each([1024, 1440])('aligns reading and chat dividers with the first sidebar category at %ipx', async (width) => {
+  await page.viewport(width, 900);
+  renderDailyFixture();
+  await page.getByRole('button', { name: '讨论这项工作', exact: true }).click();
+  const drawer = page.getByRole('complementary', { name: 'Daily Planner conversation' });
+  await expect.element(drawer).toBeVisible();
+  const readingHeader = document.querySelector('[data-nc-track-page] > header')!;
+  const chatHeader = drawer.element().querySelector(':scope > header')!;
+  const firstCategory = page.getByRole('navigation', { name: 'Workspace' }).getByRole('heading').elements()[0];
+  const label = firstCategory.querySelector('[title]')!;
+  const labelRange = document.createRange();
+  labelRange.selectNodeContents(label);
+  const labelBox = labelRange.getBoundingClientRect();
+  const categoryCenter = labelBox.top + labelBox.height / 2;
+  expect(Math.abs(readingHeader.getBoundingClientRect().bottom - categoryCenter)).toBeLessThanOrEqual(1);
+  // The drawer enters through a spring; assert the settled divider, not a frame in flight.
+  await expect.poll(() => Math.abs(chatHeader.getBoundingClientRect().bottom - categoryCenter)).toBeLessThanOrEqual(1);
+  const today = page.getByRole('button', { name: 'Go to Today', exact: true }).element().lastElementChild!;
+  const readingTitle = page.getByRole('button', { name: 'Rename track', exact: true }).element();
+  const chatTitle = chatHeader.querySelector('h2')!;
+  const center = (element: Element) => {
+    const rect = element.getBoundingClientRect();
+    return rect.top + rect.height / 2;
+  };
+  expect(Math.abs(center(today) - center(readingHeader))).toBeLessThanOrEqual(1);
+  expect(Math.abs(center(readingTitle) - center(readingHeader))).toBeLessThanOrEqual(1);
+  await expect.poll(() => Math.abs(center(chatTitle) - center(chatHeader))).toBeLessThanOrEqual(1);
+  expect(getComputedStyle(readingTitle).fontWeight).toBe('600');
+  expect(getComputedStyle(chatTitle).fontSize).toBe('16px');
+  expect(getComputedStyle(chatTitle).fontWeight).toBe('400');
+  await expect.poll(() => {
+    const box = drawer.element().getBoundingClientRect();
+    return Math.abs(box.top - (window.innerHeight - box.bottom));
+  }).toBeLessThanOrEqual(1);
+  expect(page.getByRole('button', { name: '讨论这项工作', exact: true }).query()).toBeNull();
 });
