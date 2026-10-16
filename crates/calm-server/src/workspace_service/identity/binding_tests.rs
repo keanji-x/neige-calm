@@ -9,7 +9,10 @@ use super::tests::{init, track};
 
 async fn binding(repo: &SqlxRepo, track: &Track) -> (String, String, i64) {
     sqlx::query_as(
-        "SELECT b.workspace_id,r.observed_cwd,b.selection_version FROM track_workspace_bindings b JOIN workspace_resources r ON r.id=b.workspace_id WHERE b.track_id=?1",
+        "SELECT b.workspace_id,r.observed_cwd,b.selection_version
+         FROM track_workspace_bindings b
+         JOIN workspace_resources r ON r.id=b.workspace_id
+         WHERE b.track_id=?1",
     )
     .bind(track.id.as_str())
     .fetch_one(repo.pool())

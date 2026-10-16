@@ -324,12 +324,24 @@ async fn workspace_resource_ddl_accepts_only_complete_observation_shapes() {
             for mask in 0..64 {
                 let id = format!("{:032x}", 1 + i64::from(owned) * 128 + version * 64 + mask);
                 let owner = (mask & 32 != 0).then_some("source");
-                let result = sqlx::query("INSERT INTO workspace_resources(id,source_track_id,root_path,ownership,observation_version,created_at_ms,observed_root,observed_cwd,directory_device,directory_inode,git_common_dir,physical_owner_track_id) VALUES (?1,'source','/row',?2,?3,1,?4,?5,?6,?7,?8,?9)")
-                    .bind(&id).bind(if owned {"owned"} else {"borrowed"}).bind(version)
-                    .bind((mask & 1 != 0).then_some("/row")).bind((mask & 2 != 0).then_some("."))
-                    .bind((mask & 4 != 0).then_some(1_i64)).bind((mask & 8 != 0).then_some(1_i64))
-                    .bind((mask & 16 != 0).then_some("/row/.git")).bind(owner)
-                    .execute(repo.pool()).await;
+                let result = sqlx::query(
+                    "INSERT INTO workspace_resources
+                    (id,source_track_id,root_path,ownership,observation_version,created_at_ms,
+                     observed_root,observed_cwd,directory_device,directory_inode,
+                     git_common_dir,physical_owner_track_id)
+                    VALUES (?1,'source','/row',?2,?3,1,?4,?5,?6,?7,?8,?9)",
+                )
+                .bind(&id)
+                .bind(if owned { "owned" } else { "borrowed" })
+                .bind(version)
+                .bind((mask & 1 != 0).then_some("/row"))
+                .bind((mask & 2 != 0).then_some("."))
+                .bind((mask & 4 != 0).then_some(1_i64))
+                .bind((mask & 8 != 0).then_some(1_i64))
+                .bind((mask & 16 != 0).then_some("/row/.git"))
+                .bind(owner)
+                .execute(repo.pool())
+                .await;
                 let allowed = (version == 0 && mask == 0)
                     || (version == 1 && mask == if owned { 63 } else { 31 });
                 assert_eq!(
