@@ -113,6 +113,43 @@ Codex 使用共享 app-server + 每个活跃 view 的官方 exec-server；provid
 
 provider 所在层声明类型化 `ViewSupport = Supported / Unsupported(reason)` 并提供合同测试；kernel 只消费声明，不按 provider 身份特判。Supported 必须证明项目读取、配置、Git/ghost/undo/搜索及按 cwd 的状态均隔离或显式禁用，exec 路由本身不足以证明。S2b 负责本地 provider 合同：Claude 的共享 CLAUDE_CONFIG_DIR 不能证明 project 状态隔离，须按官方合同建立独立作用域；未证明前 Unsupported。任意配置 ACP 默认 Unsupported，只有具体适配层通过合同才能声明支持。Codex 由 S4 解除。共享推理/鉴权不变，Codex TUI `!` 不支持。
 
+### 3.5 Area 协作的授权接缝（S2a / S3）
+
+Area 成员共用同一 Track 的 WorkspaceRef，不按成员建立另一份工作区；占用按
+workspace_id 汇聚。不同 view 即使展示同一路径也不是同一资源；legacy 同一实际
+checkout 的身份归一由 workspace 框架负责，协作层不另按路径建锁或账本。
+
+`resolve` 的 principal 是授权内核验证过的主体上下文，不是消息作者、展示名称、
+`ActorId::User` 或 `X-Calm-Actor` 声明。读入口带真实访问者的成员/资源访问授权；
+已接受的共同执行带协作授权层签发的执行授权上下文，引用被授予的
+AreaEnvironmentBinding 及其版本/权限范围，作者仅作消息来源和审计。具体主体与
+授权凭据类型由授权层拥有，kernel workspace service 验证并消费；workspace crate
+只消费已授权的计划/能力，不解释 AreaMember、成员策略或凭据选择。
+
+purpose 是 kernel workspace service 拥有的类型化用途，至少区分内容读取、
+内容写入/执行及生命周期控制。调用入口声明用途不等于取得权限；不能由 adapter
+自行把普通读取升级成执行或管理。读取者的授权不能充当共同执行授权，也不能
+借消息作者的私人 HOME、Git/终端凭据或 Provider 配置补齐共同身份。共同授权上下文
+必须传到所有启动和内容入口，配置/项目读取也使用同一绑定；不支持时明确拒绝。
+
+持久 Turn 固定协作授权绑定引用和 WorkspaceRef；新准入、恢复和重启重新核验
+该授权及冻结绑定，不静默改用当前成员、另一授权绑定或另一工作区。授权变化对
+已接受批次的政策由协作授权层决定；需要停止时进入同一 kernel 生命周期入口。
+AreaEnvironmentBinding 的授权身份与 workspace generation、namespace、ticket、
+Provider environment id 是不同概念；后者不能替代前者。现有共享推理/鉴权合同
+不自动证明多用户凭据隔离，隔离与成员授权未经集成验证不得开放共同执行。
+
+停止请求已发出不构成静止证明；kernel 资源协调消费 executor 的实际执行回执，
+未决 ticket、未知进程继续阻塞破坏性回收。旧执行的停止/清理不能重新指向重启后的
+新执行。任务 admission 与破坏性 quiescence 分开，普通终端存在不自动新增 worker
+排斥规则；协作层拥有消息批次和顺序，不复制租约、停止证明或资源生命周期。
+
+上述身份/用途、授权上下文、占用与启动/内容接缝归 S2a；Revision、GitFacts 和
+交付 tip 的唯一权威归 S3，精确交付协议仍须按 §6 先评审。需源码身份的执行另存
+Revision/install_epoch，不能用 WorkspaceRef 或运行 generation 代替。协作层只引用
+框架证据，不另建 candidate/tip/交付状态。此节定义实施合同，精确 Rust 类型和
+可消费提交在对应切片实现时确认；不向 S1 增加预留 API、授权行为或 schema。
+
 ## 4. S-C：资源账本与两段式持久化
 
 ### 4.1 selection 与 materialization
