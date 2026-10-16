@@ -7,6 +7,7 @@
 //!
 //! One process per test (nextest): `provenance_observation_failure_is_not_a_verdict` mutates
 //! `PATH`.
+#[cfg(target_os = "linux")]
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -2158,6 +2159,7 @@ async fn provenance_observation_failure_is_not_a_verdict() {
 /// Claim `key`'s pending attempt the way dispatch does — the frozen context closure written
 /// with the claim — then run it on `worker`. A row claimed by a bare status UPDATE has no
 /// closure and the kernel's boot context sweep marks it stale (`refuse_if_context_stale`).
+#[cfg(target_os = "linux")]
 pub(super) async fn claim_with_closure(fx: &Fx, key: &str, worker: &str) -> Task {
     let task = current(&fx.boot, key).await;
     assert_eq!(task.status, TaskStatus::Pending);
@@ -2201,6 +2203,7 @@ pub(super) async fn claim_with_closure(fx: &Fx, key: &str, worker: &str) -> Task
 /// The world of an out-of-process test, on a file-backed database the kernel binary is launched
 /// against: the in-process kernel stays passive (its live listener stopped, its sweeps
 /// boot-gated) and only seeds rows through the production paths.
+#[cfg(target_os = "linux")]
 pub(super) struct FileWorld {
     pub(super) fx: Fx,
     pub(super) tmp_path: PathBuf,
@@ -2208,6 +2211,7 @@ pub(super) struct FileWorld {
     _tmp: tempfile::TempDir,
 }
 
+#[cfg(target_os = "linux")]
 pub(super) async fn file_world() -> FileWorld {
     use crate::mcp_track_report::boot_at;
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -2234,6 +2238,7 @@ pub(super) async fn file_world() -> FileWorld {
 /// A gated attempt declared, claimed with its context closure (so the kernel's boot context
 /// sweep keeps it), delivered and settled as a candidate: `verifying@0` with a candidate row,
 /// the shape the launched kernel's boot sweep admits.
+#[cfg(target_os = "linux")]
 async fn file_world_candidate(
     world: &FileWorld,
     key: &str,
@@ -2270,6 +2275,7 @@ async fn file_world_candidate(
 
 /// Poll `#g1` of `task_id` on the file database until `ready` holds (the launched kernel
 /// drives it).
+#[cfg(target_os = "linux")]
 async fn wait_file_gate_op(
     world: &FileWorld,
     task_id: &str,
@@ -2279,6 +2285,7 @@ async fn wait_file_gate_op(
     wait_gate_op_until(&world.fx, task_id, what, ready).await
 }
 
+#[cfg(target_os = "linux")]
 fn parked_artifacts(op: &Operation) -> calm_server::operation::SpawnArtifacts {
     op.spawn_artifacts.clone().expect("parked with artifacts")
 }
