@@ -228,7 +228,11 @@ mod tests {
     fn state() -> PairingState {
         PairingState {
             origin: Some("https://fixture.ts.net".into()),
-            ..Default::default()
+            ..PairingState::new(crate::auth::SessionIdentity {
+                user_id: crate::auth::OWNER_USER_ID.into(),
+                display_name: "Owner".into(),
+                role: crate::auth::OWNER_ROLE.into(),
+            })
         }
     }
     fn claim(id: &str, ticket: &str) -> EnrollmentClaim {

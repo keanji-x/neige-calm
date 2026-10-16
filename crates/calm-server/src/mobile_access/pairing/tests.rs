@@ -3,7 +3,11 @@ use super::*;
 fn enabled() -> PairingState {
     PairingState {
         origin: Some("https://pair.example.ts.net".into()),
-        ..PairingState::default()
+        ..PairingState::new(crate::auth::SessionIdentity {
+            user_id: crate::auth::OWNER_USER_ID.into(),
+            display_name: "Owner".into(),
+            role: crate::auth::OWNER_ROLE.into(),
+        })
     }
 }
 
@@ -133,7 +137,14 @@ fn mobile_pairing_expiry_and_capacity_are_enforced() {
 fn mobile_pairing_device_revocation_removes_only_its_session_and_closes_streams() {
     let sessions = SessionStore::new();
     let mut state = enabled();
-    let owner_session = sessions.create(crate::auth::SessionAuthority::PasswordLogin);
+    let owner_session = sessions.create(
+        crate::auth::SessionIdentity {
+            user_id: crate::auth::OWNER_USER_ID.into(),
+            display_name: "Owner".into(),
+            role: crate::auth::OWNER_ROLE.into(),
+        },
+        crate::auth::SessionAuthority::PasswordLogin,
+    );
     let claim = claimed(&mut state);
     state.approve(&claim.id).unwrap();
     let mobile_session = state

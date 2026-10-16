@@ -121,7 +121,13 @@ mod tests {
 
     #[tokio::test]
     async fn mobile_access_revocation_wakes_reader_after_a_separate_writer_poll() {
-        let state = Arc::new(Mutex::new(PairingState::default()));
+        let state = Arc::new(Mutex::new(PairingState::new(
+            crate::auth::SessionIdentity {
+                user_id: crate::auth::OWNER_USER_ID.into(),
+                display_name: "Owner".into(),
+                role: crate::auth::OWNER_ROLE.into(),
+            },
+        )));
         let mut listener = RevocableListener {
             listener: TcpListener::bind("127.0.0.1:0").await.unwrap(),
             state: state.clone(),

@@ -104,7 +104,10 @@ async fn boot() -> (Boot, TrackId, TrackId) {
     let session = format!(
         "{}={}",
         auth::SESSION_COOKIE,
-        auth_state.sessions.create(SessionAuthority::PasswordLogin)
+        auth_state.sessions.create(
+            calm_server::auth::SessionIdentity::owner(&auth_state.config),
+            SessionAuthority::PasswordLogin
+        )
     );
     let protected_rest = routes::protected_router()
         .layer(axum::middleware::from_fn(

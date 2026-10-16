@@ -1,5 +1,5 @@
 use super::grants::{DeviceGrant, GrantStore, MAX_DEVICES};
-use crate::auth::SessionStore;
+use crate::auth::{SessionIdentity, SessionStore};
 use crate::error::{CalmError, Result};
 use calm_types::mobile_access::{
     PairedDevice, PairingClaim, PairingClaimed, PairingRedeem, PendingPair,
@@ -82,12 +82,12 @@ pub(super) struct PairingState {
     pub connections: CancellationToken,
 }
 
-impl Default for PairingState {
-    fn default() -> Self {
+impl PairingState {
+    pub fn new(identity: SessionIdentity) -> Self {
         Self {
             origin: None,
             pending: HashMap::new(),
-            grants: Arc::new(GrantStore::default()),
+            grants: Arc::new(GrantStore::new(identity)),
             scan: None,
             scan_window: Instant::now(),
             scan_requests: 0,

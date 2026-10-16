@@ -220,17 +220,29 @@ async fn mobile_pairing_full_http_loop_and_explicit_public_authority_fence() {
     );
     let phone = pair(&f).await;
     assert_ne!(phone, f.owner_cookie);
+    let (status, _, whoami) = request(
+        &f.public,
+        "GET",
+        "/api/auth/whoami",
+        Some(&phone),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(whoami["userId"], calm_server::auth::OWNER_USER_ID);
+    assert_eq!(whoami["displayName"], f.auth.config.display_name);
+    assert_eq!(whoami["role"], calm_server::auth::OWNER_ROLE);
+    let session = f
+        .auth
+        .sessions
+        .get(whoami["sessionId"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(session.identity.user_id, whoami["userId"]);
+    assert_eq!(session.identity.display_name, whoami["displayName"]);
+    assert_eq!(session.identity.role, whoami["role"]);
     assert_eq!(
-        request(
-            &f.public,
-            "GET",
-            "/api/auth/whoami",
-            Some(&phone),
-            json!({})
-        )
-        .await
-        .0,
-        StatusCode::OK
+        session.authority,
+        calm_server::auth::SessionAuthority::PairedDevice
     );
     for (method, path) in [
         ("GET", "/api/mobile/access"),
@@ -667,10 +679,10 @@ async fn private_tailnet_fixture() -> (Fixture, std::path::PathBuf, tokio::task:
 async fn private_tailnet_ingress_auth_and_control_fence() {
     let (f, address, control) = private_tailnet_fixture().await;
     let phone = pair(&f).await;
-    let orphan = f
-        .auth
-        .sessions
-        .create(calm_server::auth::SessionAuthority::PairedDevice);
+    let orphan = f.auth.sessions.create(
+        calm_server::auth::SessionIdentity::owner(&f.auth.config),
+        calm_server::auth::SessionAuthority::PairedDevice,
+    );
     let orphan_cookie = format!("{SESSION_COOKIE}={orphan}");
     assert_eq!(
         request(

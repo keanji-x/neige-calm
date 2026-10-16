@@ -18,7 +18,10 @@ fn protected(boot: &Boot) -> (axum::Router, String) {
         dev_autologin: false,
         display_name: "Test owner".into(),
     });
-    let token = auth.sessions.create(SessionAuthority::PasswordLogin);
+    let token = auth.sessions.create(
+        calm_server::auth::SessionIdentity::owner(&auth.config),
+        SessionAuthority::PasswordLogin,
+    );
     (
         calm_server::routes::application_router(boot.state.clone(), auth),
         format!("{SESSION_COOKIE}={token}"),
@@ -159,4 +162,52 @@ async fn owner_retry_has_one_persistent_receipt_and_replay_cannot_rearm_again() 
         calm_server::codex_authentication::AuthenticationNoticeKind::RetryRequested
     );
     assert_eq!(recovered.authentication_hold(), None);
+}
+
+#[tokio::test]
+async fn retry_rejects_nonowner_identity_even_with_owner_role_and_password_session() {
+    let boot =
+        boot_with_account(json!({"account":{"type":"apiKey"},"requiresOpenaiAuth":true})).await;
+    fail(&boot);
+    let revision = codex_entry(&boot).await["authentication_notice"]["revision"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let auth = AuthState::new(AuthConfig {
+        username: Some("owner".into()),
+        password: Some("fixture".into()),
+        dev_autologin: false,
+        display_name: "Owner".into(),
+    });
+    let token = auth.sessions.create(
+        calm_server::auth::SessionIdentity {
+            user_id: "alice".into(),
+            display_name: "Alice".into(),
+            role: calm_server::auth::OWNER_ROLE.into(),
+        },
+        SessionAuthority::PasswordLogin,
+    );
+    // Mount only this feature's routes; no additional-user login is exposed.
+    let app = calm_server::routes::agent_providers::router()
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            auth,
+            calm_server::auth::require_session,
+        ))
+        .with_state(boot.state.clone());
+    let (status, _) = post(
+        app,
+        Some(&format!("{SESSION_COOKIE}={token}")),
+        "http://127.0.0.1:4040",
+        "user",
+        &revision,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        codex_entry(&boot).await["authentication_notice"]["revision"],
+        revision,
+    );
 }

@@ -1,7 +1,7 @@
 //! `GET /api/agent-providers` — whether each Planner provider can run right now (#1817).
 
 use crate::actor::Actor;
-use crate::auth::{OWNER_ROLE, Principal};
+use crate::auth::{OWNER_ROLE, OWNER_USER_ID, Principal};
 use crate::extract::{Json, JsonBody, Query};
 use axum::extract::State;
 use axum::http::header;
@@ -126,7 +126,10 @@ pub(crate) async fn retry_codex_authentication(
     actor: Actor,
     JsonBody(request): JsonBody<AuthenticationRetryRequest>,
 ) -> Result<Response> {
-    if principal.role != OWNER_ROLE || actor.as_str() != "user" {
+    if principal.user_id != OWNER_USER_ID
+        || principal.role != OWNER_ROLE
+        || actor.as_str() != "user"
+    {
         return Err(CalmError::Forbidden(
             "Only the owner can retry the server's queued messages.".into(),
         ));

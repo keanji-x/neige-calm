@@ -23,6 +23,10 @@ pub(super) fn owner(auth: &AuthState, principal: &Principal) -> Result<()> {
             .get(&principal.session_id)
             .is_some_and(|session| {
                 session.authority == crate::auth::SessionAuthority::PasswordLogin
+                    && session.identity.user_id == crate::auth::OWNER_USER_ID
+                    && session.identity.user_id == principal.user_id
+                    && session.identity.display_name == principal.display_name
+                    && session.identity.role == principal.role
             })
     {
         return Err(CalmError::Forbidden(
@@ -298,4 +302,57 @@ pub async fn tailnet_logout(
         .tailnet_action(calm_types::tailnet::TailnetAction::Logout)
         .await?;
     Ok(no_store(Json(auth.mobile.status().await?)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::{AuthConfig, SessionAuthority, SessionIdentity};
+
+    #[test]
+    fn mobile_management_requires_matching_owner_identity_and_password_provenance() {
+        let auth = AuthState::new(AuthConfig {
+            username: Some("owner".into()),
+            password: Some("fixture".into()),
+            dev_autologin: false,
+            display_name: "Owner".into(),
+        });
+        let identity = SessionIdentity::owner(&auth.config);
+        let id = auth
+            .sessions
+            .create(identity.clone(), SessionAuthority::PasswordLogin);
+        let principal = Principal {
+            user_id: identity.user_id.clone(),
+            display_name: identity.display_name.clone(),
+            role: identity.role.clone(),
+            session_id: id,
+        };
+        assert!(owner(&auth, &principal).is_ok());
+        let mut nonowner = identity.clone();
+        nonowner.user_id = "alice".into();
+        let nonowner_id = auth
+            .sessions
+            .create(nonowner, SessionAuthority::PasswordLogin);
+        // An owner-looking Principal cannot borrow another user's password session.
+        let mut mismatch = principal.clone();
+        mismatch.session_id = nonowner_id;
+        assert!(owner(&auth, &mismatch).is_err());
+        mismatch.user_id = "alice".into();
+        assert!(owner(&auth, &mismatch).is_err());
+        for field in ["user_id", "display_name", "role", "session_id"] {
+            let mut mismatch = principal.clone();
+            match field {
+                "user_id" => mismatch.user_id = "alice".into(),
+                "display_name" => mismatch.display_name = "Someone else".into(),
+                "role" => mismatch.role = "member".into(),
+                _ => mismatch.session_id = "missing".into(),
+            }
+            assert!(owner(&auth, &mismatch).is_err(), "{field}");
+        }
+        let mut paired = principal;
+        paired.session_id = auth
+            .sessions
+            .create(identity, SessionAuthority::PairedDevice);
+        assert!(owner(&auth, &paired).is_err());
+    }
 }

@@ -3,6 +3,10 @@
 //! `dev_autologin` promotes every request to the owner without a cookie; production must never enable it.
 
 pub mod login_throttle;
+mod session;
+
+pub(crate) use session::SessionBackend;
+pub use session::{Session, SessionAuthority, SessionIdentity, SessionStore};
 
 use crate::config::Config;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -20,12 +24,10 @@ use axum_extra::extract::cookie::{Cookie, SameSite};
 use login_throttle::{LoginAttempt, LoginThrottle};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use utoipa::ToSchema;
-use uuid::Uuid;
 
 /// Name of the session cookie. Frontend and backend MUST agree on this.
 pub const SESSION_COOKIE: &str = "calm-session";
@@ -33,13 +35,13 @@ pub const SESSION_COOKIE: &str = "calm-session";
 /// The idempotent credential-revocation endpoint can run during feature reconnection.
 pub(crate) const LOGOUT_PATH: &str = "/api/auth/logout";
 
-/// Owner principal id; every successful login lands on this exact string.
+/// Deployment-owner identity used by the current password and device issuers.
 pub const OWNER_USER_ID: &str = "local-owner";
 
 /// Display name used when no `auth.username` is configured.
 pub const DEFAULT_DISPLAY_NAME: &str = "Owner";
 
-/// Role string returned by `whoami`. Single-user model has exactly one role.
+/// Deployment-owner role returned by the current credential issuers.
 pub const OWNER_ROLE: &str = "owner";
 
 /// Boot-time auth config, held in `AuthState` so requests never re-read env vars.
@@ -82,92 +84,6 @@ impl AuthConfig {
     }
 }
 
-/// One active in-memory session. Business access still resolves to the same
-/// user principal; credential provenance separately limits local management.
-#[derive(Debug, Clone)]
-pub struct Session {
-    pub session_id: String,
-    pub authority: SessionAuthority,
-}
-
-/// Required credential provenance: paired devices never gain local management
-/// authority, even if a separate device-registry record is absent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionAuthority {
-    PasswordLogin,
-    PairedDevice,
-}
-
-/// Optional credential backend owned by the feature that issues its sessions.
-/// The generic gate only consumes credential lookup and revocation.
-pub(crate) trait SessionBackend: std::fmt::Debug + Send + Sync {
-    fn get(&self, token: &str) -> Option<Session>;
-    fn remove(&self, token: &str) -> Result<()>;
-}
-
-/// Process-local sessions with an optional feature-owned credential backend.
-#[derive(Debug, Clone, Default)]
-pub struct SessionStore {
-    inner: Arc<Mutex<HashMap<String, Session>>>,
-    backend: Arc<Mutex<Option<Arc<dyn SessionBackend>>>>,
-}
-
-impl SessionStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Mint a fresh session, store it, and return the new id. Caller sets the cookie.
-    pub fn create(&self, authority: SessionAuthority) -> String {
-        let id = Uuid::new_v4().to_string();
-        let session = Session {
-            session_id: id.clone(),
-            authority,
-        };
-        // Poisoned-mutex policy: log + recover, never take the whole server down for one bad in-flight request.
-        if let Ok(mut guard) = self.inner.lock() {
-            guard.insert(id.clone(), session);
-        } else {
-            tracing::error!("session store mutex poisoned on insert");
-        }
-        id
-    }
-
-    pub(crate) fn set_backend(&self, backend: Arc<dyn SessionBackend>) {
-        *self.backend.lock().expect("session backend lock poisoned") = Some(backend);
-    }
-
-    pub fn get(&self, id: &str) -> Option<Session> {
-        match self.inner.lock() {
-            Ok(g) => g
-                .get(id)
-                .cloned()
-                .or_else(|| self.backend.lock().ok()?.as_ref()?.get(id)),
-            Err(_) => {
-                tracing::error!("session store mutex poisoned on get");
-                None
-            }
-        }
-    }
-
-    /// Idempotent — removing an unknown id is a no-op.
-    pub fn remove(&self, id: &str) -> Result<()> {
-        self.inner
-            .lock()
-            .map_err(|_| CalmError::Internal("Session lock poisoned".into()))?
-            .remove(id);
-        if let Some(backend) = self
-            .backend
-            .lock()
-            .map_err(|_| CalmError::Internal("Session backend lock poisoned".into()))?
-            .as_ref()
-        {
-            backend.remove(id)?;
-        }
-        Ok(())
-    }
-}
-
 /// State the auth routes + middleware need; cloned into `AppState`.
 #[derive(Debug, Clone)]
 pub struct AuthState {
@@ -183,9 +99,13 @@ pub struct AuthState {
 impl AuthState {
     pub fn new(config: AuthConfig) -> Self {
         let sessions = SessionStore::new();
+        let mobile = crate::mobile_access::MobileAccess::new(
+            sessions.clone(),
+            SessionIdentity::owner(&config),
+        );
         Self {
             config: Arc::new(config),
-            mobile: crate::mobile_access::MobileAccess::new(sessions.clone()),
+            mobile,
             sessions,
             allowed_origin: None,
             login_throttle: LoginThrottle::default(),
@@ -229,7 +149,7 @@ pub fn parse_origin(raw: &str) -> std::result::Result<String, String> {
     normalize_origin(raw).ok_or_else(|| format!("`{raw}` is not an http(s) origin"))
 }
 
-/// Authenticated principal, inserted into request extensions by [`require_session`]; today every principal is owner.
+/// Authenticated identity and session, inserted by [`require_session`].
 #[derive(Debug, Clone)]
 pub struct Principal {
     pub user_id: String,
@@ -239,12 +159,11 @@ pub struct Principal {
 }
 
 impl Principal {
-    /// The standard owner principal from the auth config + a (possibly synthetic) session id.
-    pub fn owner(cfg: &AuthConfig, session_id: String) -> Self {
+    fn from_identity(identity: SessionIdentity, session_id: String) -> Self {
         Self {
-            user_id: OWNER_USER_ID.to_string(),
-            display_name: cfg.display_name.clone(),
-            role: OWNER_ROLE.to_string(),
+            user_id: identity.user_id,
+            display_name: identity.display_name,
+            role: identity.role,
             session_id,
         }
     }
@@ -297,10 +216,16 @@ fn session_cookies(headers: &HeaderMap) -> impl Iterator<Item = &str> {
 pub(crate) fn resolve_principal(state: &AuthState, headers: &HeaderMap) -> Option<Principal> {
     if state.config.dev_autologin {
         // Dev mode: a stable synthetic session id so whoami / logout behave consistently; nothing is written to the store.
-        return Some(Principal::owner(&state.config, "dev-autologin".to_string()));
+        return Some(Principal::from_identity(
+            SessionIdentity::owner(&state.config),
+            "dev-autologin".to_string(),
+        ));
     }
     let session = session_cookies(headers).find_map(|id| state.sessions.get(id))?;
-    Some(Principal::owner(&state.config, session.session_id))
+    Some(Principal::from_identity(
+        session.identity,
+        session.session_id,
+    ))
 }
 
 /// #1780: `SameSite=Strict` still attaches the cookie to pages on another port of the same host,
@@ -518,7 +443,10 @@ pub async fn login_handler(
 ) -> std::result::Result<Response, LoginError> {
     // Dev autologin: any login is a no-op success with a synthetic whoami; no cookie set, the middleware promotes every request anyway.
     if auth.config.dev_autologin {
-        let principal = Principal::owner(&auth.config, "dev-autologin".to_string());
+        let principal = Principal::from_identity(
+            SessionIdentity::owner(&auth.config),
+            "dev-autologin".to_string(),
+        );
         return Ok(Json(WhoamiBody::from(&principal)).into_response());
     }
 
@@ -558,8 +486,11 @@ pub async fn login_handler(
         auth.sessions.remove(existing)?;
     }
 
-    let new_id = auth.sessions.create(SessionAuthority::PasswordLogin);
-    let principal = Principal::owner(&auth.config, new_id.clone());
+    let identity = SessionIdentity::owner(&auth.config);
+    let new_id = auth
+        .sessions
+        .create(identity.clone(), SessionAuthority::PasswordLogin);
+    let principal = Principal::from_identity(identity, new_id.clone());
     let cookie = build_session_cookie(&new_id);
 
     let mut resp = Json(WhoamiBody::from(&principal)).into_response();
@@ -723,7 +654,10 @@ mod tests {
     #[test]
     fn session_store_round_trip() {
         let store = SessionStore::new();
-        let id = store.create(SessionAuthority::PasswordLogin);
+        let id = store.create(
+            SessionIdentity::owner(&cfg_live()),
+            SessionAuthority::PasswordLogin,
+        );
         assert!(store.get(&id).is_some());
         store.remove(&id).unwrap();
         assert!(store.get(&id).is_none());
@@ -758,7 +692,10 @@ mod tests {
     #[test]
     fn resolve_principal_accepts_valid_cookie() {
         let auth = AuthState::new(cfg_live());
-        let id = auth.sessions.create(SessionAuthority::PasswordLogin);
+        let id = auth.sessions.create(
+            SessionIdentity::owner(&auth.config),
+            SessionAuthority::PasswordLogin,
+        );
         let mut headers = HeaderMap::new();
         headers.insert(
             header::COOKIE,
@@ -782,3 +719,6 @@ mod tests {
         assert!(resolve_principal(&auth, &headers).is_none());
     }
 }
+
+#[cfg(test)]
+mod identity_tests;

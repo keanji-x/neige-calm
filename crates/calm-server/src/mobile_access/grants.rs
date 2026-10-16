@@ -1,6 +1,6 @@
 //! Mobile grant ownership: persistent, origin-bound credentials and their device registry.
 //! Password sessions and pending invitations never enter this store.
-use crate::auth::{Session, SessionAuthority, SessionBackend};
+use crate::auth::{Session, SessionAuthority, SessionBackend, SessionIdentity};
 use crate::error::{CalmError, Result};
 use calm_types::mobile_access::PairedDevice;
 use serde::{Deserialize, Serialize};
@@ -52,8 +52,11 @@ struct State {
     active: bool,
     failed: bool,
 }
-#[derive(Debug, Default)]
-pub(super) struct GrantStore(Mutex<State>);
+#[derive(Debug)]
+pub(super) struct GrantStore {
+    state: Mutex<State>,
+    identity: SessionIdentity,
+}
 
 fn hash(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
@@ -105,10 +108,17 @@ fn persist(path: &Path, snapshot: &Snapshot) -> anyhow::Result<()> {
 }
 
 impl GrantStore {
+    pub fn new(identity: SessionIdentity) -> Self {
+        Self {
+            state: Mutex::new(State::default()),
+            identity,
+        }
+    }
+
     /// Called before ingress startup; failures leave authentication suspended.
     pub fn load(&self, path: PathBuf) -> anyhow::Result<()> {
         let mut state = self
-            .0
+            .state
             .lock()
             .map_err(|_| anyhow::anyhow!("Mobile credential lock poisoned"))?;
         anyhow::ensure!(
@@ -189,7 +199,7 @@ impl GrantStore {
 
     /// A verified origin change revokes old grants. Same-origin restart resumes them.
     pub fn activate(&self, origin: &str) -> Result<()> {
-        let mut state = self.0.lock().map_err(|_| storage_error())?;
+        let mut state = self.state.lock().map_err(|_| storage_error())?;
         if state.snapshot.origin.as_deref() != Some(origin) || state.failed {
             let mut snapshot = state.snapshot.clone();
             if snapshot.origin.as_deref() != Some(origin) {
@@ -204,12 +214,12 @@ impl GrantStore {
 
     /// Process shutdown is not an owner revocation.
     pub fn suspend(&self) {
-        if let Ok(mut state) = self.0.lock() {
+        if let Ok(mut state) = self.state.lock() {
             state.active = false;
         }
     }
     pub fn disable(&self) -> Result<()> {
-        let mut state = self.0.lock().map_err(|_| storage_error())?;
+        let mut state = self.state.lock().map_err(|_| storage_error())?;
         state.active = false;
         if state.snapshot.origin.is_none() && state.snapshot.devices.is_empty() && !state.failed {
             return Ok(());
@@ -218,7 +228,7 @@ impl GrantStore {
     }
     /// Startup/storage unavailability must not tell clients that a saved credential was revoked.
     pub fn ensure_ready(&self) -> Result<()> {
-        let state = self.0.lock().map_err(|_| storage_error())?;
+        let state = self.state.lock().map_err(|_| storage_error())?;
         if !state.active && !state.snapshot.devices.is_empty() {
             return Err(CalmError::ServiceUnavailable(
                 "Mobile access is reconnecting; retry shortly".into(),
@@ -228,7 +238,7 @@ impl GrantStore {
     }
 
     pub fn list(&self) -> Vec<PairedDevice> {
-        self.0
+        self.state
             .lock()
             .map(|state| {
                 state
@@ -244,7 +254,7 @@ impl GrantStore {
             .unwrap_or_default()
     }
     pub fn approved(&self, id: &str) -> bool {
-        self.0.lock().is_ok_and(|state| {
+        self.state.lock().is_ok_and(|state| {
             state.snapshot.devices.values().any(
                 |device| matches!(&device.grant, DeviceGrant::Pairing(pairing) if pairing == id),
             )
@@ -252,7 +262,7 @@ impl GrantStore {
     }
     pub fn mint(&self, origin: &str, name: String, grant: DeviceGrant) -> Result<String> {
         self.activate(origin)?;
-        let mut state = self.0.lock().map_err(|_| storage_error())?;
+        let mut state = self.state.lock().map_err(|_| storage_error())?;
         let mut snapshot = state.snapshot.clone();
         if snapshot.devices.len() >= MAX_DEVICES {
             return Err(CalmError::BadRequest("Device limit reached".into()));
@@ -271,7 +281,7 @@ impl GrantStore {
     }
     /// Invitation revocation uses this registry-owned credential/device relationship.
     pub fn owns_session(&self, id: &str, token: &str) -> bool {
-        self.0.lock().is_ok_and(|state| {
+        self.state.lock().is_ok_and(|state| {
             state
                 .snapshot
                 .devices
@@ -281,7 +291,7 @@ impl GrantStore {
     }
 
     pub fn revoke(&self, id: &str) -> Result<()> {
-        let mut state = self.0.lock().map_err(|_| storage_error())?;
+        let mut state = self.state.lock().map_err(|_| storage_error())?;
         let mut snapshot = state.snapshot.clone();
         let count = snapshot.devices.len();
         snapshot.devices.retain(|_, device| device.id != id);
@@ -297,18 +307,19 @@ impl SessionBackend for GrantStore {
         if token.len() != 64 {
             return None;
         }
-        let state = self.0.lock().ok()?;
+        let state = self.state.lock().ok()?;
         if !state.active || state.failed {
             return None;
         }
         state.snapshot.devices.get(&hash(token))?;
         Some(Session {
             session_id: token.into(),
+            identity: self.identity.clone(),
             authority: SessionAuthority::PairedDevice,
         })
     }
     fn remove(&self, token: &str) -> Result<()> {
-        let mut state = self.0.lock().map_err(|_| storage_error())?;
+        let mut state = self.state.lock().map_err(|_| storage_error())?;
         let mut snapshot = state.snapshot.clone();
         if snapshot.devices.remove(&hash(token)).is_none() {
             return Ok(());

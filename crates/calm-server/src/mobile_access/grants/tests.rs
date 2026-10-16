@@ -7,7 +7,11 @@ fn private_state() -> (tempfile::TempDir, PathBuf) {
     (temp, path)
 }
 fn open(path: &Path) -> GrantStore {
-    let store = GrantStore::default();
+    let store = GrantStore::new(crate::auth::SessionIdentity {
+        user_id: crate::auth::OWNER_USER_ID.into(),
+        display_name: "Owner".into(),
+        role: crate::auth::OWNER_ROLE.into(),
+    });
     store.load(path.into()).unwrap();
     store
 }
@@ -47,7 +51,11 @@ fn mobile_grants_restore_only_hashes_at_verified_origin_and_keep_authority() {
         restored.get(&token).unwrap().authority,
         SessionAuthority::PairedDevice
     );
-    assert_eq!(restored.get(&token).unwrap().session_id, token);
+    let session = restored.get(&token).unwrap();
+    assert_eq!(session.session_id, token);
+    assert_eq!(session.identity.user_id, crate::auth::OWNER_USER_ID);
+    assert_eq!(session.identity.display_name, "Owner");
+    assert_eq!(session.identity.role, crate::auth::OWNER_ROLE);
     assert!(
         restored.get(&hash(&token)).is_none(),
         "a digest is not a bearer token"
@@ -134,7 +142,11 @@ fn mobile_grants_refuse_corruption_permissions_symlinks_and_oversized_state() {
             _ => std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o755))
                 .unwrap(),
         }
-        let store = GrantStore::default();
+        let store = GrantStore::new(crate::auth::SessionIdentity {
+            user_id: crate::auth::OWNER_USER_ID.into(),
+            display_name: "Owner".into(),
+            role: crate::auth::OWNER_ROLE.into(),
+        });
         assert!(store.load(path).is_err(), "{mode}");
         assert!(store.list().is_empty(), "{mode}");
     }

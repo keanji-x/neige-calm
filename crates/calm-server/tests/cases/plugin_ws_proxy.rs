@@ -121,7 +121,10 @@ async fn stack(router: Router) -> Stack {
     let auth = live_auth_state("alice", "pw");
     let session = format!(
         "calm-session={}",
-        auth.sessions.create(SessionAuthority::PasswordLogin)
+        auth.sessions.create(
+            calm_server::auth::SessionIdentity::owner(&auth.config),
+            SessionAuthority::PasswordLogin
+        )
     );
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

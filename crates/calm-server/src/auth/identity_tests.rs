@@ -1,0 +1,131 @@
+use super::*;
+use axum::routing::get;
+use tower::ServiceExt;
+
+fn auth() -> AuthState {
+    AuthState::new(AuthConfig {
+        username: Some("deployment-owner".into()),
+        password: Some("fixture-password".into()),
+        dev_autologin: false,
+        display_name: "Deployment owner".into(),
+    })
+}
+
+fn identity(user_id: &str, name: &str) -> SessionIdentity {
+    SessionIdentity {
+        user_id: user_id.into(),
+        display_name: name.into(),
+        role: "member".into(),
+    }
+}
+
+async fn echo_principal(principal: Principal) -> Json<WhoamiBody> {
+    Json(WhoamiBody::from(&principal))
+}
+
+/// Only the generic auth surface is exposed: synthetic identities never enter
+/// the application router, whose resource authorization is a later slice.
+fn app(auth: AuthState) -> Router {
+    let http = Router::new()
+        .route("/principal", get(echo_principal))
+        .layer(axum::middleware::from_fn(crate::actor::actor_middleware))
+        .layer(axum::middleware::from_fn_with_state(
+            auth.clone(),
+            require_session,
+        ));
+    let ws = Router::new()
+        .route("/ws-principal", get(echo_principal))
+        .layer(axum::middleware::from_fn_with_state(
+            auth.clone(),
+            require_session_ws,
+        ));
+    http.merge(ws).merge(session_router().with_state(auth))
+}
+
+async fn assert_identity(app: &Router, token: &str, identity: &SessionIdentity) {
+    for path in ["/principal", "/ws-principal", "/api/auth/whoami"] {
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(path)
+                    .header(header::COOKIE, format!("{SESSION_COOKIE}={token}"))
+                    .header("X-Calm-Actor", "ai:codex")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["userId"], identity.user_id, "{path}");
+        assert_eq!(body["displayName"], identity.display_name, "{path}");
+        assert_eq!(body["role"], identity.role, "{path}");
+        assert_eq!(body["sessionId"], token, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn session_identity_survives_all_generic_gates_and_config_changes() {
+    let mut auth = auth();
+    let jian = identity("jian", "Jian");
+    let alice = identity("alice", "Alice");
+    let jian_token = auth
+        .sessions
+        .create(jian.clone(), SessionAuthority::PasswordLogin);
+    let alice_token = auth
+        .sessions
+        .create(alice.clone(), SessionAuthority::PairedDevice);
+    Arc::make_mut(&mut auth.config).display_name = "Renamed deployment owner".into();
+    let app = app(auth);
+    assert_identity(&app, &jian_token, &jian).await;
+    assert_identity(&app, &alice_token, &alice).await;
+}
+
+#[derive(Debug)]
+struct Backend(Session);
+
+impl SessionBackend for Backend {
+    fn get(&self, token: &str) -> Option<Session> {
+        (token == self.0.session_id).then(|| self.0.clone())
+    }
+
+    fn remove(&self, _token: &str) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn session_identity_from_feature_backend_survives_all_generic_gates() {
+    let auth = auth();
+    let identity = identity("alice", "Alice from backend");
+    let token = "backend-credential";
+    auth.sessions.set_backend(Arc::new(Backend(Session {
+        session_id: token.into(),
+        identity: identity.clone(),
+        authority: SessionAuthority::PairedDevice,
+    })));
+    assert_identity(&app(auth), token, &identity).await;
+}
+
+#[tokio::test]
+async fn declared_actor_does_not_authenticate_any_generic_gate() {
+    let app = app(auth());
+    for path in ["/principal", "/ws-principal", "/api/auth/whoami"] {
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(path)
+                    .header("X-Calm-Actor", "user")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+    }
+}

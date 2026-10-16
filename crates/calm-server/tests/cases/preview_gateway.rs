@@ -48,7 +48,10 @@ async fn gateway_with_timeout(target: Option<u16>, response_timeout: Duration) -
     let auth = live_auth_state("alice", "pw");
     let session = format!(
         "calm-session={}",
-        auth.sessions.create(SessionAuthority::PasswordLogin)
+        auth.sessions.create(
+            calm_server::auth::SessionIdentity::owner(&auth.config),
+            SessionAuthority::PasswordLogin
+        )
     );
     let stop = CancellationToken::new();
     gateway::serve_with_response_timeout(

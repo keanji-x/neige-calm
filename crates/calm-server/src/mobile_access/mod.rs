@@ -8,7 +8,7 @@ pub mod pairing;
 pub mod private_tailnet;
 pub mod routes;
 
-use crate::auth::SessionStore;
+use crate::auth::{SessionIdentity, SessionStore};
 use crate::error::{CalmError, Result};
 use axum::Router;
 use pairing::PairingState;
@@ -36,8 +36,8 @@ impl std::fmt::Debug for MobileAccess {
 }
 
 impl MobileAccess {
-    pub fn new(sessions: SessionStore) -> Self {
-        let pairings = PairingState::default();
+    pub fn new(sessions: SessionStore, identity: SessionIdentity) -> Self {
+        let pairings = PairingState::new(identity);
         sessions.set_backend(pairings.grants.clone());
         Self {
             inner: Arc::new(Inner {
@@ -239,9 +239,10 @@ mod tests {
             display_name: "Owner".into(),
         });
         auth.mobile.mark_unavailable();
-        let session = auth
-            .sessions
-            .create(crate::auth::SessionAuthority::PasswordLogin);
+        let session = auth.sessions.create(
+            SessionIdentity::owner(&auth.config),
+            crate::auth::SessionAuthority::PasswordLogin,
+        );
         let router = routes::management_router()
             .layer(axum::middleware::from_fn_with_state(
                 auth.clone(),

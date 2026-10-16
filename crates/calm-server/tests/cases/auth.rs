@@ -202,7 +202,7 @@ async fn assert_hook_event(repo: &Arc<dyn Repo>, card_id: &str, want_kind: &str)
 async fn login_success_issues_cookie_and_returns_whoami() {
     let state = fresh_state().await;
     let auth_state = live_auth_state("alice", "hunter2");
-    let app = app(state, auth_state);
+    let app = app(state, auth_state.clone());
 
     let body = serde_json::to_vec(&serde_json::json!({
         "username": "alice",
@@ -243,7 +243,13 @@ async fn login_success_issues_cookie_and_returns_whoami() {
     assert_eq!(v["userId"], "local-owner");
     assert_eq!(v["displayName"], "alice");
     assert_eq!(v["role"], "owner");
-    assert!(v["sessionId"].as_str().unwrap().len() > 8);
+    let session_id = v["sessionId"].as_str().unwrap();
+    assert!(session_id.len() > 8);
+    let session = auth_state.sessions.get(session_id).unwrap();
+    assert_eq!(session.identity.user_id, v["userId"]);
+    assert_eq!(session.identity.display_name, v["displayName"]);
+    assert_eq!(session.identity.role, v["role"]);
+    assert_eq!(session.authority, auth::SessionAuthority::PasswordLogin);
 }
 
 #[tokio::test]
