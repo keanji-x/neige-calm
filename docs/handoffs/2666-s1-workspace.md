@@ -25,7 +25,7 @@ base/upstream preparation → worktree add. Refusal/error text, branch config,
 wire/events, seven-day trash retention and ten-minute ignored cleanup remain
 unchanged. No migration, ledger, archive policy or later-slice API is added.
 
-The Git environment is an intentional closed set owned by `workspace::command`
+The isolated Git environment is a closed set owned by `workspace::command`
 (PATH/HOME/XDG_CONFIG_HOME plus the C locale), equivalent to the former helper
 expansion; network additions remain kernel policy.
 
