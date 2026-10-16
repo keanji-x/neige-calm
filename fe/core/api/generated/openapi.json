@@ -280,6 +280,16 @@
               }
             }
           },
+          "403": {
+            "description": "Registered user required; include_system requires deployment-owner authority",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal error",
             "content": {
@@ -353,7 +363,7 @@
             }
           },
           "403": {
-            "description": "`forbidden`: a write whose `Origin` is not one of this server's origins.",
+            "description": "Registered creator required; replay requires current Area membership; cross-origin writes are forbidden",
             "content": {
               "application/json": {
                 "schema": {
@@ -522,7 +532,7 @@
             }
           },
           "403": {
-            "description": "`forbidden`: a write whose `Origin` is not one of this server's origins.",
+            "description": "Registered deployment owner required; cross-origin writes are forbidden",
             "content": {
               "application/json": {
                 "schema": {
@@ -1019,7 +1029,7 @@
             }
           },
           "403": {
-            "description": "Current Area owner required; system Areas cannot be deleted via REST",
+            "description": "Registered Area owner required; system Areas cannot be deleted via REST; cross-origin writes are forbidden",
             "content": {
               "application/json": {
                 "schema": {
@@ -1118,7 +1128,7 @@
             }
           },
           "403": {
-            "description": "`forbidden`: a write whose `Origin` is not one of this server's origins.",
+            "description": "Current Area membership required, or registered deployment owner for system Areas; cross-origin writes are forbidden",
             "content": {
               "application/json": {
                 "schema": {

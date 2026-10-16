@@ -109,6 +109,7 @@ fn validate_and_normalize_default_cwd(default_cwd: &mut Option<String>) -> Resul
     params(ListAreasQuery),
     responses(
         (status = 200, description = "List the authenticated user's member Areas; include_system additionally requires deployment-owner authority", body = Vec<Area>),
+        (status = 403, description = "Registered user required; include_system requires deployment-owner authority", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -142,6 +143,7 @@ pub(crate) async fn list_areas(
     params(("Idempotency-Key" = Option<String>, Header, description = "Optional permanent creation identity scoped to the authenticated creator. The same creator, key and typed request return the same Area with 201 without another creation event; differing inputs return 409 `idempotency_key_reused` and a deleted Area 409 `idempotency_key_exhausted`. Bindings are permanent. A replay does not repeat mutable template/folder validation. Callers without a key retain non-idempotent creation: retrying may create another Area. Separate keys may create Areas with the same name. A blank, non-ASCII or over-128-byte key is 400.")),
     responses(
         (status = 201, description = "Area created", body = Area),
+        (status = 403, description = "Registered creator required; replay requires current Area membership; cross-origin writes are forbidden", body = ErrorBody),
         (status = 400, description = "Unknown default template, invalid default folder, or an invalid Idempotency-Key (`idempotency_key_invalid`)", body = ErrorBody),
         (status = 409, description = "The key belongs to different inputs (`idempotency_key_reused`) or its Area was deleted (`idempotency_key_exhausted`)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
@@ -242,6 +244,7 @@ pub(crate) async fn create_area(
     responses(
         (status = 200, description = "System area already existed; returned the existing row", body = Area),
         (status = 201, description = "System area minted", body = Area),
+        (status = 403, description = "Registered deployment owner required; cross-origin writes are forbidden", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -303,6 +306,7 @@ pub(crate) async fn ensure_system_area(s: &RouteState) -> Result<(StatusCode, Ar
     request_body = AreaPatch,
     responses(
         (status = 200, description = "Area updated", body = Area),
+        (status = 403, description = "Current Area membership required, or registered deployment owner for system Areas; cross-origin writes are forbidden", body = ErrorBody),
         (status = 400, description = "Unknown default template or invalid attached default folder", body = ErrorBody),
         (status = 404, description = "Area not found", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
@@ -801,7 +805,7 @@ async fn finish_prepared_area_deletion_owned(
     params(("id" = String, Path, description = "Area id")),
     responses(
         (status = 204, description = "Area deleted"),
-        (status = 403, description = "Current Area owner required; system Areas cannot be deleted via REST", body = ErrorBody),
+        (status = 403, description = "Registered Area owner required; system Areas cannot be deleted via REST; cross-origin writes are forbidden", body = ErrorBody),
         (status = 404, description = "Area not found", body = ErrorBody),
         (status = 409, description = "A child track has an in-flight forge-action, or an unresolved terminal launch (`conflict`); retry after it settles", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
