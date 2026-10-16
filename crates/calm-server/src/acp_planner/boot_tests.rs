@@ -351,8 +351,15 @@ async fn acp_boot_revocation_error_prevents_listener() {
     let cfg = config(&root, false);
     let repo = SqlxRepo::open(&cfg.db_url).await.unwrap();
     let owned = historical(&repo, &root, AgentProvider::OpenCode, true).await;
-    sqlx::query("CREATE TRIGGER refuse_acp_revoke BEFORE UPDATE OF mcp_token_hash ON worker_sessions WHEN OLD.id IN (SELECT worker_session_id FROM acp_managed_sessions) BEGIN SELECT RAISE(ABORT, 'injected ACP revoke failure'); END")
-        .execute(repo.pool()).await.unwrap();
+    sqlx::query(
+        "CREATE TRIGGER refuse_acp_revoke
+         BEFORE UPDATE OF mcp_token_hash ON worker_sessions
+         WHEN OLD.id IN (SELECT worker_session_id FROM acp_managed_sessions)
+         BEGIN SELECT RAISE(ABORT, 'injected ACP revoke failure'); END",
+    )
+    .execute(repo.pool())
+    .await
+    .unwrap();
     let error = match AppState::boot(&cfg).await {
         Ok(state) => {
             close(state).await;

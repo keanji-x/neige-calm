@@ -209,7 +209,7 @@ pub async fn boot(repo: &dyn crate::db::RepoEventWrite, host: &AcpPlannerHost) -
     {
         tracing::warn!(
             %error,
-            "ACP boot sweep did not confirm process cleanup; old MCP credentials revoked; continuing boot; each launch still requires a successful stop before spawning"
+            "ACP boot cleanup failed; old MCP credentials revoked; boot continues; each launch still requires a successful stop"
         );
     }
     Ok(())
