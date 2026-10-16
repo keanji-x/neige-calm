@@ -20,31 +20,9 @@ use crate::track_worker_cwd::{
 /// on `main` there; no worktree is registered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_managed_track_worker_commits_on_main_in_its_directory() {
-    let w = world().await;
+    let w = crate::track_worker_cwd::managed_world().await;
     let fx = &w.fx;
-    let path = workspace::materialize::managed_workspace_path(
-        &fx.workspace_root,
-        fx.boot.area_id.as_str(),
-        fx.track(),
-    );
-    sqlx::query(
-        "UPDATE tracks SET workspace_kind = 'managed', workspace_path = ?1, \
-         workspace_worktree_path = NULL WHERE id = ?2",
-    )
-    .bind(path.to_str().unwrap())
-    .bind(fx.track())
-    .execute(&fx.pool())
-    .await
-    .unwrap();
-    // Materialize it the way a worker's prepare does, so the commit identity can be set first.
-    let mut tx = fx.pool().begin().await.unwrap();
-    calm_server::test_seams::prepare_worker_lease_for_test(&mut tx, fx.track(), &fx.workspace_root)
-        .await
-        .unwrap();
-    tx.rollback().await.unwrap();
-    git(&path, &["config", "user.email", "managed@example.test"]);
-    git(&path, &["config", "user.name", "Managed Test"]);
-
+    let path = fx.worktree.clone();
     declare_task(fx, "a", json!({})).await;
     let a = wait_running(fx, "a").await;
     assert_eq!(a.cwd, path, "the worker runs in the managed directory");

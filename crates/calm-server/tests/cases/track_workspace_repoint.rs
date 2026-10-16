@@ -810,15 +810,22 @@ async fn an_unfrozen_attached_workspace_is_still_refused() {
     let area = create_area(&b, "c").await;
     let repo_dir = user_repo(&b.tmp.path().join("user-project"));
     let (track, _) = managed_track(&b, &area, "w").await;
-    sqlx::query(
-        "UPDATE tracks SET workspace_kind='attached', workspace_path=?1, \
-         workspace_frozen_at=NULL WHERE id=?2",
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(b.repo.pool())
+        .await
+        .unwrap();
+    calm_server::db::sqlite::track_workspace_write_tx(
+        &mut tx,
+        &track,
+        &calm_server::model::TrackWorkspace {
+            kind: calm_server::model::TrackWorkspaceKind::Attached,
+            path: repo_dir.display().to_string(),
+            frozen_at: None,
+            worktree: None,
+        },
     )
-    .bind(repo_dir.to_string_lossy().as_ref())
-    .bind(&track)
-    .execute(b.repo.pool())
     .await
     .unwrap();
+    tx.commit().await.unwrap();
     let before = std::fs::read_to_string(repo_dir.join("README.md")).unwrap();
 
     let (status, body) = repoint(&b, &track).await;
@@ -1293,11 +1300,27 @@ async fn a_child_track_is_frozen_at_creation_and_cannot_be_repointed() {
     let b = boot().await;
     let area = create_area(&b, "c").await;
     let (parent, _) = managed_track(&b, &area, "parent").await;
-    let (child, _) = managed_track(&b, &area, "child").await;
-    // The row is put into the child state directly; the production PATCH route is what gets tested.
-    sqlx::query("UPDATE tracks SET parent_track_id=?1, workspace_frozen_at=?2 WHERE id=?3")
+    let child = calm_server::test_seams::create_track_with_workspace_for_test(
+        b.repo.pool(),
+        calm_server::model::NewTrack {
+            template_input: None,
+            area_id: area.clone().into(),
+            title: "child".into(),
+            sort: None,
+            cwd: String::new(),
+            template_id: None,
+            plugin_scope: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        },
+        &calm_server::db::sqlite::TrackWorkspacePlan::ManagedFrozenUnder(b.workspace_root.clone()),
+        &b.tracks,
+    )
+    .await
+    .unwrap();
+    let child = child.id.to_string();
+    sqlx::query("UPDATE tracks SET parent_track_id=?1 WHERE id=?2")
         .bind(&parent)
-        .bind(1_i64)
         .bind(&child)
         .execute(b.repo.pool())
         .await

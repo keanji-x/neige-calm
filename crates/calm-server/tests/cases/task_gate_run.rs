@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::git_delivery::*;
-use crate::mcp_track_report::{Boot, boot, call_tool, planner_identity};
+use crate::mcp_track_report::{Boot, call_tool, planner_identity};
 use crate::task_recovery::{current, declare};
 use calm_server::ids::TrackId;
 use calm_server::mcp_server::registry::ToolCallIdentity;
@@ -44,20 +44,17 @@ pub(super) async fn world_with(
     idle: Duration,
     extra: impl FnOnce(&Boot) -> Vec<Arc<dyn ProviderAdapter>>,
 ) -> Fx {
-    let mut boot = boot().await;
-    Arc::get_mut(&mut boot.ctx)
-        .expect("the context is not shared yet")
-        .gate_run_wait = GateRunWait::for_idle(idle);
-    let fx = fixture_on_with_adapters(
-        boot,
-        |tmp| {
+    let (mut boot, workspace) =
+        crate::git_delivery::prepare_fixture("sqlite::memory:", false, |tmp| {
             let repo = tmp.join("repo");
             init_repo(&repo);
             repo
-        },
-        extra,
-    )
-    .await;
+        })
+        .await;
+    Arc::get_mut(&mut boot.ctx)
+        .expect("the context is not shared yet")
+        .gate_run_wait = GateRunWait::for_idle(idle);
+    let fx = fixture_on_with_adapters(boot, workspace, extra).await;
     fx.dispatcher.abort_event_listener_for_test();
     fx
 }

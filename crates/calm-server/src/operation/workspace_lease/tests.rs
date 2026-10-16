@@ -127,8 +127,12 @@ async fn worktree_track_fixture(
 ) {
     let checkout = tmp.join("checkout");
     init_git_repo(&checkout);
-    let (repo, track_id, card_id) = lease_fixture(&checkout).await;
-    let path = crate::test_seams::attach_track_worktree_for_test(repo.pool(), &track_id, &checkout)
+    let (repo, track_id, card_id) = lease_fixture_with_plan(
+        &checkout,
+        &crate::db::sqlite::TrackWorkspacePlan::AttachedWithTrackWorktree(checkout.clone()),
+    )
+    .await;
+    let path = crate::test_seams::ensure_track_worktree_for_test(repo.pool(), &track_id)
         .await
         .unwrap();
     let target =
@@ -620,6 +624,17 @@ async fn lease_check_rejects_every_invalid_tuple() {
 }
 
 async fn lease_fixture(track_cwd: &Path) -> (crate::db::sqlite::SqlxRepo, String, String) {
+    lease_fixture_with_plan(
+        track_cwd,
+        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+    )
+    .await
+}
+
+async fn lease_fixture_with_plan(
+    track_cwd: &Path,
+    plan: &crate::db::sqlite::TrackWorkspacePlan,
+) -> (crate::db::sqlite::SqlxRepo, String, String) {
     let repo = crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
         .await
         .unwrap();
@@ -634,8 +649,8 @@ async fn lease_fixture(track_cwd: &Path) -> (crate::db::sqlite::SqlxRepo, String
     )
     .await
     .unwrap();
-    let track = crate::db::RepoSyncDomainRaw::track_create(
-        &repo,
+    let track = crate::test_seams::create_track_with_workspace_for_test(
+        repo.pool(),
         crate::model::NewTrack {
             template_input: None,
             area_id: area.id,
@@ -647,6 +662,8 @@ async fn lease_fixture(track_cwd: &Path) -> (crate::db::sqlite::SqlxRepo, String
             attach_folder: false,
             theme: crate::routes::theme::RequestTheme::default_dark(),
         },
+        plan,
+        &crate::track_area_cache::TrackAreaCache::new(),
     )
     .await
     .unwrap();

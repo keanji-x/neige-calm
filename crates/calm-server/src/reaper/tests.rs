@@ -28,6 +28,12 @@ use crate::track_area_cache::TrackAreaCache;
 static REAPER_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn seeded_repo() -> (Arc<SqlxRepo>, TrackId) {
+    seeded_repo_with_plan(|_| crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd).await
+}
+
+async fn seeded_repo_with_plan(
+    plan: impl FnOnce(&Path) -> crate::db::sqlite::TrackWorkspacePlan,
+) -> (Arc<SqlxRepo>, TrackId) {
     let track_cwd = tempfile::tempdir().expect("track cwd tempdir").keep();
     init_git_repo(&track_cwd);
     let repo = Arc::new(
@@ -46,8 +52,8 @@ async fn seeded_repo() -> (Arc<SqlxRepo>, TrackId) {
     )
     .await
     .expect("seed area");
-    let track = RepoSyncDomainRaw::track_create(
-        repo.as_ref(),
+    let track = crate::test_seams::create_track_with_workspace_for_test(
+        repo.pool(),
         NewTrack {
             template_input: None,
             area_id: area.id,
@@ -59,6 +65,8 @@ async fn seeded_repo() -> (Arc<SqlxRepo>, TrackId) {
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },
+        &plan(&track_cwd),
+        &crate::track_area_cache::TrackAreaCache::new(),
     )
     .await
     .expect("seed track");
@@ -255,18 +263,7 @@ async fn acquire_test_workspace_lease(
     track_id: &TrackId,
     lease_owner: &str,
 ) -> (String, String) {
-    // The worker lease is the track worktree (#1830 S2): give the attached track one first.
-    let checkout: String = sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE id = ?1")
-        .bind(track_id.as_str())
-        .fetch_one(repo.pool())
-        .await
-        .expect("track checkout");
-    crate::test_support::attach_track_worktree(
-        repo.pool(),
-        track_id.as_str(),
-        Path::new(&checkout),
-    )
-    .await;
+    crate::test_support::ensure_track_worktree(repo.pool(), track_id.as_str()).await;
     let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");
     let plan = crate::operation::workspace_lease::prepare_worker_lease_as_tx(
         &mut tx,
@@ -587,7 +584,10 @@ async fn sweep_resumable_codex_dead_worker_releases_same_boot_workspace_lease() 
     let _guard = REAPER_TEST_LOCK.lock().await;
     reset_reaper_boot_gate_for_test();
 
-    let (repo, track_id) = seeded_repo().await;
+    let (repo, track_id) = seeded_repo_with_plan(|path| {
+        crate::db::sqlite::TrackWorkspacePlan::AttachedWithTrackWorktree(path.into())
+    })
+    .await;
     let task = insert_task(&repo, &track_id, "codex-lease-dead", TaskStatus::Running).await;
     let op_id = insert_spawn_operation(&repo, Some(&task.id), None).await;
     let mut worker = session("ws-codex-lease-dead", track_id.clone(), 1);
@@ -669,7 +669,10 @@ async fn sweep_resumable_codex_dead_worker_releases_same_boot_workspace_lease() 
 async fn converge_dead_worker_without_spawn_op_releases_workspace_lease() {
     let _guard = REAPER_TEST_LOCK.lock().await;
 
-    let (repo, track_id) = seeded_repo().await;
+    let (repo, track_id) = seeded_repo_with_plan(|path| {
+        crate::db::sqlite::TrackWorkspacePlan::AttachedWithTrackWorktree(path.into())
+    })
+    .await;
     let mut worker = session("ws-codex-no-spawn-op", track_id.clone(), 1);
     worker.provider = WorkerProviderKind::Codex;
     worker.mode = SessionMode::Resumable;

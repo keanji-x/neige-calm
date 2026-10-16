@@ -48,16 +48,14 @@ pub(crate) async fn insert_task_tx(tx: &mut Transaction<'_, Sqlite>, task: &Task
     Ok(())
 }
 
-/// Give an attached track its #1830 track worktree, as the create route does (the production
-/// `ensure_track_worktree`). Returns it.
-pub(crate) async fn attach_track_worktree(
+/// Finish the track worktree declared by the fixture's initial creation plan.
+pub(crate) async fn ensure_track_worktree(
     pool: &sqlx::SqlitePool,
     track_id: &str,
-    checkout: &std::path::Path,
 ) -> std::path::PathBuf {
-    crate::test_seams::attach_track_worktree_for_test(pool, track_id, checkout)
+    crate::test_seams::ensure_track_worktree_for_test(pool, track_id)
         .await
-        .expect("make the track worktree")
+        .expect("make the declared track worktree")
 }
 
 /// A one-commit git repository at `path`: the fixture checkout an attached track's worktree is

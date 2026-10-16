@@ -359,7 +359,24 @@ impl OperationRepo for DriveErrorOnceRepo {
 }
 
 async fn boot_with_counted_spawn() -> Boot {
+    boot_with_counted_spawn_and_workspace(None).await
+}
+
+async fn boot_with_counted_spawn_and_workspace(worktree_name: Option<&str>) -> Boot {
     let tmp = TempDir::new().expect("tempdir for daemon sockets");
+    let (cwd, workspace_plan) = if let Some(name) = worktree_name {
+        let path = tmp.path().join(name);
+        init_fixture_git_repo(&path);
+        (
+            path.display().to_string(),
+            calm_server::db::sqlite::TrackWorkspacePlan::AttachedWithTrackWorktree(path),
+        )
+    } else {
+        (
+            String::new(),
+            calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        )
+    };
     let repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
             .await
@@ -377,20 +394,24 @@ async fn boot_with_counted_spawn() -> Boot {
         )
         .await
         .unwrap();
-    let track = repo_dyn
-        .track_create(NewTrack {
+    let track = calm_server::test_seams::create_track_with_workspace_for_test(
+        repo.pool(),
+        NewTrack {
             template_input: None,
             area_id: area.id,
             title: "operations-test".into(),
             sort: None,
-            cwd: String::new(),
+            cwd,
             template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
-        })
-        .await
-        .unwrap();
+        },
+        &workspace_plan,
+        &calm_server::track_area_cache::TrackAreaCache::new(),
+    )
+    .await
+    .unwrap();
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().to_path_buf(),
         proc_supervisor_sock: None,
@@ -2435,8 +2456,9 @@ async fn worker_recovery_skips_respawn_when_terminal_already_exited() {
     assert_eq!(added, 1, "subscribers must see exactly one CardAdded");
     assert_eq!(failed, 0, "recovery preservation must not emit TaskFailed");
 
-    let mut boot = boot_with_counted_spawn().await;
-    let git_repo = init_git_repo_for_track(&boot, "codex-worker-recovery-exited").await;
+    let mut boot =
+        boot_with_counted_spawn_and_workspace(Some("codex-worker-recovery-exited")).await;
+    let git_repo = boot._tmp.path().join("codex-worker-recovery-exited");
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
     let codex_adapter = Arc::new(CodexWorkerAdapter::new(
         route_repo.clone(),
@@ -2878,36 +2900,17 @@ async fn adapter_mints_runtime_id_when_payload_runtime_id_is_none() {
     assert_minted_runtime(&boot.repo, output, WorkerSessionKind::ClaudeCard).await;
 }
 
-async fn init_git_repo_for_track(boot: &Boot, name: &str) -> PathBuf {
-    let repo_path = boot._tmp.path().join(name);
-    std::fs::create_dir_all(&repo_path).expect("create git repo dir");
-    run_git(&repo_path, ["init"]);
+fn init_fixture_git_repo(repo_path: &Path) {
+    std::fs::create_dir_all(repo_path).expect("create git repo dir");
+    run_git(repo_path, ["init"]);
     run_git(
-        &repo_path,
+        repo_path,
         ["config", "user.email", "no-double-spawn@example.test"],
     );
-    run_git(&repo_path, ["config", "user.name", "No Double Spawn Test"]);
+    run_git(repo_path, ["config", "user.name", "No Double Spawn Test"]);
     std::fs::write(repo_path.join("README.md"), "initial\n").expect("write readme");
-    run_git(&repo_path, ["add", "README.md"]);
-    run_git(&repo_path, ["commit", "-m", "initial"]);
-    // Written directly rather than through the production writer, which refuses a frozen row (the freeze latch).
-    sqlx::query(
-        "UPDATE tracks SET workspace_kind='attached', workspace_path=?1, workspace_frozen_at=1 WHERE id=?2",
-    )
-    .bind(repo_path.to_string_lossy().as_ref())
-    .bind(&boot.track_id)
-    .execute(boot.repo.pool())
-    .await
-    .unwrap();
-    // A codex worker runs in the track worktree (#1830 S2).
-    calm_server::test_seams::attach_track_worktree_for_test(
-        boot.repo.pool(),
-        &boot.track_id,
-        &repo_path,
-    )
-    .await
-    .unwrap();
-    repo_path
+    run_git(repo_path, ["add", "README.md"]);
+    run_git(repo_path, ["commit", "-m", "initial"]);
 }
 
 fn run_git<const N: usize>(repo: &Path, args: [&str; N]) {

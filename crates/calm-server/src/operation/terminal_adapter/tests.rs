@@ -28,6 +28,19 @@ async fn terminal_worker_harness_with_repo(
     repo: Arc<crate::db::sqlite::SqlxRepo>,
     workspace: &str,
 ) -> TerminalWorkerHarness {
+    terminal_worker_harness_with_plan(
+        repo,
+        workspace,
+        &crate::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+    )
+    .await
+}
+
+async fn terminal_worker_harness_with_plan(
+    repo: Arc<crate::db::sqlite::SqlxRepo>,
+    workspace: &str,
+    plan: &crate::db::sqlite::TrackWorkspacePlan,
+) -> TerminalWorkerHarness {
     let area = crate::db::RepoSyncDomainRaw::area_create(
         repo.as_ref(),
         calm_types::organization::LEGACY_OWNER_USER_ID,
@@ -39,8 +52,8 @@ async fn terminal_worker_harness_with_repo(
     )
     .await
     .unwrap();
-    let track = crate::db::RepoSyncDomainRaw::track_create(
-        repo.as_ref(),
+    let track = crate::test_seams::create_track_with_workspace_for_test(
+        repo.pool(),
         crate::model::NewTrack {
             template_input: None,
             area_id: area.id,
@@ -52,6 +65,8 @@ async fn terminal_worker_harness_with_repo(
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },
+        plan,
+        &crate::track_area_cache::TrackAreaCache::new(),
     )
     .await
     .unwrap();
@@ -217,13 +232,19 @@ async fn terminal_worker_with_an_explicit_cwd_keeps_it() {
 async fn worktree_harness(tmp: &std::path::Path) -> (TerminalWorkerHarness, String) {
     let checkout = tmp.join("checkout");
     crate::test_support::init_fixture_git_repo(&checkout);
-    let harness = terminal_worker_harness_with_workspace(checkout.to_str().unwrap()).await;
-    let worktree = crate::test_support::attach_track_worktree(
-        harness.repo.pool(),
-        &harness.track_id,
-        &checkout,
+    let repo = Arc::new(
+        crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+            .await
+            .unwrap(),
+    );
+    let harness = terminal_worker_harness_with_plan(
+        repo,
+        checkout.to_str().unwrap(),
+        &crate::db::sqlite::TrackWorkspacePlan::AttachedWithTrackWorktree(checkout.clone()),
     )
     .await;
+    let worktree =
+        crate::test_support::ensure_track_worktree(harness.repo.pool(), &harness.track_id).await;
     (harness, worktree.to_str().unwrap().to_string())
 }
 

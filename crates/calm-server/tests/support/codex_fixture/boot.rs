@@ -127,8 +127,9 @@ pub async fn boot_forge_e2e_fixture(
         )
         .await
         .expect("create area");
-    let track = repo_dyn
-        .track_create(NewTrack {
+    let track = calm_server::test_seams::create_track_with_workspace_for_test(
+        sqlx_repo.pool(),
+        NewTrack {
             template_input: fixture.bound_issue.map(dev_input),
             area_id: area.id.clone(),
             title: "codex-forge-e2e".into(),
@@ -138,17 +139,16 @@ pub async fn boot_forge_e2e_fixture(
             plugin_scope: Some(PLUGIN_ID.into()),
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
-        })
-        .await
-        .expect("create track");
-    // A codex worker runs in the track worktree (#1830 S2), as a track created by the route has.
-    calm_server::test_seams::attach_track_worktree_for_test(
-        sqlx_repo.pool(),
-        track.id.as_str(),
-        &track_cwd,
+        },
+        &calm_server::db::sqlite::TrackWorkspacePlan::AttachedWithTrackWorktree(track_cwd.clone()),
+        &track_area_cache,
     )
     .await
-    .expect("make the track worktree");
+    .expect("create track");
+    // A codex worker runs in the track worktree (#1830 S2), as a track created by the route has.
+    calm_server::test_seams::ensure_track_worktree_for_test(sqlx_repo.pool(), track.id.as_str())
+        .await
+        .expect("make the track worktree");
     if !fixture.require_task_gates {
         sqlx::query("UPDATE tracks SET require_task_gates = 0 WHERE id = ?1")
             .bind(track.id.as_str())

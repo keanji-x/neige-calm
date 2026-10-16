@@ -641,8 +641,9 @@ mod tests {
             )
             .await
             .expect("create area");
-        let track = repo
-            .track_create(NewTrack {
+        let track = crate::test_seams::create_track_with_workspace_for_test(
+            repo.pool(),
+            NewTrack {
                 template_input: None,
                 area_id: area.id.clone(),
                 title: "worker report preserve".into(),
@@ -652,9 +653,14 @@ mod tests {
                 plugin_scope: None,
                 attach_folder: false,
                 theme: crate::routes::theme::RequestTheme::default_dark(),
-            })
-            .await
-            .expect("create track");
+            },
+            &crate::db::sqlite::TrackWorkspacePlan::AttachedWithTrackWorktree(
+                repo_root.path().into(),
+            ),
+            &crate::track_area_cache::TrackAreaCache::new(),
+        )
+        .await
+        .expect("create track");
         let worker_card = repo
             .card_create(NewCard {
                 track_id: track.id.clone(),
@@ -682,12 +688,8 @@ mod tests {
         .await
         .expect("seed worker session");
 
-        let worktree = crate::test_support::attach_track_worktree(
-            repo.pool(),
-            track.id.as_str(),
-            repo_root.path(),
-        )
-        .await;
+        let worktree =
+            crate::test_support::ensure_track_worktree(repo.pool(), track.id.as_str()).await;
         let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");
         let plan = prepare_worker_lease_as_tx(
             &mut tx,

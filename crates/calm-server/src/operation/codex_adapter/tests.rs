@@ -48,8 +48,8 @@ async fn worker_lease_harness_with_disk(disk: bool) -> WorkerLeaseHarness {
     )
     .await
     .unwrap();
-    let track = crate::db::RepoSyncDomainRaw::track_create(
-        repo.as_ref(),
+    let track = crate::test_seams::create_track_with_workspace_for_test(
+        repo.pool(),
         crate::model::NewTrack {
             template_input: None,
             area_id: area.id,
@@ -61,15 +61,12 @@ async fn worker_lease_harness_with_disk(disk: bool) -> WorkerLeaseHarness {
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },
+        &crate::db::sqlite::TrackWorkspacePlan::AttachedWithTrackWorktree(repo_root.path().into()),
+        &crate::track_area_cache::TrackAreaCache::new(),
     )
     .await
     .unwrap();
-    let worktree = crate::test_support::attach_track_worktree(
-        repo.pool(),
-        track.id.as_str(),
-        repo_root.path(),
-    )
-    .await;
+    let worktree = crate::test_support::ensure_track_worktree(repo.pool(), track.id.as_str()).await;
     let route_repo: Arc<dyn crate::db::RouteRepo> = repo.clone();
     let full_repo: Arc<dyn crate::db::Repo> = repo.clone();
     WorkerLeaseHarness {

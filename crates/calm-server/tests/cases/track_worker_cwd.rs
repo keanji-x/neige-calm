@@ -25,7 +25,7 @@ use calm_types::report_blocks::tasks::PLANNER_DECLARATION_AUTHOR;
 use serde_json::{Value, json};
 
 use crate::git_delivery::{Fx, fixture_on_with_runtime, git, ref_target};
-use crate::mcp_track_report::{boot, call_tool};
+use crate::mcp_track_report::call_tool;
 use crate::support::git_helpers::{clone_for_track, init_bare_origin};
 use crate::task_recovery::{current, declare};
 
@@ -42,7 +42,14 @@ pub(super) struct World {
 
 /// The attached world (module docs). `.gitignore` names `ignored.log`.
 pub(super) async fn world() -> World {
-    world_with_boot(boot().await).await
+    world_with_options(
+        false,
+        |repo, _| {
+            calm_server::db::sqlite::TrackWorkspacePlan::AttachedWithTrackWorktree(repo.into())
+        },
+        &[],
+    )
+    .await
 }
 
 pub(super) async fn development_world() -> World {
@@ -51,18 +58,79 @@ pub(super) async fn development_world() -> World {
 
 /// [`development_world`] whose upstream's first commit also holds `files` (`(path, content)`).
 pub(super) async fn development_world_with(files: &[(&'static str, &'static str)]) -> World {
-    world_with_boot_and(crate::mcp_track_report::boot_development().await, files).await
+    world_with_options(
+        true,
+        |repo, _| {
+            calm_server::db::sqlite::TrackWorkspacePlan::AttachedWithTrackWorktree(repo.into())
+        },
+        files,
+    )
+    .await
 }
 
-async fn world_with_boot(boot: crate::mcp_track_report::Boot) -> World {
-    world_with_boot_and(boot, &[]).await
+/// A managed workspace chosen before creation, materialized through worker-lease preparation.
+pub(super) async fn managed_world() -> World {
+    let world = world_with_options(
+        false,
+        |_, root| calm_server::db::sqlite::TrackWorkspacePlan::ManagedUnder(root.into()),
+        &[],
+    )
+    .await;
+    let mut tx = world.fx.pool().begin().await.unwrap();
+    calm_server::test_seams::prepare_worker_lease_for_test(
+        &mut tx,
+        world.fx.track(),
+        &world.fx.workspace_root,
+    )
+    .await
+    .unwrap();
+    tx.rollback().await.unwrap();
+    git(
+        &world.fx.worktree,
+        &["config", "user.email", "managed@example.test"],
+    );
+    git(&world.fx.worktree, &["config", "user.name", "Managed Test"]);
+    world
 }
 
-async fn world_with_boot_and(
-    boot: crate::mcp_track_report::Boot,
+pub(super) async fn borrowed_world(development: bool) -> World {
+    world_with_options(
+        development,
+        |_, _| calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+        &[],
+    )
+    .await
+}
+
+async fn world_with_options(
+    development: bool,
+    plan: impl FnOnce(&Path, &Path) -> calm_server::db::sqlite::TrackWorkspacePlan,
     files: &[(&'static str, &'static str)],
 ) -> World {
     let files = files.to_vec();
+    let before = Arc::new(std::sync::Mutex::new((0, 0)));
+    let seen = before.clone();
+    let (boot, workspace) = crate::git_delivery::prepare_fixture_with_plan(
+        "sqlite::memory:",
+        development,
+        move |tmp| {
+            let origin = tmp.join("origin.git");
+            init_bare_origin(&origin, &tmp.join("seed"));
+            let checkout = tmp.join("checkout");
+            clone_for_track(&origin, &checkout);
+            std::fs::write(checkout.join(".gitignore"), "ignored.log\n").unwrap();
+            for (name, content) in &files {
+                std::fs::write(checkout.join(name), content).unwrap();
+            }
+            git(&checkout, &["add", "-A"]);
+            git(&checkout, &["commit", "-q", "-m", "ignore logs"]);
+            git(&checkout, &["push", "-q", "origin", "main"]);
+            *seen.lock().unwrap() = (worktree_entries(&checkout), neige_refs(&checkout));
+            checkout
+        },
+        plan,
+    )
+    .await;
     let shared = SharedCodexAppServer::new_fake_running_with_pending(boot.repo.clone(), None);
     let socket_dir = tempfile::Builder::new()
         .prefix("s2-mcp-")
@@ -84,26 +152,10 @@ async fn world_with_boot_and(
     .expect("spawn McpServer");
     let track_areas = TrackAreaCache::new();
     boot.repo.seed_track_area_cache(&track_areas).await.unwrap();
-    let before = Arc::new(std::sync::Mutex::new((0, 0)));
-    let seen = before.clone();
     let (worker_shared, worker_mcp) = (shared.clone(), mcp.clone());
     let fx = fixture_on_with_runtime(
         boot,
-        move |tmp| {
-            let origin = tmp.join("origin.git");
-            init_bare_origin(&origin, &tmp.join("seed"));
-            let checkout = tmp.join("checkout");
-            clone_for_track(&origin, &checkout);
-            std::fs::write(checkout.join(".gitignore"), "ignored.log\n").unwrap();
-            for (name, content) in &files {
-                std::fs::write(checkout.join(name), content).unwrap();
-            }
-            git(&checkout, &["add", "-A"]);
-            git(&checkout, &["commit", "-q", "-m", "ignore logs"]);
-            git(&checkout, &["push", "-q", "origin", "main"]);
-            *seen.lock().unwrap() = (worktree_entries(&checkout), neige_refs(&checkout));
-            checkout
-        },
+        workspace,
         Some(shared.clone()),
         move |boot, workspace_root| {
             let adapter = CodexWorkerAdapter::new(
@@ -545,13 +597,8 @@ async fn the_next_task_waits_for_the_previous_commit() {
 /// `spawn-failed: refused: track-without-worktree`; the user's checkout is untouched.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_worktree_less_attached_track_refuses_workers() {
-    let w = world().await;
+    let w = borrowed_world(false).await;
     let fx = &w.fx;
-    sqlx::query("UPDATE tracks SET workspace_worktree_path = NULL WHERE id = ?1")
-        .bind(fx.track())
-        .execute(&fx.pool())
-        .await
-        .unwrap();
     let status = git(&fx.track_root, &["status", "--porcelain"]);
     let head = git(&fx.track_root, &["rev-parse", "HEAD"]);
 

@@ -133,8 +133,9 @@ async fn boot(start_shared: bool) -> Boot {
         )
         .await
         .unwrap();
-    let track = repo
-        .track_create(NewTrack {
+    let track = calm_server::test_seams::create_track_with_workspace_for_test(
+        sqlx_repo.pool(),
+        NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "worker-shared".into(),
@@ -144,17 +145,16 @@ async fn boot(start_shared: bool) -> Boot {
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
-        })
-        .await
-        .unwrap();
-    // The worker runs in the track worktree (#1830 S2).
-    calm_server::test_seams::attach_track_worktree_for_test(
-        sqlx_repo.pool(),
-        track.id.as_str(),
-        &repo_root,
+        },
+        &calm_server::db::sqlite::TrackWorkspacePlan::AttachedWithTrackWorktree(repo_root.clone()),
+        &calm_server::track_area_cache::TrackAreaCache::new(),
     )
     .await
     .unwrap();
+    // The worker runs in the track worktree (#1830 S2).
+    calm_server::test_seams::ensure_track_worktree_for_test(sqlx_repo.pool(), track.id.as_str())
+        .await
+        .unwrap();
     let planner_card = repo
         .card_create(NewCard {
             track_id: track.id.clone(),
@@ -573,8 +573,9 @@ async fn app_state_with_fake_worker_daemon() -> (AppState, Arc<SqlxRepo>, TrackI
         )
         .await
         .unwrap();
-    let track = repo
-        .track_create(NewTrack {
+    let track = calm_server::test_seams::create_track_with_workspace_for_test(
+        repo.pool(),
+        NewTrack {
             template_input: None,
             area_id: area.id,
             title: "worker recovery".into(),
@@ -584,17 +585,16 @@ async fn app_state_with_fake_worker_daemon() -> (AppState, Arc<SqlxRepo>, TrackI
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
-        })
-        .await
-        .unwrap();
-    // The worker runs in the track worktree (#1830 S2).
-    calm_server::test_seams::attach_track_worktree_for_test(
-        repo.pool(),
-        track.id.as_str(),
-        &repo_root,
+        },
+        &calm_server::db::sqlite::TrackWorkspacePlan::AttachedWithTrackWorktree(repo_root.clone()),
+        &calm_server::track_area_cache::TrackAreaCache::new(),
     )
     .await
     .unwrap();
+    // The worker runs in the track worktree (#1830 S2).
+    calm_server::test_seams::ensure_track_worktree_for_test(repo.pool(), track.id.as_str())
+        .await
+        .unwrap();
     let events = EventBus::new();
     let cache = CardRoleCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();

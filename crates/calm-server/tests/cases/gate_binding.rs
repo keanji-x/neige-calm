@@ -2209,19 +2209,19 @@ pub(super) struct FileWorld {
 }
 
 pub(super) async fn file_world() -> FileWorld {
-    use crate::mcp_track_report::boot_at;
     let tmp = tempfile::tempdir().expect("tempdir");
     let tmp_path = tmp.path().to_path_buf();
     let db_path = tmp_path.join("calm.db");
     let db_str = db_path.to_string_lossy().to_string();
     assert!(!db_str.contains("/.local/share/neige-calm"));
     let db_url = format!("sqlite://{db_str}?mode=rwc");
-    let fx = fixture_on(boot_at(&db_url).await, |tmp| {
+    let (boot, workspace) = crate::git_delivery::prepare_fixture(&db_url, false, |tmp| {
         let repo = tmp.join("repo");
         init_repo(&repo);
         repo
     })
     .await;
+    let fx = fixture_on(boot, workspace).await;
     fx.dispatcher.abort_event_listener_for_test();
     FileWorld {
         fx,

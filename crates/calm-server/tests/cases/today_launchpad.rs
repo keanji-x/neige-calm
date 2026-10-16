@@ -379,16 +379,28 @@ async fn launchpad_track_carries_an_unfrozen_managed_workspace_on_both_branches(
     assert_eq!(track["workspace"]["path"], track["cwd"], "dto={dto}");
     assert!(track["workspace"]["frozen_at"].is_null(), "dto={dto}");
 
-    // Branch 2 — legacy adoption. Scramble the row so the assertion cannot pass on leftovers from branch 1.
-    sqlx::query(
-        // The stamp is scrambled to NULL, not to 99: the freeze latch makes a frozen launchpad row un-repointable.
-        "UPDATE tracks SET purpose=NULL, workspace_path='/also-scrambled', \
-         workspace_kind='attached', workspace_frozen_at=NULL WHERE id=?1",
+    // Branch 2 — adoption re-declares an unfrozen selection through the same writer as creation.
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(b.repo.pool())
+        .await
+        .unwrap();
+    calm_server::db::sqlite::track_workspace_write_tx(
+        &mut tx,
+        &track_id,
+        &calm_server::model::TrackWorkspace {
+            kind: calm_server::model::TrackWorkspaceKind::Attached,
+            path: "/also-scrambled".into(),
+            frozen_at: None,
+            worktree: None,
+        },
     )
-    .bind(&track_id)
-    .execute(b.repo.pool())
     .await
     .unwrap();
+    sqlx::query("UPDATE tracks SET purpose=NULL WHERE id=?1")
+        .bind(&track_id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
 
     let (status, adopted) = ensure(b.app.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "body={adopted}");

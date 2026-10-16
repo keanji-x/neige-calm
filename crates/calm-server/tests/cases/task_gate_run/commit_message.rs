@@ -346,16 +346,12 @@ async fn noop_run_then_done_with_same_input_uses_only_one_run() {
 async fn foreign_base_message_never_controls_run_or_done() {
     for base_message in ["x".repeat(16_385), "foreign\u{1}message".to_string()] {
         for later_run in [false, true] {
-            let fx = fixture_on_with_adapters(
-                boot().await,
-                |tmp| {
-                    let repo = tmp.join("repo");
-                    init_repo(&repo);
-                    git(&repo, &["commit", "--amend", "-m", &base_message]);
-                    repo
-                },
-                |_| Vec::new(),
-            )
+            let fx = crate::git_delivery::fixture_with(|tmp| {
+                let repo = tmp.join("repo");
+                init_repo(&repo);
+                git(&repo, &["commit", "--amend", "-m", &base_message]);
+                repo
+            })
             .await;
             fx.dispatcher.abort_event_listener_for_test();
             let a = running(&fx, "foreign-base", json!([{"name":"ok", "cmd":"true"}])).await;

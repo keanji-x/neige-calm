@@ -1368,8 +1368,9 @@ async fn boot_fixture_with_delivery(delivery: bool) -> Fixture {
         )
         .await
         .expect("create area");
-    let track = repo
-        .track_create(NewTrack {
+    let track = calm_server::test_seams::create_track_with_workspace_for_test(
+        sqlx_repo.pool(),
+        NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "forge-template-e2e".into(),
@@ -1379,9 +1380,12 @@ async fn boot_fixture_with_delivery(delivery: bool) -> Fixture {
             plugin_scope: Some(PLUGIN_ID.into()),
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
-        })
-        .await
-        .expect("create track");
+        },
+        &calm_server::db::sqlite::TrackWorkspacePlan::AttachedWithTrackWorktree(track_cwd.clone()),
+        &track_area_cache,
+    )
+    .await
+    .expect("create track");
     repo.seed_track_area_cache(&track_area_cache)
         .await
         .expect("seed track/area cache");
@@ -1416,13 +1420,9 @@ async fn boot_fixture_with_delivery(delivery: bool) -> Fixture {
     .expect("create delivery report");
 
     // The worker's checkout is the track worktree (#1830 S2), made as the create route makes it.
-    calm_server::test_seams::attach_track_worktree_for_test(
-        sqlx_repo.pool(),
-        track.id.as_str(),
-        &track_cwd,
-    )
-    .await
-    .expect("make the track worktree");
+    calm_server::test_seams::ensure_track_worktree_for_test(sqlx_repo.pool(), track.id.as_str())
+        .await
+        .expect("make the track worktree");
 
     let plugin_host = boot_plugin_host(
         repo.clone(),

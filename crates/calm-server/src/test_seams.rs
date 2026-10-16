@@ -111,33 +111,43 @@ pub async fn clean_idle_closed_track_worktrees_for_test(
     .await
 }
 
-/// Give an attached track its #1830 track worktree the way the create route does: the path
-/// `track_worktree_path_for(checkout, id)` on the row (the create transaction's write), then the
-/// production `ensure_track_worktree` (the route's post-commit step: fetch the upstream, start
-/// `neige/track-<id>` where the checkout's HEAD / upstream says, exclude `.claude/worktrees/`).
-/// Returns the worktree path.
+/// Create a track with its initial workspace decision through the production transaction.
+/// Callers choose the plan before the freeze latch closes; no existing track is re-pointed.
+/// Track worktrees follow the route's post-commit ensure and kernel registration paths.
 #[cfg(any(test, feature = "fixtures"))]
-pub async fn attach_track_worktree_for_test(
+pub async fn create_track_with_workspace_for_test(
+    pool: &sqlx::SqlitePool,
+    params: crate::model::NewTrack,
+    plan: &crate::db::sqlite::TrackWorkspacePlan,
+    cache: &crate::track_area_cache::TrackAreaCache,
+) -> crate::error::Result<crate::model::Track> {
+    let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
+    let track =
+        crate::db::sqlite::track_create_tx(&mut tx, params, None, plan, None, cache).await?;
+    tx.commit().await?;
+    if track.workspace.worktree.is_some() {
+        ensure_track_worktree_for_test(pool, track.id.as_str()).await?;
+    }
+    Ok(track)
+}
+
+/// Finish an already-declared track worktree without changing its stored selection.
+#[cfg(any(test, feature = "fixtures"))]
+pub async fn ensure_track_worktree_for_test(
     pool: &sqlx::SqlitePool,
     track_id: &str,
-    checkout: &std::path::Path,
 ) -> crate::error::Result<std::path::PathBuf> {
-    let path = workspace::worktree::track_worktree_path_for(checkout, track_id);
-    let path_str = path.to_str().ok_or_else(|| {
-        crate::error::CalmError::Internal(format!("{} is not UTF-8", path.display()))
-    })?;
     let mut tx = crate::db::sqlite::begin_immediate_tx(pool).await?;
-    sqlx::query("UPDATE tracks SET workspace_worktree_path = ?1 WHERE id = ?2")
-        .bind(path_str)
-        .bind(track_id)
-        .execute(&mut *tx)
-        .await?;
     let track =
         crate::db::sqlite::track_get_tx(&mut tx, &crate::ids::TrackId::from(track_id.to_string()))
             .await?;
     tx.commit().await?;
+    let path = track.workspace.worktree.as_deref().ok_or_else(|| {
+        crate::error::CalmError::BadRequest("track creation did not declare a worktree".into())
+    })?;
     crate::workspace_service::track_worktree::ensure_track_worktree(&track).await?;
-    Ok(path)
+    crate::workspace_service::identity::adopt_for_task(pool, track_id).await?;
+    Ok(path.into())
 }
 
 /// Reach the production workspace-lease acquisition from an integration test.

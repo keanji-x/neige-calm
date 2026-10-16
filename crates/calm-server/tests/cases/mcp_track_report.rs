@@ -181,12 +181,17 @@ pub(crate) async fn boot() -> Boot {
 /// [`boot`] on an explicit sqlite URL (a file-backed database an out-of-process kernel can be
 /// launched against afterwards).
 pub(crate) async fn boot_at(db_url: &str) -> Boot {
-    boot_with_scope(db_url, None).await
+    boot_with_scope(
+        db_url,
+        None,
+        "",
+        calm_server::db::sqlite::TrackWorkspacePlan::AttachedFromCwd,
+    )
+    .await
 }
 
-pub(crate) async fn boot_development() -> Boot {
+async fn enable_development(boot: Boot) -> Boot {
     const ID: &str = "gitforge";
-    let boot = boot_with_scope("sqlite::memory:", Some(ID)).await;
     let host = Arc::new(calm_server::plugin_host::PluginHost::new_full(
         Arc::new(calm_server::plugin_host::PluginRegistry::empty().with_builtins()),
         boot.repo.clone(),
@@ -202,7 +207,26 @@ pub(crate) async fn boot_development() -> Boot {
     boot
 }
 
-async fn boot_with_scope(db_url: &str, plugin_scope: Option<&str>) -> Boot {
+pub(crate) async fn boot_with_workspace(
+    db_url: &str,
+    development: bool,
+    cwd: &str,
+    plan: calm_server::db::sqlite::TrackWorkspacePlan,
+) -> Boot {
+    let boot = boot_with_scope(db_url, development.then_some("gitforge"), cwd, plan).await;
+    if development {
+        enable_development(boot).await
+    } else {
+        boot
+    }
+}
+
+async fn boot_with_scope(
+    db_url: &str,
+    plugin_scope: Option<&str>,
+    cwd: &str,
+    plan: calm_server::db::sqlite::TrackWorkspacePlan,
+) -> Boot {
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open(db_url).await.expect("open sqlite"));
     let area = repo
         .area_create(
@@ -215,20 +239,24 @@ async fn boot_with_scope(db_url: &str, plugin_scope: Option<&str>) -> Boot {
         )
         .await
         .unwrap();
-    let track = repo
-        .track_create(NewTrack {
+    let track = calm_server::test_seams::create_track_with_workspace_for_test(
+        &repo.sqlite_pool().unwrap(),
+        NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "report track".into(),
             sort: None,
-            cwd: String::new(),
+            cwd: cwd.to_string(),
             template_id: None,
             plugin_scope: plugin_scope.map(str::to_string),
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
-        })
-        .await
-        .unwrap();
+        },
+        &plan,
+        &calm_server::track_area_cache::TrackAreaCache::new(),
+    )
+    .await
+    .unwrap();
     let planner_card = repo
         .card_create(NewCard {
             track_id: track.id.clone(),

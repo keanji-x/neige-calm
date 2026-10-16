@@ -99,8 +99,9 @@ async fn boot() -> Boot {
         )
         .await
         .unwrap();
-    let track = repo
-        .track_create(NewTrack {
+    let track = calm_server::test_seams::create_track_with_workspace_for_test(
+        sqlx_repo.pool(),
+        NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "worker-shared".into(),
@@ -110,14 +111,16 @@ async fn boot() -> Boot {
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
-        })
-        .await
-        .unwrap();
+        },
+        &calm_server::db::sqlite::TrackWorkspacePlan::AttachedWithTrackWorktree(repo_root.clone()),
+        &calm_server::track_area_cache::TrackAreaCache::new(),
+    )
+    .await
+    .unwrap();
     // The worker runs in the track worktree (#1830 S2).
-    calm_server::test_seams::attach_track_worktree_for_test(
+    calm_server::test_seams::ensure_track_worktree_for_test(
         &repo.sqlite_pool().unwrap(),
         track.id.as_str(),
-        &repo_root,
     )
     .await
     .unwrap();

@@ -292,17 +292,10 @@ async fn a_catch_up_without_a_done_attempt_is_refused() {
     );
     assert_eq!(head(&fx.worktree), o0);
 
+    let managed_world = crate::track_worker_cwd::managed_world().await;
+    let fx = &managed_world.fx;
     done_edit(fx, "work", TRACK_EDIT).await;
-    let managed = fx.workspace_root.join("managed");
-    sqlx::query(
-        "UPDATE tracks SET workspace_kind = 'managed', workspace_path = ?1, \
-         workspace_worktree_path = NULL WHERE id = ?2",
-    )
-    .bind(managed.to_str().unwrap())
-    .bind(fx.track())
-    .execute(&fx.pool())
-    .await
-    .unwrap();
+    let managed = fx.worktree.clone();
     declare_catch_up(fx, "catch-up-managed").await;
     let detail = failed_detail(fx, "catch-up-managed").await;
     assert!(

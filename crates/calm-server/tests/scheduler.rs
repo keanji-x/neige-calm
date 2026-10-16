@@ -92,6 +92,10 @@ struct Boot {
 }
 
 async fn boot() -> Boot {
+    boot_at_workspace("/neige-fixture-workspace").await
+}
+
+async fn boot_at_workspace(cwd: &str) -> Boot {
     let sqlx_repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
             .await
@@ -116,7 +120,7 @@ async fn boot() -> Boot {
             title: "scheduler-test".into(),
             sort: None,
             // A terminal worker with no cwd on its task row lands in the track's workspace, and an empty one is a hard error.
-            cwd: "/neige-fixture-workspace".into(),
+            cwd: cwd.to_string(),
             template_id: None,
             plugin_scope: None,
             attach_folder: false,
@@ -1608,18 +1612,8 @@ async fn spawn_failure_marks_failed_and_emits_kernel_task_failed() {
 /// the prepare refusal is the reason the task row and the wire carry (#1830 S2 D1).
 #[tokio::test]
 async fn spawn_failure_status_detail_carries_the_real_reason() {
-    let boot = boot().await;
     let non_git = tempfile::tempdir().expect("tempdir");
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
-    // Written directly: the production writer refuses a frozen row and has no un-freeze path by design.
-    sqlx::query(
-        "UPDATE tracks SET workspace_kind='attached', workspace_path=?1, workspace_frozen_at=1 WHERE id=?2",
-    )
-    .bind(non_git.path().to_str().unwrap())
-    .bind(boot.track_id.as_str())
-    .execute(&pool)
-    .await
-    .expect("set track workspace");
+    let boot = boot_at_workspace(non_git.path().to_str().unwrap()).await;
 
     let task = plan_task(&boot.track_id, "nogit", TaskKind::Codex, &[]);
     let task_id = task.id.clone();
@@ -7967,11 +7961,15 @@ async fn acceptance_18_deleted_flip_rechecks_the_deletion_after_its_snapshot() {
         .await
         .unwrap();
     assert_eq!(observed, None, "fixture must first observe the deletion");
+    // Only the domain ID is restored to make the stale-deletion counterexample.
+    // Its complete workspace decision and resource binding still use the production writer.
+    let workspace =
+        calm_server::db::sqlite::track_workspace_read_tx(&mut tx, boot.track_id.as_str())
+            .await
+            .unwrap();
     sqlx::query(
-        // This clones a track row, so it must clone the whole workspace, not just its `cwd` projection.
-        "INSERT INTO tracks(id,area_id,title,sort,workspace_kind,workspace_path,workspace_frozen_at,created_at,updated_at) \
-         SELECT ?1,area_id,'replacement child',sort+0.25,workspace_kind,workspace_path,workspace_frozen_at,?2,?2 \
-           FROM tracks WHERE id=?3",
+        "INSERT INTO tracks(id,area_id,title,sort,created_at,updated_at) \
+         SELECT ?1,area_id,'replacement child',sort+0.25,?2,?2 FROM tracks WHERE id=?3",
     )
     .bind(&child)
     .bind(now_ms())
@@ -7979,6 +7977,9 @@ async fn acceptance_18_deleted_flip_rechecks_the_deletion_after_its_snapshot() {
     .execute(&mut *tx)
     .await
     .unwrap();
+    calm_server::db::sqlite::track_workspace_write_tx(&mut tx, &child, &workspace)
+        .await
+        .unwrap();
 
     let changed = calm_server::scheduler::guarded_child_deleted_flip_for_test(
         &mut tx,
@@ -8000,30 +8001,17 @@ async fn acceptance_18_deleted_flip_rechecks_the_deletion_after_its_snapshot() {
     );
 }
 
-/// Give this boot's track a REAL attached workspace directory; `boot()` mints its track with an empty `cwd`.
-async fn attach_boot_track_to_a_real_directory(boot: &Boot) -> (tempfile::TempDir, String) {
+async fn boot_in_real_directory() -> (Boot, tempfile::TempDir, String) {
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().to_string_lossy().into_owned();
-    let pool = boot.repo.sqlite_pool().unwrap();
-    // Written directly: the freeze latch refuses a frozen row, and `boot()`'s track may already be frozen.
-    sqlx::query(
-        "UPDATE tracks SET workspace_kind='attached', workspace_path=?1, workspace_frozen_at=?2 WHERE id=?3",
-    )
-    .bind(&path)
-    .bind(now_ms())
-    .bind(boot.track_id.as_str())
-    .execute(&pool)
-    .await
-    .unwrap();
-    (dir, path)
+    (boot_at_workspace(&path).await, dir, path)
 }
 
-/// The bootstrap payload carries `cwd`, and the runtime treats "same key, different payload hash" as a permanent
-/// conflict, so the key must follow the workspace path or the first re-drive after a re-point fails forever.
+/// A child workspace freezes at creation; a refused re-point preserves the resource binding
+/// and historical operation result, and re-driving the task reuses its original bootstrap.
 #[tokio::test]
-async fn child_bootstrap_key_follows_a_repointed_workspace_path() {
-    let boot = boot().await;
-    let (_attached_dir, attached_path) = attach_boot_track_to_a_real_directory(&boot).await;
+async fn frozen_child_refuses_repoint_and_reuses_its_bootstrap() {
+    let (boot, _attached_dir, attached_path) = boot_in_real_directory().await;
     let mut task = plan_task(&boot.track_id, "repaired-bootstrap", TaskKind::Codex, &[]);
     task.spawn = "sub-track".into();
     task.status = TaskStatus::Dispatched;
@@ -8050,52 +8038,65 @@ async fn child_bootstrap_key_follows_a_repointed_workspace_path() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    let bootstrap_key = |cwd: &str| {
-        let mut hasher = Sha256::new();
-        hasher.update(cwd.as_bytes());
-        format!(
-            "child-track:{child_id}:bootstrap:{}",
-            &hex::encode(hasher.finalize())[..16]
+    let before_track = boot.repo.track_get(&child_id).await.unwrap().unwrap();
+    assert_eq!(before_track.workspace.path, attached_path);
+    assert!(before_track.workspace.frozen_at.is_some());
+    let binding = |pool: sqlx::SqlitePool, id: String| async move {
+        sqlx::query_as::<_, (String, i64, String, String, String, Option<i64>)>(
+            "SELECT workspace_id,admission_version,selected_path,ownership,cwd,frozen_at_ms \
+             FROM track_workspace_bindings WHERE track_id=?1",
         )
-    };
-    // The path the first bootstrap ran on: this fixture's track is attached, so the child inherited it.
-    let child_cwd: String = sqlx::query_scalar("SELECT workspace_path FROM tracks WHERE id=?1")
-        .bind(&child_id)
+        .bind(id)
         .fetch_one(&pool)
         .await
+        .unwrap()
+    };
+    let before_binding = binding(pool.clone(), child_id.clone()).await;
+    let before_output: String =
+        sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE kind='child-track'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let mut proposed = before_track.workspace.clone();
+    proposed.kind = calm_server::model::TrackWorkspaceKind::Managed;
+    proposed.path = child_track_workspace_root()
+        .join("replacement")
+        .display()
+        .to_string();
+    proposed.worktree = None;
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        .await
         .unwrap();
-    assert_eq!(child_cwd, attached_path);
-
-    // Re-point the child's workspace, and with it the stored `child-track` result the scheduler reads its cwd from.
-    // The already-recorded `planner-harness-start` stays behind on the OLD path; the re-drive must get past it.
-    let repointed_cwd = workspace::materialize::managed_workspace_path(
-        &child_track_workspace_root(),
-        boot.area_id.as_str(),
-        &child_id,
-    )
-    .to_string_lossy()
-    .into_owned();
-    assert_ne!(repointed_cwd, child_cwd);
-    let mut tx = pool.begin().await.unwrap();
-    // Child tracks are frozen at creation and the production writer refuses a frozen row, so the fixture writes directly.
-    sqlx::query(
-        "UPDATE tracks SET workspace_kind='managed', workspace_path=?1, workspace_frozen_at=?2 WHERE id=?3",
-    )
-    .bind(&repointed_cwd)
-    .bind(now_ms())
-    .bind(&child_id)
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-    sqlx::query(
-        "UPDATE operations SET tx_output_json = \
-         json_set(tx_output_json,'$.result.cwd',?1,'$.data.cwd',?1) WHERE kind='child-track'",
-    )
-    .bind(&repointed_cwd)
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let error = calm_server::db::sqlite::track_workspace_write_tx(&mut tx, &child_id, &proposed)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, calm_server::error::CalmError::Conflict(_)),
+        "{error}"
+    );
+    tx.rollback().await.unwrap();
+    assert_eq!(
+        boot.repo
+            .track_get(&child_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .workspace,
+        before_track.workspace
+    );
+    assert_eq!(
+        binding(pool.clone(), child_id.clone()).await,
+        before_binding
+    );
+    let after_output: String =
+        sqlx::query_scalar("SELECT tx_output_json FROM operations WHERE kind='child-track'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        after_output, before_output,
+        "rejected re-point must preserve historical bytes"
+    );
 
     sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
         .bind(&task_id)
@@ -8107,29 +8108,18 @@ async fn child_bootstrap_key_follows_a_repointed_workspace_path() {
     assert_eq!(
         row.status,
         TaskStatus::Running,
-        "re-driving a re-pointed child must not fail the parent task: {:?}",
+        "re-driving the frozen child must reuse its bootstrap: {:?}",
         row.status_detail
     );
     assert_eq!(operation_count(&boot, "child-track").await, 1);
-    assert_eq!(
-        operation_count(&boot, "planner-harness-start").await,
-        2,
-        "the new path must mint a second bootstrap, not collide with the old key"
-    );
-    let keys: Vec<String> = sqlx::query_scalar(
-        "SELECT idempotency_key FROM operations WHERE kind='planner-harness-start' ORDER BY created_at_ms",
-    )
-    .fetch_all(&pool)
-    .await
-    .unwrap();
-    assert_eq!(keys[0], bootstrap_key(&child_cwd));
-    assert_eq!(keys[1], bootstrap_key(&repointed_cwd));
+    assert_eq!(operation_count(&boot, "planner-harness-start").await, 1);
+    assert_eq!(minted.load(Ordering::SeqCst), 1);
+    assert_eq!(binding(pool.clone(), child_id).await, before_binding);
 }
 
 #[tokio::test]
 async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_redrive() {
-    let boot = boot().await;
-    let (_attached_dir, attached_path) = attach_boot_track_to_a_real_directory(&boot).await;
+    let (boot, _attached_dir, attached_path) = boot_in_real_directory().await;
     let mut task = plan_task(&boot.track_id, "bootstrap", TaskKind::Codex, &[]);
     task.spawn = "sub-track".into();
     task.status = TaskStatus::Dispatched;

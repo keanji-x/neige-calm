@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::mcp_track_report::{Boot, boot, call_tool, planner_identity, worker_identity};
+use crate::mcp_track_report::{Boot, call_tool, planner_identity, worker_identity};
 use crate::task_recovery::{current, declare};
 use calm_server::db::sqlite::{
     card_create_with_id_tx, session_set_handle_state_tx, session_start_runtime_tx,
@@ -193,36 +193,30 @@ pub(super) async fn fixture() -> Fx {
     .await
 }
 
-/// `track_root` builds the Track workspace under the temp dir and returns it.
-pub(super) async fn fixture_with(track_root: impl FnOnce(&Path) -> PathBuf) -> Fx {
-    fixture_on(boot().await, track_root).await
+/// Filesystem fixture prepared before the track's initial workspace plan is committed.
+pub(super) struct FixtureWorkspace {
+    tmp: tempfile::TempDir,
+    track_root: PathBuf,
+    workspace_root: PathBuf,
 }
 
-/// [`fixture_with`] over an existing [`Boot`] (a file-backed one, for a test that launches the
-/// kernel binary against the same database afterwards).
-pub(super) async fn fixture_on(boot: Boot, track_root: impl FnOnce(&Path) -> PathBuf) -> Fx {
-    fixture_on_with_adapters(boot, track_root, |_| Vec::new()).await
-}
-
-/// [`fixture_on`] with further adapters in the runtime (a real worker adapter, for a test that
-/// drives a worker operation's `prepare_tx`); `extra` sees the Boot before the runtime exists.
-pub(super) async fn fixture_on_with_adapters(
-    boot: Boot,
+pub(super) async fn prepare_fixture(
+    db_url: &str,
+    development: bool,
     track_root: impl FnOnce(&Path) -> PathBuf,
-    extra: impl FnOnce(&Boot) -> Vec<Arc<dyn ProviderAdapter>>,
-) -> Fx {
-    fixture_on_with_runtime(boot, track_root, None, |boot, _| extra(boot)).await
+) -> (Boot, FixtureWorkspace) {
+    prepare_fixture_with_plan(db_url, development, track_root, |repo, _| {
+        calm_server::db::sqlite::TrackWorkspacePlan::AttachedWithTrackWorktree(repo.into())
+    })
+    .await
 }
 
-/// [`fixture_on_with_adapters`] whose runtime also reaches a shared Codex daemon (the one a
-/// worker adapter in `extra` spawns on, so the kernel's interrupt of a timed-out or canceled
-/// worker reaches it too); `extra` also sees the managed workspace root.
-pub(super) async fn fixture_on_with_runtime(
-    boot: Boot,
+pub(super) async fn prepare_fixture_with_plan(
+    db_url: &str,
+    development: bool,
     track_root: impl FnOnce(&Path) -> PathBuf,
-    shared_codex: Option<Arc<SharedCodexAppServer>>,
-    extra: impl FnOnce(&Boot, &Path) -> Vec<Arc<dyn ProviderAdapter>>,
-) -> Fx {
+    plan: impl FnOnce(&Path, &Path) -> calm_server::db::sqlite::TrackWorkspacePlan,
+) -> (Boot, FixtureWorkspace) {
     let tmp = tempfile::Builder::new()
         .prefix("neige-git-delivery-")
         .tempdir()
@@ -230,14 +224,65 @@ pub(super) async fn fixture_on_with_runtime(
     let track_root = track_root(tmp.path());
     let workspace_root = tmp.path().join("workspaces");
     std::fs::create_dir_all(&workspace_root).unwrap();
+    let boot = crate::mcp_track_report::boot_with_workspace(
+        db_url,
+        development,
+        track_root.to_str().unwrap(),
+        plan(&track_root, &workspace_root),
+    )
+    .await;
+    (
+        boot,
+        FixtureWorkspace {
+            tmp,
+            track_root,
+            workspace_root,
+        },
+    )
+}
+
+/// `track_root` builds the Track workspace under the temp dir and returns it.
+pub(super) async fn fixture_with(track_root: impl FnOnce(&Path) -> PathBuf) -> Fx {
+    let (boot, workspace) = prepare_fixture("sqlite::memory:", false, track_root).await;
+    fixture_on(boot, workspace).await
+}
+
+pub(super) async fn fixture_on(boot: Boot, workspace: FixtureWorkspace) -> Fx {
+    fixture_on_with_adapters(boot, workspace, |_| Vec::new()).await
+}
+
+/// [`fixture_on`] with further adapters in the runtime (a real worker adapter, for a test that
+/// drives a worker operation's `prepare_tx`); `extra` sees the Boot before the runtime exists.
+pub(super) async fn fixture_on_with_adapters(
+    boot: Boot,
+    workspace: FixtureWorkspace,
+    extra: impl FnOnce(&Boot) -> Vec<Arc<dyn ProviderAdapter>>,
+) -> Fx {
+    fixture_on_with_runtime(boot, workspace, None, |boot, _| extra(boot)).await
+}
+
+/// [`fixture_on_with_adapters`] whose runtime also reaches a shared Codex daemon (the one a
+/// worker adapter in `extra` spawns on, so the kernel's interrupt of a timed-out or canceled
+/// worker reaches it too); `extra` also sees the managed workspace root.
+pub(super) async fn fixture_on_with_runtime(
+    boot: Boot,
+    workspace: FixtureWorkspace,
+    shared_codex: Option<Arc<SharedCodexAppServer>>,
+    extra: impl FnOnce(&Boot, &Path) -> Vec<Arc<dyn ProviderAdapter>>,
+) -> Fx {
+    let FixtureWorkspace {
+        tmp,
+        track_root,
+        workspace_root,
+    } = workspace;
     let pool = boot.repo.sqlite_pool().unwrap();
-    sqlx::query("UPDATE tracks SET workspace_path = ?1 WHERE id = ?2")
-        .bind(track_root.to_str().unwrap())
-        .bind(boot.track_id.as_str())
-        .execute(&pool)
+    let track = boot
+        .repo
+        .track_get(boot.track_id.as_str())
         .await
+        .unwrap()
         .unwrap();
-    let worktree = attach_track_worktree(&pool, boot.track_id.as_str(), &track_root).await;
+    let worktree = PathBuf::from(track.workspace.agent_cwd());
 
     let events = boot.ctx.events.clone();
     let operation_repo = Arc::new(SqlxOperationRepo::new(pool.clone()));
@@ -294,18 +339,6 @@ pub(super) async fn fixture_on_with_runtime(
         workspace_root,
         _tmp: tmp,
     }
-}
-
-/// Give the attached Track its track worktree as the create route does (#1830 S1, through the
-/// production `ensure_track_worktree`). Returns it.
-pub(super) async fn attach_track_worktree(
-    pool: &sqlx::SqlitePool,
-    track_id: &str,
-    checkout: &Path,
-) -> PathBuf {
-    calm_server::test_seams::attach_track_worktree_for_test(pool, track_id, checkout)
-        .await
-        .unwrap()
 }
 
 /// The tool-side scheduler triggers, forwarded to whichever scheduler `poke_target` names now.

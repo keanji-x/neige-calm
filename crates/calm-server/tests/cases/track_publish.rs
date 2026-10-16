@@ -316,11 +316,11 @@ async fn publish_refuses_without_a_worktree_or_an_upstream() {
         )
     );
 
-    sqlx::query("UPDATE tracks SET workspace_worktree_path = NULL WHERE id = ?1")
-        .bind(fx.track())
-        .execute(&fx.pool())
-        .await
-        .unwrap();
+    assert_eq!(remote_branch(fx), None);
+    assert_eq!(publish_op_count(fx).await, 0);
+
+    let borrowed = crate::track_worker_cwd::borrowed_world(true).await;
+    let fx = &borrowed.fx;
     let message = refused(publish(fx, "no-worktree").await);
     assert!(
         message.starts_with("refused: publish-needs-track-worktree: "),

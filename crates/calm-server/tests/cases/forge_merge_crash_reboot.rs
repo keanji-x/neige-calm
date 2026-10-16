@@ -531,8 +531,9 @@ async fn seed_world(repo: &Arc<SqlxRepo>, track_cwd: &Path) -> Seeded {
         )
         .await
         .expect("create area");
-    let track = as_repo
-        .track_create(NewTrack {
+    let track = calm_server::test_seams::create_track_with_workspace_for_test(
+        repo.pool(),
+        NewTrack {
             template_input: None,
             area_id: area.id.clone(),
             title: "merge-crash-e2".into(),
@@ -542,21 +543,20 @@ async fn seed_world(repo: &Arc<SqlxRepo>, track_cwd: &Path) -> Seeded {
             plugin_scope: Some(PLUGIN_ID.into()),
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
-        })
-        .await
-        .expect("create track");
+        },
+        &calm_server::db::sqlite::TrackWorkspacePlan::AttachedWithTrackWorktree(track_cwd.into()),
+        &calm_server::track_area_cache::TrackAreaCache::new(),
+    )
+    .await
+    .expect("create track");
 
     let card_role_cache = CardRoleCache::new();
     let card_id = calm_server::model::new_id();
     let runtime_id = calm_server::model::new_id();
     let lease_abs = workspace::worktree::track_worktree_path_for(track_cwd, track.id.as_str());
-    calm_server::test_seams::attach_track_worktree_for_test(
-        repo.pool(),
-        track.id.as_str(),
-        track_cwd,
-    )
-    .await
-    .unwrap();
+    calm_server::test_seams::ensure_track_worktree_for_test(repo.pool(), track.id.as_str())
+        .await
+        .unwrap();
 
     let mut tx = repo.pool().begin().await.expect("begin card tx");
     let (_card, _term, mcp_token) = card_with_codex_create_tx(
