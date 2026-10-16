@@ -9,6 +9,8 @@ import type { CardEntry } from '../../systems/cards/public.js';
 import { createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 import { ThemeProvider } from '../theme/public.tsx';
+import { RecentFiles } from '../../features/report/recent-files/public.tsx';
+import { renderPage } from '../../features/track/page/test-fixtures.tsx';
 import '../../styles/entry.css';
 
 afterEach(() => { cleanup(); document.getElementById('root')?.remove(); });
@@ -101,4 +103,15 @@ it('resumes independent report and grid positions through real sidebar navigatio
   await settle();
   expect(board().scrollTop).toBeGreaterThan(240);
 
+});
+
+it('shows a visible icon beside Recent files in the desktop panel', async () => {
+  await page.viewport(1280, 900);
+  renderPage({ recentFiles: <RecentFiles paths={['README.md']} onOpen={() => undefined} /> });
+  const heading = browserPage.getByRole('heading', { name: 'Recent files', exact: true }).element();
+  const icon = heading.querySelector('svg');
+  expect(icon).not.toBeNull();
+  expect(icon!.getAttribute('aria-hidden')).toBe('true');
+  expect(icon!.getBoundingClientRect().width).toBeGreaterThan(0);
+  expect(icon!.getBoundingClientRect().height).toBeGreaterThan(0);
 });
