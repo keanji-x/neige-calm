@@ -223,47 +223,71 @@ capability, not a client-supplied resource path. S2a worktree registration opens
 the root and verifies its directory identity; later namespace registration is
 not smuggled in through arbitrary PID/path fields.
 
+Separate the stable process alias from an execution incarnation. Existing callers
+may keep their terminal-based proc_id; each new execution has a kernel-owned,
+persisted ExecutionId created before its launch intent. The ticket and immutable
+execution receipt bind that ExecutionId. The global alias slot holds
+`(proc_id, current_execution_id, slot_version, state)`; the slot is not the
+historical receipt. No terminal/provider identity special case is needed.
+
 The supervisor holds one per-resource executor gate across identity validation,
 ticket lookup/consumption, actual pipe/PTY fork and process registration. Revoke
-uses the same gate. Before fork it also atomically reserves the globally unique
-proc_id in the existing registry, recording the complete execution identity.
-The registry contains Reserved as well as Spawned entries. A different resource
-or ExternalDir racing for the same proc_id sees that reservation and is refused;
-an exact retry inspects/waits for its original receipt without another fork.
-Reservation and its journal identity are durable before fork. Startup rebuilds
-the reservation index before accepting requests; ambiguous duplicates require
-recovery. The global registry guard is short-lived, never spans fork/IO, and is
-acquired only after the resource/ExternalDir executor gate; no path holds it
-while acquiring another executor gate. Concurrent connections do not create
-independent gates or overwrite a reserved entry. Journal transitions are:
+uses the same gate. Before fork it atomically reserves the globally unique alias
+slot for the new ExecutionId in the existing registry. The registry contains
+Reserved, Live and Drained slots. A different resource or ExternalDir racing for
+an occupied alias is refused; an exact ticket retry observes its own immutable
+execution receipt without another fork. Reservation and journal identity are
+durable before fork. Startup rebuilds the alias index before accepting requests;
+ambiguous ownership requires recovery.
+
+The global registry guard is short-lived, never spans fork/IO, and is acquired
+only after the resource/ExternalDir executor gate. No path holds it while
+acquiring another executor gate. Concurrent connections cannot overwrite a
+Reserved/Live slot. Per-ExecutionId journal transitions are:
 
 | State | Allowed next state / evidence |
 |---|---|
 | Prepared | Revoke persists Revoked, or launch persists Forking before calling fork |
 | Revoked | Terminal no-fork receipt; delayed launch is refused |
 | Forking | Definite syscall failure persists NoChild; successful fork and verified process registration persist Spawned |
-| Spawned | Receipt includes resource, binding/version, generation, epoch, operation, specification digest, PID/start-time/nonce and executor identity |
-| NoChild | Terminal receipt with positive creation-failure evidence |
-| Unknown | Blocks quiescence until execution evidence resolves it; never treated as Revoked/NoChild |
+| Spawned | Receipt includes ExecutionId, alias/version, resource, binding/version, generation, epoch, operation/specification digest, PID/start-time/nonce and executor identity |
+| Exited | Positive leader-exit evidence; descendants and unresolved startup may still occupy the execution |
+| Drained | Positive backend-scoped evidence that this execution and its covered descendants can no longer act; its alias slot may be handed off |
+| NoChild | Terminal receipt with positive creation-failure evidence; its alias slot may be handed off |
+| Unknown | Blocks quiescence and alias handoff until evidence resolves it; never treated as Drained/NoChild |
 
-Journal state and its parent directory are fsynced before acknowledging the
-transition. A revoke ACK is issued only after a durable Revoked/NoChild receipt,
-or returns the identified Spawned receipt for the kernel to drain. Forking,
-lost executor state or an interrupted registration returns Unknown. If a fork
-wedges while holding the gate, revoke stays pending/Busy rather than succeeding
-on a timeout. No new generation opens before these facts are reconciled.
+Journal state and parent directory are fsynced before acknowledging a transition.
+A revoke ACK is issued only after durable Revoked/NoChild/Drained evidence, or
+returns the identified Spawned/Exited execution for the kernel to drain.
+Forking, lost executor state or interrupted registration returns Unknown. A
+wedged fork keeps revoke pending/Busy; timeout is not positive drain evidence.
+No new resource generation opens before outstanding executions reconcile.
 
-The existing proc-ID fast path moves inside this gate and checks the complete
-registered execution identity. An exact retry returns the original ticket's
-receipt and never forks again. A reused proc_id with a different resource,
-binding/version, generation, epoch, operation or specification is refused. Lost
-fork replies recover by inspecting that ticket; they do not create a fresh
-ticket. The original intent remains occupied until reconciled.
+The fast path validates the complete ExecutionId and original ticket identity.
+An exact retry returns that execution's receipt, even if its stable alias now
+names a newer execution; it cannot touch the current alias slot or fork again.
+A mismatched resource, binding/version, generation, epoch, operation or specification for
+that same ExecutionId is refused. A new authorized execution may use the same
+stable alias only through an explicit handoff intent naming the previous
+ExecutionId and expected slot version. Under the executor gate and atomic alias
+CAS, the previous execution must be positively Drained, Revoked or NoChild;
+Exited alone and Unknown refuse handoff. The handoff reserves a new slot version
+for the new ExecutionId before its fork. Failure/reply loss inspects the same
+ExecutionId/intent; it never invents another execution. This is the generic path
+for normal terminal restart as well as worker/provider restart.
 
-Attach/Probe use an authorized process capability bound to the same receipt;
+Historical terminal execution receipts/ticket tombstones retain dedup identity,
+not ownership of the current alias or physical workspace storage. Active journal
+state may compact to a terminal receipt after the kernel durably acknowledges
+that exact execution result; it cannot discard the no-repeat-fork decision.
+Validate ordinary same-terminal restart after drain, lost restart replies, old
+tickets arriving after handoff, and concurrent cross-resource alias competition.
+
+Attach/Probe use a capability bound to the ExecutionId and receipt;
 they cannot adopt an old process by proc_id alone. Read-only observation of a
 legacy process is a distinct artifact capability and cannot authorize stdin or
-new work. WriteStdin is an execution action and rechecks current admission.
+new work. WriteStdin rechecks current admission and the exact ExecutionId; an
+old observation/connection cannot acquire a newer incarnation's stdin authority.
 Known existing PTYs may be explicitly resumed only by a recoverable kernel op
 that verifies their original process identity and unchanged binding/source
 epoch, then advances the executor registration. Unknown PTYs keep the resource
