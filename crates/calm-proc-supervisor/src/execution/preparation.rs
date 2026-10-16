@@ -54,12 +54,22 @@ impl Executor {
             !self.closing.load(std::sync::atomic::Ordering::SeqCst),
             "executor admission closed"
         );
-        if let Ok(existing) = self.record(&request.identity.execution_id) {
+        let existing = self
+            .records
+            .lock()
+            .map_err(poison)?
+            .get(&request.identity.execution_id)
+            .cloned();
+        if let Some(existing) = &existing {
             anyhow::ensure!(
                 existing.request == request,
                 "execution identity reused with different immutable input"
             );
-            return Ok(reply(&existing));
+            // Terminal/historical exact retries return their original facts without recreating
+            // source authority. A still-Prepared retry must satisfy today's source qualification.
+            if !matches!(existing.phase, Phase::Prepared) {
+                return Ok(reply(existing));
+            }
         }
         anyhow::ensure!(
             request.identity.executor_boot == self.boot,
@@ -84,7 +94,11 @@ impl Executor {
                     && !value.contains('\0')),
             "invalid explicit execution environment"
         );
-        self.resolve(&request.identity, true)?;
+        let root = self.resolve(&request.identity, true)?;
+        let _cwd = root.launch_cwd(scope_cwd(&request.identity.scope))?;
+        if let Some(existing) = existing {
+            return Ok(reply(&existing));
+        }
         // Immutable scope equality makes exact retries share the same resource gate.
         // The global reservation is released before journal IO, and survives failed persistence.
         self.preparations.reserve(&request)?;

@@ -1,7 +1,7 @@
 use calm_session::control::execution::*;
 use std::{fs::File, os::unix::fs::MetadataExt};
 use workspace::{
-    execution::objects::{HeldSourceObjects, ObjectLayout},
+    execution::objects::{HeldSourceObjects, ObjectLayout, QualifiedCwd},
     identity::WorkspaceCwd,
 };
 
@@ -54,7 +54,35 @@ impl RegisteredRoot {
         Ok(())
     }
     /// Resolve and retain each component beneath the actual SCM_RIGHTS root; no later path chdir.
-    pub fn cwd(&self, cwd: &WorkspaceCwd) -> anyhow::Result<File> {
-        Ok(self.objects.open_cwd(cwd)?)
+    pub fn launch_cwd(&self, cwd: &WorkspaceCwd) -> anyhow::Result<LaunchCwd<'_>> {
+        match self.registration {
+            ExecutionRegistration::Worktree { .. } => Ok(LaunchCwd::Worktree(
+                self.objects.qualify_local()?.open_cwd(cwd)?,
+            )),
+            // ExternalDir has no canonical workspace/source proof. Keep its explicit FD contract;
+            // callers needing a stronger alias/identity action must qualify that action separately.
+            ExecutionRegistration::ExternalDir { .. } => {
+                Ok(LaunchCwd::External(self.objects.open_cwd(cwd)?))
+            }
+        }
+    }
+}
+
+pub(super) enum LaunchCwd<'lease> {
+    Worktree(QualifiedCwd<'lease>),
+    External(File),
+}
+impl LaunchCwd<'_> {
+    pub fn directory(&self) -> &File {
+        match self {
+            Self::Worktree(cwd) => cwd.directory(),
+            Self::External(file) => file,
+        }
+    }
+    pub fn revalidate(&self) -> anyhow::Result<()> {
+        if let Self::Worktree(cwd) = self {
+            cwd.revalidate()?;
+        }
+        Ok(())
     }
 }

@@ -195,6 +195,9 @@ pub enum ExecutionReply {
         reason: String,
     },
     DirectoryRelation(DirectoryRelationReport),
+    ObjectQualificationFailed {
+        failure: workspace::execution::objects::ObjectQualificationFailure,
+    },
 }
 
 /// Explicit worktree compatibility, qualified by the released v2 Probe contract or v3 handshake.

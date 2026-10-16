@@ -220,7 +220,7 @@ impl Executor {
         }
         match self.dispatch_authorized(request).await {
             Ok(reply) => reply,
-            Err(error) => refused(&error.to_string()),
+            Err(error) => qualification_or_refusal(&error),
         }
     }
 
@@ -352,7 +352,7 @@ impl Executor {
             "executor boot changed"
         );
         let root = self.resolve(&record.request.identity, true)?;
-        let cwd = root.cwd(scope_cwd(&record.request.identity.scope))?;
+        let cwd = root.launch_cwd(scope_cwd(&record.request.identity.scope))?;
         let previous_state = record
             .request
             .handoff
@@ -404,7 +404,7 @@ impl Executor {
             slot_version: version,
         };
         self.persist(record.clone())?;
-        if let Err(error) = root.validate() {
+        if let Err(error) = root.validate().and_then(|()| cwd.revalidate()) {
             record.phase = Phase::NoChild {
                 slot_version: version,
                 reason: format!("root identity failed before fork: {error}"),
@@ -420,7 +420,7 @@ impl Executor {
         };
         let result = process::spawn(
             &self.helper_image,
-            &cwd,
+            cwd.directory(),
             &record.request.specification,
             context,
         );
@@ -741,6 +741,14 @@ fn reply(record: &Journal) -> ExecutionReply {
 fn refused(reason: &str) -> ExecutionReply {
     ExecutionReply::Refused {
         reason: reason.into(),
+    }
+}
+fn qualification_or_refusal(error: &anyhow::Error) -> ExecutionReply {
+    match error.downcast_ref::<workspace::execution::objects::ObjectQualificationFailure>() {
+        Some(failure) => ExecutionReply::ObjectQualificationFailed {
+            failure: failure.clone(),
+        },
+        None => refused(&error.to_string()),
     }
 }
 fn poison<T>(_: std::sync::PoisonError<T>) -> anyhow::Error {

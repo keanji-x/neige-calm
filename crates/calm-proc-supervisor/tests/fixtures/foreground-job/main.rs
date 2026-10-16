@@ -1,5 +1,7 @@
 #[cfg(target_os = "linux")]
 mod bind_alias;
+#[cfg(target_os = "linux")]
+mod qualification_probe;
 
 use std::io::Write;
 
@@ -36,6 +38,23 @@ fn main() {
                 std::path::Path::new(&arguments[3]),
             )
             .expect("controlled bind alias capability probe");
+            return;
+        }
+        if arguments
+            .get(1)
+            .is_some_and(|argument| argument == "--probe-object-qualification")
+        {
+            assert_eq!(
+                arguments.len(),
+                5,
+                "expected owned root, source and actual executor helper"
+            );
+            qualification_probe::run(
+                std::path::Path::new(&arguments[2]),
+                std::path::Path::new(&arguments[3]),
+                std::path::Path::new(&arguments[4]),
+            )
+            .expect("controlled object qualification probe");
             return;
         }
     }

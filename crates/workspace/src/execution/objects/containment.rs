@@ -1,6 +1,8 @@
 //! Positive current-directory evidence only. Failed lookup never proves disjointness.
 use super::{
-    DirectoryPairFailure, HeldRootKey, HeldSourceObjects, ObjectRole, current_directory_pair, fact,
+    DirectoryPairFailure, HeldRootKey, HeldSourceObjects, ObjectQualificationFailure,
+    ObjectQualificationUnknown, ObjectQualificationUnsupported, ObjectRole, current_directory_pair,
+    fact,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -36,6 +38,7 @@ impl<'ancestor, 'subject> PositiveContainment<'ancestor, 'subject> {
 
 #[derive(Debug)]
 pub enum ContainmentUnknown {
+    Qualification(ObjectQualificationUnknown),
     ObjectMetadata(io::Error),
     DetachedDirectory,
     NamespaceChanged,
@@ -45,6 +48,7 @@ pub enum ContainmentUnknown {
 }
 #[derive(Debug)]
 pub enum ContainmentUnsupported {
+    Qualification(ObjectQualificationUnsupported),
     Platform,
     DifferentMount,
     Kernel(io::Error),
@@ -64,6 +68,22 @@ impl HeldSourceObjects {
     ) -> DirectoryContainment<'ancestor, 'subject> {
         if !cfg!(target_os = "linux") {
             return DirectoryContainment::Unsupported(ContainmentUnsupported::Platform);
+        }
+        // This API builds candidate keys and may use scalar equality for SameDirectory.
+        // Pure VFS observations on unqualified roots remain available through the executor helper.
+        for held in [self, subject] {
+            if let Err(error) = held.qualify_local() {
+                return match error {
+                    ObjectQualificationFailure::Unsupported(reason) => {
+                        DirectoryContainment::Unsupported(ContainmentUnsupported::Qualification(
+                            reason,
+                        ))
+                    }
+                    ObjectQualificationFailure::Unknown(reason) => {
+                        DirectoryContainment::Unknown(ContainmentUnknown::Qualification(reason))
+                    }
+                };
+            }
         }
         let pair = match current_directory_pair(self.root(), subject.root()) {
             Ok(pair) => pair,

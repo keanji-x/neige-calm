@@ -5,6 +5,8 @@ mod support;
 use support::*;
 #[path = "execution_registration/directory_relation.rs"]
 mod directory_relation;
+#[path = "execution_registration/qualification.rs"]
+mod qualification;
 
 struct Pair {
     harness: Harness,

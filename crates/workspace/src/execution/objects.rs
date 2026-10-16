@@ -1,9 +1,16 @@
 //! Live object leases. Serialized facts are validation inputs, never reopened leases.
 mod containment;
+mod qualification;
 mod relation;
 pub use containment::{
     ContainmentKind, ContainmentUnknown, ContainmentUnsupported, DirectoryContainment,
     PositiveContainment,
+};
+use qualification::NamespaceContext;
+pub use qualification::{
+    LocalObjectProfile, ObjectQualificationFailure, ObjectQualificationStage,
+    ObjectQualificationUnknown, ObjectQualificationUnsupported, QualifiedCwd, QualifiedHeldObjects,
+    QualifiedObjectFact,
 };
 pub use relation::{
     DirectoryObservationStage, DirectoryPairFacts, DirectoryPairFailure, DirectoryRelationOutcome,
@@ -101,6 +108,7 @@ impl std::hash::Hash for HeldRootKey<'_> {
 pub struct HeldObjectIdentity<'lease> {
     root: HeldRootKey<'lease>,
     layout: Vec<ObjectFact>,
+    _qualification: QualifiedHeldObjects<'lease>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,6 +118,7 @@ pub enum HeldObjectComparison {
     LayoutConflict,
     /// Same live physical root in different mount views: neither merge nor allocate another owner.
     MountAliasUnsupported,
+    NamespaceUnsupported,
 }
 
 impl HeldObjectIdentity<'_> {
@@ -117,7 +126,9 @@ impl HeldObjectIdentity<'_> {
         &self.root
     }
     pub fn compare(&self, other: &HeldObjectIdentity<'_>) -> HeldObjectComparison {
-        if self.root != other.root {
+        if self.root.namespace != other.root.namespace {
+            HeldObjectComparison::NamespaceUnsupported
+        } else if self.root != other.root {
             HeldObjectComparison::DifferentRoot
         } else if self.root.root.mount != other.root.root.mount {
             HeldObjectComparison::MountAliasUnsupported
@@ -132,10 +143,12 @@ impl HeldObjectIdentity<'_> {
 pub struct HeldSourceObjects {
     shape: ObjectShape,
     files: Vec<File>,
+    namespace: NamespaceContext,
 }
 impl HeldSourceObjects {
     /// Trusted registration owner opens once, then transfers these exact held descriptions.
     pub fn open(root: &Path, worktree: bool) -> io::Result<Self> {
+        let namespace = NamespaceContext::capture()?;
         let mut files = vec![open_directory(root)?];
         let mut roles = vec![ObjectRole::Root];
         let layout = if worktree {
@@ -181,11 +194,12 @@ impl HeldSourceObjects {
         let held = Self {
             shape: ObjectShape {
                 root: root.into(),
-                mount_namespace: namespace()?,
+                mount_namespace: namespace.inode()?,
                 layout,
                 objects,
             },
             files,
+            namespace,
         };
         held.validate()?;
         Ok(held)
@@ -195,38 +209,15 @@ impl HeldSourceObjects {
         let held = Self {
             shape,
             files: descriptors.into_iter().map(File::from).collect(),
+            namespace: NamespaceContext::capture()?,
         };
         held.validate()?;
         Ok(held)
     }
     /// Compute before the short identity-index lock. Comparison itself does no IO or Git.
     /// File descriptions stay continuously retained through the key's borrow lifetime.
-    pub fn live_identity(&self) -> io::Result<HeldObjectIdentity<'_>> {
-        let current_namespace = namespace()?;
-        ensure(
-            current_namespace == self.shape.mount_namespace,
-            "live identity mount context changed",
-        )?;
-        ensure(
-            self.files.len() == self.shape.objects.len(),
-            "live identity descriptor closure missing",
-        )?;
-        let mut objects = self
-            .files
-            .iter()
-            .zip(&self.shape.objects)
-            .map(|(file, expected)| fact(file, expected.role.clone()))
-            .collect::<io::Result<Vec<_>>>()?;
-        ensure(!objects.is_empty(), "live identity root missing")?;
-        let root = objects.remove(0);
-        Ok(HeldObjectIdentity {
-            root: HeldRootKey {
-                namespace: current_namespace,
-                root,
-                lease: std::marker::PhantomData,
-            },
-            layout: objects,
-        })
+    pub fn live_identity(&self) -> Result<HeldObjectIdentity<'_>, ObjectQualificationFailure> {
+        Ok(self.qualify_local()?.into_identity())
     }
     pub fn shape(&self) -> &ObjectShape {
         &self.shape
@@ -268,11 +259,14 @@ impl HeldSourceObjects {
                 .iter()
                 .map(File::try_clone)
                 .collect::<io::Result<_>>()?,
+            namespace: self.namespace.try_clone()?,
         })
     }
     pub fn validate(&self) -> io::Result<()> {
         ensure(
-            self.shape.root.is_absolute() && self.shape.mount_namespace == namespace()?,
+            self.shape.root.is_absolute()
+                && self.namespace.matches_current()?
+                && self.shape.mount_namespace == self.namespace.inode()?,
             "unsupported object/mount context",
         )?;
         let entries = self.entries()?;
@@ -419,7 +413,7 @@ fn read_link(file: &File) -> io::Result<Vec<u8>> {
 }
 fn fact(file: &File, role: ObjectRole) -> io::Result<ObjectFact> {
     let stat = file.metadata()?;
-    let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", file.as_raw_fd()))?;
+    let info = std::fs::read_to_string(format!("/proc/thread-self/fdinfo/{}", file.as_raw_fd()))?;
     let mount = info
         .lines()
         .find_map(|line| line.strip_prefix("mnt_id:"))
@@ -435,7 +429,7 @@ fn fact(file: &File, role: ObjectRole) -> io::Result<ObjectFact> {
     })
 }
 fn namespace() -> io::Result<u64> {
-    Ok(std::fs::metadata("/proc/self/ns/mnt")?.ino())
+    Ok(qualification::namespace_file()?.metadata()?.ino())
 }
 fn git_path(root: &Path, flag: &str) -> io::Result<PathBuf> {
     let output = crate::command::neige_git_command()

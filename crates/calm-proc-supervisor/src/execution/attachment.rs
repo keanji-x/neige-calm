@@ -77,7 +77,25 @@ impl Executor {
                 receipt
             }
         };
-        let root = Arc::new(RegisteredRoot::receive(receipt, objects)?);
+        let incoming = Arc::new(RegisteredRoot::receive(receipt, objects)?);
+        let retained = self
+            .live_objects
+            .lock()
+            .map_err(poison)?
+            .get(&incoming.receipt.id)
+            .cloned();
+        let root = if let Some(retained) = retained {
+            anyhow::ensure!(
+                retained.receipt == incoming.receipt,
+                "registration ID has a different immutable receipt"
+            );
+            // A replay must not replace the original open descriptions with freshly opened
+            // objects merely because their serialized stat/layout facts happen to compare equal.
+            retained.validate()?;
+            retained
+        } else {
+            incoming
+        };
         // Generation/source changes require every old execution to have positively settled.
         for record in self.records.lock().map_err(poison)?.values() {
             if scope_resource(&record.request.identity.scope)

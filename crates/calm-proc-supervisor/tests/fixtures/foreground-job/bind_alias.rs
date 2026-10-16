@@ -12,11 +12,11 @@ fn key_hash(key: &impl std::hash::Hash) -> u64 {
     state.finish()
 }
 
-pub(super) fn run(root: &Path, alias: &Path) -> anyhow::Result<()> {
+pub(super) fn enter_private_namespace() -> anyhow::Result<()> {
     // This executable starts before any runtime/worker threads; timeout is confined to this child.
     unsafe {
         libc::signal(libc::SIGALRM, libc::SIG_DFL);
-        libc::alarm(5);
+        libc::alarm(15);
     }
     anyhow::ensure!(
         unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) } == 0,
@@ -37,6 +37,11 @@ pub(super) fn run(root: &Path, alias: &Path) -> anyhow::Result<()> {
         "make private: {}",
         std::io::Error::last_os_error()
     );
+    Ok(())
+}
+
+pub(super) fn run(root: &Path, alias: &Path) -> anyhow::Result<()> {
+    enter_private_namespace()?;
     let source = std::ffi::CString::new(root.as_os_str().as_bytes())?;
     let target = std::ffi::CString::new(alias.as_os_str().as_bytes())?;
     anyhow::ensure!(
