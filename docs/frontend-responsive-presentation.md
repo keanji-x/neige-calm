@@ -115,6 +115,59 @@ runner's default browser-server port (63315) and CPU resources. Full frontend, t
 Switch reports distinguish shell commit, first animation-frame opportunity and body
 commit. Render counts alone do not establish paint latency.
 
+## Attribute a hotspot before changing it
+
+The router benchmarks above report broad React scopes and work boundaries. Use
+browser source-level profiling to distinguish application computation, dependency
+work, native layout and paint before choosing a fix. Main rAF gaps and the number
+of renders alone do not identify the responsible call path.
+
+From `fe/`, create a local production build with source maps:
+
+```sh
+node tools/profile-build.mjs
+```
+
+It prints a fresh temporary output directory and writes `profile-build.json` there
+with the commit, working-tree dirty flag and profiling settings. Source maps embed
+the actual built source; a dirty flag means the commit alone does not identify it.
+Normal `npm run build` and deployment outputs are unchanged. Replace the example
+directory below with the printed one; port 0 selects a free loopback port:
+
+```sh
+npx vite preview --outDir /tmp/neige-profile-XXXXXX --host 127.0.0.1 --port 0 --strictPort
+```
+
+Use your own development backend as described in
+[development preview](development-preview.md). Do not publish diagnostic source maps
+or raw recordings with application deployments.
+
+In [Chrome's Performance panel](https://developer.chrome.com/docs/devtools/performance/reference),
+record one named interaction, select its time range, and inspect Main, Bottom-up,
+Call tree, Layout/Paint and animation tracks. Source maps map generated frames back
+to their owning file. Keep application, dependency and browser work distinct;
+`@astryxdesign/core` is a dependency, not this repository's `fe/core`. Inclusive
+function costs overlap and must not be summed as independent CPU buckets.
+
+For React scheduler/component attribution, use a separate profiling build:
+
+```sh
+node tools/profile-build.mjs --react
+```
+
+This opts into `react-dom/profiling` through a build-time alias. Normal production
+React profiling is disabled. [React Performance tracks](https://react.dev/reference/dev-tools/react-performance-tracks)
+show scheduling/render/commit/effect phases; in a profiling build, component tracks
+need a Profiler subtree or React Developer Tools. Existing browser benchmarks use
+Profiler scopes in the development test build. Profile builds and DevTools add
+overhead, so repeat final latency comparisons with normal production React.
+
+[Long Animation Frames](https://developer.chrome.com/docs/web-platform/long-animation-frames)
+can further attribute long-frame scripts and forced style/layout. Check support
+before recording it. Missing script attribution is not proof of zero work; native
+layout and cross-context activity still require the browser trace. Keep raw traces,
+CPU profiles and detailed page data local unless their publication is authorized.
+
 ## Current performance decisions
 
 - Keep all loaded message DOM. A temporary agent-only `content-visibility:auto`

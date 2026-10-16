@@ -60,3 +60,10 @@ Group keys and reading memory stay in the existing committed ChatThread path.
 history, first-frame closing, and receipt order. Its timing reports distinguish shell
 commit, animation-frame opportunity and body commit; none is a guarantee of paint
 latency or lower total loading time. Heavy DOM/layout remains a separate concern.
+
+Source-level profiling and the opt-in local build command are documented in
+[the presentation guide](../../../../../../docs/frontend-responsive-presentation.md).
+Active exchange lookup uses the transcript's ordered vertical flow, without a
+position cache or history windowing. Gap and compact timestamps share one locale
+formatter per style in a thread render; labels stay scalar message inputs so
+stored rows retain memoization and browser timezone changes are observed on render.

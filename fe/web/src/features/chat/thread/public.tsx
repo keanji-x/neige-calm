@@ -92,6 +92,11 @@ export type ChatThreadProps = Readonly<{
 
 export function ChatThread({ conversation, turns, pending = false, cards, stalled, stalledReason, statusUnconfirmed = false, statusLoading = false, stopFeedback = null, canContinue, copyText, regenerateMessage, editMessage, editing = null, replacement = null, runningAnchor = null, imageFiles = null, readingView }: ChatThreadProps) {
   const compactViewport = useCompactViewport();
+  // One formatter per clock style in this render, shared by all stored rows.
+  // Render scope also observes a changed browser timezone without a global cache.
+  const gapClock = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' });
+  const compactClock = compactViewport
+    ? new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }) : null;
   const localReading = useThreadReadingView(conversation.id);
   const reading = readingView ?? localReading;
   /* The live mark is the sender's pending send or the kernel's verdict — never `conversation.state`, which sits at `turn_pending`/`running` long after a turn ended. The local wedge outranks both. */
@@ -221,11 +226,15 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
       const remaining = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
       const slid = Math.min(scroller.scrollTop, Math.max(0, pane.height - remaining));
       const edge = Math.min(pane.bottom, pane.top + ACTIVE_MARKER_SLACK_PX + slid);
-      let current = markers[0];
-      for (const marker of markers) {
-        if (marker.getBoundingClientRect().top > edge) break;
-        current = marker;
+      // Exchange markers follow the transcript's vertical flow. Find the last
+      // one at/before the edge without measuring the whole preceding history.
+      let low = 0; let high = markers.length;
+      while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        if (markers[middle].getBoundingClientRect().top <= edge) low = middle + 1;
+        else high = middle;
       }
+      const current = markers[Math.max(0, low - 1)];
       const id = current?.dataset.ncExchange;
       if (id !== undefined) setActive(id);
     };
@@ -271,7 +280,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
       return (
         <div key={turn.id} data-nc-entry={key}>
           {opensAfterGap(turns, index) && index > 0 && (
-            <p className={styles.gap}>{clockTime(turn.atMs)}</p>
+            <p className={styles.gap}>{clockTime(gapClock, turn.atMs)}</p>
           )}
           <details
             className={styles.system}
@@ -291,9 +300,9 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
     // Outcomes retain their grouping boundary; only the current metadata row paints status.
     if (turn.author === 'turn') return null;
     return (
-      <MessageEntry key={turn.id} mobile={compactViewport} atMs={turn.atMs} id={turn.id} entryKey={key} author={turn.author} text={turn.text}
+      <MessageEntry key={turn.id} mobile={compactViewport} atMs={turn.atMs} timestampLabel={turn.author === 'agent' && compactClock !== null ? clockTime(compactClock, turn.atMs) : null} id={turn.id} entryKey={key} author={turn.author} text={turn.text}
         attachments={turn.attachments} opens={opensExchange(turns, index)}
-        gapLabel={opensAfterGap(turns, index) && index > 0 ? clockTime(turn.atMs) : null}
+        gapLabel={opensAfterGap(turns, index) && index > 0 ? clockTime(gapClock, turn.atMs) : null}
         queued={isQueuedConversationTurn(turn)} edited={edited.has(turn.id)} replacement={turn.id === replacement}
         working={showLive && last} imageFiles={imageFiles} />
     );
@@ -344,7 +353,7 @@ export function ChatThread({ conversation, turns, pending = false, cards, stalle
             return (
               <div key={block.id} data-nc-entry={key}>
                 <QuietSyncFold expanded={reading.expanded.get(`quiet-${block.id}`) ?? false}
-                  onExpandedChange={expanded => reading.setExpanded(`quiet-${block.id}`, expanded)} group={block} time={clockTime(block.atMs)}
+                  onExpandedChange={expanded => reading.setExpanded(`quiet-${block.id}`, expanded)} group={block} time={clockTime(gapClock, block.atMs)}
                   live={live && block.entries.some((entry) => entry === lastTurn)}>
                   {block.entries.map((entry) => renderEntry(entry, entry.id, false))}
                 </QuietSyncFold>
@@ -763,6 +772,8 @@ export function ChatFooterRemedy({ disabled = false, onClick, children }: {
 
 /** A wall clock, not a relative time: the separator exists to say *when*, and
  *  "3h" is only useful when you already know when now is. */
-function clockTime(atMs: number): string {
-  return new Date(atMs).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+function clockTime(formatter: Intl.DateTimeFormat, atMs: number): string {
+  const date = new Date(atMs);
+  // Date#toLocaleTimeString previously displayed invalid gap dates rather than throwing.
+  return Number.isNaN(date.getTime()) ? date.toString() : formatter.format(date);
 }
