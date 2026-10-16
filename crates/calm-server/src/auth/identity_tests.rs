@@ -129,3 +129,20 @@ async fn declared_actor_does_not_authenticate_any_generic_gate() {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
     }
 }
+
+#[test]
+fn deployment_owner_depends_only_on_authenticated_user_id() {
+    let mut principal = Principal::from_identity(
+        SessionIdentity {
+            user_id: OWNER_USER_ID.into(),
+            display_name: "Another display name".into(),
+            role: "member".into(),
+        },
+        "fixture-session".into(),
+    );
+    assert!(principal.is_deployment_owner());
+    principal.user_id = "alice".into();
+    principal.display_name = DEFAULT_DISPLAY_NAME.into();
+    principal.role = OWNER_ROLE.into();
+    assert!(!principal.is_deployment_owner());
+}

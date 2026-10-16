@@ -23,7 +23,7 @@ pub(super) fn owner(auth: &AuthState, principal: &Principal) -> Result<()> {
             .get(&principal.session_id)
             .is_some_and(|session| {
                 session.authority == crate::auth::SessionAuthority::PasswordLogin
-                    && session.identity.user_id == crate::auth::OWNER_USER_ID
+                    && principal.is_deployment_owner()
                     && session.identity.user_id == principal.user_id
                     && session.identity.display_name == principal.display_name
                     && session.identity.role == principal.role

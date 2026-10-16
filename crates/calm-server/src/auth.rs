@@ -159,6 +159,12 @@ pub struct Principal {
 }
 
 impl Principal {
+    /// Whether the authenticated user is the deployment owner. Callers enforce
+    /// credential provenance and operation policy separately.
+    pub fn is_deployment_owner(&self) -> bool {
+        self.user_id == OWNER_USER_ID
+    }
+
     fn from_identity(identity: SessionIdentity, session_id: String) -> Self {
         Self {
             user_id: identity.user_id,
