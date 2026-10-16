@@ -154,8 +154,9 @@ impl Executor {
         // Serialized receipts retain audit/version facts only. No descriptor survives this boot.
         for receipt in store.registrations()? {
             anyhow::ensure!(
-                receipt.contract == EXECUTION_ENVELOPE_VERSION,
-                "unsupported persisted attachment contract"
+                receipt.contract == EXECUTION_ENVELOPE_VERSION
+                    && receipt.id == receipt.transfer.registration_id,
+                "unsupported persisted attachment contract or provenance"
             );
             let registration = &receipt.transfer.registration;
             let key = registration_key(registration);

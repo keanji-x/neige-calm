@@ -19,6 +19,11 @@ impl RegisteredRoot {
         receipt: ObjectRegistrationReceipt,
         objects: HeldSourceObjects,
     ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            receipt.id == receipt.transfer.registration_id
+                && receipt.contract == EXECUTION_ENVELOPE_VERSION,
+            "attachment receipt provenance mismatch"
+        );
         let registration = receipt.transfer.registration.clone();
         let (expected, worktree) = match &registration {
             ExecutionRegistration::Worktree { root, .. } => (root, true),

@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ObjectRole {
     Root,
     GitDirectory,
@@ -21,7 +21,7 @@ pub enum ObjectRole {
     CommonDirectory,
     CommonLink,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ObjectFact {
     pub role: ObjectRole,
     pub device: u64,
@@ -58,6 +58,41 @@ pub struct ObjectShape {
     pub mount_namespace: u64,
     pub layout: ObjectLayout,
     pub objects: Vec<ObjectFact>,
+}
+
+/// Ephemeral bucket over a currently retained root; never a serialized authority or Ready proof.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct HeldRootKey<'lease> {
+    namespace: u64,
+    root: ObjectFact,
+    lease: std::marker::PhantomData<&'lease HeldSourceObjects>,
+}
+
+pub struct HeldObjectIdentity<'lease> {
+    root: HeldRootKey<'lease>,
+    layout: Vec<ObjectFact>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeldObjectComparison {
+    SameObject,
+    DifferentRoot,
+    LayoutConflict,
+}
+
+impl HeldObjectIdentity<'_> {
+    pub fn root_key(&self) -> &HeldRootKey<'_> {
+        &self.root
+    }
+    pub fn compare(&self, other: &HeldObjectIdentity<'_>) -> HeldObjectComparison {
+        if self.root != other.root {
+            HeldObjectComparison::DifferentRoot
+        } else if self.layout == other.layout {
+            HeldObjectComparison::SameObject
+        } else {
+            HeldObjectComparison::LayoutConflict
+        }
+    }
 }
 
 pub struct HeldSourceObjects {
@@ -129,6 +164,35 @@ impl HeldSourceObjects {
         };
         held.validate()?;
         Ok(held)
+    }
+    /// Compute before the short identity-index lock. Comparison itself does no IO or Git.
+    /// File descriptions stay continuously retained through the key's borrow lifetime.
+    pub fn live_identity(&self) -> io::Result<HeldObjectIdentity<'_>> {
+        let current_namespace = namespace()?;
+        ensure(
+            current_namespace == self.shape.mount_namespace,
+            "live identity mount context changed",
+        )?;
+        ensure(
+            self.files.len() == self.shape.objects.len(),
+            "live identity descriptor closure missing",
+        )?;
+        let mut objects = self
+            .files
+            .iter()
+            .zip(&self.shape.objects)
+            .map(|(file, expected)| fact(file, expected.role.clone()))
+            .collect::<io::Result<Vec<_>>>()?;
+        ensure(!objects.is_empty(), "live identity root missing")?;
+        let root = objects.remove(0);
+        Ok(HeldObjectIdentity {
+            root: HeldRootKey {
+                namespace: current_namespace,
+                root,
+                lease: std::marker::PhantomData,
+            },
+            layout: objects,
+        })
     }
     pub fn shape(&self) -> &ObjectShape {
         &self.shape

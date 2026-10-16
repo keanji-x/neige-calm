@@ -13,7 +13,6 @@ use calm_session::terminal_session::{OwnerRegistry, RenderPlane};
 use calm_session::{DaemonMsg, read_frame, write_frame};
 use thiserror::Error;
 use tokio::io::AsyncRead;
-use tokio::net::UnixStream;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
@@ -1067,7 +1066,7 @@ async fn signal_child_direct(supervisor_sock: &Path, proc_id: &str, sig: ProcSig
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::net::UnixListener;
+    use tokio::net::{UnixListener, UnixStream};
 
     #[tokio::test]
     async fn read_control_reply_or_kill_sends_kill_on_timeout() {

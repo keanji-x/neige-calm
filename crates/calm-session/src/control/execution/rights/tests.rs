@@ -51,9 +51,11 @@ async fn execution_ancillary_truncation_closes_all_received_descriptors() {
     let files = (0..MAX_RIGHTS + 1)
         .map(|_| passed.as_fd())
         .collect::<Vec<_>>();
+    let bytes = frame("truncated");
+    assert_eq!(send_once(&sender, &bytes[..1], &files).unwrap(), 1);
     assert_eq!(
-        send_once(&sender, &frame("truncated")[..1], &files).unwrap(),
-        1
+        send_once(&sender, &bytes[1..], &[]).unwrap(),
+        bytes.len() - 1
     );
     drop(files);
     drop(passed);

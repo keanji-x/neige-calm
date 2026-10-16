@@ -3,6 +3,7 @@ use workspace::execution::objects::ObjectShape;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachRegistration {
+    pub registration_id: ObjectRegistrationId,
     pub executor_boot: ExecutorBootId,
     pub nonce: TransferNonce,
     pub incarnation: SourceObjectIncarnation,

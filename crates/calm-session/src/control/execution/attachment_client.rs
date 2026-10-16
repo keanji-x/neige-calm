@@ -29,6 +29,7 @@ impl RegisteredExecutorConnection {
         match reply {
             super::super::ControlReply::Execution(ExecutionReply::Registered(receipt))
                 if receipt.contract == EXECUTION_ENVELOPE_VERSION
+                    && receipt.id == transfer.registration_id
                     && receipt.transfer == transfer =>
             {
                 self.in_flight = false;
@@ -63,6 +64,7 @@ impl RegisteredExecutorConnection {
                 if receipt.contract == EXECUTION_ENVELOPE_VERSION
                     && nonce == request.nonce
                     && receipt.id == request.registration
+                    && receipt.id == receipt.transfer.registration_id
                     && receipt.transfer.executor_boot == self.executor_boot =>
             {
                 receipt

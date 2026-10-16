@@ -62,9 +62,15 @@ impl Executor {
                 );
                 existing.clone()
             } else {
+                anyhow::ensure!(
+                    !transfers
+                        .values()
+                        .any(|receipt| receipt.id == transfer.registration_id),
+                    "registration ID already belongs to another immutable transfer"
+                );
                 let receipt = ObjectRegistrationReceipt {
                     contract: EXECUTION_ENVELOPE_VERSION,
-                    id: ObjectRegistrationId::fresh()?,
+                    id: transfer.registration_id.clone(),
                     transfer,
                 };
                 transfers.insert(receipt.transfer.nonce.clone(), receipt.clone());

@@ -292,6 +292,7 @@ pub(super) async fn register(
             }
         });
     let transfer = AttachRegistration {
+        registration_id: ObjectRegistrationId::fresh().unwrap(),
         executor_boot: client.executor_boot().clone(),
         nonce: TransferNonce::fresh().unwrap(),
         incarnation,
