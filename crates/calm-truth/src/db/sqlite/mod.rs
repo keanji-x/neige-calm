@@ -80,7 +80,14 @@ mod track_occupancy_tests;
 mod track_recipe;
 mod track_tree;
 mod track_workspace;
+mod workspace_resource;
+pub use workspace_resource::{
+    WorkspaceAdoption, WorkspaceOwnership, track_workspace_reference, workspace_adopt_tx,
+    workspace_adoption_snapshot, workspace_require_adopted,
+};
 mod transcript_turn_input;
+#[cfg(test)]
+mod workspace_resource_tests;
 pub use transcript_turn_input::transcript_latest_turn_input_tx;
 
 pub use area::{

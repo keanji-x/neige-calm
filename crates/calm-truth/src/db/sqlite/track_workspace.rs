@@ -45,6 +45,7 @@ pub async fn track_workspace_write_tx(
             ))),
         };
     }
+    super::workspace_resource::workspace_bind_selection_tx(tx, track_id, workspace).await?;
     Ok(())
 }
 
@@ -91,5 +92,15 @@ pub async fn track_workspace_freeze_tx(
     .bind(track_id)
     .execute(&mut **tx)
     .await?;
+    if res.rows_affected() > 0 {
+        sqlx::query(
+            "UPDATE track_workspace_bindings SET frozen_at_ms = ?1 \
+             WHERE track_id = ?2 AND frozen_at_ms IS NULL",
+        )
+        .bind(now_ms)
+        .bind(track_id)
+        .execute(&mut **tx)
+        .await?;
+    }
     Ok(res.rows_affected() > 0)
 }

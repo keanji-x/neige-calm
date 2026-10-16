@@ -597,6 +597,15 @@ impl ProviderAdapter for TerminalAdapter {
 
 #[async_trait]
 impl ProviderAdapter for TerminalWorkerAdapter {
+    async fn prepare_external(&self, input: &Value, ctx: &SpawnCtx) -> Result<()> {
+        let payload: TerminalWorkerOperationPayload = serde_json::from_value(input.clone())?;
+        crate::workspace_service::identity::adopt_for_task(
+            &ctx.operation_repo.sqlite_pool(),
+            &payload.track_id,
+        )
+        .await
+    }
+
     fn kind(&self) -> &'static str {
         "terminal-worker"
     }

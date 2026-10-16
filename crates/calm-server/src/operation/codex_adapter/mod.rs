@@ -736,6 +736,16 @@ impl ProviderAdapter for CodexAdapter {
 
 #[async_trait]
 impl ProviderAdapter for CodexWorkerAdapter {
+    async fn prepare_external(&self, input: &Value, ctx: &SpawnCtx) -> Result<()> {
+        let payload: CodexWorkerOperationPayload = serde_json::from_value(input.clone())?;
+        crate::workspace_service::identity::prepare_task(
+            ctx,
+            &payload.track_id,
+            &self.workspace_root,
+        )
+        .await
+    }
+
     fn kind(&self) -> &'static str {
         "codex-worker"
     }

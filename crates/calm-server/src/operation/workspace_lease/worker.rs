@@ -166,6 +166,7 @@ pub(crate) async fn prepare_worker_lease_tx(
     attempt_id: &str,
     workspace_root: &Path,
 ) -> Result<WorkerLeasePlan> {
+    crate::db::sqlite::workspace_require_adopted(tx, track_id).await?;
     let (access, head, base, start): (String, Option<String>, Option<String>, String) =
         sqlx::query_as("SELECT access, head, base, start FROM tasks WHERE id = ?1")
             .bind(attempt_id)

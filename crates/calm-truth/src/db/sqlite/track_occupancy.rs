@@ -49,12 +49,25 @@ pub async fn checkout_occupancy(
     track_id: &str,
     except_attempt: &str,
 ) -> Result<CheckoutOccupancy> {
+    // Occupancy reports existing facts; task admission separately requires adoption.
+    let workspace_id: String =
+        sqlx::query_scalar("SELECT workspace_id FROM track_workspace_bindings WHERE track_id=?1")
+            .bind(track_id)
+            .fetch_optional(&mut *conn)
+            .await?
+            .ok_or_else(|| {
+                CalmError::Conflict(format!(
+                    "WorkspaceRecoveryRequired: track {track_id} has no workspace binding"
+                ))
+            })?;
+    let scope = "SELECT track_id FROM track_workspace_bindings WHERE workspace_id=?1";
     let sql = format!(
-        "SELECT {TASK_COLUMNS} FROM current_tasks WHERE track_id = ?1 AND id <> ?2 \
+        "SELECT {TASK_COLUMNS} FROM current_tasks WHERE track_id IN \
+         ({scope}) AND id <> ?2 \
          AND status IN ('dispatched','running','verifying')"
     );
     let in_flight = sqlx::query_as::<_, Task>(&sql)
-        .bind(track_id)
+        .bind(&workspace_id)
         .bind(except_attempt)
         .fetch_all(&mut *conn)
         .await?;
@@ -66,28 +79,30 @@ pub async fn checkout_occupancy(
         occupancy = occupancy.join(task.access);
     }
     // `'stuck'` is the operations phase of an owner whose outcome is unknown (`PhaseTag::Stuck`).
-    let lease_modes: Vec<String> = sqlx::query_scalar(
+    let lease_sql = format!(
         "SELECT DISTINCT wl.access_mode FROM workspace_leases wl \
          LEFT JOIN operations o ON o.id = wl.lease_owner \
-         WHERE wl.track_id = ?1 AND wl.state IN ('held','releasing') \
+         WHERE wl.track_id IN ({scope}) AND wl.state IN ('held','releasing') \
          AND o.idempotency_key IS NOT ?2 \
          AND o.phase IS NOT 'stuck'",
-    )
-    .bind(track_id)
-    .bind(except_attempt)
-    .fetch_all(&mut *conn)
-    .await?;
+    );
+    let lease_modes: Vec<String> = sqlx::query_scalar(&lease_sql)
+        .bind(&workspace_id)
+        .bind(except_attempt)
+        .fetch_all(&mut *conn)
+        .await?;
     for mode in lease_modes {
         occupancy = occupancy.join(TaskAccess::try_from(mode).map_err(CalmError::Internal)?);
     }
-    let delivery_unsettled: bool = sqlx::query_scalar(
+    let delivery_sql = format!(
         "SELECT EXISTS(SELECT 1 FROM task_git_deliveries \
-         WHERE track_id = ?1 AND settlement IS NULL AND producer_attempt_id <> ?2)",
-    )
-    .bind(track_id)
-    .bind(except_attempt)
-    .fetch_one(&mut *conn)
-    .await?;
+         WHERE track_id IN ({scope}) AND settlement IS NULL AND producer_attempt_id <> ?2)",
+    );
+    let delivery_unsettled: bool = sqlx::query_scalar(&delivery_sql)
+        .bind(&workspace_id)
+        .bind(except_attempt)
+        .fetch_one(&mut *conn)
+        .await?;
     if delivery_unsettled {
         return Ok(CheckoutOccupancy::Busy);
     }

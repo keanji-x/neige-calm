@@ -716,6 +716,12 @@ pub trait ProviderAdapter: Send + Sync {
 
     async fn validate(&self, input: &Value) -> Result<()>;
 
+    /// Recoverable preparation that must finish outside the repository writer transaction.
+    /// Adapters retain ownership of their resource protocol; the driver knows no kind list.
+    async fn prepare_external(&self, _input: &Value, _ctx: &SpawnCtx) -> Result<()> {
+        Ok(())
+    }
+
     async fn prepare_tx<'tx>(
         &self,
         tx: &mut Tx<'tx>,

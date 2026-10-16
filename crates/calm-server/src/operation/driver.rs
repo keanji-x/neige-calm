@@ -474,13 +474,23 @@ impl OperationRuntime {
             .ok_or_else(|| CalmError::BadRequest(format!("unknown operation kind {kind}")))
     }
 
+    pub(crate) async fn prepare_external(&self, kind: &str, payload: &Value) -> Result<()> {
+        self.adapter(kind)?
+            .prepare_external(payload, &self.spawn_ctx)
+            .await
+    }
+
     async fn drive_one(&self, adapter: Arc<dyn ProviderAdapter>, op: Operation) -> Result<()> {
         match op.phase.clone() {
             Phase::Pending => {
-                let prepared = self
-                    .repo
-                    .prepare_tx_and_advance(&op, adapter.as_ref())
-                    .await;
+                let prepared = match adapter.prepare_external(&op.payload, &self.spawn_ctx).await {
+                    Ok(()) => {
+                        self.repo
+                            .prepare_tx_and_advance(&op, adapter.as_ref())
+                            .await
+                    }
+                    Err(error) => Err(error),
+                };
                 let Some((_next, events)) = (match prepared {
                     Ok(prepared) => prepared,
                     Err(e) => {
