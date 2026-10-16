@@ -35,7 +35,8 @@ function contrastRatio(foreground: string, background: string): number {
   return ((values[0] ?? 0) + 0.05) / ((values[1] ?? 0) + 0.05);
 }
 
-it('reveals Area actions on hover with a desktop pointer', async () => {
+it('reveals group actions and accepts a direct click from a resting desktop pointer', async () => {
+  const createArea = vi.fn();
   await page.viewport(1400, 900);
   expect(matchMedia('(width >= 60rem)').matches).toBe(true);
   expect(matchMedia('(hover: hover)').matches).toBe(true);
@@ -52,7 +53,7 @@ it('reveals Area actions on hover with a desktop pointer', async () => {
         tracks={[]}
         currentPath="/"
         onGo={vi.fn()}
-        onRequestCreateArea={vi.fn()}
+        onRequestCreateArea={createArea}
         onRequestEditArea={vi.fn()}
         onDeleteArea={vi.fn()}
         onNewTrack={vi.fn()}
@@ -67,15 +68,26 @@ it('reveals Area actions on hover with a desktop pointer', async () => {
     </ThemeProvider>,
   ));
 
+  await page.elementLocator(document.body).hover();
+  const create = page.getByRole('button', { name: 'New area', exact: true }).element();
+  expect(getComputedStyle(create).opacity).toBe('0');
+  const actionsAtRest = document.querySelectorAll<HTMLElement>('nav[aria-label="Workspace"] [role="group"] button:not([data-nc-role="row"])');
+  expect(actionsAtRest.length).toBeGreaterThan(1);
+  for (const action of actionsAtRest) {
+    const target = action.getBoundingClientRect();
+    expect(document.elementFromPoint(target.x + target.width / 2, target.y + target.height / 2)?.closest('button')).toBe(action);
+  }
+  await page.getByRole('button', { name: 'New area', exact: true }).click();
+  expect(createArea).toHaveBeenCalledTimes(1);
+  await expect.element(page.getByRole('button', { name: 'Collapse Areas', exact: true })).toBeVisible();
+
   const actions = document.querySelector<HTMLElement>('[aria-label="Area actions for Work"]')!;
   const actionsWrap = actions.parentElement!;
   await page.getByRole('button', { name: 'New area' }).hover();
   expect(getComputedStyle(actionsWrap).opacity).toBe('0');
-  expect(getComputedStyle(actionsWrap).pointerEvents).toBe('none');
 
   await page.getByRole('button', { name: 'Collapse area Work' }).hover();
   expect(getComputedStyle(actionsWrap).opacity).toBe('1');
-  expect(getComputedStyle(actionsWrap).pointerEvents).toBe('auto');
 
   await page.getByRole('button', { name: 'Area actions for Work' }).click();
   await page.getByRole('menuitem', { name: 'Delete area' }).click();

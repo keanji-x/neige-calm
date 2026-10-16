@@ -498,9 +498,9 @@
     cursor: pointer;
   }
 
+  /* Reserved action slots remain hit targets while hover reveals their glyphs. */
   .areaNew {
     opacity: 0;
-    pointer-events: none;
     transition: background-color var(--motion-quick) var(--ease-feedback),
       color var(--motion-quick) var(--ease-feedback);
   }
@@ -509,7 +509,6 @@
     z-index: var(--z-raised);
 
     opacity: 0;
-    pointer-events: none;
   }
 
   .areaActionsButton {
@@ -532,7 +531,6 @@
 
   .areaRowWrap > .iconButton {
     opacity: 0;
-    pointer-events: none;
   }
 
   .areaActions:has([aria-expanded='true']),
@@ -543,7 +541,6 @@
   .areaRowWrap:hover > .iconButton,
   .areaRowWrap:focus-within > .iconButton {
     opacity: 1;
-    pointer-events: auto;
   }
 
   @media (hover: none) {
@@ -551,7 +548,6 @@
     .areaNew,
     .areaRowWrap > .iconButton {
       opacity: 1;
-      pointer-events: auto;
     }
   }
 
