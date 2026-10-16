@@ -48,9 +48,8 @@ pub(crate) fn liveness_from_supervisor_probe(
 async fn probe_supervisor_proc(supervisor_sock: &Path, proc_id: &str) -> SupervisorProbe {
     use calm_session::control::{ControlMsg, ControlReply, ProbeRequest};
     use calm_session::{read_frame, write_frame};
-    use tokio::net::UnixStream;
 
-    let mut stream = match UnixStream::connect(supervisor_sock).await {
+    let mut stream = match calm_session::control::execution::connect_legacy(supervisor_sock).await {
         Ok(stream) => stream,
         Err(e) => {
             tracing::debug!(
@@ -124,6 +123,82 @@ async fn probe_supervisor_proc(_supervisor_sock: &Path, _proc_id: &str) -> Super
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn supervisor_probe_negotiates_with_actual_supervisor() {
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("supervisor.sock");
+        let listener = calm_proc_supervisor::bind_control_listener(&socket).unwrap();
+        let (shutdown, receive) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(calm_proc_supervisor::serve_with_listener(
+            listener,
+            socket.clone(),
+            calm_proc_supervisor::ProcRegistry::new(),
+            receive,
+        ));
+        let actual = probe_terminal_liveness(&socket, Some("absent-legacy-run"), 17).await;
+        shutdown.send(()).unwrap();
+        server.await.unwrap().unwrap();
+        assert!(
+            matches!(
+                actual,
+                Liveness::Exited {
+                    evidence: ExitEvidence {
+                        source: ExitSource::Probe,
+                        ..
+                    }
+                }
+            ),
+            "actual supervisor probe was not negotiated: {actual:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn supervisor_probe_keeps_known_released_v2_wire() {
+        use calm_session::{
+            control::{ControlMsg, ControlReply, ProbeRequest},
+            read_frame, write_frame,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("released.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let peer = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            assert!(
+                matches!(read_frame::<ControlMsg,_>(&mut stream).await.unwrap(), ControlMsg::Probe(ProbeRequest { proc_id }) if proc_id.is_empty())
+            );
+            write_frame(
+                &mut stream,
+                &ControlReply::ProbeOk {
+                    supervisor_version: 2,
+                    proc_running: false,
+                },
+            )
+            .await
+            .unwrap();
+            assert!(
+                matches!(read_frame::<ControlMsg,_>(&mut stream).await.unwrap(), ControlMsg::Probe(ProbeRequest { proc_id }) if proc_id == "term:retained-run")
+            );
+            write_frame(
+                &mut stream,
+                &ControlReply::ProbeOk {
+                    supervisor_version: 2,
+                    proc_running: true,
+                },
+            )
+            .await
+            .unwrap();
+        });
+        let actual = probe_terminal_liveness(&socket, Some("retained-run"), 17).await;
+        let peer_result = peer.await;
+        assert!(
+            matches!(actual, Liveness::Alive { .. }),
+            "released v2 liveness was lost: {actual:?}"
+        );
+        peer_result.unwrap();
+    }
 
     #[test]
     fn supervisor_probe_running_maps_alive() {

@@ -25,5 +25,6 @@ futures-util = "0.3"
 tokio-tungstenite = "0.24"
 
 [dev-dependencies]
+calm-proc-supervisor = { path = "../calm-proc-supervisor" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
 tempfile = "3"

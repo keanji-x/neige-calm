@@ -610,24 +610,28 @@ async fn execution_legacy_alias_control_and_unregistered_client_are_refused() {
     .await;
     // The real legacy client has no kernel secret and can never gain registered authority.
     let mut legacy = connect_legacy(&harness.socket).await.unwrap();
-    calm_session::write_frame(
-        &mut legacy,
-        &calm_session::control::ControlMsg::Signal(calm_session::control::SignalRequest {
+    for message in [
+        calm_session::control::ControlMsg::Signal(calm_session::control::SignalRequest {
             proc_id: request.identity.process_alias.clone(),
             sig: ProcSignal::Kill,
         }),
-    )
-    .await
-    .unwrap();
-    assert!(matches!(
-        calm_session::read_frame::<calm_session::control::ControlReply, _>(&mut legacy)
+        calm_session::control::ControlMsg::Probe(calm_session::control::ProbeRequest {
+            proc_id: request.identity.process_alias.clone(),
+        }),
+    ] {
+        calm_session::write_frame(&mut legacy, &message)
             .await
-            .unwrap(),
-        calm_session::control::ControlReply::Error {
-            kind: calm_session::control::ControlErrorKind::BadRequest,
-            ..
-        }
-    ));
+            .unwrap();
+        assert!(matches!(
+            calm_session::read_frame::<calm_session::control::ControlReply, _>(&mut legacy)
+                .await
+                .unwrap(),
+            calm_session::control::ControlReply::Error {
+                kind: calm_session::control::ControlErrorKind::BadRequest,
+                ..
+            }
+        ));
+    }
     client
         .request(ExecutionRequest::Control(ExecutionControl {
             capability: capability(&request, &receipt, ExecutionControlPurpose::Interactive),
