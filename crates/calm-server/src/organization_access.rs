@@ -1,5 +1,6 @@
-//! HTTP ingress translates authenticated deployment authority; truth owns user
-//! membership policy. All protected Area mutations recheck in their write tx.
+//! Application organization access: verified identity/deployment authority is
+//! interpreted once here; truth owns UserArea membership policy. Ingress owners
+//! revalidate this contract in the transaction committing their protected work.
 use crate::auth::Principal;
 use crate::db::RouteRepo;
 use crate::error::{CalmError, Result};
@@ -8,7 +9,7 @@ use calm_types::organization::AreaAccess;
 use sqlx::SqliteConnection;
 
 /// Preflight before filesystem/process effects, through the declared read contract.
-pub(super) async fn require_area_access(
+pub(crate) async fn require_area_access(
     repo: &dyn RouteRepo,
     area_id: &str,
     principal: &Principal,
@@ -29,7 +30,7 @@ pub(super) async fn require_area_access(
 }
 
 /// Revalidate the same policy in the transaction committing the protected write.
-pub(super) async fn require_area_access_tx(
+pub(crate) async fn require_area_access_tx(
     connection: &mut SqliteConnection,
     area_id: &str,
     principal: &Principal,
@@ -58,7 +59,7 @@ fn system_area_access(area: &Area, principal: &Principal, access: AreaAccess) ->
     Ok(true)
 }
 
-pub(super) fn require_deployment_owner(principal: &Principal) -> Result<()> {
+pub(crate) fn require_deployment_owner(principal: &Principal) -> Result<()> {
     if !principal.is_deployment_owner() {
         return Err(CalmError::Forbidden("deployment owner required".into()));
     }

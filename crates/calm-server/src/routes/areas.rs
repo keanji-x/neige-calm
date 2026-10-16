@@ -1,7 +1,6 @@
 //! `/api/areas` — Area CRUD. `GET` defaults to `kind='user'`; the system area is minted only via the idempotent `POST /api/areas/system` upsert, and `DELETE` refuses a `kind='system'` row.
 use crate::workspace_service::sweep::sweep_workspace_worktrees_for_tracks;
 
-use super::area_access::{require_area_access, require_area_access_tx, require_deployment_owner};
 use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::db::sqlite::{
@@ -17,6 +16,9 @@ use crate::ids::ActorId;
 use crate::model::{Area, AreaKind, AreaPatch, NewArea, Track};
 use crate::operation::workspace_lease::{
     any_track_has_active_forge_action, release_workspace_leases_for_track_tx,
+};
+use crate::organization_access::{
+    require_area_access, require_area_access_tx, require_deployment_owner,
 };
 use crate::routes::planner_cards::quiesce_shared_card_active_turn;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
