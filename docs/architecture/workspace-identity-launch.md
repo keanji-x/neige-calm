@@ -283,8 +283,27 @@ that exact execution result; it cannot discard the no-repeat-fork decision.
 Validate ordinary same-terminal restart after drain, lost restart replies, old
 tickets arriving after handoff, and concurrent cross-resource alias competition.
 
-Attach/Probe use a capability bound to the ExecutionId and receipt;
-they cannot adopt an old process by proc_id alone. Read-only observation of a
+Every control of a registered execution uses a required outer
+`ExecutionControl { capability: ExecutionCapability, action: ProcessAction }`
+envelope. The capability binds ExecutionId, immutable receipt and authority;
+the stable alias is only an authorized lookup key, never control permission.
+The common dispatcher resolves the exact execution before dispatching any
+action, so adding a ProcessAction cannot omit its target capability. No action
+reinterprets an old capability as the alias's current execution. This covers
+observation, stdin, resize, signals, cleanup and future process controls without
+a parallel caller/variant allowlist. Direct child-control paths carry the same
+execution identity and an owned native process handle; they cannot fall back
+to the current alias or an unverified numeric PID. An absent/expired execution
+returns its own terminal receipt or a stale-capability error.
+
+After admission closes, a kernel lifecycle control capability may drain the
+identified old execution; it cannot authorize stdin or a new launch. Read-only
+observation uses its narrower artifact capability. Negotiated legacy controls
+can address only their existing legacy execution scope and cannot operate a
+new typed incarnation after alias handoff. No missing-capability serde default
+or bare-alias fallback is permitted for the new control protocol.
+
+Attach/Probe therefore cannot adopt an old process by proc_id alone. Read-only observation of a
 legacy process is a distinct artifact capability and cannot authorize stdin or
 new work. WriteStdin rechecks current admission and the exact ExecutionId; an
 old observation/connection cannot acquire a newer incarnation's stdin authority.
@@ -292,6 +311,10 @@ Known existing PTYs may be explicitly resumed only by a recoverable kernel op
 that verifies their original process identity and unchanged binding/source
 epoch, then advances the executor registration. Unknown PTYs keep the resource
 Busy and remain observable; an upgrade does not kill them to manufacture idle.
+Acceptance pauses each old mutating control before delivery, performs an
+authorized alias handoff, then delivers that old capability and proves the new
+execution is untouched. In particular, delayed signal/resize/cleanup must not
+target the replacement execution; the old connection never gains its stdin.
 
 ### Minimal S2a resource cancellation and release
 
