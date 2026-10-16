@@ -27,13 +27,14 @@
     inline-size: 100%;
     max-inline-size: var(--measure-list);
     padding-block: 0;
-    padding-inline: var(--space-2);
     border-radius: var(--radius-sm);
     text-align: start;
     cursor: pointer;
     transition: background-color var(--motion-quick) var(--ease-feedback),
       color var(--motion-quick) var(--ease-feedback);
   }
+
+  .row:not(.variantRail) { padding-inline: var(--space-2); }
 
   .row:hover {
     background: var(--overlay-hover);
@@ -128,23 +129,12 @@
   .variantRail {
     min-block-size: var(--row-h);
     grid-template-columns: minmax(0, 1fr);
-    padding-inline: var(--space-3);
   }
 
   /* Name typography and selected emphasis are owned by ui/list-typography. */
 
-  /*
-   * Gutters. Every one of these is a box-scale question — the space a control
-   * will occupy — which is why §9.1's spacing group admits a calc() carrying a
-   * --space-* term. `--space-2` is the 4px alignment inset (see `.pin`),
-   * `--control-h-sm` the 20px control, and the extra `--space-2` its clearance
-   * from the text.
-   *
-   * They must come after the variant rules: `.variantRail` sets the
-   * `padding-inline` shorthand, which would otherwise reset either end and let
-   * a button sit on top of the title.
-   */
-  .row.hasRemove {
+  /* Non-rail variants retain their own gutters; navigation-row owns the rail. */
+  .row.hasRemove:not(.variantRail) {
     padding-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm));
   }
 
@@ -154,25 +144,10 @@
   .wrapper:hover .variantCompact.hasRemove:not(.hasPin):not(.hasMenu) .age,
   .wrapper:focus-within .variantCompact.hasRemove:not(.hasPin):not(.hasMenu) .age { opacity: 0; }
 
-  .row.hasPin.hasRemove {
+  .row.hasPin.hasRemove:not(.variantRail) {
     padding-inline-end: calc(var(--space-2) * 3 + var(--control-h-sm) * 2);
   }
 
-  /*
-   * The rail, and only the rail, moves the pin to the leading edge — see the
-   * `.pin` note. So the rail is the only variant with a leading gutter, and its
-   * trailing gutter shrinks back to one control.
-   */
-  /*
-   * The rail has one control per side, so both its gutters are one control
-   * wide — the trailing one unconditionally, because in the rail that slot is
-   * occupied at rest by the status dot and only *becomes* the delete on hover.
-   *
-   * `.hasPin` is on the selector purely to out-specify `.row.hasPin.hasRemove`
-   * above, which is the two-controls-on-one-side case and does not apply here.
-   * Without it that rule reserved 52px and the rail lost 26px of title to a
-   * gutter it was not using.
-   */
   /*
    * The panel's trailing slot is likewise occupied at rest by the status dot,
    * so its gutter is unconditional too. It is one `--space-2` narrower than the
@@ -184,16 +159,6 @@
   .row.variantPanel.hasRemove,
   .row.variantPanel.hasPin.hasRemove {
     padding-inline-end: calc(var(--space-2) + var(--control-h-sm));
-  }
-
-  .row.variantRail {
-    padding-inline-start: calc(var(--space-2) * 2 + var(--control-h-sm));
-    padding-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm));
-  }
-
-  .row.variantRail.hasPin {
-    padding-inline-start: calc(var(--space-2) * 2 + var(--control-h-sm));
-    padding-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm));
   }
 
   /*
@@ -282,25 +247,14 @@
    * at rest, so putting it outermost means a pinned row shows one control flush
    * to its edge rather than one floating beside an empty slot.
    *
-   * The 4px is (--control-h - --control-h-sm) / 2: a 20px row icon inset by
-   * half the difference lands its glyph on the centre line of the rail's 28px
-   * chrome icons. Mirrored in `app/shell/shell.module.css`.
+   * The rail consumes ui/navigation-row slots instead of mirroring shell offsets.
    */
-  .pin {
+  .wrapper:where(:not(.wrapperRail)) .pin {
     inset-inline-end: var(--space-2);
   }
 
-  .remove {
+  .wrapper:where(:not(.wrapperRail)) .remove {
     inset-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm));
-  }
-
-  .wrapperRail .pin {
-    inset-inline-start: var(--space-2);
-    inset-inline-end: auto;
-  }
-
-  .wrapperRail .remove {
-    inset-inline-end: var(--space-2);
   }
 
   /*
@@ -310,30 +264,31 @@
    * One trailing column for the whole module: `+`, then every `×`, then every
    * status dot, all on one centre line.
    */
-  .wrapperPanel .remove {
+  .wrapperPanel:where(:not(.wrapperRail)) .remove {
     inset-inline-end: 0;
   }
 
   /*
-   * The dot and the delete share one 20px slot, so the dot is centred inside
-   * that box rather than flush to the same 4px: 4 + (20 − 6) / 2 = 11. Sharing
-   * the slot is the point — nothing shifts on hover, one mark simply becomes
-   * the other.
+   * Status and delete share one 20px slot. The full-width grid centres both
+   * 6px dots and 10px working rings without overflow. Nothing shifts on hover:
+   * one mark simply becomes the other.
    */
   .statusSlot {
+    pointer-events: none;
     display: grid;
     place-items: center;
-    inline-size: var(--dot-sm);
+    inline-size: var(--control-h-sm);
     position: absolute;
     inset-block-start: 50%;
-    inset-inline-end: calc(var(--space-2) + (var(--control-h-sm) - var(--dot-sm)) / 2);
     align-self: auto;
     translate: 0 -50%;
     transition: opacity var(--motion-quick) var(--ease-feedback);
   }
 
+  .wrapper:where(:not(.wrapperRail)) .statusSlot { inset-inline-end: var(--space-2); }
+
   .wrapperPanel .statusSlot {
-    inset-inline-end: calc((var(--control-h-sm) - var(--dot-sm)) / 2);
+    inset-inline-end: 0;
   }
 
   .wrapperRail:hover .statusSlot,
@@ -357,7 +312,7 @@
 
   /* The sidebar's Pinned group conveys membership, so its repeated row controls
      appear only on hover/focus. Other surfaces retain their persistent pin mark. */
-  .wrapper:not(.wrapperRail) .pinOn {
+  .wrapper:where(:not(.wrapperRail)) .pinOn {
     opacity: 1;
     pointer-events: auto;
   }
@@ -376,7 +331,6 @@
     }
   }
 
-
   .remove:hover {
     color: var(--error-text);
   }
@@ -385,7 +339,6 @@
     .statusSlot {
       transition: none;
     }
-
 
     .row,
     .action {
@@ -397,27 +350,19 @@
   .menuSlot {
     pointer-events: none;
     position: absolute;
-    inset-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm));
     inset-block-start: 50%;
     translate: 0 -50%;
   }
 
+  .wrapper:where(:not(.wrapperRail)) .menuSlot { inset-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm)); }
 
-
-  .row.hasMenu,
-  .row.hasMenu.hasRemove,
-  .row.hasMenu.hasPin.hasRemove { padding-inline-end: calc(var(--space-2) * 4 + var(--control-h-sm) * 3); }
-  .wrapperRail .row.hasMenu,
-  .wrapperRail .row.hasMenu.hasPin { padding-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm)); }
-  .wrapperRail:hover .row.hasMenu,
-  .wrapperRail:focus-within .row.hasMenu,
-  .wrapperRail:has(.menuButton[aria-expanded='true']) .row.hasMenu {
-    padding-inline-end: calc(var(--space-2) * 3 + var(--control-h-sm) * 2);
-  }
-  .wrapper:has(.hasMenu) .remove { inset-inline-end: var(--space-2); }
+  .row.hasMenu:not(.variantRail),
+  .row.hasMenu.hasRemove:not(.variantRail),
+  .row.hasMenu.hasPin.hasRemove:not(.variantRail) { padding-inline-end: calc(var(--space-2) * 4 + var(--control-h-sm) * 3); }
+  .wrapper:where(:not(.wrapperRail)):has(.hasMenu) .remove { inset-inline-end: var(--space-2); }
   .wrapperPanel:has(.hasMenu) .remove { inset-inline-end: 0; }
   .wrapperPanel:has(.hasMenu) .menuSlot { inset-inline-end: calc(var(--space-2) + var(--control-h-sm)); }
-  .wrapper:not(.wrapperRail):has(.hasMenu) .pin { inset-inline-end: calc(var(--space-2) * 3 + var(--control-h-sm) * 2); }
+  .wrapper:where(:not(.wrapperRail)):has(.hasMenu) .pin { inset-inline-end: calc(var(--space-2) * 3 + var(--control-h-sm) * 2); }
 
   .wrapper:hover .menuSlot,
   .wrapper:focus-within .menuSlot,
@@ -426,8 +371,6 @@
   @media (hover: none) {
     .menuSlot { pointer-events: auto; }
     .menuButton { opacity: 1; pointer-events: auto; }
-    .wrapperRail .row.hasMenu,
-    .wrapperRail .row.hasMenu.hasPin { padding-inline-end: calc(var(--space-2) * 3 + var(--control-h-sm) * 2); }
   }
 
   @media (prefers-reduced-motion: reduce) {

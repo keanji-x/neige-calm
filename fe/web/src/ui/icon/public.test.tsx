@@ -21,6 +21,14 @@ describe('Icon', () => {
     expect(svg?.getAttribute('stroke-width')).toBe('2');
   });
 
+  it('renders running as a complete unfilled circle without a play triangle or loading gap', () => {
+    const { container } = render(<Icon name="status-running" />);
+    const svg = container.querySelector('svg')!;
+    expect(svg.getAttribute('fill')).toBe('none');
+    expect(svg.querySelectorAll('circle')).toHaveLength(1);
+    expect(svg.querySelector('path, polygon, polyline')).toBeNull();
+  });
+
   it('uses distinct CSS classes for the default md and sm sizes', () => {
     const { container } = render(<><Icon name="plus" /><Icon name="plus" size="sm" /></>);
     const [md, sm] = container.querySelectorAll('svg');

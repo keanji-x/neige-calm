@@ -1,0 +1,57 @@
+@layer ui {
+  /* The same columns serve icons, text and controls regardless of glyph size. */
+  .row {
+    --navigation-slot: var(--control-h-sm);
+    --navigation-inset: var(--navigation-label-inset);
+    --navigation-gap: var(--space-2);
+    --navigation-text-inset: calc(var(--navigation-inset) + var(--navigation-slot) + var(--navigation-gap));
+    --navigation-inner-inset: calc(var(--navigation-inset) + var(--navigation-slot) + var(--navigation-gap));
+    --navigation-two-actions: calc(var(--navigation-inner-inset) + var(--navigation-slot) + var(--navigation-gap));
+    position: relative;
+  }
+
+  .content { min-inline-size: 0; padding-inline: var(--navigation-text-inset); }
+  .labelStart { padding-inline-start: var(--navigation-text-inset); }
+  .twoActions { padding-inline-end: var(--navigation-two-actions); }
+
+  .leading,
+  .inner,
+  .outer,
+  .chromeOuter {
+    position: absolute;
+    inset-block-start: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    inline-size: var(--navigation-slot);
+    block-size: var(--navigation-slot);
+    translate: 0 -50%;
+  }
+  .leading { inset-inline-start: var(--navigation-inset); }
+  .inner { inset-inline-end: var(--navigation-inner-inset); }
+  .outer { inset-inline-end: var(--navigation-inset); }
+
+  /* Larger hit targets retain the same centre as the compact outer slot. */
+  .chromeOuter {
+    inset-inline-end: calc(var(--navigation-inset) - (var(--control-h) - var(--navigation-slot)) / 2);
+    inline-size: var(--control-h);
+    block-size: var(--control-h);
+  }
+
+  .inlineActions {
+    display: grid;
+    grid-template-columns: repeat(2, var(--navigation-slot));
+    gap: var(--navigation-gap);
+    padding-inline-end: var(--navigation-inset);
+    place-items: center;
+  }
+
+  .revealActions:hover > .content,
+  .revealActions:focus-within > .content,
+  .revealActions:has([aria-expanded='true']) > .content {
+    padding-inline-end: var(--navigation-two-actions);
+  }
+  @media (hover: none) {
+    .revealActions > .content { padding-inline-end: var(--navigation-two-actions); }
+  }
+}

@@ -3,7 +3,9 @@
 `ui/icon` is the single semantic icon registry. Functional shapes come from the
 pinned `lucide-react` 0.468.0 package; Tools uses Wrench, terminal resources use
 SquareTerminal, agents use Bot, and disclosures use ChevronRight. Running and
-waiting use LoaderCircle and Clock3 respectively. Status circles remain distinct
+waiting use Circle and Clock3 respectively. Running uses a complete, unfilled
+outline across navigation and inventory groups; compact activity markers also
+use an outlined ring. Status circles remain distinct
 from plain action controls.
 
 All graphics use Lucide's 24-unit SVG geometry, 2-unit rounded strokes and the

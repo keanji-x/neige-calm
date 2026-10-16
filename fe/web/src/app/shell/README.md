@@ -234,3 +234,16 @@ Drawer is open. Compact Drawer closing removes its retained frame in the same
 commit, including when resizing during a desktop exit, and restores focus to
 its opener. Desktop Drawer entrance/exit and focus behavior remain unchanged.
 Control feedback and progress animations are unaffected.
+
+## Shared row columns
+
+Today, section disclosures, Area disclosures, Show more, empty-state actions
+and rail Track rows consume ui/navigation-row/public.module.css. That UI module
+owns the leading slot, text inset and both trailing control centres; shell and
+feature styles own appearance and behavior. No per-host desktop gap or duplicated
+rail-offset arithmetic is needed. The header retains its larger hit targets on
+the same slot centres. Running uses the common complete-circle icon.
+
+The browser contract compares actual text bounds, compact status glyphs and
+action centres at narrow/wide widths, with both light/dark themes and changed
+control/spacing tokens. Long labels must not cover actions or scroll horizontally.

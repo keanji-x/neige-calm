@@ -152,3 +152,5 @@
 
 - { path: fe/web/src/ui/code, type: directory, owner: ui/code, readonly: false, basis: "#2474 domain-free language metadata and read-only code presentation" }
 - { path: fe/tools/benchmark-code.mjs, type: file, owner: tooling/preview, readonly: false, basis: "#2474 standalone production reader performance comparison" }
+
+- { path: fe/web/src/ui/navigation-row, type: directory, owner: ui/navigation-row, readonly: false, basis: "User-approved shared sidebar icon, label and action column geometry" }

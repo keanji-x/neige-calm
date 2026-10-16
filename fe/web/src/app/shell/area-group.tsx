@@ -6,6 +6,7 @@ import { areaPinnedTracks, railAreaTracks, type Track } from '../../../../core/d
 import { Icon } from '../../ui/icon/public.tsx';
 import { SidebarTrackGroup, type RowProps, type GroupManagement } from './sidebar-group.tsx';
 import styles from './shell.module.css';
+import rowLayout from '../../ui/navigation-row/public.module.css';
 import { useUiPreferences } from '../providers/ui-preferences.tsx';
 
 export function AreaGroup({
@@ -43,7 +44,7 @@ export function AreaGroup({
       <DropdownMenuItem label="Delete area" onClick={() => onRequestDelete(area.id)} />
     </>}
     actions={
-      <button type="button" data-nc-role="icon" className={styles.areaNew}
+      <button type="button" data-nc-role="icon" className={`${styles.areaNew} ${rowLayout.outer}`}
         aria-label={`New track in ${area.name}`} title="New track" onClick={() => onNewTrack(area.id)}>
         <Icon name="plus" size="sm" />
       </button>

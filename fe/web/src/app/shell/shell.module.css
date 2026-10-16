@@ -262,7 +262,6 @@
       overflow: clip;
     }
 
-
   }
 
   /* 44 − 2×10 = 24px cannot hold a 28px control, so the collapsed strip drops
@@ -282,7 +281,6 @@
   .brand {
     display: inline-flex;
     align-items: center;
-    gap: var(--space-2);
     min-inline-size: 0;
     /* A full line box keeps clipped labels' ascenders and descenders visible. */
     color: var(--text-2);
@@ -337,12 +335,7 @@
     color: var(--text);
   }
 
-  .brandActions {
-    display: flex;
-    align-items: center;
-    gap: 0;
-    margin-inline-start: auto;
-  }
+  .brandActions { margin-inline-start: auto; }
 
   /*
    * THE VERTICAL SCALE.
@@ -414,17 +407,7 @@
     display: grid;
   }
 
-  /*
-   * The Area name starts exactly where every Track title starts: one 28px
-   * leading gutter (4px inset + 20px box + 4px clearance) for the chevron,
-   * which is the same arithmetic as the track row's pin gutter, and then text.
-   *
-   * The empty 6px cell that used to sit between them is gone with the track
-   * row's leading status dot — that dot moved to the trailing edge, so there is
-   * no longer a column for an area to reserve space in for a status it does not
-   * have. Removing an apology is usually a better fix than writing a better
-   * apology for it.
-   */
+  /* Navigation-row owns icon/text/action columns; the shell owns appearance. */
   .areaRow {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
@@ -434,13 +417,6 @@
     min-block-size: var(--row-h);
     padding-block: 0;
 
-    /* Leading: one control gutter for the chevron (4 + 20 + 4). Trailing: two,
-       because the row carries permanent actions and a permanent `+`
-       (4 + 20 + 4 + 20 + 4 = 52). Both are reserved, so the name ellipsizes at
-       the same column while both controls remain visible. */
-    padding-inline:
-      calc(var(--space-2) + var(--control-h-sm) + var(--space-2))
-      calc(var(--space-2) * 3 + var(--control-h-sm) * 2);
     border-radius: var(--radius-sm);
     text-align: start;
     cursor: pointer;
@@ -453,13 +429,6 @@
     min-inline-size: 0;
   }
 
-  .groupAction {
-    position: absolute;
-    inset-block-start: 50%;
-    inset-inline-end: 0;
-    translate: 0 -50%;
-  }
-
   .areaRow:hover {
     background: var(--overlay-hover);
   }
@@ -469,18 +438,10 @@
   }
 
   .chevron {
-    position: absolute;
-    inset-block-start: 50%;
-    inset-inline-start: var(--space-2);
-    display: grid;
-    place-items: center;
-    inline-size: var(--control-h-sm);
-    block-size: var(--control-h-sm);
     border-radius: var(--radius-sm);
     line-height: var(--leading-none);
     color: var(--text-3);
     pointer-events: none;
-    translate: 0 -50%;
     transition: none;
   }
 
@@ -488,23 +449,18 @@
     rotate: 90deg;
   }
 
-  /* Section labels retain the rail edge; only Area rows reserve a leading disclosure gutter. */
+  /* Section icons share the leading control column with Area disclosures. */
   .groupHeading .areaRow {
     min-block-size: var(--navigation-module-row-height);
     display: flex;
     gap: var(--space-2);
-    padding-inline: var(--navigation-label-inset) var(--control-h);
-  }
-
-  .groupHeading .groupWithoutActions {
-    padding-inline-end: 0;
   }
 
   .groupHeading .chevron {
     position: static;
     order: 1;
-    inline-size: var(--glyph-sm);
-    block-size: var(--glyph-sm);
+    inline-size: var(--control-h-sm);
+    block-size: var(--control-h-sm);
     translate: none;
     flex-shrink: 0;
     opacity: 0;
@@ -521,7 +477,7 @@
   .areaName {
     display: flex;
     align-items: center;
-    gap: var(--space-4);
+    gap: var(--space-2);
     min-inline-size: 0;
     overflow: hidden;
     white-space: nowrap;
@@ -533,18 +489,7 @@
     color: var(--text);
   }
 
-  /*
-   * `--space-2` is (--control-h − --control-h-sm) / 2 = 4px, and that is the
-   * whole reason it is here rather than 0.
-   *
-   * The rail's chrome icons (the collapse chevron, the section `+`) are 28px
-   * boxes flush to the rail's inline padding; its row icons (this more menu, the track
-   * row's pin and ×) are 20px. Flush-right on both meant their *glyphs* sat on
-   * two vertical lines 4px apart — near enough to read as a mistake, far enough
-   * to see. Insetting the small boxes by half the difference puts every icon in
-   * the rail on one column. The same 4px is applied in
-   * `features/track/row/row.module.css`; both derive it, neither hardcodes it.
-   */
+  /* Hosts retain hit-target styling; shared slots position their centres. */
   .areaActionsButton,
   .areaNew {
     display: grid;
@@ -557,32 +502,13 @@
     cursor: pointer;
   }
 
-  /*
-   * Two trailing controls on one row, and the order is §4.5's: the one that
-   * sits outermost goes flush to the trailing gutter rather than floating
-   * beside a gap. That is the `+`. Area actions take the inboard slot —
-   * 4 + 20 + 4 — which is the same
-   * step `features/track/row/row.module.css` puts between its pin and its
-   * delete, derived from the same two tokens.
-   *
-   * Both visible slots are reserved by `.areaRow`'s trailing padding, so the
-   * name never runs underneath either control.
-   */
   .areaNew {
-    position: absolute;
-    inset-block-start: 50%;
-    inset-inline-end: var(--space-2);
-    translate: 0 -50%;
     transition: background-color var(--motion-quick) var(--ease-feedback),
       color var(--motion-quick) var(--ease-feedback);
   }
 
   .areaActions {
-    position: absolute;
-    inset-block-start: 50%;
-    inset-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm));
     z-index: var(--z-raised);
-    translate: 0 -50%;
 
     /* Management is a first-class Area action, so the trigger stays visible. */
     opacity: 1;
@@ -607,7 +533,6 @@
     color: var(--text);
   }
 
-
   /*
    * §5.3's most important rule: when a region's emptiness has exactly one
    * remedy, render that remedy's own interface in the content position. This
@@ -620,7 +545,7 @@
 
     /* The one empty-state action deliberately *inset* rather than flush: it
        occupies the Area list position, whose disclosure text starts 28px in. */
-    padding-inline: calc(var(--space-2) + var(--control-h-sm) + var(--space-2)) var(--space-3);
+    padding-inline-end: var(--space-3);
     font-size: var(--text-base);
     line-height: var(--leading-tight);
     color: var(--text-3);
@@ -834,7 +759,6 @@
     }
 
     .brand {
-      gap: var(--space-3);
       font: var(--type-page-title);
       letter-spacing: var(--tracking-normal);
       color: var(--text);

@@ -27,6 +27,7 @@ import { SIDEBAR_SECTION_IDS, moveSidebarGroup, type SidebarGroupId, type Sideba
 import { AreaGroup } from './area-group.tsx';
 import { SidebarGroup, SidebarTrackGroup, type GroupManagement } from './sidebar-group.tsx';
 import styles from './shell.module.css';
+import rowLayout from '../../ui/navigation-row/public.module.css';
 
 export type SidebarProps = Readonly<{
   areas: readonly Area[];
@@ -189,17 +190,17 @@ export function Sidebar({
   };
 
   return (
-    <nav ref={railRef} className={`${styles.rail} ${collapsed ? styles.railCollapsed : ''}`} aria-label="Workspace">
+    <nav ref={railRef} className={`${rowLayout.row} ${styles.rail} ${collapsed ? styles.railCollapsed : ''}`} aria-label="Workspace">
       <div className={styles.brandRow}>
         {!collapsed && (
           <button
             type="button"
             data-nc-role="row"
-            className={styles.brand}
+            className={`${styles.brand} ${rowLayout.row} ${rowLayout.labelStart}`}
             aria-label="Go to Today"
             onClick={() => onGo({ name: 'today' })}
           >
-            <span className={styles.brandMark} aria-hidden="true" />
+            <span className={rowLayout.leading}><span className={styles.brandMark} aria-hidden="true" /></span>
             <span className={styles.brandText}>Today</span>
           </button>
         )}
@@ -216,7 +217,7 @@ export function Sidebar({
         )}
         <ConnectionIndicator readError={readError} activityError={activityError} loading={readLoading} onRetry={onRetryRead} />
         {!collapsed && (
-          <div className={styles.brandActions}>
+          <div className={`${styles.brandActions} ${rowLayout.inlineActions}`}>
             <DropdownMenu placement="below" button={{
               label: 'Sidebar view options', icon: <Icon name="more" />,
               isIconOnly: true, variant: 'ghost', size: 'sm', className: styles.areaActionsButton,
@@ -286,13 +287,13 @@ export function Sidebar({
             management={management(id, 'Group actions for Areas')}
             expanded={areasExpanded}
             onToggle={(value) => preferences.setSidebarGroupExpanded('areas', value)}
-            actions={<button type="button" data-nc-role="icon" className={`${styles.iconButton} ${styles.groupAction}`}
+            actions={<button type="button" data-nc-role="icon" className={`${styles.iconButton} ${rowLayout.chromeOuter}`}
               aria-label="New area" onClick={onRequestCreateArea}><Icon name="plus" /></button>}>
             {readError === null && !readLoading && userAreas.length === 0 && (
               <button
                 type="button"
                 data-nc-role="row"
-                className={styles.emptyAreaCreate}
+                className={`${styles.emptyAreaCreate} ${rowLayout.labelStart}`}
                 onClick={onRequestCreateArea}
               >
                 Create your first area

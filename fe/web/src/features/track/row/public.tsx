@@ -10,6 +10,7 @@ import {
 import { ActivityIndicator } from '../../../ui/activity-indicator/public.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
 import styles from './row.module.css';
+import rowLayout from '../../../ui/navigation-row/public.module.css';
 import { TrackActions } from './actions.tsx';
 
 export type TrackRowVariant = 'default' | 'compact' | 'panel' | 'rail';
@@ -89,14 +90,14 @@ export function TrackRow({
   return (
     <div className={[
       styles.wrapper,
-      variant === 'rail' ? styles.wrapperRail : '',
+      variant === 'rail' ? `${styles.wrapperRail} ${rowLayout.row} ${actions === undefined ? '' : rowLayout.revealActions}` : '',
       variant === 'panel' ? styles.wrapperPanel : '',
     ].filter(Boolean).join(' ')}>
       <button
         type="button"
         data-nc-role="row"
         className={[
-          styles.row, variantClass(variant),
+          styles.row, variantClass(variant), variant === 'rail' ? rowLayout.content : '',
           active ? styles.rowActive : '',
           hasPin ? styles.hasPin : '', hasRemove ? styles.hasRemove : '', actions !== undefined ? styles.hasMenu : '',
         ].filter(Boolean).join(' ')}
@@ -119,14 +120,14 @@ export function TrackRow({
       </button>
 
       {activity === 'unread' && <span hidden id={descriptionId}>{activityLabelOf('unread')}</span>}
-      {trailingStatus && activity !== 'quiet' && <span className={styles.statusSlot} aria-hidden="true">
+      {trailingStatus && activity !== 'quiet' && <span className={`${styles.statusSlot} ${variant === 'rail' ? rowLayout.outer : ''}`} aria-hidden="true">
         <ActivityIndicator state={activity} />
       </span>}
       {onSetPinned !== undefined && (
         <button
           type="button"
           data-nc-role="icon"
-          className={`${styles.action} ${styles.pin} ${pinned ? styles.pinOn : ''}`}
+          className={`${styles.action} ${styles.pin} ${variant === 'rail' ? rowLayout.leading : ''} ${pinned ? styles.pinOn : ''}`}
           aria-label={pinned ? `Unpin ${title}` : `Pin ${title}`}
           aria-pressed={pinned}
           onClick={() => onSetPinned(track.id, !pinned)}
@@ -134,14 +135,14 @@ export function TrackRow({
           <Icon name="arrow-up" size="sm" />
         </button>
       )}
-      {actions !== undefined && <span className={styles.menuSlot}>
+      {actions !== undefined && <span className={`${styles.menuSlot} ${variant === 'rail' ? rowLayout.inner : ''}`}>
         <TrackActions track={track} {...actions} onDelete={onDelete} className={styles.menuButton} />
       </span>}
       {onDelete !== undefined && (
         <button
           type="button"
           data-nc-role="icon"
-          className={`${styles.action} ${styles.remove}`}
+          className={`${styles.action} ${styles.remove} ${variant === 'rail' ? rowLayout.outer : ''}`}
           aria-label={`Delete ${title}`}
           onClick={() => onDelete(track.id)}
         >
