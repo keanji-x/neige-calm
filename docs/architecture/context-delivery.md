@@ -1,12 +1,12 @@
 # 上下文交付：减负而不丢契约
 
-状态：待实施设计；本次仅新增本文。整体 **L2**：后续涉及授权、恢复与持久化语义，交付后由 Planner 安排双独立评审。本次不改生产代码、配置或其他会话，不安排评审、不手动提交。
+状态：待实施设计；本次仅修订本文。整体 **L2**：后续涉及授权、恢复与持久化语义，交付后由 Planner 安排双独立评审。本次不改生产代码、配置或其他会话，不安排评审、不手动提交。
 
 ## 1. 目标与边界
 
 把模型输入组织为「常驻必要约束、当前任务摘要、本轮增量、按需说明、历史证据」，优先删除重复的展示性内容，保留唯一事实来源和恢复入口。不以更短为由删安全规则、隐藏工具 schema、改变工具授权或自动 compact 活跃会话。
 
-借鉴 [#1893](1893-planner-prompt-diet.md) 的短主提示 + `guide/`：保留触发读取的索引，将低频操作细节交给现有读取路径。该文是历史设计，旧数据库统计、工具数量、提示字节目标及删除计划均不作为当前事实。以下核对基于源码 HEAD `22b530cce38a61f9efd078c4e059e5389a8e70dc`。
+借鉴 [#1893](1893-planner-prompt-diet.md) 的短主提示 + `guide/`：保留触发读取的索引，将低频操作细节交给现有读取路径。该文是历史设计，旧数据库统计、工具数量、提示字节目标及删除计划均不作为当前事实。以下核对基于源码 HEAD `99f42b2afc8dc0fcaea0c55ec072994d93305abc`。
 
 仅有本会话和任务提供的当前 Area 报告背景，不是完整 provider 历史。任务背景称 `neige_workspace_ls` 曾因缺 grant 被拒绝；本文不绕过授权，不扫描其他 Area 数据库、会话或凭证。宿主通用指令与技能目录的重复只记录可证来源，未知留待授权后的独立观测。
 
@@ -20,10 +20,10 @@
 |---|---|---|---|
 | Planner | `profile_instructions` → `planner_instructions` → `SharedThreadStartParams.developer_instructions` → `thread/start` | 同一 profile 组装，另附长进程片段；session 保存文本，每轮 spawn 写说明文件，argv 用 `--append-system-prompt-file`；新建与 `--resume` 都传 | 同一 profile 组装；`session/prompt` 在尚无 `acp_submissions` 时前置 `Neige conversation instructions` 文本块 |
 | Assistant | ordinary/launchpad head + mechanics + tail + discovery；thread/start 注入；不是缩短版 Planner | 同一 profile，discovery 改直接 MCP；不附 Planner 长进程片段；其余使用 managed session | 同一 profile，discovery 改 session tool list；首提交说明块 |
-| plain chat | profile 不传 developer instructions，`NoMcp`；不是有任务授权的 worker | profile 返回空串，仍经 managed wiring/spawn；空 Neige 说明不意味着 CLI 无宿主提示 | 空串也走首提交说明块；agent 自身行为不能推断为空 |
-| task worker | `codex_adapter` 新 thread 注入 WorkerCodex；首 turn 单独传冻结的任务 prompt，已有 thread/turn 有恢复分支 | `claude_adapter` 命令行 `--append-system-prompt` 注入 WorkerClaude，任务 prompt 为位置参数；这是交互 worker 路径，不等同 managed Claude 每轮 spawn | **无 ACP task worker**；`TaskKind` 仅 Codex/Claude/Terminal。managed plain chat 的 Worker 数据库角色不能当 task worker |
+| PlainChat | **仅 Codex**；不传 developer instructions，`NoMcp` | 不适用 | 不适用 |
+| task worker | `codex_adapter` 新 thread 注入 WorkerCodex；首 turn 单独传冻结的任务 prompt，已有 thread/turn 有恢复分支 | `claude_adapter` 命令行 `--append-system-prompt` 注入 WorkerClaude，任务 prompt 为位置参数；这是交互 worker 路径，不等同 managed Claude 每轮 spawn | **无 ACP task worker**；`TaskKind` 仅 Codex/Claude/Terminal。PlainChat 的 Worker 数据库角色不能当 task worker |
 
-来源：[profile instructions](../../crates/calm-server/src/harness/instructions.rs)、[start adapter](../../crates/calm-server/src/operation/planner_harness_start_adapter.rs)、[role prompts](../../crates/calm-server/src/planner_card.rs)、[Claude wiring](../../crates/calm-server/src/claude_planner/wiring.rs)、[spawn](../../crates/calm-server/src/claude_planner/spawn.rs)、[ACP wiring](../../crates/calm-server/src/acp_planner/wiring.rs)、[ACP session](../../crates/calm-server/src/acp_planner/session.rs)、[Codex worker](../../crates/calm-server/src/operation/codex_adapter/mod.rs)、[Claude worker](../../crates/calm-server/src/operation/claude_adapter/mod.rs)、[TaskKind](../../crates/calm-truth/src/model.rs)。provider 的 wire 组装在 [Codex](../../crates/provider/src/codex/mod.rs) 和 [ACP protocol](../../crates/provider/src/acp/protocol.rs)。
+来源：[profile instructions](../../crates/calm-server/src/harness/instructions.rs)、[start adapter](../../crates/calm-server/src/operation/planner_harness_start_adapter.rs)、[role prompts](../../crates/calm-server/src/planner_card.rs)、[Claude wiring](../../crates/calm-server/src/claude_planner/wiring.rs)、[spawn](../../crates/calm-server/src/claude_planner/spawn.rs)、[ACP wiring](../../crates/calm-server/src/acp_planner/wiring.rs)、[ACP session](../../crates/calm-server/src/acp_planner/session.rs)、[Codex worker](../../crates/calm-server/src/operation/codex_adapter/mod.rs)、[Claude worker](../../crates/calm-server/src/operation/claude_adapter/mod.rs)、[TaskKind](../../crates/calm-truth/src/model.rs)。合法组合由 [profile binding](../../crates/calm-server/src/harness/profile.rs) 决定：Planner/Assistant 各支持 Codex、Claude、OpenCode，PlainChat 仅 Codex，任务 worker 仅 Codex/Claude（另有 Terminal）。provider 在建卡时绑定，runtime 不支持切换。provider 的 wire 组装在 [Codex](../../crates/provider/src/codex/mod.rs) 和 [ACP protocol](../../crates/provider/src/acp/protocol.rs)。
 
 ### 2.2 启动与每轮内容
 
@@ -50,16 +50,16 @@
 
 | 内容/唯一 owner 与来源 | 加载时机与允许省略 | 更新/失效 | 恢复规则 |
 |---|---|---|---|
-| 必要约束：kernel 角色/隔离/权限/工具调用规则，`planner_card` 与各角色 prompts | 建立上下文时常驻；保留授权边界、不可信数据边界、报告/任务身份；仅低频流程移 guides | 角色/provider/协议版本变更即重建；不在通用层硬编码插件名 | 新上下文重送必要约束；未知是否保留时不凭 sent 标志省略 |
-| 创建方法：card `TemplateContext` | 新 Planner 加载；候选仅移除已识别的 input-form 展示定义；其余不盲压缩 | 创建快照不可被模板更新覆盖；渲染规则版本变动要可比较原文 | 老会话不改 payload；无快照不回填猜测；读取原快照可核对 |
-| 用户绑定输入：track owner binding 的 `template_input` | 启动及恢复；必须保留有效选择、含义和授权限制；不能用删除 UI schema 顺便删除值 | 绑定失效按现有 resolver 处理；用户改意覆盖原选择须进入摘要 | 与最新用户意图对照，歧义列待决，模板默认值不是审批 |
-| 插件说明：builtin component / stored manifest，各自现有 owner | 常驻最短边界和使用触发索引；低频细节候选走已有授权读取入口，无入口先保留 | enable/scope/manifest/report refs 变化使索引失效；不是只在会话创建检查 | 重新解析 live scope，撤销后不提供越权详情；内核始终逐调用校验 |
-| 仓库指导：仓库文件 + provider 文档化加载契约 | 任务涉及代码时按适用目录读取；不默认注入仓库全文副本 | cwd/head/指导文件改变重新判适用；不得删用户要求保留的规则 | provider 切换重新确认；摘要链接不代替实际约束 |
+| 必要约束：kernel 角色/隔离/权限/工具调用规则，`planner_card` 与各角色 prompts | 建立上下文时常驻；保留授权边界、不可信数据边界、报告/任务身份；仅低频流程移 guides | 新上下文按绑定角色/provider 组装；不在通用层硬编码插件名 | 新上下文重送必要约束；未知是否保留时不凭 sent 标志省略 |
+| 创建方法：card `TemplateContext` | 新 Planner 加载完整快照，包含全部表单注释；不做通用投影 | 创建快照不可被模板更新覆盖；来源精简只影响此后创建的快照 | 老会话不改 payload；无快照不回填猜测；读取原快照可核对 |
+| 用户绑定输入：track owner binding 的 `template_input` | 启动及恢复；Bound Template Input 全量保留，含选择、含义和授权限制 | 绑定失效按现有 resolver 处理；用户改意覆盖原选择须进入摘要 | 与最新用户意图对照，歧义列待决，模板默认值不是审批 |
+| 插件说明：builtin component / stored manifest，各自现有 owner | 现有组装入口全文保留；A 只删模板内已由该入口承载的重复教学 | 目前在启动/打开 session/首提交组装；运行时说明刷新**未实现，不在本切片实现** | 说明不是权限；内核始终逐调用校验 live enable/scope/role；旧说明可能留在上下文 |
+| 仓库指导：仓库文件 + provider 文档化加载契约 | 任务涉及代码时按适用目录读取；不默认注入仓库全文副本 | cwd/head/指导文件改变重新判适用；不得删用户要求保留的规则 | 不同 provider 的新卡重新确认；摘要链接不代替实际约束 |
 | 宿主通用说明/技能目录：外部宿主（具体来源未知） | 本设计不改；先让宿主提供有版本的来源清单，再判断同源重复 | 未证实前不去重；技能正文已有按需读取语义不等于目录零成本 | 不猜私有路径、不读密钥、不修改其他会话 |
-| 工具发现：`SessionCatalog`/registry + provider loader | 常驻发现入口；按需取描述/schema，保留当前 listing/call 策略 | role/grant/plugin 状态变化实时重算；加载过的 schema 不授予权限 | 新 provider 重新发现；不得复用旧 scope 的工具集作为授权 |
+| 工具发现：`SessionCatalog`/registry + provider loader | 常驻发现入口；按需取描述/schema，保留当前 listing/call 策略 | listing 依角色/profile/plugin 策略，workspace 四工具不按 grant 隐藏；调用实时校验 grant | 不同 provider 的新卡重新发现；旧工具集不是授权 |
 | 当前任务摘要：Planner 对话/Report 的语义 owner；worker 为冻结任务 prompt + 正式消息 | 初次目标明确、目标改动、任务交接和恢复时写；不每轮重抄完整 report | 新用户 steering、覆盖关系、审批撤销、产出/验证变动即更新 | 按下文摘要契约重建；语义冲突由 Planner 判，不让 kernel 猜 |
 | 本轮预算：`PlannerTurnBudget`/`FrozenBudget` | 每次 start 保留短时间值与冻结含义；提醒仅现有支持 steer 的分支 | 新 start 重采样；同 start retry 沿用冻结值 | 不用上一轮值恢复；不把剩余执行时间当上下文容量 |
-| workspace 能力：`managed_track` live grant | 每轮仍给短当前能力声明；将 1426 字教学转为短声明 + 按需工具说明的候选，不省 live 查询 | 每轮校验，撤销即无能力；建议显式无 grant/撤销短声明，不能延续旧肯定句 | 重启/resume/provider 切换重新读，旧摘要和工具清单都不能授予 grant |
+| workspace 能力：`managed_track` live grant | 有 grant 每轮给短教学，保留必要分页/水位语义；无 grant 不注入；不省 live 查询 | 每轮校验；撤销后当轮无肯定声明 + 工具实时拒绝；不增加发送/撤权状态 | 每轮包括 resume 重新读；旧摘要和工具清单不能授予 grant |
 | 状态增量：track-vcs head/diff，queue observations | 每轮只变动；已有 report-edit 去重继续保留；无 diff 不表示状态未变 | head、pending queue、rewind 改变；超时/丢 diff 标未知 | 当前 status/精确文件重读；不能以 last_sent_head 证明模型掌握所有状态 |
 | 任务结果：completion/failure event + exact attempt/event 引用 | 已有有界预览、contract conclusion 或显式 worker summary；按需读全文 | 投影可推进，引用必须匹配原事件；验证按目标 head/run 分开记 | unavailable 不伪造详情；worker claims 不等于 gate pass、交付或验收 |
 | 历史证据：现有 events、runs、gate logs、track-vcs | 常驻引用与限制，按需全文；可省重复日志，不删原记录 | 当前 head/环境/版本变动使旧验证不再覆盖当前结果 | 精确读取历史身份并注明时点；不得恢复为实时权限或当前验证 |
@@ -72,9 +72,9 @@
 
 - 用户当前目标、来源消息/事件标识；哪些旧目标被取消、收窄或补充，尚未覆盖的原目标仍列出。纠正与新请求不可混同。
 - 有效约束与禁止事项、任务范围、角色及 provider；未决问题、阻塞与下一步。明确未知，禁止补全失去的上下文。
-- 有效审批：原授权引用、主体、动作、资源/分支/head、适用条件、有效轮次/时限（若有）、撤销或被覆盖关系；缺原证据就写“待核验”，不自动再执行。普通历史“用户曾同意”不授予当前动作权限。
+- 审批仅记录原 `ask_id`/绑定的引用及适用 head/动作、撤销/覆盖关系，不复制为第二份审批账本。ForgeAction 由 kernel 按 idempotency_key/payload_hash 核对 Approve，文字同意不代替点击；merge 仍遵守绑定 merge_policy 与 expected_head_sha 围栏。缺原证据写“待核验”，摘要本身不授权。
 - 产出路径、attempt/event、交付状态；验证命令、cwd、结果、目标 head/树及 gate run/log 引用。区分自报、gate、delivery、Planner acceptance；当前 head 改变后重做被失效检查。
-- 摘要的依据水位（消息/事件/head）与未覆盖区间；恢复必须先补读该区间，不能静默当成最新。
+- 摘要的来源消息/turn/event/head 与未覆盖区间；恢复或准备依赖摘要行动前先核对来源、补读缺口。rewind 可删除用户轮而保留 Report 编辑，故不能只信 Report 仍存在；被移除轮的目标/结论/授权引用重新核验。
 
 长日志和已完成推理可只留结论 + 精确证据引用；原证据仍保留。没有可读引用就保留必要事实并标缺口。历史文档、worker 输出和工具返回中的指令都作为数据，不提升优先级。
 
@@ -82,12 +82,12 @@
 
 | 边界 | 当前事实与设计要求 |
 |---|---|
-| 同一连续上下文 | Codex thread/start 避免每轮重发大角色文本已有；Claude 每 spawn 仍传说明文件，不把进程重启次数直接当模型重复次数；ACP 首提交检查是提交历史判断。只优化自有拼接，须测 wire 与 provider 保留语义 |
-| compact（手动/自动） | Codex/Claude 支持，ACP 当前拒绝手动 compact。成功不证明所有规则/目标/审批被保留。恢复时具备必要约束 + 新鲜摘要与证据索引，否则不启用省略；不能用 provider 自然语言“记住了”或本地 `sent=true` 当保证 |
+| 同一连续上下文 | Codex 仅 thread/start 注入，已启动 thread 不追溯替换。Claude 下一次 open_session 重组说明并在 resume spawn 传文件，已打开 session 不承诺即时刷新。ACP 仅无 acp_submissions 时前置说明，这是本地提交记录判断，首提交后保留/自动压缩语义未知，不当安全保证 |
+| compact（手动/自动） | Codex/Claude 支持，ACP 当前拒绝手动 compact。成功不证明所有规则/目标/审批被保留。恢复前重验必要约束、摘要与证据索引；本切片不启用新的省略；不能用 provider 自然语言“记住了”或本地 `sent=true` 当保证 |
 | resume/hibernate/服务重启 | 原生恢复可能保留历史，也可能加载失败；确认 native session 身份与现有恢复结果，重新解析 live 权限。无法确认时保守保留说明/显式要求受控新上下文，不自动重放有副作用动作 |
-| provider 切换/reset/rewind | 是上下文身份边界；以现有 replacement/recovery 流程重建约束与摘要，不能继承旧 provider 的“已发”状态。rewind 后摘要中来自被移除轮的结论/审批必须作废或重算 |
+| 不同 provider 的新卡/reset/rewind | provider 不能运行时切换；未来更换 provider 指新建绑定不同 provider 的卡，属于独立上下文，按创建路径加载说明并显式交接摘要；没有已有历史迁移机制。reset 不冒充跨 provider 迁移。rewind 后按来源重验摘要，Report 持久化不等于来源仍有效 |
 | retry 结果未知 | 区分未提交、已拒绝与已 dispatch 但未知。保持现有 issuance/ACP submission journal 的不重发语义；先核对结果，不为补上下文重复动作。ACP unresolved outcome 明确阻止再发；摘要不得把未知写成失败 |
-| 授权撤销/角色变更 | 模型可能仍保留旧许可；省略旧许可提示不能撤销它。live kernel 拒绝是权威；下一输入带当前状态/撤销事实，旧摘要授权条目失效。没有“曾注入一次即可永久信任”模式 |
+| 授权撤销/角色变更 | 模型可能仍保留旧许可；省略旧许可提示不能撤销它。live kernel 拒绝是权威；当轮不再注入肯定声明，摘要原授权引用须重验。没有“曾注入一次即可永久信任”模式 |
 
 若以后确需发送状态，只能表示「哪个 native session、何版本内容、在哪个已确认提交」，不表示模型保留；没有 provider 明示保留契约的边界一律重建或维持现状。这里不新增“发送缓存”。
 
@@ -141,66 +141,73 @@ print('default budget render', len(t.encode()), len(t))
 PY
 ```
 
-后续实验须用 production renderer/现有 fake provider 捕获 fixture wire，以相同 track_id、输入、scope、队列、head 对照，分别记录：首次启动、普通轮、grant 变化、结果到达、compact 后恢复、provider 切换的文本/工具描述及 schema 字节/字符。不要复制 renderer 到测量脚本。观测只存片段类型/长度/版本与非敏感 fixture，不记录真实凭证或全量用户内容。
+wire 对照附着 A/B/C 各自实际改变的生产入口，复用现有 fake provider/fixture，不建立 S0 全 provider 组合平台。相同输入、scope、queue/head、模板快照与工具加载步骤成对比较；记录文本、wrapper、工具 description/schema 和按需读取响应的 UTF-8 字节/字符。捕获的是 Neige→provider 边界，不是 provider 内部最终请求。只保存非敏感 fixture 与长度，不录真实凭证或用户全文。
 
-无 tokenizer，本次不报 token 或百分比收益。1169 是表单块候选移除原文大小，1426 是现有教学大小，不是承诺净省量；保留索引/语义输入、包装后须重测。首次少注入能减少保留上下文；每轮少注入还能减少累计新增内容，但 provider 可能重计历史或缓存，累计输入/计费与当前 retained context 分开取 provider 明示指标，不能用轮数乘字符冒充账单。UI 折叠、tool deferred、compact 后旧 reading 都不能用于估算收益。
+无 tokenizer，本次不报 token 或百分比收益。1169 仅记录当前源码表单大小，**不列为节省候选**；1426 是现有教学大小，不是承诺净省量；包装后须重测。首次少注入减少自有发送文本；每轮少注入减少累计新增文本，但 provider 可能重计历史或缓存，累计输入/计费与当前 retained context 分开取 provider 明示指标，不能用轮数乘字符冒充账单。UI 折叠、tool deferred、compact 后旧 reading 都不能用于估算收益。
 
-## 5. 最小分阶段实现与精确验收
+## 5. 可独立实施的三个切片
 
-每阶段独立可回滚，前一阶段证据不足不推进。以下是将来实现入口与场景，**不是本次已运行的测试**；不新增永久测试名清单或按文件字节 pin。修改 Rust 时 worker 跑聚焦测试/修格式；kernel gate 跑 quick、text/contract 和一次拒绝空选择的聚焦 replay；CI 跑广域套件，不在共享主机跑真实 Codex E2E。
+以下均为待实施计划，不是本次测试结果。A/B 可直接实施，C 可先落实提示契约；不以新框架、通用解析器或 provider 保留实验为前置。整体 L2 不降低，实施后的双独立评审由 Planner 安排。
 
-### S0：建立不含私密内容的 wire 对照
+### A：在模板来源删重复教学，完整保留快照与表单
 
-影响：现有 `planner_card`/`planner_harness_start_adapter` 测试、`tests/cases/claude_planner_wiring.rs`、`tests/acp_planner_provider.rs`、`operation/{codex_adapter,claude_adapter}/tests.rs`。复用 fake provider，按当前注册 profile/provider 的合法组合跑真实 renderer；不造 ACP worker。
+**owner / 最小文件面。** 模板 owner 修改 `crates/calm-server/templates/builtin/dev.md`，从报告教学删长正反例，保留四节结构、状态改写、证据引用与篇幅规则；从技术工作流删已由 gitforge instructions 完整承载的 issue 工具参数/返回字段/刷新重试、CI evidence 与 after_rerun 操作教学。插件 owner 的 `crates/plugin/src/builtin/gitforge/instructions.md` 作为这些技术细节的唯一来源，本切片无需扩写它。模板仍保留工作方法、仓库核对、可选 issue/无 issue 边界、验证职责、审查及 merge_policy/按 head 审批的全部必要语义；不把方法策略移给插件。
 
-验收：Planner 含快照及绑定输入；Assistant 无 Planner/task 权限；plain-chat 不注入 Planner 内容；两个 worker 都保留 goal/context/acceptance/gate/result contract/attempt_id；Claude resume argv 含说明文件；ACP 首次/后续说明差异与 journal 一致。首次/每轮/恢复捕获分开输出长度，不做整段敏感日志。回滚仅删除新增观测/fixture，不改会话状态。
+**注入前提与负例。** `planner_instructions` 对 compiled builtin catalog 先按 `plugin_documents_track`（track.plugin_scope 匹配，或 template_id 属 manifest.templates）附说明，此分支不依赖 enabled；[dev component](../../crates/calm-server/src/builtin_plugins/dev/mod.rs) 指向同一 gitforge 文本。enabled/scope/report-ref 过滤和 4096 cap 属后续 stored-manifest 分支，不能用它证明必达，也不能仅凭模板标题推断绑定。开发模板绑定路径即使插件禁用仍有技术文档，**工具仍不可用，不能据说明执行**。无绑定/其他模板/自定义快照不做运行时替换；若某来源不能证明对应说明必达，则保留该来源技术文字，不增加 fallback 或授权。
 
-聚焦入口：`planner_card::tests`、`planner_harness_start_adapter::tests`、`the_worker_prompts_match_their_reviewed_goldens`、`-p provider --lib codex::thread_start_wire_tests`（源码 `codex/mod.rs` 注册的 lib 模块）。
+**旧/新语义。** 删除原 S1 整个自动 input-form 剥离机制及相关验收、mutation 承诺。任意旧/新快照的 body 均全文经 `TemplateContext::append_to` 序列化，完整保留表单、help/description、非表单注释、字面占位符；Bound Template Input 不变。更新模板只改变以后创建的快照，不回填旧卡；外层 TemplateContext 损坏/未来版本依现行拒绝，无快照保持 None。将来若需要独立模型内容投影，另设计 typed owner 契约，不是本切片前置。
 
-### S1：仅剥离模板表单展示定义
+**聚焦测试与正负验收。** 扩展现有 `builtin_plugins::tests::builtin_issue_instructions_remain_documentation_when_dev_is_disabled`、`builtin_legacy_issue_documentation_preserves_snapshot_and_authority`，调用真实 `planner_instructions`；复用 [template startup cases](../../crates/calm-server/tests/cases/template_startup_context.rs) 的创建路径和 `planner_instructions_for_test`，确认 `TemplateContext::append_to` 的实际输出。新建 dev 卡组合说明包含技术唯一来源、完整表单/绑定值/审批含义；旧快照只在表单说明里写限制的样本原样保留；禁用插件、无绑定、无快照、外层损坏/未来版本分别验证文档/拒绝边界。不要用 `shipped_dev_rendered_prompt_matches_full_golden`（不含快照）作快照保真证据；它只覆盖基础 renderer。
 
-影响：`template_context.rs`、相关模板快照测试及既有 prompt goldens。现有 parser 实际在 [fe/core/domain/template-input.ts](../../fe/core/domain/template-input.ts)，Rust 侧尚无可直接复用的表单 parser；不复制前端编译/校验策略。先给模板 owner 增加明确的模型展示投影契约：只识别唯一、闭合的 `neige:input-form` 注释，JSON 可解析且 version=1；未知版本、多块或畸形保留全文。投影只移除 UI 定义，不验证/解释字段、不执行默认值编译；协议识别入口归 `template_context`，保持与前端的声明格式一致。保留原 payload 和所有方法/审批文字，Bound Template Input 全量保留。若任一模板的必要语义只存在表单 help/description 中，先在该模板 owner 正文补齐独立语义，再允许移除；不能泛化为所有 HTML 注释可删。
+**wire 与回滚。** 在上述真实组装输出及对应 startup fake-provider 捕获成对比较：新 dev 快照净减且所有保留语义可观察，旧/自定义快照输出无删减；JSON 转义与插件段一并计入。回滚模板来源只影响未来创建，已有精简快照不会自动变长；不改 payload、迁移或重置会话。普通长度优化不 mutation；若新增关键保真断言，仅在独占 worktree 对生产 append 路径作单因素破坏，预测完整红集、跑所有可观察 target/filter，再安全恢复转绿。
 
-验收：合法 UI 块不出现在新渲染、用户 merge_policy/issue 值仍精确；非表单注释、fence、字面 `{track_id}` 保持；恶意/畸形块不得吞周围约束（无法安全识别则保留原文）；v1 损坏/未来版本仍拒绝；老卡无快照不回填；已启动会话不自动 reset。对比真实渲染差异，只删定义而不删审批含义。回滚 renderer 即恢复原文，无迁移。
+### B（原 S2）：只缩短有 grant 的每轮 workspace 教学
 
-聚焦入口：`template_context::tests`、`shipped_dev_rendered_prompt_matches_full_golden`、`planner_developer_instructions_append_template_input_when_present`；新增回归在这些 owner 的原测试模块。关键 mutation：生产渲染故意删掉绑定输入，预先列出必须红的完整集合，在整个受影响 target/filter 中核对后恢复；不得只测长度。
+**owner / 最小文件面。** `managed_track` owner 只精简 `crates/calm-server/prompts/workspace-reports.md`，扩展已有 run-loop tests；`managed_track.rs`、workspace 四工具的 description/schema/listing/admission 保持现行行为。不把教学搬入所有角色都列出的 description，不增工具、读取入口、grant 缓存、发送状态或撤权状态。
 
-### S2：缩短每轮 workspace 教学，维持 live 能力声明
+短教学保留：当前跨所有用户可见 Area 的只读能力、四工具发现/用途、ls→cat 选择 track_id、date 与 diff→log 的 through_event_id 水位、next_cursor 到 null 且分页保持水位、失败/未完成不等于无活动、来源引用、不能操作别的 Track、写自己 Report 前 read、Assistant 的现行操作/通用 CLI 限制。删重复措辞与长 JSON 示例；参数结构由既有 schema 支持，必要分页教学仍每轮可见。无 grant 当轮不发肯定声明；旧上下文可能留有声明，实时工具拒绝才是权限屏障。
 
-影响：`managed_track.rs`、`prompts/workspace-reports.md`、`prompts/tools/neige_workspace_{ls,cat,diff,log}.md`、run-loop workspace tests；不新增权限缓存。每轮查询和工具 admission 原样保留；分页、水位和参数教学归各工具现有 description，短声明保留当前能力、只读/不可跨 Track 操作、不完整读取不是无活动、调用前读取工具说明的触发。Assistant 无通用 track/card CLI 读取权限，不能要求它读 `guide/`；两角色均通过现有可见 workspace 工具描述取得细节，不为缩短提示新增读取权限。撤销/无权限不沿用旧肯定句。
+**聚焦测试与正负验收。** 扩展 `-p calm-server` 下 `harness::run_loop::workspace_report_tests`：经真实 Fixture enqueue/issue，在 started_turns 捕获新建及 resumed Planner/Assistant 的实际发轮，核对短教学的必要语义与输入 segments 对齐；混合 result/budget/timeout 不偏移。现有 `ordinary_revoked_and_worker_turns_do_not_receive_workspace_grants` 还须增加同一会话 grant→撤销→下一轮的顺序样本，确认无肯定声明。实时拒绝复用 `mcp_server::tools::workspace_reports::tests::ordinary_assistants_and_persisted_workers_cannot_read_workspace_reports` 的 registry handler 调用，覆盖撤销后四工具、Worker/普通 Track/跨 Area identity；grant 查询失败不能变成肯定值。旧工具可见不等于可调用，Assistant 不必读无权访问的 track guide。
 
-验收：有 grant 的 Planner/Assistant 在新建、resume 都收到短声明；撤销后不再收到有权限句且真实 workspace read 拒绝；worker/普通 track 无能力提升；工具说明取得不授予跨 Area 权限且 Assistant 无需读 track guide；grant read 故障不伪造肯定值；混合 result/budget/timeout segments 对应不偏移。回滚短文/工具说明变更即可，不动 grants 和历史。
+**总成本验收。** 在改变的发轮入口捕获短文，并在现有 catalog/provider listing fixture 核对无 grant 的所有合法路径：Planner/Assistant × Codex、Claude、OpenCode；PlainChat 仅 Codex、task worker 仅 Codex/Claude 检查不增 workspace 能力。沿用注册元数据选择合法路径，不建新组合平台。Claude direct MCP、ACP session list 与 Codex deferred search/describe 的文本、description、schema、wrapper 都成对计数；四 description/schema 本切片字节应相等，无 grant listing 的增长上限为 **0**，不得靠 provider 未加载的假定跳过。
 
-聚焦入口：`harness::run_loop::workspace_report_tests`（现有 `resumed_planner_and_assistant_receive_live_workspace_report_instructions`、`ordinary_revoked_and_worker_turns_do_not_receive_workspace_grants`）、`result_receipt_tests`。新增 live 工具拒绝回归使用现有 workspace 工具集成测试。mutation 将实时 grant 查询改为始终有权，必须同时击穿模型声明和工具拒绝断言；先预测完整红集再执行整个相关 target。
+对固定 n 轮与相同工具加载/读取序列，分别记录 `T = startup + Σ(本轮文本 + listing/description/schema + 按需读取响应)` 的 before/after；有权要求 T_after < T_before 且每个有权普通轮净减，无权要求 T_after ≤ T_before、listing/schema 不增长。工具描述读取也计成本；若需要额外 describe/read，必须包含其请求/响应，不能只比 1426 与短文长度。provider 可能重送历史/缓存；另记其可提供的 usage，不把此 T 当账单或实际 retained tokens。当前尚无短文 wire 实测，不报净省数。
 
-### S3：以现有摘要与证据链完成交接，再决定自动化
+**回滚与 mutation。** 恢复教学源文只影响以后发轮，不抹掉已发短文/旧能力声明，不改 grant。长度优化不新增 mutation；仅关键授权断言可 mutation 共享 `workspace_report_zone` 为始终有权，事前预测 prompt 与真实拒绝测试的完整红集，跑所有可观察 filter/target，核对后恢复转绿。不得只破坏提示分支冒充工具权限验证。
 
-影响：先仅角色/worker prompts、模板 owner 的交接说明及已有 Report/context 使用，不改 schema；已有 `worker-summary-v1` 结果与精确引用继续复用。插件细节只有在可授权读取入口经过验证后才在其 owner 分层，不能塞入 kernel 通用插件特例。预算 227 字先不动：本轮动态冻结语义有价值。
+### C：用现有 Report、任务 context 与 prompts 明确交接摘要
 
-验收：用户先目标 A、后收窄 A 并追加 B，恢复摘要保留 B 与 A 覆盖关系；授权仅针对 head H，换 H2 或撤销后不能合并；混合任务结果摘要保留 contract conclusion 和 exact event，unavailable 明示；旧 gate pass 不能验当前树；未知提交不能被摘要触发重发。compact 前后、新 provider、新会话均可从现有可读证据恢复最低字段；读不到则列未决并停止依赖缺失事实的动作，不自动向其他会话取内容。
+**owner / 最小文件面。** Planner/worker 提示 owner 最小修改 `crates/calm-server/prompts/planner.md` 与 `crates/calm-server/prompts/worker/head.md` 的交接规则；使用现有 Report 概要/决策、任务 context 落实 §3.1，不新增 schema、自动摘要选择、持久化账本、router 或发送缓存。既有 `worker-summary-v1`、contract conclusion 与 exact receipt 继续使用，不把它们当自动恢复器。
 
-聚焦入口：`calm-types` 的 `observation::receipt::tests`、`harness::run_loop::result_receipt_tests`、`compact_tests`、`-p provider dispatched_prompt_disconnect_is_unknown_and_never_resent`、`assistant_provider_migration_preserves_history_current_links_queue_and_schema`。fake transcript 只用于传输和字段恢复断言；模型是否正确保留目标/审批另做受控样本人工核对，不用字符串存在测试冒充语义保真。
+摘要只保留当前目标及覆盖关系、约束/未决、下一步、产出/当前验证状态和精确证据引用；普通日志与长推理按需读。提示增加无条件规则：恢复或依赖摘要行动前检查来源与缺口、授权引用和当前 head，读不到标未知并停止依赖缺失事实的动作；不依赖模型收到 compact 通知。compact outcome 是 runtime fact，不必然是 transcript。compact 后内容保留仍未知，**不启用新的省略/只发一次**；现有 ACP 首提交策略也不证明保留，属于未解决限制。
 
-回滚提示/交接约定，已有 Report/事件继续可读。若需要自动摘要选择、持久化新字段或 compact 定制提示，另写窄设计再评审：本阶段不引入 DB 表、通用路由器、发送缓存。任何后续“只发一次”优化必须先通过 §3.2 全部边界；否则维持现有注入。
+**聚焦测试与正负验收。** 在现有 prompt 测试观察规则实际进入 `planner_instructions`/worker `task_prompt`，在 receipt/result owner 测试观察 exact attempt/event/unavailable，而非只测模板源码。用户先 A 后收窄 A 并追加 B 的交接样本保留 B 及覆盖关系；head H 审批引用不授权 H2；旧 gate 不验新树；rewind 后 Report 中被移除 turn 的摘要需重验来源；未知提交不重发。已有入口为 `-p calm-types` 的 `observation::receipt::tests`、`-p calm-server` 的 `harness::run_loop::result_receipt_tests`、`harness::run_loop::compact_tests`，以及 `-p provider dispatched_prompt_disconnect_is_unknown_and_never_resent`，各自只证实其实际层次，不把 compact 测试当语义保留保证。
 
-### 测试执行协议与维护成本
+未来不同 provider 的交接样本通过真实建卡/start 路径新建另一 provider 卡，完整加载该卡约束，显式传入有来源摘要；不迁移原 thread/history，不把 `assistant_provider_migration_preserves_history_current_links_queue_and_schema` 的 DB 迁移测试当上下文证据。fake wire 只验传输与字段，目标/审批的模型理解用受控样本人工核对，不声称字符串断言证明语义恢复。
 
-实现时先确认目标/filter 有实际测试，再执行，例如：
+**wire 与回滚。** 在实际改动的 prompt/start/worker 入口对相同交接任务比较常驻提示 + 摘要 + 按需读取总字节，规则新增的固定成本也列出；未减少总成本不称收益。回滚提示/约定仅影响未来组装，原 Report/事件继续可读。Codex 已启动 thread 不追溯替换；Claude 下次 open_session 加载新说明，仍包含既有快照；ACP 首提交后不保证刷新或保留。所有阶段回滚都不能抹去已有上下文。
 
-```bash
-cargo metadata --locked --no-deps --format-version 1
-# 从 metadata 选择真实 target；用 nextest list 确认过滤器非空
-cargo nextest list --locked -p calm-server -E 'test(template_context::tests)'
-env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 \
-  cargo nextest run --locked -p calm-server template_context::tests --test-threads 8
-```
+### 执行与维护成本
 
-入口已按源码模块核对；实施时仍用 list 确认非空，避免后续重命名造成静默漏跑。实现 gate 必须声明真实目标，若 gate 指向不存在目标则报告给 Planner 重开任务，不修改测试布局凑命令。
+实现时先用 `cargo metadata --locked --no-deps --format-version 1` 定位实际 target，再用 `cargo nextest list --locked -p <package> -E 'test(<filter>)'` 确认非空；新增场景在 owner 既有模块/target 注册。worker 仅跑聚焦测试并修格式，命令保持 `env -u NEIGE_CODEX_BIN RUSTC_WRAPPER= CARGO_BUILD_JOBS=6 cargo nextest run --locked -p <package> <filter> --test-threads 8`。kernel gate 跑 quick、text/contract 与一次拒绝空选择的聚焦 replay，CI 跑广域；共享主机不跑真实 Codex E2E。
 
-新增测试只在 owning module/既有 target 注册一次，普通新增测试不改单独名称清单；改合法 profile/provider 时更新现有注册与测试参数化来源，避免第二份硬编码业务名单。prompt golden 随 owner 正常再生并审 diff，不另加全仓文件大小 pin。每 CI workflow 使用既有所属测试 job 跑一次；kernel gate 只一次聚焦 replay，非额外永久 CI job。mutation 仅独占可恢复 worktree 做关键权限/证据断言，预告完整红集、跑完整可观察 target/filter、恢复后转绿；本文无生产修改，不执行 mutation。
+不新增永久测试名/文件大小 pin 或 provider 组合清单；普通增改测试只改所属模块及必要 golden，既有 CI 所属 job 每 workflow 一次，gate 只一次聚焦 replay。关键权限/保真 mutation 依 AGENTS 预测完整红集、跑完整可观察 target/filter、恢复检查 residue；不为普通长度优化加 mutation。本次 docs-only 不执行上述生产测试或 mutation。
 
-## 6. 本次检查与交付
+## 6. 评审处置与本次交付
 
-已读根 AGENTS.md、CONTRIBUTING.md 与上列实现/测试入口；初始 worktree 干净。实际执行：源码搜索/定点读取、`git rev-parse HEAD`、上文 Python 基线测量、相对文件链接存在性检查、`git diff --check` 与最终 diff/status 检查。文本 gate 由本任务 kernel 执行 `scripts/local-ratchet-gates.sh`，实际 verdict 以任务 gate 记录为准，不在本文预填通过。未跑 Rust/浏览器/真实 provider 测试；无代码/UI 变更，不声称端到端收益。
+原渠道 A（event 375284）与 B（event 375740）的六项 blocking 逐条处置：
 
-交付预览路径：`docs/architecture/context-delivery.md`。未取得的历史及宿主目录来源维持未知，不影响先做 S0–S2 的最小演进。
+| 原发现 | 本版处置 |
+|---|---|
+| A1：识别条件不足导致畸形表单被删 | A 撤回整个自动剥离机制；不新增 Rust 表单识别器 |
+| A2：补最新模板不能保护旧快照语义 | 任意旧/新快照全文保留，来源修订只影响未来创建 |
+| B1：PlainChat 非法 provider 组合 | §2.1 改为仅 Codex，其余不适用 |
+| B2：不存在 runtime provider 切换，误用 DB 迁移测试 | §3.2/C 明确不同 provider 新卡独立上下文；移除迁移测试的证据资格 |
+| B3：golden/mutation 未观察快照 | 删除 S1 承诺；A 经真实 planner_instructions/TemplateContext append 观察快照 |
+| B4：S2 把成本移到无 grant 工具列表 | B 不改 description/schema，所有合法无 grant listing 零增长，并核对总成本 |
+
+便宜澄清同时纳入：审批仅引用 ask_id/绑定；rewind 后重验来源；compact/ACP 保留未知且不开新省略；撤权用当轮无肯定声明 + live 拒绝；插件运行时说明刷新明确未实现。五项架构约束保持：规则归模板/插件 owner、共用真实组装与授权入口、通用 kernel 不按应用名分支、provider 保留未知不猜、观测附着现有入口而不增永久清单。
+
+本次读根 AGENTS.md/CONTRIBUTING.md、原设计、两路完整结果和相关生产/测试调用路径；docs 下未发现更具体 AGENTS。初始 worktree 干净，核对 HEAD `99f42b2afc8dc0fcaea0c55ec072994d93305abc`；重跑 §4 只读基线、相对链接存在性、`git diff --check` 及 diff/status。文本门禁由 kernel 执行 `scripts/local-ratchet-gates.sh`，verdict 以实际 gate 记录为准，不预填通过。未跑 Rust/浏览器/真实 provider/模型保留测试，不声称已实现收益。不改代码/配置，不自行提交或安排评审。
+
+交付预览：[docs/architecture/context-delivery.md](context-delivery.md)。未取得的其他会话历史、宿主目录来源及 provider 保留语义仍未知。
