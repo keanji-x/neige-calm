@@ -11,7 +11,7 @@ export function RecentFiles({ paths, onOpen }: Readonly<{
 }>) {
   if (paths.length === 0) return null;
   return (
-    <PanelModule title="Recent files">
+    <PanelModule title="Recent files" icon="file">
       <ul className={styles.list} data-nc-recent-files="">
         {paths.map((path) => (
           <li key={path} className={styles.item}>

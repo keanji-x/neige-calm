@@ -6,6 +6,7 @@ import '../../../styles/entry.css';
 
 import { useState } from '../../../ui/state/public.ts';
 import { TrackPage } from './public.tsx';
+import { RecentFiles } from '../../report/recent-files/public.tsx';
 import { renderPage, track } from './test-fixtures.tsx';
 
 afterEach(() => {
@@ -54,6 +55,17 @@ it('shows a visible link icon beside Referenced by in the desktop panel', async 
   expect(box.width).toBe(14);
   expect(box.height).toBe(14);
   expect(box.right).toBeLessThan(heading.getBoundingClientRect().right);
+});
+
+it('shows a visible icon beside Recent files in the desktop panel', async () => {
+  await browserPage.viewport(1280, 900);
+  renderPage({ recentFiles: <RecentFiles paths={['README.md']} onOpen={() => undefined} /> });
+  const heading = browserPage.getByRole('heading', { name: 'Recent files', exact: true }).element();
+  const icon = heading.querySelector('svg');
+  expect(icon).not.toBeNull();
+  expect(icon!.getAttribute('aria-hidden')).toBe('true');
+  expect(icon!.getBoundingClientRect().width).toBeGreaterThan(0);
+  expect(icon!.getBoundingClientRect().height).toBeGreaterThan(0);
 });
 
 describe('Track actions menu text geometry', () => {

@@ -40,7 +40,7 @@ export function TaskCalendar({ date, timezone, entries, children, trackCountOn, 
       </span>
     </span>;
   };
-  return <PanelModule title="Calendar" className={styles.calendarModule} grow action={<span className={styles.viewControl}><SegmentedControl label="Calendar view" size="sm" value={mode}
+  return <PanelModule title="Calendar" icon="calendar" className={styles.calendarModule} grow action={<span className={styles.viewControl}><SegmentedControl label="Calendar view" size="sm" value={mode}
     onChange={(value) => { setMode(value); calendar.current?.getApi().changeView(value === 'week' ? 'dayGridWeek' : 'dayGridMonth'); }}>
     <SegmentedControlItem value="week" label="Week" />
     <SegmentedControlItem value="month" label="Month" />

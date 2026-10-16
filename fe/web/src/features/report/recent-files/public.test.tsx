@@ -16,7 +16,9 @@ describe('RecentFiles', () => {
   it('shows only the basename, while the full path still identifies the control', async () => {
     const onOpen = vi.fn();
     render(<RecentFiles paths={['src/app/main.ts', 'README.md']} onOpen={onOpen} />);
-    expect(screen.getByRole('heading', { name: 'Recent files' })).toBeTruthy();
+    const heading = screen.getByRole('heading', { name: 'Recent files' });
+    expect(heading.querySelector('svg')).not.toBeNull();
+    expect(heading.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
     expect(screen.getByText('main.ts')).toBeTruthy();
     expect(screen.queryByText('src/app/main.ts')).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Open src/app/main.ts' }));

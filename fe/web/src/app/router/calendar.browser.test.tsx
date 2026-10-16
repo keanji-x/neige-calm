@@ -43,6 +43,11 @@ it('queries the visible month and selected day separately through the real adapt
     return <TodayCalendarTasks date={date} onDateChange={setDate} transport={transport} unauthorized={unauthorized} onSettings={() => undefined} onOpenTrack={() => undefined} />;
   }
   render(<QueryClientProvider client={client}><Example /></QueryClientProvider>);
+  const headingIcon = page.getByRole('heading', { name: 'Calendar', exact: true }).element().querySelector('svg');
+  expect(headingIcon).not.toBeNull();
+  expect(headingIcon!.getAttribute('aria-hidden')).toBe('true');
+  expect(headingIcon!.getBoundingClientRect().width).toBeGreaterThan(0);
+  expect(headingIcon!.getBoundingClientRect().height).toBeGreaterThan(0);
   await expect.poll(() => requests.some((request) => request.path.includes('from=2026-09-28&until=2026-10-05'))).toBe(true);
   await page.getByRole('radio', { name: 'Month', exact: true }).click();
   await page.getByRole('button', { name: 'Next month' }).click();
