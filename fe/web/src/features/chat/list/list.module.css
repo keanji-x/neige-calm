@@ -25,6 +25,33 @@
   /* One text column. The state dot moved to the trailing edge (see
      `.statusSlot`) and the age is gone with it, so the label is the whole row —
      the same shape a track row takes in a panel. */
+  .archiveNotice {
+    padding: var(--space-3);
+    color: var(--text-2);
+    font-size: var(--text-sm);
+  }
+
+  .archiveNotice button {
+    color: var(--text-1);
+    padding-block: var(--space-2);
+    cursor: pointer;
+  }
+
+  .archiveError {
+    color: var(--text-2);
+    font-size: var(--text-xs);
+    padding: var(--space-2);
+  }
+
+  .actions {
+    position: absolute;
+    inset-block-start: 0;
+    inset-inline-end: 0;
+    display: flex;
+    align-items: center;
+    min-block-size: var(--row-h);
+  }
+
   .item {
     position: relative;
   }
@@ -68,6 +95,14 @@
     inset-block-start: 50%;
     inset-inline-end: calc((var(--control-h-sm) - var(--dot-sm)) / 2);
     translate: 0 -50%;
+  }
+
+  .withActions .row {
+    padding-inline-end: calc(var(--space-2) + var(--control-h-sm) * 2);
+  }
+
+  .withActions .statusSlot {
+    inset-inline-end: calc(var(--control-h-sm) + (var(--control-h-sm) - var(--dot-sm)) / 2);
   }
 
   /* Two things on one line, in the order the aria-label says them: what the

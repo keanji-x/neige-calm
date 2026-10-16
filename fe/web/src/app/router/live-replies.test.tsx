@@ -19,7 +19,7 @@ const TRACK = { id: 'w1', area_id: 'c1', title: 'Test track', sort: 1, cwd: '/tm
 const CARD = { id: 'card-1', track_id: 'w1', kind: 'codex', title: 'Planner chat', sort: 1, payload: { planner_harness: true }, deletable: true, created_at: 1, updated_at: 2 };
 /* A second conversation on the same track: a track assistant, listed by the track's conversations. */
 const OTHER = { ...CARD, id: 'conv-2', title: 'Other chat', payload: { harness_profile: 'assistant' }, sort: 2 };
-const OTHER_ROW = { id: OTHER.id, trackId: TRACK.id, title: OTHER.title, kind: 'track-assistant', provider: 'codex', state: 'running', updatedAt: 5, lastTurnCompletedAt: null };
+const OTHER_ROW = { id: OTHER.id, trackId: TRACK.id, title: OTHER.title, kind: 'track-assistant', provider: 'codex', state: 'running', updatedAt: 5, archivedAt: null, lastTurnCompletedAt: null };
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 
 function ok(body: unknown): ApiTransportResponse {

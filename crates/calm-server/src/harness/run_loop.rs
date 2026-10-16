@@ -3306,6 +3306,16 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     // Deterministic drain-vs-supersede window. No-op in production.
     wait_at_planner_harness_drain_race_hook(&inner.worker_session_id).await;
     let _issuance_guard = inner.issuance.lock().await;
+    // A lifecycle write holds this fence through its commit. Observations that
+    // arrive later remain queued until the person explicitly restores the card.
+    if inner
+        .repo
+        .conversation_archived_at(inner.card_id.as_str())
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
     if inner.shutting_down.load(Ordering::SeqCst) {
         return Ok(());
     }

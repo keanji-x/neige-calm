@@ -97,6 +97,7 @@ pub(crate) async fn ensure_planner_session(
         card_id,
     )
     .await;
+    crate::conversation_archive::require_unarchived(s.repo.as_ref(), card_id.as_str()).await?;
     // Re-fetch under the lock and use only this row: `/planner/reset` or a racing Send may have moved it.
     let Some(runtime) = planner_recovery::candidate(s, card_id, human_send).await? else {
         if !human_send {

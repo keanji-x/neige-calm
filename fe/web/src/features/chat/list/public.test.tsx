@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // `Conversation.state` is the server's session reading and reads into none of the fold: the harness
 // leaves it at `turn_pending` / `running` long after a turn ended.
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Conversation } from '../../../../../core/domain/conversation.ts';
@@ -12,7 +12,7 @@ afterEach(cleanup);
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
   return { provider: 'codex' as const,
     id: 'c1', trackId: 'w1', title: 'Assistant', kind: 'track-assistant',
-    state: 'turn_pending', updatedAt: 1, lastTurnCompletedAt: null, ...overrides,
+    state: 'turn_pending', updatedAt: 1, archivedAt: null, lastTurnCompletedAt: null, ...overrides,
   };
 }
 
@@ -84,5 +84,52 @@ describe('conversation rows read activity.cards, not session state', () => {
     /* An echo for some other row is not this row's. */
     const elsewhere = draw({ cards: {}, activeId: 'c2', local: { id: 'c2', working: true, stalled: false } });
     expect(elsewhere.indicator).toBeUndefined();
+  });
+});
+
+
+describe('manual conversation archives', () => {
+  it('hides archived discussions by default and restores them through the explicit action', async () => {
+    const changeArchive = vi.fn().mockResolvedValue(undefined);
+    render(<ChatList cards={{}} onOpen={vi.fn()} onArchive={changeArchive}
+      conversations={[conversation({id:'active', title:'Active', state:'idle'}), conversation({id:'saved', title:'Saved', archivedAt:10, state:'idle'})]} />);
+    expect(screen.queryByRole('button', {name:'Conversation Saved'})).toBeNull();
+    fireEvent.click(screen.getByRole('button', {name:'Archived conversations'}));
+    expect(screen.getByRole('button', {name:'Conversation Saved'})).toBeTruthy();
+    expect(screen.getByRole('button', {name:'Conversation Active'})).toBeTruthy();
+    expect(screen.getByRole('button', {name:'Active conversations'}).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('button', {name:'Archived conversations'}).getAttribute('aria-expanded')).toBe('true');
+    fireEvent.click(screen.getByRole('button', {name:'Actions for conversation: Saved'}));
+    fireEvent.click(screen.getByRole('menuitem', {name:'Restore conversation'}));
+    await waitFor(() => expect(changeArchive).toHaveBeenCalledWith('saved', false));
+  });
+
+  it('collapses groups independently and hides an empty Archived group', () => {
+    const { rerender } = render(<ChatList cards={{}} onOpen={vi.fn()} conversations={[conversation({state:'idle'})]} />);
+    expect(screen.queryByRole('button', {name:'Archived conversations'})).toBeNull();
+    fireEvent.click(screen.getByRole('button', {name:'Active conversations'}));
+    expect(screen.queryByRole('button', {name:'Conversation Assistant'})).toBeNull();
+    rerender(<ChatList cards={{}} onOpen={vi.fn()} conversations={[conversation({state:'idle'}), conversation({id:'saved', title:'Saved', archivedAt:10, state:'idle'})]} />);
+    const archived = screen.getByRole('button', {name:'Archived conversations'});
+    expect(archived.getAttribute('aria-expanded')).toBe('false');
+    expect(archived.textContent).toContain('1');
+    fireEvent.click(archived);
+    expect(screen.getByRole('button', {name:'Conversation Saved'})).toBeTruthy();
+    expect(screen.queryByRole('button', {name:'Conversation Assistant'})).toBeNull();
+    rerender(<ChatList cards={{}} onOpen={vi.fn()} conversations={[conversation({state:'idle'})]} />);
+    expect(screen.queryByRole('button', {name:'Archived conversations'})).toBeNull();
+  });
+
+  it('offers archive only for Assistant rows, reports failures, and never hides a failed write', async () => {
+    const changeArchive = vi.fn().mockRejectedValue(new Error('Please wait for the reply to finish.'));
+    render(<ChatList cards={{}} onOpen={vi.fn()} onArchive={changeArchive}
+      conversations={[conversation({state:'idle'}), conversation({id:'worker', kind:'codex', title:'Worker', state:'idle'})]} />);
+    expect(screen.getAllByRole('button', {name:/^Conversation /})).toHaveLength(2);
+    expect(screen.queryByRole('button', {name:'Actions for conversation: Worker'})).toBeNull();
+    fireEvent.click(screen.getByRole('button', {name:'Actions for conversation: Assistant'}));
+    fireEvent.click(screen.getByRole('menuitem', {name:'Archive conversation'}));
+    await screen.findByText('Please wait for the reply to finish.');
+    expect(screen.getByRole('button', {name:'Conversation Assistant'})).toBeTruthy();
+    expect(changeArchive).toHaveBeenCalledWith('c1', true);
   });
 });

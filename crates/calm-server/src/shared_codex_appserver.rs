@@ -3291,6 +3291,14 @@ impl SharedCodexAppServer {
 
         let active_threads = merge_active_shared_thread_attribution(self.repo.as_ref()).await?;
         for (card_id, thread_id) in active_threads {
+            if self
+                .repo
+                .conversation_archived_at(&card_id)
+                .await?
+                .is_some()
+            {
+                continue;
+            }
             // Only cold rebuild infers sleep from retained carriers. Mid-life
             // replacement replays the live owners already in the cache.
             if let Some(pool) = self.repo.sqlite_pool()

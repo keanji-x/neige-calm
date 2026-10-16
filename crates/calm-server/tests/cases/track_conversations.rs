@@ -1244,3 +1244,6 @@ mod keyed;
 mod assistant_provider_contract;
 #[path = "assistant_provider_create.rs"]
 mod assistant_provider_create;
+
+#[path = "conversation_archive.rs"]
+mod conversation_archive;
