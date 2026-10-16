@@ -46,6 +46,7 @@ EXPECTED_TX_CENSUS="4 authorize_with_caches|tx
 # Retired ratify fixtures seed raw historical rows because the current Event contract rejects them.
 # ws_replay adds one insert site; events_since_bound adds historical and current-ask insert sites.
 # ask_delivery_migration (#2348) seeds pre-0158 ask rows, whose shape the current contract rejects.
+# area_ownership_tests (#2671) preserves an opaque historical payload across ownership adoption.
 EXPECTED_INSERTS="${APPEND_SEAM_INSERT_BASELINE-crates/calm-server/src/activity_window.rs:1
 crates/calm-server/src/task_context.rs:1
 crates/calm-server/tests/cases/briefing_in_mint_tx.rs:1
@@ -54,6 +55,7 @@ crates/calm-server/tests/cases/mcp_track_report.rs:1
 crates/calm-server/tests/cases/migration_0094_worker_session_id.rs:1
 crates/calm-server/tests/cases/sync_engine.rs:3
 crates/calm-server/tests/cases/ws_replay.rs:2
+crates/calm-truth/src/db/sqlite/area_ownership_tests.rs:1
 crates/calm-truth/src/db/sqlite/events.rs:1
 crates/calm-truth/src/db/sqlite/proposal_withdraw_upgrade_tests.rs:1
 crates/calm-truth/src/db/sqlite/track_closed_at_migration_tests.rs:1
