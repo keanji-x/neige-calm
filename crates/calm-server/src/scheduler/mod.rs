@@ -834,16 +834,6 @@ impl Scheduler {
             .repo
             .sqlite_pool()
             .ok_or_else(|| CalmError::Internal("scheduler requires a sqlite-backed Repo".into()))?;
-        if let Some(task) = tasks
-            .iter()
-            .find(|task| task.status == TaskStatus::Pending && task.runs_in_track_checkout())
-        {
-            let runtime = self.operation_runtime.upgrade().ok_or_else(|| {
-                CalmError::Internal("scheduler operation runtime is unavailable".into())
-            })?;
-            let (kind, payload) = build_worker_payload(task)?;
-            runtime.prepare_external(kind, &payload).await?;
-        }
         let occupancy = crate::db::sqlite::checkout_occupancy(
             &mut *pool.acquire().await?,
             track_id.as_str(),
@@ -1026,9 +1016,6 @@ impl Scheduler {
                         // read it, or a writer now waiting ahead of a reader aborts the claim. Which
                         // admitted task claims first is deliberately NOT revalidated.
                         let siblings = tasks_by_track_tx(tx, track_id.as_str()).await?;
-                        if siblings.iter().any(|task| task.id == task_id && task.runs_in_track_checkout()) {
-                            crate::db::sqlite::workspace_require_adopted(tx, track_id.as_str()).await?;
-                        }
                         let occupancy =
                             crate::db::sqlite::checkout_occupancy(tx, track_id.as_str(), &task_id)
                                 .await?;

@@ -34,6 +34,13 @@ pub fn materialize_managed_workspace(
     materialize_managed_workspace_inner(workspace_root, path, track_id, InitCommit::Create)
 }
 
+/// Read-only observation of the existing materializer's steady state. A false result
+/// supplies no ownership or baseline evidence; the original materialization entry point
+/// remains responsible for repairing or refusing that directory at its existing call time.
+pub fn is_materialized(path: &Path, track_id: &str) -> Result<bool> {
+    Ok(read_owner_marker(path)?.as_deref() == Some(track_id) && git_head_resolves(path))
+}
+
 /// Mutation seam: production always passes `Create`; a test passes `Skip` to prove `git worktree add` then dies.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum InitCommit {

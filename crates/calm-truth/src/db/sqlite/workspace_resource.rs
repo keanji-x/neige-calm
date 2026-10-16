@@ -1,7 +1,7 @@
 //! Workspace identity and binding transactions. Filesystem adoption belongs to the kernel.
 
 use sqlx::{Sqlite, SqliteConnection, Transaction};
-use workspace::identity::{WorkspaceCwd, WorkspaceId, WorkspaceRef};
+use workspace::identity::WorkspaceId;
 
 use crate::{
     error::{CalmError, Result},
@@ -15,6 +15,7 @@ pub struct WorkspaceAdoption {
     pub admission_version: i64,
     pub selected_path: String,
     pub ownership: WorkspaceOwnership,
+    pub has_directory_record: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,11 +29,12 @@ pub async fn workspace_adoption_snapshot(
     conn: &mut SqliteConnection,
     track_id: &str,
 ) -> Result<WorkspaceAdoption> {
-    let (id, admission_version, selected_path, ownership): (String, i64, String, String) =
+    let (id, admission_version, selected_path, ownership, has_directory_record): (String, i64, String, String, bool) =
         sqlx::query_as(
             "SELECT r.id,b.admission_version,b.selected_path, \
              CASE WHEN t.workspace_worktree_path IS NOT NULL THEN 'track_worktree' \
-                  WHEN t.workspace_kind='managed' THEN 'managed' ELSE 'borrowed' END \
+                  WHEN t.workspace_kind='managed' THEN 'managed' ELSE 'borrowed' END, \
+             r.adopted_workspace_id IS NOT NULL \
          FROM track_workspace_bindings b JOIN workspace_resources r ON r.id=b.workspace_id \
          JOIN tracks t ON t.id=b.track_id \
          WHERE b.track_id=?1 AND b.selected_path=coalesce(t.workspace_worktree_path,t.workspace_path) \
@@ -53,6 +55,7 @@ pub async fn workspace_adoption_snapshot(
             .map_err(|error| CalmError::Internal(error.to_string()))?,
         admission_version,
         selected_path,
+        has_directory_record,
         ownership: match ownership.as_str() {
             "borrowed" => WorkspaceOwnership::Borrowed,
             "managed" => WorkspaceOwnership::Managed,
@@ -152,21 +155,8 @@ pub async fn workspace_adopt_tx(
             "WorkspaceRecoveryRequired: workspace root was replaced",
         ));
     }
-    // An old active source proof cannot silently follow a re-point or a different root.
-    let mismatched_lease: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM workspace_leases wl JOIN track_workspace_bindings b \
-         ON b.track_id=wl.track_id WHERE b.workspace_id=?1 AND wl.state IN ('held','releasing') \
-         AND wl.canonical_path IS NOT NULL AND wl.canonical_path<>?2)",
-    )
-    .bind(snapshot.workspace_id.as_str())
-    .bind(root)
-    .fetch_one(&mut **tx)
-    .await?;
-    if mismatched_lease {
-        return Err(CalmError::Conflict(
-            "WorkspaceRecoveryRequired: an active lease names a different source root",
-        ));
-    }
+    // This registers the current selection only. Historical per-card leases may legitimately
+    // name another checkout; only their owning decoder may associate their frozen source facts.
     let current_owner: Option<String> =
         sqlx::query_scalar("SELECT physical_owner_track_id FROM workspace_resources WHERE id=?1")
             .bind(&canonical)
@@ -217,11 +207,6 @@ pub async fn workspace_adopt_tx(
         .execute(&mut **tx)
         .await?;
     }
-    Ok(())
-}
-
-pub async fn workspace_require_adopted(conn: &mut SqliteConnection, track_id: &str) -> Result<()> {
-    track_workspace_reference(conn, track_id).await?;
     Ok(())
 }
 
@@ -276,30 +261,4 @@ pub(super) async fn workspace_bind_selection_tx(
     .execute(&mut **tx)
     .await?;
     Ok(())
-}
-
-/// Read the persisted selection. Missing binding is recovery, never path-based authorization.
-pub async fn track_workspace_reference(
-    conn: &mut SqliteConnection,
-    track_id: &str,
-) -> Result<WorkspaceRef> {
-    let (id, cwd): (String, String) = sqlx::query_as(
-        "SELECT b.workspace_id,b.cwd FROM track_workspace_bindings b JOIN workspace_resources r \
-            ON r.id=b.workspace_id JOIN tracks t ON t.id=b.track_id WHERE b.track_id=?1 \
-            AND r.adopted_workspace_id=r.id AND r.canonical_root IS NOT NULL \
-            AND b.selected_path=coalesce(t.workspace_worktree_path,t.workspace_path)",
-    )
-    .bind(track_id)
-    .fetch_optional(conn)
-    .await?
-    .ok_or_else(|| {
-        CalmError::Conflict(format!(
-            "WorkspaceRecoveryRequired: track {track_id} has no workspace binding"
-        ))
-    })?;
-    Ok(WorkspaceRef {
-        workspace_id: WorkspaceId::try_from(id)
-            .map_err(|error| CalmError::Internal(error.to_string()))?,
-        cwd: WorkspaceCwd::try_from(cwd).map_err(|error| CalmError::Internal(error.to_string()))?,
-    })
 }

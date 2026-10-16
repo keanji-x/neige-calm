@@ -94,39 +94,22 @@ impl From<WorkspaceCwd> for String {
     }
 }
 
-/// Persistent input to kernel resolution, never a host path or runtime capability.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WorkspaceRef {
-    pub workspace_id: WorkspaceId,
-    pub cwd: WorkspaceCwd,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn persistent_reference_requires_identity_and_contained_cwd() {
-        let identity = "a".repeat(32);
+    fn workspace_identity_validates_names_and_relative_cwd() {
         for cwd in ["/tmp", "..", "a/../b", "a\0b", ""] {
-            let json = serde_json::json!({ "workspace_id": identity, "cwd": cwd });
             assert!(
-                serde_json::from_value::<WorkspaceRef>(json).is_err(),
+                serde_json::from_value::<WorkspaceCwd>(serde_json::json!(cwd)).is_err(),
                 "{cwd:?}"
             );
         }
-        let reference: WorkspaceRef = serde_json::from_value(serde_json::json!({
-            "workspace_id": identity, "cwd": "./src//nested"
-        }))
-        .unwrap();
-        assert_eq!(reference.cwd.as_str(), "src/nested");
-        assert!(
-            serde_json::from_value::<WorkspaceRef>(serde_json::json!({
-                "workspace_id": identity
-            }))
-            .is_err()
-        );
+        let cwd: WorkspaceCwd = serde_json::from_value(serde_json::json!("./src//nested")).unwrap();
+        assert_eq!(cwd.as_str(), "src/nested");
         assert!(WorkspaceId::try_from(String::from("other")).is_err());
+        let id: WorkspaceId = serde_json::from_value(serde_json::json!("a".repeat(32))).unwrap();
+        assert_eq!(id.as_str(), "a".repeat(32));
     }
 }

@@ -30,6 +30,8 @@ use super::{
     ProviderAdapter, SpawnCtx, SpawnHandle, SpawnOutcome, Tx, TxOutput,
 };
 
+mod target;
+
 pub type SpawnHook = Arc<
     dyn Fn(String, String, String, Value) -> BoxFuture<'static, Result<SpawnHandle>> + Send + Sync,
 >;
@@ -219,17 +221,8 @@ pub(crate) async fn terminal_cwd_or_track_workspace(
     track_id: &str,
     requested: Option<String>,
 ) -> Result<String> {
-    if let Some(cwd) = requested {
-        return Ok(cwd);
-    }
     let workspace = crate::db::sqlite::track_workspace_read_tx(tx, track_id).await?;
-    let cwd = workspace.agent_cwd();
-    if cwd.trim().is_empty() {
-        return Err(CalmError::Internal(format!(
-            "track {track_id} has no workspace path; refusing to open a terminal in the server's cwd"
-        )));
-    }
-    Ok(cwd.to_string())
+    Ok(target::decode(track_id, &workspace, requested)?.into_cwd())
 }
 
 #[async_trait]
@@ -599,11 +592,7 @@ impl ProviderAdapter for TerminalAdapter {
 impl ProviderAdapter for TerminalWorkerAdapter {
     async fn prepare_external(&self, input: &Value, ctx: &SpawnCtx) -> Result<()> {
         let payload: TerminalWorkerOperationPayload = serde_json::from_value(input.clone())?;
-        crate::workspace_service::identity::adopt_for_task(
-            &ctx.operation_repo.sqlite_pool(),
-            &payload.track_id,
-        )
-        .await
+        target::prepare(ctx, &payload.track_id, explicit_terminal_cwd(payload.cwd)).await
     }
 
     fn kind(&self) -> &'static str {

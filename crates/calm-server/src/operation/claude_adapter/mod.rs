@@ -783,12 +783,7 @@ impl ProviderAdapter for ClaudeAdapter {
 impl ProviderAdapter for ClaudeWorkerAdapter {
     async fn prepare_external(&self, input: &Value, ctx: &SpawnCtx) -> Result<()> {
         let payload: ClaudeWorkerOperationPayload = serde_json::from_value(input.clone())?;
-        crate::workspace_service::identity::prepare_task(
-            ctx,
-            &payload.track_id,
-            &self.workspace_root,
-        )
-        .await
+        super::workspace_lease::worker::register_worker_checkout(ctx, &payload.track_id).await
     }
 
     fn kind(&self) -> &'static str {

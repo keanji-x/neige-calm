@@ -4,7 +4,6 @@ use crate::{
     db::sqlite::{
         CheckoutOccupancy, SqlxRepo, TrackWorkspacePlan, area_create_tx, checkout_occupancy,
         track_create_tx, track_workspace_write_tx, workspace_adopt_tx, workspace_adoption_snapshot,
-        workspace_require_adopted,
     },
     model::{NewArea, NewTrack, RequestTheme, Track, TrackWorkspace, TrackWorkspaceKind},
 };
@@ -23,7 +22,7 @@ fn git(repo: &Path, args: &[&str]) {
     );
 }
 
-fn init(repo: &Path) {
+pub(super) fn init(repo: &Path) {
     std::fs::create_dir_all(repo).unwrap();
     git(repo, &["init", "-q"]);
     git(
@@ -41,7 +40,7 @@ fn init(repo: &Path) {
     );
 }
 
-async fn track(repo: &SqlxRepo, cwd: &Path, plan: TrackWorkspacePlan) -> Track {
+pub(super) async fn track(repo: &SqlxRepo, cwd: &Path, plan: TrackWorkspacePlan) -> Track {
     let mut tx = repo.pool().begin().await.unwrap();
     let area = area_create_tx(
         &mut tx,
@@ -77,15 +76,26 @@ async fn track(repo: &SqlxRepo, cwd: &Path, plan: TrackWorkspacePlan) -> Track {
     track
 }
 
-async fn task(repo: &SqlxRepo, track: &Track) {
+pub(super) async fn task(repo: &SqlxRepo, track: &Track) {
     sqlx::query(
         "INSERT INTO tasks(id,track_id,key,kind,goal,context_json,status,access,created_at_ms,updated_at_ms) \
          VALUES (?1,?1,'run','terminal','g','{}','running','read_write',1,1)",
     ).bind(track.id.as_str()).execute(repo.pool()).await.unwrap();
 }
 
+pub(super) async fn canonical_root(repo: &SqlxRepo, track: &Track) -> Option<String> {
+    sqlx::query_scalar(
+        "SELECT r.canonical_root FROM workspace_resources r JOIN track_workspace_bindings b \
+         ON b.workspace_id=r.id WHERE b.track_id=?1",
+    )
+    .bind(track.id.as_str())
+    .fetch_one(repo.pool())
+    .await
+    .unwrap()
+}
+
 #[tokio::test]
-async fn workspace_identity_adopts_symlink_and_subdir_into_one_admission_domain() {
+async fn workspace_identity_adopts_symlink_and_subdir_into_one_canonical_identity() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("repo");
     init(&source);
@@ -101,7 +111,10 @@ async fn workspace_identity_adopts_symlink_and_subdir_into_one_admission_domain(
     )
     .await;
     task(&repo, &first).await;
-    // The production entry reconciles the already-running legacy binding before admitting second.
+    // Each owner registers its own selection; canonical identity alone does not change admission.
+    super::adopt_for_task(repo.pool(), first.id.as_str())
+        .await
+        .unwrap();
     super::adopt_for_task(repo.pool(), second.id.as_str())
         .await
         .unwrap();
@@ -123,7 +136,7 @@ async fn workspace_identity_adopts_symlink_and_subdir_into_one_admission_domain(
         )
         .await
         .unwrap(),
-        CheckoutOccupancy::Busy
+        CheckoutOccupancy::Free
     );
 }
 
@@ -177,7 +190,7 @@ async fn workspace_identity_distinct_owned_worktrees_share_git_metadata_only() {
 }
 
 #[tokio::test]
-async fn workspace_identity_pending_selection_refuses_and_stale_adoption_cannot_repoint() {
+async fn workspace_identity_registration_cas_refuses_stale_selection() {
     let tmp = tempfile::tempdir().unwrap();
     let first = tmp.path().join("first");
     let second = tmp.path().join("second");
@@ -190,11 +203,7 @@ async fn workspace_identity_pending_selection_refuses_and_stale_adoption_cannot_
         TrackWorkspacePlan::ManagedUnder(tmp.path().into()),
     )
     .await;
-    assert!(
-        workspace_require_adopted(&mut repo.pool().acquire().await.unwrap(), track.id.as_str())
-            .await
-            .is_err()
-    );
+    assert!(canonical_root(&repo, &track).await.is_none());
     let snapshot =
         workspace_adoption_snapshot(&mut repo.pool().acquire().await.unwrap(), track.id.as_str())
             .await
@@ -291,7 +300,7 @@ async fn workspace_identity_adopts_legacy_active_lease_without_rewriting_source_
     assert_eq!(
         checkout_occupancy(
             &mut repo.pool().acquire().await.unwrap(),
-            new.id.as_str(),
+            old.id.as_str(),
             ""
         )
         .await
@@ -320,7 +329,7 @@ async fn workspace_identity_adopts_legacy_active_lease_without_rewriting_source_
     assert_eq!(
         checkout_occupancy(
             &mut repo.pool().acquire().await.unwrap(),
-            new.id.as_str(),
+            old.id.as_str(),
             ""
         )
         .await
@@ -330,12 +339,23 @@ async fn workspace_identity_adopts_legacy_active_lease_without_rewriting_source_
     assert_eq!(
         checkout_occupancy(
             &mut repo.pool().acquire().await.unwrap(),
-            new.id.as_str(),
+            old.id.as_str(),
             "producer"
         )
         .await
         .unwrap(),
         CheckoutOccupancy::Free
+    );
+    assert_eq!(
+        checkout_occupancy(
+            &mut repo.pool().acquire().await.unwrap(),
+            new.id.as_str(),
+            ""
+        )
+        .await
+        .unwrap(),
+        CheckoutOccupancy::Free,
+        "an old delivery remains occupied in its original admission scope"
     );
 }
 
@@ -407,5 +427,37 @@ async fn workspace_identity_borrowed_alias_cannot_own_the_physical_release_descr
     assert_eq!(
         retained_owner, physical_owner,
         "the release descriptor is independent of domain deletion"
+    );
+}
+
+#[tokio::test]
+async fn workspace_identity_unrelated_legacy_terminal_directory_does_not_block_checkout_admission()
+{
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    init(&source);
+    let external = tmp.path().join("plain-terminal");
+    std::fs::create_dir(&external).unwrap();
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let old = track(&repo, &external, TrackWorkspacePlan::AttachedFromCwd).await;
+    task(&repo, &old).await;
+    let incoming = track(&repo, &source, TrackWorkspacePlan::AttachedFromCwd).await;
+    super::adopt_for_task(repo.pool(), incoming.id.as_str())
+        .await
+        .expect("a legitimate non-Git terminal in another track is not checkout occupancy");
+    assert_eq!(
+        canonical_root(&repo, &incoming).await.as_deref(),
+        source.to_str()
+    );
+    assert_eq!(
+        checkout_occupancy(
+            &mut repo.pool().acquire().await.unwrap(),
+            old.id.as_str(),
+            ""
+        )
+        .await
+        .unwrap(),
+        CheckoutOccupancy::Busy,
+        "the old task's original admission fact remains occupied"
     );
 }

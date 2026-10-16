@@ -41,127 +41,13 @@ const WRITER_STATEMENTS: &[(&str, &str)] = &[
 ];
 
 /// Writes expected outside the production writer, by exact normalized text: `(file, statement, why)`.
-const EXPECTED_OTHER_WRITES: &[(&str, &str, &str)] = &[
-    (
-        "crates/calm-server/tests/cases/today_launchpad.rs",
-        "update tracks set purpose=null, workspace_path='/also-scrambled', workspace_kind='attached', workspace_frozen_at=null where id=?1",
-        "Deliberately desynchronizes the row so the launchpad adopt branch has \
-         to visibly rewrite it; without the scramble that assertion would pass \
-         on leftovers from the create branch. #1147 S2 flipped the scrambled \
-         values to `attached`/`99` because the launchpad's real workspace is \
-         now `managed`/`NULL` — scrambling to the expected values would have \
-         made the assertion vacuous. S3 flipped the STAMP back to NULL: the \
-         latch makes a frozen launchpad un-repointable, and \
-         `track_workspace_freeze_tx` excludes the system area precisely so that \
-         row never gets one, so scrambling to 99 would fake an unreachable \
-         state and turn the adopt branch into a 409.",
-    ),
-    (
-        "crates/calm-server/tests/scheduler.rs",
-        "insert into tracks(id,area_id,title,sort,workspace_kind,workspace_path,workspace_frozen_at,created_at,updated_at) select ?1,area_id,'replacement child',sort+0.25,workspace_kind,workspace_path,workspace_frozen_at,?2,?2 from tracks where id=?3",
-        "Clones a track row wholesale, workspace included.",
-    ),
-    (
-        "crates/calm-server/tests/scheduler.rs",
-        "update tracks set workspace_kind='attached', workspace_path=?1, workspace_frozen_at=1 where id=?2",
-        "#1147 S3 — forces `boot()`'s track to an attached, frozen, real \
-         non-git directory. The production writer refuses a frozen row (the \
-         latch) and has no un-freeze path, so a fixture that needs this state \
-         has to write it out of band.",
-    ),
-    (
-        "crates/calm-server/tests/scheduler.rs",
-        "update tracks set workspace_kind='attached', workspace_path=?1, workspace_frozen_at=?2 where id=?3",
-        "#1147 S3 — same reason as the entry above, with a real timestamp; \
-         used by the child-track inheritance fixtures.",
-    ),
-    (
-        "crates/calm-server/tests/scheduler.rs",
-        "update tracks set workspace_kind='managed', workspace_path=?1, workspace_frozen_at=?2 where id=?3",
-        "#1147 S3 — re-points a CHILD track, which S4 freezes at creation. The \
-         fixture is deliberately simulating the thing the latch forbids, in \
-         order to pin what happens to the child bootstrap's idempotency key \
-         afterwards.",
-    ),
-    (
-        "crates/calm-server/tests/no_double_spawn.rs",
-        "update tracks set workspace_kind='attached', workspace_path=?1, workspace_frozen_at=1 where id=?2",
-        "#1147 S3 — forces `boot()`'s track to an attached, frozen, real git \
-         repository. Same reason as the `scheduler.rs` entries: the production \
-         writer refuses a frozen row.",
-    ),
-    (
-        "crates/calm-server/tests/cases/git_delivery.rs",
-        "update tracks set workspace_path = ?1 where id = ?2",
-        "#1727 S4 — points `boot()`'s track (attached, frozen at creation, \
-         path empty) at a real git repository so the kernel git delivery runs \
-         against its track worktree (#1830 S2). Same reason as the \
-         `no_double_spawn.rs` entry: the production writer refuses a frozen row.",
-    ),
-    (
-        "crates/calm-server/src/test_seams.rs",
-        "update tracks set workspace_worktree_path = ?1 where id = ?2",
-        "#1830 S2 — `attach_track_worktree_for_test`: gives a fixture track \
-         (attached, made by `Repo::track_create`, so without a worktree) the \
-         value the create transaction writes for a new attached track, then \
-         runs the production `ensure_track_worktree`. fixtures-only; the \
-         production writer refuses a frozen row.",
-    ),
-    (
-        "crates/calm-server/tests/cases/track_worker_cwd.rs",
-        "update tracks set workspace_worktree_path = null where id = ?1",
-        "#1830 S2 T5 — turns the fixture's attached track into the pre-#1830 \
-         shape (attached, no track worktree, as the 9 tracks on 4140 are) to \
-         pin that its workers are refused.",
-    ),
-    (
-        "crates/calm-server/tests/cases/track_publish.rs",
-        "update tracks set workspace_worktree_path = null where id = ?1",
-        "#1830 S3 D7 — the pre-#1830 attached shape (no track worktree), to \
-         pin that `plugin_gitforge_publish` refuses it before any operation.",
-    ),
-    (
-        "crates/calm-server/tests/cases/track_worker_cwd_ends.rs",
-        "update tracks set workspace_kind = 'managed', workspace_path = ?1, workspace_worktree_path = null where id = ?2",
-        "#1830 S2 T6 — re-points the fixture's track to a managed directory \
-         under the fixture's workspace root, a state the latch forbids a route \
-         to produce, so the managed worker path runs in the same world as the \
-         attached cases.",
-    ),
-    (
-        "crates/calm-server/tests/cases/track_catch_up.rs",
-        "update tracks set workspace_kind = 'managed', workspace_path = ?1, workspace_worktree_path = null where id = ?2",
-        "#2058 S1 C4 — the same re-point as `track_worker_cwd_ends.rs` T6, \
-         after a done attempt, to pin that a managed track's catch-up passes \
-         the branch check and is refused for having no upstream.",
-    ),
-    (
-        "crates/calm-truth/src/db/sqlite/track_workspace_migration_tests.rs",
-        "update tracks set workspace_frozen_at = null where id = ?1",
-        "#1147 S3 — the ONLY un-freeze in the tree, and it is a test fixture. \
-         The writer under test refuses a frozen row, so the test that pins \
-         `kind`/`path`/`stamp` moving together has to open the latch first. \
-         Production has no statement that can do this.",
-    ),
-    (
-        "crates/calm-server/tests/cases/track_workspace_repoint.rs",
-        "update tracks set workspace_kind='attached', workspace_path=?1, workspace_frozen_at=null where id=?2",
-        "#1147 S3 — constructs `attached` + unfrozen, a state no route \
-         produces, so the PATCH route's `kind` guard has a fixture of its own \
-         rather than being shadowed by the freeze guard. Migration 0077's \
-         comment names this exact state as the one a forgetful PATCH branch \
-         would use to relocate a user's repository.",
-    ),
-    (
-        "crates/calm-server/tests/cases/track_workspace_repoint.rs",
-        "update tracks set parent_track_id=?1, workspace_frozen_at=?2 where id=?3",
-        "#1147 S3 — reproduces the row shape S4's child-track adapter produces \
-         (a child, frozen at creation) so the PATCH route's refusal is pinned \
-         from this slice too. The adapter's own creation path is covered by \
-         S4's tests; what is asserted here is the route's behaviour on that \
-         state.",
-    ),
-];
+const EXPECTED_OTHER_WRITES: &[(&str, &str, &str)] = &[(
+    "crates/calm-truth/src/db/sqlite/track_workspace_migration_tests.rs",
+    "update tracks set workspace_frozen_at = null where id = ?1",
+    "The single-writer regression deliberately opens the latch to exercise \
+         a second whole-value write. Production has no un-freeze statement; \
+         ordinary fixtures select their workspace through the production writer.",
+)];
 
 /// This file, skipped by its own scan: its literals are the detector's test vectors.
 const SELF: &str = "crates/calm-truth/tests/track_write_point_registry.rs";

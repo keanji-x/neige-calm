@@ -27,6 +27,24 @@ pub struct DirectoryIdentity {
 }
 
 impl DirectoryIdentity {
+    /// Missing, never-registered selections can remain Pending without creating a directory.
+    /// Other failures are not absence and must be handled explicitly by the kernel.
+    pub fn open_if_present(selected: &Path, require_root: bool) -> Result<Option<Self>> {
+        if !selected.is_absolute() {
+            return Err(Error::Internal(
+                "workspace selection must be an absolute directory".into(),
+            ));
+        }
+        match std::fs::symlink_metadata(selected) {
+            Ok(_) => Self::open(selected, require_root).map(Some),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(Error::Internal(format!(
+                "probe workspace directory {}: {error}",
+                selected.display()
+            ))),
+        }
+    }
+
     /// Git reports the owning worktree root. Distinct linked worktrees share a common-dir,
     /// but retain distinct root directory identity. Subdirs and symlinks converge here.
     pub fn open(selected: &Path, require_root: bool) -> Result<Self> {

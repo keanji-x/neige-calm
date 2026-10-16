@@ -26,6 +26,22 @@ authorization. An absolute display path cannot authorize a launch. Existing
 worktree behavior, wire events, operation payload hashes, upstream selection
 timing and cleanup policy remain unchanged. No view backend is selectable.
 
+The first implementation outcome is a registration foundation: validated identity,
+physical directory/owner facts, and atomic track bindings. Registration is neither
+runtime authorization nor historical source conversion. Checkout admission keeps
+its existing track scope until legacy operation/source bindings and lease migration
+are complete; canonical IDs alone do not enable shared-resource admission.
+Registration only observes already materialized directories. Missing selections
+and managed directories awaiting their original repair remain Pending; directory
+creation and repair retain their existing worker prepare call time. A missing previously registered directory requires
+recovery, rather than creating a new directory through the registration hook.
+
+V1 terminal cwd is decoded by its terminal owner. Explicit directories and legacy
+attached directories retain their original cwd and executor refusal/receipt behavior,
+without acquiring a workspace identity from the track's current selection. The
+foundation exports no `WorkspaceRef`, resolve, launch handle or claim capability;
+those contracts below are delivered with their real launch/file consumers.
+
 ## Ownership and types
 
 `workspace` owns validated `WorkspaceId`, `WorkspaceCwd`, `WorkspaceRef`, opaque

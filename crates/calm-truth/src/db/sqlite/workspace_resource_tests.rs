@@ -75,7 +75,7 @@ async fn running(repo: &SqlxRepo, track: &Track, access: &str) -> String {
 }
 
 #[tokio::test]
-async fn workspace_resource_shared_bindings_aggregate_tasks_and_leases() {
+async fn workspace_resource_shared_identity_preserves_existing_track_admission() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let first = create(
         &repo,
@@ -95,21 +95,21 @@ async fn workspace_resource_shared_bindings_aggregate_tasks_and_leases() {
     );
     let reader = running(&repo, &first, "read_only").await;
     assert_eq!(
-        occupancy(&repo, &second, "").await,
+        occupancy(&repo, &first, "").await,
         CheckoutOccupancy::Readers
     );
     assert!(
-        occupancy(&repo, &second, "")
+        occupancy(&repo, &first, "")
             .await
             .admits(crate::model::TaskAccess::ReadOnly)
     );
     assert!(
-        !occupancy(&repo, &second, "")
+        !occupancy(&repo, &first, "")
             .await
             .admits(crate::model::TaskAccess::ReadWrite)
     );
     assert_eq!(
-        occupancy(&repo, &second, &reader).await,
+        occupancy(&repo, &first, &reader).await,
         CheckoutOccupancy::Free
     );
     sqlx::query(
@@ -121,7 +121,12 @@ async fn workspace_resource_shared_bindings_aggregate_tasks_and_leases() {
     .execute(repo.pool())
     .await
     .unwrap();
-    assert_eq!(occupancy(&repo, &second, "").await, CheckoutOccupancy::Busy);
+    assert_eq!(occupancy(&repo, &first, "").await, CheckoutOccupancy::Busy);
+    assert_eq!(
+        occupancy(&repo, &second, "").await,
+        CheckoutOccupancy::Free,
+        "identity rollout does not activate shared admission"
+    );
 }
 
 #[tokio::test]
@@ -239,13 +244,12 @@ async fn workspace_resource_identity_survives_area_deletion_and_missing_binding_
         .await
         .unwrap();
     assert_eq!(count, 1);
-    let refusal = checkout_occupancy(
+    let refusal = super::workspace_adoption_snapshot(
         &mut repo.pool().acquire().await.unwrap(),
         track.id.as_str(),
-        "",
     )
     .await
-    .expect_err("a deleted binding is never a free checkout");
+    .expect_err("a deleted binding cannot be adopted");
     assert!(refusal.to_string().contains("WorkspaceRecoveryRequired"));
 }
 

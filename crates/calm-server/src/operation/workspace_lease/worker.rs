@@ -123,6 +123,40 @@ pub(crate) struct CatchUpFacts {
     pub head: String,
 }
 
+/// The worker owner selects supported checkouts once for registration and lease preparation.
+/// A legacy attached directory is refused by the original prepare phase, preserving its reason.
+fn worker_checkout<'a>(
+    kind: TrackWorkspaceKind,
+    workspace_path: &'a str,
+    worktree: Option<&'a str>,
+) -> Option<&'a Path> {
+    match kind {
+        TrackWorkspaceKind::Managed => Some(Path::new(workspace_path)),
+        TrackWorkspaceKind::Attached => worktree.map(Path::new),
+    }
+}
+
+pub(crate) async fn register_worker_checkout(
+    ctx: &crate::operation::SpawnCtx,
+    track_id: &str,
+) -> Result<()> {
+    let track = ctx
+        .repo
+        .track_get(track_id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("track {track_id}")))?;
+    if worker_checkout(
+        track.workspace.kind,
+        &track.workspace.path,
+        track.workspace.worktree.as_deref(),
+    )
+    .is_none()
+    {
+        return Ok(());
+    }
+    crate::workspace_service::identity::prepare_task(ctx, track_id).await
+}
+
 /// The branch rule (D4): `neige/track-<id>` when the track has a worktree, else `main`.
 pub(crate) fn worker_branch(track_id: &str, has_worktree: bool) -> Result<String> {
     if has_worktree {
@@ -166,7 +200,6 @@ pub(crate) async fn prepare_worker_lease_tx(
     attempt_id: &str,
     workspace_root: &Path,
 ) -> Result<WorkerLeasePlan> {
-    crate::db::sqlite::workspace_require_adopted(tx, track_id).await?;
     let (access, head, base, start): (String, Option<String>, Option<String>, String) =
         sqlx::query_as("SELECT access, head, base, start FROM tasks WHERE id = ?1")
             .bind(attempt_id)
@@ -211,22 +244,18 @@ async fn prepare_worker_lease_with_tx(
 ) -> Result<WorkerLeasePlan> {
     validate_path_segment("track_id", track_id)?;
     let (kind, workspace_path, worktree) = track_workspace_tx(tx, track_id).await?;
-    let path = match kind {
+    let path = worker_checkout(kind, &workspace_path, worktree.as_deref())
+        .ok_or_else(track_without_worktree)?
+        .to_path_buf();
+    if kind == TrackWorkspaceKind::Managed {
         // Last-chance materialize: track create materializes after its transaction commits, so a
         // failure there leaves a committed row pointing at a missing directory.
-        TrackWorkspaceKind::Managed => {
-            crate::workspace_service::workspace_materialize::materialize_managed_workspace(
-                workspace_root,
-                Path::new(&workspace_path),
-                track_id,
-            )?;
-            PathBuf::from(&workspace_path)
-        }
-        TrackWorkspaceKind::Attached => match worktree.as_deref() {
-            Some(worktree) => PathBuf::from(worktree),
-            None => return Err(track_without_worktree()),
-        },
-    };
+        crate::workspace_service::workspace_materialize::materialize_managed_workspace(
+            workspace_root,
+            &path,
+            track_id,
+        )?;
+    }
     let branch = worker_branch(track_id, worktree.is_some())?;
     ensure_clean_tree(&path).await?;
     let catch_up = match start {

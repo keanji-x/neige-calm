@@ -82,8 +82,7 @@ mod track_tree;
 mod track_workspace;
 mod workspace_resource;
 pub use workspace_resource::{
-    WorkspaceAdoption, WorkspaceOwnership, track_workspace_reference, workspace_adopt_tx,
-    workspace_adoption_snapshot, workspace_require_adopted,
+    WorkspaceAdoption, WorkspaceOwnership, workspace_adopt_tx, workspace_adoption_snapshot,
 };
 mod transcript_turn_input;
 #[cfg(test)]
