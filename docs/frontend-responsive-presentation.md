@@ -125,7 +125,7 @@ of renders alone do not identify the responsible call path.
 From `fe/`, create a local production build with source maps:
 
 ```sh
-node tools/profile-build.mjs
+node tools/preview/profile-build.mjs
 ```
 
 It prints a fresh temporary output directory and writes `profile-build.json` there
@@ -152,7 +152,7 @@ function costs overlap and must not be summed as independent CPU buckets.
 For React scheduler/component attribution, use a separate profiling build:
 
 ```sh
-node tools/profile-build.mjs --react
+node tools/preview/profile-build.mjs --react
 ```
 
 This opts into `react-dom/profiling` through a build-time alias. Normal production

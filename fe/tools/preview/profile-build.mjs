@@ -8,7 +8,7 @@ import { build } from 'vite';
 
 // Opt-in local diagnostics. Normal build/platform configuration stays unchanged.
 const { values } = parseArgs({ options: { react: { type: 'boolean', default: false } }, strict: true });
-const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
+const root = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const outDir = await mkdtemp(join(tmpdir(), 'neige-profile-'));
 await build({
   configFile: resolve(root, 'vite.config.ts'),
