@@ -81,27 +81,37 @@ export function EdgeNavigator({ items, activeId, onSelect, label, className, pre
   useEffect(() => {
     const track = trackRef.current;
     if (track === null) return;
-    const trackedDots = [...dotRefs.current];
+    let painted = new Map<HTMLButtonElement, number>();
     const fine = window.matchMedia('(pointer: fine)');
     let queued: number | null = null;
     const paint = () => {
       queued = null;
       const at = fine.matches ? pointerY.current : null;
       const dots = dotRefs.current;
-      // Read fixed hitboxes together before writing ink-only properties.
-      const boxes = at === null ? [] : dots.map(dot => dot?.getBoundingClientRect() ?? null);
-      dots.forEach((dot, index) => {
-        if (dot === null) return;
-        const box = boxes[index];
-        if (at === null || box == null || box.height === 0) {
-          dot.style.removeProperty('--nc-dot-proximity');
-          return;
+      // CSS owns a contiguous, uniform row pitch. Read its live geometry once;
+      // ink changes only pseudo-elements, so nearby rows retain that same pitch.
+      const first = at === null ? undefined : dots[0]?.getBoundingClientRect();
+      const next = new Map<HTMLButtonElement, number>();
+      if (at !== null && first !== undefined && first.height > 0) {
+        const aimed = Math.floor((at - first.top) / first.height);
+        const start = Math.max(0, aimed - RAIL_INK_REACH);
+        const end = Math.min(dots.length - 1, aimed + RAIL_INK_REACH);
+        for (let index = start; index <= end; index++) {
+          const dot = dots[index];
+          if (dot == null) continue;
+          const center = first.top + (index + 0.5) * first.height;
+          const near = Math.max(0, 1 - Math.abs(center - at) / (first.height * RAIL_INK_REACH));
+          const proximity = Math.round(near * near * (3 - 2 * near) * 1000) / 1000;
+          if (proximity > 0) next.set(dot, proximity);
         }
-        const near = Math.max(0, 1 - Math.abs(box.top + box.height / 2 - at) / (box.height * RAIL_INK_REACH));
-        const proximity = Math.round(near * near * (3 - 2 * near) * 1000) / 1000;
-        if (proximity === 0) dot.style.removeProperty('--nc-dot-proximity');
-        else dot.style.setProperty('--nc-dot-proximity', `${proximity}`);
-      });
+      }
+      for (const dot of painted.keys()) {
+        if (!next.has(dot)) dot.style.removeProperty('--nc-dot-proximity');
+      }
+      for (const [dot, proximity] of next) {
+        if (painted.get(dot) !== proximity) dot.style.setProperty('--nc-dot-proximity', `${proximity}`);
+      }
+      painted = next;
     };
     const schedule = () => { if (queued === null) queued = requestAnimationFrame(paint); };
     const reset = () => {
@@ -136,7 +146,7 @@ export function EdgeNavigator({ items, activeId, onSelect, label, className, pre
       stopHostResize();
       window.removeEventListener('resize', schedule);
       if (queued !== null) cancelAnimationFrame(queued);
-      for (const dot of trackedDots) dot?.style.removeProperty('--nc-dot-proximity');
+      for (const dot of painted.keys()) dot.style.removeProperty('--nc-dot-proximity');
     };
   }, [itemKey]);
   const rove = (to: number) => {

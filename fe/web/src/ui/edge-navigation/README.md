@@ -10,9 +10,12 @@ a second content cache.
 
 Fine-pointer rows are 20px tall; coarse-pointer rows are 44px tall. The intrinsic
 track is centered and scrolls when its content exceeds 320px. Pointer proximity smoothly enlarges neighboring ink toward 8px without changing
-button geometry. One bounded frame reads all fixed row boxes, then writes only
-ink sizes; scroll, resize and item changes recompute the same profile. Leaving
+button geometry. One bounded frame reads the first fixed row box and derives the nearby centers
+from its live pitch, then changes only nearby or previously enlarged ink; scroll, resize and item changes recompute the same profile. Leaving
 or cancelling the pointer resets it; touch and coarse pointers do not magnify.
+CSS owns contiguous rows of uniform pitch; no row positions or pixel pitch are
+cached in JavaScript. The mounted effect retains only the bounded set of ink
+values it owns, releasing them on reset, replacement and unmount.
 Keyboard focus keeps a clear 8px dot. One roving tab stop supports Arrow, Home and End.
 
 One Astryx `useHoverCard` owns the whole track interaction. First entry waits
