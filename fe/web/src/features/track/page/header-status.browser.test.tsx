@@ -465,6 +465,10 @@ describe('the Track conversation entry', () => {
     renderPage({ onStartConversation: start });
     const chat = browserPage.getByRole('button', { name: '讨论这项工作', exact: true });
     await expect.element(chat).toBeVisible();
+    await userEvent.hover(document.querySelector<HTMLElement>('[data-nc-page-title]')!);
+    const pixel = document.createElement('canvas');
+    pixel.width = 1; pixel.height = 1;
+    const context = pixel.getContext('2d')!;
     for (const theme of ['light', 'dark']) {
       document.documentElement.dataset.theme = theme;
       const button = [...document.querySelectorAll('button')].find((element) =>
@@ -472,7 +476,12 @@ describe('the Track conversation entry', () => {
       if (button === undefined) throw new Error('the desktop Chat action is missing');
       await waitFor(() => {
         const style = getComputedStyle(button);
-        expect(contrast(paintedRgb(style.color), paintedRgb(getComputedStyle(button.closest('header')!).backgroundColor))).toBeGreaterThanOrEqual(4.5);
+        // This action paints its own opaque card surface above the page ground.
+        context.clearRect(0, 0, 1, 1);
+        context.fillStyle = style.backgroundColor;
+        context.fillRect(0, 0, 1, 1);
+        expect(context.getImageData(0, 0, 1, 1).data[3]).toBe(255);
+        expect(contrast(paintedRgb(style.color), paintedRgb(style.backgroundColor))).toBeGreaterThanOrEqual(4.5);
       });
     }
     await userEvent.click(chat);
