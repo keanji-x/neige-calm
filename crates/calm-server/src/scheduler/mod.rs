@@ -1254,7 +1254,7 @@ impl Scheduler {
             // payload hash" permanently, so a re-pointed child would otherwise fail forever.
             idempotency_key: Some(format!(
                 "child-track:{child_id}:bootstrap:{}",
-                crate::workspace_materialize::workspace_key_digest(cwd)
+                crate::workspace_service::workspace_materialize::workspace_key_digest(cwd)
             )),
             payload_hash: stable_payload_hash(&serde_json::to_value(&bootstrap)?)?,
         };

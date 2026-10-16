@@ -22,7 +22,7 @@ use crate::track_worker_cwd::{
 async fn a_managed_track_worker_commits_on_main_in_its_directory() {
     let w = world().await;
     let fx = &w.fx;
-    let path = calm_server::workspace_materialize::managed_workspace_path(
+    let path = workspace::materialize::managed_workspace_path(
         &fx.workspace_root,
         fx.boot.area_id.as_str(),
         fx.track(),

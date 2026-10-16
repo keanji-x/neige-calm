@@ -1,8 +1,4 @@
-use std::{
-    io::{self, Write},
-    path::{Path, PathBuf},
-    process::Output,
-};
+use std::path::Path;
 
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 
@@ -12,18 +8,14 @@ use crate::event::{BroadcastEnvelope, Event, EventScope, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, AreaId, CardId, TrackId};
 use crate::model::{TaskAccess, new_id, now_ms};
 use crate::proc_identity::read_boot_id;
-use crate::workspace_materialize::neige_git_command;
+use crate::workspace_service::sweep::WorkspaceTrackSweep;
 
 use super::forge_action_adapter::FORGE_ACTION_KIND;
 use super::{PhaseTag, TimestampMs, Tx};
 
 pub(crate) mod base;
 pub(crate) mod facts;
-mod metadata_lock;
 pub(crate) mod release;
-mod teardown;
-pub(crate) mod track_worktree;
-pub(crate) mod track_worktree_clean;
 pub(crate) mod upstream;
 pub(crate) mod upstream_fetch;
 #[cfg(test)]
@@ -39,7 +31,6 @@ pub(crate) use release::{
     ReleaseDelivery, reclaim_dead_workspace_leases_on_boot, release_workspace_lease_for_card_repo,
     release_workspace_lease_for_card_tx,
 };
-pub(crate) use teardown::remove_workspace_worktree;
 #[cfg(any(test, feature = "fixtures"))]
 pub(crate) use worker::prepare_worker_lease_as_tx;
 pub(crate) use worker::{WorkerLeasePlan, prepare_worker_lease_tx, worker_branch_tx};
@@ -67,15 +58,6 @@ pub(crate) struct WorkspaceLease {
     /// `Some(Kernel)` for every lease a worker op takes since slice 2 (written
     /// in the same INSERT as `base`); `None` is legacy — no candidate binding.
     pub delivery_policy: Option<DeliveryPolicy>,
-}
-
-/// A kernel-made worktree as a git target: the track worktree (#1830 S1) that
-/// [`remove_workspace_worktree`] and `track_worktree::ensure_track_worktree` act on.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct WorkspaceLeaseTarget {
-    pub repo_root: PathBuf,
-    pub path: PathBuf,
-    pub branch: String,
 }
 
 const RECOVERABLE_OPERATION_PHASES: &[PhaseTag] = &[
@@ -129,12 +111,6 @@ pub(crate) async fn any_track_has_active_forge_action(
 
     let exists = query.build_query_scalar().fetch_one(pool).await?;
     Ok(exists)
-}
-
-impl WorkspaceLeaseTarget {
-    pub(crate) fn path_string(&self) -> String {
-        self.path.to_string_lossy().to_string()
-    }
 }
 
 /// INSERT the lease row of one worker attempt at the directory [`prepare_worker_lease_tx`] chose
@@ -272,7 +248,8 @@ pub(crate) async fn release_workspace_leases_for_track_tx(
     tx: &mut Tx<'_>,
     track_id: &str,
 ) -> Result<WorkspaceTrackRelease> {
-    let sweep = workspace_track_sweep_for_track_tx(tx, track_id).await?;
+    let sweep =
+        crate::workspace_service::sweep::workspace_track_sweep_for_track_tx(tx, track_id).await?;
     let sql = format!(
         "SELECT {WORKSPACE_LEASE_COLUMNS} FROM workspace_leases \
          WHERE track_id = ?1 AND state IN ('held','releasing') \
@@ -332,69 +309,6 @@ pub(super) async fn release_workspace_lease_tx(
 pub(crate) struct WorkspaceTrackRelease {
     pub(crate) events: Vec<(ActorId, EventScope, Event)>,
     pub(crate) sweep: Option<WorkspaceTrackSweep>,
-}
-
-/// What a track teardown removes after its commit (D10): the track worktree and its branch
-/// (#1830 S1), and the candidate refs in every common dir a lease of the track recorded.
-#[derive(Clone, Debug)]
-pub(crate) struct WorkspaceTrackSweep {
-    track_id: String,
-    /// `tracks.workspace_worktree_path`: removed with the track, whatever its leases.
-    track_worktree: Option<String>,
-    git_common_dirs: Vec<PathBuf>,
-}
-
-async fn workspace_track_sweep_for_track_tx(
-    tx: &mut Tx<'_>,
-    track_id: &str,
-) -> Result<Option<WorkspaceTrackSweep>> {
-    let Some(track_worktree) = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT workspace_worktree_path FROM tracks WHERE id = ?1",
-    )
-    .bind(track_id)
-    .fetch_optional(&mut **tx)
-    .await?
-    else {
-        return Ok(None);
-    };
-    let git_common_dirs = sqlx::query_scalar::<_, String>(
-        "SELECT DISTINCT git_common_dir FROM workspace_leases \
-         WHERE track_id = ?1 AND git_common_dir IS NOT NULL ORDER BY git_common_dir",
-    )
-    .bind(track_id)
-    .fetch_all(&mut **tx)
-    .await?
-    .into_iter()
-    .map(PathBuf::from)
-    .collect();
-    Ok(Some(WorkspaceTrackSweep {
-        track_id: track_id.to_string(),
-        track_worktree,
-        git_common_dirs,
-    }))
-}
-
-/// The post-commit half of a track or area teardown, best effort: the track worktree, then the
-/// candidate refs, addressed by the lease rows' common dirs (not by the track cwd, which may be a
-/// moved linked worktree). Never fails the caller: the track rows are already gone.
-pub(crate) async fn sweep_workspace_worktrees_for_tracks(sweeps: Vec<WorkspaceTrackSweep>) {
-    if let Err(error) =
-        tokio::task::spawn_blocking(move || sweep_workspace_worktrees_blocking(sweeps)).await
-    {
-        tracing::warn!(%error, "track teardown Git sweep task failed");
-    }
-}
-
-fn sweep_workspace_worktrees_blocking(sweeps: Vec<WorkspaceTrackSweep>) {
-    for sweep in sweeps {
-        if let Some(track_worktree) = &sweep.track_worktree {
-            track_worktree::remove_track_worktree(&sweep.track_id, track_worktree);
-        }
-        crate::git_candidate::refs::delete_candidate_refs_for_track(
-            &sweep.track_id,
-            sweep.git_common_dirs.iter().map(PathBuf::as_path),
-        );
-    }
 }
 
 pub(super) async fn append_workspace_events_tx(
@@ -460,283 +374,8 @@ pub(super) fn operation_phase_is_recoverable(phase: &str) -> bool {
         .any(|tag| tag.as_str() == phase)
 }
 
-fn remove_workspace_dir_if_exists(path: &str) -> Result<bool> {
-    let path = Path::new(path);
-    // A symlink leaf is unlinked, never followed.
-    if base::unlink_symlink_leaf(path)? {
-        return Ok(true);
-    }
-    let existed = path.exists();
-    match std::fs::remove_dir_all(path) {
-        Ok(()) => Ok(existed),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(CalmError::Internal(format!(
-            "remove workspace lease directory {}: {e}",
-            path.display()
-        ))),
-    }
-}
-
-const WORKTREE_EXCLUDE: &str = ".claude/worktrees/";
-
-#[cfg(feature = "fixtures")]
-fn metadata_test_pause(point: &str, repo_root: &Path) {
-    crate::test_seams::blocking_pause_point(point, repo_root.to_str().expect("test repo path"));
-}
-
-pub(crate) fn ensure_workspace_worktree_root_excluded(repo_root: &Path) -> Result<()> {
-    ensure_git_exclude_entry(repo_root, WORKTREE_EXCLUDE)
-}
-
-/// Append `entry` to `<git-dir>/info/exclude` unless a line already equals it.
-/// The match is exact on purpose: a near-miss (`.neige` vs `.neige/`) would still hide the directory but append a second line on every call.
-pub(crate) fn ensure_git_exclude_entry(repo_root: &Path, entry: &str) -> Result<()> {
-    let exclude_path = git_exclude_path(repo_root)?;
-    let existing = match std::fs::read_to_string(&exclude_path) {
-        Ok(existing) => existing,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(error) => {
-            return Err(CalmError::Internal(format!(
-                "read git exclude {}: {error}",
-                exclude_path.display()
-            )));
-        }
-    };
-    if existing.lines().any(|line| line.trim() == entry) {
-        return Ok(());
-    }
-    if let Some(parent) = exclude_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            CalmError::Internal(format!(
-                "create git exclude directory {}: {error}",
-                parent.display()
-            ))
-        })?;
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&exclude_path)
-        .map_err(|error| {
-            CalmError::Internal(format!(
-                "open git exclude {}: {error}",
-                exclude_path.display()
-            ))
-        })?;
-    if !existing.is_empty() && !existing.ends_with('\n') {
-        file.write_all(b"\n").map_err(|error| {
-            CalmError::Internal(format!(
-                "write git exclude {}: {error}",
-                exclude_path.display()
-            ))
-        })?;
-    }
-    file.write_all(format!("{entry}\n").as_bytes())
-        .map_err(|error| {
-            CalmError::Internal(format!(
-                "write git exclude {}: {error}",
-                exclude_path.display()
-            ))
-        })?;
-    Ok(())
-}
-
-fn git_exclude_path(repo_root: &Path) -> Result<PathBuf> {
-    // Env-isolated: an inherited `GIT_DIR` would send the exclude file into a different repository.
-    let output = crate::workspace_materialize::neige_git_command()
-        .arg("-C")
-        .arg(repo_root)
-        .args(["rev-parse", "--git-path", "info/exclude"])
-        .output()
-        .map_err(|e| {
-            CalmError::Internal(format!(
-                "spawn git rev-parse --git-path info/exclude in {}: {e}",
-                repo_root.display()
-            ))
-        })?;
-    if !output.status.success() {
-        return Err(git_failed(
-            "git rev-parse --git-path info/exclude",
-            repo_root,
-            &output,
-        ));
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let exclude_path = stdout.trim_end_matches(&['\r', '\n'][..]);
-    if exclude_path.is_empty() {
-        return Err(CalmError::Internal(format!(
-            "git rev-parse --git-path info/exclude in {} returned an empty path",
-            repo_root.display()
-        )));
-    }
-    let exclude_path = PathBuf::from(exclude_path);
-    if exclude_path.is_absolute() {
-        Ok(exclude_path)
-    } else {
-        Ok(repo_root.join(exclude_path))
-    }
-}
-
-fn validate_path_segment(label: &str, value: &str) -> Result<()> {
-    if value.is_empty()
-        || value == "."
-        || value == ".."
-        || value.contains('/')
-        || value.contains('\\')
-    {
-        return Err(CalmError::Internal(format!(
-            "invalid workspace lease {label} path segment {value:?}"
-        )));
-    }
-    Ok(())
-}
-
-pub(crate) fn git_repo_root_for_track_cwd(track_id: &str, cwd: &str) -> Result<PathBuf> {
-    let cwd_path = Path::new(cwd);
-    if cwd.trim().is_empty() || !cwd_path.is_absolute() {
-        return Err(CalmError::BadRequest(format!(
-            "track {track_id} cwd must be an absolute git repository path for workspace leasing"
-        )));
-    }
-    let output = neige_git_command()
-        .arg("-C")
-        .arg(cwd_path)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .map_err(|e| {
-            CalmError::Internal(format!(
-                "spawn git rev-parse --show-toplevel for track {track_id} cwd {}: {e}",
-                cwd_path.display()
-            ))
-        })?;
-    if !output.status.success() {
-        return Err(CalmError::BadRequest(format!(
-            "track {track_id} cwd {} is not a git repository: {}",
-            cwd_path.display(),
-            output_summary(&output)
-        )));
-    }
-    let repo_root = base::printed_path(&output.stdout);
-    if repo_root.as_os_str().is_empty() {
-        return Err(CalmError::BadRequest(format!(
-            "track {track_id} cwd {} did not resolve to a git repository root",
-            cwd_path.display()
-        )));
-    }
-    if !repo_root.is_absolute() {
-        return Err(CalmError::BadRequest(format!(
-            "track {track_id} git repository root must be absolute: {}",
-            repo_root.display()
-        )));
-    }
-    // Refused where it is read: `repo_root` is stored and frozen
-    // through `json!` by both adapters, so it is UTF-8 by construction.
-    base::utf8_path(&repo_root, "track git repository root")?;
-    Ok(repo_root)
-}
-
-fn git_repo_available(repo_root: &Path) -> bool {
-    neige_git_command()
-        .arg("-C")
-        .arg(repo_root)
-        .args(["rev-parse", "--git-dir"])
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-}
-
-fn git_ref_exists(repo_root: &Path, full_ref: &str) -> Result<bool> {
-    let status = neige_git_command()
-        .arg("-C")
-        .arg(repo_root)
-        .args(["show-ref", "--verify", "--quiet", full_ref])
-        .status()
-        .map_err(|e| {
-            CalmError::Internal(format!(
-                "spawn git show-ref {full_ref} in {}: {e}",
-                repo_root.display()
-            ))
-        })?;
-    Ok(status.success())
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum GitWorktreeRegistration {
-    Absent,
-    Present,
-    Prunable,
-    /// A registration at the lease path's realpath recorded under another
-    /// path (`registered_as`; `branch` is its `refs/heads/..`, `None` when
-    /// detached): an alias of someone else's worktree, never reused, pruned
-    /// or removed.
-    Foreign {
-        registered_as: PathBuf,
-        branch: Option<String>,
-    },
-}
-
-fn git_worktree_registered(target: &WorkspaceLeaseTarget) -> Result<bool> {
-    Ok(git_worktree_registration(target)? != GitWorktreeRegistration::Absent)
-}
-
-fn git_worktree_registration(target: &WorkspaceLeaseTarget) -> Result<GitWorktreeRegistration> {
-    let output = neige_git_command()
-        .arg("-C")
-        .arg(&target.repo_root)
-        .args(["worktree", "list", "--porcelain", "-z"])
-        .output()
-        .map_err(|e| {
-            CalmError::Internal(format!(
-                "spawn git worktree list in {}: {e}",
-                target.repo_root.display()
-            ))
-        })?;
-    if !output.status.success() {
-        return Err(git_failed("git worktree list", &target.repo_root, &output));
-    }
-    base::worktree_registration_in(&output.stdout, target)
-}
-
-/// Drop registrations whose directory is gone; touches no files.
-fn git_worktree_prune(repo_root: &Path) -> Result<()> {
-    let output = neige_git_command()
-        .arg("-C")
-        .arg(repo_root)
-        .args(["worktree", "prune", "--expire", "now"])
-        .output()
-        .map_err(|e| {
-            CalmError::Internal(format!(
-                "spawn git worktree prune in {}: {e}",
-                repo_root.display()
-            ))
-        })?;
-    if !output.status.success() {
-        return Err(git_failed("git worktree prune", repo_root, &output));
-    }
-    Ok(())
-}
-
-fn git_failed(action: &str, repo_root: &Path, output: &Output) -> CalmError {
-    CalmError::Internal(format!(
-        "{action} failed in {}: {}",
-        repo_root.display(),
-        output_summary(output)
-    ))
-}
-
-fn output_summary(output: &Output) -> String {
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if !stderr.is_empty() {
-        return stderr;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if !stdout.is_empty() {
-        return stdout;
-    }
-    format!("exit status {}", output.status)
-}
-
 const WORKSPACE_LEASE_MS: TimestampMs = 60_000;
 
 #[cfg(test)]
-mod tests;
+#[path = "tests.rs"]
+mod workspace_service_tests;

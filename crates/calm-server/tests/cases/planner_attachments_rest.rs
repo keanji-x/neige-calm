@@ -81,7 +81,7 @@ async fn boot_with_kind(kind: TrackWorkspaceKind) -> Boot {
     let workspace = track.workspace.clone();
     let workspace_path = PathBuf::from(&workspace.path);
     // The production materialization path, so the `.git/info/exclude` entry under test is the one it writes.
-    calm_server::workspace_materialize::materialize_workspace(
+    calm_server::workspace_service::workspace_materialize::materialize_workspace(
         &workspace,
         &workspace_root,
         track.id.as_str(),

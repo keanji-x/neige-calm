@@ -104,7 +104,7 @@ pub async fn prepare_worker_lease_for_test(
 pub async fn clean_idle_closed_track_worktrees_for_test(
     pool: &sqlx::SqlitePool,
 ) -> crate::error::Result<usize> {
-    crate::operation::workspace_lease::track_worktree_clean::clean_idle_closed_track_worktrees(
+    crate::workspace_service::worktree_clean::clean_idle_closed_track_worktrees(
         pool,
         &mut std::collections::HashSet::new(),
     )
@@ -122,7 +122,7 @@ pub async fn attach_track_worktree_for_test(
     track_id: &str,
     checkout: &std::path::Path,
 ) -> crate::error::Result<std::path::PathBuf> {
-    let path = crate::db::sqlite::track_worktree_path_for(checkout, track_id);
+    let path = workspace::worktree::track_worktree_path_for(checkout, track_id);
     let path_str = path.to_str().ok_or_else(|| {
         crate::error::CalmError::Internal(format!("{} is not UTF-8", path.display()))
     })?;
@@ -136,7 +136,7 @@ pub async fn attach_track_worktree_for_test(
         crate::db::sqlite::track_get_tx(&mut tx, &crate::ids::TrackId::from(track_id.to_string()))
             .await?;
     tx.commit().await?;
-    crate::operation::workspace_lease::track_worktree::ensure_track_worktree(&track).await?;
+    crate::workspace_service::track_worktree::ensure_track_worktree(&track).await?;
     Ok(path)
 }
 
@@ -223,7 +223,7 @@ pub async fn release_workspace_lease_for_card_for_test(
 /// environments, so a probe that does not scrub them can disagree with the server.
 #[cfg(feature = "fixtures")]
 pub fn neige_git_command_for_test() -> std::process::Command {
-    crate::workspace_materialize::neige_git_command()
+    workspace::command::neige_git_command()
 }
 
 /// What [`take_kernel_workspace_lease_for_test`] returns: the lease row's identity and the

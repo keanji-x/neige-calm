@@ -9,6 +9,7 @@ members = [
     "crates/calm-truth",
     "crates/calm-truth-test-harness",
     "crates/provider",
+    "crates/workspace",
     "crates/calm-server",
     "crates/plugin",
     "crates/calm-proc-supervisor",

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::*;
-use crate::workspace_materialize::materialize_managed_workspace;
+use workspace::materialize::materialize_managed_workspace;
 
 struct Fixture {
     root: tempfile::TempDir,

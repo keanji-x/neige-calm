@@ -10,7 +10,6 @@ use crate::{
     git_candidate::candidate::{TrackCandidate, track_candidates},
     model::{TaskStatus, Track, new_id},
     operation::{OperationOutcome, forge_action_adapter::NOT_LANDED_ERROR_CLASSES},
-    workspace_materialize::isolated_git_command,
 };
 use async_trait::async_trait;
 #[cfg(test)]
@@ -20,6 +19,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+use workspace::command::isolated_git_command;
 fn internal(e: impl std::fmt::Display) -> RpcError {
     RpcError::internal(e.to_string())
 }

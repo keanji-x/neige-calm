@@ -1,15 +1,11 @@
-//! Managed workspace roots: path derivation + materialization of server-owned git repositories at
-//! `<workspace-root>/<area_id>/<track_id>`.
-
+//! Managed repository materialization; callers own when and for whom it runs.
+use crate::command::{isolated_git_command, neige_git_command};
+use crate::error::{Error, Result};
+use crate::git::ensure_git_exclude_entry;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
-
-use crate::error::{CalmError, Result};
-use crate::model::{TrackWorkspace, TrackWorkspaceKind};
-use crate::operation::workspace_lease::ensure_git_exclude_entry;
-
 /// Explicit so the init commit does not inherit the host account's identity.
 const INIT_COMMIT_AUTHOR_NAME: &str = "neige";
 const INIT_COMMIT_AUTHOR_EMAIL: &str = "neige@localhost";
@@ -19,200 +15,12 @@ const INIT_COMMIT_MESSAGE: &str = "neige workspace init";
 /// `git init` preserves unknown files already under `.git/`.
 const OWNER_MARKER: &str = "neige-workspace";
 
-/// Git environment variables removed before every spawn: they redirect the repository, poison the commit
-/// identity, or (`GIT_TEMPLATE_DIR`, `GIT_CONFIG*`) outrank the `-c` overrides and inject hooks.
-const HOSTILE_GIT_ENV: &[&str] = &[
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_COMMON_DIR",
-    "GIT_INDEX_FILE",
-    "GIT_INDEX_VERSION",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_NAMESPACE",
-    "GIT_CEILING_DIRECTORIES",
-    // Discovery from a `-C <worktree>`: the lease module's checks read the
-    // worktree git found from that directory.
-    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
-    "GIT_PREFIX",
-    "GIT_AUTHOR_NAME",
-    "GIT_AUTHOR_EMAIL",
-    "GIT_AUTHOR_DATE",
-    "GIT_COMMITTER_NAME",
-    "GIT_COMMITTER_EMAIL",
-    "GIT_COMMITTER_DATE",
-    // These outrank the `-c` overrides.
-    "GIT_TEMPLATE_DIR",
-    "GIT_CONFIG_GLOBAL",
-    "GIT_CONFIG_SYSTEM",
-    "GIT_CONFIG",
-    "GIT_CONFIG_COUNT",
-];
-
-/// A `git` command with the hostile ambient variables removed; every git spawn on this path that is
-/// not an [`isolated_git_command`] must use it.
-pub(crate) fn neige_git_command() -> Command {
-    let mut command = Command::new("git");
-    for key in HOSTILE_GIT_ENV {
-        command.env_remove(key);
-    }
-    command
-}
-
-/// A `git` command whose environment is an allowlist, not the server's, for every git run that
-/// executes repository-selected code (hooks, smudge/clean/process filters, merge drivers,
-/// fsmonitor). Kept: the base allowlist ([`inherited_env`]: `PATH`, `HOME`), `XDG_CONFIG_HOME`
-/// when set (git reads the user's global config there too, e.g. `safe.directory`), and the C
-/// locale. Callers add what a run needs, such as a commit identity; the upstream fetch adds its
-/// network variables.
-///
-/// No network credential or proxy variable is inherited, so a filter that needs the network (a
-/// Git LFS smudge, a credentialed process filter) cannot fetch during lease provisioning's
-/// checkout. Supported scope: the attached repositories in use have no LFS or network filters, and
-/// `worktree add` does not recurse into submodules.
-///
-/// [`inherited_env`]: crate::plugin_host::child_process::inherited_env
-pub(crate) fn isolated_git_command() -> Command {
-    let mut command = Command::new("git");
-    command
-        .env_clear()
-        .envs(crate::plugin_host::child_process::inherited_env(&[
-            "XDG_CONFIG_HOME",
-        ]))
-        .envs([("LANG", "C"), ("LC_ALL", "C")]);
-    command
-}
+/// Kernel-owned files never participate in Git source delivery.
+pub const NEIGE_GIT_EXCLUDE_ENTRY: &str = ".neige/";
 
 /// `<workspace-root>/<area_id>/<track_id>`; ids, not slugs, so renaming a track never moves its directory.
 pub fn managed_workspace_path(workspace_root: &Path, area_id: &str, track_id: &str) -> PathBuf {
     workspace_root.join(area_id).join(track_id)
-}
-
-/// Short digest of a workspace path for an idempotency key: a key that does not name the path turns any
-/// re-point into a permanent 409, since operation rows are never deleted.
-pub(crate) fn workspace_key_digest(path: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(path.as_bytes());
-    hex::encode(hasher.finalize())[..16].to_string()
-}
-
-/// Materialize `workspace` if — and only if — it is `Managed`; attached directories are the user's and are
-/// never created or written to. Attached validation lives at the user-facing entry points instead.
-pub fn materialize_workspace(
-    workspace: &TrackWorkspace,
-    workspace_root: &Path,
-    track_id: &str,
-) -> Result<()> {
-    match workspace.kind {
-        TrackWorkspaceKind::Managed => {
-            materialize_managed_workspace(workspace_root, Path::new(&workspace.path), track_id)
-        }
-        TrackWorkspaceKind::Attached => Ok(()),
-    }
-}
-
-/// Attached admission: absolute, exists, inside a Git work tree (a subdirectory is fine — the worker derives
-/// the root itself), and the slice-branch namespace is free. Every failure is `BadRequest`.
-pub fn validate_attached_workspace(path: &Path) -> Result<()> {
-    if !path.is_absolute() {
-        return Err(CalmError::BadRequest(format!(
-            "attached workspace: path must be absolute (start with `/`); got `{}`",
-            path.display()
-        )));
-    }
-    match std::fs::metadata(path) {
-        Ok(meta) if meta.is_dir() => {}
-        Ok(_) => {
-            return Err(CalmError::BadRequest(format!(
-                "attached workspace: `{}` is not a directory",
-                path.display()
-            )));
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(CalmError::BadRequest(format!(
-                "attached workspace: `{}` does not exist. Neige never creates an \
-                 attached directory — it is yours, so it has to be there already.",
-                path.display()
-            )));
-        }
-        Err(error) => {
-            return Err(CalmError::BadRequest(format!(
-                "attached workspace: cannot read `{}`: {error}",
-                path.display()
-            )));
-        }
-    }
-    let output = neige_git_command()
-        .arg("-C")
-        .arg(path)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .map_err(|error| {
-            CalmError::BadRequest(format!(
-                "attached workspace: cannot run git in `{}`: {error}",
-                path.display()
-            ))
-        })?;
-    if !output.status.success() {
-        return Err(CalmError::BadRequest(format!(
-            "attached workspace: `{}` is not inside a Git work tree, so no worker \
-             could ever get a workspace lease there. git said: {}",
-            path.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    ensure_slice_branch_namespace_is_free(path)?;
-    Ok(())
-}
-
-/// The ref every track branch lives under; a test ties it to `track_branch_for`.
-const SLICE_BRANCH_NAMESPACE_REF: &str = "refs/heads/neige";
-
-/// Refuse a repository that already holds `refs/heads/neige`: git cannot hold that file and
-/// `refs/heads/neige/track-<id>` at once, so the track worktree could never be made.
-/// Only the exact ref is checked; a `show-ref` exit other than 0/1 is refused (fail closed).
-fn ensure_slice_branch_namespace_is_free(path: &Path) -> Result<()> {
-    let output = neige_git_command()
-        .arg("-C")
-        .arg(path)
-        .args([
-            "show-ref",
-            "--verify",
-            "--quiet",
-            SLICE_BRANCH_NAMESPACE_REF,
-        ])
-        .output()
-        .map_err(|error| {
-            CalmError::BadRequest(format!(
-                "attached workspace: cannot run git in `{}`: {error}",
-                path.display()
-            ))
-        })?;
-    match output.status.code() {
-        Some(1) => Ok(()),
-        Some(0) => Err(CalmError::BadRequest(format!(
-            "attached workspace: `{}` has a branch named `neige`, and \
-             `{SLICE_BRANCH_NAMESPACE_REF}` collides with the branch namespace \
-             every track gets its own branch under (`neige/track-<id>`). Git \
-             cannot hold both, so this track's worktree could not be made. \
-             Rename or delete that branch (`git branch -m neige \
-             <another-name>`), then attach again.",
-            path.display()
-        ))),
-        // Fail closed: the question was not answered.
-        other => Err(CalmError::BadRequest(format!(
-            "attached workspace: cannot tell whether `{}` already holds \
-             `{SLICE_BRANCH_NAMESPACE_REF}` (git show-ref exited with {}); \
-             refusing rather than letting the track worktree find out. git said: \
-             {}",
-            path.display(),
-            other
-                .map(|code| code.to_string())
-                .unwrap_or_else(|| "a signal".to_string()),
-            String::from_utf8_lossy(&output.stderr).trim()
-        ))),
-    }
 }
 
 /// Create (or re-adopt) the managed git repository at `path`; idempotent and safe to call concurrently.
@@ -251,7 +59,7 @@ fn materialize_managed_workspace_inner(
     init_commit: InitCommit,
 ) -> Result<()> {
     if !path.is_absolute() {
-        return Err(CalmError::Internal(format!(
+        return Err(Error::Internal(format!(
             "managed workspace path must be absolute: {}",
             path.display()
         )));
@@ -263,7 +71,7 @@ fn materialize_managed_workspace_inner(
     let _overlap = tests::OverlapProbe::enter(path);
 
     std::fs::create_dir_all(path).map_err(|error| {
-        CalmError::Internal(format!(
+        Error::Internal(format!(
             "materialize workspace: create {}: {error}",
             path.display()
         ))
@@ -274,7 +82,7 @@ fn materialize_managed_workspace_inner(
         Some(owner) if owner == track_id => {}
         // Ours, but for a different track: unreachable (the path contains the track id), so treat as corruption.
         Some(owner) => {
-            return Err(CalmError::Internal(format!(
+            return Err(Error::Internal(format!(
                 "materialize workspace: {} is the managed workspace of track `{owner}`, \
                  not `{track_id}`; refusing to take it over",
                 path.display()
@@ -282,7 +90,7 @@ fn materialize_managed_workspace_inner(
         }
         None if dir_has_entries(path)? => {
             // Unmarked and non-empty: somebody else's directory. Adopting it would arm the wholesale recycle deletion against a user's work.
-            return Err(CalmError::Internal(format!(
+            return Err(Error::Internal(format!(
                 "materialize workspace: {} is not empty and carries no neige ownership \
                  marker, so it is not ours; refusing to reuse it",
                 path.display()
@@ -341,7 +149,7 @@ fn materialize_managed_workspace_inner(
     }
 
     // `.neige/` is the server's own subtree inside the work tree; excluded so a worker's `git add -A` never sees it.
-    ensure_git_exclude_entry(path, crate::planner_attachments::NEIGE_GIT_EXCLUDE_ENTRY)?;
+    ensure_git_exclude_entry(path, NEIGE_GIT_EXCLUDE_ENTRY)?;
 
     assert_physically_inside_root(workspace_root, path)?;
     Ok(())
@@ -351,20 +159,20 @@ fn materialize_managed_workspace_inner(
 /// while the repository lives outside the tree the recycle path believes it owns.
 fn assert_physically_inside_root(workspace_root: &Path, path: &Path) -> Result<()> {
     let real_path = std::fs::canonicalize(path).map_err(|error| {
-        CalmError::Internal(format!(
+        Error::Internal(format!(
             "materialize workspace: canonicalize {}: {error}",
             path.display()
         ))
     })?;
     // Canonicalize the root again so a non-canonical root cannot make this pass by accident.
     let real_root = std::fs::canonicalize(workspace_root).map_err(|error| {
-        CalmError::Internal(format!(
+        Error::Internal(format!(
             "materialize workspace: canonicalize workspace root {}: {error}",
             workspace_root.display()
         ))
     })?;
     if !real_path.starts_with(&real_root) {
-        return Err(CalmError::Internal(format!(
+        return Err(Error::Internal(format!(
             "materialize workspace: {} resolves to {}, which is outside the managed \
              workspace root {}. Two things reach this: a symlink under the root \
              (which would put worker output where the recycle path's prefix assertion \
@@ -386,7 +194,7 @@ fn clear_our_stale_git_locks(path: &Path) -> Result<()> {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => {
-                return Err(CalmError::Internal(format!(
+                return Err(Error::Internal(format!(
                     "materialize workspace: read {}: {error}",
                     dir.display()
                 )));
@@ -394,7 +202,7 @@ fn clear_our_stale_git_locks(path: &Path) -> Result<()> {
         };
         for entry in entries {
             let entry = entry.map_err(|error| {
-                CalmError::Internal(format!(
+                Error::Internal(format!(
                     "materialize workspace: read {}: {error}",
                     dir.display()
                 ))
@@ -408,7 +216,7 @@ fn clear_our_stale_git_locks(path: &Path) -> Result<()> {
                     Ok(()) => {}
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => {
-                        return Err(CalmError::Internal(format!(
+                        return Err(Error::Internal(format!(
                             "materialize workspace: remove stale lock {}: {error}",
                             entry_path.display()
                         )));
@@ -421,7 +229,7 @@ fn clear_our_stale_git_locks(path: &Path) -> Result<()> {
     walk(&path.join(".git"))
 }
 
-fn owner_marker_path(path: &Path) -> PathBuf {
+pub(crate) fn owner_marker_path(path: &Path) -> PathBuf {
     path.join(".git").join(OWNER_MARKER)
 }
 
@@ -429,7 +237,7 @@ fn read_owner_marker(path: &Path) -> Result<Option<String>> {
     match std::fs::read_to_string(owner_marker_path(path)) {
         Ok(contents) => Ok(Some(contents.trim().to_string())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(CalmError::Internal(format!(
+        Err(error) => Err(Error::Internal(format!(
             "materialize workspace: read ownership marker in {}: {error}",
             path.display()
         ))),
@@ -498,7 +306,7 @@ fn reclaim_stale_claim_staging(parent: &Path, track_segment: &str, ours: &Path) 
 /// one `rename(2)`, so process death can never leave an unmarked non-empty directory the fence refuses forever.
 fn claim_owner_marker(path: &Path, track_id: &str) -> Result<()> {
     let parent = path.parent().ok_or_else(|| {
-        CalmError::Internal(format!(
+        Error::Internal(format!(
             "materialize workspace: {} has no parent directory to stage the \
              ownership claim in",
             path.display()
@@ -515,7 +323,7 @@ fn claim_owner_marker(path: &Path, track_id: &str) -> Result<()> {
 
     let staged_git = staging.join(".git");
     std::fs::create_dir_all(&staged_git).map_err(|error| {
-        CalmError::Internal(format!(
+        Error::Internal(format!(
             "materialize workspace: create ownership claim {}: {error}",
             staged_git.display()
         ))
@@ -545,7 +353,7 @@ fn assemble_and_publish_claim(
     claim_crash_point(path);
 
     std::fs::rename(staging, path).map_err(|error| {
-        CalmError::Internal(format!(
+        Error::Internal(format!(
             "materialize workspace: publish ownership claim {} onto {}: {error}",
             staging.display(),
             path.display()
@@ -568,7 +376,7 @@ fn sanitize_path_segment(segment: &str) -> String {
 fn write_marker_file(target: &Path, track_id: &str) -> Result<()> {
     use std::io::Write;
     let mut file = std::fs::File::create(target).map_err(|error| {
-        CalmError::Internal(format!(
+        Error::Internal(format!(
             "materialize workspace: create ownership marker {}: {error}",
             target.display()
         ))
@@ -576,7 +384,7 @@ fn write_marker_file(target: &Path, track_id: &str) -> Result<()> {
     file.write_all(format!("{track_id}\n").as_bytes())
         .and_then(|()| file.sync_all())
         .map_err(|error| {
-            CalmError::Internal(format!(
+            Error::Internal(format!(
                 "materialize workspace: write ownership marker {}: {error}",
                 target.display()
             ))
@@ -588,7 +396,7 @@ fn fsync_dir(path: &Path) -> Result<()> {
     std::fs::File::open(path)
         .and_then(|dir| dir.sync_all())
         .map_err(|error| {
-            CalmError::Internal(format!(
+            Error::Internal(format!(
                 "materialize workspace: fsync {}: {error}",
                 path.display()
             ))
@@ -599,7 +407,7 @@ fn write_owner_marker(path: &Path, track_id: &str) -> Result<()> {
     let marker = owner_marker_path(path);
     if let Some(parent) = marker.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
-            CalmError::Internal(format!(
+            Error::Internal(format!(
                 "materialize workspace: create {}: {error}",
                 parent.display()
             ))
@@ -612,7 +420,7 @@ fn write_owner_marker(path: &Path, track_id: &str) -> Result<()> {
     write_marker_file(&staged, track_id)?;
     claim_crash_point(path);
     std::fs::rename(&staged, &marker).map_err(|error| {
-        CalmError::Internal(format!(
+        Error::Internal(format!(
             "materialize workspace: publish ownership marker {}: {error}",
             marker.display()
         ))
@@ -626,14 +434,14 @@ fn write_owner_marker(path: &Path, track_id: &str) -> Result<()> {
 
 fn dir_has_entries(path: &Path) -> Result<bool> {
     let mut entries = std::fs::read_dir(path).map_err(|error| {
-        CalmError::Internal(format!(
+        Error::Internal(format!(
             "materialize workspace: read {}: {error}",
             path.display()
         ))
     })?;
     match entries.next() {
         Some(Ok(_)) => Ok(true),
-        Some(Err(error)) => Err(CalmError::Internal(format!(
+        Some(Err(error)) => Err(Error::Internal(format!(
             "materialize workspace: read {}: {error}",
             path.display()
         ))),
@@ -653,7 +461,7 @@ fn git_head_resolves(path: &Path) -> bool {
 
 fn run_git(path: &Path, command: &mut Command, what: &str) -> Result<()> {
     let output = command.output().map_err(|error| {
-        CalmError::Internal(format!(
+        Error::Internal(format!(
             "materialize workspace: spawn {what} for {}: {error}",
             path.display()
         ))
@@ -663,13 +471,18 @@ fn run_git(path: &Path, command: &mut Command, what: &str) -> Result<()> {
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Err(CalmError::Internal(format!(
+    Err(Error::Internal(format!(
         "materialize workspace: {what} for {} failed ({}): {}{}",
         path.display(),
         output.status,
         stderr.trim(),
         stdout.trim(),
     )))
+}
+
+/// Observe the materializer's ownership marker without adopting or repairing the directory.
+pub fn owned_by(path: &Path, owner: &str) -> bool {
+    std::fs::read_to_string(owner_marker_path(path)).is_ok_and(|contents| contents.trim() == owner)
 }
 
 #[cfg(test)]

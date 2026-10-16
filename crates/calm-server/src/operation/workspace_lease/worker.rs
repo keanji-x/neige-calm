@@ -19,14 +19,14 @@
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::time::Duration;
+use workspace::git::validate_path_segment;
+use workspace::worktree::track_branch_for;
 
-use super::base::{
-    BaseSource, LeaseBase, lease_git_common_dir, resolve_head_base, utf8_path, verify_worktree_base,
-};
+use super::base::{BaseSource, LeaseBase};
 use super::upstream::UpstreamSource;
 use super::{
     WORKSPACE_LEASE_COLUMNS, append_workspace_events_tx, release_workspace_lease_tx,
-    row_to_workspace_lease, track_worktree::track_branch_for, validate_path_segment,
+    row_to_workspace_lease,
 };
 use crate::error::{CalmError, Result};
 use crate::event::BroadcastEnvelope;
@@ -34,7 +34,8 @@ use crate::git_candidate::candidate::{newest_done, track_candidates};
 use crate::model::{TaskAccess, TaskStart, TrackWorkspaceKind};
 use crate::operation::{PhaseTag, Tx, TxOutput};
 use crate::plugin_host::child_process::{BoundedRunError, run_bounded};
-use crate::workspace_materialize::isolated_git_command;
+use workspace::base::{lease_git_common_dir, resolve_head_base, utf8_path, verify_worktree_base};
+use workspace::command::isolated_git_command;
 
 /// `status_detail` words of the three prepare-time refusals (G13's `spawn-failed: refused: …`).
 pub(crate) const TRACK_WITHOUT_WORKTREE: &str = "track-without-worktree";
@@ -125,7 +126,7 @@ pub(crate) struct CatchUpFacts {
 /// The branch rule (D4): `neige/track-<id>` when the track has a worktree, else `main`.
 pub(crate) fn worker_branch(track_id: &str, has_worktree: bool) -> Result<String> {
     if has_worktree {
-        track_branch_for(track_id)
+        track_branch_for(track_id).map_err(Into::into)
     } else {
         Ok(MANAGED_WORKSPACE_BRANCH.to_string())
     }
@@ -213,7 +214,7 @@ async fn prepare_worker_lease_with_tx(
         // Last-chance materialize: track create materializes after its transaction commits, so a
         // failure there leaves a committed row pointing at a missing directory.
         TrackWorkspaceKind::Managed => {
-            crate::workspace_materialize::materialize_managed_workspace(
+            crate::workspace_service::workspace_materialize::materialize_managed_workspace(
                 workspace_root,
                 Path::new(&workspace_path),
                 track_id,
@@ -277,7 +278,7 @@ async fn catch_up_tx(
 ) -> Result<CatchUpFacts> {
     // Step 0: nothing is reset off the worker branch (the spawn check stays, K19).
     let expected = format!("refs/heads/{branch}");
-    let on = super::base::worktree_head_ref(path)?;
+    let on = workspace::base::worktree_head_ref(path)?;
     if on.as_deref() != Some(expected.as_str()) {
         return Err(unavailable(format!(
             "the checkout is on {}, not {expected}",
@@ -415,7 +416,11 @@ fn reader_repo(track_id: &str, worktree: Option<&str>) -> std::result::Result<St
 /// A refusal is a `Conflict` naming both commits; a head the repository does not have gets its
 /// own word.
 pub(crate) fn verify_declared_head(checkout: &Path, head: &str) -> Result<()> {
-    check_head_sample(checkout, head, &super::base::resolve_head_base(checkout)?)
+    check_head_sample(
+        checkout,
+        head,
+        &workspace::base::resolve_head_base(checkout)?,
+    )
 }
 
 /// [`verify_declared_head`] against `actual`, one HEAD sample of `checkout` the caller took.
@@ -477,6 +482,7 @@ pub(crate) fn verify_worker_checkout(output: &TxOutput, ctx: &str) -> Result<()>
         &base_sha,
         Path::new(&canonical_path),
     )
+    .map_err(Into::into)
 }
 
 fn track_without_worktree() -> CalmError {

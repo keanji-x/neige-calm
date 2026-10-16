@@ -545,7 +545,7 @@ async fn seed_world(repo: &Arc<SqlxRepo>, track_cwd: &Path) -> Seeded {
     let card_role_cache = CardRoleCache::new();
     let card_id = calm_server::model::new_id();
     let runtime_id = calm_server::model::new_id();
-    let lease_abs = calm_server::db::sqlite::track_worktree_path_for(track_cwd, track.id.as_str());
+    let lease_abs = workspace::worktree::track_worktree_path_for(track_cwd, track.id.as_str());
     calm_server::test_seams::attach_track_worktree_for_test(
         repo.pool(),
         track.id.as_str(),

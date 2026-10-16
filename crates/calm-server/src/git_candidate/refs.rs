@@ -11,7 +11,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use crate::workspace_materialize::{isolated_git_command, neige_git_command};
+use workspace::command::{isolated_git_command, neige_git_command};
 
 /// The prefix every candidate ref of one Track shares (the ref is
 /// `refs/neige/candidates/<track>/<card>/<delivery_id>`, `delivery::candidate_ref_name`).

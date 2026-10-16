@@ -15,7 +15,7 @@ use super::delivery::{DeliveryRow, candidate_ref_name};
 use crate::error::{CalmError, Result};
 use crate::operation::Tx;
 use crate::operation::workspace_lease::WorkspaceLease;
-use crate::workspace_materialize::neige_git_command;
+use workspace::command::neige_git_command;
 
 /// One `task_candidates` row.
 #[derive(Clone, Debug, PartialEq, Eq)]

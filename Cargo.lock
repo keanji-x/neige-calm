@@ -572,6 +572,7 @@ dependencies = [
  "url",
  "utoipa",
  "uuid",
+ "workspace",
 ]
 
 [[package]]
@@ -662,6 +663,7 @@ dependencies = [
  "tracing",
  "utoipa",
  "uuid",
+ "workspace",
 ]
 
 [[package]]
@@ -6042,6 +6044,16 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
+]
+
+[[package]]
+name = "workspace"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]

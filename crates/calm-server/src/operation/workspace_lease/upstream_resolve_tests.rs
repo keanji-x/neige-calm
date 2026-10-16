@@ -11,7 +11,7 @@ use super::upstream_tests::{attach_origin, attached_repo, git, kernel_ref};
 
 fn fetch_key(repo: &Path, origin_upstream: &Upstream) -> super::upstream_fetch::FetchKey {
     (
-        super::base::lease_git_common_dir(repo).unwrap(),
+        workspace::base::lease_git_common_dir(repo).unwrap(),
         origin_upstream.kernel_ref(),
     )
 }

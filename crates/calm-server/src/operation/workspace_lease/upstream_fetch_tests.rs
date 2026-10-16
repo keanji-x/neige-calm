@@ -6,12 +6,14 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use super::tests::{ENV_SENTINEL, EnvVar, assert_env_allowlisted, install_ref_hook_env_probe};
 use super::upstream::*;
 use super::upstream_fetch::*;
 use super::upstream_tests::{
     attach_origin, attached_repo, git, kernel_ref, transport_count, user_ref_state,
     witness_transport, witness_transport_then,
+};
+use super::workspace_service_tests::{
+    ENV_SENTINEL, EnvVar, assert_env_allowlisted, install_ref_hook_env_probe,
 };
 
 fn known_sha(repo: &Path) -> Option<String> {

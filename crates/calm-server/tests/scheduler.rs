@@ -8061,7 +8061,7 @@ async fn child_bootstrap_key_follows_a_repointed_workspace_path() {
 
     // Re-point the child's workspace, and with it the stored `child-track` result the scheduler reads its cwd from.
     // The already-recorded `planner-harness-start` stays behind on the OLD path; the re-drive must get past it.
-    let repointed_cwd = calm_server::workspace_materialize::managed_workspace_path(
+    let repointed_cwd = workspace::materialize::managed_workspace_path(
         &child_track_workspace_root(),
         boot.area_id.as_str(),
         &child_id,

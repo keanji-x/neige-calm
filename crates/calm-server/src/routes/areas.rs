@@ -1,4 +1,5 @@
 //! `/api/areas` — Area CRUD. `GET` defaults to `kind='user'`; the system area is minted only via the idempotent `POST /api/areas/system` upsert, and `DELETE` refuses a `kind='system'` row.
+use crate::workspace_service::sweep::sweep_workspace_worktrees_for_tracks;
 
 use crate::actor::Actor;
 use crate::db::sqlite::{
@@ -14,13 +15,12 @@ use crate::ids::ActorId;
 use crate::model::{Area, AreaKind, AreaPatch, NewArea, Track};
 use crate::operation::workspace_lease::{
     any_track_has_active_forge_action, release_workspace_leases_for_track_tx,
-    sweep_workspace_worktrees_for_tracks,
 };
 use crate::routes::planner_cards::quiesce_shared_card_active_turn;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::quiesce_terminal_artifacts_for_deletion;
-use crate::workspace_materialize::validate_attached_workspace;
-use crate::workspace_recycle;
+use crate::workspace_service::workspace_materialize::validate_attached_workspace;
+use crate::workspace_service::workspace_recycle;
 use axum::{
     Router,
     extract::State,
@@ -534,7 +534,7 @@ async fn finish_area_deletion(
     terminal_ids: Vec<String>,
     actor: ActorId,
 ) -> Result<(
-    Vec<crate::operation::workspace_lease::WorkspaceTrackSweep>,
+    Vec<crate::workspace_service::sweep::WorkspaceTrackSweep>,
     Vec<String>,
 )> {
     let scope = EventScope::Area {

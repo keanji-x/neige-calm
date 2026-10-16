@@ -17,8 +17,8 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use crate::operation::workspace_lease::git_repo_root_for_track_cwd;
 use crate::operation::workspace_lease::upstream::{commits_behind, last_known_upstream};
+use crate::workspace_service::git_repo_root_for_track_cwd;
 
 /// `candidate.upstream`: the upstream commit now, and how many commits it has
 /// that the candidate's base does not (`git rev-list --count <base>..<sha>`).

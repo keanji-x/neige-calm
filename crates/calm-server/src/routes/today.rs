@@ -23,7 +23,7 @@ use crate::routes::idempotency_key::stable_payload_hash;
 use crate::state::{AppState, RouteState};
 use crate::track_report::TrackReportPayload;
 use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;
-use crate::workspace_materialize::workspace_key_digest;
+use crate::workspace_service::workspace_materialize::workspace_key_digest;
 use axum::{
     Router,
     extract::{FromRef, State},
@@ -227,13 +227,9 @@ pub(crate) async fn reset_today_launchpad_report(
 fn launchpad_workspace(workspace_root: &Path, area_id: &str, track_id: &str) -> TrackWorkspace {
     TrackWorkspace {
         kind: TrackWorkspaceKind::Managed,
-        path: crate::workspace_materialize::managed_workspace_path(
-            workspace_root,
-            area_id,
-            track_id,
-        )
-        .to_string_lossy()
-        .into_owned(),
+        path: workspace::materialize::managed_workspace_path(workspace_root, area_id, track_id)
+            .to_string_lossy()
+            .into_owned(),
         // Never `Some(..)`: a stamp here would break monotonicity on re-adoption.
         frozen_at: None,
         worktree: None,
@@ -501,7 +497,7 @@ pub(crate) async fn ensure_today_launchpad(
     // The launchpad does not go through `create_track_structure` (raw `INSERT INTO tracks`),
     // so it carries its own materialize call; skipping it leaves every codex task on the
     // Today panel dying with `spawn-failed`.
-    crate::workspace_materialize::materialize_workspace(
+    crate::workspace_service::workspace_materialize::materialize_workspace(
         &out.track.workspace,
         &workspace_root,
         out.track.id.as_str(),

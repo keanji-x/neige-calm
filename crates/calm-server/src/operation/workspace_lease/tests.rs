@@ -6,16 +6,8 @@ use super::*;
 use crate::db::sqlite::begin_immediate_tx;
 use crate::event::EventBus;
 use crate::git_candidate::delivery::AttemptOutcome;
-
-#[test]
-fn remove_workspace_dir_if_exists_treats_missing_as_success() {
-    let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("already-gone");
-    std::fs::create_dir_all(&path).unwrap();
-    std::fs::remove_dir_all(&path).unwrap();
-
-    remove_workspace_dir_if_exists(path.to_str().unwrap()).unwrap();
-}
+use crate::workspace_service::git_repo_root_for_track_cwd;
+use workspace::git::WorkspaceLeaseTarget;
 
 #[tokio::test]
 async fn acquire_plain_workspace_lease_creates_leaf_for_non_git_track_cwd() {
@@ -56,58 +48,20 @@ async fn acquire_plain_workspace_lease_creates_leaf_for_non_git_track_cwd() {
 /// A track worktree (#1830 S1) as `ensure_track_worktree` makes it: `<repo>/.claude/worktrees/
 /// track-<id>` on `neige/track-<id>`, with `.claude/worktrees/` excluded in the repository.
 fn add_track_worktree(repo: &Path, track_id: &str) -> WorkspaceLeaseTarget {
-    ensure_workspace_worktree_root_excluded(repo).unwrap();
-    let target = WorkspaceLeaseTarget {
-        repo_root: repo.to_path_buf(),
-        path: crate::db::sqlite::track_worktree_path_for(repo, track_id),
-        branch: track_worktree::track_branch_for(track_id).unwrap(),
-    };
-    run_git(
-        repo,
-        [
-            "worktree",
-            "add",
-            "-b",
-            &target.branch,
-            target.path.to_str().unwrap(),
-            "HEAD",
-        ],
-    );
+    let path = workspace::worktree::track_worktree_path_for(repo, track_id);
+    let target =
+        workspace::worktree::track_worktree_target(track_id, path.to_str().unwrap()).unwrap();
+    workspace::worktree::ensure_track_worktree(
+        &target,
+        |root, _| workspace::base::resolve_head_base(root),
+        |_, _| {},
+    )
+    .unwrap();
     target
-}
-
-#[test]
-fn workspace_worktree_remove_deletes_branch_and_is_idempotent() {
-    let tmp = tempfile::tempdir().unwrap();
-    init_git_repo(tmp.path());
-    let target = add_track_worktree(tmp.path(), "a");
-    assert!(target.path.is_dir(), "the worktree exists");
-
-    assert!(remove_workspace_worktree(&target).unwrap());
-    assert!(!target.path.exists(), "worktree path removed");
-    assert!(
-        !git_ref_exists(&target.repo_root, &format!("refs/heads/{}", target.branch)).unwrap(),
-        "branch removed"
-    );
-
-    assert!(!remove_workspace_worktree(&target).unwrap());
 }
 
 /// #1792: the branch delete runs the repository's `reference-transaction` hook, so it runs
 /// with the allowlisted environment. nextest gives this test its own process.
-#[test]
-fn workspace_worktree_remove_hook_sees_only_the_allowlisted_environment() {
-    let _sentinel = EnvVar::set(ENV_SENTINEL, "server-secret");
-    let tmp = tempfile::tempdir().unwrap();
-    let repo = tmp.path().join("repo");
-    init_git_repo(&repo);
-    let target = add_track_worktree(&repo, "hook");
-    let probes = install_ref_hook_env_probe(&repo, tmp.path());
-
-    remove_workspace_worktree(&target).unwrap();
-
-    assert_env_allowlisted(&probes.join("delete.env"));
-}
 
 /// The parent variable the hook-environment tests plant; it must never reach repository code.
 pub(super) const ENV_SENTINEL: &str = "NEIGE_LEASE_ENV_SENTINEL";
@@ -167,45 +121,6 @@ pub(super) fn assert_env_allowlisted(path: &Path) {
 
 /// The `.claude/worktrees/` exclude lands in the common dir's `info/exclude` for a linked
 /// checkout too, exactly once.
-#[test]
-fn worktree_root_exclude_resolves_for_a_linked_checkout() {
-    let tmp = tempfile::tempdir().unwrap();
-    let primary = tmp.path().join("primary");
-    init_git_repo(&primary);
-    let linked = tmp.path().join("linked-track");
-    run_git(
-        &primary,
-        [
-            "worktree",
-            "add",
-            "-b",
-            "linked-track",
-            linked.to_str().unwrap(),
-        ],
-    );
-    assert!(
-        linked.join(".git").is_file(),
-        "linked worktree .git is a gitdir file"
-    );
-
-    ensure_workspace_worktree_root_excluded(&linked).unwrap();
-    ensure_workspace_worktree_root_excluded(&linked).unwrap();
-
-    let exclude_path = git_exclude_path(&linked).unwrap();
-    assert_eq!(
-        exclude_path.canonicalize().unwrap(),
-        primary.join(".git/info/exclude").canonicalize().unwrap()
-    );
-    let exclude = std::fs::read_to_string(&exclude_path).unwrap();
-    assert_eq!(
-        exclude
-            .lines()
-            .filter(|line| line.trim() == ".claude/worktrees/")
-            .count(),
-        1,
-        "the exclude entry is written once"
-    );
-}
 
 /// An attached track with a track worktree, the fixture every prepare test below starts from.
 async fn worktree_track_fixture(
@@ -222,7 +137,8 @@ async fn worktree_track_fixture(
     let path = crate::test_seams::attach_track_worktree_for_test(repo.pool(), &track_id, &checkout)
         .await
         .unwrap();
-    let target = track_worktree::track_worktree_target(&track_id, path.to_str().unwrap()).unwrap();
+    let target =
+        workspace::worktree::track_worktree_target(&track_id, path.to_str().unwrap()).unwrap();
     (repo, track_id, card_id, target)
 }
 
@@ -267,7 +183,7 @@ async fn prepare_takes_the_track_worktree_at_its_head() {
     assert_eq!(lease.delivery_policy, Some(DeliveryPolicy::Kernel));
     assert_eq!(lease.path, target.path.to_str().unwrap());
     assert!(matches!(event.event, Event::WorkspaceLeased { ref path, .. } if path == &lease.path));
-    base::verify_worktree_base(
+    workspace::base::verify_worktree_base(
         &target.path,
         &plan.branch,
         &base.base_sha,
@@ -567,8 +483,13 @@ fn hostile_git_env_does_not_leak_into_lease_git() {
         repo.join(".git").canonicalize().unwrap(),
         "the common dir is the checkout's, not the foreign GIT_DIR's"
     );
-    let err = base::verify_worktree_base(&target.path, &target.branch, &c0, &base.canonical_path)
-        .unwrap_err();
+    let err = workspace::base::verify_worktree_base(
+        &target.path,
+        &target.branch,
+        &c0,
+        &base.canonical_path,
+    )
+    .unwrap_err();
     assert!(
         err.to_string().contains(&c0) && err.to_string().contains(&c1),
         "the spawn check names expected C0 and found C1: {err}"
@@ -623,157 +544,14 @@ fn non_utf8_checkout_realpath_is_refused_not_a_panic() {
 
 /// G15 — a symlink leaf is unlinked, never followed: whatever it points at (an external
 /// directory, registered or not) keeps every entry and registration it had.
-#[test]
-fn removal_of_symlink_leaf_unlinks_only() {
-    for registered in [false, true] {
-        let tmp = tempfile::tempdir().unwrap();
-        let repo = tmp.path().join("repo");
-        init_git_repo(&repo);
-        let external = tmp.path().join("external");
-        let target = WorkspaceLeaseTarget {
-            repo_root: repo.clone(),
-            path: crate::db::sqlite::track_worktree_path_for(&repo, "rm"),
-            branch: track_worktree::track_branch_for("rm").unwrap(),
-        };
-        if registered {
-            run_git(
-                &repo,
-                [
-                    "worktree",
-                    "add",
-                    "-b",
-                    &target.branch,
-                    external.to_str().unwrap(),
-                    "HEAD",
-                ],
-            );
-        } else {
-            std::fs::create_dir_all(&external).unwrap();
-        }
-        let sentinel = external.join("SENTINEL.txt");
-        std::fs::write(&sentinel, "external data\n").unwrap();
-        let entries_before = std::fs::read_dir(&external).unwrap().count();
-        std::fs::create_dir_all(target.path.parent().unwrap()).unwrap();
-        std::os::unix::fs::symlink(&external, &target.path).unwrap();
-        let listing_before = git_stdout(&repo, ["worktree", "list", "--porcelain"]);
-
-        let result = remove_workspace_worktree(&target);
-
-        assert!(
-            std::fs::symlink_metadata(&target.path).is_err(),
-            "registered={registered}: the link is gone"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&sentinel).unwrap(),
-            "external data\n",
-            "registered={registered}: the sentinel is untouched"
-        );
-        assert_eq!(
-            std::fs::read_dir(&external).unwrap().count(),
-            entries_before,
-            "registered={registered}: nothing added or removed in the external directory"
-        );
-        assert_eq!(
-            git_stdout(&repo, ["worktree", "list", "--porcelain"]),
-            listing_before,
-            "registered={registered}: registrations are untouched"
-        );
-        let branch_ref = format!("refs/heads/{}", target.branch);
-        if registered {
-            let err = result.expect_err("the branch is checked out in the external worktree");
-            assert!(err.to_string().contains("git branch -D"), "{err}");
-            assert!(git_ref_exists(&repo, &branch_ref).unwrap());
-        } else {
-            assert!(
-                result.unwrap(),
-                "registered=false: the link counted as removed"
-            );
-            assert!(!git_ref_exists(&repo, &branch_ref).unwrap());
-        }
-    }
-}
 
 /// G15 — someone else's registration at the target's realpath (track A's worktree moved to track
 /// B's path, a symlink left at A's) is refused rather than `worktree remove --force`d through the
 /// alias; B's directory and its uncommitted file are exactly as they were.
-#[test]
-fn foreign_registration_at_the_target_is_refused() {
-    let tmp = tempfile::tempdir().unwrap();
-    let repo = tmp.path().join("repo");
-    init_git_repo(&repo);
-    let a = add_track_worktree(&repo, "al-a");
-    let b_path = crate::db::sqlite::track_worktree_path_for(&repo, "al-b");
-    std::fs::rename(&a.path, &b_path).unwrap();
-    std::os::unix::fs::symlink(&b_path, &a.path).unwrap();
-    std::fs::write(b_path.join("UNCOMMITTED.txt"), "A's uncommitted work\n").unwrap();
-    let entries_before = std::fs::read_dir(&b_path).unwrap().count();
-    let b = WorkspaceLeaseTarget {
-        repo_root: repo.clone(),
-        path: b_path.clone(),
-        branch: track_worktree::track_branch_for("al-b").unwrap(),
-    };
-    assert!(matches!(
-        git_worktree_registration(&b).unwrap(),
-        GitWorktreeRegistration::Foreign { .. }
-    ));
-
-    let err = remove_workspace_worktree(&b).unwrap_err();
-
-    assert!(
-        err.to_string()
-            .contains("resolves to a worktree registered as"),
-        "{err}"
-    );
-    assert_eq!(std::fs::read_dir(&b_path).unwrap().count(), entries_before);
-    assert!(b_path.join("UNCOMMITTED.txt").is_file());
-}
 
 /// A user worktree at a path that is not UTF-8 is someone else's record: the registration parser
 /// compares bytes, so the target reads absent, then present once added, and is removed, all `Ok`,
 /// with the foreign worktree untouched.
-#[test]
-fn foreign_non_utf8_worktree_record_does_not_fail_the_target() {
-    use std::os::unix::ffi::OsStringExt;
-    let tmp = tempfile::tempdir().unwrap();
-    let repo = tmp.path().join("repo");
-    init_git_repo(&repo);
-    let mut foreign = tmp.path().as_os_str().to_os_string().into_vec();
-    foreign.extend_from_slice(b"/wt-\xff");
-    let foreign = PathBuf::from(std::ffi::OsString::from_vec(foreign));
-    let output = Command::new("git")
-        .args(["worktree", "add", "--detach"])
-        .arg(&foreign)
-        .arg("HEAD")
-        .current_dir(&repo)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let target = WorkspaceLeaseTarget {
-        repo_root: repo.clone(),
-        path: crate::db::sqlite::track_worktree_path_for(&repo, "u8"),
-        branch: track_worktree::track_branch_for("u8").unwrap(),
-    };
-
-    assert_eq!(
-        git_worktree_registration(&target).unwrap(),
-        GitWorktreeRegistration::Absent
-    );
-    add_track_worktree(&repo, "u8");
-    assert_eq!(
-        git_worktree_registration(&target).unwrap(),
-        GitWorktreeRegistration::Present
-    );
-    assert!(remove_workspace_worktree(&target).unwrap());
-    assert!(!target.path.exists());
-    assert!(
-        foreign.join("README.md").is_file(),
-        "the foreign worktree is untouched"
-    );
-}
 
 /// The repository's common dir path holds a byte that is
 /// not UTF-8 (`wt-\xff`), and a sibling directory carrying the U+FFFD that a
@@ -781,36 +559,6 @@ fn foreign_non_utf8_worktree_record_does_not_fail_the_target() {
 /// path reader keeps git's bytes, so `canonicalize` resolves the real common
 /// dir and the UTF-8 rule then refuses it — the lease never records the
 /// decoy directory.
-#[test]
-fn common_dir_bytes_are_not_decoded_before_canonicalize() {
-    use std::os::unix::ffi::OsStringExt;
-    let tmp = tempfile::tempdir().unwrap();
-    let mut raw = tmp.path().as_os_str().to_os_string().into_vec();
-    raw.extend_from_slice(b"/wt-\xff");
-    let repo = PathBuf::from(std::ffi::OsString::from_vec(raw)).join("repo");
-    init_git_repo(&repo);
-    let decoy = tmp.path().join("wt-\u{FFFD}").join("repo").join(".git");
-    std::fs::create_dir_all(&decoy).unwrap();
-    assert_eq!(
-        PathBuf::from(repo.join(".git").to_string_lossy().into_owned()),
-        decoy,
-        "test setup: a lossy decode of the common dir names the decoy"
-    );
-    assert!(decoy.is_dir(), "test setup: the decoy resolves");
-
-    let err = base::lease_git_common_dir(&repo).unwrap_err();
-
-    assert!(matches!(err, CalmError::Internal(_)), "{err}");
-    assert!(
-        err.to_string().contains("not UTF-8"),
-        "the real common dir was resolved and refused for what it is: {err}"
-    );
-    assert_eq!(
-        std::fs::read_dir(&decoy).unwrap().count(),
-        0,
-        "the decoy was never used"
-    );
-}
 
 /// The whole `{sha,NULL} × {head,upstream,commit,attempt,NULL,bogus} × {A,NULL}`
 /// matrix against the tuple CHECK (0111, widened by 0115 to `upstream`;

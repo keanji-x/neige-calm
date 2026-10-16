@@ -29,7 +29,7 @@ use sha2::{Digest, Sha256};
 
 use super::upstream_fetch::FetchProvenance;
 use crate::error::{CalmError, Result};
-use crate::workspace_materialize::neige_git_command;
+use workspace::command::neige_git_command;
 
 /// The prefix of every kernel-owned upstream ref.
 pub(crate) const KERNEL_UPSTREAM_REF_PREFIX: &str = "refs/neige/upstream/";
@@ -84,7 +84,7 @@ impl Upstream {
 /// The upstream of the branch `repo_root`'s HEAD is on ([`branch_upstream`]).
 /// `Ok(None)`: HEAD is detached, or the branch has no complete upstream config.
 pub(crate) fn head_upstream(repo_root: &Path) -> Result<Option<Upstream>> {
-    let Some(head_ref) = super::base::worktree_head_ref(repo_root)? else {
+    let Some(head_ref) = workspace::base::worktree_head_ref(repo_root)? else {
         return Ok(None);
     };
     match head_ref.strip_prefix("refs/heads/") {
@@ -155,8 +155,8 @@ pub(crate) fn branch_upstream(repo_root: &Path, branch: &str) -> Result<Option<U
 pub(crate) fn track_remote(
     track_id: &str,
     worktree: &str,
-) -> Result<(super::WorkspaceLeaseTarget, Option<Upstream>)> {
-    let target = super::track_worktree::track_worktree_target(track_id, worktree)?;
+) -> Result<(workspace::git::WorkspaceLeaseTarget, Option<Upstream>)> {
+    let target = workspace::worktree::track_worktree_target(track_id, worktree)?;
     let upstream =
         branch_upstream(&target.path, &target.branch)?.filter(|upstream| upstream.remote != ".");
     Ok((target, upstream))
@@ -176,11 +176,12 @@ pub(crate) fn set_branch_upstream(
         let output = git_output(repo_root, &args)?;
         // Exit 5: the key was not set.
         if !matches!(output.status.code(), Some(0 | 5)) {
-            return Err(super::git_failed(
+            return Err(workspace::git::git_failed(
                 &format!("git {}", args.join(" ")),
                 repo_root,
                 &output,
-            ));
+            )
+            .into());
         }
     }
     if let Some(upstream) = upstream {
@@ -228,11 +229,12 @@ fn config_value(repo_root: &Path, key: &str, pick: ConfigPick) -> Result<Option<
             Ok(value.filter(|value| !value.is_empty()).map(str::to_string))
         }
         Some(1) => Ok(None),
-        _ => Err(super::git_failed(
-            &format!("git {}", args.join(" ")),
-            repo_root,
-            &output,
-        )),
+        _ => {
+            Err(
+                workspace::git::git_failed(&format!("git {}", args.join(" ")), repo_root, &output)
+                    .into(),
+            )
+        }
     }
 }
 
@@ -318,7 +320,7 @@ fn upstream_view(repo_root: &Path) -> Result<Option<UpstreamView>> {
     };
     let tracking_sha = tracking.as_ref().map(|tracking| tracking.sha.clone());
     let key = (
-        super::base::lease_git_common_dir(repo_root)?,
+        workspace::base::lease_git_common_dir(repo_root)?,
         kernel_ref.clone(),
     );
     let authoritative = if let Some((sha, at)) = FetchProvenance::global().success_receipt(&key) {
@@ -385,7 +387,7 @@ pub(crate) enum LeaseStart {
 /// the upstream. A shallow history that cannot show the relation starts from
 /// HEAD. Everything else that diverged in a complete history is refused.
 pub(crate) fn choose_lease_start(repo_root: &Path) -> Result<LeaseStart> {
-    let head = super::base::resolve_head_base(repo_root)?;
+    let head = workspace::base::resolve_head_base(repo_root)?;
     let Some(UpstreamView {
         authoritative: upstream,
         tracking_sha,
@@ -473,11 +475,12 @@ pub(crate) fn is_ancestor(repo_root: &Path, ancestor: &str, descendant: &str) ->
     match output.status.code() {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
-        _ => Err(super::git_failed(
-            &format!("git {}", args.join(" ")),
-            repo_root,
-            &output,
-        )),
+        _ => {
+            Err(
+                workspace::git::git_failed(&format!("git {}", args.join(" ")), repo_root, &output)
+                    .into(),
+            )
+        }
     }
 }
 
@@ -583,11 +586,12 @@ pub(crate) fn commits_behind(repo_root: &Path, base_sha: &str, upstream_sha: &st
 pub(super) fn git_success(repo_root: &Path, args: &[&str]) -> Result<String> {
     let output = git_output(repo_root, args)?;
     if !output.status.success() {
-        return Err(super::git_failed(
+        return Err(workspace::git::git_failed(
             &format!("git {}", args.join(" ")),
             repo_root,
             &output,
-        ));
+        )
+        .into());
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }

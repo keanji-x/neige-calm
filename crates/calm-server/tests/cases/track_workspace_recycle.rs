@@ -1588,8 +1588,9 @@ async fn the_trash_gc_expires_old_entries_on_the_next_delete() {
 
     // Plant an entry stamped well outside the retention window. Its name is the
     // only thing that dates it — the GC deliberately does not read mtime.
-    let stale_stamp =
-        calm_server::model::now_ms() - calm_server::workspace_recycle::TRASH_RETENTION_MS - 1;
+    let stale_stamp = calm_server::model::now_ms()
+        - calm_server::workspace_service::workspace_recycle::TRASH_RETENTION_MS
+        - 1;
     let stale = b
         .workspace_root
         .join(".trash")

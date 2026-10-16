@@ -43,6 +43,7 @@ append-seam-escape-probe-functional-update = []
 append-seam-escape-probe-ungated-append = []
 
 [dependencies]
+workspace = { path = "../workspace" }
 calm-types = { path = "../calm-types" }
 calm-exec = { path = "../calm-exec" }
 

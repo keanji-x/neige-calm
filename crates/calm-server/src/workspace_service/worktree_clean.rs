@@ -12,12 +12,6 @@ use sqlx::SqlitePool;
 
 use crate::db::sqlite::{CheckoutOccupancy, checkout_occupancy};
 use crate::error::{CalmError, Result};
-use crate::workspace_materialize::isolated_git_command;
-
-use super::track_worktree::track_worktree_target;
-use super::{
-    GitWorktreeRegistration, base, git_repo_available, git_worktree_registration, metadata_lock,
-};
 
 const CLEAN_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
@@ -70,9 +64,11 @@ pub(crate) async fn clean_idle_closed_track_worktrees(
             continue;
         }
         let track_id = key.0.clone();
-        let result = tokio::task::spawn_blocking(move || clean_ignored(&track_id, &worktree))
-            .await
-            .map_err(|error| CalmError::Internal(format!("track worktree clean task: {error}")))?;
+        let result = tokio::task::spawn_blocking(move || {
+            workspace::worktree::clean_ignored(&track_id, &worktree, super::track_worktree::observe)
+        })
+        .await
+        .map_err(|error| CalmError::Internal(format!("track worktree clean task: {error}")))?;
         match result {
             Ok(true) => count += 1,
             Ok(false) => {}
@@ -84,46 +80,4 @@ pub(crate) async fn clean_idle_closed_track_worktrees(
         cleaned.insert(key);
     }
     Ok(count)
-}
-
-/// Remove the ignored files under the worktree; tracked and untracked-unignored files stay. A
-/// single `-f`: git keeps an ignored nested repository (someone's worktree inside this one).
-/// `Ok(false)` when there is nothing of ours to clean. Under the metadata lock, so a track delete's
-/// `worktree remove` is not half done; only a registered, non-symlink worktree is cleaned, and
-/// `GIT_CEILING_DIRECTORIES` stops git from finding the main checkout when the worktree's `.git`
-/// is missing. A track reopened after the read loses its build output, which is regenerable.
-fn clean_ignored(track_id: &str, worktree: &str) -> Result<bool> {
-    let target = track_worktree_target(track_id, worktree)?;
-    if !git_repo_available(&target.repo_root) {
-        return Ok(false);
-    }
-    let _metadata_lock = metadata_lock::GitMetadataLock::acquire(&target.repo_root)?;
-    if base::is_symlink_leaf(&target.path)? || !target.path.is_dir() {
-        return Ok(false);
-    }
-    if git_worktree_registration(&target)? != GitWorktreeRegistration::Present {
-        tracing::warn!(
-            track_id,
-            worktree,
-            "track worktree clean skipped: the path is not this track's registered worktree"
-        );
-        return Ok(false);
-    }
-    let ceiling = target.path.parent().unwrap_or(&target.path);
-    let output = isolated_git_command()
-        .env("GIT_CEILING_DIRECTORIES", ceiling)
-        .args(["-c", "core.fsmonitor=false", "-C"])
-        .arg(&target.path)
-        .args(["clean", "-fdXq"])
-        .output()
-        .map_err(|error| {
-            CalmError::Internal(format!(
-                "spawn git clean for {}: {error}",
-                target.path.display()
-            ))
-        })?;
-    if !output.status.success() {
-        return Err(super::git_failed("git clean", &target.path, &output));
-    }
-    Ok(true)
 }

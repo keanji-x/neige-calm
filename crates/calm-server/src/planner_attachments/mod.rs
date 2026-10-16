@@ -19,9 +19,6 @@ pub mod store;
 /// Server-owned subtree inside a managed workspace; excluded via `.git/info/exclude`, never a `.gitignore`.
 pub const NEIGE_DIR: &str = ".neige";
 
-/// The line `ensure_git_exclude_entry` keeps in `.git/info/exclude`.
-pub const NEIGE_GIT_EXCLUDE_ENTRY: &str = ".neige/";
-
 /// The most [`used_bytes`] may report before an upload is refused. Bound bytes are never reclaimed, so for a card whose attachments were all sent this is a lifetime total.
 /// Enforced under the card's upload lock so concurrent uploads cannot both measure the same "before".
 pub const PER_CARD_ATTACHMENT_BUDGET: u64 = 64 * 1024 * 1024;

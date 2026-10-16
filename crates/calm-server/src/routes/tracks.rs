@@ -1,4 +1,5 @@
 //! `/api/tracks`, `/api/areas/:id/tracks` — Track CRUD.
+use crate::workspace_service::sweep::{WorkspaceTrackSweep, sweep_workspace_worktrees_for_tracks};
 
 use crate::AREA_CHAT_PURPOSE;
 use crate::actor::Actor;
@@ -25,8 +26,7 @@ use crate::model::{
 use crate::operation::planner_harness_start_adapter::PlannerHarnessStartOperationPayload;
 use crate::operation::planner_start_fence::CardStartFence;
 use crate::operation::workspace_lease::{
-    WorkspaceTrackSweep, release_workspace_leases_for_track_tx,
-    sweep_workspace_worktrees_for_tracks, track_has_active_forge_action,
+    release_workspace_leases_for_track_tx, track_has_active_forge_action,
 };
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::plugin_host::manifest::Manifest;
@@ -49,8 +49,8 @@ use crate::track_report::{
 use crate::track_report_doc::ReportDoc;
 use crate::track_report_read::load_report_read_snapshot;
 use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;
-use crate::workspace_recycle;
 use crate::workspace_repoint::{PristineVerdict, workspace_pristine};
+use crate::workspace_service::workspace_recycle;
 use axum::{
     Router,
     extract::State,
@@ -937,9 +937,9 @@ pub(crate) async fn create_track(
     // Validated before the transaction, deliberately: `materialize_workspace` runs after
     // the commit, and a failure there leaves an orphan track row.
     if !cwd_omitted {
-        crate::workspace_materialize::validate_attached_workspace(std::path::Path::new(
-            &normalized_cwd,
-        ))?;
+        crate::workspace_service::workspace_materialize::validate_attached_workspace(
+            std::path::Path::new(&normalized_cwd),
+        )?;
     }
     // Stamp the normalized cwd back before the row is minted; `area_folder.path` is the
     // normalized form too.
@@ -987,10 +987,7 @@ pub(crate) async fn create_track(
         TrackWorkspacePlan::ManagedUnder(s.workspace_root.clone())
     } else {
         TrackWorkspacePlan::AttachedWithTrackWorktree(
-            crate::operation::workspace_lease::git_repo_root_for_track_cwd(
-                "(new)",
-                &normalized_cwd,
-            )?,
+            crate::workspace_service::git_repo_root_for_track_cwd("(new)", &normalized_cwd)?,
         )
     };
     let options = CreateTrackOptions {
@@ -1737,7 +1734,7 @@ async fn create_track_structure(
     // Materialize outside the transaction and before the planner harness starts. A failure
     // here MUST surface as a non-2xx; a 201 would leave a track whose first worker dies
     // with `spawn-failed`.
-    crate::workspace_materialize::materialize_workspace(
+    crate::workspace_service::workspace_materialize::materialize_workspace(
         &track.workspace,
         &workspace_root_for_materialize,
         track.id.as_str(),
@@ -1752,7 +1749,7 @@ async fn create_track_structure(
         error
     })?;
     // The attached twin of the managed materialization above, with the same contract.
-    crate::operation::workspace_lease::track_worktree::ensure_track_worktree(&track)
+    crate::workspace_service::track_worktree::ensure_track_worktree(&track)
         .await
         .map_err(|error| {
             tracing::error!(
@@ -2281,7 +2278,9 @@ async fn repoint_track_workspace(
     // Validate the target BEFORE any write, so a bad path fails here with git's own words
     // rather than as a worker's `spawn-failed`.
     let new_path = normalize_path(&requested.path);
-    crate::workspace_materialize::validate_attached_workspace(std::path::Path::new(&new_path))?;
+    crate::workspace_service::workspace_materialize::validate_attached_workspace(
+        std::path::Path::new(&new_path),
+    )?;
 
     let workspace_root = s.workspace_root.clone();
     let track_id = track.id.to_string();

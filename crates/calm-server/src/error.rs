@@ -678,3 +678,11 @@ impl plugin::ports::ErrorFactory for CalmError {
         matches!(self, Self::Conflict(message) if message == reason)
     }
 }
+
+impl From<workspace::error::Error> for CalmError {
+    fn from(error: workspace::error::Error) -> Self {
+        match error {
+            workspace::error::Error::Internal(message) => Self::Internal(message),
+        }
+    }
+}

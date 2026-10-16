@@ -65,7 +65,7 @@ use crate::plugin_host::child_process::{
     ChildFinishError, SpawnTimedOut, finish_within, read_capped, set_process_group_leader,
     spawn_within,
 };
-use crate::workspace_materialize::isolated_git_command;
+use workspace::command::isolated_git_command;
 
 /// The hard bound on one upstream fetch, spawn to reap.
 pub(crate) const UPSTREAM_FETCH_TIMEOUT: Duration = Duration::from_secs(20);
@@ -260,7 +260,7 @@ fn prepare_fetch(repo_root: &Path) -> std::result::Result<PreparedFetch, Upstrea
         return Err(UpstreamRefresh::NotFetched { reason });
     }
     let kernel_ref = upstream.kernel_ref();
-    let common_dir = super::base::lease_git_common_dir(repo_root)
+    let common_dir = workspace::base::lease_git_common_dir(repo_root)
         .map_err(|error| failed(repo_root, format!("reading the common dir failed: {error}")))?;
     Ok(PreparedFetch {
         key: (common_dir, kernel_ref.clone()),
@@ -415,7 +415,7 @@ fn clear_stale_lock(repo_root: &Path, kernel_ref: &str) -> std::result::Result<(
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    let path = super::base::printed_path(&output.stdout);
+    let path = workspace::base::printed_path(&output.stdout);
     let path = if path.is_absolute() {
         path
     } else {

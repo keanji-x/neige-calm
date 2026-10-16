@@ -33,11 +33,11 @@ use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
 use crate::model::{Task, TaskKind, TaskStatus};
 use crate::operation::forge_action_adapter::ForgeActionResultFile;
 use crate::operation::workspace_lease::facts::WorkerWorktreeFacts;
-use crate::operation::workspace_lease::track_worktree::track_branch_for;
 use crate::operation::workspace_lease::{
     DeliveryPolicy, LeaseBase, WorkerLeasePlan, WorkspaceLease, acquire_workspace_lease_tx, base,
 };
-use crate::workspace_materialize::neige_git_command;
+use workspace::command::neige_git_command;
+use workspace::worktree::track_branch_for;
 
 mod commit_message;
 
@@ -150,7 +150,7 @@ impl ScriptRepo {
         let base_sha = git(&track_root, &["rev-parse", "HEAD"]);
         // The worker's checkout is the track worktree (#1830 S2).
         let branch = track_branch_for(TRACK).unwrap();
-        let lease = crate::db::sqlite::track_worktree_path_for(&canonical(&track_root), TRACK);
+        let lease = workspace::worktree::track_worktree_path_for(&canonical(&track_root), TRACK);
         std::fs::create_dir_all(lease.parent().unwrap()).unwrap();
         git(
             &track_root,
@@ -2223,7 +2223,7 @@ fn classify_failure_maps_every_code() {
     // tail of the line, which is exactly what a 200-byte cap cut off.
     let repo_root = "/mnt/data2/kenji/neige-calm/.claude/worktrees/wt-primary-checkout";
     let lease_path =
-        crate::db::sqlite::track_worktree_path_for(Path::new(repo_root), &"t".repeat(32));
+        workspace::worktree::track_worktree_path_for(Path::new(repo_root), &"t".repeat(32));
     let production_line = format!(
         "provenance realpath={} common_dir={repo_root}/.git registered=0",
         lease_path.display()

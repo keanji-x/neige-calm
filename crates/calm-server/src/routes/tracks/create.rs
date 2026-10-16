@@ -631,7 +631,7 @@ async fn adopt_prior_track(s: &RouteState, track_id: &str, ensure_worktree: bool
     })?;
     // `Resume` re-materializes: a 201 for a track whose workspace does not exist would
     // replay the create failure one layer down. `materialize_workspace` is designed to be re-run.
-    crate::workspace_materialize::materialize_workspace(
+    crate::workspace_service::workspace_materialize::materialize_workspace(
         &track.workspace,
         &s.workspace_root,
         track.id.as_str(),
@@ -657,7 +657,7 @@ async fn adopt_prior_track(s: &RouteState, track_id: &str, ensure_worktree: bool
     // `idempotency_key_exhausted` mapping: that makes the FE rotate the key and mint a second
     // track, while a diverged checkout or a missing commit is the user's to fix.
     if ensure_worktree {
-        crate::operation::workspace_lease::track_worktree::ensure_track_worktree(&track).await?;
+        crate::workspace_service::track_worktree::ensure_track_worktree(&track).await?;
     }
     drop(track_delete_guard);
     Ok(track)

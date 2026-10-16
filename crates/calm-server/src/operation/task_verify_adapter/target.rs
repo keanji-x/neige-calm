@@ -1277,7 +1277,7 @@ mod tests {
     }
 
     fn git(dir: &Path, args: &[&str]) -> String {
-        let output = crate::workspace_materialize::neige_git_command()
+        let output = workspace::command::neige_git_command()
             .args(args)
             .current_dir(dir)
             .output()

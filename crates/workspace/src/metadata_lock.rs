@@ -7,30 +7,29 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crate::error::{CalmError, Result};
+use crate::error::{Error, Result};
 
 const LOCK_NAME: &std::ffi::CStr = c"neige-track-metadata.lock";
 const WAIT: Duration = Duration::from_secs(30);
 
 /// Closing the owned descriptor releases flock, including during unwinding. The blocking
 /// Git task owns this guard; cancellation of its async join cannot release it early.
-pub(super) struct GitMetadataLock {
+pub(crate) struct GitMetadataLock {
     _file: File,
 }
 
 impl GitMetadataLock {
     /// Call only on a blocking thread, outside database transactions. Root and linked-root
     /// resolve to the same canonical common dir, independently of RouteState or process.
-    pub(super) fn acquire(repo_root: &Path) -> Result<Self> {
-        let common = super::base::lease_git_common_dir(repo_root)?;
+    pub(crate) fn acquire(repo_root: &Path, observe: impl Fn(&str, &Path)) -> Result<Self> {
+        let common = crate::base::lease_git_common_dir(repo_root)?;
         Self::open_and_lock(&common, || {
-            #[cfg(feature = "fixtures")]
-            super::metadata_test_pause("track-metadata-contended", repo_root);
+            observe("track-metadata-contended", repo_root);
             #[cfg(test)]
             tests::observe_contention();
         })
         .map_err(|error| {
-            CalmError::Internal(format!(
+            Error::Internal(format!(
                 "lock Track Git metadata in {}: {error}",
                 common.display()
             ))

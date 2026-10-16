@@ -23,7 +23,7 @@ pub enum TrackWorkspacePlan {
     /// `Repo::track_create`.
     AttachedFromCwd,
     /// [`Self::AttachedFromCwd`] plus the track worktree under this repository root
-    /// ([`track_worktree_path_for`]); the create route's attached branch (#1830). The route
+    /// ([`workspace::worktree::track_worktree_path_for`]); the create route's attached branch (#1830). The route
     /// makes the worktree after the transaction commits.
     AttachedWithTrackWorktree(std::path::PathBuf),
     /// Derive `<root>/<area_id>/<track_id>`, `kind = Managed`, **not** frozen: a
@@ -37,15 +37,6 @@ pub enum TrackWorkspacePlan {
     /// `kind = managed` directories only, so an attached path is never created,
     /// moved or deleted by the server however many rows point at it.
     InheritAttachedFrozen(AttachedInheritedPath),
-}
-
-/// `<repo_root>/.claude/worktrees/track-<track_id>`: one segment below `worktrees/`, so it never
-/// parses as a lease path (`<track>/<card>`) and no lease sweep enumerates it.
-pub fn track_worktree_path_for(repo_root: &std::path::Path, track_id: &str) -> std::path::PathBuf {
-    repo_root
-        .join(".claude")
-        .join("worktrees")
-        .join(format!("track-{track_id}"))
 }
 
 /// A path that may be inherited as an `attached` workspace, **proven to be
@@ -157,16 +148,14 @@ pub async fn track_create_tx(
             path: p.cwd.clone(),
             frozen_at: Some(now),
             worktree: Some(
-                track_worktree_path_for(repo_root, &id)
+                workspace::worktree::track_worktree_path_for(repo_root, &id)
                     .to_string_lossy()
                     .into_owned(),
             ),
         },
         TrackWorkspacePlan::ManagedUnder(root) => TrackWorkspace {
             kind: TrackWorkspaceKind::Managed,
-            path: root
-                .join(p.area_id.as_str())
-                .join(&id)
+            path: workspace::materialize::managed_workspace_path(root, p.area_id.as_str(), &id)
                 .to_string_lossy()
                 .into_owned(),
             frozen_at: None,
@@ -174,9 +163,7 @@ pub async fn track_create_tx(
         },
         TrackWorkspacePlan::ManagedFrozenUnder(root) => TrackWorkspace {
             kind: TrackWorkspaceKind::Managed,
-            path: root
-                .join(p.area_id.as_str())
-                .join(&id)
+            path: workspace::materialize::managed_workspace_path(root, p.area_id.as_str(), &id)
                 .to_string_lossy()
                 .into_owned(),
             frozen_at: Some(now),

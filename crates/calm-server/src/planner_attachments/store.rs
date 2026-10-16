@@ -10,14 +10,13 @@ use tokio::io::AsyncWriteExt;
 
 use crate::error::{CalmError, Result};
 use crate::ids::CardId;
-use crate::operation::workspace_lease::ensure_git_exclude_entry;
 use crate::per_card_lock::{PerCardLocks, lock_card};
+use workspace::git::ensure_git_exclude_entry;
+use workspace::materialize::NEIGE_GIT_EXCLUDE_ENTRY;
 
 use super::dir;
 use super::sniff::{SNIFF_PREFIX_BYTES, sniff};
-use super::{
-    MAX_ATTACHMENT_BYTES, NEIGE_GIT_EXCLUDE_ENTRY, PER_CARD_ATTACHMENT_BUDGET, used_bytes,
-};
+use super::{MAX_ATTACHMENT_BYTES, PER_CARD_ATTACHMENT_BUDGET, used_bytes};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredAttachment {

@@ -1,41 +1,10 @@
-//! Safe recycling of managed track workspaces: a directory is renamed into `<root>/.trash/` only when it is
-//! `Managed`, canonically under the root, carries this track's ownership marker, and is not in the system area.
-//! Fail-closed; never `rm -rf`, and no copy+delete fallback for a cross-device rename.
-
+//! Canonical ownership checks, atomic trash renames and filesystem collection.
+use crate::error::{Error, Result};
 use std::path::{Path, PathBuf};
-
-use crate::error::{CalmError, Result};
-use crate::model::{AreaKind, Track, TrackWorkspace, TrackWorkspaceKind};
-
-/// Leading dot so it can never collide with an area id and is not mistaken for an area by root walkers.
 pub const TRASH_DIR_NAME: &str = ".trash";
-
-/// Kept in sync with `workspace_materialize::OWNER_MARKER`; the recycle tests read the marker only through the materializer.
-const OWNER_MARKER_RELATIVE: [&str; 2] = [".git", "neige-workspace"];
-
-/// Boot/lazy recovery fence: a managed workspace is recoverable only while its original path still carries
-/// this track's marker, which persists deletion quarantine across restarts.
-pub fn workspace_allows_runtime_recovery(track: &Track) -> bool {
-    if track.workspace.kind != TrackWorkspaceKind::Managed {
-        return true;
-    }
-    let marker = OWNER_MARKER_RELATIVE
-        .iter()
-        .fold(PathBuf::from(&track.workspace.path), |path, part| {
-            path.join(part)
-        });
-    std::fs::read_to_string(marker).is_ok_and(|contents| contents.trim() == track.id.as_str())
-}
-
-/// Retention is time-based because "I deleted the wrong track" is noticed on a human clock, not after N more deletions.
-pub const TRASH_RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
-
 /// Why a directory was **not** recycled; every variant means it was left exactly as it was on disk.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecycleRefusal {
-    NotManaged,
-    /// The owning area is system-owned, or could not be read (fail-closed).
-    SystemArea,
     PathMissing,
     /// `canonicalize` resolved outside the managed root, or onto the root / trash itself.
     OutsideRoot {
@@ -55,21 +24,6 @@ pub enum RecycleRefusal {
     },
 }
 
-impl RecycleRefusal {
-    pub fn tag(&self) -> &'static str {
-        match self {
-            RecycleRefusal::NotManaged => "not-managed",
-            RecycleRefusal::SystemArea => "system-area",
-            RecycleRefusal::PathMissing => "path-missing",
-            RecycleRefusal::OutsideRoot { .. } => "outside-root",
-            RecycleRefusal::WrongDepth { .. } => "wrong-depth",
-            RecycleRefusal::MarkerMissing => "marker-missing",
-            RecycleRefusal::MarkerMismatch { .. } => "marker-mismatch",
-            RecycleRefusal::Unreadable { .. } => "unreadable",
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecycleDecision {
     Trashed { from: PathBuf, to: PathBuf },
@@ -77,14 +31,16 @@ pub enum RecycleDecision {
 }
 
 impl RecycleDecision {
-    pub fn trashed_path(&self) -> Option<&Path> {
+    #[cfg(test)]
+    fn trashed_path(&self) -> Option<&Path> {
         match self {
             RecycleDecision::Trashed { to, .. } => Some(to.as_path()),
             RecycleDecision::Refused(_) => None,
         }
     }
 
-    pub fn refusal(&self) -> Option<&RecycleRefusal> {
+    #[cfg(test)]
+    fn refusal(&self) -> Option<&RecycleRefusal> {
         match self {
             RecycleDecision::Trashed { .. } => None,
             RecycleDecision::Refused(refusal) => Some(refusal),
@@ -92,71 +48,24 @@ impl RecycleDecision {
     }
 }
 
-/// Returns `Ok(Refused(..))` when a guard does not hold: refusing to delete a directory must not block
-/// deletion of the row. `Err` only when a guard passed and the move itself failed (notably `EXDEV`).
-pub fn recycle_track_workspace(
-    workspace_root: &Path,
-    area_kind: Option<AreaKind>,
-    track_id: &str,
-    workspace: &TrackWorkspace,
-    now_ms: i64,
-) -> Result<RecycleDecision> {
-    let decision = decide_and_move(workspace_root, area_kind, track_id, workspace, now_ms)?;
-    match &decision {
-        RecycleDecision::Trashed { from, to } => {
-            tracing::info!(
-                track_id,
-                from = %from.display(),
-                to = %to.display(),
-                "recycled managed track workspace into the trash"
-            );
-        }
-        RecycleDecision::Refused(RecycleRefusal::NotManaged | RecycleRefusal::PathMissing) => {
-            tracing::debug!(
-                track_id,
-                path = %workspace.path,
-                reason = decision.refusal().map(|r| r.tag()).unwrap_or_default(),
-                "no managed workspace to recycle"
-            );
-        }
-        RecycleDecision::Refused(refusal) => {
-            tracing::error!(
-                track_id,
-                path = %workspace.path,
-                reason = refusal.tag(),
-                detail = ?refusal,
-                "refusing to recycle a track workspace; the directory is left on disk. \
-                 This is fail-closed by design (#1147 S5): a guard could not be \
-                 satisfied, so the bytes stay."
-            );
-        }
-    }
-    Ok(decision)
-}
-
-/// Compensate a successful trash rename when the owning database deletion rolls back. The original path
-/// must still be absent: replacing anything that appeared there would trade a delete failure for data loss.
-pub fn restore_recycled_workspace(decision: &RecycleDecision) -> Result<()> {
-    let RecycleDecision::Trashed { from, to } = decision else {
-        return Ok(());
-    };
+pub fn restore_recycled_workspace(from: &Path, to: &Path) -> Result<()> {
     match std::fs::symlink_metadata(from) {
         Ok(_) => {
-            return Err(CalmError::Internal(format!(
+            return Err(Error::Internal(format!(
                 "cannot restore recycled workspace {}: original path is occupied",
                 from.display()
             )));
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
-            return Err(CalmError::Internal(format!(
+            return Err(Error::Internal(format!(
                 "inspect original workspace path {} before restore: {error}",
                 from.display()
             )));
         }
     }
     std::fs::rename(to, from).map_err(|error| {
-        CalmError::Internal(format!(
+        Error::Internal(format!(
             "restore recycled workspace {} -> {}: {error}",
             to.display(),
             from.display()
@@ -170,25 +79,12 @@ pub fn restore_recycled_workspace(decision: &RecycleDecision) -> Result<()> {
     Ok(())
 }
 
-fn decide_and_move(
+pub fn recycle_owned_directory(
     workspace_root: &Path,
-    area_kind: Option<AreaKind>,
     track_id: &str,
-    workspace: &TrackWorkspace,
+    stored: &Path,
     now_ms: i64,
 ) -> Result<RecycleDecision> {
-    // Guard 1 — typed kind, from the stored column, never inferred from the path.
-    if workspace.kind != TrackWorkspaceKind::Managed {
-        return Ok(RecycleDecision::Refused(RecycleRefusal::NotManaged));
-    }
-
-    // Guard 4 — system area; `None` means the area row could not be read, which is a refusal.
-    // Unreachable today (the routes 403 first and `area_id` is NOT NULL), kept as the last check before an irreversible move.
-    if area_kind != Some(AreaKind::User) {
-        return Ok(RecycleDecision::Refused(RecycleRefusal::SystemArea));
-    }
-
-    let stored = Path::new(&workspace.path);
     if !stored.is_absolute() {
         return Ok(RecycleDecision::Refused(RecycleRefusal::Unreadable {
             detail: format!("workspace path is not absolute: {}", stored.display()),
@@ -239,9 +135,7 @@ fn decide_and_move(
 
     // Guard 3 — our marker, naming THIS track, read from the canonical path so a link cannot decide which
     // marker answers for which directory.
-    let marker_path = OWNER_MARKER_RELATIVE
-        .iter()
-        .fold(real_path.clone(), |acc, part| acc.join(part));
+    let marker_path = crate::materialize::owner_marker_path(&real_path);
     match std::fs::read_to_string(&marker_path) {
         Ok(contents) if contents.trim() == track_id => {}
         Ok(contents) => {
@@ -279,19 +173,19 @@ fn move_into_trash(
     now_ms: i64,
 ) -> Result<PathBuf> {
     std::fs::create_dir_all(trash_root).map_err(|error| {
-        CalmError::Internal(format!(
+        Error::Internal(format!(
             "recycle workspace: create trash dir {}: {error}",
             trash_root.display()
         ))
     })?;
     let trash_root = std::fs::canonicalize(trash_root).map_err(|error| {
-        CalmError::Internal(format!(
+        Error::Internal(format!(
             "recycle workspace: canonicalize trash dir {}: {error}",
             trash_root.display()
         ))
     })?;
     if trash_root.parent() != Some(real_root) {
-        return Err(CalmError::Internal(format!(
+        return Err(Error::Internal(format!(
             "recycle workspace: the trash directory {} resolves outside the managed \
              workspace root {} — most likely `{TRASH_DIR_NAME}` is a symlink. \
              Renaming into it would move the workspace out of the tree the GC can \
@@ -309,7 +203,7 @@ fn move_into_trash(
         let candidate = trash_root.join(format!("{track_id}-{stamp}"));
         // `track_id` is interpolated, not validated upstream: a `../` would make `join` escape the trash root.
         if candidate.parent() != Some(trash_root) {
-            return Err(CalmError::Internal(format!(
+            return Err(Error::Internal(format!(
                 "recycle workspace: track id `{track_id}` does not form a single path \
                  segment; {} is not directly inside {}. Refusing to rename anywhere \
                  the GC cannot reach.",
@@ -323,7 +217,7 @@ fn move_into_trash(
             continue;
         }
         std::fs::rename(from, &candidate).map_err(|error| {
-            CalmError::Internal(format!(
+            Error::Internal(format!(
                 "recycle workspace: rename {} -> {}: {error}. A cross-device rename \
                  (EXDEV) is fatal on purpose: falling back to copy + delete would turn \
                  this into a recursive delete of a live directory, which is the exact \
@@ -335,7 +229,7 @@ fn move_into_trash(
         verify_landed_inside_trash(trash_root, from, &candidate)?;
         return Ok(candidate);
     }
-    Err(CalmError::Internal(format!(
+    Err(Error::Internal(format!(
         "recycle workspace: could not find a free trash slot for track `{track_id}` under {}",
         trash_root.display()
     )))
@@ -345,7 +239,7 @@ fn move_into_trash(
 /// landed parent differ. A failure here is an error, never `Refused`: the directory has already moved.
 fn verify_landed_inside_trash(trash_root: &Path, from: &Path, candidate: &Path) -> Result<()> {
     let landed = std::fs::canonicalize(candidate).map_err(|error| {
-        CalmError::Internal(format!(
+        Error::Internal(format!(
             "recycle workspace: cannot confirm where {} landed: {error}. The rename \
              reported success, so the workspace has moved somewhere this process can \
              no longer name. Refusing to report a successful recycle.",
@@ -357,7 +251,7 @@ fn verify_landed_inside_trash(trash_root: &Path, from: &Path, candidate: &Path) 
     }
     // Detection, not prevention. Try to undo it; report either way.
     let restored = std::fs::rename(&landed, from).is_ok();
-    Err(CalmError::Internal(format!(
+    Err(Error::Internal(format!(
         "recycle workspace: the rename landed at {}, whose parent is not the trash \
          directory {} resolved a moment earlier. `{TRASH_DIR_NAME}` was replaced \
          between the two steps (#1147 N16), so the workspace was moved outside the \
@@ -378,76 +272,8 @@ fn verify_landed_inside_trash(trash_root: &Path, from: &Path, candidate: &Path) 
     )))
 }
 
-pub struct RecycleTarget<'a> {
-    pub track_id: &'a str,
-    pub workspace: &'a TrackWorkspace,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct AreaRecycleReport {
-    pub decisions: Vec<(String, RecycleDecision)>,
-    pub area_dir_removed: bool,
-}
-
-/// Recycle every managed workspace under an area, then the `<root>/<area_id>/` layer with a non-recursive
-/// `remove_dir`, so anything left behind keeps the area directory visibly.
-pub fn recycle_area_workspaces(
-    workspace_root: &Path,
-    area_id: &str,
-    area_kind: Option<AreaKind>,
-    tracks: &[RecycleTarget<'_>],
-    now_ms: i64,
-) -> Result<AreaRecycleReport> {
-    let mut report = AreaRecycleReport::default();
-    for target in tracks {
-        let decision = match recycle_track_workspace(
-            workspace_root,
-            area_kind,
-            target.track_id,
-            target.workspace,
-            now_ms,
-        ) {
-            Ok(decision) => decision,
-            Err(error) => {
-                if let Err(restore_error) = restore_area_recycle_report(&report) {
-                    return Err(CalmError::Internal(format!(
-                        "area workspace recycle failed ({error}), and partial rollback failed: {restore_error}"
-                    )));
-                }
-                return Err(error);
-            }
-        };
-        report
-            .decisions
-            .push((target.track_id.to_string(), decision));
-    }
-
-    let _ = area_id;
-    Ok(report)
-}
-
-/// Best-effort across the whole batch: one occupied path must not prevent other workspaces from returning.
-pub fn restore_area_recycle_report(report: &AreaRecycleReport) -> Result<()> {
-    let mut errors = Vec::new();
-    for (_, decision) in report.decisions.iter().rev() {
-        if let Err(error) = restore_recycled_workspace(decision) {
-            errors.push(error.to_string());
-        }
-    }
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(CalmError::Internal(errors.join("; ")))
-    }
-}
-
-/// Cosmetic post-commit finalization; keeping the area directory until commit means rollback never recreates a path.
-pub fn finalize_area_recycle(workspace_root: &Path, area_id: &str, report: &mut AreaRecycleReport) {
-    report.area_dir_removed = remove_empty_area_dir(workspace_root, area_id);
-}
-
 /// `rmdir <root>/<area_id>` when empty and canonically a direct child of the root; failure is `false`, never an error.
-fn remove_empty_area_dir(workspace_root: &Path, area_id: &str) -> bool {
+pub fn remove_empty_area_dir(workspace_root: &Path, area_id: &str) -> bool {
     let Ok(real_root) = std::fs::canonicalize(workspace_root) else {
         return false;
     };
@@ -479,7 +305,7 @@ fn remove_empty_area_dir(workspace_root: &Path, area_id: &str) -> bool {
     }
 }
 
-/// Delete trash entries older than [`TRASH_RETENTION_MS`]; the one `remove_dir_all` in the module. Looks only at
+/// Delete trash entries older than the caller-supplied retention; the one `remove_dir_all` in the module. Looks only at
 /// direct children of the canonical trash, dates entries by the timestamp in their name (`rename` preserves
 /// mtime), and keeps anything it cannot date or that is not a real directory.
 pub fn gc_trash(workspace_root: &Path, now_ms: i64, retention_ms: i64) -> Result<Vec<PathBuf>> {
@@ -487,7 +313,7 @@ pub fn gc_trash(workspace_root: &Path, now_ms: i64, retention_ms: i64) -> Result
         Ok(root) => root,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => {
-            return Err(CalmError::Internal(format!(
+            return Err(Error::Internal(format!(
                 "trash gc: canonicalize workspace root {}: {error}",
                 workspace_root.display()
             )));
@@ -498,7 +324,7 @@ pub fn gc_trash(workspace_root: &Path, now_ms: i64, retention_ms: i64) -> Result
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => {
-            return Err(CalmError::Internal(format!(
+            return Err(Error::Internal(format!(
                 "trash gc: read {}: {error}",
                 trash_root.display()
             )));
@@ -555,23 +381,10 @@ pub fn gc_trash(workspace_root: &Path, now_ms: i64, retention_ms: i64) -> Result
 }
 
 /// `<track_id>-<ts_ms>` → `ts_ms`. `None` for any other shape.
-fn trash_entry_timestamp(path: &Path) -> Option<i64> {
+pub(crate) fn trash_entry_timestamp(path: &Path) -> Option<i64> {
     let name = path.file_name()?.to_str()?;
     let (_, stamp) = name.rsplit_once('-')?;
     stamp.parse::<i64>().ok()
-}
-
-/// Sweep the trash, swallowing failures: GC must never turn a successful delete into a 500.
-pub fn gc_trash_best_effort(workspace_root: &Path, now_ms: i64) {
-    match gc_trash(workspace_root, now_ms, TRASH_RETENTION_MS) {
-        Ok(removed) if !removed.is_empty() => {
-            tracing::info!(count = removed.len(), "trash gc: swept expired workspaces");
-        }
-        Ok(_) => {}
-        Err(error) => {
-            tracing::warn!(error = %error, "trash gc: sweep failed");
-        }
-    }
 }
 
 #[cfg(test)]

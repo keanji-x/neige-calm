@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use crate::workspace_materialize::isolated_git_command;
+use workspace::command::isolated_git_command;
 
 /// Exactly the one empty init commit from `materialize_managed_workspace`.
 const MATERIALIZE_BASELINE_COMMITS: &str = "1";

@@ -183,7 +183,7 @@ pub async fn spawn_recovered_harness(
     let Some(track) = repo.track_get(card.track_id.as_str()).await? else {
         return Ok(RecoveryOutcome::Skipped);
     };
-    if !crate::workspace_recycle::workspace_allows_runtime_recovery(&track) {
+    if !crate::workspace_service::workspace_recycle::workspace_allows_runtime_recovery(&track) {
         tracing::warn!(
             runtime_id = %runtime.id,
             track_id = %track.id,

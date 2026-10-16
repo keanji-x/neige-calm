@@ -1559,7 +1559,7 @@ async fn create_worker_caller(
 ) -> Caller {
     let card_id = calm_server::model::new_id();
     let runtime_id = calm_server::model::new_id();
-    let lease_abs = calm_server::db::sqlite::track_worktree_path_for(track_cwd, track_id.as_str());
+    let lease_abs = workspace::worktree::track_worktree_path_for(track_cwd, track_id.as_str());
     let lease_path = lease_abs.display().to_string();
 
     let mut tx = sqlx_repo.pool().begin().await.expect("begin card tx");
