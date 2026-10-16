@@ -58,8 +58,9 @@ revocation. Operators must resolve that process cleanup separately.
 Regression checks use isolated real boot/HTTP and ACP launch entry points to
 cover configured and unconfigured startup, historical token revocation and
 instance/provider isolation, revocation failure before listening, and refusal
-before agent spawn. The tests live with the ACP owner and use the `acp_boot_`
-filter; adding or renaming a test requires no central test-name list. The worker
+before agent spawn. The ACP owner compiles `tests/unit/acp_boot.rs` only under
+`cfg(all(test, unix))`, outside the production turn-call scan. The `acp_boot_`
+filter is unchanged; adding or renaming a test needs no central list. The worker
 runs focused red/green and safety mutations; the gate owns quick/text/contract
 checks and one intentional focused replay. Broad suites remain CI's job.
 
