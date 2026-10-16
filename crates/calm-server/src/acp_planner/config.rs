@@ -194,17 +194,25 @@ impl AcpPlannerHost {
     }
 }
 
-/// Only sessions explicitly registered by this ACP backend are cleanup candidates.
+/// Revoke owned credentials before listening, even without a current registration. A failed
+/// sweep only warns here; every launch still requires its own successful stop before spawning.
 pub async fn boot(repo: &dyn crate::db::RepoEventWrite, host: &AcpPlannerHost) -> Result<()> {
     let ids = revoke_owned(repo, None).await?;
     let mut ids: Vec<&str> = ids.iter().map(String::as_str).collect();
     ids.push(super::catalog::WORKER);
-    crate::planner_process::sweep(
+    if let Err(error) = crate::planner_process::sweep(
         &host.instance,
         &ids,
         crate::planner_process::SeamPolicy::Ignore,
     )
     .await
+    {
+        tracing::warn!(
+            %error,
+            "ACP boot sweep did not confirm process cleanup; old MCP credentials revoked; continuing boot; each launch still requires a successful stop before spawning"
+        );
+    }
+    Ok(())
 }
 
 pub async fn sweep_track(

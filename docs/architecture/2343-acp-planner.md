@@ -35,6 +35,34 @@ Process cleanup and boot credential revocation select only sessions registered i
 
 ## Configuration
 
+### Boot when process cleanup is unavailable
+
+Review tier: **L2**, because boot crosses the credential and process authority
+boundary. ACP boot must first revoke the old MCP credentials of every owned
+session in this instance's database, including historical rows when ACP is no
+longer configured. A database or revocation error still aborts `AppState::boot`
+before the MCP listener opens. Only after that transaction succeeds does boot
+attempt the existing session/catalog marker sweep. A sweep error is logged as
+a warning and boot continues, matching Claude's existing lifecycle policy.
+
+This restores overall service/HTTP startup on macOS; it does not add native
+macOS ACP/OpenCode support. The existing scanner still cannot confirm cleanup
+there, so configured ACP remains unavailable. Every readiness, catalog and turn
+launch must still propagate `stop(...).await?` before spawning a process.
+Track sweeping, deletion and relocation retain their existing error propagation.
+No shared scanner, schema, migration, Codex or Claude behavior changes. A failed
+scan is never an empty scan, and continuing boot does not establish that old
+processes stopped: they may retain non-MCP capabilities despite credential
+revocation. Operators must resolve that process cleanup separately.
+
+Regression checks use isolated real boot/HTTP and ACP launch entry points to
+cover configured and unconfigured startup, historical token revocation and
+instance/provider isolation, revocation failure before listening, and refusal
+before agent spawn. The tests live with the ACP owner and use the `acp_boot_`
+filter; adding or renaming a test requires no central test-name list. The worker
+runs focused red/green and safety mutations; the gate owns quick/text/contract
+checks and one intentional focused replay. Broad suites remain CI's job.
+
 Pass `--acp-planner-config /absolute/path/acp-planner.json`:
 
 ```json
