@@ -1,11 +1,14 @@
 use super::*;
 use crate::decision_sink::{CardDecisionSink, WorkerTaskReport};
 use crate::mcp_server::{AppContext, ToolCallIdentity};
-use crate::operation::{OperationCompletionBus, OperationRuntime, Phase};
+use crate::operation::{
+    OperationCompletionBus, OperationRuntime, Phase,
+    launch_cleanup_test_support::{FIXTURE_CONTROL_VERSION, read_legacy_v2_request},
+};
 use crate::state::{DaemonClient, WriteContext};
 use crate::terminal_renderer::TerminalRendererRegistry;
 use calm_session::control::{ControlMsg, ControlReply};
-use calm_session::{read_frame, write_frame};
+use calm_session::write_frame;
 use calm_truth::db::RepoRead;
 use calm_truth::session_projection_repo::WorkerSessionProjectionRepo;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -106,7 +109,7 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: Opt
             let (mut connection, _) = listener.accept().await.unwrap();
             let starts = starts_for_endpoint.clone();
             clients.spawn(async move {
-                let reply = match read_frame::<ControlMsg, _>(&mut connection).await {
+                let reply = match read_legacy_v2_request(&mut connection).await {
                     Ok(ControlMsg::EnsureProc(_)) => {
                         starts.fetch_add(1, Ordering::SeqCst);
                         ControlReply::SpawnFailed {
@@ -117,7 +120,7 @@ async fn exercise_viewer_report(expected: crate::model::TaskStatus, restart: Opt
                         }
                     }
                     Ok(ControlMsg::Probe(_)) => ControlReply::ProbeOk {
-                        supervisor_version: calm_session::SUPERVISOR_CONTROL_VERSION,
+                        supervisor_version: FIXTURE_CONTROL_VERSION,
                         proc_running: false,
                     },
                     Ok(ControlMsg::Attach(_)) => ControlReply::Error {

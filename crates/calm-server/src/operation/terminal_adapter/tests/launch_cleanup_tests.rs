@@ -673,7 +673,7 @@ async fn exercise(fault: Fault) {
     })
     .await
     .unwrap();
-    let mut control = tokio::net::UnixStream::connect(supervisor.sock())
+    let mut control = calm_session::control::execution::connect_legacy(supervisor.sock())
         .await
         .unwrap();
     write_frame(

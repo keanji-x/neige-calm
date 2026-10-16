@@ -1,6 +1,7 @@
 use super::*;
 use crate::db::prelude::*;
 use crate::event::EventBus;
+use crate::operation::launch_cleanup_test_support::read_legacy_v2_request;
 use crate::plugin_host::{PluginHost, PluginRegistry};
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::state::{AppState, CodexClient, DaemonClient, WriteContext};
@@ -552,13 +553,15 @@ impl PendingProxy {
                 let rel = rel.clone();
                 let spawn = spawn.clone();
                 clients.spawn(async move {
-                    let Ok(message) = read_frame::<ControlMsg, _>(&mut client).await else {
+                    let Ok(message) = read_legacy_v2_request(&mut client).await else {
                         return;
                     };
                     if matches!(message, ControlMsg::EnsureProc(_)) {
                         rec.notify_one();
                         rel.notified().await;
-                        let mut actual = tokio::net::UnixStream::connect(upstream).await.unwrap();
+                        let mut actual = calm_session::control::execution::connect_legacy(upstream)
+                            .await
+                            .unwrap();
                         write_frame(&mut actual, &message).await.unwrap();
                         assert!(matches!(
                             read_frame::<ControlReply, _>(&mut actual).await.unwrap(),
@@ -566,7 +569,9 @@ impl PendingProxy {
                         ));
                         spawn.notify_one();
                     } else {
-                        let mut actual = tokio::net::UnixStream::connect(upstream).await.unwrap();
+                        let mut actual = calm_session::control::execution::connect_legacy(upstream)
+                            .await
+                            .unwrap();
                         write_frame(&mut actual, &message).await.unwrap();
                         let reply: ControlReply = read_frame(&mut actual).await.unwrap();
                         let _ = write_frame(&mut client, &reply).await;

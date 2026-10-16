@@ -10,6 +10,30 @@ use std::{
     time::Duration,
 };
 
+/// These fault endpoints own the released v2 wire, independently of the current supervisor.
+pub(crate) const FIXTURE_CONTROL_VERSION: u32 = 2;
+
+/// Answer only the positive version query before applying the fixture's original business fault.
+pub(crate) async fn read_legacy_v2_request(
+    client: &mut tokio::net::UnixStream,
+) -> Result<ControlMsg, calm_session::FrameError> {
+    loop {
+        let message = read_frame::<ControlMsg, _>(client).await?;
+        if matches!(&message, ControlMsg::Probe(request) if request.proc_id.is_empty()) {
+            write_frame(
+                client,
+                &ControlReply::ProbeOk {
+                    supervisor_version: FIXTURE_CONTROL_VERSION,
+                    proc_running: false,
+                },
+            )
+            .await?;
+        } else {
+            return Ok(message);
+        }
+    }
+}
+
 pub(crate) struct AckProxy {
     pub(crate) sock: PathBuf,
     _dir: tempfile::TempDir,
@@ -36,13 +60,15 @@ impl AckProxy {
                 let count = count.clone();
                 let observed = observed.clone();
                 clients.spawn(async move {
-                    let Ok(message) = read_frame::<ControlMsg, _>(&mut client).await else {
+                    let Ok(message) = read_legacy_v2_request(&mut client).await else {
                         return;
                     };
                     if matches!(message, ControlMsg::EnsureProc(_)) {
                         if count.fetch_add(1, Ordering::SeqCst) == 0 {
                             let mut actual =
-                                tokio::net::UnixStream::connect(upstream).await.unwrap();
+                                calm_session::control::execution::connect_legacy(upstream)
+                                    .await
+                                    .unwrap();
                             write_frame(&mut actual, &message).await.unwrap();
                             let spawned_reply =
                                 read_frame::<ControlReply, _>(&mut actual).await.unwrap();
@@ -83,7 +109,9 @@ impl AckProxy {
                             .unwrap();
                         }
                     } else if !hold_ack {
-                        let mut actual = tokio::net::UnixStream::connect(upstream).await.unwrap();
+                        let mut actual = calm_session::control::execution::connect_legacy(upstream)
+                            .await
+                            .unwrap();
                         write_frame(&mut actual, &message).await.unwrap();
                         let _ = tokio::io::copy_bidirectional(&mut client, &mut actual).await;
                     } else {
@@ -167,7 +195,9 @@ pub(crate) async fn claimed_task(
 
 pub(crate) async fn spawn_sibling(sock: &Path, cwd: &Path) -> String {
     let proc_id = format!("sibling:{}", crate::model::new_id());
-    let mut connection = tokio::net::UnixStream::connect(sock).await.unwrap();
+    let mut connection = calm_session::control::execution::connect_legacy(sock)
+        .await
+        .unwrap();
     write_frame(
         &mut connection,
         &ControlMsg::EnsureProc(EnsureProcRequest {
@@ -199,7 +229,9 @@ pub(crate) async fn spawn_sibling(sock: &Path, cwd: &Path) -> String {
 }
 
 pub(crate) async fn probe_running(sock: &Path, proc_id: &str) -> bool {
-    let mut connection = tokio::net::UnixStream::connect(sock).await.unwrap();
+    let mut connection = calm_session::control::execution::connect_legacy(sock)
+        .await
+        .unwrap();
     write_frame(
         &mut connection,
         &ControlMsg::Probe(ProbeRequest {
@@ -252,8 +284,8 @@ pub(crate) async fn negative_ack_proxy(
             let count = count.clone();
             let pool = pool.clone();
             clients.spawn(async move {
-                let Ok(message) = read_frame::<ControlMsg, _>(&mut client).await else { return; };
-                let mut actual = tokio::net::UnixStream::connect(upstream).await.unwrap();
+                let Ok(message) = read_legacy_v2_request(&mut client).await else { return; };
+                let mut actual = calm_session::control::execution::connect_legacy(upstream).await.unwrap();
                 write_frame(&mut actual, &message).await.unwrap();
                 if let ControlMsg::EnsureProc(request) = &message {
                     count.fetch_add(1, Ordering::SeqCst);
