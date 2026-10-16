@@ -19,7 +19,7 @@ async fn signal_terminates_pty_child() {
     // The sleep must outlast `LIVENESS_BUDGET`, or a broken signal path reads as a timeout instead of "the signal never arrived".
     ensure_pty(supervisor.sock(), proc_id, "/bin/sleep", &["600"]).await;
 
-    let mut attach = UnixStream::connect(supervisor.sock())
+    let mut attach = calm_session::control::execution::connect_legacy(supervisor.sock())
         .await
         .expect("connect attach");
     write_frame(
@@ -37,7 +37,7 @@ async fn signal_terminates_pty_child() {
         other => panic!("unexpected attach reply: {other:?}"),
     }
 
-    let mut control = UnixStream::connect(supervisor.sock())
+    let mut control = calm_session::control::execution::connect_legacy(supervisor.sock())
         .await
         .expect("connect control");
     write_frame(
@@ -75,7 +75,7 @@ async fn signal_targets_spawned_leader_not_tty_foreground_job() {
     let proc_id = "pty-signal-leader-not-foreground";
     let fixture = env!("CARGO_BIN_EXE_proc-supervisor-foreground-job");
 
-    let mut ensure = UnixStream::connect(supervisor.sock())
+    let mut ensure = calm_session::control::execution::connect_legacy(supervisor.sock())
         .await
         .expect("connect ensure");
     write_frame(
@@ -102,7 +102,7 @@ async fn signal_targets_spawned_leader_not_tty_foreground_job() {
         ControlReply::Ready
     ));
 
-    let mut attach = UnixStream::connect(supervisor.sock())
+    let mut attach = calm_session::control::execution::connect_legacy(supervisor.sock())
         .await
         .expect("connect attach");
     write_frame(
@@ -157,7 +157,7 @@ async fn signal_targets_spawned_leader_not_tty_foreground_job() {
         "test must establish differing foreground and leader pgids before Signal"
     );
 
-    let mut control = UnixStream::connect(supervisor.sock())
+    let mut control = calm_session::control::execution::connect_legacy(supervisor.sock())
         .await
         .expect("connect control");
     write_frame(
@@ -232,7 +232,9 @@ impl Drop for ExactFixturePid {
 }
 
 async fn ensure_pty(sock: &Path, proc_id: &str, program: &str, args: &[&str]) {
-    let mut stream = UnixStream::connect(sock).await.expect("connect ensure");
+    let mut stream = calm_session::control::execution::connect_legacy(sock)
+        .await
+        .expect("connect ensure");
     write_frame(
         &mut stream,
         &ControlMsg::EnsureProc(EnsureProcRequest {

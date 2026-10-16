@@ -11,10 +11,30 @@ struct Args {
     /// $CALM_DATA_DIR/proc-supervisor.sock.
     #[arg(long)]
     control_sock: PathBuf,
+    /// Durable executor journal, outside workspace-private storage.
+    #[arg(long, requires = "kernel_client_key_file")]
+    execution_state_dir: Option<PathBuf>,
+    /// Kernel-owned JSON capability file; never inherited by launched execution.
+    #[arg(long, requires = "execution_state_dir")]
+    kernel_client_key_file: Option<PathBuf>,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    let helper_args: Vec<String> = std::env::args().collect();
+    if helper_args.get(1).map(String::as_str) == Some("--execution-helper") {
+        anyhow::ensure!(helper_args.len() == 4, "invalid execution helper envelope");
+        return calm_proc_supervisor::execution::run_scope_helper(
+            helper_args[2].parse()?,
+            helper_args[3].parse()?,
+        );
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(serve())
+}
+
+async fn serve() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
@@ -25,7 +45,18 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
     establish_sigchld_process_invariant();
-    let registry = ProcRegistry::new();
+    let registry = match (args.execution_state_dir, args.kernel_client_key_file) {
+        (Some(journal_directory), Some(key_file)) => {
+            let kernel_client_secret = serde_json::from_reader(std::fs::File::open(key_file)?)?;
+            ProcRegistry::new().with_executor(calm_proc_supervisor::execution::ExecutorConfig {
+                journal_directory,
+                helper_program: std::env::current_exe()?,
+                kernel_client_secret,
+            })?
+        }
+        (None, None) => ProcRegistry::new(),
+        _ => anyhow::bail!("execution journal and client capability must be configured together"),
+    };
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let listener = bind_control_listener(&args.control_sock)?;
     let serve_task = tokio::spawn(serve_with_listener(

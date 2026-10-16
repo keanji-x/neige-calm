@@ -8,7 +8,6 @@ use calm_session::control::{
 };
 use calm_session::{read_frame, write_frame};
 use std::time::{Duration, Instant};
-use tokio::net::UnixStream;
 
 const LIVENESS_BUDGET: Duration = Duration::from_secs(120);
 
@@ -21,7 +20,7 @@ async fn pin_lost_when_the_child_is_autoreaped() {
         .expect("start supervisor");
     let proc_id = "pty-pin-lost";
 
-    let mut stream = UnixStream::connect(supervisor.sock())
+    let mut stream = calm_session::control::execution::connect_legacy(supervisor.sock())
         .await
         .expect("connect ensure");
     write_frame(
@@ -48,7 +47,7 @@ async fn pin_lost_when_the_child_is_autoreaped() {
         other => panic!("unexpected second reply: {other:?}"),
     }
 
-    let mut attach = UnixStream::connect(supervisor.sock())
+    let mut attach = calm_session::control::execution::connect_legacy(supervisor.sock())
         .await
         .expect("connect attach");
     write_frame(
@@ -117,7 +116,7 @@ async fn pin_lost_when_the_child_is_autoreaped() {
     );
 
     // Assertion 3: and refuses to signal that pgid, distinguishably by message prefix (ESRCH also maps to `Internal`).
-    let mut control = UnixStream::connect(supervisor.sock())
+    let mut control = calm_session::control::execution::connect_legacy(supervisor.sock())
         .await
         .expect("connect signal");
     write_frame(

@@ -1,9 +1,10 @@
 mod child_environment;
+pub mod execution;
 
 use calm_session::control::{
     AttachRequest, Attached, CleanupRequest, ControlErrorKind, ControlMsg, ControlReply,
     EnsureProcRequest, IoMode, ProbeRequest, ProcSignal, ResizePtyRequest, SignalRequest,
-    WriteStdinRequest,
+    SpawnFailedDisposition, WriteStdinRequest,
 };
 use calm_session::{FrameError, read_frame, write_frame};
 use portable_pty::{CommandBuilder, MasterPty, PtySize as PtPtySize, native_pty_system};
@@ -44,6 +45,8 @@ pub struct ProcRegistry {
     pin_count: Arc<AtomicUsize>,
     /// Pty leaders this registry has lost the pin on (the kernel answered `ECHILD`).
     pin_lost_count: Arc<AtomicUsize>,
+    executor: Option<Arc<execution::Executor>>,
+    legacy_gates: Arc<StdMutex<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
 struct ProcEntry {
@@ -295,7 +298,39 @@ impl ProcRegistry {
             pty_drain_grace: PTY_DRAIN_GRACE,
             pin_count: Arc::new(AtomicUsize::new(0)),
             pin_lost_count: Arc::new(AtomicUsize::new(0)),
+            executor: None,
+            legacy_gates: Default::default(),
         }
+    }
+
+    /// Registration is installed before accepting requests; existing PTYs are never killed to upgrade.
+    pub fn with_executor(mut self, config: execution::ExecutorConfig) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            self.inner
+                .lock()
+                .map_err(|_| anyhow::anyhow!("registry poisoned"))?
+                .is_empty(),
+            "live legacy registry requires explicit recovery before executor registration"
+        );
+        self.executor = Some(execution::Executor::open(config)?);
+        Ok(self)
+    }
+
+    fn legacy_gate(&self, alias: &str) -> anyhow::Result<Arc<Mutex<()>>> {
+        Ok(self
+            .legacy_gates
+            .lock()
+            .map_err(|_| anyhow::anyhow!("legacy gate index poisoned"))?
+            .entry(alias.to_owned())
+            .or_default()
+            .clone())
+    }
+
+    fn check_legacy_alias(&self, alias: &str) -> anyhow::Result<()> {
+        if let Some(executor) = &self.executor {
+            executor.legacy_allowed(alias)?;
+        }
+        Ok(())
     }
 
     fn without_reaper() -> Self {
@@ -419,6 +454,9 @@ impl ProcRegistry {
     }
 
     pub async fn terminate_all_process_groups(&self) {
+        if let Some(executor) = &self.executor {
+            executor.stop_known().await;
+        }
         self.terminate_all_process_groups_sync();
     }
 
@@ -502,14 +540,120 @@ pub async fn serve_with_listener(
 }
 
 async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> anyhow::Result<()> {
+    use calm_session::control::execution::{
+        ExecutionProtocolMode, ExecutionReply, ExecutionRequest,
+    };
+    let peer = stream.peer_cred()?;
+    let mut negotiated = None;
     loop {
         let msg: ControlMsg = match read_frame(&mut stream).await {
             Ok(msg) => msg,
             Err(FrameError::Io(e)) if e.kind() == io::ErrorKind::UnexpectedEof => break,
             Err(err) => return Err(err.into()),
         };
+        if matches!(&msg, ControlMsg::Probe(request) if request.proc_id.is_empty()) {
+            // Public read-only version query: no alias resolution and no execution authority.
+            write_frame(
+                &mut stream,
+                &ControlReply::ProbeOk {
+                    supervisor_version: calm_session::SUPERVISOR_CONTROL_VERSION,
+                    proc_running: false,
+                },
+            )
+            .await?;
+            continue;
+        }
+        if let ControlMsg::Execution(ExecutionRequest::Handshake(hello)) = &msg {
+            let reply = match &registry.executor {
+                Some(executor)
+                    if hello.mode == ExecutionProtocolMode::RegisteredV1
+                        && executor.authenticates(&hello.client_secret) =>
+                {
+                    negotiated = Some((hello.mode.clone(), hello.client_secret.clone()));
+                    ExecutionReply::Handshake {
+                        envelope_version:
+                            calm_session::control::execution::EXECUTION_ENVELOPE_VERSION,
+                        executor_boot: executor.boot().clone(),
+                        mode: hello.mode.clone(),
+                    }
+                }
+                _ if hello.mode == ExecutionProtocolMode::LegacyWorktree
+                    && peer.uid() == unsafe { libc::geteuid() } =>
+                {
+                    // Explicitly negotiated old worktree trust only; this cannot produce a typed capability.
+                    negotiated = Some((hello.mode.clone(), hello.client_secret.clone()));
+                    ExecutionReply::Handshake {
+                        envelope_version: 0,
+                        executor_boot: workspace::execution::ExecutorBootId::fresh()?,
+                        mode: ExecutionProtocolMode::LegacyWorktree,
+                    }
+                }
+                _ => ExecutionReply::Refused {
+                    reason: "unregistered client or unavailable execution protocol".into(),
+                },
+            };
+            write_frame(&mut stream, &ControlReply::Execution(reply)).await?;
+            continue;
+        }
+        let typed = matches!(&msg, ControlMsg::Execution(_));
+        let correct_mode = negotiated.as_ref().is_some_and(|(mode, _)| {
+            if typed {
+                *mode == ExecutionProtocolMode::RegisteredV1
+            } else {
+                *mode == ExecutionProtocolMode::LegacyWorktree
+            }
+        });
+        if !correct_mode {
+            write_frame(
+                &mut stream,
+                &ControlReply::Error {
+                    kind: ControlErrorKind::BadRequest,
+                    message: "explicit control handshake required".into(),
+                },
+            )
+            .await?;
+            continue;
+        }
+        if !typed {
+            let alias = match &msg {
+                ControlMsg::EnsureProc(request) => &request.proc_id,
+                ControlMsg::Attach(request) => &request.proc_id,
+                ControlMsg::WriteStdin(request) => &request.proc_id,
+                ControlMsg::ResizePty(request) => &request.proc_id,
+                ControlMsg::Signal(request) => &request.proc_id,
+                ControlMsg::Cleanup(request) => &request.proc_id,
+                ControlMsg::Probe(request) => &request.proc_id,
+                ControlMsg::Execution(_) => unreachable!("typed request"),
+            };
+            if let Err(error) = registry.check_legacy_alias(alias) {
+                write_frame(
+                    &mut stream,
+                    &ControlReply::Error {
+                        kind: ControlErrorKind::BadRequest,
+                        message: error.to_string(),
+                    },
+                )
+                .await?;
+                continue;
+            }
+        }
         match msg {
             ControlMsg::EnsureProc(request) => {
+                let gate = registry.legacy_gate(&request.proc_id)?;
+                let _guard = gate.lock().await;
+                if let Some(executor) = &registry.executor {
+                    if let Err(error) = executor.reserve_legacy(&request.proc_id) {
+                        write_frame(
+                            &mut stream,
+                            &ControlReply::Error {
+                                kind: ControlErrorKind::BadRequest,
+                                message: error.to_string(),
+                            },
+                        )
+                        .await?;
+                        continue;
+                    }
+                }
                 // Idempotent fast path: a live proc with this id is already
                 // past readiness, so emit Spawned+Ready immediately.
                 if let Some(pid) = existing_live_pid(&registry, &request.proc_id).await {
@@ -569,6 +713,17 @@ async fn handle_connection(mut stream: UnixStream, registry: ProcRegistry) -> an
             ControlMsg::Probe(request) => {
                 handle_probe(&mut stream, registry.clone(), request).await?;
             }
+            ControlMsg::Execution(request) => {
+                let executor = registry
+                    .executor
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("registered executor unavailable"))?;
+                let (_, secret) = negotiated
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("handshake missing"))?;
+                let answer = executor.dispatch(secret, request).await;
+                write_frame(&mut stream, &ControlReply::Execution(answer)).await?;
+            }
         }
     }
     Ok(())
@@ -580,6 +735,23 @@ pub async fn ensure_proc_impl(
     registry: ProcRegistry,
     request: EnsureProcRequest,
 ) -> Result<u32, EnsureProcFailure> {
+    let gate = registry
+        .legacy_gate(&request.proc_id)
+        .map_err(|error| EnsureProcFailure {
+            disposition: SpawnFailedDisposition::NoChildCreated,
+            error: error.to_string(),
+            child_already_reaped: false,
+        })?;
+    let _guard = gate.lock().await;
+    if let Some(executor) = &registry.executor {
+        executor
+            .reserve_legacy(&request.proc_id)
+            .map_err(|error| EnsureProcFailure {
+                disposition: SpawnFailedDisposition::NoChildCreated,
+                error: error.to_string(),
+                child_already_reaped: false,
+            })?;
+    }
     if let Some(pid) = existing_live_pid(&registry, &request.proc_id).await {
         return Ok(pid);
     }

@@ -3,6 +3,7 @@ pub mod base;
 pub mod command;
 pub mod directory;
 pub mod error;
+pub mod execution;
 pub mod git;
 pub mod identity;
 pub mod materialize;

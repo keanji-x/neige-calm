@@ -1,3 +1,5 @@
+#[path = "execution_contract.rs"]
+mod execution_contract;
 mod proc_probe;
 
 // pin_lost_on_autoreap changes SIGCHLD for the entire process; keep it separate.

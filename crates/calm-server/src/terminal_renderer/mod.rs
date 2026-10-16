@@ -705,7 +705,11 @@ async fn ensure_entry(
         };
     let mut handoff = None;
     let proc_id = format!("term:{}", cfg.terminal_id);
-    let mut control_conn = match UnixStream::connect(&cfg.supervisor_sock).await {
+    let mut control_conn = match calm_session::control::execution::connect_legacy(
+        &cfg.supervisor_sock,
+    )
+    .await
+    {
         Ok(connection) => connection,
         Err(error) => {
             if let (Some(repo), Some(launch)) = (repo.as_deref(), launch.as_ref())
@@ -846,7 +850,7 @@ async fn ensure_entry(
         supervisor_rx,
     );
 
-    let mut attach_conn = UnixStream::connect(&cfg.supervisor_sock)
+    let mut attach_conn = calm_session::control::execution::connect_legacy(&cfg.supervisor_sock)
         .await
         .map_err(|e| {
             anyhow::anyhow!(
@@ -1014,7 +1018,7 @@ where
 }
 
 async fn signal_child_direct(supervisor_sock: &Path, proc_id: &str, sig: ProcSignal) {
-    let mut conn = match UnixStream::connect(supervisor_sock).await {
+    let mut conn = match calm_session::control::execution::connect_legacy(supervisor_sock).await {
         Ok(conn) => conn,
         Err(e) => {
             tracing::warn!(
@@ -1075,6 +1079,18 @@ mod tests {
         let accept_task = tokio::spawn(async move {
             let (_silent_stream, _) = listener.accept().await.expect("accept silent connection");
             let (mut signal_conn, _) = listener.accept().await.expect("accept signal connection");
+            assert!(
+                matches!(read_frame::<ControlMsg, _>(&mut signal_conn).await.unwrap(), ControlMsg::Probe(request) if request.proc_id.is_empty())
+            );
+            write_frame(
+                &mut signal_conn,
+                &ControlReply::ProbeOk {
+                    supervisor_version: 2,
+                    proc_running: false,
+                },
+            )
+            .await
+            .unwrap();
             let msg = timeout(
                 Duration::from_millis(500),
                 read_frame::<ControlMsg, _>(&mut signal_conn),

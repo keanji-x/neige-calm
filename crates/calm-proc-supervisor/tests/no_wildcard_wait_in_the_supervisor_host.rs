@@ -1,99 +1,182 @@
-//! A lint, not an enforcement: a text scan for wildcard child waits in any binary that hosts a `ProcRegistry`, plus the two auto-reap `SIGCHLD` literals under this crate's src.
-//! A wildcard wait steals the leader zombie that pins a pid; a subreaper host must therefore reap by pid.
-
+//! Source lint for consuming non-specific child waits; runtime contracts prove ownership.
+use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use std::path::{Path, PathBuf};
 
-/// Literals that mean "wait for *any* child". Scanned over `crates/*/src` and
-/// `crates/*/tests`.
-const WILDCARD_WAIT_LITERALS: &[&str] = &[
+const CONSUMING_LITERALS: &[&str] = &[
     "waitpid(-1",
     "libc::wait(",
     "wait4(-1",
     "SYS_wait4",
-    "P_ALL",
+    "SYS_waitid",
     "Pid::from_raw(-1)",
 ];
-
-/// Literals that make the kernel auto-reap our children. Scanned only under `crates/calm-proc-supervisor/src`.
 const AUTOREAP_LITERALS: &[&str] = &["SIG_IGN", "SA_NOCLDWAIT"];
-
-const AUTOREAP_SCOPE: &str = "crates/calm-proc-supervisor/src";
-
-/// This file spells every literal above, so it would match itself; excluded by path.
-const SELF: &str = "crates/calm-proc-supervisor/tests/no_wildcard_wait_in_the_supervisor_host.rs";
 
 #[test]
 fn no_wildcard_wait_in_the_supervisor_host() {
     let root = workspace_root();
     let files = rust_sources_under_crates(&root);
-    assert!(
-        files.len() > 50,
-        "scanner found only {} files under {}; it is not actually scanning the workspace",
-        files.len(),
-        root.display()
-    );
-
-    let mut hits: Vec<String> = Vec::new();
-    let mut scanned_self = false;
-    for file in &files {
-        let rel = file
-            .strip_prefix(&root)
-            .unwrap_or(file)
-            .display()
-            .to_string();
-        if rel == SELF {
-            scanned_self = true;
-            continue;
-        }
-        let text = std::fs::read_to_string(file).unwrap_or_else(|e| {
-            panic!("read {}: {e}", file.display());
-        });
-        let in_autoreap_scope = rel.starts_with(AUTOREAP_SCOPE);
-        for (idx, line) in text.lines().enumerate() {
-            let code = strip_line_comment(line);
-            for literal in WILDCARD_WAIT_LITERALS {
-                if code.contains(literal) {
-                    hits.push(format!("{rel}:{}: {literal} — {}", idx + 1, code.trim()));
-                }
+    assert!(files.len() > 50, "source gate did not scan the workspace");
+    let mut hits = Vec::new();
+    for file in files {
+        let relative = file.strip_prefix(&root).unwrap().display().to_string();
+        let text = std::fs::read_to_string(&file).unwrap();
+        let tokens: TokenStream = text
+            .parse()
+            .unwrap_or_else(|error| panic!("tokenize {relative}: {error}"));
+        let mut rendered = String::new();
+        render_code(tokens.clone(), &mut rendered);
+        for literal in CONSUMING_LITERALS {
+            if rendered.contains(literal) {
+                hits.push(format!("{relative}: consuming wildcard {literal}"));
             }
-            if in_autoreap_scope {
-                for literal in AUTOREAP_LITERALS {
-                    if code.contains(literal) {
-                        hits.push(format!("{rel}:{}: {literal} — {}", idx + 1, code.trim()));
-                    }
+        }
+        if relative.starts_with("crates/calm-proc-supervisor/src/") {
+            for literal in AUTOREAP_LITERALS {
+                if rendered.contains(literal) {
+                    hits.push(format!("{relative}: auto-reap {literal}"));
                 }
             }
         }
+        audit_waitid(tokens, false, &relative, &mut hits);
     }
-
-    assert!(
-        scanned_self,
-        "the self-exclusion path {SELF} did not match any scanned file; the \
-         scanner has moved or been renamed and is now matching itself (or the \
-         exclusion is silently disabled)"
-    );
     assert!(
         hits.is_empty(),
-        "wildcard wait / auto-reap literal(s) found in a process that may host a \
-         ProcRegistry. Whoever hosts the registry owns specific pids and must \
-         reap them by pid (#1013). If a host legitimately needs to collect \
-         re-parented grandchildren, collect them by pid.\n{}",
+        "non-specific consuming child wait or auto-reap found:\n{}",
         hits.join("\n")
     );
 }
 
-/// Strips a `//` line comment (the `://` guard keeps URLs from truncating a line early).
-/// Not token-aware: a `//` inside a string literal truncates the line and hides a call after it — no resistance to a deliberate bypass.
-fn strip_line_comment(line: &str) -> &str {
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b'/' && bytes[i + 1] == b'/' && (i == 0 || bytes[i - 1] != b':') {
-            return &line[..i];
+/// Traverse token groups, including macro bodies. Literals and comments are never executable calls.
+fn audit_waitid(stream: TokenStream, permitted_all: bool, file: &str, hits: &mut Vec<String>) {
+    let tokens = stream.into_iter().collect::<Vec<_>>();
+    let mut index = 0;
+    while index < tokens.len() {
+        if matches!(&tokens[index], TokenTree::Ident(name) if name == "waitid") {
+            if let Some(TokenTree::Group(arguments)) = tokens.get(index + 1) {
+                if arguments.delimiter() == Delimiter::Parenthesis {
+                    let args = call_arguments(arguments.stream());
+                    let selector = args.first().map(compact).unwrap_or_default();
+                    let concrete = matches!(selector.as_str(), "libc::P_PID" | "libc::P_PIDFD");
+                    let nonconsuming = args.get(3).is_some_and(guarantees_wnowait);
+                    if !concrete && !nonconsuming {
+                        hits.push(format!(
+                            "{file}: non-specific consuming waitid({arguments})"
+                        ));
+                    }
+                    audit_waitid(arguments.stream(), nonconsuming, file, hits);
+                    index += 2;
+                    continue;
+                }
+            }
+            // An import, alias, cast or function value would bypass direct-call argument proof.
+            hits.push(format!(
+                "{file}: waitid must remain a directly audited call"
+            ));
         }
-        i += 1;
+        match &tokens[index] {
+            TokenTree::Ident(name) if name == "P_ALL" && !permitted_all => hits.push(format!(
+                "{file}: P_ALL outside a proven non-consuming waitid"
+            )),
+            TokenTree::Group(group) => audit_waitid(group.stream(), permitted_all, file, hits),
+            _ => {}
+        }
+        index += 1;
     }
-    line
+}
+
+#[test]
+fn no_wildcard_wait_token_contract() {
+    for (source, refused) in [
+        ("libc::waitid(libc::P_ALL, 0, info, libc::WEXITED)", true),
+        ("libc::waitid(0, 0, info, libc::WEXITED)", true),
+        ("libc::waitid(selector, 0, info, flags)", true),
+        ("use libc::waitid as collect_children;", true),
+        ("let collect_children = libc::waitid;", true),
+        ("(libc::waitid)(0, 0, info, flags)", true),
+        (
+            "libc::waitid(libc::P_ALL, 0, info, libc::WNOWAIT & mask)",
+            true,
+        ),
+        (
+            "macro_rules! collect { () => { libc::waitid(0, 0, info, flags) } }",
+            true,
+        ),
+        (
+            "libc::waitid(libc::P_ALL, 0, info, libc::WEXITED | libc::WNOWAIT)",
+            false,
+        ),
+        ("libc::waitid(libc::P_PID, pid, info, flags)", false),
+        ("let description = \"waitid(0, 0, info, flags)\";", false),
+    ] {
+        let mut hits = Vec::new();
+        audit_waitid(source.parse().unwrap(), false, "token fixture", &mut hits);
+        assert_eq!(!hits.is_empty(), refused, "{source}: {hits:?}");
+    }
+}
+
+fn call_arguments(stream: TokenStream) -> Vec<TokenStream> {
+    let mut arguments = vec![TokenStream::new()];
+    for token in stream {
+        if matches!(&token, TokenTree::Punct(punctuation) if punctuation.as_char() == ',') {
+            arguments.push(TokenStream::new());
+        } else {
+            arguments.last_mut().unwrap().extend([token]);
+        }
+    }
+    arguments
+}
+
+fn compact(stream: &TokenStream) -> String {
+    stream.to_string().split_whitespace().collect()
+}
+
+/// A mandatory OR operand cannot have WNOWAIT cleared by another operand or parenthesized mask.
+fn guarantees_wnowait(stream: &TokenStream) -> bool {
+    let tokens = stream.clone().into_iter().collect::<Vec<_>>();
+    if tokens.len() == 1 {
+        if let TokenTree::Group(group) = &tokens[0] {
+            return group.delimiter() == Delimiter::Parenthesis
+                && guarantees_wnowait(&group.stream());
+        }
+    }
+    let mut term = TokenStream::new();
+    for token in tokens {
+        if matches!(&token, TokenTree::Punct(punctuation) if punctuation.as_char() == '|') {
+            if compact(&term) == "libc::WNOWAIT" {
+                return true;
+            }
+            term = TokenStream::new();
+        } else {
+            term.extend([token]);
+        }
+    }
+    compact(&term) == "libc::WNOWAIT"
+}
+
+fn render_code(stream: TokenStream, output: &mut String) {
+    for token in stream {
+        match token {
+            TokenTree::Group(group) => {
+                let (open, close) = match group.delimiter() {
+                    Delimiter::Parenthesis => ("(", ")"),
+                    Delimiter::Brace => ("{", "}"),
+                    Delimiter::Bracket => ("[", "]"),
+                    Delimiter::None => ("", ""),
+                };
+                output.push_str(open);
+                render_code(group.stream(), output);
+                output.push_str(close);
+            }
+            TokenTree::Literal(literal) => {
+                let value = literal.to_string();
+                if value.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+                    output.push_str(&value);
+                }
+            }
+            token => output.push_str(&token.to_string()),
+        }
+    }
 }
 
 fn workspace_root() -> PathBuf {

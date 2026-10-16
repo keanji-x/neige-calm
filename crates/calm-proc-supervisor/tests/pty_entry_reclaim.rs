@@ -104,7 +104,7 @@ async fn expired_pty_entries_are_removed_and_release_ring_and_fds() {
         "pty fd 随终端数线性泄漏：before={fds_before} after={fds_after}（8 个已退出终端）"
     );
 
-    let mut stream = UnixStream::connect(supervisor.sock())
+    let mut stream = calm_session::control::execution::connect_legacy(supervisor.sock())
         .await
         .expect("connect attach");
     write_frame(
@@ -277,7 +277,7 @@ async fn cleanup_removes_the_entry_without_waiting_for_the_grace() {
         "600s 宽限期内 entry 本应还在"
     );
 
-    let mut stream = UnixStream::connect(supervisor.sock())
+    let mut stream = calm_session::control::execution::connect_legacy(supervisor.sock())
         .await
         .expect("connect cleanup");
     write_frame(
@@ -359,7 +359,9 @@ async fn ensure_noisy_pty(sock: &Path, proc_id: &str) {
 
 /// 返回 `Spawned.pid`（= pty leader 的 pid）。
 async fn ensure_pty(sock: &Path, proc_id: &str, args: &[&str], replay_bytes: usize) -> i32 {
-    let mut stream = UnixStream::connect(sock).await.expect("connect ensure");
+    let mut stream = calm_session::control::execution::connect_legacy(sock)
+        .await
+        .expect("connect ensure");
     write_frame(
         &mut stream,
         &ControlMsg::EnsureProc(EnsureProcRequest {
@@ -387,7 +389,9 @@ async fn ensure_pty(sock: &Path, proc_id: &str, args: &[&str], replay_bytes: usi
 }
 
 async fn write_stdin(sock: &Path, proc_id: &str, bytes: &[u8]) {
-    let mut stream = UnixStream::connect(sock).await.expect("connect write");
+    let mut stream = calm_session::control::execution::connect_legacy(sock)
+        .await
+        .expect("connect write");
     write_frame(
         &mut stream,
         &ControlMsg::WriteStdin(calm_session::control::WriteStdinRequest {
@@ -406,7 +410,9 @@ async fn write_stdin(sock: &Path, proc_id: &str, bytes: &[u8]) {
 
 /// 附着直到收到 `Exited`，返回退出状态。
 async fn await_exit(sock: &Path, proc_id: &str) -> (Option<i32>, bool) {
-    let mut attach = UnixStream::connect(sock).await.expect("connect attach");
+    let mut attach = calm_session::control::execution::connect_legacy(sock)
+        .await
+        .expect("connect attach");
     write_frame(
         &mut attach,
         &ControlMsg::Attach(AttachRequest {
@@ -432,7 +438,9 @@ async fn attach_and_drain(
     sock: &Path,
     proc_id: &str,
 ) -> (calm_session::control::Attached, Vec<ControlReply>) {
-    let mut attach = UnixStream::connect(sock).await.expect("connect attach");
+    let mut attach = calm_session::control::execution::connect_legacy(sock)
+        .await
+        .expect("connect attach");
     write_frame(
         &mut attach,
         &ControlMsg::Attach(AttachRequest {

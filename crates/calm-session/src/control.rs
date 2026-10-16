@@ -1,6 +1,7 @@
 //! Control-plane messages between calm-server and calm-proc-supervisor.
 
 use serde::{Deserialize, Serialize};
+pub mod execution;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ControlMsg {
@@ -11,6 +12,7 @@ pub enum ControlMsg {
     Signal(SignalRequest),
     Cleanup(CleanupRequest),
     Probe(ProbeRequest),
+    Execution(execution::ExecutionRequest),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,6 +158,7 @@ pub enum ControlReply {
         signalled: bool,
         cursor: u64,
     },
+    Execution(execution::ExecutionReply),
 }
 
 #[cfg(test)]

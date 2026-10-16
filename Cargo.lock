@@ -487,10 +487,14 @@ dependencies = [
  "clap",
  "libc",
  "portable-pty",
+ "proc-macro2",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "workspace",
 ]
 
 [[package]]
@@ -588,6 +592,7 @@ dependencies = [
  "ts-rs",
  "uuid",
  "vte",
+ "workspace",
 ]
 
 [[package]]

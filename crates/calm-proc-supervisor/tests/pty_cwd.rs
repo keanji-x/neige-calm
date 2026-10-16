@@ -29,7 +29,10 @@ impl Supervisor {
             .spawn()?;
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                if UnixStream::connect(&socket).await.is_ok() {
+                if calm_session::control::execution::connect_legacy(&socket)
+                    .await
+                    .is_ok()
+                {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -40,7 +43,7 @@ impl Supervisor {
     }
 
     async fn ensure(&self, cwd: &str, marker: &Path) -> anyhow::Result<ControlReply> {
-        let mut stream = UnixStream::connect(&self.socket).await?;
+        let mut stream = calm_session::control::execution::connect_legacy(&self.socket).await?;
         write_frame(
             &mut stream,
             &ControlMsg::EnsureProc(EnsureProcRequest {
@@ -89,7 +92,7 @@ impl Supervisor {
     }
 
     async fn assert_unregistered(&self) -> anyhow::Result<()> {
-        let mut stream = UnixStream::connect(&self.socket).await?;
+        let mut stream = calm_session::control::execution::connect_legacy(&self.socket).await?;
         write_frame(
             &mut stream,
             &ControlMsg::Cleanup(CleanupRequest {
@@ -104,7 +107,7 @@ impl Supervisor {
                 ..
             }
         ));
-        let mut stream = UnixStream::connect(&self.socket).await?;
+        let mut stream = calm_session::control::execution::connect_legacy(&self.socket).await?;
         write_frame(
             &mut stream,
             &ControlMsg::Attach(AttachRequest {
@@ -227,7 +230,7 @@ async fn pty_cwd_validation_keeps_pipe_bootstrap_missing_directory_contract() ->
     let root = calm_test_sockets::socket_dir("pipe-cwd");
     let missing = root.path().join("daemon-will-create");
     let supervisor = calm_proc_supervisor::test_support::InProcessProcSupervisor::start().await?;
-    let mut stream = UnixStream::connect(supervisor.sock()).await?;
+    let mut stream = calm_session::control::execution::connect_legacy(supervisor.sock()).await?;
     write_frame(
         &mut stream,
         &ControlMsg::EnsureProc(EnsureProcRequest {
@@ -267,7 +270,8 @@ async fn pipe_spawn_error_is_unknown_but_pre_spawn_error_is_definite() -> anyhow
             calm_session::control::SpawnFailedDisposition::NoChildCreated,
         ),
     ] {
-        let mut stream = UnixStream::connect(supervisor.sock()).await?;
+        let mut stream =
+            calm_session::control::execution::connect_legacy(supervisor.sock()).await?;
         write_frame(
             &mut stream,
             &ControlMsg::EnsureProc(EnsureProcRequest {

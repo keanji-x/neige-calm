@@ -73,7 +73,9 @@ async fn read_grandchild_pid(stream: &mut UnixStream, replay: Vec<u8>) -> u32 {
 }
 
 async fn ensure_pty(sock: &Path, proc_id: &str, program: &str, args: &[&str]) -> u32 {
-    let mut stream = UnixStream::connect(sock).await.expect("connect ensure");
+    let mut stream = calm_session::control::execution::connect_legacy(sock)
+        .await
+        .expect("connect ensure");
     write_frame(
         &mut stream,
         &ControlMsg::EnsureProc(EnsureProcRequest {
@@ -101,7 +103,9 @@ async fn ensure_pty(sock: &Path, proc_id: &str, program: &str, args: &[&str]) ->
 }
 
 async fn attach(sock: &Path, proc_id: &str) -> (UnixStream, Vec<u8>) {
-    let mut stream = UnixStream::connect(sock).await.expect("connect attach");
+    let mut stream = calm_session::control::execution::connect_legacy(sock)
+        .await
+        .expect("connect attach");
     write_frame(
         &mut stream,
         &ControlMsg::Attach(AttachRequest {

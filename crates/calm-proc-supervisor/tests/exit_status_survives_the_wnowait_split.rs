@@ -6,7 +6,6 @@ use calm_session::control::{AttachRequest, ControlMsg, ControlReply, EnsureProcR
 use calm_session::{read_frame, write_frame};
 use std::path::Path;
 use std::time::Duration;
-use tokio::net::UnixStream;
 
 const LIVENESS_BUDGET: Duration = Duration::from_secs(120);
 
@@ -86,7 +85,9 @@ async fn run_and_await_exit(
     script: &str,
     cwd: Option<&Path>,
 ) -> (Option<i32>, bool) {
-    let mut stream = UnixStream::connect(sock).await.expect("connect ensure");
+    let mut stream = calm_session::control::execution::connect_legacy(sock)
+        .await
+        .expect("connect ensure");
     write_frame(
         &mut stream,
         &ControlMsg::EnsureProc(EnsureProcRequest {
@@ -111,7 +112,9 @@ async fn run_and_await_exit(
         other => panic!("unexpected second reply: {other:?}"),
     }
 
-    let mut attach = UnixStream::connect(sock).await.expect("connect attach");
+    let mut attach = calm_session::control::execution::connect_legacy(sock)
+        .await
+        .expect("connect attach");
     write_frame(
         &mut attach,
         &ControlMsg::Attach(AttachRequest {

@@ -6,7 +6,6 @@ use calm_session::control::{ControlMsg, ControlReply, EnsureProcRequest, IoMode}
 use calm_session::{read_frame, write_frame};
 use std::path::Path;
 use std::time::{Duration, Instant};
-use tokio::net::UnixStream;
 
 use crate::proc_probe::{alive, await_death, process_group_of};
 
@@ -131,7 +130,9 @@ impl Drop for KillOnDrop {
 }
 
 async fn ensure_pty(sock: &Path, proc_id: &str, args: &[&str]) -> u32 {
-    let mut stream = UnixStream::connect(sock).await.expect("connect ensure");
+    let mut stream = calm_session::control::execution::connect_legacy(sock)
+        .await
+        .expect("connect ensure");
     write_frame(
         &mut stream,
         &ControlMsg::EnsureProc(EnsureProcRequest {

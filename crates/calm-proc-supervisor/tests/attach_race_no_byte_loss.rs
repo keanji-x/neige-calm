@@ -42,7 +42,7 @@ async fn attach_race_no_byte_loss() {
 
     tokio::time::sleep(ATTACH_AFTER).await;
 
-    let mut attach = UnixStream::connect(supervisor.sock())
+    let mut attach = calm_session::control::execution::connect_legacy(supervisor.sock())
         .await
         .expect("connect attach");
     write_frame(
@@ -116,7 +116,9 @@ async fn attach_race_no_byte_loss() {
 }
 
 async fn ensure_pty(sock: &Path, proc_id: &str, program: &str, args: &[&str]) {
-    let mut stream = UnixStream::connect(sock).await.expect("connect ensure");
+    let mut stream = calm_session::control::execution::connect_legacy(sock)
+        .await
+        .expect("connect ensure");
     write_frame(
         &mut stream,
         &ControlMsg::EnsureProc(EnsureProcRequest {
@@ -143,7 +145,9 @@ async fn ensure_pty(sock: &Path, proc_id: &str, program: &str, args: &[&str]) {
 }
 
 async fn signal(sock: &Path, proc_id: &str, sig: ProcSignal) {
-    let mut stream = UnixStream::connect(sock).await.expect("connect signal");
+    let mut stream = calm_session::control::execution::connect_legacy(sock)
+        .await
+        .expect("connect signal");
     write_frame(
         &mut stream,
         &ControlMsg::Signal(SignalRequest {
@@ -160,7 +164,9 @@ async fn signal(sock: &Path, proc_id: &str, sig: ProcSignal) {
 }
 
 async fn cleanup(sock: &Path, proc_id: &str) {
-    let mut stream = UnixStream::connect(sock).await.expect("connect cleanup");
+    let mut stream = calm_session::control::execution::connect_legacy(sock)
+        .await
+        .expect("connect cleanup");
     write_frame(
         &mut stream,
         &ControlMsg::Cleanup(CleanupRequest {

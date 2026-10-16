@@ -516,12 +516,11 @@ pub(crate) async fn probe_supervisor_for_terminal_at(
 ) -> anyhow::Result<bool> {
     use calm_session::control::{ControlMsg, ControlReply, ProbeRequest};
     use calm_session::{read_frame, write_frame};
-    use tokio::net::UnixStream;
 
     let sock = crate::proc_supervisor::resolve_control_sock(configured_sock)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let mut stream = UnixStream::connect(&sock)
+    let mut stream = calm_session::control::execution::connect_legacy(&sock)
         .await
         .map_err(|e| anyhow::anyhow!("connect proc supervisor {}: {e}", sock.display()))?;
     write_frame(

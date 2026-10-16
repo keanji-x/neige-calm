@@ -22,7 +22,7 @@ async fn pipe_procs_are_not_signalable_via_the_signal_rpc() {
         .expect("start supervisor");
     let proc_id = "pipe-signal";
 
-    let mut stream = UnixStream::connect(supervisor.sock())
+    let mut stream = calm_session::control::execution::connect_legacy(supervisor.sock())
         .await
         .expect("connect ensure");
     write_frame(
@@ -61,7 +61,7 @@ async fn pipe_procs_are_not_signalable_via_the_signal_rpc() {
         other => panic!("unexpected second reply: {other:?}"),
     }
 
-    let mut control = UnixStream::connect(supervisor.sock())
+    let mut control = calm_session::control::execution::connect_legacy(supervisor.sock())
         .await
         .expect("connect control");
     write_frame(

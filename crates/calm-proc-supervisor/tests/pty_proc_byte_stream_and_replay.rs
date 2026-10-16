@@ -20,7 +20,7 @@ async fn pty_proc_byte_stream_and_replay() {
     ensure_pty(supervisor.sock(), proc_id, "/bin/sh", &["-c", "printf abc"]).await;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
-    let mut attach = UnixStream::connect(supervisor.sock())
+    let mut attach = calm_session::control::execution::connect_legacy(supervisor.sock())
         .await
         .expect("connect attach");
     write_frame(
@@ -52,7 +52,7 @@ async fn pty_proc_byte_stream_and_replay() {
     }
 
     cleanup(supervisor.sock(), proc_id).await;
-    let mut probe = UnixStream::connect(supervisor.sock())
+    let mut probe = calm_session::control::execution::connect_legacy(supervisor.sock())
         .await
         .expect("connect probe");
     write_frame(
@@ -70,7 +70,9 @@ async fn pty_proc_byte_stream_and_replay() {
 }
 
 async fn ensure_pty(sock: &Path, proc_id: &str, program: &str, args: &[&str]) {
-    let mut stream = UnixStream::connect(sock).await.expect("connect ensure");
+    let mut stream = calm_session::control::execution::connect_legacy(sock)
+        .await
+        .expect("connect ensure");
     write_frame(
         &mut stream,
         &ControlMsg::EnsureProc(EnsureProcRequest {
@@ -97,7 +99,9 @@ async fn ensure_pty(sock: &Path, proc_id: &str, program: &str, args: &[&str]) {
 }
 
 async fn cleanup(sock: &Path, proc_id: &str) {
-    let mut stream = UnixStream::connect(sock).await.expect("connect cleanup");
+    let mut stream = calm_session::control::execution::connect_legacy(sock)
+        .await
+        .expect("connect cleanup");
     write_frame(
         &mut stream,
         &ControlMsg::Cleanup(CleanupRequest {

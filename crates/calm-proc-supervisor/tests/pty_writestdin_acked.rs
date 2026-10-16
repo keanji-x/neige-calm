@@ -24,7 +24,7 @@ async fn pty_writestdin_acked() {
     )
     .await;
 
-    let mut attach = UnixStream::connect(supervisor.sock())
+    let mut attach = calm_session::control::execution::connect_legacy(supervisor.sock())
         .await
         .expect("connect attach");
     write_frame(
@@ -42,7 +42,7 @@ async fn pty_writestdin_acked() {
         other => panic!("unexpected attach reply: {other:?}"),
     }
 
-    let mut control = UnixStream::connect(supervisor.sock())
+    let mut control = calm_session::control::execution::connect_legacy(supervisor.sock())
         .await
         .expect("connect control");
     write_frame(
@@ -85,7 +85,9 @@ async fn pty_writestdin_acked() {
 }
 
 async fn ensure_pty(sock: &Path, proc_id: &str, program: &str, args: &[&str]) {
-    let mut stream = UnixStream::connect(sock).await.expect("connect ensure");
+    let mut stream = calm_session::control::execution::connect_legacy(sock)
+        .await
+        .expect("connect ensure");
     write_frame(
         &mut stream,
         &ControlMsg::EnsureProc(EnsureProcRequest {

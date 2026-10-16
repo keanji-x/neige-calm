@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 use tempfile::TempDir;
-use tokio::net::UnixStream;
 use tokio::process::Command;
 
 /// Anti-hang guard only; no case here claims the supervisor reacts within this budget, so a slow-but-correct run must still pass.
@@ -74,7 +73,7 @@ async fn proc_outlives_client_disconnect_and_dies_with_supervisor() {
 const TEARDOWN_BUDGET: Duration = Duration::from_secs(10);
 
 async fn ensure(control_sock: &Path, request: EnsureProcRequest) -> u32 {
-    let mut stream = UnixStream::connect(control_sock)
+    let mut stream = calm_session::control::execution::connect_legacy(control_sock)
         .await
         .expect("connect supervisor");
     write_frame(&mut stream, &ControlMsg::EnsureProc(request))
@@ -119,7 +118,10 @@ fn ensure_request(temp: &TempDir) -> EnsureProcRequest {
 async fn wait_until_listening(sock: &Path) {
     let deadline = tokio::time::Instant::now() + LIVENESS_BUDGET;
     while tokio::time::Instant::now() < deadline {
-        if UnixStream::connect(sock).await.is_ok() {
+        if calm_session::control::execution::connect_legacy(sock)
+            .await
+            .is_ok()
+        {
             return;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;

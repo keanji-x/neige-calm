@@ -2,7 +2,6 @@ use calm_session::control::{AttachRequest, ControlMsg, ControlReply, EnsureProcR
 use calm_session::{read_frame, write_frame};
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::net::UnixStream;
 
 #[tokio::test]
 async fn pty_children_exclude_application_credentials_but_keep_explicit_environment()
@@ -20,7 +19,7 @@ async fn pty_children_exclude_application_credentials_but_keep_explicit_environm
         .spawn()?;
     let mut connection = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if let Ok(stream) = UnixStream::connect(&socket).await {
+            if let Ok(stream) = calm_session::control::execution::connect_legacy(&socket).await {
                 return stream;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;

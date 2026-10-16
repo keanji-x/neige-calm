@@ -367,7 +367,9 @@ async fn attach_tail(sock: &Path, proc_id: &str) -> u64 {
 }
 
 async fn ensure_pty(sock: &Path, proc_id: &str, script: &str) {
-    let mut stream = UnixStream::connect(sock).await.expect("connect ensure");
+    let mut stream = calm_session::control::execution::connect_legacy(sock)
+        .await
+        .expect("connect ensure");
     write_frame(
         &mut stream,
         &ControlMsg::EnsureProc(EnsureProcRequest {
@@ -394,7 +396,9 @@ async fn ensure_pty(sock: &Path, proc_id: &str, script: &str) {
 }
 
 async fn attach(sock: &Path, proc_id: &str) -> UnixStream {
-    let mut stream = UnixStream::connect(sock).await.expect("connect attach");
+    let mut stream = calm_session::control::execution::connect_legacy(sock)
+        .await
+        .expect("connect attach");
     write_frame(
         &mut stream,
         &ControlMsg::Attach(AttachRequest {
@@ -409,7 +413,9 @@ async fn attach(sock: &Path, proc_id: &str) -> UnixStream {
 }
 
 async fn write_stdin(sock: &Path, proc_id: &str, bytes: &[u8]) {
-    let mut control = UnixStream::connect(sock).await.expect("connect control");
+    let mut control = calm_session::control::execution::connect_legacy(sock)
+        .await
+        .expect("connect control");
     write_frame(
         &mut control,
         &ControlMsg::WriteStdin(WriteStdinRequest {
