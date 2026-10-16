@@ -42,6 +42,20 @@ const plannerNotification = [{
   key: 'ask:1', kind: 'ask' as const, text: 'Merge PR #1811 now, or hold it?', atMs: 1,
 }];
 
+it('shows a visible link icon beside Referenced by in the desktop panel', async () => {
+  await browserPage.viewport(1280, 900);
+  renderPage({ backlinks: <a href="#source">Source report</a> });
+  const heading = browserPage.getByRole('heading', { name: 'Referenced by', exact: true }).element();
+  const icon = heading.querySelector('svg');
+  expect(icon).not.toBeNull();
+  expect(icon!.classList.contains('lucide-link2')).toBe(true);
+  expect(icon!.getAttribute('aria-hidden')).toBe('true');
+  const box = icon!.getBoundingClientRect();
+  expect(box.width).toBe(14);
+  expect(box.height).toBe(14);
+  expect(box.right).toBeLessThan(heading.getBoundingClientRect().right);
+});
+
 describe('Track actions menu text geometry', () => {
   function expectContained(inner: DOMRect, outer: DOMRect, context: string) {
     // Fractional font/anchor geometry may differ by a subpixel; clipping a glyph must fail.

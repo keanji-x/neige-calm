@@ -10,7 +10,7 @@ const names: readonly IconName[] = [
   'chevron-left', 'chevron-right', 'arrow-left', 'arrow-up', 'plus', 'close',
   'agent', 'claude', 'codex', 'terminal', 'tools', 'tasks', 'pin',
   'status-waiting', 'status-running', 'status-failed', 'status-done', 'status-exited',
-  'chat', 'notification', 'folder', 'file', 'fullscreen',
+  'chat', 'notification', 'folder', 'file', 'link', 'fullscreen',
 ];
 
 describe('Icon', () => {

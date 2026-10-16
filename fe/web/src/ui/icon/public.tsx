@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react';
-import { ArrowLeft, ArrowRightLeft, ArrowUp, Bell, Bot, ChevronLeft, ChevronRight, Circle, CircleCheck, CircleStop, CircleX, Clock3, Ellipsis, File, Folder, ListChecks, Maximize, Menu, MessageSquare, Minimize, Paperclip, Pin, Plus, SquareTerminal, Wrench, X, Icon as LucideIcon, type LucideProps } from 'lucide-react';
+import { ArrowLeft, ArrowRightLeft, ArrowUp, Bell, Bot, ChevronLeft, ChevronRight, Circle, CircleCheck, CircleStop, CircleX, Clock3, Ellipsis, File, Folder, Link2, ListChecks, Maximize, Menu, MessageSquare, Minimize, Paperclip, Pin, Plus, SquareTerminal, Wrench, X, Icon as LucideIcon, type LucideProps } from 'lucide-react';
 import { PROVIDER_GLYPHS, type GlyphNode } from './provider-glyphs.ts';
 import styles from './icon.module.css';
 
@@ -19,6 +19,7 @@ const glyphs = Object.freeze({
   'notification': (props: LucideProps) => <Bell {...props} />,
   'folder': (props: LucideProps) => <Folder {...props} />,
   'file': (props: LucideProps) => <File {...props} />,
+  'link': (props: LucideProps) => <Link2 {...props} />,
   'agent': (props: LucideProps) => <Bot {...props} />,
   'terminal': (props: LucideProps) => <SquareTerminal {...props} />,
   'tools': (props: LucideProps) => <Wrench {...props} />,

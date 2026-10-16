@@ -559,7 +559,7 @@ export function TrackPage({ mobileReportIntro, mobileChatComposer,
             {paintDesktopPanel(desktopPainter, panelView)}
             {/* `REFERENCED BY` is absent, not empty, when nothing cites this track. */}
             {backlinks !== undefined && (
-              <PanelModule title="Referenced by">{backlinks}</PanelModule>
+              <PanelModule title="Referenced by" icon="link">{backlinks}</PanelModule>
             )}
             <PanelModule title="Conversations" icon="chat" action={conversationAction}>{conversationList}</PanelModule>
           </PanelCard>
