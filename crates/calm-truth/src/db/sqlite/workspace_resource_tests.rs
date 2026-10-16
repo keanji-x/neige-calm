@@ -15,6 +15,7 @@ async fn create(repo: &SqlxRepo, cwd: &str, plan: TrackWorkspacePlan) -> Track {
     let mut tx = repo.pool().begin().await.unwrap();
     let area = area_create_tx(
         &mut tx,
+        calm_types::organization::LEGACY_OWNER_USER_ID,
         NewArea {
             name: "workspace resource".into(),
             color: "#000".into(),
@@ -352,4 +353,109 @@ async fn workspace_resource_ddl_accepts_only_complete_observation_shapes() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn workspace_resource_migration_fills_gap_after_released_area_ownership() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!(
+        "sqlite://{}?mode=rwc",
+        dir.path().join("released.db").display()
+    );
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .unwrap();
+    let before_workspace = sqlx::migrate::Migrator {
+        migrations: Cow::Owned(
+            crate::MIGRATOR
+                .iter()
+                .filter(|migration| migration.version <= 76)
+                .cloned()
+                .collect(),
+        ),
+        ..sqlx::migrate::Migrator::DEFAULT
+    };
+    before_workspace.run(&pool).await.unwrap();
+    super::track_workspace_migration_tests::seed_pre_workspace_area(&pool).await;
+    super::track_workspace_migration_tests::seed_pre_workspace_track(
+        &pool,
+        "released-track",
+        "/released/checkout",
+        7,
+    )
+    .await;
+    // This is the released main history: 0167 exists, while this branch's 0166 does not.
+    let released = sqlx::migrate::Migrator {
+        migrations: Cow::Owned(
+            crate::MIGRATOR
+                .iter()
+                .filter(|migration| migration.version != 166)
+                .cloned()
+                .collect(),
+        ),
+        ..sqlx::migrate::Migrator::DEFAULT
+    };
+    released.run(&pool).await.unwrap();
+    let checksum: Vec<u8> =
+        sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version=167 AND success=1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let absent: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM sqlite_schema WHERE name='workspace_resources'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(absent, 0);
+    let membership: (String, String, String, i64) = sqlx::query_as(
+        "SELECT area_id,user_id,role,joined_at FROM area_members WHERE area_id='area-1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(membership.1, calm_types::organization::LEGACY_OWNER_USER_ID);
+    assert_eq!(membership.2, "owner");
+    pool.close().await;
+
+    // Exercise production boot, including its unknown-future guard and real SQLx migrator.
+    let repo = SqlxRepo::open(&url).await.unwrap();
+    let after_checksum: Vec<u8> =
+        sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version=167 AND success=1")
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        after_checksum, checksum,
+        "released 0167 is neither changed nor re-applied"
+    );
+    let applied: bool =
+        sqlx::query_scalar("SELECT success FROM _sqlx_migrations WHERE version=166")
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        applied,
+        "production boot must apply the missing lower-numbered migration"
+    );
+    let after_membership: (String, String, String, i64) = sqlx::query_as(
+        "SELECT area_id,user_id,role,joined_at FROM area_members WHERE area_id='area-1'",
+    )
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        after_membership, membership,
+        "workspace backfill cannot repair or overwrite ownership"
+    );
+    let snapshot = super::workspace_observation_snapshot(
+        &mut repo.pool().acquire().await.unwrap(),
+        "released-track",
+    )
+    .await
+    .unwrap();
+    assert_eq!(snapshot.selected_path, "/released/checkout");
+    assert_eq!(snapshot.state, super::DirectoryObservation::Pending);
+    assert_eq!(snapshot.selection_version, 1);
 }
