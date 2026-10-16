@@ -49,7 +49,9 @@ Stage artifact hashes matched `DEPLOYMENT.json`:
 | plugin | `6f27a234ff5066672e459224227841aa9a31ba0487a09418cefc58379e00c527` |
 | manifest | `182083b0040ada9e7c8c3c9d235e08dc2fc652a250ee75bebb3f7ada5b1756e2` |
 
-Reproducible driver: `/tmp/research-archive-2659/compat.py`. Run from the checkout:
+Local evidence driver: `/tmp/research-archive-2659/compat.py`. These `/tmp`
+materials are temporary host evidence, not permanent reproducibility assets.
+The original invocation was from the checkout:
 `python3 /tmp/research-archive-2659/compat.py seed` on the pre-change build, then
 `python3 /tmp/research-archive-2659/compat.py verify` on the PR build. `seed`
 requires a fresh synthetic directory. Binaries were built by the focused nextest
@@ -140,8 +142,47 @@ was read or changed. Safely reran the exact built `target/debug/deps/net-*`
 executable from `/tmp/research-archive-2659`, once per named test with
 `--exact <name> --nocapture`; all four passed. Exact argv/cwd/output are in
 `source-resumption-tmp-green.log`. The hermetic harness still pins proxies and
-SDK variables. The full kernel replay may need the same safe cwd arrangement;
-do not bypass the dotenv fence.
+SDK variables. The full kernel replay uses the safe cwd arrangement below;
+the dotenv fence remains unchanged.
+
+## Safe full-package verification (2026-10-16)
+
+Candidate `2797ca8e51338fe23156b7c17bed104a02aa65db` passed all six kernel gate
+steps in `annual-v2-safe-gate-r3`, run 1: ratchet, contract, rust-quick,
+archive-safe-metadata, archive-package-replay and server-tool-names. The archive
+replay ran **312 tests: 312 passed, 0 skipped**; the tool-name filter ran
+**10 tests: 10 passed, 1588 skipped** (the latter are outside the selected
+tool-name scope). Full output is in
+`/home/kenji/.local/share/neige-next/data/gate-logs/1501af2fba10480089c64e6c059b2353:annual-v2-safe-gate-r3-r1.log`.
+
+The gate extracts `git archive HEAD` into a fresh `/tmp` source snapshot, then
+uses nextest 0.9.140's official reuse-build interface. With the Cargo prefix
+above, it builds metadata using `cargo nextest list --locked -p research-archive
+--list-type binaries-only --message-format json` and dependency metadata using
+`cargo metadata --locked --format-version 1`. Replay uses
+`cargo nextest run -E 'package(research-archive)' --binaries-metadata
+<snapshot>/binaries.json --cargo-metadata <snapshot>/cargo-metadata.json
+--workspace-remap <snapshot> --no-tests=fail --no-fail-fast --test-threads 8`.
+The replay does not accept build-selection arguments `--locked` or `-p`.
+`RUSTC_WRAPPER` is explicitly cleared for both metadata commands as well.
+
+Run 1's snapshot is `/tmp/neige-2659-gate.VnHAWL`; its `binaries.json` retains
+the original checkout's `target` directory and absolute test-binary paths.
+There is no `--target-dir-remap`: workspace remapping changes the test cwd to
+the snapshot's `plugins/research-archive`, while reusing the original build
+artifacts. The earlier minimal SDK probe recorded that cwd with `strace` in
+`/tmp/research-archive-2659/safe-remap-corrected-cwd.strace`; the full replay
+also passed the SDK tests and the dotenv-refusal regression with protections
+intact. No ancestor `.env` or actual token was read, removed or edited.
+
+Before this gate, all 39 production source files matched the r2 frozen probe
+snapshot; the three mutation source hashes matched `mutation-results.json`.
+The prior compatibility/mutation logs and drivers still existed, and the three
+saved quarterly response files were equal. No compatibility or mutation rerun
+was needed. Snapshot, metadata and `/tmp/research-archive-2659` paths are
+temporary audit evidence; retain them externally if long-term access is needed.
+No production source or SDK-test protection was changed. Formal L2 review
+remains the Planner's responsibility.
 
 ## Capacity and configuration decision
 
