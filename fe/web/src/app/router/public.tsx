@@ -1,5 +1,6 @@
 import { useManagedProviders } from '../providers/managed-providers.ts';
 import { useThreadReadingView } from '../../features/chat/thread/reading-view.tsx';
+import { useThreadPresentation } from '../../features/chat/thread/presentation.ts';
 import { useConversationDraftRetention, useConversationDraftAdoption, useRequestedConversationOpen, useConversationEscape, useConversationDraftAutoSend } from '../conversations/pane-lifecycle.ts';
 import { createConversationDraftActions } from '../conversations/draft-actions.ts';
 import { useConversationStore } from '../conversations/store.ts';
@@ -452,6 +453,10 @@ function useConversationPane(
   const scopeProvider: AgentProvider = scope === null ? 'codex' : scope.provider;
   const go = useGo();
   const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
+  const threadAvailable = open !== null
+    && (store.historyReady || store.turnsOf(open.id).length > 0 || store.stalled || store.stopFeedback !== null);
+  const threadPresented = useThreadPresentation(open?.id ?? null, threadAvailable);
+  const sideSourceReady = threadPresented && store.historyReady;
   /* While an Edit is held nothing else acts on the conversation; its replace, once sent, blocks as any send does. */
   const respondable = canContinue && edit.held === null;
   const drawerResize = useConversationDrawerResize();
@@ -459,7 +464,7 @@ function useConversationPane(
   // when the reader queues a message. `null` is never unread.
   const openActivity = rows.find(row => row.id === open?.id);
   useReadReceipt('conversation', openActivity?.id ?? null, openActivity?.lastTurnCompletedAt ?? null,
-    store.historyReady && !store.historyLoading && store.historyError === null);
+    threadPresented && store.historyReady && !store.historyLoading && store.historyError === null);
 
   /* Only this route's slot is visible, reopenable or sendable here. */
   const sourceScopeId = options?.slotId ?? source.scopeId;
@@ -517,7 +522,7 @@ function useConversationPane(
   const sendText = useCommittedCallback(existingId, (text: string) => open !== null
     && store.send(open.id, text, attachments.items, true, edit.replacesIn(open.id)) !== null);
   const sideQuestion = useCommittedCallback(existingId, (question: string) => {
-    if (open === null || options?.onSide === undefined || !store.historyReady) return false;
+    if (open === null || options?.onSide === undefined || !sideSourceReady) return false;
     return options.onSide(open, store.turnsOf(open.id), question);
   });
   const plannerAsks = plannerRow?.asks ?? NO_ASKS;
@@ -572,7 +577,7 @@ function useConversationPane(
               onCompact={composerView.manualCompactSupported && composerView.historyReady && editingBar === undefined ? composerView.compact : undefined}
               sendWaiting={replacing} {...(editingBar === undefined ? {} : { editing: editingBar })}
               /* The images stay with the composer until the store reports them delivered; the press waits out its Edit. */
-              showSideCommand={options?.showSideCommand}
+              showSideCommand={(options?.showSideCommand ?? true) && sideSourceReady}
               onSideConversation={!hasSideConversation || !composerView.historyReady ? undefined : sideQuestion}
               onSend={sendText}
               allowEmptyText={composerAttachments.items.length > 0}
@@ -643,7 +648,7 @@ function useConversationPane(
               )}
             />
   ), [existingId, compactComposer, composerFocusFor, composerFocusRequest, composer.text, setComposerText, composerView,
-    replacing, editingBar, options?.showSideCommand, options?.inline, hasSideConversation, sideQuestion,
+    replacing, editingBar, options?.showSideCommand, options?.inline, hasSideConversation, sideQuestion, sideSourceReady,
     sendText, composerAttachments, newConversation, mentionTrigger, scopeProvider, plannerAsks, answerAsk,
     roleValue, roleDisabled, roleDisabledReason, roleChange]);
 
@@ -782,7 +787,7 @@ function useConversationPane(
                 {store.loadingEarlier ? 'Loading…' : 'Load earlier'}
               </button>
             )}
-            {!store.historyReady && store.historyError === null && (
+            {(!threadPresented || !store.historyReady) && store.historyError === null && (
               <p role="status">Loading conversation…</p>
             )}
             {/* Keyed on the conversation: the drawer stays mounted across a switch, and
@@ -792,7 +797,7 @@ function useConversationPane(
                           `ChatThread` draws its empty state (with the live dot) for an empty list.
                           `turnsOf` is the second arm so a reopen whose query was collected still
                           shows the remembered transcript. */}
-            {(store.historyReady || store.turnsOf(open.id).length > 0 || store.stalled || store.stopFeedback !== null) && (
+            {threadPresented && (
               <ChatThread readingView={threadReadingView}
                 key={open.id}
                 conversation={open}

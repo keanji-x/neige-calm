@@ -37,3 +37,26 @@ Measured through `app/router/chat-performance.browser.test.tsx`, with identical
 20/120/300/900-row fixtures and no CI timing threshold. True DOM windowing needs a
 separate contract for variable heights, history anchors, jumps, focus and cross-row
 selection; #2235 tracks that remaining decision.
+
+`presentation.ts` owns the first-mount boundary for one eligible conversation visit.
+The app supplies the selected id and whether the existing transcript owner has
+content/status to render. Once eligible, the shell gets a rendering opportunity
+before a transition mounts the thread. A slow read starts this boundary when it
+arrives, rather than consuming the opportunity while the history is still unknown.
+Same-conversation updates remain immediate after mount; no deferred transcript,
+second cache, or business snapshot is created. Switching, closing, losing eligibility
+or unmounting cancels the pending frames; visit identity rejects late callbacks.
+
+The app gates read acknowledgements on this presentation boundary plus its existing
+history/error checks, so readiness alone cannot acknowledge an unmounted transcript.
+Sends, stops, drafts, uploads and query/outbox reconciliation retain their owners.
+The app keeps `/side` recognized while presentation is pending, but its command
+returns false until the source is mounted, preserving the draft. Removing the
+handler would incorrectly turn the command into an ordinary sent message.
+The same source readiness hides the selectable side command until it can run;
+the menu cannot offer a refused action that would consume its trigger text.
+Group keys and reading memory stay in the existing committed ChatThread path.
+`conversation-switch.browser.test.tsx` exercises the real router, cached and late
+history, first-frame closing, and receipt order. Its timing reports distinguish shell
+commit, animation-frame opportunity and body commit; none is a guarantee of paint
+latency or lower total loading time. Heavy DOM/layout remains a separate concern.

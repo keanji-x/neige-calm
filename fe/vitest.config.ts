@@ -78,6 +78,11 @@ export default defineConfig({
                 await mkdir('test-results/chat-performance', { recursive: true });
                 await writeFile(`test-results/chat-performance/${count}.json`, report);
               },
+              recordConversationSwitchPerformance: async (_context, count: number, report: string) => {
+                if (!Number.isInteger(count) || count < 1 || count > 10000) throw new Error('invalid benchmark row count');
+                await mkdir('test-results/conversation-switch', { recursive: true });
+                await writeFile(`test-results/conversation-switch/${count}.json`, report);
+              },
               wheelScroll: async ({ page, iframe }, selector: string, deltaY: number, position?: { x: number; y: number }) => {
                 await iframe.locator(selector).hover({ position });
                 await page.mouse.wheel(0, deltaY);

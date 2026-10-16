@@ -47,6 +47,9 @@
 # #2235 bounded exception: harness_item/fe 95 -> 97 comes solely from imports of the
 # existing wire row type and pagination limit in the production-route benchmark;
 # local names use TranscriptRow and PAGE_LIMIT. No new protocol vocabulary is defined.
+# #2665 bounded exception: harness_item/fe 97 -> 99 comes solely from the cached-switch
+# regression's existing wire row import (aliased TranscriptRow) and existing query-key
+# producer. No new domain identifier, schema, or scan rule is introduced.
 # #2129 upgrade compatibility: one existing event_spec protocol field reference in the
 # frozen pre-2129 descriptor, kept as replay test data; no new domain term.
 # #2617 bounded exception: spec/crates 500 -> 501 comes solely from the CI evidence lowerer's

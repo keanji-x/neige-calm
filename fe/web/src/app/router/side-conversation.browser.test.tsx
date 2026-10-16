@@ -12,11 +12,12 @@ import { bootTestCardRuntime } from './test-card-runtime.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import '../../styles/entry.css';
 import { queryKeys } from '../providers/queries.ts';
+import { Profiler } from 'react';
 import { readingPlaceIn } from '../../ui/drawer/reading-place.ts';
 
 afterEach(async () => { cleanup(); document.getElementById('root')?.remove(); await page.viewport(1280, 720); });
 
-function setup(outcome?: 'interrupted' | 'failed', longText?: string, live?: { text: string }) {
+function setup(outcome?: 'interrupted' | 'failed', longText?: string, live?: { text: string }, onCommit?: () => void) {
   const requests: ApiRequest[] = [];
   const track = { id: 'side-track', area_id: 'area', title: 'Architecture discussion', sort: 1,
     cwd: '/tmp', pinned_at: null, closed_at: null, created_at: 1, updated_at: 2 };
@@ -71,9 +72,44 @@ function setup(outcome?: 'interrupted' | 'failed', longText?: string, live?: { t
     unauthorized: createUnauthorizedChannel({ enqueue: (task) => task() }), onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: [`${APP_BASEPATH}/track/${track.id}?panel=conversations`] }) });
   const container = document.createElement('div'); container.id = 'root'; document.body.append(container);
-  render(<QueryClientProvider client={client}><ThemeProvider><RouterProvider router={router} /></ThemeProvider></QueryClientProvider>, { container });
+  render(<Profiler id="side-fixture" onRender={onCommit ?? (() => undefined)}><QueryClientProvider client={client}><ThemeProvider><RouterProvider router={router} /></ThemeProvider></QueryClientProvider></Profiler>, { container });
   return { requests, client };
 }
+
+it('retains /side until its cached source transcript is mounted', async () => {
+  await page.viewport(1512, 950);
+  let armed = false;
+  let scheduled = false;
+  let attempted: { hadBody: boolean; foundInput: boolean } | null = null;
+  const fixture = setup(undefined, undefined, undefined, () => {
+    const drawer = document.getElementById('conversation-parent');
+    if (!armed || scheduled || drawer === null) return;
+    scheduled = true;
+    requestAnimationFrame(() => {
+      const field = document.querySelector<HTMLElement>('[data-nc-conversation-region="conversation-parent"] [role="combobox"][aria-label="Message"]');
+      attempted = { hadBody: drawer.querySelector('[data-nc-thread]') !== null, foundInput: field !== null };
+      if (field !== null) fireEvent.keyDown(field, { key: 'Enter', code: 'Enter' });
+    });
+  });
+  await page.getByRole('button', { name: 'Conversation Main discussion' }).click();
+  const main = page.getByRole('complementary', { name: 'Main discussion' });
+  await expect.element(main.getByText('The main conversation keeps working while a separate discussion explores this design.')).toBeVisible();
+  await main.getByRole('combobox', { name: 'Message' }).fill('/side Explain the boundary');
+  await page.getByRole('button', { name: 'Close conversation', exact: true }).click();
+  await expect.element(page.getByRole('button', { name: 'Conversation Main discussion' })).toBeVisible();
+  armed = true;
+  await page.getByRole('button', { name: 'Conversation Main discussion' }).click();
+  await expect.element(main.getByText('The main conversation keeps working while a separate discussion explores this design.')).toBeVisible();
+  expect(attempted).toEqual({ hadBody: false, foundInput: true });
+  expect(fixture.requests.filter(request => request.method === 'POST'
+    && (request.path.endsWith('/conversations') || request.path.endsWith('/planner/input')))).toHaveLength(0);
+  const field = main.getByRole('combobox', { name: 'Message' });
+  await expect.element(field).toHaveTextContent('/side Explain the boundary');
+  await field.click();
+  await userEvent.keyboard('{Enter}');
+  await expect.poll(() => fixture.requests.filter(request => request.method === 'POST' && request.path.endsWith('/conversations'))).toHaveLength(1);
+  expect(fixture.requests.filter(request => request.method === 'POST' && request.path.endsWith('/planner/input'))).toHaveLength(0);
+});
 
 it('runs /side through the production router and shows two independent desktop composers', async () => {
   await page.viewport(1512, 950);
@@ -127,6 +163,7 @@ it('keeps the existing mobile conversation and refuses /side without creating a 
   await page.viewport(390, 844);
   const { requests } = setup();
   await page.getByRole('button', { name: 'Conversation Main discussion' }).click();
+  await expect.element(page.getByText('The main conversation keeps working while a separate discussion explores this design.')).toBeInTheDocument();
   const field = page.getByRole('combobox', { name: 'Message' });
   await expect.element(field).toBeEnabled();
   await field.fill('/side');
@@ -157,10 +194,12 @@ it('preserves the sibling reading anchor when the shared width changes', async (
   await page.viewport(1512, 950);
   setup(undefined, Array.from({ length: 60 }, (_, index) => `Paragraph ${index}. ${'A sentence that wraps as the conversation width changes. '.repeat(8)}`).join('\n\n'));
   await page.getByRole('button', { name: 'Conversation Main discussion' }).click();
+  await expect.element(page.getByText('Paragraph 59.', { exact: false })).toBeInTheDocument();
   const mainField = page.getByRole('combobox', { name: 'Message' });
   await mainField.fill('/side Reading position');
   await userEvent.keyboard('{Enter}');
   await expect.element(page.getByRole('region', { name: 'Side conversation · Codex' })).toBeVisible();
+  await expect.element(page.getByRole('region', { name: 'Side conversation · Codex' }).getByText('Paragraph 59.', { exact: false })).toBeInTheDocument();
   const handles = document.querySelectorAll<HTMLElement>('[role=separator][aria-label="Resize conversation"]');
   handles[0].focus();
   await userEvent.keyboard('{ArrowLeft}'.repeat(12));
