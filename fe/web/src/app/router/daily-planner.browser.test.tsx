@@ -216,6 +216,7 @@ it.each([1000, 768, 600])('keeps both conversation composers reachable with a si
   await page.getByRole('radio', { name: 'Month', exact: true }).click();
   await page.getByRole('button', { name: 'Planner', exact: true }).click();
   const main = page.getByRole('complementary', { name: 'Daily Planner conversation' });
+  await expect.element(main.getByText('Nothing said yet.', { exact: true })).toBeVisible();
   await main.getByRole('combobox', { name: 'Message', exact: true }).fill('/side');
   await userEvent.keyboard('{Enter}');
   const side = page.getByRole('region', { name: 'Side conversation · Codex' });
@@ -256,6 +257,7 @@ it.each([768, 600])('keeps both inputs inside their cards when the parent footer
   await page.getByRole('radio', { name: 'Month', exact: true }).click();
   await page.getByRole('button', { name: 'Planner', exact: true }).click();
   const main = page.getByRole('complementary', { name: 'Daily Planner conversation' });
+  await expect.element(main.getByText('Nothing said yet.', { exact: true })).toBeVisible();
   await main.getByRole('combobox', { name: 'Message', exact: true }).fill('/side');
   await userEvent.keyboard('{Enter}');
   const side = page.getByRole('region', { name: 'Side conversation · Codex' });
