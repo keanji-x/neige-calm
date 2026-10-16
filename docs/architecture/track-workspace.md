@@ -1,12 +1,14 @@
 # Track Workspace 框架
 
-状态：S1–S2a 合同已定；S3 的交付/验证实施协议及以下最小映射修订待第三轮 fresh 双路完整 L2 设计评审。详见 [workspace-delivery-protocol.md](workspace-delivery-protocol.md) 与 [workspace-verification-decision.md](workspace-verification-decision.md)。本文不声称 S3 已实现。承接 [track-cow-view.md](track-cow-view.md) 的实验；方向保持 Workspace 框架 + git worktree / Linux 同路径 overlay 两种实现。
+状态：S1–S2a 合同已定；S3 的交付/验证实施协议见 [workspace-delivery-protocol.md](workspace-delivery-protocol.md) 与 [workspace-verification-decision.md](workspace-verification-decision.md)，不声称已实现。S2b 的机制修订见 [workspace-view-backend.md](workspace-view-backend.md)，待 fresh 双路完整 L2 设计评审。方向为 Workspace 框架 + git worktree / Linux 同路径 COW 视图两种实现；[track-cow-view.md](track-cow-view.md) 的 overlay 实验只作历史证据。
 
 ## Outcome 与初版边界
 
 kernel 统一拥有选择、授权、交付、恢复和回收政策；workspace 实现只做文件系统与进程机制。Linux attached track 最终推荐视图：同 track 进程共享私有写入，能读取来源 checkout 的 dirty/ignored 文件，仓库内写入不落到用户 checkout。现存 track 不自动切换 backend；不引入 Lazy 升级、用户 checkout 备份或自研 Codex exec 协议。
 
 初版 opt-in，默认 worktree；仅开放通过合同的 Linux Git 入口，创建与关闭/删除/恢复、证据和文件 API 同片。未完成入口拒绝，不回落来源目录；推荐默认、非 Git 交付和非 Linux 新实现后置。仓库外写入仍由 provider 沙箱约束，网络/端口不隔离，外部副作用仍走 #2617 批准。
+
+S2b 选择直接 COW mediator，复用 S3 的 FUSE 基础与权威 Git 分类；不在可变来源树上挂 kernel overlay。官方 overlay 合同将挂载中 lower 变化定义为不允许/未定义，空闲重挂与成功压力测试不能补成保证。活动来源采用 close-to-open/open-scoped 观察：新 lookup/open 取得新来源观察，旧 FD/mmap 可保持旧 bytes，宿主原地改写也不承诺同步反映；不冒称全 POSIX cache 等价。保留同路径及 dirty/ignored/热缓存可见目标，不承诺全树同一时间点。交付/验证只消费独立受控 D/W 与 S3 双闭包，copy + stat/hash 不能证明来源树原子快照。新增 VFS、COW 和 mmap/cache 复杂度须按 S2b 协议独立验收；当前宿主缺 `/dev/fuse` 不能声称 qualified，也不把整个 ext4 源存储类判为 Unsupported。未来原子来源快照可注册为独立能力，不是初版依赖。
 
 后续实现等级 L2（隔离、授权和持久化边界），每片由 Planner 安排两路独立评审；本文不启动实现评审代理。本文只改文档，只跑文档 gate，不运行 Rust 或真实 Codex/Claude。
 
@@ -41,17 +43,17 @@ kernel 统一拥有选择、授权、交付、恢复和回收政策；workspace 
 | API/FE | `calm-types/src/event.rs:81,342` TrackUpdated flatten Track；`fe/core/{api/schemas.ts:76,domain/track.ts:29,89}`、generated wire/OpenAPI 保留字段。`fe/web/src/app/router/public.tsx:1066,1391,1436`、`systems/fs-viewers/public.tsx:152` 从 agentCwd 调绝对路径 FS API；旧 worktree.* invalidation 不是 backend 判别器 |
 | 宿主服务与排除项 | `server/shared_codex_appserver.rs:2528` 启 app-server，工具需另路由；`plugin_host/child_process.rs:71` 插件宿主不是 track launcher，受其独立权限合同约束，若代跑仓库动作则进入 forge 链。github_preview 从 `/` 调 gh；funnel、rollout zstd、binary probe 与 supervisor socket/config 的 current_dir 用于 kernel 自有服务/产物，不是 track cwd |
 
-已有 `crates/sandbox/src/lib.rs` 是 typed bwrap policy（最小宿主挂载、进程 namespace、环境配置），desktop 在用；不是可接管的常驻 overlay holder。`external/codex` 不在 checkout，历史行号不能证明部署版本 experimental 协议或宿主项目读取行为。
+已有 `crates/sandbox/src/lib.rs` 是 typed bwrap policy（最小宿主挂载、进程 namespace、环境配置），desktop 在用；不是可接管的常驻视图 holder。`external/codex` 不在 checkout，历史行号不能证明部署版本 experimental 协议或宿主项目读取行为。
 
 ## 2. S-A：一条源码证据路径
 
 ### 2.1 Revision、Tree 与运行视图
 
-分开三个对象：活动视图是随 lower 变化的读环境；私有写入记录是 agent 相对已安装源码的修改；`Revision` 是持有内容的不可变交付证据。只给 upper 计数不构成源码证据。
+分开三个对象：活动视图观察可变来源；私有写入记录是 agent 相对已安装源码的修改；`Revision` 是持有内容的不可变交付证据。只给私有层计数不构成源码证据。
 
 `Revision { workspace_id, install_epoch, content_digest, tree_oid, materialized_source, changes, overlap, normalization }` 由框架 snapshot 产生，绑定规范化 Git tree 与必需的 MaterializedSource 工作字节 manifest。manifest 保存路径、原始 bytes/mode/symlink 与规则身份，不把 filter/LFS 指针当工作源码；同一 content owner 持久化两类闭包。changes 含 tracked（即使被 ignore）、新增非 ignored、删除、mode/symlink；不含内部 Git 元数据和新增 ignored 产物。不支持类型或无法取得必需工作字节时显式拒绝。已 commit/status clean 不替代完整源码证据，非 Git 的 DirectoryRevision 初版不进入 Git candidate/gate。
 
-创建基线 B 永久不变；当前安装基线 D 初始为 B，catch-up 准备后为 U 的 tree，agent replay 的结果属于 W。视图将 kernel 安装层 D 与 agent 写入层 W 分开记录（独立安装清单/代次，不能把整个 upper 当 W）；snapshot 合成 D ⊕ W。未触碰的活动 lower 脏源码不自动进入交付。copy-up 可能含用户改动时标 overlap；归属无法证明也保守标记，确认绑定 revision，未经确认拒绝交付。snapshot 期间来源变化则重试或返回 Busy，不能发布撕裂内容。
+创建基线 B 永久不变；当前安装基线 D 初始为 B，catch-up 准备后为 U 的 tree，agent replay 的结果属于 W。视图将 kernel 安装状态 D 与 agent 写入状态 W 分开记录（独立安装清单/代次，不能把整个私有层当 W）；snapshot 合成 D ⊕ W。未触碰的活动来源脏源码不自动进入交付。first-write capture 可能含用户改动时标 overlap；归属无法证明也保守标记，确认绑定 revision，未经确认拒绝交付。snapshot 只读完整独立的受控 D/W；并发 manifest 变化或未决来源复制重试/Busy，不能把活动来源采样当全树原子快照。
 
 worktree 同样返回 Revision/GitFacts，只在实现内解析真实 checkout。kernel 的 lease、gate、只读 head pin、publish、catch-up、archive 只消费这组证据，不按 same_path/live_source 分支。Capabilities 布尔只做展示；动作以类型化 Result/Unsupported 和准备好的 plan 为准。
 
@@ -107,7 +109,7 @@ PTY 由 calm-proc-supervisor 实际 fork：扩展 calm-session 协议的版本�
 
 ### 3.4 namespace 与 provider
 
-overlay upper/work/runtime 只在 backend 内定位；lower 活动来源只读，`.git` 元数据私有。linked gitdir/common dir/alternates 的路径只取 Git 报告；不能私有化时拒绝，不能写穿真实 common dir。launcher 映射回真实 uid/gid，环境显式 allowlist，继承 provider 的仓库外沙箱。复用 sandbox crate 的 typed 挂载/环境与子树约束；常驻 holder 的 open/recover/join 属 workspace 新机制，因为现有 bwrap policy 是一次性进程沙箱，不另抄一套通用沙箱政策。
+私有 backing/manifest/runtime 只在 backend 内定位；活动来源仅由 mediator 持只读能力，`.git` 从 S3 授权独立 export 初始化，绝不 union/overlay 原 `.git`。linked gitdir/common dir/alternates 的路径只取 Git 报告；初版外部 gitdir/alternates 拒绝，不能写穿真实 common dir。launcher 映射回真实 uid/gid，环境显式 allowlist，继承 provider 的仓库外沙箱。复用 sandbox crate 的 typed 挂载/环境与子树约束；常驻 holder 的 open/recover/join 属 workspace 新机制，bootstrap/join 消费 S2a 同一 journal/ExecutionId/ticket/control 的显式 envelope 扩展，不另建进程账本/driver。现有 bwrap policy 是一次性进程沙箱，不另抄一套通用沙箱政策。
 
 S4 改用受控 view 内的整个 provider 服务，实施协议见 [workspace-provider-environments.md](workspace-provider-environments.md)，须经两路 L2 评审后实现。已实测共享 app-server 的远端 exec 路由不能隔离其宿主 config/文件/搜索，断连后 thread/start 仍可成功，原“共享 app-server + 每 view exec-server”不足以满足本合同。provider 按 workspace、generation、授权 binding 和 ExecutionId 管理独立服务、可变状态及控制通道；kernel 只验证类型化能力，不按 provider 名称特判。Codex 初版在该 scope 中使用 app-server 官方本地工具，不登记远端 exec-server；不猜 RPC 字段、注销/drain 方法或私有状态布局。
 
@@ -178,7 +180,7 @@ worktree ensure 保留 fetch/choose_lease_start 时点，部分失败后探测�
 | launcher / environment | handle + 准入 permit → LaunchHandle / typed provider 环境；每次执行仍核销 fence |
 | content / sync / reclaim | read/list/status/diff/授权 write；IdlePermit 刷新；DestroyPlan 回收/恢复/最终删除 owned storage，不连带删 branch |
 
-错误区分 Unsupported、Busy、Unavailable、StaleGeneration、InvalidPath、WorkspaceRecoveryRequired。Backend 有意闭合（Worktree/LinuxOverlay）；新增 variant 改 enum/decoder/持久化版本、registry、声明与共享合同，kernel 不增实现分支。APFS 另立任务。
+错误区分 Unsupported、Busy、Unavailable、StaleGeneration、InvalidPath、WorkspaceRecoveryRequired。Backend 有意闭合（Worktree/LinuxCowView）；名称对应实际机制，已发布 descriptor 不重新解释。新增 variant 改 enum/decoder/持久化版本、registry、声明与共享合同，kernel 不增实现分支。APFS 另立任务。
 
 ### 4.3 崩溃边界与恢复
 
@@ -209,7 +211,7 @@ remote environment 从开放工具准入到 drain 完成一直持运行许可；
 
 锁序沿用 card start fence（含 per_card_lock）→ operation drive → track lifecycle fence → resume replay；短 BEGIN IMMEDIATE 在所需 fence 后获取，不在事务内等待 card/drive/进程 drain。多 card 按稳定 id 顺序获取，后台维护不能持 track 锁再回取 card。检查、准入关闭、登记与安装受同一 track fence 串行化；耗时动作依 durable intent 重驱，不靠长 DB 锁。
 
-空闲点无条件 sync，worktree no-op；view 保留 W，刷新 live lower，不依赖 inotify 指纹。常驻 Claude shell、terminal、Codex viewer PTY 可以无限期推迟，明确显示阻塞进程；不承诺两轮间必刷新，不强杀。来源 HEAD 变化在下一次可静默点提示并暂停新启动，用户确认继续只更新 observed HEAD，不改 B；交互式 PTY 活跃期间不承诺暂停下一条命令。重建先归档再新 track。
+空闲点无条件 sync，worktree no-op；view 保留 W，复核来源身份/HEAD 并刷新 mediator 的来源观察，不依赖 inotify 指纹，不重挂可变 lower overlay。常驻 Claude shell、terminal、Codex viewer PTY 可以无限期推迟，明确显示阻塞进程；不承诺两轮间必刷新，不强杀。来源 HEAD 变化在下一次可静默点提示并暂停新启动，用户确认继续只更新 observed HEAD，不改 B；交互式 PTY 活跃期间不承诺暂停下一条命令。重建先归档再新 track。
 
 ### 5.2 状态与现有机制的替换点
 
@@ -234,7 +236,7 @@ remote environment 从开放工具准入到 drain 完成一直持运行许可；
 | S1：现有 worktree/managed 机制封装，只有真实生产调用者 | 新 workspace crate/service；track_worktree、materialize、clean、workspace_recycle 与 area/recovery 调用链迁入机制入口。cwd、选择时点、refusal、branch config、wire/事件、7 天 trash 与 10 分钟 clean 均不变；无新归档/retention/schema 闲置机制 | 现有 track_worktree、回收/area 补偿和恢复 tests；对生产 ensure/delete/recovery 路径作前后等价验证。G；L2（回收所有权），无依赖 |
 | S2a：只有 worktree 的类型化收口 + WorkspaceRef 迁移 | §1 全入口、truth 新 migration/sidecar binding、lease 索引、session/control/supervisor、FE track 文件端口。按持久身份/句柄、supervisor、FS/FE 三组收口，建立三类能力、票据/握手和资源账本；不预加 namespace fd。此片开始为实际 materialization 写 B pin（显式新增 Git ref 副作用），不前移 ensure 时点；无 view 可选 | 旧行与事件字节、create→ensure 来源变化、已有 branch 的失败重试、repoint/today、持久化重驱、PTY pipe/attach/restart/ACP/forge/gate/FS 生产入口。G；L2，依赖 S1 |
 | S3：worktree 的统一 Revision/Tree、交付与生命周期 | 依 [delivery protocol](workspace-delivery-protocol.md) 与 [verification decision](workspace-verification-decision.md)，本次 parent 最小映射待第三轮 fresh 双路完整 L2 设计评审。统一 content/effect owner、raw manifest + normalized closure、kernel 私有 pins/投影、精确 OID publish、Free 转换与 upstream receipts、受控同 cwd 验证/ignored 热缓存、唯一生命周期 7/90；same-source metadata 保 source epoch，真 install 走 Accepted/full drain/new execution，不改 S1 | 多 run/P、同步 gate/commit 不自等待、raw/filter/source/规则身份、每个 ref/FS/DB/crash、整 .git 删除后 raw 恢复、PR/area rollback；G + 机制/崩溃 replay，未支持不得 skip 算通过；L2，依赖 S2a |
-| S2b：Linux 同路径视图，创建与关闭/删除/恢复同片 | holder/overlay、D/W、sandbox、supervisor namespace envelope；同片承担显式 view 选择的 API/wire/OpenAPI 字段及真实生成器产物。已过机制合同的 terminal、gate、受控 forge/FS 可用；Planner/conversation/worker 另须 provider ViewSupport（§3.4）。无 Supported Planner 时只开放显式 API/terminal 路径，两 track 生产链隔离用无模型测试，不宣称 Planner 端到端可用；子 track 拒绝 | 两 track 隔离、lower 原地/原子替换、copy-up overlap、whiteout/opaque、后台后代/uid、holder 崩溃恢复、旧 ticket 竞态、外部 gitdir 拒绝、gate lower 钉 tree、create 后立即 close/delete、7/90 到期。G + 允许 userns 的真实 Linux 机制合同；不能 skip 当通过。L2，依赖 S3 |
+| S2b：Linux 同路径 COW 视图，创建与关闭/删除/恢复同片 | 依 [view backend protocol](workspace-view-backend.md)：直接 COW mediator、D/W、sandbox、holder 与 S2a namespace envelope 扩展；共享 S3 FUSE/分类/双闭包，不挂活 lower overlay。同片承担显式 view 选择的 API/wire/OpenAPI 字段及真实生成器产物。已过机制合同的 terminal、gate、受控 forge/FS 可用；Planner/conversation/worker 另须 provider ViewSupport（§3.4）。无 Supported Planner 时只开放显式 API/terminal 路径，两 track 生产链隔离用无模型测试，不宣称 Planner 端到端可用；子 track 拒绝 | 两 track 隔离、来源原地/原子替换与并发句柄、first-write overlap、whiteout/opaque/rename/hardlink、mmap/cache、后台后代/uid、holder 崩溃恢复、旧 ticket 竞态、外部 gitdir 拒绝、gate 冻结 C、create 后立即 close/delete、7/90 到期。G + 实际 FUSE/userns 的真实 Linux 机制合同；不能 skip 当通过。L2，依赖 S3 |
 | S4：provider 受控执行环境接入 | 按 [实施协议](workspace-provider-environments.md) 建 provider runtime scope、独立 state/授权认证输入和精确执行控制；Planner/conversation/worker 的 start/turn/resume/recovery 均接入。Codex 整个 app-server 进入 view 并用官方本地工具；所有宿主项目读取受 §3.4 合同约束，未证明不开放 | 实际部署 binary 官方 schema、无模型生产编码/真实 Linux 服务合同；断连/重注册、epoch/binding/旧执行控制拒绝、服务与后台 helper drain、共同授权及独立 state。G + profile 协议/平台资格；L2，依赖 S2b |
 | S5：完整产品预览/设置与推荐默认 | 产品设置及相关 types/OpenAPI、wire/zod、FE domain/ports/events、创建/恢复/保留期 UI。view 选择字段/生成器属 S2b；S2a 已封住绝对路径，S2b 已提供 view 预览；此片完善体验，能力齐备才推荐 Linux view，设置不换冻结 backend | 真生成器、schema/事件兼容、Report/image/raw/HTML、路径越界、白洞 404、设置和恢复浏览器测试；G + FE lint/build/test、真实浏览器预览与相关 browser E2E，遵循 development-preview。L2，依赖 S4 |
 
@@ -242,8 +244,8 @@ remote environment 从开放工具准入到 drain 完成一直持运行许可；
 
 - S2a / NB3-6、NB3-8、NB3-9：resolve 增 principal/purpose；按 backend 标明 QuiescenceEvidence 覆盖范围，定 supervisor 核销/撤销与 fork 线性化；删除/私有化 `agent_cwd()`，`DisplayPath` 不实现 `AsRef<Path>`，定 view 四列；扫描用 clippy disallowed-methods（Command::current_dir、std::fs）与逐处 `#[expect(reason)]`，不建文件名单。
 - S3：以上旧实施待定项由 delivery/verification 两协议及唯一 sealed effect owner 统一收口，待第三轮 fresh 双路完整评审；不维护工具名/caller/test 名单。
-- S2b / NB3-2、NB3-3：定验证 ignored 依赖/缓存投影和 upper 丢弃规则；D/W 用逻辑 manifest 重定，清 W 保留 ignored（§2.3/§4.2）。
-- S2b / NB3-7：定创建时拒绝 Unsupported Planner 或无 Planner track 的明确 API 语义、overlap 确认执行者/API；无 Supported provider 时交付链无生产 provider 调用者是有意范围。
+- S2b / NB3-2、NB3-3：依 view backend protocol 统一 mediator/ignored 分类与 D/W manifest；same-source proof 不得因清 W 暴露不同来源，必要时走真正 SourceInstallPlan，保留经证明的 ignored cache。
+- S2b / NB3-7：view backend protocol 定显式 no-provider 创建与 Unsupported Planner 拒绝、kernel 按 Revision/授权确认 overlap；无 Supported provider 时交付链无生产 provider 调用者是有意范围。
 
 关键 invariant 的 mutation 只在独占可恢复 worktree 完成：移除 generation/ticket 校验、让 gate 读 live lower、archive 失败仍回收等，单次只改一个生产因素，先预测完整红集再跑整个相关 target/filter，安全恢复并重绿。本轮只执行 doc-exists 与 ratchet gate。
 
@@ -259,11 +261,11 @@ remote environment 从开放工具准入到 drain 完成一直持运行许可；
 
 | 阻断 / 初版范围 | 解除片与准入条件 |
 |---|---|
-| 活 lower 的 rename/delete/切分支/git gc、复杂构建及 tracked 一致性 | S2b 真实 Linux 合同通过才开放对应宿主；不能 skip 算通过 |
+| 活来源的 rename/delete/切分支/git gc、mmap/cache、复杂构建及 tracked 一致性 | S2b 直接 mediator 的真实 Linux/FUSE 合同通过才开放对应宿主，不用可变 lower overlay 压测替代；不能 skip 算通过 |
 | 本地 provider 按 cwd 状态/项目读取 | S2b provider 层 ViewSupport 合同；Claude 依官方状态作用域，ACP 默认拒绝；未通过仍 Unsupported，不猜 HOME 私有布局 |
 | Codex 宿主项目文档/config/git info/ghost/undo/搜索、trust 状态 | S4 整个服务 scope、独立 state/认证输入、部署版本协议和平台合同；部分 namespace 元数据实验不能放行，未过拒绝 Codex view |
 | 转换仓库、非 Git 交付、子 track、根外 cwd | S2b 在创建/准备和重驱边界拒绝（转换在 snapshot 重检）；解除另立扩展片，非 Linux 继续 worktree |
-| gate 写源码、ignored 环境/依赖缓存 | S3 的冻结 raw 源码 + 按 Git 分类受控缓存投影；防实际源码写而非审计所有失败 syscall；S2b 钉 lower。无完整机制时拒绝 bound，不新增 GateSpec/outputdir |
+| gate 写源码、ignored 环境/依赖缓存 | S3 的冻结 raw 源码 + 按 Git 分类受控缓存投影；防实际源码写而非审计所有失败 syscall；S2b 消费同一冻结 C 而非活动来源。无完整机制时拒绝 bound，不新增 GateSpec/outputdir |
 | 常驻 PTY/远端工具无法 drain、活动轮 HEAD 检测 | S3 资源静默与 S2b/S4 执行器证明；未 drain 持续 Busy、用户显式停止，不强杀，不承诺活动轮即时检测 |
 
 这是实现发布门槛，不是本次已实现/验证的能力；网络/端口和远端副作用仍遵循既有权限边界。
