@@ -1,7 +1,8 @@
 # Documentation
 
 Start with the [English README](../README.md) or [中文 README](../README.zh-CN.md)
-for the product overview and source-based quick start. User guides below describe
+for the product overview. New users start with the [getting-started guide](getting-started.md)
+([中文](getting-started.zh-CN.md)). User guides below describe
 the implementation on `main`; a design record may also contain historical
 diagnoses, proposed changes, or explicitly deferred work.
 
@@ -9,6 +10,7 @@ diagnoses, proposed changes, or explicitly deferred work.
 
 | Need | Guide |
 | --- | --- |
+| Install a Linux package, understand templates, get a first report and continue to development | [Start with one repository](getting-started.md), [中文入门](getting-started.zh-CN.md) |
 | Choose Planners, use Recipes and @ references, supervise work, publish PRs, view previews, add plugins | [Using Neige Calm](using-neige-calm.md) |
 | Write Planner instructions and Report formats in a Recipe | [Recipe body format](recipe-body-format.md) |
 | Build or install a Linux Alpha archive | [Alpha release runbook](alpha-release.md) |

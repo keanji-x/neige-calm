@@ -32,6 +32,7 @@ mod installed;
 mod manifest;
 mod package;
 mod preflight;
+mod setup;
 mod source;
 mod tailnet;
 mod upgrade;
@@ -56,7 +57,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum CommandMode {
-    /// Run or inspect the systemd-oriented service mode.
+    /// Set up, run, or inspect the local application.
     #[command(subcommand)]
     System(SystemCommand),
 }
@@ -64,6 +65,8 @@ enum CommandMode {
 #[derive(Subcommand, Debug)]
 #[allow(clippy::large_enum_variant)]
 enum SystemCommand {
+    /// Install a verified package for first use, without requiring systemd.
+    Setup(setup::SetupArgs),
     /// Run the supervisor and local admin API.
     Serve(SystemServeArgs),
     /// Print a systemd unit that runs `neige-app system serve`.
@@ -791,6 +794,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     match Cli::parse().command {
+        CommandMode::System(SystemCommand::Setup(args)) => setup::run(args),
         CommandMode::System(SystemCommand::Serve(args)) => serve_system(args).await,
         CommandMode::System(SystemCommand::Unit(args)) => {
             let cfg = AppConfig::load(args.config.as_deref())?;

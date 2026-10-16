@@ -182,6 +182,9 @@ describe('readTrackReport', () => {
     ['a retired kind', { id: 'b-1', kind: 'view.live', rev: 1, payload: { source: 'neige://plugin/a/b', version: 1 } }],
     ['a known kind whose payload does not fit', { id: 'b-1', kind: 'table', rev: 1, payload: { columns: [] } }],
     ['a known kind whose payload is not an object', { id: 'b-1', kind: 'prose', rev: 1, payload: 7 }],
+    ['a terminal task with a result contract', { id: 'b-1', kind: 'task', payload: { key: 'terminal', kind: 'terminal', command: 'true', ready: true, declared_by: 'spec', result_contract: 'review-v1' } }],
+    ['a legacy terminal task with a result contract', { id: 'b-1', kind: 'task', payload: { key: 'legacy-terminal', kind: 'terminal', goal: 'true', ready: true, declared_by: 'spec', result_contract: 'review-v1' } }],
+    ['a withdrawn task with a result contract', { id: 'b-1', kind: 'task', payload: { key: 'withdrawn', declared_by: 'spec', tombstoned_by: 'user', tombstone: {}, result_contract: 'review-v1' } }],
   ])('degrades %s to one unsupported block, keeping the others', (_label, bad) => {
     const report = readTrackReport([card({
       payload: { body: 'x', blocks: [bad, prose('b-2', 'Still here.')] },

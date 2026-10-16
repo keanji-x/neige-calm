@@ -280,6 +280,65 @@ const RELEASE_BINARIES: &[ReleaseBinarySpec] = &[
     },
 ];
 
+/// The executable contract shared by packaging and fresh installation.
+pub(crate) fn release_executables() -> impl Iterator<Item = (&'static str, UnitName)> {
+    std::iter::once(("neige-app", UnitName::NeigeApp)).chain(
+        RELEASE_BINARIES
+            .iter()
+            .map(|binary| (binary.binary_name, binary.unit)),
+    )
+}
+
+/// Fresh installs need the complete runtime, and their persisted identities
+/// must describe the verified bytes rather than unrelated unit metadata.
+pub(crate) fn validate_installable_release(
+    package_dir: &Path,
+    manifest: &ReleaseManifestV2,
+) -> anyhow::Result<()> {
+    for (name, unit_name) in release_executables() {
+        let relative = format!("bin/{name}");
+        let file = manifest
+            .files
+            .iter()
+            .find(|file| file.path == relative)
+            .ok_or_else(|| anyhow!("fresh setup requires {relative}"))?;
+        let unit = manifest
+            .units
+            .get(&unit_name)
+            .ok_or_else(|| anyhow!("fresh setup requires unit {unit_name:?}"))?;
+        if unit.binary_sha256.as_deref() != Some(file.sha256.as_str()) {
+            anyhow::bail!("unit identity does not match verified file {relative}");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if fs::metadata(package_dir.join(&relative))?
+                .permissions()
+                .mode()
+                & 0o100
+                == 0
+            {
+                anyhow::bail!("fresh setup requires owner-executable {relative}");
+            }
+        }
+    }
+    if !manifest
+        .files
+        .iter()
+        .any(|file| file.path == "web/dist/next/index.html")
+    {
+        anyhow::bail!("fresh setup requires the next frontend (web/dist/next/index.html)");
+    }
+    let web = manifest
+        .units
+        .get(&UnitName::Web)
+        .ok_or_else(|| anyhow!("fresh setup requires the web unit"))?;
+    if web.tree_sha256.as_deref() != Some(tree_sha256(&package_dir.join("web/dist"))?.as_str()) {
+        anyhow::bail!("web unit identity does not match verified frontend");
+    }
+    Ok(())
+}
+
 fn binary_map(bins: &[NamedPath]) -> anyhow::Result<BTreeMap<&str, &Path>> {
     let mut map = BTreeMap::new();
     for bin in bins {

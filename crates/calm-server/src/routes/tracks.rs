@@ -379,11 +379,12 @@ impl NamedSource {
                             "track create: `template_id` must reference a known track template; got `{template_id}`"
                         ))
                     })?;
-                    if let Some(required) = crate::builtin_plugins::required_owner(admission.key())
-                        && admission.binding.as_ref().is_none_or(|m| m.id != required)
+                    if let Some(required) =
+                        missing_required_template_owner(admission.key(), admission.binding.as_ref())
                     {
                         return Err(CalmError::BadRequest(format!(
-                            "track create: template `{template_id}` requires `{required}`; enable its built-in capability in Settings"
+                            "track create: template `{template_id}` requires `{}`; enable its built-in capability in Settings",
+                            required.manifest().id
                         )));
                     }
                     TrackInit::Template {
@@ -1081,6 +1082,20 @@ pub(crate) async fn resolve_template_binding(
                 .iter()
                 .any(|descriptor| descriptor.id == template.key())
     })
+}
+
+/// The authoritative creation prerequisite, also advertised by the read-only picker.
+/// Binding already incorporates trusted ownership and the current running lifecycle.
+pub(crate) fn missing_required_template_owner(
+    template_key: &str,
+    binding: Option<&Manifest>,
+) -> Option<&'static crate::builtin_plugins::BuiltinPlugin> {
+    let owner_id = crate::builtin_plugins::required_owner(template_key)?;
+    if binding.is_some_and(|manifest| manifest.id == owner_id) {
+        None
+    } else {
+        Some(crate::builtin_plugins::get(owner_id).expect("required template owner is built in"))
+    }
 }
 
 /// Adds only the route's error vocabulary to the shared `template_input` validation. A violation
@@ -3521,6 +3536,23 @@ mod tests {
     use crate::track_report::{ReportBlock, TrackReportPayload};
     use crate::track_report_doc::ReportDoc;
     use serde_json::json;
+
+    #[test]
+    fn development_startup_context_includes_git_identity_preflight() {
+        let compiled = prepare_template_report(TemplateRoster::builtin(), "dev").unwrap();
+        let mut instructions = String::new();
+        compiled
+            .template_context
+            .expect("Development has a creation-time context")
+            .append_to(&mut instructions)
+            .unwrap();
+        let injected: serde_json::Value =
+            serde_json::from_str(instructions.split_once("## Selected Template\n").unwrap().1)
+                .unwrap();
+        let body = injected["body"].as_str().unwrap();
+        assert!(body.contains("git var GIT_AUTHOR_IDENT"));
+        assert!(body.contains("git var GIT_COMMITTER_IDENT"));
+    }
 
     /// Every built-in recipe instantiates, and its declarations are the tasks it advertises.
     /// The only place "the declarations are actually produced" is observable: recipe tasks

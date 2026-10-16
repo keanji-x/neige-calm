@@ -11,6 +11,7 @@ import { ThemeProvider } from '../theme/public.tsx';
 import { AppShell } from './public.tsx';
 import { ApiError } from '../../../../core/domain/failure-class.ts';
 import { AreaCreatePreflightError } from '../providers/queries.ts';
+import type { TrackTemplate } from '../../../../core/domain/track.ts';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { ReadReceiptsProvider } from '../providers/read-receipts.tsx';
 import { createReadReceiptsKernel } from '../providers/read-receipts-fixture.tsx';
@@ -26,9 +27,7 @@ const harness = vi.hoisted(() => ({
     createdAt: 1,
     updatedAt: 1,
   },
-  templates: [{ id: 'small-change', title: 'Small change', tasks: [] }] as {
-    id: string; title: string; tasks: { key: string; goal: string }[];
-  }[],
+  templates: [{ id: 'small-change', title: 'Small change', description: null, availability: { status: 'ready' as const }, tasks: [] }] as TrackTemplate[],
   templatesLoaded: true,
   templatesError: null as string | null,
   create: vi.fn(),
@@ -147,7 +146,7 @@ beforeEach(() => {
     defaultTemplateId: null,
     defaultCwd: null,
   };
-  harness.templates = [{ id: 'small-change', title: 'Small change', tasks: [] }];
+  harness.templates = [{ id: 'small-change', title: 'Small change', description: null, availability: { status: 'ready' as const }, tasks: [] }];
   harness.templatesLoaded = true;
   harness.templatesError = null;
   harness.create.mockReset().mockResolvedValue(harness.area);

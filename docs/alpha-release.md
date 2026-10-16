@@ -11,7 +11,7 @@ title and release notes; keep the package release ID in the `N.N.N-alpha.N` form
 ## 1. Build the distribution (maintainer)
 
 Prerequisites: Linux, Git, Bash, GNU tar/coreutils, Python 3, the pinned Rust
-toolchain, and Node.js >=22.12 with npm. The build does not need Codex credentials.
+toolchain, Go (the version in `tailnet/go.mod`), and Node.js >=22.12 with npm. The build does not need Codex credentials.
 
 ```bash
 git clone https://github.com/keanji-x/neige-calm.git
@@ -26,7 +26,7 @@ scripts/release/build-alpha.sh \
 The script refuses a dirty checkout and existing output names. It builds release
 binaries with `--locked`, caps Cargo at six jobs, explicitly selects the rustc host target and reads only
 that target output (even when CARGO_BUILD_TARGET is set), embeds the exact Git SHA, runs
-`npm ci` and production builds for **both** frontends, and calls the real
+`npm ci` and the production build for the maintained frontend, and calls the real
 `neige-app system package` command. `--target-dir /abs/path` selects a Cargo cache.
 Keep output outside the source checkout so the final clean-tree check stays useful.
 
@@ -58,170 +58,37 @@ on the oldest Linux/libc baseline the release intends to support. On the target,
 `release/bin/neige-app --version` and `release/bin/calm-server --version` must run
 without a missing loader/library error. Rust and Node are not runtime prerequisites.
 
-## 2. Prepare a fresh installation (user)
+## 2. Install and use the archive (user)
 
-Runtime prerequisites: compatible Linux/architecture, a desktop browser, Git,
-Codex CLI with its companion binaries installed, and Codex authentication for the
-same OS user who will run the service. Claude is optional. To use it as a
-Planner, configure its versioned executable and dedicated login directory as
-described in [Claude Planner setup](neige-app-config.md#enable-a-claude-planner);
-verify **Settings → Planners** after startup. Systemd user services
-are optional if using foreground mode below.
-
-After downloading the archive and checksum to the same directory:
+Follow [Start with one repository](getting-started.md)
+([简体中文](getting-started.zh-CN.md)). From the extracted archive:
 
 ```bash
-sha256sum -c neige-calm-0.1.0-alpha.1-linux-x86_64.tar.gz.sha256
-tar -xzf neige-calm-0.1.0-alpha.1-linux-x86_64.tar.gz
-cd neige-calm-0.1.0-alpha.1-linux-x86_64
-./release/bin/neige-app --version
-./release/bin/calm-server --version
-codex login
+./release/bin/neige-app system setup --package ./release
 ```
 
-The checksum must come from the same trusted release channel as the archive.
-Replace `x86_64` with the actual artifact architecture if necessary. Do not extract
-a new version over an existing release directory.
+Setup verifies the existing v2 package integrity contract, creates a fresh
+private installation with isolated configuration/data/plugins, initializes
+`state/installed.json`, and prints the foreground start command and browser URL.
+No compiler, systemd unit, symlink assembly or admin HTTP bootstrap is needed.
+Use `--root /absolute/new/directory` for an independent installation; existing
+installations are refused. The command asks for a local owner password, or
+accepts a private `--password-file` for automation.
 
-These next commands are for a **first install only**. If the config, service,
-symlinks or data directory already belong to an installation, use the
-[upgrade guide](deploy-and-upgrade.md), not this bootstrap sequence.
+The [configuration reference](neige-app-config.md) covers optional Claude
+Planners and previews. The [deployment guide](deploy-and-upgrade.md) covers
+systemd, upgrades and recovery; do not rerun fresh setup to upgrade.
 
-```bash
-set -e
-mkdir -p ~/.local/share/neige-app/releases ~/.local/bin
-# Refuse an existing release rather than merging directories.
-test ! -e ~/.local/share/neige-app/releases/0.1.0-alpha.1
-cp -a release ~/.local/share/neige-app/releases/0.1.0-alpha.1
-ln -s 0.1.0-alpha.1 ~/.local/share/neige-app/releases/current-server
-ln -s 0.1.0-alpha.1 ~/.local/share/neige-app/releases/current-web
-ln -s ~/.local/share/neige-app/releases/current-server/bin/neige-app ~/.local/bin/neige-app
-umask 077
-~/.local/bin/neige-app system init-config --config ~/.config/neige-app/config.toml
-chmod 600 ~/.config/neige-app/config.toml
-```
+## 3. Verify the installed candidate (maintainer)
 
-Edit `~/.config/neige-app/config.toml` before starting:
+After following the user guide, compare the public `/api/version.buildSha`
+with `BUILD.json.sourceCommit`. Check owner login, provider readiness, a real
+bounded investigation, and report persistence after browser refresh and service
+restart. Verify `state/installed.json` under the setup root's data directory.
+Run no real-model stack tests directly on the shared production host; use an
+isolated Docker exercise with private state and fenced provider-only egress.
 
-- Set `[child] auth_password` to your chosen password; default username is `owner`.
-  Keep `auth_dev_autologin = false`. This credential is separate from Codex login
-  and from the generated admin token. Keep the config private (`0600`).
-- Set `[child] fe_dist` to `.../current-web/web/dist/next`. The legacy
-  `web_dist` setting is retired and can be removed from existing configs.
-- Check `[child] calm_listen` (default `127.0.0.1:4040`) and `[admin] listen`
-  (default `127.0.0.1:4050`) are free. Use separate ports **and data/config/release
-  directories**, including explicit `[child] plugins_dir` and `plugins_data_dir`,
-  for a second instance. These two paths do not derive from `data_dir`; leaving
-  them unset preserves the server's existing XDG defaults and can share production
-  plugins and secrets. Never point a rehearsal at production data.
-- Keep the database unset (`db_url = ""`) to use SQLite in `[child] data_dir`.
-  Never use `mock` for persistent work. A fresh data directory is created at boot.
-- `[systemd] bin` should be `~/.local/bin/neige-app`. Put Codex and Git on the PATH
-  used for installation; the unit captures that PATH.
-
-For example, merge these keys into the second instance's `[child]` section,
-using directories dedicated to that instance (also isolate the ports and
-config/release directories as described above):
-
-```toml
-[child]
-data_dir = "~/.local/share/neige-calm-second"
-plugins_dir = "~/.config/neige-calm-second/plugins"
-plugins_data_dir = "~/.local/share/neige-calm-second/plugins"
-```
-
-Installing plugins grants execution under this user's account. Only this trusted
-user should be able to write plugin sources and the plugin installation directory.
-The Alpha does not provide an untrusted multi-user/plugin isolation boundary.
-
-## 3. Start the installed package
-
-Install the user unit and create the admin token, without starting anything yet:
-
-```bash
-~/.local/bin/neige-app system install --config ~/.config/neige-app/config.toml
-```
-
-Run this preparation for **both** launch modes: it creates the required admin
-token and writes a unit file, but does not require systemd to be running. Then
-choose one of the following; do not run both on the same ports/data directory.
-
-With a systemd user manager:
-
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now neige-app.service
-systemctl --user status neige-app.service
-journalctl --user -u neige-app.service -n 50 --no-pager
-```
-
-`system install` refuses to overwrite an existing unit; do not reflexively add
-`--force` on a first install. Missing `claude` warnings are harmless if only using
-Codex; install `codex` and `git` before starting agent tasks.
-
-Without systemd, after the same `system install` preparation above:
-
-```bash
-~/.local/bin/neige-app system serve --config ~/.config/neige-app/config.toml
-```
-
-Keep that process running. The default browser URL is <http://127.0.0.1:4040/>;
-with `fe_dist` configured it redirects to `/next/`. Log in with the configured
-owner credentials. `/calm/` is retired and returns 404. The admin port serves
-operator APIs, not the product UI; keep it loopback-only.
-
-### Network setup before the first agent task
-
-Systemd does not inherit the proxy variables exported in your interactive shell;
-`system install` captures PATH, not HTTP_PROXY/HTTPS_PROXY. If this host needs a
-proxy to reach the model provider, sign in and configure **Settings → Network →
-HTTP proxy / HTTPS proxy** before creating your first Track. Use the proxy URL
-appropriate to your machine, leave each field to save, then start a new Track or
-conversation. Existing running cards retain their launch configuration; changing
-a field does not repair an already waiting request. Direct-network installations
-can leave these fields empty.
-
-A successful web login only verifies local application access, not provider
-connectivity. If a first task remains Working without a reply, inspect the agent
-status/logs and these settings before retrying the same instruction repeatedly.
-The service's isolated Codex log is under
-`<child.data_dir>/logs/shared-codex-appserver/stderr.log`.
-
-## 4. Verify identity and initialize upgrade bookkeeping
-
-```bash
-curl -fsS http://127.0.0.1:4040/api/version
-curl -fsS http://127.0.0.1:4050/health
-```
-
-Compare `buildSha` with BUILD.json's `sourceCommit`. A null SHA is not a verified
-release identity. Confirm the browser loads `/next/` assets and deep links, login
-succeeds, a new Track can be created, and its report survives browser refresh.
-Use a small non-destructive task for real Codex checks; do not run real Tier 2
-stack E2E on the shared production host.
-
-The first symlink bootstrap has no `state/installed.json`. Register the **same
-local package** through the existing admin apply path before future upgrades:
-
-```bash
-TOKEN=$(cat ~/.config/neige-app/admin.token)
-curl --fail-with-body -X POST http://127.0.0.1:4050/upgrade/apply \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  --data '{"source":{"url":"'"$HOME"'/.local/share/neige-app/releases/0.1.0-alpha.1"},"dryRun":true}'
-# Inspect the dry-run: on a first install, noInstalledState is expected.
-# This first registration restarts the host; do it before creating real work.
-curl --fail-with-body -X POST http://127.0.0.1:4050/upgrade/apply \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  --data '{"source":{"url":"'"$HOME"'/.local/share/neige-app/releases/0.1.0-alpha.1"},"allowBreaking":true}'
-unset TOKEN
-```
-
-Recheck health and buildSha after the restart; verify `state/installed.json`
-under the configured data directory and open the report after one service restart.
-This bootstrap opt-in is **not** a blanket permission for later breaking upgrades.
-For those, follow [database backup and restore](deploy-and-upgrade.md#81-database-backup-and-manual-restore-read-this-before-allowbreaking).
-
-## 5. Alpha release checklist (maintainer)
+## 4. Alpha release checklist (maintainer)
 
 - Candidate commit and reviewed diff are fixed; relevant CI has passed, with
   skipped checks distinguished from executed checks.
@@ -230,7 +97,7 @@ For those, follow [database backup and restore](deploy-and-upgrade.md#81-databas
 - Fresh config requires login; root, `/next/`, its assets and a deep link work
   from the **installed package**, not Vite or the source tree.
 - `/api/version.buildSha` matches BUILD.json; package integrity dry-run passes.
-- Bootstrap bookkeeping, restart and persistence have been checked in an
+- Fresh setup bookkeeping, restart and persistence have been checked in an
   isolated installation. Record what real-model/upgrade checks were not run.
 - Known product limitations (including outstanding desktop terminal fixes)
   appear in release notes. This packaging work does not claim to fix them.

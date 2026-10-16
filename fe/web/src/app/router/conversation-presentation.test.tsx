@@ -1,3 +1,4 @@
+import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -13,7 +14,7 @@ it('offers the side menu only after the source mounts, while keeping the trigger
   const fixture = renderDailyFixture({ initial: '/track/daily?panel=conversations', extraPlanner: true,
     reply: request => {
       if (request.path === '/api/version') return { status: 200, statusText: 'OK', body: {
-        assistantProviders: true, conversationSide: true, webCompatVersion: 54, minWebCompatVersion: 54,
+        assistantProviders: true, conversationSide: true, webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION,
         syncEventVersion: 29, dbInstanceId: 'presentation-menu',
       } };
       if (request.path.includes('/second-planner/harness/items')) return { status: 200, statusText: 'OK', body: [{

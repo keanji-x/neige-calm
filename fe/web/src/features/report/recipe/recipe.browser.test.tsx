@@ -71,3 +71,13 @@ describe('the recipe body editor in a browser', () => {
     expect(onWrite.mock.calls[1][0].body).toBe('Held draft.');
   });
 });
+
+
+it('teaches ordinary Markdown and shows a reusable example without promising automatic task fences', async () => {
+  render(<RecipeEditor recipe={null} theme="light" onWrite={vi.fn()} onDelete={null} onClose={() => {}} onCreated={() => {}} />);
+  expect(screen.getByText(/Write work instructions and the desired report format in ordinary Markdown/)).toBeTruthy();
+  await userEvent.click(screen.getByText('Example: repository investigation'));
+  const example = screen.getByText(/# Work instructions/);
+  expect(example.textContent).toContain('## Evidence');
+  expect(example.textContent).not.toContain('neige-block');
+});

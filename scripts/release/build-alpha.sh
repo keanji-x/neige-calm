@@ -100,10 +100,26 @@ cp docs/private-tailnet.md "$bundle/docs/"
 cp docs/alpha-release.md docs/deploy-and-upgrade.md docs/neige-app-config.md docs/upgrade-stability.md "$bundle/docs/"
 cp docs/plugin-security.md "$bundle/docs/"
 cp docs/using-neige-calm.md docs/recipe-body-format.md "$bundle/docs/"
+cp docs/getting-started.md docs/getting-started.zh-CN.md "$bundle/docs/"
+cp README.md README.zh-CN.md "$bundle/"
 mkdir "$bundle/docs/architecture"
 cp docs/architecture/1413-local-plugin-trust.md "$bundle/docs/architecture/"
 cp docs/architecture/long-task-reliability.md "$bundle/docs/architecture/"
-printf '# Install Neige Calm Alpha\n\nFollow [the installation runbook](docs/alpha-release.md).\n' > "$bundle/INSTALL.md"
+cat > "$bundle/INSTALL.md" <<'INSTALL'
+# Install Neige Calm Alpha
+
+[Start with one repository](docs/getting-started.md) · [中文入门](docs/getting-started.zh-CN.md)
+
+From this extracted directory, run:
+
+```bash
+./release/bin/neige-app system setup --package ./release
+```
+
+Choose your local password, then run the printed start command and open the
+printed browser URL. Setup is for a fresh installation; existing installations
+follow the [upgrade guide](docs/deploy-and-upgrade.md).
+INSTALL
 # Stop if a formatter/generator or another writer changed the source during the build.
 [[ "$(git rev-parse HEAD)" == "$source_sha" && -z "$(git status --porcelain --untracked-files=normal)" ]] || {
   echo 'Checkout changed during build; refusing to publish artifacts.' >&2; exit 1;

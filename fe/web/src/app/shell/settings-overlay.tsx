@@ -94,7 +94,7 @@ export function SettingsOverlay({ transport, unauthorized }: SettingsOverlayProp
       indexLocation.current = null;
     } else if (path === '/settings') indexLocation.current = historyIndex;
   }, [href, historyIndex, path, section]);
-  const leaveMobilePage = () => {
+  const leaveSettings = () => {
     const previous = returnLocation.current;
     const distance = previous === null ? 0 : history.location.state.__TSR_index - previous.index;
     // Only pop entries after a workspace entry this mounted shell observed.
@@ -121,10 +121,10 @@ export function SettingsOverlay({ transport, unauthorized }: SettingsOverlayProp
   return <>
     <section className={styles.page} hidden={!compact} data-nc-settings-page="" aria-label="Settings">
       <MobileHeader title={mobileIndex ? 'Settings' : settingsSectionLabel(section)} level={1}
-        backLabel={mobileIndex ? 'workspace' : 'Settings'} onBack={mobileIndex ? leaveMobilePage : backToIndex} />
+        backLabel={mobileIndex ? 'workspace' : 'Settings'} onBack={mobileIndex ? leaveSettings : backToIndex} />
       <div className={styles.content} ref={compact ? attachContent : undefined} />
     </section>
-    <Dialog open={!compact} onClose={() => go({ name: 'today' })} title="Settings" wide>
+    <Dialog open={!compact} onClose={leaveSettings} title="Settings" wide>
       <div ref={!compact ? attachContent : undefined} />
     </Dialog>
     {createPortal(<div

@@ -22,6 +22,7 @@ import { compileTemplateInputs } from '../../../../../core/domain/template-input
 import { TemplateInputs } from './template-inputs.tsx';
 import type { LoadTemplate, TemplateDetail } from '../../../../../core/domain/template.ts';
 import { TemplatePreview } from './template-preview.tsx';
+import { TemplateChoices } from './template-choices.tsx';
 import { NeigeMotion } from '../../../ui/brand/motion.tsx';
 import styles from './new-track.module.css';
 import { ComposerPreferences } from './composer-preferences.tsx';
@@ -90,6 +91,8 @@ export type NewTrackFormProps = Readonly<{
   recipes?: readonly TrackRecipe[];
   /** Open the manage-recipes screen; injected because `features/**` may not import `app/**`. */
   onManageRecipes: () => void;
+  /** Open existing plugin settings; route draft ownership stays with the app. */
+  onOpenPluginSettings?: () => void;
   /** The folder picker's read port, created at the composition layer. Required: a call site that forgot it would render a picker that silently lists nothing. */
   listDirectory: ListDirectory;
   onSubmit: (draft: NewTrackDraft) => void;
@@ -118,7 +121,7 @@ function needsInput(template: TrackTemplate | undefined): boolean {
 export function NewTrackForm({
   modelControls, templatePluginGuides, submitting, error, templates, templatesLoaded, templatesError = null,
   initialTemplateId, initialCwd, loadTemplate, recipes = [], onManageRecipes, listDirectory, onSubmit,
-  errorAction, initialDraft, onDraftChange, submitBlocked = false, locked = false, mentionTrigger,
+  onOpenPluginSettings, errorAction, initialDraft, onDraftChange, submitBlocked = false, locked = false, mentionTrigger,
 }: NewTrackFormProps) {
   const fieldId = useId();
   // Creation preferences are a route-opening snapshot: Area events may update this
@@ -186,8 +189,9 @@ export function NewTrackForm({
   const compiledInputs = wantsInput && currentDetails !== null
     ? compileTemplateInputs(currentDetails.body, chosen?.input_schema, fieldValues) : null;
   const templatePending = unresolvedAreaDefault && !templatesLoaded && templatesError === null;
+  const missingPlugin = chosen?.availability.status === 'requires_plugin' ? chosen.availability : null;
   const unsupportedInput = compiledInputs?.status === 'unsupported';
-  const inputBlocker = unresolvedAreaDefault || (wantsInput && compiledInputs?.status !== 'ready');
+  const inputBlocker = missingPlugin !== null || unresolvedAreaDefault || (wantsInput && compiledInputs?.status !== 'ready');
   /* Blank by the kernel's rule, not JS `trim()`: the two disagree on a code point. */
   const valid = !isBlankForKernel(message) && (locked || !inputBlocker);
   /* One status slot; `templatesError` means the list is empty, so it never coexists
@@ -250,6 +254,11 @@ export function NewTrackForm({
             What would you like to work on?
           </h1>
         </div>
+
+        <p className={styles.introduction}>
+          Choose a Template for a guided workflow and a Folder for your repository.
+          An Area groups a project&apos;s work; a Track keeps one request, its conversation and report.
+        </p>
 
         <div
           ref={composerHostRef}
@@ -351,6 +360,19 @@ export function NewTrackForm({
           />
         )}
 
+
+        {effectiveSelection.kind === 'none' && isBlankForKernel(message) && templatesLoaded && templates.length > 0
+          && <TemplateChoices templates={templates} disabled={submitting || locked}
+            onSelect={(id) => {
+              selectStartingPoint({ kind: 'template', id });
+              composerHostRef.current?.querySelector<HTMLElement>('[contenteditable]')?.focus();
+            }} />}
+
+        {missingPlugin !== null && <Banner status="warning"
+          title={`Requires ${missingPlugin.plugin_name}`}
+          description="Enable it in Settings → Plugins. Your draft is kept while you change settings."
+          endContent={onOpenPluginSettings === undefined ? undefined
+            : <Button label="Open plugin settings" variant="ghost" isDisabled={submitting || locked} onClick={onOpenPluginSettings} />} />}
 
         {preview !== undefined && (
           <TemplatePreview key={`${effectiveSelection.kind}:${preview.id}`}

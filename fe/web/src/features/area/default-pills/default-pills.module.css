@@ -8,6 +8,12 @@
     max-inline-size: 16rem;
   }
 
+  .choiceLine {
+    display: block;
+    max-inline-size: var(--measure-form);
+    white-space: normal;
+  }
+
   .taskScroll {
     display: block;
     max-inline-size: 28rem;

@@ -35,7 +35,7 @@ const ISSUE_DEV: TrackTemplate = {
   id: 'dev',
   title: 'Development',
   input_schema: JSON.parse(ISSUE_INPUT_SCHEMA) as unknown,
-  tasks: [
+  description: null, availability: { status: 'ready' as const }, tasks: [
     { key: 'inspect-issue', goal: 'Read the bound template input and view the source issue.' },
     { key: 'review-design-a', goal: 'Review the proposed design for correctness.' },
     { key: 'open-pr', goal: 'Open a pull request and check its diff.' },
@@ -46,7 +46,7 @@ const ISSUE_DEV: TrackTemplate = {
 const SMALL_CHANGE: TrackTemplate = {
   id: 'small-change',
   title: 'Small change',
-  tasks: [
+  description: null, availability: { status: 'ready' as const }, tasks: [
     { key: 'inspect', goal: 'Read the requested change and the code it touches.' },
     { key: 'implement', goal: 'Implement the change and commit it.' },
     { key: 'verify', goal: "Run the repository's standard tests." },
@@ -55,13 +55,13 @@ const SMALL_CHANGE: TrackTemplate = {
 const INVESTIGATION: TrackTemplate = {
   id: 'investigation',
   title: 'Investigation',
-  tasks: [{ key: 'gather-facts', goal: 'Read the code, docs and history.' }],
+  description: null, availability: { status: 'ready' as const }, tasks: [{ key: 'gather-facts', goal: 'Read the code, docs and history.' }],
 };
 /** A task-less template: offered without a task hover card. */
 const INVESTMENT_RESEARCH: TrackTemplate = {
   id: 'investment-research',
   title: 'Investment research',
-  tasks: [],
+  description: null, availability: { status: 'ready' as const }, tasks: [],
 };
 const TEMPLATES = [ISSUE_DEV, SMALL_CHANGE, INVESTIGATION, INVESTMENT_RESEARCH];
 /** The templates that carry a task card; `INVESTMENT_RESEARCH` does not. */
@@ -614,18 +614,19 @@ describe('Start from — issue development expands under the group', () => {
       .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
-  /* A stopped plugin drops the schema on the read side, so the create path would
-   * reject `template_input`; the picker follows, with no fields. */
-  it('offers issue development with no fields when nothing is bound to it', async () => {
+  /* A stopped required owner drops the schema and makes creation unavailable;
+   * its template remains selectable so the reader can see the setup requirement. */
+  it('keeps development discoverable but blocks creation when its required owner is stopped', async () => {
     const { props } = renderForm({
-      templates: [{ id: 'dev', title: 'Development', tasks: ISSUE_DEV.tasks }],
+      templates: [{ id: 'dev', title: 'Development', description: null,
+        availability: { status: 'requires_plugin', plugin_id: 'gitforge', plugin_name: 'development' }, tasks: ISSUE_DEV.tasks }],
     });
     await chooseIssueDev(false);
     expect(screen.queryByLabelText('Issue URL')).toBeNull();
+    expect(screen.getAllByRole('alert').some((alert) => alert.textContent?.includes('Requires development'))).toBe(true);
+    expect(submitButton().disabled).toBe(true);
     await userEvent.click(submitButton());
-    expect(props.onSubmit).toHaveBeenCalledWith({
-      message: 'Ship the thing', template_id: 'dev',
-    });
+    expect(props.onSubmit).not.toHaveBeenCalled();
   });
 
   /* Fail-closed on a template this build has no editor for: a readable block beats a 422. */
@@ -635,7 +636,7 @@ describe('Start from — issue development expands under the group', () => {
         id: 'future-template',
         title: 'Future template',
         input_schema: { type: 'object' },
-        tasks: [{ key: 'do-it', goal: 'Do the future thing.' }],
+        description: null, availability: { status: 'ready' as const }, tasks: [{ key: 'do-it', goal: 'Do the future thing.' }],
       }],
     });
     await fillMessage();

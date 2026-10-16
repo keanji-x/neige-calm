@@ -12,7 +12,7 @@ function detail(id: string): TemplateDetail {
 }
 
 it('shows the author-owned working method beneath the actual composer', async () => {
-  render(<NewTrackForm submitting={false} error={null} templates={[{ id: 'small-change', title: 'Small change', tasks: [] }]}
+  render(<NewTrackForm submitting={false} error={null} templates={[{ id: 'small-change', title: 'Small change', description: null, availability: { status: 'ready' as const }, tasks: [] }]}
     templatesLoaded initialTemplateId="small-change" initialCwd={null} onManageRecipes={vi.fn()}
     loadTemplate={(id) => Promise.resolve(detail(id))} listDirectory={vi.fn()} onSubmit={vi.fn()} />);
   expect(await screen.findByText('Purpose of small-change')).toBeTruthy();

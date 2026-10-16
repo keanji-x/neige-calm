@@ -64,7 +64,7 @@ it('wraps safely at phone width while keeping Cancel and Save together', async (
         templates={[{
           id: 'long-template',
           title: 'A template name that is deliberately very long',
-          tasks: [],
+          description: null, availability: { status: 'ready' as const }, tasks: [],
         }]}
         templatesLoaded
         templatesError={null}

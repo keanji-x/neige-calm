@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 // A conversation not created yet keeps its unsent words per Track, driven through the real router (#1923).
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
@@ -41,7 +42,7 @@ function renderApp(managed = false) {
   const transport: ApiTransportPort = {
     send(request) {
       requests.push(request);
-      if (request.path === '/api/version') return Promise.resolve(ok({ webCompatVersion: 54, minWebCompatVersion: 54, syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationCreateModel: true }));
+      if (request.path === '/api/version') return Promise.resolve(ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationCreateModel: true }));
       if (request.path.startsWith('/api/agent-providers/managed')) return Promise.resolve(ok([{
         availability: { provider: managed ? 'claude' : 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
         capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },

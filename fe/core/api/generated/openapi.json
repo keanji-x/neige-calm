@@ -18538,9 +18538,22 @@
         "required": [
           "id",
           "title",
+          "description",
+          "availability",
           "tasks"
         ],
         "properties": {
+          "availability": {
+            "$ref": "#/components/schemas/TrackTemplateAvailability",
+            "description": "The same required-owner check creation enforces, using current trusted plugin liveness."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The purpose written by this template's author. Always present; null means no description."
+          },
           "id": {
             "type": "string",
             "description": "Template key. Passed back verbatim as `template_id` on `POST /api/tracks`."
@@ -18559,6 +18572,47 @@
             "type": "string"
           }
         }
+      },
+      "TrackTemplateAvailability": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "ready"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "plugin_id",
+              "plugin_name",
+              "status"
+            ],
+            "properties": {
+              "plugin_id": {
+                "type": "string"
+              },
+              "plugin_name": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "requires_plugin"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "A missing prerequisite is independent of any documentation the template includes."
       },
       "TrackTemplateDetail": {
         "type": "object",

@@ -191,7 +191,11 @@ impl AppConfig {
         }
         let text =
             fs::read_to_string(&path).with_context(|| format!("read config {}", path.display()))?;
-        let builder = parse_config(&text)?;
+        Self::from_text(path, &text)
+    }
+
+    pub(crate) fn from_text(path: PathBuf, text: &str) -> anyhow::Result<Self> {
+        let builder = parse_config(text)?;
         Self::from_builder(path, builder)
     }
 
@@ -804,11 +808,32 @@ fn set_value(
 }
 
 fn parse_string(value: &str) -> anyhow::Result<String> {
-    let value = strip_comment(value).trim();
-    let Some(inner) = value.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
+    let Some(inner) = value.trim().strip_prefix('"') else {
         return Err(anyhow!("expected quoted string"));
     };
-    Ok(inner.replace("\\\"", "\"").replace("\\\\", "\\"))
+    let mut chars = inner.chars();
+    let mut decoded = String::new();
+    while let Some(character) = chars.next() {
+        match character {
+            '"' => {
+                let suffix = chars.as_str().trim();
+                if suffix.is_empty() || suffix.starts_with('#') {
+                    return Ok(decoded);
+                }
+                return Err(anyhow!("unexpected text after quoted string"));
+            }
+            '\\' => match chars.next() {
+                Some(escaped @ ('\\' | '"')) => decoded.push(escaped),
+                Some(other) => {
+                    decoded.push('\\');
+                    decoded.push(other);
+                }
+                None => return Err(anyhow!("unterminated quoted string")),
+            },
+            other => decoded.push(other),
+        }
+    }
+    Err(anyhow!("unterminated quoted string"))
 }
 
 fn parse_optional_string(value: &str) -> anyhow::Result<Option<String>> {
@@ -896,6 +921,15 @@ mod systemd_tests;
 mod tests {
     use super::*;
     use crate::test_support::test_temp_dir;
+
+    #[test]
+    fn quoted_config_values_preserve_password_punctuation() {
+        assert_eq!(parse_string(r#""a # b""#).unwrap(), "a # b");
+        assert_eq!(
+            parse_string(r#""a \\\" # b" # comment"#).unwrap(),
+            "a \\\" # b"
+        );
+    }
 
     #[test]
     fn config_defaults_have_expected_paths() {

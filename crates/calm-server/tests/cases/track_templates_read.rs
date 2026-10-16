@@ -223,11 +223,92 @@ async fn lists_every_template_with_its_kernel_title() {
         "Investment research"
     );
     for entry in body.as_array().expect("array body") {
+        let template = calm_server::templates::TemplateRoster::builtin()
+            .get(entry["id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            entry["description"],
+            json!(template.description()),
+            "the picker must expose the author's description, including null"
+        );
         assert!(
-            entry.get("description").is_none(),
-            "track-templates must not invent a description: {entry}"
+            entry.get("description").is_some(),
+            "description is required: {entry}"
         );
     }
+}
+
+#[tokio::test]
+async fn template_availability_matches_required_owner_lifecycle() {
+    let boot = boot(false).await;
+    let (_, body) = list_templates(boot.app.clone()).await;
+    assert_eq!(
+        row(&body, DEV)["availability"],
+        json!({
+            "status": "requires_plugin", "plugin_id": "gitforge", "plugin_name": "development"
+        })
+    );
+    for key in [SMALL_CHANGE, INVESTIGATION, INVESTMENT_RESEARCH] {
+        assert_eq!(row(&body, key)["availability"], json!({"status": "ready"}));
+    }
+    boot.plugin_host.spawn(&boot.plugin_id).await.unwrap();
+    wait_for_running(&boot.plugin_host, &boot.plugin_id).await;
+    let (_, body) = list_templates(boot.app.clone()).await;
+    assert_eq!(row(&body, DEV)["availability"], json!({"status": "ready"}));
+    boot.plugin_host.stop(&boot.plugin_id).await.unwrap();
+    let (_, body) = list_templates(boot.app).await;
+    assert_eq!(row(&body, DEV)["availability"]["status"], "requires_plugin");
+    assert!(
+        boot.repo.areas_list().await.unwrap().is_empty(),
+        "readiness writes nothing"
+    );
+}
+
+#[tokio::test]
+async fn unavailable_template_creation_is_refused_without_writes() {
+    let boot = boot(false).await;
+    let area = boot
+        .repo
+        .area_create(calm_server::model::NewArea {
+            name: "Onboarding".into(),
+            color: "#5B8DEF".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let before = db_digest(&boot.repo).await;
+    let response = boot
+        .app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/tracks")
+                .header("X-Calm-Actor", "user")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "area_id": area.id, "planner_provider": "codex", "template_id": DEV,
+                        "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let message = body["error"].as_str().expect("refusal message");
+    assert!(
+        message.contains("requires `gitforge`") && message.contains("Settings"),
+        "{body}"
+    );
+    assert_eq!(
+        db_digest(&boot.repo).await,
+        before,
+        "refusal must leave no track, report, or operation"
+    );
 }
 
 #[tokio::test]
@@ -406,10 +487,7 @@ async fn selected_template_detail_is_exact_and_read_only() {
     assert_eq!(body["id"], SMALL_CHANGE);
     assert_eq!(body["title"], template.title());
     assert_eq!(body["body"], template.recipe().body);
-    assert_eq!(
-        body["description"],
-        "Make a focused change in an existing repository."
-    );
+    assert_eq!(body["description"], json!(template.description()));
     assert!(
         body["instructions"]
             .as_str()

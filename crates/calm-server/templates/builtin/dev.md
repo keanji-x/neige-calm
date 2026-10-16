@@ -85,6 +85,9 @@ without a remote can still be developed; publication needs a confirmed remote.
 
 Working method and repository policy
 
+Before implementation, check `git var GIT_AUTHOR_IDENT` and `git var GIT_COMMITTER_IDENT` in the track checkout.
+If a Git identity is missing, explain that saving local work needs an author and committer; ask the user to configure their existing identity or explicitly authorize one for this repository, and wait before dispatching implementation. Never invent an identity or copy one from commit history.
+
 Read the target repository's AGENTS.md, applicable directory guidance, and
 CONTRIBUTING.md before implementation, and pass their requirements to workers.
 Those files own design requirements, review tiers, review/fix scope, coding rules,

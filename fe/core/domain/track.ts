@@ -403,6 +403,13 @@ export type NewTrackBodyWithoutFirstMessage = Omit<NewTrackBody, 'first_message'
 export const trackTemplateSchema = z.object({
   id: z.string(),
   title: z.string(),
+  /** Author-owned purpose; null means this author did not supply a description. */
+  description: z.string().nullable(),
+  /** Server-owned prerequisite state, independent of documentation references. */
+  availability: z.discriminatedUnion('status', [
+    z.object({ status: z.literal('ready') }),
+    z.object({ status: z.literal('requires_plugin'), plugin_id: z.string(), plugin_name: z.string() }),
+  ]),
   input_schema: z.unknown().optional(),
   /** Required, not `.default([])`: a default would let a broken read render as "pre-sets nothing". */
   tasks: z.array(z.object({ key: z.string(), goal: z.string() })),
@@ -419,7 +426,7 @@ export const trackRecipeSchema = z.object({
   /** Picker label *and* the instantiated report's summary — one field on the
    *  kernel side too, so the editor edits one thing. */
   title: z.string(),
-  /** The report body. Its `neige-block` fences are the recipe's tasks. */
+  /** Saved report content and instructions. The planner derives tasks from the actual request. */
   body: z.string(),
   /** Optimistic-lock anchor a `PUT` must echo as `if_revision`. */
   revision: z.number(),

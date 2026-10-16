@@ -21,7 +21,7 @@ const TEMPLATE_CHIP = /^Template: /;
 const TEMPLATES: readonly TrackTemplate[] = [{
   id: 'small-change',
   title: 'Small change',
-  tasks: [
+  description: null, availability: { status: 'ready' as const }, tasks: [
     { key: 'inspect', goal: 'Read the requested change and the code it touches.' },
     { key: 'implement', goal: 'Implement the change and commit it.' },
   ],

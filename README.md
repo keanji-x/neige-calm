@@ -55,12 +55,30 @@ See [Using Neige Calm](docs/using-neige-calm.md) for the current UI paths and th
 
 ## Quick start
 
-The simplest source-based preview runs directly on the host. It currently assumes:
+For a fresh Linux installation, use the [getting-started guide](docs/getting-started.md)
+([中文](docs/getting-started.zh-CN.md)). A reviewed Alpha archive runs without
+Rust, Node.js, Go, Docker or systemd:
+
+```bash
+# From the extracted Alpha archive:
+./release/bin/neige-app system setup --package ./release
+```
+
+Setup checks package integrity, asks for a local owner password, and prints the
+start command and browser URL. The guide takes you from provider readiness to
+your first repository report, then a small change or a Development PR.
+Archives are prepared with the [maintainer packaging runbook](docs/alpha-release.md).
+Existing installations follow the [upgrade guide](docs/deploy-and-upgrade.md).
+
+### Source preview
+
+Contributors can build and run directly on the host. This path assumes:
 
 - Linux
 - Git, GNU Make, and Bash
 - [rustup](https://rustup.rs/) (the repository pins Rust in `rust-toolchain.toml`)
 - Node.js 22.12 or newer and npm
+- Go (the version in `tailnet/go.mod`; `make prod` also builds the Tailnet helper)
 - An installed and authenticated OpenAI Codex CLI
 - Optional: a configured and authenticated Claude Planner; see [Planner configuration](docs/neige-app-config.md#enable-a-claude-planner)
 - Optional, for publishing Tracks as pull requests: an authenticated [GitHub CLI](https://cli.github.com/) (`gh`) and `jq` on the server's `PATH`. The development plugin's forge tools run `gh`, and its PR checks read also runs `jq`

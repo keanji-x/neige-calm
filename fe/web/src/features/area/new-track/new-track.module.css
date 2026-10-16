@@ -84,6 +84,13 @@
     margin-block-end: var(--space-8);
   }
 
+  .introduction {
+    margin-block: 0 var(--space-3);
+    color: var(--text-2);
+    font-size: var(--text-sm);
+    line-height: var(--leading-base);
+  }
+
   .mark {
     display: inline-block;
     inline-size: 1em;

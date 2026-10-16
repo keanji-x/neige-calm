@@ -194,6 +194,7 @@ function NewTrackEditor({ transport, unauthorized, workspace, session, store }: 
         ? { label: `Reuse directory in ${session.area.name}`, isApplicable: (draft) => draft.cwd === folderConflict.cwd, onClick: recoverFolderConflict }
         : session.canRetryAsNewTrack ? { label: 'Start as a new track', onClick: retryAsNewTrack } : undefined}
     onManageRecipes={() => go({ name: 'recipes' })}
+    onOpenPluginSettings={() => go({ name: 'settings-plugins' })}
     initialTemplateId={session.area.defaultTemplateId}
     initialCwd={session.area.defaultCwd}
     listDirectory={listDirectory}

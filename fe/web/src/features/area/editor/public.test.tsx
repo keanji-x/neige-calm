@@ -10,8 +10,8 @@ import { AreaEditorForm, type AreaEditorFormProps } from './public.tsx';
 afterEach(cleanup);
 
 const templates = [
-  { id: 'small-change', title: 'Small change', tasks: [] },
-  { id: 'investigation', title: 'Investigation', tasks: [] },
+  { id: 'small-change', title: 'Small change', description: null, availability: { status: 'ready' as const }, tasks: [] },
+  { id: 'investigation', title: 'Investigation', description: null, availability: { status: 'ready' as const }, tasks: [] },
 ];
 
 function renderForm(overrides: Partial<AreaEditorFormProps> = {}) {

@@ -3,9 +3,15 @@
 Operator-facing recipe for installing `neige-app` and driving upgrades
 through the `/upgrade/apply` admin endpoint.
 
-For the Alpha archive build and first-user installation, start with the
-[Linux Alpha runbook](alpha-release.md). This guide covers the underlying
+For a fresh packaged installation, start with the [user guide](getting-started.md).
+Maintainers build archives with the [Alpha runbook](alpha-release.md).
+This guide covers the underlying
 package commands and upgrade/recovery operations.
+
+If you installed with `system setup`, use the executable and config paths printed
+by setup, including `--config <installation-root>/config.toml` on operator commands.
+Its data and releases also live under that root. The manual layout below uses
+the older operator defaults; substitute your installation's paths consistently.
 
 Before installing local plugins, read [Plugin host security](plugin-security.md).
 Their native code executes as the service OS identity. Protect both the plugin

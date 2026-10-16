@@ -1,10 +1,13 @@
 # Using Neige Calm
 
+New here? Follow [Start with one repository](getting-started.md)
+([中文](getting-started.zh-CN.md)) for installation and your first report.
+
 This guide describes the maintained desktop frontend at `/next/` on `main`.
 An older installation may not have these controls. Use
 `/api/version` to identify its build and the [upgrade guide](deploy-and-upgrade.md)
 to update it. For a fresh installation, start with the
-[Linux Alpha runbook](alpha-release.md).
+[getting-started guide](getting-started.md).
 
 ## Choose a Planner
 

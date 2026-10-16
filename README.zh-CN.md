@@ -53,12 +53,29 @@ Track 可以只完成一次，例如修复一个 issue；也可以经历多轮�
 
 ## 快速开始
 
-最简单的源码预览方式是直接在宿主机运行，目前假定具备：
+新装 Linux 实例请按[入门指南](docs/getting-started.zh-CN.md)操作
+（[English](docs/getting-started.md)）。经过审查的 Alpha 发行包运行时不需要
+Rust、Node.js、Go、Docker 或 systemd：
+
+```bash
+# 在 Alpha 归档的解压目录中执行：
+./release/bin/neige-app system setup --package ./release
+```
+
+安装程序校验发行包，提示设置本地 owner 密码，并打印启动命令和浏览器地址。
+指南会带你确认 Agent 就绪，得到第一份仓库报告，再尝试小修改或 Development PR。
+维护者按 [Alpha 打包流程](docs/alpha-release.md)准备归档；已有实例使用
+[升级指南](docs/deploy-and-upgrade.md)。
+
+### 源码预览
+
+贡献者可直接在宿主机编译运行，这条路径需要：
 
 - Linux
 - Git、GNU Make 与 Bash
 - [rustup](https://rustup.rs/)（仓库通过 `rust-toolchain.toml` 固定 Rust 版本）
 - Node.js 22.12 或更高版本与 npm
+- Go（版本见 `tailnet/go.mod`；`make prod` 也会构建 Tailnet 辅助程序）
 - 已安装并完成认证的 OpenAI Codex CLI
 - 可选：已配置并登录的 Claude Planner，详见 [Planner 配置](docs/neige-app-config.md#enable-a-claude-planner)
 - 可选，用于把 Track 发布为 PR：服务端 `PATH` 上需要已登录的 [GitHub CLI](https://cli.github.com/)（`gh`）与 `jq`。开发插件的 forge 工具会调用 `gh`，其中读取 PR checks 还会调用 `jq`

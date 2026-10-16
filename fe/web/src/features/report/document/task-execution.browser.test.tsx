@@ -3,6 +3,10 @@ import { page, userEvent } from 'vitest/browser';
 import { afterEach, expect, it } from 'vitest';
 
 import '../../../styles/entry.css';
+import { deriveReportTasks, readTrackReport } from '../../../../../core/domain/report.ts';
+import { NEUTRAL_ACTIVITY } from '../../../../../core/domain/track.ts';
+import { groupPanelRows } from '../../../../../core/view/panel-groups.ts';
+import { deriveTrackPageView } from '../../../../../core/view/track-page.ts';
 import { ReportDocument } from './public.tsx';
 
 afterEach(cleanup);
@@ -43,4 +47,34 @@ it('reveals the failed task with a reachable cause on hover and neutral declarat
   expect(getComputedStyle(declared.lastElementChild!.previousElementSibling!).color).toBe(getComputedStyle(probe).color);
   probe.remove();
   await page.screenshot();
+});
+
+
+it.each(['codex', 'claude'] as const)('keeps a completed %s review readable in task references and inventory', async (kind) => {
+  const report = readTrackReport([{
+    id: 'report', track_id: 't', kind: 'track-report', title: null, sort: 0,
+    deletable: false, created_at: 0, updated_at: 0,
+    payload: { body: '', blocks: [{ id: 'b-review', kind: 'task', payload: {
+      key: 'independent-review', kind, goal: 'Review the committed change without editing it.',
+      access: 'read_only', result_contract: 'review-v1', ready: true, declared_by: 'spec',
+    } }] },
+  }]);
+  const tasks = deriveReportTasks(report?.blocks ?? null, [{
+    blockId: 'b-review', key: 'independent-review', schedulable: true,
+    status: 'done', workerCardId: 'review-worker',
+  }]);
+  const inventory = deriveTrackPageView({ cards: [], tasks, activity: NEUTRAL_ACTIVITY,
+    openableCards: new Set(['review-worker']) }).rowModules.find(module => module.key === 'tasks')!;
+  expect(groupPanelRows(inventory.rows, 'tasks').map(group => [group.key, group.rows.length]))
+    .toEqual([['done', 1]]);
+  expect(tasks[0]).toMatchObject({ key: 'independent-review', status: 'done', kind,
+    workerCardId: 'review-worker' });
+
+  render(<ReportDocument report={report} taskRows={tasks} empty={null} />);
+  await userEvent.click(document.querySelector('[data-nc-report-reference] > summary')!);
+  await userEvent.click(document.querySelector('#b-review details > summary')!);
+  await expect.element(page.getByText('Review the committed change without editing it.')).toBeVisible();
+  await expect.element(page.getByText('done', { exact: true })).toBeVisible();
+  expect(document.querySelector('[data-nc-task-state="done"]')).not.toBeNull();
+  expect(document.body.textContent).not.toContain('unsupported block kind');
 });

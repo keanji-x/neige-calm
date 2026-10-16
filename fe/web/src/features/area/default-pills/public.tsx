@@ -149,6 +149,10 @@ export function StartingPointPill({
             <TemplateChoice
               key={`template:${template.id}`}
               label={template.title}
+              description={<>
+                {template.description !== null && <span className={styles.choiceLine}>{template.description}</span>}
+                {template.availability.status === 'requires_plugin' && <span className={styles.choiceLine}>Requires {template.availability.plugin_name}</span>}
+              </>}
               tasks={template.tasks}
               isSelected={value.kind === 'template' && value.id === template.id}
               onSelect={() => onChange({ kind: 'template', id: template.id })}
@@ -226,9 +230,10 @@ function MenuGroup({ heading, children }: Readonly<{
 }
 
 function TemplateChoice({
-  label, tasks, isSelected, isDisabled = false, onSelect,
+  label, description, tasks, isSelected, isDisabled = false, onSelect,
 }: Readonly<{
   label: string;
+  description?: ReactNode;
   tasks?: TrackTemplate['tasks'];
   isSelected: boolean;
   isDisabled?: boolean;
@@ -237,6 +242,7 @@ function TemplateChoice({
   const item = (
     <DropdownMenuItem
       label={label}
+      description={description}
       onClick={onSelect}
       isDisabled={isDisabled}
       endContent={isSelected ? (

@@ -12,7 +12,7 @@ it('collects a template-declared field for a template with an unrelated id', asy
   }] }] };
   const onSubmit = vi.fn();
   render(<NewTrackForm submitting={false} error={null}
-    templates={[{ id: 'custom-create', title: 'Custom create', tasks: [], input_schema: {
+    templates={[{ id: 'custom-create', title: 'Custom create', description: null, availability: { status: 'ready' as const }, tasks: [], input_schema: {
       type: 'object', properties: { project_code: { type: 'string' } }, required: ['project_code'], additionalProperties: false,
     } }]} templatesLoaded initialTemplateId="custom-create" initialCwd={null}
     loadTemplate={(id) => Promise.resolve({ id, title: 'Custom create', description: null, instructions: null,

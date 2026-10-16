@@ -17,7 +17,7 @@ const TASK_LABEL = 'What this track should do';
 const SMALL_CHANGE: TrackTemplate = {
   id: 'small-change',
   title: 'Small change',
-  tasks: [{ key: 'inspect', goal: 'Read the requested change.' }],
+  description: null, availability: { status: 'ready' as const }, tasks: [{ key: 'inspect', goal: 'Read the requested change.' }],
 };
 
 /* A recipe whose id is the same string as a built-in template's key: recipe ids

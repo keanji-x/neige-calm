@@ -48,7 +48,8 @@ pub use calm_types::compatibility::REST_API_VERSION as API_VERSION;
 // #2618: 51 -> 52 adds the regenerable initial Planner budget presentation.
 // #2616: 52 -> 53 adds managed Assistant identities and provider negotiation.
 // Child task route is sub-track; older clients must reload before writing reports.
-pub const WEB_COMPAT_VERSION: u32 = 54;
+// #2672 bumps 54 -> 55: template lists require author descriptions and authoritative availability.
+pub const WEB_COMPAT_VERSION: u32 = 55;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

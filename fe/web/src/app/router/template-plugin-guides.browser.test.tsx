@@ -19,8 +19,8 @@ function mount(issueGuides?: Promise<ApiTransportResponse>) {
     requests.push(request);
     if (request.path === '/api/areas') return Promise.resolve(ok([{ id: 'area', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 }]));
     if (request.path === '/api/track-templates') return Promise.resolve(ok([
-      { id: 'dev', title: 'Development', tasks: [] },
-      { id: 'small-change', title: 'Small change', tasks: [] },
+      { id: 'dev', title: 'Development', description: null, availability: { status: 'requires_plugin', plugin_id: 'gitforge', plugin_name: 'development' }, tasks: [] },
+      { id: 'small-change', title: 'Small change', description: null, availability: { status: 'ready' as const }, tasks: [] },
     ]));
     if (request.path.endsWith('/dev/plugin-guides') && issueGuides !== undefined) return issueGuides;
     if (request.path.endsWith('/plugin-guides')) return Promise.resolve(ok(request.path.includes('/dev/')

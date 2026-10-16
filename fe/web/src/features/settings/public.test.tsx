@@ -38,6 +38,16 @@ describe('Settings network form', () => {
     expect(screen.getByLabelText<HTMLInputElement>('HTTP proxy').value).toBe('http://old/draft');
     expect(screen.getByText('Changed elsewhere. Your edit is not saved.')).toBeTruthy();
   });
+  it('does not call an unchanged proxy remotely changed when the other proxy updates', async () => {
+    const view = render(<NetworkPane {...props({ settings: { [HTTP_PROXY_KEY]: 'http://old' } })} />);
+    await userEvent.type(screen.getByLabelText('HTTP proxy'), '/draft');
+    view.rerender(<NetworkPane {...props({ settings: {
+      [HTTP_PROXY_KEY]: 'http://old', [HTTPS_PROXY_KEY]: 'http://remote',
+    } })} />);
+    expect(screen.getByLabelText<HTMLInputElement>('HTTP proxy').value).toBe('http://old/draft');
+    expect(within(view.container).queryByText('Changed elsewhere. Your edit is not saved.')).toBeNull();
+  });
+
   it('seeds the proxy fields from the settings bag', () => {
     render(<NetworkPane {...props({
       settings: { [HTTP_PROXY_KEY]: 'http://box:3128', [HTTPS_PROXY_KEY]: 'http://box:3129' },

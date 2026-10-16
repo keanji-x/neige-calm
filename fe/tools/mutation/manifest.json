@@ -1051,7 +1051,7 @@
       "oracle:INV-APP-035"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -209,5 +209,5 @@\n     return result(keys);\n   }),\n-  'terminal.deleted': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),\n+  'terminal.deleted': plan((event, context) => result([trackFiles(derivedTrackId(event.data, context))])),\n   'plugin.state': plan(() => result([['plugins']])),\n   'plugin.data.changed': plan((event) => result([['plugin-data', event.data.plugin_id]])),\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -209,5 +209,5 @@\n     return result(keys);\n   }),\n-  'terminal.deleted': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),\n+  'terminal.deleted': plan((event, context) => result([trackFiles(derivedTrackId(event.data, context))])),\n   'plugin.state': plan(() => result([['plugins'], ['track-templates']])),\n   'plugin.data.changed': plan((event) => result([['plugin-data', event.data.plugin_id]])),\n",
     "expected_red": [
       "invalidation plan behavior invalidates terminal runtime projection through card ownership",
       "invalidation plan contract pins track-report invalidation to exactly the task-verdict invalidating kinds"

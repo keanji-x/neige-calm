@@ -1,0 +1,17 @@
+@layer features {
+  .choices {
+    margin-block-start: var(--space-4);
+  }
+
+  .title {
+    margin-block: 0 var(--space-2);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+    color: var(--text-2);
+  }
+
+  .description {
+    display: block;
+    white-space: normal;
+  }
+}

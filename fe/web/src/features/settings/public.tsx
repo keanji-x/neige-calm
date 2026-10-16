@@ -209,7 +209,8 @@ export function NetworkPane({
       const next = { ...current };
       for (const field of PROXY_FIELDS) {
         const row = statusRef.current[field];
-        if (previous !== null && draft[field] !== previous[field] && draft[field] !== incoming[field]
+        if (previous !== null && previous[field] !== incoming[field]
+          && draft[field] !== previous[field] && draft[field] !== incoming[field]
           && row.phase !== 'saving'
           && (row.phase === 'idle' || row.value !== incoming[field])) next[field] = true;
         else if (previous === null || draft[field] === previous[field] || draft[field] === incoming[field]) next[field] = false;

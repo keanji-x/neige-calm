@@ -1,3 +1,4 @@
+import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 import { useConversationStore } from '../conversations/store.ts';
 // @vitest-environment jsdom
 // Starting a conversation on a track, driven through the real router; and what the
@@ -173,7 +174,7 @@ function setup(reply?: Reply, storage?: UiPreferenceStorage, recovery?: Recovery
         const response = await reply(request);
         if (response) return response;
       }
-      if (request.path === '/api/version') return ok({ webCompatVersion: 54, minWebCompatVersion: 54, syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationCreateModel: true, conversationSide: true });
+      if (request.path === '/api/version') return ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationCreateModel: true, conversationSide: true });
       if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
         availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
         capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
@@ -3827,7 +3828,7 @@ it.each([false, true])('selects a model before the first conversation message an
   vi.stubGlobal('__NC_BUNDLED__', bundled);
   const access = new RecoveryAccess(); access.change('connected');
   const { requests } = setup(request => {
-    if (request.path === '/api/version') return ok({ webCompatVersion: 54, minWebCompatVersion: 54,
+    if (request.path === '/api/version') return ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION,
       syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationCreateModel: true });
     if (request.path === '/api/models?provider=codex') return ok({
       models: [{ id: 'preset-fast', model: 'gpt-5', resolved_model: null, display_name: 'GPT-5', description: '', is_default: false,
@@ -3903,7 +3904,7 @@ it('keeps the first-message model fixed when a menu opened before sending is sel
   let settle!: (response: ApiTransportResponse) => void;
   const pending = new Promise<ApiTransportResponse>(resolve => { settle = resolve; });
   const { requests } = setup(request => {
-    if (request.path === '/api/version') return ok({ webCompatVersion: 54, minWebCompatVersion: 54,
+    if (request.path === '/api/version') return ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION,
       syncEventVersion: 20, dbInstanceId: 'test', assistantProviders: true, conversationCreateModel: true });
     if (request.path === '/api/models?provider=codex') return ok({
       models: [{ id: 'preset', model: 'chosen-model', resolved_model: null, display_name: 'Chosen model', description: '', is_default: false,
@@ -4149,7 +4150,7 @@ it('an edited conversation retry cannot cross recovery after its reconciliation 
 });
 
 
-const sideVersion = () => ok({ assistantProviders: true, conversationSide: true, webCompatVersion: 54, minWebCompatVersion: 54, syncEventVersion: 1, dbInstanceId: 'side-db' });
+const sideVersion = () => ok({ assistantProviders: true, conversationSide: true, webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 1, dbInstanceId: 'side-db' });
 
 describe('side conversations', () => {
   it('keeps the parent open, creates an independent child with a text snapshot and reopens it', async () => {

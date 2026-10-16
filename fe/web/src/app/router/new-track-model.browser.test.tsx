@@ -143,7 +143,7 @@ it('keeps long custom preferences readable inside overflow and preserves the fol
   const modelName = 'A long custom model for careful reasoning';
   const cwd = '/srv/projects/a-long-custom-folder-for-the-mobile-layout';
   const view = render(<ModelForm initialCwd={cwd} initialTemplateId="long-template"
-    templates={[{ id: 'long-template', title: templateTitle, tasks: [] }]} modelName={modelName} />);
+    templates={[{ id: 'long-template', title: templateTitle, description: null, availability: { status: 'ready' as const }, tasks: [] }]} modelName={modelName} />);
   try {
     await page.viewport(320, 740);
     await userEvent.click(screen.getByRole('button', { name: 'Model: Default' }));
@@ -194,7 +194,7 @@ it('dismisses the nested template picker before overflow and leaves directory se
   const user = userEvent.setup({ delay: 60 });
   await page.viewport(320, 740);
   const cwd = '/srv/a-long-directory-selected-through-the-real-browser';
-  const view = render(<ModelForm templates={[{ id: 'small', title: 'Small change', tasks: [{ key: 'inspect', goal: 'Read the change.' }] }]}
+  const view = render(<ModelForm templates={[{ id: 'small', title: 'Small change', description: null, availability: { status: 'ready' as const }, tasks: [{ key: 'inspect', goal: 'Read the change.' }] }]}
     listDirectory={() => Promise.resolve({ path: cwd, parent: null, entries: [] })} />);
   try {
     const more = await screen.findByRole('button', { name: 'Track options' });
@@ -348,7 +348,7 @@ it('uses the card radius for the composer while retaining full pill and send con
 
 
 it('keeps the selected template and required inputs readable on a narrow screen', async () => {
-  const template: TrackTemplate = { id: 'dev', title: 'Development', tasks: [], input_schema: JSON.parse(ISSUE_INPUT_SCHEMA) as unknown };
+  const template: TrackTemplate = { id: 'dev', title: 'Development', description: null, availability: { status: 'ready' as const }, tasks: [], input_schema: JSON.parse(ISSUE_INPUT_SCHEMA) as unknown };
   await page.viewport(320, 700);
   const view = render(<ModelForm templates={[template]} initialTemplateId="dev" />);
   try {
@@ -380,7 +380,7 @@ it('keeps the selected template and required inputs readable on a narrow screen'
 
 it('aligns template field labels and descriptions on the same desktop axis', async () => {
   await page.viewport(1280, 900);
-  const template: TrackTemplate = { id: 'dev', title: 'Development', tasks: [], input_schema: JSON.parse(ISSUE_INPUT_SCHEMA) as unknown };
+  const template: TrackTemplate = { id: 'dev', title: 'Development', description: null, availability: { status: 'ready' as const }, tasks: [], input_schema: JSON.parse(ISSUE_INPUT_SCHEMA) as unknown };
   const view = render(<ModelForm templates={[template]} initialTemplateId="dev" />);
   try {
     const issue = await screen.findByLabelText<HTMLInputElement>('Issue URL');
@@ -401,7 +401,7 @@ it('aligns template field labels and descriptions on the same desktop axis', asy
 
 it('remeasures changed template metadata while its overflow popup is closed', async () => {
   await page.viewport(600, 844);
-  const template = { id: 'short', title: 'An exceptionally long template name that cannot share the footer', tasks: [] };
+  const template = { id: 'short', title: 'An exceptionally long template name that cannot share the footer', description: null, availability: { status: 'ready' as const }, tasks: [] };
   const view = render(<ModelForm templates={[template]} initialTemplateId={template.id} />);
   try {
     await screen.findByRole('button', { name: 'Track options' });

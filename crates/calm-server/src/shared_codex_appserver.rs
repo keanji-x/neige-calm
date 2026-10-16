@@ -678,7 +678,7 @@ impl SharedCodexAppServer {
         let home = Arc::new(SharedCodexHome::new(root.join("codex-home"), legacy));
         let (tx, _) = broadcast::channel(16);
         Arc::new(Self {
-            sock: root.join("run/codex-appserver.sock"),
+            sock: calm_types::runtime_paths::shared_codex_appserver_socket(&root),
             kernel_mcp_socket_path: transport::default_socket_path(&root),
             home,
             repo,
@@ -745,7 +745,7 @@ impl SharedCodexAppServer {
         ));
         let (tx, _) = broadcast::channel(1024);
         Arc::new(Self {
-            sock: data_dir.join("run/codex-appserver.sock"),
+            sock: calm_types::runtime_paths::shared_codex_appserver_socket(&data_dir),
             kernel_mcp_socket_path: transport::default_socket_path(&data_dir),
             home,
             repo,

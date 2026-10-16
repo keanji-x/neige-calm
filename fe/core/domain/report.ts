@@ -143,6 +143,8 @@ const agentTaskBlockPayloadSchema = z.strictObject({
   key: z.string(),
   kind: z.enum(['codex', 'claude']),
   goal: z.string(),
+  /** The kernel owns contract registration; the reader preserves its declared name. */
+  result_contract: z.string().optional(),
   access: z.enum(['read_only', 'read_write']).nullish(),
   head: z.string().nullish(),
   base: z.string().nullish(),

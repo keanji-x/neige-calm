@@ -1,7 +1,7 @@
 +++
 id = "small-change"
 title = "Small change"
-description = "Make a focused change in an existing repository."
+description = "Make a focused local change and verify it. Choose Development when you expect PR delivery."
 instructions = """
 Read the requested change and the affected code path.
 Implement the smallest appropriate change and run relevant verification.

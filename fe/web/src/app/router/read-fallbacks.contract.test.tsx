@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -194,7 +195,7 @@ describe('degraded workspace reads stay usable', () => {
   it('finishes an offline conversation submission without waiting for delivery reconciliation', async () => {
     const creates: ApiRequest[] = [];
     const { client } = renderRoute('/track/w1', (request) => {
-      if (request.path === '/api/version') return ok({ webCompatVersion: 54, minWebCompatVersion: 54, syncEventVersion: 29, dbInstanceId: 'test', assistantProviders: true });
+      if (request.path === '/api/version') return ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 29, dbInstanceId: 'test', assistantProviders: true });
       if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
         availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
         capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
@@ -230,7 +231,7 @@ describe('degraded workspace reads stay usable', () => {
     const creates: ApiRequest[] = [];
     let revealLanding = false;
     const { client } = renderRoute('/track/w1', (request) => {
-      if (request.path === '/api/version') return ok({ webCompatVersion: 54, minWebCompatVersion: 54, syncEventVersion: 29, dbInstanceId: 'test', assistantProviders: true });
+      if (request.path === '/api/version') return ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 29, dbInstanceId: 'test', assistantProviders: true });
       if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
         availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
         capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },
@@ -302,7 +303,7 @@ describe('degraded workspace reads stay usable', () => {
   it('keeps a create undispatched when connectivity drops between the click and its mutation', async () => {
     const creates: ApiRequest[] = [];
     const { client } = renderRoute('/track/w1', (request) => {
-      if (request.path === '/api/version') return ok({ webCompatVersion: 54, minWebCompatVersion: 54, syncEventVersion: 29, dbInstanceId: 'test', assistantProviders: true });
+      if (request.path === '/api/version') return ok({ webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 29, dbInstanceId: 'test', assistantProviders: true });
       if (request.path.startsWith('/api/agent-providers/managed')) return ok([{
         availability: { provider: 'codex', status: 'ready', reason: null, checked_at_ms: 1, authentication_notice: null },
         capabilities: { managed_conversation: true, images: true, manual_compact: true, history_replacement: true, requires_ready_availability: false },

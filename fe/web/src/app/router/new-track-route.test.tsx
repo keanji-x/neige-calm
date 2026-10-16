@@ -58,12 +58,12 @@ const CONFLICT = {
 
 /* One template bound to a running plugin (an `input_schema`, therefore fields) and one that is not. */
 const TEMPLATES = [
-  { id: 'small-change', title: 'Small change', tasks: [{ key: 'inspect', goal: 'Read the change.' }] },
+  { id: 'small-change', title: 'Small change', description: null, availability: { status: 'ready' as const }, tasks: [{ key: 'inspect', goal: 'Read the change.' }] },
   {
     id: 'dev',
     title: 'Development',
     input_schema: JSON.parse(ISSUE_INPUT_SCHEMA) as unknown,
-    tasks: [{ key: 'inspect-issue', goal: 'Read the bound issue.' }],
+    description: null, availability: { status: 'ready' as const }, tasks: [{ key: 'inspect-issue', goal: 'Read the bound issue.' }],
   },
 ];
 

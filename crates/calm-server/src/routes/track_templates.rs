@@ -5,7 +5,9 @@
 
 use crate::error::{ErrorBody, Result};
 use crate::extract::{Json, Path};
-use crate::routes::tracks::{compile_template, resolve_template_binding};
+use crate::routes::tracks::{
+    compile_template, missing_required_template_owner, resolve_template_binding,
+};
 use crate::state::{AppState, RouteState};
 use crate::templates::{Template, task_payload_key_and_instruction};
 use axum::{Router, extract::State, routing::get};
@@ -30,12 +32,28 @@ pub struct TrackTemplate {
     /// Template key. Passed back verbatim as `template_id` on `POST /api/tracks`.
     pub id: String,
     pub title: String,
+    /// The purpose written by this template's author. Always present; null means no description.
+    #[schema(required = true, nullable = true)]
+    pub description: Option<String>,
+    /// The same required-owner check creation enforces, using current trusted plugin liveness.
+    pub availability: TrackTemplateAvailability,
     /// JSON Schema for `template_input`, from the manifest of the running trusted plugin
     /// bound to `id`. Absent means the template takes no input.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<Value>,
     /// The tasks this template pre-sets, in plan order. Always present; not always non-empty.
     pub tasks: Vec<TrackTemplateTask>,
+}
+
+/// A missing prerequisite is independent of any documentation the template includes.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum TrackTemplateAvailability {
+    Ready,
+    RequiresPlugin {
+        plugin_id: String,
+        plugin_name: String,
+    },
 }
 
 /// One pre-set task, projected from a `task` fence in the template file's body.
@@ -66,13 +84,21 @@ pub(crate) async fn list_track_templates(
     for template in s.templates.user_entries() {
         // Same resolver as create-time binding, so a template can never be advertised with a
         // schema the create path would then refuse to validate against.
-        let input_schema = resolve_template_binding(&s, template)
-            .await
-            .and_then(|manifest| manifest.input_schema.clone());
+        let binding = resolve_template_binding(&s, template).await;
+        let availability = match missing_required_template_owner(template.key(), binding.as_ref()) {
+            Some(owner) => TrackTemplateAvailability::RequiresPlugin {
+                plugin_id: owner.manifest().id.clone(),
+                plugin_name: owner.manifest().display_name.clone(),
+            },
+            None => TrackTemplateAvailability::Ready,
+        };
+        let input_schema = binding.and_then(|manifest| manifest.input_schema);
         let definition = current_definition(template)?;
         templates.push(TrackTemplate {
             id: template.key().to_string(),
             title: definition.title,
+            description: template.description().map(str::to_string),
+            availability,
             input_schema,
             // Tombstoned blocks are dropped by the projection, not by the read: the picker must
             // not advertise a retired task.

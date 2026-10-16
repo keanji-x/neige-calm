@@ -33,4 +33,5 @@
 // A bundle that requires this field rejects older kernels' run responses.
 // Revision 31: required compact outcome and context-reading validity in planner/run.
 // Revision 32: managed Assistant provider identity, wire and capability.
-pub const REST_API_VERSION: &str = "32";
+// Revision 33 (#2672): template lists require author descriptions and server-owned availability.
+pub const REST_API_VERSION: &str = "33";

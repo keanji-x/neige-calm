@@ -252,6 +252,7 @@ use utoipa::{Modify, OpenApi, ToSchema};
         BacklinkQuote,
         TrackBacklinksResponse,
         crate::routes::track_templates::TrackTemplate,
+        crate::routes::track_templates::TrackTemplateAvailability,
         crate::routes::track_templates::TrackTemplateDetail,
         crate::routes::track_templates::TemplatePluginGuide,
         calm_types::model::TrackRecipe,

@@ -1,3 +1,4 @@
+import { WEB_COMPAT_VERSION } from '../providers/public.tsx';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, RouterProvider } from '@tanstack/react-router';
 import { render } from '@testing-library/react';
@@ -45,7 +46,7 @@ export function renderAssistantProviderFixture(options: {
     let body: unknown = [];
     let status = 200;
     if (request.path === '/api/version') body = { assistantProviders: options.assistantProviders ?? true,
-      conversationCreateModel: true, conversationSide: true, webCompatVersion: options.webCompatVersion ?? 54, minWebCompatVersion: options.webCompatVersion ?? 54,
+      conversationCreateModel: true, conversationSide: true, webCompatVersion: options.webCompatVersion ?? WEB_COMPAT_VERSION, minWebCompatVersion: options.webCompatVersion ?? WEB_COMPAT_VERSION,
       syncEventVersion: 20, dbInstanceId: 'provider-browser' };
     if (request.path.startsWith('/api/agent-providers/managed')) body = options.answers;
     if (request.path.startsWith('/api/models?')) body = options.catalogUnavailable ? { ...catalog, models: [], source: 'unavailable' } : catalog;

@@ -535,7 +535,7 @@ describe('creating a track from a recipe', () => {
   it('sends recipe_id and never template_id', async () => {
     const user = userEvent.setup();
     const { sent } = atNewTrack({
-      templates: [{ id: 'small-change', title: 'Small change', tasks: [] }],
+      templates: [{ id: 'small-change', title: 'Small change', description: null, availability: { status: 'ready' as const }, tasks: [] }],
     });
     /* `combobox`: the route attaches the `@` menu, and a field with a trigger takes that role. */
     const composer = await screen.findByRole('combobox', { name: 'What this track should do' });

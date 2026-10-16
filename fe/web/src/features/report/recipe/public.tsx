@@ -105,8 +105,9 @@ export function RecipesPage({ recipes, loaded, error, refreshing, onRetry, theme
         <Button type="button" variant="primary" size="sm" label="New recipe" onClick={() => setOpen('')} />
       </header>
       <p className={styles.lede}>
-        A recipe is a report you keep: its heading becomes the new track&apos;s summary, and its
-        task blocks become that track&apos;s tasks.
+        Save reusable work instructions and a report format in ordinary Markdown. Choose a recipe
+        when creating a track, then describe the actual request; the planner derives tasks from it.
+        Recipes do not enable plugins or grant tool or merge permissions.
       </p>
       {error !== null && <ErrorBox message={error} onRetry={onRetry} pending={refreshing} />}
       {recipes.length > 0
@@ -255,10 +256,13 @@ export function RecipeEditor({ recipe, theme, onWrite, onDelete, onClose, onCrea
               isDisabled={saving || unconfirmed !== null}
             />
             <p className={styles.bodyLabel} id={`${fieldId}-body-hint`}>
-              Body — Markdown. Each <code>neige-block</code> task fence becomes one task.
-              {' '}
-              Format guide: <code>docs/recipe-body-format.md</code> in the repository.
+              Write work instructions and the desired report format in ordinary Markdown.
+              The planner creates tasks for each request. A recipe does not enable plugins or grant permissions.
             </p>
+            <details>
+              <summary>Example: repository investigation</summary>
+              <pre className={styles.example}>{'# Work instructions\nRead the relevant code and cite file paths. Separate facts from open questions.\n\n# Report format\n## Findings\n## Evidence\n## Next steps'}</pre>
+            </details>
             <div className={styles.code} data-nc-recipe-body="">
               <RecipeBodyEditor
                 id={`${fieldId}-body`}

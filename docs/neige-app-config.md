@@ -14,6 +14,18 @@ field. The generated systemd unit intentionally keeps `ExecStart` short:
 neige-app system serve --config ~/.config/neige-app/config.toml
 ```
 
+## Fresh packaged installation
+
+From an extracted Alpha archive, run `release/bin/neige-app system setup --package release`.
+It asks for an owner password and creates a fresh private installation under
+`~/.local/share/neige-app` (or an absolute absent `--root`). Its generated config
+is `<root>/config.toml`; use the exact `--config` path in the printed start command.
+The data, plugin, release, admin-token and binary paths are explicit under that
+root, and installed-state bookkeeping is initialized at setup time. Setup refuses
+existing state and needs no systemd. See the [getting-started guide](getting-started.md).
+The manual configuration sections below describe the existing operator workflow;
+the default legacy config path remains `~/.config/neige-app/config.toml`.
+
 ## Create
 
 ```bash

@@ -215,9 +215,12 @@ describe('invalidation plan behavior', () => {
     expect(actual).toHaveLength(CONVERSATION_LIST_KINDS.length);
   });
 
+  it('refreshes template prerequisites when plugin state changes', () => {
+    expect(invalidationPlanFor(event({ ev: 'plugin.state', data: {} })).invalidate).toEqual([['plugins'], ['track-templates']]);
+  });
+
   it('returns an empty plan for explicit no-op policies', () => {
     const empty = { invalidate: [], remove: [], writeThrough: [] };
-    expect(invalidationPlanFor(event({ ev: 'plugin.state', data: {} })).invalidate).toEqual([['plugins']]);
     expect(invalidationPlanFor({ ev: 'plugin.data.changed', data: { plugin_id: 'calendar' } }).invalidate).toEqual([['plugin-data', 'calendar']]);
     expect(invalidationPlanFor(event({ ev: 'proposal.resolved', data: {} }))).toEqual(empty);
   });

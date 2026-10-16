@@ -217,7 +217,7 @@ function policies(): PolicyMap {
     return result(keys);
   }),
   'terminal.deleted': plan((event, context) => result(trackFilesDerived(derivedTrackId(event.data, context)))),
-  'plugin.state': plan(() => result([['plugins']])),
+  'plugin.state': plan(() => result([['plugins'], ['track-templates']])),
   'plugin.data.changed': plan((event) => result([['plugin-data', event.data.plugin_id]])),
   'plugin.tool.registered': noop('No plugin-tool catalog query exists.'),
   /* Workspace only — a hook writes no `tasks` row, and it fires per tool call. */
