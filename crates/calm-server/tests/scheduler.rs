@@ -8071,7 +8071,10 @@ async fn frozen_child_refuses_repoint_and_reuses_its_bootstrap() {
         .await
         .unwrap_err();
     assert!(
-        matches!(error, calm_server::error::CalmError::Conflict(_)),
+        matches!(
+            error,
+            calm_truth::error::TruthError::Core(calm_types::error::CoreError::Conflict(_))
+        ),
         "{error}"
     );
     tx.rollback().await.unwrap();
