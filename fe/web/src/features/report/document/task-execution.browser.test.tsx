@@ -56,7 +56,7 @@ it.each(['codex', 'claude'] as const)('keeps a completed %s review readable in t
     deletable: false, created_at: 0, updated_at: 0,
     payload: { body: '', blocks: [{ id: 'b-review', kind: 'task', payload: {
       key: 'independent-review', kind, goal: 'Review the committed change without editing it.',
-      access: 'read_only', result_contract: 'review-v1', ready: true, declared_by: 'spec',
+      access: 'read_only', result_contract: 'review-v1', ready: true, declared_by: 'user',
     } }] },
   }]);
   const tasks = deriveReportTasks(report?.blocks ?? null, [{

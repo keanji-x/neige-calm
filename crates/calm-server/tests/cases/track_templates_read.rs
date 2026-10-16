@@ -269,11 +269,14 @@ async fn unavailable_template_creation_is_refused_without_writes() {
     let boot = boot(false).await;
     let area = boot
         .repo
-        .area_create(calm_server::model::NewArea {
-            name: "Onboarding".into(),
-            color: "#5B8DEF".into(),
-            sort: None,
-        })
+        .area_create(
+            calm_types::organization::LEGACY_OWNER_USER_ID,
+            calm_server::model::NewArea {
+                name: "Onboarding".into(),
+                color: "#5B8DEF".into(),
+                sort: None,
+            },
+        )
         .await
         .unwrap();
     let before = db_digest(&boot.repo).await;
