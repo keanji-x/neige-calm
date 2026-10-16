@@ -47,7 +47,14 @@ async fn area_ownership_migration_adopts_live_and_deleted_keys_once_and_preserve
         ..sqlx::migrate::Migrator::DEFAULT
     };
     old.run(&pool).await.unwrap();
-    sqlx::query("INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at) VALUES ('live','Old','#000',1,'user',10,11),('system','system','#000',-1,'system',5,5)").execute(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO areas(id,name,color,sort,kind,created_at,updated_at)
+         VALUES ('live','Old','#000',1,'user',10,11),
+                ('system','system','#000',-1,'system',5,5)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     sqlx::query("INSERT INTO area_create_idempotency VALUES ('raw-live-key','v1:original\\hash','live'),('raw-deleted-key','v1:tombstone','deleted')").execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO events(kind,payload,actor,at,scope_kind) VALUES('area.updated','{\"unmodified\":true}','user',42,'system')").execute(&pool).await.unwrap();
     let event: (i64, String, String, String, i64, String) =

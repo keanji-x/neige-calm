@@ -13,8 +13,16 @@ pub async fn application_user_register(
     user_id: &str,
     display_name: &str,
 ) -> Result<()> {
-    sqlx::query("INSERT INTO application_users(id, display_name, created_at) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET display_name=excluded.display_name")
-        .bind(user_id).bind(display_name).bind(now_ms()).execute(connection).await?;
+    sqlx::query(
+        "INSERT INTO application_users(id, display_name, created_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(id) DO UPDATE SET display_name=excluded.display_name",
+    )
+    .bind(user_id)
+    .bind(display_name)
+    .bind(now_ms())
+    .execute(connection)
+    .await?;
     Ok(())
 }
 
@@ -85,7 +93,14 @@ pub async fn areas_list_for_member(
 ) -> Result<Vec<Area>> {
     application_user_require_registered(connection, user_id).await?;
     let rows = sqlx::query_as::<_, crate::db::rows::AreaRow>(
-        "SELECT a.id, a.name, a.color, a.sort, a.kind, a.default_template_id, a.default_cwd, a.created_at, a.updated_at FROM areas a JOIN area_members m ON m.area_id=a.id WHERE m.user_id=?1 AND a.kind='user' ORDER BY a.sort, a.id",
-    ).bind(user_id).fetch_all(connection).await?;
+        "SELECT a.id, a.name, a.color, a.sort, a.kind,
+                a.default_template_id, a.default_cwd, a.created_at, a.updated_at
+         FROM areas a JOIN area_members m ON m.area_id=a.id
+         WHERE m.user_id=?1 AND a.kind='user'
+         ORDER BY a.sort, a.id",
+    )
+    .bind(user_id)
+    .fetch_all(connection)
+    .await?;
     Ok(rows.into_iter().map(Area::from).collect())
 }

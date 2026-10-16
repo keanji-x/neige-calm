@@ -110,14 +110,18 @@ pub async fn area_create_bind_tx(
     fingerprint: &str,
     area_id: &str,
 ) -> Result<()> {
-    sqlx::query("INSERT INTO area_create_idempotency (creator_user_id, idempotency_key, request_fingerprint, area_id) VALUES (?1, ?2, ?3, ?4)")
-        .bind(creator_user_id)
-        .bind(key)
-        .bind(fingerprint)
-        .bind(area_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(crate::error::idempotency_binding_insert_error)?;
+    sqlx::query(
+        "INSERT INTO area_create_idempotency
+         (creator_user_id, idempotency_key, request_fingerprint, area_id)
+         VALUES (?1, ?2, ?3, ?4)",
+    )
+    .bind(creator_user_id)
+    .bind(key)
+    .bind(fingerprint)
+    .bind(area_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(crate::error::idempotency_binding_insert_error)?;
     Ok(())
 }
 
